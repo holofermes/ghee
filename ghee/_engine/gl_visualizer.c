@@ -250,8 +250,9 @@ void gls_destroy(GLScene *g) {
 
 // ---- multipass -------------------------------------------------------------
 // A scene as a list of passes. Each pass: own program + ping-pong buffer. Channels
-// route between passes; a channel reads its source pass's PREVIOUS-frame output
-// (so order doesn't matter and self-reference = feedback). Last pass -> screen.
+// route between passes: a forward ref (earlier pass) reads that pass's CURRENT
+// frame (same-frame chaining); a self-reference or later-pass ref reads the
+// PREVIOUS frame (= feedback). Last pass -> screen.
 
 static void mp_make_buffers(GLScene *g, GLuint fbo[2], GLuint tex[2]) {
     glGenFramebuffers(2, fbo);
@@ -352,7 +353,11 @@ void gls_mp_render(GLScene *g, uint8_t *buffer_rgb) {
         for (int c = 0; c < g->mp_nchan[p]; c++) {
             const int src = g->mp_chan_src[p][c];
             if (src < 0) continue;
-            const int rd = 1 - g->mp_write[src];  // source's previous-frame output
+            // A pass that reads an EARLIER pass (src < p, already rendered this
+            // frame) gets its CURRENT output -> same-frame forward chains, no lag.
+            // Self-feedback (src == p) or a not-yet-rendered later pass reads the
+            // PREVIOUS frame (feedback; can't read the future).
+            const int rd = (src < p) ? g->mp_write[src] : 1 - g->mp_write[src];
             glActiveTexture(GL_TEXTURE0 + c);
             glBindTexture(GL_TEXTURE_2D, g->mp_tex[src][rd]);
             char nm[16];

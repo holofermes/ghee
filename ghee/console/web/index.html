@@ -363,7 +363,7 @@ function buildChannels(){
     const sel = document.createElement("select");
     work.passes.forEach(pp=>{ const o=document.createElement("option"); o.value=pp.name; o.textContent = pp.name + (pp.name===p.name?" (self)":""); sel.appendChild(o); });
     sel.value = ch.buffer || work.passes[0].name;
-    sel.addEventListener("change", ()=>{ ch.buffer = sel.value; delete ch.image; markDirty(); postScene(); });
+    sel.addEventListener("change", ()=>{ ch.buffer = sel.value; markDirty(); postScene(); });
     const x = document.createElement("span"); x.className="x"; x.textContent="×";
     x.addEventListener("click", ()=>{ p.channels.splice(ci,1); markDirty(); postScene(); buildChannels(); });
     wrap.appendChild(nm); wrap.appendChild(sel); wrap.appendChild(x);

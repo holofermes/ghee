@@ -4,17 +4,22 @@ A Scene is options + an ordered LIST of passes (last pass -> screen). It's gener
 it knows nothing about audio/cava/"amplitudes". Those are the *app's* concern — the
 host fills a pass's arrays with whatever data it has (cava bars, etc.) each frame.
 
-A pass's inputs:
+A pass's inputs. The names below are the CONTRACT between this preamble and the C
+engine: gls_mp_render binds `time`, `resolution`, and `iChannel0..N` by these exact
+literal names; arrays and params are bound by the author's chosen name. Change a
+built-in name here and you must change it in gls_mp_render too.
   * built-ins, always available, just use them: `time` (float), `resolution` (vec2).
   * ARRAYS: named uniform float arrays {name, size}. The author names them; the host
     fills them. Indexed via <name>_at() (constant-index loop when a sampler is in
     scope — the VC4 dynamic-index workaround).
-  * CHANNELS: numbered samplers iChannel0..N, each bound to an image (URI) or a
-    buffer (another pass's output; a pass pointing at ITSELF = feedback).
+  * CHANNELS: numbered samplers iChannel0..N, each bound to another pass's output
+    buffer (a pass pointing at ITSELF = feedback). A forward ref (earlier pass) reads
+    that pass's CURRENT frame; a self/later ref reads its PREVIOUS frame.
   * PARAMS: named typed sliders (decay, tint, ...).
 
-There is no special "feedback"/"ping-pong"/"source" concept: feedback is just a
-channel bound to its own pass's buffer; the engine double-buffers that internally.
+Feedback is just a channel bound to its own pass's buffer; the engine double-buffers
+that internally. (Image/texture channels and per-pass float buffer formats are not
+modeled yet — add them when a scene actually needs them.)
 """
 from __future__ import annotations
 
@@ -69,17 +74,16 @@ class ArrayInput:
 
 @dataclass
 class Channel:
-    """A numbered sampler -> iChannel<index>, bound to exactly one of:
-       image (a URI/path) or buffer (a pass name; self = feedback)."""
-    image: str | None = None
+    """A numbered sampler -> iChannel<index>, bound to a pass's output buffer
+    (a pass name; pointing at its own pass = feedback)."""
     buffer: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Channel":
-        return cls(image=d.get("image"), buffer=d.get("buffer"))
+        return cls(buffer=d.get("buffer"))
 
     def to_dict(self) -> dict:
-        return {"image": self.image} if self.image is not None else {"buffer": self.buffer}
+        return {"buffer": self.buffer}
 
 
 @dataclass
@@ -111,7 +115,6 @@ class DisplayProfile:
 class Pass:
     name: str
     code: str
-    format: str = "rgba8"
     arrays: list[ArrayInput] = field(default_factory=list)
     channels: list[Channel] = field(default_factory=list)
     params: dict[str, Param] = field(default_factory=dict)
@@ -133,14 +136,13 @@ class Pass:
         return cls(
             name=d.get("name", "main"),
             code=code or "",
-            format=d.get("format", "rgba8"),
             arrays=[ArrayInput.from_dict(a) for a in d.get("arrays", [])],
             channels=[Channel.from_dict(c) for c in d.get("channels", [])],
             params={n: Param.from_dict(n, pd) for n, pd in d.get("params", {}).items()},
         )
 
     def to_dict(self) -> dict:
-        out: dict = {"name": self.name, "code": self.code, "format": self.format}
+        out: dict = {"name": self.name, "code": self.code}
         if self.arrays:
             out["arrays"] = [a.to_dict() for a in self.arrays]
         if self.channels:

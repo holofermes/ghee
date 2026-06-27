@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f3f3f1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ghee">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<title>ghee</title>
+<script>(function(){try{var t=localStorage.getItem("ghee:theme")||((window.matchMedia&&matchMedia("(prefers-color-scheme:dark)").matches)?"dark":"light");document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+<style>
+  :root{
+    --bg:#f3f3f1; --panel:#fbfbfa; --line:#e6e6e2; --ink:#1d1d1b; --muted:#8a8a83;
+    --accent:#3a3a36; --accent-ink:#fafafa; --hot:#c0392b;
+    --code-bg:#fcfcfb; --code-ink:#3a3a3a; --bezel:#d8d8d2; --scroll:#cfcfc9;
+    --t-cm:#a2a298; --t-pp:#8a5fb0; --t-ty:#2c7a72; --t-kw:#b0603a; --t-bi:#3f63ad; --t-nu:#86772f;
+    --err-bg:#fdf0ef; --err-line:#f3d4d0;
+    --shadow:0 1px 2px rgba(20,20,16,.05), 0 6px 20px rgba(20,20,16,.05);
+    --r:12px;
+  }
+  html[data-theme="dark"]{
+    --bg:#141518; --panel:#1c1e22; --line:#2b2e34; --ink:#e9e9e4; --muted:#888b92;
+    --accent:#e9e9e4; --accent-ink:#16171a; --hot:#e0796f;
+    --code-bg:#17181c; --code-ink:#cacac3; --bezel:#2c2f36; --scroll:#3a3e46;
+    --t-cm:#6f7178; --t-pp:#b89ce0; --t-ty:#5bbdb0; --t-kw:#e0916a; --t-bi:#80a1e0; --t-nu:#c4b56a;
+    --err-bg:#2a1a18; --err-line:#5a322c;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 22px rgba(0,0,0,.4);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0; height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; height:100vh; display:flex; flex-direction:column; overflow:hidden;
+    padding:max(18px,env(safe-area-inset-top)) 18px 18px;
+  }
+  header{display:flex; align-items:center; gap:14px; margin:0 2px 16px; flex-wrap:nowrap; flex:0 0 auto; white-space:nowrap}
+  .brand{font-weight:650; letter-spacing:.2px; font-size:16px}
+  .brand .dot{color:var(--muted); font-weight:400}
+  .spacer{flex:1}
+  select,button,input{font:inherit; color:var(--ink)}
+  select{background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:7px 10px; box-shadow:var(--shadow)}
+  button{
+    background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:7px 12px;
+    cursor:pointer; box-shadow:var(--shadow); transition:transform .04s ease, background .15s ease;
+  }
+  button:hover{border-color:var(--muted)}
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+  button.ghost{box-shadow:none; background:transparent; border-color:transparent; color:var(--muted)}
+  #theme,#rotate{font-size:22px; line-height:1; padding:2px 9px; color:var(--ink)}
+  .nav{display:flex; gap:6px}
+  .grid{display:grid; grid-template-columns:minmax(300px,440px) 1fr; gap:18px; flex:1 1 auto; min-height:0}
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow)}
+  .leftcol{display:flex; flex-direction:column; gap:18px; overflow:auto; min-height:0; padding-right:4px}
+  .stage{padding:14px; flex:0 0 auto}
+  .shadercard{display:flex; flex-direction:column; min-height:0}
+  .shadercard .editor{flex:1 1 auto; min-height:140px}
+  .shadercard .editor>textarea{height:100%; resize:none}
+  .shadercard .err{flex:0 0 auto}
+  .shadercard>.toolbar{margin:4px 0 16px}
+  .errmark{position:absolute; left:0; right:0; background:rgba(192,57,43,.16); border-left:3px solid var(--hot); pointer-events:none; display:none; z-index:1}
+  .screen{background:var(--bezel); border-radius:12px; padding:12px; width:max-content; max-width:100%; margin:0 auto}
+  .frame{position:relative; margin:0 auto; overflow:hidden; max-width:100%}
+  .frame img{position:absolute; top:50%; left:50%; display:block; image-rendering:pixelated}
+  .meter{display:flex; gap:14px; margin-top:10px; color:var(--muted); font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .meter b{color:var(--ink); font-weight:600}
+  .card{padding:14px 16px}
+  .card + .card{margin-top:16px}
+  h3{margin:0 0 12px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:600}
+  .row{display:grid; grid-template-columns:1fr; gap:5px; margin:11px 0}
+  .row label{display:flex; justify-content:space-between; font-size:13px; color:var(--accent)}
+  .row .val{color:var(--muted); font:12px ui-monospace,Menlo,monospace}
+  input[type=range]{-webkit-appearance:none; appearance:none; width:100%; height:3px; background:var(--line); border-radius:3px; outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:15px; height:15px; border-radius:50%; background:var(--accent); cursor:pointer; box-shadow:var(--shadow); margin-top:0}
+  input[type=range]::-moz-range-thumb{width:15px; height:15px; border:none; border-radius:50%; background:var(--accent); cursor:pointer}
+  .editor{position:relative; border:1px solid var(--line); border-radius:9px; background:var(--code-bg); overflow:hidden}
+  .editor>pre,.editor>textarea{margin:0; border:0; padding:11px; font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; tab-size:2; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word}
+  .editor>pre{position:absolute; inset:0; overflow:auto; color:var(--code-ink); pointer-events:none}
+  .editor>textarea{position:relative; display:block; width:100%; height:460px; resize:vertical; background:transparent; color:transparent; caret-color:var(--ink); outline:none; overflow:auto}
+  /* themed scrollbars (editor + scrolling panels), not the OS default */
+  .editor>textarea,.editor>pre,.leftcol{scrollbar-width:thin; scrollbar-color:var(--scroll) transparent}
+  .editor>textarea::-webkit-scrollbar,.editor>pre::-webkit-scrollbar,.leftcol::-webkit-scrollbar{width:10px; height:10px}
+  .editor>textarea::-webkit-scrollbar-track,.editor>pre::-webkit-scrollbar-track,.leftcol::-webkit-scrollbar-track{background:transparent}
+  .editor>textarea::-webkit-scrollbar-thumb,.editor>pre::-webkit-scrollbar-thumb,.leftcol::-webkit-scrollbar-thumb{background:var(--scroll); border-radius:8px; border:2px solid transparent; background-clip:padding-box}
+  .editor>textarea::-webkit-scrollbar-thumb:hover,.editor>pre::-webkit-scrollbar-thumb:hover,.leftcol::-webkit-scrollbar-thumb:hover{background:var(--muted); background-clip:padding-box}
+  .editor>textarea::-webkit-scrollbar-corner,.leftcol::-webkit-scrollbar-corner{background:transparent}
+  .t-cm{color:var(--t-cm); font-style:italic} .t-pp{color:var(--t-pp)} .t-ty{color:var(--t-ty)}
+  .t-kw{color:var(--t-kw)} .t-bi{color:var(--t-bi)} .t-nu{color:var(--t-nu)}
+  #info{margin-top:6px}
+  .toolbar{display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap}
+  .err{margin-top:10px; padding:10px 12px; border-radius:9px; background:var(--err-bg); border:1px solid var(--err-line); color:var(--hot); font:12px/1.45 ui-monospace,Menlo,monospace; white-space:pre-wrap; display:none}
+  .err.show{display:block}
+  .addparam{display:none; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center}
+  .addparam.show{display:flex}
+  .addparam input{background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:6px 8px; width:78px}
+  .addparam input.name{width:130px}
+  .muted{color:var(--muted); font-size:12px}
+  .pill{font:11px ui-monospace,Menlo,monospace; color:var(--muted); border:1px solid var(--line); border-radius:20px; padding:2px 9px}
+  .tabs{display:flex; gap:5px; flex-wrap:wrap; align-items:center; margin-bottom:10px; flex:0 0 auto}
+  .tab{display:inline-flex; align-items:center; gap:7px; padding:5px 11px; border:1px solid var(--line); border-radius:8px; background:var(--panel); cursor:pointer; font-size:13px; color:var(--muted); user-select:none}
+  .tab.active{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+  .tab .x{opacity:.55; font-size:13px; line-height:1}
+  .tab .x:hover{opacity:1; color:var(--hot)}
+  .tab input{background:transparent; border:0; outline:none; color:inherit; font:inherit; width:84px; padding:0}
+  .tab.add{border-style:dashed; color:var(--muted)}
+  .channels{display:flex; gap:7px; align-items:center; flex-wrap:wrap; margin-bottom:10px; flex:0 0 auto; font-size:12px; color:var(--muted)}
+  .chan{display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); border-radius:7px; padding:3px 5px 3px 8px}
+  .chan select{padding:3px 5px; font-size:12px}
+  .chan .x{opacity:.55; cursor:pointer}
+  .chan .x:hover{opacity:1; color:var(--hot)}
+  .inputs{display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:10px; flex:0 0 auto; font-size:12px; color:var(--muted)}
+  .chip{border:1px solid var(--line); border-radius:7px; padding:3px 8px; color:var(--muted); cursor:help; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .chip.arr{color:var(--ink); border-color:var(--accent)}
+  @media (max-width:620px){
+    html,body{height:auto}
+    body{height:auto; overflow:auto; display:block; padding:12px}
+    .grid{display:block}
+    .leftcol{overflow:visible; min-height:0}
+    .leftcol>.panel + .panel{margin-top:18px}
+    .shadercard{display:block; margin-top:18px}
+    .shadercard .editor{flex:none}
+    .shadercard .editor>textarea{height:360px; resize:vertical}
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">ghee<span class="dot"> · console</span></span>
+  <span class="pill" id="active">—</span>
+  <span class="spacer"></span>
+  <button class="ghost" id="theme" title="toggle theme">☾</button>
+  <div class="nav">
+    <button class="ghost" id="prev" title="previous scene">‹ prev</button>
+    <select id="scenes"></select>
+    <button class="ghost" id="next" title="next scene">next ›</button>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="leftcol">
+    <div class="panel stage">
+      <div class="screen"><div class="frame"><img id="stream" alt="render"></div></div>
+      <div class="meter">
+        <span><b id="fps">0.0</b> fps</span>
+        <span>render <b id="rms">0.0</b>ms</span>
+        <span>encode <b id="ems">0.0</b>ms</span>
+        <span class="spacer"></span>
+        <button class="ghost" id="rotate" title="rotate preview 90°">↻</button>
+      </div>
+      <div class="meter" id="info"></div>
+      <div class="meter" id="device"></div>
+    </div>
+
+    <div class="panel card">
+      <h3>parameters</h3>
+      <div id="params"></div>
+      <div class="toolbar">
+        <button id="addToggle" class="ghost">+ parameter</button>
+      </div>
+      <div class="addparam" id="addRow">
+        <input class="name" id="pName" placeholder="name">
+        <select id="pType"><option value="float">float</option><option value="int">int</option></select>
+        <input id="pVal" placeholder="value" value="0.5">
+        <input id="pMin" placeholder="min" value="0">
+        <input id="pMax" placeholder="max" value="1">
+        <button id="pAdd">add</button>
+        <span class="muted">apply to compile</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel card shadercard">
+    <h3>shader</h3>
+    <div class="tabs" id="tabs"></div>
+    <div class="channels" id="channels"></div>
+    <div class="inputs" id="inputs"></div>
+    <div class="toolbar">
+      <button class="primary" id="apply">apply</button>
+      <button id="save">save</button>
+      <button id="reset">reset</button>
+      <span class="spacer"></span>
+      <span class="muted" id="dirty"></span>
+    </div>
+    <div class="editor"><pre id="hl" aria-hidden="true"></pre><textarea id="code" spellcheck="false"></textarea><div class="errmark" id="errmark"></div></div>
+    <div class="err" id="err"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const KEY = n => "ghee:scene:" + n;
+let pristine = null;   // scene as on disk
+let work = null;       // working scene (edited)
+let active = null;
+let curPass = 0;
+let lastDisplay = null, compileTimer = null, errLine = 0;
+const codeEl = () => $("#code"), hlEl = () => $("#hl");
+
+function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+const TOK = [
+  ["cm", /\/\/[^\n]*|\/\*[\s\S]*?\*\//],
+  ["pp", /#[^\n]*/],
+  ["ty", /\b(?:void|float|int|bool|vec[234]|mat[234]|sampler2D)\b/],
+  ["kw", /\b(?:if|else|for|while|return|const|uniform|varying|attribute|struct|precision|highp|mediump|lowp|in|out|inout|break|continue|discard)\b/],
+  ["bi", /\b(?:gl_FragColor|gl_FragCoord|gl_Position|texture2D|texture|sin|cos|tan|asin|acos|atan|abs|floor|ceil|fract|mix|clamp|min|max|pow|exp|log|length|distance|dot|cross|normalize|reflect|smoothstep|step|mod|sqrt|sign|radians|degrees)\b/],
+  ["nu", /\b\d+\.?\d*\b/],
+];
+const RE = new RegExp(TOK.map(t => "(" + t[1].source + ")").join("|"), "g");
+function highlight(src){
+  let out = "", last = 0, m; RE.lastIndex = 0;
+  while ((m = RE.exec(src))){
+    out += esc(src.slice(last, m.index));
+    for (let i=0;i<TOK.length;i++){ if (m[i+1]!=null){ out += `<span class="t-${TOK[i][0]}">${esc(m[0])}</span>`; break; } }
+    last = m.index + m[0].length;
+  }
+  return out + esc(src.slice(last)) + "\n";
+}
+function syncHL(){ hlEl().innerHTML = highlight(codeEl().value); hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; }
+function renderInfo(){
+  if (!work) return;
+  let params=0, arrays=0, feedback=false;
+  work.passes.forEach(p => { params += Object.keys(p.params||{}).length; arrays += (p.arrays||[]).length; (p.channels||[]).forEach(c => { if (c.buffer === p.name) feedback=true; }); });
+  const np = work.passes.length;
+  const d = lastDisplay ? `${lastDisplay.w}×${lastDisplay.h} · ${lastDisplay.orientation.toLowerCase()}${lastDisplay.bw?" · bw":""}` : "";
+  $("#info").innerHTML = [d&&`<span>${d}</span>`, `<span>${np} pass${np>1?"es":""}</span>`, `<span>${params} param${params!==1?"s":""}</span>`, feedback?"<span>feedback</span>":"", arrays?`<span>${arrays} array${arrays>1?"s":""}</span>`:""].filter(Boolean).join("");
+}
+
+function effectiveRotation(){
+  const o = localStorage.getItem("ghee:rotation");
+  if (o !== null) return ((parseInt(o,10)%360)+360)%360;
+  return (lastDisplay && lastDisplay.rotation) ? lastDisplay.rotation : 0;
+}
+function applyRotation(){
+  if (!lastDisplay) return;
+  const R = effectiveRotation(), w = lastDisplay.w, h = lastDisplay.h, land = (R===90||R===270);
+  const img = $("#stream"), frame = img.parentElement;
+  frame.style.width = (land ? h : w) + "px";
+  frame.style.height = (land ? w : h) + "px";
+  img.style.transform = `translate(-50%,-50%) rotate(${R}deg)`;
+}
+function applyErrorLine(line){
+  const m = $("#errmark"), t = codeEl();
+  if (!line || line < 1){ m.style.display = "none"; return; }
+  const cs = getComputedStyle(t), lh = parseFloat(cs.lineHeight), pad = parseFloat(cs.paddingTop);
+  m.style.height = lh + "px";
+  m.style.top = (pad + (line - 1) * lh - t.scrollTop) + "px";
+  m.style.display = "block";
+}
+async function loadHwinfo(){
+  try{
+    const h = await jget("/hwinfo");
+    const bits = [h.model, h.gpu, h.gpu_mem && ("GPU " + h.gpu_mem)].filter(Boolean);
+    $("#device").textContent = bits.join("  ·  ");
+  }catch(_){}
+}
+
+async function jget(u){ return (await fetch(u)).json(); }
+function clone(o){ return JSON.parse(JSON.stringify(o)); }
+function dirty(){ return JSON.stringify(work) !== JSON.stringify(pristine); }
+function markDirty(){ $("#dirty").textContent = dirty() ? "unsaved" : ""; saveLocalIfDirty(); }
+function saveLocalIfDirty(){ if(dirty()) localStorage.setItem(KEY(active), JSON.stringify(work)); }
+
+async function boot(){
+  const s = await jget("/scenes");
+  const sel = $("#scenes"); sel.innerHTML = "";
+  s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
+  sel.value = s.active;
+  await loadScene(s.active);
+  $("#stream").src = "/stream";
+  loadHwinfo();
+  poll();
+}
+$("#rotate").addEventListener("click", ()=>{ localStorage.setItem("ghee:rotation", String((effectiveRotation()+90)%360)); applyRotation(); });
+
+async function loadScene(name){
+  active = name;
+  pristine = await jget("/scene?name=" + encodeURIComponent(name));
+  const saved = localStorage.getItem(KEY(name));
+  work = saved ? JSON.parse(saved) : clone(pristine);
+  $("#active").textContent = name;
+  $("#scenes").value = name;
+  curPass = 0;
+  if (!work.passes || !work.passes.length) {   // non-shader scene (python plugin): stream only
+    $("#tabs").innerHTML = ""; $("#channels").innerHTML = ""; $("#inputs").innerHTML = "";
+    $("#params").innerHTML = '<div class="muted">python plugin — not shader-editable</div>';
+    codeEl().value = ""; syncHL(); applyErrorLine(0); renderInfo(); $("#dirty").textContent = "";
+    return;
+  }
+  if (saved) { await postScene(); }     // re-apply working copy to the render
+  buildTabs(); buildChannels(); buildParams(); loadCode(); renderInfo();
+  $("#dirty").textContent = dirty() ? "unsaved" : "";
+}
+
+function setPass(i){ curPass = i; buildTabs(); buildChannels(); loadCode(); }
+function uniqueName(base){ const names=new Set(work.passes.map(p=>p.name)); let n=base,k=1; while(names.has(n)){ n=base+k; k++; } return n; }
+
+function buildTabs(){
+  const t = $("#tabs"); t.innerHTML = "";
+  work.passes.forEach((p,i)=>{
+    const tab = document.createElement("span");
+    tab.className = "tab" + (i===curPass ? " active" : "");
+    const lbl = document.createElement("span");
+    lbl.textContent = p.name; lbl.title = "double-click to rename";
+    lbl.addEventListener("click", ()=> setPass(i));
+    lbl.addEventListener("dblclick", ()=> renamePass(i, lbl));
+    tab.appendChild(lbl);
+    if (work.passes.length > 1){
+      const x = document.createElement("span"); x.className="x"; x.textContent="×"; x.title="delete pass";
+      x.addEventListener("click", e=>{ e.stopPropagation(); delPass(i); });
+      tab.appendChild(x);
+    }
+    t.appendChild(tab);
+  });
+  const add = document.createElement("span"); add.className="tab add"; add.textContent="+ pass";
+  add.addEventListener("click", addPass);
+  t.appendChild(add);
+}
+
+function renamePass(i, lbl){
+  const inp = document.createElement("input");
+  inp.value = work.passes[i].name;
+  const commit = ()=>{
+    const nn = inp.value.trim() || work.passes[i].name, old = work.passes[i].name;
+    if (nn !== old){
+      work.passes.forEach(p => (p.channels||[]).forEach(c => { if (c.buffer===old) c.buffer=nn; }));
+      work.passes[i].name = nn; markDirty(); postScene();
+    }
+    buildTabs(); buildChannels();
+  };
+  inp.addEventListener("blur", commit);
+  inp.addEventListener("keydown", e=>{ if(e.key==="Enter") inp.blur(); if(e.key==="Escape"){ inp.value=work.passes[i].name; inp.blur(); } });
+  lbl.replaceWith(inp); inp.focus(); inp.select();
+}
+
+function addPass(){
+  const name = uniqueName("pass");
+  work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", format:"rgba8", arrays:[], channels:[], params:{} });
+  curPass = work.passes.length - 1; markDirty(); postScene();
+  buildTabs(); buildChannels(); buildParams(); loadCode(); renderInfo();
+}
+
+function delPass(i){
+  if (work.passes.length <= 1) return;
+  const name = work.passes[i].name;
+  work.passes.splice(i,1);
+  work.passes.forEach(p => { p.channels = (p.channels||[]).filter(c => c.buffer !== name); });
+  if (curPass >= work.passes.length) curPass = work.passes.length - 1;
+  markDirty(); postScene();
+  buildTabs(); buildChannels(); buildParams(); loadCode(); renderInfo();
+}
+
+function buildChannels(){
+  const box = $("#channels"); box.innerHTML = "";
+  const p = work.passes[curPass]; p.channels = p.channels || [];
+  if (p.channels.length){ const l=document.createElement("span"); l.textContent="channels"; box.appendChild(l); }
+  p.channels.forEach((ch,ci)=>{
+    const wrap = document.createElement("span"); wrap.className="chan";
+    const nm = document.createElement("span"); nm.textContent = "iChannel"+ci;
+    const sel = document.createElement("select");
+    work.passes.forEach(pp=>{ const o=document.createElement("option"); o.value=pp.name; o.textContent = pp.name + (pp.name===p.name?" (self)":""); sel.appendChild(o); });
+    sel.value = ch.buffer || work.passes[0].name;
+    sel.addEventListener("change", ()=>{ ch.buffer = sel.value; delete ch.image; markDirty(); postScene(); });
+    const x = document.createElement("span"); x.className="x"; x.textContent="×";
+    x.addEventListener("click", ()=>{ p.channels.splice(ci,1); markDirty(); postScene(); buildChannels(); });
+    wrap.appendChild(nm); wrap.appendChild(sel); wrap.appendChild(x);
+    box.appendChild(wrap);
+  });
+  const add = document.createElement("span"); add.className="tab add"; add.style.fontSize="12px";
+  add.textContent = "+ channel";
+  add.addEventListener("click", ()=>{ p.channels.push({ buffer: work.passes[0].name }); markDirty(); postScene(); buildChannels(); });
+  box.appendChild(add);
+  buildInputs();
+}
+
+function buildInputs(){
+  const box = $("#inputs"); if (!box) return; box.innerHTML = "";
+  const p = work.passes[curPass];
+  const lab = document.createElement("span"); lab.textContent = "inputs"; box.appendChild(lab);
+  const chip = (label, title, cls)=>{ const s=document.createElement("span"); s.className="chip"+(cls?" "+cls:""); s.textContent=label; s.title=title; box.appendChild(s); };
+  chip("time", "uniform float time;  — seconds since start");
+  chip("resolution", "uniform vec2 resolution;  — render size in pixels");
+  (p.arrays||[]).forEach(a=>{
+    chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i)  — element i (loop-safe on VC4)\n${a.name}_size  — ${a.size}`, "arr");
+  });
+}
+function loadCode(){ codeEl().value = work.passes[curPass].code || ""; codeEl().scrollTop = 0; syncHL(); }
+
+function buildParams(){
+  const box = $("#params"); box.innerHTML = "";
+  let any = false;
+  work.passes.forEach((p,pi)=>{
+    const params = p.params || {};
+    Object.keys(params).forEach(name=>{
+      const pm = params[name];
+      if (pm.type !== "float" && pm.type !== "int") return;
+      any = true;
+      const mn = pm.min!=null?pm.min:0, mx = pm.max!=null?pm.max:1;
+      const step = pm.type==="int" ? 1 : (pm.step!=null?pm.step:(mx-mn)/200);
+      const row = document.createElement("div"); row.className="row";
+      const fmt = v => pm.type==="int" ? (v|0) : (+v).toFixed(3);
+      row.innerHTML =
+        `<label><span>${p.name==="main"?"":p.name+"."}${name}</span><span class="val" id="v_${pi}_${name}">${fmt(pm.value)}</span></label>
+         <input type="range" min="${mn}" max="${mx}" step="${step}" value="${pm.value}">`;
+      const inp = row.querySelector("input");
+      inp.addEventListener("input", ()=>{
+        const v = pm.type==="int" ? parseInt(inp.value,10) : parseFloat(inp.value);
+        pm.value = v; $("#v_"+pi+"_"+name).textContent = fmt(v);
+        fetch(`/set?pass=${pi}&name=${encodeURIComponent(name)}&value=${v}`);
+        markDirty();
+      });
+      box.appendChild(row);
+    });
+  });
+  if (!any){ box.innerHTML = `<div class="muted">no parameters</div>`; }
+}
+
+async function postScene(){
+  await fetch("/scene", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(work)});
+}
+
+// shader
+codeEl().addEventListener("input", ()=>{
+  work.passes[curPass].code = codeEl().value; syncHL(); markDirty();
+  clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350);   // live compile
+});
+codeEl().addEventListener("scroll", ()=>{ hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; applyErrorLine(errLine); });
+$("#apply").addEventListener("click", async ()=>{ work.passes[curPass].code = codeEl().value; await postScene(); markDirty(); });
+$("#save").addEventListener("click", ()=>{ localStorage.setItem(KEY(active), JSON.stringify(work)); $("#dirty").textContent = "saved"; setTimeout(()=>{ $("#dirty").textContent = dirty()?"unsaved":""; }, 900); });
+$("#reset").addEventListener("click", async ()=>{
+  localStorage.removeItem(KEY(active));
+  work = clone(pristine); await postScene(); curPass = 0;
+  buildTabs(); buildChannels(); buildParams(); loadCode(); renderInfo(); $("#dirty").textContent = "";
+});
+
+// scene nav
+$("#prev").addEventListener("click", async ()=>{ const r=await jget("/prev"); await loadScene(r.active); });
+$("#next").addEventListener("click", async ()=>{ const r=await jget("/next"); await loadScene(r.active); });
+$("#scenes").addEventListener("change", async e=>{ const r=await jget("/switch?name="+encodeURIComponent(e.target.value)); await loadScene(r.active); });
+
+// add parameter
+$("#addToggle").addEventListener("click", ()=> $("#addRow").classList.toggle("show"));
+$("#pAdd").addEventListener("click", ()=>{
+  const name = $("#pName").value.trim(); if(!name) return;
+  const type = $("#pType").value;
+  const p = work.passes[curPass];
+  p.params = p.params || {};
+  p.params[name] = {type, value:parseFloat($("#pVal").value)||0, min:parseFloat($("#pMin").value)||0, max:parseFloat($("#pMax").value)||1};
+  $("#pName").value=""; $("#addRow").classList.remove("show");
+  buildParams(); markDirty();
+});
+
+async function poll(){
+  try{
+    const s = await jget("/stats");
+    $("#fps").textContent = s.fps.toFixed(1);
+    $("#rms").textContent = s.render_ms.toFixed(1);
+    $("#ems").textContent = s.encode_ms.toFixed(1);
+    if (s.display) lastDisplay = s.display;
+    renderInfo(); applyRotation();
+    errLine = (s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass)) ? s.error_line : 0;
+    applyErrorLine(errLine);
+    const e = $("#err");
+    if (s.error){ e.textContent = s.error; e.classList.add("show"); }
+    else { e.classList.remove("show"); }
+  }catch(_){}
+  setTimeout(poll, 600);
+}
+
+function applyTheme(t){
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem("ghee:theme", t);
+  const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute("content", t==="dark"?"#141518":"#f3f3f1");
+  $("#theme").textContent = t==="dark" ? "☀" : "☾";
+}
+applyTheme(document.documentElement.dataset.theme || "light");
+$("#theme").addEventListener("click", ()=> applyTheme(document.documentElement.dataset.theme==="dark" ? "light" : "dark"));
+
+if ("serviceWorker" in navigator){ navigator.serviceWorker.register("sw.js").catch(()=>{}); }
+boot();
+</script>
+</body>
+</html>

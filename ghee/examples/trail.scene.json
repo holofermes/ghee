@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "passes": [
+    {
+      "name": "main",
+      "code": "void main() {\n  vec2 uv = v_texCoord;\n  vec3 prev = texture2D(iChannel0, uv).rgb;   // channel 0 = this pass (feedback)\n  vec2 c = vec2(0.5) + 0.35 * vec2(cos(time), sin(time * 1.3));\n  float d = distance(uv, c);\n  float src = smoothstep(0.045, 0.0, d);\n  vec3 col = max(prev * decay - sink, 0.0) + src * vec3(1.0, 0.55, 0.15);\n  gl_FragColor = vec4(col, 1.0);\n}\n",
+      "format": "rgba8",
+      "channels": [
+        {
+          "buffer": "main"
+        }
+      ],
+      "params": {
+        "decay": {
+          "type": "float",
+          "value": 0.96,
+          "min": 0.85,
+          "max": 1.0,
+          "step": 0.001
+        },
+        "sink": {
+          "type": "float",
+          "value": 0.008,
+          "min": 0.0,
+          "max": 0.03,
+          "step": 0.001
+        }
+      }
+    }
+  ]
+}

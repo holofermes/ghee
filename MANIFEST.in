@@ -1,0 +1,3 @@
+recursive-include ghee/_engine *.c *.h CMakeLists.txt
+recursive-include ghee/console/web *
+recursive-include ghee/examples *.scene.json

@@ -1,0 +1,20 @@
+[project]
+name = "ghee"
+version = "0.1.0"
+description = "Audio-blind GLSL multipass scene model + renderer, plus a shader-editor console."
+requires-python = ">=3.11"
+# numpy is used by ghee.engine (the Renderer ctypes binding). The pure scene
+# model (import ghee) does not need it, but the package ships the renderer too.
+dependencies = ["numpy"]
+
+# The console render server additionally encodes JPEG frames.
+# Install with: uv pip install -e ./ghee[console]
+[project.optional-dependencies]
+console = ["Pillow"]
+
+# setuptools (not hatchling) because the package builds a C extension: the engine
+# (ghee/_engine) is compiled into ghee/lib/ by setup.py. Package data (the
+# console web, example scenes, the built .so) is declared in setup.py.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"

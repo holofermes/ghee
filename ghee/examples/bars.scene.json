@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "passes": [
+    {
+      "name": "main",
+      "code": "void main() {\n  vec2 uv = v_texCoord;\n  int i = int(uv.x * 16.0);\n  float h = bars_at(i);\n  vec3 c = uv.y < h ? vec3(0.1, 0.9, 0.4) : vec3(0.04);\n  gl_FragColor = vec4(c, 1.0);\n}\n",
+      "format": "rgba8",
+      "arrays": [
+        {
+          "name": "bars",
+          "size": 16
+        }
+      ]
+    }
+  ]
+}

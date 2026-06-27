@@ -169,6 +169,11 @@ class Pass:
         for p in self.params.values():
             L.append(f"uniform {p.glsl_type} {p.name};")
 
+        # Cheap antialiasing: this VC4 has no GL_OES_standard_derivatives (no fwidth),
+        # so the edge width is resolution-based (~1.5px on the y axis). aastep(t, x) is
+        # a soft step(t, x) — use it instead of step()/hard compares for smooth edges.
+        L.append("float aastep(float t, float x){ float w = 1.5/resolution.y; return smoothstep(t-w, t+w, x); }")
+
         # Constant-index loop when a sampler is in scope (VC4 can't dynamically index).
         loop = bool(self.channels)
         for a in self.arrays:

@@ -47,8 +47,15 @@ struct GheeScene {
     int mp_nchan[MP_MAX_PASSES];
     GLint mp_timeLoc[MP_MAX_PASSES];
 
+    bool profile;                        // when on, ghee_mp_render splits draw vs readback (adds a glFinish)
+    double prof_draw_ms, prof_read_ms;   // last frame's split (profiling mode)
+
     char last_error[ERROR_BUFFER_SIZE];
 };
+
+static double ms_between(struct timespec a, struct timespec b) {
+    return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
+}
 
 static const char *vertex_shader_source =
     "#version 100\n"
@@ -340,7 +347,7 @@ void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const flo
 
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
     make_current(g);
-    struct timespec now;
+    struct timespec now, t_draw, t_read;
     clock_gettime(CLOCK_MONOTONIC, &now);
     const float elapsed = (now.tv_sec - g->start_time.tv_sec)
                         + (now.tv_nsec - g->start_time.tv_nsec) / 1e9f;
@@ -368,12 +375,34 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 
+    // Profiling: force the GPU to finish the passes so the readback timing below
+    // is pure readback, not "readback + the draws it was waiting on". The glFinish
+    // is the profiling cost; it is skipped entirely when profiling is off.
+    if (g->profile) { glFinish(); clock_gettime(CLOCK_MONOTONIC, &t_draw); }
+
     const int last = g->mp_count - 1;
     glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[last][g->mp_write[last]]);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, g->width, g->height, (g->components == 3) ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, buffer_rgb);
 
+    if (g->profile) {
+        clock_gettime(CLOCK_MONOTONIC, &t_read);
+        g->prof_draw_ms = ms_between(now, t_draw);   // GPU render (passes), fenced
+        g->prof_read_ms = ms_between(t_draw, t_read); // pure glReadPixels
+    }
+
     for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;  // swap all
+}
+
+// Profiling: when on, ghee_mp_render fences the passes (glFinish) so the next
+// frame's timings split GPU-render vs readback. Off by default (zero overhead).
+void ghee_set_profiling(GheeScene *g, bool on) { g->profile = on; }
+
+// Last frame's split (profiling mode): draw_ms = fenced GPU render of all passes,
+// read_ms = pure glReadPixels. Both 0 until a frame renders with profiling on.
+void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms) {
+    if (draw_ms) *draw_ms = g->prof_draw_ms;
+    if (read_ms) *read_ms = g->prof_read_ms;
 }
 
 // Tear down all passes (for switching scenes). Keeps the GL context.

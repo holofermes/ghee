@@ -136,7 +136,7 @@ def render_loop():
         frame += 1
         t1 = time.monotonic()
         buf = io.BytesIO()
-        Image.fromarray(rgb, "RGB").save(buf, "JPEG", quality=50, optimize=True, progressive=True)
+        Image.fromarray(rgb, "RGB").save(buf, "JPEG", quality=50)  # baseline ~3ms; optimize+progressive cost ~10ms more for ~900B
         with _lock:
             _latest["jpg"] = buf.getvalue(); _latest["seq"] += 1
         t2 = time.monotonic()

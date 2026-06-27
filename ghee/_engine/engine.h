@@ -62,6 +62,11 @@ void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const flo
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb);                       // render all passes; final -> buffer_rgb
 void ghee_mp_reset(GheeScene *g);                                            // tear down all passes (scene switch)
 
+// Profiling (off by default, zero overhead off): when on, ghee_mp_render fences
+// the passes so ghee_get_timings splits GPU render vs readback for the last frame.
+void ghee_set_profiling(GheeScene *g, bool on);
+void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
+
 // Optional host-side helper: pack an RGB(A) frame into a physical-display format,
 // 1bpp column-major (bw) or RGB565 big-endian. Not used by rendering; the host
 // calls it if its panel needs it.

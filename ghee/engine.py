@@ -94,6 +94,8 @@ class Renderer:
         L.ghee_mp_set_float_array.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, _F32_1, ctypes.c_int]
         L.ghee_mp_render.argtypes = [ctypes.c_void_p, _U8_3]
         L.ghee_pack_frame.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, _U8, _U8]
+        L.ghee_set_profiling.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+        L.ghee_get_timings.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)]
 
     def setup(self, scene, profile=None):
         """Build the scene's passes. Returns "" on success or a compile-error
@@ -157,6 +159,17 @@ class Renderer:
             out.fill(0)
         self.lib.ghee_pack_frame(self.width, self.height, self.components, 1 if bw else 0, rgb, out)
         return out
+
+    def set_profiling(self, on):
+        """Enable per-frame draw/readback timing (adds a glFinish; off = zero cost)."""
+        self.lib.ghee_set_profiling(self.handle, bool(on))
+
+    def timings(self):
+        """Last frame's split as (draw_ms, read_ms): GPU render of all passes vs the
+        glReadPixels readback. Both 0 until a frame renders with profiling on."""
+        d = ctypes.c_double(0.0); r = ctypes.c_double(0.0)
+        self.lib.ghee_get_timings(self.handle, ctypes.byref(d), ctypes.byref(r))
+        return d.value, r.value
 
     def last_error(self):
         e = self.lib.ghee_last_error(self.handle)

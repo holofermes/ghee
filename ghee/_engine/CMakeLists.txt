@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(gl_visualizer C)
+project(ghee C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -20,11 +20,11 @@ pkg_check_modules(JPEG  REQUIRED libjpeg)
 # The ghee C engine: data-agnostic gls_mp_* renderer + JPEG texture loader.
 # Built and installed into the ghee package's lib/ by setup.py so the package
 # ships its own .so (ghee.engine.Renderer locates it via importlib.resources).
-add_library(gl_visualizer SHARED gl_visualizer.c io.c)
-set_target_properties(gl_visualizer PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(gl_visualizer PRIVATE
+add_library(ghee SHARED engine.c io.c)
+set_target_properties(ghee PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(ghee PRIVATE
     ${DRM_INCLUDE_DIRS} ${GBM_INCLUDE_DIRS} ${EGL_INCLUDE_DIRS}
     ${GLES_INCLUDE_DIRS} ${JPEG_INCLUDE_DIRS})
-target_link_libraries(gl_visualizer PRIVATE
+target_link_libraries(ghee PRIVATE
     ${DRM_LIBRARIES} ${GBM_LIBRARIES} ${EGL_LIBRARIES} ${GLES_LIBRARIES} ${JPEG_LIBRARIES} m)
-install(TARGETS gl_visualizer LIBRARY DESTINATION lib)
+install(TARGETS ghee LIBRARY DESTINATION lib)

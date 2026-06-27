@@ -1,5 +1,5 @@
-#ifndef GL_VISUALIZER_H
-#define GL_VISUALIZER_H
+#ifndef GHEE_ENGINE_H
+#define GHEE_ENGINE_H
 #include <stdint.h>
 #include <stdbool.h>
 #include <GLES2/gl2.h>
@@ -68,4 +68,4 @@ void gls_mp_reset(GLScene *g);                                            // tea
 void gls_pack_frame(int width, int height, int components, int bw,
                     const uint8_t *rgb, uint8_t *packed);
 
-#endif // GL_VISUALIZER_H
+#endif // GHEE_ENGINE_H

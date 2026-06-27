@@ -1,4 +1,4 @@
-"""Build the ghee C engine (gl_visualizer.so) into the package's lib/.
+"""Build the ghee C engine (libghee.so) into the package's lib/.
 
 Metadata (name, version, deps) lives in pyproject.toml; this file only adds the C
 extension build. The build is best-effort: on a host without CMake or the GLES/DRM
@@ -30,7 +30,7 @@ class CMakeBuild(build_ext):
                 self._build(ext)
             except Exception as e:
                 print(f"ghee: skipping C engine build ({e}). Rendering will need a "
-                      f"prebuilt libgl_visualizer.so via $GHEE_LIB.")
+                      f"prebuilt libghee.so via $GHEE_LIB.")
 
     def _build(self, ext):
         build_tmp = os.path.abspath(self.build_temp)
@@ -47,6 +47,6 @@ class CMakeBuild(build_ext):
 setup(
     packages=find_packages(),
     package_data={"ghee": ["console/web/*", "examples/*.scene.json", "lib/*.so"]},
-    ext_modules=[CMakeExtension("ghee._engine.gl_visualizer", ENGINE)],
+    ext_modules=[CMakeExtension("ghee._engine.engine", ENGINE)],
     cmdclass={"build_ext": CMakeBuild},
 )

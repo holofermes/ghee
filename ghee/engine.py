@@ -4,7 +4,7 @@ Wraps the gls_* ABI and the multipass orchestration in one place: build a Scene'
 passes, wire channels, set params, feed named arrays, render to RGB. Data-agnostic:
 the host supplies array data by name through a provider; the engine names nothing.
 
-    r = Renderer(320, 240, lib_path="libgl_visualizer.so")
+    r = Renderer(320, 240, lib_path="libghee.so")
     err = r.setup(scene, profile)               # "" or a compile error
     rgb = r.render(lambda name, size: data)      # (h, w, components) uint8
     r.set_param("main", "decay", "float", 0.9)   # live uniform, no recompile
@@ -27,7 +27,7 @@ def bundled_lib():
     """Path to the .so shipped inside the package (built by setup.py into lib/),
     or None if it was not built (e.g. installed on a host without the toolchain)."""
     try:
-        p = importlib.resources.files("ghee") / "lib" / "libgl_visualizer.so"
+        p = importlib.resources.files("ghee") / "lib" / "libghee.so"
         return str(p) if p.is_file() else None
     except Exception:
         return None

@@ -13,7 +13,7 @@
 #include <string.h>
 #include <gbm.h>
 #include <fcntl.h>
-#include "gl_visualizer.h"
+#include "engine.h"
 
 #define ERROR_BUFFER_SIZE 512
 #define DEFAULT_DRI_DEVICE "/dev/dri/card0"
@@ -66,14 +66,14 @@ static void set_error(GLScene *g, const char *fmt, ...) {
     vsnprintf(g->last_error, ERROR_BUFFER_SIZE, fmt, ap);
     va_end(ap);
     g->last_error[ERROR_BUFFER_SIZE - 1] = '\0';
-    fprintf(stderr, "gl_visualizer: %s\n", g->last_error);
+    fprintf(stderr, "ghee: %s\n", g->last_error);
 }
 
 // Make this instance's GL context current. Required at the top of every public
 // op so multiple GLScene instances can be used interleaved in one process.
 static void make_current(GLScene *g) {
     if (!eglMakeCurrent(g->display, g->surface, g->surface, g->context))
-        fprintf(stderr, "gl_visualizer: eglMakeCurrent failed: 0x%X (disp=%p ctx=%p)\n",
+        fprintf(stderr, "ghee: eglMakeCurrent failed: 0x%X (disp=%p ctx=%p)\n",
                 eglGetError(), (void *)g->display, (void *)g->context);
 }
 
@@ -164,7 +164,7 @@ GLScene *gls_create(int width, int height, int components, const char *dri_devic
         snprintf(early_err, sizeof(early_err), "eglInitialize failed: 0x%X", eglGetError());
         goto fail;
     }
-    fprintf(stderr, "gl_visualizer: EGL %d.%d on %s\n", major, minor, dev);
+    fprintf(stderr, "ghee: EGL %d.%d on %s\n", major, minor, dev);
 
     const GLint alphaSize = (components == 4) ? 8 : 0;
     const EGLint configAttribs[] = {

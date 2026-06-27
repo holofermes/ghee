@@ -3,21 +3,18 @@
   "passes": [
     {
       "name": "plasma",
-      "format": "rgba8",
       "channels": [],
       "params": {},
       "code": "void main(){\n  vec2 uv = v_texCoord;\n  float v = sin(uv.x*10.0+time) + sin(uv.y*10.0+time*1.3) + sin((uv.x+uv.y)*8.0+time*0.7);\n  vec3 col = 0.5 + 0.5*cos(vec3(0.0,2.0,4.0) + v + time);\n  gl_FragColor = vec4(col, 1.0);\n}\n"
     },
     {
       "name": "rings",
-      "format": "rgba8",
       "channels": [],
       "params": {},
       "code": "void main(){\n  vec2 uv = v_texCoord - 0.5; uv.x *= resolution.x/resolution.y;\n  float d = length(uv);\n  float r = 0.5 + 0.5*sin(d*30.0 - time*3.0);\n  gl_FragColor = vec4(vec3(r)*vec3(0.2,0.8,1.0), 1.0);\n}\n"
     },
     {
       "name": "out",
-      "format": "rgba8",
       "channels": [{ "buffer": "plasma" }, { "buffer": "rings" }],
       "params": {},
       "code": "void main(){\n  vec2 uv = v_texCoord;\n  vec3 a = texture2D(iChannel0, uv).rgb;\n  vec3 b = texture2D(iChannel1, uv).rgb;\n  float m = 0.5 + 0.5*sin(time);\n  gl_FragColor = vec4(mix(a, b, m), 1.0);\n}\n"

@@ -4,7 +4,6 @@
     {
       "name": "buf",
       "code": "void main() {\n  vec2 uv = v_texCoord;\n  vec3 prev = texture2D(iChannel0, uv).rgb;   // buf reads itself = feedback\n  vec2 c = vec2(0.5) + 0.35 * vec2(cos(time), sin(time * 1.3));\n  float s = smoothstep(0.045, 0.0, distance(uv, c));\n  vec3 col = max(prev * decay - sink, 0.0) + s * vec3(1.0, 0.55, 0.15);\n  gl_FragColor = vec4(col, 1.0);\n}\n",
-      "format": "rgba8",
       "channels": [
         {
           "buffer": "buf"
@@ -24,7 +23,6 @@
     {
       "name": "image",
       "code": "void main() {\n  vec3 b = texture2D(iChannel0, v_texCoord).rgb;   // image reads buf...\n  gl_FragColor = vec4(vec3(1.0) - b, 1.0);          // ...and inverts it\n}\n",
-      "format": "rgba8",
       "channels": [
         {
           "buffer": "buf"

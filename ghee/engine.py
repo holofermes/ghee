@@ -1,6 +1,6 @@
 """ghee.Renderer — the Python way to drive the C engine.
 
-Wraps the gls_* ABI and the multipass orchestration in one place: build a Scene's
+Wraps the ghee_* ABI and the multipass orchestration in one place: build a Scene's
 passes, wire channels, set params, feed named arrays, render to RGB. Data-agnostic:
 the host supplies array data by name through a provider; the engine names nothing.
 
@@ -75,25 +75,25 @@ class Renderer:
         self.lib = ctypes.CDLL(lib_path)
         self._declare()
         err = ctypes.c_char_p()
-        self.handle = self.lib.gls_create(width, height, components,
+        self.handle = self.lib.ghee_create(width, height, components,
                                           dri_device.encode() if dri_device else None,
                                           ctypes.byref(err))
         if not self.handle:
-            raise RuntimeError(f"gls_create failed: {err.value.decode() if err.value else 'unknown'}")
+            raise RuntimeError(f"ghee_create failed: {err.value.decode() if err.value else 'unknown'}")
 
     def _declare(self):
         L = self.lib
-        L.gls_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p)]
-        L.gls_create.restype = ctypes.c_void_p
-        L.gls_destroy.argtypes = [ctypes.c_void_p]
-        L.gls_last_error.argtypes = [ctypes.c_void_p]; L.gls_last_error.restype = ctypes.c_char_p
-        L.gls_mp_reset.argtypes = [ctypes.c_void_p]
-        L.gls_mp_add_pass.argtypes = [ctypes.c_void_p, ctypes.c_char_p]; L.gls_mp_add_pass.restype = ctypes.c_int
-        L.gls_mp_set_channel.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]
-        L.gls_mp_set_uniform.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(CParameter)]; L.gls_mp_set_uniform.restype = ctypes.c_bool
-        L.gls_mp_set_float_array.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, _F32_1, ctypes.c_int]
-        L.gls_mp_render.argtypes = [ctypes.c_void_p, _U8_3]
-        L.gls_pack_frame.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, _U8, _U8]
+        L.ghee_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p)]
+        L.ghee_create.restype = ctypes.c_void_p
+        L.ghee_destroy.argtypes = [ctypes.c_void_p]
+        L.ghee_last_error.argtypes = [ctypes.c_void_p]; L.ghee_last_error.restype = ctypes.c_char_p
+        L.ghee_mp_reset.argtypes = [ctypes.c_void_p]
+        L.ghee_mp_add_pass.argtypes = [ctypes.c_void_p, ctypes.c_char_p]; L.ghee_mp_add_pass.restype = ctypes.c_int
+        L.ghee_mp_set_channel.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        L.ghee_mp_set_uniform.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(CParameter)]; L.ghee_mp_set_uniform.restype = ctypes.c_bool
+        L.ghee_mp_set_float_array.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, _F32_1, ctypes.c_int]
+        L.ghee_mp_render.argtypes = [ctypes.c_void_p, _U8_3]
+        L.ghee_pack_frame.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, _U8, _U8]
 
     def setup(self, scene, profile=None):
         """Build the scene's passes. Returns "" on success or a compile-error
@@ -102,11 +102,11 @@ class Renderer:
         profile = profile or DisplayProfile(width=self.width, height=self.height)
         self.error_line = None
         self.error_pass = None
-        self.lib.gls_mp_reset(self.handle)
+        self.lib.ghee_mp_reset(self.handle)
         mp = {}
         for i, p in enumerate(scene.passes):
             glsl = p.glsl(profile)
-            idx = self.lib.gls_mp_add_pass(self.handle, glsl.encode("utf-8"))
+            idx = self.lib.ghee_mp_add_pass(self.handle, glsl.encode("utf-8"))
             if idx < 0:
                 err = self.last_error() or "compile error"
                 self.error_line = _user_line(err, glsl, p.code)
@@ -117,7 +117,7 @@ class Renderer:
         for p in scene.passes:
             for c, ch in enumerate(p.channels):
                 if ch.buffer is not None and ch.buffer in mp:
-                    self.lib.gls_mp_set_channel(self.handle, mp[p.name], c, mp[ch.buffer])
+                    self.lib.ghee_mp_set_channel(self.handle, mp[p.name], c, mp[ch.buffer])
             for nm, pm in p.params.items():
                 self.set_param(p.name, nm, pm.type, pm.value)
         self.scene = scene
@@ -133,8 +133,8 @@ class Renderer:
         if provider is not None:
             for pi, name, size in self._feeds:
                 data = np.ascontiguousarray(provider(name, size), dtype=np.float32)
-                self.lib.gls_mp_set_float_array(self.handle, pi, name.encode("utf-8"), data, min(len(data), size))
-        self.lib.gls_mp_render(self.handle, out)
+                self.lib.ghee_mp_set_float_array(self.handle, pi, name.encode("utf-8"), data, min(len(data), size))
+        self.lib.ghee_mp_render(self.handle, out)
         return out
 
     def set_param(self, pass_name, name, ptype, value):
@@ -145,7 +145,7 @@ class Renderer:
             return False
         cp = create_c_parameter({"type": ptype, "value": value})
         cp.name = name.encode("utf-8")
-        return self.lib.gls_mp_set_uniform(self.handle, idx, ctypes.byref(cp))
+        return self.lib.ghee_mp_set_uniform(self.handle, idx, ctypes.byref(cp))
 
     def pack(self, rgb, bw=False, out=None):
         """Optional: pack an RGB(A) frame to a panel format (1bpp if bw, else RGB565).
@@ -155,21 +155,21 @@ class Renderer:
             out = np.zeros(size, dtype=np.uint8)
         else:
             out.fill(0)
-        self.lib.gls_pack_frame(self.width, self.height, self.components, 1 if bw else 0, rgb, out)
+        self.lib.ghee_pack_frame(self.width, self.height, self.components, 1 if bw else 0, rgb, out)
         return out
 
     def last_error(self):
-        e = self.lib.gls_last_error(self.handle)
+        e = self.lib.ghee_last_error(self.handle)
         return e.decode("utf-8") if e else ""
 
     def reset(self):
-        self.lib.gls_mp_reset(self.handle)
+        self.lib.ghee_mp_reset(self.handle)
         self._mp = {}
         self._feeds = []
 
     def close(self):
         if getattr(self, "handle", None):
-            self.lib.gls_destroy(self.handle)
+            self.lib.ghee_destroy(self.handle)
             self.handle = None
             try:
                 self._stdlib.dlclose(self.lib._handle)

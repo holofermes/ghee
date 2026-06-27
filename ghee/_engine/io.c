@@ -5,7 +5,7 @@
 #include <jpeglib.h>
 #include "engine.h"
 
-GLuint gls_load_jpeg_texture(const char *filename) {
+GLuint ghee_load_jpeg_texture(const char *filename) {
     FILE *file = fopen(filename, "rb");
     if (!file) {
         fprintf(stderr, "ghee: cannot open JPEG %s\n", filename);

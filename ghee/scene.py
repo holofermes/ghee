@@ -5,9 +5,9 @@ it knows nothing about audio/cava/"amplitudes". Those are the *app's* concern â€
 host fills a pass's arrays with whatever data it has (cava bars, etc.) each frame.
 
 A pass's inputs. The names below are the CONTRACT between this preamble and the C
-engine: gls_mp_render binds `time`, `resolution`, and `iChannel0..N` by these exact
+engine: ghee_mp_render binds `time`, `resolution`, and `iChannel0..N` by these exact
 literal names; arrays and params are bound by the author's chosen name. Change a
-built-in name here and you must change it in gls_mp_render too.
+built-in name here and you must change it in ghee_mp_render too.
   * built-ins, always available, just use them: `time` (float), `resolution` (vec2).
   * ARRAYS: named uniform float arrays {name, size}. The author names them; the host
     fills them. Indexed via <name>_at() (constant-index loop when a sampler is in

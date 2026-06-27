@@ -21,7 +21,7 @@
 #define MP_MAX_CHANNELS 8
 
 // All renderer state. One per instance — no globals.
-struct GLScene {
+struct GheeScene {
     int width, height, components;
 
     int drm_fd;
@@ -60,7 +60,7 @@ static const char *vertex_shader_source =
     "   v_texCoord = texCoord;"
     "}";
 
-static void set_error(GLScene *g, const char *fmt, ...) {
+static void set_error(GheeScene *g, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(g->last_error, ERROR_BUFFER_SIZE, fmt, ap);
@@ -70,14 +70,14 @@ static void set_error(GLScene *g, const char *fmt, ...) {
 }
 
 // Make this instance's GL context current. Required at the top of every public
-// op so multiple GLScene instances can be used interleaved in one process.
-static void make_current(GLScene *g) {
+// op so multiple GheeScene instances can be used interleaved in one process.
+static void make_current(GheeScene *g) {
     if (!eglMakeCurrent(g->display, g->surface, g->surface, g->context))
         fprintf(stderr, "ghee: eglMakeCurrent failed: 0x%X (disp=%p ctx=%p)\n",
                 eglGetError(), (void *)g->display, (void *)g->context);
 }
 
-const char *gls_last_error(GLScene *g) {
+const char *ghee_last_error(GheeScene *g) {
     static char err[ERROR_BUFFER_SIZE];
     if (!g) return "null instance";
     strncpy(err, g->last_error, ERROR_BUFFER_SIZE - 1);
@@ -88,7 +88,7 @@ const char *gls_last_error(GLScene *g) {
 
 // ---- shader compilation ---------------------------------------------------
 
-static GLuint create_shader(GLScene *g, GLenum type, const char *source) {
+static GLuint create_shader(GheeScene *g, GLenum type, const char *source) {
     const GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &source, NULL);
     glCompileShader(shader);
@@ -104,7 +104,7 @@ static GLuint create_shader(GLScene *g, GLenum type, const char *source) {
     return shader;
 }
 
-static GLuint create_shader_program(GLScene *g, const char *fragment_shader_source) {
+static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_source) {
     const GLuint vs = create_shader(g, GL_VERTEX_SHADER, vertex_shader_source);
     if (!vs) return 0;
     const GLuint fs = create_shader(g, GL_FRAGMENT_SHADER, fragment_shader_source);
@@ -132,11 +132,11 @@ static GLuint create_shader_program(GLScene *g, const char *fragment_shader_sour
 
 // ---- lifecycle ------------------------------------------------------------
 
-GLScene *gls_create(int width, int height, int components, const char *dri_device, char **err) {
+GheeScene *ghee_create(int width, int height, int components, const char *dri_device, char **err) {
     static char early_err[ERROR_BUFFER_SIZE];
     early_err[0] = '\0';
 
-    GLScene *g = calloc(1, sizeof(GLScene));
+    GheeScene *g = calloc(1, sizeof(GheeScene));
     if (!g) { if (err) *err = "out of memory"; return NULL; }
     g->width = width;
     g->height = height;
@@ -225,14 +225,14 @@ GLScene *gls_create(int width, int height, int components, const char *dri_devic
 
 fail:
     if (err) *err = early_err;
-    gls_destroy(g);
+    ghee_destroy(g);
     return NULL;
 }
 
-void gls_destroy(GLScene *g) {
+void ghee_destroy(GheeScene *g) {
     if (!g) return;
     if (g->display != EGL_NO_DISPLAY) {
-        gls_mp_reset(g);   // make_current + free all pass programs/buffers
+        ghee_mp_reset(g);   // make_current + free all pass programs/buffers
         eglMakeCurrent(g->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     }
     if (g->VBO) glDeleteBuffers(1, &g->VBO);
@@ -254,7 +254,7 @@ void gls_destroy(GLScene *g) {
 // frame (same-frame chaining); a self-reference or later-pass ref reads the
 // PREVIOUS frame (= feedback). Last pass -> screen.
 
-static void mp_make_buffers(GLScene *g, GLuint fbo[2], GLuint tex[2]) {
+static void mp_make_buffers(GheeScene *g, GLuint fbo[2], GLuint tex[2]) {
     glGenFramebuffers(2, fbo);
     glGenTextures(2, tex);
     for (int i = 0; i < 2; i++) {
@@ -272,7 +272,7 @@ static void mp_make_buffers(GLScene *g, GLuint fbo[2], GLuint tex[2]) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-int gls_mp_add_pass(GLScene *g, const char *glsl_source) {
+int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
     make_current(g);
     if (g->mp_count >= MP_MAX_PASSES) { set_error(g, "too many passes"); return -1; }
     GLuint prog = create_shader_program(g, glsl_source);
@@ -292,8 +292,8 @@ int gls_mp_add_pass(GLScene *g, const char *glsl_source) {
 
 // Recompile a pass's shader in place (live authoring). Keeps the pass's buffers
 // and channel wiring; params must be re-applied by the caller (new program).
-// On compile failure the old program is kept and false returned (see gls_last_error).
-bool gls_mp_set_shader(GLScene *g, int pass, const char *glsl_source) {
+// On compile failure the old program is kept and false returned (see ghee_last_error).
+bool ghee_mp_set_shader(GheeScene *g, int pass, const char *glsl_source) {
     if (pass < 0 || pass >= g->mp_count) return false;
     make_current(g);
     GLuint prog = create_shader_program(g, glsl_source);
@@ -307,13 +307,13 @@ bool gls_mp_set_shader(GLScene *g, int pass, const char *glsl_source) {
     return true;
 }
 
-void gls_mp_set_channel(GLScene *g, int pass, int channel, int src_pass) {
+void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
     if (pass < 0 || pass >= g->mp_count || channel < 0 || channel >= MP_MAX_CHANNELS) return;
     g->mp_chan_src[pass][channel] = src_pass;
     if (channel + 1 > g->mp_nchan[pass]) g->mp_nchan[pass] = channel + 1;
 }
 
-bool gls_mp_set_uniform(GLScene *g, int pass, const parameter_t *param) {
+bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
     if (pass < 0 || pass >= g->mp_count) return false;
     make_current(g);
     glUseProgram(g->mp_program[pass]);
@@ -330,7 +330,7 @@ bool gls_mp_set_uniform(GLScene *g, int pass, const parameter_t *param) {
     return true;
 }
 
-void gls_mp_set_float_array(GLScene *g, int pass, const char *name, const float *data, int count) {
+void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count) {
     if (pass < 0 || pass >= g->mp_count) return;
     make_current(g);
     glUseProgram(g->mp_program[pass]);
@@ -338,7 +338,7 @@ void gls_mp_set_float_array(GLScene *g, int pass, const char *name, const float 
     if (loc >= 0) glUniform1fv(loc, count, data);
 }
 
-void gls_mp_render(GLScene *g, uint8_t *buffer_rgb) {
+void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
     make_current(g);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -377,7 +377,7 @@ void gls_mp_render(GLScene *g, uint8_t *buffer_rgb) {
 }
 
 // Tear down all passes (for switching scenes). Keeps the GL context.
-void gls_mp_reset(GLScene *g) {
+void ghee_mp_reset(GheeScene *g) {
     make_current(g);
     for (int p = 0; p < g->mp_count; p++) {
         if (g->mp_program[p]) glDeleteProgram(g->mp_program[p]);
@@ -390,7 +390,7 @@ void gls_mp_reset(GLScene *g) {
 // Pack an RGB(A) frame into the display format: 1-bit column-major (bw, SSD1306)
 // or RGB565 big-endian (color, ST7789). Standalone so the host can pack the
 // physical-display buffer after a multipass render.
-void gls_pack_frame(int width, int height, int components, int bw,
+void ghee_pack_frame(int width, int height, int components, int bw,
                     const uint8_t *rgb, uint8_t *packed) {
     if (bw) {
         for (size_t row = 0; row < (size_t)height; row++) {

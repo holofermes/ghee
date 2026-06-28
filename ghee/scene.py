@@ -1,4 +1,4 @@
-"""ghee — scene model for the multipass shader renderer.
+"""ghee scene model for the multipass shader renderer.
 
 A Scene is options + an ordered LIST of passes (last pass -> screen). It's generic:
 it never interprets a pass's array data. The host fills a pass's arrays with
@@ -11,7 +11,7 @@ built-in name here and you must change it in ghee_mp_render too.
   * built-ins, always available, just use them: `time` (float), `resolution` (vec2).
   * ARRAYS: named uniform float arrays {name, size}. The author names them; the host
     fills them. Indexed via <name>_at() (constant-index loop when a sampler is in
-    scope — the VC4 dynamic-index workaround).
+    scope, the VC4 dynamic-index workaround).
   * CHANNELS: numbered samplers iChannel0..N, each bound to another pass's output
     buffer (a pass pointing at ITSELF = feedback). A forward ref (earlier pass) reads
     that pass's CURRENT frame; a self/later ref reads its PREVIOUS frame.
@@ -19,7 +19,7 @@ built-in name here and you must change it in ghee_mp_render too.
 
 Feedback is just a channel bound to its own pass's buffer; the engine double-buffers
 that internally. (Image/texture channels and per-pass float buffer formats are not
-modeled yet — add them when a scene actually needs them.)
+modeled yet. Add them when a scene actually needs them.)
 """
 from __future__ import annotations
 
@@ -171,7 +171,7 @@ class Pass:
 
         # Cheap antialiasing: this VC4 has no GL_OES_standard_derivatives (no fwidth),
         # so the edge width is resolution-based (~1.5px on the y axis). aastep(t, x) is
-        # a soft step(t, x) — use it instead of step()/hard compares for smooth edges.
+        # a soft step(t, x). Use it instead of step()/hard compares for smooth edges.
         L.append("float aastep(float t, float x){ float w = 1.5/resolution.y; return smoothstep(t-w, t+w, x); }")
 
         # Constant-index loop when a sampler is in scope (VC4 can't dynamically index).

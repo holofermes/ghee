@@ -1,4 +1,4 @@
-"""ghee.Renderer — the Python way to drive the C engine.
+"""ghee.Renderer drives the C engine from Python.
 
 Wraps the ghee_* ABI and the multipass orchestration in one place: build a Scene's
 passes, wire channels, set params, feed named arrays, render to RGB. Data-agnostic:

@@ -1,4 +1,4 @@
-"""ghee console — the render server.
+"""ghee console render server.
 
 Owns the render loop (GL is thread-affine), the active scene, and the scene list.
 Serves the JSON API and the static PWA under web/. Rendering goes through the shared

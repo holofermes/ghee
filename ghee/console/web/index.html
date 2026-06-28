@@ -130,7 +130,7 @@
 <body>
 <header>
   <span class="brand">ghee<span class="dot"> · console</span></span>
-  <span class="pill" id="active">—</span>
+  <span class="pill" id="active"></span>
   <span class="spacer"></span>
   <button class="ghost" id="theme" title="toggle theme">☾</button>
   <div class="nav">
@@ -286,7 +286,7 @@ async function loadScene(name){
   curPass = 0;
   if (!work.passes || !work.passes.length) {   // non-shader scene (python plugin): stream only
     $("#tabs").innerHTML = ""; $("#channels").innerHTML = ""; $("#inputs").innerHTML = "";
-    $("#params").innerHTML = '<div class="muted">python plugin — not shader-editable</div>';
+    $("#params").innerHTML = '<div class="muted">python plugin, not shader-editable</div>';
     codeEl().value = ""; syncHL(); applyErrorLine(0); renderInfo(); $("#dirty").textContent = "";
     return;
   }
@@ -381,10 +381,10 @@ function buildInputs(){
   const p = work.passes[curPass];
   const lab = document.createElement("span"); lab.textContent = "inputs"; box.appendChild(lab);
   const chip = (label, title, cls)=>{ const s=document.createElement("span"); s.className="chip"+(cls?" "+cls:""); s.textContent=label; s.title=title; box.appendChild(s); };
-  chip("time", "uniform float time;  — seconds since start");
-  chip("resolution", "uniform vec2 resolution;  — render size in pixels");
+  chip("time", "uniform float time;  seconds since start");
+  chip("resolution", "uniform vec2 resolution;  render size in pixels");
   (p.arrays||[]).forEach(a=>{
-    chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i)  — element i (loop-safe on VC4)\n${a.name}_size  — ${a.size}`, "arr");
+    chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i) reads element i (loop-safe on VC4)\n${a.name}_size is ${a.size}`, "arr");
   });
 }
 function loadCode(){ codeEl().value = work.passes[curPass].code || ""; codeEl().scrollTop = 0; syncHL(); }

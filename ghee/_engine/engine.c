@@ -20,7 +20,7 @@
 #define MP_MAX_PASSES 8
 #define MP_MAX_CHANNELS 8
 
-// All renderer state. One per instance — no globals.
+// All renderer state. One per instance, no globals.
 struct GheeScene {
     int width, height, components;
 

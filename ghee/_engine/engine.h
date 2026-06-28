@@ -33,7 +33,7 @@ typedef struct {
     } value;
 } parameter_t;
 
-// Opaque renderer instance. All state lives here — no globals, so multiple
+// Opaque renderer instance. All state lives here, no globals, so multiple
 // independent renderers can coexist in one process.
 typedef struct GheeScene GheeScene;
 

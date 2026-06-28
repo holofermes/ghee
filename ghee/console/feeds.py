@@ -2,7 +2,7 @@
 
 A scene declares named float arrays ({name, size}); the engine fills each one
 every frame. ghee does not know what any array means. When no host supplies a
-real source, these defaults keep the preview alive and the device panel populated.
+real source, these defaults keep the standalone preview animated.
 A host overrides them via server.run(arrays={...}, hwinfo=...).
 """
 import math
@@ -12,8 +12,8 @@ import numpy as np
 
 def demo_feed(name, size, frame):
     """Placeholder values for any named array, so the standalone console still
-    animates with nothing attached. A traveling wave; the meaning of the array
-    (audio, accel, depth, ...) belongs to whatever host fills it for real."""
+    animates with nothing attached. A traveling wave; what the array actually
+    means belongs to whatever host fills it for real."""
     i = np.arange(size)
     return (0.5 + 0.5 * np.sin(frame * 0.05 + i * (2 * math.pi / max(size, 1)))).astype(np.float32) * 0.6
 

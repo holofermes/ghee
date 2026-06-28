@@ -416,9 +416,9 @@ void ghee_mp_reset(GheeScene *g) {
     g->mp_count = 0;
 }
 
-// Pack an RGB(A) frame into the display format: 1-bit column-major (bw, SSD1306)
-// or RGB565 big-endian (color, ST7789). Standalone so the host can pack the
-// physical-display buffer after a multipass render.
+// Pack an RGB(A) frame into a compact output format: 1-bit column-major (bw)
+// or RGB565 big-endian (color). Standalone so the host can pack the output
+// buffer after a multipass render.
 void ghee_pack_frame(int width, int height, int components, int bw,
                     const uint8_t *rgb, uint8_t *packed) {
     if (bw) {

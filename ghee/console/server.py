@@ -10,7 +10,7 @@ Standalone (animated placeholder data, no host):
 
 Embedded (a host injects real data):
     from ghee.console.server import run
-    run(arrays={"amplitudes": cava.bars_for}, hwinfo=host_hwinfo)
+    run(arrays={"levels": my_source}, hwinfo=host_hwinfo)
 
 A scene declares named float arrays; the engine fills each one every frame. The
 host maps array names to sources via `arrays` (name -> callable(size, frame) ->
@@ -250,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
 def run(arrays=None, hwinfo=None, scenes_dir=None, size=(320, 240), port=8090, lib_path=None):
     """Start the console. arrays: {array_name -> callable(size, frame) -> floats}
     maps a scene's declared arrays to real data; unmapped names get an animated
-    placeholder. hwinfo: callable -> dict for the device panel."""
+    placeholder. hwinfo: callable -> dict for the device-info readout."""
     global _lib_path, WEB, SCENES, NAMES, profile, W, H, _provider, _hwinfo
     _provider = _make_provider(arrays or {})
     _hwinfo = hwinfo or default_hwinfo

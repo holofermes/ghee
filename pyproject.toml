@@ -1,7 +1,7 @@
 [project]
 name = "ghee"
 version = "0.1.0"
-description = "Audio-blind GLSL multipass scene model + renderer, plus a shader-editor console."
+description = "GLSL multipass scene model + renderer, plus a shader-editor console."
 requires-python = ">=3.11"
 # numpy is used by ghee.engine (the Renderer ctypes binding). The pure scene
 # model (import ghee) does not need it, but the package ships the renderer too.

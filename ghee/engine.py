@@ -10,7 +10,7 @@ the host supplies array data by name through a provider; the engine names nothin
     r.set_param("main", "decay", "float", 0.9)   # live uniform, no recompile
 
 `components` (3=RGB, 4=RGBA) and `lib_path` are host choices; ghee has no opinion
-on the platform. Packing a frame for a physical panel is the optional pack() helper.
+on the platform. Packing a frame to a 1bpp/RGB565 output is the optional pack() helper.
 """
 import ctypes
 import importlib.resources
@@ -150,7 +150,7 @@ class Renderer:
         return self.lib.ghee_mp_set_uniform(self.handle, idx, ctypes.byref(cp))
 
     def pack(self, rgb, bw=False, out=None):
-        """Optional: pack an RGB(A) frame to a panel format (1bpp if bw, else RGB565).
+        """Optional: pack an RGB(A) frame to 1bpp (bw) or RGB565.
         Allocates `out` if not given; zeros it first."""
         if out is None:
             size = self.width * ((self.height + 7) // 8) if bw else self.width * self.height * 2

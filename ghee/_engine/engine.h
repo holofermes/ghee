@@ -53,7 +53,7 @@ GLuint ghee_load_jpeg_texture(const char *filename);
 // between passes (reading the source pass's previous frame; self = feedback). ----
 // The engine is data-agnostic: arrays are named (the host names and fills them),
 // params carry their own name/type, channels are routed by index. It has no notion
-// of audio, "amplitudes", orientation, or display format; the host owns all of that.
+// of what any array carries or how the result is displayed; the host owns that.
 int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);                 // -> pass index, or -1
 bool ghee_mp_set_shader(GheeScene *g, int pass, const char *glsl_source);     // recompile a pass live
 void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass); // iChannel<channel> <- src_pass
@@ -67,9 +67,9 @@ void ghee_mp_reset(GheeScene *g);                                            // 
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 
-// Optional host-side helper: pack an RGB(A) frame into a physical-display format,
+// Optional host-side helper: pack an RGB(A) frame into a compact output format,
 // 1bpp column-major (bw) or RGB565 big-endian. Not used by rendering; the host
-// calls it if its panel needs it.
+// calls it if it needs it.
 void ghee_pack_frame(int width, int height, int components, int bw,
                     const uint8_t *rgb, uint8_t *packed);
 

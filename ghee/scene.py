@@ -1,8 +1,8 @@
-"""ghee — scene model for the audio-reactive shader renderer.
+"""ghee — scene model for the multipass shader renderer.
 
 A Scene is options + an ordered LIST of passes (last pass -> screen). It's generic:
-it knows nothing about audio/cava/"amplitudes". Those are the *app's* concern — the
-host fills a pass's arrays with whatever data it has (cava bars, etc.) each frame.
+it never interprets a pass's array data. The host fills a pass's arrays with
+whatever float values it has each frame; what the numbers mean is the host's concern.
 
 A pass's inputs. The names below are the CONTRACT between this preamble and the C
 engine: ghee_mp_render binds `time`, `resolution`, and `iChannel0..N` by these exact
@@ -90,7 +90,7 @@ class Channel:
 class DisplayProfile:
     """The target display. Supplied by the renderer, not stored in the scene file.
     orientation goes into the preamble as a #define so the shader picks its axis. bw is
-    applied when the frame is packed for a 1-bit panel; the shader renders color.
+    applied when the frame is packed to 1-bit output; the shader renders color.
     """
     orientation: str = "HORIZONTAL"
     bw: bool = False

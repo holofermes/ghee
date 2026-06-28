@@ -17,7 +17,7 @@ pkg_check_modules(EGL   REQUIRED egl)
 pkg_check_modules(GLES  REQUIRED glesv2)
 pkg_check_modules(JPEG  REQUIRED libjpeg)
 
-# The ghee C engine: data-agnostic gls_mp_* renderer + JPEG texture loader.
+# The ghee C engine: data-agnostic ghee_mp_* renderer + JPEG texture loader.
 # Built and installed into the ghee package's lib/ by setup.py so the package
 # ships its own .so (ghee.engine.Renderer locates it via importlib.resources).
 add_library(ghee SHARED engine.c io.c)

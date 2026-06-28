@@ -14,8 +14,7 @@ Embedded (a host injects real data):
 
 A scene declares named float arrays; the engine fills each one every frame. The
 host maps array names to sources via `arrays` (name -> callable(size, frame) ->
-floats); unmapped names fall back to an animated placeholder. ghee never
-interprets what a name means.
+floats); unmapped names fall back to an animated placeholder.
 
 API:
   GET  /stream            MJPEG, one part per rendered frame

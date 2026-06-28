@@ -1,16 +1,15 @@
 """ghee.Renderer drives the C engine from Python.
 
 Wraps the ghee_* ABI and the multipass orchestration in one place: build a Scene's
-passes, wire channels, set params, feed named arrays, render to RGB. Data-agnostic:
-the host supplies array data by name through a provider; the engine names nothing.
+passes, wire channels, set params, feed named arrays, render to RGB.
 
     r = Renderer(320, 240, lib_path="libghee.so")
     err = r.setup(scene, profile)               # "" or a compile error
     rgb = r.render(lambda name, size: data)      # (h, w, components) uint8
     r.set_param("main", "decay", "float", 0.9)   # live uniform, no recompile
 
-`components` (3=RGB, 4=RGBA) and `lib_path` are host choices; ghee has no opinion
-on the platform. Packing a frame to a 1bpp/RGB565 output is the optional pack() helper.
+`components` (3=RGB, 4=RGBA) and `lib_path` are host choices. Packing a frame to a
+1bpp/RGB565 output is the optional pack() helper.
 """
 import ctypes
 import importlib.resources

@@ -33,7 +33,7 @@ typedef struct {
     } value;
 } parameter_t;
 
-// Opaque renderer instance. All state lives here, no globals, so multiple
+// Opaque renderer instance. All state lives here, so multiple
 // independent renderers can coexist in one process.
 typedef struct GheeScene GheeScene;
 
@@ -52,8 +52,7 @@ GLuint ghee_load_jpeg_texture(const char *filename);
 // ---- multipass: a scene as a list of passes (last -> screen). Channels route
 // between passes (reading the source pass's previous frame; self = feedback). ----
 // The engine is data-agnostic: arrays are named (the host names and fills them),
-// params carry their own name/type, channels are routed by index. It has no notion
-// of what any array carries or how the result is displayed; the host owns that.
+// params carry their own name/type, channels are routed by index.
 int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);                 // -> pass index, or -1
 bool ghee_mp_set_shader(GheeScene *g, int pass, const char *glsl_source);     // recompile a pass live
 void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass); // iChannel<channel> <- src_pass

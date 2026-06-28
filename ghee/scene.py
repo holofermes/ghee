@@ -1,8 +1,7 @@
 """ghee scene model for the multipass shader renderer.
 
-A Scene is options + an ordered LIST of passes (last pass -> screen). It's generic:
-it never interprets a pass's array data. The host fills a pass's arrays with
-whatever float values it has each frame; what the numbers mean is the host's concern.
+A Scene is options + an ordered LIST of passes (last pass -> screen). The host fills
+each pass's arrays each frame; ghee never interprets the values.
 
 A pass's inputs. The names below are the CONTRACT between this preamble and the C
 engine: ghee_mp_render binds `time`, `resolution`, and `iChannel0..N` by these exact
@@ -19,7 +18,7 @@ built-in name here and you must change it in ghee_mp_render too.
 
 Feedback is just a channel bound to its own pass's buffer; the engine double-buffers
 that internally. (Image/texture channels and per-pass float buffer formats are not
-modeled yet. Add them when a scene actually needs them.)
+modeled yet.)
 """
 from __future__ import annotations
 
@@ -59,8 +58,7 @@ class Param:
 
 @dataclass
 class ArrayInput:
-    """A named uniform float array. The host fills it each frame; ghee/the engine
-    don't know or care what the data means."""
+    """A named uniform float array. The host fills it each frame."""
     name: str
     size: int
 

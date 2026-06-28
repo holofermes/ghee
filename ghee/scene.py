@@ -1,7 +1,7 @@
 """ghee scene model for the multipass shader renderer.
 
 A Scene is options + an ordered LIST of passes (last pass -> screen). The host fills
-each pass's arrays each frame; ghee never interprets the values.
+each pass's arrays each frame.
 
 A pass's inputs. The names below are the CONTRACT between this preamble and the C
 engine: ghee_mp_render binds `time`, `resolution`, and `iChannel0..N` by these exact

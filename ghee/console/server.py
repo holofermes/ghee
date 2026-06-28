@@ -62,6 +62,7 @@ _hwinfo = default_hwinfo
 
 _latest = {"jpg": None, "seq": 0}
 _lock = threading.Lock()
+_nclients = 0  # MJPEG viewers; the render loop skips JPEG encoding when 0
 _q = queue.Queue()
 _stat = {"fps": 0.0, "render_ms": 0.0, "encode_ms": 0.0, "error": "", "active": None,
          "display": {}, "error_line": None, "error_pass": None}
@@ -135,10 +136,11 @@ def render_loop():
         rgb = renderer.render(lambda name, size: _provider(name, size, frame))
         frame += 1
         t1 = time.monotonic()
-        buf = io.BytesIO()
-        Image.fromarray(rgb, "RGB").save(buf, "JPEG", quality=50)  # baseline ~3ms; optimize+progressive cost ~10ms more for ~900B
-        with _lock:
-            _latest["jpg"] = buf.getvalue(); _latest["seq"] += 1
+        if _nclients > 0:  # only encode when a browser is actually watching
+            buf = io.BytesIO()
+            Image.fromarray(rgb, "RGB").save(buf, "JPEG", quality=50)  # baseline ~3ms; optimize+progressive cost ~10ms more for ~900B
+            with _lock:
+                _latest["jpg"] = buf.getvalue(); _latest["seq"] += 1
         t2 = time.monotonic()
         dt = t2 - last; last = t2
         if dt > 0:
@@ -221,10 +223,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, f.read(), ctype)
 
     def _stream(self):
+        global _nclients
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        _nclients += 1
         last_seq = -1
         try:
             while True:
@@ -239,6 +243,8 @@ class Handler(BaseHTTPRequestHandler):
                     time.sleep(0.002)
         except (BrokenPipeError, ConnectionResetError):
             pass
+        finally:
+            _nclients -= 1
 
 
 def run(arrays=None, hwinfo=None, scenes_dir=None, size=(320, 240), port=8090, lib_path=None):

@@ -49,26 +49,17 @@ void ghee_destroy(GheeScene *g);
 // Load a JPEG file into a GL texture on the current context. 0 on failure.
 GLuint ghee_load_jpeg_texture(const char *filename);
 
-// ---- multipass: a scene as a list of passes (last -> screen). Channels route
-// between passes (reading the source pass's previous frame; self = feedback). ----
-// The engine is data-agnostic: arrays are named (the host names and fills them),
-// params carry their own name/type, channels are routed by index.
-int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);                 // -> pass index, or -1
-bool ghee_mp_set_shader(GheeScene *g, int pass, const char *glsl_source);     // recompile a pass live
-void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass); // iChannel<channel> <- src_pass
+int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);
+bool ghee_mp_set_shader(GheeScene *g, int pass, const char *glsl_source);
+void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);
 bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param);
 void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count);
-void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb);                       // render all passes; final -> buffer_rgb
-void ghee_mp_reset(GheeScene *g);                                            // tear down all passes (scene switch)
+void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb);
+void ghee_mp_reset(GheeScene *g);
 
-// Profiling (off by default, zero overhead off): when on, ghee_mp_render fences
-// the passes so ghee_get_timings splits GPU render vs readback for the last frame.
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 
-// Optional host-side helper: pack an RGB(A) frame into a compact output format,
-// 1bpp column-major (bw) or RGB565 big-endian. Not used by rendering; the host
-// calls it if it needs it.
 void ghee_pack_frame(int width, int height, int components, int bw,
                     const uint8_t *rgb, uint8_t *packed);
 

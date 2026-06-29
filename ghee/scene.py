@@ -1,25 +1,20 @@
 """ghee scene model for the multipass shader renderer.
 
-A Scene is options + an ordered LIST of passes (last pass -> screen). The host fills
-each pass's arrays each frame.
+A Scene is options + an ordered list of passes. The host fills each pass's arrays each frame.
 
-A pass's inputs. The names below are the CONTRACT between this preamble and the C
+A pass's inputs. The names below are the contract between this preamble and the ghee
 engine: ghee_mp_render binds `time`, `resolution`, and `iChannel0..N` by these exact
-literal names; arrays and params are bound by the author's chosen name. Change a
-built-in name here and you must change it in ghee_mp_render too.
-  * built-ins, always available, just use them: `time` (float), `resolution` (vec2).
-  * ARRAYS: named uniform float arrays {name, size}. The author names them; the host
-    fills them. Indexed via <name>_at() (constant-index loop when a sampler is in
-    scope, the VC4 dynamic-index workaround).
+literal names. Arrays and params are bound by the author's chosen name.
+  * built-ins, always available: `time` (float), `resolution` (vec2).
+  * ARRAYS: named uniform float arrays {name, size}. Indexed via <name>_at()
   * CHANNELS: numbered samplers iChannel0..N, each bound to another pass's output
-    buffer (a pass pointing at ITSELF = feedback). A forward ref (earlier pass) reads
-    that pass's CURRENT frame; a self/later ref reads its PREVIOUS frame.
-  * PARAMS: named typed sliders (decay, tint, ...).
+    buffer, a pass can also point at itself. A forward ref reads
+    that pass's current frame; a self/later ref reads its previous frame.
+  * PARAMS: named typed attributes.
 
-Feedback is just a channel bound to its own pass's buffer; the engine double-buffers
-that internally. (Image/texture channels and per-pass float buffer formats are not
-modeled yet.)
+Image/texture channels and per-pass float buffer formats are not modeled yet :(
 """
+
 from __future__ import annotations
 
 import json
@@ -27,8 +22,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-_GLSL_TYPE = {"float": "float", "int": "int", "vec2": "vec2",
-              "vec3": "vec3", "vec4": "vec4"}
+_GLSL_TYPE = {
+    "float": "float",
+    "int": "int",
+    "vec2": "vec2",
+    "vec3": "vec3",
+    "vec4": "vec4",
+}
 
 
 @dataclass
@@ -46,7 +46,9 @@ class Param:
 
     @classmethod
     def from_dict(cls, name: str, d: dict) -> "Param":
-        return cls(name, d["type"], d["value"], d.get("min"), d.get("max"), d.get("step"))
+        return cls(
+            name, d["type"], d["value"], d.get("min"), d.get("max"), d.get("step")
+        )
 
     def to_dict(self) -> dict:
         d: dict = {"type": self.type, "value": self.value}
@@ -58,7 +60,8 @@ class Param:
 
 @dataclass
 class ArrayInput:
-    """A named uniform float array. The host fills it each frame."""
+    """A named uniform float array."""
+
     name: str
     size: int
 
@@ -72,8 +75,8 @@ class ArrayInput:
 
 @dataclass
 class Channel:
-    """A numbered sampler -> iChannel<index>, bound to a pass's output buffer
-    (a pass name; pointing at its own pass = feedback)."""
+    """A numbered sampler -> iChannel<index>, bound to a pass's output buffer."""
+
     buffer: str | None = None
 
     @classmethod
@@ -86,10 +89,11 @@ class Channel:
 
 @dataclass
 class DisplayProfile:
-    """The target display. Supplied by the renderer, not stored in the scene file.
+    """The target display. Supplied by the renderer.
     orientation goes into the preamble as a #define so the shader picks its axis. bw is
-    applied when the frame is packed to 1-bit output; the shader renders color.
+    applied when the frame is packed to 1-bit output.
     """
+
     orientation: str = "HORIZONTAL"
     bw: bool = False
     width: int | None = None
@@ -97,8 +101,12 @@ class DisplayProfile:
 
     @classmethod
     def from_dict(cls, d: dict) -> "DisplayProfile":
-        return cls(d.get("orientation", "HORIZONTAL"), d.get("bw", False),
-                   d.get("width"), d.get("height"))
+        return cls(
+            d.get("orientation", "HORIZONTAL"),
+            d.get("bw", False),
+            d.get("width"),
+            d.get("height"),
+        )
 
     def to_dict(self) -> dict:
         out: dict = {"orientation": self.orientation, "bw": self.bw}
@@ -157,7 +165,7 @@ class Pass:
             "varying vec2 v_texCoord;",
             "uniform vec2 resolution;",
             "uniform float time;",
-            f'#define {"VERTICAL" if profile.orientation == "VERTICAL" else "HORIZONTAL"}',
+            f"#define {'VERTICAL' if profile.orientation == 'VERTICAL' else 'HORIZONTAL'}",
         ]
         for a in self.arrays:
             L.append(f"uniform float {a.name}[{a.size}];")
@@ -167,18 +175,15 @@ class Pass:
         for p in self.params.values():
             L.append(f"uniform {p.glsl_type} {p.name};")
 
-        # Cheap antialiasing: this VC4 has no GL_OES_standard_derivatives (no fwidth),
-        # so the edge width is resolution-based (~1.5px on the y axis). aastep(t, x) is
-        # a soft step(t, x). Use it instead of step()/hard compares for smooth edges.
-        L.append("float aastep(float t, float x){ float w = 1.5/resolution.y; return smoothstep(t-w, t+w, x); }")
-
-        # Constant-index loop when a sampler is in scope (VC4 can't dynamically index).
+        # Constant-index loop when a sampler is in scope - Pi 3 and older VC4 can't dynamically index :/
         loop = bool(self.channels)
         for a in self.arrays:
             if loop:
-                L += [f"float {a.name}_at(int i0){{",
-                      f"for (int i=0;i<{a.size};i++){{ if (i==i0) return {a.name}[i]; }}",
-                      "return 0.0; }"]
+                L += [
+                    f"float {a.name}_at(int i0){{",
+                    f"for (int i=0;i<{a.size};i++){{ if (i==i0) return {a.name}[i]; }}",
+                    "return 0.0; }",
+                ]
             else:
                 L += [f"float {a.name}_at(int i0){{ return {a.name}[i0]; }}"]
 
@@ -196,12 +201,13 @@ class Scene:
 
     @classmethod
     def from_dict(cls, d: dict, base_dir: str | None = None) -> "Scene":
-        return cls(version=d.get("version", 1),
-                   passes=[Pass.from_dict(pd, base_dir) for pd in d.get("passes", [])])
+        return cls(
+            version=d.get("version", 1),
+            passes=[Pass.from_dict(pd, base_dir) for pd in d.get("passes", [])],
+        )
 
     def to_dict(self) -> dict:
-        return {"version": self.version,
-                "passes": [p.to_dict() for p in self.passes]}
+        return {"version": self.version, "passes": [p.to_dict() for p in self.passes]}
 
     @classmethod
     def load(cls, path: str) -> "Scene":

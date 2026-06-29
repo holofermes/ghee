@@ -3,22 +3,13 @@
   "passes": [
     {
       "name": "main",
-      "code": "void main() {\n  vec2 uv = v_texCoord;\n  float fi = uv.x * 15.0;\n  int i0 = int(floor(fi));\n  float h = mix(amplitudes_at(i0), amplitudes_at(min(i0 + 1, 15)), fract(fi));\n  float hard = step(uv.y, h);\n  float m = mix(hard, aastep(uv.y, h), aa);\n  vec3 c = mix(vec3(0.04), vec3(0.1, 0.9, 0.4), m);\n  gl_FragColor = vec4(c, 1.0);\n}\n",
+      "code": "void main() {\n  vec2 uv = v_texCoord;\n  float fi = uv.x * 15.0;\n  int i0 = int(floor(fi));\n  float h = mix(amplitudes_at(i0), amplitudes_at(min(i0 + 1, 15)), fract(fi));\n  float m = step(uv.y, h);\n  vec3 c = mix(vec3(0.04), vec3(0.1, 0.9, 0.4), m);\n  gl_FragColor = vec4(c, 1.0);\n}\n",
       "arrays": [
         {
           "name": "amplitudes",
           "size": 16
         }
-      ],
-      "params": {
-        "aa": {
-          "type": "float",
-          "value": 1.0,
-          "min": 0.0,
-          "max": 1.0,
-          "step": 1.0
-        }
-      }
+      ]
     }
   ]
 }

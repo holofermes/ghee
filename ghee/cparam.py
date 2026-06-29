@@ -1,9 +1,3 @@
-"""Marshalling for scene parameters into the C engine's `CParameter` struct.
-
-This is engine-binding code (ctypes <-> the GLES executor), so it lives with
-ghee rather than the host app. Pure model use (`import ghee`) never touches
-it; only code that actually drives the C library imports from here.
-"""
 import ctypes
 import os
 from enum import IntEnum
@@ -17,30 +11,45 @@ class CParameterType(IntEnum):
     VEC4 = 4
     TEXTURE = 5
 
+
 class CFloatParam(ctypes.Structure):
     _fields_ = [("value", ctypes.c_float)]
+
 
 class CIntParam(ctypes.Structure):
     _fields_ = [("value", ctypes.c_int)]
 
 
 class CVec2Param(ctypes.Structure):
-    _fields_ = [("values",
-                 ctypes.c_float * 2 # type: ignore
-                )]
+    _fields_ = [
+        (
+            "values",
+            ctypes.c_float * 2,  # type: ignore
+        )
+    ]
+
 
 class CVec3Param(ctypes.Structure):
-    _fields_ = [("values",
-                 ctypes.c_float * 3 # type: ignore
-                )]
+    _fields_ = [
+        (
+            "values",
+            ctypes.c_float * 3,  # type: ignore
+        )
+    ]
+
 
 class CVec4Param(ctypes.Structure):
-    _fields_ = [("values",
-                 ctypes.c_float * 4 # type: ignore
-                )]
+    _fields_ = [
+        (
+            "values",
+            ctypes.c_float * 4,  # type: ignore
+        )
+    ]
+
 
 class CTextureParam(ctypes.Structure):
     _fields_ = [("value", ctypes.c_char * 256)]
+
 
 class CParameterValue(ctypes.Union):
     _fields_ = [
@@ -52,14 +61,16 @@ class CParameterValue(ctypes.Union):
         ("texture_param", ctypes.POINTER(CTextureParam)),
     ]
 
+
 class CParameter(ctypes.Structure):
     _fields_ = [
         ("name", ctypes.c_char * 256),
         ("type", ctypes.c_int),
-        ("value", CParameterValue)
+        ("value", CParameterValue),
     ]
 
     type: CParameterType
+
 
 def create_c_parameter(param_data) -> CParameter:
     param = CParameter()
@@ -95,10 +106,12 @@ def create_c_parameter(param_data) -> CParameter:
             texture_path: str = param_data["value"]
             if os.path.exists(texture_path):
                 param.type = CParameterType.TEXTURE
-                texture_param = CTextureParam(value=texture_path.encode('utf-8'))
+                texture_param = CTextureParam(value=texture_path.encode("utf-8"))
                 param.value.texture_param = ctypes.pointer(texture_param)
             else:
-                raise FileNotFoundError(f"Texture file {texture_path} not found, ignoring")
+                raise FileNotFoundError(
+                    f"Texture file {texture_path} not found, ignoring"
+                )
 
         case _:
             raise ValueError(f"Unknown parameter type: {param_type}")

@@ -1,8 +1,8 @@
 #define EGL_EGLEXT_PROTOTYPES
 #include <EGL/egl.h>
-#include <EGL/eglext.h> // EGL_PLATFORM_GBM_KHR
+#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
-#include <GLES3/gl3.h> // glGenVertexArrays / glBindVertexArray / glDeleteVertexArrays
+#include <GLES3/gl3.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +20,6 @@
 #define MP_MAX_PASSES 8
 #define MP_MAX_CHANNELS 8
 
-// All renderer state. One per instance.
 struct GheeScene {
     int width, height, components;
 
@@ -33,7 +32,7 @@ struct GheeScene {
 
     GLuint VBO, VAO;
 
-    struct timespec start_time;          // monotonic origin for the `time` uniform
+    struct timespec start_time;
 
     // multipass: each pass has its own program + ping-pong buffer; channels route
     // between passes (reading a pass's PREVIOUS-frame output). A pass whose channel
@@ -297,7 +296,7 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
     return idx;
 }
 
-// Recompile a pass's shader in place (live authoring). Keeps the pass's buffers
+// Recompile a pass's shader in place. Keeps the pass's buffers
 // and channel wiring; params must be re-applied by the caller (new program).
 // On compile failure the old program is kept and false returned (see ghee_last_error).
 bool ghee_mp_set_shader(GheeScene *g, int pass, const char *glsl_source) {
@@ -361,9 +360,9 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
             const int src = g->mp_chan_src[p][c];
             if (src < 0) continue;
             // A pass that reads an EARLIER pass (src < p, already rendered this
-            // frame) gets its CURRENT output -> same-frame forward chains, no lag.
+            // frame) gets its CURRENT output -> same-frame forward chains.
             // Self-feedback (src == p) or a not-yet-rendered later pass reads the
-            // PREVIOUS frame (feedback; can't read the future).
+            // PREVIOUS frame.
             const int rd = (src < p) ? g->mp_write[src] : 1 - g->mp_write[src];
             glActiveTexture(GL_TEXTURE0 + c);
             glBindTexture(GL_TEXTURE_2D, g->mp_tex[src][rd]);
@@ -376,8 +375,7 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
     }
 
     // Profiling: force the GPU to finish the passes so the readback timing below
-    // is pure readback, not "readback + the draws it was waiting on". The glFinish
-    // is the profiling cost; it is skipped entirely when profiling is off.
+    // is pure readback.
     if (g->profile) { glFinish(); clock_gettime(CLOCK_MONOTONIC, &t_draw); }
 
     const int last = g->mp_count - 1;
@@ -394,12 +392,8 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
     for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;  // swap all
 }
 
-// Profiling: when on, ghee_mp_render fences the passes (glFinish) so the next
-// frame's timings split GPU-render vs readback. Off by default (zero overhead).
 void ghee_set_profiling(GheeScene *g, bool on) { g->profile = on; }
 
-// Last frame's split (profiling mode): draw_ms = fenced GPU render of all passes,
-// read_ms = pure glReadPixels. Both 0 until a frame renders with profiling on.
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms) {
     if (draw_ms) *draw_ms = g->prof_draw_ms;
     if (read_ms) *read_ms = g->prof_read_ms;

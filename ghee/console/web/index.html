@@ -63,10 +63,9 @@
   .nav{display:flex; align-items:center; gap:4px}
   .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
   .actions{display:flex; gap:7px; align-items:center}
-  /* "this differs from the file on disk" — the loud one is the local-copy case */
-  .status{font:11px ui-monospace,Menlo,monospace; padding:3px 9px; border-radius:20px; border:1px solid transparent; color:var(--muted); white-space:nowrap}
-  .status.local{color:var(--warn-ink); background:var(--warn-bg); border-color:var(--warn-line)}
-  .status.local::before{content:"\25CF"; font-size:8px; margin-right:5px; vertical-align:middle}
+  /* a local copy (differs from disk) shows as a dot on the enabled reset button —
+     amber so it reads in both themes, never white/black */
+  #reset.local::before{content:"\25CF"; color:var(--warn-ink); font-size:8px; margin-right:6px; vertical-align:middle}
   .grid{display:grid; grid-template-columns:minmax(300px,440px) 1fr; gap:18px; flex:1 1 auto; min-height:0}
   .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow)}
   .leftcol{display:flex; flex-direction:column; gap:18px; overflow:auto; min-height:0; padding-right:4px}
@@ -166,7 +165,6 @@
     <select id="scenes"></select>
     <button class="ghost step" id="next" title="next scene">›</button>
   </div>
-  <span class="status" id="status"></span>
   <span class="spacer"></span>
   <div class="actions">
     <button class="primary" id="apply">apply</button>
@@ -318,14 +316,14 @@ function norm(s){
 }
 function dirty(){ return norm(work) !== norm(pristine); }
 
-// Make it obvious when what's on screen isn't the file on disk (the localStorage trap).
+// A local copy (differs from disk, or persisted in localStorage) lights the reset
+// button: enabled, with an amber dot. That's the only "not on disk" cue.
 function updateStatus(){
-  const el = $("#status"); if (!el) return;
-  const off = pristine && dirty();
-  el.classList.toggle("local", !!off);
-  el.textContent = off ? "local copy" : "";
-  el.title = off ? "Showing your local edits, not the file on disk. Reset to load the disk version." : "";
-  const rb = $("#reset"); if (rb) rb.disabled = !(off || localStorage.getItem(KEY(active)) != null);
+  const rb = $("#reset"); if (!rb) return;
+  const local = (pristine && dirty()) || localStorage.getItem(KEY(active)) != null;
+  rb.disabled = !local;
+  rb.classList.toggle("local", local);
+  rb.title = local ? "Showing a local copy, not the file on disk — reset to load the disk version." : "";
 }
 function markDirty(){ saveLocalIfDirty(); updateStatus(); }
 function saveLocalIfDirty(){ if(dirty()) localStorage.setItem(KEY(active), JSON.stringify(work)); }

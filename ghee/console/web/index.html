@@ -14,7 +14,8 @@
 <style>
   :root{
     --bg:#f3f3f1; --panel:#fbfbfa; --line:#e6e6e2; --ink:#1d1d1b; --muted:#8a8a83;
-    --accent:#3a3a36; --accent-ink:#fafafa; --hot:#c0392b;
+    --accent:#3a3a36; --accent-ink:#fafafa; --hot:#c0392b; --live:#2c9c46;
+    --warn-ink:#9a6b00; --warn-bg:#fdf3da; --warn-line:#eddcab;
     --code-bg:#fcfcfb; --code-ink:#3a3a3a; --bezel:#d8d8d2; --scroll:#cfcfc9;
     --t-cm:#a2a298; --t-pp:#8a5fb0; --t-ty:#2c7a72; --t-kw:#b0603a; --t-bi:#3f63ad; --t-nu:#86772f;
     --err-bg:#fdf0ef; --err-line:#f3d4d0;
@@ -23,7 +24,8 @@
   }
   html[data-theme="dark"]{
     --bg:#141518; --panel:#1c1e22; --line:#2b2e34; --ink:#e9e9e4; --muted:#888b92;
-    --accent:#e9e9e4; --accent-ink:#16171a; --hot:#e0796f;
+    --accent:#e9e9e4; --accent-ink:#16171a; --hot:#e0796f; --live:#5fcf78;
+    --warn-ink:#e7b75a; --warn-bg:#352a12; --warn-line:#574722;
     --code-bg:#17181c; --code-ink:#cacac3; --bezel:#2c2f36; --scroll:#3a3e46;
     --t-cm:#6f7178; --t-pp:#b89ce0; --t-ty:#5bbdb0; --t-kw:#e0916a; --t-bi:#80a1e0; --t-nu:#c4b56a;
     --err-bg:#2a1a18; --err-line:#5a322c;
@@ -37,22 +39,34 @@
     -webkit-font-smoothing:antialiased; height:100vh; display:flex; flex-direction:column; overflow:hidden;
     padding:max(18px,env(safe-area-inset-top)) 18px 18px;
   }
-  header{display:flex; align-items:center; gap:14px; margin:0 2px 16px; flex-wrap:nowrap; flex:0 0 auto; white-space:nowrap}
+  header{display:flex; align-items:center; gap:12px; margin:0 2px 16px; flex-wrap:nowrap; flex:0 0 auto; white-space:nowrap}
   .brand{font-weight:650; letter-spacing:.2px; font-size:16px}
   .brand .dot{color:var(--muted); font-weight:400}
   .spacer{flex:1}
   select,button,input{font:inherit; color:var(--ink)}
-  select{background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:7px 10px; box-shadow:var(--shadow)}
+  select{background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:7px 28px 7px 11px; box-shadow:var(--shadow); cursor:pointer;
+    appearance:none; -webkit-appearance:none;
+    background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+    background-position:calc(100% - 15px) 50%,calc(100% - 10px) 50%; background-size:5px 5px,5px 5px; background-repeat:no-repeat}
   button{
     background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:7px 12px;
     cursor:pointer; box-shadow:var(--shadow); transition:transform .04s ease, background .15s ease;
   }
   button:hover{border-color:var(--muted)}
   button:active{transform:translateY(1px)}
+  button:disabled{opacity:.4; cursor:default; box-shadow:none}
+  button:disabled:hover{border-color:var(--line)}
   button.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
   button.ghost{box-shadow:none; background:transparent; border-color:transparent; color:var(--muted)}
-  #theme,#rotate{font-size:22px; line-height:1; padding:2px 9px; color:var(--ink)}
-  .nav{display:flex; gap:6px}
+  button.ghost:hover{color:var(--ink); border-color:transparent}
+  #theme{font-size:20px; line-height:1; padding:3px 9px; color:var(--ink)}
+  .nav{display:flex; align-items:center; gap:4px}
+  .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
+  .actions{display:flex; gap:7px; align-items:center}
+  /* "this differs from the file on disk" — the loud one is the local-copy case */
+  .status{font:11px ui-monospace,Menlo,monospace; padding:3px 9px; border-radius:20px; border:1px solid transparent; color:var(--muted); white-space:nowrap}
+  .status.local{color:var(--warn-ink); background:var(--warn-bg); border-color:var(--warn-line)}
+  .status.local::before{content:"\25CF"; font-size:8px; margin-right:5px; vertical-align:middle}
   .grid{display:grid; grid-template-columns:minmax(300px,440px) 1fr; gap:18px; flex:1 1 auto; min-height:0}
   .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow)}
   .leftcol{display:flex; flex-direction:column; gap:18px; overflow:auto; min-height:0; padding-right:4px}
@@ -61,13 +75,28 @@
   .shadercard .editor{flex:1 1 auto; min-height:140px}
   .shadercard .editor>textarea{height:100%; resize:none}
   .shadercard .err{flex:0 0 auto}
-  .shadercard>.toolbar{margin:4px 0 16px}
   .errmark{position:absolute; left:0; right:0; background:rgba(192,57,43,.16); border-left:3px solid var(--hot); pointer-events:none; display:none; z-index:1}
   .screen{background:var(--bezel); border-radius:12px; padding:12px; width:max-content; max-width:100%; margin:0 auto}
   .frame{position:relative; margin:0 auto; overflow:hidden; max-width:100%}
   .frame img{position:absolute; top:50%; left:50%; display:block; image-rendering:pixelated}
-  .meter{display:flex; gap:14px; margin-top:10px; color:var(--muted); font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
-  .meter b{color:var(--ink); font-weight:600}
+  .previewbar{display:flex; align-items:center; gap:6px; margin-top:12px; color:var(--muted)}
+  .iconbtn{font-size:16px; line-height:1; padding:4px 9px; color:var(--muted); border-radius:8px}
+  .iconbtn:hover{color:var(--ink); background:var(--code-bg); border-color:var(--line)}
+  .fpschip{font:12px ui-monospace,Menlo,monospace; color:var(--muted); padding:0 2px}
+  .fpschip b{color:var(--ink); font-weight:600}
+  .fpschip .dot{color:var(--live); font-size:8px; vertical-align:middle; margin-right:5px}
+  .infowrap{position:relative}
+  .infopop{position:absolute; top:calc(100% + 8px); left:0; min-width:236px; background:var(--panel);
+    border:1px solid var(--line); border-radius:11px; box-shadow:var(--shadow); padding:11px 13px;
+    opacity:0; visibility:hidden; transform:translateY(-4px); transition:opacity .12s ease, transform .12s ease; z-index:6}
+  .infowrap:hover .infopop, .infowrap.open .infopop{opacity:1; visibility:visible; transform:none}
+  .ipsect + .ipsect{margin-top:9px; padding-top:9px; border-top:1px solid var(--line)}
+  .iphead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin-bottom:5px}
+  .iprow{display:flex; justify-content:space-between; gap:20px; font:12px ui-monospace,Menlo,monospace; padding:2px 0; color:var(--ink)}
+  .iprow .k{color:var(--muted)}
+  .iprow.live .v{color:var(--live)}                   /* live = the values that tick */
+  .iprow.live .k::before{content:"\25CF"; color:var(--live); font-size:7px; margin-right:6px; vertical-align:middle}
+  .iprow.off .v{color:var(--muted)}
   .card{padding:14px 16px}
   .card + .card{margin-top:16px}
   h3{margin:0 0 12px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:600}
@@ -81,7 +110,6 @@
   .editor>pre,.editor>textarea{margin:0; border:0; padding:11px; font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; tab-size:2; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word}
   .editor>pre{position:absolute; inset:0; overflow:auto; color:var(--code-ink); pointer-events:none}
   .editor>textarea{position:relative; display:block; width:100%; height:460px; resize:vertical; background:transparent; color:transparent; caret-color:var(--ink); outline:none; overflow:auto}
-  /* themed scrollbars (editor + scrolling panels), not the OS default */
   .editor>textarea,.editor>pre,.leftcol{scrollbar-width:thin; scrollbar-color:var(--scroll) transparent}
   .editor>textarea::-webkit-scrollbar,.editor>pre::-webkit-scrollbar,.leftcol::-webkit-scrollbar{width:10px; height:10px}
   .editor>textarea::-webkit-scrollbar-track,.editor>pre::-webkit-scrollbar-track,.leftcol::-webkit-scrollbar-track{background:transparent}
@@ -90,7 +118,6 @@
   .editor>textarea::-webkit-scrollbar-corner,.leftcol::-webkit-scrollbar-corner{background:transparent}
   .t-cm{color:var(--t-cm); font-style:italic} .t-pp{color:var(--t-pp)} .t-ty{color:var(--t-ty)}
   .t-kw{color:var(--t-kw)} .t-bi{color:var(--t-bi)} .t-nu{color:var(--t-nu)}
-  #info{margin-top:6px}
   .toolbar{display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap}
   .err{margin-top:10px; padding:10px 12px; border-radius:9px; background:var(--err-bg); border:1px solid var(--err-line); color:var(--hot); font:12px/1.45 ui-monospace,Menlo,monospace; white-space:pre-wrap; display:none}
   .err.show{display:block}
@@ -99,25 +126,29 @@
   .addparam input{background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:6px 8px; width:78px}
   .addparam input.name{width:130px}
   .muted{color:var(--muted); font-size:12px}
-  .pill{font:11px ui-monospace,Menlo,monospace; color:var(--muted); border:1px solid var(--line); border-radius:20px; padding:2px 9px}
-  .tabs{display:flex; gap:5px; flex-wrap:wrap; align-items:center; margin-bottom:10px; flex:0 0 auto}
-  .tab{display:inline-flex; align-items:center; gap:7px; padding:5px 11px; border:1px solid var(--line); border-radius:8px; background:var(--panel); cursor:pointer; font-size:13px; color:var(--muted); user-select:none}
-  .tab.active{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
-  .tab .x{opacity:.55; font-size:13px; line-height:1}
+  /* passes read as real tabs: an underline parent over the channels/inputs/code below it */
+  .tabs{display:flex; gap:2px; align-items:flex-end; flex-wrap:wrap; border-bottom:1px solid var(--line); margin-bottom:14px; flex:0 0 auto}
+  .tab{display:inline-flex; align-items:center; gap:7px; padding:7px 12px; border:0; border-bottom:2px solid transparent; border-radius:7px 7px 0 0; background:transparent; cursor:pointer; font-size:13px; color:var(--muted); user-select:none; margin-bottom:-1px}
+  .tab:hover{color:var(--ink); background:var(--code-bg)}
+  .tab.active{color:var(--ink); border-bottom-color:var(--accent); font-weight:600}
+  .tab .x{opacity:.5; font-size:13px; line-height:1}
   .tab .x:hover{opacity:1; color:var(--hot)}
   .tab input{background:transparent; border:0; outline:none; color:inherit; font:inherit; width:84px; padding:0}
-  .tab.add{border-style:dashed; color:var(--muted)}
+  .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:12px}
   .channels{display:flex; gap:7px; align-items:center; flex-wrap:wrap; margin-bottom:10px; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .chan{display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); border-radius:7px; padding:3px 5px 3px 8px}
-  .chan select{padding:3px 5px; font-size:12px}
+  .chan select{padding:3px 16px 3px 5px; font-size:12px; background-position:calc(100% - 7px) 50%,calc(100% - 4px) 50%}
   .chan .x{opacity:.55; cursor:pointer}
   .chan .x:hover{opacity:1; color:var(--hot)}
-  .inputs{display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:10px; flex:0 0 auto; font-size:12px; color:var(--muted)}
+  .addmini{cursor:pointer; color:var(--muted); border:1px dashed var(--line); border-radius:7px; padding:3px 8px; font-size:12px}
+  .addmini:hover{color:var(--ink); border-color:var(--muted)}
+  .inputs{display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:12px; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .chip{border:1px solid var(--line); border-radius:7px; padding:3px 8px; color:var(--muted); cursor:help; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .chip.arr{color:var(--ink); border-color:var(--accent)}
-  @media (max-width:620px){
+  @media (max-width:640px){
     html,body{height:auto}
     body{height:auto; overflow:auto; display:block; padding:12px}
+    header{flex-wrap:wrap; white-space:normal}
     .grid{display:block}
     .leftcol{overflow:visible; min-height:0}
     .leftcol>.panel + .panel{margin-top:18px}
@@ -130,13 +161,18 @@
 <body>
 <header>
   <span class="brand">ghee<span class="dot"> · console</span></span>
-  <span class="pill" id="active"></span>
-  <span class="spacer"></span>
-  <button class="ghost" id="theme" title="toggle theme">☾</button>
   <div class="nav">
-    <button class="ghost" id="prev" title="previous scene">‹ prev</button>
+    <button class="ghost step" id="prev" title="previous scene">‹</button>
     <select id="scenes"></select>
-    <button class="ghost" id="next" title="next scene">next ›</button>
+    <button class="ghost step" id="next" title="next scene">›</button>
+  </div>
+  <span class="status" id="status"></span>
+  <span class="spacer"></span>
+  <div class="actions">
+    <button class="primary" id="apply">apply</button>
+    <button id="save">save</button>
+    <button id="reset">reset</button>
+    <button class="ghost" id="theme" title="toggle theme">☾</button>
   </div>
 </header>
 
@@ -144,15 +180,15 @@
   <div class="leftcol">
     <div class="panel stage">
       <div class="screen"><div class="frame"><img id="stream" alt="render"></div></div>
-      <div class="meter">
-        <span><b id="fps">0.0</b> fps</span>
-        <span>render <b id="rms">0.0</b>ms</span>
-        <span>encode <b id="ems">0.0</b>ms</span>
+      <div class="previewbar">
+        <div class="infowrap">
+          <button class="ghost iconbtn" id="infoBtn" title="render info" aria-label="render info">ⓘ</button>
+          <div class="infopop" id="infoPop"></div>
+        </div>
+        <span class="fpschip"><span class="dot">●</span><b id="fps">0.0</b> fps</span>
         <span class="spacer"></span>
-        <button class="ghost" id="rotate" title="rotate preview 90°">↻</button>
+        <button class="ghost iconbtn" id="rotate" title="rotate preview 90°">↻</button>
       </div>
-      <div class="meter" id="info"></div>
-      <div class="meter" id="device"></div>
     </div>
 
     <div class="panel card">
@@ -178,13 +214,6 @@
     <div class="tabs" id="tabs"></div>
     <div class="channels" id="channels"></div>
     <div class="inputs" id="inputs"></div>
-    <div class="toolbar">
-      <button class="primary" id="apply">apply</button>
-      <button id="save">save</button>
-      <button id="reset">reset</button>
-      <span class="spacer"></span>
-      <span class="muted" id="dirty"></span>
-    </div>
     <div class="editor"><pre id="hl" aria-hidden="true"></pre><textarea id="code" spellcheck="false"></textarea><div class="errmark" id="errmark"></div></div>
     <div class="err" id="err"></div>
   </div>
@@ -197,7 +226,8 @@ let pristine = null;   // scene as on disk
 let work = null;       // working scene (edited)
 let active = null;
 let curPass = 0;
-let lastDisplay = null, compileTimer = null, errLine = 0;
+let lastDisplay = null, lastStats = null, compileTimer = null, errLine = 0;
+let devModel = "", devGpu = "";
 const codeEl = () => $("#code"), hlEl = () => $("#hl");
 
 function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -220,13 +250,30 @@ function highlight(src){
   return out + esc(src.slice(last)) + "\n";
 }
 function syncHL(){ hlEl().innerHTML = highlight(codeEl().value); hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; }
-function renderInfo(){
-  if (!work) return;
+
+// One info surface: live values (fps/render/encode, marked .live) over static scene +
+// device facts. The popover hangs off the ⓘ button.
+function refreshInfo(){
+  const s = lastStats;
   let params=0, arrays=0, feedback=false;
-  work.passes.forEach(p => { params += Object.keys(p.params||{}).length; arrays += (p.arrays||[]).length; (p.channels||[]).forEach(c => { if (c.buffer === p.name) feedback=true; }); });
-  const np = work.passes.length;
-  const d = lastDisplay ? `${lastDisplay.w}×${lastDisplay.h}` : "";
-  $("#info").innerHTML = [d&&`<span>${d}</span>`, `<span>${np} pass${np>1?"es":""}</span>`, `<span>${params} param${params!==1?"s":""}</span>`, feedback?"<span>feedback</span>":"", arrays?`<span>${arrays} array${arrays>1?"s":""}</span>`:""].filter(Boolean).join("");
+  ((work&&work.passes)||[]).forEach(p => { params += Object.keys(p.params||{}).length; arrays += (p.arrays||[]).length; (p.channels||[]).forEach(c => { if (c.buffer === p.name) feedback = true; }); });
+  const np = (work&&work.passes&&work.passes.length) || 0;
+  const row = (k,v,cls) => `<div class="iprow${cls?" "+cls:""}"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  const sect = (t,rows) => `<div class="ipsect"><div class="iphead">${t}</div>${rows}</div>`;
+  const liveRows =
+    row("fps", s ? s.fps.toFixed(1) : "—", "live") +
+    row("render", s ? s.render_ms.toFixed(2)+" ms" : "—", "live") +
+    row("encode", s ? s.encode_ms.toFixed(2)+" ms" : "—", "live");
+  const sceneRows =
+    row("resolution", lastDisplay ? `${lastDisplay.w} × ${lastDisplay.h}` : "—", "off") +
+    row("passes", np, "off") +
+    row("feedback", feedback ? "yes" : "no", "off") +
+    row("params", params, "off") +
+    row("arrays", arrays, "off");
+  const devRows =
+    row("model", devModel || "—", "off") +
+    row("gpu", (devGpu && devGpu !== "n/a") ? devGpu : "unknown", "off");
+  const pop = $("#infoPop"); if (pop) pop.innerHTML = sect("live", liveRows) + sect("scene", sceneRows) + sect("device", devRows);
 }
 
 function effectiveRotation(){
@@ -253,15 +300,34 @@ function applyErrorLine(line){
 async function loadHwinfo(){
   try{
     const h = await jget("/hwinfo");
-    const bits = [h.model, h.gpu, h.gpu_mem && ("GPU " + h.gpu_mem)].filter(Boolean);
-    $("#device").textContent = bits.join("  ·  ");
+    devModel = h.model || ""; devGpu = h.gpu || "";
+    refreshInfo();
   }catch(_){}
 }
 
 async function jget(u){ return (await fetch(u)).json(); }
 function clone(o){ return JSON.parse(JSON.stringify(o)); }
-function dirty(){ return JSON.stringify(work) !== JSON.stringify(pristine); }
-function markDirty(){ $("#dirty").textContent = dirty() ? "unsaved" : ""; saveLocalIfDirty(); }
+// Compare against disk ignoring empties the editor adds (e.g. buildChannels sets
+// channels:[]), so a freshly-loaded scene isn't reported as edited.
+function norm(s){
+  return JSON.stringify(s, (k,v) => {
+    if ((k==="channels"||k==="arrays") && Array.isArray(v) && !v.length) return undefined;
+    if (k==="params" && v && !Array.isArray(v) && typeof v==="object" && !Object.keys(v).length) return undefined;
+    return v;
+  });
+}
+function dirty(){ return norm(work) !== norm(pristine); }
+
+// Make it obvious when what's on screen isn't the file on disk (the localStorage trap).
+function updateStatus(){
+  const el = $("#status"); if (!el) return;
+  const off = pristine && dirty();
+  el.classList.toggle("local", !!off);
+  el.textContent = off ? "local copy" : "";
+  el.title = off ? "Showing your local edits, not the file on disk. Reset to load the disk version." : "";
+  const rb = $("#reset"); if (rb) rb.disabled = !(off || localStorage.getItem(KEY(active)) != null);
+}
+function markDirty(){ saveLocalIfDirty(); updateStatus(); }
 function saveLocalIfDirty(){ if(dirty()) localStorage.setItem(KEY(active), JSON.stringify(work)); }
 
 async function boot(){
@@ -274,25 +340,22 @@ async function boot(){
   loadHwinfo();
   poll();
 }
-$("#rotate").addEventListener("click", ()=>{ localStorage.setItem("ghee:rotation", String((effectiveRotation()+90)%360)); applyRotation(); });
 
 async function loadScene(name){
   active = name;
   pristine = await jget("/scene?name=" + encodeURIComponent(name));
   const saved = localStorage.getItem(KEY(name));
   work = saved ? JSON.parse(saved) : clone(pristine);
-  $("#active").textContent = name;
   $("#scenes").value = name;
   curPass = 0;
   if (!work.passes || !work.passes.length) {   // non-shader scene (python plugin): stream only
     $("#tabs").innerHTML = ""; $("#channels").innerHTML = ""; $("#inputs").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">python plugin, not shader-editable</div>';
-    codeEl().value = ""; syncHL(); applyErrorLine(0); renderInfo(); $("#dirty").textContent = "";
+    codeEl().value = ""; syncHL(); applyErrorLine(0); refreshInfo(); updateStatus();
     return;
   }
   if (saved) { await postScene(); }     // re-apply working copy to the render
-  buildTabs(); buildChannels(); buildParams(); loadCode(); renderInfo();
-  $("#dirty").textContent = dirty() ? "unsaved" : "";
+  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 }
 
 function setPass(i){ curPass = i; buildTabs(); buildChannels(); loadCode(); }
@@ -340,7 +403,7 @@ function addPass(){
   const name = uniqueName("pass");
   work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", format:"rgba8", arrays:[], channels:[], params:{} });
   curPass = work.passes.length - 1; markDirty(); postScene();
-  buildTabs(); buildChannels(); buildParams(); loadCode(); renderInfo();
+  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
 function delPass(i){
@@ -350,7 +413,7 @@ function delPass(i){
   work.passes.forEach(p => { p.channels = (p.channels||[]).filter(c => c.buffer !== name); });
   if (curPass >= work.passes.length) curPass = work.passes.length - 1;
   markDirty(); postScene();
-  buildTabs(); buildChannels(); buildParams(); loadCode(); renderInfo();
+  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
 function buildChannels(){
@@ -369,7 +432,7 @@ function buildChannels(){
     wrap.appendChild(nm); wrap.appendChild(sel); wrap.appendChild(x);
     box.appendChild(wrap);
   });
-  const add = document.createElement("span"); add.className="tab add"; add.style.fontSize="12px";
+  const add = document.createElement("span"); add.className="addmini";
   add.textContent = "+ channel";
   add.addEventListener("click", ()=>{ p.channels.push({ buffer: work.passes[0].name }); markDirty(); postScene(); buildChannels(); });
   box.appendChild(add);
@@ -428,18 +491,28 @@ codeEl().addEventListener("input", ()=>{
   clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350);   // live compile
 });
 codeEl().addEventListener("scroll", ()=>{ hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; applyErrorLine(errLine); });
+
+// top-bar actions
 $("#apply").addEventListener("click", async ()=>{ work.passes[curPass].code = codeEl().value; await postScene(); markDirty(); });
-$("#save").addEventListener("click", ()=>{ localStorage.setItem(KEY(active), JSON.stringify(work)); $("#dirty").textContent = "saved"; setTimeout(()=>{ $("#dirty").textContent = dirty()?"unsaved":""; }, 900); });
+$("#save").addEventListener("click", ()=>{
+  localStorage.setItem(KEY(active), JSON.stringify(work));
+  const b = $("#save"); b.textContent = "saved"; setTimeout(()=>{ b.textContent = "save"; }, 900); updateStatus();
+});
 $("#reset").addEventListener("click", async ()=>{
   localStorage.removeItem(KEY(active));
   work = clone(pristine); await postScene(); curPass = 0;
-  buildTabs(); buildChannels(); buildParams(); loadCode(); renderInfo(); $("#dirty").textContent = "";
+  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 });
 
 // scene nav
 $("#prev").addEventListener("click", async ()=>{ const r=await jget("/prev"); await loadScene(r.active); });
 $("#next").addEventListener("click", async ()=>{ const r=await jget("/next"); await loadScene(r.active); });
 $("#scenes").addEventListener("change", async e=>{ const r=await jget("/switch?name="+encodeURIComponent(e.target.value)); await loadScene(r.active); });
+
+// preview controls
+$("#rotate").addEventListener("click", ()=>{ localStorage.setItem("ghee:rotation", String((effectiveRotation()+90)%360)); applyRotation(); });
+$("#infoBtn").addEventListener("click", e=>{ e.stopPropagation(); $("#infoBtn").closest(".infowrap").classList.toggle("open"); });
+document.addEventListener("click", ()=> $("#infoBtn").closest(".infowrap").classList.remove("open"));
 
 // add parameter
 $("#addToggle").addEventListener("click", ()=> $("#addRow").classList.toggle("show"));
@@ -456,11 +529,10 @@ $("#pAdd").addEventListener("click", ()=>{
 async function poll(){
   try{
     const s = await jget("/stats");
+    lastStats = s;
     $("#fps").textContent = s.fps.toFixed(1);
-    $("#rms").textContent = s.render_ms.toFixed(1);
-    $("#ems").textContent = s.encode_ms.toFixed(1);
     if (s.display) lastDisplay = s.display;
-    renderInfo(); applyRotation();
+    refreshInfo(); applyRotation();
     errLine = (s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass)) ? s.error_line : 0;
     applyErrorLine(errLine);
     const e = $("#err");

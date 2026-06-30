@@ -18,11 +18,11 @@ def _size(s):
 
 
 def cmd_render(a):
-    from ghee import Scene
+    from ghee import load_scene
     from ghee.console.feeds import demo_feed
     from ghee.engine import Renderer
 
-    scene = Scene.load(a.scene)
+    scene, ctrl = load_scene(a.scene)
     if a.display:
         from ghee.drivers import get_driver
 
@@ -41,6 +41,15 @@ def cmd_render(a):
     err = r.setup(scene)
     if err:
         sys.exit(f"compile error: {err}")
+    if ctrl is not None:
+        ctrl.setup(r)
+
+    def provider(name, size, frame):
+        if ctrl is not None:
+            data = ctrl.provide(name, size, frame)
+            if data is not None:
+                return data
+        return demo_feed(name, size, frame)
 
     frames = a.frames if a.frames is not None else (0 if a.display else 1)
     if a.display:
@@ -48,7 +57,9 @@ def cmd_render(a):
     i = 0
     try:
         while frames == 0 or i < frames:
-            rgb = r.render(lambda name, size, i=i: demo_feed(name, size, i))
+            if ctrl is not None:
+                ctrl.update(r, i, i / 60.0)
+            rgb = r.render(lambda name, size, i=i: provider(name, size, i))
             sink.write(rgb)
             i += 1
     except KeyboardInterrupt:

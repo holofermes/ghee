@@ -58,6 +58,7 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb);
 void ghee_mp_reset(GheeScene *g);
 
 void ghee_set_profiling(GheeScene *g, bool on);
+void ghee_set_time(GheeScene *g, float t);
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 
 void ghee_pack_frame(int width, int height, int components, int bw,

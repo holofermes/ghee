@@ -45,7 +45,7 @@ class Param:
         return _GLSL_TYPE[self.type]
 
     @classmethod
-    def from_dict(cls, name: str, d: dict) -> "Param":
+    def from_dict(cls, name: str, d: dict) -> Param:
         return cls(
             name, d["type"], d["value"], d.get("min"), d.get("max"), d.get("step")
         )
@@ -66,7 +66,7 @@ class ArrayInput:
     size: int
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ArrayInput":
+    def from_dict(cls, d: dict) -> ArrayInput:
         return cls(name=d["name"], size=int(d["size"]))
 
     def to_dict(self) -> dict:
@@ -80,41 +80,11 @@ class Channel:
     buffer: str | None = None
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Channel":
+    def from_dict(cls, d: dict) -> Channel:
         return cls(buffer=d.get("buffer"))
 
     def to_dict(self) -> dict:
         return {"buffer": self.buffer}
-
-
-@dataclass
-class DisplayProfile:
-    """The target display. Supplied by the renderer.
-    orientation goes into the preamble as a #define so the shader picks its axis. bw is
-    applied when the frame is packed to 1-bit output.
-    """
-
-    orientation: str = "HORIZONTAL"
-    bw: bool = False
-    width: int | None = None
-    height: int | None = None
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "DisplayProfile":
-        return cls(
-            d.get("orientation", "HORIZONTAL"),
-            d.get("bw", False),
-            d.get("width"),
-            d.get("height"),
-        )
-
-    def to_dict(self) -> dict:
-        out: dict = {"orientation": self.orientation, "bw": self.bw}
-        if self.width is not None:
-            out["width"] = self.width
-        if self.height is not None:
-            out["height"] = self.height
-        return out
 
 
 @dataclass
@@ -131,13 +101,13 @@ class Pass:
         return any(c.buffer == self.name for c in self.channels)
 
     @classmethod
-    def from_dict(cls, d: dict, base_dir: str | None = None) -> "Pass":
+    def from_dict(cls, d: dict, base_dir: str | None = None) -> Pass:
         code = d.get("code")
         if code is None and "shader" in d:
             path = d["shader"]
             if base_dir:
                 path = os.path.join(base_dir, path)
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 code = f.read()
         return cls(
             name=d.get("name", "main"),
@@ -157,15 +127,13 @@ class Pass:
             out["params"] = {n: p.to_dict() for n, p in self.params.items()}
         return out
 
-    def glsl(self, profile: "DisplayProfile | None" = None) -> str:
-        profile = profile or DisplayProfile()
+    def glsl(self) -> str:
         L = [
             "#version 100",
             "precision mediump float;",
             "varying vec2 v_texCoord;",
             "uniform vec2 resolution;",
             "uniform float time;",
-            f"#define {'VERTICAL' if profile.orientation == 'VERTICAL' else 'HORIZONTAL'}",
         ]
         for a in self.arrays:
             L.append(f"uniform float {a.name}[{a.size}];")
@@ -200,7 +168,7 @@ class Scene:
         return self.passes[-1]
 
     @classmethod
-    def from_dict(cls, d: dict, base_dir: str | None = None) -> "Scene":
+    def from_dict(cls, d: dict, base_dir: str | None = None) -> Scene:
         return cls(
             version=d.get("version", 1),
             passes=[Pass.from_dict(pd, base_dir) for pd in d.get("passes", [])],
@@ -210,8 +178,8 @@ class Scene:
         return {"version": self.version, "passes": [p.to_dict() for p in self.passes]}
 
     @classmethod
-    def load(cls, path: str) -> "Scene":
-        with open(path, "r", encoding="utf-8") as f:
+    def load(cls, path: str) -> Scene:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data, base_dir=os.path.dirname(os.path.abspath(path)))
 

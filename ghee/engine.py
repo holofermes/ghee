@@ -3,7 +3,7 @@
 Wraps the ghee_* ABI.
 
     r = Renderer(320, 240, lib_path="libghee.so")
-    err = r.setup(scene, profile)               # "" or a compile error
+    err = r.setup(scene)                         # "" or a compile error
     rgb = r.render(lambda name, size: data)      # (h, w, components) uint8
     r.set_param("main", "decay", "float", 0.9)   # live uniform, no recompile
 
@@ -18,7 +18,6 @@ import re
 
 import numpy as np
 
-from ghee import DisplayProfile
 from ghee.cparam import CParameter, create_c_parameter
 
 
@@ -35,6 +34,49 @@ def bundled_lib():
 _U8 = np.ctypeslib.ndpointer(dtype=np.uint8, flags="C_CONTIGUOUS")
 _U8_3 = np.ctypeslib.ndpointer(dtype=np.uint8, ndim=3, flags="C_CONTIGUOUS")
 _F32_1 = np.ctypeslib.ndpointer(dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
+
+
+def packed_size(width, height, bw):
+    """Bytes a frame packs down to: 1bpp (bw) vs RGB565."""
+    return width * ((height + 7) // 8) if bw else width * height * 2
+
+
+def _pack_with(fn, rgb, width, height, components, bw, out):
+    rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+    if out is None:
+        out = np.zeros(packed_size(width, height, bw), dtype=np.uint8)
+    else:
+        out.fill(0)
+    fn(width, height, components, 1 if bw else 0, rgb, out)
+    return out
+
+
+_PACK = None
+
+
+def _packer():
+    global _PACK
+    if _PACK is None:
+        path = os.environ.get("GHEE_LIB") or bundled_lib()
+        if not path:
+            raise ValueError("no engine .so for packing: build ghee or set $GHEE_LIB")
+        lib = ctypes.CDLL(path)
+        lib.ghee_pack_frame.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            _U8,
+            _U8,
+        ]
+        _PACK = lib.ghee_pack_frame
+    return _PACK
+
+
+def pack_frame(rgb, width, height, components=3, bw=False, out=None):
+    """Pack an RGB(A) frame to 1bpp (bw) or RGB565, with no Renderer. For output
+    sinks that hold a frame but not an engine. Allocates `out` if not given."""
+    return _pack_with(_packer(), rgb, width, height, components, bw, out)
 
 
 def _user_line(err, glsl, code):
@@ -75,7 +117,6 @@ class Renderer:
                 "no engine .so: build ghee on this host, or pass "
                 "lib_path / set $GHEE_LIB"
             )
-        self._stdlib = ctypes.CDLL("")
         self.lib: ctypes.CDLL = ctypes.CDLL(lib_path)
         self._declare()
         err = ctypes.c_char_p()
@@ -136,23 +177,23 @@ class Renderer:
             _U8,
         ]
         L.ghee_set_profiling.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+        L.ghee_set_time.argtypes = [ctypes.c_void_p, ctypes.c_float]
         L.ghee_get_timings.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_double),
             ctypes.POINTER(ctypes.c_double),
         ]
 
-    def setup(self, scene, profile=None):
+    def setup(self, scene):
         """Build the scene's passes. Returns "" on success or a compile-error
         string (engine is left reset; the caller may restore the previous scene).
         On failure error_line/error_pass point at the offending user-code line."""
-        profile = profile or DisplayProfile(width=self.width, height=self.height)
         self.error_line = None
         self.error_pass = None
         self.lib.ghee_mp_reset(self.handle)
         mp = {}
         for i, p in enumerate(scene.passes):
-            glsl = p.glsl(profile)
+            glsl = p.glsl()
             idx = self.lib.ghee_mp_add_pass(self.handle, glsl.encode("utf-8"))
             if idx < 0:
                 err = self.last_error() or "compile error"
@@ -203,23 +244,24 @@ class Renderer:
     def pack(self, rgb, bw=False, out=None):
         """Optional: pack an RGB(A) frame to 1bpp (bw) or RGB565.
         Allocates `out` if not given; zeros it first."""
-        if out is None:
-            size = (
-                self.width * ((self.height + 7) // 8)
-                if bw
-                else self.width * self.height * 2
-            )
-            out = np.zeros(size, dtype=np.uint8)
-        else:
-            out.fill(0)
-        self.lib.ghee_pack_frame(
-            self.width, self.height, self.components, 1 if bw else 0, rgb, out
+        return _pack_with(
+            self.lib.ghee_pack_frame,
+            rgb,
+            self.width,
+            self.height,
+            self.components,
+            bw,
+            out,
         )
-        return out
 
     def set_profiling(self, on):
         """Enable per-frame draw/readback timing (adds a glFinish; off = zero cost)."""
         self.lib.ghee_set_profiling(self.handle, bool(on))
+
+    def set_time(self, t):
+        """Pin the `time` uniform to a fixed value, for reproducible renders. Default
+        is the monotonic clock since the engine was created."""
+        self.lib.ghee_set_time(self.handle, float(t))
 
     def timings(self):
         """Last frame's split as (draw_ms, read_ms): GPU render of all passes vs the
@@ -242,8 +284,3 @@ class Renderer:
         if getattr(self, "handle", None):
             self.lib.ghee_destroy(self.handle)
             self.handle = None
-            try:
-                self._stdlib.dlclose(self.lib._handle)
-            except Exception:
-                pass
-            self.lib = None  # type: ignore  # released on teardown; not used after close

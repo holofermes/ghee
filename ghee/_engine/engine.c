@@ -33,6 +33,8 @@ struct GheeScene {
     GLuint VBO, VAO;
 
     struct timespec start_time;
+    bool has_time_override;              // when set, render uses time_override instead of the wall clock
+    float time_override;
 
     // multipass: each pass has its own program + ping-pong buffer; channels route
     // between passes (reading a pass's PREVIOUS-frame output). A pass whose channel
@@ -194,8 +196,13 @@ GheeScene *ghee_create(int width, int height, int components, const char *dri_de
     }
     g->surface = eglCreatePlatformWindowSurface(g->display, config, g->gbm_surface, NULL);
     if (g->surface == EGL_NO_SURFACE) {
-        snprintf(early_err, sizeof(early_err), "eglCreatePlatformWindowSurface failed: 0x%X", eglGetError());
-        goto fail;
+        // Desktop Mesa rejects the GBM window surface (EGL_BAD_MATCH) that the Pi's
+        // VC4 accepts. Rendering goes to FBOs, so fall back to a surfaceless context.
+        const char *exts = eglQueryString(g->display, EGL_EXTENSIONS);
+        if (!exts || !strstr(exts, "EGL_KHR_surfaceless_context")) {
+            snprintf(early_err, sizeof(early_err), "eglCreatePlatformWindowSurface failed: 0x%X", eglGetError());
+            goto fail;
+        }
     }
     const EGLint contextAttribs[] = { EGL_CONTEXT_MAJOR_VERSION_KHR, 2, EGL_CONTEXT_MINOR_VERSION_KHR, 0, EGL_NONE };
     g->context = eglCreateContext(g->display, config, EGL_NO_CONTEXT, contextAttribs);
@@ -348,7 +355,8 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
     make_current(g);
     struct timespec now, t_draw, t_read;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    const float elapsed = (now.tv_sec - g->start_time.tv_sec)
+    const float elapsed = g->has_time_override ? g->time_override
+                        : (now.tv_sec - g->start_time.tv_sec)
                         + (now.tv_nsec - g->start_time.tv_nsec) / 1e9f;
 
     for (int p = 0; p < g->mp_count; p++) {
@@ -393,6 +401,8 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
 }
 
 void ghee_set_profiling(GheeScene *g, bool on) { g->profile = on; }
+
+void ghee_set_time(GheeScene *g, float t) { g->time_override = t; g->has_time_override = true; }
 
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms) {
     if (draw_ms) *draw_ms = g->prof_draw_ms;

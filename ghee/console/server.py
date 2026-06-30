@@ -35,7 +35,7 @@ from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
-from ghee import DisplayProfile, Scene
+from ghee import Scene
 from ghee.console import examples_dir, web_dir
 from ghee.console.feeds import default_hwinfo, demo_feed
 from ghee.engine import Renderer
@@ -48,7 +48,6 @@ _lib_path = None
 WEB: str = ""
 SCENES = {}
 NAMES = []
-profile = None
 W = H = 0
 _provider = None
 _hwinfo = default_hwinfo
@@ -93,15 +92,13 @@ def render_loop():
     st: dict[str, Scene | None] = {"scene": None}
 
     def set_scene(scene, name=None):
-        err = renderer.setup(scene, profile)
+        err = renderer.setup(scene)
         if err:
             _stat["error"] = err
             _stat["error_line"] = renderer.error_line
             _stat["error_pass"] = renderer.error_pass
             if st["scene"] is not None:
-                renderer.setup(
-                    st["scene"], profile
-                )  # keep the last good scene rendering
+                renderer.setup(st["scene"])  # keep the last good scene rendering
             return
         st["scene"] = scene
         _stat["error"] = ""
@@ -145,7 +142,9 @@ def render_loop():
                     _stat["error"] = f"scene: {e}"
 
         t0 = time.monotonic()
-        rgb = renderer.render(lambda name, size: provider(name, size, frame))
+        rgb = renderer.render(
+            lambda name, size, frame=frame: provider(name, size, frame)
+        )
         frame += 1
         t1 = time.monotonic()
         if _nclients > 0:  # only encode when a browser is actually watching
@@ -202,7 +201,7 @@ class Handler(BaseHTTPRequestHandler):
             name = q.get("name", [_stat["active"]])[0]
             if name not in SCENES:
                 return self._send(404, "no scene")
-            with open(SCENES[name], "r", encoding="utf-8") as f:
+            with open(SCENES[name], encoding="utf-8") as f:
                 return self._send(200, f.read(), "application/json")
         if u.path == "/set":
             try:
@@ -280,7 +279,7 @@ def run(
     """Start the console. arrays: {array_name -> callable(size, frame) -> floats}
     maps a scene's declared arrays to real data; unmapped names get an animated
     placeholder. hwinfo: callable -> dict for the device-info readout."""
-    global _lib_path, WEB, SCENES, NAMES, profile, W, H, _provider, _hwinfo
+    global _lib_path, WEB, SCENES, NAMES, W, H, _provider, _hwinfo
     _provider = _make_provider(arrays or {})
     _hwinfo = hwinfo or default_hwinfo
     WEB = web_dir()
@@ -290,15 +289,8 @@ def run(
     NAMES = list(SCENES.keys())
     if not NAMES:
         raise SystemExit(f"no .scene.json in {scenes_dir}")
-    profile = DisplayProfile(width=W, height=H)
     _stat["active"] = NAMES[0]
-    _stat["display"] = {
-        "w": W,
-        "h": H,
-        "orientation": profile.orientation,
-        "bw": profile.bw,
-        "rotation": 0,
-    }
+    _stat["display"] = {"w": W, "h": H, "rotation": 0}
     _lib_path = lib_path or DEFAULT_LIB
     threading.Thread(target=render_loop, daemon=True).start()
     print(f"ghee console: {len(NAMES)} scenes {NAMES} on :{port} (scenes={scenes_dir})")

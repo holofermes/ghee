@@ -1,3 +1,3 @@
-from ghee.scene import Scene, Pass, Param, Channel, ArrayInput, DisplayProfile
+from ghee.scene import ArrayInput, Channel, Param, Pass, Scene
 
-__all__ = ["Scene", "Pass", "Param", "Channel", "ArrayInput", "DisplayProfile"]
+__all__ = ["Scene", "Pass", "Param", "Channel", "ArrayInput"]

@@ -83,3 +83,23 @@ def test_render_example_spectrum(renderer):
         frame = renderer.render(lambda n, s, i=i: ctrl.provide(n, s, i)).copy()
     assert frame.std() > 2  # the custom array drove a non-blank spectrum
     assert not np.array_equal(frame[..., 0], frame[..., 1])
+
+
+def test_spectrum_gain_in_shader_and_python(renderer):
+    path = str(importlib.resources.files("ghee") / "examples" / "spectrum.py")
+    if not os.path.isfile(path):
+        import pytest
+
+        pytest.skip("spectrum example not installed")
+    scene, ctrl = load_scene(path)
+    assert renderer.setup(scene) == ""
+    ctrl.setup(renderer)
+
+    def frame_at(g):
+        scene.passes[0].params["gain"].value = g  # python side: provide() reads this
+        renderer.set_param("main", "gain", "float", g)  # shader side: the uniform
+        return renderer.render(lambda n, s: ctrl.provide(n, s, 5)).copy()
+
+    lo, hi = frame_at(0.05), frame_at(0.5)
+    assert not np.array_equal(lo, hi)  # the param changes the render
+    assert hi.mean() > lo.mean()  # higher gain = taller + brighter bars

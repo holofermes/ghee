@@ -14,7 +14,7 @@ API:
   GET  /stream            MJPEG, one part per rendered frame
   GET  /stats             {fps, render_ms, encode_ms, error, active}
   GET  /scenes            {scenes:[name...], active}
-  GET  /scene?name=       pristine scene JSON from disk
+  GET  /scene?name=       scene JSON (from disk, or built for a procedural scene)
   GET  /set?pass=&name=&value=   live uniform, no recompile
   GET  /next /prev        switch active scene
   POST /scene             full scene JSON -> recompile active (apply working copy)
@@ -35,7 +35,7 @@ from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
-from ghee import Scene
+from ghee import Scene, load_scene
 from ghee.console import examples_dir, web_dir
 from ghee.console.feeds import default_hwinfo, demo_feed
 from ghee.engine import Renderer
@@ -83,15 +83,36 @@ def _scan_scenes(scenes_dir):
     out = {}
     for p in sorted(glob.glob(os.path.join(scenes_dir, "*.scene.json"))):
         out[os.path.basename(p)[: -len(".scene.json")]] = p
+    for p in sorted(glob.glob(os.path.join(scenes_dir, "*.py"))):
+        name = os.path.basename(p)[:-3]
+        out.setdefault(name, p)  # a .py beside its .scene.json: load_scene finds both
     return out
+
+
+def _make_renderer():
+    """Create the render-thread Renderer, probing DRI devices so the console runs on
+    the Pi (card0) and on desktop Mesa (renderD128). components=4 because desktop Mesa
+    rejects an RGB glReadPixels; the frame is encoded to RGB for the browser anyway."""
+    errs = []
+    for dev in [
+        os.environ.get("GHEE_DRI"),
+        None,
+        "/dev/dri/renderD128",
+        "/dev/dri/card1",
+    ]:
+        try:
+            return Renderer(W, H, components=4, dri_device=dev, lib_path=_lib_path)
+        except Exception as e:
+            errs.append(f"{dev or 'card0'}: {e}")
+    raise RuntimeError("no GL device for the console:\n" + "\n".join(errs))
 
 
 def render_loop():
     # GL is thread-affine: create the Renderer here, in the thread that renders.
-    renderer = Renderer(W, H, components=3, lib_path=_lib_path)
-    st: dict[str, Scene | None] = {"scene": None}
+    renderer = _make_renderer()
+    st: dict = {"scene": None, "controller": None}
 
-    def set_scene(scene, name=None):
+    def set_scene(scene, name=None, controller=None):
         err = renderer.setup(scene)
         if err:
             _stat["error"] = err
@@ -101,6 +122,9 @@ def render_loop():
                 renderer.setup(st["scene"])  # keep the last good scene rendering
             return
         st["scene"] = scene
+        st["controller"] = controller
+        if controller is not None:
+            controller.setup(renderer)
         _stat["error"] = ""
         _stat["error_line"] = None
         _stat["error_pass"] = None
@@ -109,7 +133,8 @@ def render_loop():
 
     def load(name):
         try:
-            set_scene(Scene.load(SCENES[name]), name)
+            scene, controller = load_scene(SCENES[name])
+            set_scene(scene, name, controller)
         except Exception as e:
             _stat["error"] = f"load {name}: {e}"
 
@@ -137,19 +162,29 @@ def render_loop():
                     pass
             elif item[0] == "scene_obj":
                 try:
-                    set_scene(Scene.from_dict(item[1]))
+                    set_scene(Scene.from_dict(item[1]), controller=st["controller"])
                 except Exception as e:
                     _stat["error"] = f"scene: {e}"
 
+        ctrl = st["controller"]
+        if ctrl is not None:
+            ctrl.update(renderer, frame, frame / 60.0)
+
+        def feed(name, size, frame=frame, ctrl=ctrl):
+            if ctrl is not None:
+                data = ctrl.provide(name, size, frame)
+                if data is not None:
+                    return data
+            return provider(name, size, frame)
+
         t0 = time.monotonic()
-        rgb = renderer.render(
-            lambda name, size, frame=frame: provider(name, size, frame)
-        )
+        rgb = renderer.render(feed)
         frame += 1
         t1 = time.monotonic()
         if _nclients > 0:  # only encode when a browser is actually watching
             buf = io.BytesIO()
-            Image.fromarray(rgb, "RGB").save(
+            mode = "RGBA" if rgb.shape[2] == 4 else "RGB"
+            Image.fromarray(rgb, mode).convert("RGB").save(
                 buf, "JPEG", quality=50
             )  # baseline ~3ms; optimize+progressive cost ~10ms more for ~900B
             with _lock:
@@ -201,8 +236,15 @@ class Handler(BaseHTTPRequestHandler):
             name = q.get("name", [_stat["active"]])[0]
             if name not in SCENES:
                 return self._send(404, "no scene")
-            with open(SCENES[name], encoding="utf-8") as f:
-                return self._send(200, f.read(), "application/json")
+            path = SCENES[name]
+            if path.endswith(".scene.json"):
+                with open(path, encoding="utf-8") as f:
+                    return self._send(200, f.read(), "application/json")
+            try:  # procedural scene: serve the built def
+                scene, _ = load_scene(path)
+                return self._send(200, json.dumps(scene.to_dict()), "application/json")
+            except Exception as e:
+                return self._send(500, f"build {name}: {e}")
         if u.path == "/set":
             try:
                 _q.put(("param", int(q["pass"][0]), q["name"][0], float(q["value"][0])))

@@ -18,8 +18,12 @@ import importlib.util
 import inspect
 import os
 import sys
+from typing import TYPE_CHECKING
 
 from ghee.scene import Scene
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
 
 _SUFFIX = ".scene.json"
 
@@ -35,9 +39,9 @@ class SceneController:
     def setup(self, renderer) -> None:
         """Called once after the scene compiles (init state, future: load textures)."""
 
-    def provide(self, name: str, size: int, frame: int):
-        """Floats for a declared array this frame, or None to fall through to the
-        host's source / a default."""
+    def provide(self, name: str, size: int, frame: int) -> ArrayLike | None:
+        """Array-like floats for a declared array this frame, or None to fall through
+        to the host's source / a default."""
         return None
 
     def update(self, renderer, frame: int, t: float) -> None:
@@ -47,6 +51,8 @@ class SceneController:
 def _import_file(path):
     mod_name = "ghee_scene_" + os.path.splitext(os.path.basename(path))[0]
     spec = importlib.util.spec_from_file_location(mod_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load scene module: {path}")
     mod = importlib.util.module_from_spec(spec)
     base_dir = os.path.dirname(os.path.abspath(path))
     sys.path.insert(0, base_dir)  # let the scene import sibling modules

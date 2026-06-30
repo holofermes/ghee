@@ -15,7 +15,6 @@ import ctypes
 import importlib.resources
 import os
 import re
-import sys
 
 import numpy as np
 
@@ -186,11 +185,22 @@ class Renderer:
         ]
 
     def setup(self, scene):
-        """Build the scene's passes. Returns "" on success or a compile-error
-        string (engine is left reset; the caller may restore the previous scene).
-        On failure error_line/error_pass point at the offending user-code line."""
+        """Build the scene's passes. Returns "" on success or an error string (a compile
+        error, or a scene the engine refuses). On a compile error error_line/error_pass
+        point at the offending user-code line. The engine is untouched on a returned
+        error, so the caller may keep rendering the previous scene."""
         self.error_line = None
         self.error_pass = None
+        # An array name is one logical input, so it must have a single size. Reject a
+        # scene that declares the same name at two sizes before touching the engine.
+        seen = {}
+        for p in scene.passes:
+            for a in p.arrays:
+                if seen.setdefault(a.name, a.size) != a.size:
+                    return (
+                        f"array '{a.name}' declared at conflicting sizes "
+                        f"({seen[a.name]} and {a.size})"
+                    )
         self.lib.ghee_mp_reset(self.handle)
         mp = {}
         for i, p in enumerate(scene.passes):
@@ -214,19 +224,11 @@ class Renderer:
         self.scene = scene
         # Group array feeds by name: an array name is one logical input, so the provider
         # is asked for it once per frame and the result goes to every pass that declares
-        # it. Each pass keeps its own size for the upload.
+        # it (sizes are validated equal at the top of setup).
         feeds = {}
         for p in scene.passes:
             for a in p.arrays:
                 feeds.setdefault(a.name, []).append((mp[p.name], a.size))
-        for name, targets in feeds.items():
-            sizes = {size for _, size in targets}
-            if len(sizes) > 1:
-                print(
-                    f"ghee: array '{name}' declared at multiple sizes "
-                    f"{sorted(sizes)} across passes",
-                    file=sys.stderr,
-                )
         self._feeds = feeds
         return ""
 

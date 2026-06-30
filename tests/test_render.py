@@ -144,6 +144,39 @@ def test_array_provider_dedup_by_name(renderer):
     assert calls == {"shared": 1}  # one call despite two passes declaring it
 
 
+def test_conflicting_array_sizes_rejected(renderer):
+    good = scene(
+        [
+            {
+                "name": "main",
+                "arrays": [{"name": "v", "size": 4}],
+                "code": "void main(){ gl_FragColor = vec4(v_at(0), 0.0, 0.0, 1.0); }",
+            }
+        ]
+    )
+    assert renderer.setup(good) == ""
+    bad = scene(
+        [
+            {
+                "name": "a",
+                "arrays": [{"name": "amps", "size": 16}],
+                "code": "void main(){ gl_FragColor = vec4(amps_at(0), 0.0, 0.0, 1.0); }",
+            },
+            {
+                "name": "b",
+                "channels": [{"buffer": "a"}],
+                "arrays": [{"name": "amps", "size": 8}],
+                "code": "void main(){ vec2 uv=gl_FragCoord.xy/resolution; gl_FragColor = texture2D(iChannel0,uv); }",
+            },
+        ]
+    )
+    err = renderer.setup(bad)
+    assert "amps" in err and "conflicting sizes" in err
+    # engine untouched: the previous good scene still renders
+    f = renderer.render(lambda n, s: np.full(s, 0.5, dtype=np.float32))
+    assert abs(int(f[..., 0].mean()) - 128) <= 2
+
+
 def test_multipass_feedback_accumulates(renderer):
     sc = scene(
         [

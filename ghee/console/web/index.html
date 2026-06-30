@@ -15,7 +15,6 @@
   :root{
     --bg:#f3f3f1; --panel:#fbfbfa; --line:#e6e6e2; --ink:#1d1d1b; --muted:#8a8a83;
     --accent:#3a3a36; --accent-ink:#fafafa; --hot:#c0392b; --live:#2c9c46;
-    --warn-ink:#9a6b00; --warn-bg:#fdf3da; --warn-line:#eddcab;
     --code-bg:#fcfcfb; --code-ink:#3a3a3a; --bezel:#d8d8d2; --scroll:#cfcfc9;
     --t-cm:#a2a298; --t-pp:#8a5fb0; --t-ty:#2c7a72; --t-kw:#b0603a; --t-bi:#3f63ad; --t-nu:#86772f;
     --err-bg:#fdf0ef; --err-line:#f3d4d0;
@@ -25,7 +24,6 @@
   html[data-theme="dark"]{
     --bg:#141518; --panel:#1c1e22; --line:#2b2e34; --ink:#e9e9e4; --muted:#888b92;
     --accent:#e9e9e4; --accent-ink:#16171a; --hot:#e0796f; --live:#5fcf78;
-    --warn-ink:#e7b75a; --warn-bg:#352a12; --warn-line:#574722;
     --code-bg:#17181c; --code-ink:#cacac3; --bezel:#2c2f36; --scroll:#3a3e46;
     --t-cm:#6f7178; --t-pp:#b89ce0; --t-ty:#5bbdb0; --t-kw:#e0916a; --t-bi:#80a1e0; --t-nu:#c4b56a;
     --err-bg:#2a1a18; --err-line:#5a322c;
@@ -63,9 +61,6 @@
   .nav{display:flex; align-items:center; gap:4px}
   .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
   .actions{display:flex; gap:7px; align-items:center}
-  /* a local copy (differs from disk) shows as a dot on the enabled reset button —
-     amber so it reads in both themes, never white/black */
-  #reset.local::before{content:"\25CF"; color:var(--warn-ink); font-size:8px; margin-right:6px; vertical-align:middle}
   .grid{display:grid; grid-template-columns:minmax(300px,440px) 1fr; gap:18px; flex:1 1 auto; min-height:0}
   .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow)}
   .leftcol{display:flex; flex-direction:column; gap:18px; overflow:auto; min-height:0; padding-right:4px}
@@ -169,7 +164,7 @@
   <div class="actions">
     <button class="primary" id="apply">apply</button>
     <button id="save">save</button>
-    <button id="reset">reset</button>
+    <button id="reset" title="discard local edits and load the file on disk">reset</button>
     <button class="ghost" id="theme" title="toggle theme">☾</button>
   </div>
 </header>
@@ -259,17 +254,17 @@ function refreshInfo(){
   const row = (k,v,cls) => `<div class="iprow${cls?" "+cls:""}"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const sect = (t,rows) => `<div class="ipsect"><div class="iphead">${t}</div>${rows}</div>`;
   const liveRows =
-    row("fps", s ? s.fps.toFixed(1) : "—", "live") +
-    row("render", s ? s.render_ms.toFixed(2)+" ms" : "—", "live") +
-    row("encode", s ? s.encode_ms.toFixed(2)+" ms" : "—", "live");
+    row("fps", s ? s.fps.toFixed(1) : "-", "live") +
+    row("render", s ? s.render_ms.toFixed(2)+" ms" : "-", "live") +
+    row("encode", s ? s.encode_ms.toFixed(2)+" ms" : "-", "live");
   const sceneRows =
-    row("resolution", lastDisplay ? `${lastDisplay.w} × ${lastDisplay.h}` : "—", "off") +
+    row("resolution", lastDisplay ? `${lastDisplay.w} × ${lastDisplay.h}` : "-", "off") +
     row("passes", np, "off") +
     row("feedback", feedback ? "yes" : "no", "off") +
     row("params", params, "off") +
     row("arrays", arrays, "off");
   const devRows =
-    row("model", devModel || "—", "off") +
+    row("model", devModel || "-", "off") +
     row("gpu", (devGpu && devGpu !== "n/a") ? devGpu : "unknown", "off");
   const pop = $("#infoPop"); if (pop) pop.innerHTML = sect("live", liveRows) + sect("scene", sceneRows) + sect("device", devRows);
 }
@@ -316,14 +311,11 @@ function norm(s){
 }
 function dirty(){ return norm(work) !== norm(pristine); }
 
-// A local copy (differs from disk, or persisted in localStorage) lights the reset
-// button: enabled, with an amber dot. That's the only "not on disk" cue.
+// Reset is enabled only when the working scene differs from the file on disk
+// (a local copy, possibly persisted in localStorage).
 function updateStatus(){
   const rb = $("#reset"); if (!rb) return;
-  const local = (pristine && dirty()) || localStorage.getItem(KEY(active)) != null;
-  rb.disabled = !local;
-  rb.classList.toggle("local", local);
-  rb.title = local ? "Showing a local copy, not the file on disk — reset to load the disk version." : "";
+  rb.disabled = !((pristine && dirty()) || localStorage.getItem(KEY(active)) != null);
 }
 function markDirty(){ saveLocalIfDirty(); updateStatus(); }
 function saveLocalIfDirty(){ if(dirty()) localStorage.setItem(KEY(active), JSON.stringify(work)); }

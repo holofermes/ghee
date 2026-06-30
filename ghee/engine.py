@@ -15,6 +15,7 @@ import ctypes
 import importlib.resources
 import os
 import re
+import sys
 
 import numpy as np
 
@@ -108,7 +109,7 @@ class Renderer:
         )
         self.error_pass = None
         self._mp = {}  # pass name -> engine pass index
-        self._feeds = []  # (pass index, array name, size)
+        self._feeds = {}  # array name -> [(pass index, size), ...]
         self._rgb = np.zeros((height, width, components), dtype=np.uint8)
 
         lib_path = lib_path or os.environ.get("GHEE_LIB") or bundled_lib()
@@ -211,23 +212,41 @@ class Renderer:
             for nm, pm in p.params.items():
                 self.set_param(p.name, nm, pm.type, pm.value)
         self.scene = scene
-        self._feeds = [
-            (mp[p.name], a.name, a.size) for p in scene.passes for a in p.arrays
-        ]
+        # Group array feeds by name: an array name is one logical input, so the provider
+        # is asked for it once per frame and the result goes to every pass that declares
+        # it. Each pass keeps its own size for the upload.
+        feeds = {}
+        for p in scene.passes:
+            for a in p.arrays:
+                feeds.setdefault(a.name, []).append((mp[p.name], a.size))
+        for name, targets in feeds.items():
+            sizes = {size for _, size in targets}
+            if len(sizes) > 1:
+                print(
+                    f"ghee: array '{name}' declared at multiple sizes "
+                    f"{sorted(sizes)} across passes",
+                    file=sys.stderr,
+                )
+        self._feeds = feeds
         return ""
 
     def render(self, provider=None, out=None):
         """Render all passes; final pass -> the returned RGB(A) frame (h,w,components).
-        provider(name, size) -> floats fills each declared array each frame; pass None
-        to leave arrays untouched. `out` lets the host render into its own buffer."""
+        provider(name, size) -> floats fills each declared array each frame (called once
+        per unique array name); pass None to leave arrays untouched. `out` lets the host
+        render into its own buffer."""
         if out is None:
             out = self._rgb
         if provider is not None:
-            for pi, name, size in self._feeds:
-                data = np.ascontiguousarray(provider(name, size), dtype=np.float32)
-                self.lib.ghee_mp_set_float_array(
-                    self.handle, pi, name.encode("utf-8"), data, min(len(data), size)
+            for name, targets in self._feeds.items():
+                data = np.ascontiguousarray(
+                    provider(name, targets[0][1]), dtype=np.float32
                 )
+                enc = name.encode("utf-8")
+                for pi, size in targets:
+                    self.lib.ghee_mp_set_float_array(
+                        self.handle, pi, enc, data, min(len(data), size)
+                    )
         self.lib.ghee_mp_render(self.handle, out)
         return out
 
@@ -278,7 +297,7 @@ class Renderer:
     def reset(self):
         self.lib.ghee_mp_reset(self.handle)
         self._mp = {}
-        self._feeds = []
+        self._feeds = {}
 
     def close(self):
         if getattr(self, "handle", None):

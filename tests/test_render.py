@@ -117,6 +117,33 @@ def test_multipass_forward_channel(renderer):
     assert int(f[..., 2].mean()) <= 2
 
 
+def test_array_provider_dedup_by_name(renderer):
+    sc = scene(
+        [
+            {
+                "name": "a",
+                "arrays": [{"name": "shared", "size": 4}],
+                "code": "void main(){ gl_FragColor = vec4(shared_at(0), 0.0, 0.0, 1.0); }",
+            },
+            {
+                "name": "b",
+                "channels": [{"buffer": "a"}],
+                "arrays": [{"name": "shared", "size": 4}],
+                "code": "void main(){ vec2 uv=gl_FragCoord.xy/resolution; gl_FragColor = texture2D(iChannel0,uv) + vec4(0.0, shared_at(1), 0.0, 0.0); }",
+            },
+        ]
+    )
+    renderer.setup(sc)
+    calls = {}
+
+    def prov(name, size):
+        calls[name] = calls.get(name, 0) + 1
+        return np.full(size, 0.5, dtype=np.float32)
+
+    renderer.render(prov)
+    assert calls == {"shared": 1}  # one call despite two passes declaring it
+
+
 def test_multipass_feedback_accumulates(renderer):
     sc = scene(
         [

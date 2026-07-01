@@ -127,6 +127,10 @@
   .tab.active{color:var(--ink); border-bottom-color:var(--accent); font-weight:600}
   .tab .x{opacity:.5; font-size:13px; line-height:1}
   .tab .x:hover{opacity:1; color:var(--hot)}
+  .tab .m{opacity:.5; font-size:10px; line-height:1; cursor:pointer}
+  .tab .m:hover{opacity:1; color:var(--ink)}
+  .tab.off{opacity:.4} .tab.off.active{opacity:.7}
+  .tab.off .lbl{text-decoration:line-through}
   .tab input{background:transparent; border:0; outline:none; color:inherit; font:inherit; width:84px; padding:0}
   .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:12px}
   .channels{display:flex; gap:7px; align-items:center; flex-wrap:wrap; margin-bottom:10px; flex:0 0 auto; font-size:12px; color:var(--muted)}
@@ -251,6 +255,7 @@ function refreshInfo(){
   let params=0, arrays=0, feedback=false;
   ((work&&work.passes)||[]).forEach(p => { params += Object.keys(p.params||{}).length; arrays += (p.arrays||[]).length; (p.channels||[]).forEach(c => { if (c.buffer === p.name) feedback = true; }); });
   const np = (work&&work.passes&&work.passes.length) || 0;
+  const muted = ((work&&work.passes)||[]).filter(p=>p.muted).length;
   const row = (k,v,cls) => `<div class="iprow${cls?" "+cls:""}"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const sect = (t,rows) => `<div class="ipsect"><div class="iphead">${t}</div>${rows}</div>`;
   const liveRows =
@@ -259,7 +264,7 @@ function refreshInfo(){
     row("encode", s ? s.encode_ms.toFixed(2)+" ms" : "-", "live");
   const sceneRows =
     row("resolution", lastDisplay ? `${lastDisplay.w} × ${lastDisplay.h}` : "-", "off") +
-    row("passes", np, "off") +
+    row("passes", muted ? `${np} (${muted} muted)` : np, "off") +
     row("feedback", feedback ? "yes" : "no", "off") +
     row("params", params, "off") +
     row("arrays", arrays, "off");
@@ -306,6 +311,7 @@ function norm(s){
   return JSON.stringify(s, (k,v) => {
     if ((k==="channels"||k==="arrays") && Array.isArray(v) && !v.length) return undefined;
     if (k==="params" && v && !Array.isArray(v) && typeof v==="object" && !Object.keys(v).length) return undefined;
+    if (k==="muted") return undefined;   // a preview toggle, not a scene edit
     return v;
   });
 }
@@ -355,13 +361,17 @@ function buildTabs(){
   const t = $("#tabs"); t.innerHTML = "";
   work.passes.forEach((p,i)=>{
     const tab = document.createElement("span");
-    tab.className = "tab" + (i===curPass ? " active" : "");
-    const lbl = document.createElement("span");
+    tab.className = "tab" + (i===curPass ? " active" : "") + (p.muted ? " off" : "");
+    const lbl = document.createElement("span"); lbl.className = "lbl";
     lbl.textContent = p.name; lbl.title = "double-click to rename";
     lbl.addEventListener("click", ()=> setPass(i));
     lbl.addEventListener("dblclick", ()=> renamePass(i, lbl));
     tab.appendChild(lbl);
     if (work.passes.length > 1){
+      const m = document.createElement("span"); m.className="m"; m.textContent = p.muted ? "○" : "●";
+      m.title = p.muted ? "muted (click to enable)" : "mute this pass and everything after it";
+      m.addEventListener("click", e=>{ e.stopPropagation(); toggleMute(i); });
+      tab.appendChild(m);
       const x = document.createElement("span"); x.className="x"; x.textContent="×"; x.title="delete pass";
       x.addEventListener("click", e=>{ e.stopPropagation(); delPass(i); });
       tab.appendChild(x);
@@ -446,6 +456,8 @@ function buildParams(){
   const box = $("#params"); box.innerHTML = "";
   let any = false;
   work.passes.forEach((p,pi)=>{
+    if (p.muted) return;                 // a muted pass contributes no params
+    const ci = compiledIndex(pi);        // the pass index the renderer actually sees
     const params = p.params || {};
     Object.keys(params).forEach(name=>{
       const pm = params[name];
@@ -462,7 +474,7 @@ function buildParams(){
       inp.addEventListener("input", ()=>{
         const v = pm.type==="int" ? parseInt(inp.value,10) : parseFloat(inp.value);
         pm.value = v; $("#v_"+pi+"_"+name).textContent = fmt(v);
-        fetch(`/set?pass=${pi}&name=${encodeURIComponent(name)}&value=${v}`);
+        fetch(`/set?pass=${ci}&name=${encodeURIComponent(name)}&value=${v}`);
         markDirty();
       });
       box.appendChild(row);
@@ -471,8 +483,26 @@ function buildParams(){
   if (!any){ box.innerHTML = `<div class="muted">no parameters</div>`; }
 }
 
+// Muted passes are dropped before the scene reaches the renderer, so the output
+// becomes the last live pass (mute the output pass to preview a feedback buffer).
+// Channels pointing at a dropped pass are removed so the rest still compiles.
+function compiledIndex(pi){ let n=0; for(let j=0;j<pi;j++) if(!work.passes[j].muted) n++; return n; }
+function compiledScene(){
+  const keep = new Set(work.passes.filter(p=>!p.muted).map(p=>p.name));
+  return { ...work, passes: work.passes.filter(p=>!p.muted).map(p=>{
+    const q = clone(p); delete q.muted;
+    q.channels = (q.channels||[]).filter(ch => keep.has(ch.buffer));
+    return q;
+  }) };
+}
+function toggleMute(i){
+  const willMute = !work.passes[i].muted;
+  if (willMute && work.passes.filter(p=>!p.muted).length <= 1) return;  // keep one live pass
+  work.passes[i].muted = willMute;
+  postScene(); buildTabs(); buildParams(); refreshInfo();
+}
 async function postScene(){
-  await fetch("/scene", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(work)});
+  await fetch("/scene", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(compiledScene())});
 }
 
 // shader

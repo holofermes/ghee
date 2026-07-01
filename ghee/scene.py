@@ -130,10 +130,23 @@ class Pass:
     def glsl(self) -> str:
         L = [
             "#version 100",
+            # highp where the fragment stage supports it (VC4 does), else mediump.
+            # mediump cannot represent texel coords like (col+0.5)/w precisely, so a
+            # feedback pass that resamples its own output drifts a fraction of a pixel
+            # per frame and shears over time. highp keeps ping-pong buffers stable.
+            "#ifdef GL_FRAGMENT_PRECISION_HIGH",
+            "precision highp float;",
+            "#else",
             "precision mediump float;",
+            "#endif",
             "varying vec2 v_texCoord;",
             "uniform vec2 resolution;",
             "uniform float time;",
+            # VC4's gl_FragCoord.xy is sheared ~1/3 px per row when a pass samples
+            # its own output as feedback (the interpolated varying is exact). Map
+            # gl_FragCoord to the varying so scene code (gl_FragCoord.xy/resolution)
+            # samples feedback without drifting. No effect on non-feedback passes.
+            "#define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)",
         ]
         for a in self.arrays:
             L.append(f"uniform float {a.name}[{a.size}];")

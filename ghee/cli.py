@@ -76,7 +76,7 @@ def cmd_render(a):
 def cmd_serve(a):
     from ghee.console.server import run
 
-    run(scenes_dir=a.scenes, size=a.size, port=a.port, lib_path=a.lib)
+    run(scenes_dir=a.scenes, size=a.size, port=a.port, lib_path=a.lib, host=a.host)
 
 
 def cmd_displays(a):
@@ -113,6 +113,11 @@ def main(argv=None):
     s.add_argument("scenes", nargs="?", help="scenes directory")
     s.add_argument("--size", type=_size, default=(320, 240))
     s.add_argument("--port", type=int, default=8090)
+    s.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind address; 0.0.0.0 exposes the console (no auth) to the network",
+    )
     s.add_argument("--lib")
     s.set_defaults(fn=cmd_serve)
 

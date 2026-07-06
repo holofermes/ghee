@@ -14,6 +14,7 @@ API:
   GET  /stream            MJPEG, one part per rendered frame
   GET  /stats             {fps, render_ms, encode_ms, error, active}
   GET  /scenes            {scenes:[name...], active}
+  GET  /filters           {name: filter def} registry for the "+ filter" picker
   GET  /scene?name=       scene JSON (from disk, or built for a procedural scene)
   GET  /set?pass=&name=&value=   live uniform, no recompile
   GET  /next /prev        switch active scene
@@ -35,7 +36,7 @@ from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
-from ghee import Scene, load_scene
+from ghee import Scene, load_filters, load_scene
 from ghee.console import examples_dir, web_dir
 from ghee.console.feeds import default_hwinfo, demo_feed
 from ghee.engine import Renderer
@@ -158,8 +159,8 @@ def render_loop():
                     v = int(round(val)) if pm.type == "int" else val
                     renderer.set_param(p.name, nm, pm.type, v)
                     pm.value = v
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"set param {nm}: {e}", file=sys.stderr)
             elif item[0] == "scene_obj":
                 try:
                     set_scene(Scene.from_dict(item[1]), controller=st["controller"])
@@ -232,6 +233,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         if u.path == "/hwinfo":
             return self._send(200, json.dumps(_hwinfo()), "application/json")
+        if u.path == "/filters":
+            return self._send(200, json.dumps(load_filters()), "application/json")
         if u.path == "/scene":
             name = q.get("name", [_stat["active"]])[0]
             if name not in SCENES:
@@ -247,9 +250,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, f"build {name}: {e}")
         if u.path == "/set":
             try:
-                _q.put(("param", int(q["pass"][0]), q["name"][0], float(q["value"][0])))
-            except Exception:
-                pass
+                item = ("param", int(q["pass"][0]), q["name"][0], float(q["value"][0]))
+            except (KeyError, ValueError) as e:
+                return self._send(400, f"bad /set: {e}")
+            _q.put(item)
             return self._send(200, "ok")
         if u.path in ("/next", "/prev"):
             i = NAMES.index(_stat["active"]) if _stat["active"] in NAMES else 0
@@ -316,11 +320,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run(
-    arrays=None, hwinfo=None, scenes_dir=None, size=(320, 240), port=8090, lib_path=None
+    arrays=None,
+    hwinfo=None,
+    scenes_dir=None,
+    size=(320, 240),
+    port=8090,
+    lib_path=None,
+    host="127.0.0.1",
 ):
     """Start the console. arrays: {array_name -> callable(size, frame) -> floats}
     maps a scene's declared arrays to real data; unmapped names get an animated
-    placeholder. hwinfo: callable -> dict for the device-info readout."""
+    placeholder. hwinfo: callable -> dict for the device-info readout.
+    host defaults to loopback; the console has no auth and compiles POSTed GLSL,
+    so pass "0.0.0.0" only to expose it on a network you trust."""
     global _lib_path, WEB, SCENES, NAMES, W, H, _provider, _hwinfo
     _provider = _make_provider(arrays or {})
     _hwinfo = hwinfo or default_hwinfo
@@ -335,8 +347,11 @@ def run(
     _stat["display"] = {"w": W, "h": H, "rotation": 0}
     _lib_path = lib_path or DEFAULT_LIB
     threading.Thread(target=render_loop, daemon=True).start()
-    print(f"ghee console: {len(NAMES)} scenes {NAMES} on :{port} (scenes={scenes_dir})")
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    print(
+        f"ghee console: {len(NAMES)} scenes {NAMES} on {host}:{port} "
+        f"(scenes={scenes_dir})"
+    )
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

@@ -334,7 +334,7 @@ function saveLocalIfDirty(){ if(dirty()) localStorage.setItem(KEY(active), JSON.
 let FILTERS = {};   // name -> filter def (code + params), from /filters
 async function boot(){
   const s = await jget("/scenes");
-  try { FILTERS = await jget("/filters"); } catch(_) { FILTERS = {}; }
+  try { FILTERS = await jget("/filters"); } catch(e) { console.warn("/filters unavailable:", e); FILTERS = {}; }
   const sel = $("#scenes"); sel.innerHTML = "";
   s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
   sel.value = s.active;

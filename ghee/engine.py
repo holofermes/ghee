@@ -103,6 +103,7 @@ class Renderer:
         self.height = height
         self.components = components
         self.scene = None
+        self.error = ""  # last setup() compile error text ("" = ok)
         self.error_line = (
             None  # last setup() compile error: user-code line / pass index
         )
@@ -160,7 +161,7 @@ class Renderer:
             ctypes.POINTER(CParameter),
         ]
         L.ghee_mp_set_uniform.restype = ctypes.c_bool
-        L.ghee_mp_set_float_array.argtypes = [
+        L.ghee_mp_set_float_texture.argtypes = [
             ctypes.c_void_p,
             ctypes.c_int,
             ctypes.c_char_p,
@@ -189,6 +190,7 @@ class Renderer:
         error, or a scene the engine refuses). On a compile error error_line/error_pass
         point at the offending user-code line. The engine is untouched on a returned
         error, so the caller may keep rendering the previous scene."""
+        self.error = ""
         self.error_line = None
         self.error_pass = None
         # An array name is one logical input, so it must have a single size. Reject a
@@ -197,10 +199,11 @@ class Renderer:
         for p in scene.passes:
             for a in p.arrays:
                 if seen.setdefault(a.name, a.size) != a.size:
-                    return (
+                    self.error = (
                         f"array '{a.name}' declared at conflicting sizes "
                         f"({seen[a.name]} and {a.size})"
                     )
+                    return self.error
         self.lib.ghee_mp_reset(self.handle)
         mp = {}
         for i, p in enumerate(scene.passes):
@@ -208,6 +211,7 @@ class Renderer:
             idx = self.lib.ghee_mp_add_pass(self.handle, glsl.encode("utf-8"))
             if idx < 0:
                 err = self.last_error() or "compile error"
+                self.error = err
                 self.error_line = _user_line(err, glsl, p.code)
                 self.error_pass = i
                 return err
@@ -246,7 +250,7 @@ class Renderer:
                 )
                 enc = name.encode("utf-8")
                 for pi, size in targets:
-                    self.lib.ghee_mp_set_float_array(
+                    self.lib.ghee_mp_set_float_texture(
                         self.handle, pi, enc, data, min(len(data), size)
                     )
         self.lib.ghee_mp_render(self.handle, out)

@@ -19,6 +19,7 @@
 #define DEFAULT_DRI_DEVICE "/dev/dri/card0"
 #define MP_MAX_PASSES 8
 #define MP_MAX_CHANNELS 8
+#define MP_MAX_DATATEX 4
 
 struct GheeScene {
     int width, height, components;
@@ -47,6 +48,14 @@ struct GheeScene {
     int mp_chan_src[MP_MAX_PASSES][MP_MAX_CHANNELS];  // channel -> source pass index, -1 = none
     int mp_nchan[MP_MAX_PASSES];
     GLint mp_timeLoc[MP_MAX_PASSES];
+
+    // data textures: a float array bound as a 1xN sampler (<name>_tex) so a computed
+    // index samples it in one fetch, dodging the VC4 uniform-array unroll cap.
+    bool has_float_tex, has_float_linear;   // OES_texture_float[_linear] on this GL
+    int mp_ndatatex[MP_MAX_PASSES];
+    GLuint mp_datatex[MP_MAX_PASSES][MP_MAX_DATATEX];
+    char mp_datatex_name[MP_MAX_PASSES][MP_MAX_DATATEX][64];   // sampler uniform name
+    int mp_datatex_size[MP_MAX_PASSES][MP_MAX_DATATEX];
 
     bool profile;                        // when on, ghee_mp_render splits draw vs readback (adds a glFinish)
     double prof_draw_ms, prof_read_ms;   // last frame's split (profiling mode)
@@ -233,6 +242,13 @@ GheeScene *ghee_create(int width, int height, int components, const char *dri_de
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    const char *glexts = (const char *)glGetString(GL_EXTENSIONS);
+    g->has_float_tex = glexts && strstr(glexts, "GL_OES_texture_float") != NULL;
+    g->has_float_linear = glexts && strstr(glexts, "GL_OES_texture_float_linear") != NULL;
+    fprintf(stderr, "ghee: data-texture format = %s%s\n",
+            g->has_float_tex ? "float" : "8-bit LUMINANCE",
+            g->has_float_tex ? (g->has_float_linear ? " (linear)" : " (nearest)") : " (linear)");
+
     clock_gettime(CLOCK_MONOTONIC, &g->start_time);
     return g;
 
@@ -295,6 +311,7 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
     mp_make_buffers(g, g->mp_fbo[idx], g->mp_tex[idx]);
     g->mp_write[idx] = 0;
     g->mp_nchan[idx] = 0;
+    g->mp_ndatatex[idx] = 0;
     for (int c = 0; c < MP_MAX_CHANNELS; c++) g->mp_chan_src[idx][c] = -1;
     glUseProgram(prog);
     GLint rloc = glGetUniformLocation(prog, "resolution");
@@ -351,6 +368,56 @@ void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const flo
     if (loc >= 0) glUniform1fv(loc, count, data);
 }
 
+// Upload the float array as a 1xN texture named "<name>_tex". Created lazily on
+// first use, updated in place after. Float texels if the GL supports them, else
+// 8-bit LUMINANCE (clamped to [0,1]). The unit is bound in ghee_mp_render.
+void ghee_mp_set_float_texture(GheeScene *g, int pass, const char *name, const float *data, int count) {
+    if (pass < 0 || pass >= g->mp_count || count <= 0) return;
+    make_current(g);
+    char uni[64];
+    snprintf(uni, sizeof(uni), "%s_tex", name);
+    int idx = -1;
+    for (int i = 0; i < g->mp_ndatatex[pass]; i++)
+        if (strcmp(g->mp_datatex_name[pass][i], uni) == 0) { idx = i; break; }
+    if (idx < 0) {
+        if (g->mp_ndatatex[pass] >= MP_MAX_DATATEX) return;
+        idx = g->mp_ndatatex[pass]++;
+        snprintf(g->mp_datatex_name[pass][idx], 64, "%s", uni);
+        glGenTextures(1, &g->mp_datatex[pass][idx]);
+        g->mp_datatex_size[pass][idx] = 0;
+    }
+    const int unit = g->mp_nchan[pass] + idx;   // data textures follow the channels
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D, g->mp_datatex[pass][idx]);
+    const bool realloc = (g->mp_datatex_size[pass][idx] != count);
+    if (realloc) {
+        const GLint filt = g->has_float_tex && !g->has_float_linear ? GL_NEAREST : GL_LINEAR;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    if (g->has_float_tex) {
+        if (realloc)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, 1, 0, GL_LUMINANCE, GL_FLOAT, data);
+        else
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, 1, GL_LUMINANCE, GL_FLOAT, data);
+    } else {
+        uint8_t *b = malloc((size_t)count);
+        if (!b) return;
+        for (int i = 0; i < count; i++) {
+            float v = data[i];
+            b[i] = (uint8_t)(v <= 0.0f ? 0 : v >= 1.0f ? 255 : v * 255.0f + 0.5f);
+        }
+        if (realloc)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, 1, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, b);
+        else
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, 1, GL_LUMINANCE, GL_UNSIGNED_BYTE, b);
+        free(b);
+    }
+    g->mp_datatex_size[pass][idx] = count;
+}
+
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
     make_current(g);
     struct timespec now, t_draw, t_read;
@@ -378,6 +445,13 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
             snprintf(nm, sizeof(nm), "iChannel%d", c);
             const GLint loc = glGetUniformLocation(g->mp_program[p], nm);
             if (loc >= 0) glUniform1i(loc, c);
+        }
+        for (int i = 0; i < g->mp_ndatatex[p]; i++) {
+            const int unit = g->mp_nchan[p] + i;
+            glActiveTexture(GL_TEXTURE0 + unit);
+            glBindTexture(GL_TEXTURE_2D, g->mp_datatex[p][i]);
+            const GLint loc = glGetUniformLocation(g->mp_program[p], g->mp_datatex_name[p][i]);
+            if (loc >= 0) glUniform1i(loc, unit);
         }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
@@ -416,6 +490,8 @@ void ghee_mp_reset(GheeScene *g) {
         if (g->mp_program[p]) glDeleteProgram(g->mp_program[p]);
         glDeleteFramebuffers(2, g->mp_fbo[p]);
         glDeleteTextures(2, g->mp_tex[p]);
+        if (g->mp_ndatatex[p] > 0) glDeleteTextures(g->mp_ndatatex[p], g->mp_datatex[p]);
+        g->mp_ndatatex[p] = 0;
     }
     g->mp_count = 0;
 }

@@ -60,7 +60,9 @@ class Param:
 
 @dataclass
 class ArrayInput:
-    """A named uniform float array."""
+    """A named float array, fed by the host each frame and bound as a 1xN texture
+    sampler. Sampling with a computed coord is one fetch (no VC4 uniform-array unroll
+    or size cap). Read it as <name>_at(i) or <name>_sample(t) (interpolated)."""
 
     name: str
     size: int
@@ -149,24 +151,22 @@ class Pass:
             "#define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)",
         ]
         for a in self.arrays:
-            L.append(f"uniform float {a.name}[{a.size}];")
+            L.append(f"uniform sampler2D {a.name}_tex;")
             L.append(f"const int {a.name}_size = {a.size};")
         for i in range(len(self.channels)):
             L.append(f"uniform sampler2D iChannel{i};")
         for p in self.params.values():
             L.append(f"uniform {p.glsl_type} {p.name};")
 
-        # Constant-index loop when a sampler is in scope - Pi 3 and older VC4 can't dynamically index :/
-        loop = bool(self.channels)
+        # A 1xN data texture: _at(i) is one fetch with a computed coord (no VC4
+        # unroll or size cap), _sample(t) interpolates between elements for free.
         for a in self.arrays:
-            if loop:
-                L += [
-                    f"float {a.name}_at(int i0){{",
-                    f"for (int i=0;i<{a.size};i++){{ if (i==i0) return {a.name}[i]; }}",
-                    "return 0.0; }",
-                ]
-            else:
-                L += [f"float {a.name}_at(int i0){{ return {a.name}[i0]; }}"]
+            L += [
+                f"float {a.name}_at(int i0){{ return texture2D({a.name}_tex, "
+                f"vec2((float(i0)+0.5)/float({a.name}_size), 0.5)).r; }}",
+                f"float {a.name}_sample(float t){{ "
+                f"return texture2D({a.name}_tex, vec2(t, 0.5)).r; }}",
+            ]
 
         return "\n".join(L) + "\n\n" + self.code
 

@@ -24,8 +24,10 @@ def test_preamble_declares_array_and_accessor():
         {"name": "m", "code": "x", "arrays": [{"name": "amps", "size": 8}]}
     )
     g = p.glsl()
-    assert "uniform float amps[8];" in g
+    assert "uniform sampler2D amps_tex;" in g  # arrays are 1xN data textures
+    assert "const int amps_size = 8;" in g
     assert "amps_at" in g
+    assert "amps_sample" in g
 
 
 def test_scene_roundtrip():

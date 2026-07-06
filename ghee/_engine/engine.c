@@ -320,23 +320,6 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
     return idx;
 }
 
-// Recompile a pass's shader in place. Keeps the pass's buffers
-// and channel wiring; params must be re-applied by the caller (new program).
-// On compile failure the old program is kept and false returned (see ghee_last_error).
-bool ghee_mp_set_shader(GheeScene *g, int pass, const char *glsl_source) {
-    if (pass < 0 || pass >= g->mp_count) return false;
-    make_current(g);
-    GLuint prog = create_shader_program(g, glsl_source);
-    if (!prog) return false;
-    glDeleteProgram(g->mp_program[pass]);
-    g->mp_program[pass] = prog;
-    glUseProgram(prog);
-    const GLint rloc = glGetUniformLocation(prog, "resolution");
-    if (rloc >= 0) glUniform2f(rloc, (float)g->width, (float)g->height);
-    g->mp_timeLoc[pass] = glGetUniformLocation(prog, "time");
-    return true;
-}
-
 void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
     if (pass < 0 || pass >= g->mp_count || channel < 0 || channel >= MP_MAX_CHANNELS) return;
     g->mp_chan_src[pass][channel] = src_pass;
@@ -360,6 +343,7 @@ bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
     return true;
 }
 
+// Unused: superseded by ghee_mp_set_float_texture (uniform arrays hit the VC4 size cap).
 void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count) {
     if (pass < 0 || pass >= g->mp_count) return;
     make_current(g);

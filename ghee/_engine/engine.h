@@ -47,12 +47,13 @@ const char *ghee_last_error(GheeScene *g);
 void ghee_destroy(GheeScene *g);
 
 // Load a JPEG file into a GL texture on the current context. 0 on failure.
+// TODO: bind from Python (image files as texture channels).
 GLuint ghee_load_jpeg_texture(const char *filename);
 
 int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);
-bool ghee_mp_set_shader(GheeScene *g, int pass, const char *glsl_source);
 void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);
 bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param);
+// Unused: superseded by ghee_mp_set_float_texture (uniform arrays hit the VC4 size cap).
 void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count);
 // Same data, bound as a 1xN texture sampler (<name>_tex) instead of a uniform array.
 // Lifts the VC4 uniform-array size cap: sampled with a computed coord, no unroll.

@@ -1,5 +1,4 @@
 import ctypes
-import os
 from enum import IntEnum
 
 
@@ -102,18 +101,7 @@ def create_c_parameter(param_data) -> CParameter:
             vec4_param = CVec4Param(values=(ctypes.c_float * 4)(*param_data["value"]))
             param.value.vec4_param = ctypes.pointer(vec4_param)
 
-        case "sampler2D":
-            texture_path: str = param_data["value"]
-            if os.path.exists(texture_path):
-                param.type = CParameterType.TEXTURE
-                texture_param = CTextureParam(value=texture_path.encode("utf-8"))
-                param.value.texture_param = ctypes.pointer(texture_param)
-            else:
-                raise FileNotFoundError(
-                    f"Texture file {texture_path} not found, ignoring"
-                )
-
         case _:
-            raise ValueError(f"Unknown parameter type: {param_type}")
+            raise ValueError(f"unknown parameter type: {param_type}")
 
     return param

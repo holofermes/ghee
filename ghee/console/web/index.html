@@ -133,6 +133,11 @@
   .tab.off .lbl{text-decoration:line-through}
   .tab input{background:transparent; border:0; outline:none; color:inherit; font:inherit; width:84px; padding:0}
   .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:12px}
+  .tab.filt .lbl{color:var(--accent)}
+  select.filtersel{cursor:pointer; -webkit-appearance:none; appearance:none}
+  .editor.readonly>pre{opacity:.5}
+  .editor.readonly>textarea{cursor:default}
+  .editor.readonly::after{content:"filter - read-only, tweak its params below"; position:absolute; right:10px; bottom:6px; font:10px ui-monospace,monospace; color:var(--muted); opacity:.75; pointer-events:none; z-index:2}
   .channels{display:flex; gap:7px; align-items:center; flex-wrap:wrap; margin-bottom:10px; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .chan{display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); border-radius:7px; padding:3px 5px 3px 8px}
   .chan select{padding:3px 16px 3px 5px; font-size:12px; background-position:calc(100% - 7px) 50%,calc(100% - 4px) 50%}
@@ -326,8 +331,10 @@ function updateStatus(){
 function markDirty(){ saveLocalIfDirty(); updateStatus(); }
 function saveLocalIfDirty(){ if(dirty()) localStorage.setItem(KEY(active), JSON.stringify(work)); }
 
+let FILTERS = {};   // name -> filter def (code + params), from /filters
 async function boot(){
   const s = await jget("/scenes");
+  try { FILTERS = await jget("/filters"); } catch(_) { FILTERS = {}; }
   const sel = $("#scenes"); sel.innerHTML = "";
   s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
   sel.value = s.active;
@@ -361,11 +368,12 @@ function buildTabs(){
   const t = $("#tabs"); t.innerHTML = "";
   work.passes.forEach((p,i)=>{
     const tab = document.createElement("span");
-    tab.className = "tab" + (i===curPass ? " active" : "") + (p.muted ? " off" : "");
+    tab.className = "tab" + (i===curPass ? " active" : "") + (p.muted ? " off" : "") + (p.filter ? " filt" : "");
     const lbl = document.createElement("span"); lbl.className = "lbl";
-    lbl.textContent = p.name; lbl.title = "double-click to rename";
+    lbl.textContent = (p.filter ? "ƒ " : "") + p.name;   // f = filter (read-only)
+    lbl.title = p.filter ? `filter: ${p.filter} (read-only, tweak params)` : "double-click to rename";
     lbl.addEventListener("click", ()=> setPass(i));
-    lbl.addEventListener("dblclick", ()=> renamePass(i, lbl));
+    if (!p.filter) lbl.addEventListener("dblclick", ()=> renamePass(i, lbl));
     tab.appendChild(lbl);
     if (work.passes.length > 1){
       const m = document.createElement("span"); m.className="m"; m.textContent = p.muted ? "○" : "●";
@@ -381,6 +389,29 @@ function buildTabs(){
   const add = document.createElement("span"); add.className="tab add"; add.textContent="+ pass";
   add.addEventListener("click", addPass);
   t.appendChild(add);
+  const fnames = Object.keys(FILTERS);
+  if (fnames.length){
+    const fs = document.createElement("select"); fs.className = "tab add filtersel";
+    const o0 = document.createElement("option"); o0.value=""; o0.textContent="+ filter"; fs.appendChild(o0);
+    fnames.forEach(n => { const o=document.createElement("option"); o.value=n; o.textContent=n; fs.appendChild(o); });
+    fs.addEventListener("change", ()=>{ if(fs.value){ addFilter(fs.value); fs.value=""; } });
+    t.appendChild(fs);
+  }
+}
+
+function addFilter(name){
+  const f = FILTERS[name];
+  if (!f) return;
+  const prev = work.passes[work.passes.length-1].name;
+  work.passes.push({
+    name: uniqueName(name),
+    code: f.code,
+    channels: [{ buffer: prev }],   // reads the frame so far
+    params: JSON.parse(JSON.stringify(f.params || {})),
+    filter: name,                    // read-only in the editor; tweak params only
+  });
+  curPass = work.passes.length - 1; markDirty(); postScene();
+  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
 function renamePass(i, lbl){
@@ -450,7 +481,13 @@ function buildInputs(){
     chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i) reads element i (loop-safe on VC4)\n${a.name}_size is ${a.size}`, "arr");
   });
 }
-function loadCode(){ codeEl().value = work.passes[curPass].code || ""; codeEl().scrollTop = 0; syncHL(); }
+function loadCode(){
+  const p = work.passes[curPass], ta = codeEl();
+  ta.value = p.code || ""; ta.scrollTop = 0;
+  ta.readOnly = !!p.filter;   // filter code is shipped/referenced, not editable here
+  ta.closest(".editor").classList.toggle("readonly", !!p.filter);
+  syncHL();
+}
 
 function buildParams(){
   const box = $("#params"); box.innerHTML = "";

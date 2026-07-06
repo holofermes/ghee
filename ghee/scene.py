@@ -96,6 +96,7 @@ class Pass:
     arrays: list[ArrayInput] = field(default_factory=list)
     channels: list[Channel] = field(default_factory=list)
     params: dict[str, Param] = field(default_factory=dict)
+    filter: str = ""  # non-empty = this pass came from a named filter (read-only in UI)
 
     @property
     def reads_self(self) -> bool:
@@ -117,6 +118,7 @@ class Pass:
             arrays=[ArrayInput.from_dict(a) for a in d.get("arrays", [])],
             channels=[Channel.from_dict(c) for c in d.get("channels", [])],
             params={n: Param.from_dict(n, pd) for n, pd in d.get("params", {}).items()},
+            filter=d.get("filter", ""),
         )
 
     def to_dict(self) -> dict:
@@ -127,6 +129,8 @@ class Pass:
             out["channels"] = [c.to_dict() for c in self.channels]
         if self.params:
             out["params"] = {n: p.to_dict() for n, p in self.params.items()}
+        if self.filter:
+            out["filter"] = self.filter
         return out
 
     def glsl(self) -> str:
@@ -175,6 +179,9 @@ class Pass:
 class Scene:
     passes: list[Pass] = field(default_factory=list)
     version: int = 1
+    # named filters (post-process passes) to append after the scene's own passes,
+    # in order; the last one is what reaches the display. Resolved via ghee.filters.
+    filters: list[str] = field(default_factory=list)
 
     @property
     def output(self) -> Pass:
@@ -185,10 +192,14 @@ class Scene:
         return cls(
             version=d.get("version", 1),
             passes=[Pass.from_dict(pd, base_dir) for pd in d.get("passes", [])],
+            filters=list(d.get("filters", [])),
         )
 
     def to_dict(self) -> dict:
-        return {"version": self.version, "passes": [p.to_dict() for p in self.passes]}
+        out = {"version": self.version, "passes": [p.to_dict() for p in self.passes]}
+        if self.filters:
+            out["filters"] = self.filters
+        return out
 
     @classmethod
     def load(cls, path: str) -> Scene:

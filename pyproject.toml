@@ -1,7 +1,12 @@
 [project]
-name = "ghee"
+# PyPI name; the import and CLI are `ghee` (that name is taken on PyPI).
+name = "ghee-render"
 version = "0.1.0"
-description = "GLSL multipass scene model + renderer, plus a shader-editor console."
+description = "Headless GLSL multipass renderer for Raspberry Pi and desktop Mesa, plus a shader-editor console."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "holofermes" }]
+keywords = ["glsl", "shader", "raspberry-pi", "gles", "headless", "renderer"]
 requires-python = ">=3.11"
 # numpy is used by ghee.engine (the Renderer ctypes binding). The pure scene
 # model (import ghee) does not need it, but the package ships the renderer too.
@@ -18,6 +23,10 @@ drivers = [
     "spidev",
 ]
 test = ["pytest", "Pillow"]
+
+[project.urls]
+Repository = "https://github.com/holofermes/ghee"
+Issues = "https://github.com/holofermes/ghee/issues"
 
 [project.scripts]
 ghee = "ghee.cli:main"

@@ -54,7 +54,13 @@ class CMakeBuild(build_ext):
 setup(
     packages=find_packages(exclude=["tests", "tests.*"]),
     package_data={
-        "ghee": ["console/web/*", "examples/*.scene.json", "examples/*.py", "lib/*.so"]
+        "ghee": [
+            "console/web/*",
+            "examples/*.scene.json",
+            "examples/*.py",
+            "filters/*.filter.json",
+            "lib/*.so",
+        ]
     },
     ext_modules=[CMakeExtension("ghee._engine.engine", ENGINE)],
     cmdclass={"build_ext": CMakeBuild},

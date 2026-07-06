@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: GL/DRM build deps + Mesa software rasterizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libdrm-dev libgbm-dev \
+            libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev libgl1-mesa-dri
+      - name: software GPU node (vgem)
+        run: |
+          sudo modprobe vgem || echo "no vgem; render tests will skip"
+          sudo chmod 666 /dev/dri/* || true
+          ls -la /dev/dri/ || true
+      - name: install
+        run: pip install -e '.[test]'
+      - name: test
+        env:
+          # runners have no GPU; render through llvmpipe on the vgem node
+          MESA_LOADER_DRIVER_OVERRIDE: kms_swrast
+        run: python -m pytest -v

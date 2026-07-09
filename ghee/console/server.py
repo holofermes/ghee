@@ -391,12 +391,12 @@ def run(
     if not NAMES:
         raise SystemExit(f"no .scene.json in {scenes_dir}")
     _stat["active"] = NAMES[0]
-    _stat["display"] = {"w": W, "h": H, "rotation": 0}
+    _stat["display"] = {"name": "preview", "w": W, "h": H, "format": "rgba", "rotation": 0}
     _lib_path = lib_path or DEFAULT_LIB
     threading.Thread(target=render_loop, daemon=True).start()
     print(
         f"ghee console: {len(NAMES)} scenes {NAMES} on {host}:{port} "
-        f"(scenes={scenes_dir})"
+        f"(scenes={scenes_dir}, preview {W}x{H} rgba)"
     )
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 

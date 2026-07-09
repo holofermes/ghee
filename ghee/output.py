@@ -12,16 +12,15 @@ _RUN = re.compile(r"#+")
 
 
 def expand_pattern(pattern, index):
-    """frame.####.jpg + 7 -> frame.0007.jpg. A printf field (frame.%04d.jpg) also works."""
+    """frame.####.jpg + 7 -> frame.0007.jpg. A printf field (frame.%04d.jpg) also
+    works. A plain filename is returned as is (single frame, or overwrite)."""
     m = _RUN.search(pattern)
     if m:
         width = m.end() - m.start()
         return pattern[: m.start()] + str(index).zfill(width) + pattern[m.end() :]
     if "%" in pattern:
         return pattern % index
-    raise ValueError(
-        "output pattern needs a run of # (frame.####.jpg) or a printf field"
-    )
+    return pattern
 
 
 class Output(abc.ABC):

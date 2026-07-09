@@ -12,6 +12,7 @@ Wraps the ghee_* ABI.
 """
 
 import ctypes
+import glob
 import importlib.resources
 import os
 import re
@@ -120,18 +121,26 @@ class Renderer:
             )
         self.lib: ctypes.CDLL = ctypes.CDLL(lib_path)
         self._declare()
-        err = ctypes.c_char_p()
-        self.handle = self.lib.ghee_create(
-            width,
-            height,
-            components,
-            dri_device.encode() if dri_device else None,
-            ctypes.byref(err),
-        )
-        if not self.handle:
-            raise RuntimeError(
-                f"ghee_create failed: {err.value.decode() if err.value else 'unknown'}"
+        # No explicit device: probe $GHEE_DRI, the Pi's card0, the desktop
+        # render node, then any remaining cards. First one that creates wins.
+        if dri_device:
+            devices = [dri_device]
+        else:
+            devices = [os.environ.get("GHEE_DRI"), "/dev/dri/card0"]
+            devices += ["/dev/dri/renderD128", *sorted(glob.glob("/dev/dri/card*"))]
+            devices = list(dict.fromkeys(d for d in devices if d))
+        errs = []
+        self.handle = None
+        for dev in devices:
+            err = ctypes.c_char_p()
+            self.handle = self.lib.ghee_create(
+                width, height, components, dev.encode(), ctypes.byref(err)
             )
+            if self.handle:
+                break
+            errs.append(f"{dev}: {err.value.decode() if err.value else 'unknown'}")
+        if not self.handle:
+            raise RuntimeError("ghee_create failed: " + "; ".join(errs))
 
     def _declare(self):
         L = self.lib

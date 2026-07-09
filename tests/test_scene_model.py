@@ -48,8 +48,7 @@ def test_scene_roundtrip():
 def test_expand_pattern():
     assert expand_pattern("frame.####.jpg", 7) == "frame.0007.jpg"
     assert expand_pattern("f.%04d.png", 42) == "f.0042.png"
-    with pytest.raises(ValueError):
-        expand_pattern("no-index.jpg", 1)
+    assert expand_pattern("single.png", 1) == "single.png"  # plain name, as is
 
 
 def test_driver_registry_unknown():

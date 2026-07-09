@@ -30,8 +30,13 @@ def cmd_render(a):
         sink = get_driver(a.display)()
         w, h = sink.width, sink.height
     elif a.output:
-        from ghee.output import ImageSequence
+        from ghee.output import ImageSequence, expand_pattern
 
+        if a.frames and a.frames > 1 and expand_pattern(a.output, 0) == a.output:
+            sys.exit(
+                "render: multiple frames into one filename; number them with "
+                "a # run (frame.####.png)"
+            )
         sink = ImageSequence(a.output)
         w, h = a.size
     else:
@@ -108,7 +113,11 @@ def main(argv=None):
         "--size", type=_size, default=(320, 240), help="WxH for image output"
     )
     r.add_argument(
-        "--components", type=int, default=3, choices=(3, 4), help="3=RGB, 4=RGBA"
+        "--components",
+        type=int,
+        default=4,
+        choices=(3, 4),
+        help="3=RGB, 4=RGBA (desktop Mesa can only read back RGBA)",
     )
     r.add_argument("--dri", help="DRI device, e.g. /dev/dri/renderD128")
     r.add_argument("--lib", help="path to libghee.so")

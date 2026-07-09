@@ -25,7 +25,7 @@ jobs:
           docker run --rm --platform linux/arm/v7 \
             -v "$PWD:/src:ro" -v "$PWD/out:/out" dtcooper/raspberrypi-os:bookworm bash -ec '
             dpkg --print-architecture
-            head -2 /etc/apt/sources.list
+            cat /etc/apt/sources.list.d/*.list 2>/dev/null || true
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
               build-essential debhelper dh-python python3-all python3-setuptools \

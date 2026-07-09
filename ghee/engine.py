@@ -24,10 +24,17 @@ from ghee.cparam import CParameter, create_c_parameter
 
 def bundled_lib():
     """Path to the .so shipped inside the package (built by setup.py into lib/),
-    or None if it was not built (e.g. installed on a host without the toolchain)."""
+    or None if it was not built (e.g. installed on a host without the toolchain).
+    Matched by glob: packaging tools may tag the name (debian renames plain .so
+    files to libghee.cpython-<ver>-<arch>.so)."""
     try:
-        p = importlib.resources.files("ghee") / "lib" / "libghee.so"
-        return str(p) if p.is_file() else None
+        d = importlib.resources.files("ghee") / "lib"
+        hits = sorted(
+            str(p)
+            for p in (d.iterdir() if d.is_dir() else [])
+            if p.name.startswith("libghee") and p.name.endswith(".so")
+        )
+        return hits[0] if hits else None
     except Exception:
         return None
 

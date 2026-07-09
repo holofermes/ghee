@@ -9,4 +9,8 @@ export PYBUILD_DISABLE = test
 # engine is broken, so fail the package instead.
 override_dh_auto_install:
 	dh_auto_install
-	test -n "$$(find debian/python3-ghee -name libghee.so)"
+	test -n "$$(find debian/python3-ghee -name 'libghee*.so')"
+
+# libghee.so is a plain ctypes library, not a CPython extension; keep its name.
+override_dh_python3:
+	dh_python3 --no-ext-rename

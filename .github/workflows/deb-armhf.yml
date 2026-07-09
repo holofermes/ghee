@@ -1,9 +1,9 @@
 name: deb-armhf
 
-# armhf deb for the original Pi Zero / Pi 1 (ARMv6). Stock debian armhf images
-# are ARMv7-baseline and would SIGILL on a Zero, so the build runs inside a
-# Raspberry Pi OS armhf rootfs, whose gcc targets ARMv6+VFP2. Without Zero
-# hardware in CI, ARMv6-safety is asserted via the compiler macro and the ELF
+# armhf deb for the original Pi Zero / Pi 1 (ARMv6). Stock debian armhf is
+# ARMv7-baseline and third-party "Pi OS" images proved to carry v7 toolchains,
+# so this builds inside a debootstrapped Raspbian rootfs, whose gcc targets
+# ARMv6+VFP2. ARMv6-safety is asserted on the compiler macro and on the ELF
 # arch tag of the built engine.
 
 on:
@@ -14,43 +14,55 @@ on:
 jobs:
   armhf-bookworm:
     runs-on: ubuntu-latest
+    env:
+      RASPBIAN: http://raspbian.raspberrypi.com/raspbian/
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm
-      - name: build the deb (Raspberry Pi OS armhf under qemu)
+      - name: debootstrap a Raspbian bookworm armhf rootfs
         run: |
-          mkdir -p out
-          docker run --rm --platform linux/arm/v7 \
-            -v "$PWD:/src:ro" -v "$PWD/out:/out" dtcooper/raspberrypi-os:bookworm bash -ec '
-            dpkg --print-architecture
-            cat /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends debootstrap qemu-user-static binfmt-support
+          sudo debootstrap --foreign --arch=armhf --no-check-gpg bookworm rootfs "$RASPBIAN"
+          sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
+          sudo chroot rootfs /debootstrap/debootstrap --second-stage
+          sudo cp /etc/resolv.conf rootfs/etc/resolv.conf
+          sudo mount -t proc proc rootfs/proc
+          sudo mount --bind /dev rootfs/dev
+      - name: install the ARMv6 toolchain and build deps
+        run: |
+          sudo chroot rootfs bash -ec '
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
               build-essential debhelper dh-python python3-all python3-setuptools \
               python3-numpy cmake pkg-config libdrm-dev libgbm-dev \
-              libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev binutils
-            echo | gcc -dM -E - | grep "__ARM_ARCH "
-            test "$(echo | gcc -dM -E - | awk "/#define __ARM_ARCH /{print \$3}")" = "6"
-            mkdir -p /work && cp -r /src /work/ghee && cd /work/ghee
-            dpkg-buildpackage -us -uc -b
-            so=$(find /work -name "libghee*.so" | head -1)
-            readelf -A "$so" | grep Tag_CPU_arch
-            readelf -A "$so" | grep -q "Tag_CPU_arch: v6" || { echo "engine is not ARMv6"; exit 1; }
-            cp /work/*.deb /out/
-            ls -la /out'
-      - name: install-test in a fresh container
+              libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev binutils'
+          sudo chroot rootfs bash -ec 'echo | gcc -dM -E - | grep "__ARM_ARCH "'
+          sudo chroot rootfs bash -ec \
+            'test "$(echo | gcc -dM -E - | awk "/#define __ARM_ARCH /{print \$3}")" = "6"'
+      - name: build the deb
         run: |
-          docker run --rm --platform linux/arm/v7 \
-            -v "$PWD/out:/out:ro" dtcooper/raspberrypi-os:bookworm bash -ec '
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /out/*.deb
+          sudo mkdir -p rootfs/work/ghee
+          git archive HEAD | sudo tar -x -C rootfs/work/ghee
+          sudo chroot rootfs bash -ec 'cd /work/ghee && dpkg-buildpackage -us -uc -b'
+          sudo chroot rootfs bash -ec '
+            so=$(find /work -name "libghee*.so" | head -1)
+            readelf -A "$so" | grep "Tag_CPU_arch"
+            readelf -A "$so" | grep -q "Tag_CPU_arch: v6" || { echo "engine is not ARMv6"; exit 1; }'
+      - name: install-test inside the rootfs
+        run: |
+          sudo chroot rootfs bash -ec '
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /work/python3-ghee_*.deb
             python3 -c "import ghee; print(\"import ok\")"
             ghee --help > /dev/null
             echo "cli ok"
             python3 -c "from ghee.engine import bundled_lib; p = bundled_lib(); assert p, \"engine lib not found\"; print(\"engine at\", p)"
             dpkg -s python3-ghee | grep ^Depends'
+      - name: collect artifacts
+        run: |
+          mkdir -p out
+          sudo cp rootfs/work/*.deb out/
+          sudo chown -R "$(id -u)" out
+          ls -la out
       - uses: actions/upload-artifact@v4
         with:
           name: python3-ghee-armhf-bookworm

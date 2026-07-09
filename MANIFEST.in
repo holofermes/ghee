@@ -1,5 +1,5 @@
 include LICENSE
 recursive-include ghee/_engine *.c *.h CMakeLists.txt
 recursive-include ghee/console/web *
-recursive-include ghee/examples *.scene.json *.py
+recursive-include ghee/examples *.scene.json *.glsl *.py
 recursive-include ghee/filters *.filter.json

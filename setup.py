@@ -57,6 +57,7 @@ setup(
         "ghee": [
             "console/web/*",
             "examples/*.scene.json",
+            "examples/*.glsl",
             "examples/*.py",
             "filters/*.filter.json",
             "lib/*.so",

@@ -15,10 +15,12 @@ API:
   GET  /stats             {fps, render_ms, encode_ms, error, active}
   GET  /scenes            {scenes:[name...], active}
   GET  /filters           {name: filter def} registry for the "+ filter" picker
-  GET  /scene?name=       scene JSON (from disk, or built for a procedural scene)
+  GET  /scene?name=       resolved scene JSON (shader files inlined, filters expanded)
   GET  /set?pass=&name=&value=   live uniform, no recompile
   GET  /next /prev        switch active scene
   POST /scene             full scene JSON -> recompile active (apply working copy)
+  POST /save              write the scene as a modified copy in <scenes>/modified/;
+                          the original file is never touched (demo scenes refuse)
   GET  /<file>            static file from web/
 """
 
@@ -36,7 +38,7 @@ from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
-from ghee import Scene, load_filters, load_scene
+from ghee import Scene, apply_filters, load_filters, load_scene
 from ghee.console import examples_dir, web_dir
 from ghee.console.feeds import default_hwinfo, demo_feed
 from ghee.engine import Renderer
@@ -52,6 +54,27 @@ NAMES = []
 W = H = 0
 _provider = None
 _hwinfo = default_hwinfo
+_scenes_dir = ""
+_read_only = False  # bundled examples live in the package; never write there
+
+
+def _modified_path(name):
+    return os.path.join(_scenes_dir, "modified", f"{name}.scene.json")
+
+
+def _scene_path(name):
+    """A saved modified copy shadows the original; the original is never written."""
+    p = SCENES[name]
+    if p.endswith(".scene.json") and os.path.isfile(_modified_path(name)):
+        return _modified_path(name)
+    return p
+
+
+def _load_resolved(name):
+    """Scene ready to render/edit: shader files inlined, declared filters expanded."""
+    scene, controller = load_scene(_scene_path(name))
+    apply_filters(scene, scene.filters)
+    return scene, controller
 
 _latest = {"jpg": None, "seq": 0}
 _lock = threading.Lock()
@@ -134,7 +157,7 @@ def render_loop():
 
     def load(name):
         try:
-            scene, controller = load_scene(SCENES[name])
+            scene, controller = _load_resolved(name)
             set_scene(scene, name, controller)
         except Exception as e:
             _stat["error"] = f"load {name}: {e}"
@@ -239,12 +262,8 @@ class Handler(BaseHTTPRequestHandler):
             name = q.get("name", [_stat["active"]])[0]
             if name not in SCENES:
                 return self._send(404, "no scene")
-            path = SCENES[name]
-            if path.endswith(".scene.json"):
-                with open(path, encoding="utf-8") as f:
-                    return self._send(200, f.read(), "application/json")
-            try:  # procedural scene: serve the built def
-                scene, _ = load_scene(path)
+            try:
+                scene, _ = _load_resolved(name)
                 return self._send(200, json.dumps(scene.to_dict()), "application/json")
             except Exception as e:
                 return self._send(500, f"build {name}: {e}")
@@ -278,7 +297,32 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(400, str(e))
             return self._send(200, "ok")
+        if u.path == "/save":
+            return self._save(body)
         return self._send(404, "no")
+
+    def _save(self, body):
+        if _read_only:
+            return self._send(403, "demo scenes are read-only; serve your own directory to save")
+        try:
+            d = json.loads(body.decode("utf-8"))
+            name = d["name"]
+            scene = Scene.from_dict(d["scene"])
+        except Exception as e:
+            return self._send(400, f"bad /save: {e}")
+        if name not in SCENES:
+            return self._send(404, "no scene")
+        if not SCENES[name].endswith(".scene.json"):
+            return self._send(400, "procedural scene, nothing to save")
+        # store unexpanded: filter passes come back at load time from the filters list
+        scene.passes = [p for p in scene.passes if not p.filter]
+        path = _modified_path(name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(scene.to_dict(), f, indent=2)
+        os.replace(tmp, path)
+        return self._send(200, "ok")
 
     def _static(self, path):
         if path in ("", "/"):
@@ -334,11 +378,14 @@ def run(
     host defaults to loopback; the console has no auth and compiles POSTed GLSL,
     so pass "0.0.0.0" only to expose it on a network you trust."""
     global _lib_path, WEB, SCENES, NAMES, W, H, _provider, _hwinfo
+    global _scenes_dir, _read_only
     _provider = _make_provider(arrays or {})
     _hwinfo = hwinfo or default_hwinfo
     WEB = web_dir()
     W, H = size
+    _read_only = scenes_dir is None
     scenes_dir = os.path.abspath(scenes_dir) if scenes_dir else examples_dir()
+    _scenes_dir = scenes_dir
     SCENES = _scan_scenes(scenes_dir)
     NAMES = list(SCENES.keys())
     if not NAMES:

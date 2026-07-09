@@ -551,9 +551,15 @@ codeEl().addEventListener("scroll", ()=>{ hlEl().scrollTop = codeEl().scrollTop;
 
 // top-bar actions
 $("#apply").addEventListener("click", async ()=>{ work.passes[curPass].code = codeEl().value; await postScene(); markDirty(); });
-$("#save").addEventListener("click", ()=>{
+$("#save").addEventListener("click", async ()=>{
   localStorage.setItem(KEY(active), JSON.stringify(work));
-  const b = $("#save"); b.textContent = "saved"; setTimeout(()=>{ b.textContent = "save"; }, 900); updateStatus();
+  const b = $("#save");
+  let label = "saved";
+  try {
+    const r = await fetch("/save", {method:"POST", body: JSON.stringify({name: active, scene: work})});
+    if (!r.ok) { console.warn("/save:", await r.text()); label = "saved locally"; }
+  } catch(e) { console.warn("/save unavailable:", e); label = "saved locally"; }
+  b.textContent = label; setTimeout(()=>{ b.textContent = "save"; }, 1200); updateStatus();
 });
 $("#reset").addEventListener("click", async ()=>{
   localStorage.removeItem(KEY(active));

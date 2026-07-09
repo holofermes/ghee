@@ -22,7 +22,7 @@ jobs:
       - name: build the deb (Raspberry Pi OS armhf under qemu)
         run: |
           mkdir -p out
-          docker run --rm --platform linux/arm/v6 \
+          docker run --rm --platform linux/arm/v7 \
             -v "$PWD:/src:ro" -v "$PWD/out:/out" dtcooper/raspberrypi-os:bookworm bash -ec '
             dpkg --print-architecture
             echo | gcc -dM -E - | grep __ARM_ARCH
@@ -41,7 +41,7 @@ jobs:
             ls -la /out'
       - name: install-test in a fresh container
         run: |
-          docker run --rm --platform linux/arm/v6 \
+          docker run --rm --platform linux/arm/v7 \
             -v "$PWD/out:/out:ro" dtcooper/raspberrypi-os:bookworm bash -ec '
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /out/*.deb

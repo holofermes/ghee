@@ -1,0 +1,56 @@
+name: deb-armhf
+
+# armhf deb for the original Pi Zero / Pi 1 (ARMv6). Stock debian armhf images
+# are ARMv7-baseline and would SIGILL on a Zero, so the build runs inside a
+# Raspberry Pi OS armhf rootfs, whose gcc targets ARMv6+VFP2. Without Zero
+# hardware in CI, ARMv6-safety is asserted via the compiler macro and the ELF
+# arch tag of the built engine.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  armhf-bookworm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+      - name: build the deb (Raspberry Pi OS armhf under qemu)
+        run: |
+          mkdir -p out
+          docker run --rm --platform linux/arm/v6 \
+            -v "$PWD:/src:ro" -v "$PWD/out:/out" dtcooper/raspberrypi-os:bookworm bash -ec '
+            dpkg --print-architecture
+            echo | gcc -dM -E - | grep __ARM_ARCH
+            test "$(echo | gcc -dM -E - | awk "/#define __ARM_ARCH /{print \$3}")" = "6"
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              build-essential debhelper dh-python python3-all python3-setuptools \
+              python3-numpy cmake pkg-config libdrm-dev libgbm-dev \
+              libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev binutils
+            mkdir -p /work && cp -r /src /work/ghee && cd /work/ghee
+            dpkg-buildpackage -us -uc -b
+            so=$(find /work -name "libghee*.so" | head -1)
+            readelf -A "$so" | grep Tag_CPU_arch
+            readelf -A "$so" | grep -q "Tag_CPU_arch: v6" || { echo "engine is not ARMv6"; exit 1; }
+            cp /work/*.deb /out/
+            ls -la /out'
+      - name: install-test in a fresh container
+        run: |
+          docker run --rm --platform linux/arm/v6 \
+            -v "$PWD/out:/out:ro" dtcooper/raspberrypi-os:bookworm bash -ec '
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /out/*.deb
+            python3 -c "import ghee; print(\"import ok\")"
+            ghee --help > /dev/null
+            echo "cli ok"
+            python3 -c "from ghee.engine import bundled_lib; p = bundled_lib(); assert p, \"engine lib not found\"; print(\"engine at\", p)"
+            dpkg -s python3-ghee | grep ^Depends'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python3-ghee-armhf-bookworm
+          path: out/*.deb

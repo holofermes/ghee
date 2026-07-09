@@ -6,18 +6,22 @@ on:
     tags: ["v*"]
 
 jobs:
-  arm64-bookworm:
+  arm64:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dist: [bookworm, trixie]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
-      - name: build the deb (arm64 bookworm under qemu)
+      - name: build the deb (arm64 ${{ matrix.dist }} under qemu)
         run: |
           mkdir -p out
           docker run --rm --platform linux/arm64 \
-            -v "$PWD:/src:ro" -v "$PWD/out:/out" debian:bookworm bash -ec '
+            -v "$PWD:/src:ro" -v "$PWD/out:/out" debian:${{ matrix.dist }} bash -ec '
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
               build-essential debhelper dh-python python3-all python3-setuptools \
@@ -30,7 +34,7 @@ jobs:
       - name: install-test in a fresh container
         run: |
           docker run --rm --platform linux/arm64 \
-            -v "$PWD/out:/out:ro" debian:bookworm bash -ec '
+            -v "$PWD/out:/out:ro" debian:${{ matrix.dist }} bash -ec '
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /out/*.deb
             python3 -c "import ghee; print(\"import ok\")"
@@ -40,5 +44,5 @@ jobs:
             dpkg -s python3-ghee | grep ^Depends'
       - uses: actions/upload-artifact@v4
         with:
-          name: python3-ghee-arm64-bookworm
+          name: python3-ghee-arm64-${{ matrix.dist }}
           path: out/*.deb

@@ -25,13 +25,14 @@ jobs:
           docker run --rm --platform linux/arm/v7 \
             -v "$PWD:/src:ro" -v "$PWD/out:/out" dtcooper/raspberrypi-os:bookworm bash -ec '
             dpkg --print-architecture
-            echo | gcc -dM -E - | grep __ARM_ARCH
-            test "$(echo | gcc -dM -E - | awk "/#define __ARM_ARCH /{print \$3}")" = "6"
+            head -2 /etc/apt/sources.list
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
               build-essential debhelper dh-python python3-all python3-setuptools \
               python3-numpy cmake pkg-config libdrm-dev libgbm-dev \
               libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev binutils
+            echo | gcc -dM -E - | grep "__ARM_ARCH "
+            test "$(echo | gcc -dM -E - | awk "/#define __ARM_ARCH /{print \$3}")" = "6"
             mkdir -p /work && cp -r /src /work/ghee && cd /work/ghee
             dpkg-buildpackage -us -uc -b
             so=$(find /work -name "libghee*.so" | head -1)

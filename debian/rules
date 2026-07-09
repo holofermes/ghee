@@ -1,0 +1,12 @@
+#!/usr/bin/make -f
+export PYBUILD_NAME = ghee
+export PYBUILD_DISABLE = test
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+# setup.py treats a failed engine build as best-effort; a deb without the
+# engine is broken, so fail the package instead.
+override_dh_auto_install:
+	dh_auto_install
+	test -n "$$(find debian/python3-ghee -name libghee.so)"

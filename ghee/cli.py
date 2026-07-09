@@ -3,6 +3,7 @@
     ghee render scene.json -o frame.####.jpg --frames 500   # image sequence
     ghee render scene.json --display st7789                  # to a panel, until Ctrl-C
     ghee serve scenes/                                       # editor console
+    ghee serve --demo                                        # console on the bundled examples
     ghee displays                                            # list display drivers
 
 Scene arrays get an animated placeholder; no real input is wired yet.
@@ -76,6 +77,10 @@ def cmd_render(a):
 def cmd_serve(a):
     from ghee.console.server import run
 
+    if a.demo and a.scenes:
+        sys.exit("serve: pass a scenes directory or --demo, not both")
+    if not a.demo and not a.scenes:
+        sys.exit("serve: pass a scenes directory, or --demo for the bundled examples")
     run(scenes_dir=a.scenes, size=a.size, port=a.port, lib_path=a.lib, host=a.host)
 
 
@@ -111,6 +116,9 @@ def main(argv=None):
 
     s = sub.add_parser("serve", help="run the editor console")
     s.add_argument("scenes", nargs="?", help="scenes directory")
+    s.add_argument(
+        "--demo", action="store_true", help="serve the bundled example scenes"
+    )
     s.add_argument("--size", type=_size, default=(320, 240))
     s.add_argument("--port", type=int, default=8090)
     s.add_argument(

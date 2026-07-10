@@ -61,24 +61,33 @@
   .nav{display:flex; align-items:center; gap:4px}
   .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
   .actions{display:flex; gap:7px; align-items:center}
-  .grid{display:grid; grid-template-columns:minmax(300px,440px) 1fr; gap:18px; flex:1 1 auto; min-height:0}
+  .grid{display:grid; grid-template-columns:var(--leftw, minmax(300px,440px)) 6px 1fr; gap:6px; flex:1 1 auto; min-height:0}
+  .colgrip{cursor:col-resize; border-radius:3px; align-self:stretch}
+  .colgrip:hover,.colgrip.drag{background:var(--line)}
   .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow)}
-  .leftcol{display:flex; flex-direction:column; gap:18px; overflow:auto; min-height:0; padding-right:4px}
-  .stage{padding:14px; flex:0 0 auto}
+  .leftcol{display:flex; flex-direction:column; gap:18px; overflow-y:auto; overflow-x:hidden; min-height:0; padding-right:4px}
+  .stage{padding:14px; flex:0 0 auto; position:sticky; top:0; z-index:5}
+  .screen .infowrap{position:absolute; top:16px; left:16px; z-index:7}
+  .screen #rotBtn{position:absolute; top:16px; right:16px; z-index:7}
+  .ovbtn{width:26px; height:26px; padding:0; display:inline-flex; align-items:center; justify-content:center;
+    font-size:14px; line-height:1; color:#e9e9e4; background:rgba(8,9,11,.45); border:0; border-radius:8px;
+    box-shadow:none; backdrop-filter:blur(3px)}
+  .ovbtn:hover{background:rgba(8,9,11,.68); border:0}
+  /* overlay controls stay off the art: hover reveals on mouse devices, a tap
+     reveals on touch (.controls, set in js), an open popover pins them */
+  .screen .infowrap, .screen #rotBtn{opacity:0; visibility:hidden; transition:opacity .18s ease, visibility .18s ease}
+  @media (hover:hover){ .screen:hover .infowrap, .screen:hover #rotBtn{opacity:1; visibility:visible} }
+  .screen.controls .infowrap, .screen.controls #rotBtn, .screen .infowrap.open{opacity:1; visibility:visible}
   .shadercard{display:flex; flex-direction:column; min-height:0}
   .shadercard .editor{flex:1 1 auto; min-height:140px}
   .shadercard .editor>textarea{height:100%; resize:none}
   .shadercard .err{flex:0 0 auto}
   .errmark{position:absolute; left:0; right:0; background:rgba(192,57,43,.16); border-left:3px solid var(--hot); pointer-events:none; display:none; z-index:1}
-  .screen{background:var(--bezel); border-radius:12px; padding:12px; width:max-content; max-width:100%; margin:0 auto}
+  .screen{position:relative; background:var(--bezel); border-radius:12px; padding:12px; width:max-content; max-width:100%; margin:0 auto}
   .frame{position:relative; margin:0 auto; overflow:hidden; max-width:100%}
   .frame img{position:absolute; top:50%; left:50%; display:block; image-rendering:pixelated}
-  .previewbar{display:flex; align-items:center; gap:6px; margin-top:12px; color:var(--muted)}
   .iconbtn{font-size:16px; line-height:1; padding:4px 9px; color:var(--muted); border-radius:8px}
   .iconbtn:hover{color:var(--ink); background:var(--code-bg); border-color:var(--line)}
-  .fpschip{font:12px ui-monospace,Menlo,monospace; color:var(--muted); padding:0 2px}
-  .fpschip b{color:var(--ink); font-weight:600}
-  .fpschip .dot{color:var(--live); font-size:8px; vertical-align:middle; margin-right:5px}
   .infowrap{position:relative}
   .infopop{position:absolute; top:calc(100% + 8px); left:0; min-width:236px; background:var(--panel);
     border:1px solid var(--line); border-radius:11px; box-shadow:var(--shadow); padding:11px 13px;
@@ -104,12 +113,14 @@
   .editor>pre,.editor>textarea{margin:0; border:0; padding:11px; font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; tab-size:2; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word}
   .editor>pre{position:absolute; inset:0; overflow:auto; color:var(--code-ink); pointer-events:none}
   .editor>textarea{position:relative; display:block; width:100%; height:460px; resize:vertical; background:transparent; color:transparent; caret-color:var(--ink); outline:none; overflow:auto}
-  .editor>textarea,.editor>pre,.leftcol{scrollbar-width:thin; scrollbar-color:var(--scroll) transparent}
-  .editor>textarea::-webkit-scrollbar,.editor>pre::-webkit-scrollbar,.leftcol::-webkit-scrollbar{width:10px; height:10px}
-  .editor>textarea::-webkit-scrollbar-track,.editor>pre::-webkit-scrollbar-track,.leftcol::-webkit-scrollbar-track{background:transparent}
-  .editor>textarea::-webkit-scrollbar-thumb,.editor>pre::-webkit-scrollbar-thumb,.leftcol::-webkit-scrollbar-thumb{background:var(--scroll); border-radius:8px; border:2px solid transparent; background-clip:padding-box}
-  .editor>textarea::-webkit-scrollbar-thumb:hover,.editor>pre::-webkit-scrollbar-thumb:hover,.leftcol::-webkit-scrollbar-thumb:hover{background:var(--muted); background-clip:padding-box}
-  .editor>textarea::-webkit-scrollbar-corner,.leftcol::-webkit-scrollbar-corner{background:transparent}
+  .editor>textarea,.editor>pre{scrollbar-width:thin; scrollbar-color:var(--scroll) transparent}
+  .leftcol{scrollbar-width:none}
+  .leftcol::-webkit-scrollbar{display:none}
+  .editor>textarea::-webkit-scrollbar,.editor>pre::-webkit-scrollbar{width:10px; height:10px}
+  .editor>textarea::-webkit-scrollbar-track,.editor>pre::-webkit-scrollbar-track{background:transparent}
+  .editor>textarea::-webkit-scrollbar-thumb,.editor>pre::-webkit-scrollbar-thumb{background:var(--scroll); border-radius:8px; border:2px solid transparent; background-clip:padding-box}
+  .editor>textarea::-webkit-scrollbar-thumb:hover,.editor>pre::-webkit-scrollbar-thumb:hover{background:var(--muted); background-clip:padding-box}
+  .editor>textarea::-webkit-scrollbar-corner{background:transparent}
   .t-cm{color:var(--t-cm); font-style:italic} .t-pp{color:var(--t-pp)} .t-ty{color:var(--t-ty)}
   .t-kw{color:var(--t-kw)} .t-bi{color:var(--t-bi)} .t-nu{color:var(--t-nu)}
   .toolbar{display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap}
@@ -136,7 +147,16 @@
   .tab input{background:transparent; border:0; outline:none; color:inherit; font:inherit; width:84px; padding:0}
   .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:12px}
   .tab.filt .lbl{color:var(--accent)}
-  select.filtersel{cursor:pointer; -webkit-appearance:none; appearance:none; box-shadow:none}
+  .addwrap{position:relative; display:inline-flex}
+  .addmenu{position:absolute; top:calc(100% + 4px); left:0; min-width:130px; background:var(--panel);
+    border:1px solid var(--line); border-radius:11px; box-shadow:var(--shadow); padding:5px;
+    opacity:0; visibility:hidden; transform:translateY(-4px); transition:opacity .12s ease, transform .12s ease; z-index:6}
+  .addwrap.open .addmenu{opacity:1; visibility:visible; transform:none}
+  .addmenu .it{padding:7px 11px; border-radius:7px; font-size:13px; color:var(--ink); cursor:pointer; white-space:nowrap}
+  .addmenu .it:hover{background:var(--code-bg)}
+  .addmenu .sep{height:1px; background:var(--line); margin:5px 2px}
+  .rotact{cursor:pointer}
+  .rotact:hover{color:var(--ink)}
   .editor.readonly>pre{opacity:.5}
   .editor.readonly>textarea{cursor:default}
   .editor.readonly::after{content:"filter - read-only, tweak its params below"; position:absolute; right:10px; bottom:6px; font:10px ui-monospace,monospace; color:var(--muted); opacity:.75; pointer-events:none; z-index:2}
@@ -155,7 +175,9 @@
     body{height:auto; overflow:auto; display:block; padding:12px}
     header{flex-wrap:wrap; white-space:normal}
     .grid{display:block}
-    .leftcol{overflow:visible; min-height:0}
+    /* dissolve the column so the sticky stage sticks against the whole page */
+    .leftcol{display:contents}
+    .colgrip{display:none}
     .leftcol>.panel + .panel{margin-top:18px}
     .shadercard{display:block; margin-top:18px}
     .shadercard .editor{flex:none}
@@ -183,16 +205,13 @@
 <div class="grid">
   <div class="leftcol">
     <div class="panel stage">
-      <div class="screen"><div class="frame"><img id="stream" alt="render"></div></div>
-      <div class="previewbar">
+      <div class="screen">
         <div class="infowrap">
-          <button class="ghost iconbtn" id="infoBtn" title="render info" aria-label="render info">ⓘ</button>
+          <button class="ovbtn" id="infoBtn" title="render info" aria-label="render info">ⓘ</button>
           <div class="infopop" id="infoPop"></div>
         </div>
-        <span class="fpschip"><span class="dot">●</span><b id="fps">0.0</b> fps</span>
-        <span class="fpschip" id="dispchip"></span>
-        <span class="spacer"></span>
-        <button class="ghost iconbtn" id="rotate" title="rotate preview 90°">↻</button>
+        <button class="ovbtn" id="rotBtn" title="rotate preview 90°" aria-label="rotate preview 90°">↻</button>
+        <div class="frame"><img id="stream" alt="render"></div>
       </div>
     </div>
 
@@ -213,6 +232,8 @@
       </div>
     </div>
   </div>
+
+  <div class="colgrip" id="colgrip" title="drag to resize"></div>
 
   <div class="panel card shadercard">
     <h3>shader</h3>
@@ -278,7 +299,8 @@ function refreshInfo(){
   const outRows =
     row("display", (lastDisplay && lastDisplay.name) || "-", "off") +
     row("resolution", lastDisplay ? `${lastDisplay.w} × ${lastDisplay.h}` : "-", "off") +
-    row("format", (lastDisplay && lastDisplay.format) || "-", "off");
+    row("format", (lastDisplay && lastDisplay.format) || "-", "off") +
+    row("rotation", `<span class="rotact" data-act="rotate">${effectiveRotation()}° · rotate ↻</span>`, "off");
   const devRows =
     row("model", devModel || "-", "off") +
     row("gpu", (devGpu && devGpu !== "n/a") ? devGpu : "unknown", "off");
@@ -392,17 +414,24 @@ function buildTabs(){
     }
     t.appendChild(tab);
   });
-  const add = document.createElement("span"); add.className="tab add"; add.textContent="+ pass";
-  add.addEventListener("click", addPass);
-  t.appendChild(add);
+  // one "+" for both: an empty pass, or any known filter
+  const wrap = document.createElement("span"); wrap.className="addwrap";
+  const add = document.createElement("span"); add.className="tab add"; add.textContent="+";
+  add.title = "add a pass or a filter";
+  add.addEventListener("click", e=>{ e.stopPropagation(); wrap.classList.toggle("open"); });
+  const menu = document.createElement("div"); menu.className="addmenu";
+  const item = (label, fn)=>{
+    const it = document.createElement("div"); it.className="it"; it.textContent=label;
+    it.addEventListener("click", e=>{ e.stopPropagation(); wrap.classList.remove("open"); fn(); });
+    menu.appendChild(it);
+  };
+  item("empty pass", addPass);
   const fnames = Object.keys(FILTERS);
   if (fnames.length){
-    const fs = document.createElement("select"); fs.className = "tab add filtersel";
-    const o0 = document.createElement("option"); o0.value=""; o0.textContent="+ filter"; fs.appendChild(o0);
-    fnames.forEach(n => { const o=document.createElement("option"); o.value=n; o.textContent=n; fs.appendChild(o); });
-    fs.addEventListener("change", ()=>{ if(fs.value){ addFilter(fs.value); fs.value=""; } });
-    t.appendChild(fs);
+    const d = document.createElement("div"); d.className="sep"; menu.appendChild(d);
+    fnames.forEach(n => item("ƒ " + n, ()=>addFilter(n)));
   }
+  wrap.appendChild(add); wrap.appendChild(menu); t.appendChild(wrap);
 }
 
 function addFilter(name){
@@ -539,17 +568,23 @@ const EYE_OFF = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" str
 
 // Muted passes: a muted tail is dropped, so the output becomes the last live
 // pass (mute from the end to preview an intermediate buffer). A muted pass in
-// the middle stays in the chain as a black stub, so later passes that read its
-// buffer keep compiling (e.g. muting the source under a filter shows the
-// filter over black).
+// the middle becomes a passthrough of the pass before it, so the chain keeps
+// flowing around it (mute main under a filter and the filter shows the
+// previous buffer). A muted first pass has nothing to pass through: black.
 function compiledIndex(pi){ return pi; }  // stubs hold their slot, only the tail is cut
 function compiledScene(){
   let last = -1; work.passes.forEach((p,i)=>{ if(!p.muted) last = i; });
-  return { ...work, passes: work.passes.slice(0, last+1).map(p=>{
+  return { ...work, passes: work.passes.slice(0, last+1).map((p,pi)=>{
     const q = clone(p); delete q.muted;
     if (p.muted){
-      q.code = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
-      delete q.shader; q.arrays = []; q.params = {}; q.channels = [];
+      delete q.shader; q.arrays = []; q.params = {};
+      if (pi === 0){
+        q.code = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
+        q.channels = [];
+      } else {
+        q.code = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+        q.channels = [{ buffer: work.passes[pi-1].name }];
+      }
     }
     return q;
   }) };
@@ -594,10 +629,58 @@ $("#prev").addEventListener("click", async ()=>{ const r=await jget("/prev"); aw
 $("#next").addEventListener("click", async ()=>{ const r=await jget("/next"); await loadScene(r.active); });
 $("#scenes").addEventListener("change", async e=>{ const r=await jget("/switch?name="+encodeURIComponent(e.target.value)); await loadScene(r.active); });
 
+// column resize (desktop): drag the grip, width persists per browser
+(function(){
+  const grip = $("#colgrip"), grid = document.querySelector(".grid");
+  const saved = parseInt(localStorage.getItem("ghee:leftw"), 10);
+  if (saved) grid.style.setProperty("--leftw", saved + "px");
+  let dragging = false, w = saved || 0;
+  grip.addEventListener("pointerdown", e=>{
+    dragging = true; grip.classList.add("drag"); grip.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  grip.addEventListener("pointermove", e=>{
+    if (!dragging) return;
+    w = Math.min(720, Math.max(320, Math.round(e.clientX - grid.getBoundingClientRect().left)));
+    grid.style.setProperty("--leftw", w + "px");
+  });
+  grip.addEventListener("pointerup", e=>{
+    dragging = false; grip.classList.remove("drag"); grip.releasePointerCapture(e.pointerId);
+    if (w) localStorage.setItem("ghee:leftw", String(w));
+  });
+})();
+
+// touch: tap the stream to reveal the overlay controls, auto-fade after idle
+(function(){
+  const scr = document.querySelector(".screen");
+  let t = null;
+  const hide = ()=>{
+    if (document.querySelector(".infowrap.open")){ t = setTimeout(hide, 1500); return; }
+    scr.classList.remove("controls");
+  };
+  scr.addEventListener("pointerdown", ()=>{
+    if (window.matchMedia("(hover:hover)").matches) return;   // mouse devices use :hover
+    scr.classList.add("controls");
+    clearTimeout(t); t = setTimeout(hide, 2500);
+  });
+})();
+
 // preview controls
-$("#rotate").addEventListener("click", ()=>{ localStorage.setItem("ghee:rotation", String((effectiveRotation()+90)%360)); applyRotation(); });
+$("#rotBtn").addEventListener("click", ()=>{
+  localStorage.setItem("ghee:rotation", String((effectiveRotation()+90)%360));
+  applyRotation(); refreshInfo();
+});
 $("#infoBtn").addEventListener("click", e=>{ e.stopPropagation(); $("#infoBtn").closest(".infowrap").classList.toggle("open"); });
-document.addEventListener("click", ()=> $("#infoBtn").closest(".infowrap").classList.remove("open"));
+$("#infoPop").addEventListener("click", e=>{
+  e.stopPropagation();   // taps inside the popover keep it open (mobile has no hover)
+  if (e.target.closest("[data-act=rotate]")){
+    localStorage.setItem("ghee:rotation", String((effectiveRotation()+90)%360));
+    applyRotation(); refreshInfo();
+  }
+});
+document.addEventListener("click", ()=>{
+  $("#infoBtn").closest(".infowrap").classList.remove("open");
+  document.querySelectorAll(".addwrap.open").forEach(w=>w.classList.remove("open"));
+});
 
 // add parameter
 $("#addToggle").addEventListener("click", ()=> $("#addRow").classList.toggle("show"));
@@ -615,10 +698,7 @@ async function poll(){
   try{
     const s = await jget("/stats");
     lastStats = s;
-    $("#fps").textContent = s.fps.toFixed(1);
     if (s.display) lastDisplay = s.display;
-    if (lastDisplay) $("#dispchip").textContent =
-      [lastDisplay.name, `${lastDisplay.w}×${lastDisplay.h}`, lastDisplay.format].filter(Boolean).join(" · ");
     refreshInfo(); applyRotation();
     errLine = (s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass)) ? s.error_line : 0;
     applyErrorLine(errLine);

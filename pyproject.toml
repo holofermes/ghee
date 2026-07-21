@@ -8,13 +8,12 @@ license = { text = "MIT" }
 authors = [{ name = "holofermes" }]
 keywords = ["glsl", "shader", "raspberry-pi", "gles", "headless", "renderer"]
 requires-python = ">=3.11"
-# numpy is used by ghee.engine (the Renderer ctypes binding). The pure scene
-# model (import ghee) does not need it, but the package ships the renderer too.
-dependencies = ["numpy"]
+# numpy is used by ghee.engine (the Renderer ctypes binding), Pillow by image
+# output and the console stream. The pure scene model (import ghee) needs
+# neither, but the package ships the renderer too.
+dependencies = ["numpy", "Pillow"]
 
 [project.optional-dependencies]
-# The console render server and image-sequence output encode JPEG frames.
-console = ["Pillow"]
 # Hardware display drivers (ghee.drivers). Pi/panel only; off-device they will not import.
 drivers = [
     "Adafruit-Blinka",
@@ -22,7 +21,7 @@ drivers = [
     "adafruit-circuitpython-ssd1306",
     "spidev",
 ]
-test = ["pytest", "Pillow"]
+test = ["pytest"]
 
 [project.urls]
 Repository = "https://github.com/holofermes/ghee"
@@ -30,6 +29,8 @@ Issues = "https://github.com/holofermes/ghee/issues"
 
 [project.scripts]
 ghee = "ghee.cli:main"
+# alias matching the dist name, so `uvx ghee-render` works bare
+ghee-render = "ghee.cli:main"
 
 # setuptools (not hatchling) because the package builds a C extension: the engine
 # (ghee/_engine) is compiled into ghee/lib/ by setup.py. Package data (the

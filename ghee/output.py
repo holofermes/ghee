@@ -23,6 +23,30 @@ def expand_pattern(pattern, index):
     return pattern
 
 
+class AdaptivePacer:
+    """Pace a render loop off the sink's own backpressure. The sink write time
+    is the felt speed of the display bus; keeping the frame period at
+    factor * write time holds the bus at a 1/factor duty cycle, so a slow bus
+    gets few frames and a fast one gets many, with no configured rate. max_fps
+    bounds the fast end (image files write in microseconds)."""
+
+    def __init__(self, factor=2.0, max_fps=60):
+        self.factor = factor
+        self.min_period = 1.0 / max_fps
+        self.write_ema = None
+
+    def sleep_for(self, write_s, frame_s):
+        """Seconds to sleep after a frame: write_s = this frame's sink write,
+        frame_s = the whole frame so far (render + write)."""
+        self.write_ema = (
+            write_s
+            if self.write_ema is None
+            else self.write_ema * 0.9 + write_s * 0.1
+        )
+        period = max(self.write_ema * self.factor, self.min_period)
+        return max(0.0, period - frame_s)
+
+
 class Output(abc.ABC):
     @abc.abstractmethod
     def write(self, frame):

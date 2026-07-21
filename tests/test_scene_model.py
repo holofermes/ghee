@@ -57,3 +57,23 @@ def test_driver_registry_unknown():
     assert set(available_drivers()) >= {"st7789", "ssd1306"}
     with pytest.raises(KeyError):
         get_driver("does-not-exist")
+
+
+def test_adaptive_pacer():
+    from ghee.output import AdaptivePacer
+
+    p = AdaptivePacer(factor=2.0, max_fps=60)
+    # slow sink: 20ms writes in a 25ms frame -> sleep tops the period up to 40ms
+    s = p.sleep_for(0.020, 0.025)
+    assert abs(s - 0.015) < 1e-9
+    # EMA converges toward a changed write time
+    for _ in range(200):
+        s = p.sleep_for(0.040, 0.045)
+    assert 0.030 < s < 0.036
+    # fast sink: sub-ms writes are floored at max_fps, never a busy spin
+    q = AdaptivePacer(factor=2.0, max_fps=60)
+    s = q.sleep_for(0.0005, 0.002)
+    assert abs(s - (1 / 60 - 0.002)) < 1e-6
+    # a frame already longer than the period sleeps zero
+    r = AdaptivePacer(factor=2.0, max_fps=60)
+    assert r.sleep_for(0.020, 0.050) == 0.0

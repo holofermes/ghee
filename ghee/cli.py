@@ -11,6 +11,7 @@ Scene arrays get an animated placeholder; no real input is wired yet.
 
 import argparse
 import sys
+import time
 
 
 def _size(s):
@@ -58,15 +59,24 @@ def cmd_render(a):
         return demo_feed(name, size, frame)
 
     frames = a.frames if a.frames is not None else (0 if a.display else 1)
+    pacer = None
     if a.display:
+        from ghee.output import AdaptivePacer
+
+        pacer = AdaptivePacer()
         sink.turn_on()
     i = 0
     try:
         while frames == 0 or i < frames:
+            t0 = time.monotonic()
             if ctrl is not None:
                 ctrl.update(r, i, i / 60.0)
             rgb = r.render(lambda name, size, i=i: provider(name, size, i))
+            tw = time.monotonic()
             sink.write(rgb)
+            if pacer is not None:
+                tn = time.monotonic()
+                time.sleep(pacer.sleep_for(tn - tw, tn - t0))
             i += 1
     except KeyboardInterrupt:
         pass

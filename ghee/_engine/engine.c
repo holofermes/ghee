@@ -355,8 +355,8 @@ void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const flo
 // Upload the float array as a 1xN texture named "<name>_tex". Created lazily on
 // first use, updated in place after. Float texels if the GL supports them, else
 // 8-bit LUMINANCE (clamped to [0,1]). The unit is bound in ghee_mp_render.
-void ghee_mp_set_float_texture(GheeScene *g, int pass, const char *name, const float *data, int count) {
-    if (pass < 0 || pass >= g->mp_count || count <= 0) return;
+void ghee_mp_set_float_texture(GheeScene *g, int pass, const char *name, const float *data, int count, int rows) {
+    if (pass < 0 || pass >= g->mp_count || count <= 0 || rows <= 0) return;
     make_current(g);
     char uni[64];
     snprintf(uni, sizeof(uni), "%s_tex", name);
@@ -373,7 +373,7 @@ void ghee_mp_set_float_texture(GheeScene *g, int pass, const char *name, const f
     const int unit = g->mp_nchan[pass] + idx;   // data textures follow the channels
     glActiveTexture(GL_TEXTURE0 + unit);
     glBindTexture(GL_TEXTURE_2D, g->mp_datatex[pass][idx]);
-    const bool realloc = (g->mp_datatex_size[pass][idx] != count);
+    const bool realloc = (g->mp_datatex_size[pass][idx] != count * rows);
     if (realloc) {
         const GLint filt = g->has_float_tex && !g->has_float_linear ? GL_NEAREST : GL_LINEAR;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt);
@@ -383,23 +383,23 @@ void ghee_mp_set_float_texture(GheeScene *g, int pass, const char *name, const f
     }
     if (g->has_float_tex) {
         if (realloc)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, 1, 0, GL_LUMINANCE, GL_FLOAT, data);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, rows, 0, GL_LUMINANCE, GL_FLOAT, data);
         else
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, 1, GL_LUMINANCE, GL_FLOAT, data);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, rows, GL_LUMINANCE, GL_FLOAT, data);
     } else {
-        uint8_t *b = malloc((size_t)count);
+        uint8_t *b = malloc((size_t)count * rows);
         if (!b) return;
-        for (int i = 0; i < count; i++) {
+        for (int i = 0; i < count * rows; i++) {
             float v = data[i];
             b[i] = (uint8_t)(v <= 0.0f ? 0 : v >= 1.0f ? 255 : v * 255.0f + 0.5f);
         }
         if (realloc)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, 1, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, b);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, rows, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, b);
         else
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, 1, GL_LUMINANCE, GL_UNSIGNED_BYTE, b);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, rows, GL_LUMINANCE, GL_UNSIGNED_BYTE, b);
         free(b);
     }
-    g->mp_datatex_size[pass][idx] = count;
+    g->mp_datatex_size[pass][idx] = count * rows;
 }
 
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {

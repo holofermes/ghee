@@ -118,6 +118,7 @@ class Renderer:
         self.error_pass = None
         self._mp = {}  # pass name -> engine pass index
         self._feeds = {}  # array name -> [(pass index, size), ...]
+        self._feed_cache = {}  # array name -> last uploaded floats (skip no-op uploads)
         self._rgb = np.zeros((height, width, components), dtype=np.uint8)
 
         lib_path = lib_path or os.environ.get("GHEE_LIB") or bundled_lib()
@@ -182,6 +183,7 @@ class Renderer:
             ctypes.c_int,
             ctypes.c_char_p,
             _F32_1,
+            ctypes.c_int,
             ctypes.c_int,
         ]
         L.ghee_mp_render.argtypes = [ctypes.c_void_p, _U8_3]
@@ -250,6 +252,7 @@ class Renderer:
             for a in p.arrays:
                 feeds.setdefault(a.name, []).append((mp[p.name], a.size))
         self._feeds = feeds
+        self._feed_cache = {}  # engine textures were reset; force re-upload
         return ""
 
     def render(self, provider=None, out=None):
@@ -261,14 +264,25 @@ class Renderer:
             out = self._rgb
         if provider is not None:
             for name, targets in self._feeds.items():
+                size = targets[0][1]
                 data = np.ascontiguousarray(
-                    provider(name, targets[0][1]), dtype=np.float32
-                )
+                    provider(name, size), dtype=np.float32
+                ).reshape(-1)
+                last = self._feed_cache.get(name)
+                if last is not None and np.array_equal(last, data):
+                    continue  # unchanged input: the texture already holds it
+                self._feed_cache[name] = data.copy()
                 enc = name.encode("utf-8")
-                for pi, size in targets:
-                    self.lib.ghee_mp_set_float_texture(
-                        self.handle, pi, enc, data, min(len(data), size)
-                    )
+                if isinstance(size, int):
+                    w, h = min(len(data), size), 1
+                else:
+                    w, h = size
+                    if len(data) < w * h:  # short feed: zero-pad to the full mask
+                        buf = np.zeros(w * h, dtype=np.float32)
+                        buf[: len(data)] = data
+                        data = buf
+                for pi, _sz in targets:
+                    self.lib.ghee_mp_set_float_texture(self.handle, pi, enc, data, w, h)
         self.lib.ghee_mp_render(self.handle, out)
         return out
 
@@ -320,6 +334,7 @@ class Renderer:
         self.lib.ghee_mp_reset(self.handle)
         self._mp = {}
         self._feeds = {}
+        self._feed_cache = {}
 
     def close(self):
         if getattr(self, "handle", None):

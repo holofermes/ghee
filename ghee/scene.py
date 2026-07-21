@@ -60,19 +60,28 @@ class Param:
 
 @dataclass
 class ArrayInput:
-    """A named float array, fed by the host each frame and bound as a 1xN texture
-    sampler. Sampling with a computed coord is one fetch (no VC4 uniform-array unroll
-    or size cap). Read it as <name>_at(i) or <name>_sample(t) (interpolated)."""
+    """A named float input, fed by the host and bound as a texture sampler.
+    size N is a 1xN array: one fetch per computed index (no VC4 uniform-array
+    unroll or size cap), read as <name>_at(i) or <name>_sample(t). size [w, h]
+    is a 2D w x h mask (host-rasterized text, images), read as
+    <name>_sample2(uv)."""
 
     name: str
-    size: int
+    size: int | tuple[int, int]
+
+    @property
+    def is_2d(self) -> bool:
+        return not isinstance(self.size, int)
 
     @classmethod
     def from_dict(cls, d: dict) -> ArrayInput:
-        return cls(name=d["name"], size=int(d["size"]))
+        sz = d["size"]
+        if isinstance(sz, (list, tuple)):
+            return cls(name=d["name"], size=(int(sz[0]), int(sz[1])))
+        return cls(name=d["name"], size=int(sz))
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "size": self.size}
+        return {"name": self.name, "size": list(self.size) if self.is_2d else self.size}
 
 
 @dataclass
@@ -156,7 +165,8 @@ class Pass:
         ]
         for a in self.arrays:
             L.append(f"uniform sampler2D {a.name}_tex;")
-            L.append(f"const int {a.name}_size = {a.size};")
+            if not a.is_2d:
+                L.append(f"const int {a.name}_size = {a.size};")
         for i in range(len(self.channels)):
             L.append(f"uniform sampler2D iChannel{i};")
         for p in self.params.values():
@@ -164,7 +174,14 @@ class Pass:
 
         # A 1xN data texture: _at(i) is one fetch with a computed coord (no VC4
         # unroll or size cap), _sample(t) interpolates between elements for free.
+        # A 2D input is one normalized-uv fetch: _sample2(uv).
         for a in self.arrays:
+            if a.is_2d:
+                L.append(
+                    f"float {a.name}_sample2(vec2 uv){{ "
+                    f"return texture2D({a.name}_tex, uv).r; }}"
+                )
+                continue
             L += [
                 f"float {a.name}_at(int i0){{ return texture2D({a.name}_tex, "
                 f"vec2((float(i0)+0.5)/float({a.name}_size), 0.5)).r; }}",

@@ -194,3 +194,23 @@ def test_multipass_feedback_accumulates(renderer):
     f3 = renderer.render(None).copy()
     assert int(f2[..., 0].mean()) > int(f1[..., 0].mean())
     assert int(f3[..., 0].mean()) > int(f2[..., 0].mean())
+
+
+def test_2d_array_input(renderer):
+    import numpy as np
+
+    from ghee import ArrayInput, Pass, Scene
+
+    scene = Scene(passes=[Pass(
+        name="main",
+        code="void main(){ gl_FragColor = vec4(vec3(mask_sample2(v_texCoord)), 1.0); }",
+        arrays=[ArrayInput("mask", (8, 4))],
+    )])
+    assert renderer.setup(scene) == ""
+    m = np.linspace(0.0, 1.0, 32, dtype=np.float32)  # 8x4 ramp
+    frame = renderer.render(lambda name, size: m)
+    lum = frame[:, :, 0].astype(int)
+    assert lum.max() - lum.min() > 180  # the full ramp came through the 2D sampler
+    h, w = frame.shape[:2]
+    row = lum[h // 2]
+    assert abs(int(row[w - 3]) - int(row[2])) > 30  # varies along x within a row

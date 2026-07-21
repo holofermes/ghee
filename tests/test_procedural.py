@@ -103,3 +103,19 @@ def test_spectrum_gain_in_shader_and_python(renderer):
     lo, hi = frame_at(0.05), frame_at(0.5)
     assert not np.array_equal(lo, hi)  # the param changes the render
     assert hi.mean() > lo.mean()  # higher gain = taller + brighter bars
+
+
+def test_render_example_text(renderer):
+    import importlib.resources
+
+    from ghee import load_scene
+
+    path = str(importlib.resources.files("ghee") / "examples" / "text.py")
+    scene, ctrl = load_scene(path)
+    assert renderer.setup(scene) == ""
+    renderer.set_time(0.0)
+    frame = renderer.render(lambda name, size: ctrl.provide(name, size, 0))
+    lum = frame[:, :, 1].astype(int)  # the tint is green
+    bright = (lum > 120).mean()
+    assert lum.max() > 150  # glyphs lit
+    assert 0.005 < bright < 0.4  # text-like coverage, not a flood or a blank

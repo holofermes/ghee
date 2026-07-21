@@ -122,9 +122,19 @@ float amplitudes_at(int i);         // one element
 float amplitudes_sample(float t);   // interpolated, t in 0..1
 // arrays are bound as 1xN textures
 
+// a 2D input, e.g. {"name": "text", "size": [96, 16]}:
+float text_sample2(vec2 uv);        // one fetch, normalized uv
+// the host feeds w*h floats: a mask, host-rasterized text, an image
+
 // per channel: uniform sampler2D iChannel0..N
 // per param:   uniform <type> <name>
 ```
+
+A 2D input is just pixels once it is in the pass graph, so everything ghee does
+to pixels applies: `text_sample2(uv - offset)` positions it, a `time` term
+scrolls it, and a later pass can trail, displace, or dither it like any other
+buffer. `examples/text.py` scrolls Pillow-rendered text this way; run it with
+`ghee render text --filters dither --display ssd1306`.
 
 Channels are declared on the pass by `"buffer"` name:
 

@@ -10,6 +10,7 @@ Scene arrays get an animated placeholder; no real input is wired yet.
 """
 
 import argparse
+import os
 import signal
 import sys
 import time
@@ -20,13 +21,43 @@ def _size(s):
     return int(w), int(h)
 
 
+def _find_scene(arg):
+    """A path as given, or a scene name looked up in $GHEE_SCENES (colon-
+    separated directories), then the bundled examples."""
+
+    def hit(stem):
+        return any(
+            os.path.exists(p) for p in (stem, stem + ".scene.json", stem + ".py")
+        )
+
+    if hit(arg):
+        return arg
+    from ghee.console import examples_dir
+
+    dirs = [d for d in os.environ.get("GHEE_SCENES", "").split(":") if d]
+    dirs.append(examples_dir())
+    for d in dirs:
+        p = os.path.join(d, arg)
+        if hit(p):
+            return p
+    sys.exit(f"no scene '{arg}' (searched: cwd, {', '.join(dirs)})")
+
+
 def cmd_render(a):
-    from ghee import apply_filters, load_scene
+    from ghee import apply_filters, load_filters, load_scene
     from ghee.console.feeds import demo_feed
     from ghee.engine import Renderer
 
-    scene, ctrl = load_scene(a.scene)
-    apply_filters(scene, scene.filters)
+    scene, ctrl = load_scene(_find_scene(a.scene))
+    names = list(scene.filters)
+    if a.filters:
+        names += [n.strip() for n in a.filters.split(",") if n.strip()]
+    names = list(dict.fromkeys(names))
+    reg = load_filters()
+    unknown = [n for n in names if n not in reg and n not in scene.filters]
+    if unknown:
+        sys.exit(f"unknown filter: {', '.join(unknown)} (known: {', '.join(reg)})")
+    apply_filters(scene, names, registry=reg)
     if a.display:
         from ghee.drivers import get_driver
 
@@ -113,7 +144,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("render", help="render a scene to images or a display")
-    r.add_argument("scene")
+    r.add_argument("scene", help="scene file, or a name from $GHEE_SCENES / the examples")
     r.add_argument("-o", "--output", help="image pattern, e.g. frame.####.jpg")
     r.add_argument("--display", help="render to a hardware display by name")
     r.add_argument(
@@ -137,6 +168,10 @@ def main(argv=None):
         "--fps",
         type=float,
         help="fixed display frame rate (default: adapt to the panel's own speed)",
+    )
+    r.add_argument(
+        "--filters",
+        help="comma-separated filter names applied after the scene's own",
     )
     r.set_defaults(fn=cmd_render)
 

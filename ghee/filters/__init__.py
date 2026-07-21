@@ -14,9 +14,12 @@ def builtin_dir() -> str:
 
 
 def load_filters(extra_dirs=None) -> dict:
-    """name -> filter def (a pass dict). Later dirs win on a name clash."""
+    """name -> filter def (a pass dict). Later dirs win on a name clash.
+    $GHEE_FILTERS adds colon-separated directories after the builtins, so
+    every host (cli, serve, an embedding app) sees the same registry."""
+    env = [d for d in os.environ.get("GHEE_FILTERS", "").split(":") if d]
     out = {}
-    for d in [builtin_dir(), *(extra_dirs or [])]:
+    for d in [builtin_dir(), *env, *(extra_dirs or [])]:
         for p in sorted(glob.glob(os.path.join(d, "*.filter.json"))):
             with open(p, encoding="utf-8") as f:
                 fd = json.load(f)

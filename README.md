@@ -47,10 +47,11 @@ void main() {
 
 Optionally, a pass can also carry its GLSL inline in a `"code"` string.
 
-Render it to numbered PNGs:
+Render it to numbered PNGs (bundled scenes resolve by name; your own
+directories join the lookup through `$GHEE_SCENES`):
 
 ```
-ghee render bars.scene.json -o frame.####.png --frames 60
+ghee render bars -o frame.####.png --frames 60
 ```
 
 Or open the browser console on the bundled examples and edit the GLSL live:
@@ -69,14 +70,23 @@ The ghee C engine needs a compiler, CMake, and the GLES/DRM development headers.
 sudo apt install cmake pkg-config libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev
 ```
 
-Now you can install and compile the engine at once:
+The quickest taste needs no install at all; uv builds the engine on first run
+and caches it:
 
 ```
-pip install ghee-render
+uvx ghee-render serve --demo
 ```
 
-Optional extras: `ghee-render[console]` for the browser console,
-`ghee-render[drivers]` for the bundled SPI display drivers,
+To have it in a project or on the system:
+
+```
+uv add ghee-render
+```
+
+`pip install ghee-render` works too, inside a venv (Raspberry Pi OS and Debian
+refuse bare pip installs outside one).
+
+Optional extras: `ghee-render[drivers]` for the bundled SPI display drivers,
 `ghee-render[test]` for the test suite.
 
 If the GL stack is missing at install time the package still installs,
@@ -212,15 +222,24 @@ do that only on a network you trust.
 
 ## Filters
 
-A filter is a named single pass post process that a scene or a host can append
-after the scene's own passes:
+A filter is a named single pass post process appended after the scene's own
+passes. A scene can declare them:
 
 ```json
 { "passes": [ ... ], "filters": ["dither"] }
 ```
 
+or the CLI can add them ad hoc, in order, after whatever the scene declares:
+
+```
+ghee render bars --filters dither --display ssd1306
+```
+
 The bundled `dither` is an ordered 4x4 Bayer dither, which is what makes
-grayscale scenes readable on 1-bit panels.
+grayscale scenes readable on 1-bit panels. Your own `<name>.filter.json`
+files join the registry through `$GHEE_FILTERS` (colon-separated
+directories), and show up everywhere: the CLI, the console's picker, an
+embedding app.
 
 ## Hardware displays
 

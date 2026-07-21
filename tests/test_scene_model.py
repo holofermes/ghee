@@ -77,3 +77,11 @@ def test_adaptive_pacer():
     # a frame already longer than the period sleeps zero
     r = AdaptivePacer(factor=2.0, max_fps=60)
     assert r.sleep_for(0.020, 0.050) == 0.0
+
+
+def test_fixed_pacer():
+    from ghee.output import FixedPacer
+
+    p = FixedPacer(20)
+    assert abs(p.sleep_for(0.001, 0.010) - 0.040) < 1e-9
+    assert p.sleep_for(0.001, 0.060) == 0.0

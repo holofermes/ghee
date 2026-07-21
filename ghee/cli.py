@@ -10,6 +10,7 @@ Scene arrays get an animated placeholder; no real input is wired yet.
 """
 
 import argparse
+import signal
 import sys
 import time
 
@@ -20,11 +21,12 @@ def _size(s):
 
 
 def cmd_render(a):
-    from ghee import load_scene
+    from ghee import apply_filters, load_scene
     from ghee.console.feeds import demo_feed
     from ghee.engine import Renderer
 
     scene, ctrl = load_scene(a.scene)
+    apply_filters(scene, scene.filters)
     if a.display:
         from ghee.drivers import get_driver
 
@@ -61,9 +63,9 @@ def cmd_render(a):
     frames = a.frames if a.frames is not None else (0 if a.display else 1)
     pacer = None
     if a.display:
-        from ghee.output import AdaptivePacer
+        from ghee.output import AdaptivePacer, FixedPacer
 
-        pacer = AdaptivePacer()
+        pacer = FixedPacer(a.fps) if a.fps else AdaptivePacer()
         sink.turn_on()
     i = 0
     try:
@@ -131,6 +133,11 @@ def main(argv=None):
     )
     r.add_argument("--dri", help="DRI device, e.g. /dev/dri/renderD128")
     r.add_argument("--lib", help="path to libghee.so")
+    r.add_argument(
+        "--fps",
+        type=float,
+        help="fixed display frame rate (default: adapt to the panel's own speed)",
+    )
     r.set_defaults(fn=cmd_render)
 
     s = sub.add_parser("serve", help="run the editor console")
@@ -152,6 +159,9 @@ def main(argv=None):
     d.set_defaults(fn=cmd_displays)
 
     a = p.parse_args(argv)
+    # SIGTERM (timeout, systemd stop) must unwind like Ctrl-C so the finally
+    # blocks run and a display sink gets turned off, not left on a stale frame.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     a.fn(a)
 
 

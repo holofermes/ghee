@@ -47,6 +47,16 @@ class AdaptivePacer:
         return max(0.0, period - frame_s)
 
 
+class FixedPacer:
+    """Hold a display loop at an explicit frame rate."""
+
+    def __init__(self, fps):
+        self.period = 1.0 / fps
+
+    def sleep_for(self, write_s, frame_s):
+        return max(0.0, self.period - frame_s)
+
+
 class Output(abc.ABC):
     @abc.abstractmethod
     def write(self, frame):

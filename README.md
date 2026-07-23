@@ -54,13 +54,25 @@ directories join the lookup through `$GHEE_SCENES`):
 ghee render bars -o frame.####.png --frames 60
 ```
 
+Or stream it as H264 (raw Annex-B; pipe it anywhere):
+
+```
+ghee render trail --h264 - --fps 30 | mpv -
+```
+
+On boards with the VC4 hardware encoder (original Zero through Pi 4) the frame
+goes GPU -> encoder with no CPU copy; elsewhere ffmpeg/libx264 encodes the
+readback. `--bitrate` sets bits/s.
+
 Or open the browser console on the bundled examples and edit the GLSL live:
 
 ```
 ghee serve --demo
 ```
 
-`ghee serve <your_scenes_dir>` serves your own scenes instead.
+`ghee serve <your_scenes_dir>` serves your own scenes instead. The console
+preview streams H264 (WebCodecs) when the browser can, MJPEG otherwise; the
+`/h264` endpoint serves the framed stream, `/h264.html` a bare player.
 
 ## Install
 

@@ -13,6 +13,10 @@
 #include <string.h>
 #include <gbm.h>
 #include <fcntl.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <poll.h>
+#include <errno.h>
 #include "engine.h"
 
 #define ERROR_BUFFER_SIZE 512
@@ -60,6 +64,19 @@ struct GheeScene {
     bool profile;                        // when on, ghee_mp_render splits draw vs readback (adds a glFinish)
     double prof_draw_ms, prof_read_ms;   // last frame's split (profiling mode)
 
+    // display mode: scan the final buffer straight out to a KMS connector
+    // (zero CPU copy), instead of reading it back. Set up by ghee_display_create.
+    bool display_mode;
+    uint32_t disp_conn, disp_crtc;
+    drmModeModeInfo disp_mode;
+    drmModeCrtc *disp_saved;
+    struct gbm_bo *disp_prev;
+    bool disp_first;
+    GLuint blit_prog;
+    GLint blit_sampler, blit_flip;
+    GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
+    int preview_w, preview_h;
+
     char last_error[ERROR_BUFFER_SIZE];
 };
 
@@ -76,6 +93,17 @@ static const char *vertex_shader_source =
     "   gl_Position = position;"
     "   v_texCoord = texCoord;"
     "}";
+
+// Present blit: sample the final pass texture onto the window surface. Flips Y
+// because GL framebuffers are bottom-origin and the display scans out top-first.
+static const char *blit_fragment_source =
+    "#version 100\n"
+    "precision mediump float;"
+    "varying vec2 v_texCoord;"
+    "uniform sampler2D tex;"
+    "uniform float flipY;"
+    "void main() { vec2 uv = vec2(v_texCoord.x, mix(v_texCoord.y, 1.0 - v_texCoord.y, flipY));"
+    " gl_FragColor = texture2D(tex, uv); }";
 
 static void set_error(GheeScene *g, const char *fmt, ...) {
     va_list ap;
@@ -149,7 +177,7 @@ static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_so
 
 // ---- lifecycle ------------------------------------------------------------
 
-GheeScene *ghee_create(int width, int height, int components, const char *dri_device, char **err) {
+static GheeScene *create_impl(int width, int height, int components, const char *dri_device, int scanout, char **err) {
     static char early_err[ERROR_BUFFER_SIZE];
     early_err[0] = '\0';
 
@@ -170,7 +198,8 @@ GheeScene *ghee_create(int width, int height, int components, const char *dri_de
     g->gbm = gbm_create_device(g->drm_fd);
     if (!g->gbm) { snprintf(early_err, sizeof(early_err), "gbm_create_device failed"); goto fail; }
 
-    g->gbm_surface = gbm_surface_create(g->gbm, width, height, GBM_FORMAT_XRGB8888, GBM_BO_USE_RENDERING);
+    g->gbm_surface = gbm_surface_create(g->gbm, width, height, GBM_FORMAT_XRGB8888,
+        GBM_BO_USE_RENDERING | (scanout ? GBM_BO_USE_SCANOUT : 0));
     if (!g->gbm_surface) { snprintf(early_err, sizeof(early_err), "gbm_surface_create failed"); goto fail; }
 
     g->display = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, g->gbm, NULL);
@@ -258,8 +287,87 @@ fail:
     return NULL;
 }
 
+GheeScene *ghee_create(int width, int height, int components, const char *dri_device, char **err) {
+    return create_impl(width, height, components, dri_device, 0, err);
+}
+
+// One DRM framebuffer per GBM bo, cached in the bo's user data (added once).
+struct bo_fb { int drm_fd; uint32_t fb_id; };
+static void bo_destroy_fb(struct gbm_bo *bo, void *data) {
+    (void)bo;
+    struct bo_fb *f = data;
+    if (f) { if (f->fb_id) drmModeRmFB(f->drm_fd, f->fb_id); free(f); }
+}
+static uint32_t fb_for(GheeScene *g, struct gbm_bo *bo) {
+    struct bo_fb *cached = gbm_bo_get_user_data(bo);
+    if (cached) return cached->fb_id;
+    uint32_t handles[4] = { gbm_bo_get_handle(bo).u32, 0, 0, 0 };
+    uint32_t strides[4] = { gbm_bo_get_stride(bo), 0, 0, 0 };
+    uint32_t offsets[4] = { 0, 0, 0, 0 };
+    uint32_t fb = 0;
+    if (drmModeAddFB2(g->drm_fd, gbm_bo_get_width(bo), gbm_bo_get_height(bo),
+                      gbm_bo_get_format(bo), handles, strides, offsets, &fb, 0)) {
+        set_error(g, "drmModeAddFB2 failed: %s", strerror(errno));
+        return 0;
+    }
+    struct bo_fb *f = calloc(1, sizeof *f);
+    f->drm_fd = g->drm_fd; f->fb_id = fb;
+    gbm_bo_set_user_data(bo, f, bo_destroy_fb);
+    return fb;
+}
+
+// Render to a KMS connector instead of reading back. width/height should match
+// the connector mode (query it first). Must run as DRM master (root).
+GheeScene *ghee_display_create(int width, int height, const char *dri_device, char **err) {
+    GheeScene *g = create_impl(width, height, 4, dri_device, 1, err);
+    if (!g) return NULL;
+    if (drmSetMaster(g->drm_fd))
+        fprintf(stderr, "ghee: drmSetMaster failed: %s (run as root)\n", strerror(errno));
+
+    drmModeRes *res = drmModeGetResources(g->drm_fd);
+    if (!res) { if (err) *err = "drmModeGetResources failed"; ghee_destroy(g); return NULL; }
+    drmModeConnector *conn = NULL;
+    for (int i = 0; i < res->count_connectors; i++) {
+        drmModeConnector *c = drmModeGetConnector(g->drm_fd, res->connectors[i]);
+        if (c && c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) { conn = c; break; }
+        if (c) drmModeFreeConnector(c);
+    }
+    if (!conn) { if (err) *err = "no connected display"; drmModeFreeResources(res); ghee_destroy(g); return NULL; }
+    g->disp_conn = conn->connector_id;
+    drmModeEncoder *enc = drmModeGetEncoder(g->drm_fd, conn->encoder_id);
+    g->disp_crtc = (enc && enc->crtc_id) ? enc->crtc_id : res->crtcs[0];
+    if (enc) drmModeFreeEncoder(enc);
+    // Prefer the mode the display is already driving (honours a video= override
+    // or whatever the console negotiated); fall back to the connector's first.
+    drmModeCrtc *cur = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
+    g->disp_mode = (cur && cur->mode_valid) ? cur->mode : conn->modes[0];
+    if (cur) drmModeFreeCrtc(cur);
+    fprintf(stderr, "ghee: display %s %ux%u@%u on connector %u\n",
+            g->disp_mode.name, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
+            g->disp_mode.vrefresh, g->disp_conn);
+    drmModeFreeConnector(conn);
+    drmModeFreeResources(res);
+
+    make_current(g);
+    g->blit_prog = create_shader_program(g, blit_fragment_source);
+    if (!g->blit_prog) { if (err) *err = "blit shader failed"; ghee_destroy(g); return NULL; }
+    g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");
+    g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
+    g->display_mode = true;
+    g->disp_first = true;
+    return g;
+}
+
 void ghee_destroy(GheeScene *g) {
     if (!g) return;
+    if (g->display_mode) {
+        if (g->preview_fbo) { glDeleteFramebuffers(1, &g->preview_fbo); glDeleteTextures(1, &g->preview_tex); }
+        if (g->disp_saved)
+            drmModeSetCrtc(g->drm_fd, g->disp_saved->crtc_id, g->disp_saved->buffer_id,
+                           g->disp_saved->x, g->disp_saved->y, &g->disp_conn, 1, &g->disp_saved->mode);
+        if (g->disp_prev) gbm_surface_release_buffer(g->gbm_surface, g->disp_prev);
+        drmDropMaster(g->drm_fd);
+    }
     if (g->display != EGL_NO_DISPLAY) {
         ghee_mp_reset(g);   // make_current + free all pass programs/buffers
         eglMakeCurrent(g->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -402,14 +510,15 @@ void ghee_mp_set_float_texture(GheeScene *g, int pass, const char *name, const f
     g->mp_datatex_size[pass][idx] = count * rows;
 }
 
-void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
-    make_current(g);
-    struct timespec now, t_draw, t_read;
+static float elapsed_seconds(GheeScene *g) {
+    struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    const float elapsed = g->has_time_override ? g->time_override
-                        : (now.tv_sec - g->start_time.tv_sec)
-                        + (now.tv_nsec - g->start_time.tv_nsec) / 1e9f;
+    return g->has_time_override ? g->time_override
+        : (now.tv_sec - g->start_time.tv_sec) + (now.tv_nsec - g->start_time.tv_nsec) / 1e9f;
+}
 
+// Render every pass into its FBO (shared by readback and display present).
+static void render_passes(GheeScene *g, float elapsed) {
     for (int p = 0; p < g->mp_count; p++) {
         glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[p][g->mp_write[p]]);
         glViewport(0, 0, g->width, g->height);
@@ -418,10 +527,6 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
         for (int c = 0; c < g->mp_nchan[p]; c++) {
             const int src = g->mp_chan_src[p][c];
             if (src < 0) continue;
-            // A pass that reads an EARLIER pass (src < p, already rendered this
-            // frame) gets its CURRENT output -> same-frame forward chains.
-            // Self-feedback (src == p) or a not-yet-rendered later pass reads the
-            // PREVIOUS frame.
             const int rd = (src < p) ? g->mp_write[src] : 1 - g->mp_write[src];
             glActiveTexture(GL_TEXTURE0 + c);
             glBindTexture(GL_TEXTURE_2D, g->mp_tex[src][rd]);
@@ -439,6 +544,93 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
         }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
+}
+
+// Render + scan the final buffer straight out to the connector. If buffer_rgb
+// is non-NULL, also read the frame back (for a console MJPEG mirror).
+void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
+    if (!g->display_mode) return;
+    make_current(g);
+    render_passes(g, elapsed_seconds(g));
+    const int last = g->mp_count - 1;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, g->width, g->height);
+    glUseProgram(g->blit_prog);
+    glUniform1f(g->blit_flip, 1.0f);   // scanout: GL bottom-origin -> top-first display
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
+    glUniform1i(g->blit_sampler, 0);
+    glBindVertexArray(g->VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    eglSwapBuffers(g->display, g->surface);
+
+    struct gbm_bo *bo = gbm_surface_lock_front_buffer(g->gbm_surface);
+    uint32_t fb = fb_for(g, bo);
+    if (g->disp_first) {
+        g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
+        if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, fb, 0, 0, &g->disp_conn, 1, &g->disp_mode))
+            set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));
+        g->disp_first = false;
+    } else {
+        int waiting = 1;
+        if (!drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, &waiting)) {
+            drmEventContext ev = { .version = 2 };
+            struct pollfd pfd = { .fd = g->drm_fd, .events = POLLIN };
+            while (waiting) {
+                if (poll(&pfd, 1, 100) <= 0) break;
+                drmHandleEvent(g->drm_fd, &ev);
+                waiting = 0;  // any flip event completes the wait
+            }
+        }
+    }
+    if (g->disp_prev) gbm_surface_release_buffer(g->gbm_surface, g->disp_prev);
+    g->disp_prev = bo;
+    if (buffer_rgb && pw > 0 && ph > 0) {
+        // downscale the final frame into a small FBO on the GPU, then read that
+        // back (a few hundred KB instead of the full frame) so the flip cadence
+        // isn't stalled by a megapixel glReadPixels.
+        if (g->preview_w != pw || g->preview_h != ph) {
+            if (g->preview_fbo) { glDeleteFramebuffers(1, &g->preview_fbo); glDeleteTextures(1, &g->preview_tex); }
+            glGenTextures(1, &g->preview_tex);
+            glBindTexture(GL_TEXTURE_2D, g->preview_tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pw, ph, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glGenFramebuffers(1, &g->preview_fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, g->preview_fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g->preview_tex, 0);
+            g->preview_w = pw; g->preview_h = ph;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, g->preview_fbo);
+        glViewport(0, 0, pw, ph);
+        glUseProgram(g->blit_prog);
+        glUniform1f(g->blit_flip, 0.0f);   // preview matches glReadPixels orientation
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
+        glUniform1i(g->blit_sampler, 0);
+        glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
+        glEnableVertexAttribArray(1);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, pw, ph, GL_RGBA, GL_UNSIGNED_BYTE, buffer_rgb);
+    }
+    for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;
+}
+
+void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
+    make_current(g);
+    struct timespec now, t_draw, t_read;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    render_passes(g, elapsed_seconds(g));
 
     // Profiling: force the GPU to finish the passes so the readback timing below
     // is pure readback.

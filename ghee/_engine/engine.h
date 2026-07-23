@@ -41,6 +41,11 @@ typedef struct GheeScene GheeScene;
 // Returns NULL on failure; if err != NULL it receives a static error string.
 GheeScene *ghee_create(int width, int height, int components, const char *dri_device, char **err);
 
+// Like ghee_create, but renders straight to a connected KMS display (zero-copy
+// scanout instead of readback). width/height should match the connector mode.
+// Needs DRM master, so run as root. Present frames with ghee_mp_present.
+GheeScene *ghee_display_create(int width, int height, const char *dri_device, char **err);
+
 // Last error message for this instance ("" if none). Cleared on read.
 const char *ghee_last_error(GheeScene *g);
 
@@ -60,6 +65,9 @@ void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const flo
 // a 2D input (masks, host-rasterized text) sampled with normalized uv.
 void ghee_mp_set_float_texture(GheeScene *g, int pass, const char *name, const float *data, int count, int rows);
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb);
+// Render the passes and scan the final buffer out to the display (display mode
+// only). buffer_rgb non-NULL also reads the frame back (for a console mirror).
+void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 void ghee_mp_reset(GheeScene *g);
 
 void ghee_set_profiling(GheeScene *g, bool on);

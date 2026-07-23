@@ -106,7 +106,8 @@ class Renderer:
     thread must create the Renderer in that thread.
     """
 
-    def __init__(self, width, height, components=3, lib_path=None, dri_device=None):
+    def __init__(self, width, height, components=3, lib_path=None, dri_device=None,
+                 display=False):
         self.width = width
         self.height = height
         self.components = components
@@ -129,6 +130,21 @@ class Renderer:
             )
         self.lib: ctypes.CDLL = ctypes.CDLL(lib_path)
         self._declare()
+        self.display = display
+        err = ctypes.c_char_p()
+        if display:
+            # scan out to a KMS connector: needs the card (KMS) node, not a
+            # render node, and DRM master (run as root).
+            dev = dri_device or os.environ.get("GHEE_DRI") or "/dev/dri/card0"
+            self.handle = self.lib.ghee_display_create(
+                width, height, dev.encode(), ctypes.byref(err)
+            )
+            if not self.handle:
+                raise RuntimeError(
+                    f"ghee_display_create failed: "
+                    f"{err.value.decode() if err.value else 'unknown'}"
+                )
+            return
         # No explicit device: probe $GHEE_DRI, the Pi's card0, the desktop
         # render node, then any remaining cards. First one that creates wins.
         if dri_device:
@@ -160,6 +176,14 @@ class Renderer:
             ctypes.POINTER(ctypes.c_char_p),
         ]
         L.ghee_create.restype = ctypes.c_void_p
+        L.ghee_display_create.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_char_p),
+        ]
+        L.ghee_display_create.restype = ctypes.c_void_p
+        L.ghee_mp_present.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         L.ghee_destroy.argtypes = [ctypes.c_void_p]
         L.ghee_last_error.argtypes = [ctypes.c_void_p]
         L.ghee_last_error.restype = ctypes.c_char_p
@@ -262,29 +286,48 @@ class Renderer:
         render into its own buffer."""
         if out is None:
             out = self._rgb
-        if provider is not None:
-            for name, targets in self._feeds.items():
-                size = targets[0][1]
-                data = np.ascontiguousarray(
-                    provider(name, size), dtype=np.float32
-                ).reshape(-1)
-                last = self._feed_cache.get(name)
-                if last is not None and np.array_equal(last, data):
-                    continue  # unchanged input: the texture already holds it
-                self._feed_cache[name] = data.copy()
-                enc = name.encode("utf-8")
-                if isinstance(size, int):
-                    w, h = min(len(data), size), 1
-                else:
-                    w, h = size
-                    if len(data) < w * h:  # short feed: zero-pad to the full mask
-                        buf = np.zeros(w * h, dtype=np.float32)
-                        buf[: len(data)] = data
-                        data = buf
-                for pi, _sz in targets:
-                    self.lib.ghee_mp_set_float_texture(self.handle, pi, enc, data, w, h)
+        self._feed(provider)
         self.lib.ghee_mp_render(self.handle, out)
         return out
+
+    def _feed(self, provider):
+        """Upload each declared array for this frame (called once per unique name).
+        Unchanged inputs skip the re-upload."""
+        if provider is None:
+            return
+        for name, targets in self._feeds.items():
+            size = targets[0][1]
+            data = np.ascontiguousarray(
+                provider(name, size), dtype=np.float32
+            ).reshape(-1)
+            last = self._feed_cache.get(name)
+            if last is not None and np.array_equal(last, data):
+                continue  # unchanged input: the texture already holds it
+            self._feed_cache[name] = data.copy()
+            enc = name.encode("utf-8")
+            if isinstance(size, int):
+                w, h = min(len(data), size), 1
+            else:
+                w, h = size
+                if len(data) < w * h:  # short feed: zero-pad to the full mask
+                    buf = np.zeros(w * h, dtype=np.float32)
+                    buf[: len(data)] = data
+                    data = buf
+            for pi, _sz in targets:
+                self.lib.ghee_mp_set_float_texture(self.handle, pi, enc, data, w, h)
+
+    def present(self, provider=None, out=None, out_size=None):
+        """Display mode only: feed arrays, render the passes, and scan the final
+        buffer straight out to the connected display. Pass out=<h,w,4 buffer> and
+        out_size=(w, h) to also read back a GPU-downscaled preview (a few hundred
+        KB, not the full frame); None skips the readback."""
+        self._feed(provider)
+        if out is not None and out_size is not None:
+            buf = out.ctypes.data_as(ctypes.c_void_p)
+            pw, ph = out_size
+        else:
+            buf, pw, ph = None, 0, 0
+        self.lib.ghee_mp_present(self.handle, buf, pw, ph)
 
     def set_param(self, pass_name, name, ptype, value):
         """Set one uniform on a pass live (no recompile). False if the pass/uniform

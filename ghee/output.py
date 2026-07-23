@@ -39,9 +39,7 @@ class AdaptivePacer:
         """Seconds to sleep after a frame: write_s = this frame's sink write,
         frame_s = the whole frame so far (render + write)."""
         self.write_ema = (
-            write_s
-            if self.write_ema is None
-            else self.write_ema * 0.9 + write_s * 0.1
+            write_s if self.write_ema is None else self.write_ema * 0.9 + write_s * 0.1
         )
         period = max(self.write_ema * self.factor, self.min_period)
         return max(0.0, period - frame_s)

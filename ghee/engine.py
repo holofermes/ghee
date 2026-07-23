@@ -121,8 +121,16 @@ class Renderer:
     thread must create the Renderer in that thread.
     """
 
-    def __init__(self, width, height, components=3, lib_path=None, dri_device=None,
-                 display=False, rgb565=False):
+    def __init__(
+        self,
+        width,
+        height,
+        components=3,
+        lib_path=None,
+        dri_device=None,
+        display=False,
+        rgb565=False,
+    ):
         self.width = width
         self.height = height
         self.components = components
@@ -198,7 +206,12 @@ class Renderer:
             ctypes.POINTER(ctypes.c_char_p),
         ]
         L.ghee_display_create.restype = ctypes.c_void_p
-        L.ghee_mp_present.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        L.ghee_mp_present.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
         L.ghee_destroy.argtypes = [ctypes.c_void_p]
         L.ghee_last_error.argtypes = [ctypes.c_void_p]
         L.ghee_last_error.restype = ctypes.c_char_p

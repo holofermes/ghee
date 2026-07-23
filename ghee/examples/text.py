@@ -39,12 +39,22 @@ class Text(SceneController):
                     code=SHADER,
                     arrays=[ArrayInput("text", self._bake())],
                     params={
-                        "speed": Param("speed", "float", 0.1, min=-0.6, max=0.6, step=0.01),
-                        "threshold": Param("threshold", "float", 0.4, min=0.05, max=0.95, step=0.01),
+                        "speed": Param(
+                            "speed", "float", 0.1, min=-0.6, max=0.6, step=0.01
+                        ),
+                        "threshold": Param(
+                            "threshold", "float", 0.4, min=0.05, max=0.95, step=0.01
+                        ),
                         "bg": Param("bg", "float", 0.02, min=0.0, max=1.0, step=0.01),
-                        "ink_r": Param("ink_r", "float", 0.2, min=0.0, max=1.0, step=0.01),
-                        "ink_g": Param("ink_g", "float", 1.0, min=0.0, max=1.0, step=0.01),
-                        "ink_b": Param("ink_b", "float", 0.5, min=0.0, max=1.0, step=0.01),
+                        "ink_r": Param(
+                            "ink_r", "float", 0.2, min=0.0, max=1.0, step=0.01
+                        ),
+                        "ink_g": Param(
+                            "ink_g", "float", 1.0, min=0.0, max=1.0, step=0.01
+                        ),
+                        "ink_b": Param(
+                            "ink_b", "float", 0.5, min=0.0, max=1.0, step=0.01
+                        ),
                     },
                 )
             ]

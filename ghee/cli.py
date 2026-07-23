@@ -137,9 +137,17 @@ def cmd_serve(a):
         sys.exit("serve: pass a scenes directory or --demo, not both")
     if not a.demo and not a.scenes:
         sys.exit("serve: pass a scenes directory, or --demo for the bundled examples")
-    run(scenes_dir=a.scenes, size=a.size, port=a.port, lib_path=a.lib, host=a.host,
-        display=a.display, rgb565=a.rgb565,
-        preview_max=a.preview_max, preview_fps=a.preview_fps)
+    run(
+        scenes_dir=a.scenes,
+        size=a.size,
+        port=a.port,
+        lib_path=a.lib,
+        host=a.host,
+        display=a.display,
+        rgb565=a.rgb565,
+        preview_max=a.preview_max,
+        preview_fps=a.preview_fps,
+    )
 
 
 def cmd_displays(a):
@@ -154,7 +162,9 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("render", help="render a scene to images or a display")
-    r.add_argument("scene", help="scene file, or a name from $GHEE_SCENES / the examples")
+    r.add_argument(
+        "scene", help="scene file, or a name from $GHEE_SCENES / the examples"
+    )
     r.add_argument("-o", "--output", help="image pattern, e.g. frame.####.jpg")
     r.add_argument("--display", help="render to a hardware display by name")
     r.add_argument(

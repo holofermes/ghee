@@ -60,7 +60,7 @@ def test_find_scene_names(tmp_path, monkeypatch):
     from ghee.cli import _find_scene
 
     monkeypatch.delenv("GHEE_SCENES", raising=False)
-    assert _find_scene("bars").endswith("bars")          # bundled examples fallback
+    assert _find_scene("bars").endswith("bars")  # bundled examples fallback
     (tmp_path / "mine.scene.json").write_text("{}")
     monkeypatch.setenv("GHEE_SCENES", str(tmp_path))
     assert _find_scene("mine") == str(tmp_path / "mine")

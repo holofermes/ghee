@@ -201,11 +201,15 @@ def test_2d_array_input(renderer):
 
     from ghee import ArrayInput, Pass, Scene
 
-    scene = Scene(passes=[Pass(
-        name="main",
-        code="void main(){ gl_FragColor = vec4(vec3(mask_sample2(v_texCoord)), 1.0); }",
-        arrays=[ArrayInput("mask", (8, 4))],
-    )])
+    scene = Scene(
+        passes=[
+            Pass(
+                name="main",
+                code="void main(){ gl_FragColor = vec4(vec3(mask_sample2(v_texCoord)), 1.0); }",
+                arrays=[ArrayInput("mask", (8, 4))],
+            )
+        ]
+    )
     assert renderer.setup(scene) == ""
     m = np.linspace(0.0, 1.0, 32, dtype=np.float32)  # 8x4 ramp
     frame = renderer.render(lambda name, size: m)

@@ -57,11 +57,13 @@ _provider = None
 _hwinfo = default_hwinfo
 _scenes_dir = ""
 _read_only = False  # bundled examples live in the package; never write there
-_display = False    # also scan out to a connected KMS display (headless Pi, root)
-_rgb565 = False     # display scanout in 16-bit color (halves GPU store + scanout bytes)
-_preview_max = 480  # longest side of the browser preview (downscaled off the render thread)
-_preview_fps = 15   # browser preview refresh cap; the display/panel stays full speed
-_raw = {"rgb": None, "seq": 0}   # latest full frame handed to the encoder thread
+_display = False  # also scan out to a connected KMS display (headless Pi, root)
+_rgb565 = False  # display scanout in 16-bit color (halves GPU store + scanout bytes)
+_preview_max = (
+    480  # longest side of the browser preview (downscaled off the render thread)
+)
+_preview_fps = 15  # browser preview refresh cap; the display/panel stays full speed
+_raw = {"rgb": None, "seq": 0}  # latest full frame handed to the encoder thread
 _raw_lock = threading.Lock()
 
 
@@ -82,6 +84,7 @@ def _load_resolved(name):
     scene, controller = load_scene(_scene_path(name))
     apply_filters(scene, scene.filters)
     return scene, controller
+
 
 _latest = {"jpg": None, "seq": 0}
 _lock = threading.Lock()
@@ -125,9 +128,15 @@ def _make_renderer():
     the Pi (card0) and on desktop Mesa (renderD128). components=4 because desktop Mesa
     rejects an RGB glReadPixels; the frame is encoded to RGB for the browser anyway."""
     if _display:
-        return Renderer(W, H, components=4, display=True, rgb565=_rgb565,
-                        dri_device=os.environ.get("GHEE_DRI") or "/dev/dri/card0",
-                        lib_path=_lib_path)
+        return Renderer(
+            W,
+            H,
+            components=4,
+            display=True,
+            rgb565=_rgb565,
+            dri_device=os.environ.get("GHEE_DRI") or "/dev/dri/card0",
+            lib_path=_lib_path,
+        )
     errs = []
     for dev in [
         os.environ.get("GHEE_DRI"),
@@ -406,7 +415,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _save(self, body):
         if _read_only:
-            return self._send(403, "demo scenes are read-only; serve your own directory to save")
+            return self._send(
+                403, "demo scenes are read-only; serve your own directory to save"
+            )
         try:
             d = json.loads(body.decode("utf-8"))
             name = d["name"]
@@ -503,7 +514,13 @@ def run(
     if not NAMES:
         raise SystemExit(f"no .scene.json in {scenes_dir}")
     _stat["active"] = NAMES[0]
-    _stat["display"] = {"name": "preview", "w": W, "h": H, "format": "rgba", "rotation": 0}
+    _stat["display"] = {
+        "name": "preview",
+        "w": W,
+        "h": H,
+        "format": "rgba",
+        "rotation": 0,
+    }
     _lib_path = lib_path or DEFAULT_LIB
     threading.Thread(target=render_loop, daemon=True).start()
     threading.Thread(target=encoder_loop, daemon=True).start()

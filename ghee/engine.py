@@ -122,7 +122,7 @@ class Renderer:
     """
 
     def __init__(self, width, height, components=3, lib_path=None, dri_device=None,
-                 display=False):
+                 display=False, rgb565=False):
         self.width = width
         self.height = height
         self.components = components
@@ -151,7 +151,7 @@ class Renderer:
             # render node, and DRM master (run as root).
             dev = dri_device or os.environ.get("GHEE_DRI") or "/dev/dri/card0"
             self.handle = self.lib.ghee_display_create(
-                width, height, dev.encode(), ctypes.byref(err)
+                width, height, dev.encode(), 1 if rgb565 else 0, ctypes.byref(err)
             )
             if not self.handle:
                 raise RuntimeError(
@@ -194,6 +194,7 @@ class Renderer:
             ctypes.c_int,
             ctypes.c_int,
             ctypes.c_char_p,
+            ctypes.c_int,
             ctypes.POINTER(ctypes.c_char_p),
         ]
         L.ghee_display_create.restype = ctypes.c_void_p

@@ -58,6 +58,7 @@ _hwinfo = default_hwinfo
 _scenes_dir = ""
 _read_only = False  # bundled examples live in the package; never write there
 _display = False    # also scan out to a connected KMS display (headless Pi, root)
+_rgb565 = False     # display scanout in 16-bit color (halves GPU store + scanout bytes)
 _preview_max = 480  # longest side of the browser preview (downscaled off the render thread)
 _preview_fps = 15   # browser preview refresh cap; the display/panel stays full speed
 _raw = {"rgb": None, "seq": 0}   # latest full frame handed to the encoder thread
@@ -124,7 +125,7 @@ def _make_renderer():
     the Pi (card0) and on desktop Mesa (renderD128). components=4 because desktop Mesa
     rejects an RGB glReadPixels; the frame is encoded to RGB for the browser anyway."""
     if _display:
-        return Renderer(W, H, components=4, display=True,
+        return Renderer(W, H, components=4, display=True, rgb565=_rgb565,
                         dri_device=os.environ.get("GHEE_DRI") or "/dev/dri/card0",
                         lib_path=_lib_path)
     errs = []
@@ -475,6 +476,7 @@ def run(
     lib_path=None,
     host="127.0.0.1",
     display=False,
+    rgb565=False,
     preview_max=480,
     preview_fps=15,
 ):
@@ -484,8 +486,9 @@ def run(
     host defaults to loopback; the console has no auth and compiles POSTed GLSL,
     so pass "0.0.0.0" only to expose it on a network you trust."""
     global _lib_path, WEB, SCENES, NAMES, W, H, _provider, _hwinfo
-    global _scenes_dir, _read_only, _display, _preview_max, _preview_fps
+    global _scenes_dir, _read_only, _display, _rgb565, _preview_max, _preview_fps
     _display = display
+    _rgb565 = rgb565
     _preview_max = preview_max
     _preview_fps = preview_fps
     _provider = _make_provider(arrays or {})

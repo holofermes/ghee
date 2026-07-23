@@ -52,6 +52,7 @@ struct GheeScene {
     int mp_chan_src[MP_MAX_PASSES][MP_MAX_CHANNELS];  // channel -> source pass index, -1 = none
     int mp_nchan[MP_MAX_PASSES];
     GLint mp_timeLoc[MP_MAX_PASSES];
+    GLint mp_vflipLoc[MP_MAX_PASSES];    // shared-VS y-flip (direct scanout draws)
 
     // data textures: a float array bound as a 1xN sampler (<name>_tex) so a computed
     // index samples it in one fetch, dodging the VC4 uniform-array unroll cap.
@@ -70,8 +71,11 @@ struct GheeScene {
     uint32_t disp_conn, disp_crtc;
     drmModeModeInfo disp_mode;
     drmModeCrtc *disp_saved;
-    struct gbm_bo *disp_prev;
+    struct gbm_bo *disp_prev;    // buffer of the most recent flip (pending or on glass)
+    struct gbm_bo *disp_shown;   // buffer of the flip before that (still on glass until
+                                 // the pending one completes; released after)
     bool disp_first;
+    bool flip_pending;           // a submitted page flip whose event hasn't been reaped
     GLuint blit_prog;
     GLint blit_sampler, blit_flip;
     GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
@@ -84,13 +88,17 @@ static double ms_between(struct timespec a, struct timespec b) {
     return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
 }
 
+// vflip = -1 renders geometry y-mirrored: used when a pass draws straight into
+// the scanout buffer (GL is bottom-origin, the display scans top-first). The
+// fragment's v_texCoord is untouched, so user-shader semantics don't change.
 static const char *vertex_shader_source =
     "#version 100\n"
     "attribute vec4 position;"
     "attribute vec2 texCoord;"
+    "uniform float vflip;"
     "varying vec2 v_texCoord;"
     "void main() {"
-    "   gl_Position = position;"
+    "   gl_Position = vec4(position.x, position.y * vflip, position.z, position.w);"
     "   v_texCoord = texCoord;"
     "}";
 
@@ -104,6 +112,8 @@ static const char *blit_fragment_source =
     "uniform float flipY;"
     "void main() { vec2 uv = vec2(v_texCoord.x, mix(v_texCoord.y, 1.0 - v_texCoord.y, flipY));"
     " gl_FragColor = texture2D(tex, uv); }";
+
+static void wait_flip(GheeScene *g);   // defined with ghee_mp_present below
 
 static void set_error(GheeScene *g, const char *fmt, ...) {
     va_list ap;
@@ -177,7 +187,7 @@ static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_so
 
 // ---- lifecycle ------------------------------------------------------------
 
-static GheeScene *create_impl(int width, int height, int components, const char *dri_device, int scanout, char **err) {
+static GheeScene *create_impl(int width, int height, int components, const char *dri_device, int scanout, int rgb565, char **err) {
     static char early_err[ERROR_BUFFER_SIZE];
     early_err[0] = '\0';
 
@@ -197,10 +207,6 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     }
     g->gbm = gbm_create_device(g->drm_fd);
     if (!g->gbm) { snprintf(early_err, sizeof(early_err), "gbm_create_device failed"); goto fail; }
-
-    g->gbm_surface = gbm_surface_create(g->gbm, width, height, GBM_FORMAT_XRGB8888,
-        GBM_BO_USE_RENDERING | (scanout ? GBM_BO_USE_SCANOUT : 0));
-    if (!g->gbm_surface) { snprintf(early_err, sizeof(early_err), "gbm_surface_create failed"); goto fail; }
 
     g->display = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, g->gbm, NULL);
     if (g->display == EGL_NO_DISPLAY) { snprintf(early_err, sizeof(early_err), "eglGetPlatformDisplay failed"); goto fail; }
@@ -222,16 +228,67 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         EGL_ALPHA_SIZE, alphaSize,
         EGL_DEPTH_SIZE, 24,
         EGL_STENCIL_SIZE, 8,
-        EGL_SAMPLE_BUFFERS, 1,
-        EGL_SAMPLES, 4,
+        // no MSAA: ghee only draws fullscreen quads, so multisampling has zero
+        // visual effect and (on VC4) quadruples the per-pixel tile work
+        EGL_SAMPLE_BUFFERS, 0,
+        EGL_SAMPLES, 0,
         EGL_NONE
     };
-    EGLConfig config;
-    EGLint numConfigs;
-    if (!eglChooseConfig(g->display, configAttribs, &config, 1, &numConfigs) || numConfigs < 1) {
-        snprintf(early_err, sizeof(early_err), "eglChooseConfig failed: 0x%X", eglGetError());
-        goto fail;
+    // Optional (rgb565): display scanout renders RGB565, halving the bytes
+    // through the GPU's tile-store path (its measured ~300MB/s is the frame
+    // rate ceiling on VC4-class boards) and halving scanout traffic. The HVS
+    // expands 565 to the wire's 888 during scanout, so the panel sees a
+    // normal HDMI signal; the only cost is color depth. GL dithering (on by
+    // default) hides most banding. Intermediate pass FBOs stay RGBA8888.
+    const EGLint configAttribs565[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RED_SIZE, 5,
+        EGL_GREEN_SIZE, 6,
+        EGL_BLUE_SIZE, 5,
+        EGL_ALPHA_SIZE, 0,
+        EGL_DEPTH_SIZE, 24,
+        EGL_STENCIL_SIZE, 8,
+        // no MSAA on the scanout surface: 4x samples quadruple the per-pixel
+        // tile work for zero visual gain on fullscreen-quad scenes
+        EGL_SAMPLE_BUFFERS, 0,
+        EGL_SAMPLES, 0,
+        EGL_NONE
+    };
+    EGLConfig configs[64];
+    EGLConfig config = NULL;
+    EGLint numConfigs = 0;
+    uint32_t surf_fmt = GBM_FORMAT_XRGB8888;
+    if (scanout && rgb565 &&
+        eglChooseConfig(g->display, configAttribs565, configs, 64, &numConfigs) &&
+        numConfigs > 0) {
+        // the chosen config's native visual must equal the GBM surface format,
+        // so filter for a true 565 visual rather than trusting sort order
+        for (int i = 0; i < numConfigs; i++) {
+            EGLint vid = 0;
+            if (eglGetConfigAttrib(g->display, configs[i], EGL_NATIVE_VISUAL_ID, &vid) &&
+                (uint32_t)vid == GBM_FORMAT_RGB565) {
+                config = configs[i];
+                surf_fmt = GBM_FORMAT_RGB565;
+                break;
+            }
+        }
     }
+    if (!config) {   // offscreen, or no 565 visual on this driver: 888 as before
+        if (!eglChooseConfig(g->display, configAttribs, configs, 1, &numConfigs) || numConfigs < 1) {
+            snprintf(early_err, sizeof(early_err), "eglChooseConfig failed: 0x%X", eglGetError());
+            goto fail;
+        }
+        config = configs[0];
+    }
+    if (scanout)
+        fprintf(stderr, "ghee: scanout format %s\n",
+                surf_fmt == GBM_FORMAT_RGB565 ? "RGB565" : "XRGB8888");
+
+    g->gbm_surface = gbm_surface_create(g->gbm, width, height, surf_fmt,
+        GBM_BO_USE_RENDERING | (scanout ? GBM_BO_USE_SCANOUT : 0));
+    if (!g->gbm_surface) { snprintf(early_err, sizeof(early_err), "gbm_surface_create failed"); goto fail; }
+
     g->surface = eglCreatePlatformWindowSurface(g->display, config, g->gbm_surface, NULL);
     if (g->surface == EGL_NO_SURFACE) {
         // Desktop Mesa rejects the GBM window surface (EGL_BAD_MATCH) that the Pi's
@@ -288,7 +345,7 @@ fail:
 }
 
 GheeScene *ghee_create(int width, int height, int components, const char *dri_device, char **err) {
-    return create_impl(width, height, components, dri_device, 0, err);
+    return create_impl(width, height, components, dri_device, 0, 0, err);
 }
 
 // One DRM framebuffer per GBM bo, cached in the bo's user data (added once).
@@ -318,8 +375,9 @@ static uint32_t fb_for(GheeScene *g, struct gbm_bo *bo) {
 
 // Render to a KMS connector instead of reading back. width/height should match
 // the connector mode (query it first). Must run as DRM master (root).
-GheeScene *ghee_display_create(int width, int height, const char *dri_device, char **err) {
-    GheeScene *g = create_impl(width, height, 4, dri_device, 1, err);
+// rgb565 renders/scans 16-bit color: half the tile-store + scanout bytes.
+GheeScene *ghee_display_create(int width, int height, const char *dri_device, int rgb565, char **err) {
+    GheeScene *g = create_impl(width, height, 4, dri_device, 1, rgb565, err);
     if (!g) return NULL;
     if (drmSetMaster(g->drm_fd))
         fprintf(stderr, "ghee: drmSetMaster failed: %s (run as root)\n", strerror(errno));
@@ -353,6 +411,9 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, ch
     if (!g->blit_prog) { if (err) *err = "blit shader failed"; ghee_destroy(g); return NULL; }
     g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");
     g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
+    glUseProgram(g->blit_prog);   // shared VS: neutral vflip (blit flips in the fragment)
+    GLint bvf = glGetUniformLocation(g->blit_prog, "vflip");
+    if (bvf >= 0) glUniform1f(bvf, 1.0f);
     g->display_mode = true;
     g->disp_first = true;
     return g;
@@ -362,9 +423,11 @@ void ghee_destroy(GheeScene *g) {
     if (!g) return;
     if (g->display_mode) {
         if (g->preview_fbo) { glDeleteFramebuffers(1, &g->preview_fbo); glDeleteTextures(1, &g->preview_tex); }
+        wait_flip(g);   // reap any in-flight flip before tearing the CRTC down
         if (g->disp_saved)
             drmModeSetCrtc(g->drm_fd, g->disp_saved->crtc_id, g->disp_saved->buffer_id,
                            g->disp_saved->x, g->disp_saved->y, &g->disp_conn, 1, &g->disp_saved->mode);
+        if (g->disp_shown) gbm_surface_release_buffer(g->gbm_surface, g->disp_shown);
         if (g->disp_prev) gbm_surface_release_buffer(g->gbm_surface, g->disp_prev);
         drmDropMaster(g->drm_fd);
     }
@@ -425,6 +488,8 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
     GLint rloc = glGetUniformLocation(prog, "resolution");
     if (rloc >= 0) glUniform2f(rloc, (float)g->width, (float)g->height);
     g->mp_timeLoc[idx] = glGetUniformLocation(prog, "time");
+    g->mp_vflipLoc[idx] = glGetUniformLocation(prog, "vflip");
+    if (g->mp_vflipLoc[idx] >= 0) glUniform1f(g->mp_vflipLoc[idx], 1.0f);
     return idx;
 }
 
@@ -518,11 +583,21 @@ static float elapsed_seconds(GheeScene *g) {
 }
 
 // Render every pass into its FBO (shared by readback and display present).
-static void render_passes(GheeScene *g, float elapsed) {
+// direct_last: draw the FINAL pass straight into the current backbuffer
+// (display scanout) instead of its FBO texture, y-flipped via the shared VS.
+// Only valid when nothing samples the last pass's output (no channel routes to
+// it and no preview readback this frame) -- the caller guarantees that.
+static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     for (int p = 0; p < g->mp_count; p++) {
-        glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[p][g->mp_write[p]]);
+        const bool direct = direct_last && p == g->mp_count - 1;
+        glBindFramebuffer(GL_FRAMEBUFFER, direct ? 0 : g->mp_fbo[p][g->mp_write[p]]);
         glViewport(0, 0, g->width, g->height);
+        // The fullscreen quad overwrites every pixel, so the clear is invisible;
+        // on tiled GPUs (VC4) it flags the target as not-loaded, skipping a
+        // full-frame tile read from memory before the draw.
+        glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(g->mp_program[p]);
+        if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], direct ? -1.0f : 1.0f);
         if (g->mp_timeLoc[p] >= 0) glUniform1f(g->mp_timeLoc[p], elapsed);
         for (int c = 0; c < g->mp_nchan[p]; c++) {
             const int src = g->mp_chan_src[p][c];
@@ -546,28 +621,51 @@ static void render_passes(GheeScene *g, float elapsed) {
     }
 }
 
+// Reap a previously submitted page flip (blocks until its vblank event).
+static void wait_flip(GheeScene *g) {
+    if (!g->flip_pending) return;
+    drmEventContext ev = { .version = 2 };
+    struct pollfd pfd = { .fd = g->drm_fd, .events = POLLIN };
+    if (poll(&pfd, 1, 100) > 0) drmHandleEvent(g->drm_fd, &ev);
+    g->flip_pending = false;
+}
+
 // Render + scan the final buffer straight out to the connector. If buffer_rgb
 // is non-NULL, also read the frame back (for a console MJPEG mirror).
+//
+// Two throughput choices matter on VC4-class memory:
+//  * direct scanout: when nothing samples the last pass (no channel routes to
+//    it, no preview this frame), it draws straight into the backbuffer,
+//    skipping a full-res texture store + blit (2/3 of the frame's traffic).
+//  * pipelined flip: the flip is submitted and reaped on the NEXT present, so
+//    feed/render overlap scanout instead of serializing with the vblank.
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (!g->display_mode) return;
     make_current(g);
-    render_passes(g, elapsed_seconds(g));
     const int last = g->mp_count - 1;
+    bool direct = !(buffer_rgb && pw > 0 && ph > 0);
+    for (int p = 0; p < g->mp_count && direct; p++)
+        for (int c = 0; c < g->mp_nchan[p]; c++)
+            if (g->mp_chan_src[p][c] == last) { direct = false; break; }
+    render_passes(g, elapsed_seconds(g), direct);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, g->width, g->height);
-    glUseProgram(g->blit_prog);
-    glUniform1f(g->blit_flip, 1.0f);   // scanout: GL bottom-origin -> top-first display
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
-    glUniform1i(g->blit_sampler, 0);
-    glBindVertexArray(g->VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
-    glEnableVertexAttribArray(1);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (!direct) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, g->width, g->height);
+        glClear(GL_COLOR_BUFFER_BIT);   // skip the tile load (see render_passes)
+        glUseProgram(g->blit_prog);
+        glUniform1f(g->blit_flip, 1.0f);   // scanout: GL bottom-origin -> top-first display
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
+        glUniform1i(g->blit_sampler, 0);
+        glBindVertexArray(g->VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
+        glEnableVertexAttribArray(1);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
     eglSwapBuffers(g->display, g->surface);
 
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(g->gbm_surface);
@@ -577,20 +675,17 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, fb, 0, 0, &g->disp_conn, 1, &g->disp_mode))
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));
         g->disp_first = false;
+        g->disp_prev = bo;               // on glass now (SetCrtc is immediate)
     } else {
-        int waiting = 1;
-        if (!drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, &waiting)) {
-            drmEventContext ev = { .version = 2 };
-            struct pollfd pfd = { .fd = g->drm_fd, .events = POLLIN };
-            while (waiting) {
-                if (poll(&pfd, 1, 100) <= 0) break;
-                drmHandleEvent(g->drm_fd, &ev);
-                waiting = 0;  // any flip event completes the wait
-            }
-        }
+        wait_flip(g);                    // the previous flip's buffer is on glass
+        if (g->disp_shown) gbm_surface_release_buffer(g->gbm_surface, g->disp_shown);
+        g->disp_shown = g->disp_prev;    // displaced once the flip below completes
+        if (!drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL))
+            g->flip_pending = true;
+        else
+            set_error(g, "drmModePageFlip failed: %s", strerror(errno));
+        g->disp_prev = bo;
     }
-    if (g->disp_prev) gbm_surface_release_buffer(g->gbm_surface, g->disp_prev);
-    g->disp_prev = bo;
     if (buffer_rgb && pw > 0 && ph > 0) {
         // downscale the final frame into a small FBO on the GPU, then read that
         // back (a few hundred KB instead of the full frame) so the flip cadence
@@ -630,7 +725,7 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb) {
     make_current(g);
     struct timespec now, t_draw, t_read;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    render_passes(g, elapsed_seconds(g));
+    render_passes(g, elapsed_seconds(g), false);
 
     // Profiling: force the GPU to finish the passes so the readback timing below
     // is pure readback.

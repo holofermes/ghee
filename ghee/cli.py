@@ -138,7 +138,8 @@ def cmd_serve(a):
     if not a.demo and not a.scenes:
         sys.exit("serve: pass a scenes directory, or --demo for the bundled examples")
     run(scenes_dir=a.scenes, size=a.size, port=a.port, lib_path=a.lib, host=a.host,
-        display=a.display, preview_max=a.preview_max, preview_fps=a.preview_fps)
+        display=a.display, rgb565=a.rgb565,
+        preview_max=a.preview_max, preview_fps=a.preview_fps)
 
 
 def cmd_displays(a):
@@ -201,6 +202,12 @@ def main(argv=None):
         "--display",
         action="store_true",
         help="also scan out to a connected display (headless Pi, run as root)",
+    )
+    s.add_argument(
+        "--rgb565",
+        action="store_true",
+        help="display scanout in 16-bit color: halves the GPU store and scanout "
+        "bandwidth (worth it on VC4-class boards); slight banding in gradients",
     )
     s.add_argument(
         "--preview-max",

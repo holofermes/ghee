@@ -98,10 +98,18 @@ def cmd_render(a):
 
         pacer = FixedPacer(a.fps) if a.fps else AdaptivePacer()
         sink.turn_on()
+    # An endless display run may skip frames a controller reports clean
+    # (dirty=False): no render, no sink write, the panel keeps its last frame.
+    # Finite renders (--frames, -o) draw every frame regardless.
+    gated = a.display and frames == 0 and ctrl is not None
     i = 0
     try:
         while frames == 0 or i < frames:
             t0 = time.monotonic()
+            if gated and i > 0 and not ctrl.dirty(i, i / 60.0):
+                i += 1
+                time.sleep(pacer.idle_period())
+                continue
             if ctrl is not None:
                 ctrl.update(r, i, i / 60.0)
             rgb = r.render(lambda name, size, i=i: provider(name, size, i))

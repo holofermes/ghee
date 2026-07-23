@@ -654,6 +654,10 @@ void ghee_set_profiling(GheeScene *g, bool on) { g->profile = on; }
 
 void ghee_set_time(GheeScene *g, float t) { g->time_override = t; g->has_time_override = true; }
 
+// The display mode's refresh rate in Hz; 0 when not in display mode
+// (GheeScene is calloc'd, so disp_mode stays zeroed without a display).
+int ghee_display_vrefresh(GheeScene *g) { return g ? (int)g->disp_mode.vrefresh : 0; }
+
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms) {
     if (draw_ms) *draw_ms = g->prof_draw_ms;
     if (read_ms) *read_ms = g->prof_read_ms;

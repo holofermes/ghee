@@ -73,6 +73,7 @@ void ghee_mp_reset(GheeScene *g);
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
+int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
 
 void ghee_pack_frame(int width, int height, int components, int bw,
                     const uint8_t *rgb, uint8_t *packed);

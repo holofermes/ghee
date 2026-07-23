@@ -40,12 +40,21 @@ class SceneController:
         """Called once after the scene compiles (init state, future: load textures)."""
 
     def provide(self, name: str, size: int, frame: int) -> ArrayLike | None:
-        """Array-like floats for a declared array this frame, or None to fall through
-        to the host's source / a default."""
+        """Array-like floats for a declared array this frame, None to fall through
+        to the host's source / a default, or ghee.UNCHANGED to declare the
+        engine's texture already holds this array (skips the upload; push real
+        data again after setup(), which is when engine textures reset)."""
         return None
 
     def update(self, renderer, frame: int, t: float) -> None:
         """Per-frame hook before the draw (e.g. set live params)."""
+
+    def dirty(self, frame: int, t: float) -> bool:
+        """False = this frame would look identical to the last one, so the loop
+        may skip it entirely (the display keeps scanning out the last flipped
+        buffer). Default True: render every frame, as any scene animating on
+        `time` needs. `frame` advances on skipped frames too."""
+        return True
 
 
 def _import_file(path):

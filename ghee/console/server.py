@@ -168,6 +168,29 @@ def encoder_loop():
             _latest["seq"] += 1
 
 
+def _should_render(force, ctrl, frame, t):
+    """A frame draws when something demands it: a queued command, the very
+    first frame (the sink must show something once), a scene with no
+    controller (free-running), or a controller reporting dirty."""
+    if force or frame == 0 or ctrl is None:
+        return True
+    return bool(ctrl.dirty(frame, t))
+
+
+def _skip_interval(display_hz, nclients, preview_fps, render_period):
+    """How long a clean (dirty=False) scene sleeps before re-polling, derived
+    from whoever consumes frames: the display's refresh, else the preview cap,
+    else the last measured render period (uncapped preview). None = nobody
+    consumes anything, block on the command queue instead."""
+    if display_hz > 0:
+        return 1.0 / display_hz
+    if nclients <= 0:
+        return None
+    if preview_fps > 0:
+        return 1.0 / preview_fps
+    return render_period
+
+
 def render_loop():
     # GL is thread-affine: create the Renderer here, in the thread that renders.
     renderer = _make_renderer()
@@ -203,14 +226,20 @@ def render_loop():
     last = time.monotonic()
     last_preview = 0.0
     frame = 0
+    # poll cadence for clean scenes: the display's own refresh when scanning
+    # out, else consumer-derived in _skip_interval
+    display_hz = renderer.display_vrefresh() if _display else 0
+    last_period = None  # measured frame period; set before any skip can happen
     # preview readback size: display fit into _preview_max, aspect preserved
     _pscale = min(1.0, _preview_max / max(W, H))
     pw, ph = max(1, round(W * _pscale)), max(1, round(H * _pscale))
     preview_buf = np.zeros((ph, pw, 4), dtype=np.uint8)
     provider = _provider or demo_feed
     while True:
+        force = False  # any queued command below forces a draw this iteration
         while not _q.empty():
             item = _q.get()
+            force = True
             if item[0] == "switch":
                 load(item[1])
             elif item[0] == "param":
@@ -233,6 +262,22 @@ def render_loop():
                     _stat["error"] = f"scene: {e}"
 
         ctrl = st["controller"]
+        # A controller that knows this frame would look identical may skip it
+        # entirely: the display keeps scanning out the last flipped buffer.
+        # Queued commands (switch/param/scene edit/new preview client) force a
+        # draw so edits always show. `frame` advances on skipped frames too.
+        # (t = frame/60 predates this loop and assumes a 60Hz cadence; with the
+        # skip interval derived from the real refresh it tracks wall clock on a
+        # 60Hz panel, and is off for other panels exactly as it always was.)
+        if not _should_render(force, ctrl, frame, frame / 60.0):
+            _stat["fps"] *= 0.98
+            frame += 1
+            interval = _skip_interval(display_hz, _nclients, _preview_fps, last_period)
+            if interval is None:
+                _q.put(_q.get())  # nobody consumes frames: sleep until a command
+                continue
+            time.sleep(interval)
+            continue
         if ctrl is not None:
             ctrl.update(renderer, frame, frame / 60.0)
 
@@ -275,6 +320,7 @@ def render_loop():
         dt = t1 - last
         last = t1
         if dt > 0:
+            last_period = dt
             inst = 1.0 / dt
             _stat["fps"] = (
                 inst if _stat["fps"] == 0 else _stat["fps"] * 0.9 + inst * 0.1
@@ -397,6 +443,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         _nclients += 1
+        _q.put(("preview",))  # nudge an idle (dirty=False) scene to draw a frame
         last_seq = -1
         try:
             while True:

@@ -35,6 +35,7 @@ def test_base_controller_defaults():
     assert c.provide("a", 4, 0) is None
     assert c.setup(None) is None
     assert c.update(None, 0, 0.0) is None
+    assert c.dirty(0, 0.0) is True  # default: render every frame
 
 
 def test_build_only(tmp_path):

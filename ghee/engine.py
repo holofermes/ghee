@@ -39,6 +39,21 @@ def bundled_lib():
         return None
 
 
+class _Unchanged:
+    """Sentinel a provider returns for an array whose texture the engine
+    already holds: the upload is skipped entirely. The scene declares it
+    explicitly; the engine never caches or compares data to guess. After
+    setup() rebuilds a scene the textures are empty, so a controller must
+    push real data again first (its setup() hook marks that moment)."""
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "ghee.UNCHANGED"
+
+
+UNCHANGED = _Unchanged()
+
 _U8 = np.ctypeslib.ndpointer(dtype=np.uint8, flags="C_CONTIGUOUS")
 _U8_3 = np.ctypeslib.ndpointer(dtype=np.uint8, ndim=3, flags="C_CONTIGUOUS")
 _F32_1 = np.ctypeslib.ndpointer(dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
@@ -119,7 +134,6 @@ class Renderer:
         self.error_pass = None
         self._mp = {}  # pass name -> engine pass index
         self._feeds = {}  # array name -> [(pass index, size), ...]
-        self._feed_cache = {}  # array name -> last uploaded floats (skip no-op uploads)
         self._rgb = np.zeros((height, width, components), dtype=np.uint8)
 
         lib_path = lib_path or os.environ.get("GHEE_LIB") or bundled_lib()
@@ -219,6 +233,8 @@ class Renderer:
             _U8,
             _U8,
         ]
+        L.ghee_display_vrefresh.argtypes = [ctypes.c_void_p]
+        L.ghee_display_vrefresh.restype = ctypes.c_int
         L.ghee_set_profiling.argtypes = [ctypes.c_void_p, ctypes.c_bool]
         L.ghee_set_time.argtypes = [ctypes.c_void_p, ctypes.c_float]
         L.ghee_get_timings.argtypes = [
@@ -276,7 +292,6 @@ class Renderer:
             for a in p.arrays:
                 feeds.setdefault(a.name, []).append((mp[p.name], a.size))
         self._feeds = feeds
-        self._feed_cache = {}  # engine textures were reset; force re-upload
         return ""
 
     def render(self, provider=None, out=None):
@@ -292,18 +307,18 @@ class Renderer:
 
     def _feed(self, provider):
         """Upload each declared array for this frame (called once per unique name).
-        Unchanged inputs skip the re-upload."""
+        A render uploads whatever the provider returns; the one exception is the
+        explicit UNCHANGED sentinel, a scene's declaration that the texture
+        already holds this array (a partially dynamic scene skips its static
+        mask that way). The engine never caches or diffs data on its own."""
         if provider is None:
             return
         for name, targets in self._feeds.items():
             size = targets[0][1]
-            data = np.ascontiguousarray(
-                provider(name, size), dtype=np.float32
-            ).reshape(-1)
-            last = self._feed_cache.get(name)
-            if last is not None and np.array_equal(last, data):
-                continue  # unchanged input: the texture already holds it
-            self._feed_cache[name] = data.copy()
+            raw = provider(name, size)
+            if raw is UNCHANGED:
+                continue
+            data = np.ascontiguousarray(raw, dtype=np.float32).reshape(-1)
             enc = name.encode("utf-8")
             if isinstance(size, int):
                 w, h = min(len(data), size), 1
@@ -352,6 +367,11 @@ class Renderer:
             out,
         )
 
+    def display_vrefresh(self):
+        """The connected display mode's refresh rate in Hz, 0 when not in
+        display mode."""
+        return int(self.lib.ghee_display_vrefresh(self.handle))
+
     def set_profiling(self, on):
         """Enable per-frame draw/readback timing (adds a glFinish; off = zero cost)."""
         self.lib.ghee_set_profiling(self.handle, bool(on))
@@ -377,7 +397,6 @@ class Renderer:
         self.lib.ghee_mp_reset(self.handle)
         self._mp = {}
         self._feeds = {}
-        self._feed_cache = {}
 
     def close(self):
         if getattr(self, "handle", None):

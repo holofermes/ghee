@@ -46,6 +46,13 @@ class AdaptivePacer:
         period = max(self.write_ema * self.factor, self.min_period)
         return max(0.0, period - frame_s)
 
+    def idle_period(self):
+        """Current frame period without a new measurement: what a skipped
+        (dirty=False) frame sleeps before re-polling."""
+        if self.write_ema is None:
+            return self.min_period
+        return max(self.write_ema * self.factor, self.min_period)
+
 
 class FixedPacer:
     """Hold a display loop at an explicit frame rate."""
@@ -55,6 +62,9 @@ class FixedPacer:
 
     def sleep_for(self, write_s, frame_s):
         return max(0.0, self.period - frame_s)
+
+    def idle_period(self):
+        return self.period
 
 
 class Output(abc.ABC):

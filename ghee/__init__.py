@@ -1,8 +1,10 @@
+from ghee.engine import UNCHANGED
 from ghee.filters import apply_filters, load_filters
 from ghee.procedural import SceneController, load_scene
 from ghee.scene import ArrayInput, Channel, Param, Pass, Scene
 
 __all__ = [
+    "UNCHANGED",
     "Scene",
     "Pass",
     "Param",

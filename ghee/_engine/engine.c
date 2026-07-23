@@ -18,6 +18,7 @@
 #include <poll.h>
 #include <errno.h>
 #include "engine.h"
+#include "engine_internal.h"
 
 #define ERROR_BUFFER_SIZE 512
 #define DEFAULT_DRI_DEVICE "/dev/dri/card0"
@@ -80,6 +81,7 @@ struct GheeScene {
     GLint blit_sampler, blit_flip;
     GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
     int preview_w, preview_h;
+    int keep_last;                     // >0: an encoder samples the final pass, never draw it direct
 
     char last_error[ERROR_BUFFER_SIZE];
 };
@@ -643,7 +645,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (!g->display_mode) return;
     make_current(g);
     const int last = g->mp_count - 1;
-    bool direct = !(buffer_rgb && pw > 0 && ph > 0);
+    bool direct = !(buffer_rgb && pw > 0 && ph > 0) && !g->keep_last;
     for (int p = 0; p < g->mp_count && direct; p++)
         for (int c = 0; c < g->mp_nchan[p]; c++)
             if (g->mp_chan_src[p][c] == last) { direct = false; break; }
@@ -752,6 +754,56 @@ void ghee_set_time(GheeScene *g, float t) { g->time_override = t; g->has_time_ov
 // The display mode's refresh rate in Hz; 0 when not in display mode
 // (GheeScene is calloc'd, so disp_mode stays zeroed without a display).
 int ghee_display_vrefresh(GheeScene *g) { return g ? (int)g->disp_mode.vrefresh : 0; }
+
+// ---- internal seams for encoder.c (engine_internal.h) ---------------------
+
+void *ghee_i_gbm(GheeScene *g) { return g->gbm; }
+void *ghee_i_egl_display(GheeScene *g) { return g->display; }
+void  ghee_i_make_current(GheeScene *g) { make_current(g); }
+void  ghee_i_error(GheeScene *g, const char *msg) { set_error(g, "%s", msg); }
+
+void ghee_i_render_frame(GheeScene *g) {
+    render_passes(g, elapsed_seconds(g), false);
+}
+
+void ghee_i_swap(GheeScene *g) {
+    for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;
+}
+
+void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY,
+                      int post_swap) {
+    if (!g->blit_prog) {   // offscreen instance: display mode builds this at create
+        g->blit_prog = create_shader_program(g, blit_fragment_source);
+        if (!g->blit_prog) return;
+        g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");
+        g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
+        glUseProgram(g->blit_prog);
+        GLint bvf = glGetUniformLocation(g->blit_prog, "vflip");
+        if (bvf >= 0) glUniform1f(bvf, 1.0f);
+    }
+    const int last = g->mp_count - 1;
+    const int buf = post_swap ? 1 - g->mp_write[last] : g->mp_write[last];
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, w, h);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(g->blit_prog);
+    glUniform1f(g->blit_flip, flipY);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][buf]);
+    glUniform1i(g->blit_sampler, 0);
+    glBindVertexArray(g->VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+void ghee_i_keep_last(GheeScene *g, int delta) {
+    g->keep_last += delta;
+    if (g->keep_last < 0) g->keep_last = 0;
+}
 
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms) {
     if (draw_ms) *draw_ms = g->prof_draw_ms;

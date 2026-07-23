@@ -16,7 +16,7 @@ pkg_check_modules(EGL   REQUIRED egl)
 pkg_check_modules(GLES  REQUIRED glesv2)
 pkg_check_modules(JPEG  REQUIRED libjpeg)
 
-add_library(ghee SHARED engine.c io.c)
+add_library(ghee SHARED engine.c io.c encoder.c)
 set_target_properties(ghee PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(ghee PRIVATE
     ${DRM_INCLUDE_DIRS} ${GBM_INCLUDE_DIRS} ${EGL_INCLUDE_DIRS}

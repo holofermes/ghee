@@ -58,6 +58,10 @@ def cmd_render(a):
     if unknown:
         sys.exit(f"unknown filter: {', '.join(unknown)} (known: {', '.join(reg)})")
     apply_filters(scene, names, registry=reg)
+    if a.h264:
+        if a.display or a.output:
+            sys.exit("render: --h264 excludes -o/--display")
+        return _render_h264(a, scene, ctrl)
     if a.display:
         from ghee.drivers import get_driver
 
@@ -130,6 +134,80 @@ def cmd_render(a):
         print(f"wrote {i} frame(s) to {a.output}")
 
 
+def _render_h264(a, scene, ctrl):
+    """Annex-B H264 to a file or stdout ("-"): pipe it to mpv/ffplay, record
+    it, or push it through ffmpeg. Hardware zero-copy where the board has an
+    encoder (Zero..Pi 4), ffmpeg/libx264 on the readback elsewhere (Pi 5,
+    desktops). Every frame encodes at a fixed rate: H264's own delta coding is
+    what makes static frames cheap, so dirty() gating does not apply here."""
+    from ghee.console.feeds import demo_feed
+    from ghee.engine import Renderer
+    from ghee.h264 import HardwareH264, make_encoder
+
+    w, h = a.size
+    fps = int(a.fps) if a.fps else 30
+    r = Renderer(w, h, components=4, lib_path=a.lib, dri_device=a.dri)
+    err = r.setup(scene)
+    if err:
+        sys.exit(f"compile error: {err}")
+    if ctrl is not None:
+        ctrl.setup(r)
+
+    def provider(name, size, frame):
+        if ctrl is not None:
+            data = ctrl.provide(name, size, frame)
+            if data is not None:
+                return data
+        return demo_feed(name, size, frame)
+
+    enc = make_encoder(r, w, h, fps=fps, bitrate=a.bitrate, components=4)
+    hw = isinstance(enc, HardwareH264)
+    print(
+        f"h264: {'hardware zero-copy' if hw else 'software libx264'} "
+        f"{w}x{h}@{fps} {a.bitrate}bps -> {a.h264}",
+        file=sys.stderr,
+    )
+    out = sys.stdout.buffer if a.h264 == "-" else open(a.h264, "wb")
+    frames = a.frames if a.frames is not None else 0
+    period = 1.0 / fps
+    i = 0
+    try:
+        while frames == 0 or i < frames:
+            t0 = time.monotonic()
+            if ctrl is not None:
+                ctrl.update(r, i, i / 60.0)
+            if hw:
+                au, _ = enc.encode_frame(
+                    lambda name, size, i=i: provider(name, size, i)
+                )
+            else:
+                enc.feed(r.render(lambda name, size, i=i: provider(name, size, i)))
+                au, _ = enc.get_au(timeout=2.0 if i == 0 else 0.5)
+            if au:
+                out.write(au)
+                out.flush()
+            i += 1
+            time.sleep(max(0.0, period - (time.monotonic() - t0)))
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    finally:
+        try:
+            if hw:
+                enc.close()
+            else:
+                for au in enc.drain():
+                    out.write(au)
+                enc.close()
+            out.flush()
+        except BrokenPipeError:
+            pass
+        if out is not sys.stdout.buffer:
+            out.close()
+        r.close()
+    if a.h264 != "-":
+        print(f"wrote {i} frame(s) to {a.h264}", file=sys.stderr)
+
+
 def cmd_serve(a):
     from ghee.console.server import run
 
@@ -192,6 +270,18 @@ def main(argv=None):
     r.add_argument(
         "--filters",
         help="comma-separated filter names applied after the scene's own",
+    )
+    r.add_argument(
+        "--h264",
+        metavar="PATH",
+        help="write an Annex-B H264 stream to PATH ('-' = stdout, pipe to mpv); "
+        "hardware zero-copy on Zero..Pi 4, ffmpeg/libx264 elsewhere",
+    )
+    r.add_argument(
+        "--bitrate",
+        type=int,
+        default=4_000_000,
+        help="H264 bitrate in bits/s (default 4000000)",
     )
     r.set_defaults(fn=cmd_render)
 

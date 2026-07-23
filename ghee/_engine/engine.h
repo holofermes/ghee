@@ -75,6 +75,20 @@ void ghee_set_time(GheeScene *g, float t);
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
 
+// Zero-copy hardware H264 (encoder.c): the final pass is blitted into a linear
+// dmabuf and fed to the V4L2 M2M encoder (bcm2835-codec); no CPU pixel copy.
+// create fails cleanly (NULL + err) on boards without /dev/video11.
+typedef struct GheeEncoder GheeEncoder;
+GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrate, char **err);
+// Render + encode one frame (no readback). 0 = *nal/*len/*is_key set (valid
+// until the next call), 1 = encoder produced nothing yet, <0 = error.
+int  ghee_mp_render_encoded(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);
+// Encode the frame the last ghee_mp_render/ghee_mp_present produced (display
+// mirror: one render feeds screen and stream). Same returns.
+int  ghee_encoder_encode_last(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);
+void ghee_encoder_force_keyframe(GheeEncoder *e);   // instant join for a new viewer
+void ghee_encoder_destroy(GheeScene *g, GheeEncoder *e);
+
 void ghee_pack_frame(int width, int height, int components, int bw,
                     const uint8_t *rgb, uint8_t *packed);
 

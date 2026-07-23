@@ -249,6 +249,28 @@ class Renderer:
         ]
         L.ghee_display_vrefresh.argtypes = [ctypes.c_void_p]
         L.ghee_display_vrefresh.restype = ctypes.c_int
+        L.ghee_encoder_create.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_char_p),
+        ]
+        L.ghee_encoder_create.restype = ctypes.c_void_p
+        _enc_io = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        L.ghee_mp_render_encoded.argtypes = _enc_io
+        L.ghee_mp_render_encoded.restype = ctypes.c_int
+        L.ghee_encoder_encode_last.argtypes = _enc_io
+        L.ghee_encoder_encode_last.restype = ctypes.c_int
+        L.ghee_encoder_force_keyframe.argtypes = [ctypes.c_void_p]
+        L.ghee_encoder_destroy.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         L.ghee_set_profiling.argtypes = [ctypes.c_void_p, ctypes.c_bool]
         L.ghee_set_time.argtypes = [ctypes.c_void_p, ctypes.c_float]
         L.ghee_get_timings.argtypes = [

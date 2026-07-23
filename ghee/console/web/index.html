@@ -315,9 +315,15 @@ function effectiveRotation(){
 function applyRotation(){
   if (!lastDisplay) return;
   const R = effectiveRotation(), w = lastDisplay.w, h = lastDisplay.h, land = (R===90||R===270);
+  const dw = land ? h : w, dh = land ? w : h;            // on-screen dimensions
+  const MAX = 360;                                       // fit big displays, keep tiny panels native
+  const scale = Math.min(1, MAX / Math.max(dw, dh));
+  const fw = Math.round(dw * scale), fh = Math.round(dh * scale);
   const img = $("#stream"), frame = img.parentElement;
-  frame.style.width = (land ? h : w) + "px";
-  frame.style.height = (land ? w : h) + "px";
+  frame.style.width = fw + "px";
+  frame.style.height = fh + "px";
+  img.style.width = (land ? fh : fw) + "px";             // pre-rotation size so it covers the frame
+  img.style.height = (land ? fw : fh) + "px";
   img.style.transform = `translate(-50%,-50%) rotate(${R}deg)`;
 }
 function applyErrorLine(line){

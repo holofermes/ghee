@@ -129,7 +129,8 @@ def cmd_serve(a):
         sys.exit("serve: pass a scenes directory or --demo, not both")
     if not a.demo and not a.scenes:
         sys.exit("serve: pass a scenes directory, or --demo for the bundled examples")
-    run(scenes_dir=a.scenes, size=a.size, port=a.port, lib_path=a.lib, host=a.host)
+    run(scenes_dir=a.scenes, size=a.size, port=a.port, lib_path=a.lib, host=a.host,
+        display=a.display, preview_max=a.preview_max, preview_fps=a.preview_fps)
 
 
 def cmd_displays(a):
@@ -188,6 +189,23 @@ def main(argv=None):
         help="bind address; 0.0.0.0 exposes the console (no auth) to the network",
     )
     s.add_argument("--lib")
+    s.add_argument(
+        "--display",
+        action="store_true",
+        help="also scan out to a connected display (headless Pi, run as root)",
+    )
+    s.add_argument(
+        "--preview-max",
+        type=int,
+        default=480,
+        help="longest side of the browser preview in px (downscaled; default 480)",
+    )
+    s.add_argument(
+        "--preview-fps",
+        type=int,
+        default=15,
+        help="browser preview refresh cap; the display stays full speed (default 15)",
+    )
     s.set_defaults(fn=cmd_serve)
 
     d = sub.add_parser("displays", help="list display drivers and availability")

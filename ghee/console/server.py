@@ -36,6 +36,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import numpy as np
 from PIL import Image
 
 from ghee import Scene, apply_filters, load_filters, load_scene
@@ -56,6 +57,11 @@ _provider = None
 _hwinfo = default_hwinfo
 _scenes_dir = ""
 _read_only = False  # bundled examples live in the package; never write there
+_display = False    # also scan out to a connected KMS display (headless Pi, root)
+_preview_max = 480  # longest side of the browser preview (downscaled off the render thread)
+_preview_fps = 15   # browser preview refresh cap; the display/panel stays full speed
+_raw = {"rgb": None, "seq": 0}   # latest full frame handed to the encoder thread
+_raw_lock = threading.Lock()
 
 
 def _modified_path(name):
@@ -117,6 +123,10 @@ def _make_renderer():
     """Create the render-thread Renderer, probing DRI devices so the console runs on
     the Pi (card0) and on desktop Mesa (renderD128). components=4 because desktop Mesa
     rejects an RGB glReadPixels; the frame is encoded to RGB for the browser anyway."""
+    if _display:
+        return Renderer(W, H, components=4, display=True,
+                        dri_device=os.environ.get("GHEE_DRI") or "/dev/dri/card0",
+                        lib_path=_lib_path)
     errs = []
     for dev in [
         os.environ.get("GHEE_DRI"),
@@ -129,6 +139,33 @@ def _make_renderer():
         except Exception as e:
             errs.append(f"{dev or 'card0'}: {e}")
     raise RuntimeError("no GL device for the console:\n" + "\n".join(errs))
+
+
+def encoder_loop():
+    # JPEG is expensive at display resolution, so it runs OFF the render thread:
+    # the render loop drops the latest full frame here, this downscales it to
+    # _preview_max and encodes at _preview_fps. The display/panel never waits.
+    last_seq = -1
+    while True:
+        with _raw_lock:
+            fresh = _raw["seq"] != last_seq and _raw["rgb"] is not None
+            rgb = _raw["rgb"] if fresh else None
+            if fresh:
+                last_seq = _raw["seq"]
+        if rgb is None:
+            time.sleep(0.01)
+            continue
+        mode = "RGBA" if rgb.shape[2] == 4 else "RGB"
+        img = Image.fromarray(rgb, mode).convert("RGB")
+        w, h = img.size
+        scale = _preview_max / max(w, h)
+        if scale < 1.0:
+            img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=50)
+        with _lock:
+            _latest["jpg"] = buf.getvalue()
+            _latest["seq"] += 1
 
 
 def render_loop():
@@ -164,7 +201,12 @@ def render_loop():
 
     load(NAMES[0])
     last = time.monotonic()
+    last_preview = 0.0
     frame = 0
+    # preview readback size: display fit into _preview_max, aspect preserved
+    _pscale = min(1.0, _preview_max / max(W, H))
+    pw, ph = max(1, round(W * _pscale)), max(1, round(H * _pscale))
+    preview_buf = np.zeros((ph, pw, 4), dtype=np.uint8)
     provider = _provider or demo_feed
     while True:
         while not _q.empty():
@@ -201,29 +243,43 @@ def render_loop():
                     return data
             return provider(name, size, frame)
 
+        # Refresh the browser preview at most _preview_fps, and only when watched.
+        # The display/panel renders every frame regardless; the preview is a
+        # throttled, downscaled mirror handled by the encoder thread.
+        now = time.monotonic()
+        want_preview = _nclients > 0 and (
+            _preview_fps <= 0 or (now - last_preview) >= 1.0 / _preview_fps
+        )
+
         t0 = time.monotonic()
-        rgb = renderer.render(feed)
+        if _display:
+            # scan straight out; read back a small GPU-downscaled preview only
+            # when refreshing (keeps the flip cadence at full speed).
+            renderer.present(
+                feed,
+                out=(preview_buf if want_preview else None),
+                out_size=((pw, ph) if want_preview else None),
+            )
+            preview_rgb = preview_buf
+        else:
+            preview_rgb = renderer.render(feed)
         frame += 1
         t1 = time.monotonic()
-        if _nclients > 0:  # only encode when a browser is actually watching
-            buf = io.BytesIO()
-            mode = "RGBA" if rgb.shape[2] == 4 else "RGB"
-            Image.fromarray(rgb, mode).convert("RGB").save(
-                buf, "JPEG", quality=50
-            )  # baseline ~3ms; optimize+progressive cost ~10ms more for ~900B
-            with _lock:
-                _latest["jpg"] = buf.getvalue()
-                _latest["seq"] += 1
-        t2 = time.monotonic()
-        dt = t2 - last
-        last = t2
+
+        if want_preview:
+            with _raw_lock:
+                _raw["rgb"] = preview_rgb.copy()
+                _raw["seq"] += 1
+            last_preview = now
+
+        dt = t1 - last
+        last = t1
         if dt > 0:
             inst = 1.0 / dt
             _stat["fps"] = (
                 inst if _stat["fps"] == 0 else _stat["fps"] * 0.9 + inst * 0.1
             )
             _stat["render_ms"] = (t1 - t0) * 1000.0
-            _stat["encode_ms"] = (t2 - t1) * 1000.0
         time.sleep(0.003)
 
 
@@ -371,6 +427,9 @@ def run(
     port=8090,
     lib_path=None,
     host="127.0.0.1",
+    display=False,
+    preview_max=480,
+    preview_fps=15,
 ):
     """Start the console. arrays: {array_name -> callable(size, frame) -> floats}
     maps a scene's declared arrays to real data; unmapped names get an animated
@@ -378,7 +437,10 @@ def run(
     host defaults to loopback; the console has no auth and compiles POSTed GLSL,
     so pass "0.0.0.0" only to expose it on a network you trust."""
     global _lib_path, WEB, SCENES, NAMES, W, H, _provider, _hwinfo
-    global _scenes_dir, _read_only
+    global _scenes_dir, _read_only, _display, _preview_max, _preview_fps
+    _display = display
+    _preview_max = preview_max
+    _preview_fps = preview_fps
     _provider = _make_provider(arrays or {})
     _hwinfo = hwinfo or default_hwinfo
     WEB = web_dir()
@@ -394,6 +456,7 @@ def run(
     _stat["display"] = {"name": "preview", "w": W, "h": H, "format": "rgba", "rotation": 0}
     _lib_path = lib_path or DEFAULT_LIB
     threading.Thread(target=render_loop, daemon=True).start()
+    threading.Thread(target=encoder_loop, daemon=True).start()
     print(
         f"ghee console: {len(NAMES)} scenes {NAMES} on {host}:{port} "
         f"(scenes={scenes_dir}, preview {W}x{H} rgba)"

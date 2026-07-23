@@ -21,31 +21,19 @@ NAL_SLICE, NAL_IDR, NAL_SEI, NAL_SPS, NAL_PPS, NAL_AUD = 1, 5, 6, 7, 8, 9
 
 
 def split_annexb(au: bytes):
-    """Split an Annex-B access unit into raw NAL units (no start codes)."""
-    nals, i, n = [], 0, len(au)
-    while i < n:
-        if au[i : i + 3] == b"\x00\x00\x01":
-            start = i + 3
-            break
-        if au[i : i + 4] == b"\x00\x00\x00\x01":
-            start = i + 4
-            break
-        i += 1
-    else:
-        return nals
-    j = start
-    while j < n:
-        if au[j : j + 3] == b"\x00\x00\x01":
-            nals.append(au[start:j].rstrip(b"\x00"))
-            start = j + 3
-            j += 3
-        elif au[j : j + 4] == b"\x00\x00\x00\x01":
-            nals.append(au[start:j].rstrip(b"\x00"))
-            start = j + 4
-            j += 4
-        else:
-            j += 1
-    nals.append(au[start:].rstrip(b"\x00"))
+    """Split an Annex-B access unit into raw NAL units (no start codes).
+    find() keeps the scan in C: a byte-at-a-time Python loop here costs
+    milliseconds per AU on a Pi and dominated the whole streaming path.
+    A 4-byte start code's leading 00 lands on the previous NAL's tail and
+    is dropped by the rstrip, same as trailing_zero_8bits padding."""
+    nals = []
+    i = au.find(b"\x00\x00\x01")
+    while i >= 0:
+        start = i + 3
+        j = au.find(b"\x00\x00\x01", start)
+        end = j if j >= 0 else len(au)
+        nals.append(au[start:end].rstrip(b"\x00"))
+        i = j
     return [x for x in nals if x]
 
 

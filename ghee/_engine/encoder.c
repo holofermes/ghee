@@ -257,7 +257,11 @@ static int encode_common(GheeScene *g, GheeEncoder *e, int post_swap,
     // what the codec consumes top-first (same as the preview readback, opposite
     // of the scanout blit).
     ghee_i_blit_last(g, e->in[idx].fbo, e->w, e->h, 0.0f, post_swap);
-    glFinish();   // GPU done before the codec reads this dmabuf
+    // The full fence is REQUIRED: there is no implicit sync between V3D and
+    // bcm2835-codec, the VPU reads the dmabuf the moment it is queued. With
+    // glFlush instead, 800x480 tears (VPU captures half-blitted tiles;
+    // measured 3/200 frames on a Pi 3). The fence costs ~0.5-2ms/frame.
+    glFinish();
 
     struct v4l2_plane pl = {0};
     struct v4l2_buffer b = {0};

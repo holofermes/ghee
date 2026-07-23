@@ -48,11 +48,13 @@ from ghee.console import examples_dir, web_dir
 from ghee.console.feeds import default_hwinfo, demo_feed
 from ghee.engine import Renderer
 from ghee.h264 import (
+    HW_COLOR,
     NAL_IDR,
     NAL_PPS,
     NAL_SEI,
     NAL_SLICE,
     NAL_SPS,
+    SW_COLOR,
     HardwareH264,
     avcc,
     build_config,
@@ -228,6 +230,7 @@ class H264Fanout:
         self.lock = threading.Lock()
         self.cfg = None
         self.size = (0, 0)  # encoded dimensions, set by whoever starts the encoder
+        self.color = None  # decoder colorSpace hint (HW_COLOR/SW_COLOR), same owner
         self.want_key = False
 
     @property
@@ -252,7 +255,7 @@ class H264Fanout:
         sps = next((x for x in nals if x[0] & 0x1F == NAL_SPS), None)
         pps = next((x for x in nals if x[0] & 0x1F == NAL_PPS), None)
         if sps and pps:
-            self.cfg = build_config(sps, pps, *self.size)
+            self.cfg = build_config(sps, pps, *self.size, color=self.color)
         # keep VCL + SEI; drop AUD and parameter sets (the config carries them)
         chunk = avcc(
             [x for x in nals if (x[0] & 0x1F) in (NAL_SLICE, NAL_IDR, NAL_SEI)]
@@ -313,6 +316,7 @@ def h264_sw_loop():
                 continue
             size = (w, h)
             _fanout.size = (w, h)
+            _fanout.color = SW_COLOR
         enc.feed(rgb)
         au, _ = enc.get_au(timeout=1.0)
         if au:
@@ -492,6 +496,7 @@ def render_loop():
                     renderer, W, H, fps=display_hz or 30, bitrate=_h264_bitrate
                 )
                 _fanout.size = (W, H)
+                _fanout.color = HW_COLOR
             except RuntimeError as e:
                 _h264_hw_dead = True  # no /dev/video11: h264_sw_loop takes over
                 print(f"h264: {e}; using software encoder", file=sys.stderr)

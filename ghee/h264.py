@@ -19,6 +19,22 @@ import threading
 
 NAL_SLICE, NAL_IDR, NAL_SEI, NAL_SPS, NAL_PPS, NAL_AUD = 1, 5, 6, 7, 8, 9
 
+# WebCodecs VideoDecoderConfig.colorSpace per backend. The VPU converts with a
+# fixed BT.601 full-range matrix and writes no VUI, so unhinted browsers guess
+# BT.709 limited. The software lane is x264 tagged BT.601 limited.
+HW_COLOR = {
+    "primaries": "bt709",
+    "transfer": "iec61966-2-1",
+    "matrix": "smpte170m",
+    "fullRange": True,
+}
+SW_COLOR = {
+    "primaries": "bt709",
+    "transfer": "bt709",
+    "matrix": "smpte170m",
+    "fullRange": False,
+}
+
 
 def split_annexb(au: bytes):
     """Split an Annex-B access unit into raw NAL units (no start codes).
@@ -42,7 +58,7 @@ def avcc(nals):
     return b"".join(struct.pack(">I", len(x)) + x for x in nals)
 
 
-def build_config(sps: bytes, pps: bytes, w: int, h: int) -> bytes:
+def build_config(sps: bytes, pps: bytes, w: int, h: int, color=None) -> bytes:
     """WebCodecs decoder config JSON: codec string + avcC description."""
     codec = f"avc1.{sps[1]:02x}{sps[2]:02x}{sps[3]:02x}"
     box = (
@@ -53,14 +69,15 @@ def build_config(sps: bytes, pps: bytes, w: int, h: int) -> bytes:
         + struct.pack(">H", len(pps))
         + pps
     )
-    return json.dumps(
-        {
-            "codec": codec,
-            "description": base64.b64encode(box).decode(),
-            "codedWidth": w,
-            "codedHeight": h,
-        }
-    ).encode()
+    cfg = {
+        "codec": codec,
+        "description": base64.b64encode(box).decode(),
+        "codedWidth": w,
+        "codedHeight": h,
+    }
+    if color:
+        cfg["colorSpace"] = color
+    return json.dumps(cfg).encode()
 
 
 def wire_frame(t: int, payload: bytes) -> bytes:
@@ -163,6 +180,18 @@ class SoftwareH264:
                 "zerolatency",
                 "-pix_fmt",
                 "yuv420p",  # 4:4:4 would break WebCodecs/hw decoders
+                # pin the RGB->YUV matrix/range and tag the stream to match;
+                # untagged streams decode with guessed colorimetry
+                "-vf",
+                "scale=out_color_matrix=bt601:out_range=tv",
+                "-colorspace",
+                "smpte170m",
+                "-color_primaries",
+                "bt709",
+                "-color_trc",
+                "bt709",
+                "-color_range",
+                "tv",
                 "-x264-params",
                 f"aud=1:keyint={gop}:min-keyint={gop}",
                 "-b:v",

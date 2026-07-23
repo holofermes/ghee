@@ -74,7 +74,9 @@ static void enc_ctrl(int fd, uint32_t id, int32_t val) {
 static int make_inbuf(GheeScene *g, GheeEncoder *e, struct inbuf *ib, char **err) {
     struct gbm_device *gbm = ghee_i_gbm(g);
     EGLDisplay dpy = ghee_i_egl_display(g);
-    ib->bo = gbm_bo_create(gbm, e->w, e->h, GBM_FORMAT_ABGR8888,
+    // ARGB8888 (B,G,R,A in memory), NOT ABGR8888: the codec reads its AB24
+    // "RGBA" input with byte 0 as blue. GL handles the write-side swizzle.
+    ib->bo = gbm_bo_create(gbm, e->w, e->h, GBM_FORMAT_ARGB8888,
                            GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
     if (!ib->bo) { if (err) *err = "gbm_bo_create(linear) failed"; return -1; }
     ib->stride = gbm_bo_get_stride(ib->bo);
@@ -139,7 +141,13 @@ GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrat
     ofmt.fmt.pix_mp.num_planes = 1;
     ofmt.fmt.pix_mp.plane_fmt[0].bytesperline = e->in[0].stride;
     ofmt.fmt.pix_mp.plane_fmt[0].sizeimage = e->in[0].stride * h;
-    ofmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_REC709;
+    // The VPU's RGB->YUV conversion is fixed BT.601 full-range no matter what
+    // is requested here. Declare exactly that: decoders otherwise guess
+    // BT.709 limited.
+    ofmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_SMPTE170M;
+    ofmt.fmt.pix_mp.ycbcr_enc = V4L2_YCBCR_ENC_601;
+    ofmt.fmt.pix_mp.quantization = V4L2_QUANTIZATION_FULL_RANGE;
+    ofmt.fmt.pix_mp.xfer_func = V4L2_XFER_FUNC_SRGB;
     if (enc_ioctl(e->vfd, VIDIOC_S_FMT, &ofmt) < 0) {
         snprintf(eb, sizeof(eb), "encoder rejects AB24 input: %s", strerror(errno));
         if (err) *err = eb;
@@ -154,6 +162,10 @@ GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrat
     cfmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
     cfmt.fmt.pix_mp.num_planes = 1;
     cfmt.fmt.pix_mp.plane_fmt[0].sizeimage = 512 * 1024;
+    cfmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_SMPTE170M;
+    cfmt.fmt.pix_mp.ycbcr_enc = V4L2_YCBCR_ENC_601;
+    cfmt.fmt.pix_mp.quantization = V4L2_QUANTIZATION_FULL_RANGE;
+    cfmt.fmt.pix_mp.xfer_func = V4L2_XFER_FUNC_SRGB;
     if (enc_ioctl(e->vfd, VIDIOC_S_FMT, &cfmt) < 0) {
         snprintf(eb, sizeof(eb), "encoder rejects H264 output: %s", strerror(errno));
         if (err) *err = eb;

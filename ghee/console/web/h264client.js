@@ -16,14 +16,18 @@ function attachH264(canvas, url, opts) {
       output: f => { decoded++; if (lastFrame) lastFrame.close(); lastFrame = f; },
       error: e => fail('decoder error: ' + e.message),
     });
-    decoder.configure({
+    const dc = {
       codec: cfg.codec,
       description: desc,            // avcC: cross-browser AVCC mode
       codedWidth: cfg.codedWidth,
       codedHeight: cfg.codedHeight,
       optimizeForLatency: true,
       hardwareAcceleration: 'no-preference',
-    });
+    };
+    // the VC4 hardware stream carries no VUI colour description; without the
+    // hint browsers guess BT.709 limited
+    if (cfg.colorSpace) dc.colorSpace = cfg.colorSpace;
+    decoder.configure(dc);
     opts.onconfig && opts.onconfig(cfg);
   }
 

@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from ghee.h264 import (
+    HW_COLOR,
     NAL_AUD,
     NAL_IDR,
     NAL_SPS,
@@ -55,6 +56,18 @@ def test_build_config_codec_string():
     box = base64.b64decode(cfg["description"])
     assert box[0] == 1  # avcC version
     assert sps in box and pps in box
+
+
+def test_build_config_colorspace():
+    import json
+
+    sps = bytes([0x67, 0x42, 0xC0, 0x1E, 0xAA])
+    pps = bytes([0x68, 0xCE, 0x06, 0xE2])
+    plain = json.loads(build_config(sps, pps, 320, 240))
+    assert "colorSpace" not in plain
+    hinted = json.loads(build_config(sps, pps, 320, 240, color=HW_COLOR))
+    assert hinted["colorSpace"]["matrix"] == "smpte170m"
+    assert hinted["colorSpace"]["fullRange"] is True
 
 
 def test_wire_frame_framing():
@@ -110,6 +123,68 @@ def test_software_roundtrip_decodes():
         capture_output=True,
     )
     assert r.stdout.decode().strip() == f"{w},{h},{n}"
+
+
+@needs_ffmpeg
+def test_software_stream_is_tagged():
+    enc = SoftwareH264(160, 120, fps=30, bitrate=1_000_000)
+    f = np.zeros((120, 160, 4), dtype=np.uint8)
+    f[:, :, 3] = 255
+    for _ in range(5):
+        enc.feed(f)
+    stream = b"".join(enc.drain())
+    enc.close()
+    r = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=color_space,color_range",
+            "-of",
+            "csv=p=0",
+            "-",
+        ],
+        input=stream,
+        capture_output=True,
+    )
+    assert r.stdout.decode().strip() == "tv,smpte170m"
+
+
+@needs_ffmpeg
+def test_software_red_stays_red():
+    # solid red, decoded honoring the stream's own tags. Red catches channel
+    # swaps and matrix errors that green frames are blind to.
+    w, h = 160, 120
+    enc = SoftwareH264(w, h, fps=30, bitrate=2_000_000)
+    f = np.zeros((h, w, 4), dtype=np.uint8)
+    f[:, :, 0] = 255
+    f[:, :, 3] = 255
+    for _ in range(10):
+        enc.feed(f)
+    stream = b"".join(enc.drain())
+    enc.close()
+    r = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            "-",
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        input=stream,
+        capture_output=True,
+    )
+    frames = np.frombuffer(r.stdout, np.uint8).reshape(-1, h, w, 3)
+    mean = frames[-1].reshape(-1, 3).mean(axis=0)
+    assert mean[0] > 200 and mean[1] < 50 and mean[2] < 50, mean
 
 
 @needs_ffmpeg

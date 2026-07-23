@@ -85,7 +85,7 @@
   .errmark{position:absolute; left:0; right:0; background:rgba(192,57,43,.16); border-left:3px solid var(--hot); pointer-events:none; display:none; z-index:1}
   .screen{position:relative; background:var(--bezel); border-radius:12px; padding:12px; width:max-content; max-width:100%; margin:0 auto}
   .frame{position:relative; margin:0 auto; overflow:hidden; max-width:100%}
-  .frame img{position:absolute; top:50%; left:50%; display:block; image-rendering:pixelated}
+  .frame img, .frame canvas{position:absolute; top:50%; left:50%; display:block; image-rendering:pixelated}
   .iconbtn{font-size:16px; line-height:1; padding:4px 9px; color:var(--muted); border-radius:8px}
   .iconbtn:hover{color:var(--ink); background:var(--code-bg); border-color:var(--line)}
   .infowrap{position:relative}
@@ -211,7 +211,7 @@
           <div class="infopop" id="infoPop"></div>
         </div>
         <button class="ovbtn" id="rotBtn" title="rotate preview 90°" aria-label="rotate preview 90°">↻</button>
-        <div class="frame"><img id="stream" alt="render"></div>
+        <div class="frame"><img id="stream" alt="render"><canvas id="streamcv" style="display:none"></canvas></div>
       </div>
     </div>
 
@@ -245,6 +245,7 @@
   </div>
 </div>
 
+<script src="h264client.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const KEY = n => "ghee:scene:" + n;
@@ -322,9 +323,11 @@ function applyRotation(){
   const img = $("#stream"), frame = img.parentElement;
   frame.style.width = fw + "px";
   frame.style.height = fh + "px";
-  img.style.width = (land ? fh : fw) + "px";             // pre-rotation size so it covers the frame
-  img.style.height = (land ? fw : fh) + "px";
-  img.style.transform = `translate(-50%,-50%) rotate(${R}deg)`;
+  for (const el of [img, $("#streamcv")]) {              // whichever preview is active
+    el.style.width = (land ? fh : fw) + "px";            // pre-rotation size so it covers the frame
+    el.style.height = (land ? fw : fh) + "px";
+    el.style.transform = `translate(-50%,-50%) rotate(${R}deg)`;
+  }
 }
 function applyErrorLine(line){
   const m = $("#errmark"), t = codeEl();
@@ -373,9 +376,28 @@ async function boot(){
   s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
   sel.value = s.active;
   await loadScene(s.active);
-  $("#stream").src = "/stream";
+  startPreview();
   loadHwinfo();
   poll();
+}
+
+// H264/WebCodecs preview when the browser can (needs a secure context:
+// https or localhost); MJPEG otherwise, and on any stream/decoder failure.
+function startPreview(){
+  const img = $("#stream"), cv = $("#streamcv");
+  if (typeof attachH264 === "function" && "VideoDecoder" in window && window.isSecureContext) {
+    img.style.display = "none";
+    cv.style.display = "";
+    attachH264(cv, "/h264", {
+      onfail: () => {
+        cv.style.display = "none";
+        img.style.display = "";
+        img.src = "/stream";
+      },
+    });
+  } else {
+    img.src = "/stream";
+  }
 }
 
 async function loadScene(name){

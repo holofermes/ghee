@@ -12,6 +12,10 @@ Embedded (a host injects real data):
 
 API:
   GET  /stream            MJPEG, one part per rendered frame
+  GET  /h264              framed H264 stream ([u8 type][u32 len]: 0=config JSON,
+                          1=key AU, 2=delta AU, AVCC) for WebCodecs; one shared
+                          encoder fans out to all viewers. Hardware zero-copy
+                          where /dev/video11 exists, ffmpeg/libx264 otherwise.
   GET  /stats             {fps, render_ms, encode_ms, error, active}
   GET  /scenes            {scenes:[name...], active}
   GET  /filters           {name: filter def} registry for the "+ filter" picker
@@ -43,6 +47,18 @@ from ghee import Scene, apply_filters, load_filters, load_scene
 from ghee.console import examples_dir, web_dir
 from ghee.console.feeds import default_hwinfo, demo_feed
 from ghee.engine import Renderer
+from ghee.h264 import (
+    NAL_IDR,
+    NAL_PPS,
+    NAL_SEI,
+    NAL_SLICE,
+    NAL_SPS,
+    HardwareH264,
+    avcc,
+    build_config,
+    split_annexb,
+    wire_frame,
+)
 
 # None -> Renderer auto-locates the .so bundled in the ghee package.
 DEFAULT_LIB = os.environ.get("GHEE_LIB")
@@ -157,6 +173,11 @@ def encoder_loop():
     # _preview_max and encodes at _preview_fps. The display/panel never waits.
     last_seq = -1
     while True:
+        if (
+            _nclients == 0
+        ):  # raw frames may flow for the h264 path; JPEG only when watched
+            time.sleep(0.05)
+            continue
         with _raw_lock:
             fresh = _raw["seq"] != last_seq and _raw["rgb"] is not None
             rgb = _raw["rgb"] if fresh else None
@@ -176,6 +197,126 @@ def encoder_loop():
         with _lock:
             _latest["jpg"] = buf.getvalue()
             _latest["seq"] += 1
+
+
+class _H264Client:
+    def __init__(self):
+        self.q = queue.Queue(maxsize=120)
+        self.started = False
+        self.lock = threading.Lock()
+
+    def offer(self, is_key, chunk, config):
+        with self.lock:
+            if not self.started:
+                if is_key and config:
+                    self.q.put(wire_frame(0, config))
+                    self.q.put(wire_frame(1, chunk))
+                    self.started = True
+                return
+            try:
+                self.q.put_nowait(wire_frame(1 if is_key else 2, chunk))
+            except queue.Full:
+                self.started = False  # slow client: drop, resync at the next keyframe
+
+
+class H264Fanout:
+    """One shared H264 stream, every /h264 viewer. A new viewer starts at a
+    keyframe (hardware forces one on join; software joins at the next GOP)."""
+
+    def __init__(self):
+        self.clients = []
+        self.lock = threading.Lock()
+        self.cfg = None
+        self.size = (0, 0)  # encoded dimensions, set by whoever starts the encoder
+        self.want_key = False
+
+    @property
+    def nclients(self):
+        return len(self.clients)
+
+    def add(self):
+        c = _H264Client()
+        with self.lock:
+            self.clients.append(c)
+        self.want_key = True
+        return c
+
+    def remove(self, c):
+        with self.lock:
+            if c in self.clients:
+                self.clients.remove(c)
+
+    def push(self, au):
+        nals = split_annexb(au)
+        types = [x[0] & 0x1F for x in nals]
+        sps = next((x for x in nals if x[0] & 0x1F == NAL_SPS), None)
+        pps = next((x for x in nals if x[0] & 0x1F == NAL_PPS), None)
+        if sps and pps:
+            self.cfg = build_config(sps, pps, *self.size)
+        # keep VCL + SEI; drop AUD and parameter sets (the config carries them)
+        chunk = avcc(
+            [x for x in nals if (x[0] & 0x1F) in (NAL_SLICE, NAL_IDR, NAL_SEI)]
+        )
+        if not chunk:
+            return
+        is_key = NAL_IDR in types
+        with self.lock:
+            for c in list(self.clients):
+                c.offer(is_key, chunk, self.cfg)
+
+
+_fanout = H264Fanout()
+_h264_hw_dead = False  # hardware create failed once: h264_sw_loop owns the stream
+_h264_bitrate = 4_000_000
+_H264_FPS = 30  # software-encode cadence (hardware follows the display/loop)
+
+
+def h264_sw_loop():
+    """Software H264 (boards with no /dev/video11: Pi 5, desktops): encode the
+    same readback frames the MJPEG preview uses, off the render thread."""
+    from ghee.h264 import SoftwareH264
+
+    enc = None
+    size = None
+    last_seq = -1
+    while True:
+        if not (_h264_hw_dead and _fanout.nclients > 0):
+            if enc is not None:
+                enc.close()
+                enc = None
+            time.sleep(0.05)
+            continue
+        with _raw_lock:
+            fresh = _raw["seq"] != last_seq and _raw["rgb"] is not None
+            rgb = _raw["rgb"] if fresh else None
+            if fresh:
+                last_seq = _raw["seq"]
+        if rgb is None:
+            time.sleep(0.005)
+            continue
+        h, w = rgb.shape[:2]
+        if enc is not None and size != (w, h):
+            enc.close()
+            enc = None
+        if enc is None:
+            try:
+                enc = SoftwareH264(
+                    w,
+                    h,
+                    fps=_H264_FPS,
+                    bitrate=_h264_bitrate,
+                    components=rgb.shape[2],
+                )
+            except RuntimeError as e:
+                print(f"h264: software encoder unavailable: {e}", file=sys.stderr)
+                time.sleep(5)
+                continue
+            size = (w, h)
+            _fanout.size = (w, h)
+        enc.feed(rgb)
+        au, _ = enc.get_au(timeout=1.0)
+        if au:
+            _fanout.push(au)
 
 
 def _should_render(force, ctrl, frame, t):
@@ -202,9 +343,11 @@ def _skip_interval(display_hz, nclients, preview_fps, render_period):
 
 
 def render_loop():
+    global _h264_hw_dead
     # GL is thread-affine: create the Renderer here, in the thread that renders.
     renderer = _make_renderer()
     st: dict = {"scene": None, "controller": None}
+    h264_enc = None  # hardware encoder; render-thread owned (it issues GL calls)
 
     def set_scene(scene, name=None, controller=None):
         err = renderer.setup(scene)
@@ -282,7 +425,9 @@ def render_loop():
         if not _should_render(force, ctrl, frame, frame / 60.0):
             _stat["fps"] *= 0.98
             frame += 1
-            interval = _skip_interval(display_hz, _nclients, _preview_fps, last_period)
+            interval = _skip_interval(
+                display_hz, _nclients + _fanout.nclients, _preview_fps, last_period
+            )
             if interval is None:
                 _q.put(_q.get())  # nobody consumes frames: sleep until a command
                 continue
@@ -302,8 +447,18 @@ def render_loop():
         # The display/panel renders every frame regardless; the preview is a
         # throttled, downscaled mirror handled by the encoder thread.
         now = time.monotonic()
-        want_preview = _nclients > 0 and (
-            _preview_fps <= 0 or (now - last_preview) >= 1.0 / _preview_fps
+        # software H264 eats the same readback frames as the MJPEG preview, so
+        # its viewers count as readback consumers at their own cadence
+        # (_H264_FPS, not the MJPEG preview cap); hardware H264 does not (it
+        # samples the GPU texture directly). Fastest active consumer wins.
+        sw_h264 = _h264_hw_dead and _fanout.nclients > 0
+        rates = []
+        if _nclients > 0:
+            rates.append(_preview_fps)  # <= 0 means every frame
+        if sw_h264:
+            rates.append(_H264_FPS)
+        want_preview = bool(rates) and (
+            any(r <= 0 for r in rates) or (now - last_preview) >= 1.0 / max(rates)
         )
 
         t0 = time.monotonic()
@@ -327,6 +482,30 @@ def render_loop():
                 _raw["seq"] += 1
             last_preview = now
 
+        # hardware H264 mirror: encode the frame just produced, zero readback.
+        # keep_last in the engine holds the final pass in its FBO while the
+        # encoder exists, so encode_last always has a texture to sample.
+        want_h264 = _fanout.nclients > 0
+        if want_h264 and h264_enc is None and not _h264_hw_dead:
+            try:
+                h264_enc = HardwareH264(
+                    renderer, W, H, fps=display_hz or 30, bitrate=_h264_bitrate
+                )
+                _fanout.size = (W, H)
+            except RuntimeError as e:
+                _h264_hw_dead = True  # no /dev/video11: h264_sw_loop takes over
+                print(f"h264: {e}; using software encoder", file=sys.stderr)
+        if h264_enc is not None and not want_h264:
+            h264_enc.close()  # restore direct-scanout speed while unwatched
+            h264_enc = None
+        elif h264_enc is not None:
+            if _fanout.want_key:
+                _fanout.want_key = False
+                h264_enc.force_keyframe()
+            au, _ = h264_enc.encode_last()
+            if au:
+                _fanout.push(au)
+
         dt = t1 - last
         last = t1
         if dt > 0:
@@ -340,6 +519,8 @@ def render_loop():
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # /h264 streams chunked (proxy-friendly)
+
     def log_message(self, *args, **kwargs):
         pass
 
@@ -358,6 +539,8 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path == "/stream":
             return self._stream()
+        if u.path == "/h264":
+            return self._h264()
         if u.path == "/stats":
             return self._send(200, json.dumps(_stat), "application/json")
         if u.path == "/scenes":
@@ -477,6 +660,24 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             _nclients -= 1
 
+    def _h264(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        c = _fanout.add()
+        _q.put(("preview",))  # wake an idle (dirty=False) scene so the stream starts
+        try:
+            while True:
+                blob = c.q.get()
+                self.wfile.write(b"%X\r\n" % len(blob) + blob + b"\r\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            _fanout.remove(c)
+
 
 def run(
     arrays=None,
@@ -524,6 +725,7 @@ def run(
     _lib_path = lib_path or DEFAULT_LIB
     threading.Thread(target=render_loop, daemon=True).start()
     threading.Thread(target=encoder_loop, daemon=True).start()
+    threading.Thread(target=h264_sw_loop, daemon=True).start()
     print(
         f"ghee console: {len(NAMES)} scenes {NAMES} on {host}:{port} "
         f"(scenes={scenes_dir}, preview {W}x{H} rgba)"

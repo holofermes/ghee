@@ -237,8 +237,8 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         EGL_NONE
     };
     // Optional (rgb565): display scanout renders RGB565, halving the bytes
-    // through the GPU's tile-store path (its measured ~300MB/s is the frame
-    // rate ceiling on VC4-class boards) and halving scanout traffic. The HVS
+    // through the GPU's tile-store path (~300MB/s effective on VC4-class
+    // boards, the frame rate ceiling) and halving scanout traffic. The HVS
     // expands 565 to the wire's 888 during scanout, so the panel sees a
     // normal HDMI signal; the only cost is color depth. GL dithering (on by
     // default) hides most banding. Intermediate pass FBOs stay RGBA8888.

@@ -201,14 +201,27 @@ def encoder_loop():
             _latest["seq"] += 1
 
 
+# A lagging client's backlog never drains on its own (producer and consumer
+# run at the same rate), so it becomes permanent added latency. Past this many
+# queued frames the client is dropped to resync at a keyframe instead.
+H264_LAG_FRAMES = 10
+
+
 class _H264Client:
     def __init__(self):
-        self.q = queue.Queue(maxsize=120)
+        self.q = queue.Queue(maxsize=32)
         self.started = False
         self.lock = threading.Lock()
 
     def offer(self, is_key, chunk, config):
         with self.lock:
+            if self.started and self.q.qsize() >= H264_LAG_FRAMES:
+                self.started = False  # lagging: drop the rest of this GOP
+                while not self.q.empty():
+                    try:
+                        self.q.get_nowait()
+                    except queue.Empty:
+                        break
             if not self.started:
                 if is_key and config:
                     self.q.put(wire_frame(0, config))
@@ -218,7 +231,7 @@ class _H264Client:
             try:
                 self.q.put_nowait(wire_frame(1 if is_key else 2, chunk))
             except queue.Full:
-                self.started = False  # slow client: drop, resync at the next keyframe
+                self.started = False  # backstop; the lag check above fires first
 
 
 class H264Fanout:
@@ -266,12 +279,24 @@ class H264Fanout:
         with self.lock:
             for c in list(self.clients):
                 c.offer(is_key, chunk, self.cfg)
+            # a waiting (new or resyncing) client rejoins at the next keyframe;
+            # keep requesting one until everyone is streaming
+            if any(not c.started for c in self.clients):
+                self.want_key = True
 
 
 _fanout = H264Fanout()
 _h264_hw_dead = False  # hardware create failed once: h264_sw_loop owns the stream
 _h264_bitrate = 4_000_000
 _H264_FPS = 30  # software-encode cadence (hardware follows the display/loop)
+_stream_max = 0  # optional cap on the h264 stream's longest side; 0 = full size
+
+
+def _stream_size(w, h, longest):
+    """Stream dimensions: fit the longest side, keep aspect, force even
+    (yuv420 needs even dims)."""
+    s = min(1.0, longest / max(w, h)) if longest > 0 else 1.0
+    return max(2, round(w * s / 2) * 2), max(2, round(h * s / 2) * 2)
 
 
 def h264_sw_loop():
@@ -492,10 +517,11 @@ def render_loop():
         want_h264 = _fanout.nclients > 0
         if want_h264 and h264_enc is None and not _h264_hw_dead:
             try:
+                sw_, sh_ = _stream_size(W, H, _stream_max)
                 h264_enc = HardwareH264(
-                    renderer, W, H, fps=display_hz or 30, bitrate=_h264_bitrate
+                    renderer, sw_, sh_, fps=display_hz or 30, bitrate=_h264_bitrate
                 )
-                _fanout.size = (W, H)
+                _fanout.size = (sw_, sh_)
                 _fanout.color = HW_COLOR
             except RuntimeError as e:
                 _h264_hw_dead = True  # no /dev/video11: h264_sw_loop takes over
@@ -696,6 +722,7 @@ def run(
     rgb565=False,
     preview_max=480,
     preview_fps=15,
+    stream_max=0,
 ):
     """Start the console. arrays: {array_name -> callable(size, frame) -> floats}
     maps a scene's declared arrays to real data; unmapped names get an animated
@@ -704,10 +731,12 @@ def run(
     so pass "0.0.0.0" only to expose it on a network you trust."""
     global _lib_path, WEB, SCENES, NAMES, W, H, _provider, _hwinfo
     global _scenes_dir, _read_only, _display, _rgb565, _preview_max, _preview_fps
+    global _stream_max
     _display = display
     _rgb565 = rgb565
     _preview_max = preview_max
     _preview_fps = preview_fps
+    _stream_max = stream_max
     _provider = _make_provider(arrays or {})
     _hwinfo = hwinfo or default_hwinfo
     WEB = web_dir()

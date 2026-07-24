@@ -115,3 +115,41 @@ def test_real_data_still_uploads():
     assert len(h.calls) == 1
     _, _, n, w, hh = h.calls[0]
     assert (n, w, hh) == (8, 4, 2)
+
+
+def test_stream_size_caps_and_evens():
+    from ghee.console.server import _stream_size
+
+    assert _stream_size(1280, 800, 720) == (720, 450)
+    assert _stream_size(320, 240, 720) == (320, 240)  # never upscales
+    assert _stream_size(320, 240, 0) == (320, 240)  # 0 = full render size
+    w, h = _stream_size(1279, 801, 720)
+    assert w % 2 == 0 and h % 2 == 0  # yuv420 needs even dims
+
+
+def test_h264_client_lag_resyncs():
+    from ghee.console.server import H264_LAG_FRAMES, _H264Client
+
+    c = _H264Client()
+    c.offer(True, b"key", b"cfg")
+    assert c.started and c.q.qsize() == 2
+    for _ in range(H264_LAG_FRAMES + 2):  # nobody drains: backlog builds
+        c.offer(False, b"delta", b"cfg")
+    assert not c.started  # dropped instead of lagging forever
+    assert c.q.qsize() == 0  # backlog flushed
+    c.offer(False, b"delta", b"cfg")  # a delta cannot restart the stream
+    assert not c.started
+    c.offer(True, b"key2", b"cfg")  # rejoins at the next keyframe
+    assert c.started and c.q.qsize() == 2
+
+
+def test_fanout_requests_key_for_waiting_client():
+    from ghee.console.server import H264Fanout
+
+    f = H264Fanout()
+    f.size = (16, 16)
+    c = f.add()
+    f.want_key = False
+    f.push(b"\x00\x00\x00\x01\x41\x01\x02")  # delta AU cannot start a client
+    assert not c.started
+    assert f.want_key is True  # the fanout keeps asking for a keyframe

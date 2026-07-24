@@ -225,6 +225,7 @@ def cmd_serve(a):
         rgb565=a.rgb565,
         preview_max=a.preview_max,
         preview_fps=a.preview_fps,
+        stream_max=a.stream_max,
     )
 
 
@@ -320,6 +321,13 @@ def main(argv=None):
         type=int,
         default=15,
         help="browser preview refresh cap; the display stays full speed (default 15)",
+    )
+    s.add_argument(
+        "--stream-max",
+        type=int,
+        default=0,
+        help="cap the /h264 stream's longest side (GPU downscale; "
+        "default 0 = full render size)",
     )
     s.set_defaults(fn=cmd_serve)
 

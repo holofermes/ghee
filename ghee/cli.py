@@ -188,8 +188,11 @@ def _render_h264(a, scene, ctrl):
                 out.flush()
             i += 1
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
-    except (KeyboardInterrupt, BrokenPipeError):
+    except KeyboardInterrupt:
         pass
+    except (BrokenPipeError, ConnectionResetError):
+        # devnull stdout: the interpreter's exit flush would re-raise
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     finally:
         try:
             if hw:
@@ -199,7 +202,7 @@ def _render_h264(a, scene, ctrl):
                     out.write(au)
                 enc.close()
             out.flush()
-        except BrokenPipeError:
+        except (BrokenPipeError, ConnectionResetError):
             pass
         if out is not sys.stdout.buffer:
             out.close()

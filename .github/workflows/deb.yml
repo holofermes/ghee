@@ -55,8 +55,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ver=$(dpkg-deb -f out/*.deb Version | awk '{print $NF}')
+          ver=$(dpkg-deb -f out/python3-ghee_*.deb Version | awk '{print $NF}')
           asset="python3-ghee_${ver}_arm64-${{ matrix.dist }}.deb"
-          cp out/*.deb "$asset"
+          cp out/python3-ghee_*.deb "$asset"
           gh release create "${GITHUB_REF_NAME}" --notes "python3-ghee debs (arm64 bookworm/trixie, armhf ARMv6) and the sdist. Also on PyPI as ghee-render." || true
           gh release upload "${GITHUB_REF_NAME}" "$asset" --clobber

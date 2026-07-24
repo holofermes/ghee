@@ -72,7 +72,7 @@ ghee serve --demo
 
 `ghee serve <your_scenes_dir>` serves your own scenes instead. The console
 preview streams H264 (WebCodecs) when the browser can, MJPEG otherwise; the
-`/h264` endpoint serves the framed stream, `/h264.html` a bare player.
+`/h264` endpoint serves the framed stream.
 
 ## Install
 

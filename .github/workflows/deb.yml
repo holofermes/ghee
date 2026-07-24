@@ -5,6 +5,9 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: write
+
 jobs:
   arm64:
     runs-on: ubuntu-latest
@@ -46,3 +49,14 @@ jobs:
         with:
           name: python3-ghee-arm64-${{ matrix.dist }}
           path: out/*.deb
+      - name: publish to the release (tag builds)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ver=$(dpkg-deb -f out/*.deb Version)
+          asset="python3-ghee_${ver}_arm64-${{ matrix.dist }}.deb"
+          cp out/*.deb "$asset"
+          gh release create "${GITHUB_REF_NAME}" --notes "python3-ghee debs (arm64 bookworm/trixie, armhf ARMv6) and the sdist. Also on PyPI as ghee-render." || true
+          gh release upload "${GITHUB_REF_NAME}" "$asset" --clobber

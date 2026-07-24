@@ -188,6 +188,7 @@ def encoder_loop():
         if rgb is None:
             time.sleep(0.01)
             continue
+        t0 = time.monotonic()
         mode = "RGBA" if rgb.shape[2] == 4 else "RGB"
         img = Image.fromarray(rgb, mode).convert("RGB")
         w, h = img.size
@@ -196,6 +197,7 @@ def encoder_loop():
             img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=50)
+        _stat["encode_ms"] = (time.monotonic() - t0) * 1000.0
         with _lock:
             _latest["jpg"] = buf.getvalue()
             _latest["seq"] += 1
@@ -448,9 +450,8 @@ def render_loop():
         # entirely: the display keeps scanning out the last flipped buffer.
         # Queued commands (switch/param/scene edit/new preview client) force a
         # draw so edits always show. `frame` advances on skipped frames too.
-        # (t = frame/60 predates this loop and assumes a 60Hz cadence; with the
-        # skip interval derived from the real refresh it tracks wall clock on a
-        # 60Hz panel, and is off for other panels exactly as it always was.)
+        # (t = frame/60 assumes a 60Hz cadence; non-60Hz panels get a
+        # proportionally scaled t.)
         if not _should_render(force, ctrl, frame, frame / 60.0):
             _stat["fps"] *= 0.98
             frame += 1

@@ -1,10 +1,9 @@
 name: deb-armhf
 
 # armhf deb for the original Pi Zero / Pi 1 (ARMv6). Stock debian armhf is
-# ARMv7-baseline and third-party "Pi OS" images proved to carry v7 toolchains,
-# so this builds inside a debootstrapped Raspbian rootfs, whose gcc targets
-# ARMv6+VFP2. ARMv6-safety is asserted on the compiler macro and on the ELF
-# arch tag of the built engine.
+# ARMv7-baseline, so this builds inside a debootstrapped Raspbian rootfs,
+# whose gcc targets ARMv6+VFP2. ARMv6-safety is asserted on the compiler
+# macro and on the ELF arch tag of the built engine.
 
 on:
   workflow_dispatch:

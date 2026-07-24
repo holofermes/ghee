@@ -5,7 +5,7 @@ import numpy as np
 
 from ghee import ArrayInput, Pass, Scene
 
-N = 64  # past the ~48 VC4 uniform-array cap the old path hit
+N = 64  # past VC4's ~48 uniform-array cap
 
 
 def _hgrad():

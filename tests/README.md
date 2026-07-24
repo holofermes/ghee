@@ -27,5 +27,5 @@ differ by more than `tol`).
 - Defaults: `tol=16`, `max_bad_frac=0.05`. Override with `GHEE_GOLDEN_TOL` /
   `GHEE_GOLDEN_MAXBAD`; `tol=0` is an exact match.
 - Re-record a baseline: `GHEE_REGEN=1 pytest`.
-- Measured Mesa (desktop) vs VC4 (Pi): the bundled demos drift ~0% at the default, so
-  the one baseline passes on both.
+- Mesa (desktop) and VC4 (Pi) drift ~0% on the bundled demos at the default
+  tolerance, so the one baseline passes on both.

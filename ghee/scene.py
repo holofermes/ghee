@@ -12,7 +12,7 @@ literal names. Arrays and params are bound by the author's chosen name.
     that pass's current frame; a self/later ref reads its previous frame.
   * PARAMS: named typed attributes.
 
-Image/texture channels and per-pass float buffer formats are not modeled yet :(
+Image/texture channels and per-pass float buffer formats are not modeled yet.
 """
 
 from __future__ import annotations

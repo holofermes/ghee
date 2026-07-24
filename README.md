@@ -7,7 +7,7 @@ shaders (a scene), renders them off-screen with GLES2 through DRM/GBM, and hands
 the pixels to whatever you point it at: image files on disk, a SPI panel, a live
 MJPEG stream in your browser.
 
-![an audio-reactive scene with a live dither filter on a 135x240 SPI panel](media/bars-dither.gif)
+![an audio-reactive scene through the bundled 1-bit dither filter, at SPI-panel size](media/bars-dither.gif)
 
 The baseline target is the Raspberry Pi VC4 GPU (tested on a Pi Zero 2 W and a
 Pi 3 A+), but it runs on newer generation Pis with V3D, and on any desktop Linux

@@ -37,7 +37,13 @@ class SceneController:
         return base
 
     def setup(self, renderer) -> None:
-        """Called once after the scene compiles (init state, future: load textures)."""
+        """Called once after the scene compiles (init state)."""
+
+    def on_param(self, renderer, name: str, value) -> None:
+        """Called when a host-side (string) param changes, and once per string
+        param after setup() so saved values reach the controller. Rebuild
+        whatever the string drives (rasterized text, file choices) and push it
+        via provide()/set_param."""
 
     def provide(self, name: str, size: int, frame: int) -> ArrayLike | None:
         """Array-like floats for a declared array this frame, None to fall through

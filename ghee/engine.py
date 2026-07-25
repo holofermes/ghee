@@ -47,8 +47,7 @@ def probe_display(dri_device=None, lib_path=None):
     lib_path = lib_path or os.environ.get("GHEE_LIB") or bundled_lib()
     if not lib_path:
         raise ValueError(
-            "no engine .so: build ghee on this host, or pass "
-            "lib_path / set $GHEE_LIB"
+            "no engine .so: build ghee on this host, or pass lib_path / set $GHEE_LIB"
         )
     lib = ctypes.CDLL(lib_path)
     lib.ghee_display_probe.argtypes = [
@@ -326,7 +325,7 @@ class Renderer:
         self.lib.ghee_mp_reset(self.handle)
         mp = {}
         for i, p in enumerate(scene.passes):
-            glsl = p.glsl()
+            glsl = p.glsl(scene.params)
             idx = self.lib.ghee_mp_add_pass(self.handle, glsl.encode("utf-8"))
             if idx < 0:
                 err = self.last_error() or "compile error"
@@ -344,6 +343,9 @@ class Renderer:
                     )
             for nm, pm in p.params.items():
                 self.set_param(p.name, nm, pm.type, pm.value)
+        # scene params reach every pass at once (they sit in every preamble)
+        for nm, pm in scene.params.items():
+            self.set_scene_param(nm, pm.type, pm.value)
         self.scene = scene
         # Group array feeds by name: an array name is one logical input, so the provider
         # is asked for it once per frame and the result goes to every pass that declares
@@ -407,13 +409,48 @@ class Renderer:
 
     def set_param(self, pass_name, name, ptype, value):
         """Set one uniform on a pass live (no recompile). False if the pass/uniform
-        is absent."""
+        is absent. A "color" param is [r, g, b]: it sets the three decomposed
+        float uniforms name_r/_g/_b (the engine has no color type). A "vecK" param
+        is K floats: it sets the decomposed float uniforms name_x/_y/_z/_w.
+        A "string" param is host-side (the scene's controller consumes it):
+        nothing to set here."""
+        if ptype == "string":
+            return False
         idx = self._mp.get(pass_name)
         if idx is None:
             return False
+        if ptype == "color":
+            r, g, b = value
+            oks = []
+            for suffix, comp in (("_r", r), ("_g", g), ("_b", b)):
+                cp = create_c_parameter({"type": "float", "value": comp})
+                cp.name = (name + suffix).encode("utf-8")
+                oks.append(
+                    self.lib.ghee_mp_set_uniform(self.handle, idx, ctypes.byref(cp))
+                )
+            return all(oks)
+        if ptype in ("vec2", "vec3", "vec4"):
+            oks = []
+            for suffix, comp in zip(("_x", "_y", "_z", "_w"), value, strict=False):
+                cp = create_c_parameter({"type": "float", "value": comp})
+                cp.name = (name + suffix).encode("utf-8")
+                oks.append(
+                    self.lib.ghee_mp_set_uniform(self.handle, idx, ctypes.byref(cp))
+                )
+            return all(oks)
         cp = create_c_parameter({"type": ptype, "value": value})
         cp.name = name.encode("utf-8")
         return self.lib.ghee_mp_set_uniform(self.handle, idx, ctypes.byref(cp))
+
+    def set_scene_param(self, name, ptype, value):
+        """Set one scene-scoped uniform on every pass live (no recompile). A scene
+        param sits in every pass's preamble, so the set fans out to all of them;
+        a pass that never reads it has an inactive uniform and is skipped. True if
+        at least one pass held the uniform and took the value. The list is built
+        before any(): every pass must be set, not just up to the first that holds
+        the uniform."""
+        oks = [self.set_param(pn, name, ptype, value) for pn in self._mp]
+        return any(oks)
 
     def pack(self, rgb, bw=False, out=None):
         """Optional: pack an RGB(A) frame to 1bpp (bw) or RGB565.

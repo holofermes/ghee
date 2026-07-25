@@ -100,6 +100,100 @@ def test_param_live_update(renderer):
     assert abs(int(b[..., 0].mean()) - 204) <= 2
 
 
+def test_color_param_renders_and_updates(renderer):
+    from ghee import Param, Pass, Scene
+
+    sc = Scene(
+        passes=[
+            Pass(
+                name="main",
+                code="void main(){ gl_FragColor = vec4(tint, 1.0); }",
+                params={"tint": Param("tint", "color", [1.0, 0.0, 0.0])},
+            )
+        ]
+    )
+    assert renderer.setup(sc) == ""
+    renderer.set_time(0.0)
+    red = renderer.render(None).copy()
+    # RGBA readback: red is high in channel 0, low in channel 2 (asymmetric)
+    assert int(red[..., 0].mean()) > 200
+    assert int(red[..., 2].mean()) < 40
+    renderer.set_param("main", "tint", "color", [0.0, 0.0, 1.0])
+    blue = renderer.render(None).copy()
+    assert int(blue[..., 2].mean()) > 200
+    assert int(blue[..., 0].mean()) < 40
+
+
+def test_vec2_param_renders_and_updates(renderer):
+    from ghee import Param, Pass, Scene
+
+    # a horizontal red gradient shifted by offset.x; offset.y is unused
+    sc = Scene(
+        passes=[
+            Pass(
+                name="main",
+                code=(
+                    "void main(){ vec2 uv = gl_FragCoord.xy/resolution; "
+                    "gl_FragColor = vec4(clamp(uv.x + offset.x, 0.0, 1.0), "
+                    "0.0, 0.0, 1.0); }"
+                ),
+                params={"offset": Param("offset", "vec2", [0.0, 0.0])},
+            )
+        ]
+    )
+    assert renderer.setup(sc) == ""
+    renderer.set_time(0.0)
+    base = renderer.render(None).copy()
+    h, w = base.shape[:2]
+    # unshifted: dark at the left edge, bright at the right (asymmetric across x)
+    left = int(base[:, w // 8, 0].mean())
+    right = int(base[:, w - w // 8, 0].mean())
+    assert right - left > 100
+    # +0.5 x offset lifts the whole gradient: brighter everywhere
+    renderer.set_param("main", "offset", "vec2", [0.5, 0.0])
+    shifted = renderer.render(None).copy()
+    assert int(shifted[..., 0].mean()) - int(base[..., 0].mean()) > 80
+    # a live update back to zero restores the original frame
+    renderer.set_param("main", "offset", "vec2", [0.0, 0.0])
+    assert np.array_equal(renderer.render(None).copy(), base)
+
+
+def test_scene_param_reaches_every_pass(renderer):
+    from ghee import Channel, Param, Pass, Scene
+
+    # pass a fills k into red; pass b adds k into green on top of a's buffer. A
+    # scene-scoped k must reach BOTH passes, so both channels reflect it.
+    sc = Scene(
+        params={"k": Param("k", "float", 0.2)},
+        passes=[
+            Pass(
+                name="a", code="void main(){ gl_FragColor = vec4(k, 0.0, 0.0, 1.0); }"
+            ),
+            Pass(
+                name="b",
+                channels=[Channel("a")],
+                code=(
+                    "void main(){ vec2 uv = gl_FragCoord.xy/resolution; "
+                    "gl_FragColor = texture2D(iChannel0, uv) + vec4(0.0, k, 0.0, 0.0); }"
+                ),
+            ),
+        ],
+    )
+    assert renderer.setup(sc) == ""
+    renderer.set_time(0.0)
+    f = renderer.render(None).copy()
+    # k=0.2 -> ~51 in R (pass a) AND ~51 in G (pass b); B stays ~0 (asymmetric)
+    assert abs(int(f[..., 0].mean()) - 51) <= 3
+    assert abs(int(f[..., 1].mean()) - 51) <= 3
+    assert int(f[..., 2].mean()) <= 3
+    # bump k on every pass at once; both R and G must move together to ~204
+    renderer.set_scene_param("k", "float", 0.8)
+    g = renderer.render(None).copy()
+    assert abs(int(g[..., 0].mean()) - 204) <= 3  # pass a picked up 0.8
+    assert abs(int(g[..., 1].mean()) - 204) <= 3  # pass b picked up 0.8 too
+    # a half-updated composite would read 204/51 or 51/204; both moving rules it out
+
+
 def test_multipass_forward_channel(renderer):
     sc = scene(
         [

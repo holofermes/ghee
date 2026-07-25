@@ -4,7 +4,7 @@
 
 Hardware accelerated renderer for Raspberry Pi and more!
 
-![a four-pass particle scene, procedural text, and the bundled dither filter, looping](https://raw.githubusercontent.com/holofermes/ghee/main/media/hero.gif)
+![a four-pass particle scene, procedural text, and the bundled dither filter, looping](https://raw.githubusercontent.com/holofermes/ghee/main/media/hero.webp)
 
 ghee compiles a scene (GLSL fragment shaders, live parameters, optionally Python driving them) and renders it straight on the GPU:
 

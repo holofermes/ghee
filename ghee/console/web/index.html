@@ -14,6 +14,7 @@
 <style>
   :root{
     --bg:#f3f3f1; --panel:#fbfbfa; --line:#e6e6e2; --ink:#1d1d1b; --muted:#8a8a83;
+    --well:#e9e9e5;
     --accent:#3a3a36; --accent-ink:#fafafa; --hot:#c0392b; --live:#2c9c46;
     --code-bg:#fcfcfb; --code-ink:#3a3a3a; --bezel:#d8d8d2; --scroll:#cfcfc9;
     --t-cm:#a2a298; --t-pp:#8a5fb0; --t-ty:#2c7a72; --t-kw:#b0603a; --t-bi:#3f63ad; --t-nu:#86772f;
@@ -23,6 +24,7 @@
   }
   html[data-theme="dark"]{
     --bg:#141518; --panel:#1c1e22; --line:#2b2e34; --ink:#e9e9e4; --muted:#888b92;
+    --well:#14161c;
     --accent:#e9e9e4; --accent-ink:#16171a; --hot:#e0796f; --live:#5fcf78;
     --code-bg:#17181c; --code-ink:#cacac3; --bezel:#2c2f36; --scroll:#3a3e46;
     --t-cm:#6f7178; --t-pp:#b89ce0; --t-ty:#5bbdb0; --t-kw:#e0916a; --t-bi:#80a1e0; --t-nu:#c4b56a;
@@ -30,7 +32,7 @@
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 22px rgba(0,0,0,.4);
   }
   *{box-sizing:border-box}
-  html,body{margin:0; height:100%}
+  html,body{margin:0; height:100%; overscroll-behavior-x:none}
   body{
     background:var(--bg); color:var(--ink);
     font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -85,6 +87,19 @@
   .errmark{position:absolute; left:0; right:0; background:rgba(192,57,43,.16); border-left:3px solid var(--hot); pointer-events:none; display:none; z-index:1}
   .screen{position:relative; background:var(--bezel); border-radius:12px; padding:12px; width:max-content; max-width:100%; margin:0 auto}
   .frame{position:relative; margin:0 auto; overflow:hidden; max-width:100%}
+  .vecwrap{display:flex; gap:10px; align-items:center; margin:2px 0 6px}
+  .vecpad{width:84px; height:84px; border-radius:50%; background:var(--well);
+          border:1px solid var(--line); position:relative; touch-action:none;
+          flex:none; cursor:crosshair}
+  .vecpad svg{position:absolute; inset:0; pointer-events:none}
+  .veccol{flex:1; display:flex; flex-direction:column; gap:6px; min-width:0}
+  .vnums{display:flex; gap:6px}
+  .vnums input{width:100%; min-width:0; background:var(--well);
+               border:1px solid var(--line); color:inherit; border-radius:4px;
+               font:inherit; font-size:11px; padding:2px 4px}
+  .row .strinp, .row .strsel{width:100%; min-width:0; background:var(--well);
+               border:1px solid var(--line); color:inherit; border-radius:4px;
+               font:inherit; font-size:12px; padding:4px 6px}
   .frame img, .frame canvas{position:absolute; top:50%; left:50%; display:block; image-rendering:pixelated}
   .iconbtn{font-size:16px; line-height:1; padding:4px 9px; color:var(--muted); border-radius:8px}
   .iconbtn:hover{color:var(--ink); background:var(--code-bg); border-color:var(--line)}
@@ -109,6 +124,21 @@
   input[type=range]{-webkit-appearance:none; appearance:none; width:100%; height:3px; background:var(--line); border-radius:3px; outline:none}
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:15px; height:15px; border-radius:50%; background:var(--accent); cursor:pointer; box-shadow:var(--shadow); margin-top:0}
   input[type=range]::-moz-range-thumb{width:15px; height:15px; border:none; border-radius:50%; background:var(--accent); cursor:pointer}
+  /* touch: fat thumbs, edge clearance so drags stay off the browser's
+     back-swipe zone, and no history navigation from horizontal overscroll */
+  @media (pointer:coarse){
+    input[type=range]{height:6px}
+    input[type=range]::-webkit-slider-thumb{width:28px; height:28px}
+    input[type=range]::-moz-range-thumb{width:28px; height:28px}
+    .row{padding:4px 8px}
+    .leftcol{padding-left:8px; padding-right:12px}
+    .vecpad{width:116px; height:116px}
+    .vnums input, .row .strinp, .row .strsel{font-size:14px; padding:7px 8px}
+  }
+  input[type=color]{-webkit-appearance:none; appearance:none; width:100%; height:22px; padding:0; border:1px solid var(--line); border-radius:8px; background:var(--panel); cursor:pointer}
+  input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
+  input[type=color]::-webkit-color-swatch{border:none; border-radius:6px}
+  input[type=color]::-moz-color-swatch{border:none; border-radius:6px}
   .editor{position:relative; border:1px solid var(--line); border-radius:9px; background:var(--code-bg); overflow:hidden}
   .editor>pre,.editor>textarea{margin:0; border:0; padding:11px; font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; tab-size:2; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word}
   .editor>pre{position:absolute; inset:0; overflow:auto; color:var(--code-ink); pointer-events:none}
@@ -223,7 +253,8 @@
       </div>
       <div class="addparam" id="addRow">
         <input class="name" id="pName" placeholder="name">
-        <select id="pType"><option value="float">float</option><option value="int">int</option></select>
+        <select id="pPlace"><option value="pass">this pass</option><option value="scene">scene</option></select>
+        <select id="pType"><option value="float">float</option><option value="int">int</option><option value="color">color</option><option value="vec2">vec2</option><option value="vec3">vec3</option><option value="string">string</option></select>
         <input id="pVal" placeholder="value" value="0.5">
         <input id="pMin" placeholder="min" value="0">
         <input id="pMax" placeholder="max" value="1">
@@ -400,11 +431,40 @@ function startPreview(){
   }
 }
 
+function mergeNewParams(pristine, work){
+  // the working copy holds the user's edits, the pristine scene holds the
+  // code's current shape: new params surface, edited values win, metadata
+  // (range/options/type) always follows the code
+  const mergeInto = (from, into) => {
+    if (!from) return into;
+    into = into || {};
+    for (const [k, d] of Object.entries(from)){
+      const w = into[k];
+      if (!w || w.type !== d.type) into[k] = clone(d);
+      else into[k] = Object.assign(clone(d), {value: w.value});
+    }
+    return into;
+  };
+  work.params = mergeInto(pristine.params, work.params);
+  const byName = {};
+  (work.passes||[]).forEach(p => byName[p.name] = p);
+  (pristine.passes||[]).forEach(p => {
+    const wp = byName[p.name];
+    if (!wp) return;
+    wp.params = mergeInto(p.params, wp.params);
+    // shader code the user never touched in the editor tracks the scene's
+    // current source, so new uniforms arrive with the code that reads them
+    if (!wp.codeEdited && typeof p.code === "string" && wp.code !== p.code)
+      wp.code = p.code;
+  });
+}
+
 async function loadScene(name){
   active = name;
   pristine = await jget("/scene?name=" + encodeURIComponent(name));
   const saved = localStorage.getItem(KEY(name));
   work = saved ? JSON.parse(saved) : clone(pristine);
+  if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
   curPass = 0;
   if (!work.passes || !work.passes.length) {   // non-shader scene (python plugin): stream only
@@ -473,6 +533,7 @@ function addFilter(name){
     params: JSON.parse(JSON.stringify(f.params || {})),
     filter: name,                    // read-only in the editor; tweak params only
   });
+  (work.filters = work.filters || []).push(name);  // save strips the pass, keeps this
   curPass = work.passes.length - 1; markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
@@ -502,8 +563,12 @@ function addPass(){
 
 function delPass(i){
   if (work.passes.length <= 1) return;
-  const name = work.passes[i].name;
+  const name = work.passes[i].name, filt = work.passes[i].filter;
   work.passes.splice(i,1);
+  if (filt && Array.isArray(work.filters)){
+    const fi = work.filters.indexOf(filt);
+    if (fi >= 0) work.filters.splice(fi, 1);
+  }
   work.passes.forEach(p => { p.channels = (p.channels||[]).filter(c => c.buffer !== name); });
   if (curPass >= work.passes.length) curPass = work.passes.length - 1;
   markDirty(); postScene();
@@ -552,41 +617,204 @@ function loadCode(){
   syncHL();
 }
 
+const VEC_ARITY = {vec2:2, vec3:3, vec4:4};
+const VEC_AXES = ["x","y","z","w"];
+// color params travel as [r,g,b] floats; the native input speaks #rrggbb
+function rgbToHex(rgb){
+  const h = x => Math.max(0, Math.min(255, Math.round((+x)*255))).toString(16).padStart(2,"0");
+  return "#" + h(rgb[0]) + h(rgb[1]) + h(rgb[2]);
+}
+function hexToRgb(hex){
+  const n = parseInt(hex.slice(1), 16);
+  return [((n>>16)&255)/255, ((n>>8)&255)/255, (n&255)/255];
+}
+// One control per param, for both scopes. `scope` is the /set pass= target: a
+// pass index for a pass-scoped param, "scene" for a scene-scoped one. It also
+// namespaces the value-readout ids so the two scopes never collide.
+function buildParamRow(box, pm, name, scope){
+  const row = document.createElement("div"); row.className="row";
+  if (pm.type === "string"){
+    // host-side value (the scene controller consumes it): dropdown when the
+    // param declares options, free text otherwise
+    const send = v => {
+      pm.value = v;
+      fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&type=string&value=${encodeURIComponent(v)}`);
+      markDirty();
+    };
+    if (Array.isArray(pm.options) && pm.options.length){
+      row.innerHTML = `<label><span>${name}</span></label><select class="strsel"></select>`;
+      const sel = row.querySelector("select");
+      pm.options.forEach(o => {
+        const op = document.createElement("option");
+        op.value = o; op.textContent = o; sel.appendChild(op);
+      });
+      if (!pm.options.includes(pm.value)){
+        const op = document.createElement("option");
+        op.value = pm.value; op.textContent = pm.value; sel.appendChild(op);
+      }
+      sel.value = pm.value;
+      sel.addEventListener("change", ()=> send(sel.value));
+    } else {
+      row.innerHTML = `<label><span>${name}</span></label><input type="text" class="strinp">`;
+      const inp = row.querySelector("input");
+      inp.value = pm.value;
+      let t = null;
+      inp.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(()=> send(inp.value), 300); });
+      inp.addEventListener("change", ()=>{ clearTimeout(t); send(inp.value); });
+    }
+    box.appendChild(row);
+    return;
+  }
+  if (pm.type === "color"){
+    row.innerHTML =
+      `<label><span>${name}</span><span class="val" id="v_${scope}_${name}">${rgbToHex(pm.value)}</span></label>
+       <input type="color" value="${rgbToHex(pm.value)}">`;
+    const inp = row.querySelector("input");
+    inp.addEventListener("input", ()=>{
+      const rgb = hexToRgb(inp.value);
+      pm.value = rgb; $("#v_"+scope+"_"+name).textContent = inp.value;
+      const s = rgb.map(x=>x.toFixed(3)).join(",");
+      fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&type=color&value=${s}`);
+      markDirty();
+    });
+    box.appendChild(row);
+    return;
+  }
+  // vec2: a direction pad (drag = direction + magnitude, works with touch),
+  // a magnitude slider that keeps direction, and numeric entry. All three
+  // views of one vector; every change sends the full value.
+  if (pm.type === "vec2"){
+    const mn = pm.min!=null?pm.min:-1, mx = pm.max!=null?pm.max:1;
+    const R = Math.max(Math.abs(mn), Math.abs(mx)) || 1;
+    const st = pm.step!=null?pm.step:R/100;
+    const r = document.createElement("div"); r.className="row";
+    r.innerHTML =
+      `<label><span>${name}</span><span class="val" id="v_${scope}_${name}"></span></label>
+       <div class="vecwrap">
+         <div class="vecpad"><svg viewBox="0 0 84 84">
+           <line x1="42" y1="42" x2="42" y2="42" stroke="currentColor" stroke-width="2"/>
+           <circle cx="42" cy="42" r="3.5" fill="currentColor"/>
+         </svg></div>
+         <div class="veccol">
+           <input type="range" class="vmag" min="0" max="${R}" step="${st}">
+           <div class="vnums">
+             <input type="number" step="${st}" min="${mn}" max="${mx}">
+             <input type="number" step="${st}" min="${mn}" max="${mx}">
+           </div>
+         </div>
+       </div>`;
+    const pad = r.querySelector(".vecpad"), svg = pad.querySelector("svg");
+    const ln = svg.querySelector("line"), dot = svg.querySelector("circle");
+    const mag = r.querySelector(".vmag");
+    const [nx, ny] = r.querySelectorAll(".vnums input");
+    const clampC = v => Math.min(mx, Math.max(mn, v));
+    const send = () => {
+      const sv = pm.value.map(x=>(+x).toFixed(3)).join(",");
+      fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&type=vec2&value=${sv}`);
+      markDirty();
+    };
+    const sync = () => {
+      const [x, y] = pm.value;
+      const px = 42 + (x / R) * 36, py = 42 - (y / R) * 36;
+      ln.setAttribute("x2", px); ln.setAttribute("y2", py);
+      dot.setAttribute("cx", px); dot.setAttribute("cy", py);
+      mag.value = Math.hypot(x, y);
+      nx.value = (+x).toFixed(3); ny.value = (+y).toFixed(3);
+      r.querySelector(".val").textContent = `${(+x).toFixed(3)}, ${(+y).toFixed(3)}`;
+    };
+    const fromPad = ev => {
+      const b = pad.getBoundingClientRect();
+      const x = ((ev.clientX - b.left) / b.width * 2 - 1) * R;
+      const y = -((ev.clientY - b.top) / b.height * 2 - 1) * R;
+      pm.value = [clampC(x), clampC(y)];
+      sync(); send();
+    };
+    pad.addEventListener("pointerdown", ev => {
+      pad.setPointerCapture(ev.pointerId); fromPad(ev); ev.preventDefault();
+    });
+    pad.addEventListener("pointermove", ev => {
+      if (ev.buttons) fromPad(ev);
+    });
+    mag.addEventListener("input", () => {
+      const [x, y] = pm.value;
+      const len = Math.hypot(x, y);
+      const d = len > 1e-6 ? [x/len, y/len] : [1, 0];
+      const m = parseFloat(mag.value);
+      pm.value = [clampC(d[0]*m), clampC(d[1]*m)];
+      sync(); send();
+    });
+    [nx, ny].forEach((el, c) => el.addEventListener("change", () => {
+      const v = clampC(parseFloat(el.value) || 0);
+      pm.value[c] = v; sync(); send();
+    }));
+    box.appendChild(r);
+    sync();
+    return;
+  }
+  // vec3/vec4 travel as K floats; render K slider rows (name.x/.y/.z/.w)
+  // sharing the param's scalar min/max/step, each edit sending the vector.
+  if (VEC_ARITY[pm.type]){
+    const n = VEC_ARITY[pm.type];
+    const mn = pm.min!=null?pm.min:0, mx = pm.max!=null?pm.max:1;
+    const step = pm.step!=null?pm.step:(mx-mn)/200;
+    for (let c=0;c<n;c++){
+      const ax = VEC_AXES[c];
+      const r = document.createElement("div"); r.className="row";
+      r.innerHTML =
+        `<label><span>${name}.${ax}</span><span class="val" id="v_${scope}_${name}_${ax}">${(+pm.value[c]).toFixed(3)}</span></label>
+         <input type="range" min="${mn}" max="${mx}" step="${step}" value="${pm.value[c]}">`;
+      const inp = r.querySelector("input");
+      inp.addEventListener("input", ()=>{
+        const v = parseFloat(inp.value);
+        pm.value[c] = v; $("#v_"+scope+"_"+name+"_"+ax).textContent = v.toFixed(3);
+        const s = pm.value.map(x=>(+x).toFixed(3)).join(",");
+        fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&type=${pm.type}&value=${s}`);
+        markDirty();
+      });
+      box.appendChild(r);
+    }
+    return;
+  }
+  const mn = pm.min!=null?pm.min:0, mx = pm.max!=null?pm.max:1;
+  const step = pm.type==="int" ? 1 : (pm.step!=null?pm.step:(mx-mn)/200);
+  const fmt = v => pm.type==="int" ? (v|0) : (+v).toFixed(3);
+  row.innerHTML =
+    `<label><span>${name}</span><span class="val" id="v_${scope}_${name}">${fmt(pm.value)}</span></label>
+     <input type="range" min="${mn}" max="${mx}" step="${step}" value="${pm.value}">`;
+  const inp = row.querySelector("input");
+  inp.addEventListener("input", ()=>{
+    const v = pm.type==="int" ? parseInt(inp.value,10) : parseFloat(inp.value);
+    pm.value = v; $("#v_"+scope+"_"+name).textContent = fmt(v);
+    fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&value=${v}`);
+    markDirty();
+  });
+  box.appendChild(row);
+}
+
 function buildParams(){
   const box = $("#params"); box.innerHTML = "";
   let any = false;
-  const sliderNames = p => Object.keys(p.params||{}).filter(n => ["float","int"].includes(p.params[n].type));
-  // group under pass-name headers only when several passes own sliders
-  const grouped = work.passes.filter(p => !p.muted && sliderNames(p).length).length > 1;
+  const paramNames = obj => Object.keys(obj||{}).filter(n => ["float","int","color","vec2","vec3","vec4","string"].includes(obj[n].type));
+  const sceneParams = work.params || {};
+  const sceneNames = paramNames(sceneParams);
+  // header the groups once there is more than one: the SCENE group plus any
+  // pass that owns params
+  const passGroups = work.passes.filter(p => !p.muted && paramNames(p.params).length).length;
+  const grouped = (sceneNames.length ? 1 : 0) + passGroups > 1;
+  if (sceneNames.length){
+    if (grouped){ const h=document.createElement("div"); h.className="pgroup"; h.textContent="scene"; box.appendChild(h); }
+    sceneNames.forEach(name=>{ buildParamRow(box, sceneParams[name], name, "scene"); any = true; });
+  }
   work.passes.forEach((p,pi)=>{
     if (p.muted) return;                 // a muted pass contributes no params
-    const ci = compiledIndex(pi);        // the pass index the renderer actually sees
-    const params = p.params || {};
-    const names = sliderNames(p);
-    if (grouped && names.length){
+    const names = paramNames(p.params);
+    if (!names.length) return;
+    if (grouped){
       const h = document.createElement("div"); h.className="pgroup";
       h.textContent = (p.filter ? "ƒ " : "") + p.name;
       box.appendChild(h);
     }
-    names.forEach(name=>{
-      const pm = params[name];
-      any = true;
-      const mn = pm.min!=null?pm.min:0, mx = pm.max!=null?pm.max:1;
-      const step = pm.type==="int" ? 1 : (pm.step!=null?pm.step:(mx-mn)/200);
-      const row = document.createElement("div"); row.className="row";
-      const fmt = v => pm.type==="int" ? (v|0) : (+v).toFixed(3);
-      row.innerHTML =
-        `<label><span>${name}</span><span class="val" id="v_${pi}_${name}">${fmt(pm.value)}</span></label>
-         <input type="range" min="${mn}" max="${mx}" step="${step}" value="${pm.value}">`;
-      const inp = row.querySelector("input");
-      inp.addEventListener("input", ()=>{
-        const v = pm.type==="int" ? parseInt(inp.value,10) : parseFloat(inp.value);
-        pm.value = v; $("#v_"+pi+"_"+name).textContent = fmt(v);
-        fetch(`/set?pass=${ci}&name=${encodeURIComponent(name)}&value=${v}`);
-        markDirty();
-      });
-      box.appendChild(row);
-    });
+    names.forEach(name=>{ buildParamRow(box, p.params[name], name, compiledIndex(pi)); any = true; });
   });
   if (!any){ box.innerHTML = `<div class="muted">no parameters</div>`; }
 }
@@ -629,7 +857,9 @@ async function postScene(){
 
 // shader
 codeEl().addEventListener("input", ()=>{
-  work.passes[curPass].code = codeEl().value; syncHL(); markDirty();
+  work.passes[curPass].code = codeEl().value;
+  work.passes[curPass].codeEdited = true;   // hand-edited: merge keeps it as is
+  syncHL(); markDirty();
   clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350);   // live compile
 });
 codeEl().addEventListener("scroll", ()=>{ hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; applyErrorLine(errLine); });
@@ -715,9 +945,20 @@ $("#addToggle").addEventListener("click", ()=> $("#addRow").classList.toggle("sh
 $("#pAdd").addEventListener("click", ()=>{
   const name = $("#pName").value.trim(); if(!name) return;
   const type = $("#pType").value;
-  const p = work.passes[curPass];
-  p.params = p.params || {};
-  p.params[name] = {type, value:parseFloat($("#pVal").value)||0, min:parseFloat($("#pMin").value)||0, max:parseFloat($("#pMax").value)||1};
+  // "scene" writes into the working scene's top-level params (every pass);
+  // "this pass" keeps the current pass-scoped behavior
+  const into = $("#pPlace").value === "scene"
+    ? (work.params = work.params || {})
+    : (work.passes[curPass].params = work.passes[curPass].params || {});
+  if (type === "string"){
+    into[name] = {type:"string", value:$("#pVal").value};
+  } else if (type === "color"){
+    into[name] = {type:"color", value:[1.0, 1.0, 1.0]};
+  } else if (VEC_ARITY[type]){
+    into[name] = {type, value:Array(VEC_ARITY[type]).fill(0), min:parseFloat($("#pMin").value)||0, max:parseFloat($("#pMax").value)||1};
+  } else {
+    into[name] = {type, value:parseFloat($("#pVal").value)||0, min:parseFloat($("#pMin").value)||0, max:parseFloat($("#pMax").value)||1};
+  }
   $("#pName").value=""; $("#addRow").classList.remove("show");
   buildParams(); markDirty();
 });

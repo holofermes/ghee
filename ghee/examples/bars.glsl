@@ -5,5 +5,5 @@ void main() {
   int i0 = int(floor(fi));
   float h = mix(amplitudes_at(i0), amplitudes_at(min(i0 + 1, last)), fract(fi));
   float m = step(uv.y, h);
-  gl_FragColor = vec4(mix(vec3(0.04), vec3(0.1, 0.9, 0.4), m), 1.0);
+  gl_FragColor = vec4(mix(base, bar, m), 1.0);
 }

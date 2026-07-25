@@ -21,7 +21,7 @@ void main() {
     vec2 uv = v_texCoord;
     float m = text_sample2(vec2(fract(uv.x - time * speed), uv.y));
     float g = smoothstep(threshold - 0.08, threshold + 0.08, m);
-    vec3 c = mix(vec3(bg), vec3(ink_r, ink_g, ink_b), g);
+    vec3 c = mix(bg, ink, g);
     gl_FragColor = vec4(c, 1.0);
 }
 """
@@ -45,16 +45,8 @@ class Text(SceneController):
                         "threshold": Param(
                             "threshold", "float", 0.4, min=0.05, max=0.95, step=0.01
                         ),
-                        "bg": Param("bg", "float", 0.02, min=0.0, max=1.0, step=0.01),
-                        "ink_r": Param(
-                            "ink_r", "float", 0.2, min=0.0, max=1.0, step=0.01
-                        ),
-                        "ink_g": Param(
-                            "ink_g", "float", 1.0, min=0.0, max=1.0, step=0.01
-                        ),
-                        "ink_b": Param(
-                            "ink_b", "float", 0.5, min=0.0, max=1.0, step=0.01
-                        ),
+                        "bg": Param("bg", "color", [0.02, 0.02, 0.02]),
+                        "ink": Param("ink", "color", [0.2, 1.0, 0.5]),
                     },
                 )
             ]

@@ -1,8 +1,8 @@
 # ghee tests
 
 ```
-uv pip install -e './ghee[test]'      # pytest + Pillow (numpy comes with ghee)
-cd ghee && python -m pytest            # runs tests/
+uv pip install -e '.[test]'      # pytest + Pillow (numpy comes with ghee)
+python -m pytest                 # runs tests/
 ```
 
 Rendering tests need a GL device. They auto-probe `$GHEE_DRI`, then `/dev/dri/card0`

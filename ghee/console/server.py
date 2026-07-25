@@ -20,10 +20,12 @@ API:
   GET  /scenes            {scenes:[name...], active}
   GET  /filters           {name: filter def} registry for the "+ filter" picker
   GET  /scene?name=       resolved scene JSON (shader files inlined, filters expanded)
-  GET  /set?pass=&name=&value=   live uniform, no recompile
+  GET  /set?pass=&name=&value=   live uniform, no recompile (pass=scene = scene-scoped)
   GET  /next /prev        switch active scene
   POST /scene             full scene JSON -> recompile active (apply working copy)
   POST /save              write the scene as a modified copy in <scenes>/modified/;
+                          a procedural scene saves a .values.json sidecar (param
+                          values + filters) applied over its defaults at load;
                           the original file is never touched (demo scenes refuse)
   GET  /<file>            static file from web/
 """
@@ -43,7 +45,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from ghee import Scene, apply_filters, load_filters, load_scene
+from ghee import Param, Scene, apply_filters, load_filters, load_scene
 from ghee.console import examples_dir, web_dir
 from ghee.console.feeds import default_hwinfo, demo_feed
 from ghee.engine import Renderer
@@ -85,8 +87,88 @@ _raw = {"rgb": None, "seq": 0}  # latest full frame handed to the encoder thread
 _raw_lock = threading.Lock()
 
 
+_VEC_ARITY = {"vec2": 2, "vec3": 3, "vec4": 4}
+
+
+def _parse_param_value(ptype, raw):
+    """Turn a /set raw query string into the value set_param expects. A "color"
+    is "r,g,b" -> [float, float, float]; a "vecK" is K comma-separated floats ->
+    [float, ...]; anything else is a single float. Raises ValueError on malformed
+    input (a short/long color/vec, a non-number)."""
+    if ptype == "color":
+        parts = [float(x) for x in raw.split(",")]
+        if len(parts) != 3:
+            raise ValueError(f"color needs three comma-separated floats, got {raw!r}")
+        return parts
+    if ptype in _VEC_ARITY:
+        n = _VEC_ARITY[ptype]
+        parts = [float(x) for x in raw.split(",")]
+        if len(parts) != n:
+            raise ValueError(f"{ptype} needs {n} comma-separated floats, got {raw!r}")
+        return parts
+    if ptype == "string":
+        return raw
+    return float(raw)
+
+
+def _set_item(pass_raw, name, value):
+    """Render-queue item for a /set. pass="scene" (the literal string) targets the
+    scene's shared params: a distinct item type the loop applies to every pass.
+    Any other value is a pass index for a pass-scoped param (ValueError if it is
+    not an int)."""
+    if pass_raw == "scene":
+        return ("scene_param", name, value)
+    return ("param", int(pass_raw), name, value)
+
+
 def _modified_path(name):
     return os.path.join(_scenes_dir, "modified", f"{name}.scene.json")
+
+
+def _values_path(name):
+    return os.path.join(_scenes_dir, "modified", f"{name}.values.json")
+
+
+def _read_values(name):
+    """The saved values sidecar for a procedural scene, or None."""
+    path = _values_path(name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"values {name}: unreadable ({e})", file=sys.stderr)
+        return None
+
+
+def _apply_values(scene, name, vals):
+    """Overlay a saved values sidecar's param values onto the resolved scene
+    (filter passes included: their params are tweakable). The code's current
+    shape wins: unknown names are reported and skipped, saved values only
+    fill what still exists."""
+    targets = [(scene.params, "scene", vals.get("scene") or {})]
+    byname = {ps.name: ps for ps in scene.passes}
+    for pn, params in (vals.get("passes") or {}).items():
+        if pn not in byname:
+            print(f"values {name}: no pass '{pn}'", file=sys.stderr)
+            continue
+        targets.append((byname[pn].params, pn, params))
+    for existing, label, saved in targets:
+        for n, v in saved.items():
+            p = existing.get(n)
+            if p is None:
+                print(f"values {name}: no param '{label}.{n}'", file=sys.stderr)
+                continue
+            if p.type in ("float", "int") and (
+                isinstance(v, bool) or not isinstance(v, (int, float))
+            ):
+                print(f"values {name}: bad '{label}.{n}': {v!r}", file=sys.stderr)
+                continue
+            try:
+                existing[n] = Param(p.name, p.type, v, p.min, p.max, p.step, p.options)
+            except (ValueError, TypeError) as e:
+                print(f"values {name}: bad '{label}.{n}': {e}", file=sys.stderr)
 
 
 def _scene_path(name):
@@ -100,7 +182,12 @@ def _scene_path(name):
 def _load_resolved(name):
     """Scene ready to render/edit: shader files inlined, declared filters expanded."""
     scene, controller = load_scene(_scene_path(name))
+    vals = None if SCENES[name].endswith(".scene.json") else _read_values(name)
+    if vals is not None and isinstance(vals.get("filters"), list):
+        scene.filters = [f for f in vals["filters"] if isinstance(f, str)]
     apply_filters(scene, scene.filters)
+    if vals is not None:
+        _apply_values(scene, name, vals)
     return scene, controller
 
 
@@ -344,8 +431,15 @@ def h264_sw_loop():
             size = (w, h)
             _fanout.size = (w, h)
             _fanout.color = SW_COLOR
-        enc.feed(rgb)
-        au, _ = enc.get_au(timeout=1.0)
+        try:
+            enc.feed(rgb)
+            au, _ = enc.get_au(timeout=1.0)
+        except (BrokenPipeError, OSError) as e:
+            # a dead encoder process must not kill this thread: respawn
+            print(f"h264: software encoder died ({e}); respawning", file=sys.stderr)
+            enc.close()
+            enc = None
+            continue
         if au:
             _fanout.push(au)
 
@@ -393,6 +487,13 @@ def render_loop():
         st["controller"] = controller
         if controller is not None:
             controller.setup(renderer)
+            # string params are host-side: hand every current value to the
+            # controller so saved/overlaid strings take effect on load
+            groups = [scene.params] + [p.params for p in scene.passes]
+            for params in groups:
+                for nm, pm in params.items():
+                    if pm.type == "string":
+                        controller.on_param(renderer, nm, pm.value)
         _stat["error"] = ""
         _stat["error_line"] = None
         _stat["error_pass"] = None
@@ -434,11 +535,44 @@ def render_loop():
                 try:
                     p = scene.passes[pi]
                     pm = p.params[nm]
-                    v = int(round(val)) if pm.type == "int" else val
+                    if pm.type == "string":
+                        pm.value = val
+                        ctrl = st["controller"]
+                        if ctrl is not None:
+                            ctrl.on_param(renderer, nm, val)
+                        continue
+                    # int rounds; a color arrives as a list and passes through
+                    v = (
+                        int(round(val))
+                        if pm.type == "int" and not isinstance(val, list)
+                        else val
+                    )
                     renderer.set_param(p.name, nm, pm.type, v)
                     pm.value = v
                 except Exception as e:
                     print(f"set param {nm}: {e}", file=sys.stderr)
+            elif item[0] == "scene_param":
+                _, nm, val = item
+                scene = st["scene"]
+                if scene is None:
+                    continue
+                try:
+                    pm = scene.params[nm]
+                    if pm.type == "string":
+                        pm.value = val
+                        ctrl = st["controller"]
+                        if ctrl is not None:
+                            ctrl.on_param(renderer, nm, val)
+                        continue
+                    v = (
+                        int(round(val))
+                        if pm.type == "int" and not isinstance(val, list)
+                        else val
+                    )
+                    renderer.set_scene_param(nm, pm.type, v)
+                    pm.value = v
+                except Exception as e:
+                    print(f"set scene param {nm}: {e}", file=sys.stderr)
             elif item[0] == "scene_obj":
                 try:
                     set_scene(Scene.from_dict(item[1]), controller=st["controller"])
@@ -596,7 +730,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, f"build {name}: {e}")
         if u.path == "/set":
             try:
-                item = ("param", int(q["pass"][0]), q["name"][0], float(q["value"][0]))
+                ptype = q.get("type", ["float"])[0]
+                val = _parse_param_value(ptype, q["value"][0])
+                item = _set_item(q["pass"][0], q["name"][0], val)
             except (KeyError, ValueError) as e:
                 return self._send(400, f"bad /set: {e}")
             _q.put(item)
@@ -641,8 +777,32 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, f"bad /save: {e}")
         if name not in SCENES:
             return self._send(404, "no scene")
+        # the working copy carries applied filters as expanded passes; recover
+        # the declared list from them so a save never drops a filter the
+        # client forgot to record
+        applied = [p.filter for p in scene.passes if p.filter]
+        if applied:
+            scene.filters = applied
         if not SCENES[name].endswith(".scene.json"):
-            return self._send(400, "procedural scene, nothing to save")
+            # a procedural scene's shape lives in code; save its tweakable
+            # surface (param values + filter list) as a sidecar the loader
+            # applies over the controller's defaults. Filter passes' params
+            # are included: they are the filter's tweakable knobs.
+            vals = {
+                "filters": scene.filters,
+                "scene": {n: p.value for n, p in scene.params.items()},
+                "passes": {
+                    ps.name: {n: p.value for n, p in ps.params.items()}
+                    for ps in scene.passes
+                },
+            }
+            path = _values_path(name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(vals, f, indent=2)
+            os.replace(tmp, path)
+            return self._send(200, "ok")
         # store unexpanded: filter passes come back at load time from the filters list
         scene.passes = [p for p in scene.passes if not p.filter]
         path = _modified_path(name)

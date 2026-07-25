@@ -28,7 +28,11 @@ This is `bars.scene.json`, one of the bundled examples:
     {
       "name": "main",
       "shader": "bars.glsl",
-      "arrays": [{ "name": "amplitudes", "size": 16 }]
+      "arrays": [{ "name": "amplitudes", "size": 16 }],
+      "params": {
+        "base": { "type": "color", "value": [0.04, 0.04, 0.04] },
+        "bar": { "type": "color", "value": [0.1, 0.9, 0.4] }
+      }
     }
   ]
 }
@@ -44,7 +48,7 @@ void main() {
   int i0 = int(floor(fi));
   float h = mix(amplitudes_at(i0), amplitudes_at(min(i0 + 1, last)), fract(fi));
   float m = step(uv.y, h);
-  gl_FragColor = vec4(mix(vec3(0.04), vec3(0.1, 0.9, 0.4), m), 1.0);
+  gl_FragColor = vec4(mix(base, bar, m), 1.0);
 }
 ```
 

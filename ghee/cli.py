@@ -6,7 +6,7 @@
     ghee serve --demo                                        # console on the bundled examples
     ghee displays                                            # list display drivers
 
-Scene arrays get an animated placeholder; no real input is wired yet.
+Scene arrays animate on a placeholder unless a scene controller feeds them.
 """
 
 import argparse
@@ -62,7 +62,16 @@ def cmd_render(a):
         if a.display or a.output:
             sys.exit("render: --h264 excludes -o/--display")
         return _render_h264(a, scene, ctrl)
-    if a.display:
+    kms = a.display == "kms"
+    if kms:
+        from ghee.engine import probe_display
+
+        size = probe_display(dri_device=a.dri, lib_path=a.lib)
+        if size is None:
+            sys.exit("kms: no card or no connected display")
+        w, h = size
+        sink = None
+    elif a.display:
         from ghee.drivers import get_driver
 
         sink = get_driver(a.display)()
@@ -80,8 +89,10 @@ def cmd_render(a):
     else:
         sys.exit("render: pass -o PATTERN or --display NAME")
 
-    components = sink.components if a.display else a.components
-    r = Renderer(w, h, components=components, lib_path=a.lib, dri_device=a.dri)
+    components = sink.components if a.display and not kms else a.components
+    r = Renderer(
+        w, h, components=components, lib_path=a.lib, dri_device=a.dri, display=kms
+    )
     err = r.setup(scene)
     if err:
         sys.exit(f"compile error: {err}")
@@ -97,7 +108,13 @@ def cmd_render(a):
 
     frames = a.frames if a.frames is not None else (0 if a.display else 1)
     pacer = None
-    if a.display:
+    if kms:
+        # the flip paces at the panel's refresh by itself; --fps slows it down
+        if a.fps:
+            from ghee.output import FixedPacer
+
+            pacer = FixedPacer(a.fps)
+    elif a.display:
         from ghee.output import AdaptivePacer, FixedPacer
 
         pacer = FixedPacer(a.fps) if a.fps else AdaptivePacer()
@@ -107,6 +124,7 @@ def cmd_render(a):
     # Finite renders (--frames, -o) draw every frame regardless.
     gated = a.display and frames == 0 and ctrl is not None
     i = 0
+    times = []
     try:
         while frames == 0 or i < frames:
             t0 = time.monotonic()
@@ -116,9 +134,15 @@ def cmd_render(a):
                 continue
             if ctrl is not None:
                 ctrl.update(r, i, i / 60.0)
-            rgb = r.render(lambda name, size, i=i: provider(name, size, i))
-            tw = time.monotonic()
-            sink.write(rgb)
+            if kms:
+                r.present(lambda name, size, i=i: provider(name, size, i))
+                tw = time.monotonic()
+            else:
+                rgb = r.render(lambda name, size, i=i: provider(name, size, i))
+                tw = time.monotonic()
+                sink.write(rgb)
+            if a.stats:
+                times.append(time.monotonic() - t0)
             if pacer is not None:
                 tn = time.monotonic()
                 time.sleep(pacer.sleep_for(tn - tw, tn - t0))
@@ -126,12 +150,29 @@ def cmd_render(a):
     except KeyboardInterrupt:
         pass
     finally:
-        if a.display:
+        if a.display and not kms:
             sink.turn_off()
-        sink.close()
+        if sink is not None:
+            sink.close()
         r.close()
     if a.output:
         print(f"wrote {i} frame(s) to {a.output}")
+    _print_stats(a, times)
+
+
+def _print_stats(a, times):
+    """--stats: one summary line after a render (paced sleeps excluded, so a
+    display run reports its render+write cost, not the frame interval)."""
+    if not a.stats or not times:
+        return
+    tot = sum(times)
+    print(
+        f"stats: {len(times)} frame(s) in {tot:.1f}s, "
+        f"{1000 * tot / len(times):.2f} ms/frame "
+        f"(min {1000 * min(times):.2f}, max {1000 * max(times):.2f}), "
+        f"{len(times) / tot:.1f} fps",
+        file=sys.stderr,
+    )
 
 
 def _render_h264(a, scene, ctrl):
@@ -171,6 +212,7 @@ def _render_h264(a, scene, ctrl):
     frames = a.frames if a.frames is not None else 0
     period = 1.0 / fps
     i = 0
+    times = []
     try:
         while frames == 0 or i < frames:
             t0 = time.monotonic()
@@ -186,6 +228,8 @@ def _render_h264(a, scene, ctrl):
             if au:
                 out.write(au)
                 out.flush()
+            if a.stats:
+                times.append(time.monotonic() - t0)
             i += 1
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
     except KeyboardInterrupt:
@@ -209,6 +253,7 @@ def _render_h264(a, scene, ctrl):
         r.close()
     if a.h264 != "-":
         print(f"wrote {i} frame(s) to {a.h264}", file=sys.stderr)
+    _print_stats(a, times)
 
 
 def cmd_serve(a):
@@ -244,7 +289,14 @@ def cmd_serve(a):
 
 def cmd_displays(a):
     from ghee.drivers import available_drivers
+    from ghee.engine import probe_display
 
+    try:
+        size = probe_display()
+        kms = f"connected, {size[0]}x{size[1]}" if size else "no connected display"
+    except Exception as e:
+        kms = f"unavailable ({e})"
+    print(f"{'kms':12} {kms}")
     for name, status in available_drivers().items():
         print(f"{name:12} {status}")
 
@@ -258,7 +310,12 @@ def main(argv=None):
         "scene", help="scene file, or a name from $GHEE_SCENES / the examples"
     )
     r.add_argument("-o", "--output", help="image pattern, e.g. frame.####.jpg")
-    r.add_argument("--display", help="render to a hardware display by name")
+    r.add_argument(
+        "--display",
+        help="render to a hardware display: an SPI driver name, or 'kms' for "
+        "the connected HDMI/KMS display (zero-copy scanout; needs DRM master, "
+        "so root and no desktop session on the card)",
+    )
     r.add_argument(
         "--frames",
         type=int,
@@ -296,6 +353,11 @@ def main(argv=None):
         type=int,
         default=4_000_000,
         help="H264 bitrate in bits/s (default 4000000)",
+    )
+    r.add_argument(
+        "--stats",
+        action="store_true",
+        help="print a timing summary when the render ends",
     )
     r.set_defaults(fn=cmd_render)
 

@@ -74,6 +74,10 @@ void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
+// Size of the mode the connected display is driving, without creating a scene
+// or touching GL. Needs read access to the card node only, not DRM master.
+// 0 = width/height set, -1 = no device or nothing connected.
+int  ghee_display_probe(const char *dri_device, int *width, int *height);
 
 // Zero-copy hardware H264 (encoder.c): the final pass is blitted into a linear
 // dmabuf and fed to the V4L2 M2M encoder (bcm2835-codec); no CPU pixel copy.

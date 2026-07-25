@@ -218,9 +218,19 @@ def cmd_serve(a):
         sys.exit("serve: pass a scenes directory or --demo, not both")
     if not a.demo and not a.scenes:
         sys.exit("serve: pass a scenes directory, or --demo for the bundled examples")
+    size = a.size
+    if size is None:
+        if a.display:
+            from ghee.engine import probe_display
+
+            size = probe_display(lib_path=a.lib)
+            if size is None:
+                sys.exit("serve: no connected display to size from; pass --size WxH")
+        else:
+            size = (320, 240)
     run(
         scenes_dir=a.scenes,
-        size=a.size,
+        size=size,
         port=a.port,
         lib_path=a.lib,
         host=a.host,
@@ -294,7 +304,13 @@ def main(argv=None):
     s.add_argument(
         "--demo", action="store_true", help="serve the bundled example scenes"
     )
-    s.add_argument("--size", type=_size, default=(320, 240))
+    s.add_argument(
+        "--size",
+        type=_size,
+        default=None,
+        help="WxH; default is the connected display's mode with --display, "
+        "else 320x240",
+    )
     s.add_argument("--port", type=int, default=8090)
     s.add_argument(
         "--host",

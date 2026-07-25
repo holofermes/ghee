@@ -375,38 +375,66 @@ static uint32_t fb_for(GheeScene *g, struct gbm_bo *bo) {
     return fb;
 }
 
+// Pick the display to drive: first connected connector with modes, its
+// encoder's CRTC (else the first), and the mode that CRTC already drives
+// (honours a video= override or whatever the console negotiated; falls back
+// to the connector's first). Shared by create and probe so the size the probe
+// reports is exactly the mode create ends up driving. -1 = nothing connected.
+static int pick_display_mode(int fd, uint32_t *conn_out, uint32_t *crtc_out,
+                             drmModeModeInfo *mode_out) {
+    drmModeRes *res = drmModeGetResources(fd);
+    if (!res) return -1;
+    drmModeConnector *conn = NULL;
+    for (int i = 0; i < res->count_connectors; i++) {
+        drmModeConnector *c = drmModeGetConnector(fd, res->connectors[i]);
+        if (c && c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) { conn = c; break; }
+        if (c) drmModeFreeConnector(c);
+    }
+    if (!conn) { drmModeFreeResources(res); return -1; }
+    drmModeEncoder *enc = drmModeGetEncoder(fd, conn->encoder_id);
+    uint32_t crtc = (enc && enc->crtc_id) ? enc->crtc_id : res->crtcs[0];
+    if (enc) drmModeFreeEncoder(enc);
+    drmModeCrtc *cur = drmModeGetCrtc(fd, crtc);
+    *mode_out = (cur && cur->mode_valid) ? cur->mode : conn->modes[0];
+    if (cur) drmModeFreeCrtc(cur);
+    *conn_out = conn->connector_id;
+    *crtc_out = crtc;
+    drmModeFreeConnector(conn);
+    drmModeFreeResources(res);
+    return 0;
+}
+
+int ghee_display_probe(const char *dri_device, int *width, int *height) {
+    const char *dev = dri_device ? dri_device : DEFAULT_DRI_DEVICE;
+    int fd = open(dev, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return -1;
+    uint32_t conn, crtc;
+    drmModeModeInfo mode;
+    int rc = pick_display_mode(fd, &conn, &crtc, &mode);
+    close(fd);
+    if (rc) return -1;
+    if (width) *width = mode.hdisplay;
+    if (height) *height = mode.vdisplay;
+    return 0;
+}
+
 // Render to a KMS connector instead of reading back. width/height should match
-// the connector mode (query it first). Must run as DRM master (root).
-// rgb565 renders/scans 16-bit color: half the tile-store + scanout bytes.
+// the connector mode (ghee_display_probe reports it). Must run as DRM master
+// (root). rgb565 renders/scans 16-bit color: half the tile-store + scanout bytes.
 GheeScene *ghee_display_create(int width, int height, const char *dri_device, int rgb565, char **err) {
     GheeScene *g = create_impl(width, height, 4, dri_device, 1, rgb565, err);
     if (!g) return NULL;
     if (drmSetMaster(g->drm_fd))
         fprintf(stderr, "ghee: drmSetMaster failed: %s (run as root)\n", strerror(errno));
 
-    drmModeRes *res = drmModeGetResources(g->drm_fd);
-    if (!res) { if (err) *err = "drmModeGetResources failed"; ghee_destroy(g); return NULL; }
-    drmModeConnector *conn = NULL;
-    for (int i = 0; i < res->count_connectors; i++) {
-        drmModeConnector *c = drmModeGetConnector(g->drm_fd, res->connectors[i]);
-        if (c && c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) { conn = c; break; }
-        if (c) drmModeFreeConnector(c);
+    if (pick_display_mode(g->drm_fd, &g->disp_conn, &g->disp_crtc, &g->disp_mode)) {
+        if (err) *err = "no connected display";
+        ghee_destroy(g);
+        return NULL;
     }
-    if (!conn) { if (err) *err = "no connected display"; drmModeFreeResources(res); ghee_destroy(g); return NULL; }
-    g->disp_conn = conn->connector_id;
-    drmModeEncoder *enc = drmModeGetEncoder(g->drm_fd, conn->encoder_id);
-    g->disp_crtc = (enc && enc->crtc_id) ? enc->crtc_id : res->crtcs[0];
-    if (enc) drmModeFreeEncoder(enc);
-    // Prefer the mode the display is already driving (honours a video= override
-    // or whatever the console negotiated); fall back to the connector's first.
-    drmModeCrtc *cur = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
-    g->disp_mode = (cur && cur->mode_valid) ? cur->mode : conn->modes[0];
-    if (cur) drmModeFreeCrtc(cur);
     fprintf(stderr, "ghee: display %s %ux%u@%u on connector %u\n",
             g->disp_mode.name, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
             g->disp_mode.vrefresh, g->disp_conn);
-    drmModeFreeConnector(conn);
-    drmModeFreeResources(res);
 
     make_current(g);
     g->blit_prog = create_shader_program(g, blit_fragment_source);

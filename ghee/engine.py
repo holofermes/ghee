@@ -39,6 +39,31 @@ def bundled_lib():
         return None
 
 
+def probe_display(dri_device=None, lib_path=None):
+    """Size of the mode the connected display is driving, as (width, height),
+    or None when there is no card or nothing connected. Reads KMS state only:
+    no scene, no GL context, no DRM master. What it reports is exactly the
+    mode ghee_display_create will drive."""
+    lib_path = lib_path or os.environ.get("GHEE_LIB") or bundled_lib()
+    if not lib_path:
+        raise ValueError(
+            "no engine .so: build ghee on this host, or pass "
+            "lib_path / set $GHEE_LIB"
+        )
+    lib = ctypes.CDLL(lib_path)
+    lib.ghee_display_probe.argtypes = [
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    lib.ghee_display_probe.restype = ctypes.c_int
+    dev = dri_device or os.environ.get("GHEE_DRI") or "/dev/dri/card0"
+    w, h = ctypes.c_int(), ctypes.c_int()
+    if lib.ghee_display_probe(dev.encode(), ctypes.byref(w), ctypes.byref(h)):
+        return None
+    return (w.value, h.value)
+
+
 class _Unchanged:
     """Sentinel a provider returns for an array whose texture the engine
     already holds: the upload is skipped entirely. The scene declares it

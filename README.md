@@ -67,6 +67,15 @@ directories join the lookup through `$GHEE_SCENES`):
 ghee render bars -o frame.####.png --frames 60
 ```
 
+Or write raw frames to stdout and pipe them into ffmpeg. `--timestep` pins
+engine time to `frame * S`, so the render is reproducible (frame N always
+renders at time N*S):
+
+```
+ghee render bars -o - --frames 300 --timestep 0.0166667 |
+  ffmpeg -f rawvideo -pix_fmt rgba -s 320x240 -framerate 60 -i - out.mp4
+```
+
 Or stream it as H264 (raw Annex-B; pipe it anywhere):
 
 ```
@@ -131,6 +140,12 @@ one a fragment shader drawing into its own buffer. A pass reads other passes
 through numbered channel samplers: a channel bound to an earlier pass sees the
 current frame, and a channel bound to the pass itself (or a later one) sees the
 previous frame, and the last pass is what reaches the output.
+
+A pass can render at its own resolution with `"size": [w, h]`: a tiny 32x18
+precompute buffer, or a heavy effect at half size. Passes sample each other
+through normalized coordinates, so a consumer never has to know a producer's
+size. The last pass takes no size; it renders at the output resolution that
+reaches readback, the display, or the encoder.
 
 A scene is usually a JSON file. It can also be a Python file, referred to as a
 procedural scene; see [ghee from Python](#ghee-from-python) below.
@@ -323,3 +338,5 @@ that one baseline passes on both desktop Mesa and VC4.
 ## License
 
 MIT.
+
+![](https://fabiopiparo.com/pixel.gif?site=ghee)

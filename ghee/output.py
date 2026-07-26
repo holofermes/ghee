@@ -6,7 +6,11 @@ knows which sink it feeds.
 """
 
 import abc
+import queue
 import re
+import threading
+
+import numpy as np
 
 _RUN = re.compile(r"#+")
 
@@ -75,9 +79,19 @@ class Output(abc.ABC):
 
 
 class ImageSequence(Output):
-    """Write each frame to its own numbered file."""
+    """Write each frame to its own numbered file. Encoding and disk I/O run on a
+    single worker thread so the render loop never waits on PIL. save_opts is
+    passed verbatim to PIL's Image.save (e.g. quality, lossless).
 
-    def __init__(self, pattern, start=0):
+    The pool path takes no per-frame copy: acquire() hands out a preallocated
+    buffer, the renderer reads the GPU straight into it (render(out=buf)), and
+    submit() queues it; the worker encodes, writes, and recycles the buffer.
+    The pool grows lazily to depth+1 buffers, so acquire() blocks only when the
+    writer is `depth` frames behind. depth is the grace for a slow writer; the
+    depth+1 cap is the memory bound on a small board. Set depth to the frame
+    count and the render never waits, the writer drains at the end."""
+
+    def __init__(self, pattern, start=0, save_opts=None, depth=16):
         try:
             from PIL import Image
         except ImportError as e:
@@ -87,9 +101,78 @@ class ImageSequence(Output):
         self._Image = Image
         self.pattern = pattern
         self.index = start
+        self.save_opts = save_opts or {}
+        self._cap = depth + 1
+        self._allocated = 0
+        self._q = queue.Queue()
+        self._free = queue.Queue()
+        self._err = None
+        self._worker = threading.Thread(target=self._run, daemon=True)
+        self._worker.start()
+
+    def _run(self):
+        while True:
+            item = self._q.get()
+            if item is None:
+                return
+            index, buf = item
+            # The buffer is the worker's alone between submit and recycle, so PIL
+            # reads it in place. On failure keep draining and recycling so a
+            # blocked acquire() never starves; the error surfaces on the next
+            # acquire()/submit() or on close().
+            if self._err is None:
+                try:
+                    mode = "RGBA" if buf.shape[2] == 4 else "RGB"
+                    path = expand_pattern(self.pattern, index)
+                    self._Image.fromarray(buf, mode).save(path, **self.save_opts)
+                except Exception as e:
+                    self._err = e
+            self._free.put(buf)
+
+    def acquire(self, shape):
+        """A buffer of `shape` to render into. Reuses a recycled one, else grows
+        the pool to its cap, else blocks until the writer recycles one (the
+        render's only wait). Single-producer: only the render loop calls this."""
+        if self._err is not None:
+            raise self._err
+        try:
+            return self._free.get_nowait()
+        except queue.Empty:
+            pass
+        if self._allocated < self._cap:
+            self._allocated += 1
+            return np.empty(shape, dtype=np.uint8)
+        return self._free.get()
+
+    def submit(self, buf):
+        """Queue a filled buffer for encoding under the next numbered name."""
+        if self._err is not None:
+            self._free.put(buf)
+            raise self._err
+        self._q.put((self.index, buf))
+        self.index += 1
 
     def write(self, frame):
-        mode = "RGBA" if frame.shape[2] == 4 else "RGB"
-        path = expand_pattern(self.pattern, self.index)
-        self._Image.fromarray(frame, mode).save(path)
-        self.index += 1
+        """Copy a caller-owned frame into a pooled buffer and submit it."""
+        buf = self.acquire(frame.shape)
+        np.copyto(buf, frame)
+        self.submit(buf)
+
+    def close(self):
+        self._q.put(None)
+        self._worker.join()
+        if self._err is not None:
+            raise self._err
+
+
+class RawStream(Output):
+    """Write each frame's exact bytes to a binary stream, no header, one frame
+    after another (h*w*components, row-major). For piping raw video to ffmpeg,
+    mpv, or a recorder."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, frame):
+        self.stream.write(frame.tobytes())
+        self.stream.flush()

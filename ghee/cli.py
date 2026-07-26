@@ -1,6 +1,7 @@
 """ghee command line.
 
     ghee render scene.json -o frame.####.jpg --frames 500   # image sequence
+    ghee render scene.json -o - --frames 300 | ffmpeg ...    # raw frames to a pipe
     ghee render scene.json --display st7789                  # to a panel, until Ctrl-C
     ghee serve scenes/                                       # editor console
     ghee serve --demo                                        # console on the bundled examples
@@ -19,6 +20,27 @@ import time
 def _size(s):
     w, h = s.lower().split("x")
     return int(w), int(h)
+
+
+def _parse_save_opts(s):
+    """ "k=v,k2=v2" -> a dict for Image.save. Each value goes through
+    ast.literal_eval (90 -> int, True -> bool) and falls back to the raw string
+    when that fails."""
+    import ast
+
+    opts = {}
+    for pair in s.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            sys.exit(f"render: --save-opts wants k=v pairs, got '{pair}'")
+        k, v = pair.split("=", 1)
+        try:
+            opts[k.strip()] = ast.literal_eval(v.strip())
+        except (ValueError, SyntaxError):
+            opts[k.strip()] = v.strip()
+    return opts
 
 
 def _find_scene(arg):
@@ -62,6 +84,8 @@ def cmd_render(a):
         if a.display or a.output:
             sys.exit("render: --h264 excludes -o/--display")
         return _render_h264(a, scene, ctrl)
+    if a.output == "-" and a.display:
+        sys.exit("render: -o - (stdout) excludes --display")
     kms = a.display == "kms"
     if kms:
         from ghee.engine import probe_display
@@ -76,6 +100,11 @@ def cmd_render(a):
 
         sink = get_driver(a.display)()
         w, h = sink.width, sink.height
+    elif a.output == "-":
+        from ghee.output import RawStream
+
+        sink = RawStream(sys.stdout.buffer)
+        w, h = a.size
     elif a.output:
         from ghee.output import ImageSequence, expand_pattern
 
@@ -84,7 +113,8 @@ def cmd_render(a):
                 "render: multiple frames into one filename; number them with "
                 "a # run (frame.####.png)"
             )
-        sink = ImageSequence(a.output)
+        save_opts = _parse_save_opts(a.save_opts) if a.save_opts else None
+        sink = ImageSequence(a.output, save_opts=save_opts, depth=a.write_buffer)
         w, h = a.size
     else:
         sys.exit("render: pass -o PATTERN or --display NAME")
@@ -123,20 +153,30 @@ def cmd_render(a):
     # (dirty=False): no render, no sink write, the panel keeps its last frame.
     # Finite renders (--frames, -o) draw every frame regardless.
     gated = a.display and frames == 0 and ctrl is not None
+    raw = a.output == "-"
+    pooled = bool(a.output) and not raw  # image sink: render into its buffer pool
     i = 0
     times = []
     try:
         while frames == 0 or i < frames:
             t0 = time.monotonic()
-            if gated and i > 0 and not ctrl.dirty(i, i / 60.0):
+            t = i * a.timestep if a.timestep is not None else i / 60.0
+            if gated and i > 0 and not ctrl.dirty(i, t):
                 i += 1
                 time.sleep(pacer.idle_period())
                 continue
             if ctrl is not None:
-                ctrl.update(r, i, i / 60.0)
+                ctrl.update(r, i, t)
+            if a.timestep is not None:
+                r.set_time(t)
             if kms:
                 r.present(lambda name, size, i=i: provider(name, size, i))
                 tw = time.monotonic()
+            elif pooled:
+                buf = sink.acquire((h, w, components))
+                r.render(lambda name, size, i=i: provider(name, size, i), out=buf)
+                tw = time.monotonic()
+                sink.submit(buf)
             else:
                 rgb = r.render(lambda name, size, i=i: provider(name, size, i))
                 tw = time.monotonic()
@@ -149,13 +189,18 @@ def cmd_render(a):
             i += 1
     except KeyboardInterrupt:
         pass
+    except (BrokenPipeError, ConnectionResetError):
+        if not raw:
+            raise
+        # devnull stdout: the interpreter's exit flush would re-raise
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     finally:
         if a.display and not kms:
             sink.turn_off()
         if sink is not None:
             sink.close()
         r.close()
-    if a.output:
+    if a.output and not raw:
         print(f"wrote {i} frame(s) to {a.output}")
     _print_stats(a, times)
 
@@ -309,7 +354,12 @@ def main(argv=None):
     r.add_argument(
         "scene", help="scene file, or a name from $GHEE_SCENES / the examples"
     )
-    r.add_argument("-o", "--output", help="image pattern, e.g. frame.####.jpg")
+    r.add_argument(
+        "-o",
+        "--output",
+        help="image pattern (frame.####.jpg), or '-' for raw RGB(A) frames to "
+        "stdout (h*w*components, no header; pipe to ffmpeg/mpv)",
+    )
     r.add_argument(
         "--display",
         help="render to a hardware display: an SPI driver name, or 'kms' for "
@@ -322,6 +372,13 @@ def main(argv=None):
         help="frame count (default 1 for images, loop for a display)",
     )
     r.add_argument(
+        "--timestep",
+        type=float,
+        metavar="S",
+        help="pin engine time to frame*S seconds instead of the wall clock, so "
+        "renders are reproducible (frame N always renders at time N*S)",
+    )
+    r.add_argument(
         "--size", type=_size, default=(320, 240), help="WxH for image output"
     )
     r.add_argument(
@@ -330,6 +387,21 @@ def main(argv=None):
         default=4,
         choices=(3, 4),
         help="3=RGB, 4=RGBA (desktop Mesa can only read back RGBA)",
+    )
+    r.add_argument(
+        "--save-opts",
+        metavar="K=V,...",
+        help="extra options passed to the image encoder, e.g. quality=90 or "
+        "lossless=True (ignored for -o -)",
+    )
+    r.add_argument(
+        "--write-buffer",
+        type=int,
+        default=16,
+        metavar="N",
+        help="frames buffered for the async image writer; the render only waits "
+        "when the writer falls N frames behind; memory cost is N * w * h * "
+        "components bytes",
     )
     r.add_argument("--dri", help="DRI device, e.g. /dev/dri/renderD128")
     r.add_argument("--lib", help="path to libghee.so")

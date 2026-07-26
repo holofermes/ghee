@@ -446,6 +446,12 @@ function mergeNewParams(pristine, work){
     return into;
   };
   work.params = mergeInto(pristine.params, work.params);
+  // a param that moved to scene scope must leave the pass copies: the same
+  // name in both scopes is an invalid scene
+  const sceneNames = Object.keys(pristine.params || {});
+  (work.passes||[]).forEach(p => {
+    if (p.params) sceneNames.forEach(n => { delete p.params[n]; });
+  });
   const byName = {};
   (work.passes||[]).forEach(p => byName[p.name] = p);
   (pristine.passes||[]).forEach(p => {

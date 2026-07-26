@@ -49,6 +49,7 @@ struct GheeScene {
     GLuint mp_program[MP_MAX_PASSES];
     GLuint mp_fbo[MP_MAX_PASSES][2];
     GLuint mp_tex[MP_MAX_PASSES][2];
+    int mp_w[MP_MAX_PASSES], mp_h[MP_MAX_PASSES];   // per-pass buffer size; defaults to W,H
     int mp_write[MP_MAX_PASSES];
     int mp_chan_src[MP_MAX_PASSES][MP_MAX_CHANNELS];  // channel -> source pass index, -1 = none
     int mp_nchan[MP_MAX_PASSES];
@@ -484,13 +485,14 @@ void ghee_destroy(GheeScene *g) {
 // frame (same-frame chaining); a self-reference or later-pass ref reads the
 // PREVIOUS frame (= feedback). Last pass -> screen.
 
-static void mp_make_buffers(GheeScene *g, GLuint fbo[2], GLuint tex[2]) {
+static void mp_make_buffers(GheeScene *g, GLuint fbo[2], GLuint tex[2], int w, int h) {
+    (void)g;
     glGenFramebuffers(2, fbo);
     glGenTextures(2, tex);
     for (int i = 0; i < 2; i++) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
         glBindTexture(GL_TEXTURE_2D, tex[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, g->width, g->height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -509,7 +511,9 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
     if (!prog) return -1;
     int idx = g->mp_count++;
     g->mp_program[idx] = prog;
-    mp_make_buffers(g, g->mp_fbo[idx], g->mp_tex[idx]);
+    g->mp_w[idx] = g->width;
+    g->mp_h[idx] = g->height;
+    mp_make_buffers(g, g->mp_fbo[idx], g->mp_tex[idx], g->mp_w[idx], g->mp_h[idx]);
     g->mp_write[idx] = 0;
     g->mp_nchan[idx] = 0;
     g->mp_ndatatex[idx] = 0;
@@ -521,6 +525,24 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
     g->mp_vflipLoc[idx] = glGetUniformLocation(prog, "vflip");
     if (g->mp_vflipLoc[idx] >= 0) glUniform1f(g->mp_vflipLoc[idx], 1.0f);
     return idx;
+}
+
+// Give a pass its own buffer size (default = renderer W,H). Reallocates the
+// pass's ping-pong buffers and updates its `resolution` uniform. Call after
+// ghee_mp_add_pass, before the first render. The last (output) pass must keep
+// the renderer size (its buffer feeds readback/scanout); the Python layer rejects
+// a sized output pass before setup ever reaches here.
+void ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
+    if (pass < 0 || pass >= g->mp_count || w <= 0 || h <= 0) return;
+    make_current(g);
+    glDeleteFramebuffers(2, g->mp_fbo[pass]);
+    glDeleteTextures(2, g->mp_tex[pass]);
+    g->mp_w[pass] = w;
+    g->mp_h[pass] = h;
+    mp_make_buffers(g, g->mp_fbo[pass], g->mp_tex[pass], w, h);
+    glUseProgram(g->mp_program[pass]);
+    const GLint rloc = glGetUniformLocation(g->mp_program[pass], "resolution");
+    if (rloc >= 0) glUniform2f(rloc, (float)w, (float)h);
 }
 
 void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
@@ -621,7 +643,9 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     for (int p = 0; p < g->mp_count; p++) {
         const bool direct = direct_last && p == g->mp_count - 1;
         glBindFramebuffer(GL_FRAMEBUFFER, direct ? 0 : g->mp_fbo[p][g->mp_write[p]]);
-        glViewport(0, 0, g->width, g->height);
+        // per-pass buffer size; the output pass is always full-size (enforced in
+        // Python), so the direct scanout draw still gets the display viewport.
+        glViewport(0, 0, g->mp_w[p], g->mp_h[p]);
         // The fullscreen quad overwrites every pixel, so the clear is invisible;
         // on tiled GPUs (VC4) it flags the target as not-loaded, skipping a
         // full-frame tile read from memory before the draw.

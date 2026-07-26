@@ -13,6 +13,9 @@ literal names. Arrays and params are bound by the author's chosen name.
   * PARAMS: named typed attributes.
 
 Image/texture channels and per-pass float buffer formats are not modeled.
+
+A pass may set `size` [w, h] to render at its own resolution; consumers sample it
+through normalized UVs so mixed sizes compose, and the output (last) pass omits it.
 """
 
 from __future__ import annotations
@@ -202,6 +205,26 @@ class Pass:
     channels: list[Channel] = field(default_factory=list)
     params: dict[str, Param] = field(default_factory=dict)
     filter: str = ""  # non-empty = this pass came from a named filter (read-only in UI)
+    # optional [w, h] this pass renders at; None = the renderer's size. A sized
+    # pass is sampled through normalized UVs, so consumers ignore its size. The
+    # output (last) pass must leave this None (it feeds readback/display/encoder).
+    size: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.size is None:
+            return
+        s = self.size
+        if (
+            not isinstance(s, (list, tuple))
+            or len(s) != 2
+            or not all(
+                isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in s
+            )
+        ):
+            raise ValueError(
+                f"pass '{self.name}' size needs two positive ints [w, h], got {s!r}"
+            )
+        self.size = (s[0], s[1])
 
     @property
     def reads_self(self) -> bool:
@@ -224,10 +247,13 @@ class Pass:
             channels=[Channel.from_dict(c) for c in d.get("channels", [])],
             params={n: Param.from_dict(n, pd) for n, pd in d.get("params", {}).items()},
             filter=d.get("filter", ""),
+            size=d.get("size"),
         )
 
     def to_dict(self) -> dict:
         out: dict = {"name": self.name, "code": self.code}
+        if self.size is not None:
+            out["size"] = list(self.size)
         if self.arrays:
             out["arrays"] = [a.to_dict() for a in self.arrays]
         if self.channels:

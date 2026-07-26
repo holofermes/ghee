@@ -242,6 +242,12 @@ class Renderer:
         L.ghee_mp_reset.argtypes = [ctypes.c_void_p]
         L.ghee_mp_add_pass.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         L.ghee_mp_add_pass.restype = ctypes.c_int
+        L.ghee_mp_set_pass_size.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
         L.ghee_mp_set_channel.argtypes = [
             ctypes.c_void_p,
             ctypes.c_int,
@@ -322,6 +328,17 @@ class Renderer:
                         f"({seen[a.name]} and {a.size})"
                     )
                     return self.error
+        # The output pass renders at the renderer size (its buffer feeds
+        # readback/display/encoder). Checked here against the final resolved pass
+        # list, so a scene whose own last pass is sized stays valid once filters
+        # append a full-size pass after it.
+        if scene.passes and scene.passes[-1].size is not None:
+            last = scene.passes[-1]
+            self.error = (
+                f"output pass '{last.name}' must not set a size; it renders at "
+                f"the renderer size ({self.width}x{self.height})"
+            )
+            return self.error
         self.lib.ghee_mp_reset(self.handle)
         mp = {}
         for i, p in enumerate(scene.passes):
@@ -334,6 +351,8 @@ class Renderer:
                 self.error_pass = i
                 return err
             mp[p.name] = idx
+            if p.size is not None:
+                self.lib.ghee_mp_set_pass_size(self.handle, idx, p.size[0], p.size[1])
         self._mp = mp
         for p in scene.passes:
             for c, ch in enumerate(p.channels):

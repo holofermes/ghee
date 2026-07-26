@@ -312,3 +312,124 @@ def test_2d_array_input(renderer):
     h, w = frame.shape[:2]
     row = lum[h // 2]
     assert abs(int(row[w - 3]) - int(row[2])) > 30  # varies along x within a row
+
+
+def test_output_pass_size_rejected_then_ok_with_filter(renderer):
+    from ghee import Pass, Scene, apply_filters
+
+    # a sized output (last) pass is rejected: it feeds readback/display.
+    sc = Scene(
+        passes=[
+            Pass(
+                name="lo",
+                size=(8, 4),
+                code="void main(){ gl_FragColor = vec4(1.0); }",
+            ),
+            Pass(
+                name="main",
+                size=(16, 8),
+                code=(
+                    "void main(){ vec2 uv = gl_FragCoord.xy/resolution; "
+                    "gl_FragColor = vec4(uv, 0.0, 1.0); }"
+                ),
+            ),
+        ]
+    )
+    err = renderer.setup(sc)
+    assert "main" in err and "size" in err
+    # a filter appends a full-size pass after 'main', so 'main' is no longer last
+    apply_filters(sc, ["dither"])
+    assert renderer.setup(sc) == ""
+
+
+def test_sized_intermediate_pass_composes(renderer):
+    from ghee import Channel, Pass, Scene
+
+    # an 8x4 pass writes a 2D ramp (uv.x -> R, uv.y -> G); a full-size main
+    # samples it through v_texCoord, so the small buffer upscales into the frame.
+    sc = Scene(
+        passes=[
+            Pass(
+                name="lo",
+                size=(8, 4),
+                code=(
+                    "void main(){ vec2 uv = gl_FragCoord.xy/resolution; "
+                    "gl_FragColor = vec4(uv.x, uv.y, 0.0, 1.0); }"
+                ),
+            ),
+            Pass(
+                name="main",
+                channels=[Channel("lo")],
+                code="void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
+            ),
+        ]
+    )
+    assert renderer.setup(sc) == ""
+    renderer.set_time(0.0)
+    f = renderer.render(None).copy()
+    h, w = f.shape[:2]
+    # R rises left->right (uv.x survived the upscale), G differs bottom vs top (uv.y)
+    assert int(f[:, w - 3, 0].mean()) - int(f[:, 2, 0].mean()) > 80
+    assert abs(int(f[h - 3, :, 1].mean()) - int(f[2, :, 1].mean())) > 80
+
+
+def test_sized_pass_resolution_is_its_own(renderer):
+    from ghee import Channel, Pass, Scene
+
+    # the sized pass writes its own resolution into R,G; main samples it. If the
+    # pass saw the renderer size (64x48) instead of its own (20x10), the bytes
+    # would read 64/48, not 20/10.
+    sc = Scene(
+        passes=[
+            Pass(
+                name="lo",
+                size=(20, 10),
+                code=(
+                    "void main(){ gl_FragColor = "
+                    "vec4(resolution.x/255.0, resolution.y/255.0, 0.0, 1.0); }"
+                ),
+            ),
+            Pass(
+                name="main",
+                channels=[Channel("lo")],
+                code="void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
+            ),
+        ]
+    )
+    assert renderer.setup(sc) == ""
+    renderer.set_time(0.0)
+    f = renderer.render(None).copy()
+    assert abs(int(f[..., 0].mean()) - 20) <= 2
+    assert abs(int(f[..., 1].mean()) - 10) <= 2
+
+
+def test_sized_feedback_accumulates(renderer):
+    from ghee import Channel, Pass, Scene
+
+    # a 4x4 pass reads its own previous frame (feedback) and adds 0.1 each frame;
+    # main samples the 4x4 buffer. The ping-pong runs at the pass's own size.
+    sc = Scene(
+        passes=[
+            Pass(
+                name="acc",
+                size=(4, 4),
+                channels=[Channel("acc")],
+                code=(
+                    "void main(){ vec4 prev = texture2D(iChannel0, v_texCoord); "
+                    "gl_FragColor = prev + vec4(0.1, 0.0, 0.0, 1.0); }"
+                ),
+            ),
+            Pass(
+                name="main",
+                channels=[Channel("acc")],
+                code="void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
+            ),
+        ]
+    )
+    renderer.setup(sc)
+    renderer.set_time(0.0)
+    f1 = renderer.render(None).copy()
+    f2 = renderer.render(None).copy()
+    f3 = renderer.render(None).copy()
+    assert int(f2[..., 0].mean()) > int(f1[..., 0].mean())
+    assert int(f3[..., 0].mean()) > int(f2[..., 0].mean())

@@ -45,6 +45,25 @@ def test_scene_roundtrip():
     assert Scene.from_dict(d).to_dict() == d
 
 
+def test_pass_size_roundtrip():
+    d = {
+        "version": 1,
+        "passes": [
+            {"name": "pre", "code": "void main(){}", "size": [32, 18]},
+            {"name": "main", "code": "void main(){}"},
+        ],
+    }
+    assert Scene.from_dict(d).to_dict() == d
+
+
+def test_pass_size_validates():
+    Pass(name="ok", code="x", size=[8, 4])  # constructs and normalizes to a tuple
+    assert Pass(name="ok", code="x", size=[8, 4]).size == (8, 4)
+    for bad in ([0, 4], [4, 0], [-1, 4], [8], [8, 4, 2], "8x4", [8.5, 4], [8, True]):
+        with pytest.raises(ValueError):
+            Pass(name="bad", code="x", size=bad)
+
+
 def test_color_param_roundtrip():
     d = {
         "version": 1,

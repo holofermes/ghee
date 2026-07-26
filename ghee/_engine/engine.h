@@ -56,6 +56,10 @@ void ghee_destroy(GheeScene *g);
 GLuint ghee_load_jpeg_texture(const char *filename);
 
 int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);
+// Set a pass's buffer size (default = renderer W,H). Call after ghee_mp_add_pass,
+// before the first render. The last pass must keep the renderer size (it feeds
+// readback/scanout); consumers sample any pass through normalized UVs.
+void ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h);
 void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);
 bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param);
 // Unused: superseded by ghee_mp_set_float_texture (uniform arrays hit the VC4 size cap).

@@ -53,17 +53,26 @@ class Text(SceneController):
         )
 
     def _bake(self):
-        # embedded TrueType at a readable size; Pi OS Lite ships no other fonts
+        # Pillow's built-in font, a small bitmap: Pi OS Lite ships no others, so
+        # letters go down with tracking and the mask is zoomed for hard edges
         text = os.environ.get("GHEE_TEXT", "GHEE")
-        font = ImageFont.load_default(32)
-        pad = 6
+        font = ImageFont.load_default()
+        pad, gap, zoom = 2, 2, 4
         scratch = ImageDraw.Draw(Image.new("L", (1, 1)))
         bb = scratch.textbbox((0, 0), text, font=font)
-        w, h = bb[2] - bb[0] + 2 * pad, bb[3] - bb[1] + 2 * pad
+        advances = [scratch.textlength(c, font=font) for c in text]
+        w = int(sum(advances)) + gap * (len(text) - 1) + 2 * pad
+        h = bb[3] - bb[1] + 2 * pad
         img = Image.new("L", (w, h), 0)
-        ImageDraw.Draw(img).text((pad - bb[0], pad - bb[1]), text, fill=255, font=font)
+        draw, x = ImageDraw.Draw(img), float(pad)
+        for c, adv in zip(text, advances, strict=True):
+            draw.text((x, pad - bb[1]), c, fill=255, font=font)
+            x += adv + gap
+        img = img.resize((w * zoom, h * zoom), Image.NEAREST)
         self._mask = (np.asarray(img, np.float32) / 255.0).reshape(-1)
-        return (w, h)
+        return img.size
 
     def provide(self, name, size, frame):
-        return self._mask
+        if name == "text":
+            return self._mask
+        return None

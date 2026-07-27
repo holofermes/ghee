@@ -4,7 +4,9 @@ The build is best effort: on a host without CMake or the GLES/DRM
 stack it just prints a warning, so the pure-Python package still installs.
 """
 
+import glob
 import os
+import shutil
 import subprocess
 
 from setuptools import Extension, find_packages, setup
@@ -35,8 +37,7 @@ class CMakeBuild(build_ext):
     def _build(self, ext):
         build_tmp = os.path.abspath(self.build_temp)
         os.makedirs(build_tmp, exist_ok=True)
-        # Install into ghee/lib/ so the package ships its own .so in-place
-        # (editable install) or in the wheel (package_data lib/*.so).
+        # Install into ghee/lib/ so an editable install finds the engine in place.
         subprocess.check_call(
             [
                 "cmake",
@@ -46,9 +47,23 @@ class CMakeBuild(build_ext):
             ],
             cwd=build_tmp,
         )
+        # Parallel -O3 compiles exhaust a 512MB board, so the level stays
+        # overridable through CMake's own env var.
+        jobs = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL") or os.cpu_count() or 1
         subprocess.check_call(
-            ["cmake", "--build", ".", "--", "-j", "4", "install"], cwd=build_tmp
+            ["cmake", "--build", ".", "--", "-j", str(jobs), "install"], cwd=build_tmp
         )
+        self._stage(os.path.join(PKG, "lib"))
+
+    def _stage(self, libdir):
+        """build_py runs before build_ext, so package_data collected lib/*.so when
+        it was still empty. Put the engine in the wheel tree here instead."""
+        dest = os.path.abspath(os.path.join(self.build_lib, "ghee", "lib"))
+        if dest == os.path.abspath(libdir):
+            return
+        os.makedirs(dest, exist_ok=True)
+        for so in glob.glob(os.path.join(libdir, "libghee*.so")):
+            shutil.copy2(so, dest)
 
 
 setup(

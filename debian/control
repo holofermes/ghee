@@ -12,17 +12,21 @@ Build-Depends: debhelper-compat (= 13),
  libdrm-dev,
  libgbm-dev,
  libegl1-mesa-dev,
- libgles2-mesa-dev,
- libjpeg-dev
+ libgles2-mesa-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/holofermes/ghee
 
 Package: python3-ghee
 Architecture: any
 Depends: ${misc:Depends}, ${python3:Depends}, ${shlibs:Depends}, python3-numpy, python3-pil
-Description: headless GLSL multipass renderer for small Linux devices
+Recommends: ffmpeg
+Description: multi-pass GLSL renderer for small Linux devices
  ghee compiles a set of fragment shaders (a scene), renders them
  off-screen with GLES2 through DRM/GBM, and writes the pixels to image
- files, SPI panels, or an MJPEG stream. No window system required.
+ files, SPI panels, an HDMI display, or an H264 or MJPEG stream. No
+ window system required.
  .
  Ships the ghee CLI and a browser-based live shader console.
+ .
+ ffmpeg is only needed on boards without the Broadcom H264 encoder,
+ where the software encoder shells out to it.

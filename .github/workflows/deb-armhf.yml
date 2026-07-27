@@ -37,7 +37,7 @@ jobs:
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
               build-essential debhelper dh-python python3-all python3-setuptools \
               python3-numpy cmake pkg-config libdrm-dev libgbm-dev \
-              libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev binutils'
+              libegl1-mesa-dev libgles2-mesa-dev binutils'
           sudo chroot rootfs bash -ec 'echo | gcc -dM -E - | grep "__ARM_ARCH "'
           sudo chroot rootfs bash -ec \
             'test "$(echo | gcc -dM -E - | awk "/#define __ARM_ARCH /{print \$3}")" = "6"'

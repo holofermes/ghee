@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "engine_internal.h"
 
@@ -53,6 +54,8 @@ struct GheeEncoder {
     int freeidx[NBUF], nfree;
     uint8_t *au;            // returned access unit, grown as needed
     size_t au_cap;
+    bool stopped;           // V4L2_ENC_CMD_STOP sent: draining to the LAST buffer
+    bool drained;
 };
 
 static PFNEGLCREATEIMAGEKHRPROC p_eglCreateImageKHR;
@@ -81,6 +84,7 @@ static int make_inbuf(GheeScene *g, GheeEncoder *e, struct inbuf *ib, char **err
     if (!ib->bo) { if (err) *err = "gbm_bo_create(linear) failed"; return -1; }
     ib->stride = gbm_bo_get_stride(ib->bo);
     ib->dmafd = gbm_bo_get_fd(ib->bo);
+    if (ib->dmafd < 0) { if (err) *err = "gbm_bo_get_fd failed"; return -1; }
     off_t sz = lseek(ib->dmafd, 0, SEEK_END);
     lseek(ib->dmafd, 0, SEEK_SET);
     ib->size = (sz > 0) ? (size_t)sz : (size_t)ib->stride * e->h;
@@ -107,6 +111,7 @@ GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrat
     if (!e) { if (err) *err = "out of memory"; return NULL; }
     e->w = w; e->h = h; e->fps = fps > 0 ? fps : 30; e->bitrate = bitrate;
     e->vfd = -1;
+    for (int i = 0; i < NBUF; i++) e->in[i].dmafd = -1;   // 0 is a valid fd, calloc is not
 
     // Non-blocking: reclaim() drains consumed buffers with DQBUF until EAGAIN;
     // the waits that matter are explicit poll()s.
@@ -161,7 +166,13 @@ GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrat
     cfmt.fmt.pix_mp.pixelformat = v4l2_fourcc('H', '2', '6', '4');
     cfmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
     cfmt.fmt.pix_mp.num_planes = 1;
-    cfmt.fmt.pix_mp.plane_fmt[0].sizeimage = 512 * 1024;
+    // One compressed access unit has to fit: an IDR at 1080p blows past a fixed
+    // 512KB, and a high bitrate raises even a delta frame's worst case.
+    size_t cap_bytes = (size_t)w * h;
+    const size_t per_frame = e->bitrate > 0 ? (size_t)e->bitrate / 8 / (size_t)e->fps : 0;
+    if (per_frame * 4 > cap_bytes) cap_bytes = per_frame * 4;
+    if (cap_bytes < 512 * 1024) cap_bytes = 512 * 1024;
+    cfmt.fmt.pix_mp.plane_fmt[0].sizeimage = cap_bytes;
     cfmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_SMPTE170M;
     cfmt.fmt.pix_mp.ycbcr_enc = V4L2_YCBCR_ENC_601;
     cfmt.fmt.pix_mp.quantization = V4L2_QUANTIZATION_FULL_RANGE;
@@ -247,8 +258,57 @@ static void reclaim(GheeEncoder *e) {
         b.length = 1;
         b.m.planes = &pl;
         if (enc_ioctl(e->vfd, VIDIOC_DQBUF, &b) < 0) return;
+        if (b.index >= NBUF || e->nfree >= NBUF) {
+            fprintf(stderr, "ghee: encoder returned buffer %u (pool %d, free %d)\n",
+                    b.index, NBUF, e->nfree);
+            continue;
+        }
         e->freeidx[e->nfree++] = b.index;
     }
+}
+
+// Dequeue one compressed access unit into e->au and requeue its buffer.
+// 0 = *nal/*len/*is_key set, 1 = nothing came back, <0 = error. *last reports
+// the end-of-stream buffer, which is not requeued.
+static int take_au(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len,
+                   int *is_key, bool *last) {
+    struct v4l2_plane cpl = {0};
+    struct v4l2_buffer cb = {0};
+    cb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    cb.memory = V4L2_MEMORY_MMAP;
+    cb.length = 1;
+    cb.m.planes = &cpl;
+    if (enc_ioctl(e->vfd, VIDIOC_DQBUF, &cb) < 0) return 1;
+    if (last) *last = (cb.flags & V4L2_BUF_FLAG_LAST) != 0;
+    if (cb.index >= NCAP || !e->cap_ptr[cb.index] || e->cap_ptr[cb.index] == MAP_FAILED) {
+        ghee_i_error(g, "encoder returned an unmapped capture buffer");
+        return -1;
+    }
+
+    const size_t n = cpl.bytesused;
+    if (n > e->au_cap) {
+        uint8_t *p = realloc(e->au, n);
+        if (!p) { ghee_i_error(g, "encoder OOM"); return -1; }
+        e->au = p;
+        e->au_cap = n;
+    }
+    memcpy(e->au, e->cap_ptr[cb.index], n);
+    if (is_key) *is_key = (cb.flags & V4L2_BUF_FLAG_KEYFRAME) ? 1 : 0;
+
+    if (!(cb.flags & V4L2_BUF_FLAG_LAST)) {
+        struct v4l2_plane rpl = {0};
+        struct v4l2_buffer rb = {0};
+        rb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        rb.memory = V4L2_MEMORY_MMAP;
+        rb.index = cb.index;
+        rb.length = 1;
+        rb.m.planes = &rpl;
+        enc_ioctl(e->vfd, VIDIOC_QBUF, &rb);
+    }
+    if (n == 0) return 1;
+    *nal = e->au;
+    *len = (int)n;
+    return 0;
 }
 
 // Blit the current final pass into a free dmabuf, queue it, wait for one
@@ -294,37 +354,7 @@ static int encode_common(GheeScene *g, GheeEncoder *e, int post_swap,
 
     struct pollfd pfd = { .fd = e->vfd, .events = POLLIN };
     if (poll(&pfd, 1, ENC_POLL_MS) <= 0) return 1;   // nothing compressed yet
-
-    struct v4l2_plane cpl = {0};
-    struct v4l2_buffer cb = {0};
-    cb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    cb.memory = V4L2_MEMORY_MMAP;
-    cb.length = 1;
-    cb.m.planes = &cpl;
-    if (enc_ioctl(e->vfd, VIDIOC_DQBUF, &cb) < 0) return 1;
-
-    const size_t n = cpl.bytesused;
-    if (n > e->au_cap) {
-        uint8_t *p = realloc(e->au, n);
-        if (!p) { ghee_i_error(g, "encoder OOM"); return -1; }
-        e->au = p;
-        e->au_cap = n;
-    }
-    memcpy(e->au, e->cap_ptr[cb.index], n);
-    if (is_key) *is_key = (cb.flags & V4L2_BUF_FLAG_KEYFRAME) ? 1 : 0;
-
-    struct v4l2_plane rpl = {0};
-    struct v4l2_buffer rb = {0};
-    rb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    rb.memory = V4L2_MEMORY_MMAP;
-    rb.index = cb.index;
-    rb.length = 1;
-    rb.m.planes = &rpl;
-    enc_ioctl(e->vfd, VIDIOC_QBUF, &rb);
-
-    *nal = e->au;
-    *len = (int)n;
-    return 0;
+    return take_au(g, e, nal, len, is_key, NULL);
 }
 
 // Full frame: render the pass chain, encode it, no readback anywhere.
@@ -345,9 +375,34 @@ int ghee_encoder_encode_last(GheeScene *g, GheeEncoder *e, const uint8_t **nal,
     return encode_common(g, e, 1, nal, len, is_key);
 }
 
+// End of stream: STOP once, then hand back what the encoder still owes, one
+// access unit per call. 0 = *nal/*len/*is_key set, 1 = drained, <0 = error.
+int ghee_encoder_flush(GheeScene *g, GheeEncoder *e, const uint8_t **nal,
+                       int *len, int *is_key) {
+    if (!e || e->vfd < 0 || e->drained) return 1;
+    if (!e->stopped) {
+        struct v4l2_encoder_cmd cmd = { .cmd = V4L2_ENC_CMD_STOP };
+        if (enc_ioctl(e->vfd, VIDIOC_ENCODER_CMD, &cmd) < 0) { e->drained = true; return 1; }
+        e->stopped = true;
+    }
+    struct pollfd pfd = { .fd = e->vfd, .events = POLLIN };
+    int pr;
+    do { pr = poll(&pfd, 1, ENC_POLL_MS); } while (pr < 0 && errno == EINTR);
+    if (pr <= 0) { e->drained = true; return 1; }
+    bool last = false;
+    const int r = take_au(g, e, nal, len, is_key, &last);
+    if (last || r != 0) e->drained = true;
+    return r;
+}
+
 void ghee_encoder_destroy(GheeScene *g, GheeEncoder *e) {
     if (!e) return;
     if (e->vfd >= 0) {
+        // STREAMOFF mid-GOP truncates the stream, so take what the encoder
+        // still owes even when nobody is left to write it out.
+        const uint8_t *nal = NULL;
+        int len = 0, key = 0;
+        while (ghee_encoder_flush(g, e, &nal, &len, &key) == 0) { }
         int t1 = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, t2 = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
         enc_ioctl(e->vfd, VIDIOC_STREAMOFF, &t1);
         enc_ioctl(e->vfd, VIDIOC_STREAMOFF, &t2);
@@ -361,7 +416,7 @@ void ghee_encoder_destroy(GheeScene *g, GheeEncoder *e) {
         if (ib->fbo) glDeleteFramebuffers(1, &ib->fbo);
         if (ib->tex) glDeleteTextures(1, &ib->tex);
         if (ib->img && p_eglDestroyImageKHR) p_eglDestroyImageKHR(dpy, ib->img);
-        if (ib->dmafd > 0) close(ib->dmafd);
+        if (ib->dmafd >= 0) close(ib->dmafd);
         if (ib->bo) gbm_bo_destroy(ib->bo);
     }
     if (e->vfd >= 0) {

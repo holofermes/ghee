@@ -47,7 +47,13 @@ def get_driver(name):
     from ghee.drivers.base import _REGISTRY
 
     if name in _BUNDLED:
-        importlib.import_module(f"ghee.drivers.{name}")
+        try:
+            importlib.import_module(f"ghee.drivers.{name}")
+        except ImportError as e:
+            raise ImportError(
+                f"display driver '{name}' needs the panel libraries: "
+                f"pip install 'ghee-render[drivers]' ({e})"
+            ) from e
     elif name not in _REGISTRY:
         ep = _entry_points().get(name)
         if ep is not None:

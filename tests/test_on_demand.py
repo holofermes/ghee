@@ -82,12 +82,12 @@ class _FeedHarness:
         harness = self
 
         class Lib:
-            def ghee_mp_set_float_texture(self, handle, pi, enc, data, w, h):
-                harness.calls.append((pi, enc, len(data), w, h))
+            def ghee_mp_set_array(self, handle, name, data, w, h):
+                harness.calls.append((name, len(data), w, h))
 
         self.lib = Lib()
         self.handle = None
-        self._feeds = {"text": [(0, (4, 2))]}
+        self._feeds = {"text": (4, 2)}
 
     def feed(self, provider):
         Renderer._feed(self, provider)
@@ -113,8 +113,8 @@ def test_real_data_still_uploads():
     h = _FeedHarness()
     h.feed(lambda name, size: [0.5] * 8)
     assert len(h.calls) == 1
-    _, _, n, w, hh = h.calls[0]
-    assert (n, w, hh) == (8, 4, 2)
+    name, n, w, hh = h.calls[0]
+    assert (name, n, w, hh) == (b"text", 8, 4, 2)
 
 
 def test_stream_size_caps_and_evens():
@@ -131,15 +131,17 @@ def test_h264_client_lag_resyncs():
     from ghee.console.server import H264_LAG_FRAMES, _H264Client
 
     c = _H264Client()
-    c.offer(True, b"key", b"cfg")
+    # the fanout wire-frames once and hands the same bytes to every client;
+    # config is None on anything but a keyframe
+    c.offer(b"key", b"cfg")
     assert c.started and c.q.qsize() == 2
     for _ in range(H264_LAG_FRAMES + 2):  # nobody drains: backlog builds
-        c.offer(False, b"delta", b"cfg")
+        c.offer(b"delta", None)
     assert not c.started  # dropped instead of lagging forever
     assert c.q.qsize() == 0  # backlog flushed
-    c.offer(False, b"delta", b"cfg")  # a delta cannot restart the stream
+    c.offer(b"delta", None)  # a delta cannot restart the stream
     assert not c.started
-    c.offer(True, b"key2", b"cfg")  # rejoins at the next keyframe
+    c.offer(b"key2", b"cfg")  # rejoins at the next keyframe
     assert c.started and c.q.qsize() == 2
 
 

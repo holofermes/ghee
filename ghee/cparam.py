@@ -1,6 +1,8 @@
 import ctypes
 from enum import IntEnum
 
+NAME_MAX = 255  # parameter_t.name is char[256]; the C side needs the terminator
+
 
 class CParameterType(IntEnum):
     FLOAT = 0
@@ -8,7 +10,6 @@ class CParameterType(IntEnum):
     VEC2 = 2
     VEC3 = 3
     VEC4 = 4
-    TEXTURE = 5
 
 
 class CFloatParam(ctypes.Structure):
@@ -46,10 +47,6 @@ class CVec4Param(ctypes.Structure):
     ]
 
 
-class CTextureParam(ctypes.Structure):
-    _fields_ = [("value", ctypes.c_char * 256)]
-
-
 class CParameterValue(ctypes.Union):
     _fields_ = [
         ("float_param", ctypes.POINTER(CFloatParam)),
@@ -57,7 +54,6 @@ class CParameterValue(ctypes.Union):
         ("vec2_param", ctypes.POINTER(CVec2Param)),
         ("vec3_param", ctypes.POINTER(CVec3Param)),
         ("vec4_param", ctypes.POINTER(CVec4Param)),
-        ("texture_param", ctypes.POINTER(CTextureParam)),
     ]
 
 
@@ -69,6 +65,17 @@ class CParameter(ctypes.Structure):
     ]
 
     type: CParameterType
+
+
+def set_c_name(param, name):
+    """Name the uniform this parameter sets. Longer than the C field's payload and
+    glGetUniformLocation would read past the terminator."""
+    raw = name.encode("utf-8")
+    if len(raw) > NAME_MAX:
+        raise ValueError(
+            f"parameter name is {len(raw)} bytes, the engine takes {NAME_MAX}: {name}"
+        )
+    param.name = raw
 
 
 def create_c_parameter(param_data) -> CParameter:
@@ -86,20 +93,10 @@ def create_c_parameter(param_data) -> CParameter:
             int_param = CIntParam(value=int(param_data["value"]))
             param.value.int_param = ctypes.pointer(int_param)
 
-        case "vec2":
-            param.type = CParameterType.VEC2
-            vec2_param = CVec2Param(values=(ctypes.c_float * 2)(*param_data["value"]))
-            param.value.vec2_param = ctypes.pointer(vec2_param)
-
-        case "vec3":
-            param.type = CParameterType.VEC3
-            vec3_param = CVec3Param(values=(ctypes.c_float * 3)(*param_data["value"]))
-            param.value.vec3_param = ctypes.pointer(vec3_param)
-
-        case "vec4":
-            param.type = CParameterType.VEC4
-            vec4_param = CVec4Param(values=(ctypes.c_float * 4)(*param_data["value"]))
-            param.value.vec4_param = ctypes.pointer(vec4_param)
+        case "bool":
+            param.type = CParameterType.INT
+            int_param = CIntParam(value=1 if param_data["value"] else 0)
+            param.value.int_param = ctypes.pointer(int_param)
 
         case _:
             raise ValueError(f"unknown parameter type: {param_type}")

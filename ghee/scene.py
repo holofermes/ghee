@@ -28,12 +28,78 @@ from typing import Any
 _GLSL_TYPE = {
     "float": "float",
     "int": "int",
+    "bool": "bool",
 }
 
 # vecK params have no engine type: like color, the preamble decomposes them to K
 # float uniforms named by these suffixes, so they never reach the C ABI as one value.
 _VEC_ARITY = {"vec2": 2, "vec3": 3, "vec4": 4}
 _VEC_SUFFIXES = ("_x", "_y", "_z", "_w")
+
+_PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC_ARITY)
+
+# Arrays and passes become GL textures, so a size is bounded by what a texture
+# can be: one dimension caps at 16384 (above any GLES2 GL_MAX_TEXTURE_SIZE) and
+# a 2D input or a sized pass caps at 16M texels. A scene naming more than that
+# is malformed, and would otherwise reach np.arange / glTexImage2D as an
+# allocation the size of the number.
+_MAX_DIM = 16384
+_MAX_TEXELS = 1 << 24
+
+
+def _is_num(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _is_dim(x) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool) and 0 < x <= _MAX_DIM
+
+
+def _int(x):
+    """A JSON size is an int or a whole float. Anything else passes through
+    untouched, so the size check reports what the scene actually said."""
+    return int(x) if _is_num(x) and float(x).is_integer() else x
+
+
+def _list(d: dict, key: str) -> list:
+    v = d.get(key, [])
+    if not isinstance(v, list):
+        raise ValueError(f"'{key}' needs a list, got {v!r}")
+    return v
+
+
+def _obj(d: dict, key: str) -> dict:
+    v = d.get(key, {})
+    if not isinstance(v, dict):
+        raise ValueError(f"'{key}' needs an object of name -> definition, got {v!r}")
+    return v
+
+
+def _read_shader(path: str, base_dir: str | None, pass_name: str) -> str:
+    """A pass's `shader` file, read from the scene's own directory. A scene with
+    no directory (one posted to the console, one built in memory) cannot name
+    files at all, and one that has a directory cannot reach outside it: either
+    would turn a scene into a read of any file on the host."""
+    if not isinstance(path, str):
+        raise ValueError(f"pass '{pass_name}' shader needs a filename, got {path!r}")
+    if not base_dir:
+        raise ValueError(
+            f"pass '{pass_name}' names a shader file ({path!r}) but the scene has "
+            "no directory to resolve it against; inline the GLSL in 'code'"
+        )
+    root = os.path.normpath(os.path.abspath(base_dir))
+    full = os.path.normpath(os.path.join(root, path))
+    if full != root and not full.startswith(root + os.sep):
+        raise ValueError(
+            f"pass '{pass_name}' shader {path!r} is outside the scene directory"
+        )
+    try:
+        with open(full, encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        raise ValueError(
+            f"pass '{pass_name}' shader {path!r}: {e.strerror or e}"
+        ) from None
 
 
 def _param_uniform_lines(p: Param) -> list[str]:
@@ -73,6 +139,11 @@ class Param:
     options: list[str] | None = None
 
     def __post_init__(self) -> None:
+        if self.type not in _PARAM_TYPES:
+            raise ValueError(
+                f"param '{self.name}' has unknown type {self.type!r}; "
+                f"known types: {', '.join(_PARAM_TYPES)}"
+            )
         # A color is [r, g, b] floats 0..1. It has no engine type: the preamble
         # decomposes it to three float uniforms, so it never reaches glsl_type
         # or the C ABI as one value.
@@ -81,9 +152,7 @@ class Param:
             if (
                 not isinstance(v, (list, tuple))
                 or len(v) != 3
-                or not all(
-                    isinstance(x, (int, float)) and not isinstance(x, bool) for x in v
-                )
+                or not all(_is_num(x) for x in v)
             ):
                 raise ValueError(
                     f"color param '{self.name}' needs three numbers [r, g, b], "
@@ -96,9 +165,7 @@ class Param:
             if (
                 not isinstance(v, (list, tuple))
                 or len(v) != n
-                or not all(
-                    isinstance(x, (int, float)) and not isinstance(x, bool) for x in v
-                )
+                or not all(_is_num(x) for x in v)
             ):
                 raise ValueError(
                     f"{self.type} param '{self.name}' needs {n} numbers, got {v!r}"
@@ -109,6 +176,24 @@ class Param:
                 raise ValueError(
                     f"string param '{self.name}' needs a string, got {self.value!r}"
                 )
+        # A bool is `uniform bool` in the shader and an int over the C ABI (the
+        # engine has no bool type; glUniform1i sets a bool uniform).
+        elif self.type == "bool":
+            if not isinstance(self.value, bool):
+                raise ValueError(
+                    f"bool param '{self.name}' needs true or false, got {self.value!r}"
+                )
+        else:
+            if not _is_num(self.value):
+                raise ValueError(
+                    f"{self.type} param '{self.name}' needs a number, "
+                    f"got {self.value!r}"
+                )
+            self.value = int(self.value) if self.type == "int" else float(self.value)
+        for k in ("min", "max", "step"):
+            r = getattr(self, k)
+            if r is not None and not _is_num(r):
+                raise ValueError(f"param '{self.name}' {k} needs a number, got {r!r}")
         if self.options is not None:
             if self.type != "string":
                 raise ValueError(
@@ -139,6 +224,11 @@ class Param:
 
     @classmethod
     def from_dict(cls, name: str, d: dict) -> Param:
+        if not isinstance(d, dict):
+            raise ValueError(f"param '{name}' needs an object, got {d!r}")
+        for k in ("type", "value"):
+            if k not in d:
+                raise ValueError(f"param '{name}' has no '{k}'")
         return cls(
             name,
             d["type"],
@@ -168,16 +258,41 @@ class ArrayInput:
     name: str
     size: int | tuple[int, int]
 
+    def __post_init__(self) -> None:
+        s = self.size
+        if isinstance(s, (list, tuple)):
+            if len(s) != 2 or not all(_is_dim(x) for x in s):
+                raise ValueError(
+                    f"array '{self.name}' size needs two ints in 1..{_MAX_DIM} "
+                    f"[w, h], got {s!r}"
+                )
+            if s[0] * s[1] > _MAX_TEXELS:
+                raise ValueError(
+                    f"array '{self.name}' is {s[0]}x{s[1]}, over the "
+                    f"{_MAX_TEXELS} element cap"
+                )
+            self.size = (s[0], s[1])
+        elif not _is_dim(s):
+            raise ValueError(
+                f"array '{self.name}' size needs an int in 1..{_MAX_DIM}, got {s!r}"
+            )
+
     @property
     def is_2d(self) -> bool:
         return not isinstance(self.size, int)
 
     @classmethod
     def from_dict(cls, d: dict) -> ArrayInput:
+        if not isinstance(d, dict) or "name" not in d or "size" not in d:
+            raise ValueError(f"an array needs 'name' and 'size', got {d!r}")
         sz = d["size"]
         if isinstance(sz, (list, tuple)):
-            return cls(name=d["name"], size=(int(sz[0]), int(sz[1])))
-        return cls(name=d["name"], size=int(sz))
+            if len(sz) != 2:
+                raise ValueError(
+                    f"array '{d['name']}' size needs two ints [w, h], got {sz!r}"
+                )
+            return cls(name=d["name"], size=(_int(sz[0]), _int(sz[1])))
+        return cls(name=d["name"], size=_int(sz))
 
     def to_dict(self) -> dict:
         return {"name": self.name, "size": list(self.size) if self.is_2d else self.size}
@@ -191,6 +306,10 @@ class Channel:
 
     @classmethod
     def from_dict(cls, d: dict) -> Channel:
+        if not isinstance(d, dict):
+            raise ValueError(
+                f"a channel needs an object like {{'buffer': 'pass'}}, got {d!r}"
+            )
         return cls(buffer=d.get("buffer"))
 
     def to_dict(self) -> dict:
@@ -217,12 +336,15 @@ class Pass:
         if (
             not isinstance(s, (list, tuple))
             or len(s) != 2
-            or not all(
-                isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in s
-            )
+            or not all(_is_dim(x) for x in s)
         ):
             raise ValueError(
-                f"pass '{self.name}' size needs two positive ints [w, h], got {s!r}"
+                f"pass '{self.name}' size needs two positive ints [w, h] up to "
+                f"{_MAX_DIM}, got {s!r}"
+            )
+        if s[0] * s[1] > _MAX_TEXELS:
+            raise ValueError(
+                f"pass '{self.name}' is {s[0]}x{s[1]}, over the {_MAX_TEXELS} pixel cap"
             )
         self.size = (s[0], s[1])
 
@@ -233,19 +355,29 @@ class Pass:
 
     @classmethod
     def from_dict(cls, d: dict, base_dir: str | None = None) -> Pass:
+        if not isinstance(d, dict):
+            raise ValueError(f"a pass needs a JSON object, got {d!r}")
+        name = d.get("name", "main")
         code = d.get("code")
-        if code is None and "shader" in d:
-            path = d["shader"]
-            if base_dir:
-                path = os.path.join(base_dir, path)
-            with open(path, encoding="utf-8") as f:
-                code = f.read()
+        if code is None:
+            if "shader" not in d:
+                raise ValueError(
+                    f"pass '{name}' has neither 'code' (inline GLSL) nor "
+                    "'shader' (a file next to the scene)"
+                )
+            code = _read_shader(d["shader"], base_dir, name)
+        try:
+            arrays = [ArrayInput.from_dict(a) for a in _list(d, "arrays")]
+            channels = [Channel.from_dict(c) for c in _list(d, "channels")]
+            params = {n: Param.from_dict(n, pd) for n, pd in _obj(d, "params").items()}
+        except ValueError as e:
+            raise ValueError(f"pass '{name}': {e}") from None
         return cls(
-            name=d.get("name", "main"),
-            code=code or "",
-            arrays=[ArrayInput.from_dict(a) for a in d.get("arrays", [])],
-            channels=[Channel.from_dict(c) for c in d.get("channels", [])],
-            params={n: Param.from_dict(n, pd) for n, pd in d.get("params", {}).items()},
+            name=name,
+            code=code,
+            arrays=arrays,
+            channels=channels,
+            params=params,
             filter=d.get("filter", ""),
             size=d.get("size"),
         )
@@ -330,6 +462,14 @@ class Scene:
     params: dict[str, Param] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        seen: set[str] = set()
+        for p in self.passes:
+            if p.name in seen:
+                raise ValueError(
+                    f"pass '{p.name}' is declared twice; a pass name is the "
+                    "buffer name channels bind to, so it must be unique"
+                )
+            seen.add(p.name)
         # A name belongs to one scope only. Sharing a scene param with a pass is
         # explicit (it reaches every pass), so a pass declaring the same name is
         # an ambiguous redeclaration, not a link. Reject it by name and pass.
@@ -346,13 +486,27 @@ class Scene:
         return self.passes[-1]
 
     @classmethod
-    def from_dict(cls, d: dict, base_dir: str | None = None) -> Scene:
-        return cls(
-            version=d.get("version", 1),
-            passes=[Pass.from_dict(pd, base_dir) for pd in d.get("passes", [])],
-            filters=list(d.get("filters", [])),
-            params={n: Param.from_dict(n, pd) for n, pd in d.get("params", {}).items()},
-        )
+    def from_dict(
+        cls, d: dict, base_dir: str | None = None, path: str | None = None
+    ) -> Scene:
+        """`path` is only used to name the scene in error messages."""
+        src = path or "scene"
+        if not isinstance(d, dict):
+            raise ValueError(f"{src}: needs a JSON object, got {d!r}")
+        try:
+            filters = _list(d, "filters")
+            if not all(isinstance(n, str) for n in filters):
+                raise ValueError(f"'filters' needs a list of names, got {filters!r}")
+            return cls(
+                version=d.get("version", 1),
+                passes=[Pass.from_dict(pd, base_dir) for pd in _list(d, "passes")],
+                filters=list(filters),
+                params={
+                    n: Param.from_dict(n, pd) for n, pd in _obj(d, "params").items()
+                },
+            )
+        except ValueError as e:
+            raise ValueError(f"{src}: {e}") from None
 
     def to_dict(self) -> dict:
         out = {"version": self.version, "passes": [p.to_dict() for p in self.passes]}
@@ -365,8 +519,13 @@ class Scene:
     @classmethod
     def load(cls, path: str) -> Scene:
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return cls.from_dict(data, base_dir=os.path.dirname(os.path.abspath(path)))
+            try:
+                data = json.load(f)
+            except ValueError as e:
+                raise ValueError(f"{path}: invalid JSON: {e}") from None
+        return cls.from_dict(
+            data, base_dir=os.path.dirname(os.path.abspath(path)), path=path
+        )
 
     def save(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as f:

@@ -14,13 +14,12 @@ pkg_check_modules(DRM   REQUIRED libdrm)
 pkg_check_modules(GBM   REQUIRED gbm)
 pkg_check_modules(EGL   REQUIRED egl)
 pkg_check_modules(GLES  REQUIRED glesv2)
-pkg_check_modules(JPEG  REQUIRED libjpeg)
 
-add_library(ghee SHARED engine.c io.c encoder.c)
+add_library(ghee SHARED engine.c encoder.c)
 set_target_properties(ghee PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(ghee PRIVATE
     ${DRM_INCLUDE_DIRS} ${GBM_INCLUDE_DIRS} ${EGL_INCLUDE_DIRS}
-    ${GLES_INCLUDE_DIRS} ${JPEG_INCLUDE_DIRS})
+    ${GLES_INCLUDE_DIRS})
 target_link_libraries(ghee PRIVATE
-    ${DRM_LIBRARIES} ${GBM_LIBRARIES} ${EGL_LIBRARIES} ${GLES_LIBRARIES} ${JPEG_LIBRARIES} m)
+    ${DRM_LIBRARIES} ${GBM_LIBRARIES} ${EGL_LIBRARIES} ${GLES_LIBRARIES} m)
 install(TARGETS ghee LIBRARY DESTINATION lib)

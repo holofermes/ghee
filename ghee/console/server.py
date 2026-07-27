@@ -20,8 +20,9 @@ API:
   GET  /scenes            {scenes:[name...], active}
   GET  /filters           {name: filter def} registry for the "+ filter" picker
   GET  /scene?name=       resolved scene JSON (shader files inlined, filters expanded)
-  GET  /set?pass=&name=&value=   live uniform, no recompile (pass=scene = scene-scoped)
-  GET  /next /prev        switch active scene
+  POST /set?pass=&name=&value=   live uniform, no recompile (pass=scene = scene-scoped)
+  POST /next /prev        switch active scene
+  POST /switch?name=      switch to a named scene
   POST /scene             full scene JSON -> recompile active (apply working copy)
   POST /save              write the scene as a modified copy in <scenes>/modified/;
                           a procedural scene saves a .values.json sidecar (param
@@ -30,25 +31,29 @@ API:
   GET  /<file>            static file from web/
 """
 
-import glob
 import io
-import json
-import mimetypes
 import os
 import queue
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import numpy as np
 from PIL import Image
 
-from ghee import Param, Scene, apply_filters, load_filters, load_scene
 from ghee.console import examples_dir, web_dir
+from ghee.console.core import (
+    ConsoleAPI,
+    ConsoleHost,
+    NotFound,
+    ServerError,
+    parse_query,
+)
 from ghee.console.feeds import default_hwinfo, demo_feed
-from ghee.engine import Renderer
+from ghee.console.store import SceneStore
+from ghee.engine import Renderer, probe_dri_devices
 from ghee.h264 import (
     HW_COLOR,
     NAL_IDR,
@@ -70,130 +75,49 @@ DEFAULT_LIB = os.environ.get("GHEE_LIB")
 # Set by run(); the render thread and request handler read them as globals.
 _lib_path = None
 WEB: str = ""
-SCENES = {}
-NAMES = []
+STORE: SceneStore = None
 W = H = 0
 _provider = None
 _hwinfo = default_hwinfo
-_scenes_dir = ""
-_read_only = False  # bundled examples live in the package; never write there
 _display = False  # also scan out to a connected KMS display (headless Pi, root)
 _rgb565 = False  # display scanout in 16-bit color (halves GPU store + scanout bytes)
 _preview_max = (
     480  # longest side of the browser preview (downscaled off the render thread)
 )
 _preview_fps = 15  # browser preview refresh cap; the display/panel stays full speed
-_raw = {"rgb": None, "seq": 0}  # latest full frame handed to the encoder thread
-_raw_lock = threading.Lock()
+_raw = {"rgb": None, "seq": 0}  # latest preview frame handed to the encoder thread
+_raw_lock = threading.Condition()
+_httpd = None
+_stopping = threading.Event()
+_fatal = ""  # a failure the console cannot render through; run() raises it
 
 
-_VEC_ARITY = {"vec2": 2, "vec3": 3, "vec4": 4}
-
-
-def _parse_param_value(ptype, raw):
-    """Turn a /set raw query string into the value set_param expects. A "color"
-    is "r,g,b" -> [float, float, float]; a "vecK" is K comma-separated floats ->
-    [float, ...]; anything else is a single float. Raises ValueError on malformed
-    input (a short/long color/vec, a non-number)."""
-    if ptype == "color":
-        parts = [float(x) for x in raw.split(",")]
-        if len(parts) != 3:
-            raise ValueError(f"color needs three comma-separated floats, got {raw!r}")
-        return parts
-    if ptype in _VEC_ARITY:
-        n = _VEC_ARITY[ptype]
-        parts = [float(x) for x in raw.split(",")]
-        if len(parts) != n:
-            raise ValueError(f"{ptype} needs {n} comma-separated floats, got {raw!r}")
-        return parts
-    if ptype == "string":
-        return raw
-    return float(raw)
-
-
-def _set_item(pass_raw, name, value):
-    """Render-queue item for a /set. pass="scene" (the literal string) targets the
-    scene's shared params: a distinct item type the loop applies to every pass.
-    Any other value is a pass index for a pass-scoped param (ValueError if it is
-    not an int)."""
-    if pass_raw == "scene":
+def _set_item(scope, name, value):
+    """Render-queue item for a /set. scope="scene" targets the scene's shared
+    params: a distinct item type the loop applies to every pass. Anything
+    else is a pass index."""
+    if scope == "scene":
         return ("scene_param", name, value)
-    return ("param", int(pass_raw), name, value)
+    return ("param", int(scope), name, value)
 
 
-def _modified_path(name):
-    return os.path.join(_scenes_dir, "modified", f"{name}.scene.json")
-
-
-def _values_path(name):
-    return os.path.join(_scenes_dir, "modified", f"{name}.values.json")
-
-
-def _read_values(name):
-    """The saved values sidecar for a procedural scene, or None."""
-    path = _values_path(name)
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"values {name}: unreadable ({e})", file=sys.stderr)
-        return None
-
-
-def _apply_values(scene, name, vals):
-    """Overlay a saved values sidecar's param values onto the resolved scene
-    (filter passes included: their params are tweakable). The code's current
-    shape wins: unknown names are reported and skipped, saved values only
-    fill what still exists."""
-    targets = [(scene.params, "scene", vals.get("scene") or {})]
-    byname = {ps.name: ps for ps in scene.passes}
-    for pn, params in (vals.get("passes") or {}).items():
-        if pn not in byname:
-            print(f"values {name}: no pass '{pn}'", file=sys.stderr)
-            continue
-        targets.append((byname[pn].params, pn, params))
-    for existing, label, saved in targets:
-        for n, v in saved.items():
-            p = existing.get(n)
-            if p is None:
-                print(f"values {name}: no param '{label}.{n}'", file=sys.stderr)
-                continue
-            if p.type in ("float", "int") and (
-                isinstance(v, bool) or not isinstance(v, (int, float))
-            ):
-                print(f"values {name}: bad '{label}.{n}': {v!r}", file=sys.stderr)
-                continue
-            try:
-                existing[n] = Param(p.name, p.type, v, p.min, p.max, p.step, p.options)
-            except (ValueError, TypeError) as e:
-                print(f"values {name}: bad '{label}.{n}': {e}", file=sys.stderr)
-
-
-def _scene_path(name):
-    """A saved modified copy shadows the original; the original is never written."""
-    p = SCENES[name]
-    if p.endswith(".scene.json") and os.path.isfile(_modified_path(name)):
-        return _modified_path(name)
-    return p
-
-
-def _load_resolved(name):
-    """Scene ready to render/edit: shader files inlined, declared filters expanded."""
-    scene, controller = load_scene(_scene_path(name))
-    vals = None if SCENES[name].endswith(".scene.json") else _read_values(name)
-    if vals is not None and isinstance(vals.get("filters"), list):
-        scene.filters = [f for f in vals["filters"] if isinstance(f, str)]
-    apply_filters(scene, scene.filters)
-    if vals is not None:
-        _apply_values(scene, name, vals)
-    return scene, controller
+def _coerce(ptype, val):
+    """The param's declared type wins over whatever the wire carried: an int
+    rounds, a bool is a real bool. A color or vec arrives as a list and
+    passes through."""
+    if isinstance(val, list):
+        return val
+    if ptype == "int":
+        return int(round(val))
+    if ptype == "bool":
+        return bool(val)
+    return val
 
 
 _latest = {"jpg": None, "seq": 0}
-_lock = threading.Lock()
+_lock = threading.Condition()
 _nclients = 0
+_nclients_lock = threading.Lock()
 _q = queue.Queue()
 _stat = {
     "fps": 0.0,
@@ -207,6 +131,15 @@ _stat = {
 }
 
 
+def _count_clients(delta):
+    """MJPEG viewers, adjusted from handler threads and read by the render and
+    encoder threads."""
+    global _nclients
+    with _nclients_lock:
+        _nclients += delta
+        return _nclients
+
+
 def _make_provider(arrays):
     """arrays: {name -> callable(size, frame) -> floats}. Returns provide(name,
     size, frame) that uses the host's source for a name or the placeholder."""
@@ -216,16 +149,6 @@ def _make_provider(arrays):
         return src(size, frame) if src is not None else demo_feed(name, size, frame)
 
     return provide
-
-
-def _scan_scenes(scenes_dir):
-    out = {}
-    for p in sorted(glob.glob(os.path.join(scenes_dir, "*.scene.json"))):
-        out[os.path.basename(p)[: -len(".scene.json")]] = p
-    for p in sorted(glob.glob(os.path.join(scenes_dir, "*.py"))):
-        name = os.path.basename(p)[:-3]
-        out.setdefault(name, p)  # a .py beside its .scene.json: load_scene finds both
-    return out
 
 
 def _make_renderer():
@@ -243,44 +166,35 @@ def _make_renderer():
             lib_path=_lib_path,
         )
     errs = []
-    for dev in [
-        os.environ.get("GHEE_DRI"),
-        None,
-        "/dev/dri/renderD128",
-        "/dev/dri/card1",
-    ]:
+    for dev in probe_dri_devices():
         try:
             return Renderer(W, H, components=4, dri_device=dev, lib_path=_lib_path)
         except Exception as e:
-            errs.append(f"{dev or 'card0'}: {e}")
+            errs.append(f"{dev}: {e}")
     raise RuntimeError("no GL device for the console:\n" + "\n".join(errs))
 
 
 def encoder_loop():
-    # JPEG is expensive at display resolution, so it runs OFF the render thread:
-    # the render loop drops the latest full frame here, this downscales it to
-    # _preview_max and encodes at _preview_fps. The display/panel never waits.
+    # JPEG is expensive, so it runs OFF the render thread: the render loop drops
+    # its readback here and this encodes it, downscaling only when the frame was
+    # sized for another consumer. The display/panel never waits. Raw frames may
+    # flow for the h264 path; JPEG is only produced while a viewer is attached.
     last_seq = -1
-    while True:
-        if (
-            _nclients == 0
-        ):  # raw frames may flow for the h264 path; JPEG only when watched
-            time.sleep(0.05)
-            continue
+    while not _stopping.is_set():
         with _raw_lock:
-            fresh = _raw["seq"] != last_seq and _raw["rgb"] is not None
+            if _nclients == 0 or _raw["seq"] == last_seq:
+                _raw_lock.wait(0.25)
+            fresh = _nclients > 0 and _raw["seq"] != last_seq
             rgb = _raw["rgb"] if fresh else None
-            if fresh:
-                last_seq = _raw["seq"]
+            last_seq = _raw["seq"]
         if rgb is None:
-            time.sleep(0.01)
             continue
         t0 = time.monotonic()
         mode = "RGBA" if rgb.shape[2] == 4 else "RGB"
         img = Image.fromarray(rgb, mode).convert("RGB")
         w, h = img.size
         scale = _preview_max / max(w, h)
-        if scale < 1.0:
+        if scale < 1.0:  # sized for the software H264 stream, or a bigger host frame
             img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=50)
@@ -288,6 +202,7 @@ def encoder_loop():
         with _lock:
             _latest["jpg"] = buf.getvalue()
             _latest["seq"] += 1
+            _lock.notify_all()
 
 
 # A lagging client's backlog never drains on its own (producer and consumer
@@ -302,7 +217,9 @@ class _H264Client:
         self.started = False
         self.lock = threading.Lock()
 
-    def offer(self, is_key, chunk, config):
+    def offer(self, frame, config):
+        # frame/config are wire-framed once by the fanout and shared across
+        # clients; bytes are immutable.
         with self.lock:
             if self.started and self.q.qsize() >= H264_LAG_FRAMES:
                 self.started = False  # lagging: drop the rest of this GOP
@@ -312,13 +229,13 @@ class _H264Client:
                     except queue.Empty:
                         break
             if not self.started:
-                if is_key and config:
-                    self.q.put(wire_frame(0, config))
-                    self.q.put(wire_frame(1, chunk))
+                if config is not None:
+                    self.q.put(config)
+                    self.q.put(frame)
                     self.started = True
                 return
             try:
-                self.q.put_nowait(wire_frame(1 if is_key else 2, chunk))
+                self.q.put_nowait(frame)
             except queue.Full:
                 self.started = False  # backstop; the lag check above fires first
 
@@ -365,9 +282,11 @@ class H264Fanout:
         if not chunk:
             return
         is_key = NAL_IDR in types
+        frame = wire_frame(1 if is_key else 2, chunk)
+        config = wire_frame(0, self.cfg) if is_key and self.cfg else None
         with self.lock:
             for c in list(self.clients):
-                c.offer(is_key, chunk, self.cfg)
+                c.offer(frame, config)
             # a waiting (new or resyncing) client rejoins at the next keyframe;
             # keep requesting one until everyone is streaming
             if any(not c.started for c in self.clients):
@@ -396,20 +315,21 @@ def h264_sw_loop():
     enc = None
     size = None
     last_seq = -1
-    while True:
+    while not _stopping.is_set():
         if not (_h264_hw_dead and _fanout.nclients > 0):
             if enc is not None:
                 enc.close()
                 enc = None
-            time.sleep(0.05)
+            with _raw_lock:
+                _raw_lock.wait(0.25)
             continue
         with _raw_lock:
-            fresh = _raw["seq"] != last_seq and _raw["rgb"] is not None
+            if _raw["seq"] == last_seq:
+                _raw_lock.wait(0.25)
+            fresh = _raw["seq"] != last_seq
             rgb = _raw["rgb"] if fresh else None
-            if fresh:
-                last_seq = _raw["seq"]
+            last_seq = _raw["seq"]
         if rgb is None:
-            time.sleep(0.005)
             continue
         h, w = rgb.shape[:2]
         if enc is not None and size != (w, h):
@@ -470,7 +390,10 @@ def _skip_interval(display_hz, nclients, preview_fps, render_period):
 def render_loop():
     global _h264_hw_dead
     # GL is thread-affine: create the Renderer here, in the thread that renders.
-    renderer = _make_renderer()
+    try:
+        renderer = _make_renderer()
+    except Exception as e:
+        return _fail(f"renderer: {e}")
     st: dict = {"scene": None, "controller": None}
     h264_enc = None  # hardware encoder; render-thread owned (it issues GL calls)
 
@@ -502,12 +425,12 @@ def render_loop():
 
     def load(name):
         try:
-            scene, controller = _load_resolved(name)
+            scene, controller = STORE.resolve(name)
             set_scene(scene, name, controller)
         except Exception as e:
             _stat["error"] = f"load {name}: {e}"
 
-    load(NAMES[0])
+    load(STORE.names[0])
     last = time.monotonic()
     last_preview = 0.0
     frame = 0
@@ -518,339 +441,310 @@ def render_loop():
     # preview readback size: display fit into _preview_max, aspect preserved
     _pscale = min(1.0, _preview_max / max(W, H))
     pw, ph = max(1, round(W * _pscale)), max(1, round(H * _pscale))
-    preview_buf = np.zeros((ph, pw, 4), dtype=np.uint8)
+    sw_size = _stream_size(W, H, _stream_max)  # software H264 reads these frames back
     provider = _provider or demo_feed
-    while True:
-        force = False  # any queued command below forces a draw this iteration
-        while not _q.empty():
-            item = _q.get()
-            force = True
-            if item[0] == "switch":
-                load(item[1])
-            elif item[0] == "param":
-                _, pi, nm, val = item
-                scene = st["scene"]
-                if scene is None:
-                    continue
-                try:
-                    p = scene.passes[pi]
-                    pm = p.params[nm]
-                    if pm.type == "string":
-                        pm.value = val
-                        ctrl = st["controller"]
-                        if ctrl is not None:
-                            ctrl.on_param(renderer, nm, val)
+    reported = ""
+    while not _stopping.is_set():
+        try:
+            force = False  # any queued command below forces a draw this iteration
+            while not _q.empty():
+                item = _q.get()
+                force = True
+                if item[0] == "switch":
+                    load(item[1])
+                elif item[0] == "param":
+                    _, pi, nm, val = item
+                    scene = st["scene"]
+                    if scene is None:
                         continue
-                    # int rounds; a color arrives as a list and passes through
-                    v = (
-                        int(round(val))
-                        if pm.type == "int" and not isinstance(val, list)
-                        else val
-                    )
-                    renderer.set_param(p.name, nm, pm.type, v)
-                    pm.value = v
-                except Exception as e:
-                    print(f"set param {nm}: {e}", file=sys.stderr)
-            elif item[0] == "scene_param":
-                _, nm, val = item
-                scene = st["scene"]
-                if scene is None:
-                    continue
-                try:
-                    pm = scene.params[nm]
-                    if pm.type == "string":
-                        pm.value = val
-                        ctrl = st["controller"]
-                        if ctrl is not None:
-                            ctrl.on_param(renderer, nm, val)
+                    try:
+                        p = scene.passes[pi]
+                        pm = p.params[nm]
+                        if pm.type == "string":
+                            pm.value = val
+                            ctrl = st["controller"]
+                            if ctrl is not None:
+                                ctrl.on_param(renderer, nm, val)
+                            continue
+                        v = _coerce(pm.type, val)
+                        renderer.set_param(p.name, nm, pm.type, v)
+                        pm.value = v
+                    except Exception as e:
+                        print(f"set param {nm}: {e}", file=sys.stderr)
+                elif item[0] == "scene_param":
+                    _, nm, val = item
+                    scene = st["scene"]
+                    if scene is None:
                         continue
-                    v = (
-                        int(round(val))
-                        if pm.type == "int" and not isinstance(val, list)
-                        else val
-                    )
-                    renderer.set_scene_param(nm, pm.type, v)
-                    pm.value = v
-                except Exception as e:
-                    print(f"set scene param {nm}: {e}", file=sys.stderr)
-            elif item[0] == "scene_obj":
-                try:
-                    set_scene(Scene.from_dict(item[1]), controller=st["controller"])
-                except Exception as e:
-                    _stat["error"] = f"scene: {e}"
+                    try:
+                        pm = scene.params[nm]
+                        if pm.type == "string":
+                            pm.value = val
+                            ctrl = st["controller"]
+                            if ctrl is not None:
+                                ctrl.on_param(renderer, nm, val)
+                            continue
+                        v = _coerce(pm.type, val)
+                        renderer.set_scene_param(nm, pm.type, v)
+                        pm.value = v
+                    except Exception as e:
+                        print(f"set scene param {nm}: {e}", file=sys.stderr)
+                elif item[0] == "scene_obj":
+                    set_scene(item[1], controller=st["controller"])
 
-        ctrl = st["controller"]
-        # A controller that knows this frame would look identical may skip it
-        # entirely: the display keeps scanning out the last flipped buffer.
-        # Queued commands (switch/param/scene edit/new preview client) force a
-        # draw so edits always show. `frame` advances on skipped frames too.
-        # (t = frame/60 assumes a 60Hz cadence; non-60Hz panels get a
-        # proportionally scaled t.)
-        if not _should_render(force, ctrl, frame, frame / 60.0):
-            _stat["fps"] *= 0.98
-            frame += 1
-            interval = _skip_interval(
-                display_hz, _nclients + _fanout.nclients, _preview_fps, last_period
-            )
-            if interval is None:
-                _q.put(_q.get())  # nobody consumes frames: sleep until a command
-                continue
-            time.sleep(interval)
-            continue
-        if ctrl is not None:
-            ctrl.update(renderer, frame, frame / 60.0)
-
-        def feed(name, size, frame=frame, ctrl=ctrl):
-            if ctrl is not None:
-                data = ctrl.provide(name, size, frame)
-                if data is not None:
-                    return data
-            return provider(name, size, frame)
-
-        # Refresh the browser preview at most _preview_fps, and only when watched.
-        # The display/panel renders every frame regardless; the preview is a
-        # throttled, downscaled mirror handled by the encoder thread.
-        now = time.monotonic()
-        # software H264 eats the same readback frames as the MJPEG preview, so
-        # its viewers count as readback consumers at their own cadence
-        # (_H264_FPS, not the MJPEG preview cap); hardware H264 does not (it
-        # samples the GPU texture directly). Fastest active consumer wins.
-        sw_h264 = _h264_hw_dead and _fanout.nclients > 0
-        rates = []
-        if _nclients > 0:
-            rates.append(_preview_fps)  # <= 0 means every frame
-        if sw_h264:
-            rates.append(_H264_FPS)
-        want_preview = bool(rates) and (
-            any(r <= 0 for r in rates) or (now - last_preview) >= 1.0 / max(rates)
-        )
-
-        t0 = time.monotonic()
-        if _display:
-            # scan straight out; read back a small GPU-downscaled preview only
-            # when refreshing (keeps the flip cadence at full speed).
-            renderer.present(
-                feed,
-                out=(preview_buf if want_preview else None),
-                out_size=((pw, ph) if want_preview else None),
-            )
-            preview_rgb = preview_buf
-        else:
-            preview_rgb = renderer.render(feed)
-        frame += 1
-        t1 = time.monotonic()
-
-        if want_preview:
-            with _raw_lock:
-                _raw["rgb"] = preview_rgb.copy()
-                _raw["seq"] += 1
-            last_preview = now
-
-        # hardware H264 mirror: encode the frame just produced, zero readback.
-        # keep_last in the engine holds the final pass in its FBO while the
-        # encoder exists, so encode_last always has a texture to sample.
-        want_h264 = _fanout.nclients > 0
-        if want_h264 and h264_enc is None and not _h264_hw_dead:
-            try:
-                sw_, sh_ = _stream_size(W, H, _stream_max)
-                h264_enc = HardwareH264(
-                    renderer, sw_, sh_, fps=display_hz or 30, bitrate=_h264_bitrate
+            ctrl = st["controller"]
+            # A controller that knows this frame would look identical may skip it
+            # entirely: the display keeps scanning out the last flipped buffer.
+            # Queued commands (switch/param/scene edit/new preview client) force a
+            # draw so edits always show. `frame` advances on skipped frames too.
+            # (t = frame/60 assumes a 60Hz cadence; non-60Hz panels get a
+            # proportionally scaled t.)
+            if not _should_render(force, ctrl, frame, frame / 60.0):
+                _stat["fps"] *= 0.98
+                frame += 1
+                interval = _skip_interval(
+                    display_hz, _nclients + _fanout.nclients, _preview_fps, last_period
                 )
-                _fanout.size = (sw_, sh_)
-                _fanout.color = HW_COLOR
-            except RuntimeError as e:
-                _h264_hw_dead = True  # no /dev/video11: h264_sw_loop takes over
-                print(f"h264: {e}; using software encoder", file=sys.stderr)
-        if h264_enc is not None and not want_h264:
-            h264_enc.close()  # restore direct-scanout speed while unwatched
-            h264_enc = None
-        elif h264_enc is not None:
-            if _fanout.want_key:
-                _fanout.want_key = False
-                h264_enc.force_keyframe()
-            au, _ = h264_enc.encode_last()
-            if au:
-                _fanout.push(au)
+                if interval is None:
+                    _q.put(_q.get())  # nobody consumes frames: sleep until a command
+                    continue
+                time.sleep(interval)
+                continue
+            if ctrl is not None:
+                ctrl.update(renderer, frame, frame / 60.0)
 
-        dt = t1 - last
-        last = t1
-        if dt > 0:
-            last_period = dt
-            inst = 1.0 / dt
-            _stat["fps"] = (
-                inst if _stat["fps"] == 0 else _stat["fps"] * 0.9 + inst * 0.1
+            def feed(name, size, frame=frame, ctrl=ctrl):
+                if ctrl is not None:
+                    data = ctrl.provide(name, size, frame)
+                    if data is not None:
+                        return data
+                return provider(name, size, frame)
+
+            # Refresh the browser preview at most _preview_fps, and only when watched.
+            # The display/panel renders every frame regardless; the preview is a
+            # throttled, downscaled mirror handled by the encoder thread.
+            now = time.monotonic()
+            # software H264 eats the same readback frames as the MJPEG preview, so
+            # its viewers count as readback consumers at their own cadence
+            # (_H264_FPS, not the MJPEG preview cap); hardware H264 does not (it
+            # samples the GPU texture directly). Fastest active consumer wins.
+            sw_h264 = _h264_hw_dead and _fanout.nclients > 0
+            rates = []
+            if _nclients > 0:
+                rates.append(_preview_fps)  # <= 0 means every frame
+            if sw_h264:
+                rates.append(_H264_FPS)
+            want_preview = bool(rates) and (
+                any(r <= 0 for r in rates) or (now - last_preview) >= 1.0 / max(rates)
             )
-            _stat["render_ms"] = (t1 - t0) * 1000.0
-        time.sleep(0.003)
+            # one readback feeds both consumers, so it is sized for whoever is
+            # attached: the MJPEG preview can downscale a bigger frame, the
+            # software encoder cannot recover a smaller one
+            rw, rh = (max(pw, sw_size[0]), max(ph, sw_size[1])) if sw_h264 else (pw, ph)
+            # each frame gets its own buffer: the encoder thread reads it while
+            # the next readback is already running, and the size can change
+            # under it when a viewer comes or goes
+            readback = np.empty((rh, rw, 4), dtype=np.uint8) if want_preview else None
+
+            t0 = time.monotonic()
+            if _display:
+                # scan straight out; read back a small GPU-downscaled preview only
+                # when refreshing (keeps the flip cadence at full speed).
+                renderer.present(
+                    feed, out=readback, out_size=((rw, rh) if want_preview else None)
+                )
+            elif want_preview:
+                renderer.render(feed, out=readback, out_size=(rw, rh))
+            else:
+                renderer.draw(feed)  # nothing reads a frame this iteration
+            frame += 1
+            t1 = time.monotonic()
+
+            if want_preview:
+                with _raw_lock:
+                    _raw["rgb"] = readback
+                    _raw["seq"] += 1
+                    _raw_lock.notify_all()
+                last_preview = now
+
+            # hardware H264 mirror: encode the frame just produced, zero readback.
+            # keep_last in the engine holds the final pass in its FBO while the
+            # encoder exists, so encode_last always has a texture to sample.
+            want_h264 = _fanout.nclients > 0
+            if want_h264 and h264_enc is None and not _h264_hw_dead:
+                try:
+                    sw_, sh_ = _stream_size(W, H, _stream_max)
+                    h264_enc = HardwareH264(
+                        renderer, sw_, sh_, fps=display_hz or 30, bitrate=_h264_bitrate
+                    )
+                    _fanout.size = (sw_, sh_)
+                    _fanout.color = HW_COLOR
+                except RuntimeError as e:
+                    _h264_hw_dead = True  # no /dev/video11: h264_sw_loop takes over
+                    print(f"h264: {e}; using software encoder", file=sys.stderr)
+            if h264_enc is not None and not want_h264:
+                h264_enc.close()  # restore direct-scanout speed while unwatched
+                h264_enc = None
+            elif h264_enc is not None:
+                if _fanout.want_key:
+                    _fanout.want_key = False
+                    h264_enc.force_keyframe()
+                au, _ = h264_enc.encode_last()
+                if au:
+                    _fanout.push(au)
+
+            dt = t1 - last
+            last = t1
+            if dt > 0:
+                last_period = dt
+                inst = 1.0 / dt
+                _stat["fps"] = (
+                    inst if _stat["fps"] == 0 else _stat["fps"] * 0.9 + inst * 0.1
+                )
+                _stat["render_ms"] = (t1 - t0) * 1000.0
+            time.sleep(0.003)
+        except Exception as e:
+            # one bad frame (or scene, or controller) must not take the thread with
+            # it: report it and keep rendering whatever last worked
+            msg = f"render: {e}"
+            _stat["error"] = msg
+            if msg != reported:
+                print(f"ghee console: {msg}", file=sys.stderr)
+                reported = msg
+            time.sleep(0.25)
+
+
+class _RenderLoopHost(ConsoleHost):
+    """This module's render loop as a console host. Handler threads only read
+    _stat and put items on _q; the render thread owns the renderer and drains
+    the queue, so nothing here touches GL."""
+
+    save_refused = "demo scenes are read-only; serve your own directory to save"
+
+    @property
+    def writable(self):
+        return not STORE.read_only
+
+    def stats(self):
+        return dict(_stat)  # snapshot: the render thread writes into it
+
+    def scene_names(self):
+        return STORE.names
+
+    def active_name(self):
+        return _stat["active"]
+
+    def scene_def(self, name=None):
+        name = name or _stat["active"]
+        if name not in STORE:
+            raise NotFound("no scene")
+        try:
+            scene, _ = STORE.resolve(name)
+        except Exception as e:
+            raise ServerError(f"build {name}: {e}") from e
+        return scene.to_dict()
+
+    def hwinfo(self):
+        return _hwinfo()
+
+    def set_param(self, scope, name, value):
+        _q.put(_set_item(scope, name, value))
+
+    def switch(self, name):
+        if name not in STORE:
+            raise NotFound("no scene")
+        _q.put(("switch", name))
+        return name
+
+    def apply_scene(self, scene):
+        _q.put(("scene_obj", scene))
+
+    def save_scene(self, name, scene):
+        STORE.save(name, scene)
+
+
+def _build_api():
+    """Rebuilt by run() (and by the tests) because the web root is module state."""
+    return ConsoleAPI(_RenderLoopHost(), web=WEB)
+
+
+API = _build_api()
 
 
 class Handler(BaseHTTPRequestHandler):
+    """The blocking transport. Streams are its own; everything else is API."""
+
     protocol_version = "HTTP/1.1"  # /h264 streams chunked (proxy-friendly)
 
     def log_message(self, *args, **kwargs):
         pass
 
-    def _send(self, code, body: bytes | str = b"", ctype="text/plain"):
-        if isinstance(body, str):
-            body = body.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+    def _send(self, resp):
+        self.send_response(resp.status)
+        self.send_header("Content-Type", resp.content_type)
+        self.send_header("Content-Length", str(len(resp.body)))
         self.end_headers()
-        if body:
-            self.wfile.write(body)
+        if resp.body:
+            self.wfile.write(resp.body)
+
+    def _refused(self, method, path):
+        """A request turned away before its body was read leaves the connection
+        desynced, so every refusal but the method check closes it."""
+        resp = API.precheck(method, path, self.headers)
+        if resp is None:
+            return False
+        self.close_connection = resp.status != 405
+        self._send(resp)
+        return True
 
     def do_GET(self):
         u = urlparse(self.path)
-        q = parse_qs(u.query)
+        if self._refused("GET", u.path):
+            return
         if u.path == "/stream":
             return self._stream()
         if u.path == "/h264":
             return self._h264()
-        if u.path == "/stats":
-            return self._send(200, json.dumps(_stat), "application/json")
-        if u.path == "/scenes":
-            return self._send(
-                200,
-                json.dumps({"scenes": NAMES, "active": _stat["active"]}),
-                "application/json",
-            )
-        if u.path == "/hwinfo":
-            return self._send(200, json.dumps(_hwinfo()), "application/json")
-        if u.path == "/filters":
-            return self._send(200, json.dumps(load_filters()), "application/json")
-        if u.path == "/scene":
-            name = q.get("name", [_stat["active"]])[0]
-            if name not in SCENES:
-                return self._send(404, "no scene")
-            try:
-                scene, _ = _load_resolved(name)
-                return self._send(200, json.dumps(scene.to_dict()), "application/json")
-            except Exception as e:
-                return self._send(500, f"build {name}: {e}")
-        if u.path == "/set":
-            try:
-                ptype = q.get("type", ["float"])[0]
-                val = _parse_param_value(ptype, q["value"][0])
-                item = _set_item(q["pass"][0], q["name"][0], val)
-            except (KeyError, ValueError) as e:
-                return self._send(400, f"bad /set: {e}")
-            _q.put(item)
-            return self._send(200, "ok")
-        if u.path in ("/next", "/prev"):
-            i = NAMES.index(_stat["active"]) if _stat["active"] in NAMES else 0
-            i = (i + (1 if u.path == "/next" else -1)) % len(NAMES)
-            _q.put(("switch", NAMES[i]))
-            return self._send(200, json.dumps({"active": NAMES[i]}), "application/json")
-        if u.path == "/switch":
-            name = q.get("name", [None])[0]
-            if name not in SCENES:
-                return self._send(404, "no scene")
-            _q.put(("switch", name))
-            return self._send(200, json.dumps({"active": name}), "application/json")
-        return self._static(u.path)
+        self._send(API.dispatch("GET", u.path, parse_query(u.query), self.headers))
 
     def do_POST(self):
         u = urlparse(self.path)
-        n = int(self.headers.get("Content-Length", 0))
+        if self._refused("POST", u.path):
+            return
+        n = int(self.headers.get("Content-Length", "0") or 0)
         body = self.rfile.read(n) if n else b""
-        if u.path == "/scene":
-            try:
-                _q.put(("scene_obj", json.loads(body.decode("utf-8"))))
-            except Exception as e:
-                return self._send(400, str(e))
-            return self._send(200, "ok")
-        if u.path == "/save":
-            return self._save(body)
-        return self._send(404, "no")
-
-    def _save(self, body):
-        if _read_only:
-            return self._send(
-                403, "demo scenes are read-only; serve your own directory to save"
-            )
-        try:
-            d = json.loads(body.decode("utf-8"))
-            name = d["name"]
-            scene = Scene.from_dict(d["scene"])
-        except Exception as e:
-            return self._send(400, f"bad /save: {e}")
-        if name not in SCENES:
-            return self._send(404, "no scene")
-        # the working copy carries applied filters as expanded passes; recover
-        # the declared list from them so a save never drops a filter the
-        # client forgot to record
-        applied = [p.filter for p in scene.passes if p.filter]
-        if applied:
-            scene.filters = applied
-        if not SCENES[name].endswith(".scene.json"):
-            # a procedural scene's shape lives in code; save its tweakable
-            # surface (param values + filter list) as a sidecar the loader
-            # applies over the controller's defaults. Filter passes' params
-            # are included: they are the filter's tweakable knobs.
-            vals = {
-                "filters": scene.filters,
-                "scene": {n: p.value for n, p in scene.params.items()},
-                "passes": {
-                    ps.name: {n: p.value for n, p in ps.params.items()}
-                    for ps in scene.passes
-                },
-            }
-            path = _values_path(name)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(vals, f, indent=2)
-            os.replace(tmp, path)
-            return self._send(200, "ok")
-        # store unexpanded: filter passes come back at load time from the filters list
-        scene.passes = [p for p in scene.passes if not p.filter]
-        path = _modified_path(name)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(scene.to_dict(), f, indent=2)
-        os.replace(tmp, path)
-        return self._send(200, "ok")
-
-    def _static(self, path):
-        if path in ("", "/"):
-            path = "/index.html"
-        fp = os.path.normpath(os.path.join(WEB, path.lstrip("/")))
-        if not fp.startswith(WEB) or not os.path.isfile(fp):
-            return self._send(404, "not found")
-        ctype = mimetypes.guess_type(fp)[0] or "application/octet-stream"
-        with open(fp, "rb") as f:
-            return self._send(200, f.read(), ctype)
+        self._send(
+            API.dispatch("POST", u.path, parse_query(u.query), self.headers, body)
+        )
 
     def _stream(self):
-        global _nclients
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        _nclients += 1
+        _count_clients(1)
         _q.put(("preview",))  # nudge an idle (dirty=False) scene to draw a frame
         last_seq = -1
         try:
-            while True:
+            while not _stopping.is_set():
                 with _lock:
+                    if _latest["seq"] == last_seq:
+                        _lock.wait(1.0)
                     jpg = _latest["jpg"]
                     seq = _latest["seq"]
-                if jpg is not None and seq != last_seq:
-                    last_seq = seq
-                    self.wfile.write(
-                        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n"
-                        % len(jpg)
-                    )
-                    self.wfile.write(jpg)
-                    self.wfile.write(b"\r\n")
-                else:
-                    time.sleep(0.002)
+                if jpg is None or seq == last_seq:
+                    continue
+                last_seq = seq
+                self.wfile.write(
+                    b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n"
+                    % len(jpg)
+                )
+                self.wfile.write(jpg)
+                self.wfile.write(b"\r\n")
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            _nclients -= 1
+            _count_clients(-1)
 
     def _h264(self):
         self.send_response(200)
@@ -861,14 +755,43 @@ class Handler(BaseHTTPRequestHandler):
         c = _fanout.add()
         _q.put(("preview",))  # wake an idle (dirty=False) scene so the stream starts
         try:
-            while True:
-                blob = c.q.get()
+            while not _stopping.is_set():
+                try:
+                    blob = c.q.get(timeout=1.0)
+                except queue.Empty:
+                    continue
                 self.wfile.write(b"%X\r\n" % len(blob) + blob + b"\r\n")
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
             _fanout.remove(c)
+
+
+def _fail(msg):
+    """A failure the console cannot render through (no GL device, no engine):
+    stop, and let run() raise it instead of leaving a server with no renderer."""
+    global _fatal
+    _fatal = msg
+    _stat["error"] = msg
+    print(f"ghee console: {msg}", file=sys.stderr)
+    stop()
+
+
+def stop():
+    """Shut the server and the render/encode threads down. run() calls it on the
+    way out; a host that runs the console in a thread calls it to end one."""
+    global _httpd
+    _stopping.set()
+    _q.put(("stop",))  # wake a render loop parked on the command queue
+    with _raw_lock:
+        _raw_lock.notify_all()
+    with _lock:
+        _lock.notify_all()
+    httpd, _httpd = _httpd, None
+    if httpd is not None:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 def run(
@@ -885,14 +808,14 @@ def run(
     preview_fps=15,
     stream_max=0,
 ):
-    """Start the console. arrays: {array_name -> callable(size, frame) -> floats}
-    maps a scene's declared arrays to real data; unmapped names get an animated
-    placeholder. hwinfo: callable -> dict for the device-info readout.
+    """Start the console and serve until stop() (or Ctrl-C). arrays:
+    {array_name -> callable(size, frame) -> floats} hwinfo:
+    callable -> dict for the device-info readout.
     host defaults to loopback; the console has no auth and compiles POSTed GLSL,
     so pass "0.0.0.0" only to expose it on a network you trust."""
-    global _lib_path, WEB, SCENES, NAMES, W, H, _provider, _hwinfo
-    global _scenes_dir, _read_only, _display, _rgb565, _preview_max, _preview_fps
-    global _stream_max
+    global _lib_path, WEB, STORE, W, H, _provider, _hwinfo, API
+    global _display, _rgb565, _preview_max, _preview_fps
+    global _stream_max, _httpd, _fatal
     _display = display
     _rgb565 = rgb565
     _preview_max = preview_max
@@ -902,14 +825,13 @@ def run(
     _hwinfo = hwinfo or default_hwinfo
     WEB = web_dir()
     W, H = size
-    _read_only = scenes_dir is None
+    read_only = scenes_dir is None
     scenes_dir = os.path.abspath(scenes_dir) if scenes_dir else examples_dir()
-    _scenes_dir = scenes_dir
-    SCENES = _scan_scenes(scenes_dir)
-    NAMES = list(SCENES.keys())
-    if not NAMES:
-        raise SystemExit(f"no .scene.json in {scenes_dir}")
-    _stat["active"] = NAMES[0]
+    STORE = SceneStore(scenes_dir, read_only=read_only)
+    names = STORE.names
+    if not names:
+        raise ValueError(f"no .scene.json in {scenes_dir}")
+    _stat["active"] = names[0]
     _stat["display"] = {
         "name": "preview",
         "w": W,
@@ -918,14 +840,23 @@ def run(
         "rotation": 0,
     }
     _lib_path = lib_path or DEFAULT_LIB
+    _fatal = ""
+    _stopping.clear()
+    API = _build_api()
+    httpd = _httpd = ThreadingHTTPServer((host, port), Handler)
     threading.Thread(target=render_loop, daemon=True).start()
     threading.Thread(target=encoder_loop, daemon=True).start()
     threading.Thread(target=h264_sw_loop, daemon=True).start()
     print(
-        f"ghee console: {len(NAMES)} scenes {NAMES} on {host}:{port} "
+        f"ghee console: {len(names)} scenes {names} on {host}:{port} "
         f"(scenes={scenes_dir}, preview {W}x{H} rgba)"
     )
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    try:
+        httpd.serve_forever()
+    finally:
+        stop()
+    if _fatal:
+        raise RuntimeError(_fatal)
 
 
 if __name__ == "__main__":

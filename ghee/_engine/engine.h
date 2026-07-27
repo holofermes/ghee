@@ -51,31 +51,41 @@ const char *ghee_last_error(GheeScene *g);
 
 void ghee_destroy(GheeScene *g);
 
-// Load a JPEG file into a GL texture on the current context. 0 on failure.
-// TODO: bind from Python (image files as texture channels).
-GLuint ghee_load_jpeg_texture(const char *filename);
-
+// Building a scene is staged: add_pass (and set_pass_size) compile and allocate
+// the PENDING passes, commit makes them the scene, abort drops them. The running
+// scene keeps rendering until the commit, so a compile error costs nothing.
 int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);
-// Set a pass's buffer size (default = renderer W,H). Call after ghee_mp_add_pass,
-// before the first render. The last pass must keep the renderer size (it feeds
-// readback/scanout); consumers sample any pass through normalized UVs.
-void ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h);
-void ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);
+// Set a pending pass's buffer size (default = renderer W,H). Call after
+// ghee_mp_add_pass, before ghee_mp_commit. The last pass must keep the renderer
+// size (it feeds readback/scanout); consumers sample any pass through normalized
+// UVs.
+bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h);
+int  ghee_mp_commit(GheeScene *g);   // -> pass count, -1 = nothing pending
+void ghee_mp_abort(GheeScene *g);
+bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);
 bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param);
-// Unused: superseded by ghee_mp_set_float_texture (uniform arrays hit the VC4 size cap).
+// Unused: superseded by ghee_mp_set_array (uniform arrays hit the VC4 size cap).
 void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count);
 // Data bound as a count x rows luminance texture sampler (<name>_tex): rows=1 is
 // the 1xN array case (computed-coord fetch, no VC4 uniform-array cap), rows>1 is
-// a 2D input (masks, host-rasterized text) sampled with normalized uv.
-void ghee_mp_set_float_texture(GheeScene *g, int pass, const char *name, const float *data, int count, int rows);
-void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb);
+// a 2D input sampled with normalized uv. One texture per NAME: declare it
+// on every pass that reads it, upload it once a frame.
+// -> array index, -1 = refused.
+int  ghee_mp_declare_array(GheeScene *g, int pass, const char *name);
+void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int count, int rows);
+// Render the passes and swap. buffer_rgb NULL = no readback at all; pw/ph > 0 =
+// GPU-downscale the final pass to pw x ph and read back only that; otherwise the
+// full frame lands in buffer_rgb.
+void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 // Render the passes and scan the final buffer out to the display (display mode
 // only). buffer_rgb non-NULL also reads the frame back (for a console mirror).
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 void ghee_mp_reset(GheeScene *g);
+int  ghee_max_texture_units(GheeScene *g);   // a pass's channels + arrays must fit
 
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
+void ghee_clear_time(GheeScene *g);   // back to the monotonic clock
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
 // Size of the mode the connected display is driving, without creating a scene
@@ -95,6 +105,10 @@ int  ghee_mp_render_encoded(GheeScene *g, GheeEncoder *e, const uint8_t **nal, i
 // mirror: one render feeds screen and stream). Same returns.
 int  ghee_encoder_encode_last(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);
 void ghee_encoder_force_keyframe(GheeEncoder *e);   // instant join for a new viewer
+// End of stream: sends the encoder STOP once, then hands back the trailing
+// access units one call at a time. 0 = *nal/*len/*is_key set, 1 = drained,
+// <0 = error. A capture that stops without this ends mid-GOP.
+int  ghee_encoder_flush(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);
 void ghee_encoder_destroy(GheeScene *g, GheeEncoder *e);
 
 void ghee_pack_frame(int width, int height, int components, int bw,

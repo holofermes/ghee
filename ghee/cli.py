@@ -5,6 +5,7 @@
     ghee render scene.json --display st7789                  # to a panel, until Ctrl-C
     ghee serve scenes/                                       # editor console
     ghee serve --demo                                        # console on the bundled examples
+    ghee isf import shader.fs -o shader.scene.json           # import an ISF shader
     ghee displays                                            # list display drivers
 
 Scene arrays animate on a placeholder unless a scene controller feeds them.
@@ -76,7 +77,7 @@ def cmd_render(a):
         names += [n.strip() for n in a.filters.split(",") if n.strip()]
     names = list(dict.fromkeys(names))
     reg = load_filters()
-    unknown = [n for n in names if n not in reg and n not in scene.filters]
+    unknown = [n for n in names if n not in reg]
     if unknown:
         sys.exit(f"unknown filter: {', '.join(unknown)} (known: {', '.join(reg)})")
     apply_filters(scene, names, registry=reg)
@@ -261,8 +262,11 @@ def _render_h264(a, scene, ctrl):
     try:
         while frames == 0 or i < frames:
             t0 = time.monotonic()
+            t = i * a.timestep if a.timestep is not None else i / 60.0
             if ctrl is not None:
-                ctrl.update(r, i, i / 60.0)
+                ctrl.update(r, i, t)
+            if a.timestep is not None:
+                r.set_time(t)
             if hw:
                 au, _ = enc.encode_frame(
                     lambda name, size, i=i: provider(name, size, i)
@@ -284,18 +288,16 @@ def _render_h264(a, scene, ctrl):
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     finally:
         try:
-            if hw:
-                enc.close()
-            else:
-                for au in enc.drain():
-                    out.write(au)
-                enc.close()
+            for au in enc.drain():
+                out.write(au)
             out.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
-        if out is not sys.stdout.buffer:
-            out.close()
-        r.close()
+        finally:
+            enc.close()
+            if out is not sys.stdout.buffer:
+                out.close()
+            r.close()
     if a.h264 != "-":
         print(f"wrote {i} frame(s) to {a.h264}", file=sys.stderr)
     _print_stats(a, times)
@@ -318,18 +320,51 @@ def cmd_serve(a):
                 sys.exit("serve: no connected display to size from; pass --size WxH")
         else:
             size = (320, 240)
-    run(
-        scenes_dir=a.scenes,
-        size=size,
-        port=a.port,
-        lib_path=a.lib,
-        host=a.host,
-        display=a.display,
-        rgb565=a.rgb565,
-        preview_max=a.preview_max,
-        preview_fps=a.preview_fps,
-        stream_max=a.stream_max,
-    )
+    try:
+        run(
+            scenes_dir=a.scenes,
+            size=size,
+            port=a.port,
+            lib_path=a.lib,
+            host=a.host,
+            display=a.display,
+            rgb565=a.rgb565,
+            preview_max=a.preview_max,
+            preview_fps=a.preview_fps,
+            stream_max=a.stream_max,
+        )
+    except KeyboardInterrupt:
+        pass
+    except (ValueError, RuntimeError) as e:
+        sys.exit(str(e))
+
+
+def cmd_isf_import(a):
+    import json
+
+    from ghee.isf import ISFError, read_isf, slug, to_filter, to_scene
+
+    try:
+        text, name, vs = read_isf(a.source)
+    except OSError as e:
+        sys.exit(f"isf import: {a.source}: {e.strerror or e}")
+    try:
+        if a.as_filter:
+            out, warnings = to_filter(text, name, a.size, vs)
+            body = json.dumps(out, indent=2)
+            what = f"filter '{out['name']}'"
+        else:
+            scene, warnings = to_scene(text, name, a.size, vs)
+            body = json.dumps(scene.to_dict(), indent=2)
+            what = f"scene, {len(scene.passes)} pass(es)"
+    except ISFError as e:
+        sys.exit(f"isf import: {e}")
+    for w in warnings:
+        print(f"isf import: {name}: {w}", file=sys.stderr)
+    path = a.output or f"{slug(name)}.{'filter' if a.as_filter else 'scene'}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body + "\n")
+    print(f"wrote {what} to {path}")
 
 
 def cmd_displays(a):
@@ -347,7 +382,10 @@ def cmd_displays(a):
 
 
 def main(argv=None):
+    from ghee import __version__
+
     p = argparse.ArgumentParser(prog="ghee")
+    p.add_argument("--version", action="version", version=f"ghee {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("render", help="render a scene to images or a display")
@@ -483,6 +521,30 @@ def main(argv=None):
         "default 0 = full render size)",
     )
     s.set_defaults(fn=cmd_serve)
+
+    i = sub.add_parser("isf", help="Interactive Shader Format (ISF) shaders")
+    isub = i.add_subparsers(dest="isf_cmd", required=True)
+    imp = isub.add_parser("import", help="convert an ISF shader to a scene or filter")
+    imp.add_argument("source", help="a .fs file, or an http(s) URL to one")
+    imp.add_argument(
+        "-o",
+        "--output",
+        help="output path (default: the shader's name, .scene.json or .filter.json)",
+    )
+    imp.add_argument(
+        "--size",
+        type=_size,
+        default=(320, 240),
+        help="WxH the pass WIDTH/HEIGHT equations are evaluated against, since "
+        "ghee pass sizes are fixed at import (default 320x240)",
+    )
+    imp.add_argument(
+        "--as-filter",
+        action="store_true",
+        help="write a ghee filter (a single-pass ISF whose image input becomes "
+        "iChannel0, the frame so far) instead of a scene",
+    )
+    imp.set_defaults(fn=cmd_isf_import)
 
     d = sub.add_parser("displays", help="list display drivers and availability")
     d.set_defaults(fn=cmd_displays)

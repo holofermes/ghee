@@ -139,6 +139,28 @@ class HardwareH264:
     def force_keyframe(self):
         self.r.lib.ghee_encoder_force_keyframe(self.handle)
 
+    def drain(self):
+        """End of stream: yield the access units the encoder still owes, one per
+        flush, until it reports drained. Without it a capture ends mid-GOP and
+        loses its last frames."""
+        if not getattr(self, "handle", None):
+            return
+        nal = ctypes.POINTER(ctypes.c_ubyte)()
+        ln, key = ctypes.c_int(), ctypes.c_int()
+        while True:
+            rc = self.r.lib.ghee_encoder_flush(
+                self.r.handle,
+                self.handle,
+                ctypes.byref(nal),
+                ctypes.byref(ln),
+                ctypes.byref(key),
+            )
+            if rc < 0:
+                raise RuntimeError(f"hardware flush failed: {self.r.last_error()}")
+            if rc > 0:
+                return
+            yield ctypes.string_at(nal, ln.value)
+
     def close(self):
         if getattr(self, "handle", None):
             self.r.lib.ghee_encoder_destroy(self.r.handle, self.handle)
@@ -211,23 +233,25 @@ class SoftwareH264:
     def _pump(self):
         """Split the raw stream into access units at AUD start codes."""
         buf = b""
-        while True:
-            chunk = self.proc.stdout.read(4096)
-            if not chunk:
-                break
-            buf += chunk
+        try:
             while True:
-                first = self._find_aud(buf, 0)
-                if first is None:
+                chunk = self.proc.stdout.read(4096)
+                if not chunk:
                     break
-                nxt = self._find_aud(buf, first + 4)
-                if nxt is None:
-                    break
-                self._q.put(buf[first:nxt])
-                buf = buf[nxt:]
-        if buf and self._find_aud(buf, 0) is not None:
-            self._q.put(buf)  # trailing AU after EOF (stream flushed on close)
-        self._q.put(None)
+                buf += chunk
+                while True:
+                    first = self._find_aud(buf, 0)
+                    if first is None:
+                        break
+                    nxt = self._find_aud(buf, first + 4)
+                    if nxt is None:
+                        break
+                    self._q.put(buf[first:nxt])
+                    buf = buf[nxt:]
+            if buf and self._find_aud(buf, 0) is not None:
+                self._q.put(buf)  # trailing AU after EOF (stream flushed on close)
+        finally:
+            self._q.put(None)
 
     @staticmethod
     def _find_aud(buf, start):
@@ -242,8 +266,7 @@ class SoftwareH264:
 
     def feed(self, rgb):
         """One raw frame (numpy array or bytes, matching w/h/components)."""
-        data = rgb.tobytes() if hasattr(rgb, "tobytes") else rgb
-        self.proc.stdin.write(data)
+        self.proc.stdin.write(rgb)  # buffer protocol: no per-frame copy
 
     def get_au(self, timeout=2.0):
         """-> (au|None, is_key). None = nothing ready within timeout / ended."""
@@ -260,7 +283,7 @@ class SoftwareH264:
     def force_keyframe(self):
         pass  # no mid-stream control over the pipe; viewers join at the next GOP
 
-    def drain(self):
+    def drain(self, timeout=5.0):
         """Close input and yield every remaining access unit."""
         if self.proc.stdin:
             try:
@@ -269,16 +292,23 @@ class SoftwareH264:
                 pass
             self.proc.stdin = None
         while True:
-            au = self._q.get()
+            try:
+                au = self._q.get(timeout=timeout)
+            except queue.Empty:
+                return
             if au is None:
                 self._q.put(None)  # keep the sentinel: drain/close stay idempotent
                 return
             yield au
 
-    def close(self):
-        for _ in self.drain():
+    def close(self, timeout=5.0):
+        for _ in self.drain(timeout=timeout):
             pass
-        self.proc.wait(timeout=5)
+        try:
+            self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=timeout)
 
 
 def make_encoder(renderer, w, h, fps=30, bitrate=4_000_000, components=4):

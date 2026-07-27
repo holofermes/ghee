@@ -1,17 +1,44 @@
 [project]
 # PyPI name; the import and CLI are `ghee` (that name is taken on PyPI).
 name = "ghee-render"
-version = "0.1.0"
-description = "Headless GLSL multipass renderer for Raspberry Pi and desktop Mesa, plus a shader-editor console."
+version = "0.2.0"
+description = "Multi-pass GLSL renderer for Raspberry Pi. Headless GLES2, out to SPI panels, HDMI, images or hardware H264."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "holofermes" }]
-keywords = ["glsl", "shader", "raspberry-pi", "gles", "headless", "renderer"]
+keywords = [
+    "glsl",
+    "shader",
+    "shadertoy",
+    "renderer",
+    "headless",
+    "raspberry-pi",
+    "drm",
+    "kms",
+    "gles",
+    "spi",
+    "oled",
+    "st7789",
+    "ssd1306",
+    "vc4",
+    "h264",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Artistic Software",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Hardware",
+]
 requires-python = ">=3.11"
-# numpy is used by ghee.engine (the Renderer ctypes binding), Pillow by image
-# output and the console stream. The pure scene model (import ghee) needs
-# neither, but the package ships the renderer too.
-dependencies = ["numpy", "Pillow"]
+dependencies = ["numpy>=1.24", "Pillow>=9.4"]
 
 [project.optional-dependencies]
 # Hardware display drivers (ghee.drivers). Pi/panel only; off-device they will not import.
@@ -21,7 +48,8 @@ drivers = [
     "adafruit-circuitpython-ssd1306",
     "spidev",
 ]
-test = ["pytest"]
+# setuptools and build are what test_packaging.py rolls an sdist with.
+test = ["pytest", "setuptools>=64", "build"]
 
 [project.urls]
 Repository = "https://github.com/holofermes/ghee"

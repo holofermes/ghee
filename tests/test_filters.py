@@ -21,10 +21,13 @@ def test_apply_appends_reading_prev_output():
     assert set(d.params) == {"amount", "levels", "color", "scale"}
 
 
-def test_unknown_filter_skipped():
+def test_unknown_filter_skipped_with_a_warning(capsys):
+    # a filter list can be shared across hosts, so a missing filter still renders
     sc = Scene(passes=[Pass(name="main", code=FLAT)])
     apply_filters(sc, ["does-not-exist"])
     assert [p.name for p in sc.passes] == ["main"]
+    err = capsys.readouterr().err
+    assert "does-not-exist" in err and "skipped" in err
 
 
 def test_dither_flat_gray_is_1bit(renderer):

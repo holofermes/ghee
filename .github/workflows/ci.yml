@@ -5,6 +5,18 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # pinned: a ruff release must not turn the gate red on its own
+      - run: pip install ruff==0.16.0
+      - run: ruff check
+      - run: ruff format --check
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -16,9 +28,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake pkg-config libdrm-dev libgbm-dev \
-            libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev libgl1-mesa-dri
+            libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dri
       - name: software GPU node (vgem)
         run: |
+          # Azure runner kernels ship no vgem module and expose no /dev/dri, and
+          # there is no self-hosted runner, so this always falls through: the
+          # render and golden tests never execute here. They gate on real
+          # hardware instead.
           sudo modprobe vgem || echo "no vgem; render tests will skip"
           sudo chmod 666 /dev/dri/* || true
           ls -la /dev/dri/ || true
@@ -26,6 +42,6 @@ jobs:
         run: pip install -e '.[test]'
       - name: test
         env:
-          # runners have no GPU; render through llvmpipe on the vgem node
+          # llvmpipe, for the day a runner exposes a node to render on
           MESA_LOADER_DRIVER_OVERRIDE: kms_swrast
         run: python -m pytest -v

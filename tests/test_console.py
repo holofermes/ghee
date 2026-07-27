@@ -2,7 +2,9 @@
 
 import pytest
 
-from ghee.console.server import _parse_param_value, _set_item
+from ghee.console.core import parse_param_value as _parse_param_value
+from ghee.console.core import parse_scope
+from ghee.console.server import _set_item
 
 
 def test_parse_float():
@@ -74,6 +76,8 @@ def test_set_item_pass_scope():
 def test_set_item_bad_pass_index():
     with pytest.raises(ValueError):
         _set_item("notanint", "k", 0.5)
+    with pytest.raises(ValueError):
+        parse_scope("notanint")
 
 
 def test_parse_string():
@@ -83,7 +87,7 @@ def test_parse_string():
 
 def test_apply_values_overlays_and_keeps_shape():
     from ghee import Param, Pass, Scene
-    from ghee.console.server import _apply_values
+    from ghee.console.store import _apply_values
 
     scene = Scene(
         passes=[
@@ -114,7 +118,7 @@ def test_apply_values_overlays_and_keeps_shape():
 
 def test_apply_values_rejects_wrong_types():
     from ghee import Param, Pass, Scene
-    from ghee.console.server import _apply_values
+    from ghee.console.store import _apply_values
 
     scene = Scene(
         passes=[

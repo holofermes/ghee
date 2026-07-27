@@ -1,3 +1,9 @@
+ghee (0.2.0) bookworm; urgency=medium
+
+  * ISF import, shared console core, engine and packaging fixes.
+
+ -- holofermes <1163915+holofermes@users.noreply.github.com>  Mon, 27 Jul 2026 11:50:09 -0400
+
 ghee (0.1.0) bookworm; urgency=medium
 
   * Initial packaging.

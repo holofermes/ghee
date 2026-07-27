@@ -100,6 +100,16 @@
   .row .strinp, .row .strsel{width:100%; min-width:0; background:var(--well);
                border:1px solid var(--line); color:inherit; border-radius:4px;
                font:inherit; font-size:12px; padding:4px 6px}
+  /* bool: the switch lives inside the label so the whole row is a tap target */
+  .row label.boolrow{align-items:center; gap:12px; cursor:pointer; min-height:22px}
+  .boolbox{-webkit-appearance:none; appearance:none; flex:none; margin:0; position:relative;
+           width:36px; height:20px; border:1px solid var(--line); border-radius:999px;
+           background:var(--well); cursor:pointer; transition:background .12s ease, border-color .12s ease}
+  .boolbox::after{content:""; position:absolute; top:2px; left:2px; width:14px; height:14px;
+           border-radius:50%; background:var(--muted); transition:transform .12s ease, background .12s ease}
+  .boolbox:checked{background:var(--accent); border-color:var(--accent)}
+  .boolbox:checked::after{transform:translateX(16px); background:var(--accent-ink)}
+  .boolbox:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
   .frame img, .frame canvas{position:absolute; top:50%; left:50%; display:block; image-rendering:pixelated}
   .iconbtn{font-size:16px; line-height:1; padding:4px 9px; color:var(--muted); border-radius:8px}
   .iconbtn:hover{color:var(--ink); background:var(--code-bg); border-color:var(--line)}
@@ -134,6 +144,9 @@
     .leftcol{padding-left:8px; padding-right:12px}
     .vecpad{width:116px; height:116px}
     .vnums input, .row .strinp, .row .strsel{font-size:14px; padding:7px 8px}
+    .boolbox{width:50px; height:30px}
+    .boolbox::after{width:22px; height:22px; top:3px; left:3px}
+    .boolbox:checked::after{transform:translateX(20px)}
   }
   input[type=color]{-webkit-appearance:none; appearance:none; width:100%; height:22px; padding:0; border:1px solid var(--line); border-radius:8px; background:var(--panel); cursor:pointer}
   input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
@@ -254,7 +267,7 @@
       <div class="addparam" id="addRow">
         <input class="name" id="pName" placeholder="name">
         <select id="pPlace"><option value="pass">this pass</option><option value="scene">scene</option></select>
-        <select id="pType"><option value="float">float</option><option value="int">int</option><option value="color">color</option><option value="vec2">vec2</option><option value="vec3">vec3</option><option value="string">string</option></select>
+        <select id="pType"><option value="float">float</option><option value="int">int</option><option value="bool">bool</option><option value="color">color</option><option value="vec2">vec2</option><option value="vec3">vec3</option><option value="string">string</option></select>
         <input id="pVal" placeholder="value" value="0.5">
         <input id="pMin" placeholder="min" value="0">
         <input id="pMax" placeholder="max" value="1">
@@ -279,6 +292,12 @@
 <script src="h264client.js"></script>
 <script>
 const $ = s => document.querySelector(s);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
 const KEY = n => "ghee:scene:" + n;
 let pristine = null;   // scene as on disk
 let work = null;       // working scene (edited)
@@ -312,31 +331,40 @@ function syncHL(){ hlEl().innerHTML = highlight(codeEl().value); hlEl().scrollTo
 // One info surface: live values (fps/render/encode, marked .live) over static scene +
 // device facts. The popover hangs off the ⓘ button.
 function refreshInfo(){
+  const pop = $("#infoPop"); if (!pop) return;
   const s = lastStats;
   let params=0, arrays=0, feedback=false;
   ((work&&work.passes)||[]).forEach(p => { params += Object.keys(p.params||{}).length; arrays += (p.arrays||[]).length; (p.channels||[]).forEach(c => { if (c.buffer === p.name) feedback = true; }); });
   const np = (work&&work.passes&&work.passes.length) || 0;
   const muted = ((work&&work.passes)||[]).filter(p=>p.muted).length;
-  const row = (k,v,cls) => `<div class="iprow${cls?" "+cls:""}"><span class="k">${k}</span><span class="v">${v}</span></div>`;
-  const sect = (t,rows) => `<div class="ipsect"><div class="iphead">${t}</div>${rows}</div>`;
-  const liveRows =
-    row("fps", s ? s.fps.toFixed(1) : "-", "live") +
-    row("render", s ? s.render_ms.toFixed(2)+" ms" : "-", "live") +
-    row("encode", s ? s.encode_ms.toFixed(2)+" ms" : "-", "live");
-  const sceneRows =
-    row("passes", muted ? `${np} (${muted} muted)` : np, "off") +
-    row("feedback", feedback ? "yes" : "no", "off") +
-    row("params", params, "off") +
-    row("arrays", arrays, "off");
-  const outRows =
-    row("display", (lastDisplay && lastDisplay.name) || "-", "off") +
-    row("resolution", lastDisplay ? `${lastDisplay.w} × ${lastDisplay.h}` : "-", "off") +
-    row("format", (lastDisplay && lastDisplay.format) || "-", "off") +
-    row("rotation", `<span class="rotact" data-act="rotate">${effectiveRotation()}° · rotate ↻</span>`, "off");
-  const devRows =
-    row("model", devModel || "-", "off") +
-    row("gpu", (devGpu && devGpu !== "n/a") ? devGpu : "unknown", "off");
-  const pop = $("#infoPop"); if (pop) pop.innerHTML = sect("live", liveRows) + sect("output", outRows) + sect("scene", sceneRows) + sect("device", devRows);
+  pop.innerHTML = "";
+  const sect = t => { const d = el("div","ipsect"); d.appendChild(el("div","iphead",t)); pop.appendChild(d); return d; };
+  const row = (into,k,v,cls) => {
+    const r = el("div", "iprow" + (cls ? " " + cls : ""));
+    r.appendChild(el("span","k",k));
+    const val = el("span","v",v);
+    r.appendChild(val); into.appendChild(r);
+    return val;
+  };
+  const live = sect("live");
+  row(live, "fps", s ? s.fps.toFixed(1) : "-", "live");
+  row(live, "render", s ? s.render_ms.toFixed(2)+" ms" : "-", "live");
+  row(live, "encode", s ? s.encode_ms.toFixed(2)+" ms" : "-", "live");
+  const out = sect("output");
+  row(out, "display", (lastDisplay && lastDisplay.name) || "-", "off");
+  row(out, "resolution", lastDisplay ? `${lastDisplay.w} × ${lastDisplay.h}` : "-", "off");
+  row(out, "format", (lastDisplay && lastDisplay.format) || "-", "off");
+  const act = el("span", "rotact", `${effectiveRotation()}° · rotate ↻`);
+  act.dataset.act = "rotate";
+  row(out, "rotation", "", "off").appendChild(act);
+  const scene = sect("scene");
+  row(scene, "passes", muted ? `${np} (${muted} muted)` : np, "off");
+  row(scene, "feedback", feedback ? "yes" : "no", "off");
+  row(scene, "params", params, "off");
+  row(scene, "arrays", arrays, "off");
+  const dev = sect("device");
+  row(dev, "model", devModel || "-", "off");
+  row(dev, "gpu", (devGpu && devGpu !== "n/a") ? devGpu : "unknown", "off");
 }
 
 function effectiveRotation(){
@@ -376,7 +404,10 @@ async function loadHwinfo(){
   }catch(_){}
 }
 
+// everything that changes the renderer is POST: a GET is reachable from a
+// hostile page's <img src>
 async function jget(u){ return (await fetch(u)).json(); }
+async function jpost(u){ return (await fetch(u, {method:"POST"})).json(); }
 function clone(o){ return JSON.parse(JSON.stringify(o)); }
 // Compare against disk ignoring empties the editor adds (e.g. buildChannels sets
 // channels:[]), so a freshly-loaded scene isn't reported as edited.
@@ -384,7 +415,7 @@ function norm(s){
   return JSON.stringify(s, (k,v) => {
     if ((k==="channels"||k==="arrays") && Array.isArray(v) && !v.length) return undefined;
     if (k==="params" && v && !Array.isArray(v) && typeof v==="object" && !Object.keys(v).length) return undefined;
-    if (k==="muted") return undefined;   // a preview toggle, not a scene edit
+    if (k==="muted" || k==="codeEdited") return undefined;   // editor state, not a scene edit
     return v;
   });
 }
@@ -562,7 +593,7 @@ function renamePass(i, lbl){
 
 function addPass(){
   const name = uniqueName("pass");
-  work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", format:"rgba8", arrays:[], channels:[], params:{} });
+  work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
   curPass = work.passes.length - 1; markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
@@ -634,55 +665,79 @@ function hexToRgb(hex){
   const n = parseInt(hex.slice(1), 16);
   return [((n>>16)&255)/255, ((n>>8)&255)/255, (n&255)/255];
 }
+// A param name is scene data: it only ever reaches the DOM as text or as an
+// input property, never as markup.
+function paramLabel(row, name, readout){
+  const lab = el("label");
+  lab.appendChild(el("span", null, name));
+  const val = readout == null ? null : el("span", "val", readout);
+  if (val) lab.appendChild(val);
+  row.appendChild(lab);
+  return val;
+}
+function slider(mn, mx, step, value){
+  const inp = el("input");
+  inp.type = "range"; inp.min = mn; inp.max = mx; inp.step = step; inp.value = value;
+  return inp;
+}
 // One control per param, for both scopes. `scope` is the /set pass= target: a
-// pass index for a pass-scoped param, "scene" for a scene-scoped one. It also
-// namespaces the value-readout ids so the two scopes never collide.
+// pass index for a pass-scoped param, "scene" for a scene-scoped one.
 function buildParamRow(box, pm, name, scope){
-  const row = document.createElement("div"); row.className="row";
+  const send = (type, value) => {
+    const t = type ? "&type=" + type : "";
+    fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}${t}&value=${encodeURIComponent(value)}`, {method:"POST"});
+    markDirty();
+  };
+  const row = el("div", "row");
   if (pm.type === "string"){
     // host-side value (the scene controller consumes it): dropdown when the
     // param declares options, free text otherwise
-    const send = v => {
-      pm.value = v;
-      fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&type=string&value=${encodeURIComponent(v)}`);
-      markDirty();
-    };
+    paramLabel(row, name);
+    const set = v => { pm.value = v; send("string", v); };
     if (Array.isArray(pm.options) && pm.options.length){
-      row.innerHTML = `<label><span>${name}</span></label><select class="strsel"></select>`;
-      const sel = row.querySelector("select");
-      pm.options.forEach(o => {
-        const op = document.createElement("option");
-        op.value = o; op.textContent = o; sel.appendChild(op);
-      });
-      if (!pm.options.includes(pm.value)){
-        const op = document.createElement("option");
-        op.value = pm.value; op.textContent = pm.value; sel.appendChild(op);
-      }
+      const sel = el("select", "strsel");
+      const opts = pm.options.includes(pm.value) ? pm.options : pm.options.concat([pm.value]);
+      opts.forEach(o => { const op = el("option", null, o); op.value = o; sel.appendChild(op); });
       sel.value = pm.value;
-      sel.addEventListener("change", ()=> send(sel.value));
+      sel.addEventListener("change", ()=> set(sel.value));
+      row.appendChild(sel);
     } else {
-      row.innerHTML = `<label><span>${name}</span></label><input type="text" class="strinp">`;
-      const inp = row.querySelector("input");
-      inp.value = pm.value;
+      const inp = el("input", "strinp");
+      inp.type = "text"; inp.value = pm.value;
       let t = null;
-      inp.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(()=> send(inp.value), 300); });
-      inp.addEventListener("change", ()=>{ clearTimeout(t); send(inp.value); });
+      inp.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(()=> set(inp.value), 300); });
+      inp.addEventListener("change", ()=>{ clearTimeout(t); set(inp.value); });
+      row.appendChild(inp);
     }
     box.appendChild(row);
     return;
   }
+  if (pm.type === "bool"){
+    // true/false on the wire, never 1/0: the scene model demands a real bool
+    const lab = el("label", "boolrow");
+    lab.appendChild(el("span", null, name));
+    const inp = el("input", "boolbox");
+    inp.type = "checkbox";
+    inp.checked = !!pm.value;
+    inp.addEventListener("change", ()=>{
+      pm.value = inp.checked;
+      send("bool", inp.checked ? "true" : "false");
+    });
+    lab.appendChild(inp);
+    row.appendChild(lab);
+    box.appendChild(row);
+    return;
+  }
   if (pm.type === "color"){
-    row.innerHTML =
-      `<label><span>${name}</span><span class="val" id="v_${scope}_${name}">${rgbToHex(pm.value)}</span></label>
-       <input type="color" value="${rgbToHex(pm.value)}">`;
-    const inp = row.querySelector("input");
+    const val = paramLabel(row, name, rgbToHex(pm.value));
+    const inp = el("input");
+    inp.type = "color"; inp.value = rgbToHex(pm.value);
     inp.addEventListener("input", ()=>{
       const rgb = hexToRgb(inp.value);
-      pm.value = rgb; $("#v_"+scope+"_"+name).textContent = inp.value;
-      const s = rgb.map(x=>x.toFixed(3)).join(",");
-      fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&type=color&value=${s}`);
-      markDirty();
+      pm.value = rgb; val.textContent = inp.value;
+      send("color", rgb.map(x=>x.toFixed(3)).join(","));
     });
+    row.appendChild(inp);
     box.appendChild(row);
     return;
   }
@@ -693,32 +748,30 @@ function buildParamRow(box, pm, name, scope){
     const mn = pm.min!=null?pm.min:-1, mx = pm.max!=null?pm.max:1;
     const R = Math.max(Math.abs(mn), Math.abs(mx)) || 1;
     const st = pm.step!=null?pm.step:R/100;
-    const r = document.createElement("div"); r.className="row";
-    r.innerHTML =
-      `<label><span>${name}</span><span class="val" id="v_${scope}_${name}"></span></label>
-       <div class="vecwrap">
-         <div class="vecpad"><svg viewBox="0 0 84 84">
-           <line x1="42" y1="42" x2="42" y2="42" stroke="currentColor" stroke-width="2"/>
-           <circle cx="42" cy="42" r="3.5" fill="currentColor"/>
-         </svg></div>
-         <div class="veccol">
-           <input type="range" class="vmag" min="0" max="${R}" step="${st}">
-           <div class="vnums">
-             <input type="number" step="${st}" min="${mn}" max="${mx}">
-             <input type="number" step="${st}" min="${mn}" max="${mx}">
-           </div>
-         </div>
-       </div>`;
-    const pad = r.querySelector(".vecpad"), svg = pad.querySelector("svg");
-    const ln = svg.querySelector("line"), dot = svg.querySelector("circle");
-    const mag = r.querySelector(".vmag");
-    const [nx, ny] = r.querySelectorAll(".vnums input");
-    const clampC = v => Math.min(mx, Math.max(mn, v));
-    const send = () => {
-      const sv = pm.value.map(x=>(+x).toFixed(3)).join(",");
-      fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&type=vec2&value=${sv}`);
-      markDirty();
+    const val = paramLabel(row, name, "");
+    const wrap = el("div", "vecwrap");
+    const pad = el("div", "vecpad");
+    pad.innerHTML =
+      `<svg viewBox="0 0 84 84">
+         <line x1="42" y1="42" x2="42" y2="42" stroke="currentColor" stroke-width="2"/>
+         <circle cx="42" cy="42" r="3.5" fill="currentColor"/>
+       </svg>`;
+    const col = el("div", "veccol");
+    const mag = slider(0, R, st, 0); mag.className = "vmag";
+    const nums = el("div", "vnums");
+    const number = () => {
+      const i = el("input");
+      i.type = "number"; i.step = st; i.min = mn; i.max = mx;
+      nums.appendChild(i);
+      return i;
     };
+    const nx = number(), ny = number();
+    col.appendChild(mag); col.appendChild(nums);
+    wrap.appendChild(pad); wrap.appendChild(col);
+    row.appendChild(wrap);
+    const svg = pad.querySelector("svg");
+    const ln = svg.querySelector("line"), dot = svg.querySelector("circle");
+    const clampC = v => Math.min(mx, Math.max(mn, v));
     const sync = () => {
       const [x, y] = pm.value;
       const px = 42 + (x / R) * 36, py = 42 - (y / R) * 36;
@@ -726,14 +779,15 @@ function buildParamRow(box, pm, name, scope){
       dot.setAttribute("cx", px); dot.setAttribute("cy", py);
       mag.value = Math.hypot(x, y);
       nx.value = (+x).toFixed(3); ny.value = (+y).toFixed(3);
-      r.querySelector(".val").textContent = `${(+x).toFixed(3)}, ${(+y).toFixed(3)}`;
+      val.textContent = `${(+x).toFixed(3)}, ${(+y).toFixed(3)}`;
     };
+    const push = () => send("vec2", pm.value.map(x=>(+x).toFixed(3)).join(","));
     const fromPad = ev => {
       const b = pad.getBoundingClientRect();
       const x = ((ev.clientX - b.left) / b.width * 2 - 1) * R;
       const y = -((ev.clientY - b.top) / b.height * 2 - 1) * R;
       pm.value = [clampC(x), clampC(y)];
-      sync(); send();
+      sync(); push();
     };
     pad.addEventListener("pointerdown", ev => {
       pad.setPointerCapture(ev.pointerId); fromPad(ev); ev.preventDefault();
@@ -747,13 +801,13 @@ function buildParamRow(box, pm, name, scope){
       const d = len > 1e-6 ? [x/len, y/len] : [1, 0];
       const m = parseFloat(mag.value);
       pm.value = [clampC(d[0]*m), clampC(d[1]*m)];
-      sync(); send();
+      sync(); push();
     });
-    [nx, ny].forEach((el, c) => el.addEventListener("change", () => {
-      const v = clampC(parseFloat(el.value) || 0);
-      pm.value[c] = v; sync(); send();
+    [nx, ny].forEach((inp, c) => inp.addEventListener("change", () => {
+      pm.value[c] = clampC(parseFloat(inp.value) || 0);
+      sync(); push();
     }));
-    box.appendChild(r);
+    box.appendChild(row);
     sync();
     return;
   }
@@ -764,19 +818,15 @@ function buildParamRow(box, pm, name, scope){
     const mn = pm.min!=null?pm.min:0, mx = pm.max!=null?pm.max:1;
     const step = pm.step!=null?pm.step:(mx-mn)/200;
     for (let c=0;c<n;c++){
-      const ax = VEC_AXES[c];
-      const r = document.createElement("div"); r.className="row";
-      r.innerHTML =
-        `<label><span>${name}.${ax}</span><span class="val" id="v_${scope}_${name}_${ax}">${(+pm.value[c]).toFixed(3)}</span></label>
-         <input type="range" min="${mn}" max="${mx}" step="${step}" value="${pm.value[c]}">`;
-      const inp = r.querySelector("input");
+      const r = el("div", "row");
+      const val = paramLabel(r, name + "." + VEC_AXES[c], (+pm.value[c]).toFixed(3));
+      const inp = slider(mn, mx, step, pm.value[c]);
       inp.addEventListener("input", ()=>{
         const v = parseFloat(inp.value);
-        pm.value[c] = v; $("#v_"+scope+"_"+name+"_"+ax).textContent = v.toFixed(3);
-        const s = pm.value.map(x=>(+x).toFixed(3)).join(",");
-        fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&type=${pm.type}&value=${s}`);
-        markDirty();
+        pm.value[c] = v; val.textContent = v.toFixed(3);
+        send(pm.type, pm.value.map(x=>(+x).toFixed(3)).join(","));
       });
+      r.appendChild(inp);
       box.appendChild(r);
     }
     return;
@@ -784,23 +834,21 @@ function buildParamRow(box, pm, name, scope){
   const mn = pm.min!=null?pm.min:0, mx = pm.max!=null?pm.max:1;
   const step = pm.type==="int" ? 1 : (pm.step!=null?pm.step:(mx-mn)/200);
   const fmt = v => pm.type==="int" ? (v|0) : (+v).toFixed(3);
-  row.innerHTML =
-    `<label><span>${name}</span><span class="val" id="v_${scope}_${name}">${fmt(pm.value)}</span></label>
-     <input type="range" min="${mn}" max="${mx}" step="${step}" value="${pm.value}">`;
-  const inp = row.querySelector("input");
+  const val = paramLabel(row, name, fmt(pm.value));
+  const inp = slider(mn, mx, step, pm.value);
   inp.addEventListener("input", ()=>{
     const v = pm.type==="int" ? parseInt(inp.value,10) : parseFloat(inp.value);
-    pm.value = v; $("#v_"+scope+"_"+name).textContent = fmt(v);
-    fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&value=${v}`);
-    markDirty();
+    pm.value = v; val.textContent = fmt(v);
+    send(null, v);
   });
+  row.appendChild(inp);
   box.appendChild(row);
 }
 
 function buildParams(){
   const box = $("#params"); box.innerHTML = "";
   let any = false;
-  const paramNames = obj => Object.keys(obj||{}).filter(n => ["float","int","color","vec2","vec3","vec4","string"].includes(obj[n].type));
+  const paramNames = obj => Object.keys(obj||{}).filter(n => ["float","int","bool","color","vec2","vec3","vec4","string"].includes(obj[n].type));
   const sceneParams = work.params || {};
   const sceneNames = paramNames(sceneParams);
   // header the groups once there is more than one: the SCENE group plus any
@@ -820,7 +868,7 @@ function buildParams(){
       h.textContent = (p.filter ? "ƒ " : "") + p.name;
       box.appendChild(h);
     }
-    names.forEach(name=>{ buildParamRow(box, p.params[name], name, compiledIndex(pi)); any = true; });
+    names.forEach(name=>{ buildParamRow(box, p.params[name], name, pi); any = true; });
   });
   if (!any){ box.innerHTML = `<div class="muted">no parameters</div>`; }
 }
@@ -833,11 +881,11 @@ const EYE_OFF = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" str
 // the middle becomes a passthrough of the pass before it, so the chain keeps
 // flowing around it (mute main under a filter and the filter shows the
 // previous buffer). A muted first pass has nothing to pass through: black.
-function compiledIndex(pi){ return pi; }  // stubs hold their slot, only the tail is cut
+// Muted stubs hold their slot, so a pass index stays the compiled index.
 function compiledScene(){
   let last = -1; work.passes.forEach((p,i)=>{ if(!p.muted) last = i; });
   return { ...work, passes: work.passes.slice(0, last+1).map((p,pi)=>{
-    const q = clone(p); delete q.muted;
+    const q = clone(p); delete q.muted; delete q.codeEdited;
     if (p.muted){
       delete q.shader; q.arrays = []; q.params = {};
       if (pi === 0){
@@ -877,7 +925,7 @@ $("#save").addEventListener("click", async ()=>{
   const b = $("#save");
   let label = "saved";
   try {
-    const r = await fetch("/save", {method:"POST", body: JSON.stringify({name: active, scene: work})});
+    const r = await fetch("/save", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name: active, scene: work})});
     if (!r.ok) { console.warn("/save:", await r.text()); label = "saved locally"; }
   } catch(e) { console.warn("/save unavailable:", e); label = "saved locally"; }
   b.textContent = label; setTimeout(()=>{ b.textContent = "save"; }, 1200); updateStatus();
@@ -889,9 +937,9 @@ $("#reset").addEventListener("click", async ()=>{
 });
 
 // scene nav
-$("#prev").addEventListener("click", async ()=>{ const r=await jget("/prev"); await loadScene(r.active); });
-$("#next").addEventListener("click", async ()=>{ const r=await jget("/next"); await loadScene(r.active); });
-$("#scenes").addEventListener("change", async e=>{ const r=await jget("/switch?name="+encodeURIComponent(e.target.value)); await loadScene(r.active); });
+$("#prev").addEventListener("click", async ()=>{ const r=await jpost("/prev"); await loadScene(r.active); });
+$("#next").addEventListener("click", async ()=>{ const r=await jpost("/next"); await loadScene(r.active); });
+$("#scenes").addEventListener("change", async e=>{ const r=await jpost("/switch?name="+encodeURIComponent(e.target.value)); await loadScene(r.active); });
 
 // column resize (desktop): drag the grip, width persists per browser
 (function(){
@@ -958,6 +1006,8 @@ $("#pAdd").addEventListener("click", ()=>{
     : (work.passes[curPass].params = work.passes[curPass].params || {});
   if (type === "string"){
     into[name] = {type:"string", value:$("#pVal").value};
+  } else if (type === "bool"){
+    into[name] = {type:"bool", value:false};
   } else if (type === "color"){
     into[name] = {type:"color", value:[1.0, 1.0, 1.0]};
   } else if (VEC_ARITY[type]){

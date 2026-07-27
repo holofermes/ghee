@@ -92,12 +92,8 @@ class ImageSequence(Output):
     count and the render never waits, the writer drains at the end."""
 
     def __init__(self, pattern, start=0, save_opts=None, depth=16):
-        try:
-            from PIL import Image
-        except ImportError as e:
-            raise RuntimeError(
-                "image output needs Pillow: pip install ghee[console]"
-            ) from e
+        from PIL import Image
+
         self._Image = Image
         self.pattern = pattern
         self.index = start
@@ -174,5 +170,5 @@ class RawStream(Output):
         self.stream = stream
 
     def write(self, frame):
-        self.stream.write(frame.tobytes())
+        self.stream.write(frame)  # buffer protocol: no per-frame copy
         self.stream.flush()

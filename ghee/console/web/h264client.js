@@ -5,9 +5,16 @@
 function attachH264(canvas, url, opts) {
   opts = opts || {};
   const ctx = canvas.getContext('2d');
-  let decoder = null, lastFrame = null, decoded = 0, ts = 0, stopped = false;
+  let decoder = null, reader = null, lastFrame = null, decoded = 0, ts = 0, stopped = false;
   let fpsLast = 0, fpsT = performance.now();
-  const fail = e => { if (!stopped) { stopped = true; opts.onfail && opts.onfail(String(e)); } };
+  // cancelling the reader ends the request, which drops this viewer server-side
+  function teardown() {
+    stopped = true;
+    if (reader) { reader.cancel().catch(() => {}); reader = null; }
+    if (decoder) { if (decoder.state !== 'closed') decoder.close(); decoder = null; }
+    if (lastFrame) { lastFrame.close(); lastFrame = null; }
+  }
+  const fail = e => { if (!stopped) { teardown(); opts.onfail && opts.onfail(String(e)); } };
 
   function configure(cfg) {
     canvas.width = cfg.codedWidth; canvas.height = cfg.codedHeight;
@@ -33,7 +40,16 @@ function attachH264(canvas, url, opts) {
 
   function draw() {
     if (stopped) return;
-    if (lastFrame) ctx.drawImage(lastFrame, 0, 0, canvas.width, canvas.height);
+    if (lastFrame) {
+      // a dimension that is not a multiple of 16 decodes to a padded frame the
+      // SPS crops back; some decoders hand back the padding, so the source
+      // rect is explicit rather than the frame's full coded size
+      const r = lastFrame.visibleRect ||
+        { x: 0, y: 0, width: lastFrame.displayWidth, height: lastFrame.displayHeight };
+      if (canvas.width !== lastFrame.displayWidth) canvas.width = lastFrame.displayWidth;
+      if (canvas.height !== lastFrame.displayHeight) canvas.height = lastFrame.displayHeight;
+      ctx.drawImage(lastFrame, r.x, r.y, r.width, r.height, 0, 0, canvas.width, canvas.height);
+    }
     const now = performance.now();
     if (now - fpsT > 500) {   // fps = decoded frames, not canvas redraws
       opts.onstats && opts.onstats({
@@ -49,7 +65,7 @@ function attachH264(canvas, url, opts) {
   (async () => {
     const res = await fetch(url);
     if (!res.ok) throw new Error('h264 stream: HTTP ' + res.status);
-    const reader = res.body.getReader();
+    reader = res.body.getReader();
     let buf = new Uint8Array(0);
     const cat = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
     for (;;) {
@@ -75,5 +91,5 @@ function attachH264(canvas, url, opts) {
     }
   })().catch(fail);
 
-  return { stop: () => { stopped = true; if (lastFrame) lastFrame.close(); } };
+  return { stop: teardown };
 }

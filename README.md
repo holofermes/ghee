@@ -2,19 +2,125 @@
 
 [![ci](https://github.com/holofermes/ghee/actions/workflows/ci.yml/badge.svg)](https://github.com/holofermes/ghee/actions/workflows/ci.yml)
 
-Hardware accelerated renderer for Raspberry Pi and more!
+Multi-pass GLSL renderer for Raspberry Pi. Headless GLES2, out to SPI panels, HDMI, images or hardware H264.
 
 ![a four-pass particle scene, procedural text, and the bundled dither filter, looping](https://raw.githubusercontent.com/holofermes/ghee/main/media/hero.webp)
 
-ghee compiles a scene (GLSL fragment shaders, live parameters, optionally Python driving them) and renders it straight on the GPU:
+ghee compiles a scene (GLSL fragment shaders, live parameters, optionally Python
+driving them) and renders it straight on the GPU:
 
 - to image files on disk
 - to a SPI panel
 - to an HDMI display
 - as an H264 or MJPEG stream, including a live editor in your browser
 
-Rendering is GLES2 through DRM/GBM, with direct scanout for HDMI.
-The baseline target is the Raspberry Pi VC4 GPU, but it is also supported on newer generation Pis with V3D, and on any desktop Linux with Mesa.
+Rendering is GLES2 through DRM/GBM on a stock Lite image, with direct scanout for HDMI.
+
+## Where does it run?
+
+| Hardware | OS | Driver |
+| --- | --- | --- |
+| Pi 1, Pi Zero, Pi Zero W (armv6) | Raspberry Pi OS bookworm or trixie | vc4 |
+| Pi 2, Pi 3, Pi Zero 2 W (arm64) | Raspberry Pi OS bookworm or trixie | vc4 |
+| Pi 4 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 |
+| Pi 5 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 |
+| Desktop Linux (x86_64) | any current distro | Mesa |
+
+Hardware H264 encoding works on every Pi except the Pi 5, which has no
+encoder block and falls back to ffmpeg/libx264. The distributed armhf package is
+compiled for ARMv6, so it runs on every Pi back to the Pi 1!
+
+## Install
+
+Pick the asset matching your board from
+[Releases](https://github.com/holofermes/ghee/releases):
+
+```
+sudo apt install ./python3-ghee_0.1.0_arm64-bookworm.deb
+```
+
+To build from source you need a compiler, CMake, and the GLES/DRM development
+headers. On Raspberry Pi OS or Debian:
+
+```
+sudo apt install cmake pkg-config libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev
+```
+
+Then use uv:
+
+```
+uvx ghee-render serve --demo    # try it
+uv add ghee-render              # in a project
+```
+
+or pip, inside a venv:
+
+```
+pip install ghee-render
+```
+
+Optional extra: `ghee-render[drivers]` for the bundled SPI display drivers.
+
+Software H264 shells out to ffmpeg, so `sudo apt install ffmpeg`
+when appropriate. Note that the `.deb` recommends it, so a plain
+`apt install` will pull it in already.
+
+If the GL stack is missing at install time the package still installs, but
+rendering will ask for a prebuilt engine via `$GHEE_LIB`.
+
+The renderer picks its GPU node automatically: `$GHEE_DRI`, then
+`/dev/dri/card0`, then `/dev/dri/renderD128`, then any other card. Override with
+`$GHEE_DRI` or `--dri`.
+
+## Run it
+
+Render to numbered PNGs (bundled scenes resolve by name; your own directories
+join the lookup through `$GHEE_SCENES`):
+
+```
+ghee render bars -o frame.####.png --frames 60
+```
+
+A `.py` scene is imported to build its passes, so loading or switching to one
+runs its code. Treat a scenes directory, and anything you put on `$GHEE_SCENES`,
+as code you have chosen to run.
+
+Or write raw frames to stdout and pipe them into ffmpeg. `--timestep` pins
+engine time to `frame * S`, so the render is reproducible (frame N always
+renders at time N*S):
+
+```
+ghee render bars -o - --frames 300 --timestep 0.0166667 |
+  ffmpeg -f rawvideo -pix_fmt rgba -s 320x240 -framerate 60 -i - out.mp4
+```
+
+Or stream it as H264 (raw Annex-B; pipe it anywhere):
+
+```
+ghee render trail --h264 - --fps 30 | mpv -
+```
+
+On boards with the Broadcom hardware encoder (original Zero through Pi 4) the
+frame goes GPU -> encoder with no CPU copy. That is measured on a Pi Zero W and
+inferred across the rest of the range from the shared encoder block. The Pi 5
+dropped the encoder, so there and on desktop ffmpeg encodes the readback with
+libx264 and has to be on `$PATH`. `--bitrate` sets bits/s.
+
+Or scan it straight out to the HDMI display; details in
+[Hardware displays](#hardware-displays):
+
+```
+sudo ghee render trail --display kms
+```
+
+Or open the browser console on the bundled examples and edit the GLSL live:
+
+```
+ghee serve --demo
+```
+
+`ghee serve <your_scenes_dir>` serves your own scenes instead. The console
+preview streams H264 (WebCodecs) when the browser can, MJPEG otherwise.
 
 ## Scenes
 
@@ -57,81 +163,6 @@ Optionally, a pass can also carry its GLSL inline in a `"code"` string.
 A scene can also be a Python file: a `SceneController` that builds the same
 passes in code and feeds them its own data per frame; see
 [ghee from Python](#ghee-from-python).
-
-## Run it
-
-Render it to numbered PNGs (bundled scenes resolve by name; your own
-directories join the lookup through `$GHEE_SCENES`):
-
-```
-ghee render bars -o frame.####.png --frames 60
-```
-
-Or write raw frames to stdout and pipe them into ffmpeg. `--timestep` pins
-engine time to `frame * S`, so the render is reproducible (frame N always
-renders at time N*S):
-
-```
-ghee render bars -o - --frames 300 --timestep 0.0166667 |
-  ffmpeg -f rawvideo -pix_fmt rgba -s 320x240 -framerate 60 -i - out.mp4
-```
-
-Or stream it as H264 (raw Annex-B; pipe it anywhere):
-
-```
-ghee render trail --h264 - --fps 30 | mpv -
-```
-
-On boards with the VC4 hardware encoder (original Zero through Pi 4) the frame
-goes GPU -> encoder with no CPU copy; elsewhere ffmpeg/libx264 encodes the
-readback. `--bitrate` sets bits/s.
-
-Or scan it straight out to the HDMI display; details in
-[Hardware displays](#hardware-displays):
-
-```
-sudo ghee render trail --display kms
-```
-
-Or open the browser console on the bundled examples and edit the GLSL live:
-
-```
-ghee serve --demo
-```
-
-`ghee serve <your_scenes_dir>` serves your own scenes instead. The console
-preview streams H264 (WebCodecs) when the browser can, MJPEG otherwise.
-
-## Install
-
-Building the C engine needs a compiler, CMake, and the GLES/DRM development
-headers; this part is mandatory. On Raspberry Pi OS or Debian:
-
-```
-sudo apt install cmake pkg-config libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev libjpeg-dev
-```
-
-Then use uv:
-
-```
-uvx ghee-render serve --demo    # try it
-uv add ghee-render              # in a project
-```
-
-or pip, inside a venv:
-
-```
-pip install ghee-render
-```
-
-Optional extras: `ghee-render[drivers]` for the bundled SPI display drivers,
-`ghee-render[test]` for the test suite.
-
-If the GL stack is missing at install time the package still installs,
-but rendering will ask for a prebuilt engine via `$GHEE_LIB`.
-
-Note that the renderer picks its GPU node automatically, override with
-`$GHEE_DRI` or `--dri`.
 
 ## How does it work
 
@@ -196,8 +227,9 @@ Params are typed uniforms declared on the pass, with optional range metadata:
 ```
 
 which the preamble turns into `uniform float gain;`. The console renders every
-param as a live control. Types: `float`, `int`, `color` (a `vec3` in the
-shader), `vec2/3/4`, and `string`. A string never becomes a uniform: the
+param as a live control. Types: `float`, `int`, `bool`, `color` (a `vec3` in the
+shader), `vec2/3/4`, and `string`. A bool takes `true` or `false` and reaches the
+shader as `uniform bool`. A string never becomes a uniform: the
 scene's controller consumes it (`on_param`) for host-side work like
 rasterizing text, and `options` turns its text box into a dropdown. Params
 declared on the scene instead of a pass are shared: one value, every pass.
@@ -222,9 +254,11 @@ single function returning the data for a given array:
 ```python
 from math import sin
 
+
 def my_source(size, frame):
     # size floats in 0..1
     return [0.5 + 0.5 * sin(frame / 15.0 + k) for k in range(size)]
+
 
 for i in range(300):
     frame = r.render(lambda name, size: my_source(size, i))
@@ -243,11 +277,12 @@ from ghee import ArrayInput, Pass, Scene, SceneController
 
 class Pulse(SceneController):
     def build(self, base):
-        return Scene(passes=[Pass(
+        main = Pass(
             name="main",
             code="void main() { gl_FragColor = vec4(vec3(level_at(0)), 1.0); }",
             arrays=[ArrayInput("level", 1)],
-        )])
+        )
+        return Scene(passes=[main])
 
     def provide(self, name, size, frame):
         if name == "level":
@@ -301,6 +336,25 @@ files join the registry through `$GHEE_FILTERS` (colon-separated
 directories), and show up everywhere: the CLI, the console's picker, an
 embedding app.
 
+## ISF import
+
+`ghee isf import` converts an [Interactive Shader Format](https://isf.video)
+shader into a ghee scene or filter.
+
+```
+ghee isf import shader.fs                        # -> shader.scene.json
+ghee isf import https://host/shader.fs -o s.json
+ghee isf import shader.fs --as-filter            # -> shader.filter.json
+ghee isf import shader.fs --size 640x480
+```
+
+Three kinds of ISF are refused:
+
+- `FLOAT` pass buffers. ghee's pass buffers are 8-bit RGB.
+- `IMPORTED` external images. ghee scenes have no image inputs.
+- vertex shader, or a body reading a varying: ghee's vertex
+  shader is fixed.
+
 ## Hardware displays
 
 ```
@@ -324,16 +378,64 @@ differently, write a small driver class (subclass `DisplayDriver`, implement
 it gets picked up by name. Making the bundled drivers configurable (size,
 pins, offsets) is on the roadmap.
 
+## Known limitations
+
+- GLES2 only: no compute, geometry or tessellation shaders, and on VC4 no
+  derivatives (`fwidth`) and no multisampled FBOs.
+- File, stream and panel output all pay a synchronous `glReadPixels`. GLES2 has
+  no asynchronous readback, so the cost scales with output size.
+- `--display kms` needs root, because it takes DRM master, and a card no
+  compositor is holding.
+- Hardware H264 is the Broadcom encoder, which the Pi 5 does not have. There and
+  on desktop the software path costs a CPU libx264 encode and needs ffmpeg
+  installed.
+- The bundled panel drivers are fixed to the panels they were written for
+  (`st7789` 135x240, `ssd1306` 128x32). Anything else needs a driver class.
+- The web console has no authentication.
+
+## FAQ
+
+**A render says there is no GL device.** The engine probes `$GHEE_DRI`, then
+`/dev/dri/card0`, `/dev/dri/renderD128`, then any other card. Point it at the
+right one with `--dri` or `$GHEE_DRI`, and check your user is in `video` (and
+`render`, on desktop). `ghee displays` reports what works on the host.
+
+**It installed, but rendering asks for `$GHEE_LIB`.** The engine build was
+skipped because CMake or the GLES/DRM headers were missing. Install them and
+reinstall, or use a release `.deb`.
+
+**`--h264` or the console stream says there is no ffmpeg on PATH.** That board
+has no Broadcom encoder, so ghee encodes with ffmpeg and libx264 instead.
+`sudo apt install ffmpeg`.
+
+**`--display kms` cannot take DRM master.** Something else owns the card, almost
+always a desktop session.
+
+**Illegal instruction on a Pi 1 or an original Pi Zero.** Those are ARMv6, and
+Debian's armhf is built for ARMv7. Use the `armhf` release asset, which is built
+against Raspbian.
+
+**The console preview falls back to MJPEG in a browser that has WebCodecs.**
+H264 playback needs a secure context. `127.0.0.1` is one; a plain-HTTP LAN
+address is not.
+
 ## Tests
 
+The suite is not shipped in the package and must be run from a checkout:
+
 ```
-pip install 'ghee-render[test]'
+git clone https://github.com/holofermes/ghee
+cd ghee
+pip install -e '.[test]'
 python -m pytest
 ```
 
 The render tests need a GPU node and skip cleanly without one. Every bundled
 example renders against a committed golden image, compared with a tolerance
 that one baseline passes on both desktop Mesa and VC4.
+
+The CI runners have no GPU node, so the render and golden tests always skip
+there and the badge covers the rest of the suite.
 
 ## License
 

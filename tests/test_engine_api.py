@@ -99,8 +99,9 @@ def test_display_create_fails_once_without_drm_master():
     with pytest.raises(RuntimeError) as e:
         Renderer(w, h, display=True, dri_device=dev)
     msg = str(e.value)
-    if "cannot open DRI device" in msg:
-        pytest.skip(f"no permission to open {dev}")
+    before_the_master_attempt = ("cannot open DRI device", "eglInitialize failed")
+    if any(s in msg for s in before_the_master_attempt):
+        pytest.skip(f"{dev}: {msg}")
     assert "DRM master" in msg
 
 

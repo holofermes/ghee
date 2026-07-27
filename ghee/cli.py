@@ -99,7 +99,10 @@ def cmd_render(a):
     elif a.display:
         from ghee.drivers import get_driver
 
-        sink = get_driver(a.display)()
+        try:
+            sink = get_driver(a.display)()
+        except KeyError:
+            sys.exit(f"render: no display driver '{a.display}' (see: ghee displays)")
         w, h = sink.width, sink.height
     elif a.output == "-":
         from ghee.output import RawStream
@@ -335,8 +338,6 @@ def cmd_serve(a):
         )
     except KeyboardInterrupt:
         pass
-    except (ValueError, RuntimeError) as e:
-        sys.exit(str(e))
 
 
 def cmd_isf_import(a):
@@ -553,7 +554,15 @@ def main(argv=None):
     # SIGTERM (timeout, systemd stop) must unwind like Ctrl-C so the finally
     # blocks run and a display sink gets turned off, not left on a stale frame.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    a.fn(a)
+    try:
+        a.fn(a)
+    except (ValueError, RuntimeError, OSError, ImportError) as e:
+        # scene, engine, encoder and missing-dependency failures reach the user
+        # the way the argument errors above do: one line, no stack. Set
+        # $GHEE_TRACEBACK to get the stack back.
+        if os.environ.get("GHEE_TRACEBACK"):
+            raise
+        sys.exit(f"{a.cmd}: {e}")
 
 
 if __name__ == "__main__":

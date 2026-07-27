@@ -36,7 +36,7 @@ Pick the asset matching your board from
 [Releases](https://github.com/holofermes/ghee/releases):
 
 ```
-sudo apt install ./python3-ghee_0.1.0_arm64-bookworm.deb
+sudo apt install ./python3-ghee_*.deb
 ```
 
 To build from source you need a compiler, CMake, and the GLES/DRM development
@@ -61,16 +61,24 @@ pip install ghee-render
 
 Optional extra: `ghee-render[drivers]` for the bundled SPI display drivers.
 
-Software H264 shells out to ffmpeg, so `sudo apt install ffmpeg`
-when appropriate. Note that the `.deb` recommends it, so a plain
-`apt install` will pull it in already.
+Software H264 shells out to ffmpeg, and nothing here installs it for you:
 
-If the GL stack is missing at install time the package still installs, but
-rendering will ask for a prebuilt engine via `$GHEE_LIB`.
+```
+sudo apt install ffmpeg
+```
 
-The renderer picks its GPU node automatically: `$GHEE_DRI`, then
-`/dev/dri/card0`, then `/dev/dri/renderD128`, then any other card. Override with
-`$GHEE_DRI` or `--dri`.
+Only the Pi 5 and desktop need it, since every earlier Pi has the hardware
+encoder. Without it `--h264` and the console's H264 stream exit saying so;
+everything else works.
+
+Without CMake or those headers the install fails, naming what is missing. To
+install anyway: `GHEE_LIB=/path/to/libghee.so` renders with an engine already
+on the host, `GHEE_SKIP_ENGINE=1` installs the Python side alone (`ghee.scene`
+and `ghee.isf`, no rendering).
+
+The renderer picks its GPU node automatically: `$GHEE_DRI`, then a render node
+(`/dev/dri/renderD*`), then a card node. `--display kms` instead takes the first
+card with a connected mode. Override either with `$GHEE_DRI` or `--dri`.
 
 ## Run it
 
@@ -400,9 +408,9 @@ pins, offsets) is on the roadmap.
 right one with `--dri` or `$GHEE_DRI`, and check your user is in `video` (and
 `render`, on desktop). `ghee displays` reports what works on the host.
 
-**It installed, but rendering asks for `$GHEE_LIB`.** The engine build was
-skipped because CMake or the GLES/DRM headers were missing. Install them and
-reinstall, or use a release `.deb`.
+**The install failed with `C engine build failed`.** CMake or the GLES/DRM
+headers are missing. Install them (see Install) and try again, or use a release
+`.deb`. `GHEE_LIB` and `GHEE_SKIP_ENGINE=1` install without building it.
 
 **`--h264` or the console stream says there is no ffmpeg on PATH.** That board
 has no Broadcom encoder, so ghee encodes with ffmpeg and libx264 instead.

@@ -5,6 +5,7 @@ The render-path tests spawn the CLI and compare against an in-process render on
 the same GPU, so they need a GL device and skip cleanly without one. The parser
 and writer tests are pure Python (the writer needs Pillow)."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -144,6 +145,42 @@ def test_raw_stdout_epipe_clean(renderer, tmp_path):
     assert p1.wait(timeout=30) == 0
     assert "Traceback" not in err
     assert "BrokenPipeError" not in err
+
+
+def test_h264_without_any_encoder_exits_clean(renderer, tmp_path):
+    # no board encoder and no ffmpeg: one line naming the fix, no stack.
+    if os.path.exists("/dev/video11"):
+        pytest.skip("board has a hardware encoder; the no-encoder path is unreachable")
+    path = tmp_path / "s.scene.json"
+    path.write_text(SCENE)
+    p = subprocess.run(
+        _cli(str(path), "--h264", "-", "--frames", "1", "--size", f"{W}x{H}"),
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PATH=str(tmp_path / "no-ffmpeg-here")),
+        timeout=60,
+    )
+    assert p.returncode == 1
+    assert "Traceback" not in p.stderr
+    assert "no H264 encoder" in p.stderr
+    assert "apt install ffmpeg" in p.stderr
+
+
+def test_render_library_error_exits_clean(tmp_path):
+    # the clean exit is general, not an h264 special case: a scene the loader
+    # rejects lands the same way, before any GL device is touched.
+    bad = tmp_path / "bad.scene.json"
+    bad.write_text('{"version":1,"passes":[{"name":"main"}]}')
+    p = subprocess.run(
+        _cli(str(bad), "-o", str(tmp_path / "x.png")),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert p.returncode == 1
+    assert "Traceback" not in p.stderr
+    assert p.stderr.strip().startswith("render: ")
+    assert "neither 'code'" in p.stderr
 
 
 def test_image_sequence_write_byte_identical(tmp_path):

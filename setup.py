@@ -1,7 +1,7 @@
 """Build the ghee C engine (libghee.so) into the package's lib/.
 
-The build is best effort: on a host without CMake or the GLES/DRM
-stack it just prints a warning, so the pure-Python package still installs.
+A failed build fails the install. $GHEE_LIB (render with an engine already on
+the host) and GHEE_SKIP_ENGINE=1 (install without rendering) opt out.
 """
 
 import glob
@@ -16,6 +16,28 @@ ROOT = os.path.abspath(os.path.dirname(__file__))
 PKG = os.path.join(ROOT, "ghee")  # the importable package dir
 ENGINE = os.path.join(PKG, "_engine")  # C source + CMakeLists
 
+APT = (
+    "sudo apt install cmake pkg-config libdrm-dev libgbm-dev "
+    "libegl1-mesa-dev libgles2-mesa-dev"
+)
+
+
+def _build_failed(e):
+    return f"""
+ghee: C engine build failed: {type(e).__name__}: {e}
+
+libghee.so is what renders, so this install would not be able to.
+Install the toolchain and the GLES/DRM headers, then install ghee
+again. On Raspberry Pi OS or Debian:
+
+    {APT}
+
+To install without building the engine:
+
+    GHEE_LIB=/path/to/libghee.so   render with an engine already on this host
+    GHEE_SKIP_ENGINE=1             no engine, no rendering (ghee.scene, ghee.isf)
+"""
+
 
 class CMakeExtension(Extension):
     def __init__(self, name, sourcedir):
@@ -25,13 +47,20 @@ class CMakeExtension(Extension):
 
 class CMakeBuild(build_ext):
     def run(self):
+        if os.environ.get("GHEE_SKIP_ENGINE"):
+            print(
+                "ghee: GHEE_SKIP_ENGINE set, no C engine, this install cannot render."
+            )
+            return
         for ext in self.extensions:
             try:
                 self._build(ext)
             except Exception as e:
+                lib = os.environ.get("GHEE_LIB")
+                if not lib:
+                    raise SystemExit(_build_failed(e)) from e
                 print(
-                    f"ghee: skipping C engine build ({e}). Rendering will need a "
-                    f"prebuilt libghee.so via $GHEE_LIB."
+                    f"ghee: C engine build failed ({e}), rendering with $GHEE_LIB={lib}."
                 )
 
     def _build(self, ext):

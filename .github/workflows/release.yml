@@ -14,10 +14,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: build the sdist
         run: pipx run build --sdist
+      - uses: ./.github/actions/release-notes
+        id: notes
       - name: publish to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ steps.notes.outputs.file }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" --notes "python3-ghee debs (arm64 bookworm/trixie, armhf ARMv6) and the sdist. Also on PyPI as ghee-render." || true
+          gh release create "${GITHUB_REF_NAME}" --notes-file "$NOTES" \
+            || gh release view "${GITHUB_REF_NAME}" > /dev/null
           gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz --clobber

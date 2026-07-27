@@ -1,6 +1,16 @@
 ghee (0.2.0) bookworm; urgency=medium
 
-  * ISF import, shared console core, engine and packaging fixes.
+  * ISF import: Interactive Shader Format shaders convert to ghee scenes or
+    filters, from a file or a URL.
+  * Shared console core, so an embedding host and the standalone server
+    behave the same. Engine and packaging fixes.
+  * ffmpeg moves from Recommends to Suggests: only boards without the
+    Broadcom encoder need it, so apt no longer pulls it in.
+  * CLI failures print one line instead of a traceback. GHEE_TRACEBACK=1
+    brings the stack back.
+  * A C engine that fails to build now fails the install, instead of
+    shipping a package that cannot render. GHEE_LIB renders with an engine
+    already on the host; GHEE_SKIP_ENGINE=1 installs the Python side alone.
 
  -- holofermes <1163915+holofermes@users.noreply.github.com>  Mon, 27 Jul 2026 11:50:09 -0400
 

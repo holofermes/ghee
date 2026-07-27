@@ -173,7 +173,10 @@ class SoftwareH264:
 
     def __init__(self, w, h, fps=30, bitrate=4_000_000, components=4):
         if not shutil.which("ffmpeg"):
-            raise RuntimeError("no ffmpeg on PATH (needed for software H264)")
+            raise RuntimeError(
+                "no ffmpeg on PATH (needed for software H264; "
+                "install it with: sudo apt install ffmpeg)"
+            )
         self.w, self.h = w, h
         pix = "rgba" if components == 4 else "rgb24"
         gop = fps * 2

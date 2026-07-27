@@ -1,0 +1,55 @@
+name: pypi
+
+# Manual: a PyPI upload can be yanked but never replaced. This publishes the
+# sdist already attached to the tag's GitHub release, so a version whose debs
+# failed to build cannot reach PyPI.
+#
+# Trusted Publishing (OIDC), no API token. The index side needs a publisher
+# registered against this repo, the filename pypi.yml, and the environment
+# below: docs.pypi.org/trusted-publishers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "release tag to publish, e.g. v0.2.0"
+        required: true
+      target:
+        description: "index"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.target }}
+      url: >-
+        ${{ inputs.target == 'pypi' && 'https://pypi.org/p/ghee-render'
+        || 'https://test.pypi.org/p/ghee-render' }}
+    permissions:
+      id-token: write # trusted publishing; the only job that gets it
+      contents: read # gh release download
+    steps:
+      - name: take the sdist from the tag's GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          gh release download "$REF" --pattern '*.tar.gz' --dir dist
+          # the asset has to be the sdist for this exact tag, not whatever else
+          # someone attached to the release
+          test -f "dist/ghee_render-${REF#v}.tar.gz"
+          test "$(ls dist | wc -l)" = 1
+          ls -la dist
+      - name: publish to TestPyPI
+        if: inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+      - name: publish to PyPI
+        if: inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

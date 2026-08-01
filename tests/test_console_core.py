@@ -533,6 +533,36 @@ def test_a_declared_filter_comes_back_as_a_pass(tmp_path):
     assert len(written["passes"]) == 1
 
 
+def test_a_save_writes_the_common_into_the_modified_copy(scenes, tmp_path):
+    scene, _ = scenes.resolve("one")
+    scene.common = "float half(float x){ return x * 0.5; }"
+    scenes.save("one", scene)
+    written = json.loads((tmp_path / "modified" / "one.scene.json").read_text())
+    assert written["common"] == {"code": scene.common}
+    assert scenes.resolve("one")[0].common == scene.common
+
+
+def test_a_common_file_reference_saves_as_inline_code(tmp_path):
+    (tmp_path / "shared.glsl").write_text("float k(){ return 1.0; }", encoding="utf-8")
+    (tmp_path / "c.scene.json").write_text(
+        json.dumps(dict(SCENE, common={"shader": "shared.glsl"})), encoding="utf-8"
+    )
+    store = SceneStore(str(tmp_path))
+    scene, _ = store.resolve("c")
+    store.save("c", scene)
+    written = json.loads((tmp_path / "modified" / "c.scene.json").read_text())
+    assert written["common"] == {"code": "float k(){ return 1.0; }"}
+
+
+def test_a_procedural_sidecar_carries_no_common(procedural, tmp_path):
+    # a .py scene's shape lives in code; the sidecar is param values only
+    scene, _ = procedural.resolve("proc")
+    scene.common = "float k(){ return 1.0; }"
+    procedural.save("proc", scene)
+    vals = json.loads((tmp_path / "modified" / "proc.values.json").read_text())
+    assert "common" not in vals
+
+
 def test_the_store_reports_whether_it_may_be_written():
     assert SceneStore(".", read_only=True).read_only is True
     assert SceneStore(".").read_only is False

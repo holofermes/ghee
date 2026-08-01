@@ -103,6 +103,7 @@ setup(
             "examples/*.scene.json",
             "examples/*.glsl",
             "examples/*.py",
+            "examples/lib/*.py",
             "filters/*.filter.json",
             "lib/*.so",
         ]

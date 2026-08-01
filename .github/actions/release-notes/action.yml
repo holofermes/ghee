@@ -29,7 +29,8 @@ runs:
           echo "debian/changelog has no entry for $ver; add one before tagging" >&2
           exit 1
         fi
-        echo "python3-ghee ${ver} debs: arm64 (bookworm, trixie) and armhf ARMv6" \
-          "(Raspbian bookworm), plus the Python sdist." >> "$out"
+        echo "python3-ghee ${ver} debs: arm64 and armhf ARMv6, both built on" \
+          "bookworm and install-tested on bookworm and trixie, plus the" \
+          "Python sdist." >> "$out"
         echo "file=$out" >> "$GITHUB_OUTPUT"
         cat "$out"

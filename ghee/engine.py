@@ -105,6 +105,10 @@ class _Unchanged:
 
 UNCHANGED = _Unchanged()
 
+# error_pass for a compile error in the scene's common block; a pass error
+# reports the pass's index instead.
+COMMON_PASS = "common"
+
 _U8 = np.ctypeslib.ndpointer(dtype=np.uint8, flags="C_CONTIGUOUS")
 _F32_1 = np.ctypeslib.ndpointer(dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
@@ -159,15 +163,23 @@ def pack_frame(rgb, width, height, components=3, bw=False, out=None):
     return _pack_with(_packer(), rgb, width, height, components, bw, out)
 
 
-def _user_line(err, glsl, code):
-    """Map a GL compile-error line (full shader) to the user's code line by
-    subtracting the generated preamble's length."""
+def _user_line(err, glsl, code, common=None):
+    """Map a GL compile-error line (full shader) to the line its author wrote.
+    Returns (line, in_common): a line inside the scene's prepended common block
+    counts from the start of that block, anything else is the pass's own code
+    with the generated preamble's length subtracted."""
     m = re.search(r":(\d+)\(", err)
     if not m:
-        return None
-    pos = glsl.find(code)
-    offset = glsl[:pos].count("\n") if pos >= 0 else 0
-    return max(1, int(m.group(1)) - offset)
+        return None, False
+    line = int(m.group(1))
+    pos = glsl.rfind(code)  # the pass code is the tail of the assembled source
+    at = glsl[:pos].count("\n") if pos >= 0 else 0
+    if common:
+        cpos = glsl.rfind(common, 0, pos if pos >= 0 else len(glsl))
+        cat = glsl[:cpos].count("\n") if cpos >= 0 else -1
+        if cat >= 0 and cat < line <= at:
+            return max(1, line - cat), True
+    return max(1, line - at), False
 
 
 class Renderer:
@@ -196,6 +208,7 @@ class Renderer:
         self.error_line = (
             None  # last setup() compile error: user-code line / pass index
         )
+        # pass index, or COMMON_PASS when the error is in the scene's common block
         self.error_pass = None
         self._mp = {}  # pass name -> engine pass index
         self._feeds = {}  # array name -> size
@@ -309,6 +322,8 @@ class Renderer:
         ]
         L.ghee_max_texture_units.argtypes = [ctypes.c_void_p]
         L.ghee_max_texture_units.restype = ctypes.c_int
+        L.ghee_data_texture_linear.argtypes = [ctypes.c_void_p]
+        L.ghee_data_texture_linear.restype = ctypes.c_bool
         L.ghee_mp_render.argtypes = [
             ctypes.c_void_p,
             ctypes.c_void_p,
@@ -352,6 +367,7 @@ class Renderer:
         L.ghee_set_profiling.argtypes = [ctypes.c_void_p, ctypes.c_bool]
         L.ghee_set_time.argtypes = [ctypes.c_void_p, ctypes.c_float]
         L.ghee_clear_time.argtypes = [ctypes.c_void_p]
+        L.ghee_set_dt.argtypes = [ctypes.c_void_p, ctypes.c_float]
         L.ghee_get_timings.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_double),
@@ -361,7 +377,8 @@ class Renderer:
     def setup(self, scene):
         """Build the scene's passes. Returns "" on success or an error string (a compile
         error, or a scene the engine refuses). On a compile error error_line/error_pass
-        point at the offending user-code line."""
+        point at the offending user-code line; an error in the scene's common block
+        reports error_pass=COMMON_PASS and the line within that block."""
         self.error = ""
         self.error_line = None
         self.error_pass = None
@@ -410,8 +427,9 @@ class Renderer:
                 )
                 return self.error
         mp = {}
+        hw_linear = self.data_texture_linear()
         for i, p in enumerate(scene.passes):
-            glsl = p.glsl(scene.params)
+            glsl = p.glsl(scene.params, scene.common, hw_linear)
             idx = self.lib.ghee_mp_add_pass(self.handle, glsl.encode("utf-8"))
             if idx >= 0 and p.size is not None:
                 if not self.lib.ghee_mp_set_pass_size(
@@ -422,8 +440,9 @@ class Renderer:
                 err = self.last_error() or "compile error"
                 self.lib.ghee_mp_abort(self.handle)
                 self.error = err
-                self.error_line = _user_line(err, glsl, p.code)
-                self.error_pass = i
+                line, in_common = _user_line(err, glsl, p.code, scene.common)
+                self.error_line = line
+                self.error_pass = COMMON_PASS if in_common else i
                 return err
             mp[p.name] = idx
         if self.lib.ghee_mp_commit(self.handle) < 0:
@@ -597,10 +616,22 @@ class Renderer:
         else:
             self.lib.ghee_set_time(self.handle, float(t))
 
+    def set_dt(self, value):
+        """Set the `DT` uniform: the seconds a scene should advance by this frame.
+        Rides the draw like `time`, one store here and one upload per pass.
+        Defaults to 1/60 until a caller feeds a measured period."""
+        self.lib.ghee_set_dt(self.handle, float(value))
+
     def max_texture_units(self):
         """Fragment texture units this GPU exposes: a pass's channels plus its array
         inputs have to fit (8 on VC4)."""
         return int(self.lib.ghee_max_texture_units(self.handle))
+
+    def data_texture_linear(self):
+        """Whether this GPU linear-filters the textures array inputs are bound as.
+        False on V3D (float textures, no OES_texture_float_linear), where a filtered
+        fetch silently comes back nearest."""
+        return bool(self.lib.ghee_data_texture_linear(self.handle))
 
     def timings(self):
         """Last frame's split as (draw_ms, read_ms): GPU render of all passes vs the

@@ -63,7 +63,7 @@ def test_find_scene_names(tmp_path, monkeypatch):
     from ghee.cli import _find_scene
 
     monkeypatch.delenv("GHEE_SCENES", raising=False)
-    assert _find_scene("bars").endswith("bars")  # bundled examples fallback
+    assert _find_scene("bars", demo=True).endswith("bars")  # bundled examples
     (tmp_path / "mine.scene.json").write_text("{}")
     monkeypatch.setenv("GHEE_SCENES", str(tmp_path))
     assert _find_scene("mine") == str(tmp_path / "mine")
@@ -77,4 +77,4 @@ def test_cli_unknown_filter_exits(monkeypatch):
     from ghee.cli import main
 
     with pytest.raises(SystemExit, match="unknown filter"):
-        main(["render", "bars", "--filters", "nope", "-o", "/tmp/x.png"])
+        main(["render", "--demo", "bars", "--filters", "nope", "-o", "/tmp/x.png"])

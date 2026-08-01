@@ -2,8 +2,8 @@
 units, so the CLI pipe, the serve /h264 endpoint, and mpv see identical bytes:
 
 - HardwareH264: zero-copy GL -> linear dmabuf -> V4L2 M2M (bcm2835-codec,
-  /dev/video11, original Zero through Pi 4). The render itself lands in the
-  encoder's buffer; no glReadPixels anywhere.
+  /dev/video11, Pi 1 through Pi 4). The render itself lands in the encoder's
+  buffer; no glReadPixels anywhere.
 - SoftwareH264: an ffmpeg/libx264 subprocess fed the readback frames (Pi 5 has
   no hardware video encoder at all; desktops likewise via this path).
 """
@@ -16,6 +16,9 @@ import shutil
 import struct
 import subprocess
 import threading
+
+from ghee.output import Output
+from ghee.stats import DEST_H264
 
 NAL_SLICE, NAL_IDR, NAL_SEI, NAL_SPS, NAL_PPS, NAL_AUD = 1, 5, 6, 7, 8, 9
 
@@ -85,6 +88,12 @@ def wire_frame(t: int, payload: bytes) -> bytes:
     return bytes([t]) + struct.pack(">I", len(payload)) + payload
 
 
+# bcm2835-codec refuses an input buffer under 64KiB ("buffer size mismatch
+# sizeimage N < min size 65536" in dmesg) and reads 4 bytes a pixel, so a frame
+# under this many pixels has no hardware lane at any bitrate.
+HW_MIN_PIXELS = 65536 // 4
+
+
 class HardwareH264:
     """Zero-copy V4L2 encoder bound to a Renderer's GL context. All methods
     must run on the renderer's thread (they issue GL calls)."""
@@ -92,6 +101,11 @@ class HardwareH264:
     def __init__(self, renderer, w, h, fps=30, bitrate=4_000_000):
         self.r = renderer
         self.w, self.h = w, h
+        if w * h < HW_MIN_PIXELS:
+            raise RuntimeError(
+                f"{w}x{h} is under the hardware encoder's {HW_MIN_PIXELS}-pixel "
+                f"minimum (it refuses an input buffer under 64KiB)"
+            )
         err = ctypes.c_char_p()
         self.handle = renderer.lib.ghee_encoder_create(
             renderer.handle, w, h, fps, bitrate, ctypes.byref(err)
@@ -324,3 +338,55 @@ def make_encoder(renderer, w, h, fps=30, bitrate=4_000_000, components=4):
             return SoftwareH264(w, h, fps=fps, bitrate=bitrate, components=components)
         except RuntimeError as sw_err:
             raise RuntimeError(f"no H264 encoder: {hw_err}; {sw_err}") from None
+
+
+class H264Stream(Output):
+    """An Annex-B H264 stream as an output sink: a file, or a pipe to mpv or
+    ffmpeg. Hardware encodes the frame the loop just drew without ever reading
+    it back; software takes the readback.
+
+    Every frame encodes. H264's own delta coding is what makes a static frame
+    cheap, so this sink does not hold its last one and a clean frame is never
+    skipped for it.
+    """
+
+    dest = DEST_H264
+
+    def __init__(self, stream, renderer, w, h, fps=30, bitrate=4_000_000, components=4):
+        self.stream = stream
+        self.enc = make_encoder(
+            renderer, w, h, fps=fps, bitrate=bitrate, components=components
+        )
+        self.hw = isinstance(self.enc, HardwareH264)
+        self._timeout = 2.0  # the first access unit waits out the pipeline priming
+
+    def wants(self, frame):
+        return not self.hw  # hardware samples the GPU in mirror()
+
+    def write(self, frame):
+        self.enc.feed(frame)
+        self._emit(self.enc.get_au(timeout=self._timeout))
+        self._timeout = 0.5
+
+    def mirror(self, renderer):
+        if self.hw:
+            self._emit(self.enc.encode_last())
+
+    def _emit(self, got):
+        au, _ = got
+        if au:
+            self.stream.write(au)
+            self.stream.flush()
+
+    def close(self):
+        """Drain what the encoder still owes: without it a capture ends
+        mid-GOP and loses its last frames. The stream itself belongs to
+        whoever opened it."""
+        try:
+            for au in self.enc.drain():
+                self.stream.write(au)
+            self.stream.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            self.enc.close()

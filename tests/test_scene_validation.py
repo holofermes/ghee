@@ -2,7 +2,6 @@
 scene, the pass and the field in the message. Plus the sinks and drivers that
 fail on the same input. All pure Python, no GL device."""
 
-import argparse
 import ctypes
 import importlib
 import io
@@ -18,6 +17,7 @@ import pytest
 from ghee import Param, Pass, Scene
 
 GOOD = "void main(){ gl_FragColor = vec4(1.0); }"
+COMMON_TEXT = "float half(float x){ return x * 0.5; }"
 
 
 def _scene(*passes, **kw):
@@ -218,21 +218,7 @@ def test_serve_swallows_keyboard_interrupt(monkeypatch):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(server, "run", boom)
-    cli.cmd_serve(
-        argparse.Namespace(
-            demo=True,
-            scenes=None,
-            size=(64, 48),
-            port=8090,
-            lib=None,
-            host="127.0.0.1",
-            display=False,
-            rgb565=False,
-            preview_max=480,
-            preview_fps=15,
-            stream_max=0,
-        )
-    )
+    cli.main(["serve", "--demo", "--size", "64x48"])
 
 
 def test_serve_empty_scenes_dir_exits_with_the_message(tmp_path):
@@ -279,8 +265,11 @@ def test_serve_failure_prints_no_traceback(tmp_path):
 
 
 class _FakeRenderer:
-    def __init__(self, w, h, components=4, lib_path=None, dri_device=None):
+    def __init__(self, w, h, components=4, lib_path=None, dri_device=None, **kw):
+        self.width, self.height, self.components = w, h, components
         self.times = []
+        self.dts = []
+        self.scene_params = []
         self.handle = 1
         self.lib = None
 
@@ -290,8 +279,17 @@ class _FakeRenderer:
     def set_time(self, t):
         self.times.append(t)
 
-    def render(self, provider=None, out=None):
-        return np.zeros((4, 4, 4), np.uint8)
+    def set_scene_param(self, name, ptype, value):
+        self.scene_params.append((name, ptype, value))
+
+    def set_dt(self, value):
+        self.dts.append(value)
+
+    def render(self, provider=None, out=None, out_size=None):
+        return np.zeros((4, 4, 4), np.uint8) if out is None else out
+
+    def draw(self, provider=None):
+        pass
 
     def _feed(self, provider):
         pass
@@ -318,6 +316,8 @@ class _FakeEncoder:
 
 
 def _h264_run(monkeypatch, tmp_path, timestep, encoder=None, lib=None):
+    """`render --h264` end to end against a fake renderer and encoder, so what
+    is under test is the loop's own time and DT bookkeeping."""
     from ghee import cli, h264
     from ghee.engine import Renderer  # noqa: F401  the name cli imports
 
@@ -335,21 +335,26 @@ def _h264_run(monkeypatch, tmp_path, timestep, encoder=None, lib=None):
     monkeypatch.setattr(
         h264, "make_encoder", lambda *a, **kw: encoder or _FakeEncoder()
     )
-    cli._render_h264(
-        argparse.Namespace(
-            size=(4, 4),
-            fps=1000,
-            lib=None,
-            dri=None,
-            bitrate=1000,
-            h264=str(tmp_path / "out.h264"),
-            frames=3,
-            stats=False,
-            timestep=timestep,
-        ),
-        Scene(passes=[Pass(name="main", code=GOOD)]),
-        None,
+    (tmp_path / "s.scene.json").write_text(
+        json.dumps(_scene({"name": "main", "code": GOOD})), encoding="utf-8"
     )
+    argv = [
+        "render",
+        str(tmp_path / "s.scene.json"),
+        "--h264",
+        str(tmp_path / "out.h264"),
+        "--size",
+        "4x4",
+        "--fps",
+        "1000",
+        "--bitrate",
+        "1000",
+        "--frames",
+        "3",
+    ]
+    if timestep is not None:
+        argv += ["--timestep", str(timestep)]
+    cli.main(argv)
     return made["r"]
 
 
@@ -360,6 +365,23 @@ def test_h264_honors_timestep(monkeypatch, tmp_path):
 
 def test_h264_without_timestep_leaves_engine_time_alone(monkeypatch, tmp_path):
     assert _h264_run(monkeypatch, tmp_path, None).times == []
+
+
+def test_pinned_timestep_publishes_it_as_dt(monkeypatch, tmp_path):
+    assert _h264_run(monkeypatch, tmp_path, 0.5).dts == [0.5, 0.5, 0.5]
+
+
+def test_unpinned_dt_is_the_measured_frame_period(monkeypatch, tmp_path):
+    dts = _h264_run(monkeypatch, tmp_path, None).dts
+    assert len(dts) == 2  # frame 0 has no previous frame to measure against
+    assert all(0.0 < v < 5.0 for v in dts)
+
+
+def test_dt_is_never_a_scene_param(monkeypatch, tmp_path):
+    """It rides the draw as an engine uniform, so it must not reach the
+    per-pass set_scene_param fan-out."""
+    r = _h264_run(monkeypatch, tmp_path, 0.5)
+    assert [n for n, _, _ in r.scene_params if n == "DT"] == []
 
 
 # the hardware encoder's tail: what ghee_encoder_flush still owes is written out
@@ -389,7 +411,7 @@ class _FakeEncoderLib:
             self._set(nal, ln, key, au)
         return rc
 
-    def ghee_mp_render_encoded(self, scene, enc, nal, ln, key):
+    def ghee_encoder_encode_last(self, scene, enc, nal, ln, key):
         return self.render_rc
 
     def ghee_encoder_destroy(self, scene, enc):
@@ -537,7 +559,7 @@ def test_missing_drivers_extra_names_the_extra(monkeypatch):
     import ghee.drivers as drivers
 
     def boom(name):
-        raise ImportError("No module named 'board'")
+        raise ImportError("No module named 'spidev'")
 
     monkeypatch.setattr(drivers, "importlib", types.SimpleNamespace(import_module=boom))
     with pytest.raises(ImportError, match=r"ghee-render\[drivers\]"):
@@ -548,30 +570,43 @@ def test_missing_drivers_extra_names_the_extra(monkeypatch):
 
 
 def _panel_stubs():
-    board = types.ModuleType("board")
-    for name in ("CE0", "CE1", "D22", "D24", "D25", "D27"):
-        setattr(board, name, f"pin:{name}")
-    board.SPI = lambda: "spi"
-    digitalio = types.ModuleType("digitalio")
-    digitalio.DigitalInOut = lambda pin: types.SimpleNamespace(
-        pin=pin, value=None, switch_to_output=lambda: None
+    """spidev and gpiod (2.x shape), enough to construct the driver. The bytes
+    and the pin levels are test_drivers.py's job."""
+    spidev = types.ModuleType("spidev")
+    spidev.SpiDev = lambda: types.SimpleNamespace(
+        open=lambda bus, dev: None,
+        mode=0,
+        max_speed_hz=0,
+        writebytes2=lambda data: None,
+        close=lambda: None,
     )
+    line = types.ModuleType("gpiod.line")
+    line.Direction = types.SimpleNamespace(OUTPUT="output")
+    line.Value = types.SimpleNamespace(ACTIVE="active", INACTIVE="inactive")
 
-    class Panel:
-        def __init__(self, spi, **kw):
-            self.kw = kw
-            self.spi_device = types.SimpleNamespace(chip_select=None)
+    class Chip:
+        def __init__(self, path):
+            self.path = path
 
-    st = types.ModuleType("adafruit_rgb_display.st7789")
-    st.ST7789 = Panel
-    pkg = types.ModuleType("adafruit_rgb_display")
-    pkg.st7789 = st
-    return {
-        "board": board,
-        "digitalio": digitalio,
-        "adafruit_rgb_display": pkg,
-        "adafruit_rgb_display.st7789": st,
-    }
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get_info(self):
+            return types.SimpleNamespace(label="pinctrl-bcm2835")
+
+    gpiod = types.ModuleType("gpiod")
+    gpiod.line = line
+    gpiod.Chip = Chip
+    gpiod.LineSettings = lambda **kw: kw
+    gpiod.request_lines = lambda path, consumer=None, config=None: (
+        types.SimpleNamespace(
+            offsets=list(config), set_value=lambda off, v: None, release=lambda: None
+        )
+    )
+    return {"spidev": spidev, "gpiod": gpiod, "gpiod.line": line}
 
 
 def test_st7789_panel_geometry_is_a_constructor_argument(monkeypatch):
@@ -579,14 +614,18 @@ def test_st7789_panel_geometry_is_a_constructor_argument(monkeypatch):
 
     for name, mod in _panel_stubs().items():
         monkeypatch.setitem(sys.modules, name, mod)
-    sys.modules.pop("ghee.drivers.st7789", None)
+    for name in ("ghee.drivers.gpio", "ghee.drivers.st7789"):
+        sys.modules.pop(name, None)
     try:
         mod = importlib.import_module("ghee.drivers.st7789")
+        monkeypatch.setattr(
+            sys.modules["ghee.drivers.gpio"], "_chip_paths", lambda: ["/dev/gpiochip0"]
+        )
         d = mod.ST7789()  # --display st7789 takes no arguments
         assert (d.width, d.height) == (135, 240)
-        assert d.display.kw["x_offset"] == 53 and d.display.kw["y_offset"] == 40
-        assert d.display.kw["baudrate"] == 99000000
-        assert d.backlight.pin == "pin:D22"
+        assert (d.x_offset, d.y_offset) == (53, 40)
+        assert (d.dc, d.rst, d.bl) == (25, None, 22)
+        assert d.bl_pins is not None
         assert d._buf.size == 135 * 240 * 2
 
         other = mod.ST7789(
@@ -594,24 +633,21 @@ def test_st7789_panel_geometry_is_a_constructor_argument(monkeypatch):
             height=240,
             x_offset=0,
             y_offset=80,
-            cs="CE1",
-            dc="D24",
-            rst="D27",
+            dc=24,
+            rst=27,
             backlight=None,
             baudrate=32000000,
         )
         assert (other.width, other.height) == (240, 240)
-        assert other.display.kw["x_offset"] == 0 and other.display.kw["y_offset"] == 80
-        assert other.display.kw["cs"].pin == "pin:CE1"
-        assert other.display.kw["dc"].pin == "pin:D24"
-        assert other.display.kw["rst"].pin == "pin:D27"
-        assert other.display.kw["baudrate"] == 32000000
+        assert (other.x_offset, other.y_offset) == (0, 80)
+        assert (other.dc, other.rst, other.bl) == (24, 27, None)
         assert other._buf.size == 240 * 240 * 2
-        assert other.backlight is None
+        assert other.bl_pins is None
         other.turn_on()  # a panel with no backlight pin: still a no-op, not a crash
         other.turn_off()
     finally:
-        sys.modules.pop("ghee.drivers.st7789", None)
+        for name in ("ghee.drivers.gpio", "ghee.drivers.st7789"):
+            sys.modules.pop(name, None)
         _REGISTRY.pop("st7789", None)
 
 
@@ -625,3 +661,55 @@ def test_text_example_provides_only_its_array(monkeypatch):
     _, ctrl = load_scene(f"{examples_dir()}/text.py")
     assert ctrl.provide("text", 0, 0) is not None
     assert ctrl.provide("bars", 16, 0) is None
+
+
+# task 16: a scene's common block is one block of GLSL, from one source
+
+
+def test_common_needs_an_object_with_code_or_shader():
+    for bad in (COMMON_TEXT, ["x"], 3, True):
+        with pytest.raises(ValueError, match="'common' needs an object"):
+            Scene.from_dict(_scene({"name": "m", "code": GOOD}, common=bad))
+
+
+def test_common_takes_exactly_one_of_code_and_shader():
+    for bad in ({}, {"code": COMMON_TEXT, "shader": "c.glsl"}):
+        with pytest.raises(ValueError, match="exactly one"):
+            Scene.from_dict(_scene({"name": "m", "code": GOOD}, common=bad))
+
+
+def test_common_code_needs_text():
+    with pytest.raises(ValueError, match="'common' needs GLSL text in 'code'"):
+        Scene.from_dict(_scene({"name": "m", "code": GOOD}, common={"code": ["x"]}))
+    with pytest.raises(ValueError, match="'common' needs GLSL text, got"):
+        Scene(passes=[Pass(name="m", code=GOOD)], common=["x"])
+
+
+def test_common_shader_without_base_dir_raises():
+    with pytest.raises(ValueError) as e:
+        Scene.from_dict(
+            _scene({"name": "m", "code": GOOD}, common={"shader": "/etc/hostname"})
+        )
+    assert "common" in str(e.value) and "shader" in str(e.value)
+
+
+def test_common_shader_never_escapes_the_scene_directory(tmp_path):
+    secret = tmp_path.parent / "secret.glsl"
+    secret.write_text("stolen")
+    for path in ("../secret.glsl", str(secret)):
+        with pytest.raises(ValueError, match="outside the scene directory"):
+            Scene.from_dict(
+                _scene({"name": "m", "code": GOOD}, common={"shader": path}),
+                base_dir=str(tmp_path),
+            )
+
+
+def test_missing_common_file_names_the_scene_and_the_common(tmp_path):
+    p = tmp_path / "x.scene.json"
+    p.write_text(
+        json.dumps(_scene({"name": "m", "code": GOOD}, common={"shader": "gone.glsl"}))
+    )
+    with pytest.raises(ValueError) as e:
+        Scene.load(str(p))
+    msg = str(e.value)
+    assert str(p) in msg and "common" in msg and "gone.glsl" in msg

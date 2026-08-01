@@ -160,8 +160,22 @@ class ConsoleHost:
     save_refused = "this console cannot save"
 
     def stats(self):
-        """{fps, render_ms, encode_ms, error, error_line, error_pass, active,
-        display}. Read by a poll loop in the browser, so it must not block."""
+        """{fps, frame_ms, stream_fps, out, error, error_line, error_pass,
+        active, display, stale}.
+
+        fps: render-loop frames completed per real elapsed second, over a
+        trailing window (ghee.stats.FrameRate). frame_ms: one loop iteration,
+        the frame's own work with no paced sleep in it. stream_fps: frames
+        handed to viewers per real second, counted where the handoff happens,
+        every codec in one number. out: the destination names the frames reach
+        right now (ghee.stats.DEST_*), a sink's own for a sink. error_pass: the
+        pass index a compile error landed in, or "common" for the scene's
+        common block; error_line is the line within it. stale: the files the
+        active scene was built from now hold code it was not compiled from, so
+        a reload would render something else (ghee.sources); a host whose
+        scenes have no files behind them answers False.
+
+        Read by a poll loop in the browser, so it must not block."""
         raise NotImplementedError
 
     def scene_names(self):

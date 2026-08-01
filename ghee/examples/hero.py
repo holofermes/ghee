@@ -1,0 +1,490 @@
+"""A word sliding over water, with particles streaming under the surface.
+
+Particle positions live in a feedback buffer, one advection step per frame
+along a curl-noise flow whose stream function ramps to zero at the wave, so the
+surface is a streamline the flow slides along instead of crossing.
+
+The two sizes below are compile-time: a loop a uniform breaks out of early
+still costs its maximum, so a live particle-count slider would buy nothing.
+
+    ghee render --demo hero -o hero.####.png --frames 300
+    ghee render --demo hero -- --particle-grid 12x8 --no-dither
+    ghee render --demo hero --display kms -- --particle-buffer 160x100
+"""
+
+import importlib
+
+import numpy as np
+from lib import look
+from PIL import Image, ImageDraw, ImageFont
+
+from ghee import (
+    UNCHANGED,
+    Arg,
+    ArrayInput,
+    Channel,
+    Param,
+    Pass,
+    Scene,
+    SceneController,
+)
+
+# a scene is re-imported on reload but its libraries are not, so without this a
+# reload after editing look.py would render the cached one
+importlib.reload(look)
+
+# The dither filter defaults to 1-bit black and white; these give it partial
+# colour on a coarse grid. It costs one full-res pass, which --no-dither drops.
+DITHER_PARAMS = {"amount": 1.0, "levels": 2.0, "color": 0.65, "scale": 4.0}
+
+# The text canvas. Fixed, because an array size cannot change after setup.
+CANVAS = (768, 192)
+GAP = 0.6  # trailing gap between repeats, as a fraction of the word width
+PROBE = 100  # font size the fit measures at
+STROKE = 22  # font size over stroke width: the weight a display face would have
+
+# A motion delta packs into a byte per axis over this span.
+DSPAN = 0.25
+# The longest step still read as motion. `attr` drops a particle that moved
+# further and `glow` takes it as the reach of a stroke, so it has to be one
+# number: raise it in one place only and the stroke loop stops rejecting.
+JUMP = 0.1
+
+SCENE_COMMON = (
+    """
+// the render aspect, fed by the controller: a pass with its own size cannot
+// read it off `resolution`
+uniform float aspect;
+
+"""
+    + look.WAVE
+    + """
+// Everything downstream works in [0, 1] uv, so the flow and the particles look
+// the same at every render size.
+float waterline(float x) {
+    return 0.55 - wave(x, time * wave_speed * 6.28318);
+}
+float depth(vec2 p) {
+    return p.y - waterline(p.x);
+}
+
+float hash(vec2 p) {
+    p = fract(p * vec2(234.34, 435.345));
+    p += dot(p, p + 34.23);
+    return fract(p.x * p.y);
+}
+
+// A pass buffer is RGB8, so a position is three bytes: twelve bits per axis,
+// the high byte of each in R and G, both low nibbles sharing B. The domain is
+// [-0.25, 1.25] so a particle runs off-screen before it wraps.
+vec3 packPos(vec2 p) {
+    vec2 v = floor(clamp((p + 0.25) / 1.5, 0.0, 1.0) * 4095.0);
+    vec2 hi = floor(v / 16.0);
+    vec2 lo = v - hi * 16.0;
+    return vec3(hi / 255.0, (lo.x * 16.0 + lo.y) / 255.0);
+}
+vec2 unpackPos(vec3 e) {
+    float lo = e.z * (255.0 / 16.0);
+    float lx = floor(lo);
+    return (e.xy * 4080.0 + vec2(lx, (lo - lx) * 16.0)) * (1.5 / 4095.0) - 0.25;
+}
+// The high bytes read as a position on their own: what unpackPos returns, short
+// by up to one low nibble, for two multiplies against unpackPos's dozen.
+vec2 coarsePos(vec3 e) {
+    return e.xy * (4080.0 * 1.5 / 4095.0) - 0.25;
+}
+"""
+)
+
+# `state` is a later pass, so this reads it a frame back. A channel reaches one
+# frame and a stroke needs two.
+SHADER_PREV = """
+void main() {
+    gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).rgb, 1.0);
+}
+"""
+
+SHADER_STATE = """
+// Stream function: drift plus curl noise, faded out over surface_band so the
+// wave is a solid border. The noise amplitude divides by its own frequency, so
+// swirl_scale moves the size of the swirls and not their strength.
+float psi(vec2 p) {
+    float f = 24.0 * pow(0.5, swirl_scale * 4.0);
+    vec2 q = p * vec2(aspect, 1.0) * f;
+    float tf = time * 0.1;
+    float n = sin(q.x + tf) * cos(q.y * 1.1 - tf * 0.7)
+            + 0.5 * sin(q.x * 2.3 - tf * 1.3) * cos(q.y * 1.9 + tf * 0.9);
+    float free = drift.x * p.y - drift.y * p.x + n * swirl_strength * 0.5 / f;
+    return free * smoothstep(0.0, surface_band, depth(p));
+}
+
+vec2 vel(vec2 p) {
+    float e = 0.004;
+    float p0 = psi(p);
+    return vec2(psi(p + vec2(0.0, e)) - p0, p0 - psi(p + vec2(e, 0.0))) / e;
+}
+
+void main() {
+    vec2 uv = v_texCoord;
+    vec2 p = unpackPos(texture2D(iChannel0, uv).rgb);
+    bool born = time < 0.1 || texture2D(iChannel1, uv).r <= 1.5 / 255.0;
+    if (!born) {
+        // particle_speed_spread is ratio-symmetric around particle_speed:
+        // 0 = every particle alike, 1 = 0.5x to 2x
+        float sv = pow(2.0, (hash(uv * 9.3) - 0.5) * 2.0 * particle_speed_spread);
+        p += vel(p) * (DT * particle_speed * sv);
+        born = p.x < -0.25 || p.x > 1.25 || p.y > 1.25
+            // the surface moves and can sweep over a particle riding it; past
+            // the surface the field is zero, so it would strand there
+            || depth(p) < -0.02;
+    }
+    if (born) {
+        // Every spawn lands off-frame on the upstream edge and under the
+        // surface, so a stroke can only enter the frame already moving.
+        float r1 = hash(uv * 3.1), r2 = hash(uv * 7.7), r3 = hash(uv * 5.3);
+        float ax = abs(drift.x), ay = abs(drift.y);
+        if (r3 * (ax + ay + 1e-4) < ax) {
+            p.x = drift.x < 0.0 ? 1.02 + r1 * 0.15 : -0.02 - r1 * 0.15;
+            p.y = mix(waterline(p.x) + 0.05, 1.2, r2);
+        } else {
+            p.y = 1.02 + r1 * 0.15;   // the cross-flow edge is the floor
+            p.x = r2 * 1.4 - 0.2;
+        }
+    }
+    gl_FragColor = vec4(packPos(p), 1.0);
+}
+"""
+
+# One countdown per particle, ordered after `state` so both read the same value
+# this frame.
+SHADER_LIFE = """
+void main() {
+    float life = texture2D(iChannel0, v_texCoord).r;
+    if (time < 0.1) life = hash(v_texCoord * 7.3);
+    else if (life <= 1.5 / 255.0) life = mix(0.35, 1.0, hash(v_texCoord + time));
+    else life -= (1.0 / 255.0) * (0.35 / max(particle_life, 0.02)) * DT * 60.0;
+    gl_FragColor = vec4(life, 0.0, 0.0, 1.0);
+}
+"""
+
+# Per-particle precompute: the motion delta and the brightness, one texel each
+# instead of recomputed under every pixel of the stroke loop.
+SHADER_ATTR = (
+    f"""
+const float DSPAN = {DSPAN};
+const float JUMP = {JUMP};
+"""
+    + """
+void main() {
+    vec2 uv = v_texCoord;
+    vec2 p1 = unpackPos(texture2D(iChannel0, uv).rgb);
+    vec2 d = p1 - unpackPos(texture2D(iChannel1, uv).rgb);
+    // surface_fade tapers a particle out as it nears the surface; a step longer
+    // than JUMP is a spawn. Both land in the brightness, so a stroke that
+    // should not show multiplies out to zero and the loop tests neither.
+    float b = mix(particle_dim, particle_bright, hash(uv * 9.3))
+            * smoothstep(-0.02, max(surface_fade, 0.02) * 0.4 - 0.02, depth(p1))
+            * step(dot(d, d), JUMP * JUMP);
+    gl_FragColor = vec4(clamp(d / DSPAN + 0.5, 0.0, 1.0), b, 1.0);
+}
+"""
+)
+
+
+def _grid_consts(col, row):
+    """The grid bounds a shader constant, because the stroke loop needs them
+    constant to unroll at all."""
+    return f"""
+const int COL = {col};
+const int ROW = {row};
+const vec2 GRID = vec2({col}.0, {row}.0);
+const float DSPAN = {DSPAN};
+const float JUMP = {JUMP};
+"""
+
+
+# The only loop in the scene, and the reason this pass has its own size: it
+# costs particles x pixels, and it is the pixels that are cheap to give up.
+SHADER_GLOW = """
+float sdSeg(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / (dot(ba, ba) + 1e-9), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+// One particle, rejected on the coarse position the caller already holds.
+// Everything the stroke needs past that (the full position, the delta, the
+// brightness, the second fetch) sits behind the test, and a VC4 does skip a
+// branch its whole block of pixels fails, which is what makes 240 of these
+// per pixel affordable. Written as a macro rather than a function because a
+// function's early return gets flattened back into a select, work and all.
+#define STROKE(cell, texel) \\
+    away = uva - coarsePos(texel) * asp; \\
+    if (dot(away, away) < reach2) { \\
+        vec2 p1 = unpackPos(texel); \\
+        vec3 a = texture2D(iChannel1, cell).rgb; \\
+        vec2 p0 = p1 - (a.rg - 0.5) * DSPAN; \\
+        float d = sdSeg(uva, p0 * asp, p1 * asp); \\
+        ink = max(ink, a.b * smoothstep(w, w * 0.35, d)); \\
+    }
+
+void main() {
+    vec2 uv = v_texCoord;
+    vec2 asp = vec2(aspect, 1.0);
+    vec2 uva = uv * asp;
+
+    // Last frame's ink, decayed. The sub-LSB dither is what keeps an 8-bit
+    // buffer fading smoothly instead of banding into contour rings.
+    float dj = hash(uv + fract(time) * 113.1);
+    float steps = DT * 60.0;
+    float ink = max(texture2D(iChannel2, uv).r * pow(trail_length, steps)
+                    - trail_cutoff * 0.01 * steps + (dj - 0.5) / 255.0, 0.0);
+
+    // The width is in uv, not in texels, so this buffer's size changes how
+    // sharp a stroke is and never how big it is.
+    float w = 0.000625 + particle_size * particle_size * 0.035;
+    // How far a particle can sit from this pixel and still mark it: the stroke
+    // width, the longest segment it can be strung along, and a tenth of that
+    // again for the truncated position and the byte-packed delta. Past it the
+    // stroke is exactly zero, so rejecting on it costs nothing but time.
+    float reach = w + (JUMP * 1.1) * max(aspect, 1.0);
+    float reach2 = reach * reach;
+
+    vec2 away;
+    for (int ix = 0; ix < COL; ix++) {
+        // Four rows at a time, so four fetches issue together instead of one
+        // stalling per step. A row index past the last clamps back onto it, so
+        // an odd ROW strokes its final particle twice and max() does not care.
+        for (int iy = 0; iy < ROW; iy += 4) {
+            vec2 c0 = (vec2(float(ix), float(iy)) + 0.5) / GRID;
+            vec2 c1 = (vec2(float(ix), float(iy + 1)) + 0.5) / GRID;
+            vec2 c2 = (vec2(float(ix), float(iy + 2)) + 0.5) / GRID;
+            vec2 c3 = (vec2(float(ix), float(iy + 3)) + 0.5) / GRID;
+            vec3 s0 = texture2D(iChannel0, c0).rgb;
+            vec3 s1 = texture2D(iChannel0, c1).rgb;
+            vec3 s2 = texture2D(iChannel0, c2).rgb;
+            vec3 s3 = texture2D(iChannel0, c3).rgb;
+            STROKE(c0, s0);
+            STROKE(c1, s1);
+            STROKE(c2, s2);
+            STROKE(c3, s3);
+        }
+    }
+    gl_FragColor = vec4(ink, 0.0, 0.0, 1.0);
+}
+"""
+
+# The only pass at the output resolution: the wave edge and the letters are
+# hard edges, and the particles arrive magnified.
+SHADER_MAIN = (
+    f"""
+const float TEXT_ASPECT = {CANVAS[0] / CANVAS[1]:.4f};
+"""
+    + """
+void main() {
+    vec2 uv = v_texCoord;
+
+    // The texture reads come before the surface: with `wet` computed ahead of
+    // them, VC4 reads it back wrong in 4x4 blocks and the glyph body goes dry
+    // in patches under the wave.
+    float v = (uv.y - text_y + text_height * 0.5) / text_height;
+    float u = fract(uv.x * aspect / (text_height * TEXT_ASPECT) - time * text_speed);
+    float glow = texture2D(iChannel0, uv).r;
+    float m = text_sample2(vec2(u, v)) * step(0.0, v) * step(v, 1.0);
+    m = smoothstep(0.35, 0.55, m);
+
+    float wet = step(waterline(uv.x), uv.y);
+    float ink = glow * wet;
+    vec3 col = mix(mix(background, water, wet), particle_color, ink);
+    gl_FragColor = vec4(mix(col, mix(ink_background, ink_water, wet), m), 1.0);
+}
+"""
+)
+
+
+def knob(name, val, lo, hi, step):
+    return Param(name, "float", val, min=lo, max=hi, step=step)
+
+
+def _draw(text, font, stroke):
+    """The word on a canvas of its own. The stroke is weight: no host is
+    guaranteed a display face, and any face can be fattened."""
+    bb = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox(
+        (0, 0), text, font=font, stroke_width=stroke
+    )
+    img = Image.new("L", (max(bb[2] - bb[0], 1), max(bb[3] - bb[1], 1)), 0)
+    ImageDraw.Draw(img).text(
+        (-bb[0], -bb[1]),
+        text,
+        fill=255,
+        font=font,
+        stroke_width=stroke,
+        stroke_fill=255,
+    )
+    return img
+
+
+def _raster(text):
+    """The word fitted into the fixed canvas, so a long one rasterizes smaller
+    instead of overflowing. GAP is reserved on the right, so a repeat never
+    butts up against the word before it."""
+    box = (CANVAS[0] / (1.0 + GAP), float(CANVAS[1]))
+    try:
+        probe = ImageFont.load_default(size=PROBE)
+    except TypeError:  # Pillow < 10.1 takes no size here
+        word = _draw(text, ImageFont.load_default(), 0)
+    else:
+        w, h = _draw(text, probe, PROBE // STROKE).size
+        size = max(int(PROBE * min(box[0] / w, box[1] / h)), 8)
+        word = _draw(text, ImageFont.load_default(size=size), max(size // STROKE, 1))
+    k = min(box[0] / word.width, box[1] / word.height)
+    word = word.resize((max(int(word.width * k), 1), max(int(word.height * k), 1)))
+    img = Image.new("L", CANVAS, 0)
+    img.paste(word, (0, (CANVAS[1] - word.height) // 2))
+    return np.asarray(img, np.float32).reshape(-1) / 255.0
+
+
+class Hero(SceneController):
+    ARGS = (
+        Arg(
+            "particle-buffer",
+            "size",
+            default=(320, 200),
+            help="the buffer the particle field renders at, magnified onto the frame",
+        ),
+        Arg(
+            "particle-grid",
+            "size",
+            default=(20, 12),
+            help="the particle grid, columns x rows",
+        ),
+        Arg("dither", "bool", default=True, help="the dither filter pass"),
+    )
+
+    def __init__(self):
+        self._mask = _raster("GHEE")
+        self._pending = True
+
+    def on_param(self, renderer, name, value):
+        if name == "text":
+            self._mask = _raster(value or " ")
+            self._pending = True
+
+    def build(self, base):
+        grid = self.args.particle_grid
+        col, row = grid
+        return Scene(
+            common=SCENE_COMMON,
+            filters=["dither"] if self.args.dither else [],
+            passes=[
+                Pass(
+                    name="prev",
+                    code=SHADER_PREV,
+                    size=grid,
+                    channels=[Channel(buffer="state")],
+                ),
+                Pass(
+                    name="state",
+                    code=SHADER_STATE,
+                    size=grid,
+                    channels=[Channel(buffer="state"), Channel(buffer="life")],
+                    params={
+                        "drift": Param(
+                            "drift",
+                            "vec2",
+                            [-0.556, -0.088],
+                            min=-1.0,
+                            max=1.0,
+                            step=0.005,
+                        ),
+                        "particle_speed": knob(
+                            "particle_speed", 0.465, 0.0, 1.0, 0.005
+                        ),
+                        "particle_speed_spread": knob(
+                            "particle_speed_spread", 1.0, 0.0, 1.0, 0.01
+                        ),
+                        "swirl_strength": knob("swirl_strength", 0.91, 0.0, 1.0, 0.01),
+                        "swirl_scale": knob("swirl_scale", 0.88, 0.0, 1.0, 0.01),
+                        "surface_band": knob("surface_band", 0.45, 0.02, 0.6, 0.01),
+                    },
+                ),
+                Pass(
+                    name="life",
+                    code=SHADER_LIFE,
+                    size=grid,
+                    channels=[Channel(buffer="life")],
+                    params={
+                        "particle_life": knob("particle_life", 0.83, 0.0, 1.0, 0.01)
+                    },
+                ),
+                Pass(
+                    name="attr",
+                    code=SHADER_ATTR,
+                    size=grid,
+                    channels=[Channel(buffer="state"), Channel(buffer="prev")],
+                    params={
+                        "surface_fade": knob("surface_fade", 0.61, 0.0, 1.0, 0.01),
+                        "particle_dim": knob("particle_dim", 0.09, 0.0, 1.0, 0.01),
+                        "particle_bright": knob("particle_bright", 0.9, 0.0, 1.0, 0.01),
+                    },
+                ),
+                Pass(
+                    name="glow",
+                    code=_grid_consts(col, row) + SHADER_GLOW,
+                    size=self.args.particle_buffer,
+                    channels=[
+                        Channel(buffer="state"),
+                        Channel(buffer="attr"),
+                        Channel(buffer="glow"),
+                    ],
+                    params={
+                        "particle_size": knob("particle_size", 0.53, 0.0, 1.0, 0.01),
+                        "trail_length": knob("trail_length", 0.623, 0.0, 0.999, 0.001),
+                        "trail_cutoff": knob("trail_cutoff", 0.22, 0.0, 1.0, 0.01),
+                    },
+                ),
+                Pass(
+                    name="main",
+                    code=SHADER_MAIN,
+                    arrays=[ArrayInput("text", CANVAS)],
+                    channels=[Channel(buffer="glow")],
+                    params={
+                        "text": Param("text", "string", "GHEE"),
+                        "text_speed": knob("text_speed", 0.115, -0.5, 0.5, 0.005),
+                        "text_y": knob("text_y", 0.47, 0.0, 1.0, 0.01),
+                        "text_height": knob("text_height", 0.5, 0.05, 1.5, 0.01),
+                        "background": Param(
+                            "background", "color", [0.855, 0.859, 0.502]
+                        ),
+                        "water": Param("water", "color", [0.133, 1.0, 0.980]),
+                        "ink_background": Param(
+                            "ink_background", "color", [0.0, 0.639, 0.675]
+                        ),
+                        "ink_water": Param("ink_water", "color", [0.753, 0.757, 0.0]),
+                        "particle_color": Param(
+                            "particle_color", "color", [0.0, 0.027, 0.890]
+                        ),
+                    },
+                ),
+            ],
+            params={"wave_speed": knob("wave_speed", -0.315, -1.0, 1.0, 0.005)},
+        )
+
+    def setup(self, renderer):
+        self._pending = True  # setup empties the engine's textures
+        renderer.set_scene_param(
+            "aspect", "float", renderer.width / max(renderer.height, 1)
+        )
+        # The filter is appended as a pass after this scene's own, so its knobs
+        # only exist once compiled.
+        if self.args.dither:
+            for name, value in DITHER_PARAMS.items():
+                renderer.set_param("dither", name, "float", value)
+
+    def provide(self, name, size, frame):
+        if name != "text":
+            return None
+        if self._pending:
+            self._pending = False
+            return self._mask
+        return UNCHANGED

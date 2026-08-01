@@ -52,10 +52,26 @@ def _apply_values(scene, name, vals):
 
 
 class SceneStore:
-    def __init__(self, scenes_dir, read_only=False):
+    def __init__(self, scenes_dir, read_only=False, args=()):
         self.dir = os.path.abspath(scenes_dir)
         self.read_only = read_only
+        # scene args for the whole session: every scene loaded gets them
+        self.args = list(args)
         self.scenes = self._scan()
+
+    @classmethod
+    def one(cls, path, read_only=False, args=()):
+        """A store over a single scene: its own directory, narrowed to it. What
+        `render <scene> --serve` shows, against `serve <dir>`'s whole list."""
+        d, base = os.path.split(os.path.abspath(path))
+        for suffix in (".scene.json", ".py"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+        store = cls(d, read_only=read_only, args=args)
+        if base not in store:
+            raise NotFound(f"no scene '{base}' in {d}")
+        store.scenes = {base: store.scenes[base]}
+        return store
 
     def _scan(self):
         out = {}
@@ -104,8 +120,17 @@ class SceneStore:
 
     def resolve(self, name):
         """Scene ready to render/edit: shader files inlined, declared filters
-        expanded, saved values overlaid. Returns (scene, controller)."""
-        scene, controller = load_scene(self.path(name))
+        expanded, saved values overlaid. Returns (scene, controller).
+
+        A session's scene args go to every scene it loads, so each keeps what it
+        declares and ignores the rest.
+
+        Everything it reads to build the scene goes through ghee.sources.record,
+        so a caller wrapping this in collect() gets the file set behind the
+        result. The values sidecar is deliberately outside that set: /set and
+        /save write one, and a param the console already applied is not code the
+        renderer is behind on."""
+        scene, controller = load_scene(self.path(name), self.args, strict=False)
         vals = (
             None
             if self.scenes[name].endswith(".scene.json")

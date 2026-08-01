@@ -1,7 +1,7 @@
 [project]
 # PyPI name; the import and CLI are `ghee` (that name is taken on PyPI).
 name = "ghee-render"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Multi-pass GLSL renderer for Raspberry Pi. Headless GLES2, out to SPI panels, HDMI, images or hardware H264."
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,13 +41,10 @@ requires-python = ">=3.11"
 dependencies = ["numpy>=1.24", "Pillow>=9.4"]
 
 [project.optional-dependencies]
-# Hardware display drivers (ghee.drivers). Pi/panel only; off-device they will not import.
-drivers = [
-    "Adafruit-Blinka",
-    "adafruit-circuitpython-rgb-display",
-    "adafruit-circuitpython-ssd1306",
-    "spidev",
-]
+# Hardware display drivers (ghee.drivers). Pi/panel only; off-device they will not
+# import. All three are also in Debian main: python3-spidev, python3-libgpiod,
+# python3-smbus2.
+drivers = ["spidev", "gpiod", "smbus2"]
 # setuptools and build are what test_packaging.py rolls an sdist with.
 test = ["pytest", "setuptools>=64", "build"]
 
@@ -63,6 +60,9 @@ ghee-render = "ghee.cli:main"
 # setuptools (not hatchling) because the package builds a C extension: the engine
 # (ghee/_engine) is compiled into ghee/lib/ by setup.py. Package data (the
 # console web, example scenes, the built .so) is declared in setup.py.
+[tool.setuptools.dynamic]
+version = { attr = "ghee.__version__" }
+
 [build-system]
 requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"

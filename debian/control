@@ -19,6 +19,7 @@ Homepage: https://github.com/holofermes/ghee
 Package: python3-ghee
 Architecture: any
 Depends: ${misc:Depends}, ${python3:Depends}, ${shlibs:Depends}, python3-numpy, python3-pil
+Recommends: python3-spidev, python3-libgpiod, python3-smbus2
 Suggests: ffmpeg
 Description: multi-pass GLSL renderer for small Linux devices
  ghee compiles a set of fragment shaders (a scene), renders them
@@ -27,6 +28,10 @@ Description: multi-pass GLSL renderer for small Linux devices
  window system required.
  .
  Ships the ghee CLI and a browser-based live shader console.
+ .
+ python3-spidev, python3-libgpiod and python3-smbus2 drive the bundled SPI
+ and I2C panel drivers. They are recommended, so apt installs them unless
+ you say otherwise; everything else works without them.
  .
  ffmpeg is only needed on boards without the Broadcom H264 encoder (Pi 5
  and desktop), where the software encoder shells out to it. It is not

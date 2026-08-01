@@ -1,3 +1,43 @@
+ghee (0.3.0) bookworm; urgency=medium
+
+  * Panel drivers drop Adafruit-Blinka for spidev, libgpiod and smbus2, all
+    of them in Debian main, so the deb can recommend them.
+  * Hardware H264 works on the Pi 4 and Pi 400. Encoder input buffers are
+    allocated on the vc4 node so the codec can import them; v3d buffers are
+    scatter-gather and it cannot. An encoder that fails after construction
+    falls back to libx264 instead of erroring out with an empty file, and
+    the encoder drops the DRM master its vc4 open implies, so a panel or
+    offscreen render coexists with a KMS render in either launch order.
+  * One render loop: -o, --display and --h264 are a list of sinks a single
+    render feeds, and --serve attaches the console to any of them. The
+    console can drive SPI and I2C panels, not only KMS.
+  * --display-opts passes driver options from the CLI: geometry, offsets,
+    pins, bus speed, madctl. ghee displays lists each driver's options.
+  * GET /frame.png returns one lossless PNG of the running scene; 409 while
+    the scene has a compile error, 503 on a dead loop.
+  * /stats reworked: one fps definition, frame_ms, stream_fps, an out list
+    naming every destination frames reach, and a stale flag when the scene's
+    files changed on disk; the console offers the reload. /scene for the
+    active scene answers with the running document, not the file.
+  * Stream viewers ping; a stream whose viewer stopped answering is dropped.
+  * A scene-level common block is shared by every pass; filters never
+    receive it. Scene arguments are declared per scene and listed by
+    `ghee render <scene> -- --help`; scene-facing environment variables are
+    gone. Bundled examples resolve only behind --demo.
+  * A DT uniform carries the real frame period to every pass.
+  * _sample and _sample2 interpolate identically on every GPU. On V3D this
+    replaces silently-nearest sampling of float textures with the correct
+    lerp, at about 1 ms per call per 1080p frame; other platforms keep
+    hardware filtering at no cost.
+  * 8-bit data textures upload with unpack alignment 1, fixing sheared 2D
+    inputs of odd width.
+  * A page flip a slow board has not finished is waited for instead of
+    being treated as stuck.
+  * ghee --version reports the running code; the version is single-sourced
+    from ghee/__init__.py.
+
+ -- holofermes <1163915+holofermes@users.noreply.github.com>  Fri, 31 Jul 2026 21:30:00 -0400
+
 ghee (0.2.0) bookworm; urgency=medium
 
   * ISF import: Interactive Shader Format shaders convert to ghee scenes or

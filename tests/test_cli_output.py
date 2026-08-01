@@ -1,9 +1,11 @@
 """CLI output features: --timestep reproducibility, -o - raw stdout (with EPIPE
-handling), --save-opts parsing, and the async pooled ImageSequence writer.
+handling), --save-opts parsing, the async pooled ImageSequence writer, and the
+sink list the flags add up to.
 
 The render-path tests spawn the CLI and compare against an in-process render on
 the same GPU, so they need a GL device and skip cleanly without one. The parser
-and writer tests are pure Python (the writer needs Pillow)."""
+and writer tests are pure Python (the writer needs Pillow). The sink-list tests
+run the CLI against a fake renderer, so what is under test is the wiring."""
 
 import os
 import shutil
@@ -13,6 +15,8 @@ import time
 
 import numpy as np
 import pytest
+
+from ghee.stats import DEST_PANEL
 
 from .helpers import scene
 
@@ -28,10 +32,10 @@ def _cli(*args):
     return [sys.executable, "-m", "ghee.cli", "render", *args]
 
 
-def test_parse_save_opts_types():
-    from ghee.cli import _parse_save_opts
+def test_parse_kv_types():
+    from ghee.cli import _parse_kv
 
-    d = _parse_save_opts("quality=90,lossless=True,method=fast,note=hi there")
+    d = _parse_kv("quality=90,lossless=True,method=fast,note=hi there", "--save-opts")
     assert d == {
         "quality": 90,
         "lossless": True,
@@ -42,11 +46,16 @@ def test_parse_save_opts_types():
     assert d["lossless"] is True
 
 
-def test_parse_save_opts_malformed_exits():
-    from ghee.cli import _parse_save_opts
+def test_parse_kv_malformed_exits_naming_the_flag_that_took_it():
+    """One parser, two flags: the error has to say which one was written."""
+    from ghee.cli import _parse_kv
 
-    with pytest.raises(SystemExit):
-        _parse_save_opts("quality=90,nope")
+    for s, what in (
+        ("quality=90,nope", "render: --save-opts"),
+        ("width=240,nope", "serve: --display-opts"),
+    ):
+        with pytest.raises(SystemExit, match=f"{what} wants k=v pairs, got 'nope'"):
+            _parse_kv(s, what)
 
 
 def test_timestep_reproducible(renderer):
@@ -250,3 +259,503 @@ def test_worker_error_surfaces_on_close(tmp_path, monkeypatch):
     seq.write(np.zeros((8, 6, 4), dtype=np.uint8))
     with pytest.raises(OSError, match="disk full"):
         seq.close()
+
+
+# ------------------------------------------------------- the sink list ----
+# Outputs are a list: -o, --display and --h264 combine, and --serve attaches the
+# console to whatever the list already is. Driven against a fake renderer.
+
+
+class _Fake:
+    """A Renderer that fills whatever buffer the loop hands it."""
+
+    def __init__(self, w, h, components=4, **kw):
+        self.width, self.height, self.components = w, h, components
+        self.kw = kw
+        self.drawn = 0
+
+    def setup(self, scene):
+        return ""
+
+    def render(self, provider=None, out=None, out_size=None):
+        self.drawn += 1
+        if out is not None:
+            out[...] = self.drawn
+        return out
+
+    def draw(self, provider=None):
+        self.drawn += 1
+
+    def set_scene_param(self, *a):
+        pass
+
+    def set_param(self, *a):
+        pass
+
+    def set_time(self, t):
+        pass
+
+    def set_dt(self, value):
+        pass
+
+    def close(self):
+        pass
+
+
+class _Panel:
+    """A panel driver with its own geometry and pixel layout, and a couple of
+    constructor options for --display-opts to set."""
+
+    dest = DEST_PANEL
+    scanout = pooled = False
+    copies = True
+    persists = True
+    components = 3
+    native_format = "mono1"
+
+    def __init__(self, width=24, height=16, backlight=22):
+        self.width, self.height, self.backlight = width, height, backlight
+        self.frames = []
+        self.on = self.off = self.cleared = 0
+
+    def wants(self, frame):
+        return True
+
+    def readback(self):
+        return None
+
+    def write(self, frame):
+        self.frames.append(frame.copy())
+
+    def mirror(self, renderer):
+        pass
+
+    def turn_on(self):
+        self.on += 1
+
+    def turn_off(self):
+        self.off += 1
+
+    def clear(self):
+        self.cleared += 1
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def fakes(monkeypatch, tmp_path):
+    """A fake renderer, a registered stub panel, and a scene file to render."""
+    from ghee.drivers.base import _REGISTRY
+
+    made = {"renderers": [], "panels": []}
+
+    def renderer(*a, **kw):
+        r = _Fake(*a, **kw)
+        made["renderers"].append(r)
+        return r
+
+    def panel(width=24, height=16, backlight=22):
+        p = _Panel(width, height, backlight)
+        made["panels"].append(p)
+        return p
+
+    monkeypatch.setattr("ghee.engine.Renderer", renderer)
+    monkeypatch.setitem(_REGISTRY, "stub", panel)
+    (tmp_path / "s.scene.json").write_text(SCENE, encoding="utf-8")
+    made["scene"] = str(tmp_path / "s.scene.json")
+    return made
+
+
+def _run(*args):
+    from ghee.cli import main
+
+    main(list(args))
+
+
+def test_a_panel_and_an_image_sequence_share_one_render(fakes, tmp_path, capsys):
+    Image = pytest.importorskip("PIL.Image")
+    _run(
+        "render",
+        fakes["scene"],
+        "--display",
+        "stub",
+        "-o",
+        str(tmp_path / "p.####.png"),
+        "--frames",
+        "4",
+    )
+    panel = fakes["panels"][0]
+    assert len(panel.frames) == 4
+    assert fakes["renderers"][0].drawn == 4  # one render fed both
+    assert sorted(p.name for p in tmp_path.glob("p.*.png")) == [
+        f"p.000{i}.png" for i in range(4)
+    ]
+    assert Image.open(tmp_path / "p.0000.png").size == (24, 16)  # the panel's geometry
+    assert "wrote 4 frame(s)" in capsys.readouterr().out
+
+
+def test_a_panel_sets_the_render_size_and_its_own_components(fakes, tmp_path):
+    _run("render", fakes["scene"], "--display", "stub", "--frames", "1")
+    r = fakes["renderers"][0]
+    assert (r.width, r.height, r.components) == (24, 16, 3)
+    assert fakes["panels"][0].frames[0].shape == (16, 24, 3)
+
+
+def test_a_panel_ignores_size_and_components(fakes):
+    _run(
+        "render",
+        fakes["scene"],
+        "--display",
+        "stub",
+        "--size",
+        "640x480",
+        "--components",
+        "4",
+        "--frames",
+        "1",
+    )
+    r = fakes["renderers"][0]
+    assert (r.width, r.height, r.components) == (24, 16, 3)
+
+
+def test_display_opts_reach_the_driver_and_size_the_render(fakes):
+    """A panel whose geometry differs from the driver's defaults: the whole
+    point of the flag."""
+    _run(
+        "render",
+        fakes["scene"],
+        "--display",
+        "stub",
+        "--display-opts",
+        "width=40,height=30,backlight=None",
+        "--frames",
+        "1",
+    )
+    p = fakes["panels"][0]
+    assert (p.width, p.height, p.backlight) == (40, 30, None)
+    r = fakes["renderers"][0]
+    assert (r.width, r.height, r.components) == (40, 30, 3)
+    assert p.frames[0].shape == (30, 40, 3)
+
+
+def test_an_unknown_display_opt_names_the_options_the_driver_takes(fakes):
+    with pytest.raises(SystemExit) as e:
+        _run(
+            "render",
+            fakes["scene"],
+            "--display",
+            "stub",
+            "--display-opts",
+            "widht=40",
+            "--frames",
+            "1",
+        )
+    msg = str(e.value)
+    assert "--display-opts" in msg and "widht" in msg
+    assert "takes: width, height, backlight" in msg
+    assert fakes["panels"] == []  # refused before the constructor claimed a line
+
+
+def test_display_opts_belong_to_a_panel_driver(fakes, tmp_path):
+    for extra, msg in (
+        ((), "--display-opts without --display"),
+        (("--display", "kms"), "kms has no driver"),
+    ):
+        with pytest.raises(SystemExit, match=msg):
+            _run(
+                "render",
+                fakes["scene"],
+                "-o",
+                str(tmp_path / "x.png"),
+                "--display-opts",
+                "width=40",
+                *extra,
+            )
+
+
+def test_a_panel_render_loops_until_stopped_and_an_image_render_is_one_frame(fakes):
+    from ghee import cli
+
+    ns = _parse("render", fakes["scene"], "-o", "x.png")
+    assert cli._frames(ns) == 1
+    for endless in (
+        ("render", fakes["scene"], "--display", "stub"),
+        ("render", fakes["scene"], "--h264", "out.h264"),
+        ("render", fakes["scene"], "--serve"),
+    ):
+        assert cli._frames(_parse(*endless)) == 0
+    assert (
+        cli._frames(
+            _parse("render", fakes["scene"], "--display", "stub", "--frames", "9")
+        )
+        == 9
+    )
+
+
+def test_h264_is_a_sink_beside_the_others(fakes, tmp_path, monkeypatch):
+    import ghee.h264 as h264
+
+    aus = []
+
+    class Enc:
+        def feed(self, rgb):
+            aus.append(bytes(rgb.tobytes()[:1]))
+
+        def get_au(self, timeout=2.0):
+            return b"AU", False
+
+        def drain(self):
+            return iter((b"TAIL",))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(h264, "make_encoder", lambda *a, **kw: Enc())
+    _run(
+        "render",
+        fakes["scene"],
+        "--display",
+        "stub",
+        "--h264",
+        str(tmp_path / "o.h264"),
+        "--frames",
+        "3",
+    )
+    assert len(aus) == 3  # the encoder saw every frame the panel did
+    assert len(fakes["panels"][0].frames) == 3
+    assert (tmp_path / "o.h264").read_bytes() == b"AU" * 3 + b"TAIL"
+
+
+def test_two_sinks_cannot_both_claim_stdout(fakes):
+    with pytest.raises(SystemExit, match="both want stdout"):
+        _run("render", fakes["scene"], "-o", "-", "--h264", "-")
+
+
+def test_a_render_with_nowhere_to_go_says_so(fakes):
+    with pytest.raises(SystemExit, match="pass -o PATTERN"):
+        _run("render", fakes["scene"])
+
+
+def test_the_stats_line_names_every_destination(fakes, tmp_path, capsys):
+    _run(
+        "render",
+        fakes["scene"],
+        "--display",
+        "stub",
+        "-o",
+        str(tmp_path / "s.####.png"),
+        "--frames",
+        "2",
+        "--stats",
+    )
+    assert "-> panel+file" in capsys.readouterr().err
+
+
+def test_a_bundled_name_only_resolves_with_demo(fakes, tmp_path, monkeypatch):
+    """The examples are not an ambient namespace: --demo is what puts them on
+    the search path."""
+    pytest.importorskip("PIL.Image")
+    monkeypatch.delenv("GHEE_SCENES", raising=False)
+    out = str(tmp_path / "b.png")
+    with pytest.raises(SystemExit, match="no scene 'bars'"):
+        _run("render", "bars", "-o", out, "--frames", "1")
+    _run("render", "--demo", "bars", "-o", out, "--frames", "1")
+    assert os.path.exists(out)
+
+
+# --------------------------------------------------------- serve ----
+
+
+def _parse(*argv):
+    """The namespace a command line resolves to, without running it."""
+    from ghee import cli
+
+    ns = cli._parser().parse_args(list(argv))
+    ns.scene_args = []
+    return ns
+
+
+@pytest.fixture
+def served(monkeypatch):
+    """What ghee.console.server.run() was called with."""
+    from ghee.console import server
+
+    calls = []
+    monkeypatch.setattr(server, "run", lambda **kw: calls.append(kw))
+    return calls
+
+
+def test_serve_is_render_serve_over_a_directory(served, tmp_path):
+    (tmp_path / "one.scene.json").write_text(SCENE, encoding="utf-8")
+    _run("serve", str(tmp_path))
+    _run("render", str(tmp_path), "--serve")
+    a, b = served
+    assert a["scenes_dir"] == b["scenes_dir"] == str(tmp_path)
+    assert a["store"] is b["store"] is None
+    for k in ("size", "display", "components", "frames", "host", "sinks", "timestep"):
+        assert a[k] == b[k], k
+
+
+def test_serve_keeps_its_own_defaults(served, tmp_path):
+    (tmp_path / "one.scene.json").write_text(SCENE, encoding="utf-8")
+    _run("serve", str(tmp_path))
+    kw = served[0]
+    assert kw["port"] == 8090
+    assert kw["bitrate"] == 10_000_000  # the /h264 floor, not --h264's own rate
+    assert (kw["size"], kw["preview_max"], kw["preview_fps"]) == ((320, 240), 480, 15)
+    assert kw["frames"] == 0 and kw["display"] is False
+    assert kw["sinks"] == []
+
+
+def test_serve_takes_every_flag_it_always_took(served, tmp_path):
+    (tmp_path / "one.scene.json").write_text(SCENE, encoding="utf-8")
+    _run(
+        "serve",
+        str(tmp_path),
+        "--port",
+        "9",
+        "--host",
+        "0.0.0.0",
+        "--size",
+        "80x60",
+        "--preview-fps",
+        "5",
+        "--preview-max",
+        "120",
+        "--stream-max",
+        "320",
+        "--bitrate",
+        "123",
+        "--rgb565",
+        "--",
+        "--text",
+        "hi",
+    )
+    kw = served[0]
+    assert (kw["port"], kw["host"], kw["size"]) == (9, "0.0.0.0", (80, 60))
+    assert (kw["preview_fps"], kw["preview_max"], kw["stream_max"]) == (5, 120, 320)
+    assert (kw["bitrate"], kw["rgb565"]) == (123, True)
+    assert kw["scene_args"] == ["--text", "hi"]
+
+
+def test_serve_demo_is_the_bundled_examples_read_only(served):
+    _run("serve", "--demo")
+    assert served[0]["scenes_dir"] is None  # run() reads that as the examples
+    assert served[0]["store"] is None
+
+
+def test_serve_display_still_means_the_kms_scanout(served):
+    from ghee.engine import probe_display
+
+    if probe_display() is None:
+        pytest.skip("no connected display for kms")
+    _run("serve", "--demo", "--display")
+    assert served[0]["display"] is True
+    assert served[0]["sinks"] == []
+
+
+def test_serve_display_can_now_name_a_panel(fakes, served, tmp_path):
+    """The gap this closes: the console could only ever scan out to KMS."""
+    (tmp_path / "one.scene.json").write_text(SCENE, encoding="utf-8")
+    _run("serve", str(tmp_path), "--display", "stub")
+    kw = served[0]
+    assert kw["display"] is False
+    assert kw["sinks"] == fakes["panels"]
+    assert (kw["size"], kw["components"]) == ((24, 16), 3)
+
+
+def test_serve_takes_display_opts_too(fakes, served, tmp_path):
+    (tmp_path / "one.scene.json").write_text(SCENE, encoding="utf-8")
+    _run(
+        "serve",
+        str(tmp_path),
+        "--display",
+        "stub",
+        "--display-opts",
+        "width=40,height=30",
+    )
+    kw = served[0]
+    assert kw["sinks"] == fakes["panels"]
+    assert (fakes["panels"][0].width, fakes["panels"][0].height) == (40, 30)
+    assert kw["size"] == (40, 30)
+
+
+def test_render_serve_on_one_scene_serves_that_scene_alone(served, tmp_path):
+    (tmp_path / "one.scene.json").write_text(SCENE, encoding="utf-8")
+    (tmp_path / "two.scene.json").write_text(SCENE, encoding="utf-8")
+    _run("render", str(tmp_path / "one.scene.json"), "--serve")
+    store = served[0]["store"]
+    assert store.names == ["one"]
+    assert served[0]["scenes_dir"] is None
+
+
+def test_a_bundled_scene_served_on_its_own_is_read_only(served):
+    _run("render", "--demo", "bars", "--serve")
+    assert served[0]["store"].names == ["bars"]
+    assert served[0]["store"].read_only is True
+
+
+def test_a_console_attached_render_is_endless_unless_frames_says_otherwise(
+    served, tmp_path
+):
+    (tmp_path / "one.scene.json").write_text(SCENE, encoding="utf-8")
+    _run("serve", str(tmp_path))
+    _run("render", str(tmp_path), "--serve", "--frames", "40")
+    assert [kw["frames"] for kw in served] == [0, 40]
+
+
+def test_a_panel_and_a_console_at_once(fakes, served, tmp_path):
+    (tmp_path / "one.scene.json").write_text(SCENE, encoding="utf-8")
+    _run(
+        "serve",
+        str(tmp_path),
+        "--display",
+        "stub",
+        "--port",
+        "0",
+        "--preview-fps",
+        "2",
+    )
+    kw = served[0]
+    assert kw["sinks"] == fakes["panels"] and kw["preview_fps"] == 2
+
+
+def test_the_scanout_is_never_handed_over_as_a_sink(served):
+    """KMS is a mode the Renderer is created in, and the console creates it."""
+    _run("render", "--demo", "bars", "--serve", "--display", "kms", "--size", "64x48")
+    assert served[0]["display"] is True
+    assert served[0]["sinks"] == []
+
+
+def test_the_console_reports_a_panel_in_out(monkeypatch):
+    from ghee.console import server
+    from ghee.stats import DEST_H264, DEST_KMS, DEST_MJPEG, DEST_PANEL
+
+    monkeypatch.setattr(server, "_sinks", (_Panel(),))
+    monkeypatch.setattr(server, "_display", False)
+    monkeypatch.setattr(server, "_nclients", 0)
+    monkeypatch.setattr(server, "_fanout", server.H264Fanout())
+    assert server.stats()["out"] == [DEST_PANEL]
+    server._fanout.add()
+    monkeypatch.setattr(server, "_nclients", 1)
+    monkeypatch.setattr(server, "_display", True)
+    assert server.stats()["out"] == [DEST_KMS, DEST_PANEL, DEST_H264, DEST_MJPEG]
+
+
+def test_the_console_publishes_a_panels_own_format(monkeypatch):
+    from ghee.console import server
+
+    monkeypatch.setattr(server, "_sinks", ())
+    assert server._format() == "rgba"
+    monkeypatch.setattr(server, "_sinks", (_Panel(),))
+    assert server._format() == "mono1"
+
+
+def test_filters_and_h264_are_refused_with_serve(fakes):
+    for argv, msg in (
+        (("--filters", "dither"), "filter picker"),
+        (("--h264", "x.h264"), "serves /h264"),
+    ):
+        with pytest.raises(SystemExit, match=msg):
+            _run("render", fakes["scene"], "--serve", *argv)

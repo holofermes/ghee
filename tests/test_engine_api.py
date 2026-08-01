@@ -4,7 +4,9 @@ a GPU take the shared `renderer` fixture and skip cleanly without a device."""
 
 import ctypes
 import os
+import re
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -21,6 +23,8 @@ from ghee.engine import (
 )
 
 from .helpers import scene
+
+ENGINE_C = Path(__file__).resolve().parents[1] / "ghee" / "_engine" / "engine.c"
 
 FLAT = "void main(){ gl_FragColor = vec4(0.5, 0.25, 0.75, 1.0); }"
 BROKEN = "void main(){ gl_FragColor = no_such_symbol; }"
@@ -89,20 +93,53 @@ def test_probe_display_device_names_the_card_it_found(monkeypatch):
 
 @pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="as root this would take DRM master from the session for real",
+    reason="not worth contending for the session's card as root",
 )
 def test_display_create_fails_once_without_drm_master():
     found = probe_display_device()
     if found is None:
         pytest.skip("no KMS display to contend for")
     dev, w, h = found
-    with pytest.raises(RuntimeError) as e:
-        Renderer(w, h, display=True, dri_device=dev)
-    msg = str(e.value)
     before_the_master_attempt = ("cannot open DRI device", "eglInitialize failed")
+
+    # An idle box has no master to lose the race against, so take it here rather
+    # than relying on whatever happens to be running.
+    try:
+        holder = Renderer(w, h, display=True, dri_device=dev)
+    except RuntimeError as e:
+        msg = str(e)
+        if any(s in msg for s in before_the_master_attempt):
+            pytest.skip(f"{dev}: {msg}")
+        assert "DRM master" in msg
+        return
+
+    try:
+        with pytest.raises(RuntimeError) as e:
+            Renderer(w, h, display=True, dri_device=dev)
+    finally:
+        holder.close()
+    msg = str(e.value)
     if any(s in msg for s in before_the_master_attempt):
         pytest.skip(f"{dev}: {msg}")
     assert "DRM master" in msg
+
+
+def test_a_flip_the_board_is_too_slow_to_finish_is_still_waited_for():
+    """A page flip is fenced on the GPU finishing the frame, so its wait scales
+    with the render rather than with the panel's refresh. Bound that wait near a
+    frame time and a slow board leaves the flip pending, and every submit made
+    while it stays pending is refused."""
+    src = ENGINE_C.read_text()
+    bound_ms = int(re.search(r"#define FLIP_STUCK_MS (\d+)", src).group(1))
+    assert bound_ms >= 1000  # slower than any frame, i.e. only a stuck flip hits it
+
+    present = src.split("void ghee_mp_present")[1]
+    unreaped = present.split("!wait_flip(g)")[1].split("} else")[0]
+    assert "gbm_surface_release_buffer(g->gbm_surface, bo)" in unreaped
+    assert "drmModePageFlip" not in unreaped
+
+    flipped = present.split("if (!drmModePageFlip")[1].split("} else")[0]
+    assert "g->flip_failed = false;" in flipped
 
 
 def test_jpeg_loader_is_gone():
@@ -158,6 +195,9 @@ class _SetupHarness:
 
     def max_texture_units(self):
         return 8
+
+    def data_texture_linear(self):
+        return True
 
     def last_error(self):
         return self.STUB
@@ -400,6 +440,40 @@ def test_set_time_none_returns_to_the_wall_clock(renderer):
     a = renderer.render(None).copy()
     time.sleep(0.02)
     assert not np.array_equal(renderer.render(None), a)
+
+
+def test_set_dt_reaches_every_pass(renderer):
+    """DT rides the draw like time, so one store has to land in the uniform of every
+    pass. Red carries the first pass's DT through a channel, green the second's."""
+    sc = scene(
+        [
+            {
+                "name": "src",
+                "code": "void main(){ gl_FragColor = vec4(DT, 0.0, 0.0, 1.0); }",
+            },
+            {
+                "name": "main",
+                "code": "void main(){ gl_FragColor = vec4("
+                "texture2D(iChannel0, v_texCoord).r, DT, 0.0, 1.0); }",
+                "channels": [{"buffer": "src"}],
+            },
+        ]
+    )
+    assert renderer.setup(sc) == ""
+    renderer.set_time(0.0)
+
+    def dt_channels():
+        return renderer.render(None).copy()[..., :2].astype(int)
+
+    assert (abs(dt_channels() - round(255 / 60)) <= 1).all()  # engine default
+    renderer.set_dt(0.5)
+    assert (abs(dt_channels() - 128) <= 1).all()
+    renderer.set_dt(0.25)
+    assert (abs(dt_channels() - 64) <= 1).all()
+
+    renderer.set_dt(0.5)
+    same = renderer.render(None).copy()
+    assert np.array_equal(renderer.render(None), same)
 
 
 def test_closing_a_second_renderer_leaves_the_first_alive(renderer):

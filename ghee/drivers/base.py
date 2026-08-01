@@ -9,6 +9,7 @@ entry point whose module calls register() on import.
 import abc
 
 from ghee.output import Output
+from ghee.stats import DEST_PANEL
 
 _REGISTRY = {}
 
@@ -18,6 +19,8 @@ def register(name, cls):
 
 
 class DisplayDriver(Output):
+    dest = DEST_PANEL
+    persists = True  # the panel holds its last frame with no bus traffic
     width = 0
     height = 0
     components = 3
@@ -29,10 +32,4 @@ class DisplayDriver(Output):
 
     @abc.abstractmethod
     def write(self, frame):
-        pass
-
-    def turn_on(self):
-        pass
-
-    def turn_off(self):
         pass

@@ -3,6 +3,9 @@
 A sink takes an RGB(A) frame (h, w, components) uint8 and puts it somewhere: image
 files on disk, a hardware panel (see ghee.drivers), a byte stream. The renderer never
 knows which sink it feeds.
+
+A render has a list of them (ghee.loop), so what each one needs from a frame it
+declares itself: the class attributes below and wants()/readback().
 """
 
 import abc
@@ -11,6 +14,8 @@ import re
 import threading
 
 import numpy as np
+
+from ghee.stats import DEST_FILE, DEST_KMS, DEST_PIPE
 
 _RUN = re.compile(r"#+")
 
@@ -70,11 +75,56 @@ class FixedPacer:
 
 
 class Output(abc.ABC):
+    dest = ""  # what a host publishes as this sink's /stats destination
+    scanout = False  # the renderer presents to it (KMS); no readback for it
+    pooled = False  # lends the loop its own buffers through acquire()/submit()
+    copies = True  # write() is done with the buffer when it returns
+    persists = False  # keeps showing the last frame, so a clean one may be skipped
+
+    def wants(self, frame):
+        """Whether this sink takes a CPU frame this iteration. False for a sink
+        fed by the GPU (scanout, a hardware encoder) or one throttling itself."""
+        return True
+
+    def readback(self):
+        """(w, h) to read the frame back at, or None for the render size read
+        back directly. A size is a GPU downscale, which costs a blit and saves
+        the bytes."""
+        return None
+
     @abc.abstractmethod
     def write(self, frame):
         pass
 
+    def mirror(self, renderer):  # noqa: B027  optional hook: sample the GPU after the draw
+        pass
+
+    def turn_on(self):  # noqa: B027  optional hook: a sink with a power state (a backlight)
+        pass
+
+    def turn_off(self):  # noqa: B027
+        pass
+
+    def clear(self):  # noqa: B027  optional hook: blank a surface that holds its frame
+        pass
+
     def close(self):  # noqa: B027  optional hook, sinks override only if they hold resources
+        pass
+
+
+class Scanout(Output):
+    """KMS: the renderer page-flips the final buffer to the connector itself
+    (Renderer.present), so this sink holds nothing and never takes a frame. It
+    is in the list to name the destination and to put the loop on present()."""
+
+    dest = DEST_KMS
+    scanout = True
+    persists = True
+
+    def wants(self, frame):
+        return False
+
+    def write(self, frame):
         pass
 
 
@@ -90,6 +140,9 @@ class ImageSequence(Output):
     writer is `depth` frames behind. depth is the grace for a slow writer; the
     depth+1 cap is the memory bound on a small board. Set depth to the frame
     count and the render never waits, the writer drains at the end."""
+
+    dest = DEST_FILE
+    pooled = True
 
     def __init__(self, pattern, start=0, save_opts=None, depth=16):
         from PIL import Image
@@ -165,6 +218,8 @@ class RawStream(Output):
     """Write each frame's exact bytes to a binary stream, no header, one frame
     after another (h*w*components, row-major). For piping raw video to ffmpeg,
     mpv, or a recorder."""
+
+    dest = DEST_PIPE
 
     def __init__(self, stream):
         self.stream = stream

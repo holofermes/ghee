@@ -7,145 +7,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "adafruit-blinka"
-version = "9.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "adafruit-circuitpython-typing" },
-    { name = "adafruit-platformdetect" },
-    { name = "adafruit-pureio" },
-    { name = "binho-host-adapter" },
-    { name = "pyftdi" },
-    { name = "sysv-ipc", marker = "platform_machine != 'mips' and sys_platform == 'linux'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/43/1addb059d8e589799571718f4c6f7456a3112681c9f92442939d06f67605/adafruit_blinka-9.1.0.tar.gz", hash = "sha256:6d17122358d5f9c4a550eae4f78207ac4c239662236bb37fc646b9f4166e3248", size = 929886, upload-time = "2026-04-21T18:29:55.987Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/97/17dac675981730d29b2d583de2aa0a9c2963d6c63f6bdc7eebf2711914ef/adafruit_blinka-9.1.0-py3-none-any.whl", hash = "sha256:6f617d4ebb7c2e14dfe1259c63f21df4a77d1b12d5efd92cf71ae4bf34d21b91", size = 1059892, upload-time = "2026-04-21T18:29:54.24Z" },
-]
-
-[[package]]
-name = "adafruit-circuitpython-busdevice"
-version = "5.2.17"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "adafruit-blinka" },
-    { name = "adafruit-circuitpython-typing" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/40/c0/f789bfc16d2e7eed23171f264b961ceb25314ba92d733be5bd47a4ecb23e/adafruit_circuitpython_busdevice-5.2.17.tar.gz", hash = "sha256:01887ba0056d3635536f0bf1e580a2969c67fc2c4c7b42a4093bcf7a3308bc9b", size = 24423, upload-time = "2026-04-23T21:18:13.438Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/0d/66a4e0fbd7b35107f7dee04fed890f77b83d1da9dd1f7474af2ed21700ea/adafruit_circuitpython_busdevice-5.2.17-py3-none-any.whl", hash = "sha256:5a834fbe0b88b07d20494bec566815da154aa4b1b668e2e665277b34b3578e44", size = 7494, upload-time = "2026-04-23T21:18:12.284Z" },
-]
-
-[[package]]
-name = "adafruit-circuitpython-connectionmanager"
-version = "3.1.8"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "adafruit-blinka" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/29/1653838bc0e5c6119fa2b03edb58b592a2475e7cf99810064a99e5eb8994/adafruit_circuitpython_connectionmanager-3.1.8.tar.gz", hash = "sha256:ce7436d62ac26312fbd2fc7d8f70ab0582a7c7807d7033ae5bd5cb53e4f66f3b", size = 33828, upload-time = "2026-04-23T21:18:42.138Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e4/43/929d17e5dbe0773e3a3c728b12cf1a777ada32639764b09365a1b56703c0/adafruit_circuitpython_connectionmanager-3.1.8-py3-none-any.whl", hash = "sha256:f93e27874a840f728b5cdbb1bcf0aee4e75ed1c0ba46b4562606ac3ac3ea2cca", size = 7755, upload-time = "2026-04-23T21:18:40.984Z" },
-]
-
-[[package]]
-name = "adafruit-circuitpython-framebuf"
-version = "1.6.12"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "adafruit-blinka" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/42/7b/3ec24ed52b1b0aa26d5bb77efaf9c873bd087827c3c6fa68b31a7551979a/adafruit_circuitpython_framebuf-1.6.12.tar.gz", hash = "sha256:7305f6fd22296442528010875fe95fd2203537c3e711b091f8e1fe88b21b6122", size = 34119, upload-time = "2026-04-23T21:20:50.362Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/98/abee7fc878d9efbbddfe6fbfef39d78d8b5b995553b79893ef08b4a9985f/adafruit_circuitpython_framebuf-1.6.12-py3-none-any.whl", hash = "sha256:b9c04fdacca6660ecb6c3ec4f4cad5b79416913d68fb46e98aa8af22e1d2d08b", size = 9123, upload-time = "2026-04-23T21:20:49.159Z" },
-]
-
-[[package]]
-name = "adafruit-circuitpython-requests"
-version = "4.1.17"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "adafruit-blinka" },
-    { name = "adafruit-circuitpython-connectionmanager" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/bc/5c/cb31dd0a6e56a92bd9bf672539ba6102204bc443fe9af9a5f8e893b99169/adafruit_circuitpython_requests-4.1.17.tar.gz", hash = "sha256:7259976be340324d34da1ba6f4b935430b46ceece2e5c1632387a24e6f94e9a3", size = 67777, upload-time = "2026-04-23T21:24:48.423Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/8c/15a2de09cc3c30793336cf79798948768611463ddfb2b2669f51569228fb/adafruit_circuitpython_requests-4.1.17-py3-none-any.whl", hash = "sha256:4c205188a052f52b3bb8ab4af97798d7d56ae3701857d31f03b164f029fae44f", size = 10841, upload-time = "2026-04-23T21:24:47.522Z" },
-]
-
-[[package]]
-name = "adafruit-circuitpython-rgb-display"
-version = "3.14.6"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "adafruit-blinka" },
-    { name = "adafruit-circuitpython-busdevice" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f1/e6/21acb8f0a88bd2f31091a5278ee63bf37093548267277527e20ef1264b4e/adafruit_circuitpython_rgb_display-3.14.6.tar.gz", hash = "sha256:0376b6ba3740459b28439899f3c5e24666dac152423d3f36312ce13ce9c534ce", size = 40563, upload-time = "2026-06-02T13:57:38.94Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/84/fa9cfd2041311fd7956a2b312ec1cda9b928bb3199b5f2f3e1dce3ec4802/adafruit_circuitpython_rgb_display-3.14.6-py3-none-any.whl", hash = "sha256:d7b4ff30ea379e2a900e6bb28a7b4cc43af3ae9c55a5a9567d89be78b6212a50", size = 21899, upload-time = "2026-06-02T13:57:37.747Z" },
-]
-
-[[package]]
-name = "adafruit-circuitpython-ssd1306"
-version = "2.12.24"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "adafruit-blinka" },
-    { name = "adafruit-circuitpython-busdevice" },
-    { name = "adafruit-circuitpython-framebuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/78/25/f7dc77aa59354f477c1cbe143c07b40eed6414eb822d6bf98dd2e06cfba5/adafruit_circuitpython_ssd1306-2.12.24.tar.gz", hash = "sha256:2728e88008b27787565eac1a99f063ecb94538d380855a8875db3bdd87ea5626", size = 37667, upload-time = "2026-04-23T21:07:30.264Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/84/6e6525dc9a974174ef002441f8959a667e6d9a37dfdb483974aaeb7221a9/adafruit_circuitpython_ssd1306-2.12.24-py3-none-any.whl", hash = "sha256:f6bc9bf726cc7f8f8c79e1156d785a73dbf8770d64c2b78ec58396d4bfca4e1a", size = 7607, upload-time = "2026-04-23T21:07:29.371Z" },
-]
-
-[[package]]
-name = "adafruit-circuitpython-typing"
-version = "1.12.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "adafruit-blinka" },
-    { name = "adafruit-circuitpython-busdevice" },
-    { name = "adafruit-circuitpython-requests" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/65/a2/40a3440aed2375371507af668570b68523ee01db9c25c47ce5a05883170e/adafruit_circuitpython_typing-1.12.3.tar.gz", hash = "sha256:63f196f834e47842bcd4cf8c37aaa0c61e1aeb5d07f056c875fc3016cda91a12", size = 25603, upload-time = "2025-10-27T18:17:38.56Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/a1/578a03ba2bce0809b4e30974b47958963c9efe67b9fe74e7dbcdbbd45318/adafruit_circuitpython_typing-1.12.3-py3-none-any.whl", hash = "sha256:f6d0a02150e1e4efb5a2c2945b88d948809fdb465875f39947108b8467c986d9", size = 11014, upload-time = "2025-10-27T18:17:37.771Z" },
-]
-
-[[package]]
-name = "adafruit-platformdetect"
-version = "3.89.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/43/9b/96e46cb5eb2cf4119ff4bf0f840221704de29e2eed03976c4b291d483174/adafruit_platformdetect-3.89.1.tar.gz", hash = "sha256:74552d1afcf779a84ca63527a1eaee9995c429ff422db15492bad0c3599cab4b", size = 49753, upload-time = "2026-06-24T18:28:39.069Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/0b/193ac7ed72f1ecdf6d4817aab86157f9198ed22e5725f03b9945baad5389/adafruit_platformdetect-3.89.1-py3-none-any.whl", hash = "sha256:d13c206dc37e399cccda953be9b1d3709c549d05be484b1c2da8077043c0beab", size = 27108, upload-time = "2026-06-24T18:28:37.959Z" },
-]
-
-[[package]]
-name = "adafruit-pureio"
-version = "1.1.11"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e5/b7/f1672435116822079bbdab42163f9e6424769b7db778873d95d18c085230/Adafruit_PureIO-1.1.11.tar.gz", hash = "sha256:c4cfbb365731942d1f1092a116f47dfdae0aef18c5b27f1072b5824ad5ea8c7c", size = 35511, upload-time = "2023-05-25T19:01:34.654Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/9d/28e9d12f36e13c5f2acba3098187b0e931290ecd1d8df924391b5ad2db19/Adafruit_PureIO-1.1.11-py3-none-any.whl", hash = "sha256:281ab2099372cc0decc26326918996cbf21b8eed694ec4764d51eefa029d324e", size = 10678, upload-time = "2023-05-25T19:01:32.397Z" },
-]
-
-[[package]]
-name = "binho-host-adapter"
-version = "0.1.6"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyserial" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/68/36/29b7b896e83e195fac6d64ccff95c0f24a18ee86e7437a22e60e0331d90a/binho-host-adapter-0.1.6.tar.gz", hash = "sha256:1e6da7a84e208c13b5f489066f05774bff1d593d0f5bf1ca149c2b8e83eae856", size = 10068, upload-time = "2020-06-04T19:38:11.789Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/6b/0f13486003aea3eb349c2946b7ec9753e7558b78e35d22c938062a96959c/binho_host_adapter-0.1.6-py3-none-any.whl", hash = "sha256:f71ca176c1e2fc1a5dce128beb286da217555c6c7c805f2ed282a6f3507ec277", size = 10540, upload-time = "2020-06-04T19:38:10.612Z" },
-]
-
-[[package]]
 name = "build"
 version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -170,7 +31,6 @@ wheels = [
 
 [[package]]
 name = "ghee-render"
-version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -180,9 +40,8 @@ dependencies = [
 
 [package.optional-dependencies]
 drivers = [
-    { name = "adafruit-blinka" },
-    { name = "adafruit-circuitpython-rgb-display" },
-    { name = "adafruit-circuitpython-ssd1306" },
+    { name = "gpiod" },
+    { name = "smbus2" },
     { name = "spidev" },
 ]
 test = [
@@ -193,17 +52,44 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "adafruit-blinka", marker = "extra == 'drivers'" },
-    { name = "adafruit-circuitpython-rgb-display", marker = "extra == 'drivers'" },
-    { name = "adafruit-circuitpython-ssd1306", marker = "extra == 'drivers'" },
     { name = "build", marker = "extra == 'test'" },
+    { name = "gpiod", marker = "extra == 'drivers'" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pillow", specifier = ">=9.4" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "setuptools", marker = "extra == 'test'", specifier = ">=64" },
+    { name = "smbus2", marker = "extra == 'drivers'" },
     { name = "spidev", marker = "extra == 'drivers'" },
 ]
 provides-extras = ["drivers", "test"]
+
+[[package]]
+name = "gpiod"
+version = "2.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/c2/c7bc26965855f39ae3e1b09b404a1fdc3b172dac371012c316f5b9b6a314/gpiod-2.5.0.tar.gz", hash = "sha256:53ae5a1f14d6388c155b591ca0fc0cfa73b44d4f6d8d117e8a9e68f5902d187a", size = 75527, upload-time = "2026-06-17T07:46:25.985Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/08/06/35e0b6b70b7b855ee06086e06a32a3dc73c69d9d653243a4c58be6f16b9f/gpiod-2.5.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:52cd6b973a80c5db29f34f9a54205e88e91e40132fb8a85bccfa06634cb77deb", size = 115209, upload-time = "2026-06-17T07:46:01.798Z" },
+    { url = "https://files.pythonhosted.org/packages/43/ec/207ed0d0a34f62ae0bdb3af2e18b1cad07cd4d2d2d71071c723b44450676/gpiod-2.5.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:58c0945700df37a595eaad7016775b2ac5877246be78013c03e139ec5d64f4b1", size = 114694, upload-time = "2026-06-17T07:46:02.9Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/9a/b5e9a741bcff50be3b61306501fc15d1e760983eb287820c500d93e6fae2/gpiod-2.5.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:471daff511e4df27e6f2b4e812c8f2a3ee9b7dd376e22d720c0fe8da07b757e7", size = 113261, upload-time = "2026-06-17T07:46:04.17Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/b3/3817ecb7415f284b7d2f51bcc545eabf490b6f103f13914290ba2b6c916f/gpiod-2.5.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:26e2a98902222c1444d05d2f0a67a40c064514210eaf997f49ace93144a516c9", size = 112890, upload-time = "2026-06-17T07:46:05.476Z" },
+    { url = "https://files.pythonhosted.org/packages/31/58/9b5cf24fcbc084c9b3fa7c2a301297a9f503003f900d106ca7cc30ccd918/gpiod-2.5.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:514d6132654d3c7208d86974c65fab077b623e30ac02ce8224bfd5202c00785c", size = 114901, upload-time = "2026-06-17T07:46:06.601Z" },
+    { url = "https://files.pythonhosted.org/packages/77/8a/16397b75e476c55d6d498ba4923a9410dda2dcb418f9b82b152a099efa2a/gpiod-2.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3210dc420833d6ea7ce99f3f368287168cc3edd643bf3b7726155c16a712e1cd", size = 114466, upload-time = "2026-06-17T07:46:07.818Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/33/870d0c5ef644500ffe325b402dd12b2f430e12b3d265e218f4095aa98717/gpiod-2.5.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:738496d086e709d842e899925a372dc187af4a09c128a7930140cc6630fece93", size = 113325, upload-time = "2026-06-17T07:46:08.945Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/aa/dc4f381de470469130306fb0de71fe80e6074e0c7ff96a27db0949393df6/gpiod-2.5.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:204f57f8cda854f7e67d9a677d5147126f193ba2a5eb0e444ce808c126329b9b", size = 113175, upload-time = "2026-06-17T07:46:10.128Z" },
+    { url = "https://files.pythonhosted.org/packages/46/6b/43f99cb8c3929463e2a75cc24516b20cb96f1aa8342ad77a42bdf838a45f/gpiod-2.5.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c6b51959d24461d55fbafc1a6d1accd0904bb1de76182f7479b2bc473d86cfc8", size = 115036, upload-time = "2026-06-17T07:46:11.455Z" },
+    { url = "https://files.pythonhosted.org/packages/75/3b/78f62278cae19ad43b4df89ba534d470d3c05a6852c0352c604ac0169cef/gpiod-2.5.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2122147b7946af80753ca25c23cf3a4dc8f0ef808f8c0bfdfacdfd523e8c385e", size = 114558, upload-time = "2026-06-17T07:46:12.581Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/ef/455114c0fe94bee96272af68c1ab02d59ee934509cfe583876c116d9443f/gpiod-2.5.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:4ddf72333749924f29d341d9c36ab09b6de4a31d7e6106fdfcd995ad07d8296b", size = 113450, upload-time = "2026-06-17T07:46:13.895Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/b2/0218a8253319216ccf40b7649af08acb709f0d27b0d11436f09c649ac54d/gpiod-2.5.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:960a16c48471440eb72d8f0c45894936e14ad329a9347748a82811c0bdfff6f2", size = 113282, upload-time = "2026-06-17T07:46:15.392Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/77/c713b1ef7c033081c564b9c4c9947d5e6e66f887dd8d2ec4c9db37f6c867/gpiod-2.5.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c23e246249f78628bcda026349e58e5414fa33c46ec30d214f51ac911c9e557e", size = 115749, upload-time = "2026-06-17T07:46:16.653Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/2f/12fc27a96f41cd0faa92db82732de6761c922da454543bcab826e690c761/gpiod-2.5.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8faf1337e74871980377ba19283d5f6cddec14d15b3741dca0981e98bf37f07b", size = 115267, upload-time = "2026-06-17T07:46:17.698Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/bb/66266c13df04cc6467809dd099f3c30f3ef98a19a5d6e7b2445e56fbb56d/gpiod-2.5.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:087a7a81f3875c70a11691cc705321f7764358f6fb320e7e801b2c16b4e01d98", size = 113773, upload-time = "2026-06-17T07:46:18.819Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/cf/bf30830aecba9eb146d7bf1054ed08dacf1468891ef375689174e351b564/gpiod-2.5.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:36810ddf5ad35d30eef75c8c317339b1da8e8faf799953406925fa6777f82de2", size = 113611, upload-time = "2026-06-17T07:46:19.988Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/e3/c22faee30bd2341be94f8426b1829e141e1da4f24113aeeed77bcd0134c1/gpiod-2.5.0-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:30331f030422aa400670a9c004a64e3e2f715a2c03b61ee349fe94730b75d2f9", size = 122174, upload-time = "2026-06-17T07:46:21.323Z" },
+    { url = "https://files.pythonhosted.org/packages/25/5c/0245ab49b43d57d93fcf57504b728429f92a083d876bfcc1b42167417682/gpiod-2.5.0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:34db3048b6e293ec387e7687e4027c9add8d55441bbaeb2d92cbcb528238dfc3", size = 120230, upload-time = "2026-06-17T07:46:22.45Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/40/9d1786c5b1e0f8664f6d2e56de95cd43dceb430514e95c47137bda564133/gpiod-2.5.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:48e41ba6883fcf136bfae411440b3b05b211e84a751b4733a139ce9d90f920e1", size = 119723, upload-time = "2026-06-17T07:46:23.541Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/ee/4f634d271e24138fe8bbc3aa890aa768efc03e98ee2bac8ded9ba0a27715/gpiod-2.5.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:72b768c1f847a5c75f301920d690e408120f4b0ceafe91304cadcd571f9c3e04", size = 118557, upload-time = "2026-06-17T07:46:24.744Z" },
+]
 
 [[package]]
 name = "iniconfig"
@@ -456,18 +342,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pyftdi"
-version = "0.57.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyserial" },
-    { name = "pyusb" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/de/260694fa63dab6629c6ba7c2315de64dbd766eb761198b61fba96cbe7ea4/pyftdi-0.57.2-py3-none-any.whl", hash = "sha256:dec3acdc262594d8b1850a6aee608b861c2973f90011faf5cccae3107d3c67a4", size = 146319, upload-time = "2026-06-02T16:14:37.818Z" },
-]
-
-[[package]]
 name = "pygments"
 version = "2.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -483,15 +357,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e7/82/28175b2414effca1cdac8dc99f76d660e7a4fb0ceefa4b4ab8f5f6742925/pyproject_hooks-1.2.0.tar.gz", hash = "sha256:1e859bd5c40fae9448642dd871adf459e5e2084186e8d2c2a79a824c970da1f8", size = 19228, upload-time = "2024-09-29T09:24:13.293Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/24/12818598c362d7f300f18e74db45963dbcb85150324092410c8b49405e42/pyproject_hooks-1.2.0-py3-none-any.whl", hash = "sha256:9e5c6bfa8dcc30091c74b0cf803c81fdd29d94f01992a7707bc97babb1141913", size = 10216, upload-time = "2024-09-29T09:24:11.978Z" },
-]
-
-[[package]]
-name = "pyserial"
-version = "3.5"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1e/7d/ae3f0a63f41e4d2f6cb66a5b57197850f919f59e558159a4dd3a818f5082/pyserial-3.5.tar.gz", hash = "sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb", size = 159125, upload-time = "2020-11-23T03:59:15.045Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl", hash = "sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0", size = 90585, upload-time = "2020-11-23T03:59:13.41Z" },
 ]
 
 [[package]]
@@ -511,15 +376,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pyusb"
-version = "1.3.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/00/6b/ce3727395e52b7b76dfcf0c665e37d223b680b9becc60710d4bc08b7b7cb/pyusb-1.3.1.tar.gz", hash = "sha256:3af070b607467c1c164f49d5b0caabe8ac78dbed9298d703a8dbf9df4052d17e", size = 77281, upload-time = "2025-01-08T23:45:01.866Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl", hash = "sha256:bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430", size = 58465, upload-time = "2025-01-08T23:45:00.029Z" },
-]
-
-[[package]]
 name = "setuptools"
 version = "83.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -529,46 +385,16 @@ wheels = [
 ]
 
 [[package]]
+name = "smbus2"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/37/b3f7b501502c4915ba3819d1dc277bf3f5fae4a9d067caa4f502aaddd889/smbus2-0.6.1.tar.gz", hash = "sha256:2b043372abf8f6029a632c3aab36b641c5d5872b1cbad599fc68e17ac4fd90a5", size = 17274, upload-time = "2026-04-09T20:37:54.821Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/f2/c78a68bd739ac8fc608747cff73a4db3b19f3135658ed4e64374f6425cbf/smbus2-0.6.1-py2.py3-none-any.whl", hash = "sha256:650feeb27ca0ed58b07db4c10201c2a662c41305b7bf6e5fab9d888056f48180", size = 11767, upload-time = "2026-04-09T20:37:53.728Z" },
+]
+
+[[package]]
 name = "spidev"
 version = "3.8"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/67/87/039b6eeea781598015b538691bc174cc0bf77df9d4d2d3b8bf9245c0de8c/spidev-3.8.tar.gz", hash = "sha256:2bc02fb8c6312d519ebf1f4331067427c0921d3f77b8bcaf05189a2e8b8382c0", size = 13893, upload-time = "2025-09-15T18:56:20.672Z" }
-
-[[package]]
-name = "sysv-ipc"
-version = "1.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f2/5e/59208c6dd05ebc6f46ce2023c4fc01ffe814a1967d21b35d312c7e6ffeae/sysv_ipc-1.2.0.tar.gz", hash = "sha256:ef96ab33bb62e4d14142f0be0524dcc0c3c70c96442df2fc773c67b7c7514199", size = 102810, upload-time = "2026-01-09T14:05:02.231Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/bb/fc8598eae00697586a4a60684e61f402ee1ed189bbacf137ac87ba661655/sysv_ipc-1.2.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d2137e9711b672d04285a544703a323a6b9cde77e113041b1b142e89aa7e1455", size = 73502, upload-time = "2026-01-09T14:04:17.456Z" },
-    { url = "https://files.pythonhosted.org/packages/4b/39/f0934017b66ba178d7cb6e830ef122c8fe908c1178b70485c0a4b6f12baa/sysv_ipc-1.2.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6128b3f6bc3e5e4027e80d58e8d34e6c2c027453bf3a831c72f5e6e3a786bd0b", size = 74424, upload-time = "2026-01-09T14:04:18.685Z" },
-    { url = "https://files.pythonhosted.org/packages/42/92/50341228685ddd2b7dc7416f91c7dbba9841c4d40fe6779543e063d08970/sysv_ipc-1.2.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:ea90985a7763c1788e72f4b8b75e64e87d215274534933f03e6afdb3079a66d9", size = 71763, upload-time = "2026-01-09T14:04:19.506Z" },
-    { url = "https://files.pythonhosted.org/packages/22/df/a7a32863e8fc96e673d2a6beb68b862e5c9e0927b13d55973b18cdcedde6/sysv_ipc-1.2.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:ada5b425f6f8b98784882b8406bbbdb7f3e2d6613b57c7ceaa97f9dc402c9640", size = 71940, upload-time = "2026-01-09T14:04:20.53Z" },
-    { url = "https://files.pythonhosted.org/packages/e7/98/b35eba27297a886931d69352c171cfd53ea9b4a9097d282f80556046bc39/sysv_ipc-1.2.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:eb8cea6b912b467083941032f4b38269d86d1ec8f2dec0ca39694fedf6fd9acd", size = 72257, upload-time = "2026-01-09T14:04:23.289Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/6f/906724d4ca94cc5c0a6c419ed0ec2a0b64b41de6771590ebf9db59cc97db/sysv_ipc-1.2.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:48865de17c9354a6c7740c47dc4d13f409afe43e4fc350b56df3ca5c10c1462d", size = 73309, upload-time = "2026-01-09T14:04:24.421Z" },
-    { url = "https://files.pythonhosted.org/packages/ea/3a/818d7634f31484e35ffee1b018287a0007e24a98709d06ecc544e7c7cba8/sysv_ipc-1.2.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:f69c30545a3280b4b7f2057fd3aedb7044e45894314752241802e697a00b5413", size = 70955, upload-time = "2026-01-09T14:04:25.172Z" },
-    { url = "https://files.pythonhosted.org/packages/1b/80/e3881c84573206563191d8c13711382dc22bf54a7ae4d09d099271cf3703/sysv_ipc-1.2.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:a000180848b59508bd862215998ee70c4cd4cd3081b0b066068e9287645cda35", size = 71223, upload-time = "2026-01-09T14:04:26.061Z" },
-    { url = "https://files.pythonhosted.org/packages/a2/2d/2e4f55201cca54666c08468538348be4af16a52c7296bdd038a303e7be9f/sysv_ipc-1.2.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:977f0e313c2e663000f0c316682ea2c3f6d2f86bbbdb1bcd274fea244a211df0", size = 72727, upload-time = "2026-01-09T14:04:28.317Z" },
-    { url = "https://files.pythonhosted.org/packages/d0/6a/e04914984503317dd2481d6ff5fa9ab85e70960b79514309b0bcb0ef08d8/sysv_ipc-1.2.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f0b40e147277a954c41f94207dfab402bfa8371198c191b826d833b40c5e83e9", size = 73643, upload-time = "2026-01-09T14:04:29.234Z" },
-    { url = "https://files.pythonhosted.org/packages/54/46/6f9aacbbf4c71ddce08f645bd67fa4223573a3191fd938acc926ca2b94c4/sysv_ipc-1.2.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:83ff789f67477dc09424f674e1eb9195d8edd9b4044c3d5833d1a252d49034fc", size = 71319, upload-time = "2026-01-09T14:04:30.059Z" },
-    { url = "https://files.pythonhosted.org/packages/34/21/0127cb9ecbc281c5b5a79d4be7a61e2d35442f72baaa1594e089dbe9206a/sysv_ipc-1.2.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:fc541299c3af8351abff804e287a0c203338c140f70ee70855f46a1710cc0ff7", size = 71575, upload-time = "2026-01-09T14:04:32.011Z" },
-    { url = "https://files.pythonhosted.org/packages/e4/a5/1d0f4a95ba040987266af995eb973f2d469fa61452cc925a8ff95401927f/sysv_ipc-1.2.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7dcdda15a2ead282545d007bd4fb5bfff844d2ac2b2f4a2b52ddcb2a38953968", size = 73168, upload-time = "2026-01-09T14:04:35.49Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/7a/25d2a8a7bde7165a0260d06e83a57ecfe8668802f31ffea47620cfcb56eb/sysv_ipc-1.2.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9c5bf97ac00370159973c17a29224ae6f277757cee704abd61be1ce5bfaf78b0", size = 74039, upload-time = "2026-01-09T14:04:36.709Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/77/2be88d40d24a780f56ca74ff01802f8cb548a1def4c50da7094720fcd41c/sysv_ipc-1.2.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:201e18f6f32bd6542e0886668699c16ddcdcc37105b2643c2c50a044f22e437f", size = 72237, upload-time = "2026-01-09T14:04:37.729Z" },
-    { url = "https://files.pythonhosted.org/packages/2f/04/b7657691f0274bd22fb66fc772e567c78dffb96f6943cbb16352e20b55a1/sysv_ipc-1.2.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:4daecc8fae2a6335ed56095d19a3bda96e551ea78781cd53abda94cfe37b6cfe", size = 72400, upload-time = "2026-01-09T14:04:38.55Z" },
-    { url = "https://files.pythonhosted.org/packages/cc/61/ff85f043f507d4d9d5a84411dfd18f8f896dc3f77d29f5f4f6ee1d48ec9c/sysv_ipc-1.2.0-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:17f8b31c09ed94d0fa95d64720426344e2ae5a06691a8f076ef3909145877958", size = 76984, upload-time = "2026-01-09T14:04:41.32Z" },
-    { url = "https://files.pythonhosted.org/packages/ff/39/02d900a035c674c6e4edb263ea0061c0fa8389ad9a2270150dc2a1fee476/sysv_ipc-1.2.0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:acd083316d0c5b2e7fb5b7a5db6ad8fb2400ea4ca3d1813692acd93656a51f79", size = 77179, upload-time = "2026-01-09T14:04:42.65Z" },
-    { url = "https://files.pythonhosted.org/packages/46/5a/d269d9aca6f2eda908c58a244488bcca751004c8f954742fd8aadf2e0a6d/sysv_ipc-1.2.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:3eb7b8f8b577ec0fbde890f86c6f9dc365f3012b02e4e275a350427621df80ad", size = 75959, upload-time = "2026-01-09T14:04:43.569Z" },
-    { url = "https://files.pythonhosted.org/packages/8d/13/a49595e0056dc607e7530b946c7b62f11ec514822c40d54d94287e534e9d/sysv_ipc-1.2.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:a65e64577082b109d49bd68db8facb6f3a08ddbbde4b76c87b1246490922ef2a", size = 75679, upload-time = "2026-01-09T14:04:44.4Z" },
-    { url = "https://files.pythonhosted.org/packages/82/89/6ab21a4568e65630385a715a8c8f9019e1a21cf1d57ba3e7358c62d14d63/sysv_ipc-1.2.0-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:966f685dd9dc5c5862edada5fc8de70dc5f5659a89c0698366431a81931179a9", size = 25207, upload-time = "2026-01-09T14:05:00.635Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/df/a6f6a945a69ad796c7de91e489aeecb6a9b6d3437f8c927f3ad3194d9cc5/sysv_ipc-1.2.0-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ae2d070b842bb4558aeb6aec7249ec7f08d00d8252e37da24cccab8057efeb29", size = 25011, upload-time = "2026-01-09T14:05:01.459Z" },
-]
-
-[[package]]
-name = "typing-extensions"
-version = "4.16.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
-]

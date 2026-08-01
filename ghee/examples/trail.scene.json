@@ -1,9 +1,12 @@
 {
   "version": 1,
+  "common": {
+    "code": "\nvec3 palette(float t) {\n    vec3 a = vec3(0.42, 0.40, 0.52);\n    vec3 b = vec3(0.42, 0.38, 0.45);\n    vec3 c = vec3(1.00, 1.05, 0.95);\n    vec3 d = vec3(0.10, 0.42, 0.72);\n    return a + b * cos(6.28318 * (c * t + d));\n}\n"
+  },
   "passes": [
     {
       "name": "main",
-      "code": "void main() {\n  vec2 uv = v_texCoord;\n  vec3 prev = texture2D(iChannel0, uv).rgb;   // channel 0 = this pass (feedback)\n  vec2 c = vec2(0.5) + 0.35 * vec2(cos(time), sin(time * 1.3));\n  float d = distance(uv, c);\n  float src = smoothstep(0.045, 0.0, d);\n  vec3 col = max(prev * decay - sink, 0.0) + src * vec3(1.0, 0.55, 0.15);\n  gl_FragColor = vec4(col, 1.0);\n}\n",
+      "code": "void main() {\n  vec2 uv = v_texCoord;\n  vec2 p = (uv - 0.5) * vec2(resolution.x / resolution.y, 1.0);\n\n  float t = time * speed;\n  vec2 head = 0.34 * vec2(cos(t * 1.7), sin(t * 1.1));\n  float d = distance(p, head);\n  vec3 ink = palette(hue + 0.16 * sin(time * 0.5))\n           * (smoothstep(0.028, 0.0, d) + 0.4 * exp(-d * 26.0));\n\n  // channel 0 is this pass, so this fetch is the previous frame. The buffer\n  // is 8-bit: subtract less than one LSB and dim pixels never reach black.\n  float steps = DT * 60.0;\n  vec3 prev = max(texture2D(iChannel0, uv).rgb * pow(decay, steps) - 1.5 / 255.0 * steps, 0.0);\n\n  // screen rather than add: crossings climb toward the ink, never to white\n  gl_FragColor = vec4(prev + ink * glow * (1.0 - prev), 1.0);\n}\n",
       "channels": [
         {
           "buffer": "main"
@@ -12,17 +15,31 @@
       "params": {
         "decay": {
           "type": "float",
-          "value": 0.96,
-          "min": 0.85,
-          "max": 1.0,
+          "value": 0.98,
+          "min": 0.9,
+          "max": 0.999,
           "step": 0.001
         },
-        "sink": {
+        "glow": {
           "type": "float",
-          "value": 0.008,
+          "value": 1.0,
+          "min": 0.2,
+          "max": 2.0,
+          "step": 0.05
+        },
+        "speed": {
+          "type": "float",
+          "value": 1.3,
+          "min": 0.1,
+          "max": 3.0,
+          "step": 0.05
+        },
+        "hue": {
+          "type": "float",
+          "value": 0.3,
           "min": 0.0,
-          "max": 0.03,
-          "step": 0.001
+          "max": 1.0,
+          "step": 0.01
         }
       }
     }

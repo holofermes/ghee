@@ -19,6 +19,7 @@
     --code-bg:#fcfcfb; --code-ink:#3a3a3a; --bezel:#d8d8d2; --scroll:#cfcfc9;
     --t-cm:#a2a298; --t-pp:#8a5fb0; --t-ty:#2c7a72; --t-kw:#b0603a; --t-bi:#3f63ad; --t-nu:#86772f;
     --err-bg:#fdf0ef; --err-line:#f3d4d0;
+    --warn:#8a5a12; --warn-bg:#fbf1de; --warn-line:#ecd9ae;
     --shadow:0 1px 2px rgba(20,20,16,.05), 0 6px 20px rgba(20,20,16,.05);
     --r:12px;
   }
@@ -29,6 +30,7 @@
     --code-bg:#17181c; --code-ink:#cacac3; --bezel:#2c2f36; --scroll:#3a3e46;
     --t-cm:#6f7178; --t-pp:#b89ce0; --t-ty:#5bbdb0; --t-kw:#e0916a; --t-bi:#80a1e0; --t-nu:#c4b56a;
     --err-bg:#2a1a18; --err-line:#5a322c;
+    --warn:#e7c078; --warn-bg:#2b2214; --warn-line:#4e3d1e;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 22px rgba(0,0,0,.4);
   }
   *{box-sizing:border-box}
@@ -60,9 +62,13 @@
   button.ghost{box-shadow:none; background:transparent; border-color:transparent; color:var(--muted)}
   button.ghost:hover{color:var(--ink); border-color:transparent}
   #theme{font-size:20px; line-height:1; padding:3px 9px; color:var(--ink)}
+  .notice{padding:7px 12px; border-radius:9px; font-size:13px; white-space:nowrap;
+    background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn); box-shadow:none}
+  button.notice:hover{border-color:var(--warn)}
+  .notice.bad{background:var(--err-bg); border-color:var(--err-line); color:var(--hot)}
   .nav{display:flex; align-items:center; gap:4px}
   .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
-  .actions{display:flex; gap:7px; align-items:center}
+  .actions{display:flex; gap:7px; align-items:center; flex-wrap:wrap; justify-content:flex-end}
   .grid{display:grid; grid-template-columns:var(--leftw, minmax(300px,440px)) 6px 1fr; gap:6px; flex:1 1 auto; min-height:0}
   .colgrip{cursor:col-resize; border-radius:3px; align-self:stretch}
   .colgrip:hover,.colgrip.drag{background:var(--line)}
@@ -70,16 +76,28 @@
   .leftcol{display:flex; flex-direction:column; gap:18px; overflow-y:auto; overflow-x:hidden; min-height:0; padding-right:4px}
   .stage{padding:14px; flex:0 0 auto; position:sticky; top:0; z-index:5}
   .screen .infowrap{position:absolute; top:16px; left:16px; z-index:7}
-  .screen #rotBtn{position:absolute; top:16px; right:16px; z-index:7}
+  .screen .ovtools{position:absolute; top:16px; right:16px; z-index:7; display:flex; gap:6px}
   .ovbtn{width:26px; height:26px; padding:0; display:inline-flex; align-items:center; justify-content:center;
     font-size:14px; line-height:1; color:#e9e9e4; background:rgba(8,9,11,.45); border:0; border-radius:8px;
     box-shadow:none; backdrop-filter:blur(3px)}
   .ovbtn:hover{background:rgba(8,9,11,.68); border:0}
+  .ovbtn[hidden]{display:none}
+  @media (pointer:coarse){ .ovbtn{width:40px; height:40px; font-size:18px; border-radius:10px} .screen .ovtools{gap:8px} }
   /* overlay controls stay off the art: hover reveals on mouse devices, a tap
      reveals on touch (.controls, set in js), an open popover pins them */
-  .screen .infowrap, .screen #rotBtn{opacity:0; visibility:hidden; transition:opacity .18s ease, visibility .18s ease}
-  @media (hover:hover){ .screen:hover .infowrap, .screen:hover #rotBtn{opacity:1; visibility:visible} }
-  .screen.controls .infowrap, .screen.controls #rotBtn, .screen .infowrap.open{opacity:1; visibility:visible}
+  .screen .infowrap, .screen .ovtools{opacity:0; visibility:hidden; transition:opacity .18s ease, visibility .18s ease}
+  @media (hover:hover){ .screen:hover .infowrap, .screen:hover .ovtools{opacity:1; visibility:visible} }
+  .screen.controls .infowrap, .screen.controls .ovtools, .screen .infowrap.open{opacity:1; visibility:visible}
+  /* a stopped stream holds its control on screen */
+  .screen.muted .ovtools{opacity:1; visibility:visible}
+  .screen.muted .frame{opacity:.35}
+  /* the preview node lives in the pop-out window: hold its footprint so the
+     column does not collapse while it is away */
+  .screen .popped{display:flex; align-items:center; justify-content:center; margin:0 auto;
+    background:var(--well); border-radius:4px; color:var(--muted); text-align:center;
+    font:12px ui-monospace,Menlo,monospace; padding:8px}
+  .screen .popped[hidden]{display:none}
+  .screen:fullscreen{padding:0; border-radius:0; background:#000; display:flex; align-items:center; justify-content:center}
   .shadercard{display:flex; flex-direction:column; min-height:0}
   .shadercard .editor{flex:1 1 auto; min-height:140px}
   .shadercard .editor>textarea{height:100%; resize:none}
@@ -110,7 +128,8 @@
   .boolbox:checked{background:var(--accent); border-color:var(--accent)}
   .boolbox:checked::after{transform:translateX(16px); background:var(--accent-ink)}
   .boolbox:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
-  .frame img, .frame canvas{position:absolute; top:50%; left:50%; display:block; image-rendering:pixelated}
+  .frame img, .frame canvas{position:absolute; top:50%; left:50%; display:block}
+  .frame.crisp img, .frame.crisp canvas{image-rendering:pixelated}
   .iconbtn{font-size:16px; line-height:1; padding:4px 9px; color:var(--muted); border-radius:8px}
   .iconbtn:hover{color:var(--ink); background:var(--code-bg); border-color:var(--line)}
   .infowrap{position:relative}
@@ -122,8 +141,6 @@
   .iphead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin-bottom:5px}
   .iprow{display:flex; justify-content:space-between; gap:20px; font:12px ui-monospace,Menlo,monospace; padding:2px 0; color:var(--ink)}
   .iprow .k{color:var(--muted)}
-  .iprow.live .v{color:var(--live)}                   /* live = the values that tick */
-  .iprow.live .k::before{content:"\25CF"; color:var(--live); font-size:7px; margin-right:6px; vertical-align:middle}
   .iprow.off .v{color:var(--muted)}
   .card{padding:14px 16px}
   .card + .card{margin-top:16px}
@@ -147,6 +164,7 @@
     .boolbox{width:50px; height:30px}
     .boolbox::after{width:22px; height:22px; top:3px; left:3px}
     .boolbox:checked::after{transform:translateX(20px)}
+    .notice{padding:11px 14px}
   }
   input[type=color]{-webkit-appearance:none; appearance:none; width:100%; height:22px; padding:0; border:1px solid var(--line); border-radius:8px; background:var(--panel); cursor:pointer}
   input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
@@ -190,6 +208,8 @@
   .tab input{background:transparent; border:0; outline:none; color:inherit; font:inherit; width:84px; padding:0}
   .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:12px}
   .tab.filt .lbl{color:var(--accent)}
+  .tab.cm{margin-right:5px; border-right:1px solid var(--line)}
+  .tab.cm .lbl{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .addwrap{position:relative; display:inline-flex}
   .addmenu{position:absolute; top:calc(100% + 4px); left:0; min-width:130px; background:var(--panel);
     border:1px solid var(--line); border-radius:11px; box-shadow:var(--shadow); padding:5px;
@@ -238,9 +258,11 @@
   </div>
   <span class="spacer"></span>
   <div class="actions">
+    <span class="notice bad" id="offline" hidden>server not responding</span>
+    <button class="notice" id="stale" hidden title="the files this scene was built from changed on disk; reloading takes them and discards the edits made here">files changed · reload</button>
     <button class="primary" id="apply">apply</button>
     <button id="save">save</button>
-    <button id="reset" title="discard local edits and load the file on disk">reset</button>
+    <button id="reset" title="discard local edits and go back to the scene that is rendering">reset</button>
     <button class="ghost" id="theme" title="toggle theme">☾</button>
   </div>
 </header>
@@ -253,8 +275,14 @@
           <button class="ovbtn" id="infoBtn" title="render info" aria-label="render info">ⓘ</button>
           <div class="infopop" id="infoPop"></div>
         </div>
-        <button class="ovbtn" id="rotBtn" title="rotate preview 90°" aria-label="rotate preview 90°">↻</button>
+        <div class="ovtools">
+          <button class="ovbtn" id="muteBtn" title="stop the stream" aria-label="stop the stream" aria-pressed="false"></button>
+          <button class="ovbtn" id="rotBtn" title="rotate preview 90°" aria-label="rotate preview 90°">↻</button>
+          <button class="ovbtn" id="pipBtn" title="pop the preview into its own window" aria-label="pop out preview" hidden>⧉</button>
+          <button class="ovbtn" id="fsBtn" title="fullscreen preview" aria-label="fullscreen preview" hidden>⛶</button>
+        </div>
         <div class="frame"><img id="stream" alt="render"><canvas id="streamcv" style="display:none"></canvas></div>
+        <div class="popped" id="popped" hidden>preview popped out</div>
       </div>
     </div>
 
@@ -302,10 +330,18 @@ const KEY = n => "ghee:scene:" + n;
 let pristine = null;   // scene as on disk
 let work = null;       // working scene (edited)
 let active = null;
+// the tab in the editor: a pass index, or COMMON for the scene's common block
+// (which is also what /stats reports as error_pass for an error inside it)
+const COMMON = "common";
 let curPass = 0;
+const onCommon = () => curPass === COMMON;
+const hasCommon = () => !!(work && work.common && typeof work.common.code === "string");
+const commonCode = () => (hasCommon() ? work.common.code : "");
+function setCommon(code){ work.common = {code, commonEdited: true}; }
 let lastDisplay = null, lastStats = null, compileTimer = null, errLine = 0;
 let devModel = "", devGpu = "";
 const codeEl = () => $("#code"), hlEl = () => $("#hl");
+const FRAME = $(".frame"), SCREEN = FRAME.parentElement, IMG = $("#stream"), CV = $("#streamcv");
 
 function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 const TOK = [
@@ -328,8 +364,7 @@ function highlight(src){
 }
 function syncHL(){ hlEl().innerHTML = highlight(codeEl().value); hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; }
 
-// One info surface: live values (fps/render/encode, marked .live) over static scene +
-// device facts. The popover hangs off the ⓘ button.
+const statNum = (v, d, unit) => (typeof v === "number" ? v.toFixed(d) + (unit || "") : "-");
 function refreshInfo(){
   const pop = $("#infoPop"); if (!pop) return;
   const s = lastStats;
@@ -347,13 +382,18 @@ function refreshInfo(){
     return val;
   };
   const live = sect("live");
-  row(live, "fps", s ? s.fps.toFixed(1) : "-", "live");
-  row(live, "render", s ? s.render_ms.toFixed(2)+" ms" : "-", "live");
-  row(live, "encode", s ? s.encode_ms.toFixed(2)+" ms" : "-", "live");
+  row(live, "fps", s ? statNum(s.fps, 1) : "-");
+  row(live, "frame", s ? statNum(s.frame_ms, 2, " ms") : "-");
+  row(live, "stream", s ? statNum(s.stream_fps, 1, " fps") : "-");
   const out = sect("output");
-  row(out, "display", (lastDisplay && lastDisplay.name) || "-", "off");
+  const dests = (s && s.out) || [];
+  row(out, "out", dests.length ? dests.join(" + ") : "-");
   row(out, "resolution", lastDisplay ? `${lastDisplay.w} × ${lastDisplay.h}` : "-", "off");
   row(out, "format", (lastDisplay && lastDisplay.format) || "-", "off");
+  const pv = previewSource();
+  const pvRow = row(out, "preview",
+      streamMuted ? "muted" : (pv.w ? `${pv.kind} ${pv.w}×${pv.h}` : pv.kind), "off");
+  if (!streamMuted && pv.kind === "mjpeg" && previewWhy) pvRow.title = previewWhy;
   const act = el("span", "rotact", `${effectiveRotation()}° · rotate ↻`);
   act.dataset.act = "rotate";
   row(out, "rotation", "", "off").appendChild(act);
@@ -372,21 +412,109 @@ function effectiveRotation(){
   if (o !== null) return ((parseInt(o,10)%360)+360)%360;
   return (lastDisplay && lastDisplay.rotation) ? lastDisplay.rotation : 0;
 }
+function inlineBox(){
+  const stage = SCREEN.parentElement, sc = getComputedStyle(stage), bc = getComputedStyle(SCREEN);
+  const pad = n => parseFloat(sc["padding" + n]) + parseFloat(bc["padding" + n]);
+  return {
+    w: Math.max(64, stage.clientWidth - pad("Left") - pad("Right")),
+    // the stage is sticky over a scrolling column, so it takes half the viewport
+    h: Math.max(64, innerHeight * 0.5),
+    fill: false,
+  };
+}
+function previewBox(){
+  if (pipWin) return {w: pipWin.innerWidth, h: pipWin.innerHeight, fill: true};
+  const fs = document.fullscreenElement;
+  if (fs && fs.contains(FRAME)) return {w: fs.clientWidth, h: fs.clientHeight, fill: true};
+  return inlineBox();
+}
+function fitPreview(dw, dh, box){
+  const s = Math.min(box.w / dw, box.h / dh);
+  return box.fill ? s : Math.min(1, s);
+}
+function crispPreview(srcW, renderW, cssW, dpr){
+  return srcW > 0 && srcW >= renderW && cssW * dpr >= srcW;
+}
 function applyRotation(){
   if (!lastDisplay) return;
   const R = effectiveRotation(), w = lastDisplay.w, h = lastDisplay.h, land = (R===90||R===270);
   const dw = land ? h : w, dh = land ? w : h;            // on-screen dimensions
-  const MAX = 360;                                       // fit big displays, keep tiny panels native
-  const scale = Math.min(1, MAX / Math.max(dw, dh));
+  const scale = fitPreview(dw, dh, previewBox());
   const fw = Math.round(dw * scale), fh = Math.round(dh * scale);
-  const img = $("#stream"), frame = img.parentElement;
-  frame.style.width = fw + "px";
-  frame.style.height = fh + "px";
-  for (const el of [img, $("#streamcv")]) {              // whichever preview is active
+  FRAME.style.width = fw + "px";
+  FRAME.style.height = fh + "px";
+  for (const el of [IMG, CV]) {                          // whichever preview is active
     el.style.width = (land ? fh : fw) + "px";            // pre-rotation size so it covers the frame
     el.style.height = (land ? fw : fh) + "px";
     el.style.transform = `translate(-50%,-50%) rotate(${R}deg)`;
   }
+  const src = previewSource();
+  const dpr = (pipWin || window).devicePixelRatio || 1;
+  FRAME.classList.toggle("crisp", crispPreview(src.w, w, land ? fh : fw, dpr));
+  holdStagePlace(!!pipWin);
+}
+function previewSource(){
+  if (CV.style.display !== "none") return {kind: "h264", w: CV.width, h: CV.height};
+  if (!IMG.src) return {kind: "-", w: 0, h: 0};        // startPreview has not run yet
+  return {kind: "mjpeg", w: IMG.naturalWidth, h: IMG.naturalHeight};
+}
+
+const PIP_CSS = `html,body{margin:0;height:100%;background:#000;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center}
+.frame{position:relative;overflow:hidden}
+.frame img,.frame canvas{position:absolute;top:50%;left:50%;display:block}
+.frame.crisp img,.frame.crisp canvas{image-rendering:pixelated}`;
+const HAS_PIP = "documentPictureInPicture" in window;
+const HAS_FS = !!SCREEN.requestFullscreen;
+let pipWin = null, pipPending = false;
+
+function homeFrame(){
+  if (!SCREEN.contains(FRAME)) SCREEN.insertBefore(FRAME, $("#popped"));
+  applyRotation(); syncPopOut();
+}
+function holdStagePlace(on){
+  const ph = $("#popped");
+  ph.hidden = !on;
+  if (!on || !lastDisplay) return;
+  const R = effectiveRotation(), land = (R===90||R===270);
+  const dw = land ? lastDisplay.h : lastDisplay.w, dh = land ? lastDisplay.w : lastDisplay.h;
+  const s = fitPreview(dw, dh, inlineBox());
+  ph.style.width = Math.round(dw * s) + "px";
+  ph.style.height = Math.round(dh * s) + "px";
+}
+function syncPopOut(){
+  const fs = document.fullscreenElement === SCREEN;
+  $("#pipBtn").hidden = !HAS_PIP;
+  $("#fsBtn").hidden = !HAS_FS;
+  $("#pipBtn").disabled = fs;
+  $("#fsBtn").disabled = !!pipWin;
+  $("#fsBtn").title = fs ? "leave fullscreen" : "fullscreen preview";
+}
+async function openPip(){
+  if (pipWin || pipPending) { if (pipWin) pipWin.focus(); return; }
+  const b = FRAME.getBoundingClientRect();
+  pipPending = true;
+  let win;
+  try {
+    win = await documentPictureInPicture.requestWindow({
+      width: Math.max(200, Math.round(b.width)), height: Math.max(200, Math.round(b.height)),
+    });
+  } catch(e) { pipPending = false; console.warn("pop-out:", e); return; }
+  pipPending = false;
+  pipWin = win;
+  const st = win.document.createElement("style");
+  st.textContent = PIP_CSS;
+  win.document.head.appendChild(st);
+  win.document.title = "ghee · " + (active || "preview");
+  win.document.body.appendChild(FRAME);
+  win.addEventListener("resize", applyRotation);
+  win.addEventListener("pagehide", () => { pipWin = null; homeFrame(); }, {once: true});
+  applyRotation(); syncPopOut();
+}
+function toggleFullscreen(){
+  if (document.fullscreenElement) { document.exitFullscreen().catch(()=>{}); return; }
+  if (pipWin || pipPending) return;   // a pop-out mid-open would move the frame back out
+  SCREEN.requestFullscreen().catch(e => console.warn("fullscreen:", e));
 }
 function applyErrorLine(line){
   const m = $("#errmark"), t = codeEl();
@@ -415,7 +543,7 @@ function norm(s){
   return JSON.stringify(s, (k,v) => {
     if ((k==="channels"||k==="arrays") && Array.isArray(v) && !v.length) return undefined;
     if (k==="params" && v && !Array.isArray(v) && typeof v==="object" && !Object.keys(v).length) return undefined;
-    if (k==="muted" || k==="codeEdited") return undefined;   // editor state, not a scene edit
+    if (k==="muted" || k==="codeEdited" || k==="commonEdited") return undefined;   // editor state, not a scene edit
     return v;
   });
 }
@@ -430,6 +558,35 @@ function updateStatus(){
 function markDirty(){ saveLocalIfDirty(); updateStatus(); }
 function saveLocalIfDirty(){ if(dirty()) localStorage.setItem(KEY(active), JSON.stringify(work)); }
 
+// A stale scene is one the server compiled before its files changed: what is
+// rendering is older than what a reload would give. A dead server is the other
+// thing a silent poll used to hide, so it gets its own line.
+const OFFLINE_AFTER = 3;   // consecutive /stats failures
+let pollFails = 0, staleScene = false;
+const offline = () => pollFails >= OFFLINE_AFTER;
+function showNotices(){
+  $("#offline").hidden = !offline();
+  $("#stale").hidden = !staleScene || offline();
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Switching to the active name is the reload: the server re-reads the scene's
+// files. The local working copy goes first, or loadScene would post it straight
+// back over what just came off disk.
+async function reloadScene(){
+  const name = active;
+  localStorage.removeItem(KEY(name));
+  await jpost("/switch?name=" + encodeURIComponent(name));
+  let s = null;
+  for (let i = 0; i < 20; i++){          // the switch is queued for the render thread
+    s = await jget("/stats").catch(()=>null);
+    if (s && !s.stale) break;
+    await sleep(50);
+  }
+  staleScene = !!(s && s.stale);         // still stale: the new files did not compile
+  showNotices();
+  await loadScene(name);
+}
+
 let FILTERS = {};   // name -> filter def (code + params), from /filters
 async function boot(){
   const s = await jget("/scenes");
@@ -438,29 +595,77 @@ async function boot(){
   s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
   sel.value = s.active;
   await loadScene(s.active);
-  startPreview();
+  startStream();
   loadHwinfo();
   poll();
 }
 
 // H264/WebCodecs preview when the browser can (needs a secure context:
 // https or localhost); MJPEG otherwise, and on any stream/decoder failure.
+//
+// This random ID helps manage the lifecycle of h264/mjpeg streams
+const VID = "v" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+const PING_MS = 3000;
+const STREAM_KEY = "ghee:ui:stream";   // UI state, never the scene working copy
+const PLAY = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+const PAUSE = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>';
+let previewWhy = "";
+let mjpegOnly = false;    // a decoder that failed once fails the same way again
+let h264 = null;          // attachH264 handle while the h264 stream is up
+let streaming = false, pingTimer = null;
+let streamMuted = localStorage.getItem(STREAM_KEY) === "muted";
+
+function ping(){ fetch("/ping?vid=" + VID, {method:"POST"}).catch(()=>{}); }
+function startStream(){
+  if (streamMuted || streaming) return;
+  streaming = true;
+  ping();
+  pingTimer = setInterval(ping, PING_MS);
+  startPreview();
+}
+function stopStream(){
+  streaming = false;
+  clearInterval(pingTimer); pingTimer = null;
+  if (h264){ h264.stop(); h264 = null; }
+  IMG.removeAttribute("src");   // ends the MJPEG request
+  refreshInfo();
+}
+function fallbackToMjpeg(why){
+  previewWhy = why;
+  mjpegOnly = true;
+  h264 = null;
+  CV.style.display = "none";
+  IMG.style.display = "";
+  if (streaming) IMG.src = "/stream?vid=" + VID;
+  IMG.onload = () => { refreshInfo(); applyRotation(); };
+  refreshInfo();
+}
 function startPreview(){
-  const img = $("#stream"), cv = $("#streamcv");
-  if (typeof attachH264 === "function" && "VideoDecoder" in window && window.isSecureContext) {
-    img.style.display = "none";
-    cv.style.display = "";
-    attachH264(cv, "/h264", {
-      onfail: () => {
-        cv.style.display = "none";
-        img.style.display = "";
-        img.src = "/stream";
-      },
-    });
+  if (!mjpegOnly && typeof attachH264 === "function" && "VideoDecoder" in window && window.isSecureContext) {
+    IMG.style.display = "none";
+    CV.style.display = "";
+    refreshInfo();
+    h264 = attachH264(CV, "/h264?vid=" + VID, {onfail: e => fallbackToMjpeg("h264 preview dropped: " + e)});
   } else {
-    img.src = "/stream";
+    fallbackToMjpeg(previewWhy || (window.isSecureContext
+      ? "this browser has no WebCodecs VideoDecoder"
+      : "h264 preview needs https or localhost"));
   }
 }
+function applyMuted(){
+  SCREEN.classList.toggle("muted", streamMuted);
+  const b = $("#muteBtn");
+  b.innerHTML = streamMuted ? PLAY : PAUSE;
+  b.title = streamMuted ? "start the stream" : "stop the stream";
+  b.setAttribute("aria-label", b.title);
+  b.setAttribute("aria-pressed", streamMuted ? "true" : "false");
+  refreshInfo();
+}
+
+addEventListener("pagehide", e => { if (e.persisted) stopStream(); });
+addEventListener("pageshow", e => { if (e.persisted) startStream(); });
+document.addEventListener("freeze", stopStream);
+document.addEventListener("resume", startStream);
 
 function mergeNewParams(pristine, work){
   // the working copy holds the user's edits, the pristine scene holds the
@@ -489,11 +694,19 @@ function mergeNewParams(pristine, work){
     const wp = byName[p.name];
     if (!wp) return;
     wp.params = mergeInto(p.params, wp.params);
+    // a sized pass renders at the size the scene's build arguments gave it and
+    // the editor cannot change that, so the size always follows the running
+    // scene.
+    if (p.size) wp.size = clone(p.size); else delete wp.size;
     // shader code the user never touched in the editor tracks the scene's
     // current source, so new uniforms arrive with the code that reads them
     if (!wp.codeEdited && typeof p.code === "string" && wp.code !== p.code)
       wp.code = p.code;
   });
+  // same for the common block: one added to the file since this copy was saved
+  // shows up, one edited here stays as the user left it
+  if (pristine.common && !(work.common && work.common.commonEdited))
+    work.common = clone(pristine.common);
 }
 
 async function loadScene(name){
@@ -519,6 +732,20 @@ function uniqueName(base){ const names=new Set(work.passes.map(p=>p.name)); let 
 
 function buildTabs(){
   const t = $("#tabs"); t.innerHTML = "";
+  if (hasCommon()){
+    // pinned ahead of every pass, and never muted: it compiles into all of them
+    const tab = document.createElement("span");
+    tab.className = "tab cm" + (onCommon() ? " active" : "");
+    const lbl = document.createElement("span"); lbl.className = "lbl";
+    lbl.textContent = "common";
+    lbl.title = "GLSL prepended to every pass in this scene";
+    lbl.addEventListener("click", ()=> setPass(COMMON));
+    tab.appendChild(lbl);
+    const x = document.createElement("span"); x.className="x"; x.textContent="×"; x.title="delete the common block";
+    x.addEventListener("click", e=>{ e.stopPropagation(); delCommon(); });
+    tab.appendChild(x);
+    t.appendChild(tab);
+  }
   work.passes.forEach((p,i)=>{
     const tab = document.createElement("span");
     tab.className = "tab" + (i===curPass ? " active" : "") + (p.muted ? " off" : "") + (p.filter ? " filt" : "");
@@ -551,6 +778,7 @@ function buildTabs(){
     menu.appendChild(it);
   };
   item("empty pass", addPass);
+  if (!hasCommon()) item("common", addCommon);   // one per scene
   const fnames = Object.keys(FILTERS);
   if (fnames.length){
     const d = document.createElement("div"); d.className="sep"; menu.appendChild(d);
@@ -591,6 +819,19 @@ function renamePass(i, lbl){
   lbl.replaceWith(inp); inp.focus(); inp.select();
 }
 
+function addCommon(){
+  work.common = {code: ""};
+  curPass = COMMON; markDirty(); postScene();
+  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
+}
+
+function delCommon(){
+  delete work.common;
+  if (onCommon()) curPass = 0;
+  markDirty(); postScene();
+  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
+}
+
 function addPass(){
   const name = uniqueName("pass");
   work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
@@ -614,6 +855,7 @@ function delPass(i){
 
 function buildChannels(){
   const box = $("#channels"); box.innerHTML = "";
+  if (onCommon()){ $("#inputs").innerHTML = ""; return; }   // common has no channels of its own
   const p = work.passes[curPass]; p.channels = p.channels || [];
   if (p.channels.length){ const l=document.createElement("span"); l.textContent="channels"; box.appendChild(l); }
   p.channels.forEach((ch,ci)=>{
@@ -647,11 +889,19 @@ function buildInputs(){
   });
 }
 function loadCode(){
-  const p = work.passes[curPass], ta = codeEl();
-  ta.value = p.code || ""; ta.scrollTop = 0;
-  ta.readOnly = !!p.filter;   // filter code is shipped/referenced, not editable here
-  ta.closest(".editor").classList.toggle("readonly", !!p.filter);
-  syncHL();
+  const ta = codeEl(), p = onCommon() ? null : work.passes[curPass];
+  ta.value = p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
+  ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
+  ta.closest(".editor").classList.toggle("readonly", !!(p && p.filter));
+  syncHL(); syncAddRow();
+}
+
+// the common block owns no params, so the add-param row can only target the scene
+function syncAddRow(){
+  const sel = $("#pPlace"), opt = sel && sel.querySelector('option[value="pass"]');
+  if (!opt) return;
+  opt.disabled = onCommon();
+  if (onCommon()) sel.value = "scene";
 }
 
 const VEC_ARITY = {vec2:2, vec3:3, vec4:4};
@@ -884,7 +1134,7 @@ const EYE_OFF = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" str
 // Muted stubs hold their slot, so a pass index stays the compiled index.
 function compiledScene(){
   let last = -1; work.passes.forEach((p,i)=>{ if(!p.muted) last = i; });
-  return { ...work, passes: work.passes.slice(0, last+1).map((p,pi)=>{
+  const passes = work.passes.slice(0, last+1).map((p,pi)=>{
     const q = clone(p); delete q.muted; delete q.codeEdited;
     if (p.muted){
       delete q.shader; q.arrays = []; q.params = {};
@@ -897,7 +1147,9 @@ function compiledScene(){
       }
     }
     return q;
-  }) };
+  });
+  // the editor's own commonEdited flag never goes on the wire
+  return { ...work, common: hasCommon() ? {code: commonCode()} : undefined, passes };
 }
 function toggleMute(i){
   const willMute = !work.passes[i].muted;
@@ -911,15 +1163,26 @@ async function postScene(){
 
 // shader
 codeEl().addEventListener("input", ()=>{
-  work.passes[curPass].code = codeEl().value;
-  work.passes[curPass].codeEdited = true;   // hand-edited: merge keeps it as is
+  if (onCommon()) setCommon(codeEl().value);
+  else {
+    work.passes[curPass].code = codeEl().value;
+    work.passes[curPass].codeEdited = true;   // hand-edited: merge keeps it as is
+  }
   syncHL(); markDirty();
   clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350);   // live compile
 });
 codeEl().addEventListener("scroll", ()=>{ hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; applyErrorLine(errLine); });
 
 // top-bar actions
-$("#apply").addEventListener("click", async ()=>{ work.passes[curPass].code = codeEl().value; await postScene(); markDirty(); });
+$("#apply").addEventListener("click", async ()=>{
+  if (onCommon()) setCommon(codeEl().value); else work.passes[curPass].code = codeEl().value;
+  await postScene(); markDirty();
+  if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files
+    const b = $("#apply");
+    b.textContent = "files newer";
+    setTimeout(()=>{ b.textContent = "apply"; }, 1400);
+  }
+});
 $("#save").addEventListener("click", async ()=>{
   localStorage.setItem(KEY(active), JSON.stringify(work));
   const b = $("#save");
@@ -935,6 +1198,8 @@ $("#reset").addEventListener("click", async ()=>{
   work = clone(pristine); await postScene(); curPass = 0;
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 });
+
+$("#stale").addEventListener("click", reloadScene);
 
 // scene nav
 $("#prev").addEventListener("click", async ()=>{ const r=await jpost("/prev"); await loadScene(r.active); });
@@ -977,10 +1242,22 @@ $("#scenes").addEventListener("change", async e=>{ const r=await jpost("/switch?
 })();
 
 // preview controls
+$("#muteBtn").addEventListener("click", ()=>{
+  streamMuted = !streamMuted;
+  localStorage.setItem(STREAM_KEY, streamMuted ? "muted" : "live");
+  applyMuted();
+  if (streamMuted) stopStream(); else startStream();
+});
+applyMuted();
 $("#rotBtn").addEventListener("click", ()=>{
   localStorage.setItem("ghee:rotation", String((effectiveRotation()+90)%360));
   applyRotation(); refreshInfo();
 });
+$("#pipBtn").addEventListener("click", openPip);
+$("#fsBtn").addEventListener("click", toggleFullscreen);
+document.addEventListener("fullscreenchange", ()=>{ applyRotation(); syncPopOut(); });
+addEventListener("resize", applyRotation);
+syncPopOut();
 $("#infoBtn").addEventListener("click", e=>{ e.stopPropagation(); $("#infoBtn").closest(".infowrap").classList.toggle("open"); });
 $("#infoPop").addEventListener("click", e=>{
   e.stopPropagation();   // taps inside the popover keep it open (mobile has no hover)
@@ -1022,6 +1299,8 @@ $("#pAdd").addEventListener("click", ()=>{
 async function poll(){
   try{
     const s = await jget("/stats");
+    pollFails = 0;
+    staleScene = !!s.stale;
     lastStats = s;
     if (s.display) lastDisplay = s.display;
     refreshInfo(); applyRotation();
@@ -1030,7 +1309,8 @@ async function poll(){
     const e = $("#err");
     if (s.error){ e.textContent = s.error; e.classList.add("show"); }
     else { e.classList.remove("show"); }
-  }catch(_){}
+  }catch(_){ pollFails++; }
+  showNotices();
   setTimeout(poll, 600);
 }
 

@@ -26,7 +26,7 @@
 #define MP_MAX_CHANNELS 8
 #define MP_MAX_DATATEX 4
 #define MP_MAX_ARRAYS 16
-#define FLIP_TIMEOUT_MS 100
+#define FLIP_STUCK_MS 5000
 
 struct GheeScene {
     int width, height, components;
@@ -43,6 +43,7 @@ struct GheeScene {
     struct timespec start_time;
     bool has_time_override;              // when set, render uses time_override instead of the wall clock
     float time_override;
+    float dt;                            // seconds the last frame took; fed to every pass as DT
 
     // multipass: each pass has its own program + ping-pong buffer; channels route
     // between passes (reading a pass's PREVIOUS-frame output). A pass whose channel
@@ -56,6 +57,7 @@ struct GheeScene {
     int mp_chan_src[MP_MAX_PASSES][MP_MAX_CHANNELS];  // channel -> source pass index, -1 = none
     int mp_nchan[MP_MAX_PASSES];
     GLint mp_timeLoc[MP_MAX_PASSES];
+    GLint mp_dtLoc[MP_MAX_PASSES];
     GLint mp_vflipLoc[MP_MAX_PASSES];    // shared-VS y-flip (direct scanout draws)
     GLint max_units;                     // GL_MAX_TEXTURE_IMAGE_UNITS (8 on VC4)
 
@@ -134,7 +136,7 @@ static const char *blit_fragment_source =
     "void main() { vec2 uv = vec2(v_texCoord.x, mix(v_texCoord.y, 1.0 - v_texCoord.y, flipY));"
     " gl_FragColor = texture2D(tex, uv); }";
 
-static void wait_flip(GheeScene *g);        // both defined with ghee_mp_present below
+static bool wait_flip(GheeScene *g);        // both defined with ghee_mp_present below
 static bool ensure_blit(GheeScene *g);
 
 static void set_error(GheeScene *g, const char *fmt, ...) {
@@ -348,6 +350,11 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
     glEnableVertexAttribArray(1);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    // Both default to 4. Rows of an 8-bit data texture are packed at its width,
+    // so any width that is not a multiple of 4 would otherwise be read with a
+    // padded stride: each row shifted from the one above, and the tail read past
+    // the end of the buffer.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &g->max_units);
@@ -361,6 +368,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
             g->has_float_tex ? (g->has_float_linear ? " (linear)" : " (nearest)") : " (linear)");
 
     clock_gettime(CLOCK_MONOTONIC, &g->start_time);
+    g->dt = 1.0f / 60.0f;
     return g;
 
 fail:
@@ -442,8 +450,8 @@ int ghee_display_probe(const char *dri_device, int *width, int *height) {
 }
 
 // Render to a KMS connector instead of reading back. width/height should match
-// the connector mode (ghee_display_probe reports it). Must run as DRM master
-// (root). rgb565 renders/scans 16-bit color: half the tile-store + scanout bytes.
+// the connector mode (ghee_display_probe reports it). Needs DRM master.
+// rgb565 renders/scans 16-bit color: half the tile-store + scanout bytes.
 GheeScene *ghee_display_create(int width, int height, const char *dri_device, int rgb565, char **err) {
     static char eb[ERROR_BUFFER_SIZE];
     GheeScene *g = create_impl(width, height, 4, dri_device, 1, rgb565, err);
@@ -451,9 +459,7 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
     // Without master every page flip is refused, which used to show up as a
     // per-frame error and a display that never updates.
     if (drmSetMaster(g->drm_fd)) {
-        snprintf(eb, sizeof(eb), "cannot take DRM master on %s: %s. Another process "
-                 "(a desktop session, or another ghee) is driving this card, or this "
-                 "is not running as root",
+        snprintf(eb, sizeof(eb), "cannot take DRM master on %s: %s",
                  dri_device ? dri_device : DEFAULT_DRI_DEVICE, strerror(errno));
         if (err) *err = eb;
         ghee_destroy(g);
@@ -652,6 +658,7 @@ int ghee_mp_commit(GheeScene *g) {
         const GLint rloc = glGetUniformLocation(prog, "resolution");
         if (rloc >= 0) glUniform2f(rloc, (float)g->mp_w[p], (float)g->mp_h[p]);
         g->mp_timeLoc[p] = glGetUniformLocation(prog, "time");
+        g->mp_dtLoc[p] = glGetUniformLocation(prog, "DT");
         g->mp_vflipLoc[p] = glGetUniformLocation(prog, "vflip");
         if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], 1.0f);
     }
@@ -812,6 +819,7 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
         glUseProgram(g->mp_program[p]);
         if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], direct ? -1.0f : 1.0f);
         if (g->mp_timeLoc[p] >= 0) glUniform1f(g->mp_timeLoc[p], elapsed);
+        if (g->mp_dtLoc[p] >= 0) glUniform1f(g->mp_dtLoc[p], g->dt);
         for (int c = 0; c < g->mp_nchan[p]; c++) {
             const int src = g->mp_chan_src[p][c];
             glActiveTexture(GL_TEXTURE0 + c);
@@ -838,22 +846,21 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     }
 }
 
-// Reap a previously submitted page flip.
-static void wait_flip(GheeScene *g) {
-    if (!g->flip_pending) return;
+static bool wait_flip(GheeScene *g) {
+    if (!g->flip_pending) return true;
     drmEventContext ev = { .version = 2 };
     struct pollfd pfd = { .fd = g->drm_fd, .events = POLLIN };
     for (;;) {
-        const int r = poll(&pfd, 1, FLIP_TIMEOUT_MS);
+        const int r = poll(&pfd, 1, FLIP_STUCK_MS);
         if (r > 0) {
             drmHandleEvent(g->drm_fd, &ev);
             g->flip_pending = false;
-            return;
+            return true;
         }
-        if (r == 0) { set_error(g, "page flip timed out after %d ms", FLIP_TIMEOUT_MS); return; }
+        if (r == 0) { set_error(g, "page flip still not complete after %d ms", FLIP_STUCK_MS); return false; }
         if (errno == EINTR || errno == EAGAIN) continue;
         set_error(g, "page flip poll failed: %s", strerror(errno));
-        return;
+        return false;
     }
 }
 
@@ -966,16 +973,18 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));
         g->disp_first = false;
         g->disp_prev = bo;               // on glass now (SetCrtc is immediate)
-    } else {
-        wait_flip(g);                    // the previous flip's buffer is on glass
+    } else if (!wait_flip(g)) {
+        gbm_surface_release_buffer(g->gbm_surface, bo);
+    } else {                             // the previous flip's buffer is on glass
         if (g->disp_shown) gbm_surface_release_buffer(g->gbm_surface, g->disp_shown);
         g->disp_shown = g->disp_prev;    // displaced once the flip below completes
-        if (!drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL))
+        if (!drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL)) {
             g->flip_pending = true;
-        else if (!g->flip_failed) {
+            g->flip_failed = false;
+        } else if (!g->flip_failed) {
             g->flip_failed = true;
-            set_error(g, "drmModePageFlip failed: %s. DRM master went to another "
-                      "process", strerror(errno));
+            set_error(g, "drmModePageFlip failed: %s%s", strerror(errno),
+                      errno == EACCES ? ". DRM master went to another process" : "");
         }
         g->disp_prev = bo;
     }
@@ -1021,16 +1030,22 @@ void ghee_set_time(GheeScene *g, float t) { g->time_override = t; g->has_time_ov
 // Back to the monotonic clock after a ghee_set_time.
 void ghee_clear_time(GheeScene *g) { g->has_time_override = false; }
 
+void ghee_set_dt(GheeScene *g, float dt) { g->dt = dt; }
+
 // Fragment texture units this GL exposes: a pass's channels plus its data
 // textures have to fit.
 int ghee_max_texture_units(GheeScene *g) { return g ? (int)g->max_units : 0; }
+
+// Whether a data texture is linear-filtered by this GL, the same condition
+// ghee_mp_set_array picks its filter from. False on V3D, which has float
+// textures but no OES_texture_float_linear, so a filtered fetch is nearest.
+bool ghee_data_texture_linear(GheeScene *g) { return g && !(g->has_float_tex && !g->has_float_linear); }
 
 // The display mode's refresh rate in Hz; 0 when not in display mode.
 int ghee_display_vrefresh(GheeScene *g) { return g ? (int)g->disp_mode.vrefresh : 0; }
 
 // ---- internal seams for encoder.c (engine_internal.h) ---------------------
 
-void *ghee_i_gbm(GheeScene *g) { return g->gbm; }
 void *ghee_i_egl_display(GheeScene *g) { return g->display; }
 void  ghee_i_make_current(GheeScene *g) { make_current(g); }
 void  ghee_i_error(GheeScene *g, const char *msg) { set_error(g, "%s", msg); }

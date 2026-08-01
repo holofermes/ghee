@@ -5,11 +5,13 @@
 function attachH264(canvas, url, opts) {
   opts = opts || {};
   const ctx = canvas.getContext('2d');
+  const abort = new AbortController();
   let decoder = null, reader = null, lastFrame = null, decoded = 0, ts = 0, stopped = false;
   let fpsLast = 0, fpsT = performance.now();
-  // cancelling the reader ends the request, which drops this viewer server-side
+  // aborting the request is what drops this viewer server-side
   function teardown() {
     stopped = true;
+    abort.abort();
     if (reader) { reader.cancel().catch(() => {}); reader = null; }
     if (decoder) { if (decoder.state !== 'closed') decoder.close(); decoder = null; }
     if (lastFrame) { lastFrame.close(); lastFrame = null; }
@@ -17,6 +19,9 @@ function attachH264(canvas, url, opts) {
   const fail = e => { if (!stopped) { teardown(); opts.onfail && opts.onfail(String(e)); } };
 
   function configure(cfg) {
+    // a mid-stream config (encoder respawn, size change) replaces the decoder;
+    // the old one has to be closed or it keeps its hardware slot
+    if (decoder && decoder.state !== 'closed') decoder.close();
     canvas.width = cfg.codedWidth; canvas.height = cfg.codedHeight;
     const desc = Uint8Array.from(atob(cfg.description), c => c.charCodeAt(0));
     decoder = new VideoDecoder({
@@ -63,7 +68,7 @@ function attachH264(canvas, url, opts) {
   requestAnimationFrame(draw);
 
   (async () => {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: abort.signal });
     if (!res.ok) throw new Error('h264 stream: HTTP ' + res.status);
     reader = res.body.getReader();
     let buf = new Uint8Array(0);

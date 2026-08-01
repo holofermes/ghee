@@ -18,17 +18,18 @@ Rendering is GLES2 through DRM/GBM on a stock Lite image, with direct scanout fo
 
 ## Where does it run?
 
-| Hardware | OS | Driver |
-| --- | --- | --- |
-| Pi 1, Pi Zero, Pi Zero W (armv6) | Raspberry Pi OS bookworm or trixie | vc4 |
-| Pi 2, Pi 3, Pi Zero 2 W (arm64) | Raspberry Pi OS bookworm or trixie | vc4 |
-| Pi 4 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 |
-| Pi 5 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 |
-| Desktop Linux (x86_64) | any current distro | Mesa |
+| Hardware | OS | Driver | Hardware H264 |
+| --- | --- | --- | --- |
+| Pi 1, Pi Zero, Pi Zero W (armv6) | Raspberry Pi OS bookworm or trixie | vc4 | yes |
+| Pi 2, Pi 3, Pi Zero 2 W (arm64) | Raspberry Pi OS bookworm or trixie | vc4 | yes |
+| Pi 4, Pi 400 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 | yes |
+| Pi 5 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 | ffmpeg/libx264 |
+| Desktop Linux (x86_64) | any current distro | Mesa | ffmpeg/libx264 |
 
-Hardware H264 encoding works on every Pi except the Pi 5, which has no
-encoder block and falls back to ffmpeg/libx264. The distributed armhf package is
-compiled for ARMv6, so it runs on every Pi back to the Pi 1!
+The Pi 5 has no encoder block, so it falls back to ffmpeg/libx264, as do
+desktops. Hardware encoding is measured on a Pi Zero W 1/2, a Pi 3 and a Pi 400.
+The distributed armhf package is compiled for ARMv6, so it runs on every Pi
+back to the Pi 1!
 
 ## Install
 
@@ -59,66 +60,67 @@ or pip, inside a venv:
 pip install ghee-render
 ```
 
-Optional extra: `ghee-render[drivers]` for the bundled SPI display drivers.
+The bundled panel drivers need three more packages which are pulled in via
+`apt install` automatically. In case you work from source you'll need these:
 
-Software H264 shells out to ffmpeg, and nothing here installs it for you:
+```
+sudo apt install python3-spidev python3-libgpiod python3-smbus2
+```
+
+If you are outputting an H264 stream on a Pi 5 or a desktop, ghee will shell
+out to ffmpeg, but you must install it yourself like so:
 
 ```
 sudo apt install ffmpeg
 ```
 
-Only the Pi 5 and desktop need it, since every earlier Pi has the hardware
-encoder. Without it `--h264` and the console's H264 stream exit saying so;
-everything else works.
-
-Without CMake or those headers the install fails, naming what is missing. To
-install anyway: `GHEE_LIB=/path/to/libghee.so` renders with an engine already
-on the host, `GHEE_SKIP_ENGINE=1` installs the Python side alone (`ghee.scene`
-and `ghee.isf`, no rendering).
-
-The renderer picks its GPU node automatically: `$GHEE_DRI`, then a render node
-(`/dev/dri/renderD*`), then a card node. `--display kms` instead takes the first
-card with a connected mode. Override either with `$GHEE_DRI` or `--dri`.
+On all other Pi, 1 through 4, ghee uses the H264 hardware encoder.
 
 ## Run it
 
-Render to numbered PNGs (bundled scenes resolve by name; your own directories
-join the lookup through `$GHEE_SCENES`):
+Render to numbered PNGs (`--demo` resolves the bundled scenes by name; your own
+directories join the lookup through `$GHEE_SCENES`):
 
 ```
-ghee render bars -o frame.####.png --frames 60
+ghee render --demo bars -o frame.####.png --frames 60
 ```
 
 A `.py` scene is imported to build its passes, so loading or switching to one
 runs its code. Treat a scenes directory, and anything you put on `$GHEE_SCENES`,
 as code you have chosen to run.
 
+Everything after `--` goes to the scene itself, and `-- --help` lists what it
+takes; see [Scene arguments](#scene-arguments):
+
+```
+ghee render --demo text -- --text "hello there"
+ghee render --demo hero --display kms -- --particle-buffer 160x100 --no-dither
+```
+
 Or write raw frames to stdout and pipe them into ffmpeg. `--timestep` pins
 engine time to `frame * S`, so the render is reproducible (frame N always
 renders at time N*S):
 
 ```
-ghee render bars -o - --frames 300 --timestep 0.0166667 |
+ghee render --demo bars -o - --frames 300 --timestep 0.0166667 |
   ffmpeg -f rawvideo -pix_fmt rgba -s 320x240 -framerate 60 -i - out.mp4
 ```
 
 Or stream it as H264 (raw Annex-B; pipe it anywhere):
 
 ```
-ghee render trail --h264 - --fps 30 | mpv -
+ghee render --demo trail --h264 - --fps 30 | mpv -
 ```
 
-On boards with the Broadcom hardware encoder (original Zero through Pi 4) the
-frame goes GPU -> encoder with no CPU copy. That is measured on a Pi Zero W and
-inferred across the rest of the range from the shared encoder block. The Pi 5
-dropped the encoder, so there and on desktop ffmpeg encodes the readback with
-libx264 and has to be on `$PATH`. `--bitrate` sets bits/s.
+On boards with the Broadcom hardware encoder (Pi 1 through Pi 4) the frame goes
+GPU -> encoder with no CPU copy. The Pi 5 dropped the encoder, so there and on
+desktop ffmpeg encodes the readback with libx264 and has to be on `$PATH`.
 
 Or scan it straight out to the HDMI display; details in
 [Hardware displays](#hardware-displays):
 
 ```
-sudo ghee render trail --display kms
+ghee render --demo trail --display kms
 ```
 
 Or open the browser console on the bundled examples and edit the GLSL live:
@@ -129,6 +131,19 @@ ghee serve --demo
 
 `ghee serve <your_scenes_dir>` serves your own scenes instead. The console
 preview streams H264 (WebCodecs) when the browser can, MJPEG otherwise.
+
+Those outputs are a list, not a choice: `-o`, `--display` and `--h264` combine
+in one render, and `--serve` attaches the console to whatever the list is. One
+render feeds them all.
+
+```
+ghee render --demo bars --display st7789 -o frame.####.png      # panel and a contact sheet
+ghee render --demo bars --display st7789 --serve                 # panel, and edit it live
+ghee render --demo bars --display kms --serve --host 0.0.0.0     # HDMI, edit from a laptop
+```
+
+`ghee serve <dir>` is `ghee render <dir> --serve`; pointing `--serve` at a
+single scene serves that one alone.
 
 ## Scenes
 
@@ -180,16 +195,13 @@ through numbered channel samplers: a channel bound to an earlier pass sees the
 current frame, and a channel bound to the pass itself (or a later one) sees the
 previous frame, and the last pass is what reaches the output.
 
-A pass can render at its own resolution with `"size": [w, h]`: a tiny 32x18
-precompute buffer, or a heavy effect at half size. Passes sample each other
-through normalized coordinates, so a consumer never has to know a producer's
-size. The last pass takes no size; it renders at the output resolution that
-reaches readback, the display, or the encoder.
+A pass can render at arbitrary and indipendent resolutions, and they can sample
+each other through normalized coordinates.
 
-A scene is usually a JSON file. It can also be a Python file, referred to as a
-procedural scene; see [ghee from Python](#ghee-from-python) below.
+While a scene is usually a JSON file, it can also be built in Python file,
+referred to as a procedural scene; see [ghee from Python](#ghee-from-python) below.
 
-Every pass's GLSL is compiled with this simple preamble:
+Every pass's GLSL is compiled with roughly this simple preamble:
 
 ```glsl
 uniform float time;                 // seconds since start
@@ -201,15 +213,16 @@ varying vec2  v_texCoord;           // 0..1 across the buffer
 // declared array, e.g. {"name": "amplitudes", "size": 16}:
 const int amplitudes_size;          // = 16
 float amplitudes_at(int i);         // one element
-float amplitudes_sample(float t);   // interpolated, t in 0..1
+float amplitudes_sample(float t);   // interpolated, t in 0..1, clamped edges
 // arrays are bound as 1xN textures
 
 // a 2D input, e.g. {"name": "text", "size": [96, 16]}:
-float text_sample2(vec2 uv);        // one fetch, normalized uv
+float text_sample2(vec2 uv);        // bilinear, normalized uv
 // the host feeds w*h floats: a mask, host-rasterized text, an image
 
 // per channel: uniform sampler2D iChannel0..N
 // per param:   uniform <type> <name>
+// then the scene's common block, if it has one
 ```
 
 Channels are declared on the pass by `"buffer"` name:
@@ -272,7 +285,6 @@ for i in range(300):
     frame = r.render(lambda name, size: my_source(size, i))
 ```
 
-A declared array with no data gets an animated sinewave placeholder.
 
 One can build a whole procedural scene in Python with a
 `SceneController` class, using `provide()` to fill the named arrays:
@@ -309,6 +321,9 @@ Save writes a modified copy to `<scenes_dir>/modified/` for JSON scenes; a
 procedural scene saves its param values and filter list as a sidecar applied
 over the scene's defaults on load.
 
+`GET /frame.png` returns one lossless PNG of the next frame at the render size,
+so a script can set a param and read back what it did.
+
 The console embeds in Python too, with array names mapped to providers:
 
 ```python
@@ -335,7 +350,7 @@ passes. A scene can declare them:
 or the CLI can add them ad hoc, in order, after whatever the scene declares:
 
 ```
-ghee render bars --filters dither --display ssd1306
+ghee render --demo bars --filters dither --display ssd1306
 ```
 
 The bundled `dither` is an ordered 4x4 Bayer dither, which is what makes
@@ -366,25 +381,34 @@ Three kinds of ISF are refused:
 ## Hardware displays
 
 ```
-ghee displays                      # list displays and whether they work here
+ghee displays                      # list drivers, their options, and what works here
 ghee render scene.json --display st7789
-sudo ghee render scene.json --display kms
+ghee render scene.json --display kms
+ghee serve scenes/ --display st7789   # the console, driving the panel
 ```
+
+`--display` takes an optional value, so write the driver name straight after it
+and keep any path (a scenes directory) before it.
 
 `kms` is the connected HDMI (or any KMS) display: the engine takes DRM master
 and page-flips its render buffers straight to the connector, zero copy, paced
-by the panel's own refresh. It needs root and a card nothing else is driving,
-so a headless Pi is the natural home; a running desktop session already owns
-the card.
+by the panel's own refresh. It takes over a card, so a headless Pi is the
+natural home; a running desktop session already owns the card.
 
-The two bundled drivers are reference implementations for the exact panels
-this project was built on: `st7789` (135x240 SPI LCD, pins and offsets as
-wired on my Pi) and `ssd1306` (128x32 I2C 1-bit OLED). Both live behind the
-`[drivers]` extra. For other panels, or the same controllers wired
-differently, write a small driver class (subclass `DisplayDriver`, implement
-`write(frame)`) and register it through the `ghee.drivers` entry point group;
-it gets picked up by name. Making the bundled drivers configurable (size,
-pins, offsets) is on the roadmap.
+The two bundled drivers default to the panels this project was built on:
+`st7789` (135x240 SPI LCD) and `ssd1306` (128x32 I2C 1-bit OLED). You can
+configure differently wired is controller with `--display-opts`, which sets 
+the driver's constructor arguments:
+
+```
+ghee render --demo bars --display st7789 \
+  --display-opts width=240,height=240,x_offset=0,y_offset=80,backlight=26
+```
+
+Use `ghee displays` to list every option a driver takes with its default.
+
+For another controller, write a small driver class and register it through
+the `ghee.drivers` entry point group.
 
 ## Known limitations
 
@@ -392,21 +416,19 @@ pins, offsets) is on the roadmap.
   derivatives (`fwidth`) and no multisampled FBOs.
 - File, stream and panel output all pay a synchronous `glReadPixels`. GLES2 has
   no asynchronous readback, so the cost scales with output size.
-- `--display kms` needs root, because it takes DRM master, and a card no
-  compositor is holding.
+- `--display kms` needs a card no compositor is holding, because it takes DRM
+  master.
 - Hardware H264 is the Broadcom encoder, which the Pi 5 does not have. There and
   on desktop the software path costs a CPU libx264 encode and needs ffmpeg
   installed.
-- The bundled panel drivers are fixed to the panels they were written for
-  (`st7789` 135x240, `ssd1306` 128x32). Anything else needs a driver class.
+- The bundled panel drivers cover two controllers (`st7789`, `ssd1306`).
 - The web console has no authentication.
 
 ## FAQ
 
-**A render says there is no GL device.** The engine probes `$GHEE_DRI`, then
-`/dev/dri/card0`, `/dev/dri/renderD128`, then any other card. Point it at the
-right one with `--dri` or `$GHEE_DRI`, and check your user is in `video` (and
-`render`, on desktop). `ghee displays` reports what works on the host.
+**A render says there is no GL device.** Point the engine at the right node
+with `--dri` or `$GHEE_DRI`, and check your user is in `video` (and `render`,
+on desktop). `ghee displays` reports what works on the host.
 
 **The install failed with `C engine build failed`.** CMake or the GLES/DRM
 headers are missing. Install them (see Install) and try again, or use a release

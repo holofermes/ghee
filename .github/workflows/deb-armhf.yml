@@ -67,7 +67,7 @@ jobs:
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
-          name: python3-ghee-armhf-bookworm
+          name: python3-ghee-armhf
           path: out/*.deb
       - uses: ./.github/actions/release-notes
         id: notes
@@ -80,7 +80,7 @@ jobs:
         run: |
           set -euo pipefail
           ver=$(dpkg-deb -f out/python3-ghee_*.deb Version | awk '{print $NF}')
-          asset="python3-ghee_${ver}_armhf-bookworm.deb"
+          asset="python3-ghee_${ver}_armhf.deb"
           cp out/python3-ghee_*.deb "$asset"
           gh release create "${GITHUB_REF_NAME}" --notes-file "$NOTES" \
             || gh release view "${GITHUB_REF_NAME}" > /dev/null

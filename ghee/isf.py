@@ -575,7 +575,7 @@ def _shim(src, index, sized: _Sized) -> str:
         f"// ISF shim for '{src}', pass {index}",
         "#define RENDERSIZE resolution",
         "#define TIME time",
-        "#define TIMEDELTA (1.0 / 60.0)",
+        "#define TIMEDELTA DT",
         "#define FRAMEINDEX int(time * 60.0)",
         "#define DATE vec4(0.0, 0.0, 0.0, time)",
         "#define isf_FragNormCoord v_texCoord",

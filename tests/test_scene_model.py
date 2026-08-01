@@ -365,7 +365,7 @@ def test_string_param_emits_no_uniform():
         params={"text": Param("text", "string", "GHEE")},
     )
     g2 = s.passes[0].glsl(s.params)
-    assert "uniform" not in g2.split("void main")[0].split("uniform float time;")[1]
+    assert "uniform" not in g2.split("void main")[0].split("uniform float DT;")[1]
 
 
 def test_string_param_glsl_type_raises():

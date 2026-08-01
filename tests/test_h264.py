@@ -219,3 +219,34 @@ def test_hardware_unavailable_falls_back(renderer):
         enc = make_encoder(renderer, 64, 64)
         assert isinstance(enc, SoftwareH264)
         enc.close()
+
+
+def test_a_frame_under_the_codec_minimum_is_refused_by_name():
+    """A panel too small for the codec has to say so. Left to V4L2 it fails
+    somewhere inside the queue setup, which reads as "this board has no
+    hardware encoder" and takes every later stream down the software lane."""
+    from ghee.h264 import HW_MIN_PIXELS, HardwareH264
+
+    with pytest.raises(RuntimeError) as e:
+        HardwareH264(None, 128, 32)  # a small panel: 16KiB of input
+    assert "128x32" in str(e.value)
+    assert str(HW_MIN_PIXELS) in str(e.value)
+
+
+def test_hardware_create_failure_falls_back_on_a_board_that_has_an_encoder(monkeypatch):
+    """ghee_encoder_create pushes one frame through before it returns, so a
+    board whose codec cannot import the dmabuf raises out of
+    HardwareH264.__init__ and the software encoder takes over. Runs everywhere,
+    including on a Pi where the real hardware path works."""
+    import ghee.h264 as h264
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("no ffmpeg for the software encoder")
+
+    def cannot_import(*a, **kw):
+        raise RuntimeError("/dev/video11 never returned its first input buffer")
+
+    monkeypatch.setattr(h264, "HardwareH264", cannot_import)
+    enc = h264.make_encoder(None, 64, 64)  # software never touches the renderer
+    assert isinstance(enc, SoftwareH264)
+    enc.close()

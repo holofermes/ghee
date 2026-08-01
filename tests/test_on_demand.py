@@ -4,8 +4,9 @@ A scene whose controller reports dirty() False may have its frame skipped
 entirely; these cover the pure decision logic without touching GL.
 """
 
-from ghee.console.server import _should_render, _skip_interval
+from ghee.console.server import _skip_interval
 from ghee.engine import Renderer
+from ghee.loop import should_draw
 from ghee.output import AdaptivePacer, FixedPacer
 from ghee.procedural import SceneController
 
@@ -21,29 +22,29 @@ class Dirty(SceneController):
 
 
 def test_should_render_dirty_renders():
-    assert _should_render(False, Dirty(), 5, 0.1) is True
+    assert should_draw(False, Dirty(), 5, 0.1) is True
 
 
 def test_should_render_clean_skips():
-    assert _should_render(False, Clean(), 5, 0.1) is False
+    assert should_draw(False, Clean(), 5, 0.1) is False
 
 
 def test_should_render_queued_command_forces():
-    assert _should_render(True, Clean(), 5, 0.1) is True
+    assert should_draw(True, Clean(), 5, 0.1) is True
 
 
 def test_should_render_no_controller_free_runs():
-    assert _should_render(False, None, 5, 0.1) is True
+    assert should_draw(False, None, 5, 0.1) is True
 
 
 def test_should_render_first_frame_always_draws():
     # something must reach the sink once, even for a scene born clean
-    assert _should_render(False, Clean(), 0, 0.0) is True
+    assert should_draw(False, Clean(), 0, 0.0) is True
 
 
 def test_default_controller_is_always_dirty():
     # unchanged behavior for every scene that doesn't opt in
-    assert _should_render(False, SceneController(), 5, 0.1) is True
+    assert should_draw(False, SceneController(), 5, 0.1) is True
 
 
 def test_interval_display_uses_vrefresh():

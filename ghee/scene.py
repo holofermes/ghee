@@ -16,6 +16,9 @@ Image/texture channels and per-pass float buffer formats are not modeled.
 
 A pass may set `size` [w, h] to render at its own resolution; consumers sample it
 through normalized UVs so mixed sizes compose, and the output (last) pass omits it.
+
+A scene may carry one `common` block: GLSL prepended to every scene pass after
+the preamble, for functions and constants the passes share.
 """
 
 from __future__ import annotations
@@ -24,6 +27,8 @@ import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
+
+from ghee.sources import record
 
 _GLSL_TYPE = {
     "float": "float",
@@ -75,31 +80,55 @@ def _obj(d: dict, key: str) -> dict:
     return v
 
 
-def _read_shader(path: str, base_dir: str | None, pass_name: str) -> str:
-    """A pass's `shader` file, read from the scene's own directory. A scene with
-    no directory (one posted to the console, one built in memory) cannot name
+def _read_shader(path: str, base_dir: str | None, what: str) -> str:
+    """A `shader` file, read from the scene's own directory. A scene with no
+    directory (one posted to the console, one built in memory) cannot name
     files at all, and one that has a directory cannot reach outside it: either
-    would turn a scene into a read of any file on the host."""
+    would turn a scene into a read of any file on the host. `what` names the
+    holder in errors: a pass, or the scene's common block."""
     if not isinstance(path, str):
-        raise ValueError(f"pass '{pass_name}' shader needs a filename, got {path!r}")
+        raise ValueError(f"{what} shader needs a filename, got {path!r}")
     if not base_dir:
         raise ValueError(
-            f"pass '{pass_name}' names a shader file ({path!r}) but the scene has "
+            f"{what} names a shader file ({path!r}) but the scene has "
             "no directory to resolve it against; inline the GLSL in 'code'"
         )
     root = os.path.normpath(os.path.abspath(base_dir))
     full = os.path.normpath(os.path.join(root, path))
     if full != root and not full.startswith(root + os.sep):
-        raise ValueError(
-            f"pass '{pass_name}' shader {path!r} is outside the scene directory"
-        )
+        raise ValueError(f"{what} shader {path!r} is outside the scene directory")
     try:
         with open(full, encoding="utf-8") as f:
-            return f.read()
+            code = f.read()
     except OSError as e:
+        raise ValueError(f"{what} shader {path!r}: {e.strerror or e}") from None
+    record(full)
+    return code
+
+
+def _common(d: dict, base_dir: str | None) -> str | None:
+    """The scene's shared GLSL, carried the two ways a pass carries its own:
+    'code' inline, or a 'shader' file next to the scene. None = no common
+    block at all; "" is an empty one the console just created."""
+    c = d.get("common")
+    if c is None:
+        return None
+    if not isinstance(c, dict):
         raise ValueError(
-            f"pass '{pass_name}' shader {path!r}: {e.strerror or e}"
-        ) from None
+            "'common' needs an object with 'code' (inline GLSL) or 'shader' "
+            f"(a file next to the scene), got {c!r}"
+        )
+    code, shader = c.get("code"), c.get("shader")
+    if (code is None) == (shader is None):
+        raise ValueError(
+            "'common' needs exactly one of 'code' (inline GLSL) or 'shader' "
+            "(a file next to the scene)"
+        )
+    if code is None:
+        return _read_shader(shader, base_dir, "common")
+    if not isinstance(code, str):
+        raise ValueError(f"'common' needs GLSL text in 'code', got {code!r}")
+    return code
 
 
 def _param_uniform_lines(p: Param) -> list[str]:
@@ -298,6 +327,57 @@ class ArrayInput:
         return {"name": self.name, "size": list(self.size) if self.is_2d else self.size}
 
 
+def _array_reader_lines(a: ArrayInput, hw_linear: bool) -> list[str]:
+    """Preamble readers for one declared array, bound as a data texture.
+    _at(i) is one fetch at a computed coord (no VC4 uniform-array unroll or
+    size cap). V3D cannot linear-filter a float texture, so a GPU-filtered
+    fetch is nearest there and linear elsewhere. hw_linear says which GPU this
+    is: where the filter works _sample/_sample2 are one fetch, where it does
+    not they read the exact texels and interpolate in the shader, reproducing
+    GL's LINEAR + CLAMP_TO_EDGE (texel centres, clamped edges). Both forms
+    return the same values; the shader one costs the extra fetches."""
+    n = a.name
+    if a.is_2d:
+        if hw_linear:
+            return [f"float {n}_sample2(vec2 uv){{ return texture2D({n}_tex, uv).r; }}"]
+        w, h = a.size
+        return [
+            f"float {n}_sample2(vec2 uv){{",
+            f"  vec2 dim = vec2({float(w)}, {float(h)});",
+            "  vec2 x = uv * dim - 0.5;",
+            "  vec2 i = floor(x);",
+            "  vec2 lo = (clamp(i, vec2(0.0), dim - 1.0) + 0.5) / dim;",
+            "  vec2 hi = (clamp(i + 1.0, vec2(0.0), dim - 1.0) + 0.5) / dim;",
+            f"  float a = texture2D({n}_tex, vec2(lo.x, lo.y)).r;",
+            f"  float b = texture2D({n}_tex, vec2(hi.x, lo.y)).r;",
+            f"  float c = texture2D({n}_tex, vec2(lo.x, hi.y)).r;",
+            f"  float d = texture2D({n}_tex, vec2(hi.x, hi.y)).r;",
+            "  vec2 f = x - i;",
+            "  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);",
+            "}",
+        ]
+    at = (
+        f"float {n}_at(int i0){{ return texture2D({n}_tex, "
+        f"vec2((float(i0)+0.5)/float({n}_size), 0.5)).r; }}"
+    )
+    if hw_linear:
+        return [
+            at,
+            f"float {n}_sample(float t){{ return texture2D({n}_tex, vec2(t, 0.5)).r; }}",
+        ]
+    return [
+        at,
+        f"float {n}_sample(float t){{",
+        f"  float x = t * float({n}_size) - 0.5;",
+        "  float i = floor(x);",
+        f"  float last = float({n}_size - 1);",
+        f"  float a = {n}_at(int(clamp(i, 0.0, last)));",
+        f"  float b = {n}_at(int(clamp(i + 1.0, 0.0, last)));",
+        "  return mix(a, b, x - i);",
+        "}",
+    ]
+
+
 @dataclass
 class Channel:
     """A numbered sampler -> iChannel<index>, bound to a pass's output buffer."""
@@ -365,7 +445,7 @@ class Pass:
                     f"pass '{name}' has neither 'code' (inline GLSL) nor "
                     "'shader' (a file next to the scene)"
                 )
-            code = _read_shader(d["shader"], base_dir, name)
+            code = _read_shader(d["shader"], base_dir, f"pass '{name}'")
         try:
             arrays = [ArrayInput.from_dict(a) for a in _list(d, "arrays")]
             channels = [Channel.from_dict(c) for c in _list(d, "channels")]
@@ -396,7 +476,14 @@ class Pass:
             out["filter"] = self.filter
         return out
 
-    def glsl(self, scene_params: dict[str, Param] | None = None) -> str:
+    def glsl(
+        self,
+        scene_params: dict[str, Param] | None = None,
+        common: str | None = None,
+        hw_linear: bool = False,
+    ) -> str:
+        """`hw_linear` is the target GPU's answer to Renderer.data_texture_linear;
+        the default emits the array readers that hold on any GPU."""
         L = [
             "#version 100",
             # highp where the fragment stage supports it (VC4 does), else mediump.
@@ -411,6 +498,7 @@ class Pass:
             "varying vec2 v_texCoord;",
             "uniform vec2 resolution;",
             "uniform float time;",
+            "uniform float DT;",
             # VC4's gl_FragCoord.xy is sheared ~1/3 px per row when a pass samples
             # its own output as feedback (the interpolated varying is exact). Map
             # gl_FragCoord to the varying so scene code (gl_FragCoord.xy/resolution)
@@ -430,24 +518,14 @@ class Pass:
         for p in self.params.values():
             L += _param_uniform_lines(p)
 
-        # A 1xN data texture: _at(i) is one fetch with a computed coord (no VC4
-        # unroll or size cap), _sample(t) interpolates between elements for free.
-        # A 2D input is one normalized-uv fetch: _sample2(uv).
         for a in self.arrays:
-            if a.is_2d:
-                L.append(
-                    f"float {a.name}_sample2(vec2 uv){{ "
-                    f"return texture2D({a.name}_tex, uv).r; }}"
-                )
-                continue
-            L += [
-                f"float {a.name}_at(int i0){{ return texture2D({a.name}_tex, "
-                f"vec2((float(i0)+0.5)/float({a.name}_size), 0.5)).r; }}",
-                f"float {a.name}_sample(float t){{ "
-                f"return texture2D({a.name}_tex, vec2(t, 0.5)).r; }}",
-            ]
+            L += _array_reader_lines(a, hw_linear)
 
-        return "\n".join(L) + "\n\n" + self.code
+        # A filter is authored on its own and appended to any scene, so the
+        # scene's common block never reaches it: its internals cannot collide
+        # with names the scene author chose.
+        body = f"{common}\n\n{self.code}" if common and not self.filter else self.code
+        return "\n".join(L) + "\n\n" + body
 
 
 @dataclass
@@ -460,8 +538,13 @@ class Scene:
     # scene-scoped params: emitted into every pass's preamble and set on all of
     # them at once. Same shape as a pass's params.
     params: dict[str, Param] = field(default_factory=dict)
+    # GLSL shared by every scene pass (functions, constants), prepended after
+    # the preamble. None = no common block; filter passes never see it.
+    common: str | None = None
 
     def __post_init__(self) -> None:
+        if self.common is not None and not isinstance(self.common, str):
+            raise ValueError(f"'common' needs GLSL text, got {self.common!r}")
         seen: set[str] = set()
         for p in self.passes:
             if p.name in seen:
@@ -504,12 +587,15 @@ class Scene:
                 params={
                     n: Param.from_dict(n, pd) for n, pd in _obj(d, "params").items()
                 },
+                common=_common(d, base_dir),
             )
         except ValueError as e:
             raise ValueError(f"{src}: {e}") from None
 
     def to_dict(self) -> dict:
         out = {"version": self.version, "passes": [p.to_dict() for p in self.passes]}
+        if self.common is not None:  # "" is a common block the console can fill
+            out["common"] = {"code": self.common}
         if self.filters:
             out["filters"] = self.filters
         if self.params:
@@ -523,6 +609,7 @@ class Scene:
                 data = json.load(f)
             except ValueError as e:
                 raise ValueError(f"{path}: invalid JSON: {e}") from None
+        record(path)
         return cls.from_dict(
             data, base_dir=os.path.dirname(os.path.abspath(path)), path=path
         )

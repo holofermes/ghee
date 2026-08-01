@@ -1,27 +1,45 @@
-"""A procedural scene with no JSON: it builds its pass in code and feeds a custom
-array each frame. Run it with `ghee render <this file> -o out.####.png --frames N`,
-or `ghee serve` to drive it in the console.
+"""A scene with no JSON: it builds its pass in code and feeds a custom array
+each frame.
 
-The `gain` param lives in both worlds: the shader reads it as a uniform (bar
-brightness) and provide() reads it in Python (bar height). One slider, both sides.
+`gain` is one param on both sides: the shader reads it as a uniform for bar
+brightness, provide() reads it in Python for bar height.
+
+    ghee render --demo spectrum -o out.####.png --frames 60
+    ghee serve --demo spectrum                      # drive it in the console
 """
 
+import importlib
+
 import numpy as np
+from lib import look
 
 from ghee import ArrayInput, Param, Pass, Scene, SceneController
+
+# a scene is re-imported on reload but its libraries are not, so without this a
+# reload after editing look.py would render the cached one
+importlib.reload(look)
 
 BARS = 48
 
 SHADER = """
 void main() {
-    vec2 uv = gl_FragCoord.xy / resolution;
-    int i = int(uv.x * float(bars_size));
-    if (i > bars_size - 1) i = bars_size - 1;
+    vec2 uv = vec2(v_texCoord.x, 1.0 - v_texCoord.y);  // y climbs off the floor
+    float fi = uv.x * float(bars_size);
+    int i = int(min(fi, float(bars_size - 1)));
     float h = bars_at(i);
-    float lit = step(uv.y, h);
-    vec3 hue = vec3(0.2 + 0.8 * (0.5 + 0.5 * sin(time * 2.0 + uv.x * 8.0)), uv.y, 1.0 - uv.y);
-    vec3 col = mix(vec3(0.02, 0.0, 0.05), hue * (0.3 + 1.4 * gain), lit);
-    gl_FragColor = vec4(col, 1.0);
+
+    // bars stand on the baseline, their reflection hangs under it
+    float base = 0.34;
+    float under = step(uv.y, base);
+    float y = mix(uv.y - base, (base - uv.y) * 2.4, under) / (1.0 - base);
+
+    float column = smoothstep(0.46, 0.30, abs(fract(fi) - 0.5));
+    float body = column * (1.0 - smoothstep(h - 0.004, h + 0.004, y));
+    float cap = body * smoothstep(h - 0.12, h, y);
+
+    vec3 col = palette(0.16 + 0.30 * uv.x + 0.06 * h);
+    col *= (body * (0.15 + 0.6 * y) + cap * 1.3) * mix(1.0, 0.30, under) * (0.4 + gain);
+    gl_FragColor = vec4(tone(col, 0.02, 1.5), 1.0);
 }
 """
 
@@ -29,18 +47,17 @@ void main() {
 class Spectrum(SceneController):
     def build(self, base):
         self.scene = Scene(
+            common=look.PALETTE + look.TONE,
             passes=[
                 Pass(
                     name="main",
                     code=SHADER,
                     arrays=[ArrayInput("bars", BARS)],
                     params={
-                        "gain": Param(
-                            "gain", "float", 0.45, min=0.0, max=0.5, step=0.01
-                        )
+                        "gain": Param("gain", "float", 0.6, min=0.0, max=1.0, step=0.01)
                     },
                 )
-            ]
+            ],
         )
         return self.scene
 
@@ -48,8 +65,11 @@ class Spectrum(SceneController):
         if name == "bars":
             gain = self.scene.passes[0].params["gain"].value
             x = np.linspace(0.0, 1.0, size)
-            wave = np.sin(2 * np.pi * 3 * x + frame * 0.07) * np.sin(
-                np.pi * x + frame * 0.02
-            )
-            return (0.5 + gain * wave).astype(np.float32)
+            t = frame * 0.05
+            # look.WAVE in numpy: two sines that are not quite harmonics running
+            # opposite ways, so the crest travels and never lands twice on the
+            # same bar
+            w = 0.28 * np.sin(x * 4.4 + t) + 0.10 * np.sin(x * 9.7 - t * 0.6)
+            tilt = np.exp(-1.7 * x)  # a spectrum leans on its low end
+            return (gain * (0.55 + tilt) * (0.65 + w)).astype(np.float32)
         return None

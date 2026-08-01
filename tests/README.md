@@ -17,6 +17,8 @@ with `GHEE_DRI=/dev/dri/renderD128 pytest`.
   input -> different pixels (determinism, named array, live param update, multipass
   forward + feedback). Device-independent, no golden needed.
 - `test_demos.py` — every bundled demo scene compiles, renders, and matches its golden.
+- `test_drivers.py` — the panel drivers against faked spidev, gpiod and smbus2: the
+  bytes and pin levels they put on the wire. Both gpiod APIs (1.x, 2.x). No hardware.
 
 ## Goldens
 

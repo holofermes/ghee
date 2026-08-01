@@ -3,10 +3,23 @@
     ghee render scene.json -o frame.####.jpg --frames 500   # image sequence
     ghee render scene.json -o - --frames 300 | ffmpeg ...    # raw frames to a pipe
     ghee render scene.json --display st7789                  # to a panel, until Ctrl-C
+    ghee render scene.json --h264 - | mpv -                  # H264 to a pipe
+    ghee render scene.json --display st7789 --serve           # panel plus the console
     ghee serve scenes/                                       # editor console
     ghee serve --demo                                        # console on the bundled examples
+    ghee render --demo bars -o frame.png                     # a bundled example by name
     ghee isf import shader.fs -o shader.scene.json           # import an ISF shader
     ghee displays                                            # list display drivers
+
+Outputs combine: -o, --display and --h264 are a list of sinks one render feeds,
+and --serve attaches the console to any of them. `serve` is `render --serve`
+over a directory of scenes.
+
+Everything after `--` goes to the scene's own controller, and `-- --help` lists
+what it takes:
+
+    ghee render --demo text -- --text "hello there"
+    ghee render --demo bluesun --display kms -- --emit 480x300
 
 Scene arrays animate on a placeholder unless a scene controller feeds them.
 """
@@ -15,7 +28,6 @@ import argparse
 import os
 import signal
 import sys
-import time
 
 
 def _size(s):
@@ -23,10 +35,10 @@ def _size(s):
     return int(w), int(h)
 
 
-def _parse_save_opts(s):
-    """ "k=v,k2=v2" -> a dict for Image.save. Each value goes through
-    ast.literal_eval (90 -> int, True -> bool) and falls back to the raw string
-    when that fails."""
+def _parse_kv(s, what):
+    """ "k=v,k2=v2" -> a dict. Each value goes through ast.literal_eval (90 ->
+    int, True -> bool) and falls back to the raw string when that fails. `what`
+    names the flag a parse error came from."""
     import ast
 
     opts = {}
@@ -35,7 +47,7 @@ def _parse_save_opts(s):
         if not pair:
             continue
         if "=" not in pair:
-            sys.exit(f"render: --save-opts wants k=v pairs, got '{pair}'")
+            sys.exit(f"{what} wants k=v pairs, got '{pair}'")
         k, v = pair.split("=", 1)
         try:
             opts[k.strip()] = ast.literal_eval(v.strip())
@@ -44,9 +56,19 @@ def _parse_save_opts(s):
     return opts
 
 
-def _find_scene(arg):
+def _split_scene_args(argv):
+    """(ghee's own argv, the scene's tokens). The first `--` ends ghee's flags:
+    everything past it belongs to the scene, further `--` included."""
+    if "--" not in argv:
+        return argv, []
+    i = argv.index("--")
+    return argv[:i], argv[i + 1 :]
+
+
+def _find_scene(arg, demo=False):
     """A path as given, or a scene name looked up in $GHEE_SCENES (colon-
-    separated directories), then the bundled examples."""
+    separated directories), plus the bundled examples when --demo asks for
+    them."""
 
     def hit(stem):
         return any(
@@ -55,23 +77,24 @@ def _find_scene(arg):
 
     if hit(arg):
         return arg
-    from ghee.console import examples_dir
-
     dirs = [d for d in os.environ.get("GHEE_SCENES", "").split(":") if d]
-    dirs.append(examples_dir())
+    if demo:
+        from ghee.console import examples_dir
+
+        dirs.append(examples_dir())
     for d in dirs:
         p = os.path.join(d, arg)
         if hit(p):
             return p
-    sys.exit(f"no scene '{arg}' (searched: cwd, {', '.join(dirs)})")
+    sys.exit(f"no scene '{arg}' (searched: {', '.join(['cwd'] + dirs)})")
 
 
-def cmd_render(a):
+def _scene(a):
+    """The scene this invocation renders, with its filters applied: the ones it
+    declares, then whatever --filters adds."""
     from ghee import apply_filters, load_filters, load_scene
-    from ghee.console.feeds import demo_feed
-    from ghee.engine import Renderer
 
-    scene, ctrl = load_scene(_find_scene(a.scene))
+    scene, ctrl = load_scene(_find_scene(a.scene, a.demo), a.scene_args)
     names = list(scene.filters)
     if a.filters:
         names += [n.strip() for n in a.filters.split(",") if n.strip()]
@@ -81,263 +104,288 @@ def cmd_render(a):
     if unknown:
         sys.exit(f"unknown filter: {', '.join(unknown)} (known: {', '.join(reg)})")
     apply_filters(scene, names, registry=reg)
-    if a.h264:
-        if a.display or a.output:
-            sys.exit("render: --h264 excludes -o/--display")
-        return _render_h264(a, scene, ctrl)
-    if a.output == "-" and a.display:
-        sys.exit("render: -o - (stdout) excludes --display")
-    kms = a.display == "kms"
-    if kms:
+    return scene, ctrl
+
+
+def _panel(a):
+    """What --display names: the string "kms" for the scanout, else the driver
+    instance, built with whatever --display-opts sets."""
+    if not a.display:
+        if a.display_opts:
+            sys.exit(f"{a.cmd}: --display-opts without --display")
+        return None
+    if a.display == "kms":
+        if a.display_opts:
+            sys.exit(f"{a.cmd}: --display-opts with --display kms; kms has no driver")
+        return "kms"
+    from ghee.drivers import driver_options, get_driver
+
+    try:
+        cls = get_driver(a.display)
+    except KeyError:
+        # --display takes an optional value, so a path written after it is read
+        # as a driver name
+        hint = (
+            ", and a scenes directory goes before it"
+            if os.path.isdir(a.display)
+            else ""
+        )
+        sys.exit(f"{a.cmd}: no display driver '{a.display}' (see: ghee displays){hint}")
+    if not a.display_opts:
+        return cls()
+    opts = _parse_kv(a.display_opts, f"{a.cmd}: --display-opts")
+    # checked before the driver runs: a constructor claims GPIO lines and the
+    # SPI bus before it reaches a keyword it does not take
+    known = driver_options(cls)
+    unknown = [k for k in opts if k not in known]
+    if unknown:
+        sys.exit(
+            f"{a.cmd}: --display-opts: {a.display} has no option "
+            f"{', '.join(unknown)} (takes: {', '.join(known)})"
+        )
+    return cls(**opts)
+
+
+def _geometry(a, panel):
+    """(size, components) the render runs at. A scanout renders at the connected
+    mode and a panel at its own geometry and pixel layout, either of which wins
+    over --size; everything else takes --size."""
+    if panel == "kms":
         from ghee.engine import probe_display
 
-        size = probe_display(dri_device=a.dri, lib_path=a.lib)
+        size = probe_display(dri_device=a.dri, lib_path=a.lib) or a.size
         if size is None:
-            sys.exit("kms: no card or no connected display")
-        w, h = size
-        sink = None
-    elif a.display:
-        from ghee.drivers import get_driver
+            sys.exit(f"{a.cmd}: no connected display to size from; pass --size WxH")
+        return size, a.components
+    if panel is not None:
+        return (panel.width, panel.height), panel.components
+    return a.size or (320, 240), a.components
 
-        try:
-            sink = get_driver(a.display)()
-        except KeyError:
-            sys.exit(f"render: no display driver '{a.display}' (see: ghee displays)")
-        w, h = sink.width, sink.height
-    elif a.output == "-":
+
+def _file_sink(a):
+    """The -o sink: raw frames to stdout, or numbered image files."""
+    if a.output == "-":
         from ghee.output import RawStream
 
-        sink = RawStream(sys.stdout.buffer)
-        w, h = a.size
-    elif a.output:
-        from ghee.output import ImageSequence, expand_pattern
+        return RawStream(sys.stdout.buffer)
+    if not a.output:
+        return None
+    from ghee.output import ImageSequence, expand_pattern
 
-        if a.frames and a.frames > 1 and expand_pattern(a.output, 0) == a.output:
-            sys.exit(
-                "render: multiple frames into one filename; number them with "
-                "a # run (frame.####.png)"
-            )
-        save_opts = _parse_save_opts(a.save_opts) if a.save_opts else None
-        sink = ImageSequence(a.output, save_opts=save_opts, depth=a.write_buffer)
-        w, h = a.size
-    else:
-        sys.exit("render: pass -o PATTERN or --display NAME")
+    if a.frames and a.frames > 1 and expand_pattern(a.output, 0) == a.output:
+        sys.exit(
+            "render: multiple frames into one filename; number them with "
+            "a # run (frame.####.png)"
+        )
+    save_opts = _parse_kv(a.save_opts, f"{a.cmd}: --save-opts") if a.save_opts else None
+    return ImageSequence(a.output, save_opts=save_opts, depth=a.write_buffer)
 
-    components = sink.components if a.display and not kms else a.components
+
+def _pacer(a, panel):
+    """Nothing paces a file or a pipe: that render runs as fast as it draws. A
+    panel paces on its own bus speed, the KMS flip paces itself at the display's
+    refresh, and an H264 stream holds a fixed rate for its timestamps."""
+    from ghee.output import AdaptivePacer, FixedPacer
+
+    if panel == "kms":
+        return FixedPacer(a.fps) if a.fps else None
+    if panel is not None:
+        return FixedPacer(a.fps) if a.fps else AdaptivePacer()
+    if a.h264:
+        return FixedPacer(_h264_fps(a))
+    return None
+
+
+def _h264_fps(a):
+    return int(a.fps) if a.fps else 30
+
+
+def _frames(a):
+    """--frames as given, else one image and an endless display, stream or
+    console."""
+    if a.frames is not None:
+        return a.frames
+    return 0 if (a.display or a.h264 or a.serve) else 1
+
+
+def cmd_render(a):
+    """One render into however many sinks the flags ask for."""
+    from ghee.engine import Renderer
+    from ghee.feeds import demo_feed
+    from ghee.loop import Loop
+    from ghee.output import Scanout
+
+    if a.serve and a.filters:
+        sys.exit(f"{a.cmd}: --filters with --serve; the console has a filter picker")
+    if a.serve and a.h264:
+        sys.exit(f"{a.cmd}: --h264 with --serve; the console serves /h264 already")
+    if a.output == "-" and a.h264 == "-":
+        sys.exit(f"{a.cmd}: -o - and --h264 - both want stdout")
+    # the scene loads first: it owns the tokens after `--`, including their
+    # --help, and a scene the loader rejects must fail before a panel is opened
+    scene = None if a.serve else _scene(a)
+    panel = _panel(a)
+    kms = panel == "kms"
+    if panel is None and not a.output and not a.h264 and not a.serve:
+        sys.exit(f"{a.cmd}: pass -o PATTERN, --display NAME, --h264 PATH or --serve")
+    size, components = _geometry(a, panel)
+    sinks = [] if panel is None else [Scanout() if kms else panel]
+    out = _file_sink(a)
+    if out is not None:
+        sinks.append(out)
+    if a.serve:
+        # the console creates the Renderer on its own render thread (GL belongs
+        # to the thread that draws), so the sinks are all that is handed over
+        return _serve(a, [s for s in sinks if not s.scanout], size, components, kms)
+
+    scene, ctrl = scene
+    w, h = size
     r = Renderer(
-        w, h, components=components, lib_path=a.lib, dri_device=a.dri, display=kms
+        w,
+        h,
+        components=components,
+        lib_path=a.lib,
+        dri_device=a.dri,
+        display=kms,
+        rgb565=a.rgb565,
     )
     err = r.setup(scene)
     if err:
         sys.exit(f"compile error: {err}")
     if ctrl is not None:
         ctrl.setup(r)
+    stream = None
+    if a.h264:
+        from ghee.h264 import H264Stream
 
-    def provider(name, size, frame):
-        if ctrl is not None:
-            data = ctrl.provide(name, size, frame)
-            if data is not None:
-                return data
-        return demo_feed(name, size, frame)
-
-    frames = a.frames if a.frames is not None else (0 if a.display else 1)
-    pacer = None
-    if kms:
-        # the flip paces at the panel's refresh by itself; --fps slows it down
-        if a.fps:
-            from ghee.output import FixedPacer
-
-            pacer = FixedPacer(a.fps)
-    elif a.display:
-        from ghee.output import AdaptivePacer, FixedPacer
-
-        pacer = FixedPacer(a.fps) if a.fps else AdaptivePacer()
-        sink.turn_on()
-    # An endless display run may skip frames a controller reports clean
-    # (dirty=False): no render, no sink write, the panel keeps its last frame.
-    # Finite renders (--frames, -o) draw every frame regardless.
-    gated = a.display and frames == 0 and ctrl is not None
-    raw = a.output == "-"
-    pooled = bool(a.output) and not raw  # image sink: render into its buffer pool
-    i = 0
+        fps = _h264_fps(a)
+        stream = sys.stdout.buffer if a.h264 == "-" else open(a.h264, "wb")
+        h264 = H264Stream(
+            stream, r, w, h, fps=fps, bitrate=a.bitrate, components=components
+        )
+        print(
+            f"h264: {'hardware zero-copy' if h264.hw else 'software libx264'} "
+            f"{w}x{h}@{fps} {a.bitrate}bps -> {a.h264}",
+            file=sys.stderr,
+        )
+        sinks.append(h264)
     times = []
+    loop = Loop(
+        r,
+        sinks,
+        controller=ctrl,
+        provider=demo_feed,
+        frames=_frames(a),
+        timestep=a.timestep,
+        pacer=_pacer(a, panel),
+        on_frame=(lambda lp, cost: times.append(cost)) if a.stats else None,
+    )
+    pipe = "-" in (a.output, a.h264)
     try:
-        while frames == 0 or i < frames:
-            t0 = time.monotonic()
-            t = i * a.timestep if a.timestep is not None else i / 60.0
-            if gated and i > 0 and not ctrl.dirty(i, t):
-                i += 1
-                time.sleep(pacer.idle_period())
-                continue
-            if ctrl is not None:
-                ctrl.update(r, i, t)
-            if a.timestep is not None:
-                r.set_time(t)
-            if kms:
-                r.present(lambda name, size, i=i: provider(name, size, i))
-                tw = time.monotonic()
-            elif pooled:
-                buf = sink.acquire((h, w, components))
-                r.render(lambda name, size, i=i: provider(name, size, i), out=buf)
-                tw = time.monotonic()
-                sink.submit(buf)
-            else:
-                rgb = r.render(lambda name, size, i=i: provider(name, size, i))
-                tw = time.monotonic()
-                sink.write(rgb)
-            if a.stats:
-                times.append(time.monotonic() - t0)
-            if pacer is not None:
-                tn = time.monotonic()
-                time.sleep(pacer.sleep_for(tn - tw, tn - t0))
-            i += 1
+        loop.run()
     except KeyboardInterrupt:
         pass
     except (BrokenPipeError, ConnectionResetError):
-        if not raw:
+        if not pipe:
             raise
         # devnull stdout: the interpreter's exit flush would re-raise
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     finally:
-        if a.display and not kms:
-            sink.turn_off()
-        if sink is not None:
-            sink.close()
+        for s in sinks:
+            s.close()
+        if stream is not None and stream is not sys.stdout.buffer:
+            stream.close()
         r.close()
-    if a.output and not raw:
-        print(f"wrote {i} frame(s) to {a.output}")
-    _print_stats(a, times)
+    if a.output and a.output != "-":
+        print(f"wrote {loop.drawn} frame(s) to {a.output}")
+    if a.h264 and a.h264 != "-":
+        print(f"wrote {loop.drawn} frame(s) to {a.h264}", file=sys.stderr)
+    _print_stats(a, times, loop.elapsed, loop.out)
 
 
-def _print_stats(a, times):
-    """--stats: one summary line after a render (paced sleeps excluded, so a
-    display run reports its render+write cost, not the frame interval)."""
+def _serve(a, sinks, size, components, kms):
+    """Attach the console to this render. A scene serves itself alone; a
+    directory (or --demo) serves everything in it."""
+    from ghee.console.server import run
+
+    scenes_dir, store = None, None
+    if a.scene is not None:
+        path = _find_scene(a.scene, a.demo)
+        if os.path.isdir(path):
+            scenes_dir = path
+        else:
+            store = _one_scene_store(a, path)
+    try:
+        run(
+            scenes_dir=scenes_dir,
+            store=store,
+            size=size,
+            components=components,
+            sinks=sinks,
+            display=kms,
+            rgb565=a.rgb565,
+            port=a.port,
+            host=a.host,
+            lib_path=a.lib,
+            dri_device=a.dri,
+            preview_max=a.preview_max,
+            preview_fps=a.preview_fps,
+            stream_max=a.stream_max,
+            bitrate=a.bitrate,
+            scene_args=a.scene_args,
+            frames=_frames(a),
+            timestep=a.timestep,
+        )
+    except KeyboardInterrupt:
+        pass
+
+
+def _one_scene_store(a, path):
+    """A store holding the single scene `render --serve` was pointed at. The
+    bundled examples are never written, whichever way they are reached."""
+    from ghee.console import examples_dir
+    from ghee.console.core import NotFound
+    from ghee.console.store import SceneStore
+
+    bundled = os.path.dirname(os.path.abspath(path)) == os.path.abspath(examples_dir())
+    try:
+        return SceneStore.one(path, read_only=bundled, args=a.scene_args or ())
+    except NotFound as e:
+        sys.exit(f"{a.cmd}: {e}")
+
+
+def cmd_serve(a):
+    """`serve` is `render --serve` over a directory of scenes."""
+    if a.demo and a.scenes:
+        sys.exit("serve: pass a scenes directory or --demo, not both")
+    if not a.demo and not a.scenes:
+        if a.display and os.path.isdir(a.display):
+            # --display takes an optional value, so it swallowed the directory
+            sys.exit(
+                f"serve: --display took '{a.display}' as the display name; "
+                f"put the scenes directory before it"
+            )
+        sys.exit("serve: pass a scenes directory, or --demo for the bundled examples")
+    a.scene = a.scenes  # --demo leaves it None: the bundled examples, read-only
+    return cmd_render(a)
+
+
+def _print_stats(a, times, wall, out):
+    """--stats: one summary line after a render. ms/frame is the per-frame cost
+    with paced sleeps excluded; fps is frames over real elapsed time, the same
+    number the console publishes."""
+    from ghee.stats import rate
+
     if not a.stats or not times:
         return
     tot = sum(times)
     print(
-        f"stats: {len(times)} frame(s) in {tot:.1f}s, "
+        f"stats: {len(times)} frame(s) in {wall:.2f}s, "
         f"{1000 * tot / len(times):.2f} ms/frame "
         f"(min {1000 * min(times):.2f}, max {1000 * max(times):.2f}), "
-        f"{len(times) / tot:.1f} fps",
+        f"{rate(len(times), wall):.1f} fps -> {'+'.join(out)}",
         file=sys.stderr,
     )
-
-
-def _render_h264(a, scene, ctrl):
-    """Annex-B H264 to a file or stdout ("-"): pipe it to mpv/ffplay, record
-    it, or push it through ffmpeg. Hardware zero-copy where the board has an
-    encoder (Zero..Pi 4), ffmpeg/libx264 on the readback elsewhere (Pi 5,
-    desktops). Every frame encodes at a fixed rate: H264's own delta coding is
-    what makes static frames cheap, so dirty() gating does not apply here."""
-    from ghee.console.feeds import demo_feed
-    from ghee.engine import Renderer
-    from ghee.h264 import HardwareH264, make_encoder
-
-    w, h = a.size
-    fps = int(a.fps) if a.fps else 30
-    r = Renderer(w, h, components=4, lib_path=a.lib, dri_device=a.dri)
-    err = r.setup(scene)
-    if err:
-        sys.exit(f"compile error: {err}")
-    if ctrl is not None:
-        ctrl.setup(r)
-
-    def provider(name, size, frame):
-        if ctrl is not None:
-            data = ctrl.provide(name, size, frame)
-            if data is not None:
-                return data
-        return demo_feed(name, size, frame)
-
-    enc = make_encoder(r, w, h, fps=fps, bitrate=a.bitrate, components=4)
-    hw = isinstance(enc, HardwareH264)
-    print(
-        f"h264: {'hardware zero-copy' if hw else 'software libx264'} "
-        f"{w}x{h}@{fps} {a.bitrate}bps -> {a.h264}",
-        file=sys.stderr,
-    )
-    out = sys.stdout.buffer if a.h264 == "-" else open(a.h264, "wb")
-    frames = a.frames if a.frames is not None else 0
-    period = 1.0 / fps
-    i = 0
-    times = []
-    try:
-        while frames == 0 or i < frames:
-            t0 = time.monotonic()
-            t = i * a.timestep if a.timestep is not None else i / 60.0
-            if ctrl is not None:
-                ctrl.update(r, i, t)
-            if a.timestep is not None:
-                r.set_time(t)
-            if hw:
-                au, _ = enc.encode_frame(
-                    lambda name, size, i=i: provider(name, size, i)
-                )
-            else:
-                enc.feed(r.render(lambda name, size, i=i: provider(name, size, i)))
-                au, _ = enc.get_au(timeout=2.0 if i == 0 else 0.5)
-            if au:
-                out.write(au)
-                out.flush()
-            if a.stats:
-                times.append(time.monotonic() - t0)
-            i += 1
-            time.sleep(max(0.0, period - (time.monotonic() - t0)))
-    except KeyboardInterrupt:
-        pass
-    except (BrokenPipeError, ConnectionResetError):
-        # devnull stdout: the interpreter's exit flush would re-raise
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-    finally:
-        try:
-            for au in enc.drain():
-                out.write(au)
-            out.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            enc.close()
-            if out is not sys.stdout.buffer:
-                out.close()
-            r.close()
-    if a.h264 != "-":
-        print(f"wrote {i} frame(s) to {a.h264}", file=sys.stderr)
-    _print_stats(a, times)
-
-
-def cmd_serve(a):
-    from ghee.console.server import run
-
-    if a.demo and a.scenes:
-        sys.exit("serve: pass a scenes directory or --demo, not both")
-    if not a.demo and not a.scenes:
-        sys.exit("serve: pass a scenes directory, or --demo for the bundled examples")
-    size = a.size
-    if size is None:
-        if a.display:
-            from ghee.engine import probe_display
-
-            size = probe_display(lib_path=a.lib)
-            if size is None:
-                sys.exit("serve: no connected display to size from; pass --size WxH")
-        else:
-            size = (320, 240)
-    try:
-        run(
-            scenes_dir=a.scenes,
-            size=size,
-            port=a.port,
-            lib_path=a.lib,
-            host=a.host,
-            display=a.display,
-            rgb565=a.rgb565,
-            preview_max=a.preview_max,
-            preview_fps=a.preview_fps,
-            stream_max=a.stream_max,
-        )
-    except KeyboardInterrupt:
-        pass
 
 
 def cmd_isf_import(a):
@@ -369,7 +417,9 @@ def cmd_isf_import(a):
 
 
 def cmd_displays(a):
-    from ghee.drivers import available_drivers
+    import inspect
+
+    from ghee.drivers import available_drivers, driver_options, get_driver
     from ghee.engine import probe_display
 
     try:
@@ -380,18 +430,116 @@ def cmd_displays(a):
     print(f"{'kms':12} {kms}")
     for name, status in available_drivers().items():
         print(f"{name:12} {status}")
+        if status != "ok":
+            continue
+        opts = ",".join(
+            k if v is inspect.Parameter.empty else f"{k}={v!r}"
+            for k, v in driver_options(get_driver(name)).items()
+        )
+        if opts:
+            print(f"{'':12} --display-opts {opts}")
 
 
-def main(argv=None):
+def _render_flags(p):
+    """What every render takes, whichever command asked for it."""
+    p.add_argument(
+        "--display",
+        nargs="?",
+        const="kms",
+        metavar="NAME",
+        help="render to a hardware display: an SPI/I2C driver name, or bare "
+        "(or 'kms') for the connected HDMI/KMS display (zero-copy scanout; "
+        "needs DRM master)",
+    )
+    p.add_argument(
+        "--display-opts",
+        metavar="K=V,...",
+        help="options for the --display driver, e.g. width=240,height=240,"
+        "y_offset=80,backlight=26; `ghee displays` lists what each one takes",
+    )
+    p.add_argument(
+        "--rgb565",
+        action="store_true",
+        help="display scanout in 16-bit color: halves the GPU store and scanout "
+        "bandwidth (worth it on VC4-class boards); slight banding in gradients",
+    )
+    p.add_argument(
+        "--frames",
+        type=int,
+        help="frame count (default 1 for images, loop for a display, a stream "
+        "or the console)",
+    )
+    p.add_argument(
+        "--timestep",
+        type=float,
+        metavar="S",
+        help="pin engine time to frame*S seconds instead of the wall clock, so "
+        "renders are reproducible (frame N always renders at time N*S)",
+    )
+    p.add_argument(
+        "--size",
+        type=_size,
+        default=None,
+        help="WxH to render at; a display or panel sets its own (default 320x240)",
+    )
+    p.add_argument("--dri", help="DRI device, e.g. /dev/dri/renderD128")
+    p.add_argument("--lib", help="path to libghee.so")
+
+
+def _console_flags(p, bitrate):
+    """The console's own flags: what `serve` offers and `render --serve` needs."""
+    p.add_argument("--port", type=int, default=8090)
+    p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind address; 0.0.0.0 exposes the console (no auth) to the network",
+    )
+    p.add_argument(
+        "--preview-max",
+        type=int,
+        default=480,
+        help="longest side of the browser preview in px (downscaled; default 480)",
+    )
+    p.add_argument(
+        "--preview-fps",
+        type=int,
+        default=15,
+        help="browser preview refresh cap; the display stays full speed (default 15)",
+    )
+    p.add_argument(
+        "--stream-max",
+        type=int,
+        default=0,
+        help="cap the /h264 stream's longest side (GPU downscale; "
+        "default 0 = full render size)",
+    )
+    p.add_argument(
+        "--bitrate",
+        type=int,
+        default=bitrate,
+        help=f"H264 bitrate in bits/s: the --h264 stream's rate, or the floor "
+        f"for the console's /h264 (default {bitrate})",
+    )
+
+
+def _parser():
     from ghee import __version__
 
     p = argparse.ArgumentParser(prog="ghee")
     p.add_argument("--version", action="version", version=f"ghee {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("render", help="render a scene to images or a display")
+    r = sub.add_parser(
+        "render",
+        help="render a scene to images, a display, a stream, or several at once",
+        epilog="anything after `--` goes to the scene's controller "
+        "(ghee render --demo text -- --text hi); `-- --help` lists what it takes",
+    )
+    r.add_argument("scene", help="scene file, or a name from $GHEE_SCENES")
     r.add_argument(
-        "scene", help="scene file, or a name from $GHEE_SCENES / the examples"
+        "--demo",
+        action="store_true",
+        help="look the scene name up in the bundled examples too",
     )
     r.add_argument(
         "-o",
@@ -400,25 +548,15 @@ def main(argv=None):
         "stdout (h*w*components, no header; pipe to ffmpeg/mpv)",
     )
     r.add_argument(
-        "--display",
-        help="render to a hardware display: an SPI driver name, or 'kms' for "
-        "the connected HDMI/KMS display (zero-copy scanout; needs DRM master, "
-        "so root and no desktop session on the card)",
+        "--h264",
+        metavar="PATH",
+        help="write an Annex-B H264 stream to PATH ('-' = stdout, pipe to mpv); "
+        "hardware zero-copy on Pi 1..Pi 4, ffmpeg/libx264 elsewhere",
     )
     r.add_argument(
-        "--frames",
-        type=int,
-        help="frame count (default 1 for images, loop for a display)",
-    )
-    r.add_argument(
-        "--timestep",
-        type=float,
-        metavar="S",
-        help="pin engine time to frame*S seconds instead of the wall clock, so "
-        "renders are reproducible (frame N always renders at time N*S)",
-    )
-    r.add_argument(
-        "--size", type=_size, default=(320, 240), help="WxH for image output"
+        "--serve",
+        action="store_true",
+        help="also run the editor console on this render (see: ghee serve)",
     )
     r.add_argument(
         "--components",
@@ -442,8 +580,6 @@ def main(argv=None):
         "when the writer falls N frames behind; memory cost is N * w * h * "
         "components bytes",
     )
-    r.add_argument("--dri", help="DRI device, e.g. /dev/dri/renderD128")
-    r.add_argument("--lib", help="path to libghee.so")
     r.add_argument(
         "--fps",
         type=float,
@@ -454,74 +590,42 @@ def main(argv=None):
         help="comma-separated filter names applied after the scene's own",
     )
     r.add_argument(
-        "--h264",
-        metavar="PATH",
-        help="write an Annex-B H264 stream to PATH ('-' = stdout, pipe to mpv); "
-        "hardware zero-copy on Zero..Pi 4, ffmpeg/libx264 elsewhere",
-    )
-    r.add_argument(
-        "--bitrate",
-        type=int,
-        default=4_000_000,
-        help="H264 bitrate in bits/s (default 4000000)",
-    )
-    r.add_argument(
         "--stats",
         action="store_true",
         help="print a timing summary when the render ends",
     )
+    _render_flags(r)
+    _console_flags(r, bitrate=4_000_000)
     r.set_defaults(fn=cmd_render)
 
-    s = sub.add_parser("serve", help="run the editor console")
+    s = sub.add_parser(
+        "serve",
+        help="run the editor console",
+        epilog="the console is plain HTTP: GET /stats /scene /scenes /frame.png "
+        "/stream /h264, POST /set /switch /next /prev /scene /save /ping. "
+        "Anything after `--` goes to every scene the console loads, and "
+        "each keeps what it declares; `-- --help` lists what takes what",
+    )
     s.add_argument("scenes", nargs="?", help="scenes directory")
     s.add_argument(
         "--demo", action="store_true", help="serve the bundled example scenes"
     )
-    s.add_argument(
-        "--size",
-        type=_size,
-        default=None,
-        help="WxH; default is the connected display's mode with --display, "
-        "else 320x240",
+    _render_flags(s)
+    _console_flags(s, bitrate=10_000_000)
+    # serve is render --serve over a directory, so it carries render's whole
+    # namespace with the flags it does not offer left at their defaults
+    s.set_defaults(
+        fn=cmd_serve,
+        serve=True,
+        output=None,
+        h264=None,
+        components=4,
+        save_opts=None,
+        write_buffer=16,
+        fps=None,
+        filters=None,
+        stats=False,
     )
-    s.add_argument("--port", type=int, default=8090)
-    s.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="bind address; 0.0.0.0 exposes the console (no auth) to the network",
-    )
-    s.add_argument("--lib")
-    s.add_argument(
-        "--display",
-        action="store_true",
-        help="also scan out to a connected display (headless Pi, run as root)",
-    )
-    s.add_argument(
-        "--rgb565",
-        action="store_true",
-        help="display scanout in 16-bit color: halves the GPU store and scanout "
-        "bandwidth (worth it on VC4-class boards); slight banding in gradients",
-    )
-    s.add_argument(
-        "--preview-max",
-        type=int,
-        default=480,
-        help="longest side of the browser preview in px (downscaled; default 480)",
-    )
-    s.add_argument(
-        "--preview-fps",
-        type=int,
-        default=15,
-        help="browser preview refresh cap; the display stays full speed (default 15)",
-    )
-    s.add_argument(
-        "--stream-max",
-        type=int,
-        default=0,
-        help="cap the /h264 stream's longest side (GPU downscale; "
-        "default 0 = full render size)",
-    )
-    s.set_defaults(fn=cmd_serve)
 
     i = sub.add_parser("isf", help="Interactive Shader Format (ISF) shaders")
     isub = i.add_subparsers(dest="isf_cmd", required=True)
@@ -550,7 +654,16 @@ def main(argv=None):
     d = sub.add_parser("displays", help="list display drivers and availability")
     d.set_defaults(fn=cmd_displays)
 
+    return p
+
+
+def main(argv=None):
+    p = _parser()
+    argv, scene_args = _split_scene_args(list(sys.argv[1:] if argv is None else argv))
     a = p.parse_args(argv)
+    if scene_args and a.cmd not in ("render", "serve"):
+        sys.exit(f"{a.cmd}: takes no scene arguments after --")
+    a.scene_args = scene_args
     # SIGTERM (timeout, systemd stop) must unwind like Ctrl-C so the finally
     # blocks run and a display sink gets turned off, not left on a stale frame.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))

@@ -2,7 +2,12 @@
 (same inputs -> same pixels, different inputs -> different pixels), so they hold on any
 GPU without a committed golden. They skip when no GL device is available."""
 
+import os
+import subprocess
+import sys
+
 import numpy as np
+import pytest
 
 from .helpers import const, scene
 
@@ -312,6 +317,79 @@ def test_2d_array_input(renderer):
     h, w = frame.shape[:2]
     row = lum[h // 2]
     assert abs(int(row[w - 3]) - int(row[2])) > 30  # varies along x within a row
+
+
+def _mask_roundtrip(renderer, w, h):
+    """Feed a w x h 2D input holding a ramp in memory order, then read every texel
+    back at the centre of the block it covers. Returns (read, fed) as 0-255 rows, so
+    a row picked up at the wrong offset lands somewhere else along the ramp."""
+    from ghee import ArrayInput, Pass, Scene
+
+    sc = Scene(
+        passes=[
+            Pass(
+                name="main",
+                code=(
+                    f"const vec2 dim = vec2({w}.0, {h}.0);\n"
+                    "void main(){ vec2 uv = gl_FragCoord.xy/resolution;\n"
+                    "  gl_FragColor = vec4(vec3(mask_sample2("
+                    "(floor(uv*dim)+0.5)/dim)), 1.0); }"
+                ),
+                arrays=[ArrayInput("mask", (w, h))],
+            )
+        ]
+    )
+    assert renderer.setup(sc) == ""
+    m = np.linspace(0.0, 1.0, w * h, dtype=np.float32)
+    frame = renderer.render(lambda name, size: m)
+    fh, fw = frame.shape[:2]
+    read = np.array(
+        [
+            [
+                frame[int((r + 0.5) * fh / h), int((c + 0.5) * fw / w), 0]
+                for c in range(w)
+            ]
+            for r in range(h)
+        ],
+        dtype=int,
+    )
+    return read, np.round(m.reshape(h, w) * 255.0).astype(int)
+
+
+def test_2d_array_input_odd_row_length(renderer):
+    # 9 is the point: on the 8-bit data-texture path a row is as many bytes as the
+    # input is wide, so a width that is not a multiple of 4 is what catches the
+    # engine reading rows at a padded stride.
+    read, fed = _mask_roundtrip(renderer, 9, 5)
+    assert abs(read - fed).max() <= 3
+
+
+def test_2d_array_input_odd_row_length_8bit():
+    """The same round-trip on the 8-bit data-texture path, which is the one a GL
+    without OES_texture_float takes. Mesa can be told to hide the extension, so a
+    desktop covers that path too; skipped on a GL where the knob does nothing."""
+    p = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-s",
+            "--no-header",
+            f"{__file__}::test_2d_array_input_odd_row_length",
+        ],
+        env=dict(
+            os.environ,
+            MESA_EXTENSION_OVERRIDE="-GL_OES_texture_float -GL_OES_texture_float_linear",
+        ),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    out = p.stdout + p.stderr
+    if "8-bit LUMINANCE" not in out:
+        pytest.skip("this GL keeps float data textures whatever the override says")
+    assert p.returncode == 0, out
 
 
 def test_output_pass_size_rejected_then_ok_with_filter(renderer):

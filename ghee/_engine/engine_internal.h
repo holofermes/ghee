@@ -5,7 +5,6 @@
 
 #include "engine.h"
 
-void *ghee_i_gbm(GheeScene *g);            // struct gbm_device *
 void *ghee_i_egl_display(GheeScene *g);    // EGLDisplay
 void  ghee_i_make_current(GheeScene *g);
 void  ghee_i_error(GheeScene *g, const char *msg);

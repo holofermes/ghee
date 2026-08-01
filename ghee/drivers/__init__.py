@@ -7,10 +7,17 @@ entry point. available_drivers() reports which ones import on this host.
 
 import importlib
 import importlib.metadata as _md
+import inspect
 
 from ghee.drivers.base import DisplayDriver, register
 
-__all__ = ["DisplayDriver", "register", "available_drivers", "get_driver"]
+__all__ = [
+    "DisplayDriver",
+    "register",
+    "available_drivers",
+    "get_driver",
+    "driver_options",
+]
 
 _BUNDLED = ["st7789", "ssd1306"]
 
@@ -62,3 +69,14 @@ def get_driver(name):
     if cls is None:
         raise KeyError(f"no display driver '{name}'")
     return cls
+
+
+def driver_options(cls):
+    """name -> default for what a driver's constructor takes, in declaration
+    order. What `--display-opts` may set and `ghee displays` lists; a parameter
+    with no default comes back as inspect.Parameter.empty."""
+    return {
+        p.name: p.default
+        for p in inspect.signature(cls).parameters.values()
+        if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+    }

@@ -130,7 +130,43 @@ def test_bundled_drivers_are_listed_by_name():
 def test_declared_extras_match_the_readme():
     extras = _pyproject()["project"]["optional-dependencies"]
     assert set(extras) == {"drivers", "test"}
-    assert any(d.lower().startswith("spidev") for d in extras["drivers"])
+    assert {d.lower() for d in extras["drivers"]} == {"spidev", "gpiod", "smbus2"}
+
+
+DEBIAN_NAME = {
+    "spidev": "python3-spidev",
+    "gpiod": "python3-libgpiod",
+    "smbus2": "python3-smbus2",
+}
+
+
+def test_every_driver_dependency_is_in_debian_main():
+    """The deb has to be able to recommend them, or panel support has no apt
+    path and lands on pip --break-system-packages."""
+    extras = _pyproject()["project"]["optional-dependencies"]["drivers"]
+    control = (ROOT / "debian" / "control").read_text()
+    recommends = [ln for ln in control.splitlines() if ln.startswith("Recommends:")]
+    assert len(recommends) == 1, recommends
+    named = {p.strip() for p in recommends[0].split(":", 1)[1].split(",")}
+    assert named == {DEBIAN_NAME[d.lower()] for d in extras}
+
+
+def test_the_shipped_tree_names_no_pypi_only_panel_library():
+    """The panel drivers moved to packages that exist in Debian main. A
+    surviving reference would put a deb user back on pip."""
+    gone = ("blinka", "adafruit", "digitalio", "busio")
+    files = [
+        ROOT / n for n in ("pyproject.toml", "README.md", "setup.py", "MANIFEST.in")
+    ]
+    # the changelog is history and says what was dropped, on purpose
+    files += [p for p in sorted((ROOT / "debian").glob("*")) if p.name != "changelog"]
+    files += sorted(ROOT.glob("ghee/**/*.py"))
+    offenders = [
+        str(p.relative_to(ROOT))
+        for p in files
+        if p.is_file() and any(g in p.read_text(errors="ignore").lower() for g in gone)
+    ]
+    assert offenders == []
 
 
 def test_runtime_deps_have_floors():
@@ -138,10 +174,14 @@ def test_runtime_deps_have_floors():
         assert any(op in dep for op in (">=", "==", "~=")), dep
 
 
-def test_version_matches_the_installed_distribution():
+def test_version_is_single_sourced_from_the_code():
     import ghee
 
-    assert ghee.__version__ == version(DIST) == _pyproject()["project"]["version"]
+    project = _pyproject()["project"]
+    assert "version" not in project and "version" in project["dynamic"]
+    dyn = _pyproject()["tool"]["setuptools"]["dynamic"]["version"]
+    assert dyn == {"attr": "ghee.__version__"}
+    assert version(DIST) == ghee.__version__
 
 
 def _build_ext(tmp_path, **env):

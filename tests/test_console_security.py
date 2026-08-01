@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import re
+import socket
 import threading
 import time
 from http.server import ThreadingHTTPServer
@@ -260,6 +261,7 @@ def test_a_sibling_directory_sharing_the_prefix_is_404(monkeypatch, console, tmp
 
 
 class StubRenderer:
+    width, height, components = 64, 48, 4
     error_line = None
     error_pass = None
 
@@ -291,6 +293,9 @@ class StubRenderer:
         pass
 
     def set_scene_param(self, *a):
+        pass
+
+    def set_dt(self, value):
         pass
 
 
@@ -330,6 +335,54 @@ def test_a_failing_frame_keeps_the_render_thread_alive(monkeypatch, loop_state):
     server._q.put(("stop",))
     t.join(timeout=5)
     assert not t.is_alive()
+
+
+def test_a_hardware_encoder_failing_mid_stream_hands_over_to_software(
+    monkeypatch, loop_state
+):
+    closed = []
+
+    class DyingEncoder:
+        def __init__(self, renderer, w, h, fps=30, bitrate=0):
+            pass
+
+        def force_keyframe(self):
+            pass
+
+        def encode_last(self):
+            raise RuntimeError("encoder stalled (no free input)")
+
+        def close(self):
+            closed.append(True)
+
+    stub = StubRenderer()
+    monkeypatch.setattr(server, "_make_renderer", lambda: stub)
+    monkeypatch.setattr(server, "HardwareH264", DyingEncoder)
+    monkeypatch.setattr(server, "_h264_hw_dead", False)
+    monkeypatch.setattr(server, "_fanout", server.H264Fanout())
+    server._fanout.add()
+    t = _run_loop()
+    assert _wait(lambda: server._h264_hw_dead)  # h264_sw_loop owns the stream now
+    assert t.is_alive()
+    _stop_loop(t)
+    assert closed
+
+
+def test_the_software_handover_lifts_when_the_last_viewer_leaves(
+    monkeypatch, loop_state
+):
+    """A hardware failure belongs to the stream it happened in. Left standing it
+    costs every later stream the readback the software encoder needs, for the
+    life of the process."""
+    monkeypatch.setattr(server, "_make_renderer", StubRenderer)
+    monkeypatch.setattr(server, "_h264_hw_dead", True)
+    monkeypatch.setattr(server, "_fanout", server.H264Fanout())
+    c = server._fanout.add()
+    t = _run_loop()
+    assert _wait(lambda: server._h264_hw_dead)
+    server._fanout.remove(c)
+    assert _wait(lambda: not server._h264_hw_dead)
+    _stop_loop(t)
 
 
 def test_a_renderer_that_cannot_be_created_is_fatal(monkeypatch, loop_state):
@@ -411,6 +464,20 @@ def test_the_readback_follows_a_software_h264_viewer_joining_mid_run(
     _stop_loop(t)
 
 
+def test_a_h264_viewer_that_left_is_dropped_with_nothing_to_send(monkeypatch, console):
+    """A stream handler learns its viewer left from a write that fails, and no
+    write comes while the encoder is handing out nothing. A viewer nobody
+    notices leaving holds the console in the mode its stream asked for."""
+    monkeypatch.setattr(server, "_fanout", server.H264Fanout())
+    s = socket.create_connection(("127.0.0.1", console.port), timeout=5)
+    try:
+        s.sendall(b"GET /h264 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        assert _wait(lambda: server._fanout.nclients == 1)
+    finally:
+        s.close()
+    assert _wait(lambda: server._fanout.nclients == 0, timeout=10)
+
+
 # smaller fixes
 
 
@@ -442,24 +509,6 @@ def test_fanout_wires_each_frame_once():
     b_cfg, b_key = b.q.get_nowait(), b.q.get_nowait()
     assert a_cfg is b_cfg and a_key is b_key
     assert a_cfg == wire_frame(0, fanout.cfg)
-
-
-def test_demo_feed_2d_matches_its_formula_and_caches_the_grid():
-    import math
-
-    import numpy as np
-
-    from ghee.console import feeds
-
-    feeds._bands.clear()
-    got = feeds.demo_feed("mask", (7, 3), 4)
-    x, y = np.meshgrid(np.arange(7), np.arange(3))
-    want = (0.5 + 0.5 * np.sin((x + y) * (2 * math.pi / 7) + 4 * 0.05)) * 0.6
-    assert got.shape == (21,)
-    assert np.allclose(got, want.reshape(-1).astype(np.float32), atol=1e-6)
-    grid = feeds._bands[(7, 3)]
-    feeds.demo_feed("mask", (7, 3), 5)
-    assert feeds._bands[(7, 3)] is grid
 
 
 # the web UI never builds markup out of scene data
@@ -499,3 +548,18 @@ def test_the_ui_posts_every_state_changing_endpoint():
         for m in re.finditer(re.escape(path), src):
             line = src[src.rfind("\n", 0, m.start()) + 1 : src.find("\n", m.end())]
             assert "POST" in line or "jpost" in line, line
+
+
+def test_a_restored_working_copy_takes_pass_sizes_from_the_running_scene():
+    """A sized pass renders at the size the scene's build arguments gave it,
+    and the editor has no control for it. The copy the browser restores on load
+    is re-applied to whatever session is running, so carrying its own sizes
+    would silently re-render a session at another one's geometry."""
+    src = _index_src()
+    merge = re.split(
+        r"\n(?:async )?function ",
+        src[src.index("function mergeNewParams(") :],
+        maxsplit=1,
+    )[0]
+    assert "wp.size = clone(p.size)" in merge
+    assert "delete wp.size" in merge

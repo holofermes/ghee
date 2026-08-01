@@ -43,7 +43,7 @@ GheeScene *ghee_create(int width, int height, int components, const char *dri_de
 
 // Like ghee_create, but renders straight to a connected KMS display (zero-copy
 // scanout instead of readback). width/height should match the connector mode.
-// Needs DRM master, so run as root. Present frames with ghee_mp_present.
+// Needs DRM master. Present frames with ghee_mp_present.
 GheeScene *ghee_display_create(int width, int height, const char *dri_device, int rgb565, char **err);
 
 // Last error message for this instance ("" if none). Cleared on read.
@@ -82,10 +82,12 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 void ghee_mp_reset(GheeScene *g);
 int  ghee_max_texture_units(GheeScene *g);   // a pass's channels + arrays must fit
+bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
 void ghee_clear_time(GheeScene *g);   // back to the monotonic clock
+void ghee_set_dt(GheeScene *g, float dt);  // the DT uniform every pass gets; 1/60 until set
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
 // Size of the mode the connected display is driving, without creating a scene

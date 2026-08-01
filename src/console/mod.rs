@@ -1,0 +1,149 @@
+//! Port of ghee/console/__init__.py.
+//!
+//! The console API (core), the scenes it shows (store), what it fills in for
+//! itself (feeds), and the render server that mounts them (server).
+
+pub mod core;
+pub mod feeds;
+pub mod server;
+pub mod store;
+
+/// The PWA, read at compile time: a binary carries no package dir. Names are
+/// the paths under ghee/console/web/, which is what a URL asks for.
+pub const WEB: [(&str, &[u8]); 5] = [
+    (
+        "index.html",
+        include_bytes!("../../ghee/console/web/index.html"),
+    ),
+    (
+        "h264client.js",
+        include_bytes!("../../ghee/console/web/h264client.js"),
+    ),
+    ("sw.js", include_bytes!("../../ghee/console/web/sw.js")),
+    (
+        "manifest.json",
+        include_bytes!("../../ghee/console/web/manifest.json"),
+    ),
+    (
+        "icon.svg",
+        include_bytes!("../../ghee/console/web/icon.svg"),
+    ),
+];
+
+/// (content type, bytes) for a name from WEB. mimetypes.guess_type for the
+/// suffixes the PWA is made of, and octet-stream for anything else.
+pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
+    let ctype = match name.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("html") => "text/html",
+        Some("js") => "text/javascript",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("css") => "text/css",
+        Some("png") => "image/png",
+        _ => "application/octet-stream",
+    };
+    let body = WEB
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map_or(&[][..], |(_, b)| *b);
+    (ctype, body)
+}
+
+/// The bundled example scenes, read at compile time like WEB. Scene loading
+/// works on files (shader refs beside the scene, controller detection), so the
+/// embedded set is extracted to a content-keyed cache dir before use.
+pub const EXAMPLES: [(&str, &[u8]); 12] = [
+    ("bars.glsl", include_bytes!("../../ghee/examples/bars.glsl")),
+    (
+        "bars.scene.json",
+        include_bytes!("../../ghee/examples/bars.scene.json"),
+    ),
+    ("bluesun.py", include_bytes!("../../ghee/examples/bluesun.py")),
+    (
+        "blur.scene.json",
+        include_bytes!("../../ghee/examples/blur.scene.json"),
+    ),
+    (
+        "echo.scene.json",
+        include_bytes!("../../ghee/examples/echo.scene.json"),
+    ),
+    ("hero.py", include_bytes!("../../ghee/examples/hero.py")),
+    ("lib/look.py", include_bytes!("../../ghee/examples/lib/look.py")),
+    (
+        "mix.scene.json",
+        include_bytes!("../../ghee/examples/mix.scene.json"),
+    ),
+    ("spectrum.py", include_bytes!("../../ghee/examples/spectrum.py")),
+    ("text.py", include_bytes!("../../ghee/examples/text.py")),
+    (
+        "trail.scene.json",
+        include_bytes!("../../ghee/examples/trail.scene.json"),
+    ),
+    (
+        "twopass.scene.json",
+        include_bytes!("../../ghee/examples/twopass.scene.json"),
+    ),
+];
+
+/// The bundled example scenes on disk: $GHEE_EXAMPLES when set, else the
+/// embedded set extracted under the user cache. None when no cache location is
+/// writable.
+pub fn examples_dir() -> Option<String> {
+    if let Some(d) = std::env::var("GHEE_EXAMPLES")
+        .ok()
+        .filter(|d| std::path::Path::new(d).is_dir())
+    {
+        return Some(d);
+    }
+    extract_examples().ok()
+}
+
+fn extract_examples() -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for (name, body) in &EXAMPLES {
+        h.update(name.as_bytes());
+        h.update([0]);
+        h.update(body);
+    }
+    let tag: String = h
+        .finalize()
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("ghee").join(format!("examples-{tag}"));
+    let done = dir.join(".complete");
+    if !done.exists() {
+        for (name, body) in &EXAMPLES {
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, body)?;
+        }
+        std::fs::write(done, b"")?;
+    }
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_embedded_examples_extract_and_resolve() {
+        let dir = examples_dir().unwrap();
+        let dir = std::path::Path::new(&dir);
+        assert!(dir.join("bars.scene.json").is_file());
+        assert!(dir.join("lib/look.py").is_file());
+        let scene = crate::scene::Scene::load(dir.join("bars.scene.json").to_str().unwrap());
+        assert!(scene.is_ok());
+    }
+}

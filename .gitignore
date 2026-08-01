@@ -11,3 +11,6 @@ debian/python3-ghee/
 debian/files
 debian/*.substvars
 debian/debhelper-build-stamp
+.coverage
+htmlcov/
+/target/

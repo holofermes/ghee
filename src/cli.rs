@@ -1,0 +1,1742 @@
+//! Port of ghee/cli.py (see that file for the reference implementation).
+//!
+//!     ghee render scene.json -o frame.####.jpg --frames 500  # image sequence
+//!     ghee render scene.json -o - --frames 300 | ffmpeg ...  # raw frames to a pipe
+//!     ghee render scene.json --display st7789                # to a panel, until Ctrl-C
+//!     ghee render scene.json --h264 - | mpv -                # H264 to a pipe
+//!     ghee render scene.json --display st7789 --serve        # panel plus the console
+//!     ghee serve scenes/                                     # editor console
+//!     ghee serve --demo                                      # console on the bundled examples
+//!     ghee render --demo bars -o frame.png                   # a bundled example by name
+//!     ghee isf import shader.fs -o shader.scene.json         # import an ISF shader
+//!     ghee displays                                          # list display drivers
+//!
+//! Outputs combine: -o, --display and --h264 are a list of sinks one render
+//! feeds, and --serve attaches the console to any of them. `serve` is `render
+//! --serve` over a directory of scenes. Everything after `--` goes to the
+//! scene's own controller.
+//!
+//! One piece of the Python is not in this build: a scene controller needs an
+//! interpreter, so ghee::procedural refuses one and the arguments it declares
+//! never reach a parser.
+
+use std::cell::RefCell;
+use std::ffi::c_int;
+use std::fs::File;
+use std::io::{stdout, Stdout, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+use anyhow::{Context, Result};
+use clap::error::{ContextKind, ErrorKind};
+use clap::{Args, Parser, Subcommand};
+use serde_json::{Map, Value};
+
+use crate::console::examples_dir;
+use crate::console::server;
+use crate::console::store::SceneStore;
+use crate::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
+use crate::engine::{probe_display, Feed, Renderer};
+use crate::feeds::demo_feed;
+use crate::filters::{apply_filters, load_filters};
+use crate::h264::H264Stream;
+use crate::isf::{read_isf, slug, to_filter, to_scene};
+use crate::looper::{Frame, Loop, Output, Pacer};
+use crate::output::{expand_pattern, AdaptivePacer, FixedPacer, ImageSequence, RawStream, Scanout};
+use crate::procedural::load_scene;
+use crate::scene::Scene;
+use crate::stats::rate;
+
+/// argparse's `sys.exit(message)`: the line as written, status 1. Anything else
+/// reaching main() is prefixed with the command name instead.
+#[derive(Debug)]
+struct Exit(String);
+
+impl std::fmt::Display for Exit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Exit {}
+
+fn exit(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(Exit(message.into()))
+}
+
+/// Python truthiness of an optional string flag: unset and "" are both false.
+fn given(v: &Option<String>) -> bool {
+    v.as_deref().is_some_and(|s| !s.is_empty())
+}
+
+fn text(v: &Option<String>) -> &str {
+    v.as_deref().unwrap_or_default()
+}
+
+fn size(s: &str) -> Result<(i32, i32), String> {
+    let bad = || format!("invalid _size value: '{s}'");
+    let lower = s.to_lowercase();
+    let mut parts = lower.split('x');
+    let (Some(w), Some(h), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(bad());
+    };
+    match (w.trim().parse::<i32>(), h.trim().parse::<i32>()) {
+        (Ok(w), Ok(h)) => Ok((w, h)),
+        _ => Err(bad()),
+    }
+}
+
+/// ast.literal_eval over what a k=v value can hold: a number, True/False/None,
+/// or a quoted string. None for anything else, which the caller keeps as text.
+fn literal_eval(s: &str) -> Option<Value> {
+    match s {
+        "True" => return Some(Value::Bool(true)),
+        "False" => return Some(Value::Bool(false)),
+        "None" => return Some(Value::Null),
+        _ => {}
+    }
+    if let Some(quote) = s.chars().next().filter(|c| *c == '\'' || *c == '"') {
+        let inner = s.get(1..s.len().saturating_sub(1))?;
+        return match s.len() >= 2 && s.ends_with(quote) && !inner.contains(quote) {
+            true => Some(Value::from(inner)),
+            false => None,
+        };
+    }
+    // A Python integer literal takes a sign, a base prefix and _ separators; a
+    // float literal is what serde_json already reads.
+    let body = s.strip_prefix(['+', '-']).unwrap_or(s);
+    let (digits, radix) = match body.get(..2).map(str::to_lowercase).as_deref() {
+        Some("0x") => (&body[2..], 16),
+        Some("0o") => (&body[2..], 8),
+        Some("0b") => (&body[2..], 2),
+        _ => (body, 10),
+    };
+    let plain = digits.replace('_', "");
+    if !plain.is_empty() && plain.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        if let Ok(n) = i64::from_str_radix(&plain, radix) {
+            return Some(Value::from(if s.starts_with('-') { -n } else { n }));
+        }
+    }
+    if radix != 10 {
+        return None;
+    }
+    serde_json::from_str::<Value>(s)
+        .ok()
+        .filter(Value::is_number)
+}
+
+/// "k=v,k2=v2" -> a dict. Each value goes through literal_eval (90 -> int,
+/// True -> bool) and falls back to the raw string when that fails. `what` names
+/// the flag a parse error came from.
+fn parse_kv(s: &str, what: &str) -> Result<Map<String, Value>> {
+    let mut opts = Map::new();
+    for pair in s.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = pair.split_once('=') else {
+            return Err(exit(format!("{what} wants k=v pairs, got '{pair}'")));
+        };
+        let v = v.trim();
+        opts.insert(
+            k.trim().to_string(),
+            literal_eval(v).unwrap_or_else(|| Value::from(v)),
+        );
+    }
+    Ok(opts)
+}
+
+/// (ghee's own argv, the scene's tokens). The first `--` ends ghee's flags:
+/// everything past it belongs to the scene, further `--` included.
+fn split_scene_args(argv: &[String]) -> (Vec<String>, Vec<String>) {
+    match argv.iter().position(|a| a == "--") {
+        None => (argv.to_vec(), Vec::new()),
+        Some(i) => (argv[..i].to_vec(), argv[i + 1..].to_vec()),
+    }
+}
+
+/// os.path.join(dir, name): an absolute name replaces the directory.
+fn join(dir: &str, name: &str) -> String {
+    if name.starts_with('/') || dir.is_empty() {
+        return name.to_string();
+    }
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// A path as given, or a scene name looked up in $GHEE_SCENES (colon-separated
+/// directories), plus the bundled examples when --demo asks for them.
+fn find_scene(arg: &str, demo: bool) -> Result<String> {
+    fn hit(stem: &str) -> bool {
+        [
+            stem.to_string(),
+            format!("{stem}.scene.json"),
+            format!("{stem}.py"),
+        ]
+        .iter()
+        .any(|p| Path::new(p).exists())
+    }
+    if hit(arg) {
+        return Ok(arg.to_string());
+    }
+    let env = std::env::var("GHEE_SCENES").unwrap_or_default();
+    let mut dirs: Vec<String> = env
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .map(String::from)
+        .collect();
+    if demo {
+        dirs.extend(examples_dir());
+    }
+    for d in &dirs {
+        let p = join(d, arg);
+        if hit(&p) {
+            return Ok(p);
+        }
+    }
+    let searched: Vec<&str> = std::iter::once("cwd")
+        .chain(dirs.iter().map(String::as_str))
+        .collect();
+    Err(exit(format!(
+        "no scene '{arg}' (searched: {})",
+        searched.join(", ")
+    )))
+}
+
+/// The scene this invocation renders, with its filters applied: the ones it
+/// declares, then whatever --filters adds.
+fn scene_of(a: &Ns) -> Result<Scene> {
+    let mut scene = load_scene(&find_scene(text(&a.scene), a.demo)?, &a.scene_args, true)?;
+    let mut names = scene.filters.clone();
+    names.extend(
+        text(&a.filters)
+            .split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(String::from),
+    );
+    let mut wanted: Vec<String> = Vec::new();
+    for n in names {
+        if !wanted.contains(&n) {
+            wanted.push(n);
+        }
+    }
+    let reg = load_filters(&[]);
+    let unknown: Vec<&str> = wanted
+        .iter()
+        .filter(|n| !reg.contains_key(n.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(exit(format!(
+            "unknown filter: {} (known: {})",
+            unknown.join(", "),
+            reg.keys().cloned().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    apply_filters(&mut scene, &wanted, Some(&reg))?;
+    Ok(scene)
+}
+
+/// What --display names: the KMS scanout, else the driver instance, built with
+/// whatever --display-opts sets.
+enum Panel {
+    None,
+    Kms,
+    Driver(Box<dyn DisplayDriver>),
+}
+
+fn panel_of(a: &Ns) -> Result<Panel> {
+    if !given(&a.display) {
+        if given(&a.display_opts) {
+            return Err(exit(format!("{}: --display-opts without --display", a.cmd)));
+        }
+        return Ok(Panel::None);
+    }
+    let name = text(&a.display);
+    if name == "kms" {
+        if given(&a.display_opts) {
+            return Err(exit(format!(
+                "{}: --display-opts with --display kms; kms has no driver",
+                a.cmd
+            )));
+        }
+        return Ok(Panel::Kms);
+    }
+    let Ok(spec) = get_driver(name) else {
+        // --display takes an optional value, so a path written after it is read
+        // as a driver name
+        let hint = if Path::new(name).is_dir() {
+            ", and a scenes directory goes before it"
+        } else {
+            ""
+        };
+        return Err(exit(format!(
+            "{}: no display driver '{name}' (see: ghee displays){hint}",
+            a.cmd
+        )));
+    };
+    if !given(&a.display_opts) {
+        return Ok(Panel::Driver((spec.open)(&[])?));
+    }
+    let opts = parse_kv(text(&a.display_opts), &format!("{}: --display-opts", a.cmd))?;
+    // checked before the driver runs: a constructor claims GPIO lines and the
+    // SPI bus before it reaches a keyword it does not take
+    let known = driver_options(spec);
+    let unknown: Vec<&str> = opts
+        .keys()
+        .filter(|k| !known.iter().any(|o| o.name == k.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(exit(format!(
+            "{}: --display-opts: {name} has no option {} (takes: {})",
+            a.cmd,
+            unknown.join(", "),
+            known.iter().map(|o| o.name).collect::<Vec<_>>().join(", ")
+        )));
+    }
+    let pairs: Vec<(String, Value)> = opts.into_iter().collect();
+    Ok(Panel::Driver((spec.open)(&pairs)?))
+}
+
+/// (size, components) the render runs at. A scanout renders at the connected
+/// mode and a panel at its own geometry and pixel layout, either of which wins
+/// over --size; everything else takes --size.
+fn geometry(a: &Ns, panel: &Panel) -> Result<((i32, i32), i32)> {
+    match panel {
+        Panel::Kms => match probe_display(a.dri.as_deref()).or(a.size) {
+            Some(size) => Ok((size, a.components)),
+            None => Err(exit(format!(
+                "{}: no connected display to size from; pass --size WxH",
+                a.cmd
+            ))),
+        },
+        Panel::Driver(d) => Ok(((d.width(), d.height()), d.components())),
+        Panel::None => Ok((a.size.unwrap_or((320, 240)), a.components)),
+    }
+}
+
+/// The -o sink: raw frames to stdout, or numbered image files.
+enum FileSink {
+    None,
+    Raw(RawStream<Stdout>),
+    Images(ImageSequence),
+}
+
+fn file_sink(a: &Ns) -> Result<FileSink> {
+    if text(&a.output) == "-" {
+        return Ok(FileSink::Raw(RawStream::new(stdout())));
+    }
+    if !given(&a.output) {
+        return Ok(FileSink::None);
+    }
+    let pattern = text(&a.output);
+    if a.frames.is_some_and(|n| n > 1) && expand_pattern(pattern, 0)? == pattern {
+        return Err(exit(
+            "render: multiple frames into one filename; number them with \
+             a # run (frame.####.png)",
+        ));
+    }
+    let save_opts = match given(&a.save_opts) {
+        true => Some(parse_kv(
+            text(&a.save_opts),
+            &format!("{}: --save-opts", a.cmd),
+        )?),
+        false => None,
+    };
+    Ok(FileSink::Images(ImageSequence::with_opts(
+        pattern,
+        0,
+        save_opts,
+        usize::try_from(a.write_buffer).unwrap_or(0),
+    )))
+}
+
+/// Nothing paces a file or a pipe: that render runs as fast as it draws. A
+/// panel paces on its own bus speed, the KMS flip paces itself at the display's
+/// refresh, and an H264 stream holds a fixed rate for its timestamps.
+fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
+    let fixed = a
+        .fps
+        .filter(|f| *f != 0.0)
+        .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
+    match panel {
+        Panel::Kms => fixed,
+        Panel::Driver(_) => fixed.or_else(|| Some(Box::new(AdaptivePacer::new()))),
+        Panel::None if given(&a.h264) => Some(Box::new(FixedPacer::new(f64::from(h264_fps(a))))),
+        Panel::None => None,
+    }
+}
+
+fn h264_fps(a: &Ns) -> i32 {
+    match a.fps.filter(|f| *f != 0.0) {
+        Some(f) => f as i32,
+        None => 30,
+    }
+}
+
+/// --frames as given, else one image and an endless display, stream or console.
+fn frames_of(a: &Ns) -> i64 {
+    match a.frames {
+        Some(n) => n,
+        None => i64::from(!(given(&a.display) || given(&a.h264) || a.serve)),
+    }
+}
+
+/// A driver is an Output bound to a physical panel (ghee.drivers.base); the
+/// trait split is Rust's, so the loop reaches a driver through this.
+struct PanelSink(Box<dyn DisplayDriver>);
+
+impl Output for PanelSink {
+    fn dest(&self) -> &str {
+        self.0.dest()
+    }
+
+    fn persists(&self) -> bool {
+        self.0.persists()
+    }
+
+    fn write(&mut self, frame: Frame<'_>) -> Result<()> {
+        self.0.write(frame.data)
+    }
+
+    fn turn_on(&mut self) -> Result<()> {
+        self.0.turn_on()
+    }
+
+    fn turn_off(&mut self) -> Result<()> {
+        self.0.turn_off()
+    }
+
+    fn clear(&mut self) -> Result<()> {
+        self.0.clear()
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.0.close()
+    }
+}
+
+/// The sinks in the order the flags add them up: the display, then -o, then
+/// --h264.
+fn sink_list<'a>(
+    scanout: &'a mut Option<Scanout>,
+    panel: &'a mut Option<PanelSink>,
+    file: &'a mut FileSink,
+    h264: &'a mut Option<H264Stream>,
+) -> Vec<&'a mut dyn Output> {
+    let mut sinks: Vec<&mut dyn Output> = Vec::new();
+    if let Some(s) = scanout.as_mut() {
+        sinks.push(s);
+    }
+    if let Some(s) = panel.as_mut() {
+        sinks.push(s);
+    }
+    match file {
+        FileSink::Raw(s) => sinks.push(s),
+        FileSink::Images(s) => sinks.push(s),
+        FileSink::None => {}
+    }
+    if let Some(s) = h264.as_mut() {
+        sinks.push(s);
+    }
+    sinks
+}
+
+/// The signal that ended the run, 0 for none. SIGTERM (timeout, systemd stop)
+/// and SIGINT have to unwind the way Python's KeyboardInterrupt does, so the
+/// sinks are turned off and a panel is not left on a stale frame.
+static SIGNALLED: AtomicI32 = AtomicI32::new(0);
+
+// Linux signal numbers. The handler is a plain function pointer, so neither
+// SIG_DFL nor SIG_IGN is needed to install it.
+const SIGINT: c_int = 2;
+const SIGTERM: c_int = 15;
+
+extern "C" {
+    fn signal(sig: c_int, handler: extern "C" fn(c_int)) -> usize;
+}
+
+extern "C" fn on_signal(sig: c_int) {
+    SIGNALLED.store(sig, Ordering::SeqCst);
+    // a console blocks in its own server, which this is the way out of
+    server::stop();
+}
+
+fn catch_signals() {
+    unsafe {
+        signal(SIGINT, on_signal);
+        signal(SIGTERM, on_signal);
+    }
+}
+
+/// The reader at the far end of the pipe went away.
+fn broken_pipe(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            )
+        })
+    })
+}
+
+/// One render into however many sinks the flags ask for.
+fn cmd_render(a: &Ns) -> Result<()> {
+    if a.serve && given(&a.filters) {
+        return Err(exit(format!(
+            "{}: --filters with --serve; the console has a filter picker",
+            a.cmd
+        )));
+    }
+    if a.serve && given(&a.h264) {
+        return Err(exit(format!(
+            "{}: --h264 with --serve; the console serves /h264 already",
+            a.cmd
+        )));
+    }
+    if text(&a.output) == "-" && text(&a.h264) == "-" {
+        return Err(exit(format!(
+            "{}: -o - and --h264 - both want stdout",
+            a.cmd
+        )));
+    }
+    // the scene loads first: it owns the tokens after `--`, including their
+    // --help, and a scene the loader rejects must fail before a panel is opened
+    let scene = if a.serve { None } else { Some(scene_of(a)?) };
+    let panel = panel_of(a)?;
+    let kms = matches!(panel, Panel::Kms);
+    if matches!(panel, Panel::None) && !given(&a.output) && !given(&a.h264) && !a.serve {
+        return Err(exit(format!(
+            "{}: pass -o PATTERN, --display NAME, --h264 PATH or --serve",
+            a.cmd
+        )));
+    }
+    let ((w, h), components) = geometry(a, &panel)?;
+    let pace = pacer(a, &panel);
+    let mut scanout = kms.then_some(Scanout);
+    let mut sink = match panel {
+        Panel::Driver(d) => Some(PanelSink(d)),
+        _ => None,
+    };
+    let mut file = file_sink(a)?;
+    if a.serve {
+        // The console draws on this thread, so it takes the sinks as they are: a
+        // panel driver's SPI and GPIO handles never leave the thread that opened
+        // them. The scanout is never one of them: it is a mode the Renderer is
+        // made in.
+        let mut sinks: Vec<Box<dyn Output>> = Vec::new();
+        let mut native_format = None;
+        if let Some(panel) = sink {
+            native_format = Some(panel.0.native_format().to_string());
+            sinks.push(Box::new(panel));
+        }
+        match file {
+            FileSink::Raw(s) => sinks.push(Box::new(s)),
+            FileSink::Images(s) => sinks.push(Box::new(s)),
+            FileSink::None => {}
+        }
+        return serve(a, sinks, native_format, (w, h), components, kms);
+    }
+    let Some(scene) = scene else {
+        unreachable!("loaded above for every render that is not --serve")
+    };
+    let mut r = Renderer::new(w, h, components, a.dri.as_deref(), kms, a.rgb565)?;
+    let err = r.setup(&scene)?;
+    if !err.is_empty() {
+        return Err(exit(format!("compile error: {err}")));
+    }
+    let mut h264 = None;
+    if given(&a.h264) {
+        let path = text(&a.h264);
+        let fps = h264_fps(a);
+        let stream: Box<dyn Write + Send> = match path {
+            "-" => Box::new(stdout()),
+            _ => Box::new(File::create(path).with_context(|| path.to_string())?),
+        };
+        let stream = H264Stream::new(stream, &r, w, h, fps, a.bitrate, components)?;
+        eprintln!(
+            "h264: {} {w}x{h}@{fps} {}bps -> {path}",
+            if stream.hw {
+                "hardware zero-copy"
+            } else {
+                "software libx264"
+            },
+            a.bitrate
+        );
+        h264 = Some(stream);
+    }
+    let times: RefCell<Vec<f64>> = RefCell::new(Vec::new());
+    let want = frames_of(a);
+    let (ran, drawn, elapsed, out) = {
+        let sinks = sink_list(&mut scanout, &mut sink, &mut file, &mut h264);
+        let mut lp = Loop::new(&mut r, sinks);
+        lp.provider = Some(Box::new(|name, size, frame| {
+            Feed::Data(demo_feed(name, size, frame))
+        }));
+        // a frame budget spells no other count for "render nothing": 0 is the
+        // endless run, so a negative --frames stops before the first frame
+        lp.frames = want.max(0) as u64;
+        lp.timestep = a.timestep;
+        lp.pacer = pace;
+        lp.stopping = Some(Box::new(move || {
+            want < 0 || SIGNALLED.load(Ordering::SeqCst) != 0
+        }));
+        if a.stats {
+            lp.on_frame = Some(Box::new(|_, cost| times.borrow_mut().push(cost)));
+        }
+        let ran = lp.run();
+        let out: Vec<String> = lp.out().iter().map(|d| (*d).to_string()).collect();
+        (ran, lp.drawn, lp.elapsed, out)
+    };
+    let pipe = text(&a.output) == "-" || text(&a.h264) == "-";
+    let ran = match ran {
+        Err(e) if pipe && broken_pipe(&e) => Ok(()),
+        other => other,
+    };
+    let mut closed = Ok(());
+    for s in sink_list(&mut scanout, &mut sink, &mut file, &mut h264) {
+        closed = closed.and(s.close());
+    }
+    r.close();
+    if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
+        std::process::exit(143);
+    }
+    ran?;
+    closed?;
+    if given(&a.output) && text(&a.output) != "-" {
+        println!("wrote {drawn} frame(s) to {}", text(&a.output));
+    }
+    if given(&a.h264) && text(&a.h264) != "-" {
+        eprintln!("wrote {drawn} frame(s) to {}", text(&a.h264));
+    }
+    print_stats(a, &times.borrow(), elapsed, &out);
+    Ok(())
+}
+
+/// Attach the console to this render. A scene serves itself alone; a directory
+/// (or --demo) serves everything in it.
+fn serve(
+    a: &Ns,
+    sinks: Vec<Box<dyn Output>>,
+    native_format: Option<String>,
+    size: (i32, i32),
+    components: i32,
+    kms: bool,
+) -> Result<()> {
+    let (mut scenes_dir, mut store) = (None, None);
+    if let Some(scene) = &a.scene {
+        let path = find_scene(scene, a.demo)?;
+        if Path::new(&path).is_dir() {
+            scenes_dir = Some(path);
+        } else {
+            store = Some(one_scene_store(a, &path)?);
+        }
+    }
+    let ran = server::run(server::Options {
+        scenes_dir,
+        store,
+        size,
+        components,
+        sinks,
+        native_format,
+        display: kms,
+        rgb565: a.rgb565,
+        port: a.port,
+        host: a.host.clone(),
+        preview_max: a.preview_max,
+        preview_fps: f64::from(a.preview_fps),
+        stream_max: a.stream_max,
+        bitrate: i64::from(a.bitrate),
+        scene_args: a.scene_args.clone(),
+        frames: frames_of(a).max(0) as u64,
+        timestep: a.timestep,
+        dri_device: a.dri.clone(),
+        ..Default::default()
+    });
+    if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
+        std::process::exit(143);
+    }
+    ran
+}
+
+/// A store holding the single scene `render --serve` was pointed at. The
+/// bundled examples are never written, whichever way they are reached.
+fn one_scene_store(a: &Ns, path: &str) -> Result<SceneStore> {
+    SceneStore::one(path, in_examples(path), a.scene_args.clone())
+        .map_err(|e| exit(format!("{}: {e}", a.cmd)))
+}
+
+/// Whether a scene sits in the bundled examples directory. Python compares
+/// os.path.abspath; this resolves symlinks as well, which no scene path needs
+/// to survive.
+fn in_examples(path: &str) -> bool {
+    let dir = match Path::new(path).parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::env::current_dir().unwrap_or_default(),
+    };
+    let Some(examples) = examples_dir() else {
+        return false;
+    };
+    match (dir.canonicalize(), Path::new(&examples).canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// `serve` is `render --serve` over a directory of scenes.
+fn cmd_serve(a: &Ns) -> Result<()> {
+    if a.demo && given(&a.scene) {
+        return Err(exit("serve: pass a scenes directory or --demo, not both"));
+    }
+    if !a.demo && !given(&a.scene) {
+        if given(&a.display) && Path::new(text(&a.display)).is_dir() {
+            // --display takes an optional value, so it swallowed the directory
+            return Err(exit(format!(
+                "serve: --display took '{}' as the display name; \
+                 put the scenes directory before it",
+                text(&a.display)
+            )));
+        }
+        return Err(exit(
+            "serve: pass a scenes directory, or --demo for the bundled examples",
+        ));
+    }
+    cmd_render(a)
+}
+
+/// --stats: one summary line after a render. ms/frame is the per-frame cost
+/// with paced sleeps excluded; fps is frames over real elapsed time, the same
+/// number the console publishes.
+fn stats_line(times: &[f64], wall: f64, out: &[String]) -> String {
+    let n = times.len();
+    let total: f64 = times.iter().sum();
+    let min = times.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = times.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    format!(
+        "stats: {n} frame(s) in {wall:.2}s, {:.2} ms/frame (min {:.2}, max {:.2}), {:.1} fps -> {}",
+        1000.0 * total / n as f64,
+        1000.0 * min,
+        1000.0 * max,
+        rate(n as u64, wall),
+        out.join("+")
+    )
+}
+
+fn print_stats(a: &Ns, times: &[f64], wall: f64, out: &[String]) {
+    if !a.stats || times.is_empty() {
+        return;
+    }
+    eprintln!("{}", stats_line(times, wall, out));
+}
+
+fn cmd_isf_import(a: &ImportArgs) -> Result<()> {
+    let (source, name, vs) =
+        read_isf(&a.source).map_err(|e| exit(format!("isf import: {}: {e}", a.source)))?;
+    let (body, what, warnings) = if a.as_filter {
+        let (out, warnings) = to_filter(&source, &name, a.size, vs).map_err(isf_failed)?;
+        let named = out.get("name").and_then(Value::as_str).unwrap_or_default();
+        let what = format!("filter '{named}'");
+        (serde_json::to_string_pretty(&out)?, what, warnings)
+    } else {
+        let (scene, warnings) = to_scene(&source, &name, a.size, vs).map_err(isf_failed)?;
+        let what = format!("scene, {} pass(es)", scene.passes.len());
+        (
+            serde_json::to_string_pretty(&scene.to_dict())?,
+            what,
+            warnings,
+        )
+    };
+    for w in warnings {
+        eprintln!("isf import: {name}: {w}");
+    }
+    let path = match a.output.as_deref().filter(|p| !p.is_empty()) {
+        Some(p) => p.to_string(),
+        None => format!(
+            "{}.{}.json",
+            slug(&name),
+            if a.as_filter { "filter" } else { "scene" }
+        ),
+    };
+    let mut f = File::create(&path).with_context(|| path.clone())?;
+    f.write_all(body.as_bytes())?;
+    f.write_all(b"\n")?;
+    println!("wrote {what} to {path}");
+    Ok(())
+}
+
+fn isf_failed(e: anyhow::Error) -> anyhow::Error {
+    exit(format!("isf import: {e:#}"))
+}
+
+fn cmd_displays() -> Result<()> {
+    let kms = match probe_display(None) {
+        Some((w, h)) => format!("connected, {w}x{h}"),
+        None => "no connected display".to_string(),
+    };
+    println!("{:12} {kms}", "kms");
+    for (name, status) in available_drivers() {
+        println!("{name:12} {status}");
+        if status != "ok" {
+            continue;
+        }
+        let opts: Vec<String> = driver_options(get_driver(name)?)
+            .iter()
+            .map(|o| match o.default {
+                Some(v) => format!("{}={v}", o.name),
+                None => format!("{}=None", o.name),
+            })
+            .collect();
+        if !opts.is_empty() {
+            println!("{:12} --display-opts {}", "", opts.join(","));
+        }
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------ the parser ----
+
+#[derive(Parser)]
+#[command(
+    name = "ghee",
+    version,
+    disable_help_subcommand = true,
+    disable_version_flag = true
+)]
+struct Cli {
+    // argparse spells it long only, so the short -V clap adds is off
+    #[arg(
+        long,
+        action = clap::ArgAction::Version,
+        help = "show program's version number and exit"
+    )]
+    version: Option<bool>,
+
+    #[command(subcommand)]
+    cmd: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    #[command(
+        about = "render a scene to images, a display, a stream, or several at once",
+        // argparse reads a negative number as a value, not as an option string
+        allow_negative_numbers = true,
+        after_help = "anything after `--` goes to the scene's controller \
+                      (ghee render --demo text -- --text hi); `-- --help` lists what it takes"
+    )]
+    Render(RenderArgs),
+
+    #[command(
+        about = "run the editor console",
+        allow_negative_numbers = true,
+        after_help = "the console is plain HTTP: GET /stats /scene /scenes /frame.png \
+                      /stream /h264, POST /set /switch /next /prev /scene /save /ping. \
+                      Anything after `--` goes to every scene the console loads, and \
+                      each keeps what it declares; `-- --help` lists what takes what"
+    )]
+    Serve(ServeArgs),
+
+    #[command(about = "Interactive Shader Format (ISF) shaders")]
+    Isf(IsfArgs),
+
+    #[command(about = "list display drivers and availability")]
+    Displays,
+}
+
+/// What every render takes, whichever command asked for it.
+#[derive(Args)]
+struct RenderFlags {
+    #[arg(
+        long,
+        value_name = "NAME",
+        num_args = 0..=1,
+        default_missing_value = "kms",
+        help = "render to a hardware display: an SPI/I2C driver name, or bare \
+                (or 'kms') for the connected HDMI/KMS display (zero-copy scanout; \
+                needs DRM master)"
+    )]
+    display: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "K=V,...",
+        help = "options for the --display driver, e.g. width=240,height=240,\
+                y_offset=80,backlight=26; `ghee displays` lists what each one takes"
+    )]
+    display_opts: Option<String>,
+
+    #[arg(
+        long,
+        help = "display scanout in 16-bit color: halves the GPU store and scanout \
+                bandwidth (worth it on VC4-class boards); slight banding in gradients"
+    )]
+    rgb565: bool,
+
+    #[arg(
+        long,
+        help = "frame count (default 1 for images, loop for a display, a stream \
+                or the console)"
+    )]
+    frames: Option<i64>,
+
+    #[arg(
+        long,
+        value_name = "S",
+        help = "pin engine time to frame*S seconds instead of the wall clock, so \
+                renders are reproducible (frame N always renders at time N*S)"
+    )]
+    timestep: Option<f64>,
+
+    #[arg(
+        long,
+        value_parser = size,
+        help = "WxH to render at; a display or panel sets its own (default 320x240)"
+    )]
+    size: Option<(i32, i32)>,
+
+    #[arg(long, help = "DRI device, e.g. /dev/dri/renderD128")]
+    dri: Option<String>,
+
+    #[arg(long, help = "path to libghee.so")]
+    lib: Option<String>,
+}
+
+/// The console's own flags bar --bitrate, whose default differs per command:
+/// what `serve` offers and `render --serve` needs.
+#[derive(Args)]
+struct ConsoleFlags {
+    #[arg(long, default_value_t = 8090)]
+    port: u16,
+
+    #[arg(
+        long,
+        default_value = "127.0.0.1",
+        help = "bind address; 0.0.0.0 exposes the console (no auth) to the network"
+    )]
+    host: String,
+
+    #[arg(
+        long,
+        default_value_t = 480,
+        help = "longest side of the browser preview in px (downscaled; default 480)"
+    )]
+    preview_max: i32,
+
+    #[arg(
+        long,
+        default_value_t = 15,
+        help = "browser preview refresh cap; the display stays full speed (default 15)"
+    )]
+    preview_fps: i32,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "cap the /h264 stream's longest side (GPU downscale; \
+                default 0 = full render size)"
+    )]
+    stream_max: i32,
+}
+
+#[derive(Args)]
+struct RenderArgs {
+    #[arg(help = "scene file, or a name from $GHEE_SCENES")]
+    scene: String,
+
+    #[arg(long, help = "look the scene name up in the bundled examples too")]
+    demo: bool,
+
+    #[arg(
+        short,
+        long,
+        help = "image pattern (frame.####.jpg), or '-' for raw RGB(A) frames to \
+                stdout (h*w*components, no header; pipe to ffmpeg/mpv)"
+    )]
+    output: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "write an Annex-B H264 stream to PATH ('-' = stdout, pipe to mpv); \
+                hardware zero-copy on Pi 1..Pi 4, ffmpeg/libx264 elsewhere"
+    )]
+    h264: Option<String>,
+
+    #[arg(
+        long,
+        help = "also run the editor console on this render (see: ghee serve)"
+    )]
+    serve: bool,
+
+    #[arg(
+        long,
+        default_value_t = 4,
+        value_parser = clap::value_parser!(i32).range(3..=4),
+        help = "3=RGB, 4=RGBA (desktop Mesa can only read back RGBA)"
+    )]
+    components: i32,
+
+    #[arg(
+        long,
+        value_name = "K=V,...",
+        help = "extra options passed to the image encoder, e.g. quality=90 or \
+                lossless=True (ignored for -o -)"
+    )]
+    save_opts: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = 16,
+        value_name = "N",
+        help = "frames buffered for the async image writer; the render only waits \
+                when the writer falls N frames behind; memory cost is N * w * h * \
+                components bytes"
+    )]
+    write_buffer: i64,
+
+    #[arg(
+        long,
+        help = "fixed display frame rate (default: adapt to the panel's own speed)"
+    )]
+    fps: Option<f64>,
+
+    #[arg(
+        long,
+        help = "comma-separated filter names applied after the scene's own"
+    )]
+    filters: Option<String>,
+
+    #[arg(long, help = "print a timing summary when the render ends")]
+    stats: bool,
+
+    #[command(flatten)]
+    render: RenderFlags,
+
+    #[command(flatten)]
+    console: ConsoleFlags,
+
+    #[arg(
+        long,
+        default_value_t = 4_000_000,
+        help = "H264 bitrate in bits/s: the --h264 stream's rate, or the floor \
+                for the console's /h264 (default 4000000)"
+    )]
+    bitrate: i32,
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    #[arg(help = "scenes directory")]
+    scenes: Option<String>,
+
+    #[arg(long, help = "serve the bundled example scenes")]
+    demo: bool,
+
+    #[command(flatten)]
+    render: RenderFlags,
+
+    #[command(flatten)]
+    console: ConsoleFlags,
+
+    #[arg(
+        long,
+        default_value_t = 10_000_000,
+        help = "H264 bitrate in bits/s: the --h264 stream's rate, or the floor \
+                for the console's /h264 (default 10000000)"
+    )]
+    bitrate: i32,
+}
+
+#[derive(Args)]
+struct IsfArgs {
+    #[command(subcommand)]
+    isf_cmd: IsfCommand,
+}
+
+#[derive(Subcommand)]
+enum IsfCommand {
+    #[command(
+        about = "convert an ISF shader to a scene or filter",
+        allow_negative_numbers = true
+    )]
+    Import(ImportArgs),
+}
+
+#[derive(Args)]
+struct ImportArgs {
+    #[arg(help = "a .fs file, or an http(s) URL to one")]
+    source: String,
+
+    #[arg(
+        short,
+        long,
+        help = "output path (default: the shader's name, .scene.json or .filter.json)"
+    )]
+    output: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "320x240",
+        value_parser = isf_size,
+        help = "WxH the pass WIDTH/HEIGHT equations are evaluated against, since \
+                ghee pass sizes are fixed at import (default 320x240)"
+    )]
+    size: (i64, i64),
+
+    #[arg(
+        long,
+        help = "write a ghee filter (a single-pass ISF whose image input becomes \
+                iChannel0, the frame so far) instead of a scene"
+    )]
+    as_filter: bool,
+}
+
+/// ghee::isf evaluates its size equations in i64.
+fn isf_size(s: &str) -> Result<(i64, i64), String> {
+    size(s).map(|(w, h)| (i64::from(w), i64::from(h)))
+}
+
+/// The namespace both render and serve resolve to: serve is render --serve over
+/// a directory, so it carries render's whole namespace with the flags it does
+/// not offer left at their defaults.
+struct Ns {
+    cmd: &'static str,
+    scene: Option<String>,
+    demo: bool,
+    output: Option<String>,
+    h264: Option<String>,
+    serve: bool,
+    components: i32,
+    save_opts: Option<String>,
+    write_buffer: i64,
+    fps: Option<f64>,
+    filters: Option<String>,
+    stats: bool,
+    display: Option<String>,
+    display_opts: Option<String>,
+    rgb565: bool,
+    frames: Option<i64>,
+    timestep: Option<f64>,
+    size: Option<(i32, i32)>,
+    dri: Option<String>,
+    /// the engine is linked in, so there is no library to point at
+    #[allow(dead_code)]
+    lib: Option<String>,
+    port: u16,
+    host: String,
+    preview_max: i32,
+    preview_fps: i32,
+    stream_max: i32,
+    bitrate: i32,
+    scene_args: Vec<String>,
+}
+
+impl RenderArgs {
+    fn ns(self, scene_args: Vec<String>) -> Ns {
+        Ns {
+            cmd: "render",
+            scene: Some(self.scene),
+            demo: self.demo,
+            output: self.output,
+            h264: self.h264,
+            serve: self.serve,
+            components: self.components,
+            save_opts: self.save_opts,
+            write_buffer: self.write_buffer,
+            fps: self.fps,
+            filters: self.filters,
+            stats: self.stats,
+            display: self.render.display,
+            display_opts: self.render.display_opts,
+            rgb565: self.render.rgb565,
+            frames: self.render.frames,
+            timestep: self.render.timestep,
+            size: self.render.size,
+            dri: self.render.dri,
+            lib: self.render.lib,
+            port: self.console.port,
+            host: self.console.host,
+            preview_max: self.console.preview_max,
+            preview_fps: self.console.preview_fps,
+            stream_max: self.console.stream_max,
+            bitrate: self.bitrate,
+            scene_args,
+        }
+    }
+}
+
+impl ServeArgs {
+    fn ns(self, scene_args: Vec<String>) -> Ns {
+        Ns {
+            cmd: "serve",
+            // --demo leaves it None: the bundled examples, read-only
+            scene: self.scenes,
+            demo: self.demo,
+            output: None,
+            h264: None,
+            serve: true,
+            components: 4,
+            save_opts: None,
+            write_buffer: 16,
+            fps: None,
+            filters: None,
+            stats: false,
+            display: self.render.display,
+            display_opts: self.render.display_opts,
+            rgb565: self.render.rgb565,
+            frames: self.render.frames,
+            timestep: self.render.timestep,
+            size: self.render.size,
+            dri: self.render.dri,
+            lib: self.render.lib,
+            port: self.console.port,
+            host: self.console.host,
+            preview_max: self.console.preview_max,
+            preview_fps: self.console.preview_fps,
+            stream_max: self.console.stream_max,
+            bitrate: self.bitrate,
+            scene_args,
+        }
+    }
+}
+
+/// The command name a failure is reported under, and what that command did.
+fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
+    let cmd = match &cli.cmd {
+        Command::Render(_) => "render",
+        Command::Serve(_) => "serve",
+        Command::Isf(_) => "isf",
+        Command::Displays => "displays",
+    };
+    if !scene_args.is_empty() && !matches!(cli.cmd, Command::Render(_) | Command::Serve(_)) {
+        return (
+            cmd,
+            Err(exit(format!("{cmd}: takes no scene arguments after --"))),
+        );
+    }
+    let ran = match cli.cmd {
+        Command::Render(a) => cmd_render(&a.ns(scene_args)),
+        Command::Serve(a) => cmd_serve(&a.ns(scene_args)),
+        Command::Isf(a) => match &a.isf_cmd {
+            IsfCommand::Import(i) => cmd_isf_import(i),
+        },
+        Command::Displays => cmd_displays(),
+    };
+    (cmd, ran)
+}
+
+/// argparse reports a token no parser claimed from the top-level parser, so the
+/// line names `ghee` itself and the status is 2.
+fn clap_status(e: &clap::Error) -> i32 {
+    if e.kind() == ErrorKind::UnknownArgument {
+        let arg = e
+            .get(ContextKind::InvalidArg)
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        eprintln!("ghee: error: unrecognized arguments: {arg}");
+        return 2;
+    }
+    let _ = e.print();
+    i32::from(e.use_stderr()) * 2
+}
+
+/// The command line's exit status. Scene, engine, encoder and missing-dependency
+/// failures reach the user the way the argument errors do: one line, no stack.
+/// $GHEE_TRACEBACK asks for the whole error chain instead.
+pub fn main(argv: Vec<String>) -> i32 {
+    let (own, scene_args) = split_scene_args(&argv);
+    let cli = match Cli::try_parse_from(std::iter::once("ghee".to_string()).chain(own)) {
+        Ok(cli) => cli,
+        Err(e) => return clap_status(&e),
+    };
+    catch_signals();
+    let (cmd, ran) = dispatch(cli, scene_args);
+    match ran {
+        Ok(()) => 0,
+        Err(e) => {
+            if std::env::var("GHEE_TRACEBACK").is_ok_and(|v| !v.is_empty()) {
+                eprintln!("{e:?}");
+            } else if let Some(line) = e.downcast_ref::<Exit>() {
+                eprintln!("{line}");
+            } else {
+                eprintln!("{cmd}: {e:#}");
+            }
+            1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    const SCENE: &str = r#"{"version":1,"passes":[{"name":"main",
+        "code":"void main(){ gl_FragColor = vec4(0.25,0.5,0.75,1.0); }"}]}"#;
+
+    fn argv(tokens: &[&str]) -> Vec<String> {
+        tokens.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn parse(tokens: &[&str]) -> (Cli, Vec<String>) {
+        let (own, scene_args) = split_scene_args(&argv(tokens));
+        let cli = Cli::try_parse_from(std::iter::once("ghee".to_string()).chain(own)).unwrap();
+        (cli, scene_args)
+    }
+
+    /// The namespace a command line resolves to, without running it.
+    fn ns(tokens: &[&str]) -> Ns {
+        let (cli, scene_args) = parse(tokens);
+        match cli.cmd {
+            Command::Render(a) => a.ns(scene_args),
+            Command::Serve(a) => a.ns(scene_args),
+            _ => panic!("not a render command"),
+        }
+    }
+
+    fn run(tokens: &[&str]) -> Result<()> {
+        let (cli, scene_args) = parse(tokens);
+        dispatch(cli, scene_args).1
+    }
+
+    /// The message of a call that had to fail. Neither Panel nor FileSink is
+    /// Debug, so unwrap_err() cannot ask for it.
+    fn failure<T>(r: Result<T>) -> String {
+        match r {
+            Ok(_) => panic!("expected a failure"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn tmpdir(tag: &str) -> String {
+        let d = std::env::temp_dir().join(format!("ghee-cli-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d.to_string_lossy().into_owned()
+    }
+
+    fn scene_file(tag: &str) -> String {
+        let path = format!("{}/s.scene.json", tmpdir(tag));
+        fs::write(&path, SCENE).unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_kv_types() {
+        let d = parse_kv(
+            "quality=90,lossless=True,method=fast,note=hi there",
+            "--save-opts",
+        )
+        .unwrap();
+        assert_eq!(d["quality"], Value::from(90));
+        assert_eq!(d["lossless"], Value::Bool(true));
+        assert_eq!(d["method"], Value::from("fast"));
+        assert_eq!(d["note"], Value::from("hi there"));
+        assert!(d["quality"].is_i64());
+    }
+
+    /// One parser, two flags: the error has to say which one was written.
+    #[test]
+    fn parse_kv_malformed_exits_naming_the_flag_that_took_it() {
+        for (s, what) in [
+            ("quality=90,nope", "render: --save-opts"),
+            ("width=240,nope", "serve: --display-opts"),
+        ] {
+            let e = parse_kv(s, what).unwrap_err();
+            assert_eq!(e.to_string(), format!("{what} wants k=v pairs, got 'nope'"));
+            assert!(e.downcast_ref::<Exit>().is_some());
+        }
+    }
+
+    #[test]
+    fn a_value_that_is_no_literal_stays_a_string() {
+        let d = parse_kv(
+            "backlight=None,rst= 25 ,name='panel',rate=1.5,mask=0x1f",
+            "x",
+        )
+        .unwrap();
+        assert_eq!(d["backlight"], Value::Null);
+        assert_eq!(d["rst"], Value::from(25));
+        assert_eq!(d["name"], Value::from("panel"));
+        assert_eq!(d["rate"], Value::from(1.5));
+        assert_eq!(d["mask"], Value::from(31));
+        assert_eq!(literal_eval("wide"), None);
+        assert_eq!(literal_eval("-4"), Some(Value::from(-4)));
+        assert_eq!(literal_eval("1_0"), Some(Value::from(10)));
+    }
+
+    #[test]
+    fn split_leaves_gheeflags_alone() {
+        let (mine, theirs) = split_scene_args(&argv(&[
+            "render", "text", "--size", "64x48", "--", "--text", "hi", "--", "-x",
+        ]));
+        assert_eq!(mine, argv(&["render", "text", "--size", "64x48"]));
+        assert_eq!(theirs, argv(&["--text", "hi", "--", "-x"]));
+        assert_eq!(
+            split_scene_args(&argv(&["render", "text", "--size", "64x48"])),
+            (argv(&["render", "text", "--size", "64x48"]), Vec::new())
+        );
+    }
+
+    #[test]
+    fn commands_without_scenes_reject_scene_args() {
+        let e = run(&["displays", "--", "--emit", "8x8"]).unwrap_err();
+        assert_eq!(e.to_string(), "displays: takes no scene arguments after --");
+    }
+
+    #[test]
+    fn own_flags_are_still_validated() {
+        let e = Cli::try_parse_from(argv(&["ghee", "render", "text", "--nosuchflag"]))
+            .err()
+            .unwrap();
+        assert_eq!(e.kind(), ErrorKind::UnknownArgument);
+        assert_eq!(
+            e.get(ContextKind::InvalidArg)
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("--nosuchflag")
+        );
+    }
+
+    #[test]
+    fn a_size_is_wxh() {
+        assert_eq!(size("64x48"), Ok((64, 48)));
+        assert_eq!(size("64X48"), Ok((64, 48)));
+        assert_eq!(size("-4x9"), Ok((-4, 9)));
+        for bad in ["banana", "16", "0x9x2", ""] {
+            assert!(size(bad).is_err(), "{bad}");
+        }
+        assert_eq!(ns(&["render", "s", "--size", "80x60"]).size, Some((80, 60)));
+        assert_eq!(ns(&["render", "s"]).size, None);
+    }
+
+    #[test]
+    fn a_panel_render_loops_until_stopped_and_an_image_render_is_one_frame() {
+        assert_eq!(frames_of(&ns(&["render", "s", "-o", "x.png"])), 1);
+        for endless in [
+            vec!["render", "s", "--display", "st7789"],
+            vec!["render", "s", "--h264", "out.h264"],
+            vec!["render", "s", "--serve"],
+        ] {
+            assert_eq!(frames_of(&ns(&endless)), 0, "{endless:?}");
+        }
+        assert_eq!(
+            frames_of(&ns(&[
+                "render",
+                "s",
+                "--display",
+                "st7789",
+                "--frames",
+                "9"
+            ])),
+            9
+        );
+    }
+
+    #[test]
+    fn display_opts_belong_to_a_panel_driver() {
+        for (extra, msg) in [
+            (vec![], "render: --display-opts without --display"),
+            (
+                vec!["--display", "kms"],
+                "render: --display-opts with --display kms; kms has no driver",
+            ),
+        ] {
+            let mut tokens = vec!["render", "s", "-o", "x.png", "--display-opts", "width=40"];
+            tokens.extend(extra);
+            assert_eq!(failure(panel_of(&ns(&tokens))), msg);
+        }
+    }
+
+    #[test]
+    fn an_unknown_display_opt_names_the_options_the_driver_takes() {
+        let a = ns(&[
+            "render",
+            "s",
+            "--display",
+            "st7789",
+            "--display-opts",
+            "widht=40",
+        ]);
+        let e = failure(panel_of(&a));
+        assert!(
+            e.starts_with("render: --display-opts: st7789 has no option widht"),
+            "{e}"
+        );
+        assert!(e.contains("(takes: width, height, x_offset"), "{e}");
+    }
+
+    #[test]
+    fn a_display_that_is_a_directory_says_where_the_directory_goes() {
+        let d = tmpdir("dir-display");
+        assert_eq!(
+            failure(panel_of(&ns(&["serve", "--display", &d]))),
+            format!(
+                "serve: no display driver '{d}' (see: ghee displays), \
+                 and a scenes directory goes before it"
+            )
+        );
+    }
+
+    #[test]
+    fn two_sinks_cannot_both_claim_stdout() {
+        let e = run(&["render", "s", "-o", "-", "--h264", "-"]).unwrap_err();
+        assert_eq!(e.to_string(), "render: -o - and --h264 - both want stdout");
+    }
+
+    #[test]
+    fn a_render_with_nowhere_to_go_says_so() {
+        let path = scene_file("nowhere");
+        assert_eq!(
+            run(&["render", &path]).unwrap_err().to_string(),
+            "render: pass -o PATTERN, --display NAME, --h264 PATH or --serve"
+        );
+    }
+
+    #[test]
+    fn filters_and_h264_are_refused_with_serve() {
+        for (extra, msg) in [
+            (
+                vec!["--filters", "dither"],
+                "render: --filters with --serve; the console has a filter picker",
+            ),
+            (
+                vec!["--h264", "x.h264"],
+                "render: --h264 with --serve; the console serves /h264 already",
+            ),
+        ] {
+            let mut tokens = vec!["render", "s", "--serve"];
+            tokens.extend(extra);
+            assert_eq!(run(&tokens).unwrap_err().to_string(), msg);
+        }
+    }
+
+    #[test]
+    fn serve_wants_a_directory_or_demo_and_not_both() {
+        assert_eq!(
+            run(&["serve"]).unwrap_err().to_string(),
+            "serve: pass a scenes directory, or --demo for the bundled examples"
+        );
+        assert_eq!(
+            run(&["serve", "scenes/", "--demo"])
+                .unwrap_err()
+                .to_string(),
+            "serve: pass a scenes directory or --demo, not both"
+        );
+    }
+
+    #[test]
+    fn serve_names_the_directory_a_bare_display_swallowed() {
+        let d = tmpdir("swallowed");
+        assert_eq!(
+            run(&["serve", "--display", &d]).unwrap_err().to_string(),
+            format!(
+                "serve: --display took '{d}' as the display name; \
+                 put the scenes directory before it"
+            )
+        );
+    }
+
+    /// The examples are not an ambient namespace: --demo is what puts them on
+    /// the search path.
+    #[test]
+    fn a_bundled_name_only_resolves_with_demo() {
+        std::env::set_var("GHEE_EXAMPLES", "ghee/examples");
+        assert!(
+            failure(find_scene("bars", false)).starts_with("no scene 'bars' (searched: cwd"),
+            "resolved without --demo"
+        );
+        assert_eq!(find_scene("bars", true).unwrap(), "ghee/examples/bars");
+    }
+
+    #[test]
+    fn a_scene_path_is_taken_as_written() {
+        let path = scene_file("asis");
+        let stem = path.trim_end_matches(".scene.json");
+        assert_eq!(find_scene(&path, false).unwrap(), path);
+        assert_eq!(find_scene(stem, false).unwrap(), stem);
+        assert_eq!(join("/a/b", "c"), "/a/b/c");
+        assert_eq!(join("/a/b/", "c"), "/a/b/c");
+        assert_eq!(join("/a/b", "/c"), "/c");
+    }
+
+    #[test]
+    fn the_stats_line_names_every_destination() {
+        let out = ["panel".to_string(), "file".to_string()];
+        assert_eq!(
+            stats_line(&[0.010, 0.030, 0.020], 2.0, &out),
+            "stats: 3 frame(s) in 2.00s, 20.00 ms/frame \
+             (min 10.00, max 30.00), 1.5 fps -> panel+file"
+        );
+    }
+
+    #[test]
+    fn multiple_frames_into_one_filename_is_refused() {
+        let a = ns(&["render", "s", "-o", "one.png", "--frames", "4"]);
+        let e = failure(file_sink(&a));
+        assert!(
+            e.starts_with("render: multiple frames into one filename"),
+            "{e}"
+        );
+        // one frame into one name is the overwrite case, and a # run numbers
+        for tokens in [
+            vec!["render", "s", "-o", "one.png"],
+            vec!["render", "s", "-o", "f.####.png", "--frames", "4"],
+        ] {
+            assert!(matches!(
+                file_sink(&ns(&tokens)).unwrap(),
+                FileSink::Images(_)
+            ));
+        }
+        assert!(matches!(
+            file_sink(&ns(&["render", "s", "-o", "-"])).unwrap(),
+            FileSink::Raw(_)
+        ));
+        assert!(matches!(
+            file_sink(&ns(&["render", "s"])).unwrap(),
+            FileSink::None
+        ));
+    }
+
+    #[test]
+    fn geometry_takes_size_then_the_panels_own() {
+        assert_eq!(
+            geometry(&ns(&["render", "s"]), &Panel::None).unwrap(),
+            ((320, 240), 4)
+        );
+        let a = ns(&["render", "s", "--size", "640x480", "--components", "3"]);
+        assert_eq!(geometry(&a, &Panel::None).unwrap(), ((640, 480), 3));
+    }
+
+    #[test]
+    fn serve_keeps_renders_defaults_for_the_flags_it_does_not_offer() {
+        let a = ns(&["serve", "scenes/"]);
+        assert_eq!(a.cmd, "serve");
+        assert_eq!(a.scene.as_deref(), Some("scenes/"));
+        assert!(a.serve && !a.stats);
+        assert_eq!((a.port, a.bitrate), (8090, 10_000_000));
+        assert_eq!((a.preview_max, a.preview_fps, a.stream_max), (480, 15, 0));
+        assert_eq!(a.host, "127.0.0.1");
+        assert_eq!((a.components, a.write_buffer), (4, 16));
+        assert!(a.output.is_none() && a.h264.is_none() && a.filters.is_none());
+        assert_eq!(frames_of(&a), 0);
+    }
+
+    #[test]
+    fn render_keeps_its_own_console_defaults() {
+        let a = ns(&["render", "s", "-o", "x.png"]);
+        assert_eq!((a.port, a.bitrate), (8090, 4_000_000));
+        assert_eq!((a.components, a.write_buffer), (4, 16));
+        assert!(!a.serve && !a.demo && !a.rgb565);
+        assert_eq!(ns(&["render", "s", "--bitrate", "123"]).bitrate, 123);
+    }
+
+    #[test]
+    fn serve_takes_every_flag_it_always_took() {
+        let a = ns(&[
+            "serve",
+            "scenes/",
+            "--port",
+            "9",
+            "--host",
+            "0.0.0.0",
+            "--size",
+            "80x60",
+            "--preview-fps",
+            "5",
+            "--preview-max",
+            "120",
+            "--stream-max",
+            "320",
+            "--bitrate",
+            "123",
+            "--rgb565",
+            "--",
+            "--text",
+            "hi",
+        ]);
+        assert_eq!(
+            (a.port, a.host.as_str(), a.size),
+            (9, "0.0.0.0", Some((80, 60)))
+        );
+        assert_eq!((a.preview_fps, a.preview_max, a.stream_max), (5, 120, 320));
+        assert_eq!((a.bitrate, a.rgb565), (123, true));
+        assert_eq!(a.scene_args, argv(&["--text", "hi"]));
+    }
+
+    #[test]
+    fn a_bare_display_is_the_scanout() {
+        let a = ns(&["render", "s", "--display"]);
+        assert_eq!(a.display.as_deref(), Some("kms"));
+        assert!(matches!(panel_of(&a).unwrap(), Panel::Kms));
+        assert_eq!(
+            ns(&["render", "s", "--display", "st7789"])
+                .display
+                .as_deref(),
+            Some("st7789")
+        );
+    }
+
+    #[test]
+    fn a_pacer_follows_the_sink() {
+        assert!(pacer(&ns(&["render", "s", "-o", "x.png"]), &Panel::None).is_none());
+        assert!(pacer(&ns(&["render", "s", "--h264", "x"]), &Panel::None).is_some());
+        assert!(pacer(&ns(&["render", "s", "--display"]), &Panel::Kms).is_none());
+        let paced = ns(&["render", "s", "--display", "--fps", "24"]);
+        assert!(pacer(&paced, &Panel::Kms).is_some());
+        assert_eq!(h264_fps(&ns(&["render", "s"])), 30);
+        assert_eq!(h264_fps(&ns(&["render", "s", "--fps", "24.9"])), 24);
+        assert_eq!(h264_fps(&ns(&["render", "s", "--fps", "0"])), 30);
+    }
+
+    #[test]
+    fn the_scene_the_render_loads_carries_its_filters() {
+        let path = scene_file("filters");
+        let scene = scene_of(&ns(&["render", &path, "--filters", "dither"])).unwrap();
+        assert_eq!(scene.passes.len(), 2);
+        assert_eq!(scene.passes[1].name, "dither");
+        let e = scene_of(&ns(&["render", &path, "--filters", "nope"]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("unknown filter: nope (known: dither"), "{e}");
+    }
+
+    #[test]
+    fn serve_mounts_the_directory_it_was_given() {
+        // the console reports an empty directory before it binds anything;
+        // main() is what puts the command name in front of it
+        let d = tmpdir("serve-dir");
+        assert_eq!(
+            failure(run(&["serve", &d])),
+            format!("no .scene.json in {d}")
+        );
+    }
+
+    #[test]
+    fn render_serve_on_one_scene_serves_that_scene_alone() {
+        let path = scene_file("one");
+        let a = ns(&["render", &path, "--serve"]);
+        let store = one_scene_store(&a, &path).unwrap();
+        assert_eq!(store.names(), ["s"]);
+        assert!(!store.read_only);
+        assert!(!in_examples(&path));
+    }
+
+    /// A bundled scene served on its own is read-only, whichever way it is
+    /// reached.
+    #[test]
+    fn a_bundled_scene_is_read_only() {
+        std::env::set_var("GHEE_EXAMPLES", "ghee/examples");
+        let path = "ghee/examples/bars.scene.json";
+        assert!(in_examples(path));
+        let a = ns(&["render", "--demo", "bars", "--serve"]);
+        assert!(one_scene_store(&a, path).unwrap().read_only);
+    }
+}

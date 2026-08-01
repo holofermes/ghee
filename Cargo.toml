@@ -1,0 +1,25 @@
+[package]
+name = "ghee"
+version = "0.3.0"
+edition = "2021"
+
+[[bin]]
+name = "ghee"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+jpeg-encoder = "0.6"
+libloading = "0.8"
+rppal = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tiny_http = "0.12"
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+lto = "thin"

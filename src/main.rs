@@ -1,30 +1,12 @@
-mod cli;
-mod console;
-mod cparam;
-mod drivers;
-mod engine;
-mod feeds;
-mod ffi;
-mod filters;
-mod golden;
-mod h264;
-mod isf;
-mod looper;
-mod output;
-mod procedural;
-mod scene;
-mod sources;
-mod stats;
-
 use std::process::exit;
 
 use anyhow::{bail, Result};
 
-use crate::engine::Renderer;
-use crate::scene::{Pass, Scene};
+use ghee::engine::Renderer;
+use ghee::scene::{Pass, Scene};
+use ghee::{cli, golden};
 
-/// Neither is part of ghee/cli.py: they check this port against the Python one
-/// and stay out of `ghee --help`.
+/// Two checks on the engine itself. They stay out of `ghee --help`.
 const EXTRAS: &str = "usage: ghee smoke [dri] [components] | ghee golden --manifest PATH";
 
 fn main() {
@@ -44,8 +26,8 @@ fn main() {
     }
 }
 
-/// One flat pass at a known colour, rendered and read back: the engine, the
-/// scene assembly and the readback in one command.
+/// Render one flat pass at a known colour and read it back. One command covers
+/// the engine, the scene assembly and the readback.
 fn smoke(args: &[&str]) -> Result<()> {
     let dri = args.first().copied().unwrap_or("/dev/dri/renderD128");
     let components: i32 = match args.get(1) {

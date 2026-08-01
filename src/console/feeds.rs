@@ -1,11 +1,9 @@
-//! Port of ghee/console/feeds.py.
-//!
-//! What the console fills in for itself: host info. The array placeholder is
-//! feeds::demo_feed.
+//! The host info the console fills in for itself. crate::feeds::demo_feed does
+//! the same for array data.
 
 use serde_json::{Map, Value};
 
-/// Generic host info when no real provider is injected.
+/// Host info for a host that injects no provider of its own.
 pub fn default_hwinfo() -> Value {
     let mut d = Map::new();
     d.insert("model".to_string(), Value::from(platform()));
@@ -13,7 +11,7 @@ pub fn default_hwinfo() -> Value {
     Value::Object(d)
 }
 
-/// platform.platform(): the kernel's own description of the machine.
+/// The kernel's own description of the machine.
 fn platform() -> String {
     let os = std::fs::read_to_string("/proc/sys/kernel/ostype").unwrap_or_default();
     let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();

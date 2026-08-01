@@ -1,15 +1,13 @@
-//! Port of ghee/console/store.py (see that file for the reference implementation).
-//!
 //! The scenes a console shows, edits and saves.
 //!
-//! A directory of .scene.json and .py scenes, plus the modified/ copies a save
-//! writes beside them. The original file is never written: a JSON scene saves a
-//! modified copy that shadows it, a procedural scene saves a .values.json sidecar
-//! (param values + filter list) applied over the code's defaults at load.
+//! A store holds a directory of .scene.json and .py scenes. A save writes into
+//! modified/ beside them and never touches the original. A JSON scene saves a
+//! modified copy that shadows it. A procedural scene saves a .values.json
+//! sidecar of param values and its filter list. A load applies that sidecar over
+//! the code's defaults.
 //!
-//! A host whose scenes live somewhere else (in memory, in a database, in one
-//! controller it built itself) implements names/resolve/save and hands that to
-//! its ConsoleHost instead.
+//! A host whose scenes live elsewhere implements names, resolve and save of its
+//! own, and hands them to its ConsoleHost.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -19,14 +17,14 @@ use serde_json::{Map, Value};
 use crate::console::core::{ConsoleError, ConsoleResult};
 use crate::filters::apply_filters;
 use crate::procedural::load_scene;
+use crate::procedural::process::{self, SceneProcess};
 use crate::scene::{py_repr, Param, Scene};
 
 const SCENE_SUFFIX: &str = ".scene.json";
 
-/// Overlay a saved values sidecar's param values onto the resolved scene (filter
-/// passes included: their params are tweakable). The code's current shape wins:
-/// unknown names are reported and skipped, saved values only fill what still
-/// exists.
+/// Overlay a values sidecar onto the resolved scene. A filter pass takes the
+/// overlay too, because its params are tweakable. The code's current shape wins,
+/// so this reports an unknown name and skips it.
 pub fn apply_values(scene: &mut Scene, name: &str, vals: &Value) {
     let empty = Map::new();
     let saved_passes = vals
@@ -83,9 +81,9 @@ pub fn apply_values(scene: &mut Scene, name: &str, vals: &Value) {
 pub struct SceneStore {
     pub dir: String,
     pub read_only: bool,
-    /// scene args for the whole session: every scene loaded gets them
+    /// Scene args for the whole session. Every scene the store loads gets them.
     pub args: Vec<String>,
-    /// name -> path, in the order a scan found them
+    /// Each scene name and its path, in the order a scan found them.
     pub scenes: Vec<(String, String)>,
 }
 
@@ -101,8 +99,8 @@ impl SceneStore {
         }
     }
 
-    /// A store over a single scene: its own directory, narrowed to it. What
-    /// `render <scene> --serve` shows, against `serve <dir>`'s whole list.
+    /// A store over one scene: its own directory, narrowed to that scene.
+    /// `render <scene> --serve` shows this. `serve <dir>` shows the whole list.
     pub fn one(path: &str, read_only: bool, args: Vec<String>) -> ConsoleResult<SceneStore> {
         let full = abspath(path);
         let (d, mut base) = match full.rsplit_once('/') {
@@ -164,7 +162,8 @@ impl SceneStore {
         }
     }
 
-    /// A saved modified copy shadows the original; the original is never written.
+    /// The path a scene loads from. A saved modified copy shadows the original,
+    /// and nothing writes the original.
     pub fn path(&self, name: &str) -> ConsoleResult<String> {
         let p = self
             .source(name)
@@ -177,20 +176,35 @@ impl SceneStore {
         Ok(p)
     }
 
-    /// Scene ready to render/edit: shader files inlined, declared filters
+    /// A scene ready to render and edit: shader files inlined, declared filters
     /// expanded, saved values overlaid.
     ///
-    /// A session's scene args go to every scene it loads, so each keeps what it
-    /// declares and ignores the rest.
+    /// Every scene the session loads gets the session's scene args. A scene keeps
+    /// what it declares and ignores the rest.
     ///
-    /// Everything it reads to build the scene goes through sources::record, so a
-    /// caller wrapping this in collect() gets the file set behind the result. The
-    /// values sidecar is deliberately outside that set: /set and /save write one,
-    /// and a param the console already applied is not code the renderer is behind
-    /// on.
+    /// Every read goes through sources::record, so a caller that wraps this in
+    /// collect() gets the files behind the result. The values sidecar stays out
+    /// of that set: /set and /save write one, and an applied param leaves the
+    /// renderer up to date.
     pub fn resolve(&self, name: &str) -> ConsoleResult<Scene> {
-        let mut scene = load_scene(&self.path(name)?, &self.args, false)
-            .map_err(|e| ConsoleError::server_error(e.to_string()))?;
+        self.start(name).map(|(scene, _)| scene)
+    }
+
+    /// resolve(), plus the process when the scene is procedural. The process runs
+    /// from here on. A caller that wants the document only drops it, which stops
+    /// it.
+    pub fn start(&self, name: &str) -> ConsoleResult<(Scene, Option<SceneProcess>)> {
+        let path = self.path(name)?;
+        let (mut scene, mut process) = match process::executable(&path) {
+            Some(exe) => SceneProcess::start(&exe, &self.args)
+                .map(|(scene, fed)| (scene, Some(fed)))
+                .map_err(|e| ConsoleError::server_error(format!("{e:#}")))?,
+            None => (
+                load_scene(&path, &self.args, false)
+                    .map_err(|e| ConsoleError::server_error(e.to_string()))?,
+                None,
+            ),
+        };
         let vals = match self.source(name) {
             Some(p) if p.ends_with(SCENE_SUFFIX) => None,
             _ => self.read_values(name),
@@ -208,7 +222,10 @@ impl SceneStore {
         if let Some(vals) = vals {
             apply_values(&mut scene, name, &vals);
         }
-        Ok(scene)
+        if let Some(fed) = process.as_mut() {
+            fed.bind(&scene);
+        }
+        Ok((scene, process))
     }
 
     pub fn save(&self, name: &str, mut scene: Scene) -> ConsoleResult<()> {
@@ -216,9 +233,9 @@ impl SceneStore {
             .source(name)
             .ok_or_else(|| ConsoleError::not_found("no scene"))?
             .to_string();
-        // the working copy carries applied filters as expanded passes; recover
-        // the declared list from them so a save never drops a filter the client
-        // forgot to record
+        // The working copy carries an applied filter as an expanded pass.
+        // Recover the declared list from them, so a save keeps a filter the
+        // client did not record.
         let applied: Vec<String> = scene
             .passes
             .iter()
@@ -229,10 +246,9 @@ impl SceneStore {
             scene.filters = applied;
         }
         if !source.ends_with(SCENE_SUFFIX) {
-            // a procedural scene's shape lives in code; save its tweakable
-            // surface (param values + filter list) as a sidecar the loader
-            // applies over the controller's defaults. Filter passes' params are
-            // included: they are the filter's tweakable knobs.
+            // A procedural scene's shape lives in code. Save the param values
+            // and the filter list as a sidecar. The loader applies that over
+            // the code's own defaults.
             let mut vals = Map::new();
             vals.insert("filters".to_string(), Value::from(scene.filters.clone()));
             vals.insert("scene".to_string(), values_of(&scene.params));
@@ -243,8 +259,8 @@ impl SceneStore {
             vals.insert("passes".to_string(), Value::Object(passes));
             return write(&self.values_path(name), &Value::Object(vals));
         }
-        // store unexpanded: filter passes come back at load time from the
-        // filters list
+        // Store the scene unexpanded. A load rebuilds each filter pass from the
+        // filters list.
         scene.passes.retain(|p| p.filter.is_empty());
         write(&self.modified_path(name), &scene.to_dict())
     }
@@ -270,7 +286,7 @@ fn write(path: &str, obj: &Value) -> ConsoleResult<()> {
     fs::rename(&tmp, path).map_err(io)
 }
 
-/// The .scene.json and .py scenes in a directory, JSON first: a .py beside its
+/// The .scene.json and .py scenes in a directory, JSON first. A .py beside its
 /// .scene.json is one scene, and load_scene finds both.
 fn scan(dir: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
@@ -290,14 +306,20 @@ fn scan(dir: &str) -> Vec<(String, String)> {
             if out.iter().any(|(name, _)| name == stem) {
                 continue;
             }
-            out.push((stem.to_string(), format!("{dir}/{n}")));
+            let path = format!("{dir}/{n}");
+            // ghee runs a procedural scene as a process. A .py without the
+            // execute bit is a module the scenes beside it import, not a scene.
+            if suffix == ".py" && process::executable(&path).is_none() {
+                continue;
+            }
+            out.push((stem.to_string(), path));
         }
     }
     out
 }
 
-/// os.path.abspath: the path against the working directory, with "." and ".."
-/// resolved textually and no trailing separator.
+/// The path against the working directory. It resolves "." and ".." as text,
+/// and it drops a trailing separator.
 fn abspath(path: &str) -> String {
     let p = Path::new(path);
     let joined = if p.is_absolute() {
@@ -342,6 +364,14 @@ mod tests {
 
     fn write_text(path: &str, text: &str) {
         fs::write(path, text).unwrap();
+    }
+
+    /// Write a .py the store takes for a scene. A scene process carries the
+    /// execute bit.
+    fn write_scene(path: &str, text: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(path, text).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn read_json(path: &str) -> Value {
@@ -403,7 +433,8 @@ mod tests {
 
     #[test]
     fn a_scene_json_scene_ignores_a_stray_sidecar() {
-        // Only a procedural scene reads one; a JSON scene saves a whole copy.
+        // Only a procedural scene reads a sidecar. A JSON scene saves a whole
+        // copy.
         let (d, store) = scenes("stray");
         fs::create_dir_all(format!("{d}/modified")).unwrap();
         write_text(
@@ -498,11 +529,11 @@ mod tests {
         );
     }
 
-    // a procedural scene: the values sidecar a save writes for one
+    // a procedural scene: the values sidecar a save writes
 
     fn procedural_store(tag: &str) -> (String, SceneStore) {
         let d = tmpdir(tag);
-        write_text(&format!("{d}/proc.py"), "# a controller lives here\n");
+        write_scene(&format!("{d}/proc.py"), "#!/bin/sh\nexit 0\n");
         let store = SceneStore::new(&d, false, Vec::new());
         (d, store)
     }
@@ -550,7 +581,8 @@ mod tests {
 
     #[test]
     fn a_procedural_sidecar_carries_no_common() {
-        // a .py scene's shape lives in code; the sidecar is param values only
+        // A procedural scene's shape lives in code. The sidecar holds param
+        // values only.
         let (d, store) = procedural_store("sidecar-common");
         let mut scene = proc_scene();
         scene.common = Some("float k(){ return 1.0; }".to_string());
@@ -563,10 +595,21 @@ mod tests {
     fn a_scan_takes_the_json_scene_over_the_py_beside_it() {
         let d = tmpdir("pair");
         write_text(&format!("{d}/wob{SCENE_SUFFIX}"), SCENE);
-        write_text(&format!("{d}/wob.py"), "# controller\n");
+        write_text(&format!("{d}/wob.py"), "# a scene process\n");
         let store = SceneStore::new(&d, false, Vec::new());
         assert_eq!(store.names(), vec!["wob".to_string()]);
         assert_eq!(store.path("wob").unwrap(), format!("{d}/wob{SCENE_SUFFIX}"));
+    }
+
+    /// The shim ships beside the procedural scenes that import it. A module is
+    /// not a scene, so the console does not list it.
+    #[test]
+    fn a_module_beside_the_scenes_is_not_a_scene() {
+        let d = tmpdir("shim");
+        write_scene(&format!("{d}/feed.py"), "#!/bin/sh\nexit 0\n");
+        write_text(&format!("{d}/ghee.py"), "\"\"\"the shim\"\"\"\n");
+        let store = SceneStore::new(&d, false, Vec::new());
+        assert_eq!(store.names(), vec!["feed".to_string()]);
     }
 
     #[test]

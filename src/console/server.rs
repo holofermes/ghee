@@ -1,49 +1,45 @@
-//! Port of ghee/console/server.py (see that file for the reference
-//! implementation).
-//!
 //! ghee console render server.
 //!
-//! Attaches the console to a render loop (looper): it owns the active scene, the
-//! scene list and the command queue the loop drains, and serves the JSON API and
-//! the static PWA. The loop itself is not the console's, so a render can have one
-//! without a browser and a browser without giving up its panel.
+//! This attaches the console to a render loop (looper). The console owns the
+//! active scene, the scene list and the command queue the loop drains. It serves
+//! the JSON API and the compiled-in web assets. The loop belongs to the caller,
+//! so a render runs without a browser, and a browser costs the caller no panel.
 //!
 //! API:
 //!   GET  /stream[?vid=]     MJPEG, one part per rendered frame
-//!   GET  /h264[?vid=]       framed H264 stream ([u8 type][u32 len]: 0=config JSON,
-//!                           1=key AU, 2=delta AU, AVCC) for WebCodecs; one shared
-//!                           encoder fans out to all viewers. Hardware zero-copy
-//!                           where /dev/video11 exists, ffmpeg/libx264 otherwise.
+//!   GET  /h264[?vid=]       framed H264 for WebCodecs ([u8 type][u32 len]:
+//!                           0=config JSON, 1=key AU, 2=delta AU, AVCC). One
+//!                           shared encoder feeds every viewer. Hardware
+//!                           zero-copy needs /dev/video11, else ffmpeg/libx264.
 //!   POST /ping?vid=         heartbeat for the streams opened under that vid
-//!   GET  /frame.png         one lossless PNG of the next frame, at the render size.
-//!                           The request rides the command queue, so a /set that
-//!                           returned before it is in the frame. 409 while the scene
-//!                           has an error, 503 when the loop draws nothing.
+//!   GET  /frame.png         one lossless PNG of the next frame, at the render
+//!                           size. The request rides the command queue, so the
+//!                           frame carries every /set that returned before it.
+//!                           409 while the scene holds an error. 503 when the
+//!                           loop draws nothing.
 //!   GET  /stats             {fps, frame_ms, stream_fps, out, error, error_line,
 //!                           error_pass, active, display, stale}
 //!   GET  /scenes            {scenes:[name...], active}
 //!   GET  /filters           {name: filter def} registry for the "+ filter" picker
 //!   GET  /scene?name=       resolved scene JSON (shader files inlined, filters
-//!                           expanded). The active scene answers with the document
-//!                           that is rendering: applied edits and /set values
+//!                           expanded). The active name answers with the document
+//!                           that renders now, applied edits and /set values
 //!                           included. Any other name answers from disk.
 //!   POST /set?pass=&name=&value=   live uniform, no recompile (pass=scene = scene-scoped)
 //!   POST /next /prev        switch active scene
-//!   POST /switch?name=      switch to a named scene; the active name reloads it,
-//!                           which is how a stale scene picks up its files again
+//!   POST /switch?name=      switch to a named scene. The active name reloads it,
+//!                           which is how a stale scene reads its files again.
 //!   POST /scene             full scene JSON -> recompile active (apply working copy)
 //!   POST /save              write the scene as a modified copy in <scenes>/modified/
 //!   GET  /<file>            static file from the compiled-in web assets
 //!
-//! Python keeps this module's state in module globals; here it is one Console the
-//! render loop, the encoder threads and the request handlers share. run() also
-//! parks it in a process global, so stop() ends a console from a signal handler
-//! the way the Python one does.
+//! One Console holds this module's state. The render loop, the encoder threads
+//! and the request handlers share it. run() also parks it in a process global,
+//! so stop() ends a console from a signal handler.
 //!
-//! run() draws on the thread that called it and accepts requests on a thread of
-//! its own, the other way round from the Python server. A panel driver holds SPI
-//! and GPIO handles bound to the thread that opened them, so the loop has to be
-//! where the caller built its sinks.
+//! run() draws on the thread that called it. It accepts requests on a thread of
+//! its own. A panel driver binds its SPI and GPIO handles to one thread. The
+//! loop must run where the caller built its sinks.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -71,7 +67,7 @@ use crate::h264::{
     avcc, build_config, split_annexb, wire_frame, ColorSpace, HardwareH264, SoftwareH264, HW_COLOR,
     NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, SW_COLOR,
 };
-use crate::looper::{Frame, Loop, Output, RenderTarget};
+use crate::looper::{ControllerSlot, Frame, Loop, Output, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
 use crate::scene::{ArraySize, Param, ParamValue, Scene};
 use crate::sources::{collect, Snapshot};
@@ -80,43 +76,42 @@ use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG};
 /// JPEG quality for the MJPEG preview
 pub const PREVIEW_QUALITY: u8 = 75;
 
-/// A lagging client's backlog never drains on its own (producer and consumer run
-/// at the same rate), so it becomes permanent added latency. Past this many
-/// queued frames the client is dropped to resync at a keyframe instead.
+/// The producer and a viewer run at the same rate, so a backlog never drains on
+/// its own. Past this many queued frames the fanout drops the client, and the
+/// client resyncs at the next keyframe.
 pub const H264_LAG_FRAMES: usize = 10;
 
-/// bits per pixel per frame the stream aims for
+/// The bits per pixel per frame the stream aims for.
 pub const H264_BPP: f64 = 0.15;
 pub const H264_BITRATE_CEILING: i64 = 80_000_000;
-/// software-encode cadence (hardware follows the display/loop)
+/// The software encode cadence. Hardware follows the display or the loop.
 pub const H264_FPS: i32 = 30;
 
 /// How long GET /frame.png waits for the render loop to answer its request.
 pub const FRAME_TIMEOUT: f64 = 4.0;
 
-/// A page opens its stream as /h264?vid=<id> or /stream?vid=<id> and repeats
-/// POST /ping?vid=<id> while it watches. Consumption is not evidence a viewer is
-/// there: a page frozen in a browser's back/forward cache stays connected and
-/// keeps draining its socket, so its stream reads as watched for as long as the
-/// process lives. The ping stopping is what separates the two, and it is measured
-/// on its own clock so a viewer on a congested link is never dropped for being
-/// slow.
+/// A page opens /h264?vid=<id> or /stream?vid=<id>. It repeats POST
+/// /ping?vid=<id> while it watches. Consumption proves nothing: a page frozen in
+/// a browser's back/forward cache stays connected and keeps draining its socket.
+/// Only the ping stopping marks a departure. The deadline runs on its own clock,
+/// so a congested link never drops a viewer.
 ///
-/// the cadence the console page pings at
+/// The cadence the console page pings at.
 #[allow(dead_code)]
 pub const PING_INTERVAL: f64 = 3.0;
-/// three intervals, so two lost pings are not a departure
+/// Three intervals, so two lost pings are not a departure.
 pub const VIEWER_DEADLINE: f64 = 10.0;
 
-/// Set by run(); stop() ends that console from wherever it is called.
+/// run() sets this. stop() ends that console from anywhere.
 static CONSOLE: Mutex<Option<Arc<Console>>> = Mutex::new(None);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Render-queue item for a /set. Scope::Scene targets the scene's shared params:
-/// a distinct item the loop applies to every pass. Anything else is a pass index.
+/// The render-queue item for a /set. Scope::Scene targets the scene's shared
+/// params, and the loop applies that item to every pass. Anything else names a
+/// pass index.
 pub fn set_item(scope: Scope, name: &str, value: Value) -> Command {
     match scope {
         Scope::Scene => Command::SceneParam(name.to_string(), value),
@@ -124,8 +119,8 @@ pub fn set_item(scope: Scope, name: &str, value: Value) -> Command {
     }
 }
 
-/// The param's declared type wins over whatever the wire carried: an int rounds,
-/// a bool is a real bool. A color or vec arrives as a list and passes through.
+/// The param's declared type wins over the wire type. An int rounds. A bool
+/// becomes a real bool. A color or a vec arrives as a list and passes through.
 pub fn coerce(ptype: &str, val: &Value) -> Result<ParamValue> {
     let built = if val.is_array() {
         Param::new("v", ptype, val.clone(), None, None, None, None)
@@ -163,7 +158,7 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
-/// round(): half goes to even.
+/// Round a float. A half goes to the even side.
 fn round_half_even(x: f64) -> f64 {
     let r = x.round();
     if (x - x.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
@@ -178,11 +173,11 @@ pub enum Command {
     Switch(String),
     Param(i64, String, Value),
     SceneParam(String, Value),
-    /// GET /frame.png: arm the still where this lands in queue order
+    /// GET /frame.png: arm the still where this item lands in queue order.
     Shot,
-    /// a working copy to compile onto the running renderer
+    /// A working copy to compile onto the running renderer.
     SceneObj(Box<Scene>),
-    /// nudge an idle scene to draw a frame for a stream that just opened or closed
+    /// Draw one frame, for a stream that just opened or closed.
     Preview,
     Stop,
 }
@@ -208,7 +203,7 @@ impl Commands {
         lock(&self.items).is_empty()
     }
 
-    /// Sleep until there is a command to drain, leaving it on the queue.
+    /// Sleep until a command arrives. The command stays on the queue.
     fn wait(&self) {
         let mut items = lock(&self.items);
         while items.is_empty() {
@@ -220,8 +215,7 @@ impl Commands {
     }
 }
 
-/// One readback the render thread handed on, row-major (height, width,
-/// components).
+/// One readback from the render thread, row-major (height, width, components).
 pub struct RawFrame {
     pub data: Vec<u8>,
     pub width: i32,
@@ -256,7 +250,7 @@ struct Raw {
     seq: u64,
 }
 
-/// The latest JPEG the MJPEG viewers are served.
+/// The latest JPEG the console serves to the MJPEG viewers.
 #[derive(Default)]
 struct Latest {
     jpg: Option<Arc<Vec<u8>>>,
@@ -277,49 +271,51 @@ struct Stat {
 /// A source for one declared array: the host's data for this frame.
 pub type ArraySource = Box<dyn Fn(ArraySize, u64) -> Vec<f32> + Send + Sync>;
 
-/// This module's state: what the Python server keeps in module globals.
+/// This module's state. The render loop and the request threads share it.
 pub struct Console {
-    // configuration; run() sets it before the threads start
+    // configuration: run() sets it before the threads start
     pub store: SceneStore,
     pub web: bool,
     pub w: i32,
     pub h: i32,
-    /// also scan out to a connected KMS display (headless Pi)
+    /// Scan out to a connected KMS display as well.
     pub display: bool,
-    /// display scanout in 16-bit color (halves GPU store + scanout bytes)
+    /// Scan out in 16-bit color. This halves the GPU store and the scanout bytes.
     pub rgb565: bool,
-    /// longest side of the browser preview (downscaled off the render thread)
+    /// The longest side of the browser preview. The encoder thread downscales it.
     pub preview_max: i32,
-    /// browser preview refresh cap; the display/panel stays full speed
+    /// The browser preview refresh cap. The display and the panel stay at full
+    /// speed.
     pub preview_fps: f64,
-    /// optional cap on the h264 stream's longest side; 0 = full size
+    /// The cap on the h264 stream's longest side. 0 means full size.
     pub stream_max: i32,
     pub bitrate: i64,
-    /// frame components the renderer reads back (3 = a panel packs RGB)
+    /// The frame components the renderer reads back. A panel that packs RGB asks
+    /// for 3.
     pub components: i32,
-    /// 0 = render until stop(); a count ends the console with the render
+    /// 0 renders until stop(). A count ends the console with the render.
     pub frames: u64,
-    /// pin engine time to frame * this, for a reproducible render
+    /// Pin engine time to frame * this, for a reproducible render.
     pub timestep: Option<f64>,
-    /// DRI device override, else probed
+    /// The DRI device override. None probes for one.
     pub dri: Option<String>,
-    /// the /stats destinations of the sinks beside the console's own; a sink
-    /// itself belongs to the render thread
+    /// The /stats destinations of the caller's sinks. A sink itself belongs to
+    /// the render thread.
     pub sink_dests: Vec<String>,
-    /// a panel's own pixel format, else the readback's
+    /// A panel's own pixel format. None takes the readback's.
     pub native_format: Option<String>,
-    /// the interval a stale check reads disk at; None is the default window
+    /// The interval a stale check reads disk at. None takes the default window.
     pub stale_interval: Option<f64>,
     arrays: Vec<(String, ArraySource)>,
     hwinfo: Box<dyn Fn() -> Value + Send + Sync>,
 
     // state
     stat: Mutex<Stat>,
-    /// the document that is rendering, under the name it was loaded as
+    /// The document that renders now, under the name it loaded as.
     running: Mutex<Option<(Option<String>, Value)>>,
     /// The files the running scene was built from. Only a load off disk replaces
-    /// it, so an applied working copy leaves a scene whose files moved on still
-    /// stale.
+    /// this. An applied working copy leaves the scene stale when its files moved
+    /// on.
     sources: Mutex<Option<Snapshot>>,
     raw: Mutex<Raw>,
     raw_ready: Condvar,
@@ -327,20 +323,19 @@ pub struct Console {
     latest_ready: Condvar,
     nclients: Mutex<i64>,
     q: Commands,
-    /// loop iterations that drew
+    /// The loop iterations that drew.
     frame_rate: Arc<Mutex<FrameRate>>,
-    /// frames handed to viewers, whichever codec
+    /// The frames handed to viewers, whichever codec.
     stream_rate: Arc<Mutex<FrameRate>>,
     pub fanout: H264Fanout,
     pub shot: Arc<Shot>,
     pub viewers: Heartbeat,
     stopping: Arc<AtomicBool>,
-    /// a failure the console cannot render through; run() returns it
+    /// A failure the console cannot render through. run() returns it.
     fatal: Mutex<String>,
-    /// Hardware encoding failed for the stream running now, so the software lane
-    /// owns it. Cleared once the last viewer leaves: a stall or a busy codec
-    /// belongs to the stream it happened in, and the software lane costs a
-    /// readback the hardware one does not.
+    /// Hardware encoding failed for this stream, so the software lane owns it.
+    /// The last viewer to leave clears it. A stall or a busy codec belongs to
+    /// the stream it happened in, and the software lane costs a readback.
     h264_hw_dead: AtomicBool,
     httpd: Mutex<Option<Arc<Server>>>,
 }
@@ -398,8 +393,8 @@ impl Console {
         self.stopping.load(Ordering::SeqCst)
     }
 
-    /// MJPEG viewers, adjusted from handler threads and read by the render and
-    /// encoder threads.
+    /// The MJPEG viewer count. A handler thread changes it. The render and
+    /// encoder threads read it.
     pub fn count_clients(&self, delta: i64) -> i64 {
         let mut n = lock(&self.nclients);
         *n += delta;
@@ -410,8 +405,8 @@ impl Console {
         *lock(&self.nclients)
     }
 
-    /// Where this console's frames are going right now: the scanout and the
-    /// output sinks it was given, plus whichever streams have a viewer.
+    /// Where the frames go now: the scanout, the caller's sinks, and each stream
+    /// with a viewer.
     fn out(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         if self.display {
@@ -427,16 +422,16 @@ impl Console {
         out
     }
 
-    /// The pixel format the frames end up in: a panel's own, else the readback's.
+    /// The pixel format the frames end in. A panel's own wins over the
+    /// readback's.
     fn format(&self) -> String {
         self.native_format
             .clone()
             .unwrap_or_else(|| "rgba".to_string())
     }
 
-    /// The /stats payload. The rates are computed on read, so an idle loop's
-    /// number falls with the clock instead of being written by a frame that
-    /// never happened.
+    /// The /stats payload. Each rate computes on read, so an idle loop's number
+    /// falls with the clock.
     pub fn stats(&self) -> Value {
         let mut d = Map::new();
         {
@@ -471,8 +466,8 @@ impl Console {
         Value::Object(d)
     }
 
-    /// Everything published describes the scene running now, not the one before:
-    /// the rate windows, the last frame's cost, the compile error.
+    /// Drop what the scene before published: the rate windows, the last frame's
+    /// cost, the compile error.
     fn reset_stats(&self) {
         lock(&self.frame_rate).reset(None);
         lock(&self.stream_rate).reset(None);
@@ -483,9 +478,9 @@ impl Console {
         stat.error_pass = None;
     }
 
-    /// Republish the running document from the scene the loop holds. Called by
-    /// the render thread after anything that changes what is rendering: a load,
-    /// an applied scene that compiled, a /set that landed.
+    /// Republish the running document from the scene the loop holds. The render
+    /// thread calls this after a load, an applied scene that compiled, or a /set
+    /// that landed.
     fn publish(&self, scene: &Scene) {
         let active = lock(&self.stat).active.clone();
         *lock(&self.running) = Some((active, scene.to_dict()));
@@ -498,25 +493,25 @@ impl Console {
         }
     }
 
-    /// Queue something that changes what is rendering. Queued first, then
-    /// counted, so a still can only join a frame that is going to carry it.
+    /// Queue an item that changes what renders. The queue takes it before the
+    /// count, so a still joins only a frame that carries it.
     fn command(&self, item: Command) {
         self.q.put(item);
         self.shot.touch();
     }
 
-    /// Software H264 eats the same readback frames the MJPEG preview does, so
-    /// its viewers count as readback consumers; hardware does not (it samples
-    /// the GPU texture directly).
+    /// Software H264 reads back the same frames as the MJPEG preview, so its
+    /// viewers count as readback consumers. Hardware samples the GPU texture
+    /// instead.
     fn software_h264(&self) -> bool {
         self.h264_hw_dead.load(Ordering::SeqCst) && self.fanout.nclients() > 0
     }
 
-    /// Shut the server down and signal the render loop and the encode threads.
-    /// run() calls it on the way out; a host that runs the console in a thread
-    /// calls it to end one. It waits for no thread of its own: a request handler
-    /// calls it, and so does a signal handler. The loop it ends is run()'s own, so
-    /// by the time run() returns its sinks are closed.
+    /// Shut the server down, and signal the render loop and the encode threads.
+    /// run() calls it on the way out. A host that runs the console in a thread
+    /// calls it to end one. It waits for no thread, because a request handler
+    /// and a signal handler both call it. It ends run()'s own loop, so run()
+    /// closes its sinks before it returns.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.q.put(Command::Stop); // wake a render loop parked on the command queue
@@ -528,9 +523,8 @@ impl Console {
         }
     }
 
-    /// A failure the console cannot render through (no GL device, no engine):
-    /// stop, and let run() return it instead of leaving a server with no
-    /// renderer.
+    /// Record a failure the console cannot render through, and stop. run()
+    /// returns it, instead of leaving a server with no renderer.
     fn fail(&self, msg: &str) {
         *lock(&self.fatal) = msg.to_string();
         lock(&self.stat).error = msg.to_string();
@@ -549,10 +543,10 @@ pub fn stop() {
 
 // ---------------------------------------------------------------- preview
 
-/// JPEG is expensive, so it runs OFF the render thread: the render loop drops
-/// its readback here and this encodes it, downscaling only when the frame was
-/// sized for another consumer. The display/panel never waits. Raw frames may
-/// flow for the h264 path; JPEG is only produced while a viewer is attached.
+/// Encode the preview JPEGs, off the render thread. The render loop drops its
+/// readback here. This downscales only a frame another consumer sized, so the
+/// display and the panel never wait. Raw frames also feed the h264 path, but a
+/// JPEG needs an attached viewer.
 pub fn encoder_loop(console: &Console) {
     let mut last_seq = u64::MAX;
     while !console.stopping() {
@@ -576,7 +570,7 @@ pub fn encoder_loop(console: &Console) {
         let scale = f64::from(console.preview_max) / f64::from(w.max(h));
         let (mut pw, mut ph) = (w, h);
         if scale < 1.0 {
-            // sized for the software H264 stream, or a bigger host frame
+            // the frame is sized for the software H264 stream, or for a bigger host
             pw = 1.max(round_half_even(f64::from(w) * scale) as i32);
             ph = 1.max(round_half_even(f64::from(h) * scale) as i32);
             pixels = resize_rgb(&pixels, w, h, pw, ph);
@@ -600,7 +594,7 @@ pub fn encoder_loop(console: &Console) {
     }
 }
 
-/// An RGB(A) readback as the RGB bytes a JPEG is written from.
+/// The RGB bytes of an RGB(A) readback, which is what a JPEG needs.
 fn to_rgb(frame: &RawFrame) -> Vec<u8> {
     if frame.components == 3 {
         return frame.data.clone();
@@ -664,8 +658,8 @@ impl H264Client {
         }
     }
 
-    /// frame/config are wire-framed once by the fanout and shared across
-    /// clients.
+    /// The fanout wire-frames frame and config once, and every client shares
+    /// them.
     fn offer(&self, frame: &Arc<Vec<u8>>, config: Option<&Arc<Vec<u8>>>) {
         let mut state = lock(&self.state);
         if state.started && state.q.len() >= H264_LAG_FRAMES {
@@ -682,14 +676,14 @@ impl H264Client {
             return;
         }
         if state.q.len() >= 32 {
-            state.started = false; // backstop; the lag check above fires first
+            state.started = false; // backstop: the lag check above fires first
         } else {
             state.q.push_back(Arc::clone(frame));
         }
         self.ready.notify_all();
     }
 
-    /// The next blob for this viewer, or None once the wait ran out.
+    /// The next blob for this viewer, or None when the wait runs out.
     pub fn get(&self, timeout: Duration) -> Option<Arc<Vec<u8>>> {
         let mut state = lock(&self.state);
         if state.q.is_empty() {
@@ -703,18 +697,17 @@ impl H264Client {
     }
 }
 
-/// One shared H264 stream, every /h264 viewer. A new viewer starts at a keyframe
-/// (hardware forces one on join; software joins at the next GOP).
+/// One shared H264 stream for every /h264 viewer. A new viewer starts at a
+/// keyframe: hardware forces one on join, and software waits for the next GOP.
 ///
-/// rate is the FrameRate the pushes are counted into. A host serving another
-/// codec as well passes the counter it publishes as stream_fps, so one number
-/// covers every viewer it has.
+/// rate counts the pushes. A host that serves another codec as well passes the
+/// counter it publishes as stream_fps, so one number covers every viewer.
 pub struct H264Fanout {
     clients: Mutex<Vec<Arc<H264Client>>>,
     cfg: Mutex<Option<Vec<u8>>>,
-    /// encoded dimensions, set by whoever starts the encoder
+    /// The encoded dimensions. Whoever starts the encoder sets them.
     size: Mutex<(i32, i32)>,
-    /// decoder colorSpace hint (HW_COLOR/SW_COLOR), same owner
+    /// The decoder colorSpace hint (HW_COLOR or SW_COLOR). Same owner as size.
     color: Mutex<Option<ColorSpace>>,
     want_key: AtomicBool,
     rate: Arc<Mutex<FrameRate>>,
@@ -760,7 +753,7 @@ impl H264Fanout {
             let (w, h) = *lock(&self.size);
             *lock(&self.cfg) = Some(build_config(sps, pps, w, h, *lock(&self.color)));
         }
-        // keep VCL + SEI; drop AUD and parameter sets (the config carries them)
+        // Keep the VCL and SEI NALs. The config carries the parameter sets.
         let keep: Vec<&[u8]> = nals
             .iter()
             .filter(|x| matches!(x[0] & 0x1F, NAL_SLICE | NAL_IDR | NAL_SEI))
@@ -783,16 +776,16 @@ impl H264Fanout {
         if !clients.is_empty() {
             lock(&self.rate).tick(None);
         }
-        // a waiting (new or resyncing) client rejoins at the next keyframe; keep
-        // requesting one until everyone is streaming
+        // A waiting client rejoins at the next keyframe. Keep asking for one
+        // until every client streams.
         if clients.iter().any(|c| !lock(&c.state).started) {
             self.want_key.store(true, Ordering::SeqCst);
         }
     }
 }
 
-/// Stream dimensions: fit the longest side, keep aspect, force even (yuv420
-/// needs even dims).
+/// The stream dimensions: fit the longest side and keep the aspect. yuv420 needs
+/// even dimensions.
 pub fn stream_size(w: i32, h: i32, longest: i32) -> (i32, i32) {
     let s = if longest > 0 {
         (f64::from(longest) / f64::from(w.max(h))).min(1.0)
@@ -808,8 +801,8 @@ pub fn stream_bitrate(w: i32, h: i32, fps: i32, floor: i64) -> i64 {
     floor.max((derived as i64).min(H264_BITRATE_CEILING))
 }
 
-/// Software H264 (boards with no /dev/video11: Pi 5, desktops): encode the same
-/// readback frames the MJPEG preview uses, off the render thread.
+/// Software H264, for a board with no /dev/video11. It encodes the same readback
+/// frames as the MJPEG preview, off the render thread.
 pub fn h264_sw_loop(console: &Console) {
     let mut enc: Option<SoftwareH264> = None;
     let mut size = (0, 0);
@@ -872,7 +865,7 @@ pub fn h264_sw_loop(console: &Console) {
         }
         let e = enc.as_mut().expect("the encoder was just created");
         if let Err(err) = e.feed(&rgb.data) {
-            // a dead encoder process must not kill this thread: respawn
+            // a dead encoder process must not kill this thread
             eprintln!("h264: software encoder died ({err}); respawning");
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
@@ -890,10 +883,10 @@ pub fn h264_sw_loop(console: &Console) {
 
 // ---------------------------------------------------------------- sinks
 
-/// How long a clean (dirty=false) scene sleeps before re-polling, derived from
-/// whoever consumes frames: the display's refresh, else the preview cap, else the
-/// last measured render period (uncapped preview). None = nobody consumes
-/// anything, block on the command queue instead.
+/// How long a clean scene sleeps before it polls again. Whoever consumes frames
+/// sets it: the display's refresh, else the preview cap, else the last measured
+/// render period. None means nobody consumes frames, so block on the command
+/// queue instead.
 pub fn skip_interval(
     display_hz: i32,
     nclients: i64,
@@ -912,17 +905,18 @@ pub fn skip_interval(
     Some(render_period)
 }
 
-/// One whole frame for a client that asked for a picture (GET /frame.png).
+/// One whole frame for a client that asks for a picture (GET /frame.png).
 ///
-/// Requests are generations. request() hands one out and the handler puts a token
-/// on the command queue; the loop arms the shot where that token lands, which
-/// takes every generation asked for so far into the next frame. So a /set that
-/// returned before the request was drained before the arm and is in the frame,
-/// while a request made after the arm waits for the following draw. A request
-/// made while another one is still being answered joins it instead of asking for
-/// a draw of its own, so requests that overlap cost one frame. A command queued
-/// since the arm ends that: the frame in flight is a command short of what the
-/// caller has already been told landed, so it asks anew.
+/// A request is a generation. request() hands one out, and the handler queues a
+/// token. The loop arms the shot where that token lands, and the next frame
+/// answers every generation asked for so far. A /set that returned before the
+/// request drains before the arm, so that frame carries it. A request made after
+/// the arm waits for the following draw.
+///
+/// A request made while another one waits joins it, so overlapping requests cost
+/// one frame. A command queued since the arm ends that sharing. The frame in
+/// flight is one command behind what the caller already saw land, so the request
+/// asks anew.
 pub struct Shot {
     state: Mutex<ShotState>,
     published: Condvar,
@@ -931,15 +925,15 @@ pub struct Shot {
 
 #[derive(Default)]
 struct ShotState {
-    /// generations handed out
+    /// The generations handed out.
     asked: u64,
-    /// generations the next frame answers
+    /// The generations the next frame answers.
     armed: u64,
-    /// generations the published frame answers
+    /// The generations the published frame answers.
     done: u64,
-    /// requests being answered right now
+    /// The requests that wait for an answer now.
     holders: i64,
-    /// a command was queued after the arm
+    /// A command arrived after the arm.
     moved: bool,
     frame: Option<Arc<RawFrame>>,
 }
@@ -962,8 +956,8 @@ impl Shot {
         s.asked
     }
 
-    /// Count a request from here until it has its answer; one made in the
-    /// meantime shares its frame.
+    /// Count a request until it has its answer. A request made meanwhile shares
+    /// its frame.
     pub fn hold(&self) {
         lock(&self.state).holders += 1;
     }
@@ -972,7 +966,7 @@ impl Shot {
         lock(&self.state).holders -= 1;
     }
 
-    /// A command is on the queue: whatever is being drawn now predates it.
+    /// A command is on the queue, so the frame in flight predates it.
     pub fn touch(&self) {
         lock(&self.state).moved = true;
     }
@@ -983,8 +977,8 @@ impl Shot {
         s.moved = false;
     }
 
-    /// The frame answering this generation, or None if none was published in
-    /// time. Woken early by a shutdown, which publishes nothing more.
+    /// The frame that answers this generation, or None when none arrives in
+    /// time. A shutdown wakes the wait, because nothing more publishes.
     pub fn wait(&self, gen: u64, timeout: f64) -> Option<Arc<RawFrame>> {
         let end = monotonic() + timeout;
         let mut s = lock(&self.state);
@@ -1022,11 +1016,11 @@ struct FrameShot {
 
 impl Output for FrameShot {
     fn dest(&self) -> &str {
-        "" // a still is not somewhere the frames are going; see Console::out
+        "" // a still is not a destination; see Console::out
     }
 
     fn persists(&self) -> bool {
-        true // nothing here waits on frames, so a clean scene may skip
+        true // nothing here waits on a frame, so a clean scene may skip
     }
 
     fn wants(&self, _frame: u64) -> bool {
@@ -1043,19 +1037,20 @@ impl Output for FrameShot {
     }
 }
 
-/// The console as an output sink: the throttled, downscaled readback the browser
-/// preview and the software H264 encoder share, and the hardware H264 mirror. It
-/// reads the console's viewer counts and caps every frame, so what it asks the
-/// loop for follows viewers coming and going.
+/// The console as an output sink. The browser preview and the software H264
+/// encoder share one throttled, downscaled readback, and the hardware H264 mirror
+/// runs here too. This reads the console's viewer counts every frame, so what it
+/// asks the loop for follows the viewers.
 struct ConsoleSink {
     console: Arc<Console>,
     renderer: Rc<RefCell<Renderer>>,
-    /// hardware encoder; render-thread owned (it issues GL calls)
+    /// The hardware encoder. The render thread owns it, because it issues GL
+    /// calls.
     enc: Option<HardwareH264>,
-    /// when the preview was last refreshed
+    /// When the preview last refreshed.
     last: Cell<f64>,
     now: Cell<f64>,
-    /// display refresh, the rate a hardware encoder is created at
+    /// The display refresh. A hardware encoder runs at this rate.
     hz: i32,
 }
 
@@ -1065,18 +1060,17 @@ impl Output for ConsoleSink {
     }
 
     fn persists(&self) -> bool {
-        true // a browser holds the last frame it was sent
+        true // a browser holds the last frame it got
     }
 
     fn wants(&self, _frame: u64) -> bool {
-        // Refresh the browser preview at most preview_fps, and only while
-        // watched. The display/panel renders every frame regardless; the preview
-        // is a throttled, downscaled mirror handled by the encoder thread. The
-        // software encoder has its own cadence (H264_FPS); the fastest active
-        // consumer wins.
+        // Refresh the browser preview at preview_fps at most, and only while a
+        // viewer watches. The display and the panel still render every frame.
+        // The software encoder has its own cadence (H264_FPS). The fastest
+        // active consumer wins.
         if self.console.shot.wants() {
-            // this frame is read back whole for the still; taking it here would
-            // resize the software encoder to the render size and back again
+            // The still reads this frame back whole. Taking it here resizes the
+            // software encoder to the render size and back again.
             return false;
         }
         let mut rates: Vec<f64> = Vec::new();
@@ -1094,9 +1088,9 @@ impl Output for ConsoleSink {
     }
 
     fn readback(&self) -> Option<(i32, i32)> {
-        // One readback feeds both consumers, so it is sized for whoever is
-        // attached: the MJPEG preview can downscale a bigger frame, the software
-        // encoder cannot recover a smaller one.
+        // One readback feeds both consumers, so whoever is attached sizes it.
+        // The MJPEG preview downscales a bigger frame. The software encoder
+        // cannot recover a smaller one.
         let (w, h) = (self.console.w, self.console.h);
         let scale = (f64::from(self.console.preview_max) / f64::from(w.max(h))).min(1.0);
         let pw = 1.max(round_half_even(f64::from(w) * scale) as i32);
@@ -1117,15 +1111,15 @@ impl Output for ConsoleSink {
         Ok(())
     }
 
-    /// Hardware H264 mirror: encode the frame just produced, zero readback.
-    /// keep_last in the engine holds the final pass in its FBO while the encoder
-    /// exists, so encode_last always has a texture to sample.
+    /// The hardware H264 mirror: encode the frame just drawn, with no readback.
+    /// The engine's keep_last holds the final pass in its FBO while the encoder
+    /// exists. encode_last always has a texture to sample.
     fn mirror(&mut self, _renderer: &dyn RenderTarget) -> Result<()> {
         let console = Arc::clone(&self.console);
         if console.fanout.nclients() == 0 {
             console.h264_hw_dead.store(false, Ordering::SeqCst); // the next stream tries hardware again
             if let Some(mut enc) = self.enc.take() {
-                enc.close(); // restore direct-scanout speed while unwatched
+                enc.close(); // direct scanout returns while nobody watches
             }
             return Ok(());
         }
@@ -1175,8 +1169,8 @@ impl Output for ConsoleSink {
 
 // ---------------------------------------------------------------- render loop
 
-/// The renderer the loop drives and the console sink samples for the hardware
-/// encoder. Both live on the render thread; GL is thread-affine.
+/// The renderer the loop drives. The console sink samples it for the hardware
+/// encoder. Both live on the render thread, because GL is thread-affine.
 struct SharedRenderer(Rc<RefCell<Renderer>>);
 
 impl RenderTarget for SharedRenderer {
@@ -1198,6 +1192,16 @@ impl RenderTarget for SharedRenderer {
 
     fn set_time(&self, t: f64) {
         self.0.borrow().set_time(Some(t));
+    }
+
+    fn set_param(
+        &self,
+        pass: Option<&str>,
+        name: &str,
+        ty: &str,
+        value: &ParamValue,
+    ) -> Result<bool> {
+        RenderTarget::set_param(&*self.0.borrow(), pass, name, ty, value)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
@@ -1222,9 +1226,9 @@ impl RenderTarget for SharedRenderer {
     }
 }
 
-/// Create the render-thread Renderer, probing DRI devices so the console runs on
-/// the Pi (card0) and on desktop Mesa (renderD128). components defaults to 4
-/// because desktop Mesa rejects an RGB glReadPixels; a panel sink asks for 3,
+/// Create the render-thread Renderer. It probes the DRI devices, so the console
+/// runs on a Pi (card0) and on desktop Mesa (renderD128). components defaults to
+/// 4, because desktop Mesa refuses an RGB glReadPixels. A panel sink asks for 3,
 /// which is what it packs from.
 fn make_renderer(console: &Console) -> Result<Renderer> {
     if console.display {
@@ -1269,7 +1273,7 @@ struct Running {
     scene: Option<Scene>,
 }
 
-/// The compile error, or "" when this scene is the one now rendering.
+/// Returns the compile error, or "" when this scene renders now.
 fn set_scene(
     console: &Console,
     renderer: &RefCell<Renderer>,
@@ -1299,8 +1303,8 @@ fn set_scene(
     if let Some(name) = name {
         lock(&console.stat).active = Some(name.to_string());
     }
-    // before the publish: a /stats between the two must not see the new scene
-    // with the old (or no) snapshot and answer stale from it
+    // Store the snapshot before the publish. A /stats between the two must not
+    // read the new scene against the snapshot before it.
     if let Some(snap) = snap {
         *lock(&console.sources) = Some(snap);
     }
@@ -1311,40 +1315,55 @@ fn set_scene(
     String::new()
 }
 
-fn load(console: &Console, renderer: &RefCell<Renderer>, st: &RefCell<Running>, name: &str) {
-    let (built, read) = collect(|| console.store.resolve(name));
+/// Load a scene by name, and put what feeds it in the controller slot. The last
+/// scene's process stops first, so two procedural scenes never overlap.
+fn load(
+    console: &Console,
+    renderer: &RefCell<Renderer>,
+    st: &RefCell<Running>,
+    ctrl: &ControllerSlot,
+    name: &str,
+) {
+    *ctrl.borrow_mut() = None;
+    let (built, read) = collect(|| console.store.start(name));
     match built {
-        Ok(scene) => {
+        Ok((scene, process)) => {
             let snap = console.snapshot(read);
-            set_scene(console, renderer, st, scene, Some(name), Some(snap));
+            let err = set_scene(console, renderer, st, scene, Some(name), Some(snap));
+            if err.is_empty() {
+                *ctrl.borrow_mut() = process.map(|f| Box::new(f) as Box<dyn SceneController>);
+            }
         }
         Err(e) => lock(&console.stat).error = format!("load {name}: {e}"),
     }
 }
 
-/// Apply every queued command, and report whether one landed: a queued command
-/// (switch, param, scene edit, a new preview client) forces a draw this iteration
-/// so edits always show.
-fn drain(console: &Console, renderer: &RefCell<Renderer>, st: &RefCell<Running>) -> bool {
+/// Apply every queued command, and report whether one landed. A queued command
+/// forces a draw this iteration, so an edit always shows.
+fn drain(
+    console: &Console,
+    renderer: &RefCell<Renderer>,
+    st: &RefCell<Running>,
+    ctrl: &ControllerSlot,
+) -> bool {
     let mut force = false;
-    let mut edited = false; // a /set landed: the running document has to follow
+    let mut edited = false; // a /set landed, so the running document must follow
     while !console.q.is_empty() {
         let Some(item) = console.q.take() else { break };
         force = true;
         match item {
-            Command::Switch(name) => load(console, renderer, st, &name),
+            Command::Switch(name) => load(console, renderer, st, ctrl, &name),
             Command::Param(pi, name, value) => {
-                if set_pass_param(renderer, st, pi, &name, &value) {
+                if set_pass_param(renderer, st, ctrl, pi, &name, &value) {
                     edited = true;
                 }
             }
             Command::SceneParam(name, value) => {
-                if set_scene_param(renderer, st, &name, &value) {
+                if set_scene_param(renderer, st, ctrl, &name, &value) {
                     edited = true;
                 }
             }
-            // in queue order, so a /set ahead of it is applied to the frame this
-            // arms
+            // in queue order, so the armed frame carries a /set ahead of it
             Command::Shot => console.shot.arm(),
             Command::SceneObj(scene) => {
                 set_scene(console, renderer, st, *scene, None, None);
@@ -1364,6 +1383,7 @@ fn drain(console: &Console, renderer: &RefCell<Renderer>, st: &RefCell<Running>)
 fn set_pass_param(
     renderer: &RefCell<Renderer>,
     st: &RefCell<Running>,
+    ctrl: &ControllerSlot,
     pi: i64,
     name: &str,
     value: &Value,
@@ -1387,6 +1407,7 @@ fn set_pass_param(
         if ty != "string" {
             renderer.borrow().set_param(&pass.name, name, &ty, &v)?;
         }
+        told(ctrl, name, &v);
         pass.params
             .get_mut(name)
             .ok_or_else(|| anyhow!("'{name}'"))?
@@ -1402,9 +1423,21 @@ fn set_pass_param(
     }
 }
 
+/// Tell the scene's process about a string param the console changed. The
+/// process reads it on the next tick.
+fn told(ctrl: &ControllerSlot, name: &str, value: &ParamValue) {
+    let ParamValue::Str(text) = value else {
+        return;
+    };
+    if let Some(c) = ctrl.borrow_mut().as_mut() {
+        c.on_param(name, text);
+    }
+}
+
 fn set_scene_param(
     renderer: &RefCell<Renderer>,
     st: &RefCell<Running>,
+    ctrl: &ControllerSlot,
     name: &str,
     value: &Value,
 ) -> bool {
@@ -1423,6 +1456,7 @@ fn set_scene_param(
         if ty != "string" {
             renderer.borrow().set_scene_param(name, &ty, &v)?;
         }
+        told(ctrl, name, &v);
         scene
             .params
             .get_mut(name)
@@ -1439,14 +1473,18 @@ fn set_scene_param(
     }
 }
 
-/// Run the console's render loop on this thread. Everything the console adds to
-/// a plain render is here: the command queue, the scene it publishes, the stale
-/// snapshot, and a frame error that must not kill the thread.
+/// Run the console's render loop on this thread. The console adds the command
+/// queue, the published scene and the stale snapshot. A frame error must not
+/// kill the thread.
 ///
-/// GL is thread-affine: the Renderer is created here, in the thread that renders.
-/// The sinks are the caller's, drawn to from here, which is what lets a driver
-/// bound to the calling thread be one of them.
-pub fn render_loop(console: &Arc<Console>, mut sinks: Vec<Box<dyn Output>>) {
+/// GL is thread-affine, so this creates the Renderer on the thread that renders.
+/// The sinks belong to the caller, and this draws to them from here. A driver
+/// bound to the calling thread works as a sink.
+pub fn render_loop(
+    console: &Arc<Console>,
+    mut sinks: Vec<Box<dyn Output>>,
+    on_stats: Option<StatsHook>,
+) {
     let renderer = match make_renderer(console) {
         Ok(r) => Rc::new(RefCell::new(r)),
         Err(e) => return console.fail(&format!("renderer: {e}")),
@@ -1457,6 +1495,8 @@ pub fn render_loop(console: &Arc<Console>, mut sinks: Vec<Box<dyn Output>>) {
         0
     };
     let st = RefCell::new(Running::default());
+    // what feeds the running scene, when the scene brings something
+    let ctrl: ControllerSlot = RefCell::new(None);
     let mut shared = SharedRenderer(Rc::clone(&renderer));
     let mut scanout = Scanout;
     let mut console_sink = ConsoleSink {
@@ -1471,6 +1511,9 @@ pub fn render_loop(console: &Arc<Console>, mut sinks: Vec<Box<dyn Output>>) {
         shot: Arc::clone(&console.shot),
     };
     let mut reported = String::new();
+    let times: RefCell<Vec<f64>> = RefCell::new(Vec::new());
+    let timed = on_stats.is_some();
+    let (elapsed, out): (f64, Vec<String>);
     {
         let mut refs: Vec<&mut dyn Output> = Vec::new();
         if console.display {
@@ -1486,7 +1529,8 @@ pub fn render_loop(console: &Arc<Console>, mut sinks: Vec<Box<dyn Output>>) {
         render.rest = 0.003; // yield to the handler and encoder threads
         let feed = provider(console);
         render.provider = Some(Box::new(feed));
-        render.poll = Some(Box::new(|| drain(console, &renderer, &st)));
+        render.controller = Some(&ctrl);
+        render.poll = Some(Box::new(|| drain(console, &renderer, &st, &ctrl)));
         render.idle_hook = Some(Box::new(|period| {
             let interval = skip_interval(
                 hz,
@@ -1496,7 +1540,7 @@ pub fn render_loop(console: &Arc<Console>, mut sinks: Vec<Box<dyn Output>>) {
             );
             match interval {
                 None => {
-                    console.q.wait(); // nobody consumes frames: sleep until a command
+                    console.q.wait(); // nobody consumes frames, so sleep until a command
                     0.0
                 }
                 Some(interval) => interval,
@@ -1505,10 +1549,13 @@ pub fn render_loop(console: &Arc<Console>, mut sinks: Vec<Box<dyn Output>>) {
         render.stopping = Some(Box::new(|| console.stopping()));
         render.on_frame = Some(Box::new(|_loop, cost| {
             lock(&console.stat).frame_ms = cost * 1000.0;
+            if timed {
+                times.borrow_mut().push(cost);
+            }
         }));
         render.on_error = Some(Box::new(|e| {
-            // one bad frame (or scene) must not take the thread with it: report
-            // it and keep rendering whatever last worked
+            // One bad frame must not take the thread with it. Report it, and
+            // keep rendering the last scene that worked.
             let msg = format!("render: {e}");
             lock(&console.stat).error = msg.clone();
             if msg != reported {
@@ -1519,12 +1566,16 @@ pub fn render_loop(console: &Arc<Console>, mut sinks: Vec<Box<dyn Output>>) {
         }));
         let first = console.store.names().first().cloned();
         if let Some(name) = first {
-            load(console, &renderer, &st, &name);
+            load(console, &renderer, &st, &ctrl, &name);
         }
         if let Err(e) = render.run() {
             eprintln!("ghee console: render: {e}");
         }
+        elapsed = render.elapsed;
+        out = render.out().iter().map(|d| (*d).to_string()).collect();
     }
+    // The scene's process stops with the loop that drove it.
+    *ctrl.borrow_mut() = None;
     if console.display {
         let _ = scanout.close();
     }
@@ -1533,11 +1584,14 @@ pub fn render_loop(console: &Arc<Console>, mut sinks: Vec<Box<dyn Output>>) {
     }
     let _ = console_sink.close();
     let _ = shot_sink.close();
-    // whichever way the loop ended there is nothing rendering to serve
+    if let Some(report) = on_stats {
+        report(&times.borrow(), elapsed, &out);
+    }
+    // The loop ended, so nothing renders to serve.
     console.stop();
 }
 
-/// arrays: {name -> source}. The host's source for a name, else the placeholder.
+/// The host's array source for a name, else the placeholder feed.
 fn provider(console: &Console) -> impl FnMut(&str, ArraySize, u64) -> Feed + '_ {
     |name: &str, size: ArraySize, frame: u64| match console.arrays.iter().find(|(n, _)| n == name) {
         Some((_, src)) => Feed::Data(src(size, frame)),
@@ -1545,9 +1599,9 @@ fn provider(console: &Console) -> impl FnMut(&str, ArraySize, u64) -> Feed + '_ 
     }
 }
 
-/// This module's render loop as a console host. Handler threads only read the
-/// published state and put items on the queue; the render thread owns the
-/// renderer and drains the queue, so nothing here touches GL.
+/// This module's render loop, as a console host. A handler thread reads the
+/// published state and queues items only. The render thread owns the renderer
+/// and drains the queue, so nothing here touches GL.
 pub struct RenderLoopHost {
     console: Arc<Console>,
 }
@@ -1628,19 +1682,18 @@ impl ConsoleHost for RenderLoopHost {
 
 // ---------------------------------------------------------------- heartbeat
 
-/// One stream connection and when its client last said it was there. A connection
-/// that named no vid is not pinged for and never expires, which is what keeps
-/// `curl /h264` and any page older than the heartbeat streaming.
+/// One stream connection, and when its client last reported in. A connection
+/// with no vid never expires, because nothing pings for it. That keeps
+/// `curl /h264` and a page older than the heartbeat streaming.
 pub struct Viewer {
     vid: String,
     last: Mutex<f64>,
 }
 
-/// The stream viewers expected to say they are still there.
+/// The stream viewers that must report in.
 ///
-/// Connections are held one by one rather than one per vid, so a page that
-/// reopens its stream (an h264 viewer falling back to MJPEG) leaves nothing
-/// behind that outlives the connection it belonged to.
+/// This holds each connection, not one entry per vid. A page that reopens its
+/// stream leaves nothing behind that outlives the connection it belonged to.
 pub struct Heartbeat {
     pub deadline: f64,
     by_vid: Mutex<Vec<(String, Vec<Arc<Viewer>>)>>,
@@ -1683,8 +1736,8 @@ impl Heartbeat {
         }
     }
 
-    /// Mark every connection opened under this vid alive. Returns how many, which
-    /// is zero for a page that pings before its stream is up.
+    /// Mark every connection under this vid alive. Returns how many. A page that
+    /// pings before its stream opens gets zero.
     pub fn ping(&self, vid: Option<&str>) -> usize {
         let now = monotonic();
         let vid = vid.unwrap_or_default();
@@ -1711,7 +1764,7 @@ impl Heartbeat {
 
 // ---------------------------------------------------------------- transport
 
-/// First line only: a status body stays one line, whatever it reports.
+/// The first line only. A status body stays one line.
 fn line(msg: &str) -> &str {
     msg.split('\n').next().unwrap_or("")
 }
@@ -1733,8 +1786,8 @@ fn send(request: Request, resp: &Response) {
     let _ = request.respond(out);
 }
 
-/// The status line and headers a stream writes for itself, straight onto the
-/// socket: the parts that follow are its own framing.
+/// The status line and headers a stream writes onto the socket itself. The
+/// stream frames the parts that follow.
 fn stream_head(w: &mut dyn Write, ctype: &str, extra: &[&str]) -> std::io::Result<()> {
     let mut head = format!("HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\n");
     for line in extra {
@@ -1746,7 +1799,8 @@ fn stream_head(w: &mut dyn Write, ctype: &str, extra: &[&str]) -> std::io::Resul
     w.flush()
 }
 
-/// The blocking transport. Streams are its own; everything else is API.
+/// The blocking transport. It serves the streams itself, and it hands the rest
+/// to the API.
 fn handle(console: &Arc<Console>, api: &ConsoleAPI<RenderLoopHost>, mut request: Request) {
     let method = request.method().as_str().to_string();
     let url = request.url().to_string();
@@ -1791,7 +1845,7 @@ fn stream(console: &Arc<Console>, request: Request, query: &Query) {
     }
     let viewer = console.viewers.join(query.get("vid").map(String::as_str));
     console.count_clients(1);
-    console.q.put(Command::Preview); // nudge an idle scene to draw a frame
+    console.q.put(Command::Preview); // wake an idle scene so it draws a frame
     let mut last_seq = u64::MAX;
     while !console.stopping() {
         if console.viewers.gone(&viewer) {
@@ -1860,16 +1914,15 @@ fn h264(console: &Arc<Console>, request: Request, query: &Query) {
     }
     console.fanout.remove(&c);
     console.viewers.leave(&viewer);
-    // Symmetric with the wake on connect, and load-bearing: the encoder is torn
-    // down on the next drawn frame, but a scene that reports clean skips before
-    // the loop reaches that line. An encoder left open holds keep_last, which
-    // costs the display direct scanout for a stream nobody is watching.
+    // The encoder tears down on the next drawn frame, and a clean scene skips
+    // that frame. An open encoder holds keep_last, which costs the display its
+    // direct scanout while nobody watches.
     console.q.put(Command::Preview);
 }
 
 fn frame_png(console: &Arc<Console>, request: Request) {
-    // A scene that does not compile has no frame to hand out: say so instead of
-    // answering with whatever was rendering before it.
+    // A scene that does not compile has no frame. Say so, instead of answering
+    // with the scene before it.
     let error = lock(&console.stat).error.clone();
     if !error.is_empty() {
         return send(
@@ -1909,18 +1962,22 @@ fn frame_png(console: &Arc<Console>, request: Request) {
 
 // ---------------------------------------------------------------- run
 
-/// What run() serves. The Python signature's keyword arguments, with its
-/// defaults.
+/// The render calls this once at the end, with every frame's cost, the wall time
+/// and the destinations the frames reached. It runs on the render thread.
+pub type StatsHook = Box<dyn FnOnce(&[f64], f64, &[String])>;
+
+/// What run() serves. Every field has a default, so a caller sets only what it
+/// needs.
 pub struct Options {
-    /// {array name -> source} the scenes read per frame
+    /// The array sources the scenes read per frame.
     pub arrays: Vec<(String, ArraySource)>,
-    /// host info for the device-info readout
+    /// The host info for the device-info readout.
     pub hwinfo: Option<Box<dyn Fn() -> Value + Send + Sync>>,
     pub scenes_dir: Option<String>,
     pub size: (i32, i32),
     pub port: u16,
-    /// loopback by default; the console has no auth and compiles POSTed GLSL, so
-    /// pass "0.0.0.0" only to expose it on a network you trust
+    /// Loopback by default. The console has no auth, and it compiles POSTed
+    /// GLSL. Pass "0.0.0.0" only on a network you trust.
     pub host: String,
     pub display: bool,
     pub rgb565: bool,
@@ -1928,22 +1985,25 @@ pub struct Options {
     pub preview_fps: f64,
     pub stream_max: i32,
     pub bitrate: i64,
-    /// build-time arguments offered to every scene the console loads
+    /// The build-time arguments for every scene the console loads.
     pub scene_args: Vec<String>,
-    /// a prebuilt store instead of one over scenes_dir
+    /// A prebuilt store, instead of one over scenes_dir.
     pub store: Option<SceneStore>,
-    /// output sinks the frames also reach, so a console can drive a panel or
-    /// write files; `display` is the KMS scanout instead, because that one is a
-    /// mode the renderer is created in. They are written from run()'s own thread,
-    /// so a sink bound to the thread that built it (a panel driver) belongs here
+    /// The output sinks the frames also reach, so a console drives a panel or
+    /// writes files. `display` covers the KMS scanout instead, because that one
+    /// is a mode the renderer is created in. run() writes these from its own
+    /// thread, so a sink bound to the thread that built it belongs here.
     pub sinks: Vec<Box<dyn Output>>,
-    /// the pixel format a panel sink packs to, for /stats
+    /// The pixel format a panel sink packs to, for /stats.
     pub native_format: Option<String>,
     pub components: i32,
-    /// 0 serves until stop(); a count ends the console with the render
+    /// 0 serves until stop(). A count ends the console with the render.
     pub frames: u64,
     pub timestep: Option<f64>,
     pub dri_device: Option<String>,
+    /// The summary hook. This hook makes the loop keep a cost per frame, and a
+    /// run without it keeps none.
+    pub on_stats: Option<StatsHook>,
 }
 
 impl Default for Options {
@@ -1969,6 +2029,7 @@ impl Default for Options {
             frames: 0,
             timestep: None,
             dri_device: None,
+            on_stats: None,
         }
     }
 }
@@ -1996,6 +2057,7 @@ pub fn run(opts: Options) -> Result<()> {
         frames,
         timestep,
         dri_device,
+        on_stats,
     } = opts;
     let store = match store {
         Some(store) => store,
@@ -2078,9 +2140,9 @@ pub fn run(opts: Options) -> Result<()> {
         size.0,
         size.1,
     );
-    render_loop(&console, sinks);
-    // the loop is done, so nothing is left to serve; stop() unblocks the accept
-    // thread, and the handlers it spawned end on the same flag
+    render_loop(&console, sinks, on_stats);
+    // The loop is done, so nothing is left to serve. stop() unblocks the accept
+    // thread, and the handlers it spawned end on the same flag.
     console.stop();
     let _ = serving.join();
     let fatal = lock(&console.fatal).clone();
@@ -2112,6 +2174,24 @@ mod tests {
         )))
     }
 
+    /// Whether a GL device opens. `run` builds its own renderer, so a test
+    /// that calls it reports the skip and passes where no device opens. The
+    /// answer is cached: one probe opens one renderer for the whole process.
+    fn have_gl() -> bool {
+        static GL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *GL.get_or_init(|| {
+            let mut errs = Vec::new();
+            for dev in crate::engine::probe_dri_devices() {
+                match crate::engine::Renderer::new(8, 8, 4, Some(&dev), false, false) {
+                    Ok(_) => return true,
+                    Err(e) => errs.push(format!("{dev}: {e}")),
+                }
+            }
+            eprintln!("no GL device for the console: {}", errs.join("; "));
+            false
+        })
+    }
+
     fn key_au() -> Vec<u8> {
         let mut au = Vec::new();
         for nal in [
@@ -2129,7 +2209,7 @@ mod tests {
 
     #[test]
     fn set_item_scene_scope() {
-        // pass="scene" (literal) routes to a distinct scene-scoped queue item
+        // the literal pass="scene" routes to a distinct scene-scoped queue item
         match set_item(Scope::Scene, "speed", Value::from(0.5)) {
             Command::SceneParam(name, v) => {
                 assert_eq!((name.as_str(), v), ("speed", Value::from(0.5)))
@@ -2229,7 +2309,7 @@ mod tests {
 
     #[test]
     fn the_preview_quality_is_not_the_old_mush() {
-        // q50 on a 480px frame is what the fallback used to look like enlarged
+        // q50 on a 480px frame looks mushy once a browser enlarges it
         let quality = u32::from(PREVIEW_QUALITY);
         assert!(quality > 50);
     }
@@ -2409,7 +2489,7 @@ mod tests {
         assert!(!shot.wants());
         assert!(Arc::ptr_eq(&shot.wait(a, 0.0).unwrap(), &frame));
         assert!(Arc::ptr_eq(&shot.wait(b, 0.0).unwrap(), &frame));
-        let c = shot.request(); // asked after the frame was published: not answered by it
+        let c = shot.request(); // asked after the frame published, so it gets no answer
         assert!(shot.wait(c, 0.0).is_none());
     }
 
@@ -2420,7 +2500,7 @@ mod tests {
         shot.hold();
         let b = shot.request();
         assert_eq!(a, b);
-        shot.touch(); // a command landed since: the frame in flight is behind
+        shot.touch(); // a command landed, so the frame in flight is behind
         assert_eq!(shot.request(), a + 1);
         shot.release();
     }
@@ -2593,8 +2673,8 @@ mod tests {
 
     // the loop run() drives
 
-    /// A sink that never leaves the thread that built it, which is what a panel
-    /// driver's SPI and GPIO handles are.
+    /// A sink that never leaves the thread that built it. A panel driver's SPI
+    /// and GPIO handles work the same way.
     struct Bound(Rc<Cell<u32>>);
 
     impl Output for Bound {
@@ -2614,6 +2694,9 @@ mod tests {
 
     #[test]
     fn the_console_draws_to_a_thread_bound_sink_on_the_callers_thread() {
+        if !have_gl() {
+            return;
+        }
         let console = tmp_console("bound"); // for its scene directory
         let drawn = Rc::new(Cell::new(0));
         let ran = run(Options {
@@ -2629,132 +2712,38 @@ mod tests {
         assert_eq!(drawn.get(), 3);
     }
 
-    // parity with the Python console: the same scene directory, two ports, one
-    // shape. Ignored by default: it needs a GPU and a Python console beside this
-    // one. `cargo test --release -- --ignored python_parity --nocapture`.
+    /// What the stats hook hands back: frame count, wall time, destinations.
+    type Summary = Rc<RefCell<Option<(usize, f64, Vec<String>)>>>;
+
+    /// --stats needs this to print its line after a bounded serve run.
+    #[test]
+    fn a_bounded_console_run_hands_back_its_timing() {
+        if !have_gl() {
+            return;
+        }
+        let console = tmp_console("stats");
+        let summary: Summary = Rc::new(RefCell::new(None));
+        let got = Rc::clone(&summary);
+        let ran = run(Options {
+            store: Some(SceneStore::new(&console.store.dir, true, Vec::new())),
+            port: free_port(),
+            size: (32, 24),
+            frames: 3,
+            sinks: vec![Box::new(Bound(Rc::new(Cell::new(0))))],
+            on_stats: Some(Box::new(move |times, wall, out| {
+                *got.borrow_mut() = Some((times.len(), wall, out.to_vec()));
+            })),
+            ..Options::default()
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        let (n, wall, out) = summary.borrow().clone().expect("no summary");
+        assert_eq!(n, 3);
+        assert!(wall > 0.0);
+        assert_eq!(out, [crate::stats::DEST_PANEL]);
+    }
 
     fn free_port() -> u16 {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap().port()
-    }
-
-    fn http_get(port: u16, path: &str) -> Option<(u16, String)> {
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
-        s.set_read_timeout(Some(Duration::from_secs(15))).ok()?;
-        let req =
-            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
-        s.write_all(req.as_bytes()).ok()?;
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut s, &mut buf).ok()?;
-        let text = String::from_utf8_lossy(&buf).into_owned();
-        let (head, body) = text.split_once("\r\n\r\n")?;
-        let status = head.split_whitespace().nth(1)?.parse().ok()?;
-        Some((status, body.to_string()))
-    }
-
-    fn wait_up(port: u16, path: &str) -> bool {
-        let end = monotonic() + 30.0;
-        while monotonic() < end {
-            if let Some((200, _)) = http_get(port, path) {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        false
-    }
-
-    /// A payload with its values replaced by their types: what "the same shape"
-    /// means for a number that cannot match across two processes.
-    fn shape(v: &Value) -> Value {
-        match v {
-            Value::Object(o) => {
-                Value::Object(o.iter().map(|(k, v)| (k.clone(), shape(v))).collect())
-            }
-            Value::Array(a) => Value::Array(a.iter().map(shape).collect()),
-            Value::Null => Value::from("null"),
-            Value::Bool(_) => Value::from("bool"),
-            Value::Number(_) => Value::from("number"),
-            Value::String(_) => Value::from("string"),
-        }
-    }
-
-    fn parity_scenes() -> String {
-        let d = std::env::temp_dir().join(format!("ghee-parity-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        let repo = env!("CARGO_MANIFEST_DIR");
-        for name in ["bars.scene.json", "bars.glsl", "echo.scene.json"] {
-            fs::copy(format!("{repo}/ghee/examples/{name}"), d.join(name)).unwrap();
-        }
-        d.to_string_lossy().into_owned()
-    }
-
-    #[test]
-    #[ignore = "needs a GPU and the Python console beside this one"]
-    fn python_parity() {
-        let dir = parity_scenes();
-        let (rust_port, py_port) = (free_port(), free_port());
-        // the venv interpreter, not `uv run`: uv forks python, so killing uv
-        // leaves the console holding its port
-        let mut python =
-            std::process::Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.venv/bin/python"))
-                .args([
-                    "-m",
-                    "ghee.console.server",
-                    &dir,
-                    "320x240",
-                    &py_port.to_string(),
-                ])
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .spawn()
-                .expect("the Python console did not start");
-        let served = {
-            let dir = dir.clone();
-            thread::spawn(move || {
-                run(Options {
-                    scenes_dir: Some(dir),
-                    port: rust_port,
-                    size: (320, 240),
-                    ..Options::default()
-                })
-            })
-        };
-        let up = wait_up(rust_port, "/stats") && wait_up(py_port, "/stats");
-        let mut mismatches: Vec<String> = Vec::new();
-        if up {
-            for (path, exact) in [
-                ("/scenes", true),
-                ("/scene", true),
-                ("/scene?name=echo", true),
-                ("/filters", true),
-                ("/stats", false),
-                ("/hwinfo", false),
-            ] {
-                let (rs, rb) = http_get(rust_port, path).expect("no answer from the Rust console");
-                let (ps, pb) = http_get(py_port, path).expect("no answer from the Python console");
-                let (rv, pv): (Value, Value) = (
-                    serde_json::from_str(&rb).unwrap_or(Value::Null),
-                    serde_json::from_str(&pb).unwrap_or(Value::Null),
-                );
-                let (rv, pv) = if exact {
-                    (rv, pv)
-                } else {
-                    (shape(&rv), shape(&pv))
-                };
-                if (rs, &rv) != (ps, &pv) {
-                    mismatches.push(format!(
-                        "{path}\n  rust ({rs}): {rv}\n  python ({ps}): {pv}"
-                    ));
-                } else {
-                    println!("{path}: {} {rv}", if exact { "same" } else { "same shape" });
-                }
-            }
-        }
-        stop();
-        let _ = served.join();
-        let _ = python.kill();
-        let _ = python.wait();
-        assert!(up, "one of the consoles never came up");
-        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     }
 }

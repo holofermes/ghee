@@ -1,8 +1,7 @@
-//! Port of ghee/engine.py (see that file for the reference implementation).
+//! Renderer drives the C engine over the ghee_* ABI.
 //!
-//! Renderer drives the C engine over the ghee_* ABI. The engine is linked into
-//! this binary, so Python's lib_path / $GHEE_LIB / bundled .so lookup has no
-//! counterpart here; $GHEE_DRI still picks the device.
+//! The engine links into this binary. There is no library to find at run time.
+//! $GHEE_DRI selects the DRI device.
 
 use std::env;
 use std::ffi::{CStr, CString};
@@ -17,14 +16,14 @@ use crate::cparam::create_c_parameter;
 use crate::ffi;
 use crate::scene::{ArraySize, ParamValue, Scene};
 
-/// error_pass for a compile error in the scene's common block; a pass error
-/// reports the pass's index instead.
+/// error_pass for a compile error in the scene's common block.
+/// A pass error reports the pass index.
 pub const COMMON_PASS: &str = "common";
 
-/// vecN params reach the shader as decomposed float uniforms named by these.
+/// A vecN param reaches the shader as float uniforms with these suffixes.
 const VEC_SUFFIXES: [&str; 4] = ["_x", "_y", "_z", "_w"];
 
-/// Which shader a setup() compile error sits in.
+/// The shader a setup() compile error sits in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorPass {
     Common,
@@ -32,7 +31,8 @@ pub enum ErrorPass {
 }
 
 impl ErrorPass {
-    /// The wire form: a common-block error by name, a pass error by index.
+    /// The wire form. A common-block error carries the name.
+    /// A pass error carries the index.
     pub fn to_json(self) -> Value {
         match self {
             ErrorPass::Common => Value::from(COMMON_PASS),
@@ -41,17 +41,18 @@ impl ErrorPass {
     }
 }
 
-/// What a provider hands back for one declared array. Unchanged is the scene's
-/// explicit statement that the texture already holds this array, so the upload
-/// is skipped entirely; the engine never caches or compares data to guess.
-/// After setup() rebuilds a scene the textures are empty, so a controller must
-/// push real data again first.
+/// What a provider returns for one declared array.
+///
+/// Unchanged states that the texture already holds this array. The engine then
+/// skips the upload. The engine never caches or compares data.
+/// setup() rebuilds a scene with empty textures. A controller pushes data again
+/// after every setup().
 pub enum Feed {
     Data(Vec<f32>),
     Unchanged,
 }
 
-/// provider(name, size) -> this frame's data for one declared array.
+/// provider(name, size) returns this frame's data for one declared array.
 pub type Provider<'a> = &'a mut dyn FnMut(&str, ArraySize) -> Feed;
 
 fn dri_nodes(prefix: &str) -> Vec<String> {
@@ -82,13 +83,13 @@ fn dedupe(devices: Vec<String>) -> Vec<String> {
     out
 }
 
-/// DRI nodes to try for offscreen rendering, in order: $GHEE_DRI, the render
-/// nodes, then the primary cards. First one that creates a renderer wins. One
-/// list for every caller, so the console, the tests and the Renderer itself all
-/// land on the same GPU.
+/// The DRI nodes to try for offscreen rendering, in order.
 ///
-/// Render nodes come first because a primary node carries DRM master. A render
-/// node has no master to contend for.
+/// The order is $GHEE_DRI, then the render nodes, then the primary cards.
+/// The first node that creates a renderer wins.
+/// Every caller reads this one list, so every caller lands on the same GPU.
+/// A primary node carries DRM master, so the render nodes come first.
+/// A render node has no master to contend for.
 pub fn probe_dri_devices() -> Vec<String> {
     let mut devices: Vec<String> = env_dri().into_iter().collect();
     devices.push("/dev/dri/renderD128".to_string());
@@ -98,8 +99,9 @@ pub fn probe_dri_devices() -> Vec<String> {
     dedupe(devices)
 }
 
-/// Primary DRI nodes, $GHEE_DRI first. Display work needs one of these: a
-/// render node has no connectors and cannot take DRM master.
+/// The primary DRI nodes, $GHEE_DRI first.
+/// Display work needs a primary node. A render node has no connector.
+/// A render node cannot take DRM master.
 pub fn probe_dri_cards() -> Vec<String> {
     let mut devices: Vec<String> = env_dri().into_iter().collect();
     devices.extend(dri_nodes("card"));
@@ -111,8 +113,8 @@ pub fn probe_dri_cards() -> Vec<String> {
     }
 }
 
-/// The card node driving a connected display, as (device, width, height), or
-/// None when nothing is connected.
+/// The card node that drives a connected display, as (device, width, height).
+/// None means no display is connected.
 pub fn probe_display_device(dri_device: Option<&str>) -> Option<(String, i32, i32)> {
     let devices = match dri_device.filter(|d| !d.is_empty()) {
         Some(d) => vec![d.to_string()],
@@ -130,20 +132,21 @@ pub fn probe_display_device(dri_device: Option<&str>) -> Option<(String, i32, i3
     None
 }
 
-/// Size of the mode the connected display is driving, as (width, height), or
-/// None when there is no card or nothing connected.
+/// The mode size of the connected display, as (width, height).
+/// None means no card node, or no connected display.
 pub fn probe_display(dri_device: Option<&str>) -> Option<(i32, i32)> {
     probe_display_device(dri_device).map(|(_, w, h)| (w, h))
 }
 
-/// Bytes a frame packs down to: 1bpp (bw) vs RGB565.
+/// The size of a packed frame in bytes.
+/// bw packs 1bpp. Otherwise the frame packs RGB565.
 pub fn packed_size(width: i32, height: i32, bw: bool) -> usize {
     let (w, h) = (i64::from(width), i64::from(height));
     (if bw { w * ((h + 7) / 8) } else { w * h * 2 }) as usize
 }
 
-/// Pack an RGB(A) frame to 1bpp (bw) or RGB565, with no Renderer. For output
-/// sinks that hold a frame but not an engine.
+/// Pack an RGB(A) frame to 1bpp (bw) or RGB565 without a Renderer.
+/// An output sink that holds a frame and no engine calls this.
 #[allow(dead_code)]
 pub fn pack_frame(rgb: &[u8], width: i32, height: i32, components: i32, bw: bool) -> Vec<u8> {
     let mut out = vec![0u8; packed_size(width, height, bw)];
@@ -151,7 +154,7 @@ pub fn pack_frame(rgb: &[u8], width: i32, height: i32, components: i32, bw: bool
     out
 }
 
-/// pack_frame into a buffer the caller holds; zeros it first.
+/// pack_frame into a buffer the caller holds. The call zeros the buffer first.
 pub fn pack_frame_into(
     rgb: &[u8],
     width: i32,
@@ -162,13 +165,13 @@ pub fn pack_frame_into(
 ) {
     let frame = (i64::from(width) * i64::from(height) * i64::from(components)) as usize;
     let packed = packed_size(width, height, bw);
-    // the packer reads three channels of every pixel, so under 3 components its
-    // last pixel would read past the frame span checked below
+    // The packer reads three channels of every pixel. Fewer than 3 components
+    // reads past the frame span the check below covers.
     assert!(
         components >= 3,
         "packing needs 3+ components, got {components}"
     );
-    // the C side reads and writes these spans with no length of its own
+    // The C side reads and writes these spans. It carries no length of its own.
     assert!(
         rgb.len() >= frame && out.len() >= packed,
         "packing {width}x{height}x{components} reads {frame} bytes and writes {packed}"
@@ -204,7 +207,8 @@ fn or_else(s: String, fallback: &str) -> String {
     }
 }
 
-/// The line a GL compile error names: the first `:<digits>(` in it.
+/// The line a GL compile error names. The line is the first `:<digits>(` in
+/// the error text.
 fn error_line_number(err: &str) -> Option<i64> {
     let b = err.as_bytes();
     for (i, _) in err.match_indices(':') {
@@ -219,15 +223,16 @@ fn error_line_number(err: &str) -> Option<i64> {
     None
 }
 
-/// Map a GL compile-error line (full shader) to the line its author wrote.
-/// Returns (line, in_common): a line inside the scene's prepended common block
-/// counts from the start of that block, anything else is the pass's own code
-/// with the generated preamble's length subtracted.
+/// Map a GL compile-error line to the line the author wrote.
+///
+/// The error names a line of the assembled shader. Returns (line, in_common).
+/// A line inside the scene's prepended common block counts from the start of
+/// that block. Any other line is the pass's own code, less the preamble length.
 fn user_line(err: &str, glsl: &str, code: &str, common: Option<&str>) -> (Option<i64>, bool) {
     let Some(line) = error_line_number(err) else {
         return (None, false);
     };
-    let pos = glsl.rfind(code); // the pass code is the tail of the assembled source
+    let pos = glsl.rfind(code); // The pass code is the tail of the assembled source.
     let at = pos.map_or(0, |p| glsl[..p].matches('\n').count() as i64);
     if let Some(c) = common.filter(|c| !c.is_empty()) {
         let cpos = glsl[..pos.unwrap_or(glsl.len())].rfind(c);
@@ -248,26 +253,26 @@ fn size_repr(size: ArraySize) -> String {
 
 /// A multipass renderer bound to one engine.
 ///
-/// ghee is thread-affine: construct and use a Renderer on a single thread (the
-/// context is made current at create time). A worker that renders in its own
-/// thread must create the Renderer in that thread; the raw handle keeps this
-/// type off Send.
+/// ghee is thread-affine. Create a Renderer on one thread. Use it on that same
+/// thread. The engine makes the GL context current at create time.
+/// A worker that renders in its own thread creates its own Renderer there.
+/// The raw handle keeps this type off Send.
 pub struct Renderer {
     pub width: i32,
     pub height: i32,
     pub components: i32,
     pub scene: Option<Scene>,
-    /// last setup() compile error text ("" = ok)
+    /// The last setup() compile error text. "" means the setup succeeded.
     pub error: String,
-    /// last setup() compile error: the line of user code it sits on
+    /// The line of user code the last setup() compile error sits on.
     pub error_line: Option<i64>,
-    /// the pass it sits in, or Common for the scene's common block
+    /// The pass the error sits in. Common is the scene's common block.
     pub error_pass: Option<ErrorPass>,
     #[allow(dead_code)]
     pub display: bool,
-    /// pass name -> engine pass index, in the order the passes were added
+    /// pass name -> engine pass index, in the order setup() adds the passes.
     mp: Vec<(String, c_int)>,
-    /// array name -> size, in declaration order
+    /// array name -> size, in declaration order.
     feeds: Vec<(String, ArraySize)>,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
@@ -282,8 +287,8 @@ impl Renderer {
         display: bool,
         rgb565: bool,
     ) -> Result<Renderer> {
-        // the engine reads back GL_RGB for 3 and GL_RGBA for anything else, so
-        // any other count would size the frame buffers under what it writes
+        // The engine reads back GL_RGB for 3 components and GL_RGBA otherwise.
+        // Any other count sizes the frame buffer under what the engine writes.
         assert!(
             components == 3 || components == 4,
             "components must be 3 or 4, got {components}"
@@ -304,8 +309,8 @@ impl Renderer {
         };
         let device = dri_device.filter(|d| !d.is_empty());
         if display {
-            // scan out to a KMS connector: needs the card (KMS) node, not a
-            // render node, and DRM master.
+            // Scanout to a KMS connector needs a card node and DRM master.
+            // A render node offers neither.
             let dev = match device.map(str::to_string).or_else(env_dri) {
                 Some(d) => d,
                 None => probe_display_device(None)
@@ -348,8 +353,8 @@ impl Renderer {
         Ok(r)
     }
 
-    /// The engine handle, for the ghee_* calls a host makes for itself (the
-    /// encoder).
+    /// The engine handle. A host passes it to the ghee_* calls it makes itself,
+    /// such as the encoder calls.
     pub fn handle(&self) -> *mut ffi::GheeScene {
         self.handle
     }
@@ -358,11 +363,13 @@ impl Renderer {
         self.mp.iter().find(|(n, _)| n == name).map(|(_, i)| *i)
     }
 
-    /// Build the scene's passes. Returns "" on success or an error string (a
-    /// compile error, or a scene the engine refuses). On a compile error
-    /// error_line/error_pass point at the offending user-code line; an error in
-    /// the scene's common block reports error_pass=Common and the line within
-    /// that block.
+    /// Build the scene's passes.
+    ///
+    /// Returns "" on success. Returns an error string for a compile error, or
+    /// for a scene the engine refuses.
+    /// A compile error sets error_line and error_pass to the user-code line.
+    /// An error in the scene's common block sets error_pass to Common.
+    /// error_line then counts from the start of that block.
     pub fn setup(&mut self, scene: &Scene) -> Result<String> {
         self.error = String::new();
         self.error_line = None;
@@ -371,9 +378,8 @@ impl Renderer {
             self.error = "scene has no passes".to_string();
             return Ok(self.error.clone());
         }
-        // An array name is one logical input, so it must have a single size.
-        // Reject a scene that declares the same name at two sizes before
-        // touching the engine.
+        // An array name is one input, so it holds one size.
+        // This check runs before the engine sees the scene.
         let mut seen: Vec<(&str, ArraySize)> = Vec::new();
         for p in &scene.passes {
             for a in &p.arrays {
@@ -392,10 +398,10 @@ impl Renderer {
                 }
             }
         }
-        // The output pass renders at the renderer size (its buffer feeds
-        // readback/display/encoder). Checked here against the final resolved
-        // pass list, so a scene whose own last pass is sized stays valid once
-        // filters append a full-size pass after it.
+        // The output pass renders at the renderer size. Its buffer feeds the
+        // readback, the display and the encoder.
+        // The check reads the resolved pass list, so a filter pass appended
+        // after a sized pass keeps the scene valid.
         let last = scene.output();
         if last.size.is_some() {
             self.error = format!(
@@ -405,8 +411,8 @@ impl Renderer {
             );
             return Ok(self.error.clone());
         }
-        // A channel binds to a pass by name. A name that is no pass is an error;
-        // buffer=None is the deliberate unbound channel and reads black.
+        // A channel binds to a pass by name. A name that names no pass is an
+        // error. buffer=None is the unbound channel, and it reads black.
         let names: Vec<&str> = scene.passes.iter().map(|p| p.name.as_str()).collect();
         for p in &scene.passes {
             for (c, ch) in p.channels.iter().enumerate() {
@@ -469,6 +475,15 @@ impl Renderer {
             return Ok(self.error.clone());
         }
         self.mp = mp;
+        // The output aspect reaches every pass that declares it.
+        // A pass with its own size reads that size off `resolution`.
+        // Such a pass cannot derive the shape of the frame.
+        // A scene param of this name overwrites the value below.
+        self.set_scene_param(
+            "aspect",
+            "float",
+            &ParamValue::Float(f64::from(self.width) / f64::from(self.height.max(1))),
+        )?;
         for (i, p) in scene.passes.iter().enumerate() {
             for (c, ch) in p.channels.iter().enumerate() {
                 let src = match ch.buffer.as_deref() {
@@ -494,7 +509,7 @@ impl Renderer {
                 self.set_param(&p.name, nm, &pm.ty, &pm.value)?;
             }
         }
-        // scene params reach every pass at once (they sit in every preamble)
+        // A scene param sits in every preamble, so it reaches every pass.
         for (nm, pm) in scene.params.iter() {
             self.set_scene_param(nm, &pm.ty, &pm.value)?;
         }
@@ -523,18 +538,19 @@ impl Renderer {
         Ok(String::new())
     }
 
-    /// Render all passes; the final pass is the returned RGB(A) frame, row-major
-    /// (height, width, components). `provider` fills each declared array for
-    /// this frame; None leaves the arrays untouched.
+    /// Render all passes. The final pass is the returned RGB(A) frame.
+    /// The frame is row-major (height, width, components).
+    /// `provider` fills each declared array for this frame.
+    /// None leaves the arrays as they are.
     pub fn render(&mut self, provider: Option<Provider<'_>>) -> Result<&[u8]> {
         self.feed(provider)?;
         unsafe { ffi::ghee_mp_render(self.handle, self.rgb.as_mut_ptr(), 0, 0) };
         Ok(&self.rgb)
     }
 
-    /// render() into a buffer the host holds. out_size=(w, h) reads back a
-    /// GPU-downscaled frame at that size instead of the full one, as present()
-    /// does.
+    /// render() into a buffer the host holds.
+    /// out_size=(w, h) reads back a GPU-downscaled frame at that size.
+    /// None reads back the full frame. present() downscales the same way.
     pub fn render_into(
         &mut self,
         provider: Option<Provider<'_>>,
@@ -543,15 +559,15 @@ impl Renderer {
     ) -> Result<()> {
         self.feed(provider)?;
         let (pw, ph) = out_size.unwrap_or((0, 0));
-        // the engine downscales only when both dims are positive; any other
-        // out_size falls through to the full-frame readback
+        // The engine downscales only when both dimensions are positive.
+        // Any other out_size falls through to the full-frame readback.
         let (w, h) = if pw > 0 && ph > 0 {
             (pw, ph)
         } else {
             (self.width, self.height)
         };
         let want = (i64::from(w) * i64::from(h) * i64::from(self.components)) as usize;
-        // the readback writes this span with no length of its own
+        // The readback writes this span. It carries no length of its own.
         assert!(
             out.len() >= want,
             "readback of {w}x{h}x{} needs {want} bytes, the buffer holds {}",
@@ -583,11 +599,11 @@ impl Renderer {
         Ok(())
     }
 
-    /// Upload each declared array for this frame (once per unique name). A
-    /// render uploads whatever the provider returns; the one exception is the
-    /// explicit Unchanged answer, a scene's declaration that the texture already
-    /// holds this array (a partially dynamic scene skips its static mask that
-    /// way). The engine never caches or diffs data on its own.
+    /// Upload each declared array for this frame, once per unique name.
+    ///
+    /// A render uploads what the provider returns. An Unchanged answer states
+    /// that the texture already holds this array, and the upload is skipped.
+    /// The engine never caches or compares data.
     fn feed(&self, provider: Option<Provider<'_>>) -> Result<()> {
         let Some(provider) = provider else {
             return Ok(());
@@ -601,7 +617,7 @@ impl Renderer {
                 ArraySize::Grid(gw, gh) => {
                     let want = (gw * gh) as usize;
                     let data = if data.len() < want {
-                        // short feed: zero-pad to the full mask
+                        // A short feed zero-pads to the full mask.
                         let mut buf = vec![0f32; want];
                         buf[..data.len()].copy_from_slice(&data);
                         buf
@@ -619,10 +635,10 @@ impl Renderer {
         Ok(())
     }
 
-    /// Display mode only: feed arrays, render the passes, and scan the final
-    /// buffer straight out to the connected display. `preview` also reads back a
-    /// GPU-downscaled frame (a few hundred KB, not the full frame); None skips
-    /// the readback.
+    /// Display mode only. This call feeds the arrays and renders the passes.
+    /// It then scans the final buffer out to the connected display.
+    /// `preview` also reads back a GPU-downscaled frame.
+    /// None skips that readback.
     pub fn present(
         &mut self,
         provider: Option<Provider<'_>>,
@@ -646,12 +662,15 @@ impl Renderer {
         Ok(())
     }
 
-    /// Set one uniform on a pass live (no recompile). False if the pass/uniform
-    /// is absent. A "color" param is [r, g, b]: it sets the three decomposed
-    /// float uniforms name_r/_g/_b (the engine has no color type). A "vecK"
-    /// param is K floats: it sets the decomposed float uniforms name_x/_y/_z/_w.
-    /// A "string" param is host-side (the scene's controller consumes it):
-    /// nothing to set here.
+    /// Set one uniform on a pass live, with no recompile.
+    ///
+    /// Returns false when the pass or the uniform is absent.
+    /// A "color" param is [r, g, b]. It sets the float uniforms name_r, name_g
+    /// and name_b, because the engine has no color type.
+    /// A "vecK" param is K floats. It sets the float uniforms name_x, name_y,
+    /// name_z and name_w.
+    /// A "string" param is host-side. The scene's controller consumes it, so
+    /// this call sets nothing.
     pub fn set_param(
         &self,
         pass_name: &str,
@@ -700,11 +719,12 @@ impl Renderer {
         Ok(unsafe { ffi::ghee_mp_set_uniform(self.handle, idx, cp.as_ptr()) })
     }
 
-    /// Set one scene-scoped uniform on every pass live (no recompile). A scene
-    /// param sits in every pass's preamble, so the set fans out to all of them;
-    /// a pass that never reads it has an inactive uniform and is skipped. True
-    /// if at least one pass held the uniform and took the value. Every pass is
-    /// set, not just up to the first that holds the uniform.
+    /// Set one scene-scoped uniform on every pass live, with no recompile.
+    ///
+    /// A scene param sits in every pass's preamble, so the set reaches every
+    /// pass. A pass that never reads the param holds an inactive uniform, and
+    /// the engine skips it.
+    /// Returns true when at least one pass takes the value.
     pub fn set_scene_param(&self, name: &str, ptype: &str, value: &ParamValue) -> Result<bool> {
         let oks = self
             .mp
@@ -720,27 +740,28 @@ impl Renderer {
         pack_frame(rgb, self.width, self.height, self.components, bw)
     }
 
-    /// pack() into a buffer the caller holds; zeros it first.
+    /// pack() into a buffer the caller holds. The call zeros the buffer first.
     #[allow(dead_code)]
     pub fn pack_into(&self, rgb: &[u8], bw: bool, out: &mut [u8]) {
         pack_frame_into(rgb, self.width, self.height, self.components, bw, out);
     }
 
-    /// The connected display mode's refresh rate in Hz, 0 when not in display
-    /// mode.
+    /// The refresh rate of the connected display mode, in Hz.
+    /// A renderer outside display mode returns 0.
     pub fn display_vrefresh(&self) -> i32 {
         unsafe { ffi::ghee_display_vrefresh(self.handle) }
     }
 
-    /// Enable per-frame draw/readback timing (adds a glFinish; off = zero cost).
+    /// Enable per-frame draw and readback timing.
+    /// The timing adds a glFinish. Timing off costs nothing.
     #[allow(dead_code)]
     pub fn set_profiling(&self, on: bool) {
         unsafe { ffi::ghee_set_profiling(self.handle, on) };
     }
 
-    /// Pin the `time` uniform to a fixed value, for reproducible renders.
-    /// Default is the monotonic clock since the engine was created; None hands
-    /// it back to that clock.
+    /// Pin the `time` uniform to a fixed value, for a reproducible render.
+    /// The default is the monotonic clock since the engine start.
+    /// None returns the uniform to that clock.
     pub fn set_time(&self, t: Option<f64>) {
         match t {
             None => unsafe { ffi::ghee_clear_time(self.handle) },
@@ -748,28 +769,30 @@ impl Renderer {
         }
     }
 
-    /// Set the `DT` uniform: the seconds a scene should advance by this frame.
-    /// Rides the draw like `time`, one store here and one upload per pass.
-    /// Defaults to 1/60 until a caller feeds a measured period.
+    /// Set the `DT` uniform, the seconds a scene advances this frame.
+    /// DT rides the draw like `time`: one store here, one upload per pass.
+    /// The default is 1/60 until a caller feeds a measured period.
     pub fn set_dt(&self, value: f64) {
         unsafe { ffi::ghee_set_dt(self.handle, value as f32) };
     }
 
-    /// Fragment texture units this GPU exposes: a pass's channels plus its array
-    /// inputs have to fit (8 on VC4).
+    /// The fragment texture units this GPU exposes. VC4 exposes 8.
+    /// A pass fits its channels and its array inputs in this budget.
     pub fn max_texture_units(&self) -> i32 {
         unsafe { ffi::ghee_max_texture_units(self.handle) }
     }
 
-    /// Whether this GPU linear-filters the textures array inputs are bound as.
-    /// False on V3D (float textures, no OES_texture_float_linear), where a
-    /// filtered fetch silently comes back nearest.
+    /// True when this GPU linear-filters the float textures that carry arrays.
+    /// V3D returns false. It has no OES_texture_float_linear.
+    /// A filtered fetch there returns the nearest texel.
     pub fn data_texture_linear(&self) -> bool {
         unsafe { ffi::ghee_data_texture_linear(self.handle) }
     }
 
-    /// Last frame's split as (draw_ms, read_ms): GPU render of all passes vs the
-    /// glReadPixels readback. Both 0 until a frame renders with profiling on.
+    /// The last frame's split, as (draw_ms, read_ms).
+    /// draw_ms is the GPU render of every pass.
+    /// read_ms is the glReadPixels readback.
+    /// Both stay 0 until a frame renders with profiling on.
     #[allow(dead_code)]
     pub fn timings(&self) -> (f64, f64) {
         let (mut draw, mut read): (c_double, c_double) = (0.0, 0.0);
@@ -828,16 +851,16 @@ mod tests {
     const RAW: &str =
         "#version 100\nprecision mediump float;\nvoid main(){ gl_FragColor = vec4(1.0); }";
 
-    /// One GL device, one Renderer at a time, and $GHEE_DRI is process-wide: the
-    /// tests that touch either run one after another.
+    /// A GL device takes one Renderer at a time, and $GHEE_DRI is process-wide.
+    /// A test that touches either one holds this lock.
     static GPU: Mutex<()> = Mutex::new(());
 
     fn lock() -> MutexGuard<'static, ()> {
         GPU.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The shared renderer of tests/conftest.py, held with the device lock. None
-    /// where that fixture skips: no GL device.
+    /// The renderer these tests share, with the device lock.
+    /// None means the host has no GL device.
     fn gpu() -> Option<(MutexGuard<'static, ()>, Renderer)> {
         let guard = lock();
         let mut errs = Vec::new();
@@ -897,8 +920,8 @@ mod tests {
 
     #[test]
     fn probe_dri_devices_prefers_render_nodes() {
-        // a primary node carries DRM master: a second concurrent process on a
-        // Pi 5's card0 renders black, a render node has no master to contend for
+        // A primary node carries DRM master. A second process on a Pi 5 card0
+        // renders black. A render node has no master to contend for.
         let _g = lock();
         env::remove_var("GHEE_DRI");
         let devs = probe_dri_devices();
@@ -931,14 +954,14 @@ mod tests {
 
     #[test]
     fn probe_display_device_names_the_card_it_found() {
-        // Headless hosts (CI, render-node-only cards) legitimately probe to
-        // None; anything else must be a positive WxH on a card node.
+        // A headless host probes to None.
+        // Any other host reports a positive width and height on a card node.
         let _g = lock();
         env::remove_var("GHEE_DRI");
         let Some((dev, w, h)) = probe_display_device(None) else {
             return;
         };
-        // the connectors are not always on card0: on a Pi 5 they are on card1
+        // The connectors do not always sit on card0. A Pi 5 puts them on card1.
         assert!(probe_dri_cards().contains(&dev));
         assert!(w > 0 && h > 0);
         assert_eq!(probe_display(None), Some((w, h)));
@@ -948,14 +971,13 @@ mod tests {
     fn display_create_fails_once_without_drm_master() {
         let _g = lock();
         if fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0) {
-            return; // not worth contending for the session's card as root
+            return; // As root this test takes the session's card.
         }
         let Some((dev, w, h)) = probe_display_device(None) else {
             return;
         };
         let before_the_master_attempt = ["cannot open DRI device", "eglInitialize failed"];
-        // An idle box has no master to lose the race against, so take it here
-        // rather than relying on whatever happens to be running.
+        // An idle host holds no DRM master. This test takes the master itself.
         let holder = Renderer::new(w, h, 4, Some(&dev), true, false);
         let msg = match &holder {
             Err(e) => e.to_string(),
@@ -972,10 +994,10 @@ mod tests {
 
     #[test]
     fn a_flip_the_board_is_too_slow_to_finish_is_still_waited_for() {
-        // A page flip is fenced on the GPU finishing the frame, so its wait
-        // scales with the render rather than with the panel's refresh. Bound
-        // that wait near a frame time and a slow board leaves the flip pending,
-        // and every submit made while it stays pending is refused.
+        // A page flip fences on the GPU finishing the frame. The wait scales
+        // with the render. The panel refresh does not bound it.
+        // A bound near one frame time leaves a slow board's flip pending.
+        // The engine refuses every submit while a flip stays pending.
         let src = fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/ghee/_engine/engine.c"
@@ -987,7 +1009,7 @@ mod tests {
             .and_then(|s| s.split_whitespace().next())
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap();
-        assert!(bound >= 1000); // slower than any frame, i.e. only a stuck flip hits it
+        assert!(bound >= 1000); // 1000 ms is slower than any frame, so only a stuck flip hits it.
 
         let present = src.split("void ghee_mp_present").nth(1).unwrap();
         let unreaped = present
@@ -1015,29 +1037,29 @@ mod tests {
         let glsl = "#version 100\nprecision mediump float;\nfloat sat(float x){ return x; }\n\nvoid main(){\n  nope();\n}";
         let common = "float sat(float x){ return x; }";
         let code = "void main(){\n  nope();\n}";
-        // line 6 of the assembled source is line 2 of the pass
+        // Line 6 of the assembled source is line 2 of the pass.
         assert_eq!(
             user_line("0:6(3): error: no function nope", glsl, code, Some(common)),
             (Some(2), false)
         );
-        // line 3 sits inside the common block, counted from its own start
+        // Line 3 sits in the common block. It counts from the block start.
         assert_eq!(
             user_line("0:3(3): error: bad", glsl, code, Some(common)),
             (Some(1), true)
         );
-        // the same line with no common block is the pass's, clamped at 1
+        // With no common block the same line is the pass's, clamped at 1.
         assert_eq!(
             user_line("0:3(3): error: bad", glsl, code, None),
             (Some(1), false)
         );
-        // an error with no line at all attributes nothing
+        // An error with no line attributes nothing.
         assert_eq!(user_line("out of memory", glsl, code, None), (None, false));
     }
 
     #[test]
     fn packed_size_is_1bpp_by_column_or_rgb565() {
         assert_eq!(packed_size(128, 32, true), 128 * 4);
-        assert_eq!(packed_size(128, 33, true), 128 * 5); // partial byte column
+        assert_eq!(packed_size(128, 33, true), 128 * 5); // A 33rd row fills a partial byte column.
         assert_eq!(packed_size(128, 32, false), 128 * 32 * 2);
     }
 
@@ -1063,7 +1085,7 @@ mod tests {
 
     #[test]
     fn channel_bound_to_nothing_is_allowed() {
-        // buffer=None is the deliberate unbound channel, not a broken reference
+        // buffer=None is the unbound channel. The scene stays valid.
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([
             {"name": "a", "channels": [{"buffer": null}], "code": FLAT},
@@ -1087,14 +1109,14 @@ mod tests {
             r.setup(&scene_of(clash)).unwrap(),
             "array 'v' declared at conflicting sizes (4 and (2, 2))"
         );
-        // a size clash outranks the sized output pass below it
+        // The size clash outranks the sized output pass below it.
         let both = json!([
             {"name": "a", "code": FLAT, "arrays": [{"name": "v", "size": 4}]},
             {"name": "b", "code": FLAT, "size": [8, 8],
              "arrays": [{"name": "v", "size": [2, 2]}]},
         ]);
         assert!(r.setup(&scene_of(both)).unwrap().starts_with("array 'v'"));
-        // and the sized output pass outranks the bad channel below it
+        // The sized output pass outranks the bad channel below it.
         let sized_and_bad = json!([
             {"name": "a", "code": FLAT},
             {"name": "b", "code": FLAT, "size": [8, 8], "channels": [{"buffer": "typo"}]},
@@ -1107,8 +1129,8 @@ mod tests {
 
     #[test]
     fn unbound_channel_reads_black() {
-        // 'leak' leaves a white texture bound on unit 0; 'main' has an unbound
-        // channel 0, whose sampler used to default to that unit and sample the leak
+        // 'leak' leaves a white texture bound on unit 0.
+        // Channel 0 of 'main' is unbound, and it reads black.
         let Some((_g, mut r)) = gpu() else { return };
         let sample = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
         let sc = scene_of(json!([
@@ -1122,6 +1144,39 @@ mod tests {
         for c in 0..3 {
             assert!(channel(&f, c).iter().fold(0.0, |a: f64, b| a.max(*b)) <= 2.0);
         }
+    }
+
+    /// A sized pass renders at its own size, so its `resolution` is not the
+    /// frame size. `aspect` carries the shape of the output.
+    #[test]
+    fn every_pass_reads_the_output_aspect() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let red = "uniform float aspect;\nvoid main(){ \
+                   gl_FragColor = vec4(aspect * 0.5, 0.0, 0.0, 1.0); }";
+        let through = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+        let sc = scene_of(json!([
+            {"name": "small", "code": red, "size": [8, 8]},
+            {"name": "main", "code": through, "channels": [{"buffer": "small"}]},
+        ]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        let f = r.render(None).unwrap().to_vec();
+        let want = 255.0 * (W as f64 / H as f64) * 0.5;
+        assert!((mean(&channel(&f, 0)) - want).abs() <= 2.0, "{}", f[0]);
+        // A scene that declares the name keeps its own value.
+        let mine = Scene::from_dict(
+            &json!({"version": 1,
+                    "params": {"aspect": {"type": "float", "value": 0.5}},
+                    "passes": [{"name": "main", "code":
+                                "void main(){ gl_FragColor = \
+                                 vec4(aspect, 0.0, 0.0, 1.0); }"}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(r.setup(&mine).unwrap(), "");
+        let f = r.render(None).unwrap().to_vec();
+        assert!((mean(&channel(&f, 0)) - 128.0).abs() <= 2.0);
     }
 
     #[test]
@@ -1167,9 +1222,9 @@ mod tests {
 
     #[test]
     fn a_degenerate_out_size_cannot_undersize_the_readback_buffer() {
-        // the engine only downscales for positive dims; a zero or negative one
-        // falls through to the full-frame readback, which the buffer check has
-        // to size for (it used to demand 0 bytes and let C write the frame)
+        // The engine downscales only for positive dimensions.
+        // A zero or negative dimension falls through to the full-frame readback.
+        // The buffer check sizes for that readback.
         let Some((_g, mut r)) = gpu() else { return };
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         r.set_time(Some(0.0));
@@ -1184,7 +1239,7 @@ mod tests {
                 "{msg}"
             );
         }
-        // a full-size buffer satisfies the fall-through readback
+        // A full-size buffer satisfies the fall-through readback.
         let mut out = vec![0u8; H * W * COMPONENTS];
         r.render_into(None, &mut out, Some((0, 6))).unwrap();
         assert_eq!(out, r.render(None).unwrap());
@@ -1220,8 +1275,8 @@ mod tests {
 
     #[test]
     fn draw_renders_with_no_readback() {
-        // feedback: each frame adds to the last, so a draw() that really
-        // rendered shows up in the next readback
+        // The scene feeds back: each frame adds to the last.
+        // A draw() that renders shows up in the next readback.
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{
             "name": "main",
@@ -1232,7 +1287,7 @@ mod tests {
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
         let one = r.render(None).unwrap().to_vec();
-        assert_eq!(r.setup(&sc).unwrap(), ""); // fresh buffers, cleared to black
+        assert_eq!(r.setup(&sc).unwrap(), ""); // setup() gives fresh buffers, cleared to black.
         r.draw(None).unwrap();
         let two = r.render(None).unwrap().to_vec();
         assert!(mean(&channel(&two, 0)) as i64 > mean(&channel(&one, 0)) as i64);
@@ -1276,7 +1331,7 @@ mod tests {
             };
             r.render(Some(&mut provider)).unwrap().to_vec()
         };
-        assert_eq!(calls, ["shared"]); // one upload, three passes reading it
+        assert_eq!(calls, ["shared"]); // One upload feeds the three passes that read it.
         for c in 0..3 {
             assert!((mean(&channel(&f, c)) as i64 - 128).abs() <= 2);
         }
@@ -1289,7 +1344,7 @@ mod tests {
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
 
-        // one channel past what this GPU has, plus an array on top
+        // The pass asks for one channel past this GPU's budget, plus an array.
         let units = r.max_texture_units() as usize;
         let channels: Vec<Value> = (0..units).map(|_| json!({"buffer": "a"})).collect();
         let greedy = scene_of(json!([
@@ -1339,9 +1394,9 @@ mod tests {
 
     #[test]
     fn set_dt_reaches_every_pass() {
-        // DT rides the draw like time, so one store has to land in the uniform
-        // of every pass. Red carries the first pass's DT through a channel,
-        // green the second's.
+        // DT rides the draw like time, so one store lands in every pass.
+        // Red carries the first pass's DT through a channel.
+        // Green carries the second pass's DT.
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([
             {"name": "src", "code": "void main(){ gl_FragColor = vec4(DT, 0.0, 0.0, 1.0); }"},
@@ -1358,7 +1413,7 @@ mod tests {
             (0..2).all(|c| channel(frame, c).iter().all(|v| (v - want).abs() <= 1.0))
         };
         let f = r.render(None).unwrap().to_vec();
-        assert!(near(&f, (255.0f64 / 60.0).round())); // engine default
+        assert!(near(&f, (255.0f64 / 60.0).round())); // 1/60 is the engine default.
         r.set_dt(0.5);
         let f = r.render(None).unwrap().to_vec();
         assert!(near(&f, 128.0));
@@ -1378,7 +1433,7 @@ mod tests {
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
-        // one GPU node, one renderer at a time
+        // A GPU node can refuse a second renderer. The test then stops.
         let Ok(mut other) = Renderer::new(16, 16, COMPONENTS as i32, None, false, false) else {
             return;
         };
@@ -1391,7 +1446,8 @@ mod tests {
     #[test]
     fn a_short_2d_feed_is_zero_padded_and_a_long_1d_one_is_cut() {
         let Some((_g, mut r)) = gpu() else { return };
-        // mask reads its second half, vals is fed past its declared size
+        // The shader reads the second half of mask.
+        // The provider feeds vals past its declared size.
         let sc = scene_of(json!([{
             "name": "main",
             "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "vals", "size": 2}],
@@ -1401,7 +1457,7 @@ mod tests {
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
         let mut provider = |name: &str, _size: ArraySize| match name {
-            // half a 2x2 mask: the second row zero-pads
+            // This feed holds half a 2x2 mask. The second row zero-pads.
             "mask" => Feed::Data(vec![1.0, 1.0]),
             _ => Feed::Data(vec![0.0, 0.5, 1.0, 1.0]),
         };
@@ -1446,7 +1502,7 @@ mod tests {
         .unwrap();
         assert!(!r.setup(&sc).unwrap().is_empty());
         assert_eq!(r.error_pass, Some(ErrorPass::Common));
-        assert_eq!(r.error_line, Some(2)); // the line the author wrote nope() on
+        assert_eq!(r.error_line, Some(2)); // The author wrote nope() on line 2.
     }
 
     #[test]
@@ -1468,14 +1524,14 @@ mod tests {
         assert!(!r.setup(&sc).unwrap().is_empty());
         assert_eq!(r.error_pass, Some(ErrorPass::Index(1)));
         assert_eq!(r.error_line, Some(3));
-        // a good compile clears the attribution
+        // A good compile clears the attribution.
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         assert!(r.error_pass.is_none() && r.error_line.is_none());
     }
 
-    // data arrays, fed as 1xN textures (tests/test_texture.py)
+    // Data arrays reach the shader as 1xN textures.
 
-    const N: usize = 64; // past VC4's ~48 uniform-array cap
+    const N: usize = 64; // 64 is past the cap of about 48 a VC4 uniform array holds.
 
     fn ramp(n: usize) -> Vec<f32> {
         (0..n).map(|i| i as f32 / (n - 1) as f32).collect()
@@ -1503,10 +1559,10 @@ mod tests {
         let mut provider = |_: &str, _: ArraySize| Feed::Data(vals.clone());
         let f = r.render(Some(&mut provider)).unwrap().to_vec();
         let column = |x: usize| mean(&(0..H).map(|y| px(&f, W, x, y, 0)).collect::<Vec<_>>());
-        assert!(column(0) < 40.0); // left column ~ vals[0] = 0
-        assert!(column(W - 1) > 215.0); // right column ~ vals[N-1] = 1
+        assert!(column(0) < 40.0); // The left column holds vals[0] = 0.
+        assert!(column(W - 1) > 215.0); // The right column holds vals[N-1] = 1.
         let row: Vec<f64> = (0..W).map(|x| px(&f, W, x, H / 2, 0)).collect();
-        // non-decreasing dark->bright across x
+        // The row runs dark to bright across x.
         assert!(row.windows(2).all(|w| w[1] - w[0] >= -1.0));
     }
 
@@ -1523,12 +1579,12 @@ mod tests {
         let vals = ramp(N);
         let mut provider = |_: &str, _: ArraySize| Feed::Data(vals.clone());
         let f = r.render(Some(&mut provider)).unwrap().to_vec();
-        // sample(0.5) ~ 0.5 for a ramp
+        // A ramp gives sample(0.5) = 0.5.
         let mid = mean(&(0..H).map(|y| px(&f, W, W / 2, y, 0)).collect::<Vec<_>>()) / 255.0;
         assert!(0.4 < mid && mid < 0.6);
     }
 
-    /// GL's LINEAR + CLAMP_TO_EDGE on a 1xN row.
+    /// GL LINEAR filtering with CLAMP_TO_EDGE on a 1xN row.
     fn lerp1(vals: &[f32], t: f64) -> f64 {
         let last = vals.len() as f64 - 1.0;
         let x = t * vals.len() as f64 - 0.5;
@@ -1539,10 +1595,10 @@ mod tests {
 
     #[test]
     fn sample_matches_texel_lerp() {
-        // Every column of a rendered _sample(t) ramp against the lerp computed
-        // here. Holds on a GL that linear-filters float textures and on one that
-        // cannot (V3D); which reader the renderer emitted is what makes the
-        // values agree.
+        // The test compares every column of a rendered _sample(t) ramp against
+        // the lerp above. It holds on a GL that linear-filters float textures.
+        // It also holds on V3D, which has no float linear filtering.
+        // The reader the renderer emits makes the two agree.
         let Some((_g, mut r)) = gpu() else { return };
         let vals: Vec<f32> = vec![0.10, 0.90, 0.30, 0.70, 0.50];
         let sc = array_scene(
@@ -1566,13 +1622,13 @@ mod tests {
 
     #[test]
     fn sample2_matches_bilinear() {
-        // _sample2 at points that land mid-texel in one axis, both, or neither
+        // _sample2 reads points mid-texel in one axis, in both, and in neither.
         let Some((_g, mut r)) = gpu() else { return };
-        let m: Vec<f32> = vec![0.0, 1.0, 0.5, 0.25]; // 2x2, [y][x]
+        let m: Vec<f32> = vec![0.0, 1.0, 0.5, 0.25]; // A 2x2 mask, indexed [y][x].
         for (uv, want) in [
-            ((0.5, 0.5), 0.4375),             // centre: all four texels
-            ((0.25, 0.5), (0.0 + 0.5) / 2.0), // on column 0, between rows
-            ((0.5, 0.25), (0.0 + 1.0) / 2.0), // on row 0, between columns
+            ((0.5, 0.5), 0.4375),             // The centre reads all four texels.
+            ((0.25, 0.5), (0.0 + 0.5) / 2.0), // Column 0, between the rows.
+            ((0.5, 0.25), (0.0 + 1.0) / 2.0), // Row 0, between the columns.
         ] {
             let code = format!(
                 "void main(){{ gl_FragColor=vec4(vec3(mask_sample2(vec2({}, {}))),1.0); }}",
@@ -1590,39 +1646,38 @@ mod tests {
                 got.iter().cloned().fold(f64::MAX, f64::min),
                 got.iter().cloned().fold(f64::MIN, f64::max),
             );
-            assert_eq!(lo, hi); // one value, the whole frame
+            assert_eq!(lo, hi); // One value covers the whole frame.
         }
     }
 
-    // Behaviours checked against ghee/engine.py by running both sides on the
-    // same input; the values below are what the Python one produced.
+    // The reference produced the values below for these inputs.
 
     #[test]
     fn user_line_edges_match_the_reference() {
         let glsl = "#version 100\nprecision mediump float;\nfloat sat(float x){ return x; }\n\nvoid main(){\n  nope();\n}";
         let common = Some("float sat(float x){ return x; }");
         let code = "void main(){\n  nope();\n}";
-        // the pass starts on line 5, the common block on line 3
+        // The pass starts on line 5. The common block starts on line 3.
         assert_eq!(user_line("0:5(1): x", glsl, code, common), (Some(1), false));
-        // a line at or above the common block's own start is the pass's
+        // A line at or above the common block start belongs to the pass.
         assert_eq!(user_line("0:2(1): x", glsl, code, common), (Some(1), false));
         assert_eq!(
             user_line("0:99(1): x", glsl, code, common),
             (Some(95), false)
         );
-        // the first ":<digits>(" in the text, not the first colon
+        // The parser takes the first ":<digits>(" in the text.
         assert_eq!(
             user_line("abc:12x(3) then :45( here", glsl, code, None),
             (Some(41), false)
         );
         assert_eq!(user_line("::7(2): x", glsl, code, None), (Some(3), false));
         assert_eq!(user_line("no digits :(", glsl, code, None), (None, false));
-        // code the assembled source does not contain subtracts nothing
+        // Code the assembled source does not hold subtracts nothing.
         assert_eq!(
             user_line("0:6(3): e", glsl, "nowhere-in-glsl", common),
             (Some(6), false)
         );
-        // an empty common block is no common block
+        // An empty common block counts as no common block.
         assert_eq!(
             user_line("0:6(3): e", glsl, code, Some("")),
             (Some(2), false)
@@ -1639,13 +1694,13 @@ mod tests {
         env::remove_var("GHEE_DRI");
         let without = probe_dri_devices();
         assert_eq!(with, without);
-        assert_eq!(empty, without); // an empty override is no override
+        assert_eq!(empty, without); // An empty override counts as no override.
     }
 
     #[test]
     fn setup_error_strings_match_the_reference() {
         let Some((_g, mut r)) = gpu() else { return };
-        // a 2D size prints as the pair it is stored as, a 1D one as the int
+        // A 2D size prints as a pair. A 1D size prints as an int.
         let clash = json!([
             {"name": "a", "code": FLAT, "arrays": [{"name": "v", "size": [3, 5]}]},
             {"name": "b", "code": FLAT, "arrays": [{"name": "v", "size": 7}]},
@@ -1654,7 +1709,7 @@ mod tests {
             r.setup(&scene_of(clash)).unwrap(),
             "array 'v' declared at conflicting sizes ((3, 5) and 7)"
         );
-        // the bad channel outranks the texture-unit budget the same pass blows
+        // The bad channel outranks the texture-unit budget of the same pass.
         let units = r.max_texture_units() as usize;
         let typos: Vec<Value> = (0..units).map(|_| json!({"buffer": "typo"})).collect();
         let both = json!([
@@ -1670,8 +1725,8 @@ mod tests {
 
     #[test]
     fn the_texture_budget_counts_an_array_name_once() {
-        // a name declared twice on one pass is one texture unit, so the budget
-        // lets it through; what stops it is the compiler, on the redeclaration
+        // A name declared twice on one pass takes one texture unit, so the
+        // budget passes it. The compiler stops it on the redeclaration.
         let Some((_g, mut r)) = gpu() else { return };
         let units = r.max_texture_units() as usize;
         let channels: Vec<Value> = (0..units - 1).map(|_| json!({"buffer": "a"})).collect();
@@ -1690,9 +1745,10 @@ mod tests {
 
     #[test]
     fn a_param_reaches_the_shader_decomposed() {
-        // a color sets name_r/_g/_b and a vecK name_x/_y/_z/_w; the shader here
-        // reads tint.r, off.x and off.y, so the unread tint_g/tint_b are
-        // optimised out and the color set reports false while its red lands
+        // A color param sets name_r, name_g and name_b.
+        // A vecK param sets name_x, name_y, name_z and name_w.
+        // This shader reads tint.r, off.x and off.y, so GL drops tint_g and
+        // tint_b. The color set then reports false, and its red still lands.
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{
             "name": "main",
@@ -1707,18 +1763,18 @@ mod tests {
         assert!(!r.set_param("main", "tint", "color", &color).unwrap());
         let off = ParamValue::Vec(vec![0.25, 0.75]);
         assert!(r.set_param("main", "off", "vec2", &off).unwrap());
-        // a string param is host-side: nothing to set, on any pass or none
+        // A string param is host-side. It sets nothing, on any pass.
         let label = ParamValue::Str("x".to_string());
         assert!(!r.set_param("main", "label", "string", &label).unwrap());
         assert!(!r.set_param("nope", "label", "string", &label).unwrap());
         assert!(!r
             .set_param("nope", "tint", "float", &ParamValue::Float(1.0))
             .unwrap());
-        // a name no pass declares sets nothing
+        // A name no pass declares sets nothing.
         assert!(!r
             .set_param("main", "ghost", "color", &ParamValue::Color([1.0; 3]))
             .unwrap());
-        // more suffixes than components stops at the components
+        // A type with more suffixes than components stops at the components.
         assert!(r.set_param("main", "off", "vec4", &off).unwrap());
         let f = r.render(None).unwrap();
         for (c, want) in [(0, 128.0), (1, 64.0), (2, 191.0), (3, 255.0)] {
@@ -1732,8 +1788,8 @@ mod tests {
 
     #[test]
     fn a_scene_param_reaches_every_pass_not_just_the_first() {
-        // 'a' writes P to red, 'main' adds P to green through the channel. Stop
-        // at the first pass that took the value and green stays at its default.
+        // 'a' writes P to red. 'main' adds P to green through the channel.
+        // A set that stops at the first pass leaves green at its default.
         let Some((_g, mut r)) = gpu() else { return };
         let sc = Scene::from_dict(
             &json!({
@@ -1758,7 +1814,7 @@ mod tests {
         let f = r.render(None).unwrap();
         assert!((f64::from(f[0]) - 128.0).abs() <= 2.0, "{}", f[0]);
         assert!((f64::from(f[1]) - 128.0).abs() <= 2.0, "{}", f[1]);
-        // no pass holds the uniform, and a string param sets nothing anywhere
+        // No pass holds this uniform. A string param sets nothing anywhere.
         assert!(!r
             .set_scene_param("ghost", "float", &ParamValue::Float(0.5))
             .unwrap());
@@ -1801,19 +1857,19 @@ mod tests {
             run(vec![1., 0., 0., 1.], vec![0., 0., 1.]),
             [255., 255., 255., 255.],
         );
-        // a 2D feed past the mask keeps the declared w x h and drops the tail
+        // A 2D feed past the mask keeps the declared w x h and drops the tail.
         near(
             run(vec![0.25, 0.5, 0.75, 1.0, 9.0, 9.0], vec![0., 0., 0.5]),
             [64., 255., 128., 255.],
         );
-        // an empty 2D feed zero-pads the whole mask
+        // An empty 2D feed zero-pads the whole mask.
         near(run(Vec::new(), vec![0., 0., 0.25]), [0., 0., 64., 255.]);
-        // a 1D feed past the declared size uploads min(len, size) of it
+        // A 1D feed past the declared size uploads min(len, size) values.
         near(
             run(vec![1., 1., 1., 1.], vec![0.1, 0.2, 0.3, 0.9, 0.9]),
             [255., 255., 76., 255.],
         );
-        // and an empty 1D feed is a zero-wide upload: the texture keeps its data
+        // An empty 1D feed uploads zero width. The texture keeps its data.
         near(
             run(vec![1., 1., 1., 1.], Vec::new()),
             [255., 255., 76., 255.],
@@ -1822,8 +1878,8 @@ mod tests {
 
     #[test]
     fn a_readback_size_is_w_times_h_times_components() {
-        // out_size reads back a GPU-scaled frame at exactly that size, up or
-        // down from the renderer's and on either axis alone
+        // out_size reads back a GPU-scaled frame at that exact size.
+        // The size scales up or down, and on either axis alone.
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{
             "name": "main",

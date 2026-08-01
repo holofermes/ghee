@@ -1,30 +1,27 @@
-//! Port of ghee/console/core.py (see that file for the reference implementation).
+//! The console API, with no transport under it.
 //!
-//! The console API with no transport under it.
+//! A host implements ConsoleHost over what it renders, and hands that to a
+//! ConsoleAPI. The transport turns each of its own requests into (method, path,
+//! query, headers, body). It turns the Response back into what it serves:
 //!
-//! A host implements ConsoleHost over whatever it is already rendering and hands
-//! it to ConsoleAPI. The transport turns its own request objects into
-//! (method, path, query, headers, body) and turns the Response back into whatever
-//! it serves:
+//! ```text
+//! let api = ConsoleAPI::new(MyHost::new()).with_web(true);
+//! let refused = api.precheck(method, path, headers);  // before reading a body
+//! let resp = api.dispatch(method, path, query, headers, body);
+//! ```
 //!
-//!     let api = ConsoleAPI::new(MyHost::new()).with_web(true);
-//!     let refused = api.precheck(method, path, headers);  // before reading a body
-//!     let resp = api.dispatch(method, path, query, headers, body);
+//! query maps a name to its first value, and parse_query() builds one from a raw
+//! query string. A headers lookup ignores case.
 //!
-//! query is a name -> first value map (parse_query() builds one from a raw query
-//! string). headers is a case-insensitive mapping.
+//! The transport keeps the streams (/stream, /h264) and its own routes. Route
+//! them before dispatch reaches the static-file fallback.
 //!
-//! Streams (/stream, /h264) and anything a host adds of its own stay with the
-//! transport: route them before dispatch reaches its static-file fallback.
+//! Every refusal lives here, so a new host inherits it. The refusals are the
+//! Origin check on a mutating request, the body cap, POST-only state changes,
+//! the JSON content type and the static root check.
 //!
-//! Everything the console refuses lives here, so a new host inherits the refusals
-//! instead of reimplementing them: the Origin check on anything that mutates, the
-//! body cap, POST-only state changes, the JSON content type, and the static root
-//! check.
-//!
-//! Thread safety: an API holds no mutable state and can be called from any number
-//! of threads at once. What a host does under set_param/switch/apply_scene is the
-//! host's contract to state.
+//! An API holds no mutable state, so any number of threads may call it at once.
+//! A host states its own thread contract for set_param, switch and apply_scene.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -35,20 +32,22 @@ use crate::console::{static_asset, WEB};
 use crate::filters::load_filters;
 use crate::scene::{py_repr, Scene};
 
-/// a POSTed scene is JSON text
+/// The largest request body the console reads. A POSTed scene is JSON text.
 pub const MAX_BODY: usize = 1 << 20;
 
-/// Everything that changes the renderer is POST: a GET is reachable from a
-/// hostile page's <img src>, which carries no Origin to refuse.
+/// The paths that change the renderer. They take POST only. A hostile page
+/// reaches a GET through <img src>, and that request carries no Origin to
+/// refuse.
 pub const POST_ONLY: [&str; 4] = ["/set", "/switch", "/next", "/prev"];
 
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 const BOOLS: [(&str, bool); 4] = [("true", true), ("1", true), ("false", false), ("0", false)];
 
-/// A query string as name -> first value.
+/// A query string, as a name to its first value.
 pub type Query = BTreeMap<String, String>;
 
-/// Case-insensitive request headers, as the transport hands them over.
+/// The request headers, as the transport hands them over. A lookup ignores
+/// case.
 #[derive(Clone, Debug, Default)]
 pub struct Headers(Vec<(String, String)>);
 
@@ -104,8 +103,8 @@ impl Response {
     }
 }
 
-/// Returned by a host or the API; the status it carries is what the client gets,
-/// with the message as the body.
+/// A refusal from a host or from the API. The client gets this status, with the
+/// message as the body.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConsoleError {
     pub status: u16,
@@ -159,16 +158,16 @@ impl std::error::Error for ConsoleError {}
 
 pub type ConsoleResult<T> = Result<T, ConsoleError>;
 
-/// A /set target: the literal "scene" for the scene's shared params, else a pass
-/// index.
+/// A /set target. The literal "scene" names the scene's shared params. Anything
+/// else is a pass index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     Scene,
     Pass(i64),
 }
 
-/// An Origin on a state-changing request must be this server's own. Requests
-/// with no Origin at all (curl, the CLI, a script) pass.
+/// A state-changing request must carry this server's own Origin. A request with
+/// no Origin passes, because curl, the CLI and a script send none.
 pub fn origin_allowed(origin: &str, host: Option<&str>) -> bool {
     if origin.is_empty() {
         return true;
@@ -176,8 +175,8 @@ pub fn origin_allowed(origin: &str, host: Option<&str>) -> bool {
     netloc(origin).to_lowercase() == host.unwrap_or("").to_lowercase()
 }
 
-/// urlsplit(url).netloc: what follows "//" after a scheme, up to the path,
-/// query or fragment.
+/// The host part of a URL: what follows "//", up to the path, query or
+/// fragment.
 fn netloc(url: &str) -> &str {
     let rest = match url.find(':') {
         Some(i) if is_scheme(&url[..i]) => &url[i + 1..],
@@ -196,10 +195,10 @@ fn is_scheme(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
 }
 
-/// A raw query string as {name: first value}. The console never repeats a key.
+/// A raw query string, as a name to its first value. The console never repeats a
+/// key.
 ///
-/// parse_qs drops a name whose value is blank, so `?value=` carries no value at
-/// all rather than an empty one.
+/// A field with a blank value is dropped, so `?value=` carries no value.
 pub fn parse_query(qs: &str) -> Query {
     let mut out = Query::new();
     for field in qs.split('&').filter(|f| !f.is_empty()) {
@@ -215,8 +214,8 @@ pub fn parse_query(qs: &str) -> Query {
     out
 }
 
-/// urllib.parse.unquote_plus: "+" is a space and %XX a byte, with an invalid
-/// escape left as it stands.
+/// Decode a query field. "+" is a space and %XX is a byte. An invalid escape
+/// stays as it is.
 fn unquote_plus(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -246,7 +245,7 @@ fn unquote_plus(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// float(): whitespace around the number is dropped, the rest has to be one.
+/// Parse a float. Whitespace around the number is fine. Any other text fails.
 fn py_float(raw: &str) -> Result<f64, String> {
     let s = raw.trim().to_ascii_lowercase();
     let text = if s.trim_start_matches(['+', '-']) == "infinity" {
@@ -262,7 +261,7 @@ fn py_float(raw: &str) -> Result<f64, String> {
     })
 }
 
-/// int(): whitespace around a decimal integer.
+/// Parse a decimal integer. Whitespace around it is fine.
 fn py_int(raw: &str) -> Result<i64, String> {
     let s = raw.trim();
     let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
@@ -276,11 +275,11 @@ fn py_int(raw: &str) -> Result<i64, String> {
     }
 }
 
-/// Turn a /set raw query string into the value set_param expects. A "color" is
-/// "r,g,b" -> [float, float, float]; a "vecK" is K comma-separated floats ->
-/// [float, ...]; a "bool" is true/false (or 1/0) -> a real bool, which is what
-/// the scene model demands; anything else is a single float. Errs on malformed
-/// input (a short/long color/vec, a non-number, a non-bool).
+/// The value set_param expects, from a /set raw query string.
+///
+/// A "color" is "r,g,b" and gives three floats. A "vecK" is K comma-separated
+/// floats. A "bool" is true or false (1 or 0), and the scene model demands a
+/// real bool. Anything else is one float. Malformed input errs.
 pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
     if ptype == "bool" {
         let key = raw.trim().to_lowercase();
@@ -325,8 +324,8 @@ fn floats(raw: &str) -> Result<Vec<f64>, String> {
     raw.split(',').map(py_float).collect()
 }
 
-/// A /set pass= target: the literal "scene" for the scene's shared params, else
-/// a pass index (an error if it is not an int).
+/// The /set pass= target. The literal "scene" names the scene's shared params.
+/// Anything else is a pass index, and a non-integer errs.
 pub fn parse_scope(raw: &str) -> Result<Scope, String> {
     if raw == "scene" {
         return Ok(Scope::Scene);
@@ -334,8 +333,8 @@ pub fn parse_scope(raw: &str) -> Result<Scope, String> {
     Ok(Scope::Pass(py_int(raw)?))
 }
 
-/// The bundled asset a URL path names, or None. The assets are compiled in, so
-/// a path that climbs out of the root names nothing.
+/// The web asset a URL path names, or None. The assets are compiled in, so a
+/// path that climbs out of the root names nothing.
 pub fn static_path(urlpath: &str) -> Option<&'static str> {
     let urlpath = match urlpath {
         "" | "/" => "/index.html",
@@ -355,13 +354,13 @@ pub fn static_path(urlpath: &str) -> Option<&'static str> {
     WEB.iter().find(|(n, _)| *n == name).map(|(n, _)| *n)
 }
 
-/// What the console needs from whatever is rendering.
+/// What the console needs from whatever renders.
 ///
-/// Implement the pieces your host has and mount a ConsoleAPI on your server.
-/// Return NotFound/BadRequest/ReadOnly/ServerError from any method and the
-/// client gets that status with the message.
+/// Implement the methods your host has. Mount a ConsoleAPI on your server. Any
+/// method may return a ConsoleError, and the client gets its status and its
+/// message.
 pub trait ConsoleHost {
-    /// /save is refused unless a host opts in; save_refused is the refusal text
+    /// /save is refused unless a host opts in. save_refused carries the text.
     fn writable(&self) -> bool {
         false
     }
@@ -373,30 +372,28 @@ pub trait ConsoleHost {
     /// {fps, frame_ms, stream_fps, out, error, error_line, error_pass, active,
     /// display, stale}.
     ///
-    /// fps: render-loop frames completed per real elapsed second, over a
-    /// trailing window (stats::FrameRate). frame_ms: one loop iteration, the
-    /// frame's own work with no paced sleep in it. stream_fps: frames handed to
-    /// viewers per real second, counted where the handoff happens, every codec
-    /// in one number. out: the destination names the frames reach right now
-    /// (stats::DEST_*), a sink's own for a sink. error_pass: the pass index a
-    /// compile error landed in, or "common" for the scene's common block;
-    /// error_line is the line within it. stale: the files the active scene was
-    /// built from now hold code it was not compiled from, so a reload would
-    /// render something else (sources); a host whose scenes have no files behind
-    /// them answers false.
+    /// fps counts completed render-loop frames per elapsed second, over a
+    /// trailing window (stats::FrameRate). frame_ms is one loop iteration, with
+    /// no paced sleep in it. stream_fps counts the frames handed to viewers per
+    /// elapsed second, every codec in one number. out names the destinations the
+    /// frames reach now (stats::DEST_*). error_pass is the pass index that holds
+    /// a compile error, or "common" for the scene's common block. error_line is
+    /// the line inside that pass. stale is true when the files behind the active
+    /// scene hold code the scene was not compiled from. A host whose scenes have
+    /// no files answers false for stale.
     ///
-    /// Read by a poll loop in the browser, so it must not block.
+    /// A poll loop in the browser reads this, so it must not block.
     fn stats(&self) -> ConsoleResult<Value>;
 
     fn scene_names(&self) -> ConsoleResult<Vec<String>>;
 
     fn active_name(&self) -> ConsoleResult<Option<String>>;
 
-    /// Resolved scene JSON (shader files inlined, filters expanded) for a name,
-    /// or for the active scene when name is None.
+    /// The resolved scene JSON for a name, or for the active scene when name is
+    /// None. Resolved means shader files inlined and filters expanded.
     fn scene_def(&self, name: Option<&str>) -> ConsoleResult<Value>;
 
-    /// name -> filter def, for the "+ filter" picker.
+    /// Each filter name and its definition, for the "+ filter" picker.
     fn filters(&self) -> ConsoleResult<Value> {
         Ok(Value::Object(load_filters(&[])))
     }
@@ -405,8 +402,8 @@ pub trait ConsoleHost {
         Ok(Value::Object(Map::new()))
     }
 
-    /// Live uniform, no recompile. scope is a pass index, or Scene for a
-    /// scene-scoped param.
+    /// Set a live uniform, with no recompile. scope is a pass index, or Scene
+    /// for a scene-scoped param.
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()>;
 
     /// Make name active and return the new active name.
@@ -443,7 +440,7 @@ pub trait ConsoleHost {
 /// Routes one transport-free request onto a ConsoleHost.
 pub struct ConsoleAPI<H: ConsoleHost> {
     pub host: H,
-    /// serve the bundled assets, or false when the transport serves its own
+    /// Serve the compiled-in web assets. false leaves that to the transport.
     pub web: bool,
     pub post_only: Vec<String>,
     pub max_body: usize,
@@ -476,9 +473,9 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
         self
     }
 
-    /// The refusals that have to land before a body is read: a Response to send
-    /// instead of handling the request, or None. Pure, and dispatch runs it
-    /// again, so a transport that skips it is still refused.
+    /// The refusals that must land before the transport reads a body. Returns a
+    /// Response to send instead of handling the request, or None. dispatch runs
+    /// this again, so a transport that skips it still gets the refusal.
     pub fn precheck(&self, method: &str, path: &str, headers: &Headers) -> Option<Response> {
         if method == "POST" {
             if !origin_allowed(headers.get("Origin").unwrap_or(""), headers.get("Host")) {
@@ -643,8 +640,8 @@ fn json_body(headers: &Headers, body: &[u8], what: &str) -> ConsoleResult<Value>
     serde_json::from_slice(body).map_err(|e| ConsoleError::bad_request(format!("bad {what}: {e}")))
 }
 
-/// A posted scene is a Scene before anything downstream sees it: the renderer
-/// never gets a document nobody validated.
+/// Validate a posted scene into a Scene. The renderer never gets a document
+/// nobody validated.
 fn scene_of(d: &Value, what: &str) -> ConsoleResult<Scene> {
     Scene::from_dict(d, None, None)
         .map_err(|e| ConsoleError::bad_request(format!("bad {what}: {e}")))
@@ -781,7 +778,7 @@ mod tests {
         }
     }
 
-    /// A host with nothing but the required methods: what the trait defaults
+    /// A host with the required methods only. It shows what the trait defaults
     /// answer.
     struct Bare;
 
@@ -1064,8 +1061,8 @@ mod tests {
 
     #[test]
     fn a_scene_naming_a_shader_file_is_400() {
-        // A posted scene has no base directory, so a "shader" path is a read of
-        // something off disk: the model refuses it and the API surfaces that.
+        // A posted scene has no base directory. A "shader" path reads a file off
+        // disk, so the model refuses it and the API passes that on.
         let api = api();
         let r = api.dispatch(
             "POST",
@@ -1174,7 +1171,7 @@ mod tests {
         );
     }
 
-    // refusals: precheck decides them, and dispatch enforces them again
+    // refusals: precheck decides them, dispatch enforces them again
 
     #[test]
     fn state_changing_paths_are_post_only() {
@@ -1189,8 +1186,8 @@ mod tests {
 
     #[test]
     fn a_host_declaring_its_own_get_routes_still_mutates_through_post() {
-        // A host keeping GET /set for its scripts and buttons re-labels the
-        // request as a POST rather than weakening the core.
+        // A host that keeps GET /set for its scripts relabels the request as a
+        // POST. The core keeps its refusal.
         let api = ConsoleAPI::new(FakeHost::new()).with_post_only(&[]);
         assert!(api.precheck("GET", "/set", &Headers::new()).is_none());
         post(
@@ -1239,7 +1236,7 @@ mod tests {
 
     #[test]
     fn a_get_carrying_an_origin_is_not_refused() {
-        // Reads are safe; only the mutating side gets the Origin check.
+        // A read is safe. Only a mutating request gets the Origin check.
         let headers = Headers::from([("Origin", "http://evil.example")]);
         assert!(api().precheck("GET", "/stats", &headers).is_none());
     }
@@ -1314,7 +1311,7 @@ mod tests {
 
     #[test]
     fn origin_helper() {
-        assert!(origin_allowed("", Some("h"))); // curl, a script, the CLI
+        assert!(origin_allowed("", Some("h"))); // curl, a script, the CLI send none
         assert!(origin_allowed("http://127.0.0.1:1", Some("127.0.0.1:1")));
         assert!(!origin_allowed("http://evil.example", Some("127.0.0.1:1")));
         assert!(!origin_allowed("null", Some("127.0.0.1:1")));
@@ -1355,7 +1352,7 @@ mod tests {
         }
     }
 
-    // console request helpers (tests/test_console.py)
+    // console request helpers
 
     #[test]
     fn parse_float() {
@@ -1365,8 +1362,8 @@ mod tests {
 
     #[test]
     fn parse_int_rides_the_float_path() {
-        // int params parse as float here; the render thread rounds using the
-        // scene's own param type, so the wire value stays a plain number.
+        // An int param parses as a float here. The render thread rounds it with
+        // the scene's own param type, so the wire value stays a plain number.
         assert_eq!(parse_param_value("int", "5"), Ok(Value::from(5.0)));
     }
 

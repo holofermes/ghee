@@ -1,4 +1,5 @@
-//! Port of ghee/cparam.py (see that file for the reference implementation).
+//! A scene param becomes the parameter_t view the C engine binds. Rust owns the
+//! storage that view points at, for as long as the engine reads it.
 
 use core::ffi::{c_char, c_int};
 
@@ -7,12 +8,12 @@ use serde_json::Value;
 
 use crate::ffi;
 
-/// parameter_t.name is char[256]; the C side needs the terminator.
+/// parameter_t.name is char[256]. The C side needs the terminator byte.
 pub const NAME_MAX: usize = 255;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
-#[allow(dead_code)] // the vector types are the C enum's; nothing here produces one
+#[allow(dead_code)] // The C enum declares the vector types. Nothing here produces one.
 pub enum CParameterType {
     Float = ffi::PARAM_TYPE_FLOAT,
     Int = ffi::PARAM_TYPE_INT,
@@ -21,10 +22,11 @@ pub enum CParameterType {
     Vec4 = ffi::PARAM_TYPE_VEC4,
 }
 
-/// The per-type struct the C view points at. Held as the raw pointer of a
-/// leaked Box (reclaimed in Drop), not the Box itself: moving a Box retags it
-/// and invalidates every raw pointer derived from it, including the copy parked
-/// in `Parameter.value`.
+/// The per-type struct the C view points at.
+///
+/// The field holds a raw pointer, and never the Box itself. A move retags a Box.
+/// The retag invalidates every raw pointer to it, including the copy in
+/// `Parameter.value`. Drop reclaims the allocation.
 enum Owned {
     Float(*mut ffi::FloatParam),
     Int(*mut ffi::IntParam),
@@ -37,8 +39,7 @@ pub struct CParameter {
 
 impl Drop for CParameter {
     fn drop(&mut self) {
-        // reclaims the into_raw allocation; the C engine keeps no pointer to it
-        // past a call
+        // The C engine keeps no pointer to this storage after a call returns.
         unsafe {
             match self.owned {
                 Owned::Float(p) => drop(Box::from_raw(p)),
@@ -53,8 +54,8 @@ impl CParameter {
         &self.param
     }
 
-    /// Name the uniform this parameter sets. Longer than the C field's payload and
-    /// glGetUniformLocation would read past the terminator.
+    /// Name the uniform this param sets. A longer name fills the C field, and
+    /// glGetUniformLocation then reads past the terminator.
     pub fn set_c_name(&mut self, name: &str) -> Result<()> {
         let raw = name.as_bytes();
         if raw.len() > NAME_MAX {
@@ -127,7 +128,7 @@ pub fn create_c_parameter(param_type: &str, value: &Value) -> Result<CParameter>
                 ffi::ParamValue { int_param: p },
             )
         }
-        // The engine has no bool type; glUniform1i sets a bool uniform.
+        // The engine has no bool type. glUniform1i sets a bool uniform.
         "bool" => {
             let p = Box::into_raw(Box::new(ffi::IntParam {
                 value: c_int::from(truthy(value)),
@@ -174,7 +175,7 @@ mod tests {
 
     #[test]
     fn vector_param_has_no_producer() {
-        // colors and vecN reach the shader as decomposed float uniforms
+        // A color and a vecN reach the shader as decomposed float uniforms.
         let e = create_c_parameter("vec3", &json!([0.0, 0.0, 0.0]))
             .err()
             .map(|e| e.to_string());
@@ -195,7 +196,7 @@ mod tests {
         let cp = create_c_parameter("float", &json!(0.25)).unwrap();
         assert_eq!(cp.param.ty, CParameterType::Float as c_int);
         assert_eq!(unsafe { (*cp.param.value.float_param).value }, 0.25);
-        // int() truncates toward zero
+        // An int param truncates a float value toward zero.
         let cp = create_c_parameter("int", &json!(3.7)).unwrap();
         assert_eq!(unsafe { (*cp.param.value.int_param).value }, 3);
     }

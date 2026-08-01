@@ -11,8 +11,10 @@ fn main() {
         .flag_if_supported("-funroll-loops");
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if arch == "arm" {
-        // Zero W is ARMv6+VFP2; arm toolchain baselines default to v7 and fault there.
-        // zig spells the cpu with underscores, gcc/clang with dashes.
+        // The Pi Zero W CPU is ARMv6 with VFP2. An arm toolchain defaults to
+        // ARMv7 and faults on that CPU.
+        // zig writes the cpu name with underscores. gcc and clang write it with
+        // dashes.
         b.flag_if_supported("-mcpu=arm1176jzf_s");
         b.flag_if_supported("-mcpu=arm1176jzf-s");
     }

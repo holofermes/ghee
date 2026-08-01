@@ -1,14 +1,12 @@
-//! Port of ghee/h264.py (see that file for the reference implementation).
-//!
-//! H264 output. Two backends behind one shape, both emitting Annex-B access
-//! units, so the CLI pipe, the serve /h264 endpoint, and mpv see identical
-//! bytes:
+//! H264 output. Two lanes sit behind one shape. Both emit Annex-B access
+//! units, so the CLI pipe, the serve /h264 endpoint and mpv see identical
+//! bytes.
 //!
 //! - HardwareH264: zero-copy GL -> linear dmabuf -> V4L2 M2M (bcm2835-codec,
-//!   /dev/video11, Pi 1 through Pi 4). The render itself lands in the encoder's
-//!   buffer; no glReadPixels anywhere.
-//! - SoftwareH264: an ffmpeg/libx264 subprocess fed the readback frames (Pi 5
-//!   has no hardware video encoder at all; desktops likewise via this path).
+//!   /dev/video11, Pi 1 through Pi 4). The render lands in the encoder's own
+//!   buffer. Nothing calls glReadPixels.
+//! - SoftwareH264: an ffmpeg/libx264 subprocess takes the readback frames. A
+//!   Pi 5 has no hardware video encoder, and a desktop takes this lane too.
 
 use std::ffi::CStr;
 use std::io::{self, Read, Write};
@@ -48,8 +46,8 @@ pub struct ColorSpace {
     pub full_range: bool,
 }
 
-// The VPU converts with a fixed BT.601 full-range matrix and writes no VUI, so
-// unhinted browsers guess BT.709 limited. The software lane is x264 tagged
+// The VPU converts with a fixed BT.601 full-range matrix and writes no VUI. An
+// unhinted browser then guesses BT.709 limited. x264 tags the software lane
 // BT.601 limited.
 pub const HW_COLOR: ColorSpace = ColorSpace {
     primaries: "bt709",
@@ -64,7 +62,7 @@ pub const SW_COLOR: ColorSpace = ColorSpace {
     full_range: false,
 };
 
-/// bytes.find(needle, from).
+/// The first index of `needle` in `hay` at or after `from`.
 fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     let tail = hay.get(from..)?;
     tail.windows(needle.len())
@@ -72,9 +70,9 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .map(|i| i + from)
 }
 
-/// Split an Annex-B access unit into raw NAL units (no start codes). A 4-byte
-/// start code's leading 00 lands on the previous NAL's tail and is dropped by
-/// the zero strip, same as trailing_zero_8bits padding.
+/// Split an Annex-B access unit into raw NAL units (no start codes). The
+/// leading 00 of a 4-byte start code lands on the previous NAL's tail. The
+/// zero strip drops it, the same as trailing_zero_8bits padding.
 pub fn split_annexb(au: &[u8]) -> Vec<&[u8]> {
     let mut nals = Vec::new();
     let mut i = find(au, START_CODE, 0);
@@ -167,16 +165,16 @@ pub fn wire_frame(t: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 // bcm2835-codec refuses an input buffer under 64KiB ("buffer size mismatch
-// sizeimage N < min size 65536" in dmesg) and reads 4 bytes a pixel, so a frame
+// sizeimage N < min size 65536" in dmesg). It reads 4 bytes a pixel. A frame
 // under this many pixels has no hardware lane at any bitrate.
 pub const HW_MIN_PIXELS: i32 = 65536 / 4;
 
-/// An access unit and whether it is a keyframe; None while nothing is ready.
+/// An access unit and its keyframe flag. None while nothing is ready.
 pub type Au<'a> = (Option<&'a [u8]>, bool);
 
-/// Zero-copy V4L2 encoder bound to a Renderer's GL context. All methods must
-/// run on the renderer's thread (they issue GL calls), and the encoder must not
-/// outlive the renderer it was created from.
+/// Zero-copy V4L2 encoder bound to a Renderer's GL context. Every method issues
+/// GL calls, so every method runs on the renderer's thread. The encoder never
+/// outlives its renderer.
 pub struct HardwareH264 {
     scene: *mut ffi::GheeScene,
     #[allow(dead_code)]
@@ -228,7 +226,7 @@ impl HardwareH264 {
             bail!("hardware encode failed: {}", self.last_error());
         }
         if rc > 0 {
-            return Ok((None, false)); // pipeline priming: no compressed output yet
+            return Ok((None, false)); // the pipeline primes: no output yet
         }
         Ok((
             Some(unsafe { slice::from_raw_parts(nal, len as usize) }),
@@ -236,8 +234,8 @@ impl HardwareH264 {
         ))
     }
 
-    /// Encode the frame the last render()/present() produced (display mirror:
-    /// one render feeds screen and stream).
+    /// Encode the frame the last render() or present() leaves. One render
+    /// feeds the screen and the stream.
     pub fn encode_last(&mut self) -> Result<Au<'_>> {
         let mut nal: *const u8 = ptr::null();
         let (mut len, mut key): (c_int, c_int) = (0, 0);
@@ -272,9 +270,9 @@ impl HardwareH264 {
         ))
     }
 
-    /// End of stream: the access units the encoder still owes, one per flush,
-    /// until it reports drained. Without it a capture ends mid-GOP and loses its
-    /// last frames.
+    /// End of stream: the access units the encoder still owes, one per flush.
+    /// It runs until the encoder reports drained. A capture that skips it ends
+    /// mid-GOP and loses its last frames.
     pub fn drain(&mut self) -> HardwareDrain<'_> {
         HardwareDrain { enc: Some(self) }
     }
@@ -325,7 +323,7 @@ fn err_text(err: *mut c_char) -> String {
     }
 }
 
-/// shutil.which: an executable file of that name on PATH.
+/// True when PATH holds an executable file of that name.
 fn on_path(program: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
@@ -337,11 +335,12 @@ fn on_path(program: &str) -> bool {
     })
 }
 
-/// Python's SoftwareH264 drain/close timeout.
+/// How long SoftwareH264 waits for ffmpeg to drain and exit.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// ffmpeg/libx264 subprocess. feed() it readback frames; get_au() returns
-/// complete access units (x264 runs with aud=1 so AU boundaries are explicit).
+/// ffmpeg/libx264 subprocess. feed() takes the readback frames. get_au()
+/// returns complete access units. x264 runs with aud=1, so an AU boundary is
+/// explicit.
 pub struct SoftwareH264 {
     #[allow(dead_code)]
     pub w: i32,
@@ -385,9 +384,9 @@ impl SoftwareH264 {
                 "-tune",
                 "zerolatency",
                 "-pix_fmt",
-                "yuv420p", // 4:4:4 would break WebCodecs/hw decoders
-                // pin the RGB->YUV matrix/range and tag the stream to match;
-                // untagged streams decode with guessed colorimetry
+                "yuv420p", // 4:4:4 breaks WebCodecs and hardware decoders
+                // pin the RGB->YUV matrix and range, then tag the stream to
+                // match. A decoder guesses an untagged stream's colorimetry.
                 "-vf",
                 "scale=out_color_matrix=bt601:out_range=tv",
                 "-colorspace",
@@ -435,7 +434,7 @@ impl SoftwareH264 {
         }
     }
 
-    /// (au|None, is_key). None = nothing ready within timeout / ended.
+    /// (au or None, is_key). None means nothing arrives inside the timeout.
     pub fn get_au(&mut self, timeout: Duration) -> (Option<Vec<u8>>, bool) {
         let Ok(au) = self.rx.recv_timeout(timeout) else {
             return (None, false);
@@ -444,7 +443,7 @@ impl SoftwareH264 {
         (Some(au), is_key)
     }
 
-    /// No mid-stream control over the pipe; viewers join at the next GOP.
+    /// The pipe takes no mid-stream control. A viewer joins at the next GOP.
     #[allow(dead_code)]
     pub fn force_keyframe(&mut self) {}
 
@@ -512,7 +511,7 @@ fn pump(mut stdout: ChildStdout, tx: &SyncSender<Vec<u8>>) {
             buf.drain(..next);
         }
     }
-    // trailing AU after EOF (stream flushed on close)
+    // the closing flush leaves one AU after EOF
     if !buf.is_empty() && find_aud(&buf, 0).is_some() {
         let _ = tx.send(buf);
     }
@@ -600,13 +599,12 @@ pub fn make_encoder(
     }
 }
 
-/// An Annex-B H264 stream as an output sink: a file, or a pipe to mpv or
-/// ffmpeg. Hardware encodes the frame the loop just drew without ever reading
-/// it back; software takes the readback.
+/// An Annex-B H264 stream as a sink: a file, or a pipe to mpv or ffmpeg. The
+/// hardware lane encodes the frame the loop just drew and never reads it back.
+/// The software lane takes the readback.
 ///
-/// Every frame encodes. H264's own delta coding is what makes a static frame
-/// cheap, so this sink does not hold its last one and a clean frame is never
-/// skipped for it.
+/// Every frame encodes. H264 delta coding makes a static frame cheap, so this
+/// sink holds no last frame and skips no clean frame.
 pub struct H264Stream {
     stream: Box<dyn Write + Send>,
     enc: Encoder,
@@ -635,7 +633,7 @@ impl H264Stream {
     }
 }
 
-/// The reader at the far end of the pipe went away.
+/// True when the reader at the far end of the pipe is gone.
 fn dropped(e: &io::Error) -> bool {
     matches!(
         e.kind(),
@@ -681,8 +679,7 @@ impl Output for H264Stream {
         Ok(())
     }
 
-    /// Drain what the encoder still owes: without it a capture ends mid-GOP and
-    /// loses its last frames. The stream itself belongs to whoever opened it.
+    /// Drain what the encoder still owes. The stream belongs to its opener.
     fn close(&mut self) -> Result<()> {
         let H264Stream { stream, enc, .. } = self;
         let mut wrote = Ok(());
@@ -729,8 +726,7 @@ mod tests {
     /// One GL device, one Renderer at a time.
     static GPU: Mutex<()> = Mutex::new(());
 
-    /// The shared renderer of tests/conftest.py. None where that fixture skips:
-    /// no GL device.
+    /// The renderer these tests share. None where there is no GL device.
     fn gpu() -> Option<(MutexGuard<'static, ()>, Renderer)> {
         let guard = GPU.lock().unwrap_or_else(|e| e.into_inner());
         for dev in probe_dri_devices() {
@@ -835,7 +831,7 @@ mod tests {
         );
     }
 
-    /// A keyframe access unit carries its own SPS/PPS, so a viewer's config and
+    /// A keyframe access unit carries its own SPS/PPS. A viewer's config and
     /// its first frame come from the same bytes.
     #[test]
     fn a_keyframe_access_unit_carries_its_parameter_sets() {
@@ -946,8 +942,9 @@ mod tests {
         aus.extend(enc.drain(DRAIN_TIMEOUT));
         enc.close(DRAIN_TIMEOUT).unwrap();
         let stream = aus.concat();
-        assert_eq!(aus.len(), n as usize); // zerolatency: one AU per frame once flushed
-                                           // first AU carries config + a keyframe
+        // zerolatency gives one AU per frame once flushed
+        assert_eq!(aus.len(), n as usize);
+        // the first AU carries the config and a keyframe
         let types0: Vec<u8> = split_annexb(&aus[0]).iter().map(|x| x[0] & 0x1F).collect();
         assert!(types0.contains(&NAL_SPS) && types0.contains(&NAL_IDR));
         assert!(aus
@@ -986,8 +983,7 @@ mod tests {
         if !have_ffmpeg() {
             return;
         }
-        // solid red, decoded honoring the stream's own tags. Red catches channel
-        // swaps and matrix errors that green frames are blind to.
+        // red catches the channel swaps and matrix errors a green frame hides
         let (w, h) = (160usize, 120usize);
         let mut enc = SoftwareH264::new(w as i32, h as i32, 30, 2_000_000, 4).unwrap();
         let mut f = vec![0u8; w * h * 4];
@@ -1037,7 +1033,8 @@ mod tests {
         if !have_ffmpeg() {
             return;
         }
-        // brightness ramp in, brightness ramp out: proves pixels reach the codec
+        // a brightness ramp in and a brightness ramp out: the pixels reach
+        // the codec
         let (w, h, n) = (160usize, 120usize, 20usize);
         let mut enc = SoftwareH264::new(w as i32, h as i32, 30, 2_000_000, 4).unwrap();
         for f in gradient_frames(w as i32, h as i32, n as i32) {
@@ -1059,9 +1056,10 @@ mod tests {
 
     #[test]
     fn a_frame_under_the_codec_minimum_is_refused_by_name() {
-        // A panel too small for the codec has to say so. Left to V4L2 it fails
-        // somewhere inside the queue setup, which reads as "this board has no
-        // hardware encoder" and takes every later stream down the software lane.
+        // A panel under the codec minimum has to say so by name. V4L2 alone
+        // fails inside the queue setup. That failure reads as "this board has
+        // no hardware encoder" and sends every later stream to the software
+        // lane.
         let Some((_g, r)) = gpu() else { return };
         let msg = match HardwareH264::new(&r, 128, 32, 30, 4_000_000) {
             Ok(_) => panic!("a 128x32 frame was accepted"),
@@ -1074,7 +1072,7 @@ mod tests {
     #[test]
     fn hardware_unavailable_falls_back() {
         if Path::new("/dev/video11").exists() {
-            return; // board has a hardware encoder; fallback not exercised
+            return; // this board has a hardware encoder, so nothing falls back
         }
         let Some((_g, r)) = gpu() else { return };
         assert!(HardwareH264::new(&r, 64, 64, 30, 4_000_000).is_err());

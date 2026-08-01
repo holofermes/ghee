@@ -1,17 +1,15 @@
-//! Port of ghee/loop.py (see that file for the reference implementation).
-//!
 //! One loop for everything ghee renders: image files, a pipe, a panel, KMS
-//! scanout, H264, the browser console, or several of those at once. It draws a
-//! frame and hands it to its sinks; what each sink needs from a frame the sink
-//! declares itself (Output).
+//! scanout, H264, or the browser console. It drives several at once too. It
+//! draws a frame and hands it to its sinks. Each sink declares what it needs
+//! from a frame (Output).
 //!
 //! GL is thread-affine, so the renderer belongs to the thread that runs the
-//! loop: a host running the loop in a worker creates it there.
+//! loop. A host that runs the loop in a worker creates the renderer there.
 //!
-//! A host drives the loop through callables instead of subclassing it: `poll`
-//! drains its command queue, `idle` says how long a skipped frame waits,
-//! `stopping` ends the run, `on_frame`/`on_error` publish. The controller slot
-//! is read every frame, so replacing what it holds switches scenes mid-run.
+//! A host drives the loop through hooks. `poll` drains its command queue.
+//! `idle` says how long a skipped frame waits. `stopping` ends the run.
+//! `on_frame` and `on_error` publish. The loop reads the controller slot every
+//! frame, so a new controller switches scenes mid-run.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -21,10 +19,10 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 
 use crate::engine::{Feed, Provider, Renderer};
-use crate::scene::ArraySize;
+use crate::scene::{ArraySize, ParamValue};
 use crate::stats::{monotonic, FrameRate};
 
-/// What the loop asks of a renderer. Renderer is the one implementation; the
+/// What the loop asks of a renderer. Renderer is the one implementation. The
 /// loop's own tests drive a recording stand-in through it.
 pub trait RenderTarget {
     fn width(&self) -> i32;
@@ -32,6 +30,13 @@ pub trait RenderTarget {
     fn components(&self) -> i32;
     fn set_dt(&self, value: f64);
     fn set_time(&self, t: f64);
+
+    /// Set one live param. `pass` names a pass's param, and None takes the
+    /// scene's. False when the pass or the uniform is missing. Required: a
+    /// silent default here once dropped every procedural-scene param in serve.
+    fn set_param(&self, pass: Option<&str>, name: &str, ty: &str, value: &ParamValue)
+        -> Result<bool>;
+
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()>;
     fn render_into(
         &mut self,
@@ -67,6 +72,19 @@ impl RenderTarget for Renderer {
         Renderer::set_time(self, Some(t));
     }
 
+    fn set_param(
+        &self,
+        pass: Option<&str>,
+        name: &str,
+        ty: &str,
+        value: &ParamValue,
+    ) -> Result<bool> {
+        match pass {
+            Some(pass) => Renderer::set_param(self, pass, name, ty, value),
+            None => Renderer::set_scene_param(self, name, ty, value),
+        }
+    }
+
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
         Renderer::draw(self, provider)
     }
@@ -89,8 +107,8 @@ impl RenderTarget for Renderer {
     }
 }
 
-/// One frame as a sink sees it: the readback bytes and the shape they came back
-/// at, row-major (height, width, components).
+/// One frame as a sink sees it: the readback bytes, and their shape, row-major
+/// (height, width, components).
 #[derive(Clone, Copy)]
 pub struct Frame<'a> {
     pub data: &'a [u8],
@@ -108,7 +126,7 @@ pub struct OwnedFrame {
 }
 
 impl OwnedFrame {
-    /// (height, width, components), numpy's shape order.
+    /// (height, width, components), the layout order of the frame buffer.
     pub fn of(shape: (i32, i32, i32)) -> OwnedFrame {
         let (height, width, components) = shape;
         OwnedFrame {
@@ -137,16 +155,16 @@ impl OwnedFrame {
     }
 }
 
-/// A sink takes an RGB(A) frame and puts it somewhere: image files on disk, a
-/// hardware panel, a byte stream. What each one needs from a frame it declares
-/// itself, through the flags and wants()/readback() below.
+/// A sink takes an RGB(A) frame and puts it somewhere: an image file, a
+/// hardware panel, a byte stream. Each sink declares what it needs from a
+/// frame, through the flags and wants()/readback() below.
 pub trait Output {
     /// what a host publishes as this sink's /stats destination
     fn dest(&self) -> &str {
         ""
     }
 
-    /// the renderer presents to it (KMS); no readback for it
+    /// the renderer presents to it (KMS), and nothing reads it back
     fn scanout(&self) -> bool {
         false
     }
@@ -166,14 +184,15 @@ pub trait Output {
         false
     }
 
-    /// Whether this sink takes a CPU frame this iteration. False for a sink fed
-    /// by the GPU (scanout, a hardware encoder) or one throttling itself.
+    /// True when this sink takes a CPU frame this iteration. A sink the GPU
+    /// feeds (scanout, a hardware encoder) answers false. A sink that throttles
+    /// itself answers false too.
     fn wants(&self, _frame: u64) -> bool {
         true
     }
 
-    /// (w, h) to read the frame back at, or None for the render size read back
-    /// directly. A size is a GPU downscale, which costs a blit and saves the
+    /// (w, h) to read the frame back at. None reads the render size back
+    /// directly. A size is a GPU downscale: it costs a blit and saves the
     /// bytes.
     fn readback(&self) -> Option<(i32, i32)> {
         None
@@ -210,41 +229,51 @@ pub trait Output {
         Ok(())
     }
 
-    /// optional hook, sinks override only if they hold resources
+    /// optional hook: a sink overrides it only when it holds resources
     fn close(&mut self) -> Result<()> {
         Ok(())
     }
 }
 
-/// Paces a render loop: ghee.output's AdaptivePacer and FixedPacer.
+/// Paces a render loop: output::AdaptivePacer and output::FixedPacer.
 pub trait Pacer {
-    /// Seconds to sleep after a frame: write_s = this frame's sink write,
-    /// frame_s = the whole frame so far (render + write).
+    /// Seconds to sleep after a frame. write_s is this frame's sink write.
+    /// frame_s is the whole frame so far (render + write).
     fn sleep_for(&mut self, write_s: f64, frame_s: f64) -> f64;
 
-    /// Current frame period without a new measurement: what a skipped
-    /// (dirty=False) frame sleeps before re-polling.
+    /// The current frame period, with no new measurement. A skipped (clean)
+    /// frame sleeps this long before it polls again.
     fn idle_period(&self) -> f64;
 }
 
 /// Hooks a scene into the render loop. Every method is optional.
 pub trait SceneController {
-    /// Floats for a declared array this frame, None to fall through to the
-    /// host's source, or Feed::Unchanged to declare the engine's texture
+    /// Once an iteration, before the skip decision and before update(). A
+    /// process reads its messages here and takes this tick. An error ends the
+    /// frame, so a dead process reports it here.
+    fn tick(&mut self, _frame: u64, _t: f64, _dt: f64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Floats for a declared array this frame. None falls through to the
+    /// host's source. Feed::Unchanged declares that the engine's texture
     /// already holds this array.
     fn provide(&mut self, _name: &str, _size: ArraySize, _frame: u64) -> Option<Feed> {
         None
     }
+
+    /// A host-side (string) param changes. The next tick carries it.
+    fn on_param(&mut self, _name: &str, _value: &str) {}
 
     /// Per-frame hook before the draw (e.g. set live params).
     fn update(&mut self, _renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
         Ok(())
     }
 
-    /// False = this frame would look identical to the last one, so the loop may
-    /// skip it entirely (the display keeps scanning out the last flipped
-    /// buffer). Default true: render every frame, as any scene animating on
-    /// `time` needs. `frame` advances on skipped frames too.
+    /// False means this frame matches the last one, so the loop skips it
+    /// whole. The display keeps scanning out the last flipped buffer. The
+    /// default is true: every frame renders, which a scene animating on `time`
+    /// needs. `frame` advances over a skipped frame too.
     fn dirty(&mut self, _frame: u64, _t: f64) -> bool {
         true
     }
@@ -254,9 +283,9 @@ pub trait SceneController {
 /// by putting a new one in here.
 pub type ControllerSlot = RefCell<Option<Box<dyn SceneController>>>;
 
-/// A frame draws when something demands it: a queued command, the very first
-/// frame (the sink must show something once), a scene with no controller
-/// (free-running), or a controller reporting dirty.
+/// A frame draws on any of four demands. The demands are a queued command, the
+/// first frame, a scene with no controller, and a controller that reports
+/// dirty. A sink has to show something once, so the first frame always draws.
 pub fn should_draw(
     forced: bool,
     controller: Option<&mut dyn SceneController>,
@@ -278,7 +307,7 @@ fn sleep(seconds: f64) {
     }
 }
 
-/// The buffer this frame is read back into.
+/// The buffer the loop reads this frame back into.
 enum Target {
     /// no readback
     None,
@@ -294,12 +323,12 @@ pub type LoopProvider<'a> = Box<dyn FnMut(&str, ArraySize, u64) -> Feed + 'a>;
 pub type OnFrame<'a> = Box<dyn FnMut(&Loop<'a>, f64) + 'a>;
 pub type OnError<'a> = Box<dyn FnMut(&anyhow::Error) -> bool + 'a>;
 
-/// Draw frames into a list of sinks until the frame budget runs out or the host
-/// stops it.
+/// Draw frames into a list of sinks. The run ends on the frame budget, or when
+/// the host stops it.
 ///
-/// frames=0 runs until `stopping`; anything else is a finite render. The loop
-/// turns its sinks on and off around the run but never closes them: their
-/// lifetime belongs to whoever built them.
+/// frames=0 runs until `stopping`. Any other count is a finite render. The loop
+/// turns its sinks on and off around the run, and never closes them. Their
+/// lifetime belongs to their builder.
 pub struct Loop<'a> {
     pub renderer: &'a mut dyn RenderTarget,
     pub sinks: Vec<&'a mut dyn Output>,
@@ -326,7 +355,7 @@ pub struct Loop<'a> {
     pub frame: u64,
     pub drawn: u64,
     pub elapsed: f64,
-    /// measured frame period, the DT a scene is fed
+    /// measured frame period, the DT the loop feeds a scene
     pub period: Option<f64>,
     prev: Option<f64>,
     buf: Vec<u8>,
@@ -360,7 +389,7 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// The destination names the frames reach (ghee.stats DEST_*).
+    /// The destination names the frames reach (stats::DEST_*).
     pub fn out(&self) -> Vec<&str> {
         self.sinks
             .iter()
@@ -386,9 +415,8 @@ impl<'a> Loop<'a> {
 
     pub fn run(&mut self) -> Result<()> {
         let scanout = self.sinks.iter().any(|s| s.scanout());
-        // Only a run that never ends, into sinks that all keep showing their
-        // last frame, may skip a frame a controller reports clean. A file or a
-        // pipe would lose it.
+        // Only an endless run into sinks that all hold their last frame may
+        // skip a clean frame. A file or a pipe loses it.
         let skippable =
             self.frames == 0 && !self.sinks.is_empty() && self.sinks.iter().all(|s| s.persists());
         let mut lit = false;
@@ -435,12 +463,15 @@ impl<'a> Loop<'a> {
             Some(p) => p(),
             None => false,
         };
-        // the t a controller is handed; unpinned it assumes a 60Hz cadence, so a
-        // slower panel gets a proportionally scaled t
+        // the t the loop hands a controller. Unpinned it assumes a 60Hz
+        // cadence, so a slower panel gets a scaled t.
         let t = match self.timestep {
             Some(step) => self.frame as f64 * step,
             None => self.frame as f64 / 60.0,
         };
+        // before the skip decision: a scene fed from outside says whether this
+        // tick needs a frame
+        self.tick_controller(t)?;
         if skippable && !self.should_draw_now(forced, t) {
             self.frame += 1;
             let idle = self.idle();
@@ -451,9 +482,9 @@ impl<'a> Loop<'a> {
             self.period = Some(t0 - prev);
         }
         self.prev = Some(t0);
-        // The one place DT is fed: the real frame period, or the pinned step
-        // when the render has to be reproducible. Until a period has been
-        // measured the engine's default stands.
+        // The one place the loop feeds DT: the measured frame period, or the
+        // pinned step for a reproducible render. Before the first measurement
+        // the engine's default stands.
         if let Some(step) = self.timestep {
             self.renderer.set_dt(step);
         } else if let Some(period) = self.period {
@@ -461,7 +492,7 @@ impl<'a> Loop<'a> {
         }
         let drew = self.draw_frame(scanout, t)?;
         if !*lit {
-            // nothing was on the panel to light up before
+            // the panel now holds a frame to light
             *lit = true;
             for s in self.sinks.iter_mut() {
                 s.turn_on()?;
@@ -489,6 +520,21 @@ impl<'a> Loop<'a> {
         Ok(())
     }
 
+    /// Hand the controller this iteration, drawn or skipped. DT is the pinned
+    /// step, else the last measured period.
+    fn tick_controller(&mut self, t: f64) -> Result<()> {
+        let Some(cell) = self.controller else {
+            return Ok(());
+        };
+        let frame = self.frame;
+        let dt = self.timestep.or(self.period).unwrap_or(1.0 / 60.0);
+        let mut slot = cell.borrow_mut();
+        match (*slot).as_mut() {
+            Some(c) => c.tick(frame, t, dt),
+            None => Ok(()),
+        }
+    }
+
     fn should_draw_now(&mut self, forced: bool, t: f64) -> bool {
         let frame = self.frame;
         match self.controller {
@@ -505,7 +551,7 @@ impl<'a> Loop<'a> {
     }
 
     /// Update the controller, render, and hand the frame to its sinks. Returns
-    /// the clock at the end of the render, before the sinks were written.
+    /// the clock at the end of the render, before the sink writes.
     fn draw_frame(&mut self, scanout: bool, t: f64) -> Result<f64> {
         let frame = self.frame;
         let timestep = self.timestep;
@@ -553,12 +599,12 @@ impl<'a> Loop<'a> {
             }
             Target::Reuse
         } else {
-            // a sink keeps the frame past write() (hands it to another thread),
-            // so the next readback must not land in the same memory
+            // a sink keeps the frame past write() and hands it to another
+            // thread. The next readback needs its own memory.
             Target::Fresh(OwnedFrame::of(shape))
         };
-        // The array provider for one frame: the controller first, the host's
-        // source (or the placeholder) for anything it does not answer.
+        // The array provider for one frame. The controller answers first. The
+        // host's source (or the placeholder) takes anything it leaves.
         let has_feed = ctrl.is_some() || provider.is_some();
         let mut feed = |name: &str, size: ArraySize| -> Feed {
             if let Some(c) = ctrl.as_mut() {
@@ -579,8 +625,8 @@ impl<'a> Loop<'a> {
         {
             let provider: Option<Provider<'_>> = if has_feed { Some(&mut feed) } else { None };
             if scanout {
-                // present() reads back through a downscale blit or not at all;
-                // there is no direct full-frame path here.
+                // present() reads back through a downscale blit, or not at
+                // all. It has no direct full-frame path.
                 let preview = out.map(|o| {
                     let (w, h) = size.unwrap_or((renderer.width(), renderer.height()));
                     (o, (w, h))
@@ -625,9 +671,9 @@ fn frame_len(shape: (i32, i32, i32)) -> usize {
     (i64::from(shape.0) * i64::from(shape.1) * i64::from(shape.2)) as usize
 }
 
-/// The size the frame is read back at for this set of readers: None for the
-/// render size read back directly, else the largest downscale asked for (a
-/// smaller consumer downscales further itself).
+/// The size this set of readers reads the frame back at. None reads the render
+/// size back directly. Any other answer is the largest downscale asked for, and
+/// a smaller consumer downscales further itself.
 fn readback_size(sinks: &[&mut dyn Output], readers: &[usize]) -> Option<(i32, i32)> {
     if readers.is_empty() {
         return None;
@@ -664,10 +710,11 @@ mod tests {
     const H: i32 = 48;
     const COMPONENTS: i32 = 4;
 
-    /// One call the loop made on the renderer: (kind, readback bytes, out_size).
+    /// One call the loop makes on the renderer: (kind, readback bytes,
+    /// out_size).
     type Call = (&'static str, Option<usize>, Option<(i32, i32)>);
 
-    /// A Renderer stand-in that records what the loop asked of it.
+    /// A Renderer stand-in that records what the loop asks of it.
     #[derive(Default)]
     struct Recorder {
         calls: Vec<Call>,
@@ -700,6 +747,16 @@ mod tests {
     impl RenderTarget for Recorder {
         fn width(&self) -> i32 {
             W
+        }
+
+        fn set_param(
+            &self,
+            _pass: Option<&str>,
+            _name: &str,
+            _ty: &str,
+            _value: &ParamValue,
+        ) -> Result<bool> {
+            Ok(false) // the recorder holds no uniforms
         }
 
         fn height(&self) -> i32 {
@@ -746,7 +803,7 @@ mod tests {
         }
     }
 
-    /// What one sink write saw.
+    /// What one sink write sees.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     struct Got {
         at: usize,
@@ -970,8 +1027,8 @@ mod tests {
 
     #[test]
     fn a_sink_needing_the_whole_frame_wins_over_a_downscale() {
-        // None is the render size read back directly; a smaller consumer
-        // downscales the big frame itself rather than costing it detail.
+        // None is the render size read back directly. A smaller consumer
+        // downscales the big frame itself.
         let mut r = Recorder::default();
         let (mut a, mut b) = (Sink::new(), Sink::new());
         b.size = Some((32, 24));
@@ -993,9 +1050,9 @@ mod tests {
             lp.run().unwrap();
         }
         assert_eq!(p.submitted.len(), 3);
-        assert_eq!(p.lent, p.submitted); // the loop drew into the sink's own buffers
+        assert_eq!(p.lent, p.submitted); // the loop draws into the sink's buffers
         assert_eq!(r.buffers[0], p.lent[0]);
-        assert!(p.frames.is_empty()); // write() never ran: no copy anywhere
+        assert!(p.frames.is_empty()); // write() never runs: nothing copies
     }
 
     #[test]
@@ -1049,7 +1106,7 @@ mod tests {
             let mut lp = Loop::new(&mut r, vec![&mut s]);
             lp.frames = 3;
             lp.run().unwrap();
-            // nothing overwrote a held frame: the loop kept no buffer to reuse
+            // the loop keeps no buffer to reuse, so nothing overwrites a held frame
             assert!(lp.buf.is_empty());
         }
         assert_eq!(s.frames.len(), 3);
@@ -1256,8 +1313,8 @@ mod tests {
 
     #[test]
     fn the_idle_wait_falls_back_to_the_measured_period() {
-        // Without a pacer or a host's own interval there is still an answer: a
-        // scanout render with no --fps has neither.
+        // A scanout render with no --fps has no pacer and no host interval.
+        // idle() still answers.
         let mut r = Recorder::default();
         let mut k = Sink::scanout();
         let mut lp = Loop::new(&mut r, vec![&mut k]);
@@ -1338,7 +1395,7 @@ mod tests {
             lp.run().unwrap();
         }
         assert_eq!(s.on, 1);
-        // the backlight came up over a drawn frame, not a blank panel
+        // the backlight comes up over a drawn frame
         assert!(!s.frames.is_empty());
     }
 
@@ -1409,9 +1466,74 @@ mod tests {
             }));
             lp.run().unwrap();
         }
-        // update() writes through the renderer, so the recorded times name the
-        // controller that ran each frame
+        // update() writes through the renderer, so each recorded time names
+        // the controller of that frame
         assert_eq!(*r.times.borrow(), vec![1.0, 2.0, 2.0, 2.0]);
+    }
+
+    /// The loop ticks a scene fed from outside even for a skipped frame. The
+    /// tick is what earns the next answer.
+    #[test]
+    fn the_controller_is_ticked_once_an_iteration_drawn_or_skipped() {
+        struct Ticker(Arc<Mutex<Vec<(u64, f64)>>>);
+
+        impl SceneController for Ticker {
+            fn tick(&mut self, frame: u64, _t: f64, dt: f64) -> Result<()> {
+                self.0.lock().unwrap().push((frame, dt));
+                Ok(())
+            }
+
+            fn dirty(&mut self, _frame: u64, _t: f64) -> bool {
+                false
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut r = Recorder::default();
+        let mut s = Sink::new();
+        s.persists = true;
+        let ctrl = slot(Ticker(seen.clone()));
+        let (frame, drawn);
+        {
+            let mut lp = Loop::new(&mut r, vec![&mut s]);
+            lp.controller = Some(&ctrl);
+            lp.timestep = Some(0.25);
+            lp.stopping = Some(Box::new(after(4)));
+            lp.idle_hook = Some(Box::new(|_| 0.0));
+            lp.run().unwrap();
+            (frame, drawn) = (lp.frame, lp.drawn);
+        }
+        let seen = seen.lock().unwrap();
+        assert_eq!(drawn, 1); // the first frame draws, the rest are clean
+        assert_eq!(seen.len() as u64, frame);
+        assert_eq!(seen[0], (0, 0.25));
+        assert_eq!(
+            seen.iter().map(|(f, _)| *f).collect::<Vec<u64>>(),
+            (0..frame).collect::<Vec<u64>>()
+        );
+    }
+
+    #[test]
+    fn a_tick_that_fails_ends_the_frame() {
+        struct Gone;
+
+        impl SceneController for Gone {
+            fn tick(&mut self, _frame: u64, _t: f64, _dt: f64) -> Result<()> {
+                bail!("the scene process exited")
+            }
+        }
+
+        let mut r = Recorder::default();
+        let mut s = Sink::new();
+        let ctrl = slot(Gone);
+        let mut lp = Loop::new(&mut r, vec![&mut s]);
+        lp.controller = Some(&ctrl);
+        lp.frames = 2;
+        assert_eq!(
+            lp.run().unwrap_err().to_string(),
+            "the scene process exited"
+        );
+        assert_eq!(lp.drawn, 0);
     }
 
     #[test]

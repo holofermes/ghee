@@ -1,19 +1,19 @@
-//! Port of ghee/feeds.py (see that file for the reference implementation).
+//! The placeholder array data ghee feeds a scene when nothing else does.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use crate::scene::ArraySize;
 
-/// Normalised coordinates over an array: x alone for a 1D size, x and y over
-/// the whole grid for a 2D one.
+/// Normalised coordinates over an array. A 1D size takes x alone. A 2D size
+/// takes x and y over the whole grid.
 enum Coords {
     Linear(Vec<f32>),
     Grid(Vec<f32>, Vec<f32>),
 }
 
-/// Keyed (n, 0) for a 1D size and (w, h) for a 2D one. A grid dimension is
-/// validated 1 or more (ghee.scene.ArrayInput), so the two never collide.
+/// Keyed (n, 0) for a 1D size and (w, h) for a 2D one. scene::ArrayInput
+/// validates a grid dimension as 1 or more, so the two keys never collide.
 static GRIDS: Mutex<BTreeMap<(i64, i64), Coords>> = Mutex::new(BTreeMap::new());
 
 fn key(size: ArraySize) -> (i64, i64) {
@@ -23,8 +23,8 @@ fn key(size: ArraySize) -> (i64, i64) {
     }
 }
 
-/// Normalised coordinates for a size, built once and kept: only the size
-/// changes them, not the frame.
+/// Normalised coordinates for a size, built once and kept. Only the size
+/// changes them.
 fn build(size: ArraySize) -> Coords {
     match size {
         ArraySize::Linear(n) => {
@@ -46,11 +46,11 @@ fn build(size: ArraySize) -> Coords {
     }
 }
 
-/// Placeholder values for any named array, so a scene still animates if
-/// nothing is attached. The name is the provider's, unread here.
+/// Placeholder values for any named array. A scene with no data attached
+/// still animates. The name belongs to the provider and stays unread here.
 pub fn demo_feed(_name: &str, size: ArraySize, frame: u64) -> Vec<f32> {
-    // t is a float the array ops narrow to f32 one term at a time, as numpy's
-    // weak scalars do.
+    // t stays f64. Each term narrows to f32 on its own, which the pinned
+    // values depend on.
     let t = frame as f64 * 0.05;
     let (t1, t06, t035) = (t as f32, (t * 0.6) as f32, (t * 0.35) as f32);
     let mut grids = GRIDS.lock().unwrap_or_else(|e| e.into_inner());
@@ -117,16 +117,15 @@ mod tests {
         let b = demo_feed("amps", ArraySize::Linear(24), 40);
         assert_eq!((a.len(), b.len()), (24, 24));
         assert!(a.iter().all(|v| (0.0..=1.0).contains(v)));
-        // it travels, and the second sine keeps the crest off the beat, so no
-        // frame is a shift of another
+        // the second sine keeps the crest off the beat, so no frame is a
+        // shift of another
         assert!(a.iter().zip(&b).any(|(x, y)| (x - y).abs() > 1e-3));
         let rolled = b.iter().cycle().skip(23).take(24);
         assert!(a.iter().zip(rolled).any(|(x, y)| (x - y).abs() > 1e-2));
     }
 
-    /// The values ghee/feeds.py produces, read off the reference implementation.
     #[test]
-    fn the_placeholder_reproduces_the_python_values() {
+    fn the_placeholder_reproduces_the_recorded_values() {
         let got = demo_feed("amps", ArraySize::Linear(5), 3);
         let want = [
             0.482_854_8,

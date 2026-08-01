@@ -1,30 +1,31 @@
-//! Port of ghee/isf.py (see that file for the reference implementation).
-//!
 //! Import an ISF (Interactive Shader Format) shader as a ghee scene or filter.
 //!
 //! An ISF file is a fragment shader with a JSON header in a leading block
-//! comment: INPUTS (typed uniforms plus image and audio samplers), PASSES (the
-//! render targets and the size each one draws at), and a body written against
-//! ISF's own built-ins.
+//! comment. The header holds INPUTS, which are typed uniforms plus image and
+//! audio samplers. It also holds PASSES, which are the render targets and the
+//! size each one draws at. The body reads ISF's own built-ins.
 //!
 //! A generated shim maps ISF onto the ghee preamble:
 //!
-//!     RENDERSIZE -> resolution         isf_FragNormCoord -> v_texCoord
-//!     TIME       -> time               an image input / PASSES target -> iChannelN
-//!     IMG_*      -> texture2D()        an audio input -> a ghee array
-//!     PASSINDEX  -> a per-pass const int, so the compiler folds the branches
+//! ```text
+//! RENDERSIZE -> resolution         isf_FragNormCoord -> v_texCoord
+//! TIME       -> time               an image input / PASSES target -> iChannelN
+//! IMG_*      -> texture2D()        an audio input -> a ghee array
+//! PASSINDEX  -> a per-pass const int, so the compiler folds the branches
+//! ```
 //!
-//! ISF puts one body in every pass and branches on PASSINDEX, so each ghee pass
-//! gets that same body with its own PASSINDEX constant.
+//! ISF puts one body in every pass and branches on PASSINDEX. Each ghee pass
+//! takes that same body with its own PASSINDEX constant.
 //!
-//! Two things the body cannot keep. A file-scope initializer that reads a
-//! uniform is legal in the GLSL 1.20 ISF is written against and illegal in ESSL
-//! 1.00, so it is hoisted into main. IMG_SIZE cannot be a function (a sampler2D
-//! carries no size), so IMG_SIZE(x) becomes the constant x_isf_size.
+//! The body loses two things. ISF targets GLSL 1.20, which allows a file-scope
+//! initializer that reads a uniform. ESSL 1.00 refuses one, so the import hoists
+//! it into main. IMG_SIZE cannot be a function, because a sampler2D carries no
+//! size. IMG_SIZE(x) becomes the constant x_isf_size.
 //!
-//! Refused, by name and reason: FLOAT (32-bit) pass buffers, which ghee's 8-bit
-//! buffers would saturate silently; a custom ISF vertex shader, whose varyings
-//! ghee's fixed vertex shader does not emit; IMPORTED external images.
+//! ghee refuses three things, by name and reason. A FLOAT (32-bit) pass buffer
+//! saturates silently in ghee's 8-bit buffers. A custom ISF vertex shader writes
+//! varyings ghee's fixed vertex shader does not emit. IMPORTED loads an external
+//! image.
 
 use std::collections::HashMap;
 
@@ -35,20 +36,20 @@ use crate::scene::{
     py_repr, py_str, ArrayInput, Channel, Param, ParamMap, ParamValue, Pass, Scene,
 };
 
-// An audio input that names no MAX gets this many bins.
+// An audio input that names no MAX takes this many bins.
 const AUDIO_BINS: i64 = 256;
 
-// Fetch estimate over this many per fragment: too slow to hold 30fps on VC4.
+// VC4 misses 30fps past this many fetches per fragment.
 const FETCH_BUDGET: i64 = 200;
 
 // Texture units on VC4, the smallest GPU ghee targets.
 const VC4_UNITS: usize = 8;
 
-// Names ghee's own preamble owns. An ISF input or target using one would shadow
-// it, so it is renamed here and in the body.
+// The names ghee's own preamble owns. An ISF input or target with one of these
+// shadows it, so the import renames it here and in the body.
 const RESERVED: [&str; 3] = ["time", "resolution", "v_texCoord"];
 
-/// The render size to_scene/to_filter assume when the caller names none.
+/// The render size to_scene and to_filter take when the caller names none.
 #[allow(dead_code)]
 pub const DEFAULT_SIZE: (i64, i64) = (320, 240);
 
@@ -65,8 +66,8 @@ const IMG_ACCESSORS: [&str; 5] = [
     "vec4 IMG_NORM_THIS_PIXEL(sampler2D s) { return texture2D(s, v_texCoord); }",
 ];
 
-// What an unbound image input reads in scene mode: a checkered gradient with a
-// disc, so a filter imported as a scene shows what it does to something.
+// What an unbound image input reads in scene mode. The pattern is a checkered
+// gradient with a disc, so an imported filter has something to act on.
 pub const SOURCE_PASS: &str = "isf_source";
 
 const SOURCE_CODE: &str = "void main() {
@@ -79,17 +80,17 @@ const SOURCE_CODE: &str = "void main() {
 }
 ";
 
-/// An ISF file ghee cannot import, with the reason and the file it came from.
+/// A refusal, naming the reason. `convert` puts the file name in front.
 fn isf_error(msg: impl std::fmt::Display) -> anyhow::Error {
     anyhow!("{msg}")
 }
 
-/// Python's repr() of a Rust string: the error strings quote the source text.
+/// A string quoted the way the error strings quote source text.
 fn repr(s: &str) -> String {
     py_repr(&Value::String(s.to_string()))
 }
 
-/// Python truthiness of a JSON-decoded value.
+/// True when a JSON value counts as empty: null, false, 0, "", [], {}.
 fn falsy(v: &Value) -> bool {
     match v {
         Value::Null => true,
@@ -101,13 +102,13 @@ fn falsy(v: &Value) -> bool {
     }
 }
 
-/// `d.get(key) or []`: a falsy value stands in for an absent one.
+/// The value at key. A falsy value counts as an absent one.
 fn truthy<'a>(d: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
     d.get(key).filter(|v| !falsy(v))
 }
 
-/// An ISF source, a name to call it, and whether a sibling .vs sits next to it.
-/// A read failure carries the bare strerror, which is what the CLI reports.
+/// An ISF source, a name for it, and whether a sibling .vs file exists. A read
+/// failure carries the bare strerror, which the CLI reports.
 pub fn read_isf(path: &str) -> Result<(String, String, bool)> {
     if path.starts_with("http://") || path.starts_with("https://") {
         bail!("{path}: reading an ISF over http(s) needs an HTTP client this build has none of");
@@ -150,9 +151,9 @@ pub fn split_header(text: &str) -> Result<(Map<String, Value>, String)> {
     Ok((meta, slice(&src, end, src.len())))
 }
 
-/// An ISF WIDTH/HEIGHT: a number, or an equation over $WIDTH, $HEIGHT and
-/// $<inputName> with + - * / and floor/ceil/abs/min/max. Rounds down to a
-/// positive int, which is what a render target can be.
+/// An ISF WIDTH or HEIGHT. It is a number, or an equation over $WIDTH, $HEIGHT
+/// and $<inputName>. The operators are + - * / and floor, ceil, abs, min, max.
+/// The result rounds down to a positive int, which is what a render target takes.
 pub fn eval_size(expr: &Value, values: &HashMap<String, f64>) -> Result<i64> {
     let v = match expr {
         Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
@@ -173,11 +174,9 @@ pub fn eval_size(expr: &Value, values: &HashMap<String, f64>) -> Result<i64> {
     Ok(1.max(v as i64))
 }
 
-/// Move every non-const file-scope initializer into the top of main. ESSL 1.00
-/// wants a constant expression there and GLSL 1.20 does not, so
-/// `float ratio = RENDERSIZE.x / RENDERSIZE.y;` at file scope is the single most
-/// common reason an ISF body will not compile. Returns the body and the names
-/// hoisted.
+/// Move every non-const file-scope initializer to the top of main. ESSL 1.00
+/// takes a constant expression there, and GLSL 1.20 takes any expression.
+/// Returns the body and the hoisted names.
 pub fn hoist_globals(body: &str) -> Result<(String, Vec<String>)> {
     let src: Vec<char> = body.chars().collect();
     let mask = mask_code(&src, true);
@@ -198,8 +197,8 @@ pub fn hoist_globals(body: &str) -> Result<(String, Vec<String>)> {
                 }
             }
             ';' if depth == 0 && par == 0 => {
-                // from the masked text: a statement's slice starts after the last
-                // `;` or `}`, so it can carry a comment block the rewrite must keep
+                // A statement slice starts after the last `;` or `}`, so it can
+                // carry a comment block the rewrite keeps.
                 let seg = &mask[start..i];
                 let head = seg
                     .iter()
@@ -237,9 +236,9 @@ pub fn hoist_globals(body: &str) -> Result<(String, Vec<String>)> {
     Ok((out.into_iter().collect(), names))
 }
 
-/// Texture fetches one fragment makes: every IMG_*/texture2D call site times the
-/// trip count of each literal-bounded for loop around it. A loop bounded by a
-/// uniform counts once, so this is a floor, not a bound.
+/// The texture fetches one fragment makes. Each IMG_* or texture2D call site
+/// counts once for every trip of a literal-bounded for loop around it. A loop
+/// bounded by a uniform counts one trip, so the result is a floor.
 pub fn fetch_estimate(body: &str) -> Result<i64> {
     let src: Vec<char> = body.chars().collect();
     let mask = mask_code(&src, true);
@@ -290,9 +289,9 @@ pub fn to_scene(
     }
 }
 
-/// Import a single-pass ISF filter as a ghee filter definition (the dict a
-/// `<name>.filter.json` holds). Its one image input becomes iChannel0, which is
-/// what ghee hands a filter: the frame so far.
+/// Import a single-pass ISF filter as a ghee filter definition, the object a
+/// `<name>.filter.json` holds. Its one image input becomes iChannel0. ghee hands
+/// a filter the frame so far there.
 pub fn to_filter(
     text: &str,
     name: &str,
@@ -305,8 +304,8 @@ pub fn to_filter(
     }
 }
 
-/// A file/pass/filter name from an ISF title: 'Radial Spectrogram.fs' ->
-/// 'radial_spectrogram'.
+/// A file, pass or filter name from an ISF title. 'Radial Spectrogram.fs'
+/// becomes 'radial_spectrogram'.
 pub fn slug(name: &str) -> String {
     let (stem, _) = splitext(basename(name));
     let mut out = String::new();
@@ -335,11 +334,11 @@ struct Input {
     name: String,
     ty: Value,
     param: Option<Param>,
-    /// audio inputs: the array they become
+    /// The array an audio input becomes.
     size: Option<(i64, i64)>,
 }
 
-/// Everything the shim has to name: samplers and the size each one is.
+/// Everything the shim names: the samplers and the size of each one.
 #[derive(Default)]
 struct Sized {
     channels: Vec<(String, Option<String>)>,
@@ -652,7 +651,7 @@ fn inputs_of(meta: &Map<String, Value>) -> Result<Vec<Input>> {
         };
         match ty.as_str() {
             Some("audio" | "audioFFT") => {
-                // Python's bool is an int, so MAX: true is one bin.
+                // MAX true counts as 1, so the shader takes one bin.
                 let n = match d.get("MAX") {
                     Some(Value::Bool(true)) => 1,
                     Some(v) if v.is_number() && !falsy(v) => v.as_f64().unwrap_or(0.0) as i64,
@@ -668,9 +667,9 @@ fn inputs_of(meta: &Map<String, Value>) -> Result<Vec<Input>> {
     Ok(out)
 }
 
-/// One INPUTS entry as a ghee Param. ISF colors are RGBA, so they become a vec4
-/// rather than ghee's three-component color; a long is an int over the range its
-/// VALUES span (ghee has no labelled int dropdown).
+/// One INPUTS entry as a ghee param. An ISF color is RGBA. It becomes a vec4,
+/// because ghee's color holds three components. A long becomes an int over the
+/// range its VALUES span, because ghee has no labelled int dropdown.
 fn param_of(name: &str, ty: &Value, d: &Map<String, Value>) -> Result<Param> {
     let default = d.get("DEFAULT");
     match ty.as_str() {
@@ -697,8 +696,8 @@ fn param_of(name: &str, ty: &Value, d: &Map<String, Value>) -> Result<Param> {
                 Some(Value::Array(a)) => a.iter().filter(|v| v.is_number()).collect(),
                 _ => Vec::new(),
             };
-            // min()/max() keep the first of equal values, and the JSON number
-            // they came in as: an int range stays an int range.
+            // The pick keeps the first of two equal values, and the JSON number
+            // it arrives as. An int range stays an int range.
             let pick = |better: fn(f64, f64) -> bool| -> Option<Value> {
                 values
                     .iter()
@@ -794,9 +793,9 @@ fn passes_of(meta: &Map<String, Value>) -> Result<Vec<Map<String, Value>>> {
     }
 }
 
-/// An ISF name that is also a ghee preamble name (a target called `time`) would
-/// shadow the uniform the shim maps TIME onto. Rename it, and every reference
-/// the body makes to it, before anything else reads the body.
+/// An ISF name can also be a ghee preamble name, such as a target called `time`.
+/// It shadows the uniform the shim maps TIME onto. Rename it, and every
+/// reference the body makes to it, before anything else reads the body.
 fn rename_reserved(
     body: &str,
     inputs: &mut [Input],
@@ -870,9 +869,9 @@ fn pass_names(
 
 type PassSizes = (Vec<(i64, i64)>, Vec<Option<(i64, i64)>>);
 
-/// Each pass's WIDTH/HEIGHT equations evaluated against the target size. Returns
-/// the resolved sizes (what the shim reports as x_isf_size) and the sizes the
-/// scene declares, where None means the renderer's own size.
+/// Evaluate each pass's WIDTH and HEIGHT equations against the target size.
+/// Returns the resolved sizes, which the shim reports as x_isf_size, and the
+/// sizes the scene declares. None is the renderer's own size.
 fn pass_sizes(
     pass_meta: &[Map<String, Value>],
     size: (i64, i64),
@@ -921,9 +920,8 @@ fn pass_sizes(
     Ok((resolved, declared))
 }
 
-/// IMG_SIZE(x) -> the constant x_isf_size, and IMG_PIXEL(x, p) -> the same call
-/// with x's size handed in front, since a sampler2D argument carries no size of
-/// its own.
+/// IMG_SIZE(x) becomes the constant x_isf_size. IMG_PIXEL(x, p) takes x's size
+/// in front, because a sampler2D argument carries no size of its own.
 fn rewrite_img(body: &str, sized: &Sized) -> Result<String> {
     let mut unknown: Vec<String> = Vec::new();
     let mut note = |name: &str| {
@@ -950,9 +948,9 @@ fn rewrite_img(body: &str, sized: &Sized) -> Result<String> {
     Ok(body)
 }
 
-/// A rewrite over the code only: the match runs against the body with its
-/// comments blanked, so a call left behind in a commented-out line is neither
-/// rewritten nor reported. `close` is what follows the sampler argument.
+/// A rewrite over the code only. The match runs against the body with its
+/// comments blanked, so a call inside a comment stays as it is. `close` is what
+/// follows the sampler argument.
 fn sub_code(body: &str, call: &str, close: &str, mut repl: impl FnMut(&str) -> String) -> String {
     let src: Vec<char> = body.chars().collect();
     let mask = mask_code(&src, false);
@@ -1025,8 +1023,8 @@ fn shim(src: &str, index: usize, sized: &Sized) -> String {
     for name in &sized.arrays {
         l.push(format!("#define {name} {name}_tex"));
     }
-    // ISF also exposes each image's placement in its texture. Nothing ghee binds
-    // is atlased or flipped, so the rect is the whole buffer.
+    // ISF also exposes each image's placement in its texture. ghee binds no
+    // atlas and no flipped image, so the rect is the whole buffer.
     for (name, (w, h)) in &sized.sizes {
         l.push(format!("const vec2 {name}_isf_size = vec2({w}.0, {h}.0);"));
         l.push(format!("const vec2 _{name}_imgSize = vec2({w}.0, {h}.0);"));
@@ -1050,10 +1048,9 @@ fn description(meta: &Map<String, Value>) -> String {
 
 // --- text scanning ----------------------------------------------------------
 //
-// The Python is regex-driven and every index it reports is a character index
-// into the source it was handed, so a rewrite can splice the original back
-// together around a match. These scanners work on `Vec<char>` for the same
-// reason: a byte index would not line up with the mask.
+// A rewrite splices the original source around a match. Every index these
+// scanners report is a character index into that source. They work on
+// `Vec<char>`, because a byte index would not line up with the mask.
 
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -1092,14 +1089,14 @@ fn slice(src: &[char], a: usize, b: usize) -> String {
     src[a..b].iter().collect()
 }
 
-/// `\b<needle>\b`, the needle being a GLSL identifier.
+/// `\b<needle>\b`. The needle is a GLSL identifier.
 fn search_word(hay: &[char], needle: &str) -> Option<usize> {
     let n = needle.chars().count();
     (0..=hay.len().saturating_sub(n))
         .find(|&i| starts_with(hay, i, needle) && boundary(hay, i) && boundary(hay, i + n))
 }
 
-/// `re.sub(r"\b<old>\b", new, hay)`.
+/// Replace every `\b<old>\b` in hay with new.
 fn replace_word(hay: &[char], old: &str, new: &str) -> Vec<char> {
     let n = old.chars().count();
     let mut out: Vec<char> = Vec::with_capacity(hay.len());
@@ -1116,8 +1113,8 @@ fn replace_word(hay: &[char], old: &str, new: &str) -> Vec<char> {
     out
 }
 
-/// Python's `[A-Za-z_]\w*$` matched from the start, where `$` also stands before
-/// one trailing newline.
+/// `[A-Za-z_]\w*$` matched from the start. `$` also stands before one trailing
+/// newline.
 fn is_ident(s: &str) -> bool {
     let s = s.strip_suffix('\n').unwrap_or(s);
     let mut it = s.chars();
@@ -1127,7 +1124,7 @@ fn is_ident(s: &str) -> bool {
     }
 }
 
-/// Python's `iChannel\d+$` matched from the start.
+/// `iChannel\d+$` matched from the start.
 fn is_channel_name(s: &str) -> bool {
     let s = s.strip_suffix('\n').unwrap_or(s);
     match s.strip_prefix("iChannel") {
@@ -1136,9 +1133,9 @@ fn is_channel_name(s: &str) -> bool {
     }
 }
 
-/// src with every comment blanked (and every preprocessor directive too, unless
-/// `directives` says otherwise), so a scan sees code only and every index still
-/// lines up with the original.
+/// src with every comment blanked, and every preprocessor directive too when
+/// `directives` is true. A scan then sees code only, and every index still lines
+/// up with the original.
 fn mask_code(src: &[char], directives: bool) -> Vec<char> {
     let mut out = src.to_vec();
     let n = src.len();
@@ -1309,7 +1306,7 @@ fn match_paren(src: &[char], i: usize) -> usize {
     src.len() - 1
 }
 
-/// The literal bound of a for header (`<=?\s*(\d+)`), else one trip.
+/// The literal bound of a for header (`<=?\s*(\d+)`). One trip otherwise.
 fn trips(header: &[char]) -> i64 {
     for i in 0..header.len() {
         if header[i] != '<' {
@@ -1336,9 +1333,9 @@ fn trips(header: &[char]) -> i64 {
     1
 }
 
-/// A file-scope `<type> a = x, b;` as (declaration, [(name, initializer)]), or
-/// None when the statement declares no initialized variable (a prototype, a
-/// const, a uniform, a varying, an interface block).
+/// A file-scope `<type> a = x, b;` as (declaration, [(name, initializer)]).
+/// None when the statement initializes no variable: a prototype, a const, a
+/// uniform, a varying, an interface block.
 fn split_decl(stmt: &str) -> Option<(String, Vec<(String, String)>)> {
     let s = stmt.trim();
     let (prefix, rest) = ["lowp", "mediump", "highp"]
@@ -1361,7 +1358,7 @@ fn split_decl(stmt: &str) -> Option<(String, Vec<(String, String)>)> {
             continue;
         };
         if lhs.contains('[') {
-            // an array initializer is not ESSL 1.00 to begin with
+            // ESSL 1.00 has no array initializer.
             return None;
         }
         decls.push(lhs.trim().to_string());
@@ -1433,7 +1430,7 @@ fn basename(path: &str) -> &str {
     }
 }
 
-/// os.path.splitext: a leading dot belongs to the name, not to an extension.
+/// Split off the extension. A leading dot belongs to the name.
 fn splitext(path: &str) -> (&str, &str) {
     let sep = path.rfind('/').map_or(0, |i| i + 1);
     let Some(dot) = path.rfind('.').filter(|d| *d >= sep) else {
@@ -1445,8 +1442,8 @@ fn splitext(path: &str) -> (&str, &str) {
     (&path[..dot], &path[dot..])
 }
 
-/// Recursive descent over an ISF size equation. The whole vocabulary is $names,
-/// numbers, + - * /, and floor/ceil/abs/min/max.
+/// Recursive descent over an ISF size equation. The vocabulary is $names,
+/// numbers, + - * /, and floor, ceil, abs, min, max.
 struct Expr<'a> {
     text: &'a str,
     values: &'a HashMap<String, f64>,
@@ -1575,8 +1572,8 @@ impl<'a> Expr<'a> {
     }
 }
 
-/// math.floor/ceil, abs, and min/max over two or more values. None where Python
-/// would raise a TypeError on the argument count.
+/// floor, ceil, abs, and min or max over two or more values. None when the
+/// argument count is wrong for the function.
 fn call_fn(name: &str, args: &[f64]) -> Option<f64> {
     match (name, args) {
         ("floor", [a]) => Some(a.floor()),
@@ -1752,14 +1749,14 @@ void main() {
             (&invert.ty[..], &invert.value),
             ("bool", &ParamValue::Bool(true))
         );
-        // a long is an int over the range its VALUES span (ghee has no labelled int)
+        // A long is an int over the range its VALUES span.
         let mode = p.get("mode").unwrap();
         assert_eq!((&mode.ty[..], &mode.value), ("int", &ParamValue::Int(1)));
         assert_eq!(
             (&mode.min, &mode.max, &mode.step),
             (&Some(json!(0)), &Some(json!(2)), &Some(json!(1)))
         );
-        // an ISF color is RGBA, so vec4 rather than ghee's three-component color
+        // An ISF color is RGBA, so it becomes a vec4.
         let tint = p.get("tint").unwrap();
         assert_eq!(
             (&tint.ty[..], &tint.value),
@@ -1770,7 +1767,7 @@ void main() {
             (&centre.ty[..], &centre.value),
             ("vec2", &ParamValue::Vec(vec![0.5, 0.5]))
         );
-        assert!(!p.contains_key("inputImage")); // an image is a channel
+        assert!(!p.contains_key("inputImage")); // An image input is a channel.
     }
 
     #[test]
@@ -1795,7 +1792,7 @@ void main() {
             "d.fs",
             (8, 8),
         );
-        // falls back to MIN, then 0.0
+        // A float with no DEFAULT falls back to MIN, then to 0.0.
         assert_eq!(sc.params.get("f").unwrap().value, ParamValue::Float(3.0));
         assert_eq!(
             sc.params.get("c").unwrap().value,
@@ -1820,8 +1817,8 @@ void main() {
         assert_eq!(sc.passes[0].arrays.len(), 1);
         let a = &sc.passes[0].arrays[0];
         assert_eq!((&a.name[..], a.size), ("fft", ArraySize::Linear(32)));
-        // ghee binds the array as sampler2D <name>_tex in GL_LUMINANCE, so the ISF
-        // (r+g+b)/3 reads back the array value
+        // ghee binds the array as sampler2D <name>_tex in GL_LUMINANCE. The ISF
+        // (r+g+b)/3 then reads the array value.
         assert!(sc.passes[0].code.contains("#define fft fft_tex"));
         assert!(sc.passes[0].channels.is_empty());
     }
@@ -1853,7 +1850,7 @@ void main() {
         assert_eq!(names(&sc), ["acc", "out"]);
         assert!(sc.passes[0].code.contains("const int PASSINDEX = 0;"));
         assert!(sc.passes[1].code.contains("const int PASSINDEX = 1;"));
-        // ISF puts one body in every pass; only the constant differs
+        // ISF puts one body in every pass. Only the constant differs.
         let body = "void main() {";
         assert_eq!(
             sc.passes[0].code.split_once(body).unwrap().1,
@@ -1873,7 +1870,7 @@ void main() {
     fn pass_sizes_come_from_the_equations() {
         let sc = scene(TWO_PASS, "two.fs", (320, 240));
         assert_eq!(sc.passes[0].size, Some((160, 60)));
-        assert_eq!(sc.passes[1].size, None); // the output pass takes the render size
+        assert_eq!(sc.passes[1].size, None); // The output pass takes the render size.
         assert!(sc.passes[0]
             .code
             .contains("const vec2 acc_isf_size = vec2(160.0, 60.0);"));
@@ -2054,7 +2051,7 @@ void main() {
             (json!("floor($WIDTH*min((0.3),1.0))"), 96),
             (json!("max(8.0,floor($HEIGHT*$quality))"), 24),
             (json!("$WIDTH - $HEIGHT"), 80),
-            (json!("-$WIDTH"), 1), // a target is at least one pixel
+            (json!("-$WIDTH"), 1), // A target is at least one pixel.
         ];
         for (expr, want) in cases {
             assert_eq!(eval_size(&expr, &values).unwrap(), want, "{expr}");
@@ -2210,7 +2207,7 @@ void main() {
 
     // --- on a GPU ----------------------------------------------------------
 
-    /// The shared renderer of tests/conftest.py. None where that fixture skips.
+    /// The renderer these tests share. None when there is no GL device.
     fn renderer() -> Option<crate::engine::Renderer> {
         let mut errs = Vec::new();
         for dev in crate::engine::probe_dri_devices() {

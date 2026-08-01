@@ -1,4 +1,5 @@
-//! Port of ghee/sources.py (see that file for the reference implementation).
+//! The files a scene load reads. record() notes one file. collect() gathers
+//! them. A Snapshot polls that set, so a running scene sees an edit on disk.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -11,15 +12,15 @@ use sha2::{Digest, Sha256};
 
 use crate::stats::monotonic;
 
-/// seconds between disk checks: stale() is polled
+/// seconds between the disk checks stale() makes
 pub const STALE_INTERVAL: f64 = 1.0;
 
 thread_local! {
     static COLLECTING: RefCell<Option<HashSet<PathBuf>>> = const { RefCell::new(None) };
 }
 
-/// os.path.abspath: joined onto the working directory and normalised without
-/// touching the disk, so a symlink keeps the name it was read under.
+/// An absolute path. It joins onto the working directory and normalises with
+/// no disk read. A symlink keeps the name the load reads it under.
 fn abspath(path: &Path) -> PathBuf {
     let joined = match env::current_dir() {
         Ok(cwd) if path.is_relative() => cwd.join(path),
@@ -42,7 +43,7 @@ fn abspath(path: &Path) -> PathBuf {
     out.iter().collect()
 }
 
-/// Note a file a scene load has just read.
+/// Note a file the scene load reads.
 pub fn record(path: impl AsRef<Path>) {
     COLLECTING.with(|c| {
         if let Some(into) = c.borrow_mut().as_mut() {
@@ -51,8 +52,8 @@ pub fn record(path: impl AsRef<Path>) {
     });
 }
 
-/// Gather what record() sees on this thread while `f` runs. Nests: an outer
-/// collect resumes when the inner one ends.
+/// Gather what record() sees on this thread while `f` runs. Collects nest: the
+/// outer collect resumes when the inner one ends.
 pub fn collect<T>(f: impl FnOnce() -> T) -> (T, HashSet<PathBuf>) {
     let prev = COLLECTING.with(|c| c.borrow_mut().replace(HashSet::new()));
     let out = f();
@@ -83,7 +84,7 @@ fn digest(path: &Path) -> String {
     )
 }
 
-/// A compiled scene's files as they were when it compiled.
+/// A compiled scene's files, with the mtime and digest of the compile.
 pub struct Snapshot {
     interval: f64,
     clock: Box<dyn Fn() -> f64 + Send + Sync>,
@@ -93,7 +94,8 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// The files behind a scene, checked at most once a STALE_INTERVAL.
+    /// The files behind a scene. stale() checks them once a STALE_INTERVAL at
+    /// most.
     pub fn new(paths: impl IntoIterator<Item = impl AsRef<Path>>) -> Snapshot {
         Snapshot::with(paths, STALE_INTERVAL, Box::new(monotonic))
     }
@@ -121,8 +123,8 @@ impl Snapshot {
         }
     }
 
-    /// Whether the files now hold content this scene was not built from.
-    /// Answers from the last check inside `interval`.
+    /// True when a file holds content the compile never read. Inside
+    /// `interval` the last check answers.
     pub fn stale(&mut self) -> bool {
         let now = (self.clock)();
         if now - self.checked < self.interval {
@@ -141,7 +143,7 @@ impl Snapshot {
                 continue;
             }
             if digest(path) == seen.1 {
-                seen.0 = fresh; // copied, not edited
+                seen.0 = fresh; // a copy: same content, new mtime
             } else {
                 out = true;
             }
@@ -166,7 +168,7 @@ mod tests {
         d
     }
 
-    /// A new mtime over identical content: what a file copy leaves behind.
+    /// A new mtime over identical content. A file copy leaves this behind.
     fn touch(path: &Path) {
         let m = fs::metadata(path).unwrap();
         let times = FileTimes::new()
@@ -180,8 +182,8 @@ mod tests {
             .unwrap();
     }
 
-    /// Write, and push the mtime past whatever a snapshot may already hold: a
-    /// rewrite inside one timestamp tick is otherwise invisible to a stat.
+    /// Write, then push the mtime past what a snapshot holds. A stat cannot
+    /// see a rewrite inside one timestamp tick.
     fn write(path: &Path, text: &str) {
         fs::write(path, text).unwrap();
         touch(path);
@@ -195,7 +197,7 @@ mod tests {
 
     #[test]
     fn nothing_is_recorded_outside_a_collect() {
-        record("/tmp/uncollected.glsl"); // no collector: record() is a no-op
+        record("/tmp/uncollected.glsl"); // no collector, so record() does nothing
         let ((), paths) = collect(|| ());
         assert!(paths.is_empty());
     }
@@ -258,8 +260,8 @@ mod tests {
 
     #[test]
     fn a_copied_file_is_not_hashed_twice() {
-        // the new mtime is adopted, so a redeployed tree costs one hash, not one
-        // per poll for as long as the console runs
+        // the snapshot takes the new mtime, so a copied tree costs one hash
+        // per file
         let p = watched("rehash");
         let mut s = snap(&[&p]);
         touch(&p);

@@ -1,24 +1,27 @@
-//! Port of ghee/cli.py (see that file for the reference implementation).
+//! The `ghee` command line: the commands, their flags, and what each one runs.
 //!
-//!     ghee render scene.json -o frame.####.jpg --frames 500  # image sequence
-//!     ghee render scene.json -o - --frames 300 | ffmpeg ...  # raw frames to a pipe
-//!     ghee render scene.json --display st7789                # to a panel, until Ctrl-C
-//!     ghee render scene.json --h264 - | mpv -                # H264 to a pipe
-//!     ghee render scene.json --display st7789 --serve        # panel plus the console
-//!     ghee serve scenes/                                     # editor console
-//!     ghee serve --demo                                      # console on the bundled examples
-//!     ghee render --demo bars -o frame.png                   # a bundled example by name
-//!     ghee isf import shader.fs -o shader.scene.json         # import an ISF shader
-//!     ghee displays                                          # list display drivers
+//! ```text
+//! ghee render scene.json -o frame.####.jpg --frames 500  # image sequence
+//! ghee render scene.json -o - --frames 300 | ffmpeg ...  # raw frames to a pipe
+//! ghee render scene.json --display st7789                # to a panel, until Ctrl-C
+//! ghee render scene.json --h264 - | mpv -                # H264 to a pipe
+//! ghee render scene.json --display st7789 --serve        # panel plus the console
+//! ghee serve scenes/                                     # editor console
+//! ghee serve --demo                                      # console on the bundled examples
+//! ghee render --demo bars -o frame.png                   # a bundled example by name
+//! ghee isf import shader.fs -o shader.scene.json         # import an ISF shader
+//! ghee displays                                          # list display drivers
+//! ```
 //!
-//! Outputs combine: -o, --display and --h264 are a list of sinks one render
-//! feeds, and --serve attaches the console to any of them. `serve` is `render
+//! Sinks combine. -o, --display and --h264 make the list of sinks one render
+//! feeds. --serve attaches the console to any of them. `serve` is `render
 //! --serve` over a directory of scenes. Everything after `--` goes to the
 //! scene's own controller.
 //!
-//! One piece of the Python is not in this build: a scene controller needs an
-//! interpreter, so ghee::procedural refuses one and the arguments it declares
-//! never reach a parser.
+//! A scene that is an executable is a process (docs/procedural.md). ghee runs
+//! it, takes the scene it hands over, and feeds the render from its messages.
+//! `-- --help` lists the arguments the process declares. ghee checks the tokens
+//! after `--` against them.
 
 use std::cell::RefCell;
 use std::ffi::c_int;
@@ -32,6 +35,7 @@ use clap::error::{ContextKind, ErrorKind};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Map, Value};
 
+use crate::bench::{self, BenchArgs};
 use crate::console::examples_dir;
 use crate::console::server;
 use crate::console::store::SceneStore;
@@ -41,14 +45,15 @@ use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
 use crate::h264::H264Stream;
 use crate::isf::{read_isf, slug, to_filter, to_scene};
-use crate::looper::{Frame, Loop, Output, Pacer};
+use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, SceneController};
 use crate::output::{expand_pattern, AdaptivePacer, FixedPacer, ImageSequence, RawStream, Scanout};
-use crate::procedural::load_scene;
+use crate::procedural::process::{self, SceneProcess};
+use crate::procedural::{load_scene, scene_name};
 use crate::scene::Scene;
 use crate::stats::rate;
 
-/// argparse's `sys.exit(message)`: the line as written, status 1. Anything else
-/// reaching main() is prefixed with the command name instead.
+/// A message main() prints as written, status 1. main() puts the command name
+/// in front of any other error.
 #[derive(Debug)]
 struct Exit(String);
 
@@ -64,7 +69,7 @@ fn exit(message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(Exit(message.into()))
 }
 
-/// Python truthiness of an optional string flag: unset and "" are both false.
+/// True when an optional string flag carries text. Unset and "" are false.
 fn given(v: &Option<String>) -> bool {
     v.as_deref().is_some_and(|s| !s.is_empty())
 }
@@ -86,8 +91,8 @@ fn size(s: &str) -> Result<(i32, i32), String> {
     }
 }
 
-/// ast.literal_eval over what a k=v value can hold: a number, True/False/None,
-/// or a quoted string. None for anything else, which the caller keeps as text.
+/// What a k=v value holds: a number, True/False/None, or a quoted string.
+/// Anything else gives None, and the caller keeps it as text.
 fn literal_eval(s: &str) -> Option<Value> {
     match s {
         "True" => return Some(Value::Bool(true)),
@@ -102,8 +107,8 @@ fn literal_eval(s: &str) -> Option<Value> {
             false => None,
         };
     }
-    // A Python integer literal takes a sign, a base prefix and _ separators; a
-    // float literal is what serde_json already reads.
+    // An integer literal takes a sign, a base prefix and _ separators.
+    // serde_json already reads a float literal.
     let body = s.strip_prefix(['+', '-']).unwrap_or(s);
     let (digits, radix) = match body.get(..2).map(str::to_lowercase).as_deref() {
         Some("0x") => (&body[2..], 16),
@@ -125,9 +130,9 @@ fn literal_eval(s: &str) -> Option<Value> {
         .filter(Value::is_number)
 }
 
-/// "k=v,k2=v2" -> a dict. Each value goes through literal_eval (90 -> int,
-/// True -> bool) and falls back to the raw string when that fails. `what` names
-/// the flag a parse error came from.
+/// "k=v,k2=v2" -> a map. Each value goes through literal_eval (90 -> int, True
+/// -> bool). A value literal_eval refuses stays the raw string. `what` names
+/// the flag an error comes from.
 fn parse_kv(s: &str, what: &str) -> Result<Map<String, Value>> {
     let mut opts = Map::new();
     for pair in s.split(',') {
@@ -147,8 +152,8 @@ fn parse_kv(s: &str, what: &str) -> Result<Map<String, Value>> {
     Ok(opts)
 }
 
-/// (ghee's own argv, the scene's tokens). The first `--` ends ghee's flags:
-/// everything past it belongs to the scene, further `--` included.
+/// (ghee's own argv, the scene's tokens). The first `--` ends ghee's flags.
+/// Everything past it belongs to the scene, further `--` included.
 fn split_scene_args(argv: &[String]) -> (Vec<String>, Vec<String>) {
     match argv.iter().position(|a| a == "--") {
         None => (argv.to_vec(), Vec::new()),
@@ -156,7 +161,7 @@ fn split_scene_args(argv: &[String]) -> (Vec<String>, Vec<String>) {
     }
 }
 
-/// os.path.join(dir, name): an absolute name replaces the directory.
+/// dir joined with name. An absolute name replaces the directory.
 fn join(dir: &str, name: &str) -> String {
     if name.starts_with('/') || dir.is_empty() {
         return name.to_string();
@@ -168,8 +173,10 @@ fn join(dir: &str, name: &str) -> String {
     }
 }
 
-/// A path as given, or a scene name looked up in $GHEE_SCENES (colon-separated
-/// directories), plus the bundled examples when --demo asks for them.
+/// A path as given, or a scene name from $GHEE_SCENES (colon-separated
+/// directories). --demo resolves from the bundled examples alone. No file in
+/// the working directory shadows a demo name. A process is a file like any
+/// other, so the name resolves to the executable itself.
 fn find_scene(arg: &str, demo: bool) -> Result<String> {
     fn hit(stem: &str) -> bool {
         [
@@ -180,18 +187,25 @@ fn find_scene(arg: &str, demo: bool) -> Result<String> {
         .iter()
         .any(|p| Path::new(p).exists())
     }
+    if demo {
+        let Some(dir) = examples_dir() else {
+            return Err(exit("no demo scenes: no writable cache location"));
+        };
+        let p = join(&dir, arg);
+        if hit(&p) {
+            return Ok(p);
+        }
+        return Err(exit(format!("no demo scene '{arg}'")));
+    }
     if hit(arg) {
         return Ok(arg.to_string());
     }
     let env = std::env::var("GHEE_SCENES").unwrap_or_default();
-    let mut dirs: Vec<String> = env
+    let dirs: Vec<String> = env
         .split(':')
         .filter(|d| !d.is_empty())
         .map(String::from)
         .collect();
-    if demo {
-        dirs.extend(examples_dir());
-    }
     for d in &dirs {
         let p = join(d, arg);
         if hit(&p) {
@@ -207,10 +221,53 @@ fn find_scene(arg: &str, demo: bool) -> Result<String> {
     )))
 }
 
-/// The scene this invocation renders, with its filters applied: the ones it
-/// declares, then whatever --filters adds.
-fn scene_of(a: &Ns) -> Result<Scene> {
-    let mut scene = load_scene(&find_scene(text(&a.scene), a.demo)?, &a.scene_args, true)?;
+/// (name, path) for every scene this command loads: the scene it renders, or
+/// each scene the console mounts.
+fn scene_set(a: &Ns) -> Result<Vec<(String, String)>> {
+    let one = |path: String| vec![(scene_name(&path), path)];
+    if !a.serve {
+        return Ok(one(find_scene(text(&a.scene), a.demo)?));
+    }
+    let dir = match &a.scene {
+        Some(scene) => find_scene(scene, a.demo)?,
+        None => examples_dir().unwrap_or_default(),
+    };
+    if !Path::new(&dir).is_dir() {
+        return Ok(one(dir));
+    }
+    Ok(SceneStore::new(&dir, true, Vec::new()).scenes)
+}
+
+/// Check the tokens after `--` against what the scenes take. `--help` lists
+/// them grouped per scene. A token no scene declares is a typo.
+fn check_scene_args(a: &Ns) -> Result<()> {
+    if a.scene_args.is_empty() {
+        return Ok(());
+    }
+    let set = scene_set(a)?;
+    let prog = match a.cmd {
+        "serve" => "ghee serve --".to_string(),
+        _ => format!("ghee render {} --", set.first().map_or("", |(n, _)| n)),
+    };
+    let declared = process::declare(&set);
+    if process::wants_help(&a.scene_args) {
+        print!("{}", process::help(&declared, &prog));
+        std::process::exit(0);
+    }
+    process::check(&declared, &a.scene_args, &prog).map_err(|e| exit(e.to_string()))
+}
+
+/// The scene this run renders, and the process behind it. The filters apply in
+/// order: the ones the scene declares, then the ones --filters adds.
+fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
+    let path = find_scene(text(&a.scene), a.demo)?;
+    let (mut scene, mut process) = match process::executable(&path) {
+        Some(exe) => {
+            let (scene, fed) = SceneProcess::start(&exe, &a.scene_args)?;
+            (scene, Some(fed))
+        }
+        None => (load_scene(&path, &a.scene_args, true)?, None),
+    };
     let mut names = scene.filters.clone();
     names.extend(
         text(&a.filters)
@@ -239,11 +296,15 @@ fn scene_of(a: &Ns) -> Result<Scene> {
         )));
     }
     apply_filters(&mut scene, &wanted, Some(&reg))?;
-    Ok(scene)
+    // the process addresses the params of the final scene, filters included
+    if let Some(fed) = process.as_mut() {
+        fed.bind(&scene);
+    }
+    Ok((scene, process))
 }
 
-/// What --display names: the KMS scanout, else the driver instance, built with
-/// whatever --display-opts sets.
+/// What --display names: the KMS scanout, or the driver instance.
+/// --display-opts builds the driver.
 enum Panel {
     None,
     Kms,
@@ -268,8 +329,8 @@ fn panel_of(a: &Ns) -> Result<Panel> {
         return Ok(Panel::Kms);
     }
     let Ok(spec) = get_driver(name) else {
-        // --display takes an optional value, so a path written after it is read
-        // as a driver name
+        // --display takes an optional value, so it reads a path after it as a
+        // driver name
         let hint = if Path::new(name).is_dir() {
             ", and a scenes directory goes before it"
         } else {
@@ -284,8 +345,8 @@ fn panel_of(a: &Ns) -> Result<Panel> {
         return Ok(Panel::Driver((spec.open)(&[])?));
     }
     let opts = parse_kv(text(&a.display_opts), &format!("{}: --display-opts", a.cmd))?;
-    // checked before the driver runs: a constructor claims GPIO lines and the
-    // SPI bus before it reaches a keyword it does not take
+    // check before the driver runs: a constructor claims the GPIO lines and
+    // the SPI bus first. It reaches a keyword it does not take after that.
     let known = driver_options(spec);
     let unknown: Vec<&str> = opts
         .keys()
@@ -304,9 +365,9 @@ fn panel_of(a: &Ns) -> Result<Panel> {
     Ok(Panel::Driver((spec.open)(&pairs)?))
 }
 
-/// (size, components) the render runs at. A scanout renders at the connected
-/// mode and a panel at its own geometry and pixel layout, either of which wins
-/// over --size; everything else takes --size.
+/// (size, components) the render runs at. A scanout takes the connected mode.
+/// A panel takes its own geometry and pixel layout. Both win over --size.
+/// Everything else takes --size.
 fn geometry(a: &Ns, panel: &Panel) -> Result<((i32, i32), i32)> {
     match panel {
         Panel::Kms => match probe_display(a.dri.as_deref()).or(a.size) {
@@ -358,8 +419,8 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
 }
 
 /// Nothing paces a file or a pipe: that render runs as fast as it draws. A
-/// panel paces on its own bus speed, the KMS flip paces itself at the display's
-/// refresh, and an H264 stream holds a fixed rate for its timestamps.
+/// panel paces on its own bus speed. The KMS flip paces itself at the display
+/// refresh. An H264 stream holds a fixed rate for its timestamps.
 fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
     let fixed = a
         .fps
@@ -380,7 +441,8 @@ fn h264_fps(a: &Ns) -> i32 {
     }
 }
 
-/// --frames as given, else one image and an endless display, stream or console.
+/// --frames as given. Without it an image render draws one frame, and a
+/// display, a stream or the console runs endlessly.
 fn frames_of(a: &Ns) -> i64 {
     match a.frames {
         Some(n) => n,
@@ -388,8 +450,8 @@ fn frames_of(a: &Ns) -> i64 {
     }
 }
 
-/// A driver is an Output bound to a physical panel (ghee.drivers.base); the
-/// trait split is Rust's, so the loop reaches a driver through this.
+/// A driver writes to a physical panel (drivers::base). The loop reaches a
+/// driver through this Output.
 struct PanelSink(Box<dyn DisplayDriver>);
 
 impl Output for PanelSink {
@@ -448,13 +510,13 @@ fn sink_list<'a>(
     sinks
 }
 
-/// The signal that ended the run, 0 for none. SIGTERM (timeout, systemd stop)
-/// and SIGINT have to unwind the way Python's KeyboardInterrupt does, so the
-/// sinks are turned off and a panel is not left on a stale frame.
+/// The signal that ends the run, 0 for none. SIGTERM (timeout, systemd stop)
+/// and SIGINT unwind the run. The run turns its sinks off, so a panel holds no
+/// stale frame.
 static SIGNALLED: AtomicI32 = AtomicI32::new(0);
 
-// Linux signal numbers. The handler is a plain function pointer, so neither
-// SIG_DFL nor SIG_IGN is needed to install it.
+// Linux signal numbers. The handler is a plain function pointer, so the
+// install needs neither SIG_DFL nor SIG_IGN.
 const SIGINT: c_int = 2;
 const SIGTERM: c_int = 15;
 
@@ -464,7 +526,7 @@ extern "C" {
 
 extern "C" fn on_signal(sig: c_int) {
     SIGNALLED.store(sig, Ordering::SeqCst);
-    // a console blocks in its own server, which this is the way out of
+    // a console blocks in its own server, and this is the way out
     server::stop();
 }
 
@@ -475,7 +537,7 @@ fn catch_signals() {
     }
 }
 
-/// The reader at the far end of the pipe went away.
+/// True when the reader at the far end of the pipe is gone.
 fn broken_pipe(e: &anyhow::Error) -> bool {
     e.chain().any(|c| {
         c.downcast_ref::<std::io::Error>().is_some_and(|io| {
@@ -489,6 +551,8 @@ fn broken_pipe(e: &anyhow::Error) -> bool {
 
 /// One render into however many sinks the flags ask for.
 fn cmd_render(a: &Ns) -> Result<()> {
+    // before anything opens: the tokens after `--` own their own --help
+    check_scene_args(a)?;
     if a.serve && given(&a.filters) {
         return Err(exit(format!(
             "{}: --filters with --serve; the console has a filter picker",
@@ -507,8 +571,8 @@ fn cmd_render(a: &Ns) -> Result<()> {
             a.cmd
         )));
     }
-    // the scene loads first: it owns the tokens after `--`, including their
-    // --help, and a scene the loader rejects must fail before a panel is opened
+    // the scene loads first: it owns the tokens after `--` and their --help. A
+    // scene the loader rejects fails before a panel opens.
     let scene = if a.serve { None } else { Some(scene_of(a)?) };
     let panel = panel_of(a)?;
     let kms = matches!(panel, Panel::Kms);
@@ -527,10 +591,10 @@ fn cmd_render(a: &Ns) -> Result<()> {
     };
     let mut file = file_sink(a)?;
     if a.serve {
-        // The console draws on this thread, so it takes the sinks as they are: a
-        // panel driver's SPI and GPIO handles never leave the thread that opened
-        // them. The scanout is never one of them: it is a mode the Renderer is
-        // made in.
+        // The console draws on this thread, so it takes the sinks as they are.
+        // A panel driver's SPI and GPIO handles never leave the thread that
+        // opened them. The scanout is never a sink here. It is a mode of the
+        // Renderer itself.
         let mut sinks: Vec<Box<dyn Output>> = Vec::new();
         let mut native_format = None;
         if let Some(panel) = sink {
@@ -544,9 +608,11 @@ fn cmd_render(a: &Ns) -> Result<()> {
         }
         return serve(a, sinks, native_format, (w, h), components, kms);
     }
-    let Some(scene) = scene else {
+    let Some((scene, process)) = scene else {
         unreachable!("loaded above for every render that is not --serve")
     };
+    let controller: ControllerSlot =
+        RefCell::new(process.map(|f| Box::new(f) as Box<dyn SceneController>));
     let mut r = Renderer::new(w, h, components, a.dri.as_deref(), kms, a.rgb565)?;
     let err = r.setup(&scene)?;
     if !err.is_empty() {
@@ -577,11 +643,12 @@ fn cmd_render(a: &Ns) -> Result<()> {
     let (ran, drawn, elapsed, out) = {
         let sinks = sink_list(&mut scanout, &mut sink, &mut file, &mut h264);
         let mut lp = Loop::new(&mut r, sinks);
+        lp.controller = Some(&controller);
         lp.provider = Some(Box::new(|name, size, frame| {
             Feed::Data(demo_feed(name, size, frame))
         }));
-        // a frame budget spells no other count for "render nothing": 0 is the
-        // endless run, so a negative --frames stops before the first frame
+        // 0 is the endless run, so the frame budget spells no other count for
+        // "render nothing". A negative --frames stops before the first frame.
         lp.frames = want.max(0) as u64;
         lp.timestep = a.timestep;
         lp.pacer = pace;
@@ -616,11 +683,13 @@ fn cmd_render(a: &Ns) -> Result<()> {
     if given(&a.h264) && text(&a.h264) != "-" {
         eprintln!("wrote {drawn} frame(s) to {}", text(&a.h264));
     }
-    print_stats(a, &times.borrow(), elapsed, &out);
+    if a.stats {
+        print_stats(&times.borrow(), elapsed, &out);
+    }
     Ok(())
 }
 
-/// Attach the console to this render. A scene serves itself alone; a directory
+/// Attach the console to this render. A scene serves itself alone. A directory
 /// (or --demo) serves everything in it.
 fn serve(
     a: &Ns,
@@ -658,6 +727,7 @@ fn serve(
         frames: frames_of(a).max(0) as u64,
         timestep: a.timestep,
         dri_device: a.dri.clone(),
+        on_stats: a.stats.then(serve_stats),
         ..Default::default()
     });
     if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
@@ -666,16 +736,15 @@ fn serve(
     ran
 }
 
-/// A store holding the single scene `render --serve` was pointed at. The
-/// bundled examples are never written, whichever way they are reached.
+/// A store for the single scene `render --serve` names. A bundled example
+/// stays read-only, whichever way a command reaches it.
 fn one_scene_store(a: &Ns, path: &str) -> Result<SceneStore> {
     SceneStore::one(path, in_examples(path), a.scene_args.clone())
         .map_err(|e| exit(format!("{}: {e}", a.cmd)))
 }
 
-/// Whether a scene sits in the bundled examples directory. Python compares
-/// os.path.abspath; this resolves symlinks as well, which no scene path needs
-/// to survive.
+/// True when a scene sits in the bundled examples directory. The comparison
+/// resolves symlinks.
 fn in_examples(path: &str) -> bool {
     let dir = match Path::new(path).parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -697,7 +766,7 @@ fn cmd_serve(a: &Ns) -> Result<()> {
     }
     if !a.demo && !given(&a.scene) {
         if given(&a.display) && Path::new(text(&a.display)).is_dir() {
-            // --display takes an optional value, so it swallowed the directory
+            // --display takes an optional value, so it took the directory
             return Err(exit(format!(
                 "serve: --display took '{}' as the display name; \
                  put the scenes directory before it",
@@ -712,8 +781,8 @@ fn cmd_serve(a: &Ns) -> Result<()> {
 }
 
 /// --stats: one summary line after a render. ms/frame is the per-frame cost
-/// with paced sleeps excluded; fps is frames over real elapsed time, the same
-/// number the console publishes.
+/// without the paced sleeps. fps is frames over elapsed time, the same number
+/// the console publishes.
 fn stats_line(times: &[f64], wall: f64, out: &[String]) -> String {
     let n = times.len();
     let total: f64 = times.iter().sum();
@@ -729,11 +798,25 @@ fn stats_line(times: &[f64], wall: f64, out: &[String]) -> String {
     )
 }
 
-fn print_stats(a: &Ns, times: &[f64], wall: f64, out: &[String]) {
-    if !a.stats || times.is_empty() {
+fn print_stats(times: &[f64], wall: f64, out: &[String]) {
+    if times.is_empty() {
         return;
     }
     eprintln!("{}", stats_line(times, wall, out));
+}
+
+/// Where a serve run's frames go. A console with no panel and no file is still
+/// a destination.
+fn serve_out(out: &[String]) -> Vec<String> {
+    if out.is_empty() {
+        return vec!["console".to_string()];
+    }
+    out.to_vec()
+}
+
+/// The same summary line, for the end of the console's render.
+fn serve_stats() -> server::StatsHook {
+    Box::new(|times, wall, out| print_stats(times, wall, &serve_out(out)))
 }
 
 fn cmd_isf_import(a: &ImportArgs) -> Result<()> {
@@ -794,7 +877,8 @@ fn cmd_displays() -> Result<()> {
             })
             .collect();
         if !opts.is_empty() {
-            println!("{:12} --display-opts {}", "", opts.join(","));
+            // a driver's own defaults: an SPI or I2C panel answers no probe
+            println!("{:12} defaults: --display-opts {}", "", opts.join(","));
         }
     }
     Ok(())
@@ -810,7 +894,7 @@ fn cmd_displays() -> Result<()> {
     disable_version_flag = true
 )]
 struct Cli {
-    // argparse spells it long only, so the short -V clap adds is off
+    // long only: clap's own short -V stays off
     #[arg(
         long,
         action = clap::ArgAction::Version,
@@ -826,10 +910,10 @@ struct Cli {
 enum Command {
     #[command(
         about = "render a scene to images, a display, a stream, or several at once",
-        // argparse reads a negative number as a value, not as an option string
+        // a negative number is a value here
         allow_negative_numbers = true,
-        after_help = "anything after `--` goes to the scene's controller \
-                      (ghee render --demo text -- --text hi); `-- --help` lists what it takes"
+        after_help = "anything after `--` goes to the scene itself \
+                      (ghee render --demo hero -- --no-dither); `-- --help` lists what it takes"
     )]
     Render(RenderArgs),
 
@@ -848,9 +932,14 @@ enum Command {
 
     #[command(about = "list display drivers and availability")]
     Displays,
+
+    /// The benchmark suite is a development tool, so it stays out of
+    /// `ghee --help`.
+    #[command(hide = true, about = "run the benchmark suite")]
+    Bench(BenchArgs),
 }
 
-/// What every render takes, whichever command asked for it.
+/// What every render takes, whichever command asks for it.
 #[derive(Args)]
 struct RenderFlags {
     #[arg(
@@ -903,13 +992,10 @@ struct RenderFlags {
 
     #[arg(long, help = "DRI device, e.g. /dev/dri/renderD128")]
     dri: Option<String>,
-
-    #[arg(long, help = "path to libghee.so")]
-    lib: Option<String>,
 }
 
-/// The console's own flags bar --bitrate, whose default differs per command:
-/// what `serve` offers and `render --serve` needs.
+/// The console's own flags, bar --bitrate. --bitrate has a different default
+/// per command, so each command declares it.
 #[derive(Args)]
 struct ConsoleFlags {
     #[arg(long, default_value_t = 8090)]
@@ -1103,9 +1189,9 @@ fn isf_size(s: &str) -> Result<(i64, i64), String> {
     size(s).map(|(w, h)| (i64::from(w), i64::from(h)))
 }
 
-/// The namespace both render and serve resolve to: serve is render --serve over
-/// a directory, so it carries render's whole namespace with the flags it does
-/// not offer left at their defaults.
+/// The namespace both render and serve resolve to. serve is render --serve
+/// over a directory. It carries render's whole namespace, and every flag it
+/// does not offer keeps its default.
 struct Ns {
     cmd: &'static str,
     scene: Option<String>,
@@ -1126,9 +1212,6 @@ struct Ns {
     timestep: Option<f64>,
     size: Option<(i32, i32)>,
     dri: Option<String>,
-    /// the engine is linked in, so there is no library to point at
-    #[allow(dead_code)]
-    lib: Option<String>,
     port: u16,
     host: String,
     preview_max: i32,
@@ -1160,7 +1243,6 @@ impl RenderArgs {
             timestep: self.render.timestep,
             size: self.render.size,
             dri: self.render.dri,
-            lib: self.render.lib,
             port: self.console.port,
             host: self.console.host,
             preview_max: self.console.preview_max,
@@ -1195,7 +1277,6 @@ impl ServeArgs {
             timestep: self.render.timestep,
             size: self.render.size,
             dri: self.render.dri,
-            lib: self.render.lib,
             port: self.console.port,
             host: self.console.host,
             preview_max: self.console.preview_max,
@@ -1207,13 +1288,14 @@ impl ServeArgs {
     }
 }
 
-/// The command name a failure is reported under, and what that command did.
+/// The command name a failure reports under, and the result of that command.
 fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
     let cmd = match &cli.cmd {
         Command::Render(_) => "render",
         Command::Serve(_) => "serve",
         Command::Isf(_) => "isf",
         Command::Displays => "displays",
+        Command::Bench(_) => "bench",
     };
     if !scene_args.is_empty() && !matches!(cli.cmd, Command::Render(_) | Command::Serve(_)) {
         return (
@@ -1228,12 +1310,13 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
             IsfCommand::Import(i) => cmd_isf_import(i),
         },
         Command::Displays => cmd_displays(),
+        Command::Bench(a) => bench::run(&a),
     };
     (cmd, ran)
 }
 
-/// argparse reports a token no parser claimed from the top-level parser, so the
-/// line names `ghee` itself and the status is 2.
+/// The top-level parser reports a token no subcommand claims. The line names
+/// `ghee` itself and the status is 2.
 fn clap_status(e: &clap::Error) -> i32 {
     if e.kind() == ErrorKind::UnknownArgument {
         let arg = e
@@ -1247,9 +1330,9 @@ fn clap_status(e: &clap::Error) -> i32 {
     i32::from(e.use_stderr()) * 2
 }
 
-/// The command line's exit status. Scene, engine, encoder and missing-dependency
-/// failures reach the user the way the argument errors do: one line, no stack.
-/// $GHEE_TRACEBACK asks for the whole error chain instead.
+/// The command line's exit status. A scene, engine, encoder or missing
+/// dependency failure reaches the user as one line, with no stack. An argument
+/// error reads the same way. $GHEE_TRACEBACK asks for the whole error chain.
 pub fn main(argv: Vec<String>) -> i32 {
     let (own, scene_args) = split_scene_args(&argv);
     let cli = match Cli::try_parse_from(std::iter::once("ghee".to_string()).chain(own)) {
@@ -1306,7 +1389,7 @@ mod tests {
         dispatch(cli, scene_args).1
     }
 
-    /// The message of a call that had to fail. Neither Panel nor FileSink is
+    /// The message of a call that has to fail. Neither Panel nor FileSink is
     /// Debug, so unwrap_err() cannot ask for it.
     fn failure<T>(r: Result<T>) -> String {
         match r {
@@ -1342,7 +1425,7 @@ mod tests {
         assert!(d["quality"].is_i64());
     }
 
-    /// One parser, two flags: the error has to say which one was written.
+    /// One parser, two flags: the error says which flag took the value.
     #[test]
     fn parse_kv_malformed_exits_naming_the_flag_that_took_it() {
         for (s, what) in [
@@ -1544,8 +1627,7 @@ mod tests {
         );
     }
 
-    /// The examples are not an ambient namespace: --demo is what puts them on
-    /// the search path.
+    /// --demo is what puts the bundled examples on the search path.
     #[test]
     fn a_bundled_name_only_resolves_with_demo() {
         std::env::set_var("GHEE_EXAMPLES", "ghee/examples");
@@ -1578,6 +1660,13 @@ mod tests {
     }
 
     #[test]
+    fn a_serve_run_names_the_console_when_nothing_else_took_the_frames() {
+        assert_eq!(serve_out(&[]), ["console"]);
+        let panel = ["panel".to_string()];
+        assert_eq!(serve_out(&panel), panel);
+    }
+
+    #[test]
     fn multiple_frames_into_one_filename_is_refused() {
         let a = ns(&["render", "s", "-o", "one.png", "--frames", "4"]);
         let e = failure(file_sink(&a));
@@ -1585,7 +1674,7 @@ mod tests {
             e.starts_with("render: multiple frames into one filename"),
             "{e}"
         );
-        // one frame into one name is the overwrite case, and a # run numbers
+        // one frame into one name overwrites. A # run numbers the files.
         for tokens in [
             vec!["render", "s", "-o", "one.png"],
             vec!["render", "s", "-o", "f.####.png", "--frames", "4"],
@@ -1699,19 +1788,18 @@ mod tests {
     #[test]
     fn the_scene_the_render_loads_carries_its_filters() {
         let path = scene_file("filters");
-        let scene = scene_of(&ns(&["render", &path, "--filters", "dither"])).unwrap();
+        let (scene, process) = scene_of(&ns(&["render", &path, "--filters", "dither"])).unwrap();
         assert_eq!(scene.passes.len(), 2);
         assert_eq!(scene.passes[1].name, "dither");
-        let e = scene_of(&ns(&["render", &path, "--filters", "nope"]))
-            .unwrap_err()
-            .to_string();
+        assert!(process.is_none()); // a JSON scene feeds itself
+        let e = failure(scene_of(&ns(&["render", &path, "--filters", "nope"])));
         assert!(e.starts_with("unknown filter: nope (known: dither"), "{e}");
     }
 
     #[test]
     fn serve_mounts_the_directory_it_was_given() {
-        // the console reports an empty directory before it binds anything;
-        // main() is what puts the command name in front of it
+        // the console reports an empty directory before it binds anything.
+        // main() puts the command name in front.
         let d = tmpdir("serve-dir");
         assert_eq!(
             failure(run(&["serve", &d])),
@@ -1729,8 +1817,8 @@ mod tests {
         assert!(!in_examples(&path));
     }
 
-    /// A bundled scene served on its own is read-only, whichever way it is
-    /// reached.
+    /// A bundled scene served on its own stays read-only, whichever way a
+    /// command reaches it.
     #[test]
     fn a_bundled_scene_is_read_only() {
         std::env::set_var("GHEE_EXAMPLES", "ghee/examples");

@@ -1,6 +1,7 @@
-//! Bindings for the C engine (ghee/_engine/engine.h). One item per header
-//! declaration, same order; ghee_mp_set_float_array is omitted (header marks it
-//! superseded by ghee_mp_set_array).
+//! Bindings for the C engine (ghee/_engine/engine.h).
+//!
+//! Each item matches one header declaration, in header order.
+//! ghee_mp_set_float_array is not here. ghee_mp_set_array replaces it.
 #![allow(dead_code)]
 
 use core::ffi::{c_char, c_double, c_int};

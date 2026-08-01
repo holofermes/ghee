@@ -1,11 +1,9 @@
-//! Port of ghee/scene.py (see that file for the reference implementation).
+//! A Scene holds options and an ordered list of passes. The host fills each
+//! pass's arrays every frame.
 //!
-//! A Scene is options + an ordered list of passes. The host fills each pass's
-//! arrays each frame.
-//!
-//! The names below are the contract between this preamble and the ghee engine:
-//! ghee_mp_render binds `time`, `resolution` and `iChannel0..N` by these exact
-//! literal names. Arrays and params are bound by the author's chosen name.
+//! The names below are a contract with the ghee engine. ghee_mp_render binds
+//! `time`, `resolution` and `iChannel0..N` by these literal names. The author
+//! names an array or a param, and the engine binds it by that name.
 
 use std::fs;
 
@@ -14,8 +12,8 @@ use serde_json::{Map, Value};
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
-// vecK params have no engine type: like color, the preamble decomposes them to K
-// float uniforms named by these suffixes, so they never reach the C ABI as one value.
+// A vecK param has no engine type. The preamble decomposes it to K float
+// uniforms with these suffixes. It never reaches the C ABI as one value.
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 const VEC_SUFFIXES: [&str; 4] = ["_x", "_y", "_z", "_w"];
 
@@ -23,9 +21,9 @@ const PARAM_TYPES: [&str; 8] = [
     "float", "int", "bool", "color", "string", "vec2", "vec3", "vec4",
 ];
 
-// Arrays and passes become GL textures, so a size is bounded by what a texture
-// can be: one dimension caps at 16384 (above any GLES2 GL_MAX_TEXTURE_SIZE) and
-// a 2D input or a sized pass caps at 16M texels.
+// An array and a pass both become a GL texture, so a texture size bounds them.
+// One dimension caps at 16384, above any GLES2 GL_MAX_TEXTURE_SIZE. A 2D input
+// or a sized pass caps at 16M texels.
 const MAX_DIM: i64 = 16384;
 const MAX_TEXELS: i64 = 1 << 24;
 
@@ -45,8 +43,8 @@ fn is_dim(v: &Value) -> bool {
     v.as_i64().is_some_and(|n| 0 < n && n <= MAX_DIM)
 }
 
-/// A JSON size is an int or a whole float. Anything else passes through
-/// untouched, so the size check reports what the scene actually said.
+/// A JSON size is an int or a whole float. Any other value passes through
+/// unchanged, so the size check reports what the scene declares.
 fn to_int(v: &Value) -> Value {
     match v {
         Value::Number(n) if n.is_f64() => match n.as_f64() {
@@ -78,7 +76,8 @@ fn obj_of<'a>(d: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Va
     }
 }
 
-/// Python's repr() of a JSON-decoded value: error strings quote what the scene said.
+/// The value form the error strings quote a scene back in: `None`, `True`,
+/// `False`, a quoted string, a shortest round-trip float.
 pub(crate) fn py_repr(v: &Value) -> String {
     match v {
         Value::Null => "None".to_string(),
@@ -101,7 +100,7 @@ pub(crate) fn py_repr(v: &Value) -> String {
     }
 }
 
-/// Python's str() of a JSON-decoded value.
+/// The same form. A plain string stays unquoted.
 pub(crate) fn py_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -134,8 +133,8 @@ fn py_str_repr(s: &str) -> String {
     out
 }
 
-/// Python's repr() of a float: shortest round-trip, fixed notation while the
-/// decimal exponent is in -4..15, else an exponent of at least two digits.
+/// A float in that form: the shortest round-trip. A decimal exponent in -4..15
+/// prints fixed. Any other prints with an exponent of two digits or more.
 fn py_float(f: f64) -> String {
     if f.is_nan() {
         return "nan".to_string();
@@ -168,7 +167,7 @@ fn py_float(f: f64) -> String {
     }
 }
 
-/// What Python's OSError carries as strerror.
+/// The OS message alone. io::Error prints an errno after it.
 fn strerror(e: &std::io::Error) -> String {
     let s = e.to_string();
     match s.find(" (os error ") {
@@ -177,7 +176,7 @@ fn strerror(e: &std::io::Error) -> String {
     }
 }
 
-/// os.path.normpath: lexical, symlinks are not resolved.
+/// A lexical path cleanup. It does not resolve a symlink.
 fn normpath(path: &str) -> String {
     let absolute = path.starts_with('/');
     let mut out: Vec<&str> = Vec::new();
@@ -217,11 +216,12 @@ fn join(root: &str, path: &str) -> String {
     }
 }
 
-/// A `shader` file, read from the scene's own directory. A scene with no
-/// directory (one posted to the console, one built in memory) cannot name files
-/// at all, and one that has a directory cannot reach outside it: either would
-/// turn a scene into a read of any file on the host. `what` names the holder in
-/// errors: a pass, or the scene's common block.
+/// Read a `shader` file from the scene's own directory.
+///
+/// A scene with no directory names no file. A console post and an in-memory
+/// scene have no directory. A scene with a directory reads inside it only.
+/// Either rule stops a scene from reading any file on the host. `what` names the
+/// holder in an error: a pass, or the scene's common block.
 fn read_shader(path: &Value, base_dir: Option<&str>, what: &str) -> Result<String> {
     let Value::String(name) = path else {
         bail!("{what} shader needs a filename, got {}", py_repr(path));
@@ -250,9 +250,9 @@ fn read_shader(path: &Value, base_dir: Option<&str>, what: &str) -> Result<Strin
     }
 }
 
-/// The scene's shared GLSL, carried the two ways a pass carries its own: 'code'
-/// inline, or a 'shader' file next to the scene. None = no common block at all;
-/// "" is an empty one the console just created.
+/// The scene's shared GLSL. It arrives the two ways a pass's own GLSL does:
+/// 'code' inline, or a 'shader' file next to the scene. None is no common block.
+/// "" is an empty block the console creates.
 fn common_block(d: &Map<String, Value>, base_dir: Option<&str>) -> Result<Option<String>> {
     let c = match d.get("common") {
         None | Some(Value::Null) => return Ok(None),
@@ -283,10 +283,12 @@ fn common_block(d: &Map<String, Value>, base_dir: Option<&str>) -> Result<Option
     }
 }
 
-/// Preamble uniform declarations for one param. A color decomposes to three
-/// float uniforms plus a vec3 alias; a vecK to K floats plus a vecK alias (the
-/// engine has no color/vec type, it only ever sets floats). A scalar is one
-/// typed uniform. A string is host-side only: no uniform at all.
+/// The preamble uniform declarations for one param.
+///
+/// A color decomposes to three float uniforms plus a vec3 alias. A vecK
+/// decomposes to K float uniforms plus a vecK alias. The engine has no color
+/// type and no vec type, and it sets floats only. A scalar is one typed uniform.
+/// A string is host-side, and it declares no uniform.
 fn param_uniform_lines(p: &Param) -> Vec<String> {
     let name = &p.name;
     if p.ty == "string" {
@@ -351,8 +353,8 @@ pub struct Param {
     pub min: Option<Value>,
     pub max: Option<Value>,
     pub step: Option<Value>,
-    /// string params only: offered choices, rendered as a dropdown (free text
-    /// input when absent)
+    /// The choices a string param offers. The console renders them as a
+    /// dropdown. Without them it renders a text input.
     pub options: Option<Vec<String>>,
 }
 
@@ -373,7 +375,7 @@ impl Param {
                 PARAM_TYPES.join(", ")
             );
         }
-        // A color is [r, g, b] floats 0..1. It has no engine type: the preamble
+        // A color is [r, g, b], each 0..1. It has no engine type. The preamble
         // decomposes it to three float uniforms, so it never reaches glsl_type
         // or the C ABI as one value.
         let stored = if ty == "color" {
@@ -397,8 +399,8 @@ impl Param {
                 Value::String(s) => ParamValue::Str(s.clone()),
                 v => bail!("string param '{name}' needs a string, got {}", py_repr(v)),
             }
-        // A bool is `uniform bool` in the shader and an int over the C ABI (the
-        // engine has no bool type; glUniform1i sets a bool uniform).
+        // A bool is `uniform bool` in the shader and an int over the C ABI. The
+        // engine has no bool type. glUniform1i sets a bool uniform.
         } else if ty == "bool" {
             match &value {
                 Value::Bool(b) => ParamValue::Bool(*b),
@@ -451,6 +453,53 @@ impl Param {
             step: step.filter(|v| !v.is_null()),
             options,
         })
+    }
+
+    /// A param with no min, max or step.
+    fn plain(name: &str, ty: &str, value: ParamValue) -> Param {
+        Param {
+            name: name.to_string(),
+            ty: ty.to_string(),
+            value,
+            min: None,
+            max: None,
+            step: None,
+            options: None,
+        }
+    }
+
+    pub fn float(name: &str, value: f64) -> Param {
+        Param::plain(name, "float", ParamValue::Float(value))
+    }
+
+    pub fn int(name: &str, value: i64) -> Param {
+        Param::plain(name, "int", ParamValue::Int(value))
+    }
+
+    pub fn bool(name: &str, value: bool) -> Param {
+        Param::plain(name, "bool", ParamValue::Bool(value))
+    }
+
+    /// [r, g, b], each 0..1. It reaches a pass as a vec3.
+    pub fn color(name: &str, rgb: [f64; 3]) -> Param {
+        Param::plain(name, "color", ParamValue::Color(rgb))
+    }
+
+    /// The value count sets the type. 2 numbers are a vec2, 3 a vec3, 4 a vec4.
+    pub fn vec(name: &str, values: &[f64]) -> Result<Param> {
+        let Some((ty, _)) = VEC_ARITY.iter().find(|(_, n)| *n == values.len()) else {
+            bail!(
+                "vec param '{name}' needs 2, 3 or 4 numbers, got {}",
+                values.len()
+            );
+        };
+        Ok(Param::plain(name, ty, ParamValue::Vec(values.to_vec())))
+    }
+
+    /// A string param is host-side, and it has no uniform. Use `new` with
+    /// `options` for the choices the console shows as a dropdown.
+    pub fn string(name: &str, value: &str) -> Param {
+        Param::plain(name, "string", ParamValue::Str(value.to_string()))
     }
 
     #[allow(dead_code)]
@@ -514,8 +563,8 @@ fn number_list(v: &Value, n: usize) -> Option<Vec<f64>> {
     Some(a.iter().map(|x| x.as_f64().unwrap_or_default()).collect())
 }
 
-/// Insertion-ordered name -> Param: the order params are declared in is the
-/// order their uniforms reach a pass's preamble.
+/// Insertion-ordered name -> Param. A param's declaration order is its uniform's
+/// order in a pass preamble.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParamMap(Vec<(String, Param)>);
 
@@ -565,10 +614,15 @@ impl ParamMap {
     }
 }
 
-/// A named float input, fed by the host and bound as a texture sampler. size N
-/// is a 1xN array: one fetch per computed index (no VC4 uniform-array unroll or
-/// size cap), read as <name>_at(i) or <name>_sample(t). size [w, h] is a 2D
-/// w x h mask (host-rasterized text, images), read as <name>_sample2(uv).
+/// A named float input. The host feeds it, and the engine binds it as a texture
+/// sampler.
+///
+/// Size N is a 1xN array. A read is one fetch at a computed index, so VC4 needs
+/// no uniform-array unroll and imposes no size cap. Read it with `<name>_at(i)`
+/// or `<name>_sample(t)`.
+///
+/// Size [w, h] is a 2D w x h mask, such as host-rasterized text or an image.
+/// Read it with `<name>_sample2(uv)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArrayInput {
     pub name: String,
@@ -581,13 +635,33 @@ pub enum ArraySize {
     Grid(i64, i64),
 }
 
+impl From<i64> for ArraySize {
+    fn from(n: i64) -> ArraySize {
+        ArraySize::Linear(n)
+    }
+}
+
+impl From<(i64, i64)> for ArraySize {
+    fn from((w, h): (i64, i64)) -> ArraySize {
+        ArraySize::Grid(w, h)
+    }
+}
+
+/// A size as a scene JSON value. The size check reads that form.
+fn size_value(size: ArraySize) -> Value {
+    match size {
+        ArraySize::Linear(n) => Value::from(n),
+        ArraySize::Grid(w, h) => Value::from(vec![w, h]),
+    }
+}
+
 impl ArrayInput {
     pub fn new(name: &str, size: Value) -> Result<ArrayInput> {
         ArrayInput::build(name, size, false)
     }
 
-    /// `pair` marks a [w, h] that from_dict rebuilt: Python's is a tuple by then
-    /// and the size check reports it as one.
+    /// `pair` marks a [w, h] that from_dict rebuilds. The size check reports it
+    /// as a tuple, `(w, h)`.
     fn build(name: &str, size: Value, pair: bool) -> Result<ArrayInput> {
         let stored = if let Value::Array(s) = &size {
             if s.len() != 2 || !s.iter().all(is_dim) {
@@ -651,24 +725,21 @@ impl ArrayInput {
     pub fn to_dict(&self) -> Value {
         let mut d = Map::new();
         d.insert("name".to_string(), Value::from(self.name.clone()));
-        d.insert(
-            "size".to_string(),
-            match self.size {
-                ArraySize::Linear(n) => Value::from(n),
-                ArraySize::Grid(w, h) => Value::from(vec![w, h]),
-            },
-        );
+        d.insert("size".to_string(), size_value(self.size));
         Value::Object(d)
     }
 }
 
-/// Preamble readers for one declared array, bound as a data texture. _at(i) is
-/// one fetch at a computed coord (no VC4 uniform-array unroll or size cap). V3D
-/// cannot linear-filter a float texture, so a GPU-filtered fetch is nearest
-/// there and linear elsewhere. `hw_linear` says which GPU this is: where the
-/// filter works _sample/_sample2 are one fetch, where it does not they read the
-/// exact texels and interpolate in the shader, reproducing GL's LINEAR +
-/// CLAMP_TO_EDGE (texel centres, clamped edges).
+/// The preamble readers for one declared array, bound as a data texture.
+///
+/// `_at(i)` is one fetch at a computed coord. VC4 needs no uniform-array unroll
+/// and imposes no size cap.
+///
+/// V3D cannot linear-filter a float texture, so a GPU-filtered fetch is nearest
+/// there and linear elsewhere. `hw_linear` says which GPU this is. Where the
+/// filter works, `_sample` and `_sample2` are one fetch. Where it does not, they
+/// read the exact texels and interpolate in the shader. That reproduces GL's
+/// LINEAR and CLAMP_TO_EDGE: texel centres and clamped edges.
 fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     let n = &a.name;
     if let ArraySize::Grid(w, h) = a.size {
@@ -765,11 +836,12 @@ pub struct Pass {
     pub arrays: Vec<ArrayInput>,
     pub channels: Vec<Channel>,
     pub params: ParamMap,
-    /// non-empty = this pass came from a named filter (read-only in the UI)
+    /// A non-empty name marks a pass a named filter produced. The console
+    /// renders such a pass read-only.
     pub filter: String,
-    /// optional [w, h] this pass renders at; None = the renderer's size. A sized
-    /// pass is sampled through normalized UVs, so consumers ignore its size. The
-    /// output (last) pass must leave this None.
+    /// The [w, h] this pass renders at. None is the renderer's size. A consumer
+    /// samples a sized pass through normalized UVs, so it ignores the size. The
+    /// output pass leaves this None.
     pub size: Option<(i64, i64)>,
 }
 
@@ -812,7 +884,7 @@ impl Pass {
         })
     }
 
-    /// A pass with nothing but a name and its GLSL: the dataclass defaults.
+    /// A pass with a name and GLSL only. Every other field takes its default.
     pub fn of(name: &str, code: &str) -> Result<Pass> {
         Pass::new(
             name,
@@ -825,7 +897,7 @@ impl Pass {
         )
     }
 
-    /// True if any channel feeds back from this pass's own buffer.
+    /// True when a channel reads this pass's own buffer.
     #[allow(dead_code)]
     pub fn reads_self(&self) -> bool {
         self.channels
@@ -922,8 +994,8 @@ impl Pass {
         Value::Object(out)
     }
 
-    /// `hw_linear` is the target GPU's answer to Renderer.data_texture_linear;
-    /// false emits the array readers that hold on any GPU.
+    /// `hw_linear` is the target GPU's Renderer.data_texture_linear. False emits
+    /// the array readers that hold on any GPU.
     pub fn glsl(
         &self,
         scene_params: Option<&ParamMap>,
@@ -932,10 +1004,9 @@ impl Pass {
     ) -> String {
         let mut l: Vec<String> = vec![
             "#version 100".to_string(),
-            // highp where the fragment stage supports it (VC4 does), else mediump.
-            // mediump cannot represent texel coords like (col+0.5)/w precisely, so a
-            // feedback pass that resamples its own output drifts a fraction of a pixel
-            // per frame and shears over time. highp keeps ping-pong buffers stable.
+            // mediump cannot hold a texel coord like (col+0.5)/w. A feedback pass
+            // that resamples its own output then drifts a fraction of a pixel per
+            // frame. highp keeps a ping-pong buffer stable, and VC4 supports it.
             "#ifdef GL_FRAGMENT_PRECISION_HIGH".to_string(),
             "precision highp float;".to_string(),
             "#else".to_string(),
@@ -945,10 +1016,10 @@ impl Pass {
             "uniform vec2 resolution;".to_string(),
             "uniform float time;".to_string(),
             "uniform float DT;".to_string(),
-            // VC4's gl_FragCoord.xy is sheared ~1/3 px per row when a pass samples
-            // its own output as feedback (the interpolated varying is exact). Map
-            // gl_FragCoord to the varying so scene code (gl_FragCoord.xy/resolution)
-            // samples feedback without drifting. No effect on non-feedback passes.
+            // VC4 shears gl_FragCoord.xy by about 1/3 px per row when a pass
+            // samples its own output. The interpolated varying is exact. This
+            // define maps gl_FragCoord onto the varying, so scene code that reads
+            // gl_FragCoord.xy/resolution samples feedback without drift.
             "#define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)".to_string(),
         ];
         for a in &self.arrays {
@@ -960,8 +1031,7 @@ impl Pass {
         for i in 0..self.channels.len() {
             l.push(format!("uniform sampler2D iChannel{i};"));
         }
-        // Scene-scoped params are emitted into every pass identically (explicit
-        // sharing, no name-matching), ahead of this pass's own params.
+        // Every pass takes the same scene param lines, ahead of its own params.
         for p in scene_params.iter().flat_map(|sp| sp.values()) {
             l.extend(param_uniform_lines(p));
         }
@@ -971,9 +1041,9 @@ impl Pass {
         for a in &self.arrays {
             l.extend(array_reader_lines(a, hw_linear));
         }
-        // A filter is authored on its own and appended to any scene, so the
-        // scene's common block never reaches it: its internals cannot collide
-        // with names the scene author chose.
+        // An author writes a filter on its own, and ghee appends it to any
+        // scene. The scene's common block never reaches it, so a filter name
+        // never collides with a scene name.
         let body = match common {
             Some(c) if !c.is_empty() && self.filter.is_empty() => format!("{c}\n\n{}", self.code),
             _ => self.code.clone(),
@@ -986,14 +1056,15 @@ impl Pass {
 pub struct Scene {
     pub passes: Vec<Pass>,
     pub version: Value,
-    /// named filters (post-process passes) to append after the scene's own passes,
-    /// in order; the last one is what reaches the display. Resolved via filters.
+    /// The named filters to append after the scene's own passes, in order. The
+    /// last one reaches the display. The filters module resolves a name.
     pub filters: Vec<String>,
-    /// scene-scoped params: emitted into every pass's preamble and set on all of
-    /// them at once. Same shape as a pass's params.
+    /// The scene params. Every pass preamble declares them, and one set reaches
+    /// every pass at once. They take the shape of a pass param.
     pub params: ParamMap,
-    /// GLSL shared by every scene pass (functions, constants), prepended after
-    /// the preamble. None = no common block; filter passes never see it.
+    /// The GLSL every scene pass shares, such as a function or a constant. It
+    /// follows the preamble. None is no common block. A filter pass never sees
+    /// it.
     pub common: Option<String>,
 }
 
@@ -1018,9 +1089,9 @@ impl Scene {
                 seen.push(&p.name);
             }
         }
-        // A name belongs to one scope only. Sharing a scene param with a pass is
-        // explicit (it reaches every pass), so a pass declaring the same name is
-        // an ambiguous redeclaration, not a link. Reject it by name and pass.
+        // A name belongs to one scope only. A scene param already reaches every
+        // pass, so a pass that declares the same name redeclares it. The error
+        // names the param and the pass.
         for p in &passes {
             for nm in p.params.keys() {
                 if params.contains_key(nm) {
@@ -1041,7 +1112,7 @@ impl Scene {
         })
     }
 
-    /// A scene with nothing but passes: the dataclass defaults.
+    /// A scene with passes only. Every other field takes its default.
     pub fn of(passes: Vec<Pass>) -> Result<Scene> {
         Scene::new(passes, Value::from(1), Vec::new(), ParamMap::new(), None)
     }
@@ -1050,7 +1121,7 @@ impl Scene {
         &self.passes[self.passes.len() - 1]
     }
 
-    /// `path` is only used to name the scene in error messages.
+    /// `path` names the scene in an error message.
     pub fn from_dict(d: &Value, base_dir: Option<&str>, path: Option<&str>) -> Result<Scene> {
         let src = path.unwrap_or("scene");
         let Value::Object(o) = d else {
@@ -1092,7 +1163,7 @@ impl Scene {
             "passes".to_string(),
             Value::from(self.passes.iter().map(Pass::to_dict).collect::<Vec<_>>()),
         );
-        // "" is a common block the console can fill
+        // "" is a common block the console can fill.
         if let Some(c) = &self.common {
             let mut m = Map::new();
             m.insert("code".to_string(), Value::from(c.clone()));
@@ -1135,6 +1206,85 @@ impl Scene {
     pub fn save(&self, path: &str) -> Result<()> {
         fs::write(path, serde_json::to_string_pretty(&self.to_dict())?)?;
         Ok(())
+    }
+}
+
+/// Chained construction on the Result a Pass constructor returns:
+/// `Pass::of(name, code).array("level", 8).param(Param::float("gain", 1.0))?`.
+/// The first error stops the chain, and `?` returns it.
+pub trait PassBuilder {
+    /// Declare an array the host fills every frame. `8` is a 1x8 linear array,
+    /// `(16, 8)` a 16x8 grid.
+    fn array<S: Into<ArraySize>>(self, name: &str, size: S) -> Result<Pass>;
+
+    /// Declare a pass param. A second param of the same name replaces the first.
+    fn param(self, param: Param) -> Result<Pass>;
+
+    /// Bind the next iChannel to a pass's buffer. `None` leaves it unbound. An
+    /// unbound channel reads black.
+    fn channel<'a, B: Into<Option<&'a str>>>(self, buffer: B) -> Result<Pass>;
+
+    /// Render this pass at [width, height] instead of the renderer's size. The
+    /// output pass has no size of its own.
+    fn size(self, width: i64, height: i64) -> Result<Pass>;
+}
+
+impl PassBuilder for Result<Pass> {
+    fn array<S: Into<ArraySize>>(self, name: &str, size: S) -> Result<Pass> {
+        let mut p = self?;
+        p.arrays
+            .push(ArrayInput::new(name, size_value(size.into()))?);
+        Ok(p)
+    }
+
+    fn param(self, param: Param) -> Result<Pass> {
+        let mut p = self?;
+        p.params.insert(param.name.clone(), param);
+        Ok(p)
+    }
+
+    fn channel<'a, B: Into<Option<&'a str>>>(self, buffer: B) -> Result<Pass> {
+        let mut p = self?;
+        p.channels.push(Channel::new(buffer.into()));
+        Ok(p)
+    }
+
+    fn size(self, width: i64, height: i64) -> Result<Pass> {
+        let p = self?;
+        Pass::new(
+            &p.name,
+            &p.code,
+            p.arrays,
+            p.channels,
+            p.params,
+            &p.filter,
+            Some(Value::from(vec![width, height])),
+        )
+    }
+}
+
+/// Chained construction on the Result a Scene constructor returns:
+/// `Scene::of(passes).param(Param::color("tint", [1.0, 0.0, 0.0]))?`.
+pub trait SceneBuilder {
+    /// Declare a scene param. It is one uniform in every pass. A pass that
+    /// declares the same name fails here.
+    fn param(self, param: Param) -> Result<Scene>;
+
+    /// Append named filters, in order. The last one reaches the display.
+    fn filters(self, names: &[&str]) -> Result<Scene>;
+}
+
+impl SceneBuilder for Result<Scene> {
+    fn param(self, param: Param) -> Result<Scene> {
+        let mut s = self?;
+        s.params.insert(param.name.clone(), param);
+        Scene::new(s.passes, s.version, s.filters, s.params, s.common)
+    }
+
+    fn filters(self, names: &[&str]) -> Result<Scene> {
+        let mut s = self?;
+        s.filters.extend(names.iter().map(|n| (*n).to_string()));
+        Ok(s)
     }
 }
 
@@ -1181,7 +1331,7 @@ mod tests {
         )
         .unwrap();
         let g = p.glsl(None, None, false);
-        assert!(g.contains("uniform sampler2D amps_tex;")); // arrays are 1xN data textures
+        assert!(g.contains("uniform sampler2D amps_tex;")); // An array is a 1xN data texture.
         assert!(g.contains("const int amps_size = 8;"));
         assert!(g.contains("amps_at"));
         assert!(g.contains("amps_sample"));
@@ -1281,7 +1431,7 @@ mod tests {
         assert!(g.contains("uniform float tint_g;"));
         assert!(g.contains("uniform float tint_b;"));
         assert!(g.contains("#define tint vec3(tint_r, tint_g, tint_b)"));
-        assert!(!g.contains("uniform color")); // a color never leaks a bogus GLSL type
+        assert!(!g.contains("uniform color")); // 'color' is not a GLSL type.
         assert!(!g.contains("uniform vec3 tint;"));
     }
 
@@ -1379,7 +1529,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(", ");
             assert!(g.contains(&format!("#define {name} {t}({args})")));
-            // the vec type never leaks as a uniform
+            // A vec type never reaches the shader as a uniform.
             assert!(!g.contains(&format!("uniform {t} {name};")));
         }
     }
@@ -1488,13 +1638,13 @@ mod tests {
         .unwrap();
         for p in &sc.passes {
             let g = p.glsl(Some(&sc.params), None, false);
-            assert!(g.contains("uniform float gain;")); // scalar, one uniform
-                                                        // a color scene param decomposes to three floats + a vec3 alias, per pass
+            assert!(g.contains("uniform float gain;")); // A scalar is one uniform.
+                                                        // A color decomposes to three floats plus a vec3 alias, in every pass.
             assert!(g.contains("uniform float tint_r;"));
             assert!(g.contains("uniform float tint_g;"));
             assert!(g.contains("uniform float tint_b;"));
             assert!(g.contains("#define tint vec3(tint_r, tint_g, tint_b)"));
-            // a vec2 scene param decomposes to two floats + a vec2 alias, per pass
+            // A vec2 decomposes to two floats plus a vec2 alias, in every pass.
             assert!(g.contains("uniform float off_x;"));
             assert!(g.contains("uniform float off_y;"));
             assert!(g.contains("#define off vec2(off_x, off_y)"));
@@ -1516,7 +1666,7 @@ mod tests {
         )
         .unwrap()])
         .unwrap();
-        // an empty scene-params dict threads nothing into the preamble
+        // An empty scene param map adds nothing to the preamble.
         for p in &sc.passes {
             assert_eq!(
                 p.glsl(Some(&sc.params), None, false),
@@ -1564,7 +1714,7 @@ mod tests {
             Some(json!([1, 2]))
         )
         .is_err());
-        // options are string-only
+        // Only a string param takes options.
         assert!(Param::new(
             "bad",
             "float",
@@ -1625,7 +1775,7 @@ mod tests {
         );
     }
 
-    // a scene file reference never escapes its scene directory
+    // A scene's file reference never escapes the scene directory.
 
     #[test]
     fn shader_key_without_base_dir_raises() {
@@ -1671,7 +1821,7 @@ mod tests {
     fn serialized_scene_reloads_without_a_directory() {
         let scene = Scene::load(&repo("ghee/examples/bars.scene.json")).unwrap();
         let d = scene.to_dict();
-        // what the console posts back: code, inline
+        // The console posts code back inline.
         assert!(!d.to_string().contains("shader"));
         assert_eq!(
             Scene::from_dict(&d, None, None).unwrap().passes[0].code,
@@ -1697,7 +1847,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    // param values are typed
+    // A param value is typed.
 
     #[test]
     fn float_and_int_params_need_numbers() {
@@ -1734,7 +1884,7 @@ mod tests {
             None,
         )
         .unwrap();
-        param("g", "float", json!(0.5)).unwrap(); // all None
+        param("g", "float", json!(0.5)).unwrap(); // No min, max or step.
         for k in ["min", "max", "step"] {
             let (mut lo, mut hi, mut st) = (None, None, None);
             match k {
@@ -1763,7 +1913,7 @@ mod tests {
         assert!(e.contains("unknown type"), "{e}");
     }
 
-    // array and pass sizes are bounded
+    // An array size and a pass size are bounded.
 
     #[test]
     fn array_size_is_bounded() {
@@ -1799,12 +1949,12 @@ mod tests {
         });
         let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
         assert!(e.contains("size"), "{e}");
-        assert!(e.contains("100000000000"), "{e}"); // the whole float reports as an int
+        assert!(e.contains("100000000000"), "{e}"); // A whole float reports as an int.
     }
 
     #[test]
     fn two_d_array_texel_cap() {
-        ArrayInput::new("a", json!([4096, 4096])).unwrap(); // exactly the cap
+        ArrayInput::new("a", json!([4096, 4096])).unwrap(); // Exactly the cap.
         let e = ArrayInput::new("a", json!([8192, 4096]))
             .unwrap_err()
             .to_string();
@@ -1826,7 +1976,7 @@ mod tests {
             .contains("cap"));
     }
 
-    // a pass name is a buffer name, so it is unique
+    // A pass name is a buffer name, so it is unique.
 
     #[test]
     fn duplicate_pass_names_rejected() {
@@ -1845,7 +1995,7 @@ mod tests {
         assert!(e.contains("twice"), "{e}");
     }
 
-    // one error, carrying scene, pass and field
+    // One error carries the scene, the pass and the field.
 
     #[test]
     fn malformed_scene_json_reports_context() {
@@ -1901,7 +2051,7 @@ mod tests {
         }
     }
 
-    // a scene's common block is one block of GLSL, from one source
+    // A scene's common block is one block of GLSL from one source.
 
     fn common_scene(common: Option<Value>, passes: Option<Vec<Value>>) -> Value {
         let mut d = Map::new();
@@ -2022,7 +2172,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sc.common.as_deref(), Some(COMMON));
-        // what the console posts back and what a save writes: code, inline
+        // The console posts code back inline, and a save writes the same form.
         assert_eq!(sc.to_dict()["common"], json!({"code": COMMON}));
         fs::remove_dir_all(&base).unwrap();
     }
@@ -2043,7 +2193,7 @@ mod tests {
 
     #[test]
     fn an_empty_common_is_a_block_that_exists() {
-        // the console's "+ common" creates one before anything is typed into it
+        // The console's "+ common" creates a block before anyone types into it.
         let sc =
             Scene::from_dict(&common_scene(Some(json!({"code": ""})), None), None, None).unwrap();
         assert_eq!(sc.common.as_deref(), Some(""));
@@ -2074,7 +2224,7 @@ mod tests {
         for p in &sc.passes {
             let g = p.glsl(Some(&sc.params), sc.common.as_deref(), false);
             assert!(g.contains(COMMON));
-            // after the generated preamble, before the pass's own code
+            // The common block follows the preamble and precedes the pass code.
             let pre = g.find("uniform float time;").unwrap();
             let common_at = g.find(COMMON).unwrap();
             let code_at = g.find(&p.code).unwrap();
@@ -2089,7 +2239,7 @@ mod tests {
         assert_eq!(p.glsl(None, Some(""), false), p.glsl(None, None, false));
     }
 
-    // the assembled source, byte for byte against the Python fixtures
+    // The assembled source, byte for byte against the recorded fixtures.
 
     fn fixture_scene(name: &str) -> Scene {
         let (base, filters) = match name.split_once('+') {
@@ -2103,7 +2253,7 @@ mod tests {
 
     #[test]
     fn assembled_glsl_is_byte_exact() {
-        let _g = crate::filters::env_guard(); // the fixtures build against the shipped dither
+        let _g = crate::filters::env_guard(); // The fixtures build against the shipped dither.
         let dir = repo("tools/fixtures/glsl");
         let mut names: Vec<String> = fs::read_dir(&dir)
             .unwrap()
@@ -2189,7 +2339,7 @@ mod tests {
     }
 
     #[test]
-    fn python_reprs() {
+    fn a_value_quoted_in_an_error_keeps_its_form() {
         assert_eq!(py_repr(&json!(null)), "None");
         assert_eq!(py_repr(&json!(true)), "True");
         assert_eq!(py_repr(&json!(4)), "4");
@@ -2204,15 +2354,15 @@ mod tests {
         assert_eq!(py_float(96.0), "96.0");
     }
 
-    /// to_dict serialised the way json.dumps(separators=(",", ":")) does.
+    /// The scene as to_dict serialises it, with no space after a separator.
     fn canon(s: &Scene) -> String {
         serde_json::to_string(&s.to_dict()).unwrap()
     }
 
     #[test]
     fn to_dict_matches_the_reference_json() {
-        // the text ghee/scene.py's to_dict serialises to for the same input:
-        // key order, which keys are dropped, and int vs float per field
+        // The text to_dict serialises for this input: key order, dropped keys,
+        // and int or float per field.
         let d = json!({
             "version": 2,
             "passes": [
@@ -2236,8 +2386,8 @@ mod tests {
             canon(&Scene::from_dict(&d, None, None).unwrap()),
             r#"{"version":2,"passes":[{"name":"a","code":"x","size":[8,8]},{"name":"b","code":"y","arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"b":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":{"code":"float f(){ return 1.0; }"},"filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}}}"#
         );
-        // a null range or option list is no range or option list; an empty
-        // filter mark and an absent version are dropped and defaulted
+        // A null range or option list is no range or option list. to_dict drops
+        // an empty filter mark. An absent version takes the default.
         let sparse = json!({
             "passes": [{"name": "m", "code": "x", "filter": "",
                         "params": {"g": {"type": "int", "value": 2.0, "min": null,
@@ -2247,13 +2397,13 @@ mod tests {
             canon(&Scene::from_dict(&sparse, None, None).unwrap()),
             r#"{"version":1,"passes":[{"name":"m","code":"x","params":{"g":{"type":"int","value":2}}}]}"#
         );
-        // "" is a common block the console just made, None is no block at all
+        // "" is a common block the console makes. None is no block.
         let empty_common = json!({"passes": [{"name": "m", "code": "z"}], "common": {"code": ""}});
         assert_eq!(
             canon(&Scene::from_dict(&empty_common, None, None).unwrap()),
             r#"{"version":1,"passes":[{"name":"m","code":"z"}],"common":{"code":""}}"#
         );
-        // version is carried through untouched, whatever it is
+        // to_dict carries any version through unchanged.
         let odd = json!({"version": "x", "passes": [{"name": "m", "code": "x"}]});
         assert_eq!(
             canon(&Scene::from_dict(&odd, None, None).unwrap()),
@@ -2263,8 +2413,8 @@ mod tests {
 
     #[test]
     fn to_dict_round_trips_the_shipped_scenes() {
-        // a scene reloaded from its own to_dict serialises to the same bytes,
-        // so saving one twice never rewrites it
+        // A scene reloaded from its own to_dict serialises to the same bytes.
+        // A second save never rewrites the file.
         let dir = repo("ghee/examples");
         let mut names: Vec<String> = fs::read_dir(&dir)
             .unwrap()

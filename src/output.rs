@@ -1,12 +1,9 @@
-//! Port of ghee/output.py (see that file for the reference implementation).
+//! The sinks themselves. The Output and Pacer traits live in ghee::looper,
+//! beside the loop that drives them.
 //!
-//! The sinks themselves. The Output and Pacer traits they answer to live in
-//! ghee::looper beside the loop that drives them.
-//!
-//! Python leans on PIL to turn a frame into a file; there is no PIL here, so
-//! ImageSequence encodes PNG and JPEG itself. save_opts keeps its PIL spelling:
-//! `quality` reaches the JPEG encoder, anything else is ignored the way a PIL
-//! plugin ignores an option it has no use for.
+//! ImageSequence encodes PNG and JPEG itself. ghee links no image library.
+//! `quality` in save_opts reaches the JPEG encoder. The encoder ignores an
+//! option it has no use for.
 
 use std::fs;
 use std::io::Write;
@@ -23,7 +20,7 @@ use crate::looper::{Frame, Output, OwnedFrame, Pacer};
 use crate::stats::{DEST_FILE, DEST_KMS, DEST_PIPE};
 
 /// frame.####.jpg + 7 -> frame.0007.jpg. A printf field (frame.%04d.jpg) also
-/// works. A plain filename is returned as is (single frame, or overwrite).
+/// works. A plain filename comes back as it is (one frame, or an overwrite).
 pub fn expand_pattern(pattern: &str, index: i64) -> Result<String> {
     if let Some(start) = pattern.find('#') {
         let width = pattern[start..].bytes().take_while(|b| *b == b'#').count();
@@ -40,8 +37,8 @@ pub fn expand_pattern(pattern: &str, index: i64) -> Result<String> {
     Ok(pattern.to_string())
 }
 
-/// The integer conversions of Python's `pattern % index`, which is what a
-/// printf-style frame number goes through. Errors carry Python's own text.
+/// The integer conversions of a printf-style `pattern % index`. A frame number
+/// reaches its filename this way.
 fn percent_format(pattern: &str, index: i64) -> Result<String> {
     let src = pattern.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(src.len() + 8);
@@ -109,7 +106,7 @@ fn percent_format(pattern: &str, index: i64) -> Result<String> {
 }
 
 /// A parsed conversion: the flags, width and precision ahead of its character.
-/// `#` never reaches here, a pattern holding one takes the ####-run branch.
+/// `#` never reaches here. A pattern that holds one takes the ####-run branch.
 #[derive(Default)]
 struct Spec {
     zero: bool,
@@ -165,11 +162,11 @@ impl Spec {
     }
 }
 
-/// Pace a render loop off the sink's own backpressure. The sink write time
-/// is the felt speed of the display bus; keeping the frame period at
-/// factor * write time holds the bus at a 1/factor duty cycle, so a slow bus
-/// gets few frames and a fast one gets many, with no configured rate. max_fps
-/// bounds the fast end (image files write in microseconds).
+/// Pace a render loop off the sink's own backpressure. The sink write time is
+/// the speed of the display bus. A frame period of factor * write time holds
+/// the bus at a 1/factor duty cycle. A slow bus gets few frames. A fast bus
+/// gets many. Nothing configures a rate. max_fps bounds the fast end: an image
+/// file writes in microseconds.
 pub struct AdaptivePacer {
     pub factor: f64,
     pub min_period: f64,
@@ -177,7 +174,7 @@ pub struct AdaptivePacer {
 }
 
 impl AdaptivePacer {
-    /// Python's defaults: factor 2.0, max_fps 60.
+    /// The defaults: factor 2.0, max_fps 60.
     pub fn new() -> AdaptivePacer {
         AdaptivePacer::with_limits(2.0, 60.0)
     }
@@ -237,9 +234,9 @@ impl Pacer for FixedPacer {
     }
 }
 
-/// KMS: the renderer page-flips the final buffer to the connector itself
-/// (Renderer::present), so this sink holds nothing and never takes a frame. It
-/// is in the list to name the destination and to put the loop on present().
+/// KMS. The renderer page-flips the final buffer to the connector itself
+/// (Renderer::present). This sink holds nothing and never takes a frame. It
+/// names the destination and puts the loop on present().
 pub struct Scanout;
 
 impl Output for Scanout {
@@ -269,16 +266,17 @@ enum Job {
     Stop,
 }
 
-/// Write each frame to its own numbered file. Encoding and disk I/O run on a
-/// single worker thread so the render loop never waits on the encoder.
+/// Write each frame to its own numbered file. Encoding and disk I/O run on one
+/// worker thread, so the render loop never waits on the encoder.
 ///
-/// The pool path takes no per-frame copy: acquire() hands out a preallocated
-/// buffer, the renderer reads the GPU straight into it (render_into), and
-/// submit() queues it; the worker encodes, writes, and recycles the buffer.
-/// The pool grows lazily to depth+1 buffers, so acquire() blocks only when the
-/// writer is `depth` frames behind. depth is the grace for a slow writer; the
-/// depth+1 cap is the memory bound on a small board. Set depth to the frame
-/// count and the render never waits, the writer drains at the end.
+/// The pool path takes no per-frame copy. acquire() hands out a preallocated
+/// buffer. The renderer reads the GPU straight into it (render_into). submit()
+/// queues it. The worker encodes, writes and recycles the buffer.
+///
+/// The pool grows to depth+1 buffers, so acquire() blocks only when the writer
+/// is `depth` frames behind. depth is the grace for a slow writer. The depth+1
+/// cap is the memory bound on a small board. A depth of the whole frame count
+/// keeps the render clear of every wait. The writer drains at the end.
 pub struct ImageSequence {
     #[allow(dead_code)]
     pub pattern: String,
@@ -293,7 +291,7 @@ pub struct ImageSequence {
 }
 
 impl ImageSequence {
-    /// Python's defaults: start 0, no save options, depth 16.
+    /// The defaults: start 0, no save options, depth 16.
     #[allow(dead_code)]
     pub fn new(pattern: &str) -> ImageSequence {
         ImageSequence::with_opts(pattern, 0, None, 16)
@@ -330,7 +328,7 @@ impl ImageSequence {
         self.err.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Stop the writer once it has drained, and surface what it failed on.
+    /// Stop the writer once it drains. Report the failure it holds.
     fn finish(&mut self) -> Result<()> {
         let _ = self.jobs.send(Job::Stop);
         if let Some(worker) = self.worker.take() {
@@ -345,10 +343,11 @@ impl ImageSequence {
     }
 }
 
-/// The writer thread: encode, write, recycle. The buffer is the worker's alone
-/// between submit and recycle, so the encoder reads it in place. On failure keep
-/// draining and recycling so a blocked acquire() never starves; the error
-/// surfaces on the next acquire()/submit() or on close().
+/// The writer thread: encode, write, recycle. The buffer belongs to the worker
+/// alone between submit and recycle, so the encoder reads it in place. After a
+/// failure the worker keeps draining and recycling, so a blocked acquire()
+/// never starves. The error reaches the caller on the next acquire(), the next
+/// submit(), or on close().
 fn run(
     inbox: &Receiver<Job>,
     recycle: &Sender<OwnedFrame>,
@@ -357,8 +356,8 @@ fn run(
     opts: &Map<String, Value>,
 ) {
     while let Ok(Job::Frame(index, buf)) = inbox.recv() {
-        // the lock is never held across the write: acquire() reads it from the
-        // render thread every frame
+        // the write never holds the lock, because acquire() reads it every
+        // frame from the render thread
         let failed = err.lock().unwrap_or_else(|e| e.into_inner()).is_some();
         if !failed {
             if let Err(e) = save(pattern, index, buf.view(), opts) {
@@ -384,9 +383,10 @@ impl Output for ImageSequence {
         true
     }
 
-    /// A buffer of `shape` to render into. Reuses a recycled one, else grows
-    /// the pool to its cap, else blocks until the writer recycles one (the
-    /// render's only wait). Single-producer: only the render loop calls this.
+    /// A buffer of `shape` to render into. It takes a recycled buffer first.
+    /// It grows the pool to its cap next. It blocks for a recycled buffer
+    /// last, which is the render's only wait. Single-producer: only the render
+    /// loop calls it.
     fn acquire(&mut self, shape: (i32, i32, i32)) -> Result<OwnedFrame> {
         if let Some(e) = self.failure() {
             bail!(e);
@@ -407,7 +407,7 @@ impl Output for ImageSequence {
             let _ = self.recycle.send(buf);
             bail!(e);
         }
-        // after close() the worker is gone and the frame goes nowhere
+        // after close() no worker is left, so the frame goes nowhere
         let _ = self.jobs.send(Job::Frame(self.index, buf));
         self.index += 1;
         Ok(())
@@ -455,8 +455,8 @@ impl<W: Write> Output for RawStream<W> {
     }
 }
 
-/// The extension PIL would pick a format from: everything after the last dot of
-/// the file name, lowercased, or "" for a name without one.
+/// The extension that picks the format: everything after the last dot of the
+/// file name, lowercased. A name without a dot gives "".
 fn suffix(path: &str) -> String {
     Path::new(path)
         .extension()
@@ -475,7 +475,7 @@ fn encode(path: &str, frame: Frame<'_>, opts: &Map<String, Value>) -> Result<Vec
     }
 }
 
-/// A frame as baseline JPEG. PIL refuses an RGBA frame here and so does this.
+/// A frame as baseline JPEG. JPEG holds no alpha channel, so RGBA fails.
 pub fn encode_jpeg(frame: Frame<'_>, quality: u8) -> Result<Vec<u8>> {
     let color = match frame.components {
         3 => ColorType::Rgb,
@@ -524,7 +524,7 @@ fn crc32(bytes: &[u8]) -> u32 {
 
 fn adler32(bytes: &[u8]) -> u32 {
     let (mut a, mut b) = (1u32, 0u32);
-    // 5552 bytes is the most that can be summed before a u32 b could overflow
+    // 5552 bytes is the most a u32 b sums without an overflow
     for block in bytes.chunks(5552) {
         for byte in block {
             a += u32::from(*byte);
@@ -536,8 +536,8 @@ fn adler32(bytes: &[u8]) -> u32 {
     (b << 16) | a
 }
 
-/// A zlib stream of stored (uncompressed) deflate blocks: valid input for any
-/// PNG decoder, at the cost of the size a real compressor would have saved.
+/// A zlib stream of stored (uncompressed) deflate blocks. Any PNG decoder
+/// reads it. The file is larger than a compressed one.
 fn zlib_stored(raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len() + raw.len() / 65535 * 5 + 11);
     out.extend_from_slice(&[0x78, 0x01]);
@@ -645,9 +645,9 @@ mod tests {
         assert_eq!(expand_pattern("100%%.%02d.png", 7).unwrap(), "100%.07.png");
     }
 
-    /// What CPython's own `pattern % index` answers, spec by spec.
+    /// The pinned answer of `pattern % index`, spec by spec.
     #[test]
-    fn a_conversion_formats_the_way_python_formats_it() {
+    fn a_conversion_formats_the_way_the_reference_formats_it() {
         let specs = [
             "%d", "%i", "%u", "%x", "%X", "%o", "%s", "%4d", "%-4d", "%04d", "%+d", "% d", "%.3d",
             "%5.3d", "%08.3d", "%-8.3d", "%05s", "%.2s", "%+04d", "%ld",
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_field_carries_pythons_own_message() {
+    fn a_malformed_field_carries_the_recorded_message() {
         for (pattern, msg) in [
             (
                 "f.%q.png",
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn adaptive_pacer_idle_period_tracks_writes() {
         let mut p = AdaptivePacer::with_limits(2.0, 60.0);
-        assert_eq!(p.idle_period(), p.min_period); // nothing measured yet
+        assert_eq!(p.idle_period(), p.min_period); // no write measured yet
         p.sleep_for(0.05, 0.06); // a 50ms sink write
         assert_eq!(p.idle_period(), 0.05 * 2.0);
     }
@@ -775,9 +775,8 @@ mod tests {
 
     #[test]
     fn image_sequence_pool_recycles() {
-        // distinct content per frame through the acquire/submit pool, with a
-        // shallow depth so buffers recycle every couple of frames; each file
-        // must still be byte-identical to a synchronous save of that frame.
+        // a shallow depth recycles the buffers every couple of frames. Each
+        // file still matches a synchronous save of that frame byte for byte.
         let dir = tmpdir("pool");
         let want = frames(10, 20);
         let mut seq = ImageSequence::with_opts(&at(&dir, "p.####.png"), 0, None, 2);
@@ -860,7 +859,7 @@ mod tests {
         assert_eq!(&png[16..24], &[0, 0, 0, 2, 0, 0, 0, 3]); // 2x3
         assert_eq!(&png[24..29], &[8, 2, 0, 0, 0]); // 8-bit rgb, no interlace
         assert_eq!(&png[png.len() - 8..], b"IEND\xae\x42\x60\x82");
-        // every chunk's crc checks out
+        // every chunk's crc matches
         let mut i = 8;
         while i < png.len() {
             let len = u32::from_be_bytes(png[i..i + 4].try_into().unwrap()) as usize;
@@ -874,8 +873,8 @@ mod tests {
 
     #[test]
     fn a_png_over_64k_spans_several_stored_blocks() {
-        // one stored deflate block holds 65535 bytes, so a frame of any size
-        // has to come back out of the sequence of them
+        // one stored deflate block holds 65535 bytes, so a large frame spans
+        // several of them
         let mut buf = OwnedFrame::of((200, 200, 3));
         for (i, b) in buf.data.iter_mut().enumerate() {
             *b = (i % 251) as u8;

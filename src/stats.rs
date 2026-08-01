@@ -1,4 +1,4 @@
-//! Port of ghee/stats.py (see that file for the reference implementation).
+//! The clock, the frame rate and the output names that /stats reports.
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -11,14 +11,14 @@ pub const DEST_PIPE: &str = "pipe";
 pub const DEST_H264: &str = "h264";
 pub const DEST_MJPEG: &str = "mjpeg";
 
-/// Seconds off the monotonic clock. One origin for the whole process, so a
+/// Seconds off the monotonic clock. The whole process shares one origin. A
 /// timestamp one caller takes means the same to another.
 pub fn monotonic() -> f64 {
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
-/// Completed work per real elapsed second.
+/// Completed work per elapsed second.
 pub fn rate(count: u64, elapsed: f64) -> f64 {
     if elapsed > 0.0 {
         count as f64 / elapsed
@@ -27,16 +27,16 @@ pub fn rate(count: u64, elapsed: f64) -> f64 {
     }
 }
 
-/// Frames completed per real elapsed second, over a trailing window.
+/// Frames completed per elapsed second, over a trailing window.
 ///
-/// tick() belongs to the thread doing the work. value() only reads the clock,
-/// so any thread may call it.
+/// tick() belongs to the thread that does the work. value() only reads the
+/// clock, so any thread calls it.
 pub struct FrameRate {
     pub window: f64,
     start: f64,
     last: f64,
     count: u64,
-    /// the last closed window's rate; None until one closes
+    /// the last closed window's rate. None until a window closes
     rate: Option<f64>,
 }
 
@@ -77,9 +77,8 @@ impl FrameRate {
         }
     }
 
-    /// The last closed window's rate. Nothing completed for a whole window
-    /// reads zero, so a counter that stopped mid-window does not decay towards
-    /// it forever holding the frames it happened to have.
+    /// The last closed window's rate. A whole window with no completed work
+    /// reads zero.
     pub fn value(&self, now: Option<f64>) -> f64 {
         let now = now.unwrap_or_else(monotonic);
         if now - self.last >= self.window {
@@ -103,7 +102,7 @@ impl Default for FrameRate {
 mod tests {
     use super::*;
 
-    /// pytest.approx: a tolerance relative to the expected value.
+    /// A tolerance relative to the expected value.
     fn approx(got: f64, want: f64, rel: f64) -> bool {
         (got - want).abs() <= rel * want.abs() + 1e-12
     }
@@ -124,11 +123,11 @@ mod tests {
 
     #[test]
     fn a_bimodal_sequence_publishes_its_true_rate() {
-        // alternating 4 ms and 32 ms frames: 2 frames per 36 ms
+        // alternating 4 ms and 32 ms frames give 2 frames per 36 ms
         let mut fr = FrameRate::new();
         let (t, _) = feed(&mut fr, &[0.004, 0.032], 4.0);
         assert!(approx(fr.value(Some(t)), 2.0 / 0.036, 0.02));
-        // what a mean of reciprocals would have said instead
+        // a mean of reciprocals reads higher
         assert!(fr.value(Some(t)) < 0.5 * ((1.0 / 0.004) + (1.0 / 0.032)) / 2.0);
     }
 
@@ -155,8 +154,7 @@ mod tests {
         }
         let published = fr.value(Some(1.0));
         assert!(approx(published, 50.0, 1e-6));
-        // a skipped frame is simply not a tick: the number it would have counted
-        // into is left alone, not scaled by a factor no clock produced
+        // a skipped frame is not a tick, so the published rate stands
         assert_eq!(fr.value(Some(1.02)), published);
         assert_eq!(fr.value(Some(1.5)), published);
     }
@@ -166,23 +164,23 @@ mod tests {
         let mut fr = FrameRate::new();
         fr.reset(Some(0.0));
         for i in 1..=50 {
-            fr.tick(Some(f64::from(i) * 0.02)); // the window closes at 1.0 s carrying nothing over
+            fr.tick(Some(f64::from(i) * 0.02)); // the window closes at 1.0 s and carries nothing
         }
         assert_eq!(fr.value(Some(2.0)), 0.0);
         assert_eq!(fr.value(Some(11.0)), 0.0);
-        fr.tick(Some(11.1)); // one lone frame closes a ten-second window
+        fr.tick(Some(11.1)); // one frame closes a ten-second window
         assert!(approx(fr.value(Some(11.1)), 1.0 / 10.1, 1e-6));
         assert_eq!(fr.value(Some(21.1)), 0.0);
     }
 
     #[test]
     fn a_counter_that_stops_mid_window_reads_zero() {
-        // the viewer that went away: ticks stop with a part-filled window, and
-        // count/elapsed would decay towards zero without ever printing it
+        // the viewer goes away: the ticks stop with a part-filled window, and
+        // count/elapsed only decays towards zero
         let mut fr = FrameRate::new();
         fr.reset(Some(0.0));
         for i in 1..=30 {
-            fr.tick(Some(f64::from(i) * 0.01)); // 30 frames, window still open at 0.3 s
+            fr.tick(Some(f64::from(i) * 0.01)); // the window is still open at 0.3 s
         }
         assert!(fr.value(Some(0.4)) > 0.0);
         assert_eq!(fr.value(Some(1.3)), 0.0);

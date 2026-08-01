@@ -1,18 +1,19 @@
-//! Port of ghee/filters/__init__.py.
+//! Named post-process passes ghee ships, such as dither.
 //!
-//! Named post-process passes shipped with ghee (dither, ...). A filter file
-//! (`<name>.filter.json`) is a single pass (name, code, params) that reads
-//! iChannel0 (the frame so far) and writes the processed result. Applying a
-//! filter appends it as a pass that reads the previous pass's output, so it
-//! becomes the on-screen result. Built-ins are compiled in; extra dirs can be
-//! scanned for more.
+//! A filter file (`<name>.filter.json`) holds one pass: a name, code and params.
+//! The pass reads iChannel0, the frame so far, and writes the result. ghee
+//! appends a filter as a pass that reads the pass before it. The last filter
+//! reaches the display.
+//!
+//! The build compiles the shipped filters in. A scan adds more from a directory.
 
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
 
 use crate::scene::{Pass, Scene};
 
-/// The shipped filters, read at compile time: a binary carries no package dir.
+/// The shipped filters. A binary carries no package directory, so the build
+/// compiles them in.
 const BUILTIN: [(&str, &str); 1] = [(
     "dither.filter.json",
     include_str!("../ghee/filters/dither.filter.json"),
@@ -37,8 +38,9 @@ fn accept(out: &mut Map<String, Value>, path: &str, text: &str) {
     out.insert(name, fd);
 }
 
-/// name -> filter def (a pass dict). Later dirs win on a name clash.
-/// $GHEE_FILTERS adds colon-separated directories after the builtin.
+/// name -> filter definition, one pass each. A later directory wins a name
+/// clash. $GHEE_FILTERS adds directories after the shipped filters, separated
+/// by colons.
 pub fn load_filters(extra_dirs: &[&str]) -> Map<String, Value> {
     let env = std::env::var("GHEE_FILTERS").unwrap_or_default();
     let mut out = Map::new();
@@ -70,8 +72,8 @@ pub fn load_filters(extra_dirs: &[&str]) -> Map<String, Value> {
     out
 }
 
-/// Append each named filter as a pass reading the current last pass, in order,
-/// so the last filter is what reaches the display. Mutates the scene.
+/// Append each named filter as a pass, in order. Each one reads the pass before
+/// it, so the last filter reaches the display.
 pub fn apply_filters(
     scene: &mut Scene,
     names: &[String],
@@ -119,7 +121,7 @@ pub fn apply_filters(
             Value::Array(vec![Value::Object(channel)]),
         );
         let mut p = Pass::from_dict(&Value::Object(d), None)?;
-        p.filter = name.clone(); // filter-sourced: the console renders it read-only
+        p.filter = name.clone(); // The console renders a filter pass read-only.
         scene.passes.push(p);
     }
     Ok(())
@@ -136,8 +138,8 @@ fn unique(scene: &Scene, base: &str) -> String {
     name
 }
 
-/// $GHEE_FILTERS is process-wide: the tests that set it and the tests that read
-/// the registry cannot run at the same time.
+/// $GHEE_FILTERS is process-wide. A test that sets it must not run beside a
+/// test that reads the registry.
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -180,8 +182,8 @@ mod tests {
         apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
         assert_eq!(names(&sc), ["main", "dither"]);
         let d = &sc.passes[1];
-        assert_eq!(d.filter, "dither"); // marked filter-sourced
-                                        // iChannel0 = the frame so far
+        assert_eq!(d.filter, "dither");
+        // iChannel0 is the frame so far.
         let buffers: Vec<_> = d.channels.iter().map(|c| c.buffer.clone()).collect();
         assert_eq!(buffers, [Some("main".to_string())]);
         let params: Vec<&String> = d.params.keys().collect();
@@ -190,7 +192,7 @@ mod tests {
 
     #[test]
     fn unknown_filter_skipped() {
-        // a filter list can be shared across hosts, so a missing filter still renders
+        // Hosts share a filter list, so a missing filter still renders the scene.
         let _g = env_guard();
         let mut sc = Scene::of(vec![Pass::of("main", FLAT).unwrap()]).unwrap();
         apply_filters(&mut sc, &["does-not-exist".to_string()], None).unwrap();
@@ -203,7 +205,7 @@ mod tests {
         let mut sc = Scene::of(vec![Pass::of("dither", GOOD).unwrap()]).unwrap();
         apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
         assert_eq!(names(&sc), ["dither", "dither1"]);
-        Scene::of(sc.passes.clone()).unwrap(); // the result is still a valid scene
+        Scene::of(sc.passes.clone()).unwrap();
     }
 
     #[test]
@@ -262,14 +264,14 @@ mod tests {
         std::env::set_var("GHEE_FILTERS", &dir);
         let reg = load_filters(&[]);
         assert!(reg.contains_key("dither") && reg.contains_key("invert"));
-        // later dirs win on a clash: shadow the builtin dither
+        // A later directory wins a name clash.
         std::fs::write(
             format!("{dir}/dither.filter.json"),
             json!({"name": "dither", "code": "void main(){}", "params": {}}).to_string(),
         )
         .unwrap();
         assert_eq!(load_filters(&[])["dither"]["code"], json!("void main(){}"));
-        // the shadowed name keeps the position it was first inserted at
+        // A shadowed name keeps its first insertion position.
         assert_eq!(load_filters(&[]).keys().next().unwrap(), "dither");
         match prev {
             Some(v) => std::env::set_var("GHEE_FILTERS", v),
@@ -292,7 +294,6 @@ mod tests {
 
     #[test]
     fn repeated_filters_chain_and_keep_renaming() {
-        // each one reads the pass appended before it, so the last is on screen
         let _g = env_guard();
         let mut sc = Scene::of(vec![Pass::of("dither", GOOD).unwrap()]).unwrap();
         let three = [
@@ -315,7 +316,7 @@ mod tests {
                 Some("dither2".to_string())
             ]
         );
-        // the mark is the name asked for, not the name the pass ended up with
+        // The mark is the name asked for. The pass name can differ.
         let marks: Vec<&str> = sc.passes.iter().map(|p| p.filter.as_str()).collect();
         assert_eq!(marks, ["", "dither", "dither", "dither"]);
     }

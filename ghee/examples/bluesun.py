@@ -1,9 +1,10 @@
-"""Blue Sun: a wall of light pipes, with the wall actually lit.
+#!/usr/bin/env python3
+"""Blue Sun: a wall of light pipes, and the wall the pipes light.
 
 `coneForm` is the closed form of the irradiance a Lambertian cone delivers to a
-surface lying near it, two atan per pixel. Sharp under a tube and soft far away
-falls out of the integral, so there is no blur radius and no falloff curve, and
-`standoff` moves it.
+surface near it. It costs two atan for each pixel. The integral gives a pool
+that is sharp under a tube and soft far away. The scene needs no blur radius and
+no falloff curve, and `standoff` moves the pool.
 
 Lengths are in wall units, where the frame is 1.0 tall.
 
@@ -11,35 +12,53 @@ Lengths are in wall units, where the frame is 1.0 tall.
     ghee render --demo bluesun --display kms -- --emit 480x300
 """
 
-import importlib
 import os
+import sys
 
-import numpy as np
-from lib import look
-from PIL import Image
+import ghee
 
-from ghee import (
-    UNCHANGED,
-    Arg,
-    ArrayInput,
-    Channel,
-    Param,
-    Pass,
-    Scene,
-    SceneController,
-)
+ARGS = [
+    ghee.Arg(
+        "emit", "size", help="draw the tubes at WxH and blit, instead of full res"
+    ),
+    ghee.Arg("wash", "size", help="the wall buffer, default follows the draw aspect"),
+    ghee.Arg(
+        "near-seg",
+        "int",
+        default=3,
+        help="segments either side of a wall point that reach it",
+    ),
+    ghee.Arg(
+        "near-ray",
+        "int",
+        default=1,
+        help="rays either side, ditto; cost is (2*seg+1)*(2*ray+1) per pixel",
+    ),
+    ghee.Arg(
+        "max-leds",
+        "int",
+        default=8,
+        help="LEDs a segment can carry; each one costs two form factors",
+    ),
+]
 
-# a scene is re-imported on reload but its libraries are not, so without this a
-# reload after editing look.py would render the cached one
-importlib.reload(look)
+args = ghee.args(ARGS)
+
+# Slow imports come after the parse: the probe must answer inside its window.
+import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
 
 SEG = (72, 128)  # segment table: columns are segments, rows are rays, twice over
 
+WALL = (256, 256)  # the wall texture, one mono float per texel
+
 
 def _wash_size(emit):
-    """The wall buffer, following the draw size's aspect when there is one: a
-    square buffer magnified across a 16:10 panel combs the falloff diagonally,
-    which reads as a low-resolution wall however sharp the tubes are."""
+    """The wall buffer. It follows the aspect of the draw size when there is one.
+
+    A square buffer magnified across a 16:10 panel combs the falloff diagonally.
+    The wall then reads as low resolution, however sharp the tubes are.
+    """
     if emit is None:
         return (384, 384)
     w, h = emit
@@ -412,171 +431,152 @@ void main() {
 
 
 def p(name, val, lo, hi, step):
-    return Param(name, "float", val, min=lo, max=hi, step=step)
+    return ghee.Param(name, "float", val, min=lo, max=hi, step=step)
 
 
 def i(name, val, lo, hi):
-    return Param(name, "int", val, min=lo, max=hi, step=1)
+    return ghee.Param(name, "int", val, min=lo, max=hi, step=1)
 
 
-class BlueSun(SceneController):
-    ARGS = [
-        Arg("emit", "size", help="draw the tubes at WxH and blit, instead of full res"),
-        Arg("wash", "size", help="the wall buffer, default follows the draw aspect"),
-        Arg(
-            "near-seg",
-            "int",
-            default=3,
-            help="segments either side of a wall point that reach it",
-        ),
-        Arg(
-            "near-ray",
-            "int",
-            default=1,
-            help="rays either side, ditto; cost is (2*seg+1)*(2*ray+1) per pixel",
-        ),
-        Arg(
-            "max-leds",
-            "int",
-            default=8,
-            help="LEDs a segment can carry; each one costs two form factors",
-        ),
-    ]
-
-    def __init__(self):
-        self._pushed = False
-        self._img = ""
-
-    def on_param(self, renderer, name, value):
-        if name == "wall_img":
-            self._img = value
-            self._pushed = False
-
-    def provide(self, name, size, frame):
-        if name != "wall":
-            return None
-        if self._pushed:
-            return UNCHANGED
-        self._pushed = True
-        return self._texture(size)
-
-    def _texture(self, size):
-        """The wall surface: an image if wall_img names one it can read, else a
-        soft plaster noise. Mono floats, multiplied into the albedo."""
-        w, h = size
-        if self._img:
-            try:
-                img = Image.open(os.path.expanduser(self._img)).convert("L")
-                a = np.asarray(img.resize((w, h)), np.float32) / 255.0
-                return a.reshape(-1)
-            except OSError as e:
-                print(f"wall_img {self._img!r}: {e}")
-        rng = np.random.default_rng(7)
-        base = rng.random((24, 24)).astype(np.float32)
-        soft = np.asarray(
-            Image.fromarray(base, "F").resize((w, h), Image.BILINEAR), np.float32
-        )
-        grain = rng.random((h, w)).astype(np.float32)
-        a = 0.75 + (soft - 0.5) * 0.4 + (grain - 0.5) * 0.06
-        return np.clip(a, 0.0, 1.0).reshape(-1)
-
-    def build(self, base):
-        emit = self.args.emit
-        ns = max(0, self.args.near_seg)
-        nr = max(0, self.args.near_ray)
-        ml = max(1, self.args.max_leds)
-        return Scene(
-            passes=[
-                Pass(name="seg", code=SHADER_SEG, size=SEG),
-                Pass(
-                    name="wash",
-                    code=SHADER_WASH,
-                    size=self.args.wash or _wash_size(emit),
-                    channels=[Channel(buffer="seg")],
-                ),
-                Pass(
-                    name="tube",
-                    code=SHADER_TUBE,
-                    size=emit,
-                    channels=[Channel(buffer="seg")],
-                    params={
-                        "depth": p("depth", 2.0, 0.05, 2.0, 0.01),
-                        "core": p("core", 1.82, 0.0, 4.0, 0.02),
-                        "shell": p("shell", 0.0, 0.0, 0.3, 0.005),
-                        "shell_spec": p("shell_spec", 0.01, 0.0, 2.0, 0.01),
-                        "shell_gloss": p("shell_gloss", 0.25, 0.0, 1.0, 0.01),
-                        "shell_light": p("shell_light", -0.09, -0.25, 0.25, 0.005),
-                        "gain_max": p("gain_max", 4.0, 4.0, 4.0, 1.0),
-                    },
-                ),
-                Pass(
-                    name="main",
-                    code=SHADER_MAIN,
-                    channels=[Channel(buffer="wash"), Channel(buffer="tube")],
-                    arrays=[ArrayInput("wall", (256, 256))],
-                    params={
-                        "albedo": Param("albedo", "color", [0.7098, 0.7098, 0.7098]),
-                        "wall_img": Param("wall_img", "string", ""),
-                        "wall_mix": p("wall_mix", 1.0, 0.0, 1.0, 0.01),
-                        "wall_scale": p("wall_scale", 0.45, 0.1, 8.0, 0.05),
-                        "ambient": p("ambient", 0.085, 0.0, 0.5, 0.005),
-                        "black": p("black", 0.06, 0.0, 0.4, 0.005),
-                        "exposure": p("exposure", 1.05, 0.05, 6.0, 0.05),
-                    },
-                ),
-            ],
-            common=(
-                f"const int NEAR_SEG = {ns};\nconst int NEAR_RAY = {nr};\n"
-                f"const int MAX_LED = {ml};\n" + SCENE_COMMON
+def build(a):
+    emit = a.emit
+    ns = max(0, a.near_seg)
+    nr = max(0, a.near_ray)
+    ml = max(1, a.max_leds)
+    return ghee.Scene(
+        passes=[
+            ghee.Pass(name="seg", code=SHADER_SEG, size=SEG),
+            ghee.Pass(
+                name="wash",
+                code=SHADER_WASH,
+                size=a.wash or _wash_size(emit),
+                channels=[ghee.Channel(buffer="seg")],
             ),
-            params={
-                # the fan
-                "rays": i("rays", 16, 3, 64),
-                "reach": p("reach", 0.72, 0.05, 0.8, 0.005),
-                "hub": p("hub", 0.053, 0.005, 0.4, 0.002),
-                "square": p("square", 1.0, 0.0, 1.0, 0.01),
-                "corner": p("corner", 0.125, 0.0, 0.25, 0.005),
-                "spin": p("spin", 0.03, 0.0, 1.0, 0.002),
-                # the tubes
-                "segs": i("segs", 9, 1, 64),
-                # how far the wall gathers: (2*near_seg+1) * (2*near_ray+1)
-                # emitters per pixel, whatever the ray and segment counts are.
-                # Trimming it clips the far spill.
-                "near_seg": i("near_seg", min(1, ns), 0, ns),
-                "near_ray": i("near_ray", min(1, nr), 0, nr),
-                "seam": p("seam", 0.43, 0.0, 0.7, 0.01),
-                # a chunk's gradient, hub end to tip end
-                "head": p("head", 0.89, 0.0, 1.0, 0.01),
-                "tail": p("tail", 0.16, 0.0, 1.0, 0.01),
-                "ht_jit": p("ht_jit", 1.0, 0.0, 1.0, 0.01),
-                "tube_r0": p("tube_r0", 0.013, 0.001, 0.06, 0.0005),
-                "tube_r1": p("tube_r1", 0.014, 0.001, 0.06, 0.0005),
-                "standoff": p("standoff", 0.026, 0.002, 0.2, 0.001),
-                "tilt": p("tilt", 0.03, -1.2, 1.2, 0.01),
-                "tilt_jit": p("tilt_jit", 1.0, 0.0, 1.0, 0.01),
-                "leds": i("leds", min(2, ml), 1, ml),
-                "led_mix": p("led_mix", 0.98, 0.0, 1.0, 0.01),
-                "led_spread": p("led_spread", 0.0, 0.0, 1.2, 0.01),
-                # the LEDs
-                "radiance": p("radiance", 0.25, 0.0, 20.0, 0.05),
-                "speed": p("speed", 0.9, -8.0, 8.0, 0.05),
-                "snap": p("snap", 0.99, 0.0, 1.0, 0.01),
-                "level_jit": p("level_jit", 1.0, 0.0, 1.0, 0.01),
-                "taper": p("taper", 0.17, 0.0, 1.0, 0.01),
-                "ray_jit": p("ray_jit", 1.0, 0.0, 1.0, 0.01),
-                "hue": p("hue", 0.55, 0.0, 1.0, 0.005),
-                "hue_span": p("hue_span", 0.2, -0.5, 0.5, 0.005),
-                "hue_jit": p("hue_jit", 0.465, 0.0, 0.5, 0.005),
-                "chroma_dim": p("chroma_dim", 0.78, 0.0, 1.0, 0.01),
-                "sat": p("sat", 0.85, 0.0, 1.0, 0.01),
-                # the view
-                "zoom": p("zoom", 1.48, 0.2, 8.0, 0.01),
-                "pan": Param("pan", "vec2", [0.0, 0.0], min=-1.0, max=1.0, step=0.002),
-            },
-        )
+            ghee.Pass(
+                name="tube",
+                code=SHADER_TUBE,
+                size=emit,
+                channels=[ghee.Channel(buffer="seg")],
+                params={
+                    "depth": p("depth", 2.0, 0.05, 2.0, 0.01),
+                    "core": p("core", 1.82, 0.0, 4.0, 0.02),
+                    "shell": p("shell", 0.0, 0.0, 0.3, 0.005),
+                    "shell_spec": p("shell_spec", 0.01, 0.0, 2.0, 0.01),
+                    "shell_gloss": p("shell_gloss", 0.25, 0.0, 1.0, 0.01),
+                    "shell_light": p("shell_light", -0.09, -0.25, 0.25, 0.005),
+                    "gain_max": p("gain_max", 4.0, 4.0, 4.0, 1.0),
+                },
+            ),
+            ghee.Pass(
+                name="main",
+                code=SHADER_MAIN,
+                channels=[ghee.Channel(buffer="wash"), ghee.Channel(buffer="tube")],
+                arrays=[ghee.ArrayInput("wall", WALL)],
+                params={
+                    "albedo": ghee.Param("albedo", "color", [0.7098, 0.7098, 0.7098]),
+                    "wall_img": ghee.Param("wall_img", "string", ""),
+                    "wall_mix": p("wall_mix", 1.0, 0.0, 1.0, 0.01),
+                    "wall_scale": p("wall_scale", 0.45, 0.1, 8.0, 0.05),
+                    "ambient": p("ambient", 0.085, 0.0, 0.5, 0.005),
+                    "black": p("black", 0.06, 0.0, 0.4, 0.005),
+                    "exposure": p("exposure", 1.05, 0.05, 6.0, 0.05),
+                },
+            ),
+        ],
+        common=(
+            f"const int NEAR_SEG = {ns};\nconst int NEAR_RAY = {nr};\n"
+            f"const int MAX_LED = {ml};\n" + SCENE_COMMON
+        ),
+        params={
+            # the fan
+            "rays": i("rays", 16, 3, 64),
+            "reach": p("reach", 0.72, 0.05, 0.8, 0.005),
+            "hub": p("hub", 0.053, 0.005, 0.4, 0.002),
+            "square": p("square", 1.0, 0.0, 1.0, 0.01),
+            "corner": p("corner", 0.125, 0.0, 0.25, 0.005),
+            "spin": p("spin", 0.03, 0.0, 1.0, 0.002),
+            # the tubes
+            "segs": i("segs", 9, 1, 64),
+            # how far the wall gathers: (2*near_seg+1) * (2*near_ray+1)
+            # emitters per pixel, whatever the ray and segment counts are.
+            # Trimming it clips the far spill.
+            "near_seg": i("near_seg", min(1, ns), 0, ns),
+            "near_ray": i("near_ray", min(1, nr), 0, nr),
+            "seam": p("seam", 0.43, 0.0, 0.7, 0.01),
+            # a chunk's gradient, hub end to tip end
+            "head": p("head", 0.89, 0.0, 1.0, 0.01),
+            "tail": p("tail", 0.16, 0.0, 1.0, 0.01),
+            "ht_jit": p("ht_jit", 1.0, 0.0, 1.0, 0.01),
+            "tube_r0": p("tube_r0", 0.013, 0.001, 0.06, 0.0005),
+            "tube_r1": p("tube_r1", 0.014, 0.001, 0.06, 0.0005),
+            "standoff": p("standoff", 0.026, 0.002, 0.2, 0.001),
+            "tilt": p("tilt", 0.03, -1.2, 1.2, 0.01),
+            "tilt_jit": p("tilt_jit", 1.0, 0.0, 1.0, 0.01),
+            "leds": i("leds", min(2, ml), 1, ml),
+            "led_mix": p("led_mix", 0.98, 0.0, 1.0, 0.01),
+            "led_spread": p("led_spread", 0.0, 0.0, 1.2, 0.01),
+            # the LEDs
+            "radiance": p("radiance", 0.25, 0.0, 20.0, 0.05),
+            "speed": p("speed", 0.9, -8.0, 8.0, 0.05),
+            "snap": p("snap", 0.99, 0.0, 1.0, 0.01),
+            "level_jit": p("level_jit", 1.0, 0.0, 1.0, 0.01),
+            "taper": p("taper", 0.17, 0.0, 1.0, 0.01),
+            "ray_jit": p("ray_jit", 1.0, 0.0, 1.0, 0.01),
+            "hue": p("hue", 0.55, 0.0, 1.0, 0.005),
+            "hue_span": p("hue_span", 0.2, -0.5, 0.5, 0.005),
+            "hue_jit": p("hue_jit", 0.465, 0.0, 0.5, 0.005),
+            "chroma_dim": p("chroma_dim", 0.78, 0.0, 1.0, 0.01),
+            "sat": p("sat", 0.85, 0.0, 1.0, 0.01),
+            # the view
+            "zoom": p("zoom", 1.48, 0.2, 8.0, 0.01),
+            "pan": ghee.Param("pan", "vec2", [0.0, 0.0], min=-1.0, max=1.0, step=0.002),
+        },
+    )
 
-    def setup(self, renderer):
-        self._pushed = False
-        renderer.set_scene_param(
-            "aspect", "float", renderer.width / max(renderer.height, 1)
-        )
+
+def _texture(size, path):
+    """The wall surface.
+
+    `path` names an image, and a path this function cannot read gives a soft
+    plaster noise instead. The values are mono floats, and multiply into the
+    albedo.
+    """
+    w, h = size
+    if path:
+        try:
+            img = Image.open(os.path.expanduser(path)).convert("L")
+            a = np.asarray(img.resize((w, h)), np.float32) / 255.0
+            return a.reshape(-1)
+        except OSError as e:
+            # stdout carries the messages: anything for a human goes to stderr
+            print(f"wall_img {path!r}: {e}", file=sys.stderr)
+    rng = np.random.default_rng(7)
+    base = rng.random((24, 24)).astype(np.float32)
+    soft = np.asarray(
+        Image.fromarray(base, "F").resize((w, h), Image.BILINEAR), np.float32
+    )
+    grain = rng.random((h, w)).astype(np.float32)
+    a = 0.75 + (soft - 0.5) * 0.4 + (grain - 0.5) * 0.06
+    return np.clip(a, 0.0, 1.0).reshape(-1)
+
+
+_wall = {"img": "", "pending": True}
+
+
+@ghee.feed("wall")
+def wall(tick):
+    """The texture holds until wall_img names another file.
+
+    This feed sends the texture once, and again on each change.
+    """
+    img = tick.params.get("wall_img")
+    if img is not None and img != _wall["img"]:
+        _wall["img"] = img
+        _wall["pending"] = True
+    if not _wall["pending"]:
+        return None
+    _wall["pending"] = False
+    return _texture(WALL, _wall["img"])
+
+
+ghee.run(build(args))

@@ -1,8 +1,8 @@
-"""A scene with no JSON: it builds its pass in code and feeds a custom array
-each frame.
+"""A scene with no JSON. It builds its pass in code, and feeds one array each
+frame.
 
-`gain` is one param on both sides: the shader reads it as a uniform for bar
-brightness, provide() reads it in Python for bar height.
+`gain` is one param on both sides. The shader reads it as a uniform for the bar
+brightness. provide() reads it in Python for the bar height.
 
     ghee render --demo spectrum -o out.####.png --frames 60
     ghee serve --demo spectrum                      # drive it in the console

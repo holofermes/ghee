@@ -1,37 +1,42 @@
-"""A word sliding over water, with particles streaming under the surface.
+#!/usr/bin/env python3
+"""A word slides over water, and particles stream under the surface.
 
-Particle positions live in a feedback buffer, one advection step per frame
-along a curl-noise flow whose stream function ramps to zero at the wave, so the
-surface is a streamline the flow slides along instead of crossing.
+A feedback buffer holds the particle positions. Each frame takes one advection
+step along a curl-noise flow. The stream function of that flow ramps to zero at
+the wave. The surface is then a streamline, and the flow slides along it.
 
-The two sizes below are compile-time: a loop a uniform breaks out of early
-still costs its maximum, so a live particle-count slider would buy nothing.
+The two sizes below are compile-time. A loop that a uniform breaks out of early
+still costs its maximum, so a live particle-count slider buys nothing.
 
     ghee render --demo hero -o hero.####.png --frames 300
     ghee render --demo hero -- --particle-grid 12x8 --no-dither
     ghee render --demo hero --display kms -- --particle-buffer 160x100
 """
 
-import importlib
+import ghee
 
-import numpy as np
-from lib import look
-from PIL import Image, ImageDraw, ImageFont
+ARGS = [
+    ghee.Arg(
+        "particle-buffer",
+        "size",
+        default=(320, 200),
+        help="the buffer the particle field renders at, magnified onto the frame",
+    ),
+    ghee.Arg(
+        "particle-grid",
+        "size",
+        default=(20, 12),
+        help="the particle grid, columns x rows",
+    ),
+    ghee.Arg("dither", "bool", default=True, help="the dither filter pass"),
+]
 
-from ghee import (
-    UNCHANGED,
-    Arg,
-    ArrayInput,
-    Channel,
-    Param,
-    Pass,
-    Scene,
-    SceneController,
-)
+args = ghee.args(ARGS)
 
-# a scene is re-imported on reload but its libraries are not, so without this a
-# reload after editing look.py would render the cached one
-importlib.reload(look)
+# Slow imports come after the parse: the probe must answer inside its window.
+import numpy as np  # noqa: E402
+from lib import look  # noqa: E402
+from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 # The dither filter defaults to 1-bit black and white; these give it partial
 # colour on a coarse grid. It costs one full-res pass, which --no-dither drops.
@@ -52,8 +57,8 @@ JUMP = 0.1
 
 SCENE_COMMON = (
     """
-// the render aspect, fed by the controller: a pass with its own size cannot
-// read it off `resolution`
+// ghee sets the output aspect. A pass with its own size cannot read it off
+// `resolution`.
 uniform float aspect;
 
 """
@@ -192,8 +197,10 @@ void main() {
 
 
 def _grid_consts(col, row):
-    """The grid bounds a shader constant, because the stroke loop needs them
-    constant to unroll at all."""
+    """The grid bounds, as shader constants.
+
+    The stroke loop unrolls only over constant bounds.
+    """
     return f"""
 const int COL = {col};
 const int ROW = {row};
@@ -303,12 +310,15 @@ void main() {
 
 
 def knob(name, val, lo, hi, step):
-    return Param(name, "float", val, min=lo, max=hi, step=step)
+    return ghee.Param(name, "float", val, min=lo, max=hi, step=step)
 
 
 def _draw(text, font, stroke):
-    """The word on a canvas of its own. The stroke is weight: no host is
-    guaranteed a display face, and any face can be fattened."""
+    """The word on a canvas of its own.
+
+    The stroke gives the weight. No host is guaranteed a display face, and a
+    stroke fattens any face.
+    """
     bb = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox(
         (0, 0), text, font=font, stroke_width=stroke
     )
@@ -325,9 +335,11 @@ def _draw(text, font, stroke):
 
 
 def _raster(text):
-    """The word fitted into the fixed canvas, so a long one rasterizes smaller
-    instead of overflowing. GAP is reserved on the right, so a repeat never
-    butts up against the word before it."""
+    """The word fitted into the fixed canvas.
+
+    A long word rasterizes smaller, and never overflows. GAP holds the right
+    side clear, so a repeat keeps its distance from the word before it.
+    """
     box = (CANVAS[0] / (1.0 + GAP), float(CANVAS[1]))
     try:
         probe = ImageFont.load_default(size=PROBE)
@@ -344,147 +356,135 @@ def _raster(text):
     return np.asarray(img, np.float32).reshape(-1) / 255.0
 
 
-class Hero(SceneController):
-    ARGS = (
-        Arg(
-            "particle-buffer",
-            "size",
-            default=(320, 200),
-            help="the buffer the particle field renders at, magnified onto the frame",
-        ),
-        Arg(
-            "particle-grid",
-            "size",
-            default=(20, 12),
-            help="the particle grid, columns x rows",
-        ),
-        Arg("dither", "bool", default=True, help="the dither filter pass"),
+def build(a):
+    grid = a.particle_grid
+    col, row = grid
+    return ghee.Scene(
+        common=SCENE_COMMON,
+        filters=["dither"] if a.dither else [],
+        passes=[
+            ghee.Pass(
+                name="prev",
+                code=SHADER_PREV,
+                size=grid,
+                channels=[ghee.Channel(buffer="state")],
+            ),
+            ghee.Pass(
+                name="state",
+                code=SHADER_STATE,
+                size=grid,
+                channels=[ghee.Channel(buffer="state"), ghee.Channel(buffer="life")],
+                params={
+                    "drift": ghee.Param(
+                        "drift",
+                        "vec2",
+                        [-0.556, -0.088],
+                        min=-1.0,
+                        max=1.0,
+                        step=0.005,
+                    ),
+                    "particle_speed": knob("particle_speed", 0.465, 0.0, 1.0, 0.005),
+                    "particle_speed_spread": knob(
+                        "particle_speed_spread", 1.0, 0.0, 1.0, 0.01
+                    ),
+                    "swirl_strength": knob("swirl_strength", 0.91, 0.0, 1.0, 0.01),
+                    "swirl_scale": knob("swirl_scale", 0.88, 0.0, 1.0, 0.01),
+                    "surface_band": knob("surface_band", 0.45, 0.02, 0.6, 0.01),
+                },
+            ),
+            ghee.Pass(
+                name="life",
+                code=SHADER_LIFE,
+                size=grid,
+                channels=[ghee.Channel(buffer="life")],
+                params={"particle_life": knob("particle_life", 0.83, 0.0, 1.0, 0.01)},
+            ),
+            ghee.Pass(
+                name="attr",
+                code=SHADER_ATTR,
+                size=grid,
+                channels=[ghee.Channel(buffer="state"), ghee.Channel(buffer="prev")],
+                params={
+                    "surface_fade": knob("surface_fade", 0.61, 0.0, 1.0, 0.01),
+                    "particle_dim": knob("particle_dim", 0.09, 0.0, 1.0, 0.01),
+                    "particle_bright": knob("particle_bright", 0.9, 0.0, 1.0, 0.01),
+                },
+            ),
+            ghee.Pass(
+                name="glow",
+                code=_grid_consts(col, row) + SHADER_GLOW,
+                size=a.particle_buffer,
+                channels=[
+                    ghee.Channel(buffer="state"),
+                    ghee.Channel(buffer="attr"),
+                    ghee.Channel(buffer="glow"),
+                ],
+                params={
+                    "particle_size": knob("particle_size", 0.53, 0.0, 1.0, 0.01),
+                    "trail_length": knob("trail_length", 0.623, 0.0, 0.999, 0.001),
+                    "trail_cutoff": knob("trail_cutoff", 0.22, 0.0, 1.0, 0.01),
+                },
+            ),
+            ghee.Pass(
+                name="main",
+                code=SHADER_MAIN,
+                arrays=[ghee.ArrayInput("text", CANVAS)],
+                channels=[ghee.Channel(buffer="glow")],
+                params={
+                    "text": ghee.Param("text", "string", "GHEE"),
+                    "text_speed": knob("text_speed", 0.115, -0.5, 0.5, 0.005),
+                    "text_y": knob("text_y", 0.47, 0.0, 1.0, 0.01),
+                    "text_height": knob("text_height", 0.5, 0.05, 1.5, 0.01),
+                    "background": ghee.Param(
+                        "background", "color", [0.855, 0.859, 0.502]
+                    ),
+                    "water": ghee.Param("water", "color", [0.133, 1.0, 0.980]),
+                    "ink_background": ghee.Param(
+                        "ink_background", "color", [0.0, 0.639, 0.675]
+                    ),
+                    "ink_water": ghee.Param("ink_water", "color", [0.753, 0.757, 0.0]),
+                    "particle_color": ghee.Param(
+                        "particle_color", "color", [0.0, 0.027, 0.890]
+                    ),
+                },
+            ),
+        ],
+        params={"wave_speed": knob("wave_speed", -0.315, -1.0, 1.0, 0.005)},
     )
 
-    def __init__(self):
-        self._mask = _raster("GHEE")
-        self._pending = True
 
-    def on_param(self, renderer, name, value):
-        if name == "text":
-            self._mask = _raster(value or " ")
-            self._pending = True
+_state = {"word": "GHEE", "mask": None, "first": True}
 
-    def build(self, base):
-        grid = self.args.particle_grid
-        col, row = grid
-        return Scene(
-            common=SCENE_COMMON,
-            filters=["dither"] if self.args.dither else [],
-            passes=[
-                Pass(
-                    name="prev",
-                    code=SHADER_PREV,
-                    size=grid,
-                    channels=[Channel(buffer="state")],
-                ),
-                Pass(
-                    name="state",
-                    code=SHADER_STATE,
-                    size=grid,
-                    channels=[Channel(buffer="state"), Channel(buffer="life")],
-                    params={
-                        "drift": Param(
-                            "drift",
-                            "vec2",
-                            [-0.556, -0.088],
-                            min=-1.0,
-                            max=1.0,
-                            step=0.005,
-                        ),
-                        "particle_speed": knob(
-                            "particle_speed", 0.465, 0.0, 1.0, 0.005
-                        ),
-                        "particle_speed_spread": knob(
-                            "particle_speed_spread", 1.0, 0.0, 1.0, 0.01
-                        ),
-                        "swirl_strength": knob("swirl_strength", 0.91, 0.0, 1.0, 0.01),
-                        "swirl_scale": knob("swirl_scale", 0.88, 0.0, 1.0, 0.01),
-                        "surface_band": knob("surface_band", 0.45, 0.02, 0.6, 0.01),
-                    },
-                ),
-                Pass(
-                    name="life",
-                    code=SHADER_LIFE,
-                    size=grid,
-                    channels=[Channel(buffer="life")],
-                    params={
-                        "particle_life": knob("particle_life", 0.83, 0.0, 1.0, 0.01)
-                    },
-                ),
-                Pass(
-                    name="attr",
-                    code=SHADER_ATTR,
-                    size=grid,
-                    channels=[Channel(buffer="state"), Channel(buffer="prev")],
-                    params={
-                        "surface_fade": knob("surface_fade", 0.61, 0.0, 1.0, 0.01),
-                        "particle_dim": knob("particle_dim", 0.09, 0.0, 1.0, 0.01),
-                        "particle_bright": knob("particle_bright", 0.9, 0.0, 1.0, 0.01),
-                    },
-                ),
-                Pass(
-                    name="glow",
-                    code=_grid_consts(col, row) + SHADER_GLOW,
-                    size=self.args.particle_buffer,
-                    channels=[
-                        Channel(buffer="state"),
-                        Channel(buffer="attr"),
-                        Channel(buffer="glow"),
-                    ],
-                    params={
-                        "particle_size": knob("particle_size", 0.53, 0.0, 1.0, 0.01),
-                        "trail_length": knob("trail_length", 0.623, 0.0, 0.999, 0.001),
-                        "trail_cutoff": knob("trail_cutoff", 0.22, 0.0, 1.0, 0.01),
-                    },
-                ),
-                Pass(
-                    name="main",
-                    code=SHADER_MAIN,
-                    arrays=[ArrayInput("text", CANVAS)],
-                    channels=[Channel(buffer="glow")],
-                    params={
-                        "text": Param("text", "string", "GHEE"),
-                        "text_speed": knob("text_speed", 0.115, -0.5, 0.5, 0.005),
-                        "text_y": knob("text_y", 0.47, 0.0, 1.0, 0.01),
-                        "text_height": knob("text_height", 0.5, 0.05, 1.5, 0.01),
-                        "background": Param(
-                            "background", "color", [0.855, 0.859, 0.502]
-                        ),
-                        "water": Param("water", "color", [0.133, 1.0, 0.980]),
-                        "ink_background": Param(
-                            "ink_background", "color", [0.0, 0.639, 0.675]
-                        ),
-                        "ink_water": Param("ink_water", "color", [0.753, 0.757, 0.0]),
-                        "particle_color": Param(
-                            "particle_color", "color", [0.0, 0.027, 0.890]
-                        ),
-                    },
-                ),
-            ],
-            params={"wave_speed": knob("wave_speed", -0.315, -1.0, 1.0, 0.005)},
-        )
 
-    def setup(self, renderer):
-        self._pending = True  # setup empties the engine's textures
-        renderer.set_scene_param(
-            "aspect", "float", renderer.width / max(renderer.height, 1)
-        )
-        # The filter is appended as a pass after this scene's own, so its knobs
-        # only exist once compiled.
-        if self.args.dither:
-            for name, value in DITHER_PARAMS.items():
-                renderer.set_param("dither", name, "float", value)
+@ghee.tick
+def start(tick):
+    """ghee appends a filter after the scene's own passes.
 
-    def provide(self, name, size, frame):
-        if name != "text":
-            return None
-        if self._pending:
-            self._pending = False
-            return self._mask
-        return UNCHANGED
+    The filter params exist only after ghee compiles the filter, so the first
+    tick sets them.
+    """
+    if not _state["first"]:
+        return
+    _state["first"] = False
+    if args.dither:
+        for name, value in DITHER_PARAMS.items():
+            ghee.set_param(name, value, pass_="dither")
+
+
+@ghee.feed("text")
+def text(tick):
+    """The word holds in the engine texture.
+
+    This feed sends the word once, and again on each change of the text param.
+    """
+    word = tick.params.get("text")
+    if word is not None and word != _state["word"]:
+        _state["word"] = word
+        _state["mask"] = None
+    if _state["mask"] is not None:
+        return None
+    _state["mask"] = _raster(_state["word"] or " ")
+    return _state["mask"]
+
+
+ghee.run(build(args))

@@ -1,9 +1,11 @@
-"""Host-rasterized text through a 2D input: Pillow draws the string once into a
-mask, the shader scrolls, thresholds and tints it over a wave.
+"""Host-rasterized text through a 2D input.
 
-`--text` is build time because the mask is a fixed-size array; motion,
-crispness and colour stay live. Line art needs no dither, and the backing wave
-stays under a 1-bit panel's threshold as long as `glow` does.
+Pillow draws the string once into a mask. The shader scrolls the mask, then
+thresholds it and tints it over a wave.
+
+`--text` is build time, because the mask is a fixed-size array. Motion,
+crispness and color stay live. Line art needs no dither. The wave behind the
+text stays under the threshold of a 1-bit panel while `glow` stays under it.
 
     ghee serve --demo -- --text "hello there"       # then edit it live
     ghee render --demo text --display ssd1306       # to a panel, no dither
@@ -46,7 +48,7 @@ def _scratch():
 
 
 def _raster(text, font):
-    """One draw at a readable size: the mask lands near 1:1 on a small panel."""
+    """One draw at a readable size. The mask lands near 1:1 on a small panel."""
     pad = FONT_SIZE // 5
     bb = _scratch().textbbox((0, 0), text, font=font)
     img = Image.new("L", (bb[2] - bb[0] + 2 * pad, bb[3] - bb[1] + 2 * pad), 0)
@@ -55,9 +57,11 @@ def _raster(text, font):
 
 
 def _raster_bitmap(text):
-    """The ~10px font, letters spaced by hand and the mask zoomed for hard
-    edges. Small and soft, so it is only for Pillow builds with no sized
-    load_default()."""
+    """The 10px font, with the letters spaced by hand.
+
+    The mask zooms for hard edges. The result stays small and soft, so this path
+    serves a Pillow build with no sized load_default() alone.
+    """
     pad, gap, zoom = 2, 2, 4
     font = ImageFont.load_default()
     scratch = _scratch()

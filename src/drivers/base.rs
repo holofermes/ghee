@@ -1,7 +1,6 @@
-//! Port of ghee/drivers/base.py.
-//!
-//! A driver is an Output bound to a physical panel: it owns the panel geometry and
-//! the native pixel format, and packs each RGB frame before pushing it.
+//! A driver is an Output bound to a panel.
+//! The driver owns the panel geometry and the native pixel format.
+//! The driver packs each RGB frame before it writes the frame.
 
 use anyhow::Result;
 
@@ -9,6 +8,7 @@ use crate::stats::DEST_PANEL;
 
 #[allow(dead_code)]
 pub const RGB565: &str = "rgb565";
+pub const RGB444: &str = "rgb444";
 #[allow(dead_code)]
 pub const MONO1: &str = "mono1";
 
@@ -34,7 +34,7 @@ pub trait DisplayDriver {
         3
     }
 
-    /// RGB565 or MONO1.
+    /// RGB565, RGB444 or MONO1.
     #[allow(dead_code)]
     fn native_format(&self) -> &'static str {
         RGB565

@@ -1,8 +1,7 @@
-//! Port of ghee/drivers/ssd1306.py.
-//!
-//! Packs each RGB frame to 1bpp into the display buffer, behind the 0x40 control
-//! byte the panel wants in front of display RAM, and pushes the lot in one
-//! transfer.
+//! The driver packs each RGB frame to 1bpp in the display buffer.
+//! The panel wants the 0x40 control byte in front of display RAM.
+//! The buffer holds that byte first.
+//! One transfer sends the whole buffer.
 
 use anyhow::{bail, Result};
 use rppal::i2c::I2c;
@@ -26,7 +25,7 @@ const DEFAULT_BUS: i64 = 1;
 const DEFAULT_ADDR: i64 = 0x3C;
 
 const INIT: [&[u8]; 18] = [
-    &[DISP_ON], // on, then straight off again on the next command
+    &[DISP_ON], // on, then off again on the next command
     &[DISP_OFF],
     &[0x20, 0x00], // horizontal addressing
     &[0x40],       // start line 0
@@ -39,14 +38,14 @@ const INIT: [&[u8]; 18] = [
     &[0xD9, 0xF1], // precharge
     &[0xDB, 0x30], // VCOMH deselect
     &[0x81, 0xFF], // contrast
-    &[0xA4],       // follow RAM, not all-on
-    &[0xA6],       // not inverted
+    &[0xA4],       // follow RAM (0xA5 lights every pixel)
+    &[0xA6],       // normal display (0xA7 inverts)
     &[0xAD, 0x30], // internal IREF
     &[0x8D, 0x14], // charge pump on
     &[DISP_ON],
 ];
 
-/// The addressing window a frame is written into.
+/// The addressing window a frame goes into.
 fn window_commands(width: i32, height: i32) -> Result<[u8; 6]> {
     let (Ok(last_col), Ok(last_page)) = (u8::try_from(width - 1), u8::try_from(height / 8 - 1))
     else {
@@ -55,7 +54,7 @@ fn window_commands(width: i32, height: i32) -> Result<[u8; 6]> {
     Ok([COL_ADDR, 0, last_col, PAGE_ADDR, 0, last_page])
 }
 
-/// The transfer a frame goes out in: the data control byte, then 1bpp pixels.
+/// The transfer buffer: the data control byte, then the 1bpp pixels.
 fn frame_buffer(width: i32, height: i32) -> Vec<u8> {
     let mut buf = vec![0u8; 1 + (width as usize) * (height as usize) / 8];
     buf[0] = DATA;
@@ -161,8 +160,8 @@ mod tests {
     use super::*;
     use crate::engine::pack_frame_into;
 
-    /// The command bytes adafruit_ssd1306 sends a 128x32 panel on internal Vcc,
-    /// poweron() first, then the init table, then show()'s addressing window.
+    /// The command bytes adafruit_ssd1306 sends a 128x32 panel on internal Vcc.
+    /// The order is poweron(), the init table, then the addressing window.
     const INIT_COMMANDS: [u8; 28] = [
         0xAF, 0xAE, 0x20, 0x00, 0x40, 0xA1, 0xA8, 0x1F, 0xC8, 0xD3, 0x00, 0xDA, 0x02, 0xD5, 0x80,
         0xD9, 0xF1, 0xDB, 0x30, 0x81, 0xFF, 0xA4, 0xA6, 0xAD, 0x30, 0x8D, 0x14, 0xAF,

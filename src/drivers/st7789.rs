@@ -1,10 +1,11 @@
-//! Port of ghee/drivers/st7789.py.
+//! The driver packs each RGB frame to RGB565.
+//! The driver blits the frame on a private SPI handle.
+//! The GPIO drives DC, reset and backlight.
+//! Chip select is the hardware CE line.
+//! The kernel SPI controller owns that GPIO, so a pin claim cannot take it.
 //!
-//! Packs each RGB frame to RGB565 and blits it on a private SPI handle, with DC,
-//! reset and backlight driven through the GPIO. Chip select is the hardware CE
-//! line: the kernel SPI controller owns that GPIO and the pin claim cannot take it.
-//!
-//! Pins are BCM numbers. The defaults are the 135x240 breakout this was written on.
+//! Pins are BCM numbers.
+//! The defaults fit a 135x240 breakout.
 
 use std::fs;
 use std::thread::sleep;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
 
-use crate::drivers::base::{DisplayDriver, RGB565};
+use crate::drivers::base::{DisplayDriver, RGB444, RGB565};
 use crate::drivers::gpio::Pins;
 use crate::drivers::{i32_opt, int_opt, pin_opt, DriverOption, DriverSpec, Opts};
 use crate::engine::pack_frame_into;
@@ -38,14 +39,21 @@ const DEFAULT_BACKLIGHT: i64 = 22;
 const DEFAULT_BAUDRATE: i64 = 99000000;
 const DEFAULT_SPI_BUS: i64 = 0;
 const DEFAULT_SPI_DEVICE: i64 = 0;
-// MADCTL: row/column order and RGB/BGR, so the panel's rotation and mirroring.
-// Per board, and a wrong value shows as a flipped image.
+// MADCTL sets row order, column order and RGB/BGR: the panel rotation and mirroring.
+// The value is per board. A wrong value flips the image.
 const DEFAULT_MADCTL: i64 = 0xC0;
+// COLMOD takes 16-bit RGB565 (0x55) or 12-bit RGB444 (0x33).
+// 12-bit sends 25% fewer bytes.
+// 4 bits per channel needs the dither filter.
+const DEFAULT_COLOR_BITS: i64 = 16;
+// partial=1 sends only the rows that changed since the last frame.
+// 12-bit packs pixel pairs across row bounds, so 12-bit always sends full frames.
+const DEFAULT_PARTIAL: i64 = 1;
 
 /// A command byte and its data, empty for a command that takes none.
 type Command = (u8, Vec<u8>);
 
-/// struct.pack(">HH", a, b).
+/// Two coordinates as big-endian u16.
 fn pack_hh(a: i32, b: i32) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(4);
     for v in [a, b] {
@@ -63,13 +71,19 @@ fn init_panel(
     x_offset: i32,
     y_offset: i32,
     madctl: u8,
+    color_bits: u8,
 ) -> Result<Vec<Command>> {
     let cols = pack_hh(x_offset, width + x_offset)?;
     let rows = pack_hh(y_offset, height + y_offset)?;
+    let colmod = match color_bits {
+        16 => 0x55,
+        12 => 0x33,
+        _ => bail!("color_bits {color_bits} is not 16 or 12"),
+    };
     Ok(vec![
         (SWRESET, vec![]),
         (SLPOUT, vec![]),
-        (COLMOD, vec![0x55]), // 16 bit colour
+        (COLMOD, vec![colmod]),
         (MADCTL, vec![0x08]),
         (CASET, cols),
         (RASET, rows),
@@ -94,8 +108,34 @@ fn window(
     ])
 }
 
-/// spidev refuses a transfer larger than its own buffer, so a blit goes out in
-/// bufsiz chunks.
+/// Two RGB pixels pack to three RGB444 bytes, the top nibble of each channel.
+/// A trailing odd pixel takes black.
+fn pack_rgb444(frame: &[u8], out: &mut Vec<u8>) {
+    out.clear();
+    let mut px = frame.chunks_exact(3);
+    loop {
+        let Some(a) = px.next() else { break };
+        let b = px.next().unwrap_or(&[0, 0, 0]);
+        out.push((a[0] & 0xF0) | (a[1] >> 4));
+        out.push((a[2] & 0xF0) | (b[0] >> 4));
+        out.push((b[1] & 0xF0) | (b[2] >> 4));
+    }
+}
+
+/// The first and last rows that differ. None means the frames are identical.
+fn rows_changed(prev: &[u8], next: &[u8], bytes_per_row: usize) -> Option<(usize, usize)> {
+    let rows = next.len() / bytes_per_row;
+    let differs = |r: usize| {
+        prev[r * bytes_per_row..(r + 1) * bytes_per_row]
+            != next[r * bytes_per_row..(r + 1) * bytes_per_row]
+    };
+    let first = (0..rows).find(|r| differs(*r))?;
+    let last = (first..rows).rev().find(|r| differs(*r)).unwrap_or(first);
+    Some((first, last))
+}
+
+/// spidev refuses a transfer larger than its own buffer.
+/// A blit goes out in bufsiz chunks.
 fn spi_block_size() -> usize {
     fs::read_to_string("/sys/module/spidev/parameters/bufsiz")
         .ok()
@@ -131,9 +171,9 @@ fn slave_select(n: i64) -> Result<SlaveSelect> {
     })
 }
 
-/// The backlight is claimed on its own, and a refusal is survivable: it is the one
-/// line another kernel driver may already hold, and losing it must not cost the
-/// panel its DC line.
+/// The backlight takes its own claim.
+/// Another kernel driver can already hold that line.
+/// A refusal costs the backlight alone, and never the panel's DC line.
 fn backlight_pins(offset: Option<u8>) -> Option<Pins> {
     let offset = offset?;
     match Pins::new(&[Some(offset)]) {
@@ -159,7 +199,11 @@ pub struct St7789 {
     spi: Spi,
     block: usize,
     buf: Vec<u8>,
-    window_ready: bool,
+    color_bits: u8,
+    partial: bool,
+    prev: Vec<u8>,
+    prev_valid: bool,
+    window_full: bool,
 }
 
 impl St7789 {
@@ -176,6 +220,8 @@ impl St7789 {
         spi_bus: i64,
         spi_device: i64,
         madctl: u8,
+        color_bits: u8,
+        partial: bool,
     ) -> Result<St7789> {
         let pins = Pins::new(&[Some(dc), rst])?;
         let bl_pins = backlight_pins(backlight);
@@ -197,8 +243,19 @@ impl St7789 {
             bl_pins,
             spi,
             block: spi_block_size(),
-            buf: vec![0u8; (width as usize) * (height as usize) * 2],
-            window_ready: false,
+            buf: match color_bits {
+                16 => vec![0u8; (width as usize) * (height as usize) * 2],
+                _ => Vec::new(),
+            },
+            color_bits,
+            // 12-bit packs pixel pairs across row bounds, so partial is off there
+            partial: partial && color_bits == 16,
+            prev: match partial && color_bits == 16 {
+                true => vec![0u8; (width as usize) * (height as usize) * 2],
+                false => Vec::new(),
+            },
+            prev_valid: false,
+            window_full: false,
         };
         if let Some(rst) = rst {
             panel.pins.set(rst, false)?;
@@ -206,7 +263,7 @@ impl St7789 {
             panel.pins.set(rst, true)?;
             sleep(Duration::from_millis(50));
         }
-        for (command, data) in init_panel(width, height, x_offset, y_offset, madctl)? {
+        for (command, data) in init_panel(width, height, x_offset, y_offset, madctl, color_bits)? {
             panel.cmd(command, &data)?;
         }
         panel.turn_on()?;
@@ -238,8 +295,38 @@ impl St7789 {
         Ok(())
     }
 
+    fn send_rows(&mut self, first: usize, last: usize, bytes_per_row: usize) -> Result<()> {
+        self.pins.set(self.dc, false)?;
+        self.spi_write(&[RAMWR])?;
+        self.pins.set(self.dc, true)?;
+        let buf = std::mem::take(&mut self.buf);
+        let sent = self.spi_write(&buf[first * bytes_per_row..(last + 1) * bytes_per_row]);
+        self.buf = buf;
+        sent
+    }
+
     fn blit(&mut self) -> Result<()> {
-        if !self.window_ready {
+        let bytes_per_row = (self.width as usize) * 2;
+        if self.partial && self.prev_valid {
+            let Some((first, last)) = rows_changed(&self.prev, &self.buf, bytes_per_row) else {
+                return Ok(()); // nothing changed, so nothing goes on the wire
+            };
+            for (command, data) in window(
+                0,
+                first as i32,
+                self.width - 1,
+                last as i32,
+                self.x_offset,
+                self.y_offset,
+            )? {
+                self.cmd(command, &data)?;
+            }
+            self.window_full = false;
+            self.send_rows(first, last, bytes_per_row)?;
+            std::mem::swap(&mut self.prev, &mut self.buf);
+            return Ok(());
+        }
+        if !self.window_full {
             for (command, data) in window(
                 0,
                 0,
@@ -250,7 +337,7 @@ impl St7789 {
             )? {
                 self.cmd(command, &data)?;
             }
-            self.window_ready = true;
+            self.window_full = true;
         }
         self.pins.set(self.dc, false)?;
         self.spi_write(&[RAMWR])?;
@@ -258,7 +345,12 @@ impl St7789 {
         let buf = std::mem::take(&mut self.buf);
         let sent = self.spi_write(&buf);
         self.buf = buf;
-        sent
+        sent?;
+        if self.partial {
+            std::mem::swap(&mut self.prev, &mut self.buf);
+            self.prev_valid = true;
+        }
+        Ok(())
     }
 }
 
@@ -272,16 +364,27 @@ impl DisplayDriver for St7789 {
     }
 
     fn native_format(&self) -> &'static str {
-        RGB565
+        match self.color_bits {
+            12 => RGB444,
+            _ => RGB565,
+        }
     }
 
     fn write(&mut self, frame: &[u8]) -> Result<()> {
-        pack_frame_into(frame, self.width, self.height, 3, false, &mut self.buf);
+        match self.color_bits {
+            12 => pack_rgb444(frame, &mut self.buf),
+            _ => pack_frame_into(frame, self.width, self.height, 3, false, &mut self.buf),
+        }
         self.blit()
     }
 
     fn clear(&mut self) -> Result<()> {
-        self.buf.fill(0);
+        let len = match self.color_bits {
+            12 => (self.width as usize) * (self.height as usize) * 3 / 2,
+            _ => (self.width as usize) * (self.height as usize) * 2,
+        };
+        self.buf.clear();
+        self.buf.resize(len, 0);
         self.blit()
     }
 
@@ -300,7 +403,7 @@ impl DisplayDriver for St7789 {
     }
 }
 
-const OPTIONS: [DriverOption; 11] = [
+const OPTIONS: [DriverOption; 13] = [
     DriverOption::new("width", Some(DEFAULT_WIDTH)),
     DriverOption::new("height", Some(DEFAULT_HEIGHT)),
     DriverOption::new("x_offset", Some(DEFAULT_X_OFFSET)),
@@ -312,6 +415,8 @@ const OPTIONS: [DriverOption; 11] = [
     DriverOption::new("spi_bus", Some(DEFAULT_SPI_BUS)),
     DriverOption::new("spi_device", Some(DEFAULT_SPI_DEVICE)),
     DriverOption::new("madctl", Some(DEFAULT_MADCTL)),
+    DriverOption::new("color_bits", Some(DEFAULT_COLOR_BITS)),
+    DriverOption::new("partial", Some(DEFAULT_PARTIAL)),
 ];
 
 fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver>> {
@@ -322,6 +427,10 @@ fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver>> {
     let madctl = int_opt(opts, "madctl", DEFAULT_MADCTL)?;
     let Ok(madctl) = u8::try_from(madctl) else {
         bail!("madctl {madctl} is not a byte");
+    };
+    let color_bits = int_opt(opts, "color_bits", DEFAULT_COLOR_BITS)?;
+    let Ok(color_bits) = u8::try_from(color_bits) else {
+        bail!("color_bits {color_bits} is not 16 or 12");
     };
     let Some(dc) = pin_opt(opts, "dc", Some(DEFAULT_DC))? else {
         bail!("dc is the panel's command pin and takes a GPIO number");
@@ -338,6 +447,8 @@ fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver>> {
         int_opt(opts, "spi_bus", DEFAULT_SPI_BUS)?,
         int_opt(opts, "spi_device", DEFAULT_SPI_DEVICE)?,
         madctl,
+        color_bits,
+        int_opt(opts, "partial", DEFAULT_PARTIAL)? != 0,
     )?))
 }
 
@@ -352,7 +463,7 @@ mod tests {
     use super::*;
     use crate::engine::pack_frame;
 
-    /// What _cmd puts on the wire for a command stream: (DC level, bytes).
+    /// What cmd puts on the wire for a command stream: (DC level, bytes).
     fn wire(commands: &[Command]) -> Vec<(bool, String)> {
         let mut out = Vec::new();
         for (command, data) in commands {
@@ -374,8 +485,8 @@ mod tests {
             .collect()
     }
 
-    /// What a Blinka-driven adafruit_rgb_display.st7789 puts on the wire for this
-    /// panel, recorded off the real one.
+    /// What adafruit_rgb_display.st7789 puts on the wire for this panel.
+    /// The bytes come from a recording of the real panel.
     const INIT_ON_THE_WIRE: [(bool, &str); 15] = [
         (false, "01"), // SWRESET
         (false, "11"), // SLPOUT
@@ -402,7 +513,7 @@ mod tests {
     ];
 
     fn defaults() -> Vec<Command> {
-        init_panel(135, 240, 53, 40, 0xC0).unwrap()
+        init_panel(135, 240, 53, 40, 0xC0, 16).unwrap()
     }
 
     #[test]
@@ -420,7 +531,7 @@ mod tests {
 
     #[test]
     fn geometry_reaches_the_addressing_commands() {
-        let cmds = init_panel(240, 240, 0, 80, 0xC0).unwrap();
+        let cmds = init_panel(240, 240, 0, 80, 0xC0, 16).unwrap();
         assert_eq!(
             wire(&cmds)[6..10],
             recorded(&[
@@ -434,9 +545,9 @@ mod tests {
 
     #[test]
     fn madctl_is_the_last_init_write() {
-        // A 240x240 board came up rotated 180 under the 0xc0 default, so the
-        // rotation/mirroring byte has to reach the panel from the constructor.
-        let cmds = init_panel(135, 240, 53, 40, 0x00).unwrap();
+        // The constructor's madctl byte must reach the panel.
+        // A 240x240 board comes up rotated 180 under the 0xC0 default.
+        let cmds = init_panel(135, 240, 53, 40, 0x00, 16).unwrap();
         let sent = wire(&cmds);
         assert_eq!(
             sent[sent.len() - 2..],
@@ -449,7 +560,7 @@ mod tests {
     #[test]
     fn a_coordinate_past_16_bits_is_an_error() {
         assert_eq!(
-            init_panel(135, 70000, 53, 40, 0xC0)
+            init_panel(135, 70000, 53, 40, 0xC0, 16)
                 .unwrap_err()
                 .to_string(),
             "panel coordinate 70040 does not fit 16 bits"
@@ -476,7 +587,44 @@ mod tests {
         assert_eq!(
             listed.join(","),
             "width=135,height=240,x_offset=53,y_offset=40,dc=25,rst=None,\
-             backlight=22,baudrate=99000000,spi_bus=0,spi_device=0,madctl=192"
+             backlight=22,baudrate=99000000,spi_bus=0,spi_device=0,madctl=192,\
+             color_bits=16,partial=1"
         );
+    }
+
+    #[test]
+    fn twelve_bit_packs_two_pixels_into_three_bytes() {
+        let mut out = Vec::new();
+        pack_rgb444(&[0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56], &mut out);
+        assert_eq!(out, [0xAC, 0xE1, 0x35]);
+        pack_rgb444(&[0xFF, 0xFF, 0xFF], &mut out);
+        assert_eq!(out, [0xFF, 0xF0, 0x00]); // the trailing odd pixel takes black
+    }
+
+    #[test]
+    fn twelve_bit_init_sets_colmod_33() {
+        let cmds = init_panel(240, 240, 0, 0, 0x00, 12).unwrap();
+        assert_eq!(wire(&cmds)[2..4], recorded(&[(false, "3a"), (true, "33")]));
+    }
+
+    #[test]
+    fn color_bits_other_than_16_or_12_are_refused() {
+        assert_eq!(
+            init_panel(240, 240, 0, 0, 0x00, 18)
+                .unwrap_err()
+                .to_string(),
+            "color_bits 18 is not 16 or 12"
+        );
+    }
+
+    #[test]
+    fn changed_rows_bound_the_partial_window() {
+        let a = vec![0u8; 8 * 4]; // 8 rows, 4 bytes each
+        let mut b = a.clone();
+        assert_eq!(rows_changed(&a, &b, 4), None);
+        b[2 * 4] = 1;
+        assert_eq!(rows_changed(&a, &b, 4), Some((2, 2)));
+        b[6 * 4 + 3] = 9;
+        assert_eq!(rows_changed(&a, &b, 4), Some((2, 6)));
     }
 }

@@ -1,14 +1,13 @@
-//! Port of ghee/drivers/gpio.py.
-//!
-//! Offsets are BCM numbers. rppal finds the SoC gpiochip by label and holds one
-//! process-wide claim per pin, so Python's libgpiod v1/v2 shim and its soc_chip()
-//! have no counterpart here. A Pins group still stands on its own, so lines that
-//! may fail independently (an optional backlight) belong in their own group.
+//! Offsets are BCM numbers.
+//! rppal finds the SoC gpiochip by label.
+//! rppal holds one process-wide claim for each pin.
+//! A Pins group stands on its own.
+//! Put a line that can fail alone, such as an optional backlight, in its own group.
 
 use anyhow::{anyhow, Result};
 use rppal::gpio::{Gpio, OutputPin};
 
-/// The lines a group drives: a None pin is not a line.
+/// The lines a group drives. A None pin is not a line.
 pub fn line_offsets(offsets: &[Option<u8>]) -> Vec<u8> {
     offsets.iter().flatten().copied().collect()
 }
@@ -25,7 +24,7 @@ impl Pins {
         let gpio = Gpio::new()?;
         let mut lines = Vec::with_capacity(offsets.len());
         for &offset in &offsets {
-            // a claim that fails part way drops the lines already taken
+            // a claim that fails part way drops the lines the loop already took
             lines.push((offset, gpio.get(offset)?.into_output_low()));
         }
         Ok(Pins { offsets, lines })

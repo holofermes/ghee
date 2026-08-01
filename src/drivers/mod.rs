@@ -1,8 +1,7 @@
-//! Port of ghee/drivers/__init__.py.
-//!
-//! Display driver discovery. The bundled drivers are compiled in, so there is no
-//! import to fail and no entry-point plugin to load: available_drivers() reports
-//! the table below.
+//! Display driver discovery.
+//! The binary holds the bundled drivers.
+//! No import fails, and no plugin loads.
+//! available_drivers() reports the table below.
 
 mod base;
 mod gpio;
@@ -14,11 +13,11 @@ use serde_json::Value;
 
 pub use base::DisplayDriver;
 
-/// What --display-opts sets, as the values a k=v pair parses to.
+/// The options --display-opts sets. Each k=v pair parses to one value.
 pub type Opts = [(String, Value)];
 
-/// A constructor option and its default: what --display-opts may set and
-/// `ghee displays` lists.
+/// A constructor option and its default.
+/// --display-opts sets the option, and `ghee displays` lists it.
 pub struct DriverOption {
     pub name: &'static str,
     pub default: Option<i64>,
@@ -38,7 +37,7 @@ pub struct DriverSpec {
 
 const BUNDLED: [&DriverSpec; 2] = [&st7789::SPEC, &ssd1306::SPEC];
 
-/// name -> "ok" or the reason it is unavailable.
+/// name -> "ok", or the reason the driver is unavailable.
 pub fn available_drivers() -> Vec<(&'static str, &'static str)> {
     BUNDLED.iter().map(|d| (d.name, "ok")).collect()
 }
@@ -57,7 +56,7 @@ pub fn driver_options(spec: &DriverSpec) -> &'static [DriverOption] {
     spec.options
 }
 
-/// The value set for `name`, last one wins.
+/// The value set for `name`. The last pair wins.
 fn opt<'a>(opts: &'a Opts, name: &str) -> Option<&'a Value> {
     opts.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v)
 }
@@ -76,7 +75,7 @@ pub(crate) fn i32_opt(opts: &Opts, name: &str, default: i64) -> Result<i32> {
     i32::try_from(v).map_err(|_| anyhow!("{name} {v} is out of range"))
 }
 
-/// A BCM pin number, or None for a line this panel does without.
+/// A BCM pin number. None means the panel does without the line.
 pub(crate) fn pin_opt(opts: &Opts, name: &str, default: Option<i64>) -> Result<Option<u8>> {
     let v = match opt(opts, name) {
         None => default,
@@ -141,7 +140,9 @@ mod tests {
                 "baudrate",
                 "spi_bus",
                 "spi_device",
-                "madctl"
+                "madctl",
+                "color_bits",
+                "partial"
             ]
         );
         let ssd: Vec<&str> = driver_options(get_driver("ssd1306").unwrap())

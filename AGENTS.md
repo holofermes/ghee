@@ -1,117 +1,114 @@
 # Working on ghee
 
-ghee compiles GLSL scenes and renders them on a GPU through DRM/GBM, headless,
-with output to SPI/I2C panels, HDMI via KMS scanout, image files, raw frames, or
-H264. Python around a small C engine (`ghee/_engine/`). Target hardware is
-Raspberry Pi, from a 2012 Pi 1 to a Pi 5.
+ghee compiles GLSL scenes and renders them on a GPU through DRM/GBM, headless.
+The output goes to SPI/I2C panels, to HDMI through KMS scanout, to image files,
+to raw frames, or to H264. ghee is one Rust binary around a small C engine
+(`ghee/_engine/`), and `build.rs` compiles that engine in. The target hardware
+is Raspberry Pi, from a Pi 1 to a Pi 5.
 
 ## You cannot see the output
 
-There is no readback from an SPI or I2C panel, and an HDMI display needs eyes on
-it. Reaching for hardware to check a change is a dead end. Render to a file and
-assert on pixels:
+An SPI or I2C panel has no readback. An HDMI display needs a human in front of
+it. Hardware tells you nothing about a change. Render to a file, and assert on
+the pixels:
 
 ```
 ghee render --demo bars -o out.png --size 320x240 --timestep 0 --frames 1
 ```
 
-`--timestep S` pins engine time to `frame * S`, so frame N always renders at time
-`N*S` and two runs are comparable. Without it, time is the wall clock and nothing
-you render can be diffed.
+`--timestep S` pins engine time to `frame * S`. Frame N then always renders at
+time `N*S`, and two runs are comparable. Without it, time is the wall clock, and
+no render diffs against another.
 
-For a change that should not alter output, render before and after and compare
-bytes. `cmp` on a handful of scenes catches whole classes of regression that no
-amount of looking would find.
+Render before a change and after it, then compare the bytes. `cmp` over a few
+scenes catches a whole class of regression that no amount of looking finds.
 
-`tests/goldens/` is this pattern already institutionalised. Run it with
-`uv run pytest tests/test_render.py`.
+The golden check is that pattern, already in the repo. It renders every bundled
+example. It compares the sha256 of each frame against a pinned reference:
 
-When a change genuinely needs hardware, ask a human, and give them a rendered
-reference image to compare against when it makes sense to do so.
+```
+cargo run --release -- golden --manifest tools/fixtures/golden/manifest.json
+```
+
+Ask a human when a change needs hardware. Give the human a rendered reference
+image to compare against, when an image helps.
 
 ## Commands
 
 ```
-cd ghee && uv run pytest -q         # from this directory, not the parent
-uvx ruff@0.16.0 format .
-uvx ruff@0.16.0 check .
+cargo build --release
+cargo test --release
+cargo clippy --release --all-targets
+cargo fmt
+python3 -m pytest tests/test_shim.py    # the procedural-scene shim
 ```
 
-Python goes through `uv`. Lint and format with ruff only, config in
-`pyproject.toml`.
-
-After editing anything in `ghee/_engine/`:
-
-```
-uv pip install -e . --no-deps --force-reinstall
-```
-
-`uv run pytest` does **not** reliably recompile the engine. Without that
-reinstall you will test the previous `.so` and believe a change works when it was
-never built. Confirm the new binary actually contains your change (`strings`,
-`objdump`) before trusting a result.
+`build.rs` rebuilds the C engine when anything in `ghee/_engine/` changes, so
+the engine needs no build step of its own. Cross-compiling takes `GHEE_SYSROOT`.
 
 ## The surface is the CLI and plain HTTP
 
-`ghee --help` describes the tool; `ghee render <scene> -- --help` describes a
-scene.The console is JSON over HTTP: `/stats`, `/scene`, `/scenes`, `/set`,
+`ghee --help` describes the tool. `ghee render <scene> -- --help` describes a
+scene. The console is JSON over HTTP: `/stats`, `/scene`, `/scenes`, `/set`,
 `/switch`, `/frame.png`
 
 ## Contracts
 
-Some shapes are load-bearing and pinned by tests. Changing one is an API break,
-not a refactor
+Some shapes are load-bearing, and the tests pin them. A change to one of them is
+an API break.
 
 ## When this file is wrong
 
-If a command or claim here disagrees with the repo, the repo wins. Diagnose,
-do the task against reality, and fix this file in the same change. Do not
-follow a stale instruction off a cliff, and do not silently work around it
-either.
+The repo wins when a command or a claim here disagrees with it. Diagnose the
+difference. Do the task against the repo. Fix this file in the same change.
+Never follow a stale instruction, and never work around one in silence.
 
 ## Writing a scene
 
-A scene is JSON (an ordered list of passes, each with a fragment shader) or a
-`.py` file exposing a `SceneController` that builds those passes in code. See
-`ghee/examples/`.
+A scene is either JSON or a procedural scene. The JSON is an ordered list of
+passes, each with a fragment shader. A procedural scene is an executable that
+emits its scene JSON and feeds its data. See `ghee/examples/`, `shim/ghee.py`
+and `docs/procedural.md`.
 
-- **Build-time parameters are declared, not read from the environment.** A
-  controller sets `ARGS = [Arg("emit", "size")]` and reads `self.args.emit` in
-  `build()`. `ghee render <scene> -- --help` lists what a scene takes. Nothing
-  derived from an argument may be computed at import time.
-- **Shared GLSL goes in the scene's `common` block**, prepended into every pass.
-  Filter passes never receive it.
-- Live parameters are `Param`s; they reach every pass through the preamble and
-  can be changed without a recompile.
-- Per-frame data arrives as declared arrays, bound as textures, read with
-  `name_at(i)` or `name_sample2(uv)`.
-- **On VC4, read a pass's textures before computing values used after them.**
-  The evidence: a value computed ahead of the texture reads and consumed after
-  them came back wrong in 4x4 pixel blocks, both directions, while every part
-  of the expression read correct alone, a compiler fault, not arithmetic.
-  Hoisting the reads above the dependent math is the shape that compiles right.
-- **A cheap reject around an expensive per-pixel loop body pays on VC4.** The
-  evidence: an `if` a whole 16-pixel block fails is genuinely skipped, measured
-  as a large cost drop for an always-false body. The reject must be an `if`
-  block; written as a function with an early return it flattens into a select
-  and the work happens anyway.
+- **A scene declares its build-time parameters. It never reads the
+  environment.** A scene declares its arguments (`ghee.args([...])` in the shim)
+  and answers the probe with them. `ghee render <scene> -- --help` lists what a
+  scene takes. Compute nothing from an argument before the parse.
+- **Put shared GLSL in the scene's `common` block.** ghee puts that block in
+  front of every pass. A filter pass never gets it.
+- A live parameter is a `Param`. It reaches every pass through the preamble. A
+  `Param` changes with no recompile.
+- Per-frame data arrives as a declared array. ghee binds the array as a texture.
+  The shader reads it with `name_at(i)` or `name_sample2(uv)`.
+- **On VC4, hoist the texture reads of a pass above the math that depends on
+  them.** A value computed ahead of the texture reads, and consumed after them,
+  comes back wrong. The error shows in 4x4 pixel blocks, in both directions.
+  Every part of the expression reads correct alone, so the fault is the compiler.
+- **A cheap reject around an expensive per-pixel loop body pays on VC4.** VC4
+  skips an `if` that a whole 16-pixel block fails, and an always-false body then
+  costs almost nothing. Write the reject as an `if` block. A function with an
+  early return flattens into a select, and the work happens anyway.
 
-Performance shape, so you optimise the right thing: readback is a fixed cost that
-scales with pixel count rather than shader complexity, and at panel sizes the
-SPI/I2C write dominates the frame, not the GPU.
+Readback is a fixed cost. It scales with the pixel count, and not with the
+shader complexity. At panel sizes the SPI or I2C write dominates the frame, and
+the GPU does not.
 
 ## Conventions
 
-Comments state a constraint the code cannot: a hardware limit, a protocol rule, a
-non-obvious invariant. Not the history of how something was found, not why a
-change is correct, not what it replaced. That belongs in the commit message.
+A comment states a constraint the code cannot state: a hardware limit, a
+protocol rule, a hidden invariant. A comment never holds the history of a
+finding. A comment never argues that a change is correct. A comment never names
+what it replaced. The commit message holds that.
 
-Prose in this repo, including docs and commit messages, avoids em dashes and
-"not X but Y" constructions. Terse. Nothing obvious.
+Prose in this repo follows ASD-STE100: one topic per sentence, active voice,
+present tense, about 20 words at most, one term for one thing. This covers
+comments, docs and commit messages. Avoid em dashes and "not X but Y"
+constructions. Stay terse. Write nothing obvious.
 
-Error strings are an interface. An error that names a wrong cause sends the
-reader down a dead end, so name the real condition and nothing else.
+An error string is an interface. An error that names a wrong cause sends the
+reader down a dead end. Name the real condition, and nothing else.
 
-Do not commit or push unless asked. Do not add runtime dependencies. The console
-web UI is one static file with no build step, and any change to it must work in
-both light and dark themes as well as for mobile and desktop across all major browsers.
+Do not commit or push unless asked. Do not add a dependency without a strong
+recorded reason. The console web UI is one static file with no build step. A
+change to it must work in the light theme and in the dark theme. It must work on
+mobile and on desktop, across all major browsers.

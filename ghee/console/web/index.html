@@ -717,9 +717,9 @@ async function loadScene(name){
   if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
   curPass = 0;
-  if (!work.passes || !work.passes.length) {   // non-shader scene (python plugin): stream only
+  if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
     $("#tabs").innerHTML = ""; $("#channels").innerHTML = ""; $("#inputs").innerHTML = "";
-    $("#params").innerHTML = '<div class="muted">python plugin, not shader-editable</div>';
+    $("#params").innerHTML = '<div class="muted">no passes, not shader-editable</div>';
     codeEl().value = ""; syncHL(); applyErrorLine(0); refreshInfo(); updateStatus();
     return;
   }

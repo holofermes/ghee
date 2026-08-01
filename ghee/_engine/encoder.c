@@ -16,7 +16,7 @@
 //
 // This file is the only V4L2 user in the engine; boards without a hardware
 // encoder (Pi 5, desktops) fail ghee_encoder_create cleanly at open() and the
-// Python layer falls back to a software encoder.
+// caller falls back to a software encoder.
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>

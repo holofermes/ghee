@@ -606,8 +606,8 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
 
 // Give a pending pass its own buffer size (default = renderer W,H). Call after
 // ghee_mp_add_pass, before ghee_mp_commit. The last (output) pass must keep the
-// renderer size (its buffer feeds readback/scanout); the Python layer rejects a
-// sized output pass before setup ever reaches here.
+// renderer size (its buffer feeds readback/scanout); Renderer::setup rejects a
+// sized output pass before it reaches here.
 bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     if (pass < 0 || pass >= g->stage_count || w <= 0 || h <= 0) {
         set_error(g, "cannot size pass %d at %dx%d", pass, w, h);
@@ -809,8 +809,9 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     for (int p = 0; p < g->mp_count; p++) {
         const bool direct = direct_last && p == g->mp_count - 1;
         glBindFramebuffer(GL_FRAMEBUFFER, direct ? 0 : g->mp_fbo[p][g->mp_write[p]]);
-        // per-pass buffer size; the output pass is always full-size (enforced in
-        // Python), so the direct scanout draw still gets the display viewport.
+        // per-pass buffer size; the output pass is always full-size (the caller
+        // enforces that), so the direct scanout draw still gets the display
+        // viewport.
         glViewport(0, 0, g->mp_w[p], g->mp_h[p]);
         // The fullscreen quad overwrites every pixel, so the clear is invisible;
         // on tiled GPUs (VC4) it flags the target as not-loaded, skipping a

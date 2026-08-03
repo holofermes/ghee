@@ -1,4 +1,4 @@
-"""The ghee procedural-scene shim.
+"""The ghee procedural-scene shim, the Python half of `import ghee`.
 
 The shim builds a scene, answers the probe, and feeds the data.
 A procedural scene is an executable.
@@ -20,7 +20,16 @@ docs/procedural.md holds the wire contract.
 
     ghee.run(scene)
 
-The shim imports the standard library only.
+A feed that returns bytes, a bytearray or a numpy array of dtype uint8 sends
+the u8 wire form, where the value is byte / 255. Everything else sends floats.
+A large mask of bytes costs a quarter of the pipe, and the engine uploads it
+with no conversion.
+
+A scene ghee started answers the wire. A scene a user started has no wire, so
+run() opens it on the ghee bindings and drives the same feeds there.
+$GHEE_WIRE tells the two runs apart.
+
+The wire half imports the standard library alone.
 A scene runs under the python3 of the host.
 """
 
@@ -30,12 +39,17 @@ import argparse
 import array
 import json
 import os
+import signal
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 _PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC)
+
+# ghee sets this in the scene process it starts. Without it, run() self-hosts.
+WIRE = "GHEE_WIRE"
 
 
 # ---------------------------------------------------------------- scene model
@@ -260,7 +274,9 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
     `--ghee-args` writes the declaration line and stops: the ghee probe.
     `--help` lists the args.
     A dash in a name becomes an underscore on the result.
+    A direct run takes the host flags as well, and run() reads them.
     """
+    global _HOST
     argv = sys.argv[1:]
     if "--ghee-args" in argv:
         line = json.dumps({"args": [s.declaration() for s in specs]})
@@ -273,7 +289,50 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
         shown = f"{d[0]}x{d[1]}" if s.type == "size" and d is not None else d
         help_ = s.help if d is None else f"{s.help} (default: {shown})".lstrip()
         p.add_argument(f"--{s.name}", default=d, help=help_, **_ARG_TYPES[s.type])
-    return p.parse_args(argv)
+    if os.environ.get(WIRE):
+        return p.parse_args(argv)
+    _host_flags(p)
+    _HOST = p.parse_args(argv)
+    return _HOST
+
+
+def _host_flags(p: argparse.ArgumentParser) -> None:
+    """What a direct run takes on top of the scene's own args.
+
+    Each flag is the flag `ghee render` spells the same way.
+    A scene that declares one of these names collides here, and argparse says
+    so.
+    """
+    p.add_argument(
+        "--output",
+        default="kms",
+        metavar="NAME",
+        help="a display driver name, 'kms', or 'none' for a headless render "
+        "(default: kms)",
+    )
+    p.add_argument(
+        "--size",
+        type=_size,
+        metavar="WxH",
+        help="WxH to render at; a display or a panel states its own",
+    )
+    p.add_argument("--fps", type=float, metavar="N", help="frame rate cap")
+    p.add_argument(
+        "--stats", type=int, metavar="PORT", help="serve the console on PORT"
+    )
+    p.add_argument(
+        "--frames",
+        type=int,
+        default=0,
+        metavar="N",
+        help="frames to render; 0 runs until SIGINT or SIGTERM (default: 0)",
+    )
+    p.add_argument(
+        "--timestep",
+        type=float,
+        metavar="S",
+        help="pin time to frame*S seconds instead of the wall clock",
+    )
 
 
 # ------------------------------------------------------------------ the loop
@@ -297,6 +356,10 @@ _FEEDS: dict = {}
 _HOOKS: list = []
 _OUT: list = []
 _CLEAN = False
+# a direct run: the host flags args() read, the handle it drives, the signals
+_HOST = None
+_HANDLE = None
+_STOPPED: list = []
 
 
 def feed(name: str):
@@ -304,6 +367,7 @@ def feed(name: str):
 
     The function takes the tick and returns the values.
     It returns None to leave the array as it stands.
+    A uint8 buffer goes out as bytes, and anything else as floats.
     """
 
     def hold(fn):
@@ -326,6 +390,9 @@ def set_param(name: str, value, pass_: str | None = None) -> None:
     `pass_` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
     """
+    if _HANDLE is not None:
+        _HANDLE.set_param(name, value, pass_=pass_)
+        return
     wire = f"{pass_}.{name}" if pass_ else name
     count, body = _f32((value,) if isinstance(value, (int, float)) else value)
     _OUT.append(_message(1, wire, count, body))
@@ -337,11 +404,19 @@ def skip() -> None:
     _CLEAN = True
 
 
-def _message(kind: int, name: str, count: int, body: bytes) -> bytes:
+def _message(kind: int, name: str, count: int, body) -> bytes:
     nb = name.encode("utf-8")
     if len(nb) > 255:
         raise ValueError(f"name {name!r} is over the 255 bytes the wire holds")
     return bytes((kind, len(nb))) + nb + count.to_bytes(4, "little") + body
+
+
+def _view(values):
+    """The buffer of `values`, or None for a source that holds no buffer."""
+    try:
+        return memoryview(values)
+    except TypeError:
+        return None
 
 
 def _f32(values) -> tuple[int, bytes]:
@@ -351,16 +426,31 @@ def _f32(values) -> tuple[int, bytes]:
     Any other iterable of numbers converts first.
     """
     if sys.byteorder == "little":
-        try:
-            mv = memoryview(values)
-        except TypeError:
-            mv = None
+        mv = _view(values)
         if mv is not None and mv.format == "f" and mv.c_contiguous:
             return mv.nbytes // 4, mv.tobytes()
     a = array.array("f", values)
     if sys.byteorder != "little":
         a.byteswap()
     return len(a), a.tobytes()
+
+
+def _array_message(name: str, values) -> tuple[int, bytes]:
+    """(count, one array message) for what a feed returned.
+
+    A buffer of bytes goes out as kind 4: one byte for each value, which the
+    engine reads as byte / 255. `bytes`, a `bytearray` and a numpy array of
+    dtype uint8 are such buffers. A large mask then costs a quarter of the
+    bytes, and the engine uploads it with no conversion.
+    Anything else goes out as kind 0 floats.
+    """
+    mv = _view(values)
+    if mv is not None and mv.format == "B":
+        # the message copies the body once. A view spares a mask a second copy.
+        body = mv if mv.c_contiguous else mv.tobytes()
+        return mv.nbytes, _message(4, name, mv.nbytes, body)
+    count, body = _f32(values)
+    return count, _message(0, name, count, body)
 
 
 def _tick(line: str) -> Tick:
@@ -373,12 +463,11 @@ def _tick(line: str) -> Tick:
     )
 
 
-def run(scene: Scene) -> None:
-    """Write the handshake, then answer ticks until ghee closes stdin."""
-    global _CLEAN
-    out = sys.stdout.buffer
-    out.write(json.dumps(scene.to_dict()).encode("utf-8") + b"\n")
-    out.flush()
+def _counts(scene: Scene) -> dict:
+    """The values each declared array takes, keyed by name.
+
+    A feed of a name the scene never declared stops the run here.
+    """
     counts = {a.name: a.count for p in scene.passes for a in p.arrays}
     for name in _FEEDS:
         if name not in counts:
@@ -386,6 +475,28 @@ def run(scene: Scene) -> None:
                 f"feed '{name}' is not an array this scene declares "
                 f"({', '.join(counts) or 'none'})"
             )
+    return counts
+
+
+def run(scene: Scene) -> None:
+    """Render the scene.
+
+    A run under ghee answers the wire.
+    A run of its own opens the scene on the bindings and drives it.
+    """
+    if os.environ.get(WIRE):
+        _wire(scene)
+    else:
+        _direct(scene)
+
+
+def _wire(scene: Scene) -> None:
+    """Write the handshake, then answer ticks until ghee closes stdin."""
+    global _CLEAN
+    out = sys.stdout.buffer
+    out.write(json.dumps(scene.to_dict()).encode("utf-8") + b"\n")
+    out.flush()
+    counts = _counts(scene)
     for line in sys.stdin:
         if not line.strip():
             continue
@@ -398,14 +509,87 @@ def run(scene: Scene) -> None:
             values = fn(t)
             if values is None:
                 continue
-            count, body = _f32(values)
+            count, msg = _array_message(name, values)
             if count != counts[name]:
                 raise ValueError(
                     f"array '{name}' takes {counts[name]} values, got {count}"
                 )
-            _OUT.append(_message(0, name, count, body))
+            _OUT.append(msg)
         if _CLEAN:
             _OUT.append(b"\x02")
         if _OUT:
             out.write(b"".join(_OUT))
             out.flush()
+
+
+# --------------------------------------------------------------- direct mode
+
+
+def _host_args():
+    """The host flags of a run that declared no args of its own."""
+    p = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]), allow_abbrev=False)
+    _host_flags(p)
+    return p.parse_args(sys.argv[1:])
+
+
+def _open(scene: Scene, a):
+    """Open the scene on the bindings. `--output none` renders headless."""
+    from ghee import open as open_scene
+
+    w, h = a.size or (None, None)
+    return open_scene(
+        scene.to_dict(),
+        output=None if a.output == "none" else a.output,
+        width=w,
+        height=h,
+        fps=a.fps,
+        stats=a.stats,
+        timestep=a.timestep,
+    )
+
+
+def _stop(sig, _frame) -> None:
+    _STOPPED.append(sig)
+
+
+def _direct(scene: Scene) -> None:
+    """Drive the scene from the same hooks and feeds the wire drives.
+
+    The tick keeps its wire shape. `params` stays empty, because no ghee holds
+    the string params here.
+    A frame budget of 0 runs until SIGINT or SIGTERM.
+    """
+    global _CLEAN, _HANDLE
+    a = _HOST if _HOST is not None else _host_args()
+    _counts(scene)
+    handle = _open(scene, a)
+    del _STOPPED[:]
+    caught = [(s, signal.signal(s, _stop)) for s in (signal.SIGINT, signal.SIGTERM)]
+    _HANDLE = handle
+    frame, started, last = 0, time.monotonic(), 0.0
+    try:
+        while not _STOPPED and (a.frames == 0 or frame < a.frames):
+            now = (
+                frame * a.timestep
+                if a.timestep is not None
+                else time.monotonic() - started
+            )
+            t = Tick(frame, now, now - last, {})
+            last = now
+            _CLEAN = False
+            for hook in _HOOKS:
+                hook(t)
+            for name, fn in _FEEDS.items():
+                values = fn(t)
+                if values is not None:
+                    handle.feed(name, values)
+            if _CLEAN:
+                handle.skip()
+            else:
+                handle.frame()
+            frame += 1
+    finally:
+        _HANDLE = None
+        for s, held in caught:
+            signal.signal(s, held)
+        handle.close()

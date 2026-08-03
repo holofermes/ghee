@@ -1,22 +1,22 @@
-"""The feeder shim (shim/ghee.py): the scene it emits, the probe, the wire.
+"""The feeder shim (ghee._shim): the scene it emits, the probe, the wire.
 
-The shim ships beside the bundled demos, so it is loaded from its file here
-rather than imported.
+The shim is the Python half of the ghee-render wheel. Each test loads a copy
+of it from the installed file, because the feed and hook registries are module
+state.
 
-    python3 -m pytest tests/test_shim.py
+    pytest python/tests/test_shim.py
 """
 
 import importlib.util
 import io
 import itertools
 import json
-import os
 import struct
 import sys
 
 import pytest
 
-SHIM = os.path.join(os.path.dirname(os.path.dirname(__file__)), "shim", "ghee.py")
+SHIM = importlib.util.find_spec("ghee._shim").origin
 _names = itertools.count()
 
 
@@ -39,9 +39,13 @@ class Out:
 
 
 def drive(shim, scene, ticks, monkeypatch):
-    """Run the loop over `ticks` -> (handshake dict, message bytes)."""
+    """Run the loop over `ticks` -> (handshake dict, message bytes).
+
+    The mark is what puts run() on the wire. test_direct.py drives the rest.
+    """
     lines = "".join(json.dumps(t) + "\n" for t in ticks)
     out = Out()
+    monkeypatch.setenv(shim.WIRE, "1")
     monkeypatch.setattr(sys, "stdin", io.StringIO(lines))
     monkeypatch.setattr(sys, "stdout", out)
     shim.run(scene)
@@ -50,7 +54,7 @@ def drive(shim, scene, ticks, monkeypatch):
 
 
 def messages(buf):
-    """The wire back to (kind, name, values)."""
+    """The wire back to (kind, name, values). Kind 4 carries one byte each."""
     out, i = [], 0
     while i < len(buf):
         kind = buf[i]
@@ -64,14 +68,17 @@ def messages(buf):
         i += nlen
         (count,) = struct.unpack_from("<I", buf, i)
         i += 4
-        out.append((kind, name, list(struct.unpack_from(f"<{count}f", buf, i))))
-        i += 4 * count
+        width = 1 if kind == 4 else 4
+        fmt = f"<{count}B" if kind == 4 else f"<{count}f"
+        out.append((kind, name, list(struct.unpack_from(fmt, buf, i))))
+        i += width * count
     return out
 
 
 def probe(shim, argv, monkeypatch, specs=()):
     """`args()` under a command line -> (result or SystemExit code, stdout)."""
     buf = io.StringIO()
+    monkeypatch.setenv(shim.WIRE, "1")
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(sys, "stdout", buf)
     try:
@@ -327,6 +334,48 @@ def test_a_float32_buffer_goes_out_as_it_lies(monkeypatch):
     assert messages(rest) == [(0, "v", [0.25, 0.5, 0.75, 1.0])]
 
 
+def test_a_uint8_buffer_goes_out_as_bytes(monkeypatch):
+    """kind 4: one byte for each value, and the engine divides by 255."""
+    shim = load()
+    np = pytest.importorskip("numpy")
+
+    @shim.feed("v")
+    def v(tick):
+        return np.array([[0, 64], [128, 255]], np.uint8)
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
+    assert messages(rest) == [(4, "v", [0, 64, 128, 255])]
+    assert len(rest) == 1 + 1 + 1 + 4 + 4  # kind, name_len, name, count, bytes
+
+
+def test_bytes_go_out_as_bytes_and_floats_stay_floats(monkeypatch):
+    shim = load()
+
+    @shim.feed("v")
+    def v(tick):
+        return bytes([1, 2, 3, 4]) if tick.frame == 0 else [1.0, 2.0, 3.0, 4.0]
+
+    ticks = [{"frame": n, "time": 0.0, "dt": 0.0, "params": {}} for n in range(2)]
+    _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
+    assert messages(rest) == [
+        (4, "v", [1, 2, 3, 4]),
+        (0, "v", [1.0, 2.0, 3.0, 4.0]),
+    ]
+
+
+def test_a_short_byte_feed_names_the_array(monkeypatch):
+    shim = load()
+
+    @shim.feed("v")
+    def v(tick):
+        return bytearray([1, 2])
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    with pytest.raises(ValueError, match="array 'v' takes 4 values, got 2"):
+        drive(shim, scene_of(shim), ticks, monkeypatch)
+
+
 def test_the_tick_line_carries_the_string_params(monkeypatch):
     shim = load()
     seen = []
@@ -341,3 +390,54 @@ def test_the_tick_line_carries_the_string_params(monkeypatch):
     ]
     drive(shim, scene_of(shim), ticks, monkeypatch)
     assert seen == [(3, 0.25, 0.016, {"text": "GHEE"}), (4, 0.5, 0.016, {})]
+
+
+# --------------------------------------------------------------- the package
+
+
+SURFACE = [
+    "Arg",
+    "ArrayInput",
+    "Channel",
+    "Param",
+    "Pass",
+    "Scene",
+    "Tick",
+    "args",
+    "feed",
+    "run",
+    "set_param",
+    "skip",
+    "tick",
+]
+
+
+def test_the_package_is_the_shim_plus_the_native_half():
+    """`import ghee` is the whole surface. pip is the only way to it."""
+    import ghee
+    from ghee import _shim
+
+    for name in SURFACE:
+        assert getattr(ghee, name) is getattr(_shim, name), name
+    assert set(ghee.__all__) == set(SURFACE) | {"Handle", "open", "__version__"}
+    assert ghee.__version__
+
+
+def test_open_without_the_native_module_names_it(monkeypatch):
+    """A shim run needs no native module. open() is what needs it."""
+    import ghee
+
+    class Missing:
+        def find_spec(self, name, path=None, target=None):
+            if name == "ghee._native":
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            return None
+
+    monkeypatch.delitem(sys.modules, "ghee._native", raising=False)
+    monkeypatch.delattr(ghee, "_native", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [Missing(), *sys.meta_path])
+    with pytest.raises(ImportError, match="ghee._native is missing") as caught:
+        assert ghee.open
+    assert "ghee-render" in str(caught.value)
+    # the shim itself is still there
+    assert ghee.Scene(passes=[]).to_dict() == {"version": 1, "passes": []}

@@ -51,9 +51,8 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
 /// extracts this set to a content-keyed cache directory first. A procedural
-/// scene imports the shim from its own directory, so ghee.py extracts with the
-/// scenes that need it.
-pub const EXAMPLES: [(&str, &[u8]); 13] = [
+/// example imports ghee from the ghee-render package, which pip installs.
+pub const EXAMPLES: [(&str, &[u8]); 12] = [
     ("bars.glsl", include_bytes!("../../ghee/examples/bars.glsl")),
     (
         "bars.scene.json",
@@ -71,7 +70,6 @@ pub const EXAMPLES: [(&str, &[u8]); 13] = [
         "echo.scene.json",
         include_bytes!("../../ghee/examples/echo.scene.json"),
     ),
-    ("ghee.py", include_bytes!("../../shim/ghee.py")),
     ("hero.py", include_bytes!("../../ghee/examples/hero.py")),
     (
         "lib/look.py",
@@ -161,10 +159,10 @@ mod tests {
         assert!(dir.join("bars.scene.json").is_file());
         assert!(dir.join("lib/look.py").is_file());
         // examples_dir answers with $GHEE_EXAMPLES when it is set, so read the
-        // extraction itself. The shim ships beside the procedural scenes.
+        // extraction itself
         let out = extract_examples().unwrap();
         let out = std::path::Path::new(&out);
-        assert!(out.join("ghee.py").is_file());
+        assert!(out.join("hero.py").is_file());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

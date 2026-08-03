@@ -1,0 +1,296 @@
+"""The console the host embeds: what it serves, and what a /set does."""
+
+import json
+import shutil
+import socket
+import threading
+import time
+import urllib.error
+import urllib.request
+
+import pytest
+from conftest import RED
+
+import ghee
+
+LEVEL = [1.0] * 8
+
+# this box has no /dev/video11, so /h264 runs on ffmpeg/libx264
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None, reason="software H264 takes ffmpeg on PATH"
+)
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def get(port, path, timeout=5):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout) as r:
+        return r.status, r.read()
+
+
+def post(port, path, timeout=5):
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=b"", method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read()
+
+
+def json_of(port, path):
+    status, body = get(port, path)
+    assert status == 200
+    return json.loads(body)
+
+
+def read_exact(r, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = r.read(n - len(buf))
+        if not chunk:
+            raise EOFError("the stream ended")
+        buf += chunk
+    return buf
+
+
+def messages(r, count):
+    """The wire messages of /h264: [u8 type][u32 len][payload]."""
+    out = []
+    while len(out) < count:
+        head = read_exact(r, 5)
+        out.append((head[0], read_exact(r, int.from_bytes(head[1:5], "big"))))
+    return out
+
+
+def watching(h, read, limit=30.0):
+    """Run `read` against the console while the host renders. The stream
+    advances with the host's frames, so something has to draw."""
+    box = {}
+    done = threading.Event()
+
+    def watcher():
+        try:
+            box["got"] = read()
+        except Exception as e:  # the reader's failure belongs to the test
+            box["error"] = e
+        finally:
+            done.set()
+
+    reader = threading.Thread(target=watcher)
+    reader.start()
+    end = time.monotonic() + limit
+    while not done.is_set() and time.monotonic() < end:
+        h.feed("level", LEVEL)
+        h.frame()
+    reader.join(5)
+    if "error" in box:
+        raise box["error"]
+    assert "got" in box, f"the stream gave nothing in {limit}s"
+    return box["got"]
+
+
+@pytest.fixture
+def served():
+    port = free_port()
+    with ghee.open(RED, width=32, height=32, stats=port) as h:
+        h.feed("level", LEVEL)
+        h.frame()
+        yield h, port
+
+
+def test_the_console_publishes_the_render(served):
+    h, port = served
+    stats = json_of(port, "/stats")
+    assert stats["active"] == "scene"
+    assert stats["error"] == ""
+    assert stats["display"] == {"w": 32, "h": 32, "format": "rgba", "rotation": 0}
+    assert stats["out"] == []
+    assert stats["frames"] == 1
+    assert stats["frame_ms"] > 0.0
+    h.skip()
+    assert json_of(port, "/stats")["skipped"] == 1
+
+
+def test_the_console_serves_the_scene_it_renders(served):
+    _, port = served
+    assert json_of(port, "/scenes") == {"scenes": ["scene"], "active": "scene"}
+    scene = json_of(port, "/scene")
+    assert [p["name"] for p in scene["passes"]] == ["main"]
+    assert scene["params"]["tint"]["type"] == "color"
+    assert "dither" in json_of(port, "/filters")
+
+
+def test_the_console_serves_its_own_page(served):
+    _, port = served
+    status, body = get(port, "/")
+    assert status == 200
+    assert b"<html" in body.lower()
+
+
+def test_a_set_lands_on_the_next_frame(served):
+    h, port = served
+    assert post(port, "/set?pass=0&name=gain&value=0.25&type=float")[0] == 200
+    h.feed("level", LEVEL)
+    h.frame()
+    assert abs(h.pixels()[0] - 64) <= 2
+    # a scene param takes the scene scope
+    assert post(port, "/set?pass=scene&name=tint&value=0,1,0&type=color")[0] == 200
+    h.feed("level", LEVEL)
+    h.frame()
+    assert h.pixels()[1] > 0 and h.pixels()[0] == 0
+
+
+def test_a_set_the_scene_refuses(served):
+    _, port = served
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        post(port, "/set?pass=scene&name=nope&value=1&type=float")
+    assert raised.value.code == 400
+
+
+def test_this_console_switches_no_scene_and_compiles_none(served):
+    _, port = served
+    for path in ["/next", "/switch?name=scene"]:
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            post(port, path)
+        assert raised.value.code == 403
+
+
+def test_a_still_is_the_next_frame_the_host_draws(served):
+    h, port = served
+    answer = {}
+
+    def ask():
+        answer["got"] = get(port, "/frame.png", timeout=10)
+
+    asking = threading.Thread(target=ask)
+    asking.start()
+    while asking.is_alive():
+        h.feed("level", LEVEL)
+        h.frame()
+    asking.join()
+    status, body = answer["got"]
+    assert status == 200
+    assert body[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_a_still_reaches_a_settled_host(served):
+    h, port = served
+    answer = {}
+
+    def ask():
+        answer["got"] = get(port, "/frame.png", timeout=10)
+
+    asking = threading.Thread(target=ask)
+    asking.start()
+    while asking.is_alive():
+        h.skip()
+    asking.join()
+    status, body = answer["got"]
+    assert status == 200
+    assert body[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_port_closes_with_the_handle():
+    port = free_port()
+    h = ghee.open(RED, width=8, height=8, stats=port)
+    assert json_of(port, "/stats")["active"] == "scene"
+    h.close()
+    with pytest.raises(OSError):
+        get(port, "/stats", timeout=2)
+
+
+def test_stats_binds_where_it_is_told():
+    port = free_port()
+    with ghee.open(RED, width=8, height=8, stats=("127.0.0.1", port)) as h:
+        h.feed("level", LEVEL)
+        h.frame()
+        assert json_of(port, "/stats")["active"] == "scene"
+
+
+def test_stats_takes_a_port_or_a_pair():
+    with pytest.raises(ValueError):
+        ghee.open(RED, width=8, height=8, stats="8090")
+
+
+@needs_ffmpeg
+def test_h264_serves_what_webcodecs_decodes(served):
+    h, port = served
+
+    def read():
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20) as r:
+            return messages(r, 3)
+
+    msgs = watching(h, read)
+    kinds = [t for t, _ in msgs]
+    assert kinds[0] == 0  # the decoder config opens the stream
+    cfg = json.loads(msgs[0][1])
+    assert cfg["codec"].startswith("avc1.")
+    assert (cfg["codedWidth"], cfg["codedHeight"]) == (32, 32)
+    assert cfg["colorSpace"]["matrix"] == "smpte170m"
+    assert kinds[1] == 1  # a key access unit, then whatever follows
+    assert kinds[2] in (1, 2)
+    au = msgs[1][1]
+    nal = int.from_bytes(au[:4], "big")  # AVCC: a length in front of each NAL
+    assert 0 < nal <= len(au) - 4
+
+
+@needs_ffmpeg
+def test_h264_reaches_a_settled_host(served):
+    h, port = served
+    box = {}
+    done = threading.Event()
+
+    def watcher():
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/h264", timeout=20
+            ) as r:
+                box["got"] = messages(r, 2)
+        except Exception as e:
+            box["error"] = e
+        finally:
+            done.set()
+
+    reader = threading.Thread(target=watcher)
+    reader.start()
+    end = time.monotonic() + 30.0
+    while not done.is_set() and time.monotonic() < end:
+        h.skip()
+    reader.join(5)
+    if "error" in box:
+        raise box["error"]
+    assert [t for t, _ in box["got"]] == [0, 1]
+
+
+@needs_ffmpeg
+def test_a_second_viewer_gets_the_stream(served):
+    h, port = served
+
+    def read():
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20) as r:
+            return messages(r, 2)
+
+    for _ in range(2):
+        assert [t for t, _ in watching(h, read)] == [0, 1]
+
+
+@needs_ffmpeg
+def test_the_stream_runs_only_while_a_client_watches(served):
+    h, port = served
+    assert "h264" not in json_of(port, "/stats")["out"]
+
+    def read():
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20) as r:
+            messages(r, 2)
+            return json_of(port, "/stats")
+
+    assert "h264" in watching(h, read)["out"]
+    # the console drops the client on the write that follows the close
+    end = time.monotonic() + 5
+    while "h264" in json_of(port, "/stats")["out"] and time.monotonic() < end:
+        h.feed("level", LEVEL)
+        h.frame()
+    assert "h264" not in json_of(port, "/stats")["out"]

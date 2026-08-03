@@ -1,0 +1,239 @@
+"""The handle: what open, frame, skip, set_param and feed do."""
+
+import array
+import json
+import threading
+import time
+
+from conftest import RED, scene_file
+
+import ghee
+
+LEVEL = array.array("f", [1.0] * 8)
+
+
+def pixel(h, i=0):
+    """Pixel `i` of the last frame, as a tuple of components."""
+    px = h.pixels()
+    n = h.components
+    return tuple(px[i * n : i * n + n])
+
+
+def test_a_scene_renders_the_frame_it_declares():
+    with ghee.open(RED) as h:
+        h.feed("level", LEVEL)
+        tick = h.frame()
+        assert h.size == (320, 240)
+        assert h.components == 4
+        assert pixel(h) == (255, 0, 0, 255)
+        assert tick["frame"] == 0
+        assert len(h.pixels()) == 320 * 240 * 4
+
+
+def test_the_size_a_headless_render_takes():
+    with ghee.open(RED, width=64, height=48) as h:
+        assert h.size == (64, 48)
+        h.feed("level", LEVEL)
+        h.frame()
+        assert len(h.pixels()) == 64 * 48 * 4
+
+
+def test_a_scene_loads_from_a_path_a_string_or_a_dict(tmp_path):
+    for source in [scene_file(tmp_path, RED), json.dumps(RED), RED]:
+        with ghee.open(source, width=8, height=8) as h:
+            h.feed("level", LEVEL)
+            h.frame()
+            assert pixel(h) == (255, 0, 0, 255)
+
+
+def test_a_param_reaches_the_shader_live():
+    with ghee.open(RED, width=8, height=8) as h:
+        h.feed("level", LEVEL)
+        h.set_param("gain", 0.5)
+        h.frame()
+        assert abs(pixel(h)[0] - 128) <= 2
+        h.set_param("gain", 1.0, pass_="main")
+        h.feed("level", LEVEL)
+        h.frame()
+        assert pixel(h)[0] == 255
+        h.set_param("main.gain", 0.0)
+        h.feed("level", LEVEL)
+        h.frame()
+        assert pixel(h)[0] == 0
+
+
+def test_a_scene_param_reaches_every_pass():
+    with ghee.open(RED, width=8, height=8) as h:
+        h.feed("level", LEVEL)
+        h.set_param("tint", [0.0, 1.0, 0.0])
+        h.frame()
+        assert pixel(h) == (0, 255, 0, 255)
+
+
+def test_a_feed_takes_any_buffer_of_values():
+    half = bytes([128] * 8)
+    for values in [LEVEL, [1.0] * 8, memoryview(bytes([255] * 8))]:
+        with ghee.open(RED, width=8, height=8) as h:
+            h.feed("level", values)
+            h.frame()
+            assert pixel(h)[0] == 255
+    # a uint8 buffer reaches the texture as byte / 255
+    with ghee.open(RED, width=8, height=8) as h:
+        h.feed("level", half)
+        h.frame()
+        assert abs(pixel(h)[0] - 128) <= 2
+
+
+def test_the_next_frame_consumes_the_feed_once():
+    # the texture holds what it was fed, so a frame with no feed renders the same
+    with ghee.open(RED, width=8, height=8) as h:
+        h.feed("level", LEVEL)
+        h.frame()
+        first = h.pixels()
+        h.frame()
+        assert h.pixels() == first
+
+
+def test_skip_takes_the_tick_and_draws_nothing():
+    with ghee.open(RED, width=8, height=8) as h:
+        h.feed("level", LEVEL)
+        h.frame()
+        drawn = h.pixels()
+        h.set_param("gain", 0.0)
+        tick = h.skip()
+        assert tick["frame"] == 1
+        assert h.pixels() == drawn
+        assert h.frame()["frame"] == 2
+
+
+def test_a_tick_carries_the_frame_the_time_and_the_step():
+    with ghee.open(RED, width=8, height=8, timestep=0.1) as h:
+        ticks = [h.frame(), h.skip(), h.frame()]
+    assert [t["frame"] for t in ticks] == [0, 1, 2]
+    assert [round(t["time"], 6) for t in ticks] == [0.0, 0.1, 0.2]
+    assert [t["dt"] for t in ticks] == [0.1, 0.1, 0.1]
+
+
+def test_a_step_no_frame_may_hand_a_scene():
+    # one frame must never step a simulation by seconds
+    with ghee.open(RED, width=8, height=8, timestep=1.0) as h:
+        assert h.frame()["dt"] == 0.25
+
+
+def test_an_unpinned_tick_reads_the_wall_clock():
+    with ghee.open(RED, width=8, height=8, fps=60) as h:
+        first = h.frame()
+        second = h.frame()
+        third = h.frame()
+    assert first["time"] == 0.0
+    assert 0.0 < second["time"] < third["time"] < 5.0
+    assert first["dt"] == 1.0 / 60.0  # nothing is measured before the second frame
+    assert 0.0 < third["dt"] <= 0.25
+
+
+def test_a_pinned_timestep_repeats_a_render_bit_for_bit():
+    def run():
+        with ghee.open(RED, width=32, height=32, timestep=1 / 30) as h:
+            for _ in range(4):
+                h.feed("level", LEVEL)
+                h.frame()
+            return h.pixels()
+
+    assert run() == run()
+
+
+def test_a_handle_closes_once_and_says_what_it_is():
+    h = ghee.open(RED, width=8, height=8)
+    assert repr(h) == "<ghee 8x8>"
+    h.close()
+    h.close()
+    assert repr(h) == "<ghee 8x8 closed>"
+    assert h.size == (8, 8)
+
+
+def test_the_module_names_its_version():
+    """One release, two spellings: PEP 440 for the wheel, semver for the crate.
+
+    The package surface is test_shim.py's.
+    """
+    from ghee import _native
+
+    assert ghee.__version__.startswith(_native.__version__.split("-")[0])
+    assert set(_native.__all__) == {"Handle", "open", "__version__"}
+
+
+def test_a_frame_lets_the_other_threads_run():
+    # the host's own threads keep working while a paced frame renders and waits
+    counted = []
+    stop = threading.Event()
+
+    def count():
+        while not stop.is_set():
+            counted.append(time.monotonic())
+            time.sleep(0.001)
+
+    worker = threading.Thread(target=count)
+    worker.start()
+    try:
+        with ghee.open(RED, width=64, height=64, fps=20) as h:
+            h.feed("level", LEVEL)
+            for _ in range(4):
+                h.frame()
+    finally:
+        stop.set()
+        worker.join()
+    # four frames at 20 fps hold the loop about 0.2s, and the counter ran through it
+    assert len(counted) > 20
+
+
+# the shape a procedural host renders: two passes that ping-pong, a mask fed as
+# bytes, a float32 array, and per-pass params
+HOST_SCENE = {
+    "version": 1,
+    "passes": [
+        {
+            "name": "hold",
+            "channels": [{"buffer": "main"}, {"buffer": "hold"}],
+            "params": {"snap": {"type": "float", "value": 0.0}},
+            "code": (
+                "void main(){ gl_FragColor = mix(texture2D(iChannel1, v_texCoord),"
+                " texture2D(iChannel0, v_texCoord), snap); }"
+            ),
+        },
+        {
+            "name": "main",
+            "channels": [{"buffer": "hold"}],
+            "arrays": [
+                {"name": "text", "size": [8, 4]},
+                {"name": "state", "size": 2},
+            ],
+            "params": {
+                "hotColor": {"type": "vec3", "value": [1.0, 0.0, 0.0]},
+                "visLines": {"type": "float", "value": 1.0},
+            },
+            "code": (
+                "void main(){ gl_FragColor = vec4(hotColor * (text_sample2(v_texCoord)"
+                " * visLines + state_at(0)), 1.0); }"
+            ),
+        },
+    ],
+}
+
+
+def test_a_host_feeds_a_mask_a_state_and_per_pass_params():
+    mask = bytes([255] * 32)
+    with ghee.open(HOST_SCENE, width=16, height=16) as h:
+        h.feed("text", mask)
+        h.feed("state", array.array("f", [0.0, 0.0]))
+        h.set_param("snap", 1.0, pass_="hold")
+        h.set_param("hotColor", [1.0, 0.0, 0.0], pass_="main")
+        h.frame()
+        assert pixel(h) == (255, 0, 0, 255)
+        h.set_param("visLines", 0.0, pass_="main")
+        h.feed("state", array.array("f", [0.5, 0.0]))
+        h.frame()
+        assert abs(pixel(h)[0] - 128) <= 2
+        # a clean tick feeds nothing and draws nothing
+        held = h.pixels()
+        h.skip()
+        assert h.pixels() == held

@@ -196,9 +196,11 @@ impl SceneStore {
     pub fn start(&self, name: &str) -> ConsoleResult<(Scene, Option<SceneProcess>)> {
         let path = self.path(name)?;
         let (mut scene, mut process) = match process::executable(&path) {
+            // the console error state reaches a browser, so it carries the
+            // stderr of a dead process
             Some(exe) => SceneProcess::start(&exe, &self.args)
                 .map(|(scene, fed)| (scene, Some(fed)))
-                .map_err(|e| ConsoleError::server_error(format!("{e:#}")))?,
+                .map_err(|e| ConsoleError::server_error(process::with_stderr(&e)))?,
             None => (
                 load_scene(&path, &self.args, false)
                     .map_err(|e| ConsoleError::server_error(e.to_string()))?,
@@ -601,13 +603,13 @@ mod tests {
         assert_eq!(store.path("wob").unwrap(), format!("{d}/wob{SCENE_SUFFIX}"));
     }
 
-    /// The shim ships beside the procedural scenes that import it. A module is
+    /// A procedural scene imports its own modules from beside it. A module is
     /// not a scene, so the console does not list it.
     #[test]
     fn a_module_beside_the_scenes_is_not_a_scene() {
-        let d = tmpdir("shim");
+        let d = tmpdir("module");
         write_scene(&format!("{d}/feed.py"), "#!/bin/sh\nexit 0\n");
-        write_text(&format!("{d}/ghee.py"), "\"\"\"the shim\"\"\"\n");
+        write_text(&format!("{d}/look.py"), "\"\"\"a module\"\"\"\n");
         let store = SceneStore::new(&d, false, Vec::new());
         assert_eq!(store.names(), vec!["feed".to_string()]);
     }

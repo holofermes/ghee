@@ -1,4 +1,4 @@
-//! The `ghee` command line: the commands, their flags, and what each one runs.
+//! The `ghee` command line.
 //!
 //! ```text
 //! ghee render scene.json -o frame.####.jpg --frames 500  # image sequence
@@ -12,16 +12,6 @@
 //! ghee isf import shader.fs -o shader.scene.json         # import an ISF shader
 //! ghee displays                                          # list display drivers
 //! ```
-//!
-//! Sinks combine. -o, --display and --h264 make the list of sinks one render
-//! feeds. --serve attaches the console to any of them. `serve` is `render
-//! --serve` over a directory of scenes. Everything after `--` goes to the
-//! scene's own controller.
-//!
-//! A scene that is an executable is a process (docs/procedural.md). ghee runs
-//! it, takes the scene it hands over, and feeds the render from its messages.
-//! The tokens after `--` reach the process as they are, and the process parses
-//! them. `-- --help` alone lists what each scene declares.
 
 use std::cell::RefCell;
 use std::ffi::c_int;
@@ -179,13 +169,9 @@ fn join(dir: &str, name: &str) -> String {
 /// other, so the name resolves to the executable itself.
 fn find_scene(arg: &str, demo: bool) -> Result<String> {
     fn hit(stem: &str) -> bool {
-        [
-            stem.to_string(),
-            format!("{stem}.scene.json"),
-            format!("{stem}.py"),
-        ]
-        .iter()
-        .any(|p| Path::new(p).exists())
+        Path::new(stem).exists()
+            || Path::new(&format!("{stem}{}", crate::procedural::SUFFIX)).exists()
+            || crate::procedural::has_executable_member(stem)
     }
     if demo {
         let Some(dir) = examples_dir() else {

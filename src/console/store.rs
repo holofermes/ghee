@@ -1,6 +1,7 @@
 //! The scenes a console shows, edits and saves.
 //!
-//! A store holds a directory of .scene.json and .py scenes. A save writes into
+//! A store holds a directory of .scene.json and executable scenes. A save
+//! writes into
 //! modified/ beside them and never touches the original. A JSON scene saves a
 //! modified copy that shadows it. A procedural scene saves a .values.json
 //! sidecar of param values and its filter list. A load applies that sidecar over
@@ -107,11 +108,7 @@ impl SceneStore {
             Some((d, b)) => (d.to_string(), b.to_string()),
             None => (String::new(), full.clone()),
         };
-        for suffix in [SCENE_SUFFIX, ".py"] {
-            if let Some(stem) = base.strip_suffix(suffix) {
-                base = stem.to_string();
-            }
-        }
+        base = crate::procedural::scene_name(&base);
         let mut store = SceneStore::new(&d, read_only, args);
         if !store.contains(&base) {
             return Err(ConsoleError::not_found(format!("no scene '{base}' in {d}")));
@@ -288,8 +285,8 @@ fn write(path: &str, obj: &Value) -> ConsoleResult<()> {
     fs::rename(&tmp, path).map_err(io)
 }
 
-/// The .scene.json and .py scenes in a directory, JSON first. A .py beside its
-/// .scene.json is one scene, and load_scene finds both.
+/// The scenes in a directory, JSON first: every .scene.json, and every
+/// executable file. An executable beside its .scene.json is one scene.
 fn scan(dir: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut names: Vec<String> = match fs::read_dir(dir) {
@@ -300,22 +297,28 @@ fn scan(dir: &str) -> Vec<(String, String)> {
         Err(_) => return out,
     };
     names.sort();
-    for suffix in [SCENE_SUFFIX, ".py"] {
-        for n in &names {
-            let Some(stem) = n.strip_suffix(suffix) else {
-                continue;
-            };
-            if out.iter().any(|(name, _)| name == stem) {
-                continue;
-            }
-            let path = format!("{dir}/{n}");
-            // ghee runs a procedural scene as a process. A .py without the
-            // execute bit is a module the scenes beside it import, not a scene.
-            if suffix == ".py" && process::executable(&path).is_none() {
-                continue;
-            }
-            out.push((stem.to_string(), path));
+    for n in &names {
+        let Some(stem) = n.strip_suffix(SCENE_SUFFIX) else {
+            continue;
+        };
+        out.push((stem.to_string(), format!("{dir}/{n}")));
+    }
+    for n in &names {
+        if n.ends_with(SCENE_SUFFIX) {
+            continue;
         }
+        let path = format!("{dir}/{n}");
+        // ghee runs a procedural scene as a process. A file without the
+        // execute bit is a module or data the scenes beside it use, not a
+        // scene.
+        if !process::runnable(&path) {
+            continue;
+        }
+        let stem = crate::procedural::scene_name(n);
+        if out.iter().any(|(name, _)| *name == stem) {
+            continue;
+        }
+        out.push((stem, path));
     }
     out
 }

@@ -1,10 +1,16 @@
-//! A scene package is a directory `<name>/`, a `<name>.scene.json`, or a `<name>.py`.
-//! The package holds one or both of these files:
+//! A scene package is a directory `<name>/`, a `<name>.scene.json`, or an
+//! executable. The package holds one or both of these members:
 //!   <name>.scene.json   the declarative shape (passes, arrays, params)
-//!   <name>.py           a procedural scene (docs/procedural.md)
+//!   an executable       a procedural scene (docs/procedural.md)
 //!
-//! ghee runs a `<name>.py`, and procedural/process.rs owns it.
-//! This module loads one only to report a missing executable bit.
+//! The execute bit marks a scene, in any language, under any name:
+//! `<name>`, `<name>.py` and `<name>.sh` all belong to the package
+//! `<name>`. `.scene.json` is the one special name, a document whatever
+//! its mode bits say. Two executables under one stem are ambiguous, and
+//! the error says so: choose one by naming the file itself.
+//!
+//! ghee runs the executable member, and procedural/process.rs owns it.
+//! This module loads the documents.
 
 use std::path::Path;
 
@@ -47,34 +53,88 @@ fn base_name(path: &str) -> &str {
     parts.last().copied().unwrap_or(if root { "" } else { "." })
 }
 
-/// (json path, py path) for a directory, a .scene.json, or a .py.
-pub fn resolve(path: &str) -> (Option<String>, Option<String>) {
+/// (json path, executable path) for any spelling of the package.
+///
+/// The executable member is the file with the execute bit under the
+/// package stem: the bare `<stem>`, or `<stem>.<ext>` under any extension.
+/// A spelling that names a runnable file directly is its own choice, and a
+/// named file without the bit gets the chmod hint. Two executable members
+/// are ambiguous, and the error says: choose one.
+pub fn resolve(path: &str) -> Result<(Option<String>, Option<String>)> {
     let stem = if Path::new(path).is_dir() {
         let sep = if path.ends_with('/') { "" } else { "/" };
         format!("{path}{sep}{}", base_name(path))
-    } else if let Some(s) = path.strip_suffix(".py") {
-        s.to_string()
     } else if let Some(s) = path.strip_suffix(SUFFIX) {
         s.to_string()
     } else {
         splitext(path).to_string()
     };
-    let (j, p) = (format!("{stem}{SUFFIX}"), format!("{stem}.py"));
-    (
-        Path::new(&j).is_file().then_some(j),
-        Path::new(&p).is_file().then_some(p),
-    )
+    let j = format!("{stem}{SUFFIX}");
+    let json = Path::new(&j).is_file().then_some(j);
+    let named_file = Path::new(path).is_file() && !path.ends_with(SUFFIX);
+    if named_file && (process::runnable(path) || path != stem) {
+        return Ok((json, Some(path.to_string())));
+    }
+    let (mut runnable, _) = members(&stem);
+    match runnable.len() {
+        0 | 1 => Ok((json, runnable.pop())),
+        _ => bail!(
+            "ambiguous scene '{}': {}: choose one",
+            scene_name(&stem),
+            runnable.join(", ")
+        ),
+    }
 }
 
-/// The name of a scene package: its basename without the package suffix.
-pub fn scene_name(path: &str) -> String {
-    let mut name = base_name(path);
-    for suffix in [SUFFIX, ".py"] {
-        if let Some(s) = name.strip_suffix(suffix) {
-            name = s;
+/// The files of the package stem, the bare `<stem>` and `<stem>.<ext>`,
+/// split into (with, without) the execute bit, sorted. A `.scene.json` is
+/// a document and stays out.
+fn members(stem: &str) -> (Vec<String>, Vec<String>) {
+    let (dir, base) = match stem.rsplit_once('/') {
+        Some((d, b)) => (d.to_string(), b.to_string()),
+        None => (".".to_string(), stem.to_string()),
+    };
+    let prefix = &stem[..stem.len() - base.len()];
+    let (mut with, mut without) = (Vec::new(), Vec::new());
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return (with, without);
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let is_member = name
+            .strip_prefix(base.as_str())
+            .is_some_and(|rest| rest.is_empty() || (rest.len() > 1 && rest.starts_with('.')));
+        if !is_member || name.ends_with(SUFFIX) {
+            continue;
+        }
+        let full = format!("{prefix}{name}");
+        if !Path::new(&full).is_file() {
+            continue;
+        }
+        if process::runnable(&full) {
+            with.push(full);
+        } else {
+            without.push(full);
         }
     }
-    name.to_string()
+    with.sort();
+    without.sort();
+    (with, without)
+}
+
+/// True when the stem has an executable member. The scene-name lookup asks.
+pub(crate) fn has_executable_member(stem: &str) -> bool {
+    !members(stem).0.is_empty()
+}
+
+/// The name of a scene package: its basename without `.scene.json`, or
+/// without the file's own extension.
+pub fn scene_name(path: &str) -> String {
+    let name = base_name(path);
+    match name.strip_suffix(SUFFIX) {
+        Some(s) => s.to_string(),
+        None => splitext(name).to_string(),
+    }
 }
 
 fn prog(path: &str) -> String {
@@ -88,15 +148,18 @@ fn prog(path: &str) -> String {
 /// strict=false leaves an undeclared token alone.
 /// A host that hands one set of tokens to every scene needs strict=false.
 pub fn load_scene(path: &str, args: &[String], strict: bool) -> Result<Scene> {
-    let (json_path, py_path) = resolve(path);
+    let (json_path, exe) = resolve(path)?;
     let base = match &json_path {
         Some(j) => Some(Scene::load(j)?),
         None => None,
     };
     // procedural/process.rs starts an executable scene
-    // this function loads a file, so an unexecutable .py is a dead end
-    if let Some(py) = py_path {
-        bail!("{py}: no executable bit; a procedural scene must be executable (chmod +x)");
+    // this function loads documents, so an executable member is a dead end
+    if let Some(x) = exe {
+        if !process::runnable(&x) {
+            bail!("{x}: no executable bit; a procedural scene must be executable (chmod +x)");
+        }
+        bail!("{x}: an executable scene runs as a process");
     }
     if strict && !args.is_empty() {
         bail!(
@@ -163,12 +226,13 @@ mod tests {
     }
 
     #[test]
-    fn json_plus_scene_py_resolves_both() {
+    fn json_plus_executable_resolves_both() {
         let d = format!("{}/wob", tmpdir("wob"));
         fs::create_dir_all(&d).unwrap();
         fs::write(format!("{d}/wob{SUFFIX}"), JSON_SCENE).unwrap();
-        fs::write(format!("{d}/wob.py"), SCENE_PY).unwrap();
-        // a scene directory holds <name>.scene.json and <name>.py
+        let py = format!("{d}/wob.py");
+        fs::write(&py, SCENE_PY).unwrap();
+        fs::set_permissions(&py, fs::Permissions::from_mode(0o755)).unwrap();
         // every spelling of the package resolves to the same pair
         for spelling in [
             d.clone(),
@@ -178,16 +242,66 @@ mod tests {
             format!("{d}/wob{SUFFIX}"),
         ] {
             assert_eq!(
-                resolve(&spelling),
-                (
-                    Some(format!("{d}/wob{SUFFIX}")),
-                    Some(format!("{d}/wob.py"))
-                ),
+                resolve(&spelling).unwrap(),
+                (Some(format!("{d}/wob{SUFFIX}")), Some(py.clone())),
                 "{spelling}"
             );
         }
+        // the runnable member belongs to process.rs, and the load says so
         let e = load_scene(&d, &no_args(), true).unwrap_err();
-        assert!(e.to_string().contains("no executable bit"), "{e}");
+        assert!(e.to_string().contains("runs as a process"), "{e}");
+    }
+
+    #[test]
+    fn a_module_without_the_bit_is_not_a_scene() {
+        let d = format!("{}/module", tmpdir("module"));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(format!("{d}/mod{SUFFIX}"), JSON_SCENE).unwrap();
+        fs::write(format!("{d}/mod.py"), "# a module the scenes import\n").unwrap();
+        assert_eq!(
+            resolve(&format!("{d}/mod")).unwrap(),
+            (Some(format!("{d}/mod{SUFFIX}")), None)
+        );
+        assert!(load_scene(&format!("{d}/mod"), &no_args(), true).is_ok());
+    }
+
+    #[test]
+    fn an_executable_is_a_scene_under_any_name() {
+        let d = tmpdir("names");
+        for name in ["wave.sh", "bare"] {
+            let p = format!("{d}/{name}");
+            fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(
+            resolve(&format!("{d}/wave")).unwrap(),
+            (None, Some(format!("{d}/wave.sh")))
+        );
+        assert_eq!(
+            resolve(&format!("{d}/bare")).unwrap(),
+            (None, Some(format!("{d}/bare")))
+        );
+        assert_eq!(scene_name(&format!("{d}/wave.sh")), "wave");
+        assert_eq!(scene_name(&format!("{d}/bare")), "bare");
+    }
+
+    #[test]
+    fn two_executables_error_choose_one() {
+        let d = tmpdir("ambiguous");
+        for name in ["twin.py", "twin.sh"] {
+            let p = format!("{d}/{name}");
+            fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let e = resolve(&format!("{d}/twin")).unwrap_err().to_string();
+        assert!(e.contains("ambiguous scene 'twin'"), "{e}");
+        assert!(e.contains("twin.py") && e.contains("twin.sh"), "{e}");
+        assert!(e.contains("choose one"), "{e}");
+        // naming the file is the choice
+        assert_eq!(
+            resolve(&format!("{d}/twin.sh")).unwrap(),
+            (None, Some(format!("{d}/twin.sh")))
+        );
     }
 
     #[test]
@@ -202,7 +316,7 @@ mod tests {
     #[test]
     fn a_package_that_is_neither_reports_no_scene() {
         let d = tmpdir("empty");
-        assert_eq!(resolve(&format!("{d}/nope")), (None, None));
+        assert_eq!(resolve(&format!("{d}/nope")).unwrap(), (None, None));
         let e = load_scene(&format!("{d}/nope"), &no_args(), true).unwrap_err();
         assert_eq!(
             e.to_string(),
@@ -216,11 +330,11 @@ mod tests {
         fs::write(format!("{d}/wob.tar{SUFFIX}"), JSON_SCENE).unwrap();
         // wob.tar.gz splits at its last dot, so the package is wob.tar
         assert_eq!(
-            resolve(&format!("{d}/wob.tar.gz")),
+            resolve(&format!("{d}/wob.tar.gz")).unwrap(),
             (Some(format!("{d}/wob.tar{SUFFIX}")), None)
         );
-        assert_eq!(resolve(&format!("{d}/wob.gz")), (None, None));
-        assert_eq!(resolve(&format!("{d}/.wob")), (None, None));
+        assert_eq!(resolve(&format!("{d}/wob.gz")).unwrap(), (None, None));
+        assert_eq!(resolve(&format!("{d}/.wob")).unwrap(), (None, None));
     }
 
     #[test]

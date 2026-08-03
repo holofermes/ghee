@@ -1,15 +1,12 @@
 //! Procedural scenes (docs/procedural.md).
 //! A procedural scene is an executable that supplies a scene and its data.
 //!
-//! ghee starts the process when the scene becomes active.
-//! The process writes one scene JSON line.
-//! The process then writes binary messages that set arrays and live params.
-//! ghee writes one JSON line to the process stdin for each render tick.
+//! ghee starts the process when the scene becomes active. The process
+//! writes one scene JSON line, then binary messages that set arrays and
+//! live params, and ghee writes one JSON line to its stdin for each render
+//! tick.
 //!
 //! The render thread never blocks on the process.
-//! A reader thread takes the messages into a mailbox.
-//! A writer thread takes the ticks out of a second mailbox.
-//! The frame path reads the one mailbox and writes the other.
 
 use std::collections::HashMap;
 use std::ffi::c_int;
@@ -36,7 +33,6 @@ use crate::scene::{ArraySize, ParamValue, Scene};
 const PROBE_WAIT: Duration = Duration::from_secs(2);
 
 /// The handshake waits this long for the scene line.
-/// A first `uv run` resolves packages before the process runs a statement.
 const HANDSHAKE_WAIT: Duration = Duration::from_secs(30);
 
 /// The stop sequence: closed stdin, then SIGTERM, then SIGKILL.
@@ -46,21 +42,23 @@ const KILL_AFTER: Duration = Duration::from_secs(1);
 /// A stop waits this long for the pipe threads to end on their own.
 const SETTLE: Duration = Duration::from_millis(200);
 
-/// The message of a dead process waits this long for its stderr.
-/// The drain thread ends at EOF, and the process is already reaped here.
-/// The wait covers scheduling alone.
-/// A loaded machine drops the stderr from the message without the wait.
+/// How long the error message of a dead process waits for the stderr
+/// drain thread to finish. The process is already reaped and the drain
+/// ends at EOF, so the wait covers thread scheduling alone. Without it, a
+/// loaded machine builds the message before the drain hands over the
+/// stderr tail.
 const EPITAPH_WAIT: Duration = Duration::from_secs(1);
 
 /// The error state keeps this much of the process stderr.
 const STDERR_TAIL: usize = 8192;
 
-/// A message count no scene has.
-/// The reader refuses such a message instead of allocating for it.
+/// The cap on one message's value count, far above any real scene's data.
+/// A count past it means a corrupt stream, and the reader refuses the
+/// message instead of allocating a huge buffer for garbage.
 const MAX_VALUES: usize = 1 << 22;
 
-/// The mark of a scene process ghee started.
-/// A scene the user starts sees no such variable, and hosts itself instead.
+/// The env var ghee sets in every scene process it starts. The shim's
+/// run() reads it to tell a ghee-started run from a direct one.
 const WIRE: &str = "GHEE_WIRE";
 
 const SET_ARRAY: u8 = 0;
@@ -81,24 +79,22 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 // ------------------------------------------------------------ what a path is
 
 /// True for a regular file anyone may execute.
-fn runnable(path: &str) -> bool {
+pub(crate) fn runnable(path: &str) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// The executable a scene path names.
-/// A scene package names its `<name>.py`, and any other path names itself.
-/// None means the path holds no process.
+/// A runnable path names itself, and a package spelling names its
+/// executable member. None means the path holds no process.
 pub fn executable(path: &str) -> Option<String> {
-    if let (_, Some(py)) = resolve(path) {
-        if runnable(&py) {
-            return Some(py);
-        }
-    }
     // a .scene.json is a document whatever its mode bits say
     if runnable(path) && !path.ends_with(crate::procedural::SUFFIX) {
         return Some(path.to_string());
     }
-    None
+    match resolve(path) {
+        Ok((_, Some(x))) if runnable(&x) => Some(x),
+        _ => None,
+    }
 }
 
 /// The directory the process runs in, and the program path for any directory.
@@ -378,7 +374,7 @@ pub struct SceneProcess {
     inbox: Arc<Mutex<Inbox>>,
     outbox: Arc<(Mutex<Outbox>, Condvar)>,
     stderr: Arc<Mutex<String>>,
-    /// The stderr drain. An epitaph waits for it before it reads the tail.
+    /// The stderr drain. SceneFailure waits for it before it reads the tail.
     errors: Option<JoinHandle<()>>,
     /// The tick writer. It holds the process stdin, so it ends the run.
     writer: Option<JoinHandle<()>>,
@@ -625,7 +621,7 @@ impl SceneController for SceneProcess {
     }
 
     /// Data reaches the engine texture once.
-    /// A name no later message sets keeps what the texture holds.
+    /// An array keeps its texture data until a message changes it.
     /// A process that sends a mask once pays for one upload.
     fn provide(&mut self, name: &str, _size: ArraySize, _frame: u64) -> Option<Feed> {
         Some(match self.data.remove(name) {

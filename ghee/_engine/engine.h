@@ -73,6 +73,10 @@ void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const flo
 // -> array index, -1 = refused.
 int  ghee_mp_declare_array(GheeScene *g, int pass, const char *name);
 void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int count, int rows);
+// The same upload from bytes, where the value is data[i] / 255. An 8-bit
+// LUMINANCE texture takes the bytes as they lie, so a large mask costs no
+// conversion at all.
+void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, int count, int rows);
 // Render the passes and swap. buffer_rgb NULL = no readback at all; pw/ph > 0 =
 // GPU-downscale the final pass to pw x ph and read back only that; otherwise the
 // full frame lands in buffer_rgb.

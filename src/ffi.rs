@@ -106,6 +106,13 @@ extern "C" {
         count: c_int,
         rows: c_int,
     );
+    pub fn ghee_mp_set_array_u8(
+        g: *mut GheeScene,
+        name: *const c_char,
+        data: *const u8,
+        count: c_int,
+        rows: c_int,
+    );
     pub fn ghee_mp_render(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_present(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_reset(g: *mut GheeScene);

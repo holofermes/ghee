@@ -43,17 +43,41 @@ impl ErrorPass {
 
 /// What a provider returns for one declared array.
 ///
+/// DataU8 is the same array from bytes, where the value is byte / 255. A mask
+/// that starts as bytes reaches the texture without a float detour.
 /// Unchanged states that the texture already holds this array. The engine then
 /// skips the upload. The engine never caches or compares data.
 /// setup() rebuilds a scene with empty textures. A controller pushes data again
 /// after every setup().
 pub enum Feed {
     Data(Vec<f32>),
+    DataU8(Vec<u8>),
     Unchanged,
 }
 
 /// provider(name, size) returns this frame's data for one declared array.
 pub type Provider<'a> = &'a mut dyn FnMut(&str, ArraySize) -> Feed;
+
+/// The (width, rows) one array upload takes, and the data it carries.
+///
+/// A short 1xN feed uploads the values it holds, and a longer one is cut. A
+/// short mask zero-pads to the full shape, because the rows must line up.
+fn shape<T: Copy + Default>(size: ArraySize, data: Vec<T>) -> (c_int, c_int, Vec<T>) {
+    match size {
+        ArraySize::Linear(n) => (data.len().min(n as usize) as c_int, 1, data),
+        ArraySize::Grid(w, h) => {
+            let want = (w * h) as usize;
+            let data = if data.len() < want {
+                let mut buf = vec![T::default(); want];
+                buf[..data.len()].copy_from_slice(&data);
+                buf
+            } else {
+                data
+            };
+            (w as c_int, h as c_int, data)
+        }
+    }
+}
 
 fn dri_nodes(prefix: &str) -> Vec<String> {
     let Ok(entries) = fs::read_dir("/dev/dri") else {
@@ -609,27 +633,22 @@ impl Renderer {
             return Ok(());
         };
         for (name, size) in &self.feeds {
-            let Feed::Data(data) = provider(name, *size) else {
-                continue;
-            };
-            let (w, h, data) = match *size {
-                ArraySize::Linear(n) => (data.len().min(n as usize) as c_int, 1, data),
-                ArraySize::Grid(gw, gh) => {
-                    let want = (gw * gh) as usize;
-                    let data = if data.len() < want {
-                        // A short feed zero-pads to the full mask.
-                        let mut buf = vec![0f32; want];
-                        buf[..data.len()].copy_from_slice(&data);
-                        buf
-                    } else {
-                        data
-                    };
-                    (gw as c_int, gh as c_int, data)
+            match provider(name, *size) {
+                Feed::Unchanged => {}
+                Feed::Data(data) => {
+                    let (w, h, data) = shape(*size, data);
+                    let cname = CString::new(name.as_str())?;
+                    unsafe {
+                        ffi::ghee_mp_set_array(self.handle, cname.as_ptr(), data.as_ptr(), w, h);
+                    }
                 }
-            };
-            let cname = CString::new(name.as_str())?;
-            unsafe {
-                ffi::ghee_mp_set_array(self.handle, cname.as_ptr(), data.as_ptr(), w, h);
+                Feed::DataU8(data) => {
+                    let (w, h, data) = shape(*size, data);
+                    let cname = CString::new(name.as_str())?;
+                    unsafe {
+                        ffi::ghee_mp_set_array_u8(self.handle, cname.as_ptr(), data.as_ptr(), w, h);
+                    }
+                }
             }
         }
         Ok(())
@@ -1582,6 +1601,36 @@ mod tests {
         // A ramp gives sample(0.5) = 0.5.
         let mid = mean(&(0..H).map(|y| px(&f, W, W / 2, y, 0)).collect::<Vec<_>>()) / 255.0;
         assert!(0.4 < mid && mid < 0.6);
+    }
+
+    #[test]
+    fn a_u8_feed_renders_what_the_same_floats_render() {
+        // The two wire forms name the same values: byte / 255. The frames must
+        // match to the pixel, on a float data texture and on an 8-bit one.
+        use sha2::{Digest, Sha256};
+        let Some((_g, mut r)) = gpu() else { return };
+        let bytes: Vec<u8> = (0..N).map(|i| (i * 4) as u8).collect();
+        let floats: Vec<f32> = bytes.iter().map(|b| f32::from(*b) / 255.0).collect();
+        for (code, size) in [
+            (
+                "void main(){ gl_FragColor=vec4(vec3(vals_sample(v_texCoord.x)),1.0); }",
+                json!(N),
+            ),
+            (
+                "void main(){ gl_FragColor=vec4(vec3(vals_sample2(v_texCoord)),1.0); }",
+                json!([8, 8]),
+            ),
+        ] {
+            let sc = array_scene(code, "vals", size.clone());
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            let fed = floats.clone();
+            let mut as_f32 = |_: &str, _: ArraySize| Feed::Data(fed.clone());
+            let want = Sha256::digest(r.render(Some(&mut as_f32)).unwrap());
+            let fed = bytes.clone();
+            let mut as_u8 = |_: &str, _: ArraySize| Feed::DataU8(fed.clone());
+            let got = Sha256::digest(r.render(Some(&mut as_u8)).unwrap());
+            assert_eq!(got, want, "{size}");
+        }
     }
 
     /// GL LINEAR filtering with CLAMP_TO_EDGE on a 1xN row.

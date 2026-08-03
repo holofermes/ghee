@@ -752,31 +752,47 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
     return idx;
 }
 
-// Upload one declared array as a count x rows texture named "<name>_tex", once
-// for every pass that declared it. Float texels if the GL supports them, else
-// 8-bit LUMINANCE (clamped to [0,1]). The units are bound in render_passes.
-void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int count, int rows) {
-    if (count <= 0 || rows <= 0) return;
+// Bind one declared array's texture, and set the filters on a resize.
+// -1 = no pass declares the name. *fresh means the texture needs a full
+// glTexImage2D, and not a glTexSubImage2D.
+static int mp_array_bind(GheeScene *g, const char *name, int count, int rows, bool *fresh) {
     char uni[64];
     snprintf(uni, sizeof(uni), "%s_tex", name);
     const int idx = mp_array_index(g, uni);
-    if (idx < 0) { set_error(g, "array '%s' is declared by no pass", name); return; }
+    if (idx < 0) { set_error(g, "array '%s' is declared by no pass", name); return -1; }
     make_current(g);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g->mp_array_tex[idx]);
-    const bool realloc = (g->mp_array_size[idx] != count * rows);
-    if (realloc) {
+    *fresh = (g->mp_array_size[idx] != count * rows);
+    if (*fresh) {
         const GLint filt = g->has_float_tex && !g->has_float_linear ? GL_NEAREST : GL_LINEAR;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
+    return idx;
+}
+
+// GLES2 pins a texture's texel type at the allocation, so every upload of one
+// array carries the type has_float_tex picked.
+static void mp_array_upload(bool fresh, int count, int rows, GLenum type, const void *px) {
+    if (fresh)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, rows, 0, GL_LUMINANCE, type, px);
+    else
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, rows, GL_LUMINANCE, type, px);
+}
+
+// Upload one declared array as a count x rows texture named "<name>_tex", once
+// for every pass that declared it. Float texels if the GL supports them, else
+// 8-bit LUMINANCE (clamped to [0,1]). The units are bound in render_passes.
+void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int count, int rows) {
+    if (count <= 0 || rows <= 0) return;
+    bool fresh = false;
+    const int idx = mp_array_bind(g, name, count, rows, &fresh);
+    if (idx < 0) return;
     if (g->has_float_tex) {
-        if (realloc)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, rows, 0, GL_LUMINANCE, GL_FLOAT, data);
-        else
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, rows, GL_LUMINANCE, GL_FLOAT, data);
+        mp_array_upload(fresh, count, rows, GL_FLOAT, data);
     } else {
         uint8_t *b = malloc((size_t)count * rows);
         if (!b) return;
@@ -784,11 +800,27 @@ void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int co
             float v = data[i];
             b[i] = (uint8_t)(v <= 0.0f ? 0 : v >= 1.0f ? 255 : v * 255.0f + 0.5f);
         }
-        if (realloc)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, rows, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, b);
-        else
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, rows, GL_LUMINANCE, GL_UNSIGNED_BYTE, b);
+        mp_array_upload(fresh, count, rows, GL_UNSIGNED_BYTE, b);
         free(b);
+    }
+    g->mp_array_size[idx] = count * rows;
+}
+
+// ghee_mp_set_array from bytes, where the value is data[i] / 255. The 8-bit
+// texture takes the bytes as they lie. A float texture takes one conversion.
+void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, int count, int rows) {
+    if (count <= 0 || rows <= 0) return;
+    bool fresh = false;
+    const int idx = mp_array_bind(g, name, count, rows, &fresh);
+    if (idx < 0) return;
+    if (g->has_float_tex) {
+        float *b = malloc((size_t)count * rows * sizeof(float));
+        if (!b) return;
+        for (int i = 0; i < count * rows; i++) b[i] = data[i] / 255.0f;
+        mp_array_upload(fresh, count, rows, GL_FLOAT, b);
+        free(b);
+    } else {
+        mp_array_upload(fresh, count, rows, GL_UNSIGNED_BYTE, data);
     }
     g->mp_array_size[idx] = count * rows;
 }

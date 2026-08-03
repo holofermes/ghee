@@ -134,6 +134,7 @@ jobs:
     if: github.event_name == 'release'
     needs: [native, cross, debs]
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       id-token: write
       contents: write

@@ -51,8 +51,14 @@ fn hex(digest: &[u8]) -> String {
 }
 
 /// The index of the first frame whose hash differs. None means every frame
-/// matches.
-fn check_scene(man: &Manifest, entry: &Entry) -> Result<Option<usize>> {
+/// matches. `dump` writes every frame as `<name>.<frame>.png`, so a board
+/// whose GPU rounds differently still compares against a reference by pixels.
+fn check_scene(
+    man: &Manifest,
+    name: &str,
+    entry: &Entry,
+    dump: Option<&str>,
+) -> Result<Option<usize>> {
     let scene = Scene::load(&entry.path)?;
     let mut r = Renderer::new(man.width, man.height, man.components, None, false, false)?;
     let err = r.setup(&scene)?;
@@ -60,6 +66,7 @@ fn check_scene(man: &Manifest, entry: &Entry) -> Result<Option<usize>> {
         bail!("setup failed: {err}");
     }
     r.set_dt(1.0 / man.fps);
+    let mut mismatch = None;
     for f in 0..man.frames {
         r.set_time(Some(f as f64 / man.fps));
         let mut provider = |name: &str, size: ArraySize| {
@@ -70,25 +77,41 @@ fn check_scene(man: &Manifest, entry: &Entry) -> Result<Option<usize>> {
             let (frame, nh) = (f as u64, name_hash(name));
             Feed::Data((0..n).map(|i| value_at(i, frame, nh)).collect())
         };
-        let sha = hex(&Sha256::digest(r.render(Some(&mut provider))?));
-        if entry.shas.get(f) != Some(&sha) {
-            return Ok(Some(f));
+        let pixels = r.render(Some(&mut provider))?;
+        if let Some(dir) = dump {
+            let png = crate::output::encode_png(crate::looper::Frame {
+                data: pixels,
+                width: man.width,
+                height: man.height,
+                components: man.components,
+            })?;
+            fs::write(format!("{dir}/{name}.{f}.png"), png)?;
+        }
+        let sha = hex(&Sha256::digest(pixels));
+        if mismatch.is_none() && entry.shas.get(f) != Some(&sha) {
+            mismatch = Some(f);
+            if dump.is_none() {
+                return Ok(mismatch);
+            }
         }
     }
-    Ok(None)
+    Ok(mismatch)
 }
 
 /// The process exit code. A mismatch in any scene gives 1.
-pub fn run(manifest_path: &str) -> Result<i32> {
+pub fn run(manifest_path: &str, dump: Option<&str>) -> Result<i32> {
     let text = fs::read_to_string(manifest_path)
         .with_context(|| format!("cannot read manifest {manifest_path}"))?;
     let man: Manifest = serde_json::from_str(&text)
         .with_context(|| format!("{manifest_path}: not a golden manifest"))?;
+    if let Some(dir) = dump {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {dir}"))?;
+    }
     let mut failed = false;
     for (name, raw) in &man.scenes {
         let entry: Entry = serde_json::from_value(raw.clone())
             .map_err(|e| anyhow!("{manifest_path}: scene '{name}': {e}"))?;
-        match check_scene(&man, &entry) {
+        match check_scene(&man, name, &entry, dump) {
             Ok(None) => println!("{name}: PASS ({} frames)", man.frames),
             Ok(Some(f)) => {
                 println!("{name}: FAIL (first mismatch at frame {f})");

@@ -49,10 +49,9 @@ const FRAME_TIMEOUT: f64 = 4.0;
 /// loopback until a host names another address.
 pub const LOOPBACK: &str = "127.0.0.1";
 
-/// The stream caps the CLI console serves. Both consoles answer /h264 with the
-/// same size and the same bitrate.
 /// What the encoder takes: the host's stream cap, never past the frame the
-/// host renders. yuv420 takes even dimensions only.
+/// host renders. yuv420 takes even dimensions only. Both consoles answer
+/// /h264 with the same size and the same bitrate.
 pub fn encode_size(w: i32, h: i32, longest: i32) -> (i32, i32) {
     let (sw, sh) = stream_size(w, h, longest);
     (sw.min(w & !1), sh.min(h & !1))

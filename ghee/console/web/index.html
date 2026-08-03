@@ -641,7 +641,7 @@ async function boot(){
 // H264/WebCodecs preview when the browser can (needs a secure context:
 // https or localhost); MJPEG otherwise, and on any stream/decoder failure.
 //
-// This random ID helps manage the lifecycle of h264/mjpeg streams
+// the vid groups this page's streams on the server, and the ping keeps them alive
 const VID = "v" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 const PING_MS = 3000;
 const STREAM_KEY = "ghee:ui:stream";   // UI state, never the scene working copy

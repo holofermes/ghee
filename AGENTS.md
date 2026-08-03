@@ -23,8 +23,9 @@ no render diffs against another.
 Render before a change and after it, then compare the bytes. `cmp` over a few
 scenes catches a whole class of regression that no amount of looking finds.
 
-The golden check is that pattern, already in the repo. It renders every bundled
-example. It compares the sha256 of each frame against a pinned reference:
+The golden check is that pattern, already in the repo. It renders the scenes
+the manifest names. It compares the sha256 of each frame against a pinned
+reference:
 
 ```
 cargo run --release -- golden --manifest tools/fixtures/golden/manifest.json

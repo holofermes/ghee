@@ -552,7 +552,7 @@ def _texture(size, path):
             a = np.asarray(img.resize((w, h)), np.float32) / 255.0
             return a.reshape(-1)
         except OSError as e:
-            # stdout carries the messages: anything for a human goes to stderr
+            # stdout belongs to the wire, so anything for a human goes to stderr
             print(f"wall_img {path!r}: {e}", file=sys.stderr)
     rng = np.random.default_rng(7)
     base = rng.random((24, 24)).astype(np.float32)

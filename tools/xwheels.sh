@@ -9,15 +9,15 @@
 # this itself: it rejects glibc-suffixed targets and its manylinux
 # audit wants to bundle the GL stack.
 #
-# GHEE_SYSROOTS names the sysroot directory (default /root/xcheck/sysroots,
-# the build container). Each sysroot is the target's /usr/lib + /usr/include
-# for libdrm, gbm, EGL and GLESv2.
+# GHEE_SYSROOTS names the sysroot directory. Each sysroot is the target's
+# /usr/lib + /usr/include for libdrm, gbm, EGL and GLESv2
+# (tools/mksysroot.sh builds one).
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmpl=${1:?usage: xwheels.sh <template-wheel> [out-dir]}
 out=${2:-$root/python/target/wheels}
-sysroots=${GHEE_SYSROOTS:-/root/xcheck/sysroots}
+sysroots=${GHEE_SYSROOTS:?GHEE_SYSROOTS names the sysroot directory}
 
 build() {
     target=$1 sysroot=$2

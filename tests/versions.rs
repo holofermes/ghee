@@ -30,7 +30,7 @@ fn the_two_crates_carry_one_version() {
 /// every cargo-deb call carries it.
 #[test]
 fn every_deb_takes_the_debian_spelling_of_the_version() {
-    let text = read(".github/workflows/debs.yml");
+    let text = read(".github/workflows/release.yml");
     let built = text.matches("cargo deb ").count();
     assert!(built > 0, "no deb is built");
     assert_eq!(built, text.matches("--deb-version").count());
@@ -39,10 +39,8 @@ fn every_deb_takes_the_debian_spelling_of_the_version() {
 
 /// A release builds from a released version alone, and the tag names it.
 #[test]
-fn the_release_workflows_check_the_tag() {
-    for workflow in [".github/workflows/wheels.yml", ".github/workflows/debs.yml"] {
-        let text = read(workflow);
-        assert!(text.contains("github.event.release.tag_name"), "{workflow}");
-        assert!(text.contains("no release builds from it"), "{workflow}");
-    }
+fn the_release_workflow_checks_the_tag() {
+    let text = read(".github/workflows/release.yml");
+    assert!(text.contains("github.event.release.tag_name"));
+    assert!(text.contains("no release builds from it"));
 }

@@ -15,7 +15,7 @@ import ghee
 
 LEVEL = [1.0] * 8
 
-# this box has no /dev/video11, so /h264 runs on ffmpeg/libx264
+# without /dev/video11, /h264 runs on ffmpeg/libx264
 needs_ffmpeg = pytest.mark.skipif(
     shutil.which("ffmpeg") is None, reason="software H264 takes ffmpeg on PATH"
 )

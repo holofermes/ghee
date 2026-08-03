@@ -223,7 +223,8 @@ fn source_of(scene: &Bound<'_, PyAny>) -> PyResult<Source> {
     )))
 }
 
-/// Where the console binds: a port on loopback, or a (host, port) pair.
+/// The stream cap a caller passes: pixels (an int >= 2), or a fraction of
+/// the render size.
 fn stream_max_of(v: &Bound<'_, PyAny>) -> PyResult<StreamMax> {
     if let Ok(n) = v.extract::<i64>() {
         if n >= 2 {

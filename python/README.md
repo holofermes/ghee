@@ -61,7 +61,10 @@ pins both to `frame * S`.
 `skip` takes the tick and draws nothing, the panel keeps its last frame.
 
 `stats` serves the console on `127.0.0.1`, and a `(host, port)` pair binds
-it elsewhere. `docs/http.md` holds the API. This console renders the one
+it elsewhere. Anyone who reaches the port can change params, so bind beyond
+loopback only on a network you trust.
+[docs/http.md](https://github.com/holofermes/ghee/blob/main/docs/http.md)
+holds the API. This console renders the one
 scene its host opened, param changes apply, and scene switching and
 recompiles are refused. The video stream advances with `frame()`: viewers
 see a new frame only when the host draws one.

@@ -382,7 +382,7 @@ uv run --no-cache --with python/target/wheels/ghee_render-*.whl --with pytest \
 ```
 
 The render tests need a GPU node, and they skip cleanly without one. The
-golden check renders every bundled example and compares the sha256 of each
+golden check renders the scenes the manifest names and compares the sha256 of each
 frame against the pinned reference in `tools/fixtures/golden/`.
 
 ## License

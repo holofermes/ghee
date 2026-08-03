@@ -62,7 +62,7 @@ jobs:
       - name: sysroots
         run: |
           tools/mksysroot.sh http://raspbian.raspberrypi.com/raspbian trixie armhf sysroots/armv6
-          tools/mksysroot.sh http://deb.debian.org/debian trixie arm64 sysroots/aarch64
+          tools/mksysroot.sh http://deb.debian.org/debian bookworm arm64 sysroots/aarch64
       - name: build
         run: |
           GHEE_SYSROOTS="$PWD/sysroots" tools/xwheels.sh template/*.whl wheels
@@ -97,7 +97,7 @@ jobs:
       - name: sysroots
         run: |
           tools/mksysroot.sh http://raspbian.raspberrypi.com/raspbian trixie armhf sysroots/armv6
-          tools/mksysroot.sh http://deb.debian.org/debian trixie arm64 sysroots/aarch64
+          tools/mksysroot.sh http://deb.debian.org/debian bookworm arm64 sysroots/aarch64
       # Each deb ships the command and the Python package in one:
       # target/pydist holds the unpacked wheel for the arch being built,
       # and the Cargo.toml asset list sends it to dist-packages.

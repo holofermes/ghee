@@ -20,8 +20,8 @@
 //!
 //! A scene that is an executable is a process (docs/procedural.md). ghee runs
 //! it, takes the scene it hands over, and feeds the render from its messages.
-//! `-- --help` lists the arguments the process declares. ghee checks the tokens
-//! after `--` against them.
+//! The tokens after `--` reach the process as they are, and the process parses
+//! them. `-- --help` alone lists what each scene declares.
 
 use std::cell::RefCell;
 use std::ffi::c_int;
@@ -238,10 +238,11 @@ fn scene_set(a: &Ns) -> Result<Vec<(String, String)>> {
     Ok(SceneStore::new(&dir, true, Vec::new()).scenes)
 }
 
-/// Check the tokens after `--` against what the scenes take. `--help` lists
-/// them grouped per scene. A token no scene declares is a typo.
-fn check_scene_args(a: &Ns) -> Result<()> {
-    if a.scene_args.is_empty() {
+/// `-- --help` lists what each scene takes, grouped per scene. This runs each
+/// scene with `--ghee-args` to ask, and nothing else in ghee ever does. Any
+/// other token goes to the scene untouched.
+fn scene_args_help(a: &Ns) -> Result<()> {
+    if !process::wants_help(&a.scene_args) {
         return Ok(());
     }
     let set = scene_set(a)?;
@@ -249,12 +250,8 @@ fn check_scene_args(a: &Ns) -> Result<()> {
         "serve" => "ghee serve --".to_string(),
         _ => format!("ghee render {} --", set.first().map_or("", |(n, _)| n)),
     };
-    let declared = process::declare(&set);
-    if process::wants_help(&a.scene_args) {
-        print!("{}", process::help(&declared, &prog));
-        std::process::exit(0);
-    }
-    process::check(&declared, &a.scene_args, &prog).map_err(|e| exit(e.to_string()))
+    print!("{}", process::help(&process::declare(&set), &prog));
+    std::process::exit(0);
 }
 
 /// The scene this run renders, and the process behind it. The filters apply in
@@ -552,7 +549,7 @@ fn broken_pipe(e: &anyhow::Error) -> bool {
 /// One render into however many sinks the flags ask for.
 fn cmd_render(a: &Ns) -> Result<()> {
     // before anything opens: the tokens after `--` own their own --help
-    check_scene_args(a)?;
+    scene_args_help(a)?;
     if a.serve && given(&a.filters) {
         return Err(exit(format!(
             "{}: --filters with --serve; the console has a filter picker",
@@ -923,7 +920,7 @@ enum Command {
         after_help = "the console is plain HTTP: GET /stats /scene /scenes /frame.png \
                       /stream /h264, POST /set /switch /next /prev /scene /save /ping. \
                       Anything after `--` goes to every scene the console loads, and \
-                      each keeps what it declares; `-- --help` lists what takes what"
+                      each keeps what it takes; `-- --help` lists what takes what"
     )]
     Serve(ServeArgs),
 

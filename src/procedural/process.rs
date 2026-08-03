@@ -16,14 +16,14 @@ use std::ffi::c_int;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
 use crate::engine::Feed;
@@ -31,7 +31,8 @@ use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::resolve;
 use crate::scene::{ArraySize, ParamValue, Scene};
 
-/// The probe waits this long for the declarations line.
+/// `-- --help` waits this long for a scene's declarations line.
+/// Nothing else runs a scene with `--ghee-args`.
 const PROBE_WAIT: Duration = Duration::from_secs(2);
 
 /// The handshake waits this long for the scene line.
@@ -58,9 +59,14 @@ const STDERR_TAIL: usize = 8192;
 /// The reader refuses such a message instead of allocating for it.
 const MAX_VALUES: usize = 1 << 22;
 
+/// The mark of a scene process ghee started.
+/// A scene the user starts sees no such variable, and hosts itself instead.
+const WIRE: &str = "GHEE_WIRE";
+
 const SET_ARRAY: u8 = 0;
 const SET_PARAM: u8 = 1;
 const CLEAN: u8 = 2;
+const SET_ARRAY_U8: u8 = 4;
 
 const SIGTERM: c_int = 15;
 
@@ -108,7 +114,7 @@ fn where_to_run(path: &str) -> Result<(String, String)> {
     Ok((full, dir))
 }
 
-// ------------------------------------------------------------------- probing
+// ------------------------------------------------------- what a scene takes
 
 /// One argument a process declares.
 #[derive(Clone, Debug, PartialEq)]
@@ -119,99 +125,19 @@ pub struct ArgDecl {
     pub help: String,
 }
 
-/// A scene in an argument check.
+/// A scene in the `-- --help` listing.
 /// `args` is None for a pass-through process.
-/// A pass-through process takes the tokens as they are, and ghee checks nothing.
+/// A pass-through process answers nothing, and ghee lists no argument for it.
 #[derive(Clone, Debug)]
 pub struct Declared {
     pub name: String,
     pub args: Option<Vec<ArgDecl>>,
 }
 
-type Probes = Mutex<HashMap<String, Option<Vec<ArgDecl>>>>;
-
-fn probed() -> &'static Probes {
-    static PROBED: OnceLock<Probes> = OnceLock::new();
-    PROBED.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// What a process declares. ghee probes each path once.
-/// None is a pass-through.
-/// A cache on disk keys the raw answer by the file identity.
-/// A scene pays the probe again only when its file changes.
-pub fn declarations(path: &str) -> Option<Vec<ArgDecl>> {
-    if let Some(hit) = lock(probed()).get(path) {
-        return hit.clone();
-    }
-    let stamp = probe_stamp(path);
-    let line = match stamp.and_then(|s| probe_cache_get(path, s)) {
-        Some(cached) => cached,
-        None => {
-            let line = probe(path);
-            if let Some(s) = stamp {
-                probe_cache_put(path, s, &line);
-            }
-            line
-        }
-    };
-    let found = line.and_then(|l| parse_declarations(&l));
-    lock(probed()).insert(path.to_string(), found.clone());
-    found
-}
-
-/// The file identity that keeps a cached probe answer valid.
-fn probe_stamp(path: &str) -> Option<(i128, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    Some((
-        i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()),
-        m.size(),
-    ))
-}
-
-fn probe_cache_file() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("ghee").join("probes.json")
-}
-
-/// Some(answer) on a fresh cache hit. The inner None is a cached pass-through.
-fn probe_cache_get(path: &str, stamp: (i128, u64)) -> Option<Option<String>> {
-    let doc: Value =
-        serde_json::from_str(&std::fs::read_to_string(probe_cache_file()).ok()?).ok()?;
-    let entry = doc.get(path)?;
-    if entry.get("mtime")?.as_str()? != stamp.0.to_string()
-        || entry.get("size")?.as_u64()? != stamp.1
-    {
-        return None;
-    }
-    Some(entry.get("line").and_then(Value::as_str).map(String::from))
-}
-
-fn probe_cache_put(path: &str, stamp: (i128, u64), line: &Option<String>) {
-    let file = probe_cache_file();
-    let mut doc = std::fs::read_to_string(&file)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| match v {
-            Value::Object(m) => Some(m),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let mut entry = Map::new();
-    entry.insert("mtime".into(), Value::String(stamp.0.to_string()));
-    entry.insert("size".into(), Value::from(stamp.1));
-    entry.insert(
-        "line".into(),
-        line.as_deref().map_or(Value::Null, Value::from),
-    );
-    doc.insert(path.to_string(), Value::Object(entry));
-    if let Some(parent) = file.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&file, Value::Object(doc).to_string());
+/// What a process declares, read now. None is a pass-through.
+/// Only `-- --help` calls this. A render and a serve never probe.
+fn declarations(path: &str) -> Option<Vec<ArgDecl>> {
+    probe(path).and_then(|line| parse_declarations(&line))
 }
 
 /// Run `<process> --ghee-args` and read the one line it answers with.
@@ -268,9 +194,9 @@ fn parse_declarations(line: &str) -> Option<Vec<ArgDecl>> {
     Some(out)
 }
 
-/// What each scene of a set declares.
+/// What each scene of a set declares, for `-- --help`.
 /// A scene that holds no process declares nothing.
-/// Such a scene still rejects every token.
+/// Each executable scene answers `--ghee-args` here, and nothing else asks.
 pub fn declare(scenes: &[(String, String)]) -> Vec<Declared> {
     scenes
         .iter()
@@ -284,7 +210,7 @@ pub fn declare(scenes: &[(String, String)]) -> Vec<Declared> {
         .collect()
 }
 
-// ------------------------------------------------------- arguments and help
+// -------------------------------------------------------------------- help
 
 fn metavar(ty: &str) -> &'static str {
     match ty {
@@ -337,116 +263,25 @@ pub fn help(scenes: &[Declared], prog: &str) -> String {
     out
 }
 
-/// True when the scene tokens ask for the help.
+/// True when the tokens are the help request itself.
+/// Any other token belongs to the scene, `--help` beside it included.
 pub fn wants_help(tokens: &[String]) -> bool {
-    tokens.iter().any(|t| t == "--help" || t == "-h")
-}
-
-/// Levenshtein distance, for the closest declared name to a typo.
-fn distance(a: &str, b: &str) -> usize {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.iter().enumerate() {
-        let mut prev = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            let next = (row[j] + 1).min(row[j + 1] + 1).min(prev + cost);
-            prev = row[j + 1];
-            row[j + 1] = next;
-        }
-    }
-    row[b.len()]
-}
-
-/// The declared name a typo is closest to, when one is close enough.
-fn closest(token: &str, names: &[&str]) -> Option<String> {
-    let typo = token.trim_start_matches('-');
-    let mut best: Option<(usize, &str)> = None;
-    for name in names {
-        let d = distance(typo, name);
-        if best.is_none_or(|(bd, _)| d < bd) {
-            best = Some((d, name));
-        }
-    }
-    let (d, name) = best?;
-    let room = 2.max(typo.chars().count() / 3);
-    (d <= room).then(|| format!("--{name}"))
-}
-
-/// The tokens no scene of the set claims, in the order they arrive.
-fn unrecognized(decls: &[ArgDecl], tokens: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < tokens.len() {
-        let token = &tokens[i];
-        i += 1;
-        if token == "--" {
-            break; // everything after belongs to the process itself
-        }
-        let Some(body) = token.strip_prefix("--") else {
-            out.push(token.clone());
-            continue;
-        };
-        let (name, joined) = match body.split_once('=') {
-            Some((n, _)) => (n, true),
-            None => (body, false),
-        };
-        let bare = name.strip_prefix("no-").unwrap_or(name);
-        let found = decls
-            .iter()
-            .find(|d| d.name == name || (d.ty == "bool" && d.name == bare));
-        match found {
-            None => out.push(token.clone()),
-            // the value belongs to the flag before it
-            Some(d) => {
-                if !joined && d.ty != "bool" {
-                    i += 1;
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Check the tokens after `--` against what the scenes declare.
-/// A pass-through process takes tokens ghee cannot know.
-/// One pass-through process in the set turns the check off.
-pub fn check(scenes: &[Declared], tokens: &[String], prog: &str) -> Result<()> {
-    if tokens.is_empty() || scenes.iter().any(|s| s.args.is_none()) {
-        return Ok(());
-    }
-    let mut decls: Vec<ArgDecl> = Vec::new();
-    for scene in scenes {
-        for a in scene.args.iter().flatten() {
-            if !decls.iter().any(|d| d.name == a.name) {
-                decls.push(a.clone());
-            }
-        }
-    }
-    let bad = unrecognized(&decls, tokens);
-    if bad.is_empty() {
-        return Ok(());
-    }
-    let names: Vec<&str> = decls.iter().map(|d| d.name.as_str()).collect();
-    let hint = bad
-        .iter()
-        .filter(|t| t.starts_with("--"))
-        .find_map(|t| closest(t, &names))
-        .map(|n| format!(" (did you mean {n}?)"))
-        .unwrap_or_default();
-    bail!(
-        "{prog}: error: unrecognized arguments: {}{hint}",
-        bad.join(" ")
-    )
+    matches!(tokens, [one] if one == "--help" || one == "-h")
 }
 
 // ------------------------------------------------------------- the mailboxes
 
+/// One array message, in the form the process wrote it.
+/// The bytes reach the engine as bytes, so a mask pays for no conversion.
+enum ArrayData {
+    F32(Vec<f32>),
+    U8(Vec<u8>),
+}
+
 /// What the reader thread takes off stdout between two drains.
 #[derive(Default)]
 struct Inbox {
-    arrays: Vec<(String, Vec<f32>)>,
+    arrays: Vec<(String, ArrayData)>,
     params: Vec<(String, Vec<f32>)>,
     /// The ticks the process calls clean.
     clean: u32,
@@ -456,7 +291,7 @@ struct Inbox {
     fault: String,
 }
 
-fn newest(into: &mut Vec<(String, Vec<f32>)>, name: String, values: Vec<f32>) {
+fn newest<T>(into: &mut Vec<(String, T)>, name: String, values: T) {
     match into.iter_mut().find(|(n, _)| *n == name) {
         Some(slot) => slot.1 = values,
         None => into.push((name, values)),
@@ -491,6 +326,49 @@ struct Outbox {
     closed: bool,
 }
 
+// --------------------------------------------------------------- the failure
+
+/// What a dead scene process leaves.
+/// The drain writes the stderr of the process to the terminal as it arrives.
+/// Display names the condition alone, so a terminal reads that stderr once.
+/// `full()` adds the tail, for a reader that saw no terminal.
+#[derive(Clone, Debug)]
+pub struct SceneFailure {
+    /// The scene, and what happened to it.
+    why: String,
+    /// The last of the process stderr.
+    stderr: String,
+}
+
+impl std::fmt::Display for SceneFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
+}
+
+impl std::error::Error for SceneFailure {}
+
+impl SceneFailure {
+    /// The condition, then the stderr of the process.
+    /// The console error state carries this, because a browser reads no
+    /// terminal.
+    pub fn full(&self) -> String {
+        match self.stderr.is_empty() {
+            true => self.why.clone(),
+            false => format!("{}\n{}", self.why, self.stderr),
+        }
+    }
+}
+
+/// The text of an error for a reader that saw no terminal.
+/// A dead scene process adds the stderr the drain already wrote.
+pub fn with_stderr(e: &anyhow::Error) -> String {
+    match e.downcast_ref::<SceneFailure>() {
+        Some(failure) => failure.full(),
+        None => format!("{e:#}"),
+    }
+}
+
 // ------------------------------------------------------------------ the process
 
 pub struct SceneProcess {
@@ -506,7 +384,7 @@ pub struct SceneProcess {
     writer: Option<JoinHandle<()>>,
     threads: Vec<JoinHandle<()>>,
     /// Array data no frame takes yet, newest for each name.
-    data: HashMap<String, Vec<f32>>,
+    data: HashMap<String, ArrayData>,
     /// Param values that wait for a renderer.
     incoming: Vec<(String, Vec<f32>)>,
     /// param name -> (the pass that holds it, its type). None is scene scope.
@@ -517,19 +395,21 @@ pub struct SceneProcess {
     /// Ticks the process calls clean that the loop has not skipped.
     clean: u32,
     /// The process died. The scene stays in this error state.
-    dead: Option<String>,
+    dead: Option<SceneFailure>,
 }
 
 impl SceneProcess {
-    /// Probe the process, start it, and take the handshake.
+    /// Start the process and take the handshake.
     /// The scene belongs to the process.
     /// The caller compiles the scene, then binds this process to it.
+    /// `args` are the tokens after `--`, as they came. The process parses them,
+    /// and a process that refuses one dies with its own message on stderr.
     pub fn start(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
-        declarations(path); // the probe runs before the first start
         let (program, dir) = where_to_run(path)?;
         let mut child = Command::new(program)
             .args(args)
             .current_dir(&dir)
+            .env(WIRE, "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -646,20 +526,17 @@ impl SceneProcess {
         }
     }
 
-    /// The message a dead process leaves: what happened, then its stderr.
-    fn epitaph(&mut self, why: &str) -> String {
+    /// What a dead process leaves: the condition, and its stderr beside it.
+    fn epitaph(&mut self, why: &str) -> SceneFailure {
         self.stop();
         if let Some(t) = self.errors.take() {
             wait_until(EPITAPH_WAIT, || t.is_finished());
             self.threads.push(t);
         }
-        let tail = lock(&self.stderr).trim_end().to_string();
-        let mut msg = format!("{}: {why}", self.name);
-        if !tail.is_empty() {
-            msg.push('\n');
-            msg.push_str(&tail);
+        SceneFailure {
+            why: format!("{}: {why}", self.name),
+            stderr: lock(&self.stderr).trim_end().to_string(),
         }
-        msg
     }
 
     /// One JSON line for this tick, carrying the string params that changed.
@@ -741,7 +618,7 @@ impl SceneController for SceneProcess {
     fn tick(&mut self, frame: u64, t: f64, dt: f64) -> Result<()> {
         self.drain();
         if let Some(dead) = &self.dead {
-            bail!("{dead}");
+            return Err(anyhow!(dead.clone()));
         }
         self.offer(frame, t, dt);
         Ok(())
@@ -751,10 +628,11 @@ impl SceneController for SceneProcess {
     /// A name no later message sets keeps what the texture holds.
     /// A process that sends a mask once pays for one upload.
     fn provide(&mut self, name: &str, _size: ArraySize, _frame: u64) -> Option<Feed> {
-        match self.data.remove(name) {
-            Some(values) => Some(Feed::Data(values)),
-            None => Some(Feed::Unchanged),
-        }
+        Some(match self.data.remove(name) {
+            Some(ArrayData::F32(values)) => Feed::Data(values),
+            Some(ArrayData::U8(values)) => Feed::DataU8(values),
+            None => Feed::Unchanged,
+        })
     }
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
@@ -853,6 +731,10 @@ fn drain_stderr(mut err: ChildStderr, into: Arc<Mutex<String>>) -> JoinHandle<()
             match err.read(&mut buf) {
                 Ok(0) | Err(_) => return,
                 Ok(n) => {
+                    // pass the scene's own words through: prints reach the
+                    // terminal live, and the tail below feeds a reader with no
+                    // terminal (SceneFailure::full)
+                    eprint!("{}", String::from_utf8_lossy(&buf[..n]));
                     let mut held = lock(&into);
                     held.push_str(&String::from_utf8_lossy(&buf[..n]));
                     while held.len() > STDERR_TAIL {
@@ -894,6 +776,7 @@ fn read_stream(
 }
 
 /// kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE.
+/// Kind 4 carries count u8 bytes instead, and the value is byte / 255.
 /// Kind 2 (clean) is the single byte.
 fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> {
     loop {
@@ -906,8 +789,11 @@ fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> 
             held.clean = held.clean.saturating_add(1);
             continue;
         }
-        if kind[0] != SET_ARRAY && kind[0] != SET_PARAM {
-            return Err(format!("wrote message kind {} (0, 1 or 2 only)", kind[0]));
+        if !matches!(kind[0], SET_ARRAY | SET_PARAM | SET_ARRAY_U8) {
+            return Err(format!(
+                "wrote message kind {} (0, 1, 2 or 4 only)",
+                kind[0]
+            ));
         }
         let mut len = [0u8; 1];
         let mut count = [0u8; 4];
@@ -924,18 +810,23 @@ fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> 
                 "wrote a message of {count} values, over the {MAX_VALUES} cap"
             ));
         }
-        let mut body = vec![0u8; count * 4];
+        let width = if kind[0] == SET_ARRAY_U8 { 1 } else { 4 };
+        let mut body = vec![0u8; count * width];
         if out.read_exact(&mut body).is_err() {
             return Ok(());
+        }
+        let name = String::from_utf8_lossy(&name).into_owned();
+        if kind[0] == SET_ARRAY_U8 {
+            newest(&mut lock(inbox).arrays, name, ArrayData::U8(body));
+            continue;
         }
         let values: Vec<f32> = body
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let name = String::from_utf8_lossy(&name).into_owned();
         let mut held = lock(inbox);
         match kind[0] {
-            SET_ARRAY => newest(&mut held.arrays, name, values),
+            SET_ARRAY => newest(&mut held.arrays, name, ArrayData::F32(values)),
             _ => newest(&mut held.params, name, values),
         }
     }
@@ -1032,6 +923,24 @@ out.flush()
 time.sleep(60)
 "#;
 
+    /// A process that sends one array as kind 4 bytes and one as kind 0 floats.
+    const U8_SCRIPT: &str = r#"#!/usr/bin/env python3
+import json, struct, sys, time
+
+SCENE = {"version": 1,
+         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
+                     "arrays": [{"name": "mask", "size": [2, 2]},
+                                {"name": "state", "size": 2}]}]}
+out = sys.stdout.buffer
+out.write((json.dumps(SCENE) + "\n").encode())
+out.write(struct.pack("<BB", 4, 4) + b"mask" + struct.pack("<I", 4))
+out.write(bytes([0, 64, 128, 255]))
+out.write(struct.pack("<BB", 0, 5) + b"state" + struct.pack("<I", 2))
+out.write(struct.pack("<2f", 0.25, 1.0))
+out.flush()
+time.sleep(60)
+"#;
+
     fn tmpdir(tag: &str) -> String {
         static SEQ: AtomicU32 = AtomicU32::new(0);
         let n = SEQ.fetch_add(1, Ordering::SeqCst);
@@ -1052,12 +961,12 @@ time.sleep(60)
         Vec::new()
     }
 
-    /// The message of a call that must fail.
+    /// The error of a call that must fail.
     /// A running process is not Debug, so unwrap_err() does not compile here.
-    fn failure<T>(r: Result<T>) -> String {
+    fn failure<T>(r: Result<T>) -> anyhow::Error {
         match r {
             Ok(_) => panic!("expected a failure"),
-            Err(e) => e.to_string(),
+            Err(e) => e,
         }
     }
 
@@ -1065,10 +974,14 @@ time.sleep(60)
         tokens.iter().map(|s| (*s).to_string()).collect()
     }
 
-    /// A renderer stand-in that records the params a process sets.
+    /// A renderer stand-in that records the params a process sets, and the
+    /// arrays a provider hands it. `feeds` names what render_into asks for.
     #[derive(Default)]
     struct Stub {
         set: std::cell::RefCell<Vec<(Option<String>, String, ParamValue)>>,
+        feeds: Vec<(String, ArraySize)>,
+        bytes: std::cell::RefCell<Vec<(String, Vec<u8>)>>,
+        floats: std::cell::RefCell<Vec<(String, Vec<f32>)>>,
     }
 
     impl RenderTarget for Stub {
@@ -1094,10 +1007,18 @@ time.sleep(60)
 
         fn render_into(
             &mut self,
-            _provider: Option<crate::engine::Provider<'_>>,
+            provider: Option<crate::engine::Provider<'_>>,
             _out: &mut [u8],
             _out_size: Option<(i32, i32)>,
         ) -> Result<()> {
+            let Some(p) = provider else { return Ok(()) };
+            for (name, size) in &self.feeds {
+                match p(name, *size) {
+                    Feed::DataU8(v) => self.bytes.borrow_mut().push((name.clone(), v)),
+                    Feed::Data(v) => self.floats.borrow_mut().push((name.clone(), v)),
+                    Feed::Unchanged => {}
+                }
+            }
             Ok(())
         }
 
@@ -1138,7 +1059,7 @@ time.sleep(60)
     }
 
     #[test]
-    fn the_probe_reads_the_declared_arguments() {
+    fn the_help_probe_reads_the_declared_arguments() {
         let d = tmpdir("probe");
         let path = script(&d, "feed", SCENE_SCRIPT);
         let decls = declarations(&path).unwrap();
@@ -1147,18 +1068,36 @@ time.sleep(60)
         assert_eq!(decls[0].ty, "size");
         assert_eq!(decls[0].default, serde_json::json!([4, 2]));
         assert_eq!(decls[1].ty, "bool");
-        // ghee probes once and caches the answer under the path
-        assert_eq!(declarations(&path), Some(decls));
+        // nothing is cached, so an edited scene answers with what it says now
+        script(
+            &d,
+            "feed",
+            "#!/bin/sh\necho '{\"args\": [{\"name\": \"gain\", \"type\": \"float\"}]}'\n",
+        );
+        let after = declarations(&path).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].name, "gain");
     }
 
     #[test]
-    fn a_scene_that_does_not_answer_the_probe_is_pass_through() {
+    fn a_scene_that_does_not_answer_the_help_probe_is_pass_through() {
         let d = tmpdir("passthrough");
         let path = script(&d, "quiet", "#!/bin/sh\nsleep 30\n");
         let started = Instant::now();
         assert_eq!(declarations(&path), None);
         assert!(started.elapsed() >= PROBE_WAIT, "gave up before the wait");
         assert!(started.elapsed() < PROBE_WAIT + Duration::from_secs(3));
+    }
+
+    /// The start runs the scene itself. Nothing runs `--ghee-args` first.
+    #[test]
+    fn a_start_costs_no_probe() {
+        let d = tmpdir("no-probe");
+        let path = script(&d, "feed", SCENE_SCRIPT);
+        let started = Instant::now();
+        let (_scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        assert!(started.elapsed() < PROBE_WAIT, "{:?}", started.elapsed());
+        f.stop();
     }
 
     #[test]
@@ -1176,6 +1115,24 @@ time.sleep(60)
         assert_eq!(executable(&format!("{d}/pack")), None);
     }
 
+    /// A scene process reads the mark and answers the wire. A scene the user
+    /// starts sees none, and hosts itself on the bindings.
+    /// The shell runs from /bin, so the mark file takes the whole path.
+    #[test]
+    fn the_scene_process_carries_the_wire_mark() {
+        let d = tmpdir("wire");
+        let mark = format!("{d}/mark");
+        let body = format!(
+            "printf %s \"$GHEE_WIRE\" > {mark}\n\
+             printf '{{\"passes\":[{{\"name\":\"main\",\"code\":\"void main(){{}}\"}}]}}\\n'\n\
+             sleep 5\n"
+        );
+        let (_scene, f) = SceneProcess::start("/bin/sh", &args(&["-c", &body])).unwrap();
+        assert!(wait_until(SETTLE, || fs::read_to_string(&mark).is_ok()));
+        assert_eq!(fs::read_to_string(&mark).unwrap(), "1");
+        drop(f);
+    }
+
     #[test]
     fn the_handshake_line_becomes_the_scene() {
         let d = tmpdir("handshake");
@@ -1187,8 +1144,11 @@ time.sleep(60)
         drop(process);
     }
 
+    /// The drain writes the process stderr to the terminal as it arrives.
+    /// The message names the condition, and repeats none of that stderr.
+    /// A reader with no terminal asks for the stderr with it.
     #[test]
-    fn a_scene_that_dies_without_a_handshake_reports_its_stderr() {
+    fn a_scene_that_dies_without_a_handshake_names_the_condition() {
         let d = tmpdir("nohandshake");
         let path = script(
             &d,
@@ -1196,8 +1156,11 @@ time.sleep(60)
             "#!/bin/sh\necho 'boom in the process' >&2\nexit 3\n",
         );
         let e = failure(SceneProcess::start(&path, &no_args()));
-        assert!(e.contains("did not complete the handshake"), "{e}");
-        assert!(e.contains("boom in the process"), "{e}");
+        let shown = e.to_string();
+        assert!(shown.contains("did not complete the handshake"), "{shown}");
+        assert!(!shown.contains("boom in the process"), "{shown}");
+        let full = with_stderr(&e);
+        assert_eq!(full, format!("{shown}\nboom in the process"));
     }
 
     #[test]
@@ -1300,7 +1263,42 @@ time.sleep(60)
     }
 
     #[test]
-    fn a_scene_that_exits_mid_run_is_an_error_with_its_stderr() {
+    fn a_kind_4_message_reaches_the_render_target_as_bytes() {
+        let d = tmpdir("u8");
+        let path = script(&d, "mask", U8_SCRIPT);
+        let (scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(pump(&mut f, |f| f.data.len() == 2));
+        let mut stub = Stub {
+            feeds: vec![
+                ("mask".to_string(), ArraySize::Grid(2, 2)),
+                ("state".to_string(), ArraySize::Linear(2)),
+            ],
+            ..Stub::default()
+        };
+        let mut frame = [0u8; 8 * 8 * 4];
+        {
+            let mut feed = |name: &str, size: ArraySize| f.provide(name, size, 0).unwrap();
+            stub.render_into(Some(&mut feed), &mut frame, None).unwrap();
+        }
+        // the bytes reach the target as bytes, and the floats stay floats
+        assert_eq!(
+            stub.bytes.borrow().as_slice(),
+            [("mask".to_string(), vec![0u8, 64, 128, 255])]
+        );
+        assert_eq!(
+            stub.floats.borrow().as_slice(),
+            [("state".to_string(), vec![0.25f32, 1.0])]
+        );
+        // the texture holds the mask now, so the next frame uploads nothing
+        assert!(matches!(
+            f.provide("mask", ArraySize::Grid(2, 2), 1),
+            Some(Feed::Unchanged)
+        ));
+    }
+
+    #[test]
+    fn a_scene_that_exits_mid_run_is_an_error_that_holds_its_stderr() {
         let d = tmpdir("died");
         let path = script(
             &d,
@@ -1317,11 +1315,16 @@ time.sleep(60)
             }
             thread::sleep(Duration::from_millis(10));
         }
-        let e = last.unwrap_err().to_string();
-        assert!(e.contains("the scene process exited"), "{e}");
-        assert!(e.contains("the process gave up"), "{e}");
+        let e = last.unwrap_err();
+        let shown = e.to_string();
+        assert!(shown.contains("the scene process exited"), "{shown}");
+        // the terminal already holds the stderr, so the message repeats none
+        assert!(!shown.contains("the process gave up"), "{shown}");
+        assert!(with_stderr(&e).contains("the process gave up"), "{e}");
         // the error state holds, so every later tick reports the same message
-        assert_eq!(f.tick(1, 0.0, 0.016).unwrap_err().to_string(), e);
+        let again = f.tick(1, 0.0, 0.016).unwrap_err();
+        assert_eq!(again.to_string(), shown);
+        assert_eq!(with_stderr(&again), with_stderr(&e));
     }
 
     #[test]
@@ -1408,76 +1411,69 @@ time.sleep(60)
     }
 
     #[test]
-    fn a_token_no_scene_declares_is_refused_with_the_closest_name() {
-        let e = check(&[hero()], &args(&["--emmit", "8x8"]), "ghee render hero --")
-            .unwrap_err()
-            .to_string();
-        // the value of an unknown flag is unrecognized with the flag
-        assert_eq!(
-            e,
-            "ghee render hero --: error: unrecognized arguments: --emmit 8x8 (did you mean --emit?)"
-        );
-        // nothing close enough to name
-        let e = check(&[hero()], &args(&["--zzzz"]), "ghee render hero --")
-            .unwrap_err()
-            .to_string();
-        assert_eq!(
-            e,
-            "ghee render hero --: error: unrecognized arguments: --zzzz"
-        );
-    }
-
-    #[test]
-    fn declared_tokens_and_their_values_pass() {
+    fn only_the_help_request_alone_asks_for_the_help() {
+        assert!(wants_help(&args(&["--help"])) && wants_help(&args(&["-h"])));
+        // a scene owns every other spelling, its own --help included
         for tokens in [
             args(&["--emit", "8x8"]),
-            args(&["--emit=8x8"]),
-            args(&["--loud"]),
-            args(&["--no-loud", "--emit", "8x8"]),
-            args(&["--emit", "8x8", "--", "--anything"]),
+            args(&["--emit", "8x8", "--help"]),
+            args(&["--help", "--emit"]),
+            args(&[]),
         ] {
-            check(&[hero()], &tokens, "ghee render hero --").unwrap();
+            assert!(!wants_help(&tokens), "{tokens:?}");
         }
-        // in a scene set, each scene keeps what it declares
-        let set = [
-            hero(),
-            Declared {
-                name: "spectrum".to_string(),
-                args: Some(vec![decl("bars", "int", Value::from(16), "")]),
-            },
-        ];
-        check(&set, &args(&["--emit", "8x8", "--bars", "24"]), "x").unwrap();
-        assert!(check(&set, &args(&["--barz", "24"]), "x").is_err());
     }
 
     #[test]
-    fn a_pass_through_scene_in_the_set_takes_every_token() {
-        check(&[hero(), raw()], &args(&["--whatever", "9"]), "x").unwrap();
-        // a scene that declares nothing still rejects a token
-        let e = check(
-            &[plain("bars")],
-            &args(&["--emit", "8x8"]),
-            "ghee render bars --",
-        )
-        .unwrap_err()
-        .to_string();
-        assert_eq!(
-            e,
-            "ghee render bars --: error: unrecognized arguments: --emit 8x8"
-        );
-    }
-
-    #[test]
-    fn a_probed_scene_drives_the_check_and_the_help() {
+    fn the_help_runs_each_scene_of_the_set_on_demand() {
         let d = tmpdir("declare");
-        let path = script(&d, "feed", SCENE_SCRIPT);
-        let set = vec![("feed".to_string(), path.clone())];
+        // a shell answer, because the set already holds a scene that spends the
+        // whole wait, and a loaded machine must not race an interpreter start
+        let path = script(
+            &d,
+            "feed",
+            "#!/bin/sh\necho '{\"args\": [{\"name\": \"emit\", \"type\": \"size\"},\
+             {\"name\": \"loud\", \"type\": \"bool\"}]}'\n",
+        );
+        let quiet = script(&d, "quiet", "#!/bin/sh\nsleep 30\n");
+        let json = format!("{d}/flat.scene.json");
+        fs::write(&json, "{}").unwrap();
+        let set = vec![
+            ("feed".to_string(), path),
+            ("quiet".to_string(), quiet),
+            ("flat".to_string(), json),
+        ];
         let declared = declare(&set);
         assert_eq!(declared[0].args.as_ref().unwrap().len(), 2);
-        check(&declared, &args(&["--emit", "8x8"]), "x").unwrap();
-        assert!(check(&declared, &args(&["--emitt", "8x8"]), "x").is_err());
-        assert!(help(&declared, "ghee render feed --").contains("--emit WxH"));
-        assert!(wants_help(&args(&["--help"])) && !wants_help(&args(&["--emit"])));
+        let text = help(&declared, "ghee serve --");
+        assert!(text.contains("--emit WxH"), "{text}");
+        // a scene that answers nothing in the wait, and a scene with no process
+        assert!(text.contains("quiet: pass-through"), "{text}");
+        assert!(text.contains("flat: no arguments"), "{text}");
+    }
+
+    /// A token ghee cannot know reaches the scene. The scene refuses it, and
+    /// its own words reach the caller through the handshake failure.
+    #[test]
+    fn an_unknown_token_reaches_the_scene() {
+        let d = tmpdir("tokens");
+        let path = script(
+            &d,
+            "picky",
+            "#!/bin/sh\ntest \"$1\" = --emit || { echo \"picky: unrecognized: $1\" >&2; exit 2; }\n\
+             printf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\nsleep 30\n",
+        );
+        let e = failure(SceneProcess::start(&path, &args(&["--bogus"])));
+        assert!(
+            e.to_string().contains("did not complete the handshake"),
+            "{e}"
+        );
+        assert!(
+            with_stderr(&e).contains("picky: unrecognized: --bogus"),
+            "{e}"
+        );
+        // the token the scene knows passes through the same way
+        SceneProcess::start(&path, &args(&["--emit"])).unwrap();
     }
 
     #[test]
@@ -1499,7 +1495,10 @@ time.sleep(60)
             thread::sleep(Duration::from_millis(10));
         }
         let e = last.unwrap_err().to_string();
-        assert!(e.contains("wrote message kind 7 (0, 1 or 2 only)"), "{e}");
+        assert!(
+            e.contains("wrote message kind 7 (0, 1, 2 or 4 only)"),
+            "{e}"
+        );
     }
 
     const DOTTED_SCRIPT: &str = r#"#!/usr/bin/env python3

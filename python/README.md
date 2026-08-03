@@ -1,25 +1,19 @@
 # ghee for Python
 
-`pip install ghee-render`, then `import ghee`. One package holds two surfaces.
+`pip install ghee-render`: one package, two surfaces. It embeds the
+[ghee](https://github.com/holofermes/ghee) renderer, and it provides the
+Python sugar for writing a
+[procedural scene](https://github.com/holofermes/ghee/blob/main/docs/procedural.md).
 
-**The renderer.** `ghee.open` opens a GLSL scene, feeds it and asks it for
-frames. The renderer, the panel drivers and the console are the ones the `ghee`
-command uses. It lives in the native module `ghee._native`, and the package
-imports that on the first `open()`.
-
-**The scene shim.** `ghee.Scene`, `@ghee.feed`, `@ghee.tick` and `ghee.run`
-write a procedural scene: an executable ghee starts, feeds and renders.
-`docs/procedural.md` holds it. A scene no ghee started hosts itself on the
-renderer above. The shim is Python alone, and it needs no native module.
+Build the wheel yourself with maturin:
 
 ```
 maturin build --release --compatibility linux
 ```
 
-The wheel is abi3-py39: one wheel per architecture serves CPython 3.9 and up.
-It links libEGL, libgbm and libdrm from the system, as the ghee package does.
-
 ## Use
+
+To use the `ghee` renderer:
 
 ```python
 import ghee
@@ -28,9 +22,9 @@ h = ghee.open(
     "scene.json",      # a path, the JSON text of a scene, or a dict
     output="st7789",   # a driver name, "kms", or None for headless
     opts={"width": 240, "height": 240, "backlight": 26},
-    width=None, height=None,   # a headless size; a panel states its own
-    fps=30,            # pace cap; None runs free
-    stats=8090,        # console port; ("0.0.0.0", 8090) binds elsewhere
+    width=None, height=None,   # a headless size, a panel states its own
+    fps=30,            # pace cap, None runs free
+    stats=8090,        # console port, ("0.0.0.0", 8090) binds elsewhere
     verbose=False,
     timestep=None,     # pin time to frame*S for a reproducible render
 )
@@ -51,38 +45,86 @@ h.close()       # also a context manager
 
 ## What each call does
 
-`set_param` sets a live uniform, with no recompile. A bare name is the scene
+`set_param` sets a live uniform, no recompile. A bare name is the scene
 param, else the param of the first pass that declares it.
 
-`feed` holds data for one declared array. The next frame consumes it once. A
-uint8 buffer reaches the texture as byte / 255, and a float32 buffer passes
-through. An array no feed set keeps what its texture holds.
+`feed` holds the data for one declared array, and the next frame consumes
+it once. A uint8 buffer reaches the texture as byte / 255, a float32
+buffer passes through. An array keeps its texture data until a feed
+changes it.
 
-`frame` draws and hands the frame to the output. `time` is the wall clock since
-the first frame, and `dt` is the measured frame period. `timestep` pins both to
-`frame * S`.
+`frame` draws and hands the frame to the output. `time` is the wall clock
+since the first frame, `dt` is the measured frame period, and `timestep`
+pins both to `frame * S`.
 
-`skip` takes the tick and draws nothing. The panel keeps its last frame.
+`skip` takes the tick and draws nothing, the panel keeps its last frame.
 
-`stats` serves the console on 127.0.0.1: `/stats`, `/scene`, `/scenes`,
-`/stream`, `/h264`, `/frame.png` and POST `/set`. A `(host, port)` pair binds it
-on another address. The console has no auth, so give it a network you trust.
-This console renders the one scene its host opened, so it switches no scene and
-compiles none.
-
-`/h264` is the console's video stream, framed for a browser's WebCodecs
-decoder. One encoder feeds every viewer, and it runs only while a viewer
-watches. A board with a V4L2 encoder takes the frame off the GPU with no
-readback. Every other board encodes through ffmpeg/libx264, which takes ffmpeg
-on PATH. The stream advances with `frame()`: a host that draws nothing sends
-nothing.
+`stats` serves the console on `127.0.0.1`, and a `(host, port)` pair binds
+it elsewhere. `docs/http.md` holds the API. This console renders the one
+scene its host opened, param changes apply, and scene switching and
+recompiles are refused. The video stream advances with `frame()`: viewers
+see a new frame only when the host draws one.
 
 ## Rules
 
-ghee is thread-affine. Open a handle on one thread, and use it on that same
-thread. A call from another thread raises RuntimeError.
+ghee is thread-affine: open a handle on one thread and use it on that same
+thread, a call from another thread raises RuntimeError.
 
-A scene, a GLSL or a param error raises ValueError. A driver or system error
+A scene, GLSL or param error raises ValueError, a driver or system error
 raises RuntimeError.
 
-A frame releases the GIL, so the host's other threads run while it renders.
+A frame releases the GIL, so the host's other threads run while it
+renders.
+
+## Python scenes
+
+The shim is used to write a procedural scene. A PEP 723 scene should
+declare `ghee-render` inline:
+
+    #!/usr/bin/env -S uv run --script
+    # /// script
+    # dependencies = ["ghee-render"]
+    # ///
+
+The shim gives:
+
+- `ghee.Scene / Pass / Param / ArrayInput / Channel`: build the scene
+- `ghee.Arg`, `ghee.args([...])`: argument declarations, and the `-- --help` answer
+- `@ghee.feed("name")`: the values of a named array, each tick. A uint8
+  buffer, `bytes` or a numpy uint8 array
+- `@ghee.tick`: a hook for each tick, with `ghee.set_param(name, value)` and
+  `ghee.skip()`
+- `ghee.run(scene)`: the handshake, then the tick loop
+
+## Direct mode
+
+The same scene file runs two ways. When ghee starts it, as `ghee render
+spectrum.py` or from a scenes directory, `run()` feeds ghee over the
+[wire protocol](https://github.com/holofermes/ghee/blob/main/docs/procedural.md).
+When you run the file itself, `run()` opens the embedded renderer and
+renders directly:
+
+    ./spectrum.py --output kms --frames 300
+    ./spectrum.py --bins 32 --output none --size 320x240 --frames 1
+
+`run()` tells the two apart by `GHEE_WIRE=1`, which ghee sets in every
+process it starts.
+
+The scene takes its own arguments first, then these:
+
+- `--output NAME`: a driver name, `kms`, or `none` for a headless render
+  (default `kms`)
+- `--size WxH`: the render size. A display or a panel states its own
+- `--fps N`, `--stats PORT`, `--timestep S`: as `ghee render` takes them
+- `--frames N`: 0 runs until SIGINT or SIGTERM (default 0)
+
+The feeds, the hooks and `ghee.skip()` work the same. The tick keeps its
+wire shape, with `params` empty. If one of your own arguments collides with
+these names, argparse says so.
+
+## What the wire carries
+
+The wire suits small per-frame data. Megabyte-scale data costs a
+serialization and two copies for each frame, and on a small Pi that shows
+up as a low frame rate. A data-heavy host takes `ghee.open` instead: the
+renderer in the same process, no pipe.

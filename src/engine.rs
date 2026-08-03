@@ -1,6 +1,5 @@
 //! Renderer drives the C engine over the ghee_* ABI.
 //!
-//! The engine links into this binary. There is no library to find at run time.
 //! $GHEE_DRI selects the DRI device.
 
 use std::env;
@@ -277,8 +276,8 @@ fn size_repr(size: ArraySize) -> String {
 
 /// A multipass renderer bound to one engine.
 ///
-/// ghee is thread-affine. Create a Renderer on one thread. Use it on that same
-/// thread. The engine makes the GL context current at create time.
+/// ghee is thread-affine: create a Renderer on one thread and use it there.
+/// The engine makes the GL context current at create time.
 /// A worker that renders in its own thread creates its own Renderer there.
 /// The raw handle keeps this type off Send.
 pub struct Renderer {

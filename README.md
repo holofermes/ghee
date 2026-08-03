@@ -1,18 +1,35 @@
 # ghee
 
-Multi-pass GLSL renderer for Raspberry Pi. Headless GLES2, out to SPI panels, HDMI, images or hardware H264.
+ghee runs your GLSL headless on the GPU and puts the frames on an SPI/I2C
+panel, HDMI, image files, or an H264 stream. Multi-pass, Shadertoy-style,
+any Raspberry Pi.
 
 ![a four-pass particle scene, procedural text, and the bundled dither filter, looping](https://raw.githubusercontent.com/holofermes/ghee/main/media/hero.webp)
 
-ghee compiles a scene of GLSL fragment shaders and renders it on the GPU:
+ghee renders with GLES2 through DRM/GBM on a stock Raspberry Pi OS Lite
+image, HDMI takes direct scanout. ghee teaches no GLSL,
+[The Book of Shaders](https://thebookofshaders.com) and
+[Shadertoy](https://www.shadertoy.com) have that covered.
 
-- to image files on disk
-- to a SPI panel
-- to an HDMI display
-- as an H264 or MJPEG stream, including a live editor in your browser
+## Install
 
-ghee renders with GLES2 through DRM/GBM on a stock Lite image. HDMI takes direct
-scanout.
+The Python package carries the whole renderer, panel drivers and console
+included. In a uv project, or any venv, on any 64-bit OS:
+
+```
+uv add ghee-render                # or, in a venv: pip install ghee-render
+```
+
+A Pi with no venv takes the deb from the
+[releases page](https://github.com/holofermes/ghee/releases) instead. It
+installs the `ghee` command and the Python package in one, for the system
+python, and it is the only path for the 32-bit Pis:
+
+```
+sudo apt install ./ghee_*.deb
+```
+
+Or build everything from source: [Build](#build).
 
 ## Where does it run?
 
@@ -24,10 +41,14 @@ scanout.
 | Pi 5 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 | ffmpeg/libx264 |
 | Desktop Linux (x86_64) | any current distro | Mesa | ffmpeg/libx264 |
 
-The Pi 5 has no encoder block. The Pi 5 and a desktop encode with ffmpeg and
-libx264. Tested boards for the hardware encoder: Pi Zero W, Pi Zero 2 W, Pi 3,
-Pi 400. The `arm-unknown-linux-gnueabihf` target is ARMv6, and the build
-compiles the C engine to match. ghee runs on every Pi back to the Pi 1.
+ghee runs on every Pi back to the Pi 1, and builds ship for all of them.
+Pi 1 through Pi 4 encode H264 on the Broadcom block. The Pi 5 has no
+encoder, so there and on desktop ghee encodes with ffmpeg/libx264,
+install it if needed:
+
+```
+sudo apt install ffmpeg
+```
 
 ## Build
 
@@ -39,78 +60,59 @@ sudo apt install libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev
 cargo build --release
 ```
 
-The build compiles the C engine into the binary. `target/release/ghee` is the
-whole product. It needs no runtime library, no interpreter and no data files.
-
-For an H264 stream on a Pi 5 or a desktop, install ffmpeg as well:
-
-```
-sudo apt install ffmpeg
-```
-
-Every other Pi, 1 through 4, uses the H264 hardware encoder.
-
-Point `GHEE_SYSROOT` at a target sysroot with those same headers to
-cross-compile.
-
 ## Run it
 
-Render to numbered PNGs. `--demo` resolves the bundled scenes by name. Your own
-directories join the lookup through `$GHEE_SCENES`:
+The `--demo` flag provides a set of builtin [scenes](#scenes).
+
+Render one of the JSON scenes to an image sequence of sixty frames:
 
 ```
-ghee render --demo bars -o frame.####.png --frames 60
+ghee render --demo mix -o frame.####.png --frames 60
 ```
 
-A procedural scene is an executable, and ghee runs it. Treat a scenes directory
-as code you choose to run. Treat everything on `$GHEE_SCENES` the same way.
-
-Everything after `--` goes to the scene itself. `-- --help` lists what a scene
-takes; see [Procedural scenes](#procedural-scenes):
+Render one of the Python [procedural scenes](#procedural-scenes) to a connected HDMI display
+and pass custom arguments:
 
 ```
-ghee render --demo hero -- --particle-grid 40x24
 ghee render --demo bluesun --display kms -- --emit 480x300
 ```
 
-Or write raw frames to stdout and pipe them into ffmpeg. `--timestep S` pins
-engine time to `frame * S`. Frame N then always renders at time `N*S`, and two
-runs are comparable:
+Write raw frames to stdout and pipe them through ffmpeg into an mp4,
+with `--timestep` pinning engine time to a fixed 1/60 s step per frame:
 
 ```
 ghee render --demo bars -o - --frames 300 --timestep 0.0166667 |
   ffmpeg -f rawvideo -pix_fmt rgba -s 320x240 -framerate 60 -i - out.mp4
 ```
 
-Or stream it as H264 (raw Annex-B; pipe it anywhere):
+Or stream it as a hardware accelerated H264 Annex-B stream and pipe it to mpv:
 
 ```
 ghee render --demo trail --h264 - --fps 30 | mpv -
 ```
 
-A board with the Broadcom hardware encoder (Pi 1 through Pi 4) sends the frame
-GPU -> encoder, with no CPU copy. The Pi 5 dropped that encoder. The Pi 5 and a
-desktop encode the readback with libx264, so ffmpeg has to be on `$PATH`.
-
-Or scan it straight out to the HDMI display; details in
+Or scan it straight out to the HDMI display, details in
 [Hardware displays](#hardware-displays):
 
 ```
 ghee render --demo trail --display kms
 ```
 
-Or open the browser console on the bundled examples and edit the GLSL live:
+Or drive an SPI or I2C panel:
+
+```
+ghee render --demo trail --display st7789
+```
+
+Or serve the web [console](#the-console) to preview and author all the
+demo scenes:
 
 ```
 ghee serve --demo
 ```
 
-`ghee serve <your_scenes_dir>` serves your own scenes. The console preview
-streams H264 through WebCodecs when the browser allows it, and MJPEG otherwise.
-
-The outputs are a list. `-o`, `--display` and `--h264` combine in one render,
-and `--serve` attaches the console to the whole list. One render feeds every
-output.
+And you can combine outputs: one render can write PNGs, drive a panel and
+stream H264 at the same time, and `--serve` the authoring console on top:
 
 ```
 ghee render --demo bars --display st7789 -o frame.####.png      # panel and a contact sheet
@@ -118,12 +120,9 @@ ghee render --demo bars --display st7789 --serve                 # panel, and ed
 ghee render --demo bars --display kms --serve --host 0.0.0.0     # HDMI, edit from a laptop
 ```
 
-`ghee serve <dir>` is `ghee render <dir> --serve`. `--serve` on a single scene
-serves that scene alone.
-
 ## Scenes
 
-A scene is JSON: an ordered list of passes, each with its own GLSL fragment shader.
+A scene is a JSON file with an ordered list of passes, each with its own GLSL fragment shader.
 This is `bars.scene.json`, one of the bundled examples:
 
 ```json
@@ -157,20 +156,23 @@ void main() {
 }
 ```
 
-A pass can also carry its GLSL inline in a `"code"` string.
+A pass can also carry its GLSL inline in a `"code"` string, and a scene can
+also be a program that emits its own JSON and feeds it data, see
+[Procedural scenes](#procedural-scenes).
 
-A scene can also be a program. The program emits its own JSON and feeds the
-scene its data; see [Procedural scenes](#procedural-scenes).
+Your own scenes can be looked up through the `$GHEE_SCENES` env variable.
+Careful: procedural scenes are executables, and ghee runs them, only put
+directories you trust there.
 
 ## How does it work
 
-The pass model follows Shadertoy. The passes render in order. Each pass is a
-fragment shader that draws into its own buffer. A pass reads another pass
-through a numbered channel sampler. A channel on an earlier pass sees the
-current frame. A channel on the pass itself, or on a later pass, sees the
+The pass model follows Shadertoy. The passes render in order, each one a
+fragment shader drawing into its own buffer. A pass reads another pass
+through a numbered channel sampler: a channel on an earlier pass sees the
+current frame, a channel on the pass itself or a later one sees the
 previous frame. The last pass reaches the output.
 
-Each pass renders at its own resolution. A pass samples another pass through
+Each pass renders at its own resolution, and samples another pass through
 normalized coordinates.
 
 ghee compiles the GLSL of every pass behind a preamble like this one:
@@ -213,67 +215,54 @@ void main() {
 }
 ```
 
-A param is a typed uniform declared on the pass, with optional range metadata:
+A param is a typed uniform declared on the pass, with optional range
+metadata:
 
 ```json
 { "params": { "gain": { "type": "float", "value": 0.45, "min": 0, "max": 1, "step": 0.01 } } }
 ```
 
-The preamble turns that into `uniform float gain;`. The console renders every
-param as a live control. The types are `float`, `int`, `bool`, `color` (a `vec3`
-in the shader), `vec2/3/4`, and `string`. A bool takes `true` or `false`, and
-reaches the shader as `uniform bool`. A string never becomes a uniform. The
-scene consumes a string for host-side work such as rasterizing text, and
-`options` turns its text box into a dropdown. A param declared on the scene is
-shared: every pass reads the one value.
+The preamble turns that into `uniform float gain;`, and the console renders
+every param as a live control. The types are `float`, `int`, `bool`,
+`color` (a `vec3` in the shader), `vec2/3/4`, and `string`. A string stays
+on the host: the scene consumes it for work like rasterizing text, and
+`options` turns its text box into a dropdown. A param declared on the scene
+is shared, every pass reads the one value.
 
 ## Procedural scenes
 
-A procedural scene is an executable that supplies its own scene and its data.
-ghee starts the scene process when the scene becomes active, then talks to it
-over stdin and stdout. The process can be a program in any language.
+A procedural scene is an executable that supplies its own scene and data,
+in any language, ghee starts it and talks to it over stdin and stdout.
 `docs/procedural.md` holds the wire contract.
 
-`pip install ghee-render` is that contract for Python: `import ghee`. A scene
-that declares its packages inline (PEP 723) names `ghee-render` there, under
-`#!/usr/bin/env -S uv run --script`. The shim gives:
+`pip install ghee-render` is that contract for Python: `import ghee` gives
+`Scene`/`Pass`/`Param` to build the scene, `@ghee.feed` and `@ghee.tick` to
+supply the data, and `ghee.run` for the loop. A PEP 723 scene declares
+`ghee-render` inline under `#!/usr/bin/env -S uv run --script`.
 
-- `ghee.Scene / Pass / Param / ArrayInput / Channel`: build the scene
-- `ghee.Arg`, `ghee.args([...])`: argument declarations, and the `-- --help` answer
-- `@ghee.feed("name")`: the values of a named array, for each tick
-- `@ghee.tick`: a hook for each tick, with `ghee.set_param(name, value)` and `ghee.skip()`
-- `ghee.run(scene)`: the handshake, then the tick loop
-
-A scene no ghee started renders itself: `./scene.py --output kms --frames 300`.
-It takes `--output`, `--size`, `--fps`, `--stats`, `--frames` and `--timestep`
-after its own arguments.
+The python shim lets you also run the python file to render directly:
+`./scene.py --output kms --frames 300`.
 
 `ghee/examples/` holds `bluesun.py` and `hero.py`.
 
 ## The console
 
-`ghee serve <scenes_dir>` (or `--demo`) starts a web editor on `127.0.0.1:8090`.
-The console gives a live preview of the running scene. It edits the GLSL of each
-pass, and shows a compile error inline. It gives param sliders, pass muting and
-a filter picker. Apply recompiles the running renderer.
-
-Save writes a modified copy of a JSON scene to `<scenes_dir>/modified/`. A
-procedural scene saves its param values and its filter list as a sidecar. ghee
-applies the sidecar over the scene defaults on load.
-
-`GET /frame.png` returns one lossless PNG of the next frame, at the render size.
-A script sets a param, then reads back the result.
+`ghee serve <scenes_dir>` starts the console on `127.0.0.1:8090`: a
+hardware accelerated live preview of the running scene, the GLSL of each
+pass editable with compile errors inline, param sliders, pass muting and a
+filter picker, and edits hot-reload into the running renderer.
+See [docs/http.md](docs/http.md) for its API.
 
 ![the console editing a live scene](https://raw.githubusercontent.com/holofermes/ghee/main/media/console.png)
 
-The console has no authentication, and it compiles any GLSL a client posts to
-it, so it binds loopback by default. Pass `--host 0.0.0.0` to reach it from your
-network. Do that only on a network you trust.
+Careful: the console has no auth and compiles any GLSL posted to it, so it
+binds loopback by default. `--host 0.0.0.0` opens it to your network, do
+that only on one you trust.
 
 ## Filters
 
-A filter is a named single-pass post process, appended after the scene's own
-passes. A scene can declare them:
+A filter is a named single-pass post process, appended after the scene's
+own passes. A scene can declare them:
 
 ```json
 { "passes": [ ... ], "filters": ["dither"] }
@@ -285,15 +274,14 @@ or the CLI can add them in order, after whatever the scene declares:
 ghee render --demo bars --filters dither --display ssd1306
 ```
 
-The bundled `dither` is an ordered 4x4 Bayer dither. It makes a grayscale scene
-readable on a 1-bit panel. Your own `<name>.filter.json` files join the registry
-through `$GHEE_FILTERS`, which takes colon-separated directories. A registered
-filter shows up everywhere: the CLI, the console picker, an embedding program.
+You can author your own `<name>.filter.json` files and add their
+directories to `$GHEE_FILTERS`, colon-separated.
 
 ## ISF import
 
-`ghee isf import` converts an [Interactive Shader Format](https://isf.video)
-shader into a ghee scene or filter.
+`ghee isf import` converts an
+[Interactive Shader Format](https://isf.video) shader into a ghee scene or
+filter.
 
 ```
 ghee isf import shader.fs                        # -> shader.scene.json
@@ -306,7 +294,8 @@ ghee refuses three kinds of ISF:
 
 - `FLOAT` pass buffers. ghee's pass buffers are 8-bit RGB.
 - `IMPORTED` external images. ghee scenes have no image inputs.
-- a vertex shader, or a body reading a varying. ghee's vertex shader is fixed.
+- a vertex shader, or a body reading a varying. ghee's vertex shader is
+  fixed.
 
 ## Hardware displays
 
@@ -317,17 +306,12 @@ ghee render scene.json --display kms
 ghee serve scenes/ --display st7789   # the console, driving the panel
 ```
 
-`--display` takes an optional value. Write the driver name straight after it.
-Keep any path, such as a scenes directory, before it.
+`kms` is the connected HDMI display, or any KMS display.
 
-`kms` is the connected HDMI display, or any KMS display. The engine takes DRM
-master. It page-flips its render buffers straight to the connector, zero copy,
-and the panel's own refresh paces the flips. The engine takes over a card, so a
-headless Pi is the natural home. A running desktop session already owns the card.
-
-The two bundled drivers are `st7789` (135x240 SPI LCD) and `ssd1306` (128x32 I2C
-1-bit OLED), and their defaults fit those panels. A panel with other wiring takes
-`--display-opts`, which sets the driver's own options:
+The two bundled drivers are `st7789` (configured for a 135x240 SPI LCD) and `ssd1306`
+(configured for a 128x32 I2C 1-bit OLED). Extend either driver to your own
+panel with `--display-opts`, which sets the driver's own options, for
+example the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
 
 ```
 ghee render --demo bars --display st7789 \
@@ -338,8 +322,8 @@ Run `ghee displays` to list every option a driver takes, with its default.
 
 ## From Rust
 
-ghee is a library and a command. A render takes three calls: load or build a
-scene, set it up, then render frames.
+ghee is a library and a command. A render takes three calls: load or build
+a scene, set it up, then render frames.
 
 ```rust
 use ghee::engine::{Feed, Renderer};
@@ -356,37 +340,36 @@ let frame = r.render(Some(&mut |_name, size| match size {
 }))?;
 ```
 
-`render` takes one closure. The closure answers with the data for a named array.
+`render` takes one closure, which answers with the data for a named array.
 The engine is thread-affine: build and use a Renderer on one thread.
 
 ## Known limitations
 
-- GLES2 only: no compute, geometry or tessellation shaders. VC4 also has no
-  derivatives (`fwidth`) and no multisampled FBOs.
-- File, stream and panel output all pay a synchronous `glReadPixels`. GLES2 has
-  no asynchronous readback, so the cost scales with output size.
-- `--display kms` needs a card no compositor is holding, because it takes DRM
-  master.
-- Hardware H264 is the Broadcom encoder, which the Pi 5 does not have. The Pi 5
-  and a desktop pay a CPU libx264 encode, and need ffmpeg.
+- GLES2 only: no compute, geometry or tessellation shaders. VC4 also has
+  no derivatives (`fwidth`) and no multisampled FBOs.
+- Everything except hardware H264 and KMS scanout reads the frame back
+  with a blocking glReadPixels (GLES2 has no async readback), so bigger
+  outputs cost more CPU.
+- `--display kms` needs its own card: if a compositor holds it, ghee
+  cannot take DRM master.
 - The bundled panel drivers cover two controllers (`st7789`, `ssd1306`).
-- The web console has no authentication.
 
 ## FAQ
 
-**A render says there is no GL device.** Point the engine at the right node with
-`--dri` or `$GHEE_DRI`. Add your user to the `video` group, and to the `render`
-group on a desktop. `ghee displays` reports what works on the host.
+**A render says there is no GL device.** Point the engine at the right
+node with `--dri` or `$GHEE_DRI`, and add your user to the `video` group
+(plus `render` on a desktop). `ghee displays` reports what works on the
+host.
 
-**`--h264` or the console stream says there is no ffmpeg on PATH.** That board
-has no Broadcom encoder, so ghee encodes with ffmpeg and libx264.
+**`--h264` or the console stream says there is no ffmpeg on PATH.** That
+board has no Broadcom encoder, so ghee encodes with ffmpeg and libx264:
 `sudo apt install ffmpeg`.
 
-**`--display kms` cannot take DRM master.** Something else owns the card, almost
-always a desktop session.
+**`--display kms` cannot take DRM master.** Something else owns the card,
+almost always a desktop session.
 
-**The console preview falls back to MJPEG in a browser that has WebCodecs.** H264
-playback needs a secure context. `127.0.0.1` is a secure context, and a
+**The console preview falls back to MJPEG in a browser that has
+WebCodecs.** H264 playback needs a secure context, `127.0.0.1` is one, a
 plain-HTTP LAN address is not.
 
 ## Tests
@@ -398,9 +381,9 @@ uv run --no-cache --with python/target/wheels/ghee_render-*.whl --with pytest \
     pytest python/tests
 ```
 
-The render tests need a GPU node, and they skip cleanly without one. The golden
-check renders every bundled example. It compares the sha256 of each frame
-against the pinned reference in `tools/fixtures/golden/`.
+The render tests need a GPU node, and they skip cleanly without one. The
+golden check renders every bundled example and compares the sha256 of each
+frame against the pinned reference in `tools/fixtures/golden/`.
 
 ## License
 

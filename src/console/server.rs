@@ -1,45 +1,14 @@
 //! ghee console render server.
 //!
-//! This attaches the console to a render loop (looper). The console owns the
-//! active scene, the scene list and the command queue the loop drains. It serves
-//! the JSON API and the compiled-in web assets. The loop belongs to the caller,
-//! so a render runs without a browser, and a browser costs the caller no panel.
+//! A host is the program that runs the renderer: the `ghee` command, or a
+//! program that embedded it. The host runs a render loop (looper), one
+//! thread that draws every frame and hands it to the host's sinks: the
+//! display, a panel, files. This module attaches the console to that loop.
 //!
-//! API:
-//!   GET  /stream[?vid=]     MJPEG, one part per rendered frame
-//!   GET  /h264[?vid=]       framed H264 for WebCodecs ([u8 type][u32 len]:
-//!                           0=config JSON, 1=key AU, 2=delta AU, AVCC). One
-//!                           shared encoder feeds every viewer. Hardware
-//!                           zero-copy needs /dev/video11, else ffmpeg/libx264.
-//!   POST /ping?vid=         heartbeat for the streams opened under that vid
-//!   GET  /frame.png         one lossless PNG of the next frame, at the render
-//!                           size. The request rides the command queue, so the
-//!                           frame carries every /set that returned before it.
-//!                           409 while the scene holds an error. 503 when the
-//!                           loop draws nothing.
-//!   GET  /stats             {fps, frame_ms, stream_fps, out, error, error_line,
-//!                           error_pass, active, display, stale}
-//!   GET  /scenes            {scenes:[name...], active}
-//!   GET  /filters           {name: filter def} registry for the "+ filter" picker
-//!   GET  /scene?name=       resolved scene JSON (shader files inlined, filters
-//!                           expanded). The active name answers with the document
-//!                           that renders now, applied edits and /set values
-//!                           included. Any other name answers from disk.
-//!   POST /set?pass=&name=&value=   live uniform, no recompile (pass=scene = scene-scoped)
-//!   POST /next /prev        switch active scene
-//!   POST /switch?name=      switch to a named scene. The active name reloads it,
-//!                           which is how a stale scene reads its files again.
-//!   POST /scene             full scene JSON -> recompile active (apply working copy)
-//!   POST /save              write the scene as a modified copy in <scenes>/modified/
-//!   GET  /<file>            static file from the compiled-in web assets
-//!
-//! One Console holds this module's state. The render loop, the encoder threads
-//! and the request handlers share it. run() also parks it in a process global,
-//! so stop() ends a console from a signal handler.
-//!
-//! run() draws on the thread that called it. It accepts requests on a thread of
-//! its own. A panel driver binds its SPI and GPIO handles to one thread. The
-//! loop must run where the caller built its sinks.
+//! The console serves the HTTP API (`docs/http.md`) and the web page on a
+//! thread of its own. A request handler never touches the renderer: it
+//! queues a command, a param set, a scene switch, an edited scene, and the
+//! render thread applies the queue between frames.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -1047,7 +1016,7 @@ struct FrameShot {
 
 impl Output for FrameShot {
     fn dest(&self) -> &str {
-        "" // a still is not a destination; see Console::out
+        "" // a still is not a destination, see Console::out
     }
 
     fn persists(&self) -> bool {
@@ -1093,7 +1062,7 @@ const HW_STARVE_LIMIT: u32 = 90;
 
 impl Output for ConsoleSink {
     fn dest(&self) -> &str {
-        "" // the console's destinations are its viewers; see Console::out
+        "" // the console's destinations are its viewers, see Console::out
     }
 
     fn persists(&self) -> bool {
@@ -1966,7 +1935,7 @@ fn h264(console: &Arc<Console>, request: Request, query: &Query) {
         }
     }
     // The terminal chunk ends the response. Without it, keep-alive parks the
-    // socket and a viewer waits forever on a stream the server abandoned; a
+    // socket and a viewer waits forever on a stream the server abandoned. A
     // clean end is what sends the client to its MJPEG fallback.
     let _ = w.write_all(b"0\r\n\r\n");
     let _ = w.flush();

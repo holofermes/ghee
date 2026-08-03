@@ -63,8 +63,11 @@ it was handed: uv keys a local wheel by its name, and a rebuild keeps that name.
 
 The Pi wheels come from `tools/xwheels.sh`: cargo-zigbuild with the glibc
 pins, then a repack of the native wheel. `tools/mksysroot.sh` makes the
-sysroots it needs from the boards' own apt repositories.
-`.github/workflows/wheels.yml` runs both.
+sysroots it needs from the boards' own apt repositories. The deb carries the
+`ghee` command and the Python package in one: the release workflow unpacks
+the arch's wheel into `target/pydist`, and the cargo-deb asset list ships it
+to dist-packages. `.github/workflows/release.yml` runs the whole chain,
+wheels, debs, release assets and PyPI.
 
 The tree carries `X.Y.Z-dev`. `tools/release.sh <version>` writes one version
 into every site. The release flip is the last commit before the tag, the tag
@@ -73,13 +76,12 @@ builds the wheels and the debs, and the next commit flips to the next `-dev`.
 ## The surface is the CLI and plain HTTP
 
 `ghee --help` describes the tool. `ghee render <scene> -- --help` describes a
-scene. The console is JSON over HTTP: `/stats`, `/scene`, `/scenes`, `/set`,
-`/switch`, `/frame.png`
+scene. The console is JSON over HTTP, and `docs/http.md` holds the API.
 
 A Python host takes the third surface: `ghee.open(scene, ...)`, then `feed`,
 `set_param`, `frame` and `skip`. `python/README.md` holds it.
 
-A procedural scene no ghee started hosts itself on that same surface:
+A procedural scene you start yourself hosts itself on that same surface:
 `./scene.py --output kms --frames 300`. `docs/procedural.md` holds it.
 
 ## Contracts
@@ -130,10 +132,14 @@ protocol rule, a hidden invariant. A comment never holds the history of a
 finding. A comment never argues that a change is correct. A comment never names
 what it replaced. The commit message holds that.
 
-Prose in this repo follows ASD-STE100: one topic per sentence, active voice,
-present tense, about 20 words at most, one term for one thing. This covers
-comments, docs and commit messages. Avoid em dashes and "not X but Y"
-constructions. Stay terse. Write nothing obvious.
+Prose, comments, docs and commit messages alike, matches the voice this repo
+already writes in: read the README and a few module docs before writing any.
+The mechanics that are rules, not accidents: no em dashes, no "not X but Y"
+constructions, no filler (simply, robust, powerful, "note that"), semicolons
+rarely, no "we", plain words, one term for one thing, an actor introduced
+before it is used, a fact stated once in the place the reader acts on it,
+never document what the code used to do, and a speed claim takes a number on
+named hardware or stays unwritten. Write nothing obvious.
 
 An error string is an interface. An error that names a wrong cause sends the
 reader down a dead end. Name the real condition, and nothing else.

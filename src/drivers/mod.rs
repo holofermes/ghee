@@ -1,6 +1,4 @@
 //! Display driver discovery.
-//! The binary holds the bundled drivers.
-//! No import fails, and no plugin loads.
 //! available_drivers() reports the table below.
 
 mod base;

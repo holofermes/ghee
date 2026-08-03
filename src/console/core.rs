@@ -334,7 +334,7 @@ pub fn parse_scope(raw: &str) -> Result<Scope, String> {
 }
 
 /// The web asset a URL path names, or None. The assets are compiled in, so a
-/// path that climbs out of the root names nothing.
+/// path that climbs out of the root gets None.
 pub fn static_path(urlpath: &str) -> Option<&'static str> {
     let urlpath = match urlpath {
         "" | "/" => "/index.html",

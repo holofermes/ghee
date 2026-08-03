@@ -1,15 +1,16 @@
-//! One loop for everything ghee renders: image files, a pipe, a panel, KMS
-//! scanout, H264, or the browser console. It drives several at once too. It
-//! draws a frame and hands it to its sinks. Each sink declares what it needs
-//! from a frame (Output).
+//! One loop for everything ghee renders. It draws a frame and hands it to
+//! its sinks: an image file, a pipe, a panel, KMS scanout, H264, the
+//! browser console, several at once. Each sink declares what it needs from
+//! a frame (Output).
 //!
 //! GL is thread-affine, so the renderer belongs to the thread that runs the
 //! loop. A host that runs the loop in a worker creates the renderer there.
 //!
-//! A host drives the loop through hooks. `poll` drains its command queue.
-//! `idle` says how long a skipped frame waits. `stopping` ends the run.
-//! `on_frame` and `on_error` publish. The loop reads the controller slot every
-//! frame, so a new controller switches scenes mid-run.
+//! A host drives the loop through hooks: `poll` applies the host's queued
+//! commands, `idle` says how long a skipped frame waits, `stopping` ends
+//! the run, `on_frame` and `on_error` publish. A controller hooks the
+//! active scene into the loop, and the loop reads its controller slot every
+//! frame, so a host switches scenes mid-run by replacing it.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -35,8 +36,8 @@ pub trait RenderTarget {
     fn set_time(&self, t: f64);
 
     /// Set one live param. `pass` names a pass's param, and None takes the
-    /// scene's. False when the pass or the uniform is missing. Required: a
-    /// silent default here once dropped every procedural-scene param in serve.
+    /// scene's. False when the pass or the uniform is missing. Required, a
+    /// silent default would drop params with no error.
     fn set_param(
         &self,
         pass: Option<&str>,
@@ -208,12 +209,12 @@ pub trait Output {
 
     fn write(&mut self, frame: Frame<'_>) -> Result<()>;
 
-    /// A buffer of `shape` to render into; pooled sinks only.
+    /// A buffer of `shape` to render into, pooled sinks only.
     fn acquire(&mut self, _shape: (i32, i32, i32)) -> Result<OwnedFrame> {
         bail!("not a pooled sink")
     }
 
-    /// Take back a filled buffer; pooled sinks only.
+    /// Take back a filled buffer, pooled sinks only.
     fn submit(&mut self, _frame: OwnedFrame) -> Result<()> {
         bail!("not a pooled sink")
     }
@@ -701,8 +702,8 @@ fn readback_size(sinks: &[&mut dyn Output], readers: &[usize]) -> Option<(i32, i
     Some(size)
 }
 
-/// The one sink the loop may render straight into: a pooled sink alone on the
-/// frame, at the render size. Anything else takes a copy.
+/// The one sink the loop may render straight into: a pooled sink that is the
+/// frame's only consumer, at the render size. Anything else takes a copy.
 fn pool_index(
     sinks: &[&mut dyn Output],
     readers: &[usize],
@@ -827,7 +828,7 @@ mod tests {
         height: i32,
     }
 
-    /// A recording sink; the flags under test are constructor fields.
+    /// A recording sink, the flags under test are constructor fields.
     struct Sink {
         dest: &'static str,
         scanout: bool,

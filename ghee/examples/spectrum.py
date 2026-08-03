@@ -15,7 +15,7 @@ brightness. The feed sends raw levels; every scaling stays in GLSL.
 
 import ghee
 
-ghee.args()  # the probe; this scene takes no arguments
+ghee.args()  # the probe, this scene takes no arguments
 
 # Slow imports come after the parse: the probe must answer inside its window.
 import numpy as np  # noqa: E402

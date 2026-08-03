@@ -1,11 +1,10 @@
-"""The ghee procedural-scene shim, the Python half of `import ghee`.
+"""The ghee procedural-scene shim.
 
 The shim builds a scene, answers the probe, and feeds the data.
-A procedural scene is an executable.
-ghee starts the scene process when the scene becomes active.
-The process writes its scene as one JSON line.
-The process then writes binary messages, one batch for each tick.
-docs/procedural.md holds the wire contract.
+A procedural scene is an executable: ghee starts the process when the scene
+becomes active, the process writes its scene as one JSON line, then binary
+messages, one batch for each tick. See docs/procedural.md for the wire
+contract.
 
     #!/usr/bin/env python3
     import ghee
@@ -21,16 +20,12 @@ docs/procedural.md holds the wire contract.
     ghee.run(scene)
 
 A feed that returns bytes, a bytearray or a numpy array of dtype uint8 sends
-the u8 wire form, where the value is byte / 255. Everything else sends floats.
-A large mask of bytes costs a quarter of the pipe, and the engine uploads it
-with no conversion.
+the u8 wire form, where the value is byte / 255.
 
-A scene ghee started answers the wire. A scene a user started has no wire, so
-run() opens it on the ghee bindings and drives the same feeds there.
-$GHEE_WIRE tells the two runs apart.
-
-The wire half imports the standard library alone.
-A scene runs under the python3 of the host.
+The same scene file runs two ways. When ghee starts it, run() talks the
+wire. When you run the file yourself, run() opens the scene on the ghee
+bindings and drives the same feeds there. $GHEE_WIRE, which ghee sets in
+the processes it starts, tells the two apart.
 """
 
 from __future__ import annotations

@@ -1,16 +1,16 @@
 //! ghee compiles GLSL scenes and renders them on a GPU through DRM/GBM,
 //! headless.
 //!
-//! A [`Scene`](scene::Scene) is an ordered list of passes. Each pass is a
+//! A [`Scene`](scene::Scene) is an ordered list of passes, each one a
 //! fragment shader plus the arrays and params it reads. A
-//! [`Renderer`](engine::Renderer) compiles a scene. It renders frames into a
-//! buffer the host reads back.
+//! [`Renderer`](engine::Renderer) compiles a scene and renders frames into
+//! a buffer the host reads back.
 //!
-//! The `ghee` command is [`cli::main`]. The engine is thread-affine. Build and
-//! use a Renderer on one thread.
+//! The `ghee` command is [`cli::main`]. The engine is thread-affine: build
+//! and use a Renderer on one thread.
 //!
-//! The example opens a GL device, so the doc test compiles it and does not run
-//! it. `tests/lib_api.rs` runs the same scene where a device is present.
+//! The example opens a GL device, so the doc test only compiles it.
+//! `tests/lib_api.rs` runs the same scene where a device is present.
 //!
 //! ```no_run
 //! use ghee::engine::{Feed, Renderer};

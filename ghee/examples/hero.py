@@ -42,7 +42,7 @@ import numpy as np  # noqa: E402
 from lib import look  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
-# The dither filter defaults to 1-bit black and white; these give it partial
+# The dither filter defaults to 1-bit black and white, these give it partial
 # colour on a coarse grid. It costs one full-res pass, which --no-dither drops.
 DITHER_PARAMS = {"amount": 1.0, "levels": 2.0, "color": 0.65, "scale": 4.0}
 

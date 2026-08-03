@@ -10,16 +10,20 @@ repository = "https://github.com/holofermes/ghee"
 maintainer = "holofermes <1163915+holofermes@users.noreply.github.com>"
 # cargo-deb takes no manifest key for the Debian version, and it keeps a `-dev`
 # version as it stands, which dpkg then sorts after the release. The deb build
-# passes --deb-version with the `~` spelling (.github/workflows/debs.yml).
+# passes --deb-version with the `~` spelling (.github/workflows/release.yml).
 # revision drops the `-1` cargo-deb appends otherwise.
 revision = ""
 section = "graphics"
 priority = "optional"
-depends = "libdrm2, libgbm1, libegl1, libgles2"
+depends = "libdrm2, libgbm1, libegl1, libgles2, python3 (>= 3.9)"
 conflicts = "python3-ghee"
 replaces = "python3-ghee"
+# The deb ships the command and the Python package in one. target/pydist
+# holds the unpacked wheel for the target arch, and the release workflow
+# fills it before cargo-deb runs.
 assets = [
     ["target/release/ghee", "usr/bin/", "755"],
+    ["target/pydist/**/*", "usr/lib/python3/dist-packages/", "644"],
 ]
 
 [[bin]]

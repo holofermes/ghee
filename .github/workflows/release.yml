@@ -1,0 +1,169 @@
+name: release
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  native:
+    # ubuntu-22.04 pins the x86_64 glibc floor at 2.35, so the retagged
+    # manylinux wheel installs on Debian bookworm and up
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      # a workflow_dispatch builds whatever the tree says, dev included
+      - name: the tag is the version, and the version is a release
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          v=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          test "$TAG" = "v$v" || { echo "tag $TAG is not v$v"; exit 1; }
+          case $v in *dev*) echo "$v is a dev version: no release builds from it"; exit 1;; esac
+      - name: GLES and DRM development headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdrm-dev libgbm-dev libegl1-mesa-dev \
+            libgles2-mesa-dev
+      - name: maturin
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv tool install maturin
+      - name: build
+        run: cd python && maturin build --release --compatibility linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-x86_64
+          path: python/target/wheels/*.whl
+
+  cross:
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-x86_64
+          path: template
+      - name: zig and cargo-zigbuild
+        run: |
+          curl -LsS "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-$ZIG_VERSION" >>"$GITHUB_PATH"
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv tool install cargo-zigbuild
+          rustup target add aarch64-unknown-linux-gnu arm-unknown-linux-gnueabihf
+      # The armhf repo is the armv6 rebuild the Zero W runs; arm64 is
+      # plain Debian. Keep the dist in step with the glibc pins in
+      # tools/xwheels.sh.
+      - name: sysroots
+        run: |
+          tools/mksysroot.sh http://raspbian.raspberrypi.com/raspbian trixie armhf sysroots/armv6
+          tools/mksysroot.sh http://deb.debian.org/debian trixie arm64 sysroots/aarch64
+      - name: build
+        run: |
+          GHEE_SYSROOTS="$PWD/sysroots" tools/xwheels.sh template/*.whl wheels
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-arm
+          path: wheels/*.whl
+
+  debs:
+    needs: cross
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-arm
+          path: wheels
+      - name: the Debian version
+        run: |
+          v=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "DEB_VERSION=$(printf %s "$v" | tr '-' '~')" >>"$GITHUB_ENV"
+      - name: zig, cargo-zigbuild, cargo-deb
+        run: |
+          curl -LsS "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-$ZIG_VERSION" >>"$GITHUB_PATH"
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv tool install cargo-zigbuild
+          cargo install cargo-deb
+          rustup target add aarch64-unknown-linux-gnu arm-unknown-linux-gnueabihf
+      # The armhf repo is the armv6 rebuild the 32-bit Pis run; arm64 is
+      # plain Debian. Keep the dist in step with the glibc pins below.
+      - name: sysroots
+        run: |
+          tools/mksysroot.sh http://raspbian.raspberrypi.com/raspbian trixie armhf sysroots/armv6
+          tools/mksysroot.sh http://deb.debian.org/debian trixie arm64 sysroots/aarch64
+      # Each deb ships the command and the Python package in one:
+      # target/pydist holds the unpacked wheel for the arch being built,
+      # and the Cargo.toml asset list sends it to dist-packages.
+      - name: armhf deb (ARMv6, one deb for every 32-bit Pi)
+        run: |
+          rm -rf target/pydist && mkdir -p target/pydist
+          unzip -q wheels/*linux_armv6l.whl -d target/pydist
+          GHEE_SYSROOT="$PWD/sysroots/armv6" \
+            CFLAGS_arm_unknown_linux_gnueabihf=-mcpu=arm1176jzf_s \
+            cargo zigbuild --release --target arm-unknown-linux-gnueabihf.2.38
+          readelf -A target/arm-unknown-linux-gnueabihf/release/ghee |
+            grep -q 'Tag_CPU_arch: v6'
+          cargo deb --deb-version "$DEB_VERSION" --target arm-unknown-linux-gnueabihf --no-build --no-strip
+      - name: arm64 deb
+        run: |
+          rm -rf target/pydist && mkdir -p target/pydist
+          unzip -q wheels/*linux_aarch64.whl -d target/pydist
+          GHEE_SYSROOT="$PWD/sysroots/aarch64" \
+            cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.36
+          cargo deb --deb-version "$DEB_VERSION" --target aarch64-unknown-linux-gnu --no-build --no-strip
+      - name: each deb holds the command and the module
+        run: |
+          for deb in target/*/debian/*.deb; do
+            dpkg-deb -c "$deb" | grep -q 'usr/bin/ghee'
+            dpkg-deb -c "$deb" | grep -q 'dist-packages/ghee/__init__.py'
+            dpkg-deb -c "$deb" | grep -q 'dist-packages/ghee/_native'
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: target/*/debian/*.deb
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [native, cross, debs]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          merge-multiple: true
+      - name: the release page carries every wheel and deb, original tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" all/*linux*.whl all/*.deb --clobber --repo "$GITHUB_REPOSITORY"
+      - name: uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      # The tag claims manylinux while the wheel links the system GL stack,
+      # which the spec forbids and every GPU wheel does anyway. The glibc
+      # floors are real: 2.35 = the ubuntu-22.04 builder, 2.36 = the zig pin.
+      # armv6 stays off PyPI, manylinux has no such arch.
+      - name: retag the PyPI pair manylinux
+        run: |
+          mkdir dist
+          uvx wheel tags --platform-tag manylinux_2_35_x86_64 --remove all/*linux_x86_64.whl
+          uvx wheel tags --platform-tag manylinux_2_36_aarch64 --remove all/*linux_aarch64.whl
+          mv all/*manylinux*.whl dist/
+      # The sdist rides along, or an arch with no wheel resolves the old
+      # 0.2.0 python package instead of building 0.3.0 from source.
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: sdist
+        run: cd src/python && uvx maturin sdist -o "$GITHUB_WORKSPACE/dist"
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -91,6 +91,35 @@
   /* a stopped stream holds its control on screen */
   .screen.muted .ovtools{opacity:1; visibility:visible}
   .screen.muted .frame{opacity:.35}
+  /* a tiny frame trades the toolbar for one menu: five buttons would blanket
+     the pixels. applyRotation sets .tiny from the fitted frame size. */
+  .screen .minitrig{display:none; position:absolute; top:14px; right:14px; z-index:8;
+    width:22px; height:22px; padding:0; font-size:14px; line-height:1;
+    align-items:center; justify-content:center; border:0; border-radius:6px;
+    background:rgba(8,9,11,.55); color:#dfe3ea; cursor:pointer;
+    opacity:0; visibility:hidden; transition:opacity .18s ease, visibility .18s ease}
+  .screen .minitrig span{transform:translateY(-1px)}
+  .screen .minitrig:hover{background:rgba(8,9,11,.85)}
+  .screen.tiny .minitrig{display:inline-flex}
+  .screen.tiny .ovtools, .screen.tiny .infowrap .ovbtn{display:none}
+  @media (hover:hover){ .screen.tiny:hover .minitrig{opacity:1; visibility:visible} }
+  .screen.tiny.controls .minitrig, .screen.tiny.muted .minitrig,
+  .screen.tiny .minitrig[aria-expanded="true"]{opacity:1; visibility:visible}
+  .screen .ovmenu{display:none; position:absolute; top:40px; right:14px; z-index:9;
+    min-width:170px; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; box-shadow:0 10px 28px rgba(0,0,0,.35); padding:5px}
+  .screen .ovmenu.open{display:block}
+  .screen .ovmenu button{display:flex; gap:10px; align-items:center; width:100%;
+    padding:7px 10px; background:none; border:0; color:var(--ink); font-size:13px;
+    border-radius:7px; cursor:pointer; text-align:left}
+  .screen .ovmenu button:hover{background:var(--well)}
+  .screen .ovmenu button[hidden]{display:none}
+  .screen .ovmenu .ic{width:18px; display:inline-flex; justify-content:center; color:var(--muted)}
+  @media (pointer:coarse){
+    .screen .minitrig{width:40px; height:40px; font-size:18px; border-radius:10px}
+    .screen .ovmenu{top:58px}
+    .screen .ovmenu button{padding:11px 12px; font-size:14px}
+  }
   /* the preview node lives in the pop-out window: hold its footprint so the
      column does not collapse while it is away */
   .screen .popped{display:flex; align-items:center; justify-content:center; margin:0 auto;
@@ -281,6 +310,14 @@
           <button class="ovbtn" id="pipBtn" title="pop the preview into its own window" aria-label="pop out preview" hidden>⧉</button>
           <button class="ovbtn" id="fsBtn" title="fullscreen preview" aria-label="fullscreen preview" hidden>⛶</button>
         </div>
+        <button class="minitrig" id="miniBtn" title="controls" aria-label="controls" aria-haspopup="menu" aria-expanded="false"><span>⋮</span></button>
+        <div class="ovmenu" id="ovMenu" role="menu">
+          <button data-for="infoBtn"><span class="ic">ⓘ</span><span>render info</span></button>
+          <button data-for="muteBtn"><span class="ic"></span><span>stop the stream</span></button>
+          <button data-for="rotBtn"><span class="ic">↻</span><span>rotate preview 90°</span></button>
+          <button data-for="pipBtn"><span class="ic">⧉</span><span>pop out preview</span></button>
+          <button data-for="fsBtn"><span class="ic">⛶</span><span>fullscreen preview</span></button>
+        </div>
         <div class="frame"><img id="stream" alt="render"><canvas id="streamcv" style="display:none"></canvas></div>
         <div class="popped" id="popped" hidden>preview popped out</div>
       </div>
@@ -443,6 +480,7 @@ function applyRotation(){
   const fw = Math.round(dw * scale), fh = Math.round(dh * scale);
   FRAME.style.width = fw + "px";
   FRAME.style.height = fh + "px";
+  SCREEN.classList.toggle("tiny", fw < 220 || fh < 72);
   for (const el of [IMG, CV]) {                          // whichever preview is active
     el.style.width = (land ? fh : fw) + "px";            // pre-rotation size so it covers the frame
     el.style.height = (land ? fw : fh) + "px";
@@ -1255,6 +1293,31 @@ $("#rotBtn").addEventListener("click", ()=>{
 });
 $("#pipBtn").addEventListener("click", openPip);
 $("#fsBtn").addEventListener("click", toggleFullscreen);
+// the tiny-frame menu drives the overlay buttons it replaces
+const MINI = $("#miniBtn"), OVMENU = $("#ovMenu");
+function closeMini(){ OVMENU.classList.remove("open"); MINI.setAttribute("aria-expanded","false"); }
+function syncMini(){
+  for (const row of OVMENU.querySelectorAll("button[data-for]")) {
+    const src = $("#" + row.dataset.for);
+    row.hidden = src.hidden;
+    if (row.dataset.for === "muteBtn") {
+      row.querySelector(".ic").innerHTML = src.innerHTML;
+      row.querySelector("span:last-child").textContent = src.title;
+    }
+  }
+}
+MINI.addEventListener("click", e => {
+  e.stopPropagation();
+  syncMini();
+  const open = !OVMENU.classList.contains("open");
+  OVMENU.classList.toggle("open", open);
+  MINI.setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("click", e => { if (!OVMENU.contains(e.target)) closeMini(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMini(); });
+for (const row of OVMENU.querySelectorAll("button[data-for]")) {
+  row.addEventListener("click", () => { closeMini(); $("#" + row.dataset.for).click(); });
+}
 document.addEventListener("fullscreenchange", ()=>{ applyRotation(); syncPopOut(); });
 addEventListener("resize", applyRotation);
 syncPopOut();

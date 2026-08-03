@@ -22,6 +22,9 @@ use crate::engine::{Feed, Provider, Renderer};
 use crate::scene::{ArraySize, ParamValue};
 use crate::stats::{monotonic, FrameRate};
 
+/// the longest step one frame may hand a scene, however long the loop idled
+pub const MAX_DT: f64 = 0.25;
+
 /// What the loop asks of a renderer. Renderer is the one implementation. The
 /// loop's own tests drive a recording stand-in through it.
 pub trait RenderTarget {
@@ -34,8 +37,13 @@ pub trait RenderTarget {
     /// Set one live param. `pass` names a pass's param, and None takes the
     /// scene's. False when the pass or the uniform is missing. Required: a
     /// silent default here once dropped every procedural-scene param in serve.
-    fn set_param(&self, pass: Option<&str>, name: &str, ty: &str, value: &ParamValue)
-        -> Result<bool>;
+    fn set_param(
+        &self,
+        pass: Option<&str>,
+        name: &str,
+        ty: &str,
+        value: &ParamValue,
+    ) -> Result<bool>;
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()>;
     fn render_into(
@@ -463,11 +471,12 @@ impl<'a> Loop<'a> {
             Some(p) => p(),
             None => false,
         };
-        // the t the loop hands a controller. Unpinned it assumes a 60Hz
-        // cadence, so a slower panel gets a scaled t.
+        // the t the loop hands a controller. Unpinned it is the wall clock
+        // since run() started: a scene synced to outside time (music) must
+        // not drift with the loop's own pace.
         let t = match self.timestep {
             Some(step) => self.frame as f64 * step,
-            None => self.frame as f64 / 60.0,
+            None => t0 - started,
         };
         // before the skip decision: a scene fed from outside says whether this
         // tick needs a frame
@@ -488,7 +497,9 @@ impl<'a> Loop<'a> {
         if let Some(step) = self.timestep {
             self.renderer.set_dt(step);
         } else if let Some(period) = self.period {
-            self.renderer.set_dt(period);
+            // a draw after a skip stretch measures the whole gap: one frame
+            // must never step a simulation by seconds
+            self.renderer.set_dt(period.min(MAX_DT));
         }
         let drew = self.draw_frame(scanout, t)?;
         if !*lit {
@@ -527,7 +538,11 @@ impl<'a> Loop<'a> {
             return Ok(());
         };
         let frame = self.frame;
-        let dt = self.timestep.or(self.period).unwrap_or(1.0 / 60.0);
+        let dt = self
+            .timestep
+            .or(self.period)
+            .unwrap_or(1.0 / 60.0)
+            .min(MAX_DT);
         let mut slot = cell.borrow_mut();
         match (*slot).as_mut() {
             Some(c) => c.tick(frame, t, dt),

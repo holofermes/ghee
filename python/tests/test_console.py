@@ -266,6 +266,30 @@ def test_h264_reaches_a_settled_host(served):
 
 
 @needs_ffmpeg
+def test_stream_max_caps_the_preview():
+    port = free_port()
+    with ghee.open(RED, width=64, height=64, stats=port, stream_max=0.5) as h:
+        h.feed("level", LEVEL)
+        h.frame()
+
+        def read():
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/h264", timeout=20
+            ) as r:
+                return messages(r, 1)
+
+        msgs = watching(h, read)
+        cfg = json.loads(msgs[0][1])
+        assert (cfg["codedWidth"], cfg["codedHeight"]) == (32, 32)
+
+
+def test_stream_max_rejects_what_it_cannot_read():
+    for bad in (1.5, 0, -3, "half"):
+        with pytest.raises(ValueError):
+            ghee.open(RED, width=8, height=8, stream_max=bad)
+
+
+@needs_ffmpeg
 def test_a_second_viewer_gets_the_stream(served):
     h, port = served
 

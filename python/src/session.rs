@@ -213,6 +213,14 @@ pub enum Source {
     Doc(Value),
 }
 
+/// The h264 stream cap a host asks for.
+#[derive(Clone, Copy)]
+pub enum StreamMax {
+    Pixels(i32),
+    /// Of the render size's longest side.
+    Fraction(f64),
+}
+
 /// What open() takes, once the host's own values are parsed.
 pub struct Opening {
     pub source: Source,
@@ -223,6 +231,7 @@ pub struct Opening {
     pub timestep: Option<f64>,
     /// The console's bind address and port.
     pub stats: Option<(String, u16)>,
+    pub stream_max: Option<StreamMax>,
     pub verbose: bool,
 }
 
@@ -232,6 +241,8 @@ pub struct Session {
     index: Arc<Index>,
     pacer: Option<Box<dyn Pacer>>,
     console: Option<Console>,
+    /// The h264 cap for the longest side. 0 streams the render size.
+    stream_longest: i32,
     /// The console's hardware H264 encoder. It issues GL calls, so it belongs
     /// to this thread, and it never outlives the renderer.
     h264: Option<HardwareH264>,
@@ -360,6 +371,7 @@ impl Session {
             fps,
             timestep,
             stats,
+            stream_max,
             verbose,
         } = opening;
         let (scene, name) = load(source)?;
@@ -399,6 +411,11 @@ impl Session {
                 }
             );
         }
+        let longest = match stream_max {
+            None => 0,
+            Some(StreamMax::Pixels(n)) => n,
+            Some(StreamMax::Fraction(f)) => ((f64::from(w.max(h)) * f).round() as i32).max(2),
+        };
         let console = match stats {
             None => None,
             Some((host, port)) => Some(
@@ -411,6 +428,7 @@ impl Session {
                     (w, h),
                     &format,
                     out,
+                    longest,
                     verbose,
                 )
                 .map_err(system_fault)?,
@@ -423,6 +441,7 @@ impl Session {
         Ok(Session {
             renderer,
             sink,
+            stream_longest: longest,
             index,
             pacer: fps
                 .filter(|f| *f != 0.0)
@@ -591,6 +610,7 @@ impl Session {
             console,
             h264,
             hz,
+            stream_longest,
             ..
         } = self;
         let Some(console) = console.as_ref() else {
@@ -603,7 +623,7 @@ impl Session {
             return;
         }
         if h264.is_none() {
-            let (w, h) = encode_size(renderer.width, renderer.height);
+            let (w, h) = encode_size(renderer.width, renderer.height, *stream_longest);
             let fps = if *hz > 0 { *hz } else { H264_FPS };
             match HardwareH264::new(renderer, w, h, fps, encode_bitrate(w, h, fps)) {
                 Ok(enc) => {

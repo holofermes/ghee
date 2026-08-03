@@ -24,7 +24,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyString, PyTuple};
 use serde_json::{Map, Value};
 
-use session::{Fault, Fed, Opening, Session, Source, Tick};
+use session::{Fault, Fed, Opening, Session, Source, StreamMax, Tick};
 
 /// A scene error is the caller's text: ValueError. A driver or system error is
 /// the host's: RuntimeError.
@@ -224,6 +224,22 @@ fn source_of(scene: &Bound<'_, PyAny>) -> PyResult<Source> {
 }
 
 /// Where the console binds: a port on loopback, or a (host, port) pair.
+fn stream_max_of(v: &Bound<'_, PyAny>) -> PyResult<StreamMax> {
+    if let Ok(n) = v.extract::<i64>() {
+        if n >= 2 {
+            return Ok(StreamMax::Pixels(n.min(i64::from(i32::MAX)) as i32));
+        }
+    }
+    if let Ok(f) = v.extract::<f64>() {
+        if f > 0.0 && f <= 1.0 {
+            return Ok(StreamMax::Fraction(f));
+        }
+    }
+    Err(PyValueError::new_err(
+        "stream_max takes pixels (an int >= 2) or a fraction of the render size (0 < f <= 1)",
+    ))
+}
+
 fn bind_of(stats: &Bound<'_, PyAny>) -> PyResult<(String, u16)> {
     if let Ok(port) = stats.extract::<i64>() {
         return Ok((serve::LOOPBACK.to_string(), port_of(port)?));
@@ -354,7 +370,8 @@ impl Handle {
 /// `fps` caps the pace. None runs free.
 /// `timestep` pins time to frame*S, so a render repeats bit for bit.
 /// `stats` serves the ghee console on that port, on 127.0.0.1. A (host, port)
-/// pair binds it elsewhere.
+/// pair binds it elsewhere. `stream_max` caps the console's h264 stream on
+/// its longest side: pixels, or a fraction of the render size.
 #[pyfunction]
 #[pyo3(signature = (
     scene,
@@ -364,6 +381,7 @@ impl Handle {
     height=None,
     fps=None,
     stats=None,
+    stream_max=None,
     verbose=false,
     timestep=None,
 ))]
@@ -376,11 +394,13 @@ fn open(
     height: Option<i32>,
     fps: Option<f64>,
     stats: Option<&Bound<'_, PyAny>>,
+    stream_max: Option<&Bound<'_, PyAny>>,
     verbose: bool,
     timestep: Option<f64>,
 ) -> PyResult<Handle> {
     let source = source_of(scene)?;
     let stats = stats.map(bind_of).transpose()?;
+    let stream_max = stream_max.map(stream_max_of).transpose()?;
     let opts = match opts {
         None => Vec::new(),
         Some(d) => match to_json(d)? {
@@ -405,6 +425,7 @@ fn open(
         fps,
         timestep,
         stats,
+        stream_max,
         verbose,
     })
     .map_err(fault)?;

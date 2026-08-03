@@ -51,21 +51,16 @@ pub const LOOPBACK: &str = "127.0.0.1";
 
 /// The stream caps the CLI console serves. Both consoles answer /h264 with the
 /// same size and the same bitrate.
-fn caps() -> (i32, i64) {
-    let opts = Options::default();
-    (opts.stream_max, opts.bitrate)
-}
-
-/// What the encoder takes: the stream cap, never past the frame the host
-/// renders. yuv420 takes even dimensions only.
-pub fn encode_size(w: i32, h: i32) -> (i32, i32) {
-    let (sw, sh) = stream_size(w, h, caps().0);
+/// What the encoder takes: the host's stream cap, never past the frame the
+/// host renders. yuv420 takes even dimensions only.
+pub fn encode_size(w: i32, h: i32, longest: i32) -> (i32, i32) {
+    let (sw, sh) = stream_size(w, h, longest);
     (sw.min(w & !1), sh.min(h & !1))
 }
 
 /// The bitrate the CLI console gives this size at this pace.
 pub fn encode_bitrate(w: i32, h: i32, fps: i32) -> i32 {
-    stream_bitrate(w, h, fps, caps().1) as i32
+    stream_bitrate(w, h, fps, Options::default().bitrate) as i32
 }
 
 /// A param a request queued for the next frame.
@@ -110,6 +105,8 @@ pub struct Shared {
     /// The last viewer to leave clears it, and the next stream tries hardware
     /// again.
     hw_dead: AtomicBool,
+    /// The h264 cap for the longest side. 0 streams the render size.
+    stream_longest: i32,
     verbose: bool,
     stopping: AtomicBool,
 }
@@ -258,6 +255,7 @@ impl Console {
         size: (i32, i32),
         format: &str,
         out: Vec<String>,
+        stream_longest: i32,
         verbose: bool,
     ) -> Result<Console> {
         let shared = Arc::new(Shared {
@@ -280,6 +278,7 @@ impl Console {
             fanout: H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))),
             watchers: Heartbeat::new(VIEWER_DEADLINE),
             hw_dead: AtomicBool::new(false),
+            stream_longest,
             verbose,
             stopping: AtomicBool::new(false),
         });
@@ -422,7 +421,7 @@ fn h264_sw_loop(shared: &Arc<Shared>) {
             continue;
         };
         seen = seq;
-        let (ew, eh) = encode_size(w, h);
+        let (ew, eh) = encode_size(w, h, shared.stream_longest);
         if ew < 2 || eh < 2 {
             continue; // under 2 px a side there is nothing even to encode
         }

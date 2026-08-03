@@ -25,6 +25,7 @@ h = ghee.open(
     width=None, height=None,   # a headless size, a panel states its own
     fps=30,            # pace cap, None runs free
     stats=8090,        # console port, ("0.0.0.0", 8090) binds elsewhere
+    stream_max=None,   # h264 stream cap: pixels, or a fraction of the render size
     verbose=False,
     timestep=None,     # pin time to frame*S for a reproducible render
 )

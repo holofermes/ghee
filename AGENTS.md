@@ -40,17 +40,47 @@ cargo build --release
 cargo test --release
 cargo clippy --release --all-targets
 cargo fmt
-python3 -m pytest tests/test_shim.py    # the procedural-scene shim
 ```
 
 `build.rs` rebuilds the C engine when anything in `ghee/_engine/` changes, so
 the engine needs no build step of its own. Cross-compiling takes `GHEE_SYSROOT`.
+
+`python/` is one mixed crate and package: the PyO3 extension `ghee._native`,
+plus the `ghee` package that wraps it and holds the procedural-scene shim
+(`python/ghee/_shim.py`). One abi3 wheel per architecture serves CPython 3.9
+and up. It is a crate of its own, so the commands above never build it. The
+wheel is the only way to `import ghee`: nothing vendors the shim.
+
+```
+cd python && maturin build --release --compatibility linux
+uv run --no-cache --with python/target/wheels/ghee_render-*.whl --with pytest \
+    pytest python/tests
+```
+
+`--compatibility linux` leaves libEGL, libgbm and libdrm to the system, which
+is where the deb takes them from. `--no-cache` is what makes uv read the wheel
+it was handed: uv keys a local wheel by its name, and a rebuild keeps that name.
+
+The Pi wheels come from `tools/xwheels.sh`: cargo-zigbuild with the glibc
+pins, then a repack of the native wheel. `tools/mksysroot.sh` makes the
+sysroots it needs from the boards' own apt repositories.
+`.github/workflows/wheels.yml` runs both.
+
+The tree carries `X.Y.Z-dev`. `tools/release.sh <version>` writes one version
+into every site. The release flip is the last commit before the tag, the tag
+builds the wheels and the debs, and the next commit flips to the next `-dev`.
 
 ## The surface is the CLI and plain HTTP
 
 `ghee --help` describes the tool. `ghee render <scene> -- --help` describes a
 scene. The console is JSON over HTTP: `/stats`, `/scene`, `/scenes`, `/set`,
 `/switch`, `/frame.png`
+
+A Python host takes the third surface: `ghee.open(scene, ...)`, then `feed`,
+`set_param`, `frame` and `skip`. `python/README.md` holds it.
+
+A procedural scene no ghee started hosts itself on that same surface:
+`./scene.py --output kms --frames 300`. `docs/procedural.md` holds it.
 
 ## Contracts
 
@@ -67,8 +97,8 @@ Never follow a stale instruction, and never work around one in silence.
 
 A scene is either JSON or a procedural scene. The JSON is an ordered list of
 passes, each with a fragment shader. A procedural scene is an executable that
-emits its scene JSON and feeds its data. See `ghee/examples/`, `shim/ghee.py`
-and `docs/procedural.md`.
+emits its scene JSON and feeds its data. See `ghee/examples/`,
+`python/ghee/_shim.py` and `docs/procedural.md`.
 
 - **A scene declares its build-time parameters. It never reads the
   environment.** A scene declares its arguments (`ghee.args([...])` in the shim)

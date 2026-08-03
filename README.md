@@ -234,8 +234,8 @@ ghee starts the scene process when the scene becomes active, then talks to it
 over stdin and stdout. The process can be a program in any language.
 `docs/procedural.md` holds the wire contract.
 
-`shim/ghee.py` is that contract for Python. Copy it beside your scene. A scene
-that needs packages declares them inline (PEP 723) under
+`pip install ghee-render` is that contract for Python: `import ghee`. A scene
+that declares its packages inline (PEP 723) names `ghee-render` there, under
 `#!/usr/bin/env -S uv run --script`. The shim gives:
 
 - `ghee.Scene / Pass / Param / ArrayInput / Channel`: build the scene
@@ -244,7 +244,11 @@ that needs packages declares them inline (PEP 723) under
 - `@ghee.tick`: a hook for each tick, with `ghee.set_param(name, value)` and `ghee.skip()`
 - `ghee.run(scene)`: the handshake, then the tick loop
 
-`ghee/examples/` holds `bluesun.py` and `hero.py`, with the shim beside them.
+A scene no ghee started renders itself: `./scene.py --output kms --frames 300`.
+It takes `--output`, `--size`, `--fps`, `--stats`, `--frames` and `--timestep`
+after its own arguments.
+
+`ghee/examples/` holds `bluesun.py` and `hero.py`.
 
 ## The console
 
@@ -390,7 +394,8 @@ plain-HTTP LAN address is not.
 ```
 cargo test --release
 cargo run --release -- golden --manifest tools/fixtures/golden/manifest.json
-python3 -m pytest tests/test_shim.py
+uv run --no-cache --with python/target/wheels/ghee_render-*.whl --with pytest \
+    pytest python/tests
 ```
 
 The render tests need a GPU node, and they skip cleanly without one. The golden

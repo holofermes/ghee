@@ -16,6 +16,8 @@ jobs:
             libgles2-mesa-dev
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo fmt --check --manifest-path python/Cargo.toml
+      - run: cargo clippy --release --manifest-path python/Cargo.toml -- -D warnings
       # A GitHub runner exposes no /dev/dri. A test that needs a GL device
       # reports the skip and passes. Hardware gates the render itself, through
       # the golden check.

@@ -1,0 +1,59 @@
+name: debs
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  debs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # a workflow_dispatch builds whatever the tree says, dev included
+      - name: the tag is the version, and the version is a release
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          v=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          test "$TAG" = "v$v" || { echo "tag $TAG is not v$v"; exit 1; }
+          case $v in *dev*) echo "$v is a dev version: no release builds from it"; exit 1;; esac
+      - name: the Debian version
+        run: |
+          v=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "DEB_VERSION=$(printf %s "$v" | tr '-' '~')" >>"$GITHUB_ENV"
+      - name: zig, cargo-zigbuild, cargo-deb
+        run: |
+          curl -LsS "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-$ZIG_VERSION" >>"$GITHUB_PATH"
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv tool install cargo-zigbuild
+          cargo install cargo-deb
+          rustup target add aarch64-unknown-linux-gnu arm-unknown-linux-gnueabihf
+      # The armhf repo is the armv6 rebuild the 32-bit Pis run; arm64 is
+      # plain Debian. Keep the dist in step with the glibc pins below.
+      - name: sysroots
+        run: |
+          tools/mksysroot.sh http://raspbian.raspberrypi.com/raspbian trixie armhf sysroots/armv6
+          tools/mksysroot.sh http://deb.debian.org/debian trixie arm64 sysroots/aarch64
+      - name: armhf deb (ARMv6, one deb for every 32-bit Pi)
+        run: |
+          GHEE_SYSROOT="$PWD/sysroots/armv6" \
+            CFLAGS_arm_unknown_linux_gnueabihf=-mcpu=arm1176jzf_s \
+            cargo zigbuild --release --target arm-unknown-linux-gnueabihf.2.38
+          readelf -A target/arm-unknown-linux-gnueabihf/release/ghee |
+            grep -q 'Tag_CPU_arch: v6'
+          cargo deb --deb-version "$DEB_VERSION" --target arm-unknown-linux-gnueabihf --no-build --no-strip
+      - name: arm64 deb
+        run: |
+          GHEE_SYSROOT="$PWD/sysroots/aarch64" \
+            cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.36
+          cargo deb --deb-version "$DEB_VERSION" --target aarch64-unknown-linux-gnu --no-build --no-strip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: target/*/debian/*.deb

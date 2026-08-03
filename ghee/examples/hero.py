@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["ghee-render>=0.3.0", "numpy", "pillow"]
+# ///
 """A word slides over water, and particles stream under the surface.
 
 A feedback buffer holds the particle positions. Each frame takes one advection

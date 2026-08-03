@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["ghee-render>=0.3.0", "numpy", "pillow"]
+# ///
 """Host-rasterized text through a 2D input.
 
 Pillow draws the string once into a mask. The shader scrolls the mask, then
@@ -7,21 +12,21 @@ thresholds it and tints it over a wave.
 crispness and color stay live. Line art needs no dither. The wave behind the
 text stays under the threshold of a 1-bit panel while `glow` stays under it.
 
-    ghee serve --demo -- --text "hello there"       # then edit it live
+    ghee render --demo text -o out.####.png --frames 60
     ghee render --demo text --display ssd1306       # to a panel, no dither
+    ghee render --demo text -- --text "hello there"
 """
 
-import importlib
+import ghee
 
-import numpy as np
-from lib import look
-from PIL import Image, ImageDraw, ImageFont
+args = ghee.args(
+    [ghee.Arg("text", "string", default="GHEE", help="the word to rasterize")]
+)
 
-from ghee import UNCHANGED, Arg, ArrayInput, Param, Pass, Scene, SceneController
-
-# a scene is re-imported on reload but its libraries are not, so without this a
-# reload after editing look.py would render the cached one
-importlib.reload(look)
+# Slow imports come after the parse: the probe must answer inside its window.
+import numpy as np  # noqa: E402
+from lib import look  # noqa: E402
+from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 FONT_SIZE = 28
 
@@ -77,56 +82,53 @@ def _raster_bitmap(text):
     return img.resize((w * zoom, h * zoom), Image.NEAREST)
 
 
-class Text(SceneController):
-    ARGS = [Arg("text", default="GHEE", help="the word to rasterize")]
+def _bake(text):
+    try:
+        font = ImageFont.load_default(size=FONT_SIZE)
+    except TypeError:  # Pillow < 10.1 takes no size here
+        img = _raster_bitmap(text)
+    else:
+        img = _raster(text, font)
+    return (np.asarray(img, np.float32) / 255.0).reshape(-1), img.size
 
-    def __init__(self):
-        self._mask = None
-        self._pending = True
 
-    def build(self, base):
-        w, h = self._bake()
-        return Scene(
-            common=look.PALETTE + look.WAVE + look.TONE,
-            passes=[
-                Pass(
-                    name="main",
-                    code=f"const float mask_aspect = {w / h:.6f};\n{SHADER}",
-                    arrays=[ArrayInput("text", (w, h))],
-                    params={
-                        "speed": Param(
-                            "speed", "float", 0.1, min=-0.6, max=0.6, step=0.01
-                        ),
-                        "threshold": Param(
-                            "threshold", "float", 0.4, min=0.05, max=0.95, step=0.01
-                        ),
-                        "glow": Param(
-                            "glow", "float", 0.3, min=0.0, max=1.0, step=0.01
-                        ),
-                        "ink": Param("ink", "color", [0.72, 0.92, 1.0]),
-                    },
-                )
-            ],
-        )
+MASK, (W, H) = _bake(args.text)
 
-    def _bake(self):
-        text = self.args.text
-        try:
-            font = ImageFont.load_default(size=FONT_SIZE)
-        except TypeError:  # Pillow < 10.1 takes no size here
-            img = _raster_bitmap(text)
-        else:
-            img = _raster(text, font)
-        self._mask = (np.asarray(img, np.float32) / 255.0).reshape(-1)
-        return img.size
+_sent = {"done": False}
 
-    def setup(self, renderer):
-        self._pending = True  # setup empties the engine's textures
 
-    def provide(self, name, size, frame):
-        if name != "text":
-            return None
-        if self._pending:
-            self._pending = False
-            return self._mask
-        return UNCHANGED
+@ghee.feed("text")
+def text(tick):
+    """The mask holds in the engine texture after one send."""
+    if _sent["done"]:
+        return None
+    _sent["done"] = True
+    return MASK
+
+
+def build():
+    return ghee.Scene(
+        common=look.PALETTE + look.WAVE + look.TONE,
+        passes=[
+            ghee.Pass(
+                name="main",
+                code=f"const float mask_aspect = {W / H:.6f};\n{SHADER}",
+                arrays=[ghee.ArrayInput("text", (W, H))],
+                params={
+                    "speed": ghee.Param(
+                        "speed", "float", 0.1, min=-0.6, max=0.6, step=0.01
+                    ),
+                    "threshold": ghee.Param(
+                        "threshold", "float", 0.4, min=0.05, max=0.95, step=0.01
+                    ),
+                    "glow": ghee.Param(
+                        "glow", "float", 0.3, min=0.0, max=1.0, step=0.01
+                    ),
+                    "ink": ghee.Param("ink", "color", [0.72, 0.92, 1.0]),
+                },
+            )
+        ],
+    )
+
+
+ghee.run(build())

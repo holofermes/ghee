@@ -1,23 +1,25 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["ghee-render>=0.3.0", "numpy"]
+# ///
 """A scene with no JSON. It builds its pass in code, and feeds one array each
 frame.
 
-`gain` is one param on both sides. The shader reads it as a uniform for the bar
-brightness. provide() reads it in Python for the bar height.
+`gain` is one param the shader reads twice: for the bar height and for the
+brightness. The feed sends raw levels; every scaling stays in GLSL.
 
     ghee render --demo spectrum -o out.####.png --frames 60
     ghee serve --demo spectrum                      # drive it in the console
 """
 
-import importlib
+import ghee
 
-import numpy as np
-from lib import look
+ghee.args()  # the probe; this scene takes no arguments
 
-from ghee import ArrayInput, Param, Pass, Scene, SceneController
-
-# a scene is re-imported on reload but its libraries are not, so without this a
-# reload after editing look.py would render the cached one
-importlib.reload(look)
+# Slow imports come after the parse: the probe must answer inside its window.
+import numpy as np  # noqa: E402
+from lib import look  # noqa: E402
 
 BARS = 48
 
@@ -26,7 +28,7 @@ void main() {
     vec2 uv = vec2(v_texCoord.x, 1.0 - v_texCoord.y);  // y climbs off the floor
     float fi = uv.x * float(bars_size);
     int i = int(min(fi, float(bars_size - 1)));
-    float h = bars_at(i);
+    float h = gain * bars_at(i);
 
     // bars stand on the baseline, their reflection hangs under it
     float base = 0.34;
@@ -44,32 +46,33 @@ void main() {
 """
 
 
-class Spectrum(SceneController):
-    def build(self, base):
-        self.scene = Scene(
-            common=look.PALETTE + look.TONE,
-            passes=[
-                Pass(
-                    name="main",
-                    code=SHADER,
-                    arrays=[ArrayInput("bars", BARS)],
-                    params={
-                        "gain": Param("gain", "float", 0.6, min=0.0, max=1.0, step=0.01)
-                    },
-                )
-            ],
-        )
-        return self.scene
+def build():
+    return ghee.Scene(
+        common=look.PALETTE + look.TONE,
+        passes=[
+            ghee.Pass(
+                name="main",
+                code=SHADER,
+                arrays=[ghee.ArrayInput("bars", BARS)],
+                params={
+                    "gain": ghee.Param(
+                        "gain", "float", 0.6, min=0.0, max=1.0, step=0.01
+                    )
+                },
+            )
+        ],
+    )
 
-    def provide(self, name, size, frame):
-        if name == "bars":
-            gain = self.scene.passes[0].params["gain"].value
-            x = np.linspace(0.0, 1.0, size)
-            t = frame * 0.05
-            # look.WAVE in numpy: two sines that are not quite harmonics running
-            # opposite ways, so the crest travels and never lands twice on the
-            # same bar
-            w = 0.28 * np.sin(x * 4.4 + t) + 0.10 * np.sin(x * 9.7 - t * 0.6)
-            tilt = np.exp(-1.7 * x)  # a spectrum leans on its low end
-            return (gain * (0.55 + tilt) * (0.65 + w)).astype(np.float32)
-        return None
+
+@ghee.feed("bars")
+def bars(tick):
+    x = np.linspace(0.0, 1.0, BARS)
+    t = tick.frame * 0.05
+    # look.WAVE in numpy: two sines that are not quite harmonics running
+    # opposite ways, so the crest travels and never lands twice on the same bar
+    w = 0.28 * np.sin(x * 4.4 + t) + 0.10 * np.sin(x * 9.7 - t * 0.6)
+    tilt = np.exp(-1.7 * x)  # a spectrum leans on its low end
+    return ((0.55 + tilt) * (0.65 + w)).astype(np.float32)
+
+
+ghee.run(build())

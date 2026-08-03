@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["ghee-render>=0.3.0", "numpy", "pillow"]
+# ///
 """Blue Sun: a wall of light pipes, and the wall the pipes light.
 
 `coneForm` is the closed form of the irradiance a Lambertian cone delivers to a

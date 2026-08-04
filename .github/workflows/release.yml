@@ -147,7 +147,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" all/*linux*.whl all/*.deb --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" all/*linux*.whl all/*/debian/*.deb --clobber --repo "$GITHUB_REPOSITORY"
       - name: uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       # The tag claims manylinux while the wheel links the system GL stack,

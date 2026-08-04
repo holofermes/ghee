@@ -1,6 +1,6 @@
 [package]
 name = "ghee"
-version = "0.3.0-dev"
+version = "0.3.0"
 edition = "2021"
 description = "GLSL scene renderer for headless GPUs. Renders to SPI/I2C panels, KMS scanout, files, and H264."
 license = "MIT"

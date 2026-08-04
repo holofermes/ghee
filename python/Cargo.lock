@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "ghee"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cc",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "ghee-python"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ghee",

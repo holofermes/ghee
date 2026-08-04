@@ -113,8 +113,7 @@ fn window(
 fn pack_rgb444(frame: &[u8], out: &mut Vec<u8>) {
     out.clear();
     let mut px = frame.chunks_exact(3);
-    loop {
-        let Some(a) = px.next() else { break };
+    while let Some(a) = px.next() {
         let b = px.next().unwrap_or(&[0, 0, 0]);
         out.push((a[0] & 0xF0) | (a[1] >> 4));
         out.push((a[2] & 0xF0) | (b[0] >> 4));

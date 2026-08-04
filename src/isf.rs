@@ -1064,12 +1064,10 @@ fn boundary(s: &[char], i: usize) -> bool {
 }
 
 fn starts_with(src: &[char], i: usize, pat: &str) -> bool {
-    let mut k = i;
-    for c in pat.chars() {
-        if src.get(k) != Some(&c) {
+    for (k, c) in pat.chars().enumerate() {
+        if src.get(i + k) != Some(&c) {
             return false;
         }
-        k += 1;
     }
     true
 }
@@ -1225,10 +1223,7 @@ fn find_varying(body: &[char]) -> Option<String> {
         if hit.is_some() {
             return hit;
         }
-        match body[line..].iter().position(|c| *c == '\n') {
-            Some(p) => line += p + 1,
-            None => return None,
-        }
+        line += body[line..].iter().position(|c| *c == '\n')? + 1;
     }
 }
 

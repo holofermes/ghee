@@ -498,10 +498,7 @@ fn pump(mut stdout: ChildStdout, tx: &SyncSender<Vec<u8>>) {
             Ok(n) => n,
         };
         buf.extend_from_slice(&chunk[..n]);
-        loop {
-            let Some(first) = find_aud(&buf, 0) else {
-                break;
-            };
+        while let Some(first) = find_aud(&buf, 0) {
             let Some(next) = find_aud(&buf, first + 4) else {
                 break;
             };

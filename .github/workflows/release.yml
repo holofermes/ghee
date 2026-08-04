@@ -10,6 +10,9 @@ env:
 
 jobs:
   native:
+    # A release that is not v* (the press tag) skips the whole chain: every
+    # other job needs this one.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
     # ubuntu-22.04 pins the x86_64 glibc floor at 2.35, so the retagged
     # manylinux wheel installs on Debian bookworm and up
     runs-on: ubuntu-22.04

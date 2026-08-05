@@ -23,13 +23,13 @@ ARGS = [
     ghee.Arg(
         "particle-buffer",
         "size",
-        default=(320, 200),
+        default="half",
         help="the buffer the particle field renders at, magnified onto the frame",
     ),
     ghee.Arg(
         "particle-grid",
         "size",
-        default=(20, 12),
+        default="eighth",
         help="the particle grid, columns x rows",
     ),
     ghee.Arg("dither", "bool", default=True, help="the dither filter pass"),

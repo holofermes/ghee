@@ -23,9 +23,12 @@ import ghee
 
 ARGS = [
     ghee.Arg(
-        "emit", "size", help="draw the tubes at WxH and blit, instead of full res"
+        "emit",
+        "size",
+        default="half",
+        help="draw the tubes at WxH and blit, instead of full res",
     ),
-    ghee.Arg("wash", "size", help="the wall buffer, default follows the draw aspect"),
+    ghee.Arg("wash", "size", default="quarter", help="the wall buffer"),
     ghee.Arg(
         "near-seg",
         "int",

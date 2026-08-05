@@ -99,6 +99,14 @@ int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display m
 // 0 = width/height set, -1 = no device or nothing connected.
 int  ghee_display_probe(const char *dri_device, int *width, int *height);
 
+// Blank the display, or light it again (display mode only). Blanking stops
+// the CRTC driving the connector, which runs the kernel driver's own disable
+// path: a panel turns its display off and drops its backlight. A blanked
+// display draws nothing, so ghee_mp_present returns at once and the caller
+// paces its own loop. 0, or -1 with the reason in ghee_last_error.
+int ghee_display_blank(GheeScene *g, int blank);
+int ghee_display_blanked(GheeScene *g);
+
 // Zero-copy hardware H264 (encoder.c): the final pass is blitted into a linear
 // dmabuf and fed to the V4L2 M2M encoder (bcm2835-codec); no CPU pixel copy.
 // create fails cleanly (NULL + err) on boards without /dev/video11.

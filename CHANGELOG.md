@@ -7,6 +7,8 @@
 - `ghee displays` lists every card with a connected display.
 - `ghee overlay` writes the kernel's setup for a bundled panel: the
   config.txt lines, and the firmware file the overlay names.
+- A KMS display blanks and lights through its kernel driver, which takes
+  the panel's backlight or its display-off command with it.
 
 ## 0.3.0 - 2026-08-04
 

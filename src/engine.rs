@@ -770,6 +770,24 @@ impl Renderer {
         unsafe { ffi::ghee_display_vrefresh(self.handle) }
     }
 
+    /// Blank the display, or light it again.
+    /// Blanking stops the CRTC driving the connector, and the kernel driver
+    /// takes its panel from there: the display goes off and the backlight
+    /// with it. A blanked display draws nothing, so present returns at once
+    /// and the caller paces its own loop.
+    /// A renderer that drives no display returns an error.
+    pub fn blank(&self, on: bool) -> Result<()> {
+        if unsafe { ffi::ghee_display_blank(self.handle, i32::from(on)) } != 0 {
+            bail!("{}", self.last_error());
+        }
+        Ok(())
+    }
+
+    /// True while the display is blanked.
+    pub fn blanked(&self) -> bool {
+        unsafe { ffi::ghee_display_blanked(self.handle) != 0 }
+    }
+
     /// Enable per-frame draw and readback timing.
     /// The timing adds a glFinish. Timing off costs nothing.
     #[allow(dead_code)]

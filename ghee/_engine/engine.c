@@ -97,6 +97,7 @@ struct GheeScene {
     struct gbm_bo *disp_shown;   // buffer of the flip before that (still on glass until
                                  // the pending one completes; released after)
     bool disp_first;
+    bool disp_blanked;           // the CRTC drives nothing: ghee_mp_present draws nothing
     bool flip_pending;           // a submitted page flip whose event hasn't been reaped
     bool flip_failed;            // a refused flip, reported once instead of every frame
     GLuint blit_prog;
@@ -969,8 +970,36 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
 //    skipping a full-res texture store + blit (2/3 of the frame's traffic).
 //  * pipelined flip: the flip is submitted and reaped on the NEXT present, so
 //    feed/render overlap scanout instead of serializing with the vblank.
+// Blank the display, or light it again. Blanking stops the CRTC driving the
+// connector, which runs the kernel driver's own disable path: a panel turns
+// its display off and drops its backlight. The next present after a light
+// sets the mode again. A blanked display draws nothing at all, so the caller
+// paces its own loop while the display is dark.
+int ghee_display_blank(GheeScene *g, int blank) {
+    if (!g || !g->display_mode) return -1;
+    if (!blank == !g->disp_blanked) return 0;
+    if (!blank) {
+        g->disp_blanked = false;
+        g->disp_first = true;
+        return 0;
+    }
+    wait_flip(g);
+    if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, 0, 0, 0, NULL, 0, NULL)) {
+        set_error(g, "cannot blank the display: %s", strerror(errno));
+        return -1;
+    }
+    // Nothing scans these out now, and the next light starts from a fresh
+    // front buffer.
+    if (g->disp_shown) { gbm_surface_release_buffer(g->gbm_surface, g->disp_shown); g->disp_shown = NULL; }
+    if (g->disp_prev) { gbm_surface_release_buffer(g->gbm_surface, g->disp_prev); g->disp_prev = NULL; }
+    g->disp_blanked = true;
+    return 0;
+}
+
+int ghee_display_blanked(GheeScene *g) { return g && g->disp_blanked; }
+
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
-    if (!g->display_mode) return;
+    if (!g->display_mode || g->disp_blanked) return;
     if (g->mp_count <= 0) { set_error(g, "present: the scene has no passes"); return; }
     make_current(g);
     const int last = g->mp_count - 1;

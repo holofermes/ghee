@@ -129,6 +129,8 @@ extern "C" {
         width: *mut c_int,
         height: *mut c_int,
     ) -> c_int;
+    pub fn ghee_display_blank(g: *mut GheeScene, blank: c_int) -> c_int;
+    pub fn ghee_display_blanked(g: *mut GheeScene) -> c_int;
     pub fn ghee_encoder_create(
         g: *mut GheeScene,
         w: c_int,

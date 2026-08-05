@@ -86,6 +86,10 @@ pub struct SceneStore {
     pub args: Vec<String>,
     /// Each scene name and its path, in the order a scan found them.
     pub scenes: Vec<(String, String)>,
+    /// Filters every scene in this store ends with, after its own. A host
+    /// whose panel needs one (a 1-bit panel needs the dither) sets them here
+    /// instead of writing them into every scene.
+    pub filters: Vec<String>,
 }
 
 impl SceneStore {
@@ -97,6 +101,7 @@ impl SceneStore {
             read_only,
             args,
             scenes,
+            filters: Vec::new(),
         }
     }
 
@@ -215,7 +220,14 @@ impl SceneStore {
                 .map(str::to_string)
                 .collect();
         }
-        let filters = scene.filters.clone();
+        // The scene's own filters run first, the store's follow, so a host
+        // filter like the dither lands last where the panel needs it.
+        let mut filters = scene.filters.clone();
+        for name in &self.filters {
+            if !filters.contains(name) {
+                filters.push(name.clone());
+            }
+        }
         apply_filters(&mut scene, &filters, None)
             .map_err(|e| ConsoleError::server_error(e.to_string()))?;
         if let Some(vals) = vals {
@@ -381,6 +393,30 @@ mod tests {
 
     fn read_json(path: &str) -> Value {
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// A host filter reaches a scene that declares none, and the scene's own
+    /// filters keep their place in front of it.
+    #[test]
+    fn the_store_filters_every_scene_it_loads() {
+        let d = tmpdir("host-filters");
+        write_text(&format!("{d}/plain.scene.json"), SCENE);
+        let mut store = SceneStore::new(&d, true, Vec::new());
+        let (plain, _) = store.start("plain").unwrap();
+        assert_eq!(plain.passes.len(), 1, "no filter yet");
+
+        store.filters = vec!["dither".to_string()];
+        let (dithered, _) = store.start("plain").unwrap();
+        assert_eq!(dithered.passes.len(), 2);
+        assert_eq!(dithered.passes[1].name, "dither");
+
+        // a scene that already ends with the filter takes it once
+        let own = r#"{"version": 1, "filters": ["dither"],
+             "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
+        write_text(&format!("{d}/own.scene.json"), own);
+        store.scenes = scan(&store.dir);
+        let (once, _) = store.start("own").unwrap();
+        assert_eq!(once.passes.len(), 2, "the dither is not applied twice");
     }
 
     /// A directory of two JSON scenes.

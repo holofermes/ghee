@@ -1227,6 +1227,10 @@ impl RenderTarget for SharedRenderer {
         self.0.borrow_mut().draw(provider)
     }
 
+    fn blank(&self, on: bool) -> Result<()> {
+        self.0.borrow().blank(on)
+    }
+
     fn render_into(
         &mut self,
         provider: Option<Provider<'_>>,
@@ -2016,6 +2020,9 @@ pub struct Options {
     pub scene_args: Vec<String>,
     /// A prebuilt store, instead of one over scenes_dir.
     pub store: Option<SceneStore>,
+    /// Filters every scene ends with, after its own. A host whose panel needs
+    /// one sets them here.
+    pub filters: Vec<String>,
     /// The output sinks the frames also reach, so a console drives a panel or
     /// writes files. `display` covers the KMS scanout instead, because that one
     /// is a mode the renderer is created in. run() writes these from its own
@@ -2050,6 +2057,7 @@ impl Default for Options {
             bitrate: 10_000_000,
             scene_args: Vec::new(),
             store: None,
+            filters: Vec::new(),
             sinks: Vec::new(),
             native_format: None,
             components: 4,
@@ -2085,6 +2093,7 @@ pub fn run(opts: Options) -> Result<()> {
         timestep,
         dri_device,
         on_stats,
+        filters,
     } = opts;
     let store = match store {
         Some(store) => store,
@@ -2103,6 +2112,8 @@ pub fn run(opts: Options) -> Result<()> {
     if names.is_empty() {
         bail!("no .scene.json in {}", store.dir);
     }
+    let mut store = store;
+    store.filters = filters;
     let mut console = Console::new(store);
     console.w = size.0;
     console.h = size.1;

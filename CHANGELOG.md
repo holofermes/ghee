@@ -9,6 +9,9 @@
   config.txt lines, and the firmware file the overlay names.
 - A KMS display blanks and lights through its kernel driver, which takes
   the panel's backlight or its display-off command with it.
+- The console takes a host filter list, applied after each scene's own, so
+  a panel that needs the dither takes it without writing it into every
+  scene.
 
 ## 0.3.0 - 2026-08-04
 

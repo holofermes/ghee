@@ -1316,7 +1316,13 @@ MINI.addEventListener("click", e => {
 document.addEventListener("click", e => { if (!OVMENU.contains(e.target)) closeMini(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeMini(); });
 for (const row of OVMENU.querySelectorAll("button[data-for]")) {
-  row.addEventListener("click", () => { closeMini(); $("#" + row.dataset.for).click(); });
+  // the row's own click keeps travelling to the document, which closes every
+  // popover: a row that opens one would open it and lose it in one dispatch
+  row.addEventListener("click", e => {
+    e.stopPropagation();
+    closeMini();
+    $("#" + row.dataset.for).click();
+  });
 }
 document.addEventListener("fullscreenchange", ()=>{ applyRotation(); syncPopOut(); });
 addEventListener("resize", applyRotation);

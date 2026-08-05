@@ -211,12 +211,51 @@ class Scene:
 # ---------------------------------------------------------------------- args
 
 
+SIZE = "GHEE_SIZE"
+
+# A buffer is usually asked for as a share of the frame, so the words say that
+# directly. Powers of two: an odd divisor lands the buffer off the pixel grid
+# and the magnify combs.
+_FRACTIONS = {"full": 1, "half": 2, "quarter": 4, "eighth": 8, "sixteenth": 16}
+
+
+def _render_size() -> tuple[int, int] | None:
+    """The size ghee is about to render at.
+
+    ghee puts it in the environment before it starts the scene. A direct run
+    has no ghee, so the host --size stands in, and the default matches the one
+    `ghee render` uses with no display.
+    """
+    given = os.environ.get(SIZE)
+    if not given:
+        argv = sys.argv[1:]
+        if "--size" in argv[:-1]:
+            given = argv[argv.index("--size") + 1]
+    if not given:
+        return (320, 240)
+    try:
+        w, h = given.lower().split("x")
+        return (int(w), int(h))
+    except ValueError:
+        return None
+
+
 def _size(s: str) -> tuple[int, int]:
+    share = _FRACTIONS.get(s.strip().lower())
+    if share is not None:
+        size = _render_size()
+        if size is None:
+            raise argparse.ArgumentTypeError(
+                f"{s!r} is a share of the render size, and this run has none: pass WxH"
+            )
+        return (max(1, size[0] // share), max(1, size[1] // share))
     try:
         w, h = s.lower().split("x")
         wh = (int(w), int(h))
     except ValueError:
-        raise argparse.ArgumentTypeError(f"want WxH, got {s!r}") from None
+        raise argparse.ArgumentTypeError(
+            f"want WxH or one of {', '.join(_FRACTIONS)}, got {s!r}"
+        ) from None
     if min(wh) < 1:
         raise argparse.ArgumentTypeError(f"want a positive WxH, got {s!r}")
     return wh
@@ -258,7 +297,7 @@ class Arg:
         A size default is the WxH the command line takes.
         """
         d = self.default
-        if self.type == "size" and d is not None:
+        if self.type == "size" and isinstance(d, tuple):
             d = f"{d[0]}x{d[1]}"
         return {"name": self.name, "type": self.type, "default": d, "help": self.help}
 
@@ -281,7 +320,7 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
     p = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]), allow_abbrev=False)
     for s in specs:
         d = s.default
-        shown = f"{d[0]}x{d[1]}" if s.type == "size" and d is not None else d
+        shown = f"{d[0]}x{d[1]}" if isinstance(d, tuple) else d
         help_ = s.help if d is None else f"{s.help} (default: {shown})".lstrip()
         p.add_argument(f"--{s.name}", default=d, help=help_, **_ARG_TYPES[s.type])
     if os.environ.get(WIRE):

@@ -349,6 +349,32 @@ fn panel_of(a: &Ns) -> Result<Panel> {
     Ok(Panel::Driver((spec.open)(&pairs)?))
 }
 
+/// The size a scene builds against, worked out before any device opens.
+/// geometry() gives the same answer once the panel is up, and a scene needs it
+/// earlier than that: it sizes its own buffers as it builds, so `half` and
+/// `quarter` have to mean something already. Reading a mode or a driver's
+/// declared width costs nothing and takes no DRM master, so asking early is
+/// free. None where the size cannot be known without opening the device, and a
+/// scene that wanted a fraction then says so itself.
+fn prospective_size(a: &Ns) -> Option<(i32, i32)> {
+    if !given(&a.display) {
+        return Some(a.size.unwrap_or(DEFAULT_SIZE));
+    }
+    let name = text(&a.display);
+    if name == "kms" {
+        return probe_display(a.dri.as_deref()).or(a.size);
+    }
+    let spec = get_driver(name).ok()?;
+    let opts = parse_kv(text(&a.display_opts), "--display-opts").unwrap_or_default();
+    let known = driver_options(spec);
+    let pick = |k: &str| -> Option<i32> {
+        let given = opts.get(k).and_then(Value::as_i64);
+        let fallback = known.iter().find(|o| o.name == k).and_then(|o| o.default);
+        given.or(fallback).map(|v| v as i32)
+    };
+    Some((pick("width")?, pick("height")?))
+}
+
 /// (size, components) the render runs at. A scanout takes the connected mode.
 /// A panel takes its own geometry and pixel layout. Both win over --size.
 /// Everything else takes --size.
@@ -362,7 +388,7 @@ fn geometry(a: &Ns, panel: &Panel) -> Result<((i32, i32), i32)> {
             ))),
         },
         Panel::Driver(d) => Ok(((d.width(), d.height()), d.components())),
-        Panel::None => Ok((a.size.unwrap_or((320, 240)), a.components)),
+        Panel::None => Ok((a.size.unwrap_or(DEFAULT_SIZE), a.components)),
     }
 }
 
@@ -501,6 +527,9 @@ static SIGNALLED: AtomicI32 = AtomicI32::new(0);
 
 // Linux signal numbers. The handler is a plain function pointer, so the
 // install needs neither SIG_DFL nor SIG_IGN.
+/// The render size with nothing to take one from: no display, no --size.
+const DEFAULT_SIZE: (i32, i32) = (320, 240);
+
 const SIGINT: c_int = 2;
 const SIGTERM: c_int = 15;
 
@@ -556,7 +585,11 @@ fn cmd_render(a: &Ns) -> Result<()> {
         )));
     }
     // the scene loads first: it owns the tokens after `--` and their --help. A
-    // scene the loader rejects fails before a panel opens.
+    // scene the loader rejects fails before a panel opens. It builds its own
+    // buffers as it loads, so it learns the render size before that.
+    if let Some(size) = prospective_size(a) {
+        crate::procedural::process::set_render_size(size);
+    }
     let scene = if a.serve { None } else { Some(scene_of(a)?) };
     let panel = panel_of(a)?;
     let kms = matches!(panel, Panel::Kms);

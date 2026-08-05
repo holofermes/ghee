@@ -16,7 +16,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -60,6 +60,25 @@ const MAX_VALUES: usize = 1 << 22;
 /// The env var ghee sets in every scene process it starts. The shim's
 /// run() reads it to tell a ghee-started run from a direct one.
 const WIRE: &str = "GHEE_WIRE";
+
+/// The size ghee will render at, as WxH, in every scene process it starts.
+/// A scene sizes its own buffers against it, so `half` and `quarter` mean
+/// something before a single pass is built.
+const SIZE: &str = "GHEE_SIZE";
+
+/// The render size, set once the command line and the display agree on it and
+/// read at every scene spawn. A scene builds before the panel opens, so the
+/// size travels here rather than through the wire handshake.
+static RENDER_SIZE: RwLock<Option<(i32, i32)>> = RwLock::new(None);
+
+pub fn set_render_size(size: (i32, i32)) {
+    *RENDER_SIZE.write().unwrap() = Some(size);
+}
+
+/// WxH for the scene environment, or None before anything set it.
+fn render_size() -> Option<String> {
+    RENDER_SIZE.read().unwrap().map(|(w, h)| format!("{w}x{h}"))
+}
 
 const SET_ARRAY: u8 = 0;
 const SET_PARAM: u8 = 1;
@@ -139,7 +158,11 @@ fn declarations(path: &str) -> Option<Vec<ArgDecl>> {
 /// Run `<process> --ghee-args` and read the one line it answers with.
 fn probe(path: &str) -> Option<String> {
     let (program, dir) = where_to_run(path).ok()?;
-    let mut child = Command::new(program)
+    let mut cmd = Command::new(program);
+    if let Some(size) = render_size() {
+        cmd.env(SIZE, size);
+    }
+    let mut child = cmd
         .arg("--ghee-args")
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -402,7 +425,11 @@ impl SceneProcess {
     /// and a process that refuses one dies with its own message on stderr.
     pub fn start(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
         let (program, dir) = where_to_run(path)?;
-        let mut child = Command::new(program)
+        let mut cmd = Command::new(program);
+        if let Some(size) = render_size() {
+            cmd.env(SIZE, size);
+        }
+        let mut child = cmd
             .args(args)
             .current_dir(&dir)
             .env(WIRE, "1")

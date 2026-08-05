@@ -26,10 +26,13 @@ ARGS = [
         default="half",
         help="the buffer the particle field renders at, magnified onto the frame",
     ),
+    # A count, not a share of the frame: the shader unrolls the grid, so the
+    # cost is the whole grid every frame however small the panel is. A share
+    # of a 1280x800 frame is 16000 particles and the render stops moving.
     ghee.Arg(
         "particle-grid",
         "size",
-        default="eighth",
+        default=(20, 12),
         help="the particle grid, columns x rows",
     ),
     ghee.Arg("dither", "bool", default=True, help="the dither filter pass"),

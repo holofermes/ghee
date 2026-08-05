@@ -5,6 +5,8 @@
 - `--display kms` drives any connected KMS display, an SPI/I2C panel the
   kernel drives included.
 - `ghee displays` lists every card with a connected display.
+- `ghee overlay` writes the kernel's setup for a bundled panel: the
+  config.txt lines, and the firmware file the overlay names.
 
 ## 0.3.0 - 2026-08-04
 

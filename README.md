@@ -300,32 +300,43 @@ ghee refuses three kinds of ISF:
 ## Hardware displays
 
 ```
-ghee displays                      # list drivers, their options, and what works here
-ghee render scene.json --display st7789
+ghee displays                      # cards, drivers, their options, what works here
 ghee render scene.json --display kms
+ghee render scene.json --display st7789
 ghee serve scenes/ --display st7789   # the console, driving the panel
+ghee overlay st7789                   # take the kernel route instead
 ```
 
 `kms` is any connected KMS display: HDMI, or an SPI/I2C panel the kernel
-drives (`drivers/gpu/drm/tiny`, set up with a
-[device-tree overlay](https://github.com/raspberrypi/linux/blob/HEAD/arch/arm/boot/dts/overlays/README)
-and the [firmware blob](https://github.com/notro/panel-mipi-dbi/wiki) it
-loads). Use `ghee displays` to list the cards, and `--dri` to pick one. A
-panel set up that way belongs to the kernel driver, so `--display st7789`
-and `--display ssd1306` cannot reach it.
+drives. Use `ghee displays` to list the cards, and `--dri` to pick one.
 
-Yes, two more userspace panel drivers: `st7789` (a 135x240 SPI LCD) and
+Take the kernel route for a panel where you can: on a Pi Zero W at 240x240 the
+`hero` demo renders 44% more fps than the userspace `st7789` driver does, at
+40% less CPU. The kernel already drives a range of SPI and I2C panels set up
+with a device-tree overlay. Use `ghee overlay` to generate what the panel
+needs and the instructions to install it, the panel belongs to the kernel
+driver from then on:
+
+```
+$ ghee overlay st7789 --display-opts width=240,height=240,madctl=0x00,backlight=26
+dtoverlay=mipi-dbi-spi,spi0-0,speed=99000000
+dtparam=width=240,height=240
+dtparam=dc-gpio=25,backlight-gpio=26
+dtparam=write-only
+wrote panel.bin; copy it to /lib/firmware/panel.bin, add the lines above to
+/boot/firmware/config.txt, and reboot
+```
+
+Yes, two userspace panel drivers: `st7789` (a 135x240 SPI LCD) and
 `ssd1306` (a 128x32 I2C 1-bit OLED). They need no overlay and no reboot,
-can be hot swapped 😬, and are configurable at runtime. Extend either
-driver to your own panel with `--display-opts`, which sets the driver's
-own options, for example the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
+can be hot swapped 😬, and are configurable at runtime. Extend either driver to
+your own panel with `--display-opts`, which sets the driver's own options,
+for example the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
 
 ```
 ghee render --demo bars --display st7789 \
   --display-opts width=240,height=240,x_offset=0,y_offset=0,madctl=0x00,backlight=26
 ```
-
-Run `ghee displays` to list every option a driver takes, with its default.
 
 ## From Rust
 

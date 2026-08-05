@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 use rppal::i2c::I2c;
 
 use crate::drivers::base::{DisplayDriver, MONO1};
-use crate::drivers::{int_opt, DriverOption, DriverSpec, Opts};
+use crate::drivers::{int_opt, DriverOption, DriverSpec, Opts, Setup};
 use crate::engine::pack_frame_into;
 
 const CMD: u8 = 0x80; // control byte: one command follows
@@ -133,7 +133,7 @@ impl DisplayDriver for Ssd1306 {
 }
 
 const OPTIONS: [DriverOption; 2] = [
-    DriverOption::new("bus", Some(DEFAULT_BUS)),
+    DriverOption::own("bus", Some(DEFAULT_BUS)),
     DriverOption::new("addr", Some(DEFAULT_ADDR)),
 ];
 
@@ -149,16 +149,62 @@ fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver>> {
     Ok(Box::new(Ssd1306::new(bus, addr)?))
 }
 
+/// The config.txt lines that hand this panel to ssd130x. That driver holds
+/// the init sequence for the whole Solomon family, so no firmware file goes
+/// with it. `inverted` and `sequential` describe how the glass is wired to
+/// the controller, which no option here reports: drop them if the picture
+/// comes out mirrored or interleaved.
+fn kernel(opts: &Opts) -> Result<Setup> {
+    let addr = int_opt(opts, "addr", DEFAULT_ADDR)?;
+    if addr != DEFAULT_ADDR {
+        bail!("the ssd1306 overlay drives address 0x{DEFAULT_ADDR:02X}, and this panel answers at 0x{addr:02X}");
+    }
+    Ok(Setup {
+        firmware: None,
+        lines: vec![
+            "dtparam=i2c_arm=on".to_string(),
+            format!("dtoverlay=ssd1306,height={HEIGHT},inverted,sequential"),
+        ],
+    })
+}
+
 pub const SPEC: DriverSpec = DriverSpec {
     name: "ssd1306",
     options: &OPTIONS,
     open,
+    kernel,
 };
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::engine::pack_frame_into;
+
+    /// ssd130x holds the init sequence for the whole family, so the overlay
+    /// is the entire setup.
+    #[test]
+    fn the_kernel_setup_is_the_overlay_alone() {
+        let setup = kernel(&[]).unwrap();
+        assert!(setup.firmware.is_none());
+        assert_eq!(
+            setup.lines,
+            [
+                "dtparam=i2c_arm=on",
+                "dtoverlay=ssd1306,height=32,inverted,sequential",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_address_the_overlay_cannot_drive_is_refused() {
+        let set = [("addr".to_string(), json!(0x3D))];
+        assert_eq!(
+            kernel(&set).unwrap_err().to_string(),
+            "the ssd1306 overlay drives address 0x3C, and this panel answers at 0x3D"
+        );
+    }
 
     /// The command bytes adafruit_ssd1306 sends a 128x32 panel on internal Vcc.
     /// The order is poweron(), the init table, then the addressing window.

@@ -14,16 +14,65 @@ pub use base::DisplayDriver;
 /// The options --display-opts sets. Each k=v pair parses to one value.
 pub type Opts = [(String, Value)];
 
+/// A command byte and its data, empty for a command that takes none.
+/// A delay is command 0x00 carrying the milliseconds, the encoding
+/// panel-mipi-dbi reads.
+pub type Command = (u8, Vec<u8>);
+
+/// The kernel's own setup for a panel, what `ghee overlay` writes out.
+/// A panel whose driver holds its init sequence has no firmware of its own.
+#[derive(Debug)]
+pub struct Setup {
+    pub firmware: Option<Vec<u8>>,
+    /// The config.txt lines that bring the card up.
+    pub lines: Vec<String>,
+}
+
+/// The firmware file panel-mipi-dbi loads: a 15-byte magic, the format
+/// version, then each command as its byte, its parameter count and the
+/// parameters.
+pub fn firmware(init: &[Command]) -> Vec<u8> {
+    let mut out = b"MIPI DBI\0\0\0\0\0\0\0\x01".to_vec();
+    for (command, data) in init {
+        out.push(*command);
+        out.push(data.len() as u8);
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+/// A delay in the init sequence, in milliseconds. A panel-mipi-dbi delay
+/// carries one byte, so 255 is the longest one.
+pub(crate) fn delay(ms: u8) -> Command {
+    (0x00, vec![ms])
+}
+
 /// A constructor option and its default.
 /// --display-opts sets the option, and `ghee displays` lists it.
 pub struct DriverOption {
     pub name: &'static str,
     pub default: Option<i64>,
+    /// The option describes the panel, so `ghee overlay` takes it too.
+    pub kernel: bool,
 }
 
 impl DriverOption {
     pub const fn new(name: &'static str, default: Option<i64>) -> DriverOption {
-        DriverOption { name, default }
+        DriverOption {
+            name,
+            default,
+            kernel: true,
+        }
+    }
+
+    /// An option the userspace driver alone acts on, like the format it puts
+    /// on the wire.
+    pub const fn own(name: &'static str, default: Option<i64>) -> DriverOption {
+        DriverOption {
+            name,
+            default,
+            kernel: false,
+        }
     }
 }
 
@@ -31,6 +80,8 @@ pub struct DriverSpec {
     pub name: &'static str,
     pub options: &'static [DriverOption],
     pub open: fn(&Opts) -> Result<Box<dyn DisplayDriver>>,
+    /// The kernel setup for this panel, for `ghee overlay`.
+    pub kernel: fn(&Opts) -> Result<Setup>,
 }
 
 const BUNDLED: [&DriverSpec; 2] = [&st7789::SPEC, &ssd1306::SPEC];
@@ -57,6 +108,12 @@ pub fn driver_options(spec: &DriverSpec) -> &'static [DriverOption] {
 /// The value set for `name`. The last pair wins.
 fn opt<'a>(opts: &'a Opts, name: &str) -> Option<&'a Value> {
     opts.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v)
+}
+
+/// True when --display-opts set this option. A driver default describes the
+/// panel it was written for, which is the wrong answer for a kernel setup.
+pub(crate) fn given(opts: &Opts, name: &str) -> bool {
+    opt(opts, name).is_some()
 }
 
 pub(crate) fn int_opt(opts: &Opts, name: &str, default: i64) -> Result<i64> {

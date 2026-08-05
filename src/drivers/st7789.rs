@@ -16,7 +16,10 @@ use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
 
 use crate::drivers::base::{rows_changed, DisplayDriver, RGB444, RGB565};
 use crate::drivers::gpio::Pins;
-use crate::drivers::{i32_opt, int_opt, pin_opt, DriverOption, DriverSpec, Opts};
+use crate::drivers::{
+    delay, firmware, given, i32_opt, int_opt, pin_opt, Command, DriverOption, DriverSpec, Opts,
+    Setup,
+};
 use crate::engine::pack_frame_into;
 
 const SWRESET: u8 = 0x01;
@@ -49,9 +52,6 @@ const DEFAULT_COLOR_BITS: i64 = 16;
 // partial=1 sends only the rows that changed since the last frame.
 // 12-bit packs pixel pairs across row bounds, so 12-bit always sends full frames.
 const DEFAULT_PARTIAL: i64 = 1;
-
-/// A command byte and its data, empty for a command that takes none.
-type Command = (u8, Vec<u8>);
 
 /// Two coordinates as big-endian u16.
 fn pack_hh(a: i32, b: i32) -> Result<Vec<u8>> {
@@ -390,6 +390,81 @@ impl DisplayDriver for St7789 {
     }
 }
 
+/// The init sequence panel-mipi-dbi replays from the firmware file. The
+/// kernel driver sets the address window itself on every flush, so CASET and
+/// RASET stay out, and the offsets ride in the overlay instead. The delays
+/// are the controller's own settling times, which the userspace driver takes
+/// between its own writes.
+fn kernel_init(madctl: u8) -> Vec<Command> {
+    vec![
+        (SWRESET, vec![]),
+        delay(150),
+        (SLPOUT, vec![]),
+        delay(120),
+        (COLMOD, vec![0x55]),
+        (MADCTL, vec![madctl]),
+        (INVON, vec![]),
+        (NORON, vec![]),
+        (DISPON, vec![]),
+        delay(100),
+    ]
+}
+
+/// The config.txt lines that hand this panel to panel-mipi-dbi, and the
+/// firmware the overlay names.
+fn kernel(opts: &Opts) -> Result<Setup> {
+    if !given(opts, "width") || !given(opts, "height") {
+        bail!("pass width and height");
+    }
+    let madctl = int_opt(opts, "madctl", DEFAULT_MADCTL)?;
+    let Ok(madctl) = u8::try_from(madctl) else {
+        bail!("madctl {madctl} is not a byte");
+    };
+    let Some(dc) = pin_opt(opts, "dc", Some(DEFAULT_DC))? else {
+        bail!("dc is the panel's command pin and takes a GPIO number");
+    };
+    let (bus, device) = (
+        int_opt(opts, "spi_bus", DEFAULT_SPI_BUS)?,
+        int_opt(opts, "spi_device", DEFAULT_SPI_DEVICE)?,
+    );
+    let mut lines = vec![
+        format!(
+            "dtoverlay=mipi-dbi-spi,spi{bus}-{device},speed={}",
+            int_opt(opts, "baudrate", DEFAULT_BAUDRATE)?
+        ),
+        format!(
+            "dtparam=width={},height={}",
+            i32_opt(opts, "width", DEFAULT_WIDTH)?,
+            i32_opt(opts, "height", DEFAULT_HEIGHT)?
+        ),
+    ];
+    // The offsets belong to the panel that carries the geometry above, so a
+    // panel named here starts at the controller's origin until it says
+    // otherwise.
+    let (x, y) = (i32_opt(opts, "x_offset", 0)?, i32_opt(opts, "y_offset", 0)?);
+    if x != 0 {
+        lines.push(format!("dtparam=x-offset={x}"));
+    }
+    if y != 0 {
+        lines.push(format!("dtparam=y-offset={y}"));
+    }
+    let mut pins = format!("dtparam=dc-gpio={dc}");
+    if let Some(bl) = pin_opt(opts, "backlight", Some(DEFAULT_BACKLIGHT))? {
+        pins.push_str(&format!(",backlight-gpio={bl}"));
+    }
+    if let Some(rst) = pin_opt(opts, "rst", None)? {
+        pins.push_str(&format!(",reset-gpio={rst}"));
+    }
+    lines.push(pins);
+    // MISO reaches no hobby breakout, and the driver reads the controller
+    // without this.
+    lines.push("dtparam=write-only".to_string());
+    Ok(Setup {
+        firmware: Some(firmware(&kernel_init(madctl))),
+        lines,
+    })
+}
+
 const OPTIONS: [DriverOption; 13] = [
     DriverOption::new("width", Some(DEFAULT_WIDTH)),
     DriverOption::new("height", Some(DEFAULT_HEIGHT)),
@@ -402,8 +477,8 @@ const OPTIONS: [DriverOption; 13] = [
     DriverOption::new("spi_bus", Some(DEFAULT_SPI_BUS)),
     DriverOption::new("spi_device", Some(DEFAULT_SPI_DEVICE)),
     DriverOption::new("madctl", Some(DEFAULT_MADCTL)),
-    DriverOption::new("color_bits", Some(DEFAULT_COLOR_BITS)),
-    DriverOption::new("partial", Some(DEFAULT_PARTIAL)),
+    DriverOption::own("color_bits", Some(DEFAULT_COLOR_BITS)),
+    DriverOption::own("partial", Some(DEFAULT_PARTIAL)),
 ];
 
 fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver>> {
@@ -443,10 +518,13 @@ pub const SPEC: DriverSpec = DriverSpec {
     name: "st7789",
     options: &OPTIONS,
     open,
+    kernel,
 };
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{json, Value};
+
     use super::*;
     use crate::engine::pack_frame;
 
@@ -579,6 +657,87 @@ mod tests {
         );
     }
 
+    /// The bytes panel-mipi-dbi loads for the 240x240 bonnet, read back from
+    /// the firmware file that drove the real panel.
+    const FIRMWARE_ON_THE_PANEL: &str = "4d495049204442490000000000000001\
+                                         010000019611000001783a0155360100\
+                                         210013002900000164";
+
+    fn bonnet() -> Vec<(String, Value)> {
+        [
+            ("width", json!(240)),
+            ("height", json!(240)),
+            ("x_offset", json!(0)),
+            ("y_offset", json!(0)),
+            ("madctl", json!(0)),
+            ("backlight", json!(26)),
+        ]
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect()
+    }
+
+    #[test]
+    fn the_firmware_matches_the_file_that_drove_the_panel() {
+        let blob = kernel(&bonnet()).unwrap().firmware.unwrap();
+        assert_eq!(hex(&blob), FIRMWARE_ON_THE_PANEL);
+        assert_eq!(blob.len(), 41);
+    }
+
+    #[test]
+    fn the_overlay_lines_carry_the_panel_the_options_describe() {
+        assert_eq!(
+            kernel(&bonnet()).unwrap().lines,
+            [
+                "dtoverlay=mipi-dbi-spi,spi0-0,speed=99000000",
+                "dtparam=width=240,height=240",
+                "dtparam=dc-gpio=25,backlight-gpio=26",
+                "dtparam=write-only",
+            ]
+        );
+    }
+
+    /// The offsets ride in the overlay, since the kernel driver sets the
+    /// address window itself.
+    #[test]
+    fn an_offset_panel_puts_its_offsets_in_the_overlay() {
+        let mut set = bonnet();
+        set.retain(|(k, _)| k != "y_offset" && k != "madctl");
+        set.push(("y_offset".to_string(), json!(80)));
+        let lines = kernel(&set).unwrap().lines;
+        assert!(
+            lines.contains(&"dtparam=y-offset=80".to_string()),
+            "{lines:?}"
+        );
+        // no x offset was named, so no line carries one
+        assert!(!lines.iter().any(|l| l.contains("x-offset")), "{lines:?}");
+        // the default madctl reaches the firmware, not the overlay
+        let blob = kernel(&set).unwrap().firmware.unwrap();
+        assert!(hex(&blob).contains("3601c0"), "{}", hex(&blob));
+    }
+
+    /// A driver default describes the 135x240 breakout, and writing that into
+    /// a kernel setup would name the wrong panel.
+    #[test]
+    fn the_overlay_takes_no_geometry_default() {
+        for set in [vec![], vec![("width".to_string(), json!(240))]] {
+            assert_eq!(
+                kernel(&set).unwrap_err().to_string(),
+                "pass width and height"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reset_pin_reaches_the_overlay() {
+        let mut set = bonnet();
+        set.push(("rst".to_string(), json!(27)));
+        assert!(kernel(&set)
+            .unwrap()
+            .lines
+            .contains(&"dtparam=dc-gpio=25,backlight-gpio=26,reset-gpio=27".to_string()));
+    }
+
     #[test]
     fn twelve_bit_packs_two_pixels_into_three_bytes() {
         let mut out = Vec::new();
@@ -603,5 +762,4 @@ mod tests {
             "color_bits 18 is not 16 or 12"
         );
     }
-
 }

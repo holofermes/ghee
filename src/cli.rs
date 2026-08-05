@@ -11,6 +11,7 @@
 //! ghee render --demo bars -o frame.png                   # a bundled example by name
 //! ghee isf import shader.fs -o shader.scene.json         # import an ISF shader
 //! ghee displays                                          # list display drivers
+//! ghee overlay st7789                                     # kernel setup for a panel
 //! ```
 
 use std::cell::RefCell;
@@ -411,9 +412,7 @@ fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
         .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
     match panel {
         Panel::Kms => fixed,
-        Panel::Driver(_) => {
-            fixed.or_else(|| Some(Box::new(AdaptivePacer::new())))
-        }
+        Panel::Driver(_) => fixed.or_else(|| Some(Box::new(AdaptivePacer::new()))),
         Panel::None if given(&a.h264) => Some(Box::new(FixedPacer::new(f64::from(h264_fps(a))))),
         Panel::None => None,
     }
@@ -858,6 +857,89 @@ fn line(text: &str) {
     }
 }
 
+/// `ghee overlay` writes the kernel's own setup for a panel: the config.txt
+/// lines that bring the card up, and the firmware the overlay names. The
+/// panel then answers `--display kms` like any other display.
+fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
+    let Ok(spec) = get_driver(&a.driver) else {
+        return Err(exit(format!(
+            "overlay: no display driver '{}' (see: ghee displays)",
+            a.driver
+        )));
+    };
+    let opts = match given(&a.display_opts) {
+        true => parse_kv(text(&a.display_opts), "overlay: --display-opts")?,
+        false => Map::new(),
+    };
+    // Only the options that describe the panel reach a kernel setup: the
+    // wire format and the update strategy are the driver's own.
+    let known = driver_options(spec);
+    let takes = || {
+        known
+            .iter()
+            .filter(|o| o.kernel)
+            .map(|o| o.name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let own: Vec<&str> = opts
+        .keys()
+        .filter(|k| known.iter().any(|o| o.name == k.as_str() && !o.kernel))
+        .map(String::as_str)
+        .collect();
+    if !own.is_empty() {
+        return Err(exit(format!(
+            "overlay: the userspace driver alone acts on {} (the kernel setup takes: {})",
+            own.join(", "),
+            takes()
+        )));
+    }
+    let unknown: Vec<&str> = opts
+        .keys()
+        .filter(|k| !known.iter().any(|o| o.name == k.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(exit(format!(
+            "overlay: no option {} on {} (takes: {})",
+            unknown.join(", "),
+            a.driver,
+            takes()
+        )));
+    }
+    let pairs: Vec<(String, Value)> = opts.into_iter().collect();
+    let setup = (spec.kernel)(&pairs).map_err(|e| exit(format!("overlay: {e}")))?;
+    for text in &setup.lines {
+        line(text);
+    }
+    match setup.firmware {
+        Some(blob) => {
+            let path = text(&a.output);
+            let path = match path.is_empty() {
+                true => "panel.bin",
+                false => path,
+            };
+            File::create(path)
+                .and_then(|mut f| f.write_all(&blob))
+                .with_context(|| path.to_string())?;
+            eprintln!(
+                "wrote {path}. Copy it to /lib/firmware/panel.bin, add the lines \
+                 above to /boot/firmware/config.txt, and reboot"
+            );
+        }
+        None => {
+            if given(&a.output) {
+                return Err(exit(format!(
+                    "overlay: -o with {}, a panel that takes no firmware file",
+                    a.driver
+                )));
+            }
+            eprintln!("add the lines above to /boot/firmware/config.txt, and reboot");
+        }
+    }
+    Ok(())
+}
+
 fn cmd_displays() -> Result<()> {
     // every card with a connected display, since an SPI panel under a
     // kernel display driver is a card beside the HDMI one
@@ -943,6 +1025,13 @@ enum Command {
 
     #[command(about = "list connected cards, display drivers, and their options")]
     Displays,
+
+    #[command(
+        about = "write the kernel's setup for a panel, so it answers --display kms",
+        after_help = "the panel then belongs to the kernel driver, and --display <NAME> \
+                      no longer reaches it"
+    )]
+    Overlay(OverlayArgs),
 
     /// The benchmark suite is a development tool, so it stays out of
     /// `ghee --help`.
@@ -1156,6 +1245,26 @@ struct ServeArgs {
 }
 
 #[derive(Args)]
+struct OverlayArgs {
+    #[arg(help = "display driver name (see: ghee displays)")]
+    driver: String,
+
+    #[arg(
+        long,
+        value_name = "K=V,...",
+        help = "the panel's options, the same ones --display-opts takes"
+    )]
+    display_opts: Option<String>,
+
+    #[arg(
+        short,
+        long,
+        help = "where to write the firmware file (default panel.bin)"
+    )]
+    output: Option<String>,
+}
+
+#[derive(Args)]
 struct IsfArgs {
     #[command(subcommand)]
     isf_cmd: IsfCommand,
@@ -1310,6 +1419,7 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
         Command::Serve(_) => "serve",
         Command::Isf(_) => "isf",
         Command::Displays => "displays",
+        Command::Overlay(_) => "overlay",
         Command::Bench(_) => "bench",
     };
     if !scene_args.is_empty() && !matches!(cli.cmd, Command::Render(_) | Command::Serve(_)) {
@@ -1325,6 +1435,7 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
             IsfCommand::Import(i) => cmd_isf_import(i),
         },
         Command::Displays => cmd_displays(),
+        Command::Overlay(a) => cmd_overlay(&a),
         Command::Bench(a) => bench::run(&a),
     };
     (cmd, ran)
@@ -1662,6 +1773,45 @@ mod tests {
         assert_eq!(join("/a/b", "c"), "/a/b/c");
         assert_eq!(join("/a/b/", "c"), "/a/b/c");
         assert_eq!(join("/a/b", "/c"), "/c");
+    }
+
+    /// `overlay` refuses before it writes anything.
+    #[test]
+    fn overlay_names_what_it_cannot_set_up() {
+        for (tokens, msg) in [
+            (
+                vec!["overlay", "does-not-exist"],
+                "overlay: no display driver 'does-not-exist' (see: ghee displays)",
+            ),
+            (
+                vec!["overlay", "ssd1306", "-o", "panel.bin"],
+                "overlay: -o with ssd1306, a panel that takes no firmware file",
+            ),
+            (
+                vec!["overlay", "st7789", "--display-opts", "widht=240"],
+                "overlay: no option widht on st7789 (takes: width, height, \
+                 x_offset, y_offset, dc, rst, backlight, baudrate, spi_bus, spi_device, \
+                 madctl)",
+            ),
+            // the wire format and the update strategy never reach a kernel setup
+            (
+                vec![
+                    "overlay",
+                    "st7789",
+                    "--display-opts",
+                    "color_bits=12,partial=0",
+                ],
+                "overlay: the userspace driver alone acts on color_bits, partial (the \
+                 kernel setup takes: width, height, x_offset, y_offset, dc, rst, \
+                 backlight, baudrate, spi_bus, spi_device, madctl)",
+            ),
+            (
+                vec!["overlay", "ssd1306", "--display-opts", "bus=0"],
+                "overlay: the userspace driver alone acts on bus (the kernel setup takes: addr)",
+            ),
+        ] {
+            assert_eq!(run(&tokens).unwrap_err().to_string(), msg, "{tokens:?}");
+        }
     }
 
     #[test]

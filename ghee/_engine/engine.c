@@ -108,6 +108,13 @@ struct GheeScene {
     struct gbm_bo *disp_shown;   // buffer of the flip before that (still on glass until
                                  // the pending one completes, released after)
     bool disp_first;
+    // A render smaller than the mode scans out through the display's own
+    // scaler: the plane takes a source rectangle the size of the buffer and a
+    // destination rectangle the size of the mode, and the hardware stretches
+    // it. The GPU shades the smaller count, and the stretch costs nothing.
+    // Page flip carries no source rectangle, so this path sets the plane every
+    // frame and waits a vblank of its own for pacing.
+    uint32_t disp_plane;         // the primary plane, 0 when the render fills the mode
     bool disp_blanked;           // the CRTC drives nothing: ghee_mp_present draws nothing
     bool flip_pending;           // a submitted page flip whose event hasn't been reaped
     bool flip_failed;            // a refused flip, reported once instead of every frame
@@ -150,6 +157,7 @@ static const char *blit_fragment_source =
     " gl_FragColor = texture2D(tex, uv); }";
 
 static bool wait_flip(GheeScene *g);        // both defined with ghee_mp_present below
+static uint32_t primary_plane(int fd, uint32_t crtc_id);
 static bool ensure_blit(GheeScene *g);
 
 static void set_error(GheeScene *g, const char *fmt, ...) {
@@ -536,6 +544,20 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
     fprintf(stderr, "ghee: display %s %ux%u@%u on connector %u\n",
             g->disp_mode.name, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
             g->disp_mode.vrefresh, g->disp_conn);
+
+    if (width != g->disp_mode.hdisplay || height != g->disp_mode.vdisplay) {
+        g->disp_plane = primary_plane(g->drm_fd, g->disp_crtc);
+        if (!g->disp_plane) {
+            snprintf(eb, sizeof(eb),
+                     "%dx%d does not fill the %ux%u mode, and this display scales nothing",
+                     width, height, g->disp_mode.hdisplay, g->disp_mode.vdisplay);
+            if (err) *err = eb;
+            ghee_destroy(g);
+            return NULL;
+        }
+        fprintf(stderr, "ghee: scanout scales %dx%d to %ux%u on plane %u\n",
+                width, height, g->disp_mode.hdisplay, g->disp_mode.vdisplay, g->disp_plane);
+    }
 
     make_current(g);
     if (!ensure_blit(g)) { if (err) *err = "blit shader failed"; ghee_destroy(g); return NULL; }
@@ -970,6 +992,64 @@ static void read_pixels(GheeScene *g, int w, int h, int components, uint8_t *out
     }
 }
 
+// The CRTC's primary plane. A scaled scanout drives the plane directly, and
+// only the primary one covers the whole screen. The universal-planes cap is
+// what makes the kernel list it at all: without it a client sees the overlay
+// planes alone. 0 = none, and the caller then refuses the size.
+static uint32_t primary_plane(int fd, uint32_t crtc_id) {
+    drmModeRes *res = drmModeGetResources(fd);
+    if (!res) return 0;
+    int index = -1;
+    for (int i = 0; i < res->count_crtcs; i++)
+        if (res->crtcs[i] == crtc_id) index = i;
+    drmModeFreeResources(res);
+    if (index < 0) return 0;
+
+    if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) return 0;
+    drmModePlaneRes *pr = drmModeGetPlaneResources(fd);
+    if (!pr) return 0;
+    uint32_t found = 0;
+    for (uint32_t i = 0; i < pr->count_planes && !found; i++) {
+        drmModePlane *p = drmModeGetPlane(fd, pr->planes[i]);
+        if (!p) continue;
+        if (p->possible_crtcs & (1u << index)) {
+            drmModeObjectProperties *props =
+                drmModeObjectGetProperties(fd, p->plane_id, DRM_MODE_OBJECT_PLANE);
+            for (uint32_t k = 0; props && k < props->count_props; k++) {
+                drmModePropertyRes *pp = drmModeGetProperty(fd, props->props[k]);
+                if (pp && strcmp(pp->name, "type") == 0 &&
+                    props->prop_values[k] == DRM_PLANE_TYPE_PRIMARY)
+                    found = p->plane_id;
+                if (pp) drmModeFreeProperty(pp);
+            }
+            if (props) drmModeFreeObjectProperties(props);
+        }
+        drmModeFreePlane(p);
+    }
+    drmModeFreePlaneResources(pr);
+    return found;
+}
+
+// Put the buffer on the scaling plane and wait out the frame it lands on.
+// drmModeSetPlane sends no completion event, so the vblank wait is what paces
+// the loop, and after it the previous buffer is off the glass.
+static bool set_scaled_plane(GheeScene *g, uint32_t fb, int w, int h) {
+    if (drmModeSetPlane(g->drm_fd, g->disp_plane, g->disp_crtc, fb, 0,
+                        0, 0, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
+                        0, 0, (uint32_t)w << 16, (uint32_t)h << 16)) {
+        if (!g->flip_failed) {
+            g->flip_failed = true;
+            set_error(g, "drmModeSetPlane failed: %s%s", strerror(errno),
+                      errno == EACCES ? ". DRM master went to another process" : "");
+        }
+        return false;
+    }
+    g->flip_failed = false;
+    drmVBlank vb = { .request = { .type = DRM_VBLANK_RELATIVE, .sequence = 1 } };
+    drmWaitVBlank(g->drm_fd, &vb);
+    return true;
+}
+
 static bool wait_flip(GheeScene *g) {
     if (!g->flip_pending) return true;
     drmEventContext ev = { .version = 2 };
@@ -1118,7 +1198,21 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
 
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(g->gbm_surface);
     uint32_t fb = fb_for(g, bo);
-    if (g->disp_first) {
+    if (g->disp_plane) {
+        // The mode is already set: the plane carries each frame from here, and
+        // the wait inside means the buffer before this one is off the glass.
+        if (g->disp_first) {
+            g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
+            g->disp_first = false;
+        }
+        if (set_scaled_plane(g, fb, g->width, g->height)) {
+            if (g->disp_shown) gbm_surface_release_buffer(g->gbm_surface, g->disp_shown);
+            g->disp_shown = g->disp_prev;
+            g->disp_prev = bo;
+        } else {
+            gbm_surface_release_buffer(g->gbm_surface, bo);
+        }
+    } else if (g->disp_first) {
         g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
         if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, fb, 0, 0, &g->disp_conn, 1, &g->disp_mode))
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));

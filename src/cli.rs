@@ -362,7 +362,7 @@ fn prospective_size(a: &Ns) -> Option<(i32, i32)> {
     }
     let name = text(&a.display);
     if name == "kms" {
-        return probe_display(a.dri.as_deref()).or(a.size);
+        return a.size.or_else(|| probe_display(a.dri.as_deref()));
     }
     let spec = get_driver(name).ok()?;
     let opts = parse_kv(text(&a.display_opts), "--display-opts").unwrap_or_default();
@@ -375,19 +375,30 @@ fn prospective_size(a: &Ns) -> Option<(i32, i32)> {
     Some((pick("width")?, pick("height")?))
 }
 
-/// (size, components) the render runs at. A scanout takes the connected mode.
-/// A panel takes its own geometry and pixel layout. Both win over --size.
+/// (size, components) the render runs at.
+/// A scanout takes --size and scales it across the mode on the way out, or the
+/// mode itself when there is no --size. A panel takes its own geometry and
+/// pixel layout, and its wire carries no scaler, so --size means nothing there.
 /// Everything else takes --size.
 fn geometry(a: &Ns, panel: &Panel) -> Result<((i32, i32), i32)> {
     match panel {
-        Panel::Kms => match probe_display(a.dri.as_deref()).or(a.size) {
+        Panel::Kms => match a.size.or_else(|| probe_display(a.dri.as_deref())) {
             Some(size) => Ok((size, a.components)),
             None => Err(exit(format!(
-                "{}: no connected display to size from; pass --size WxH",
+                "{}: no connected display to size from, pass --size WxH",
                 a.cmd
             ))),
         },
-        Panel::Driver(d) => Ok(((d.width(), d.height()), d.components())),
+        Panel::Driver(d) => match a.size {
+            Some(_) => Err(exit(format!(
+                "{}: --size with --display {}, which draws {}x{} and scales nothing",
+                a.cmd,
+                text(&a.display),
+                d.width(),
+                d.height()
+            ))),
+            None => Ok(((d.width(), d.height()), d.components())),
+        },
         Panel::None => Ok((a.size.unwrap_or(DEFAULT_SIZE), a.components)),
     }
 }

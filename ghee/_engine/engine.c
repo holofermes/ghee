@@ -158,6 +158,7 @@ static const char *blit_fragment_source =
 
 static bool wait_flip(GheeScene *g);        // both defined with ghee_mp_present below
 static uint32_t primary_plane(int fd, uint32_t crtc_id);
+static bool plane_scales(GheeScene *g, int width, int height);
 static bool ensure_blit(GheeScene *g);
 
 static void set_error(GheeScene *g, const char *fmt, ...) {
@@ -546,11 +547,14 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
             g->disp_mode.vrefresh, g->disp_conn);
 
     if (width != g->disp_mode.hdisplay || height != g->disp_mode.vdisplay) {
+        // Every KMS driver has a primary plane, so its presence says nothing
+        // about scaling. The only answer worth having is the kernel's, on this
+        // card, at this size: put a buffer on the plane and see.
         g->disp_plane = primary_plane(g->drm_fd, g->disp_crtc);
-        if (!g->disp_plane) {
+        if (!g->disp_plane || !plane_scales(g, width, height)) {
             snprintf(eb, sizeof(eb),
-                     "%dx%d does not fill the %ux%u mode, and this display scales nothing",
-                     width, height, g->disp_mode.hdisplay, g->disp_mode.vdisplay);
+                     "this display draws %ux%u and scales nothing, so it cannot take %dx%d",
+                     g->disp_mode.hdisplay, g->disp_mode.vdisplay, width, height);
             if (err) *err = eb;
             ghee_destroy(g);
             return NULL;
@@ -574,9 +578,19 @@ void ghee_destroy(GheeScene *g) {
     if (have_gl) make_current(g);
     if (g->display_mode) {
         wait_flip(g);   // reap any in-flight flip before tearing the CRTC down
-        if (g->disp_saved)
+        if (g->disp_plane && g->disp_saved) {
+            // A scaled scanout set no mode, so it puts none back. The plane
+            // still points at a buffer about to be freed, so hand it the old
+            // framebuffer at full size and leave the CRTC alone.
+            drmModeSetPlane(g->drm_fd, g->disp_plane, g->disp_crtc,
+                            g->disp_saved->buffer_id, 0,
+                            0, 0, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
+                            0, 0, (uint32_t)g->disp_mode.hdisplay << 16,
+                            (uint32_t)g->disp_mode.vdisplay << 16);
+        } else if (g->disp_saved) {
             drmModeSetCrtc(g->drm_fd, g->disp_saved->crtc_id, g->disp_saved->buffer_id,
                            g->disp_saved->x, g->disp_saved->y, &g->disp_conn, 1, &g->disp_saved->mode);
+        }
         if (g->disp_shown) gbm_surface_release_buffer(g->gbm_surface, g->disp_shown);
         if (g->disp_prev) gbm_surface_release_buffer(g->gbm_surface, g->disp_prev);
         drmDropMaster(g->drm_fd);
@@ -1028,6 +1042,37 @@ static uint32_t primary_plane(int fd, uint32_t crtc_id) {
     }
     drmModeFreePlaneResources(pr);
     return found;
+}
+
+// Whether this card will scan a width x height buffer across the whole mode.
+// A dumb buffer of that size goes on the plane and straight back off, so the
+// answer comes from the kernel rather than from what the driver looks like it
+// ought to support. A card that refuses either step keeps its old plane.
+static bool plane_scales(GheeScene *g, int width, int height) {
+    struct drm_mode_create_dumb creq = { .width = width, .height = height, .bpp = 32 };
+    if (drmIoctl(g->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq)) return false;
+    uint32_t handles[4] = { creq.handle }, strides[4] = { creq.pitch }, offsets[4] = { 0 };
+    uint32_t fb = 0;
+    bool ok = false;
+    if (!drmModeAddFB2(g->drm_fd, width, height, GBM_FORMAT_XRGB8888,
+                       handles, strides, offsets, &fb, 0)) {
+        drmModePlane *was = drmModeGetPlane(g->drm_fd, g->disp_plane);
+        ok = drmModeSetPlane(g->drm_fd, g->disp_plane, g->disp_crtc, fb, 0,
+                             0, 0, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
+                             0, 0, (uint32_t)width << 16, (uint32_t)height << 16) == 0;
+        if (was) {
+            if (ok && was->fb_id)
+                drmModeSetPlane(g->drm_fd, g->disp_plane, g->disp_crtc, was->fb_id, 0,
+                                0, 0, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
+                                0, 0, (uint32_t)g->disp_mode.hdisplay << 16,
+                                (uint32_t)g->disp_mode.vdisplay << 16);
+            drmModeFreePlane(was);
+        }
+        drmModeRmFB(g->drm_fd, fb);
+    }
+    struct drm_mode_destroy_dumb dreq = { .handle = creq.handle };
+    drmIoctl(g->drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+    return ok;
 }
 
 // Put the buffer on the scaling plane and wait out the frame it lands on.

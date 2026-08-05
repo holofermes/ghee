@@ -59,6 +59,10 @@ struct GheeScene {
     int mp_nchan[MP_MAX_PASSES];
     GLint mp_timeLoc[MP_MAX_PASSES];
     GLint mp_dtLoc[MP_MAX_PASSES];
+    // Sampler uniform locations, resolved once: a link fixes them, and the
+    // name lookup is the render loop's own cost otherwise.
+    GLint mp_chanLoc[MP_MAX_PASSES][MP_MAX_CHANNELS];
+    GLint mp_dataLoc[MP_MAX_PASSES][MP_MAX_DATATEX];
     GLint mp_vflipLoc[MP_MAX_PASSES];    // shared-VS y-flip (direct scanout draws)
     GLint max_units;                     // GL_MAX_TEXTURE_IMAGE_UNITS (8 on VC4)
 
@@ -661,6 +665,12 @@ int ghee_mp_commit(GheeScene *g) {
         if (rloc >= 0) glUniform2f(rloc, (float)g->mp_w[p], (float)g->mp_h[p]);
         g->mp_timeLoc[p] = glGetUniformLocation(prog, "time");
         g->mp_dtLoc[p] = glGetUniformLocation(prog, "DT");
+        for (int c = 0; c < MP_MAX_CHANNELS; c++) {
+            char nm[16];
+            snprintf(nm, sizeof(nm), "iChannel%d", c);
+            g->mp_chanLoc[p][c] = glGetUniformLocation(prog, nm);
+        }
+        for (int i = 0; i < MP_MAX_DATATEX; i++) g->mp_dataLoc[p][i] = -1;
         g->mp_vflipLoc[p] = glGetUniformLocation(prog, "vflip");
         if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], 1.0f);
     }
@@ -750,6 +760,9 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
         glGenTextures(1, &g->mp_array_tex[idx]);
         g->mp_array_size[idx] = 0;
     }
+    glUseProgram(g->mp_program[pass]);
+    g->mp_dataLoc[pass][g->mp_ndatatex[pass]] =
+        glGetUniformLocation(g->mp_program[pass], g->mp_array_name[idx]);
     g->mp_datatex[pass][g->mp_ndatatex[pass]++] = idx;
     return idx;
 }
@@ -864,18 +877,15 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
                 const int rd = (src < p) ? g->mp_write[src] : 1 - g->mp_write[src];
                 glBindTexture(GL_TEXTURE_2D, g->mp_tex[src][rd]);
             }
-            char nm[16];
-            snprintf(nm, sizeof(nm), "iChannel%d", c);
-            const GLint loc = glGetUniformLocation(g->mp_program[p], nm);
-            if (loc >= 0) glUniform1i(loc, c);
+            if (g->mp_chanLoc[p][c] >= 0) glUniform1i(g->mp_chanLoc[p][c], c);
         }
         for (int i = 0; i < g->mp_ndatatex[p]; i++) {
+            // a channel declared after this array shifts the unit, so the
+            // unit is the render's to set and the location alone is cached
             const int unit = g->mp_nchan[p] + i;
-            const int a = g->mp_datatex[p][i];
             glActiveTexture(GL_TEXTURE0 + unit);
-            glBindTexture(GL_TEXTURE_2D, g->mp_array_tex[a]);
-            const GLint loc = glGetUniformLocation(g->mp_program[p], g->mp_array_name[a]);
-            if (loc >= 0) glUniform1i(loc, unit);
+            glBindTexture(GL_TEXTURE_2D, g->mp_array_tex[g->mp_datatex[p][i]]);
+            if (g->mp_dataLoc[p][i] >= 0) glUniform1i(g->mp_dataLoc[p][i], unit);
         }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }

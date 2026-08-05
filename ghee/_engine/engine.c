@@ -79,6 +79,13 @@ struct GheeScene {
     // computed index samples it in one fetch, dodging the VC4 uniform-array unroll cap.
     // One texture per array NAME, at scene scope: uploaded once a frame and bound
     // into every pass that declared it.
+    // GLES2 promises RGBA readback and nothing else. vc4 reads RGB too, v3d
+    // hands back nothing for it, so a panel there would pack an all-black
+    // frame. Where RGB is missing the readback takes RGBA into scratch and
+    // drops the alpha, which costs the boards that read RGB nothing.
+    bool reads_rgb;
+    uint8_t *rgba_scratch;
+    size_t rgba_scratch_size;
     bool has_float_tex, has_float_linear;   // OES_texture_float[_linear] on this GL
     int mp_narray;
     GLuint mp_array_tex[MP_MAX_ARRAYS];
@@ -217,6 +224,32 @@ static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_so
 
 // ---- lifecycle ------------------------------------------------------------
 
+// Whether this card renders for itself. A card with no render node of its own
+// (an SPI panel the kernel drives) borrows a GPU through Mesa, and the two
+// then share one buffer: the GPU's own tiling means nothing to the panel's
+// driver, which reads the memory row by row.
+// Mesa's loader prints a burst of "failed to retrieve device information" while
+// it brings a borrowed GPU up, and there is nothing the reader can do about it.
+// ghee reads its own failures back through eglGetError, so the bring-up window
+// keeps stderr to itself. -1 means the window never closed on anything.
+static int hush_stderr(void) {
+    const int null = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    if (null < 0) return -1;
+    const int saved = dup(STDERR_FILENO);
+    if (saved < 0) { close(null); return -1; }
+    fflush(stderr);
+    dup2(null, STDERR_FILENO);
+    close(null);
+    return saved;
+}
+
+static void unhush_stderr(int saved) {
+    if (saved < 0) return;
+    fflush(stderr);
+    dup2(saved, STDERR_FILENO);
+    close(saved);
+}
+
 static GheeScene *create_impl(int width, int height, int components, const char *dri_device, int scanout, int rgb565, char **err) {
     static char early_err[ERROR_BUFFER_SIZE];
     early_err[0] = '\0';
@@ -235,14 +268,25 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         snprintf(early_err, sizeof(early_err), "cannot open DRI device %s", dev);
         goto fail;
     }
+    const int hushed = hush_stderr();
     g->gbm = gbm_create_device(g->drm_fd);
-    if (!g->gbm) { snprintf(early_err, sizeof(early_err), "gbm_create_device failed"); goto fail; }
+    if (!g->gbm) {
+        unhush_stderr(hushed);
+        snprintf(early_err, sizeof(early_err), "gbm_create_device failed");
+        goto fail;
+    }
 
     g->display = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, g->gbm, NULL);
-    if (g->display == EGL_NO_DISPLAY) { snprintf(early_err, sizeof(early_err), "eglGetPlatformDisplay failed"); goto fail; }
+    if (g->display == EGL_NO_DISPLAY) {
+        unhush_stderr(hushed);
+        snprintf(early_err, sizeof(early_err), "eglGetPlatformDisplay failed");
+        goto fail;
+    }
 
     int major, minor;
-    if (eglInitialize(g->display, &major, &minor) == EGL_FALSE) {
+    const EGLBoolean ready = eglInitialize(g->display, &major, &minor);
+    unhush_stderr(hushed);
+    if (ready == EGL_FALSE) {
         snprintf(early_err, sizeof(early_err), "eglInitialize failed: 0x%X", eglGetError());
         goto fail;
     }
@@ -365,6 +409,18 @@ static GheeScene *create_impl(int width, int height, int components, const char 
 
     glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &g->max_units);
     if (g->max_units < 1) g->max_units = 8;
+
+    // GL_IMPLEMENTATION_COLOR_READ_FORMAT answers RGBA on hardware that reads
+    // RGB perfectly well, so the probe reads a known pixel instead: a driver
+    // without RGB hands back nothing rather than raising an error.
+    uint8_t probe[3] = { 0, 0, 0 };
+    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    while (glGetError() != GL_NO_ERROR) { }
+    glReadPixels(0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, probe);
+    g->reads_rgb = glGetError() == GL_NO_ERROR && probe[0] > 200 && probe[1] < 60;
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
     const char *glexts = (const char *)glGetString(GL_EXTENSIONS);
     g->has_float_tex = glexts && strstr(glexts, "GL_OES_texture_float") != NULL;
@@ -516,6 +572,7 @@ void ghee_destroy(GheeScene *g) {
         if (g->surface != EGL_NO_SURFACE) eglDestroySurface(g->display, g->surface);
         eglTerminate(g->display);
     }
+    free(g->rgba_scratch);
     if (g->gbm_surface) gbm_surface_destroy(g->gbm_surface);
     if (g->gbm) gbm_device_destroy(g->gbm);
     if (g->drm_fd >= 0) close(g->drm_fd);
@@ -891,6 +948,28 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     }
 }
 
+// Read a rectangle back as `components` bytes a pixel. A GL that cannot hand
+// back RGB reads RGBA into scratch, and the copy drops every fourth byte.
+static void read_pixels(GheeScene *g, int w, int h, int components, uint8_t *out) {
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    if (components != 3 || g->reads_rgb) {
+        glReadPixels(0, 0, w, h, components == 3 ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, out);
+        return;
+    }
+    const size_t want = (size_t)w * h * 4;
+    if (g->rgba_scratch_size < want) {
+        uint8_t *grown = realloc(g->rgba_scratch, want);
+        if (!grown) { set_error(g, "%dx%d readback buffer failed", w, h); return; }
+        g->rgba_scratch = grown;
+        g->rgba_scratch_size = want;
+    }
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g->rgba_scratch);
+    const uint8_t *src = g->rgba_scratch;
+    for (size_t i = 0, n = (size_t)w * h; i < n; i++, src += 4, out += 3) {
+        out[0] = src[0]; out[1] = src[1]; out[2] = src[2];
+    }
+}
+
 static bool wait_flip(GheeScene *g) {
     if (!g->flip_pending) return true;
     drmEventContext ev = { .version = 2 };
@@ -967,8 +1046,7 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
     glEnableVertexAttribArray(1);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, pw, ph, fmt, GL_UNSIGNED_BYTE, buffer_rgb);
+    read_pixels(g, pw, ph, g->components, buffer_rgb);
 }
 
 // Render + scan the final buffer straight out to the connector. If buffer_rgb
@@ -1083,8 +1161,7 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         read_preview(g, buffer_rgb, pw, ph);
     } else if (buffer_rgb) {
         glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[last][g->mp_write[last]]);
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        glReadPixels(0, 0, g->width, g->height, (g->components == 3) ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, buffer_rgb);
+        read_pixels(g, g->width, g->height, g->components, buffer_rgb);
     }
 
     if (g->profile) {

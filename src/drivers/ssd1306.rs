@@ -83,8 +83,14 @@ impl Ssd1306 {
         Ok(panel)
     }
 
+    /// A command goes out as a plain two-byte write, not an SMBus transaction:
+    /// the bytes on the wire are the same, and the SMBus path reaches this
+    /// panel on some boards and not others.
     fn cmd(&mut self, cmd: u8) -> Result<()> {
-        self.bus.smbus_write_byte(CMD, cmd)?;
+        let sent = self.bus.write(&[CMD, cmd])?;
+        if sent != 2 {
+            bail!("I2C took {sent} of 2 bytes");
+        }
         Ok(())
     }
 

@@ -166,7 +166,9 @@ fn backlight_pins(offset: Option<u8>) -> Option<Pins> {
     match Pins::new(&[Some(offset)]) {
         Ok(pins) => Some(pins),
         Err(e) => {
-            eprintln!("st7789: GPIO{offset} is not available ({e}); no backlight control");
+            eprintln!(
+                "st7789: GPIO{offset} is not available ({e}), so the backlight is left alone"
+            );
             None
         }
     }

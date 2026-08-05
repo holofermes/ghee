@@ -117,7 +117,7 @@ pub struct BenchArgs {
     #[arg(long)]
     timestep: Option<f64>,
 
-    #[arg(long, help = "GPU node; default is ghee's own probe order")]
+    #[arg(long, help = "GPU node, ghee's own probe order by default")]
     dri: Option<String>,
 
     #[arg(long, help = "pin this process to one CPU")]
@@ -1199,7 +1199,7 @@ pub fn run(a: &BenchArgs) -> Result<()> {
         None => probe_dri_devices()
             .into_iter()
             .find(|d| Path::new(d).exists())
-            .ok_or_else(|| anyhow!("no GPU node; pass --dri or set $GHEE_DRI"))?,
+            .ok_or_else(|| anyhow!("no GPU node: pass --dri or set $GHEE_DRI"))?,
     };
 
     let like: Option<HashMap<String, i64>> = match &a.like {

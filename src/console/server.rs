@@ -866,7 +866,7 @@ pub fn h264_sw_loop(console: &Console) {
         let e = enc.as_mut().expect("the encoder was just created");
         if let Err(err) = e.feed(&rgb.data) {
             // a dead encoder process must not kill this thread
-            eprintln!("h264: software encoder died ({err}); respawning");
+            eprintln!("h264: software encoder died ({err}), respawning");
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -1142,7 +1142,7 @@ impl Output for ConsoleSink {
                 Err(e) => {
                     // h264_sw_loop takes this stream over
                     console.h264_hw_dead.store(true, Ordering::SeqCst);
-                    eprintln!("h264: {e}; using software encoder");
+                    eprintln!("h264: {e}, using software encoder");
                 }
             }
         }
@@ -1172,7 +1172,7 @@ impl Output for ConsoleSink {
                 let mut enc = self.enc.take().expect("the encoder is still here");
                 enc.close();
                 console.h264_hw_dead.store(true, Ordering::SeqCst);
-                eprintln!("h264: {e}; using software encoder");
+                eprintln!("h264: {e}, using software encoder");
             }
         }
         Ok(())

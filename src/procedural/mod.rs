@@ -157,7 +157,7 @@ pub fn load_scene(path: &str, args: &[String], strict: bool) -> Result<Scene> {
     // this function loads documents, so an executable member is a dead end
     if let Some(x) = exe {
         if !process::runnable(&x) {
-            bail!("{x}: no executable bit; a procedural scene must be executable (chmod +x)");
+            bail!("{x}: no executable bit, and a procedural scene must be executable (chmod +x)");
         }
         bail!("{x}: an executable scene runs as a process");
     }
@@ -218,7 +218,9 @@ mod tests {
         let e = load_scene(&path, &no_args(), true).unwrap_err();
         assert_eq!(
             e.to_string(),
-            format!("{path}: no executable bit; a procedural scene must be executable (chmod +x)")
+            format!(
+                "{path}: no executable bit, and a procedural scene must be executable (chmod +x)"
+            )
         );
         // with the bit, process.rs takes the file
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();

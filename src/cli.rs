@@ -1006,7 +1006,7 @@ enum Command {
         // a negative number is a value here
         allow_negative_numbers = true,
         after_help = "anything after `--` goes to the scene itself \
-                      (ghee render --demo hero -- --no-dither); `-- --help` lists what it takes"
+                      (ghee render --demo hero -- --no-dither), and `-- --help` lists what it takes"
     )]
     Render(RenderArgs),
 
@@ -1016,7 +1016,7 @@ enum Command {
         after_help = "the console is plain HTTP: GET /stats /scene /scenes /frame.png \
                       /stream /h264, POST /set /switch /next /prev /scene /save /ping. \
                       Anything after `--` goes to every scene the console loads, and \
-                      each keeps what it takes; `-- --help` lists what takes what"
+                      each keeps what it takes, and `-- --help` lists what takes what"
     )]
     Serve(ServeArgs),
 
@@ -1049,7 +1049,7 @@ struct RenderFlags {
         default_missing_value = "kms",
         help = "render to a hardware display: an SPI/I2C driver name, or bare \
                 (or 'kms') for the connected KMS display, HDMI or a panel the \
-                kernel drives (zero-copy scanout; needs DRM master)"
+                kernel drives (zero-copy scanout, needs DRM master)"
     )]
     display: Option<String>,
 
@@ -1057,14 +1057,14 @@ struct RenderFlags {
         long,
         value_name = "K=V,...",
         help = "options for the --display driver, e.g. width=240,height=240,\
-                y_offset=80,backlight=26; `ghee displays` lists what each one takes"
+                y_offset=80,backlight=26. `ghee displays` lists what each one takes"
     )]
     display_opts: Option<String>,
 
     #[arg(
         long,
         help = "display scanout in 16-bit color: halves the GPU store and scanout \
-                bandwidth (worth it on VC4-class boards); slight banding in gradients"
+                bandwidth (worth it on VC4-class boards), slight banding in gradients"
     )]
     rgb565: bool,
 
@@ -1086,13 +1086,13 @@ struct RenderFlags {
     #[arg(
         long,
         value_parser = size,
-        help = "WxH to render at; a display or panel sets its own (default 320x240)"
+        help = "WxH to render at, a display or panel sets its own (default 320x240)"
     )]
     size: Option<(i32, i32)>,
 
     #[arg(
         long,
-        help = "DRI device, e.g. /dev/dri/renderD128; with --display it picks \
+        help = "DRI device, e.g. /dev/dri/renderD128. With --display it picks \
                 which card's display to drive"
     )]
     dri: Option<String>,
@@ -1108,28 +1108,28 @@ struct ConsoleFlags {
     #[arg(
         long,
         default_value = "127.0.0.1",
-        help = "bind address; 0.0.0.0 exposes the console (no auth) to the network"
+        help = "bind address, 0.0.0.0 exposes the console (no auth) to the network"
     )]
     host: String,
 
     #[arg(
         long,
         default_value_t = 480,
-        help = "longest side of the browser preview in px (downscaled; default 480)"
+        help = "longest side of the browser preview in px (downscaled, default 480)"
     )]
     preview_max: i32,
 
     #[arg(
         long,
         default_value_t = 15,
-        help = "browser preview refresh cap; the display stays full speed (default 15)"
+        help = "browser preview refresh cap, the display stays full speed (default 15)"
     )]
     preview_fps: i32,
 
     #[arg(
         long,
         default_value_t = 0,
-        help = "cap the /h264 stream's longest side (GPU downscale; \
+        help = "cap the /h264 stream's longest side (GPU downscale, \
                 default 0 = full render size)"
     )]
     stream_max: i32,
@@ -1147,15 +1147,15 @@ struct RenderArgs {
         short,
         long,
         help = "image pattern (frame.####.jpg), or '-' for raw RGB(A) frames to \
-                stdout (h*w*components, no header; pipe to ffmpeg/mpv)"
+                stdout (h*w*components with no header, pipe to ffmpeg/mpv)"
     )]
     output: Option<String>,
 
     #[arg(
         long,
         value_name = "PATH",
-        help = "write an Annex-B H264 stream to PATH ('-' = stdout, pipe to mpv); \
-                hardware zero-copy on Pi 1..Pi 4, ffmpeg/libx264 elsewhere"
+        help = "write an Annex-B H264 stream to PATH ('-' = stdout, pipe to mpv). \
+                Hardware zero-copy on Pi 1..Pi 4, ffmpeg/libx264 elsewhere"
     )]
     h264: Option<String>,
 
@@ -1185,9 +1185,9 @@ struct RenderArgs {
         long,
         default_value_t = 16,
         value_name = "N",
-        help = "frames buffered for the async image writer; the render only waits \
-                when the writer falls N frames behind; memory cost is N * w * h * \
-                components bytes"
+        help = "frames buffered for the async image writer. The render waits only \
+                when the writer falls N frames behind, at a memory cost of \
+                N * w * h * components bytes"
     )]
     write_buffer: i64,
 

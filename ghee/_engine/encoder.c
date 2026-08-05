@@ -1,4 +1,4 @@
-// encoder.c — zero-copy hardware H264 output (V4L2 M2M, bcm2835-codec).
+// encoder.c: zero-copy hardware H264 output (V4L2 M2M, bcm2835-codec).
 //
 // The final pass is blitted into a LINEAR dmabuf-backed FBO and the dmabuf fd
 // is queued straight to the encoder's OUTPUT queue: pixels go GPU -> VPU with
@@ -14,7 +14,7 @@
 // the GL context as an EGL_LINUX_DMA_BUF_EXT image. Pi 1 through Pi 3 have no
 // separate v3d node and take the same path.
 //
-// This file is the only V4L2 user in the engine; boards without a hardware
+// This file is the only V4L2 user in the engine, and boards without a hardware
 // encoder (Pi 5, desktops) fail ghee_encoder_create cleanly at open() and the
 // caller falls back to a software encoder.
 
@@ -91,7 +91,7 @@ static void enc_ctrl(int fd, uint32_t id, int32_t val) {
 }
 
 // The vc4 card node, whatever it is numbered. On the Pi 4 card0 is vc4 and
-// card1 is v3d; on earlier boards there is only card0.
+// card1 is v3d. Earlier boards have card0 alone.
 static int open_vc4_node(void) {
     for (int i = 0; i < MAX_DRI_CARDS; i++) {
         char path[32];
@@ -235,7 +235,7 @@ GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrat
     e->vc4_fd = -1;
     for (int i = 0; i < NBUF; i++) e->in[i].dmafd = -1;   // 0 is a valid fd, calloc is not
 
-    // Non-blocking: reclaim() drains consumed buffers with DQBUF until EAGAIN;
+    // Non-blocking: reclaim() drains consumed buffers with DQBUF until EAGAIN,
     // the waits that matter are explicit poll()s.
     e->vfd = open(ENC_DEVICE, O_RDWR | O_CLOEXEC | O_NONBLOCK);
     if (e->vfd < 0) {
@@ -449,7 +449,7 @@ static int encode_common(GheeScene *g, GheeEncoder *e, int post_swap,
     ghee_i_blit_last(g, e->in[idx].fbo, e->w, e->h, 0.0f, post_swap);
     // The full fence is REQUIRED: there is no implicit sync between V3D and
     // bcm2835-codec, so the VPU reads the dmabuf the moment it is queued.
-    // glFlush is not enough; the encoder captures half-blitted tiles at
+    // glFlush is not enough, and the encoder captures half-blitted tiles at
     // larger frame sizes (tearing). The fence costs ~0.5-2ms per frame.
     glFinish();
 

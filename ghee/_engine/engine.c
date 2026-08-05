@@ -44,16 +44,16 @@ struct GheeScene {
     struct timespec start_time;
     bool has_time_override;              // when set, render uses time_override instead of the wall clock
     float time_override;
-    float dt;                            // seconds the last frame took; fed to every pass as DT
+    float dt;                            // seconds the last frame took, fed to every pass as DT
 
-    // multipass: each pass has its own program + ping-pong buffer; channels route
+    // multipass: each pass has its own program + ping-pong buffer, and channels route
     // between passes (reading a pass's PREVIOUS-frame output). A pass whose channel
     // points at itself = feedback. Last pass -> screen.
     int mp_count;
     GLuint mp_program[MP_MAX_PASSES];
     GLuint mp_fbo[MP_MAX_PASSES][2];
     GLuint mp_tex[MP_MAX_PASSES][2];
-    int mp_w[MP_MAX_PASSES], mp_h[MP_MAX_PASSES];   // per-pass buffer size; defaults to W,H
+    int mp_w[MP_MAX_PASSES], mp_h[MP_MAX_PASSES];   // per-pass buffer size, W,H until set
     int mp_write[MP_MAX_PASSES];
     int mp_chan_src[MP_MAX_PASSES][MP_MAX_CHANNELS];  // channel -> source pass index, -1 = none
     int mp_nchan[MP_MAX_PASSES];
@@ -106,7 +106,7 @@ struct GheeScene {
     drmModeCrtc *disp_saved;
     struct gbm_bo *disp_prev;    // buffer of the most recent flip (pending or on glass)
     struct gbm_bo *disp_shown;   // buffer of the flip before that (still on glass until
-                                 // the pending one completes; released after)
+                                 // the pending one completes, released after)
     bool disp_first;
     bool disp_blanked;           // the CRTC drives nothing: ghee_mp_present draws nothing
     bool flip_pending;           // a submitted page flip whose event hasn't been reaped
@@ -312,7 +312,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     // through the GPU's tile-store path (~300MB/s effective on VC4-class
     // boards, the frame rate ceiling) and halving scanout traffic. The HVS
     // expands 565 to the wire's 888 during scanout, so the panel sees a
-    // normal HDMI signal; the only cost is color depth. GL dithering (on by
+    // normal HDMI signal, and the only cost is color depth. GL dithering (on by
     // default) hides most banding. Intermediate pass FBOs stay RGBA8888.
     const EGLint configAttribs565[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -470,7 +470,7 @@ static uint32_t fb_for(GheeScene *g, struct gbm_bo *bo) {
 
 // Pick the display to drive: first connected connector with modes, its
 // encoder's CRTC (else the first), and the mode that CRTC already drives
-// (honours a video= override or whatever the console negotiated; falls back
+// (honours a video= override or whatever the console negotiated, falls back
 // to the connector's first). Shared by create and probe so the size the probe
 // reports is exactly the mode create ends up driving. -1 = nothing connected.
 static int pick_display_mode(int fd, uint32_t *conn_out, uint32_t *crtc_out,
@@ -582,7 +582,7 @@ void ghee_destroy(GheeScene *g) {
 // ---- multipass -------------------------------------------------------------
 // A scene as a list of passes. Each pass: own program + ping-pong buffer. Channels
 // route between passes: a forward ref (earlier pass) reads that pass's CURRENT
-// frame (same-frame chaining); a self-reference or later-pass ref reads the
+// frame (same-frame chaining), a self-reference or later-pass ref reads the
 // PREVIOUS frame (= feedback). Last pass -> screen.
 
 static void mp_free_buffers(GLuint fbo[2], GLuint tex[2]) {
@@ -669,7 +669,7 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
 
 // Give a pending pass its own buffer size (default = renderer W,H). Call after
 // ghee_mp_add_pass, before ghee_mp_commit. The last (output) pass must keep the
-// renderer size (its buffer feeds readback/scanout); Renderer::setup rejects a
+// renderer size (its buffer feeds readback/scanout), and Renderer::setup rejects a
 // sized output pass before it reaches here.
 bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     if (pass < 0 || pass >= g->stage_count || w <= 0 || h <= 0) {
@@ -913,11 +913,11 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     for (int p = 0; p < g->mp_count; p++) {
         const bool direct = direct_last && p == g->mp_count - 1;
         glBindFramebuffer(GL_FRAMEBUFFER, direct ? 0 : g->mp_fbo[p][g->mp_write[p]]);
-        // per-pass buffer size; the output pass is always full-size (the caller
+        // The per-pass buffer size. The output pass is always full-size (the caller
         // enforces that), so the direct scanout draw still gets the display
         // viewport.
         glViewport(0, 0, g->mp_w[p], g->mp_h[p]);
-        // The fullscreen quad overwrites every pixel, so the clear is invisible;
+        // The fullscreen quad overwrites every pixel, so the clear is invisible, and
         // on tiled GPUs (VC4) it flags the target as not-loaded, skipping a
         // full-frame tile read from memory before the draw.
         glClear(GL_COLOR_BUFFER_BIT);
@@ -988,7 +988,7 @@ static bool wait_flip(GheeScene *g) {
     }
 }
 
-// The blit program (present, preview readback, encoder), built on first use;
+// The blit program (present, preview readback, encoder), built on first use.
 // display mode builds it at create.
 static bool ensure_blit(GheeScene *g) {
     if (g->blit_prog) return true;
@@ -1143,7 +1143,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;
 }
 
-// Render every pass and swap. buffer_rgb NULL renders nothing back to the CPU;
+// Render every pass and swap. buffer_rgb NULL renders nothing back to the CPU,
 // pw/ph > 0 read back a GPU-downscaled preview instead of the full frame.
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (g->mp_count <= 0) { set_error(g, "render: the scene has no passes"); return; }
@@ -1191,7 +1191,7 @@ int ghee_max_texture_units(GheeScene *g) { return g ? (int)g->max_units : 0; }
 // textures but no OES_texture_float_linear, so a filtered fetch is nearest.
 bool ghee_data_texture_linear(GheeScene *g) { return g && !(g->has_float_tex && !g->has_float_linear); }
 
-// The display mode's refresh rate in Hz; 0 when not in display mode.
+// The display mode's refresh rate in Hz, 0 outside display mode.
 int ghee_display_vrefresh(GheeScene *g) { return g ? (int)g->disp_mode.vrefresh : 0; }
 
 // ---- internal seams for encoder.c (engine_internal.h) ---------------------

@@ -592,7 +592,7 @@ pub fn make_encoder(
     };
     match SoftwareH264::new(w, h, fps, bitrate, components) {
         Ok(enc) => Ok(Encoder::Software(enc)),
-        Err(sw_err) => bail!("no H264 encoder: {hw_err}; {sw_err}"),
+        Err(sw_err) => bail!("no H264 encoder. hardware: {hw_err}. software: {sw_err}"),
     }
 }
 

@@ -38,7 +38,7 @@ typedef struct {
 typedef struct GheeScene GheeScene;
 
 // Create a headless GLES2 renderer on the given DRI device (NULL -> "/dev/dri/card0").
-// Returns NULL on failure; if err != NULL it receives a static error string.
+// Returns NULL on failure. A non-NULL err receives a static error string.
 GheeScene *ghee_create(int width, int height, int components, const char *dri_device, char **err);
 
 // Like ghee_create, but renders straight to a connected KMS display (zero-copy
@@ -57,7 +57,7 @@ void ghee_destroy(GheeScene *g);
 int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);
 // Set a pending pass's buffer size (default = renderer W,H). Call after
 // ghee_mp_add_pass, before ghee_mp_commit. The last pass must keep the renderer
-// size (it feeds readback/scanout); consumers sample any pass through normalized
+// size (it feeds readback/scanout), consumers sample any pass through normalized
 // UVs.
 bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h);
 int  ghee_mp_commit(GheeScene *g);   // -> pass count, -1 = nothing pending
@@ -77,8 +77,8 @@ void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int co
 // LUMINANCE texture takes the bytes as they lie, so a large mask costs no
 // conversion at all.
 void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, int count, int rows);
-// Render the passes and swap. buffer_rgb NULL = no readback at all; pw/ph > 0 =
-// GPU-downscale the final pass to pw x ph and read back only that; otherwise the
+// Render the passes and swap. buffer_rgb NULL = no readback at all, pw/ph > 0 =
+// GPU-downscale the final pass to pw x ph and read back only that, otherwise the
 // full frame lands in buffer_rgb.
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 // Render the passes and scan the final buffer out to the display (display mode
@@ -91,7 +91,7 @@ bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
 void ghee_clear_time(GheeScene *g);   // back to the monotonic clock
-void ghee_set_dt(GheeScene *g, float dt);  // the DT uniform every pass gets; 1/60 until set
+void ghee_set_dt(GheeScene *g, float dt);  // the DT uniform every pass gets, 1/60 until set
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
 // Size of the mode the connected display is driving, without creating a scene
@@ -108,7 +108,7 @@ int ghee_display_blank(GheeScene *g, int blank);
 int ghee_display_blanked(GheeScene *g);
 
 // Zero-copy hardware H264 (encoder.c): the final pass is blitted into a linear
-// dmabuf and fed to the V4L2 M2M encoder (bcm2835-codec); no CPU pixel copy.
+// dmabuf and fed to the V4L2 M2M encoder (bcm2835-codec), with no CPU pixel copy.
 // create fails cleanly (NULL + err) on boards without /dev/video11.
 typedef struct GheeEncoder GheeEncoder;
 GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrate, char **err);

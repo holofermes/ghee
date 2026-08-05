@@ -505,10 +505,10 @@ impl Param {
     #[allow(dead_code)]
     pub fn glsl_type(&self) -> Result<&'static str> {
         if self.ty == "string" {
-            bail!("a string param is host-side; it has no glsl_type");
+            bail!("a string param is host-side, so it has no glsl_type");
         }
         if self.ty == "color" {
-            bail!("color decomposes to three float uniforms; it has no glsl_type");
+            bail!("color decomposes to three float uniforms, so it has no glsl_type");
         }
         if let Some(n) = vec_arity(&self.ty) {
             bail!(
@@ -1440,7 +1440,7 @@ mod tests {
         let p = param("tint", "color", json!([1.0, 0.0, 0.0])).unwrap();
         assert_eq!(
             p.glsl_type().unwrap_err().to_string(),
-            "color decomposes to three float uniforms; it has no glsl_type"
+            "color decomposes to three float uniforms, so it has no glsl_type"
         );
     }
 
@@ -1771,7 +1771,7 @@ mod tests {
         let p = param("text", "string", json!("GHEE")).unwrap();
         assert_eq!(
             p.glsl_type().unwrap_err().to_string(),
-            "a string param is host-side; it has no glsl_type"
+            "a string param is host-side, so it has no glsl_type"
         );
     }
 

@@ -1,5 +1,5 @@
 // Internal seams between engine.c and encoder.c. Not part of the public ABI
-// (engine.h); encoder.c is the only intended consumer.
+// (engine.h), and encoder.c is the only intended consumer.
 #ifndef GHEE_ENGINE_INTERNAL_H
 #define GHEE_ENGINE_INTERNAL_H
 

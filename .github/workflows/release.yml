@@ -2,6 +2,11 @@ name: release
 
 on:
   workflow_dispatch:
+  # main builds the arm wheels and the debs on every push, so a cross-compile
+  # or packaging break surfaces before the tag rather than during it. Only the
+  # release event publishes.
+  push:
+    branches: [main]
   release:
     types: [published]
 
@@ -12,13 +17,13 @@ jobs:
   native:
     # A release that is not v* (the press tag) skips the whole chain: every
     # other job needs this one.
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     # ubuntu-22.04 pins the x86_64 glibc floor at 2.35, so the retagged
     # manylinux wheel installs on Debian bookworm and up
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      # a workflow_dispatch builds whatever the tree says, dev included
+      # a push or a dispatch builds whatever the tree says, dev included
       - name: the tag is the version, and the version is a release
         if: github.event_name == 'release'
         env:

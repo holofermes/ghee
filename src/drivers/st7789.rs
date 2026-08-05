@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
 
-use crate::drivers::base::{DisplayDriver, RGB444, RGB565};
+use crate::drivers::base::{rows_changed, DisplayDriver, RGB444, RGB565};
 use crate::drivers::gpio::Pins;
 use crate::drivers::{i32_opt, int_opt, pin_opt, DriverOption, DriverSpec, Opts};
 use crate::engine::pack_frame_into;
@@ -119,18 +119,6 @@ fn pack_rgb444(frame: &[u8], out: &mut Vec<u8>) {
         out.push((a[2] & 0xF0) | (b[0] >> 4));
         out.push((b[1] & 0xF0) | (b[2] >> 4));
     }
-}
-
-/// The first and last rows that differ. None means the frames are identical.
-fn rows_changed(prev: &[u8], next: &[u8], bytes_per_row: usize) -> Option<(usize, usize)> {
-    let rows = next.len() / bytes_per_row;
-    let differs = |r: usize| {
-        prev[r * bytes_per_row..(r + 1) * bytes_per_row]
-            != next[r * bytes_per_row..(r + 1) * bytes_per_row]
-    };
-    let first = (0..rows).find(|r| differs(*r))?;
-    let last = (first..rows).rev().find(|r| differs(*r)).unwrap_or(first);
-    Some((first, last))
 }
 
 /// spidev refuses a transfer larger than its own buffer.
@@ -616,14 +604,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn changed_rows_bound_the_partial_window() {
-        let a = vec![0u8; 8 * 4]; // 8 rows, 4 bytes each
-        let mut b = a.clone();
-        assert_eq!(rows_changed(&a, &b, 4), None);
-        b[2 * 4] = 1;
-        assert_eq!(rows_changed(&a, &b, 4), Some((2, 2)));
-        b[6 * 4 + 3] = 9;
-        assert_eq!(rows_changed(&a, &b, 4), Some((2, 6)));
-    }
 }

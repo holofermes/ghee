@@ -17,6 +17,7 @@
 #include <xf86drmMode.h>
 #include <poll.h>
 #include <errno.h>
+#include <sys/mman.h>
 #include "engine.h"
 #include "engine_internal.h"
 

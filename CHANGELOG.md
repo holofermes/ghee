@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `--display kms` drives any connected KMS display, an SPI/I2C panel the
+  kernel drives included.
+- `ghee displays` lists every card with a connected display.
+
 ## 0.3.0 - 2026-08-04
 
 Ported to Rust.

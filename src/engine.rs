@@ -212,7 +212,7 @@ pub fn pack_frame_into(
     }
 }
 
-fn err_text(err: *mut c_char) -> String {
+pub(crate) fn err_text(err: *mut c_char) -> String {
     if err.is_null() {
         "unknown".to_string()
     } else {

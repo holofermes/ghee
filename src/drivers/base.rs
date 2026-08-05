@@ -12,6 +12,23 @@ pub const RGB444: &str = "rgb444";
 #[allow(dead_code)]
 pub const MONO1: &str = "mono1";
 
+/// The first and last rows that differ. None means the frames are identical.
+/// A partial-update driver sends only that row span.
+pub(crate) fn rows_changed(
+    prev: &[u8],
+    next: &[u8],
+    bytes_per_row: usize,
+) -> Option<(usize, usize)> {
+    let rows = next.len() / bytes_per_row;
+    let differs = |r: usize| {
+        prev[r * bytes_per_row..(r + 1) * bytes_per_row]
+            != next[r * bytes_per_row..(r + 1) * bytes_per_row]
+    };
+    let first = (0..rows).find(|r| differs(*r))?;
+    let last = (first..rows).rev().find(|r| differs(*r)).unwrap_or(first);
+    Some((first, last))
+}
+
 pub trait DisplayDriver {
     fn dest(&self) -> &'static str {
         DEST_PANEL
@@ -92,5 +109,16 @@ mod tests {
         assert_eq!(p.dest(), DEST_PANEL);
         assert!(p.persists());
         assert_eq!((p.width(), p.height(), p.components()), (0, 0, 3));
+    }
+
+    #[test]
+    fn changed_rows_bound_the_partial_window() {
+        let a = vec![0u8; 8 * 4]; // 8 rows, 4 bytes each
+        let mut b = a.clone();
+        assert_eq!(rows_changed(&a, &b, 4), None);
+        b[2 * 4] = 1;
+        assert_eq!(rows_changed(&a, &b, 4), Some((2, 2)));
+        b[6 * 4 + 3] = 9;
+        assert_eq!(rows_changed(&a, &b, 4), Some((2, 6)));
     }
 }

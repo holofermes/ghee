@@ -306,16 +306,23 @@ ghee render scene.json --display kms
 ghee serve scenes/ --display st7789   # the console, driving the panel
 ```
 
-`kms` is the connected HDMI display, or any KMS display.
+`kms` is any connected KMS display: HDMI, or an SPI/I2C panel the kernel
+drives (`drivers/gpu/drm/tiny`, set up with a
+[device-tree overlay](https://github.com/raspberrypi/linux/blob/HEAD/arch/arm/boot/dts/overlays/README)
+and the [firmware blob](https://github.com/notro/panel-mipi-dbi/wiki) it
+loads). Use `ghee displays` to list the cards, and `--dri` to pick one. A
+panel set up that way belongs to the kernel driver, so `--display st7789`
+and `--display ssd1306` cannot reach it.
 
-The two bundled drivers are `st7789` (configured for a 135x240 SPI LCD) and `ssd1306`
-(configured for a 128x32 I2C 1-bit OLED). Extend either driver to your own
-panel with `--display-opts`, which sets the driver's own options, for
-example the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
+Yes, two more userspace panel drivers: `st7789` (a 135x240 SPI LCD) and
+`ssd1306` (a 128x32 I2C 1-bit OLED). They need no overlay and no reboot,
+can be hot swapped 😬, and are configurable at runtime. Extend either
+driver to your own panel with `--display-opts`, which sets the driver's
+own options, for example the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
 
 ```
 ghee render --demo bars --display st7789 \
-  --display-opts width=240,height=240,x_offset=0,y_offset=80,backlight=26
+  --display-opts width=240,height=240,x_offset=0,y_offset=0,madctl=0x00,backlight=26
 ```
 
 Run `ghee displays` to list every option a driver takes, with its default.

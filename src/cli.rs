@@ -411,7 +411,9 @@ fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
         .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
     match panel {
         Panel::Kms => fixed,
-        Panel::Driver(_) => fixed.or_else(|| Some(Box::new(AdaptivePacer::new()))),
+        Panel::Driver(_) => {
+            fixed.or_else(|| Some(Box::new(AdaptivePacer::new())))
+        }
         Panel::None if given(&a.h264) => Some(Box::new(FixedPacer::new(f64::from(h264_fps(a))))),
         Panel::None => None,
     }
@@ -565,6 +567,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
             a.cmd
         )));
     }
+    let dri = a.dri.clone();
     let ((w, h), components) = geometry(a, &panel)?;
     let pace = pacer(a, &panel);
     let mut scanout = kms.then_some(Scanout);
@@ -589,14 +592,14 @@ fn cmd_render(a: &Ns) -> Result<()> {
             FileSink::Images(s) => sinks.push(Box::new(s)),
             FileSink::None => {}
         }
-        return serve(a, sinks, native_format, (w, h), components, kms);
+        return serve(a, sinks, native_format, (w, h), components, kms, dri);
     }
     let Some((scene, process)) = scene else {
         unreachable!("loaded above for every render that is not --serve")
     };
     let controller: ControllerSlot =
         RefCell::new(process.map(|f| Box::new(f) as Box<dyn SceneController>));
-    let mut r = Renderer::new(w, h, components, a.dri.as_deref(), kms, a.rgb565)?;
+    let mut r = Renderer::new(w, h, components, dri.as_deref(), kms, a.rgb565)?;
     let err = r.setup(&scene)?;
     if !err.is_empty() {
         return Err(exit(format!("compile error: {err}")));
@@ -674,6 +677,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
 
 /// Attach the console to this render. A scene serves itself alone. A directory
 /// (or --demo) serves everything in it.
+#[allow(clippy::too_many_arguments)]
 fn serve(
     a: &Ns,
     sinks: Vec<Box<dyn Output>>,
@@ -681,6 +685,7 @@ fn serve(
     size: (i32, i32),
     components: i32,
     kms: bool,
+    dri: Option<String>,
 ) -> Result<()> {
     let (mut scenes_dir, mut store) = (None, None);
     if let Some(scene) = &a.scene {
@@ -709,7 +714,7 @@ fn serve(
         scene_args: a.scene_args.clone(),
         frames: frames_of(a).max(0) as u64,
         timestep: a.timestep,
-        dri_device: a.dri.clone(),
+        dri_device: dri,
         on_stats: a.stats.then(serve_stats),
         ..Default::default()
     });
@@ -842,11 +847,18 @@ fn isf_failed(e: anyhow::Error) -> anyhow::Error {
 }
 
 fn cmd_displays() -> Result<()> {
-    let kms = match probe_display(None) {
-        Some((w, h)) => format!("connected, {w}x{h}"),
-        None => "no connected display".to_string(),
-    };
-    println!("{:12} {kms}", "kms");
+    // every card with a connected display, since an SPI panel under a
+    // kernel display driver is a card beside the HDMI one
+    let mut connected = 0;
+    for dev in crate::engine::probe_dri_cards() {
+        if let Some((w, h)) = probe_display(Some(&dev)) {
+            println!("{:12} {dev} connected, {w}x{h}", "kms");
+            connected += 1;
+        }
+    }
+    if connected == 0 {
+        println!("{:12} no connected display", "kms");
+    }
     for (name, status) in available_drivers() {
         println!("{name:12} {status}");
         if status != "ok" {
@@ -913,7 +925,7 @@ enum Command {
     #[command(about = "Interactive Shader Format (ISF) shaders")]
     Isf(IsfArgs),
 
-    #[command(about = "list display drivers and availability")]
+    #[command(about = "list connected cards, display drivers, and their options")]
     Displays,
 
     /// The benchmark suite is a development tool, so it stays out of
@@ -931,8 +943,8 @@ struct RenderFlags {
         num_args = 0..=1,
         default_missing_value = "kms",
         help = "render to a hardware display: an SPI/I2C driver name, or bare \
-                (or 'kms') for the connected HDMI/KMS display (zero-copy scanout; \
-                needs DRM master)"
+                (or 'kms') for the connected KMS display, HDMI or a panel the \
+                kernel drives (zero-copy scanout; needs DRM master)"
     )]
     display: Option<String>,
 
@@ -973,7 +985,11 @@ struct RenderFlags {
     )]
     size: Option<(i32, i32)>,
 
-    #[arg(long, help = "DRI device, e.g. /dev/dri/renderD128")]
+    #[arg(
+        long,
+        help = "DRI device, e.g. /dev/dri/renderD128; with --display it picks \
+                which card's display to drive"
+    )]
     dri: Option<String>,
 }
 

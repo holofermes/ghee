@@ -846,21 +846,33 @@ fn isf_failed(e: anyhow::Error) -> anyhow::Error {
     exit(format!("isf import: {e:#}"))
 }
 
+/// One line of a listing. A reader that closes the pipe ends the command,
+/// the way `ghee displays | head` does.
+fn line(text: &str) {
+    if let Err(e) = writeln!(stdout(), "{text}") {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("ghee: {e}");
+        std::process::exit(1);
+    }
+}
+
 fn cmd_displays() -> Result<()> {
     // every card with a connected display, since an SPI panel under a
     // kernel display driver is a card beside the HDMI one
     let mut connected = 0;
     for dev in crate::engine::probe_dri_cards() {
         if let Some((w, h)) = probe_display(Some(&dev)) {
-            println!("{:12} {dev} connected, {w}x{h}", "kms");
+            line(&format!("{:12} {dev} connected, {w}x{h}", "kms"));
             connected += 1;
         }
     }
     if connected == 0 {
-        println!("{:12} no connected display", "kms");
+        line(&format!("{:12} no connected display", "kms"));
     }
     for (name, status) in available_drivers() {
-        println!("{name:12} {status}");
+        line(&format!("{name:12} {status}"));
         if status != "ok" {
             continue;
         }
@@ -873,7 +885,11 @@ fn cmd_displays() -> Result<()> {
             .collect();
         if !opts.is_empty() {
             // a driver's own defaults: an SPI or I2C panel answers no probe
-            println!("{:12} defaults: --display-opts {}", "", opts.join(","));
+            line(&format!(
+                "{:12} defaults: --display-opts {}",
+                "",
+                opts.join(",")
+            ));
         }
     }
     Ok(())

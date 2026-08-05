@@ -58,6 +58,12 @@ pub trait RenderTarget {
         provider: Option<Provider<'_>>,
         preview: Option<(&mut [u8], (i32, i32))>,
     ) -> Result<()>;
+
+    /// Blank the display, or light it again. A target that drives no display
+    /// takes it as a no-op, so a sink can gate on an idle host either way.
+    fn blank(&self, _on: bool) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl RenderTarget for Renderer {
@@ -113,6 +119,10 @@ impl RenderTarget for Renderer {
         preview: Option<(&mut [u8], (i32, i32))>,
     ) -> Result<()> {
         Renderer::present(self, provider, preview)
+    }
+
+    fn blank(&self, on: bool) -> Result<()> {
+        Renderer::blank(self, on)
     }
 }
 

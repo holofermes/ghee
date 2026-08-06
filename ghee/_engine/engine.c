@@ -1251,7 +1251,10 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         // The mode is already set: the plane carries each frame from here, and
         // the wait inside means the buffer before this one is off the glass.
         if (g->disp_first) {
-            g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
+            // ghee_display_blank sets disp_first again on a relight, with the
+            // CRTC already disabled. Only the first capture holds what
+            // ghee_destroy restores.
+            if (!g->disp_saved) g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
             g->disp_first = false;
         }
         if (set_scaled_plane(g, fb, g->width, g->height)) {
@@ -1262,7 +1265,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
             gbm_surface_release_buffer(g->gbm_surface, bo);
         }
     } else if (g->disp_first) {
-        g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
+        if (!g->disp_saved) g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
         if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, fb, 0, 0, &g->disp_conn, 1, &g->disp_mode))
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));
         g->disp_first = false;

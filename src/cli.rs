@@ -1019,11 +1019,8 @@ fn cmd_displays() -> Result<()> {
     if connected == 0 {
         line(&format!("{:12} no connected display", "kms"));
     }
-    for (name, status) in available_drivers() {
-        line(&format!("{name:12} {status}"));
-        if status != "ok" {
-            continue;
-        }
+    for name in available_drivers() {
+        line(&format!("{name:12} ok"));
         let opts: Vec<String> = driver_options(get_driver(name)?)
             .iter()
             .map(|o| match o.default {

@@ -312,7 +312,7 @@ fn open_sink(output: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
         return Ok(Sink::Kms);
     }
     let Ok(spec) = get_driver(name) else {
-        let have: Vec<&str> = available_drivers().into_iter().map(|(d, _)| d).collect();
+        let have: Vec<&str> = available_drivers();
         return Err(Fault::scene(format!(
             "no display driver '{name}' (this build has {}, and kms)",
             have.join(", ")

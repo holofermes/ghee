@@ -86,9 +86,9 @@ pub struct DriverSpec {
 
 const BUNDLED: [&DriverSpec; 2] = [&st7789::SPEC, &ssd1306::SPEC];
 
-/// name -> "ok", or the reason the driver is unavailable.
-pub fn available_drivers() -> Vec<(&'static str, &'static str)> {
-    BUNDLED.iter().map(|d| (d.name, "ok")).collect()
+/// Every driver in this build, in table order.
+pub fn available_drivers() -> Vec<&'static str> {
+    BUNDLED.iter().map(|d| d.name).collect()
 }
 
 /// The driver registered under `name`.
@@ -163,10 +163,7 @@ mod tests {
 
     #[test]
     fn the_bundled_drivers_are_available() {
-        assert_eq!(
-            available_drivers(),
-            vec![("st7789", "ok"), ("ssd1306", "ok")]
-        );
+        assert_eq!(available_drivers(), vec!["st7789", "ssd1306"]);
     }
 
     #[test]

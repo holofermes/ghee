@@ -4,21 +4,15 @@
 #include <stdbool.h>
 #include <GLES2/gl2.h>
 
+// set_param splits a vector into one float uniform per component, so this ABI
+// declares scalars only.
 typedef enum {
     PARAM_TYPE_FLOAT,
-    PARAM_TYPE_INT,
-    PARAM_TYPE_VEC2,
-    PARAM_TYPE_VEC3,
-    PARAM_TYPE_VEC4,
-    PARAM_TYPE_TEXTURE
+    PARAM_TYPE_INT
 } param_type_t;
 
 typedef struct { float value; } float_param_t;
 typedef struct { int value; } int_param_t;
-typedef struct { float values[2]; } vec2_param_t;
-typedef struct { float values[3]; } vec3_param_t;
-typedef struct { float values[4]; } vec4_param_t;
-typedef struct { char value[256]; } texture_param_t;
 
 typedef struct {
     char name[256];
@@ -26,10 +20,6 @@ typedef struct {
     union {
         float_param_t *float_param;
         int_param_t *int_param;
-        vec2_param_t *vec2_param;
-        vec3_param_t *vec3_param;
-        vec4_param_t *vec4_param;
-        texture_param_t *texture_param;
     } value;
 } parameter_t;
 

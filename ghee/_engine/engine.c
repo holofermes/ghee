@@ -805,10 +805,7 @@ bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
     switch (param->type) {
         case PARAM_TYPE_FLOAT: glUniform1f(loc, param->value.float_param->value); break;
         case PARAM_TYPE_INT:   glUniform1i(loc, param->value.int_param->value); break;
-        case PARAM_TYPE_VEC2:  glUniform2fv(loc, 1, param->value.vec2_param->values); break;
-        case PARAM_TYPE_VEC3:  glUniform3fv(loc, 1, param->value.vec3_param->values); break;
-        case PARAM_TYPE_VEC4:  glUniform4fv(loc, 1, param->value.vec4_param->values); break;
-        default: return false;  // textures are channels, not params
+        default: return false;
     }
     return true;
 }

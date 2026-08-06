@@ -13,13 +13,9 @@ pub const NAME_MAX: usize = 255;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
-#[allow(dead_code)] // The C enum declares the vector types. Nothing here produces one.
 pub enum CParameterType {
     Float = ffi::PARAM_TYPE_FLOAT,
     Int = ffi::PARAM_TYPE_INT,
-    Vec2 = ffi::PARAM_TYPE_VEC2,
-    Vec3 = ffi::PARAM_TYPE_VEC3,
-    Vec4 = ffi::PARAM_TYPE_VEC4,
 }
 
 /// The per-type struct the C view points at.

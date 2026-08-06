@@ -412,6 +412,12 @@ fn kernel_init(madctl: u8) -> Vec<Command> {
     ]
 }
 
+/// The clock the overlay carries. ghee's own driver runs this controller at
+/// DEFAULT_BAUDRATE, and the kernel driver handed that same number renders
+/// noise on a VC4-class board where this one is clean. A panel that takes
+/// more says so with `--display-opts baudrate=`.
+const KERNEL_BAUDRATE: i64 = 62_500_000;
+
 /// The config.txt lines that hand this panel to panel-mipi-dbi, and the
 /// firmware the overlay names.
 fn kernel(opts: &Opts) -> Result<Setup> {
@@ -432,7 +438,7 @@ fn kernel(opts: &Opts) -> Result<Setup> {
     let mut lines = vec![
         format!(
             "dtoverlay=mipi-dbi-spi,spi{bus}-{device},speed={}",
-            int_opt(opts, "baudrate", DEFAULT_BAUDRATE)?
+            int_opt(opts, "baudrate", KERNEL_BAUDRATE)?
         ),
         format!(
             "dtparam=width={},height={}",
@@ -691,7 +697,7 @@ mod tests {
         assert_eq!(
             kernel(&bonnet()).unwrap().lines,
             [
-                "dtoverlay=mipi-dbi-spi,spi0-0,speed=99000000",
+                "dtoverlay=mipi-dbi-spi,spi0-0,speed=62500000",
                 "dtparam=width=240,height=240",
                 "dtparam=dc-gpio=25,backlight-gpio=26",
                 "dtparam=write-only",

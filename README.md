@@ -319,7 +319,7 @@ driver from then on:
 
 ```
 $ ghee overlay st7789 --display-opts width=240,height=240,madctl=0x00,backlight=26
-dtoverlay=mipi-dbi-spi,spi0-0,speed=99000000
+dtoverlay=mipi-dbi-spi,spi0-0,speed=62500000
 dtparam=width=240,height=240
 dtparam=dc-gpio=25,backlight-gpio=26
 dtparam=write-only

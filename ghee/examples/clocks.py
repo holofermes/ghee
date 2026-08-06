@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["ghee-render>=0.4.0", "numpy"]
+# dependencies = ["ghee-render>=0.4.0"]
 # ///
 """A grid of dials, each spinning at its own band's rate.
 
@@ -22,7 +22,8 @@ import ghee
 ghee.args()  # the probe, this scene takes no arguments
 
 # Slow imports come after the parse: the probe must answer inside its window.
-import numpy as np  # noqa: E402
+import math  # noqa: E402
+from array import array  # noqa: E402
 
 BANDS = 64
 
@@ -165,11 +166,14 @@ def amplitudes(tick):
     Each band keeps a rate of its own, so neighbouring dials drift apart
     instead of reading as one clock repeated across the grid.
     """
-    x = np.linspace(0.0, 1.0, BANDS)
     t = tick.frame * 0.03
-    tilt = 0.35 + 0.45 * (1.0 - x) ** 1.6  # a spectrum leans on its low end
-    swell = 0.25 * np.sin(t * (0.6 + 2.0 * x) + x * 7.0)
-    return np.clip(tilt + swell, 0.0, 1.0).astype(np.float32)
+    out = array("f", bytes(4 * BANDS))
+    for i in range(BANDS):
+        x = i / (BANDS - 1)
+        tilt = 0.35 + 0.45 * (1.0 - x) ** 1.6  # a spectrum leans on its low end
+        swell = 0.25 * math.sin(t * (0.6 + 2.0 * x) + x * 7.0)
+        out[i] = min(1.0, max(0.0, tilt + swell))
+    return out
 
 
 ghee.run(build())

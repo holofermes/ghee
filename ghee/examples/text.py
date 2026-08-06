@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["ghee-render>=0.3.0", "numpy", "pillow"]
+# dependencies = ["ghee-render>=0.3.0", "pillow"]
 # ///
 """Host-rasterized text through a 2D input.
 
@@ -24,7 +24,8 @@ args = ghee.args(
 )
 
 # Slow imports come after the parse: the probe must answer inside its window.
-import numpy as np  # noqa: E402
+from array import array  # noqa: E402
+
 from lib import look  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
@@ -89,7 +90,7 @@ def _bake(text):
         img = _raster_bitmap(text)
     else:
         img = _raster(text, font)
-    return (np.asarray(img, np.float32) / 255.0).reshape(-1), img.size
+    return array("f", [v / 255.0 for v in img.getdata()]), img.size
 
 
 MASK, (W, H) = _bake(args.text)

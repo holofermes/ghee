@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["ghee-render>=0.3.0", "numpy"]
+# dependencies = ["ghee-render>=0.3.0"]
 # ///
 """A scene with no JSON. It builds its pass in code, and feeds one array each
 frame.
@@ -18,7 +18,9 @@ import ghee
 ghee.args()  # the probe, this scene takes no arguments
 
 # Slow imports come after the parse: the probe must answer inside its window.
-import numpy as np  # noqa: E402
+import math  # noqa: E402
+from array import array  # noqa: E402
+
 from lib import look  # noqa: E402
 
 BARS = 48
@@ -66,13 +68,16 @@ def build():
 
 @ghee.feed("bars")
 def bars(tick):
-    x = np.linspace(0.0, 1.0, BARS)
     t = tick.frame * 0.05
-    # look.WAVE in numpy: two sines that are not quite harmonics running
-    # opposite ways, so the crest travels and never lands twice on the same bar
-    w = 0.28 * np.sin(x * 4.4 + t) + 0.10 * np.sin(x * 9.7 - t * 0.6)
-    tilt = np.exp(-1.7 * x)  # a spectrum leans on its low end
-    return ((0.55 + tilt) * (0.65 + w)).astype(np.float32)
+    out = array("f", bytes(4 * BARS))
+    for i in range(BARS):
+        x = i / (BARS - 1)
+        # look.WAVE: two sines that are not quite harmonics running opposite
+        # ways, so the crest travels and never lands twice on the same bar
+        w = 0.28 * math.sin(x * 4.4 + t) + 0.10 * math.sin(x * 9.7 - t * 0.6)
+        tilt = math.exp(-1.7 * x)  # a spectrum leans on its low end
+        out[i] = (0.55 + tilt) * (0.65 + w)
+    return out
 
 
 ghee.run(build())

@@ -9,9 +9,17 @@
   config.txt lines, and the firmware file the overlay names.
 - A KMS display blanks and lights through its kernel driver, which takes
   the panel's backlight or its display-off command with it.
-- The console takes a host filter list, applied after each scene's own, so
-  a panel that needs the dither takes it without writing it into every
-  scene.
+- The console takes a host filter list, applied after each scene's own.
+- `--size` on a KMS display renders that size and the display scales it
+  across the mode, so a scene can shade a quarter of the pixels and fill the
+  screen.
+- A scene sizes its buffers as a share of the frame: `full`, `half`,
+  `quarter`, `eighth`, `sixteenth`, wherever a WxH goes.
+- `--demo clocks`: a grid of dials that fits itself to the frame.
+- `-- --help` says when a scene was still starting rather than calling it
+  pass-through, and `--no-probe` skips the wait.
+- Importing ghee no longer reads the installed metadata, which starts every
+  Python scene about a second sooner on a Pi Zero.
 
 ## 0.3.0 - 2026-08-04
 

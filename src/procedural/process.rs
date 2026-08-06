@@ -140,37 +140,70 @@ pub struct ArgDecl {
     pub help: String,
 }
 
+/// What a scene said when ghee asked what arguments it takes.
+#[derive(Clone, Debug)]
+pub enum Takes {
+    /// The declarations it answered with, empty for a scene that takes none.
+    Args(Vec<ArgDecl>),
+    /// It answered with something else, so its arguments are its own.
+    PassThrough,
+    /// It was still starting when the wait ran out.
+    Slow,
+    /// Nothing asked it.
+    Unasked,
+}
+
 /// A scene in the `-- --help` listing.
-/// `args` is None for a pass-through process.
-/// A pass-through process answers nothing, and ghee lists no argument for it.
 #[derive(Clone, Debug)]
 pub struct Declared {
     pub name: String,
-    pub args: Option<Vec<ArgDecl>>,
+    pub args: Takes,
 }
 
-/// What a process declares, read now. None is a pass-through.
+/// What a process declares, read now.
 /// Only `-- --help` calls this. A render and a serve never probe.
-fn declarations(path: &str) -> Option<Vec<ArgDecl>> {
-    probe(path).and_then(|line| parse_declarations(&line))
+fn declarations(path: &str) -> Takes {
+    match probe(path) {
+        Answer::Line(line) => match parse_declarations(&line) {
+            Some(args) => Takes::Args(args),
+            None => Takes::PassThrough,
+        },
+        Answer::Silent => Takes::PassThrough,
+        Answer::Slow => Takes::Slow,
+    }
+}
+
+/// What came back from `--ghee-args`.
+enum Answer {
+    Line(String),
+    /// It ran and said nothing, so it takes its arguments its own way.
+    Silent,
+    /// It was still running when the wait ran out, so nothing is known.
+    Slow,
 }
 
 /// Run `<process> --ghee-args` and read the one line it answers with.
-fn probe(path: &str) -> Option<String> {
-    let (program, dir) = where_to_run(path).ok()?;
+fn probe(path: &str) -> Answer {
+    let Ok((program, dir)) = where_to_run(path) else {
+        return Answer::Silent;
+    };
     let mut cmd = Command::new(program);
     if let Some(size) = render_size() {
         cmd.env(SIZE, size);
     }
-    let mut child = cmd
+    let Ok(mut child) = cmd
         .arg("--ghee-args")
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
-    let out = child.stdout.take()?;
+    else {
+        return Answer::Silent;
+    };
+    let Some(out) = child.stdout.take() else {
+        return Answer::Silent;
+    };
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut line = Vec::new();
@@ -179,9 +212,16 @@ fn probe(path: &str) -> Option<String> {
         }
     });
     let answer = rx.recv_timeout(PROBE_WAIT).ok();
+    // Still running when the wait ran out is a slow scene. Gone already, with
+    // nothing on stdout, is a scene that takes no arguments this way.
+    let running = matches!(child.try_wait(), Ok(None));
     let _ = child.kill();
     let _ = child.wait();
-    answer
+    match (answer, running) {
+        (Some(line), _) => Answer::Line(line),
+        (None, true) => Answer::Slow,
+        (None, false) => Answer::Silent,
+    }
 }
 
 /// `{"args": [{"name": ..., "type": ..., "default": ..., "help": ...}]}`.
@@ -216,14 +256,18 @@ fn parse_declarations(line: &str) -> Option<Vec<ArgDecl>> {
 /// What each scene of a set declares, for `-- --help`.
 /// A scene that holds no process declares nothing.
 /// Each executable scene answers `--ghee-args` here, and nothing else asks.
-pub fn declare(scenes: &[(String, String)]) -> Vec<Declared> {
+/// `ask` false skips every probe, which is the point of --no-probe: a scene
+/// slow to start costs the wait once per scene, and a listing of ten costs it
+/// ten times.
+pub fn declare(scenes: &[(String, String)], ask: bool) -> Vec<Declared> {
     scenes
         .iter()
         .map(|(name, path)| Declared {
             name: name.clone(),
             args: match executable(path) {
+                Some(_) if !ask => Takes::Unasked,
                 Some(exe) => declarations(&exe),
-                None => Some(Vec::new()),
+                None => Takes::Args(Vec::new()),
             },
         })
         .collect()
@@ -255,14 +299,30 @@ fn shown(decl: &ArgDecl) -> Option<String> {
 pub fn help(scenes: &[Declared], prog: &str) -> String {
     let mut out = format!("usage: {prog} [ARGS]\n");
     for scene in scenes {
-        let Some(args) = &scene.args else {
-            out.push_str(&format!("\n{}: pass-through\n", scene.name));
-            continue;
+        let args = match &scene.args {
+            Takes::Args(args) if !args.is_empty() => args,
+            Takes::Args(_) => {
+                out.push_str(&format!("\n{}: no arguments\n", scene.name));
+                continue;
+            }
+            Takes::PassThrough => {
+                out.push_str(&format!("\n{}: pass-through\n", scene.name));
+                continue;
+            }
+            Takes::Slow => {
+                out.push_str(&format!(
+                    "\n{}: still starting after {}s, so its arguments went unread. \
+                     --no-probe skips the wait\n",
+                    scene.name,
+                    PROBE_WAIT.as_secs()
+                ));
+                continue;
+            }
+            Takes::Unasked => {
+                out.push_str(&format!("\n{}: not asked\n", scene.name));
+                continue;
+            }
         };
-        if args.is_empty() {
-            out.push_str(&format!("\n{}: no arguments\n", scene.name));
-            continue;
-        }
         out.push_str(&format!("\n{}:\n", scene.name));
         for a in args {
             let flag = match a.ty.as_str() {
@@ -1085,7 +1145,9 @@ time.sleep(60)
     fn the_help_probe_reads_the_declared_arguments() {
         let d = tmpdir("probe");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let decls = declarations(&path).unwrap();
+        let Takes::Args(decls) = declarations(&path) else {
+            panic!("the scene declared nothing");
+        };
         assert_eq!(decls.len(), 2);
         assert_eq!(decls[0].name, "emit");
         assert_eq!(decls[0].ty, "size");
@@ -1097,19 +1159,45 @@ time.sleep(60)
             "feed",
             "#!/bin/sh\necho '{\"args\": [{\"name\": \"gain\", \"type\": \"float\"}]}'\n",
         );
-        let after = declarations(&path).unwrap();
+        let Takes::Args(after) = declarations(&path) else {
+            panic!("the edited scene declared nothing");
+        };
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].name, "gain");
     }
 
+    /// A scene still starting when the wait runs out is reported as that, so
+    /// the listing can say why it is bare and how to skip the wait.
     #[test]
-    fn a_scene_that_does_not_answer_the_help_probe_is_pass_through() {
-        let d = tmpdir("passthrough");
-        let path = script(&d, "quiet", "#!/bin/sh\nsleep 30\n");
+    fn a_scene_slower_than_the_probe_wait_says_so() {
+        let d = tmpdir("slow");
+        let path = script(&d, "slow", "#!/bin/sh\nsleep 30\n");
         let started = Instant::now();
-        assert_eq!(declarations(&path), None);
+        assert!(matches!(declarations(&path), Takes::Slow));
         assert!(started.elapsed() >= PROBE_WAIT, "gave up before the wait");
         assert!(started.elapsed() < PROBE_WAIT + Duration::from_secs(3));
+    }
+
+    /// A scene that runs and answers nothing takes its arguments its own way,
+    /// and it is not slow: it is already gone when the wait ends.
+    #[test]
+    fn a_scene_that_answers_nothing_is_pass_through() {
+        let d = tmpdir("passthrough");
+        let path = script(&d, "quiet", "#!/bin/sh\nexit 0\n");
+        assert!(matches!(declarations(&path), Takes::PassThrough));
+    }
+
+    /// --no-probe asks nothing at all, so a slow scene costs no wait.
+    #[test]
+    fn no_probe_asks_nothing() {
+        let d = tmpdir("unasked");
+        let path = script(&d, "slow", "#!/bin/sh\nsleep 30\n");
+        let set = vec![("slow".to_string(), path)];
+        let started = Instant::now();
+        let declared = declare(&set, false);
+        assert!(matches!(declared[0].args, Takes::Unasked));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(help(&declared, "ghee serve --").contains("slow: not asked"));
     }
 
     /// The start runs the scene itself. Nothing runs `--ghee-args` first.
@@ -1393,7 +1481,7 @@ time.sleep(60)
     fn hero() -> Declared {
         Declared {
             name: "hero".to_string(),
-            args: Some(vec![
+            args: Takes::Args(vec![
                 decl("emit", "size", serde_json::json!([480, 300]), "the wall"),
                 decl("loud", "bool", Value::from(false), "shout"),
             ]),
@@ -1403,14 +1491,14 @@ time.sleep(60)
     fn plain(name: &str) -> Declared {
         Declared {
             name: name.to_string(),
-            args: Some(Vec::new()),
+            args: Takes::Args(Vec::new()),
         }
     }
 
     fn raw() -> Declared {
         Declared {
             name: "raw".to_string(),
-            args: None,
+            args: Takes::PassThrough,
         }
     }
 
@@ -1458,7 +1546,7 @@ time.sleep(60)
             "#!/bin/sh\necho '{\"args\": [{\"name\": \"emit\", \"type\": \"size\"},\
              {\"name\": \"loud\", \"type\": \"bool\"}]}'\n",
         );
-        let quiet = script(&d, "quiet", "#!/bin/sh\nsleep 30\n");
+        let quiet = script(&d, "quiet", "#!/bin/sh\nexit 0\n");
         let json = format!("{d}/flat.scene.json");
         fs::write(&json, "{}").unwrap();
         let set = vec![
@@ -1466,11 +1554,14 @@ time.sleep(60)
             ("quiet".to_string(), quiet),
             ("flat".to_string(), json),
         ];
-        let declared = declare(&set);
-        assert_eq!(declared[0].args.as_ref().unwrap().len(), 2);
+        let declared = declare(&set, true);
+        let Takes::Args(args) = &declared[0].args else {
+            panic!("feed declared nothing: {:?}", declared[0].args);
+        };
+        assert_eq!(args.len(), 2);
         let text = help(&declared, "ghee serve --");
         assert!(text.contains("--emit WxH"), "{text}");
-        // a scene that answers nothing in the wait, and a scene with no process
+        // a scene that answers nothing, and a scene with no process at all
         assert!(text.contains("quiet: pass-through"), "{text}");
         assert!(text.contains("flat: no arguments"), "{text}");
     }

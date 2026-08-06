@@ -237,7 +237,10 @@ fn scene_args_help(a: &Ns) -> Result<()> {
         "serve" => "ghee serve --".to_string(),
         _ => format!("ghee render {} --", set.first().map_or("", |(n, _)| n)),
     };
-    print!("{}", process::help(&process::declare(&set), &prog));
+    print!(
+        "{}",
+        process::help(&process::declare(&set, !a.no_probe), &prog)
+    );
     std::process::exit(0);
 }
 
@@ -1111,6 +1114,12 @@ struct RenderFlags {
                 bandwidth (worth it on VC4-class boards), slight banding in gradients"
     )]
     rgb565: bool,
+    #[arg(
+        long,
+        help = "with `-- --help`, list the scenes without asking each one what \
+                it takes"
+    )]
+    no_probe: bool,
 
     #[arg(
         long,
@@ -1386,6 +1395,7 @@ struct Ns {
     preview_fps: i32,
     stream_max: i32,
     bitrate: i32,
+    no_probe: bool,
     scene_args: Vec<String>,
 }
 
@@ -1404,6 +1414,7 @@ impl RenderArgs {
             fps: self.fps,
             filters: self.filters,
             stats: self.stats,
+            no_probe: self.render.no_probe,
             display: self.render.display,
             display_opts: self.render.display_opts,
             rgb565: self.render.rgb565,
@@ -1432,6 +1443,7 @@ impl ServeArgs {
             output: None,
             h264: None,
             serve: true,
+            no_probe: self.render.no_probe,
             components: 4,
             save_opts: None,
             write_buffer: 16,

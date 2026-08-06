@@ -977,79 +977,55 @@ mod tests {
     /// It feeds one array and one param for each tick.
     /// It appends every tick it reads to ticks.jsonl in its own directory.
     /// The test reads that file, so the process must run in that directory.
-    const SCENE_SCRIPT: &str = r#"#!/usr/bin/env python3
-import json, struct, sys
+    const SCENE_SCRIPT: &str = r#"#!/bin/sh
+# f32 <a> <b>: the four little-endian bytes of a/b as an IEEE 754 single.
+f32() {
+    a=$1 b=$2
+    if [ "$a" -eq 0 ]; then printf '\000\000\000\000'; return; fi
+    e=0
+    while [ "$a" -ge $((b * 2)) ]; do b=$((b * 2)); e=$((e + 1)); done
+    while [ "$a" -lt "$b" ]; do a=$((a * 2)); e=$((e - 1)); done
+    s=$(( ((a << 24) + b) / (b * 2) ))
+    if [ "$s" -ge $((1 << 24)) ]; then s=$((1 << 23)); e=$((e + 1)); fi
+    bits=$(( (127 + e) << 23 | (s - (1 << 23)) ))
+    printf "$(printf '\\%03o\\%03o\\%03o\\%03o' $((bits & 255)) $((bits >> 8 & 255)) $((bits >> 16 & 255)) $((bits >> 24 & 255)))"
+}
 
-ARGS = {"args": [{"name": "emit", "type": "size", "default": [4, 2],
-                  "help": "the array shape"},
-                 {"name": "loud", "type": "bool", "default": False, "help": ""}]}
+if [ "$1" = "--ghee-args" ]; then
+    : > probed
+    printf '%s\n' '{"args": [{"name": "emit", "type": "size", "default": [4, 2], "help": "the array shape"}, {"name": "loud", "type": "bool", "default": false, "help": ""}]}'
+    exit 0
+fi
+printf '%s\n' '{"version": 1, "params": {"text": {"type": "string", "value": "GHEE"}}, "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(level_at(0)); }", "arrays": [{"name": "level", "size": 4}], "params": {"amt": {"type": "float", "value": 0.0}}}]}'
 
-SCENE = {"version": 1, "params": {"text": {"type": "string", "value": "GHEE"}},
-         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(level_at(0)); }",
-                     "arrays": [{"name": "level", "size": 4}],
-                     "params": {"amt": {"type": "float", "value": 0.0}}}]}
-
-if "--ghee-args" in sys.argv:
-    sys.stdout.write(json.dumps(ARGS) + "\n")
-    sys.exit(0)
-
-out = sys.stdout.buffer
-out.write((json.dumps(SCENE) + "\n").encode())
-out.flush()
-
-
-def msg(kind, name, values):
-    out.write(struct.pack("<BB", kind, len(name)) + name.encode())
-    out.write(struct.pack("<I", len(values)))
-    out.write(struct.pack("<%df" % len(values), *values))
-    out.flush()
-
-
-for line in sys.stdin:
-    tick = json.loads(line)
-    with open("ticks.jsonl", "a") as f:
-        f.write(line)
-    n = tick["frame"]
-    msg(0, "level", [n, n + 1, n + 2, n + 3])
-    msg(1, "amt", [n / 10.0])
-    if n % 2:
-        out.write(bytes([2]))
-        out.flush()
-with open("ticks.jsonl", "a") as f:
-    f.write("eof\n")
+while IFS= read -r line; do
+    printf '%s\n' "$line" >> ticks.jsonl
+    n=${line#*\"frame\":}; n=${n%%,*}; n=${n%%\}*}
+    printf '\000\005level\004\000\000\000'
+    f32 "$n" 1; f32 $((n + 1)) 1; f32 $((n + 2)) 1; f32 $((n + 3)) 1
+    printf '\001\003amt\001\000\000\000'
+    f32 "$n" 10
+    if [ $((n % 2)) -eq 1 ]; then printf '\002'; fi
+done
+printf 'eof\n' >> ticks.jsonl
 "#;
 
     /// A process that ignores stdin. It writes its data, then waits for the stop.
-    const FREE: &str = r#"#!/usr/bin/env python3
-import json, struct, sys, time
-
-SCENE = {"version": 1,
-         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
-                     "arrays": [{"name": "level", "size": 2}]}]}
-out = sys.stdout.buffer
-out.write((json.dumps(SCENE) + "\n").encode())
-out.write(struct.pack("<BB", 0, 5) + b"level" + struct.pack("<I", 2))
-out.write(struct.pack("<2f", 7.0, 8.0))
-out.flush()
-time.sleep(60)
+    const FREE: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }", "arrays": [{"name": "level", "size": 2}]}]}'
+# kind 0, level, the floats 7.0 and 8.0
+printf '\000\005level\002\000\000\000\000\000\340\100\000\000\000\101'
+sleep 60
 "#;
 
     /// A process that sends one array as kind 4 bytes and one as kind 0 floats.
-    const U8_SCRIPT: &str = r#"#!/usr/bin/env python3
-import json, struct, sys, time
-
-SCENE = {"version": 1,
-         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
-                     "arrays": [{"name": "mask", "size": [2, 2]},
-                                {"name": "state", "size": 2}]}]}
-out = sys.stdout.buffer
-out.write((json.dumps(SCENE) + "\n").encode())
-out.write(struct.pack("<BB", 4, 4) + b"mask" + struct.pack("<I", 4))
-out.write(bytes([0, 64, 128, 255]))
-out.write(struct.pack("<BB", 0, 5) + b"state" + struct.pack("<I", 2))
-out.write(struct.pack("<2f", 0.25, 1.0))
-out.flush()
-time.sleep(60)
+    const U8_SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }", "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "state", "size": 2}]}]}'
+# kind 4, mask, the bytes 0 64 128 255
+printf '\004\004mask\004\000\000\000\000\100\200\377'
+# kind 0, state, the floats 0.25 and 1.0
+printf '\000\005state\002\000\000\000\000\000\200\076\000\000\200\077'
+sleep 60
 "#;
 
     fn tmpdir(tag: &str) -> String {
@@ -1062,6 +1038,7 @@ time.sleep(60)
     }
 
     fn script(dir: &str, name: &str, body: &str) -> String {
+        let _write = SCRIPTS.write().unwrap();
         let path = format!("{dir}/{name}");
         fs::write(&path, body).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1070,6 +1047,24 @@ time.sleep(60)
 
     fn no_args() -> Vec<String> {
         Vec::new()
+    }
+
+    /// A fork that lands while another thread holds a write descriptor on a
+    /// fresh executable hands that descriptor to the child, and the exec of
+    /// that file answers ETXTBSY until it closes. Writing a script takes this
+    /// lock exclusively and spawning takes it shared, so the two never
+    /// overlap, and concurrent spawns still run together.
+    static SCRIPTS: RwLock<()> = RwLock::new(());
+
+    fn start_scene(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
+        let _spawn = SCRIPTS.read().unwrap();
+        SceneProcess::start(path, args)
+    }
+
+    /// declarations(), spawn-locked like start_scene.
+    fn declared(path: &str) -> Takes {
+        let _spawn = SCRIPTS.read().unwrap();
+        declarations(path)
     }
 
     /// The error of a call that must fail.
@@ -1173,7 +1168,7 @@ time.sleep(60)
     fn the_help_probe_reads_the_declared_arguments() {
         let d = tmpdir("probe");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let Takes::Args(decls) = declarations(&path) else {
+        let Takes::Args(decls) = declared(&path) else {
             panic!("the scene declared nothing");
         };
         assert_eq!(decls.len(), 2);
@@ -1187,7 +1182,7 @@ time.sleep(60)
             "feed",
             "#!/bin/sh\necho '{\"args\": [{\"name\": \"gain\", \"type\": \"float\"}]}'\n",
         );
-        let Takes::Args(after) = declarations(&path) else {
+        let Takes::Args(after) = declared(&path) else {
             panic!("the edited scene declared nothing");
         };
         assert_eq!(after.len(), 1);
@@ -1201,7 +1196,7 @@ time.sleep(60)
         let d = tmpdir("slow");
         let path = script(&d, "slow", "#!/bin/sh\nsleep 30\n");
         let started = Instant::now();
-        assert!(matches!(declarations(&path), Takes::Starting));
+        assert!(matches!(declared(&path), Takes::Starting));
         assert!(started.elapsed() >= PROBE_WAIT, "gave up before the wait");
         assert!(started.elapsed() < PROBE_WAIT + Duration::from_secs(3));
     }
@@ -1212,7 +1207,7 @@ time.sleep(60)
     fn a_scene_that_answers_nothing_is_pass_through() {
         let d = tmpdir("passthrough");
         let path = script(&d, "quiet", "#!/bin/sh\nexit 0\n");
-        assert!(matches!(declarations(&path), Takes::PassThrough));
+        assert!(matches!(declared(&path), Takes::PassThrough));
     }
 
     /// --no-probe asks nothing at all, so a scene still starting costs no wait.
@@ -1233,10 +1228,10 @@ time.sleep(60)
     fn a_start_costs_no_probe() {
         let d = tmpdir("no-probe");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let started = Instant::now();
-        let (_scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
-        assert!(started.elapsed() < PROBE_WAIT, "{:?}", started.elapsed());
+        let (_scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.stop();
+        // The fixture writes this file from its --ghee-args branch.
+        assert!(!Path::new(&format!("{d}/probed")).exists());
     }
 
     #[test]
@@ -1276,7 +1271,7 @@ time.sleep(60)
     fn the_handshake_line_becomes_the_scene() {
         let d = tmpdir("handshake");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let (scene, process) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (scene, process) = start_scene(&path, &no_args()).unwrap();
         assert_eq!(scene.passes.len(), 1);
         assert_eq!(scene.passes[0].arrays[0].name, "level");
         assert_eq!(scene.params.get("text").unwrap().ty, "string");
@@ -1294,7 +1289,7 @@ time.sleep(60)
             "broken",
             "#!/bin/sh\necho 'boom in the process' >&2\nexit 3\n",
         );
-        let e = failure(SceneProcess::start(&path, &no_args()));
+        let e = failure(start_scene(&path, &no_args()));
         let shown = e.to_string();
         assert!(shown.contains("did not complete the handshake"), "{shown}");
         assert!(!shown.contains("boom in the process"), "{shown}");
@@ -1306,7 +1301,7 @@ time.sleep(60)
     fn messages_set_arrays_params_and_the_clean_flag() {
         let d = tmpdir("messages");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let (scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.data.contains_key("level")));
         let Some(Feed::Data(values)) = f.provide("level", ArraySize::Linear(4), 0) else {
@@ -1354,7 +1349,7 @@ time.sleep(60)
     fn the_ticks_reach_the_scene_in_its_own_directory() {
         let d = tmpdir("ticks");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let (scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         f.tick(0, 0.0, 1.0 / 60.0).unwrap();
         let first = ticks(&d, 1).remove(0);
@@ -1377,7 +1372,7 @@ time.sleep(60)
     fn a_changed_string_param_reaches_the_next_tick() {
         let d = tmpdir("onparam");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let (scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         f.tick(0, 0.0, 0.016).unwrap();
         ticks(&d, 1);
@@ -1392,7 +1387,7 @@ time.sleep(60)
     fn a_scene_that_ignores_stdin_runs_free() {
         let d = tmpdir("free");
         let path = script(&d, "free", FREE);
-        let (scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.data.contains_key("level")));
         let Some(Feed::Data(values)) = f.provide("level", ArraySize::Linear(2), 0) else {
@@ -1405,7 +1400,7 @@ time.sleep(60)
     fn a_kind_4_message_reaches_the_render_target_as_bytes() {
         let d = tmpdir("u8");
         let path = script(&d, "mask", U8_SCRIPT);
-        let (scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.data.len() == 2));
         let mut stub = Stub {
@@ -1445,7 +1440,7 @@ time.sleep(60)
             "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\n\
              echo 'the process gave up' >&2\nexit 1\n",
         );
-        let (_scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (_scene, mut f) = start_scene(&path, &no_args()).unwrap();
         let mut last = Ok(());
         for frame in 0..100u64 {
             last = f.tick(frame, 0.0, 0.016);
@@ -1470,7 +1465,7 @@ time.sleep(60)
     fn closed_stdin_stops_a_scene_and_a_stubborn_one_is_signalled() {
         let d = tmpdir("stop");
         let quick = script(&d, "quick", SCENE_SCRIPT);
-        let (_scene, f) = SceneProcess::start(&quick, &no_args()).unwrap();
+        let (_scene, f) = start_scene(&quick, &no_args()).unwrap();
         let started = Instant::now();
         drop(f);
         assert!(
@@ -1484,7 +1479,7 @@ time.sleep(60)
             "#!/bin/sh\ntrap '' TERM\nprintf '{\"passes\":[{\"name\":\"main\",\
              \"code\":\"void main(){}\"}]}\\n'\nsleep 10\n",
         );
-        let (_scene, f) = SceneProcess::start(&stubborn, &no_args()).unwrap();
+        let (_scene, f) = start_scene(&stubborn, &no_args()).unwrap();
         let started = Instant::now();
         drop(f);
         let took = started.elapsed();
@@ -1605,7 +1600,7 @@ time.sleep(60)
             "#!/bin/sh\ntest \"$1\" = --emit || { echo \"picky: unrecognized: $1\" >&2; exit 2; }\n\
              printf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\nsleep 30\n",
         );
-        let e = failure(SceneProcess::start(&path, &args(&["--bogus"])));
+        let e = failure(start_scene(&path, &args(&["--bogus"])));
         assert!(
             e.to_string().contains("did not complete the handshake"),
             "{e}"
@@ -1615,7 +1610,7 @@ time.sleep(60)
             "{e}"
         );
         // the scene's own token passes through the same way
-        SceneProcess::start(&path, &args(&["--emit"])).unwrap();
+        start_scene(&path, &args(&["--emit"])).unwrap();
     }
 
     #[test]
@@ -1627,7 +1622,7 @@ time.sleep(60)
             "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\n\
              printf '\\007'\nsleep 5\n",
         );
-        let (_scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (_scene, mut f) = start_scene(&path, &no_args()).unwrap();
         let mut last = Ok(());
         for frame in 0..100u64 {
             last = f.tick(frame, 0.0, 0.016);
@@ -1643,33 +1638,19 @@ time.sleep(60)
         );
     }
 
-    const DOTTED_SCRIPT: &str = r#"#!/usr/bin/env python3
-import json, struct, sys
-
-SCENE = {"version": 1, "params": {},
-         "passes": [{"name": "draw", "code": "void main(){}",
-                     "params": {"color": {"type": "float", "value": 0.2}}},
-                    {"name": "dither", "code": "void main(){}",
-                     "params": {"color": {"type": "float", "value": 0.0}}}]}
-
-out = sys.stdout.buffer
-out.write((json.dumps(SCENE) + "\n").encode())
-
-def msg(name, v):
-    n = name.encode()
-    out.write(bytes([1, len(n)]) + n + struct.pack("<I", 1) + struct.pack("<f", v))
-
-msg("dither.color", 0.65)
-msg("color", 0.1)
-out.flush()
-sys.stdin.readline()
+    const DOTTED_SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "params": {}, "passes": [{"name": "draw", "code": "void main(){}", "params": {"color": {"type": "float", "value": 0.2}}}, {"name": "dither", "code": "void main(){}", "params": {"color": {"type": "float", "value": 0.0}}}]}'
+# kind 1: dither.color = 0.65, then color = 0.1
+printf '\001\014dither.color\001\000\000\000\146\146\046\077'
+printf '\001\005color\001\000\000\000\315\314\314\075'
+read -r line
 "#;
 
     #[test]
     fn a_dotted_name_addresses_the_param_of_one_pass() {
         let d = tmpdir("dotted");
         let path = script(&d, "feed", DOTTED_SCRIPT);
-        let (scene, mut f) = SceneProcess::start(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.incoming.len() >= 2));
         let mut stub = Stub::default();

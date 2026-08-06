@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["ghee-render>=0.3.0", "numpy", "pillow"]
+# dependencies = ["ghee-render", "numpy", "pillow"]
 # ///
 """Blue Sun: a wall of light pipes, and the wall the pipes light.
 
@@ -26,7 +26,7 @@ ARGS = [
         "emit",
         "size",
         default="half",
-        help="draw the tubes at WxH and blit, instead of full res",
+        help="draw the tubes at this size and blit, instead of the full frame",
     ),
     ghee.Arg("wash", "size", default="quarter", help="the wall buffer"),
     ghee.Arg(

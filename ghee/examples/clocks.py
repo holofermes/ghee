@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["ghee-render>=0.4.0"]
+# dependencies = ["ghee-render"]
 # ///
 """A grid of dials, each spinning at its own band's rate.
 

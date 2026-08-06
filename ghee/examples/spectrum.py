@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["ghee-render>=0.3.0"]
+# dependencies = ["ghee-render"]
 # ///
 """A scene with no JSON. It builds its pass in code, and feeds one array each
 frame.

@@ -323,7 +323,7 @@ dtoverlay=mipi-dbi-spi,spi0-0,speed=62500000
 dtparam=width=240,height=240
 dtparam=dc-gpio=25,backlight-gpio=26
 dtparam=write-only
-wrote panel.bin; copy it to /lib/firmware/panel.bin, add the lines above to
+wrote panel.bin. Copy it to /lib/firmware/panel.bin, add the lines above to
 /boot/firmware/config.txt, and reboot
 ```
 

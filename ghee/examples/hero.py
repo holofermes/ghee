@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["ghee-render>=0.3.0", "numpy", "pillow"]
+# dependencies = ["ghee-render", "numpy", "pillow"]
 # ///
 """A word slides over water, and particles stream under the surface.
 

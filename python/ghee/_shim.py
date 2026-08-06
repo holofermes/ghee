@@ -265,7 +265,7 @@ _ARG_TYPES = {
     "string": {"type": str},
     "int": {"type": int},
     "float": {"type": float},
-    "size": {"type": _size, "metavar": "WxH"},
+    "size": {"type": _size, "metavar": "WxH|SHARE"},
     "bool": {"action": argparse.BooleanOptionalAction},
 }
 
@@ -275,7 +275,8 @@ class Arg:
     """A build-time argument the scene takes.
 
     The ghee command line gives it after `--`.
-    A `size` arg parses WxH to (w, h).
+    A `size` arg parses WxH to (w, h), and a share of the render size by
+    name: full, half, quarter, eighth, sixteenth.
     A `bool` arg takes --name or --no-name.
     """
 

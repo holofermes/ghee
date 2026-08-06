@@ -1,10 +1,11 @@
 # Working on ghee
 
 ghee compiles GLSL scenes and renders them on a GPU through DRM/GBM, headless.
-The output goes to SPI/I2C panels, to any KMS display through scanout, to image
-files, to raw frames, or to H264. ghee is one Rust binary
-around a small C engine (`ghee/_engine/`), and `build.rs` compiles that engine
-in. The target hardware is Raspberry Pi, from a Pi 1 to a Pi 5.
+The output goes to SPI/I2C panels, to any connected KMS display, to image
+files, to raw frames, or to H264. A KMS display takes the frames through
+scanout. ghee is one
+Rust binary around a small C engine (`ghee/_engine/`), and `build.rs` compiles
+that engine in. The target hardware is Raspberry Pi, from a Pi 1 to a Pi 5.
 
 ## You cannot see the output
 

@@ -8,8 +8,6 @@ which is Python alone. python/README.md and docs/procedural.md hold them.
 from __future__ import annotations
 
 import importlib
-import sysconfig
-from importlib.metadata import version
 
 from ._shim import (
     Arg,
@@ -26,8 +24,6 @@ from ._shim import (
     skip,
     tick,
 )
-
-__version__ = version("ghee-render")
 
 __all__ = [
     "Arg",
@@ -54,6 +50,8 @@ def _ext():
 
     A scene that only builds and feeds runs without it.
     """
+    import sysconfig
+
     try:
         return importlib.import_module("ghee._native")
     except ImportError as e:
@@ -66,4 +64,12 @@ def _ext():
 def __getattr__(name):
     if name in ("open", "Handle"):
         return getattr(_ext(), name)
+    if name == "__version__":
+        # importlib.metadata reads the installed metadata, and reading it costs
+        # about a second on a Pi Zero: it pulls in email, inspect and zipfile
+        # to do it. A scene asks for the version about never, and every scene
+        # pays this at import, so the answer waits until someone asks.
+        from importlib.metadata import version
+
+        return version("ghee-render")
     raise AttributeError(f"module 'ghee' has no attribute '{name}'")

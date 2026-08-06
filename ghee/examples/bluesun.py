@@ -3,7 +3,7 @@
 # requires-python = ">=3.9"
 # dependencies = ["ghee-render", "numpy", "pillow"]
 # ///
-"""Blue Sun: a wall of light pipes, and the wall the pipes light.
+"""Blue Sun: a wall of light pipes, and the wall that the pipes light.
 
 `coneForm` is the closed form of the irradiance a Lambertian cone delivers to a
 surface near it. It costs two atan for each pixel. The integral gives a pool
@@ -45,7 +45,7 @@ ARGS = [
         "max-leds",
         "int",
         default=8,
-        help="LEDs a segment can carry; each one costs two form factors",
+        help="LEDs per segment; each one costs two form factors",
     ),
 ]
 
@@ -544,9 +544,8 @@ def build(a):
 def _texture(size, path):
     """The wall surface.
 
-    `path` names an image, and a path this function cannot read gives a soft
-    plaster noise instead. The values are mono floats, and multiply into the
-    albedo.
+    `path` names an image, and an unreadable one gives a soft plaster noise
+    instead. The values are mono floats, and multiply into the albedo.
     """
     w, h = size
     if path:

@@ -647,7 +647,7 @@ mod tests {
 
     /// The pinned answer of `pattern % index`, spec by spec.
     #[test]
-    fn a_conversion_formats_the_way_the_reference_formats_it() {
+    fn every_conversion_matches_its_pinned_reference() {
         let specs = [
             "%d", "%i", "%u", "%x", "%X", "%o", "%s", "%4d", "%-4d", "%04d", "%+d", "% d", "%.3d",
             "%5.3d", "%08.3d", "%-8.3d", "%05s", "%.2s", "%+04d", "%ld",

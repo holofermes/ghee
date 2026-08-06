@@ -11,8 +11,8 @@ pub const DEST_PIPE: &str = "pipe";
 pub const DEST_H264: &str = "h264";
 pub const DEST_MJPEG: &str = "mjpeg";
 
-/// Seconds off the monotonic clock. The whole process shares one origin. A
-/// timestamp one caller takes means the same to another.
+/// Seconds off the monotonic clock. The whole process shares one origin. One
+/// caller's timestamp means the same to another.
 pub fn monotonic() -> f64 {
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64()
@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_drops_the_window_it_was_measuring() {
+    fn reset_drops_the_open_window() {
         let mut fr = FrameRate::new();
         let (t, _) = feed(&mut fr, &[0.02], 4.0);
         assert!(fr.value(Some(t)) > 0.0);

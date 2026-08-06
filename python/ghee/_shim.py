@@ -101,7 +101,7 @@ class Param:
 
 @dataclass
 class ArrayInput:
-    """A named float input the scene fills.
+    """A named float input for the scene to fill.
 
     Size N is a 1xN array. The shader reads it with <name>_at(i).
     Size [w, h] is a 2D mask. The shader reads it with <name>_sample2(uv).
@@ -127,7 +127,7 @@ class ArrayInput:
 
     @property
     def count(self) -> int:
-        """The values one message carries. A 2D array sends w*h values."""
+        """How many values one message carries. A 2D array sends w*h values."""
         return self.size[0] * self.size[1] if self.is_2d else self.size
 
     def to_dict(self) -> dict:
@@ -185,7 +185,8 @@ class Scene:
 
     A scene param reaches every pass.
     `common` is GLSL that ghee puts in front of each pass.
-    `filters` are named post-process passes ghee appends after the scene's own.
+    `filters` are named post-process passes that ghee appends after the
+    scene's own.
     """
 
     passes: list[Pass] = field(default_factory=list)
@@ -220,11 +221,11 @@ _FRACTIONS = {"full": 1, "half": 2, "quarter": 4, "eighth": 8, "sixteenth": 16}
 
 
 def _render_size() -> tuple[int, int] | None:
-    """The size ghee is about to render at.
+    """ghee's next render size.
 
     ghee puts it in the environment before it starts the scene. A direct run
     has no ghee, so the host --size stands in, and the default matches the one
-    `ghee render` uses with no display.
+    that `ghee render` uses with no display.
     """
     given = os.environ.get(SIZE)
     if not given:
@@ -272,7 +273,7 @@ _ARG_TYPES = {
 
 @dataclass
 class Arg:
-    """A build-time argument the scene takes.
+    """A build-time argument of the scene.
 
     The ghee command line gives it after `--`.
     A `size` arg parses WxH to (w, h), and a share of the render size by
@@ -295,7 +296,7 @@ class Arg:
     def declaration(self) -> dict:
         """One entry of the probe answer.
 
-        A size default is the WxH the command line takes.
+        A size default is the WxH that the command line takes.
         """
         d = self.default
         if self.type == "size" and isinstance(d, tuple):
@@ -334,7 +335,7 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
 def _host_flags(p: argparse.ArgumentParser) -> None:
     """What a direct run takes on top of the scene's own args.
 
-    Each flag is the flag `ghee render` spells the same way.
+    Each flag is the flag that `ghee render` spells the same way.
     A scene that declares one of these names collides here, and argparse says
     so.
     """
@@ -391,7 +392,7 @@ _FEEDS: dict = {}
 _HOOKS: list = []
 _OUT: list = []
 _CLEAN = False
-# a direct run: the host flags args() read, the handle it drives, the signals
+# a direct run: the host flags from args(), the handle it drives, the signals
 _HOST = None
 _HANDLE = None
 _STOPPED: list = []
@@ -442,7 +443,7 @@ def skip() -> None:
 def _message(kind: int, name: str, count: int, body) -> bytes:
     nb = name.encode("utf-8")
     if len(nb) > 255:
-        raise ValueError(f"name {name!r} is over the 255 bytes the wire holds")
+        raise ValueError(f"name {name!r} is over the wire's 255 bytes")
     return bytes((kind, len(nb))) + nb + count.to_bytes(4, "little") + body
 
 
@@ -499,9 +500,9 @@ def _tick(line: str) -> Tick:
 
 
 def _counts(scene: Scene) -> dict:
-    """The values each declared array takes, keyed by name.
+    """How many values each declared array takes, keyed by name.
 
-    A feed of a name the scene never declared stops the run here.
+    A feed of an undeclared name stops the run here.
     """
     counts = {a.name: a.count for p in scene.passes for a in p.arrays}
     for name in _FEEDS:
@@ -595,7 +596,7 @@ def _stop(sig, _frame) -> None:
 
 
 def _direct(scene: Scene) -> None:
-    """Drive the scene from the same hooks and feeds the wire drives.
+    """Drive the scene from the wire's own hooks and feeds.
 
     The tick keeps its wire shape. `params` stays empty, because no ghee holds
     the string params here.

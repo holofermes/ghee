@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use rppal::gpio::{Gpio, OutputPin};
 
-/// The lines a group drives. A None pin is not a line.
+/// A group drives these lines. A None pin is not a line.
 pub fn line_offsets(offsets: &[Option<u8>]) -> Vec<u8> {
     offsets.iter().flatten().copied().collect()
 }
@@ -24,7 +24,7 @@ impl Pins {
         let gpio = Gpio::new()?;
         let mut lines = Vec::with_capacity(offsets.len());
         for &offset in &offsets {
-            // a claim that fails part way drops the lines the loop already took
+            // a claim that fails part way drops the lines already taken
             lines.push((offset, gpio.get(offset)?.into_output_low()));
         }
         Ok(Pins { offsets, lines })

@@ -23,7 +23,7 @@ use crate::engine::{Feed, Provider, Renderer};
 use crate::scene::{ArraySize, ParamValue};
 use crate::stats::{monotonic, FrameRate};
 
-/// the longest step one frame may hand a scene, however long the loop idled
+/// a frame never hands a scene more than this, however long the loop idled
 pub const MAX_DT: f64 = 0.25;
 
 /// What the loop asks of a renderer. Renderer is the one implementation. The
@@ -203,8 +203,8 @@ pub trait Output {
         false
     }
 
-    /// True when this sink takes a CPU frame this iteration. A sink the GPU
-    /// feeds (scanout, a hardware encoder) answers false. A sink that throttles
+    /// True when this sink takes a CPU frame this iteration. A GPU-fed sink
+    /// (scanout, a hardware encoder) answers false. A sink that throttles
     /// itself answers false too.
     fn wants(&self, _frame: u64) -> bool {
         true
@@ -302,7 +302,7 @@ pub trait SceneController {
 /// by putting a new one in here.
 pub type ControllerSlot = RefCell<Option<Box<dyn SceneController>>>;
 
-/// A frame draws on any of four demands. The demands are a queued command, the
+/// The loop draws on any of four demands. The demands are a queued command, the
 /// first frame, a scene with no controller, and a controller that reports
 /// dirty. A sink has to show something once, so the first frame always draws.
 pub fn should_draw(
@@ -326,11 +326,11 @@ fn sleep(seconds: f64) {
     }
 }
 
-/// The buffer the loop reads this frame back into.
+/// The destination buffer for this frame's readback.
 enum Target {
     /// no readback
     None,
-    /// the sink the loop renders straight into, by index
+    /// the index of the sink rendered straight into
     Pool(usize, OwnedFrame),
     /// a sink keeps the frame past write(), so this readback gets its own memory
     Fresh(OwnedFrame),
@@ -374,7 +374,7 @@ pub struct Loop<'a> {
     pub frame: u64,
     pub drawn: u64,
     pub elapsed: f64,
-    /// measured frame period, the DT the loop feeds a scene
+    /// measured frame period, the DT fed to a scene
     pub period: Option<f64>,
     prev: Option<f64>,
     buf: Vec<u8>,
@@ -408,7 +408,7 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// The destination names the frames reach (stats::DEST_*).
+    /// The frames reach these destinations, by name (stats::DEST_*).
     pub fn out(&self) -> Vec<&str> {
         self.sinks
             .iter()
@@ -482,7 +482,7 @@ impl<'a> Loop<'a> {
             Some(p) => p(),
             None => false,
         };
-        // the t the loop hands a controller. Unpinned it is the wall clock
+        // the t handed to a controller. Unpinned it is the wall clock
         // since run() started: a scene synced to outside time (music) must
         // not drift with the loop's own pace.
         let t = match self.timestep {
@@ -697,7 +697,7 @@ fn frame_len(shape: (i32, i32, i32)) -> usize {
     (i64::from(shape.0) * i64::from(shape.1) * i64::from(shape.2)) as usize
 }
 
-/// The size this set of readers reads the frame back at. None reads the render
+/// This set of readers reads the frame back at this size. None reads the render
 /// size back directly. Any other answer is the largest downscale asked for, and
 /// a smaller consumer downscales further itself.
 fn readback_size(sinks: &[&mut dyn Output], readers: &[usize]) -> Option<(i32, i32)> {
@@ -712,8 +712,8 @@ fn readback_size(sinks: &[&mut dyn Output], readers: &[usize]) -> Option<(i32, i
     Some(size)
 }
 
-/// The one sink the loop may render straight into: a pooled sink that is the
-/// frame's only consumer, at the render size. Anything else takes a copy.
+/// The one sink open to a direct render: a pooled sink that is the frame's
+/// only consumer, at the render size. Anything else takes a copy.
 fn pool_index(
     sinks: &[&mut dyn Output],
     readers: &[usize],
@@ -736,8 +736,7 @@ mod tests {
     const H: i32 = 48;
     const COMPONENTS: i32 = 4;
 
-    /// One call the loop makes on the renderer: (kind, readback bytes,
-    /// out_size).
+    /// One recorded call on the renderer: (kind, readback bytes, out_size).
     type Call = (&'static str, Option<usize>, Option<(i32, i32)>);
 
     /// A Renderer stand-in that records what the loop asks of it.
@@ -1373,7 +1372,7 @@ mod tests {
     }
 
     #[test]
-    fn out_names_every_destination_the_frames_reach() {
+    fn out_names_every_sinks_destination_and_skips_a_nameless_one() {
         let mut r = Recorder::default();
         let (mut k, mut p, mut f) = (
             Sink::scanout(),
@@ -1498,7 +1497,7 @@ mod tests {
     }
 
     /// The loop ticks a scene fed from outside even for a skipped frame. The
-    /// tick is what earns the next answer.
+    /// scene answers only after a tick.
     #[test]
     fn the_controller_is_ticked_once_an_iteration_drawn_or_skipped() {
         struct Ticker(Arc<Mutex<Vec<(u64, f64)>>>);

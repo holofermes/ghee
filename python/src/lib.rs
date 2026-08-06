@@ -139,12 +139,12 @@ fn to_json(v: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::Array(out));
     }
     Err(PyValueError::new_err(format!(
-        "{} is not a value ghee takes",
+        "ghee takes no value of type {}",
         v.get_type().name()?
     )))
 }
 
-/// The values a feed carries. A uint8 buffer reaches the texture as byte / 255,
+/// The values in a feed. A uint8 buffer reaches the texture as byte / 255,
 /// and a float32 buffer passes through. Any other sequence of numbers converts
 /// to float32.
 ///
@@ -201,7 +201,8 @@ fn tick_dict(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyDict>> {
     Ok(d)
 }
 
-/// The scene a caller names: a path, a JSON document, or the JSON text of one.
+/// The scene named by a caller: a path, a JSON document, or the JSON text of
+/// one.
 fn source_of(scene: &Bound<'_, PyAny>) -> PyResult<Source> {
     if scene.cast::<PyDict>().is_ok() {
         return Ok(Source::Doc(to_json(scene)?));
@@ -223,8 +224,8 @@ fn source_of(scene: &Bound<'_, PyAny>) -> PyResult<Source> {
     )))
 }
 
-/// The stream cap a caller passes: pixels (an int >= 2), or a fraction of
-/// the render size.
+/// The caller's stream cap: pixels (an int >= 2), or a fraction of the render
+/// size.
 fn stream_max_of(v: &Bound<'_, PyAny>) -> PyResult<StreamMax> {
     if let Ok(n) = v.extract::<i64>() {
         if n >= 2 {
@@ -262,7 +263,7 @@ fn port_of(port: i64) -> PyResult<u16> {
 /// A rendering scene, and the output it draws to.
 #[pyclass(module = "ghee")]
 struct Handle {
-    /// (width, height) the scene renders at
+    /// (width, height) of the scene's render
     #[pyo3(get)]
     size: (i32, i32),
     held: Affine<Session>,
@@ -291,7 +292,7 @@ impl Handle {
 
     /// Hold data for one declared array. The next frame consumes it once.
     ///
-    /// An array no feed set keeps what its texture holds.
+    /// An array with no feed keeps what its texture holds.
     fn feed(&mut self, name: &str, data: &Bound<'_, PyAny>) -> PyResult<()> {
         let data = fed(data)?;
         self.held.get()?.feed(name, data).map_err(fault)

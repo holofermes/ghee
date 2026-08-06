@@ -2,8 +2,8 @@
 //!
 //! An ISF file is a fragment shader with a JSON header in a leading block
 //! comment. The header holds INPUTS, which are typed uniforms plus image and
-//! audio samplers. It also holds PASSES, which are the render targets and the
-//! size each one draws at. The body reads ISF's own built-ins.
+//! audio samplers. It also holds PASSES, which are the render targets and
+//! their draw sizes. The body reads ISF's own built-ins.
 //!
 //! A generated shim maps ISF onto the ghee preamble:
 //!
@@ -24,8 +24,8 @@
 //!
 //! ghee refuses three things, by name and reason. A FLOAT (32-bit) pass buffer
 //! saturates silently in ghee's 8-bit buffers. A custom ISF vertex shader writes
-//! varyings ghee's fixed vertex shader does not emit. IMPORTED loads an external
-//! image.
+//! its own varyings, which ghee's fixed vertex shader does not emit. IMPORTED
+//! loads an external image.
 
 use std::collections::HashMap;
 
@@ -45,11 +45,11 @@ const FETCH_BUDGET: i64 = 200;
 // Texture units on VC4, the smallest GPU ghee targets.
 const VC4_UNITS: usize = 8;
 
-// The names ghee's own preamble owns. An ISF input or target with one of these
-// shadows it, so the import renames it here and in the body.
+// ghee's own preamble owns these names. An ISF input or target with one of
+// these shadows it, so the import renames it here and in the body.
 const RESERVED: [&str; 3] = ["time", "resolution", "v_texCoord"];
 
-/// The render size to_scene and to_filter take when the caller names none.
+/// to_scene and to_filter render at this size when the caller names none.
 #[allow(dead_code)]
 pub const DEFAULT_SIZE: (i64, i64) = (320, 240);
 
@@ -85,7 +85,7 @@ fn isf_error(msg: impl std::fmt::Display) -> anyhow::Error {
     anyhow!("{msg}")
 }
 
-/// A string quoted the way the error strings quote source text.
+/// A string in the error strings' own quoting.
 fn repr(s: &str) -> String {
     py_repr(&Value::String(s.to_string()))
 }
@@ -236,7 +236,7 @@ pub fn hoist_globals(body: &str) -> Result<(String, Vec<String>)> {
     Ok((out.into_iter().collect(), names))
 }
 
-/// The texture fetches one fragment makes. Each IMG_* or texture2D call site
+/// The texture fetch count per fragment. Each IMG_* or texture2D call site
 /// counts once for every trip of a literal-bounded for loop around it. A loop
 /// bounded by a uniform counts one trip, so the result is a floor.
 pub fn fetch_estimate(body: &str) -> Result<i64> {
@@ -334,11 +334,11 @@ struct Input {
     name: String,
     ty: Value,
     param: Option<Param>,
-    /// The array an audio input becomes.
+    /// An audio input becomes an array of this size.
     size: Option<(i64, i64)>,
 }
 
-/// Everything the shim names: the samplers and the size of each one.
+/// The shim's own names: the samplers and the size of each one.
 #[derive(Default)]
 struct Sized {
     channels: Vec<(String, Option<String>)>,
@@ -669,7 +669,7 @@ fn inputs_of(meta: &Map<String, Value>) -> Result<Vec<Input>> {
 
 /// One INPUTS entry as a ghee param. An ISF color is RGBA. It becomes a vec4,
 /// because ghee's color holds three components. A long becomes an int over the
-/// range its VALUES span, because ghee has no labelled int dropdown.
+/// span of its VALUES, because ghee has no labelled int dropdown.
 fn param_of(name: &str, ty: &Value, d: &Map<String, Value>) -> Result<Param> {
     let default = d.get("DEFAULT");
     match ty.as_str() {
@@ -794,8 +794,8 @@ fn passes_of(meta: &Map<String, Value>) -> Result<Vec<Map<String, Value>>> {
 }
 
 /// An ISF name can also be a ghee preamble name, such as a target called `time`.
-/// It shadows the uniform the shim maps TIME onto. Rename it, and every
-/// reference the body makes to it, before anything else reads the body.
+/// It shadows the uniform that the shim maps TIME onto. Rename it, and every
+/// reference to it in the body, before anything else reads the body.
 fn rename_reserved(
     body: &str,
     inputs: &mut [Input],
@@ -871,7 +871,7 @@ type PassSizes = (Vec<(i64, i64)>, Vec<Option<(i64, i64)>>);
 
 /// Evaluate each pass's WIDTH and HEIGHT equations against the target size.
 /// Returns the resolved sizes, which the shim reports as x_isf_size, and the
-/// sizes the scene declares. None is the renderer's own size.
+/// sizes declared on the scene. None is the renderer's own size.
 fn pass_sizes(
     pass_meta: &[Map<String, Value>],
     size: (i64, i64),
@@ -1048,9 +1048,9 @@ fn description(meta: &Map<String, Value>) -> String {
 
 // --- text scanning ----------------------------------------------------------
 //
-// A rewrite splices the original source around a match. Every index these
-// scanners report is a character index into that source. They work on
-// `Vec<char>`, because a byte index would not line up with the mask.
+// A rewrite splices the original source around a match. These scanners report
+// character indices into that source. They work on `Vec<char>`, because a byte
+// index would not line up with the mask.
 
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -1744,7 +1744,7 @@ void main() {
             (&invert.ty[..], &invert.value),
             ("bool", &ParamValue::Bool(true))
         );
-        // A long is an int over the range its VALUES span.
+        // A long is an int over the span of its VALUES.
         let mode = p.get("mode").unwrap();
         assert_eq!((&mode.ty[..], &mode.value), ("int", &ParamValue::Int(1)));
         assert_eq!(

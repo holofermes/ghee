@@ -6,8 +6,8 @@
 """A scene with no JSON. It builds its pass in code, and feeds one array each
 frame.
 
-`gain` is one param the shader reads twice: for the bar height and for the
-brightness. The feed sends raw levels; every scaling stays in GLSL.
+The shader reads `gain` twice: for the bar height and for the brightness. The
+feed sends raw levels; every scaling stays in GLSL.
 
     ghee render --demo spectrum -o out.####.png --frames 60
     ghee serve --demo spectrum                      # drive it in the console

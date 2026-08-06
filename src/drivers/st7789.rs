@@ -392,7 +392,7 @@ impl DisplayDriver for St7789 {
     }
 }
 
-/// The init sequence panel-mipi-dbi replays from the firmware file. The
+/// panel-mipi-dbi replays this init sequence from the firmware file. The
 /// kernel driver sets the address window itself on every flush, so CASET and
 /// RASET stay out, and the offsets ride in the overlay instead. The delays
 /// are the controller's own settling times, which the userspace driver takes
@@ -412,14 +412,14 @@ fn kernel_init(madctl: u8) -> Vec<Command> {
     ]
 }
 
-/// The clock the overlay carries. ghee's own driver runs this controller at
-/// DEFAULT_BAUDRATE, and the kernel driver handed that same number renders
+/// The overlay carries this clock. ghee's own driver runs this controller at
+/// DEFAULT_BAUDRATE. Hand the kernel driver that same number, and it renders
 /// noise on a VC4-class board where this one is clean. A panel that takes
 /// more says so with `--display-opts baudrate=`.
 const KERNEL_BAUDRATE: i64 = 62_500_000;
 
 /// The config.txt lines that hand this panel to panel-mipi-dbi, and the
-/// firmware the overlay names.
+/// firmware named in those lines.
 fn kernel(opts: &Opts) -> Result<Setup> {
     if !given(opts, "width") || !given(opts, "height") {
         bail!("pass width and height");
@@ -665,7 +665,7 @@ mod tests {
         );
     }
 
-    /// The bytes panel-mipi-dbi loads for the 240x240 bonnet, read back from
+    /// panel-mipi-dbi loads these bytes for the 240x240 bonnet, read back from
     /// the firmware file that drove the real panel.
     const FIRMWARE_ON_THE_PANEL: &str = "4d495049204442490000000000000001\
                                          010000019611000001783a0155360100\
@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn the_overlay_lines_carry_the_panel_the_options_describe() {
+    fn the_overlay_lines_carry_the_panel_described_by_the_options() {
         assert_eq!(
             kernel(&bonnet()).unwrap().lines,
             [

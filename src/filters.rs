@@ -1,4 +1,4 @@
-//! Named post-process passes ghee ships, such as dither.
+//! ghee ships named post-process passes, such as dither.
 //!
 //! A filter file (`<name>.filter.json`) holds one pass: a name, code and params.
 //! The pass reads iChannel0, the frame so far, and writes the result. ghee

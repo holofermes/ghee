@@ -12,13 +12,13 @@ loopback, or open it with `--host` only on a network you trust.
   error_pass, active, display, stale}`
 - `GET /scenes`: `{scenes: [name...], active}`
 - `GET /scene?name=`: the resolved scene JSON, shader files inlined and
-  filters expanded. The active name answers with the document rendering
-  right now, applied edits and /set values included, any other name
-  answers from disk.
+  filters expanded. For the active scene ghee answers with the document it
+  is rendering, applied edits and /set values included. For any other name
+  it reads from disk.
 - `GET /filters`: the filter registry, `{name: filter def}`
 - `GET /hwinfo`: the host hardware report
 - `GET /frame.png`: one lossless PNG of the next frame, at the render
-  size. The request rides the command queue, so the frame carries every
+  size. The request goes on the command queue, so the frame carries every
   `/set` that returned before it. 409 while the scene holds an error, 503
   when the loop draws nothing.
 

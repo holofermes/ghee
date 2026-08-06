@@ -45,7 +45,7 @@ const INIT: [&[u8]; 18] = [
     &[DISP_ON],
 ];
 
-/// The addressing window a frame goes into.
+/// The addressing window for a frame.
 fn window_commands(width: i32, height: i32) -> Result<[u8; 6]> {
     let (Ok(last_col), Ok(last_page)) = (u8::try_from(width - 1), u8::try_from(height / 8 - 1))
     else {
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn an_address_the_overlay_cannot_drive_is_refused() {
+    fn a_kernel_setup_takes_only_the_overlay_address() {
         let set = [("addr".to_string(), json!(0x3D))];
         assert_eq!(
             kernel(&set).unwrap_err().to_string(),
@@ -212,7 +212,7 @@ mod tests {
         );
     }
 
-    /// The command bytes adafruit_ssd1306 sends a 128x32 panel on internal Vcc.
+    /// adafruit_ssd1306's command bytes for a 128x32 panel on internal Vcc.
     /// The order is poweron(), the init table, then the addressing window.
     const INIT_COMMANDS: [u8; 28] = [
         0xAF, 0xAE, 0x20, 0x00, 0x40, 0xA1, 0xA8, 0x1F, 0xC8, 0xD3, 0x00, 0xDA, 0x02, 0xD5, 0x80,

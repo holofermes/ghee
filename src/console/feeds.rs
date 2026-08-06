@@ -1,4 +1,4 @@
-//! The host info the console fills in for itself. crate::feeds::demo_feed does
+//! The console fills in this host info for itself. crate::feeds::demo_feed does
 //! the same for array data.
 
 use serde_json::{Map, Value};

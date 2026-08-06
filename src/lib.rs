@@ -4,7 +4,7 @@
 //! A [`Scene`](scene::Scene) is an ordered list of passes, each one a
 //! fragment shader plus the arrays and params it reads. A
 //! [`Renderer`](engine::Renderer) compiles a scene and renders frames into
-//! a buffer the host reads back.
+//! a buffer that the host reads back.
 //!
 //! The `ghee` command is [`cli::main`]. The engine is thread-affine: build
 //! and use a Renderer on one thread.

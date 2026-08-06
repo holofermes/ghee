@@ -4,8 +4,8 @@
 #include <stdbool.h>
 #include <GLES2/gl2.h>
 
-// set_param splits a vector into one float uniform per component, so this ABI
-// declares scalars only.
+// set_param splits a vector into one float uniform per component, so every
+// type below is a scalar.
 typedef enum {
     PARAM_TYPE_FLOAT,
     PARAM_TYPE_INT
@@ -83,10 +83,10 @@ bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
 void ghee_clear_time(GheeScene *g);   // back to the monotonic clock
-void ghee_set_dt(GheeScene *g, float dt);  // the DT uniform every pass gets, 1/60 until set
+void ghee_set_dt(GheeScene *g, float dt);  // the DT uniform on every pass, 1/60 until set
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
-// Size of the mode the connected display is driving, without creating a scene
+// Size of the mode that the connected display drives, without creating a scene
 // or touching GL. Needs read access to the card node only, not DRM master.
 // 0 = width/height set, -1 = no device or nothing connected.
 int  ghee_display_probe(const char *dri_device, int *width, int *height);
@@ -104,7 +104,7 @@ int ghee_display_blanked(GheeScene *g);
 // create fails cleanly (NULL + err) on boards without /dev/video11.
 typedef struct GheeEncoder GheeEncoder;
 GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrate, char **err);
-// Encode the frame the last ghee_mp_render/ghee_mp_present produced (display
+// Encode the frame left by the last ghee_mp_render/ghee_mp_present (display
 // mirror: one render feeds screen and stream). 0 = *nal/*len/*is_key set
 // (valid until the next call), 1 = encoder produced nothing yet, <0 = error.
 int  ghee_encoder_encode_last(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);

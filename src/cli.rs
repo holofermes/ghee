@@ -44,8 +44,8 @@ use crate::report;
 use crate::scene::Scene;
 use crate::stats::rate;
 
-/// A message main() prints as written, status 1. main() puts the command name
-/// in front of any other error.
+/// main() prints this message as written, status 1. main() puts the command
+/// name in front of any other error.
 #[derive(Debug)]
 struct Exit(String);
 
@@ -123,8 +123,8 @@ fn literal_eval(s: &str) -> Option<Value> {
 }
 
 /// "k=v,k2=v2" -> a map. Each value goes through literal_eval (90 -> int, True
-/// -> bool). A value literal_eval refuses stays the raw string. `what` names
-/// the flag an error comes from.
+/// -> bool), and literal_eval leaves a value it refuses as the raw string.
+/// `what` names the flag behind an error.
 fn parse_kv(s: &str, what: &str) -> Result<Map<String, Value>> {
     let mut opts = Map::new();
     for pair in s.split(',') {
@@ -209,8 +209,8 @@ fn find_scene(arg: &str, demo: bool) -> Result<String> {
     )))
 }
 
-/// (name, path) for every scene this command loads: the scene it renders, or
-/// each scene the console mounts.
+/// (name, path) for each scene loaded here: one for a render, and every scene
+/// in the console's directory.
 fn scene_set(a: &Ns) -> Result<Vec<(String, String)>> {
     let one = |path: String| vec![(scene_name(&path), path)];
     if !a.serve {
@@ -245,8 +245,8 @@ fn scene_args_help(a: &Ns) -> Result<()> {
     std::process::exit(0);
 }
 
-/// The scene this run renders, and the process behind it. The filters apply in
-/// order: the ones the scene declares, then the ones --filters adds.
+/// The scene of this run, and the process behind it. The filters apply in
+/// order: the scene's own first, then --filters.
 fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
     let path = find_scene(text(&a.scene), a.demo)?;
     report::detail("scene", &path);
@@ -354,7 +354,7 @@ fn panel_of(a: &Ns) -> Result<Panel> {
     Ok(Panel::Driver((spec.open)(&pairs)?))
 }
 
-/// The size a scene builds against, worked out before any device opens.
+/// A scene builds against this size, worked out before any device opens.
 /// geometry() gives the same answer once the panel is up, and a scene needs it
 /// earlier than that: it sizes its own buffers as it builds, so `half` and
 /// `quarter` have to mean something already. Reading a mode or a driver's
@@ -380,7 +380,7 @@ fn prospective_size(a: &Ns) -> Option<(i32, i32)> {
     Some((pick("width")?, pick("height")?))
 }
 
-/// (size, components) the render runs at.
+/// (size, components) of the render.
 /// A scanout takes --size and scales it across the mode on the way out, or the
 /// mode itself when there is no --size. A panel takes its own geometry and
 /// pixel layout, and its wire carries no scaler, so --size means nothing there.
@@ -447,7 +447,7 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
 }
 
 /// Nothing paces a file or a pipe: that render runs as fast as it draws. A
-/// panel paces on its own bus speed. The KMS flip paces itself at the display
+/// panel paces on its own bus speed. A KMS present waits out the display
 /// refresh. An H264 stream holds a fixed rate for its timestamps.
 fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
     let fixed = a
@@ -512,8 +512,7 @@ impl Output for PanelSink {
     }
 }
 
-/// The sinks in the order the flags add them up: the display, then -o, then
-/// --h264.
+/// The sinks in flag order: the display, then -o, then --h264.
 fn sink_list<'a>(
     scanout: &'a mut Option<Scanout>,
     panel: &'a mut Option<PanelSink>,
@@ -580,7 +579,7 @@ fn broken_pipe(e: &anyhow::Error) -> bool {
     })
 }
 
-/// One render into however many sinks the flags ask for.
+/// One render into as many sinks as the flags ask for.
 fn cmd_render(a: &Ns) -> Result<()> {
     // before anything opens: the tokens after `--` own their own --help
     scene_args_help(a)?;
@@ -604,8 +603,8 @@ fn cmd_render(a: &Ns) -> Result<()> {
     }
     report::apply(a);
     // the scene loads first: it owns the tokens after `--` and their --help. A
-    // scene the loader rejects fails before a panel opens. It builds its own
-    // buffers as it loads, so it learns the render size before that.
+    // rejected scene fails before a panel opens. It builds its own buffers as
+    // it loads, so it learns the render size before that.
     if let Some(size) = prospective_size(a) {
         crate::procedural::process::set_render_size(size);
     }
@@ -834,8 +833,8 @@ fn cmd_serve(a: &Ns) -> Result<()> {
 }
 
 /// --stats: one summary line after a render. ms/frame is the per-frame cost
-/// without the paced sleeps. fps is frames over elapsed time, the same number
-/// the console publishes.
+/// without the paced sleeps. fps is frames over elapsed time, and the console
+/// publishes the same number.
 fn stats_line(times: &[f64], wall: f64, out: &[String]) -> String {
     let n = times.len();
     let total: f64 = times.iter().sum();
@@ -924,8 +923,8 @@ fn line(text: &str) {
 }
 
 /// `ghee overlay` writes the kernel's own setup for a panel: the config.txt
-/// lines that bring the card up, and the firmware the overlay names. The
-/// panel then answers `--display kms` like any other display.
+/// lines that bring the card up, and the panel's firmware file. The panel
+/// then answers `--display kms` like any other display.
 fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
     let Ok(spec) = get_driver(&a.driver) else {
         return Err(exit(format!(
@@ -1078,8 +1077,9 @@ enum Command {
         allow_negative_numbers = true,
         after_help = "the console is plain HTTP: GET /stats /scene /scenes /frame.png \
                       /stream /h264, POST /set /switch /next /prev /scene /save /ping. \
-                      Anything after `--` goes to every scene the console loads, and \
-                      each keeps what it takes, and `-- --help` lists what takes what"
+                      The console passes anything after `--` to every scene it loads, \
+                      each scene keeps the arguments it takes, and `-- --help` lists \
+                      them per scene"
     )]
     Serve(ServeArgs),
 
@@ -1111,8 +1111,8 @@ struct RenderFlags {
         num_args = 0..=1,
         default_missing_value = "kms",
         help = "render to a hardware display: an SPI/I2C driver name, or bare \
-                (or 'kms') for the connected KMS display, HDMI or a panel the \
-                kernel drives (zero-copy scanout, needs DRM master)"
+                (or 'kms') for the connected KMS display, HDMI or a kernel-driven \
+                panel (zero-copy scanout, needs DRM master)"
     )]
     display: Option<String>,
 
@@ -1212,7 +1212,7 @@ struct ConsoleFlags {
     #[arg(
         long,
         default_value_t = 30,
-        help = "frame rate the /h264 stream encodes at (default 30)"
+        help = "encode the /h264 stream at this frame rate (default 30)"
     )]
     stream_fps: i32,
 }
@@ -1334,7 +1334,7 @@ struct OverlayArgs {
     #[arg(
         long,
         value_name = "K=V,...",
-        help = "the panel's options, the same ones --display-opts takes"
+        help = "the panel's options, as `ghee render --display-opts` takes them"
     )]
     display_opts: Option<String>,
 
@@ -1377,7 +1377,7 @@ struct ImportArgs {
         long,
         default_value = "320x240",
         value_parser = isf_size,
-        help = "WxH the pass WIDTH/HEIGHT equations are evaluated against, since \
+        help = "evaluate the pass WIDTH/HEIGHT equations against this WxH, since \
                 ghee pass sizes are fixed at import (default 320x240)"
     )]
     size: (i64, i64),
@@ -1395,7 +1395,7 @@ fn isf_size(s: &str) -> Result<(i64, i64), String> {
     size(s).map(|(w, h)| (i64::from(w), i64::from(h)))
 }
 
-/// The namespace both render and serve resolve to. serve is render --serve
+/// render and serve both resolve to this namespace. serve is render --serve
 /// over a directory. It carries render's whole namespace, and every flag it
 /// does not offer keeps its default.
 pub struct Ns {
@@ -1506,7 +1506,7 @@ impl ServeArgs {
     }
 }
 
-/// The command name a failure reports under, and the result of that command.
+/// The command name behind a failure report, and the result of that command.
 fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
     let cmd = match &cli.cmd {
         Command::Render(_) => "render",
@@ -1535,8 +1535,8 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
     (cmd, ran)
 }
 
-/// The top-level parser reports a token no subcommand claims. The line names
-/// `ghee` itself and the status is 2.
+/// The top-level parser reports a token when no subcommand claims it. The
+/// line names `ghee` itself and the status is 2.
 fn clap_status(e: &clap::Error) -> i32 {
     if e.kind() == ErrorKind::UnknownArgument {
         let arg = e
@@ -1599,7 +1599,7 @@ mod tests {
         (cli, scene_args)
     }
 
-    /// The namespace a command line resolves to, without running it.
+    /// The namespace of a parsed command line, without running it.
     fn ns(tokens: &[&str]) -> Ns {
         let (cli, scene_args) = parse(tokens);
         match cli.cmd {
@@ -1764,7 +1764,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_display_opt_names_the_options_the_driver_takes() {
+    fn an_unknown_display_opt_names_the_drivers_own_options() {
         let a = ns(&[
             "render",
             "s",
@@ -1841,7 +1841,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_names_the_directory_a_bare_display_swallowed() {
+    fn serve_names_the_directory_swallowed_by_a_bare_display() {
         let d = tmpdir("swallowed");
         assert_eq!(
             run(&["serve", "--display", &d]).unwrap_err().to_string(),
@@ -2050,7 +2050,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_the_render_loads_carries_its_filters() {
+    fn the_scene_loaded_for_a_render_carries_its_filters() {
         let path = scene_file("filters");
         let (scene, process) = scene_of(&ns(&["render", &path, "--filters", "dither"])).unwrap();
         assert_eq!(scene.passes.len(), 2);

@@ -24,7 +24,7 @@ ARGS = [
         "particle-buffer",
         "size",
         default="eighth",
-        help="the buffer the particle field renders at, magnified onto the frame",
+        help="the particle field's own buffer size, magnified onto the frame",
     ),
     # A count, not a share of the frame: the shader unrolls the grid, so the
     # cost is the whole grid every frame however small the panel is. A share
@@ -52,8 +52,8 @@ DITHER_PARAMS = {"amount": 1.0, "levels": 2.0, "color": 0.65, "scale": 4.0}
 # The text canvas. Fixed, because an array size cannot change after setup.
 CANVAS = (768, 192)
 GAP = 0.6  # trailing gap between repeats, as a fraction of the word width
-PROBE = 100  # font size the fit measures at
-STROKE = 22  # font size over stroke width: the weight a display face would have
+PROBE = 100  # font size for the fit measurement
+STROKE = 22  # font size over stroke width: a display face's weight
 
 # A motion delta packs into a byte per axis over this span.
 DSPAN = 0.25
@@ -229,7 +229,7 @@ float sdSeg(vec2 p, vec2 a, vec2 b) {
 // One particle, rejected on the coarse position the caller already holds.
 // Everything the stroke needs past that (the full position, the delta, the
 // brightness, the second fetch) sits behind the test, and a VC4 does skip a
-// branch its whole block of pixels fails, which is what makes 240 of these
+// branch that its whole block of pixels fails, which is what makes 240 of these
 // per pixel affordable. Written as a macro rather than a function because a
 // function's early return gets flattened back into a select, work and all.
 #define STROKE(cell, texel) \\

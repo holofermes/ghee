@@ -234,7 +234,7 @@ impl HardwareH264 {
         ))
     }
 
-    /// Encode the frame the last render() or present() leaves. One render
+    /// Encode the frame left by the last render() or present(). One render
     /// feeds the screen and the stream.
     pub fn encode_last(&mut self) -> Result<Au<'_>> {
         let mut nal: *const u8 = ptr::null();
@@ -249,7 +249,7 @@ impl HardwareH264 {
         unsafe { ffi::ghee_encoder_force_keyframe(self.handle) };
     }
 
-    /// One access unit the encoder still owes, None once it reports drained.
+    /// One access unit still owed, None once the encoder reports drained.
     fn flush(&mut self) -> Result<Option<Vec<u8>>> {
         if self.handle.is_null() {
             return Ok(None);
@@ -270,7 +270,7 @@ impl HardwareH264 {
         ))
     }
 
-    /// End of stream: the access units the encoder still owes, one per flush.
+    /// End of stream: the access units still owed, one per flush.
     /// It runs until the encoder reports drained. A capture that skips it ends
     /// mid-GOP and loses its last frames.
     pub fn drain(&mut self) -> HardwareDrain<'_> {
@@ -597,7 +597,7 @@ pub fn make_encoder(
 }
 
 /// An Annex-B H264 stream as a sink: a file, or a pipe to mpv or ffmpeg. The
-/// hardware lane encodes the frame the loop just drew and never reads it back.
+/// hardware lane encodes the frame just drawn and never reads it back.
 /// The software lane takes the readback.
 ///
 /// Every frame encodes. H264 delta coding makes a static frame cheap, so this
@@ -980,7 +980,7 @@ mod tests {
         if !have_ffmpeg() {
             return;
         }
-        // red catches the channel swaps and matrix errors a green frame hides
+        // green hides channel swaps and matrix errors, red catches them
         let (w, h) = (160usize, 120usize);
         let mut enc = SoftwareH264::new(w as i32, h as i32, 30, 2_000_000, 4).unwrap();
         let mut f = vec![0u8; w * h * 4];

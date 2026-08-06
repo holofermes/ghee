@@ -64,10 +64,10 @@ pins both to `frame * S`.
 it elsewhere. Anyone who reaches the port can change params, so bind beyond
 loopback only on a network you trust.
 [docs/http.md](https://github.com/holofermes/ghee/blob/main/docs/http.md)
-holds the API. This console renders the one
-scene its host opened, param changes apply, and scene switching and
-recompiles are refused. The video stream advances with `frame()`: viewers
-see a new frame only when the host draws one.
+holds the API. This console shows the host's own scene, param changes
+apply, and scene switching and recompiles are refused. The video stream
+advances with `frame()`: viewers see a new frame only when the host draws
+one.
 
 ## Rules
 
@@ -77,7 +77,7 @@ thread, a call from another thread raises RuntimeError.
 A scene, GLSL or param error raises ValueError, a driver or system error
 raises RuntimeError.
 
-A frame releases the GIL, so the host's other threads run while it
+`frame()` releases the GIL, so the host's other threads run while it
 renders.
 
 ## Python scenes
@@ -111,8 +111,8 @@ renders directly:
     ./spectrum.py --output kms --frames 300
     ./spectrum.py --bins 32 --output none --size 320x240 --frames 1
 
-`run()` tells the two apart by `GHEE_WIRE=1`, which ghee sets in every
-process it starts.
+ghee sets `GHEE_WIRE=1` in every scene process it starts, and `run()`
+tells the two apart by it.
 
 The scene takes its own arguments first, then these:
 

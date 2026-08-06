@@ -170,7 +170,7 @@ The pass model follows Shadertoy. The passes render in order, each one a
 fragment shader drawing into its own buffer. A pass reads another pass
 through a numbered channel sampler: a channel on an earlier pass sees the
 current frame, a channel on the pass itself or a later one sees the
-previous frame. The last pass reaches the output.
+previous frame. ghee sends the last pass to the output.
 
 Each pass renders at its own resolution, and samples another pass through
 normalized coordinates.
@@ -307,8 +307,8 @@ ghee serve scenes/ --display st7789   # the console, driving the panel
 ghee overlay st7789                   # take the kernel route instead
 ```
 
-`kms` is any connected KMS display: HDMI, or an SPI/I2C panel the kernel
-drives. Use `ghee displays` to list the cards, and `--dri` to pick one.
+`kms` is any connected KMS display: HDMI, or an SPI/I2C panel with a kernel
+driver. Use `ghee displays` to list the cards, and `--dri` to pick one.
 
 Take the kernel route for a panel where you can: on a Pi Zero W at 240x240 the
 `hero` demo renders 44% more fps than the userspace `st7789` driver does, at
@@ -340,7 +340,7 @@ ghee render --demo bars --display st7789 \
 
 ## From Rust
 
-ghee is a library and a command. A render takes three calls: load or build
+ghee is a library and a command. A render is three calls: load or build
 a scene, set it up, then render frames.
 
 ```rust
@@ -374,7 +374,7 @@ The engine is thread-affine: build and use a Renderer on one thread.
 
 ## FAQ
 
-**A render says there is no GL device.** Point the engine at the right
+**`ghee render` says there is no GL device.** Point the engine at the right
 node with `--dri` or `$GHEE_DRI`, and add your user to the `video` group
 (plus `render` on a desktop). `ghee displays` reports what works on the
 host.
@@ -400,8 +400,8 @@ uv run --no-cache --with python/target/wheels/ghee_render-*.whl --with pytest \
 ```
 
 The render tests need a GPU node, and they skip cleanly without one. The
-golden check renders the scenes the manifest names and compares the sha256 of each
-frame against the pinned reference in `tools/fixtures/golden/`.
+golden check renders every scene listed in the manifest and compares the
+sha256 of each frame against the pinned reference in `tools/fixtures/golden/`.
 
 ## License
 

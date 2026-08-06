@@ -1,4 +1,4 @@
-//! The files a scene load reads. record() notes one file. collect() gathers
+//! A scene load reads files. record() notes one file. collect() gathers
 //! them. A Snapshot polls that set, so a running scene sees an edit on disk.
 
 use std::cell::RefCell;
@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::stats::monotonic;
 
-/// seconds between the disk checks stale() makes
+/// seconds between stale()'s own disk checks
 pub const STALE_INTERVAL: f64 = 1.0;
 
 thread_local! {
@@ -20,7 +20,7 @@ thread_local! {
 }
 
 /// An absolute path. It joins onto the working directory and normalises with
-/// no disk read. A symlink keeps the name the load reads it under.
+/// no disk read. A symlink stays unresolved, under the load's own spelling.
 fn abspath(path: &Path) -> PathBuf {
     let joined = match env::current_dir() {
         Ok(cwd) if path.is_relative() => cwd.join(path),
@@ -43,7 +43,7 @@ fn abspath(path: &Path) -> PathBuf {
     out.iter().collect()
 }
 
-/// Note a file the scene load reads.
+/// Note one file read by the scene load.
 pub fn record(path: impl AsRef<Path>) {
     COLLECTING.with(|c| {
         if let Some(into) = c.borrow_mut().as_mut() {
@@ -123,7 +123,7 @@ impl Snapshot {
         }
     }
 
-    /// True when a file holds content the compile never read. Inside
+    /// True when a file changed since the compile read it. Inside
     /// `interval` the last check answers.
     pub fn stale(&mut self) -> bool {
         let now = (self.clock)();

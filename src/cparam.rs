@@ -1,5 +1,5 @@
-//! A scene param becomes the parameter_t view the C engine binds. Rust owns the
-//! storage that view points at, for as long as the engine reads it.
+//! A scene param becomes a parameter_t view, and the C engine binds that view.
+//! Rust owns the storage behind it for as long as the engine reads it.
 
 use core::ffi::{c_char, c_int};
 
@@ -18,7 +18,7 @@ pub enum CParameterType {
     Int = ffi::PARAM_TYPE_INT,
 }
 
-/// The per-type struct the C view points at.
+/// The C view points at this per-type struct.
 ///
 /// The field holds a raw pointer, and never the Box itself. A move retags a Box.
 /// The retag invalidates every raw pointer to it, including the copy in
@@ -50,7 +50,7 @@ impl CParameter {
         &self.param
     }
 
-    /// Name the uniform this param sets. A longer name fills the C field, and
+    /// Name the uniform for this param. A longer name fills the C field, and
     /// glGetUniformLocation then reads past the terminator.
     pub fn set_c_name(&mut self, name: &str) -> Result<()> {
         let raw = name.as_bytes();

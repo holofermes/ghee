@@ -57,18 +57,18 @@ const STDERR_TAIL: usize = 8192;
 /// message instead of allocating a huge buffer for garbage.
 const MAX_VALUES: usize = 1 << 22;
 
-/// The env var ghee sets in every scene process it starts. The shim's
+/// ghee sets this env var in every scene process it starts. The shim's
 /// run() reads it to tell a ghee-started run from a direct one.
 const WIRE: &str = "GHEE_WIRE";
 
-/// The size ghee will render at, as WxH, in every scene process it starts.
+/// ghee's render size, as WxH, in every scene process it starts.
 /// A scene sizes its own buffers against it, so `half` and `quarter` mean
 /// something before a single pass is built.
 const SIZE: &str = "GHEE_SIZE";
 
 /// The render size, set once the command line and the display agree on it and
-/// read at every scene spawn. A scene builds before the panel opens, so the
-/// size travels here rather than through the wire handshake.
+/// read at every scene spawn. A scene builds before the panel opens, so ghee
+/// passes the size here rather than through the wire handshake.
 static RENDER_SIZE: RwLock<Option<(i32, i32)>> = RwLock::new(None);
 
 pub fn set_render_size(size: (i32, i32)) {
@@ -102,7 +102,7 @@ pub(crate) fn runnable(path: &str) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-/// The executable a scene path names.
+/// The executable behind a scene path.
 /// A runnable path names itself, and a package spelling names its
 /// executable member. None means the path holds no process.
 pub fn executable(path: &str) -> Option<String> {
@@ -116,7 +116,7 @@ pub fn executable(path: &str) -> Option<String> {
     }
 }
 
-/// The directory the process runs in, and the program path for any directory.
+/// The process working directory, and the program path for any directory.
 fn where_to_run(path: &str) -> Result<(String, String)> {
     let full = fs::canonicalize(path)
         .map_err(|e| anyhow!("{path}: {e}"))?
@@ -131,7 +131,7 @@ fn where_to_run(path: &str) -> Result<(String, String)> {
 
 // ------------------------------------------------------- what a scene takes
 
-/// One argument a process declares.
+/// One argument declared by a process.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArgDecl {
     pub name: String,
@@ -368,7 +368,7 @@ pub fn wants_help(tokens: &[String]) -> bool {
 
 // ------------------------------------------------------------- the mailboxes
 
-/// One array message, in the form the process wrote it.
+/// One array message, in the process's own form.
 /// The bytes reach the engine as bytes, so a mask pays for no conversion.
 enum ArrayData {
     F32(Vec<f32>),
@@ -380,7 +380,7 @@ enum ArrayData {
 struct Inbox {
     arrays: Vec<(String, ArrayData)>,
     params: Vec<(String, Vec<f32>)>,
-    /// The ticks the process calls clean.
+    /// The process calls these ticks clean.
     clean: u32,
     /// stdout ended, so the process is gone.
     done: bool,
@@ -415,7 +415,7 @@ impl Tick {
 }
 
 /// The one tick that waits for the writer.
-/// A new tick absorbs the tick the writer has not taken.
+/// A new tick absorbs the untaken one.
 /// A slow process loses ticks, and never a param change.
 #[derive(Default)]
 struct Outbox {
@@ -458,7 +458,7 @@ impl SceneFailure {
 }
 
 /// The text of an error for a reader that saw no terminal.
-/// A dead scene process adds the stderr the drain already wrote.
+/// A dead scene process adds the stderr already written by the drain.
 pub fn with_stderr(e: &anyhow::Error) -> String {
     match e.downcast_ref::<SceneFailure>() {
         Some(failure) => failure.full(),
@@ -480,16 +480,17 @@ pub struct SceneProcess {
     /// The tick writer. It holds the process stdin, so it ends the run.
     writer: Option<JoinHandle<()>>,
     threads: Vec<JoinHandle<()>>,
-    /// Array data no frame takes yet, newest for each name.
+    /// Array data still waiting for a frame, newest for each name.
     data: HashMap<String, ArrayData>,
     /// Param values that wait for a renderer.
     incoming: Vec<(String, Vec<f32>)>,
     /// param name -> (the pass that holds it, its type). None is scene scope.
     params: HashMap<String, (Option<String>, String)>,
-    /// The string params as they stand, and the last values the process read.
+    /// The string params as they stand, and the last values read by the
+    /// process.
     strings: HashMap<String, String>,
     sent: HashMap<String, String>,
-    /// Ticks the process calls clean that the loop has not skipped.
+    /// Clean ticks from the process, not yet spent on a skip.
     clean: u32,
     /// The process died. The scene stays in this error state.
     dead: Option<SceneFailure>,
@@ -570,8 +571,8 @@ impl SceneProcess {
     }
 
     /// Index the params of the compiled scene.
-    /// The set holds the handshake params, plus the params filters and saved
-    /// values add.
+    /// The set holds the handshake params, plus any param added by a filter
+    /// or a saved value.
     /// The first tick carries every string param.
     pub fn bind(&mut self, scene: &Scene) {
         self.params.clear();
@@ -1084,8 +1085,8 @@ time.sleep(60)
         tokens.iter().map(|s| (*s).to_string()).collect()
     }
 
-    /// A renderer stand-in that records the params a process sets, and the
-    /// arrays a provider hands it. `feeds` names what render_into asks for.
+    /// A renderer stand-in that records the params set by a process, and the
+    /// arrays from a provider. `feeds` names what render_into asks for.
     #[derive(Default)]
     struct Stub {
         set: std::cell::RefCell<Vec<(Option<String>, String, ParamValue)>>,
@@ -1313,8 +1314,8 @@ time.sleep(60)
         };
         assert_eq!(values.len(), 4);
         assert_eq!(values[1] - values[0], 1.0);
-        // a name no message sets keeps what the texture holds
-        // data the engine takes never uploads twice
+        // an unset name keeps what the texture holds
+        // the engine never uploads the same data twice
         for name in ["other", "level"] {
             assert!(matches!(
                 f.provide(name, ArraySize::Linear(4), 0),
@@ -1494,7 +1495,7 @@ time.sleep(60)
         );
     }
 
-    // the arguments a set of scenes takes
+    // the arguments of a set of scenes
 
     fn decl(name: &str, ty: &str, default: Value, help: &str) -> ArgDecl {
         ArgDecl {
@@ -1593,7 +1594,7 @@ time.sleep(60)
         assert!(text.contains("flat: no arguments"), "{text}");
     }
 
-    /// A token ghee cannot know reaches the scene. The scene refuses it, and
+    /// An unknown token reaches the scene. The scene refuses it, and
     /// its own words reach the caller through the handshake failure.
     #[test]
     fn an_unknown_token_reaches_the_scene() {
@@ -1613,12 +1614,12 @@ time.sleep(60)
             with_stderr(&e).contains("picky: unrecognized: --bogus"),
             "{e}"
         );
-        // the token the scene knows passes through the same way
+        // the scene's own token passes through the same way
         SceneProcess::start(&path, &args(&["--emit"])).unwrap();
     }
 
     #[test]
-    fn a_message_kind_ghee_cannot_read_ends_the_scene_process() {
+    fn an_unreadable_message_kind_ends_the_scene_process() {
         let d = tmpdir("badkind");
         let path = script(
             &d,

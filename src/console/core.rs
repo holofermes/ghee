@@ -32,7 +32,7 @@ use crate::console::{static_asset, WEB};
 use crate::filters::load_filters;
 use crate::scene::{py_repr, Scene};
 
-/// The largest request body the console reads. A POSTed scene is JSON text.
+/// The console's cap on a request body. A POSTed scene is JSON text.
 pub const MAX_BODY: usize = 1 << 20;
 
 /// The paths that change the renderer. They take POST only. A hostile page
@@ -333,7 +333,7 @@ pub fn parse_scope(raw: &str) -> Result<Scope, String> {
     Ok(Scope::Pass(py_int(raw)?))
 }
 
-/// The web asset a URL path names, or None. The assets are compiled in, so a
+/// The web asset named by a URL path, or None. The assets are compiled in, so a
 /// path that climbs out of the root gets None.
 pub fn static_path(urlpath: &str) -> Option<&'static str> {
     let urlpath = match urlpath {
@@ -375,12 +375,12 @@ pub trait ConsoleHost {
     /// fps counts completed render-loop frames per elapsed second, over a
     /// trailing window (stats::FrameRate). frame_ms is one loop iteration, with
     /// no paced sleep in it. stream_fps counts the frames handed to viewers per
-    /// elapsed second, every codec in one number. out names the destinations the
-    /// frames reach now (stats::DEST_*). error_pass is the pass index that holds
-    /// a compile error, or "common" for the scene's common block. error_line is
-    /// the line inside that pass. stale is true when the files behind the active
-    /// scene hold code the scene was not compiled from. A host whose scenes have
-    /// no files answers false for stale.
+    /// elapsed second, every codec in one number. out names where the frames go
+    /// now (stats::DEST_*). error_pass is the pass index that holds a compile
+    /// error, or "common" for the scene's common block. error_line is the line
+    /// inside that pass. stale is true when the files behind the active scene
+    /// changed since the compile. A host whose scenes have no files answers
+    /// false for stale.
     ///
     /// A poll loop in the browser reads this, so it must not block.
     fn stats(&self) -> ConsoleResult<Value>;
@@ -607,7 +607,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     }
 }
 
-/// The (scope, name, value) a /set carries, or the first thing wrong with it.
+/// The (scope, name, value) of a /set, or the first thing wrong with it.
 fn parse_set(query: &Query) -> Result<(Scope, String, Value), String> {
     let raw = query.get("value").ok_or("'value'")?;
     let value = parse_param_value(query.get("type").map_or("float", String::as_str), raw)?;
@@ -640,8 +640,8 @@ fn json_body(headers: &Headers, body: &[u8], what: &str) -> ConsoleResult<Value>
     serde_json::from_slice(body).map_err(|e| ConsoleError::bad_request(format!("bad {what}: {e}")))
 }
 
-/// Validate a posted scene into a Scene. The renderer never gets a document
-/// nobody validated.
+/// Validate a posted scene into a Scene. The renderer never gets an
+/// unvalidated document.
 fn scene_of(d: &Value, what: &str) -> ConsoleResult<Scene> {
     Scene::from_dict(d, None, None)
         .map_err(|e| ConsoleError::bad_request(format!("bad {what}: {e}")))
@@ -664,7 +664,7 @@ mod tests {
         Headers::from([("Content-Type", "application/json")])
     }
 
-    /// One call the fake host recorded.
+    /// One recorded call on the fake host.
     #[derive(Debug, PartialEq)]
     enum Call {
         SceneDef(Option<String>),

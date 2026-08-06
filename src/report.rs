@@ -2,8 +2,8 @@
 //!
 //! Three levels: `--quiet` leaves errors alone, the default names each step,
 //! `--verbose` adds the paths and the formats behind them. Every word here
-//! goes to stderr, because stdout carries the frames a `-o -` pipes and the
-//! listings `ghee displays` writes.
+//! goes to stderr, because `-o -` pipes its frames to stdout, and
+//! `ghee displays` writes its listing there.
 //!
 //! A terminal gets a progress line that rewrites itself. A pipe gets one line
 //! per event and no escape codes, so a log stays a log.
@@ -22,7 +22,7 @@ static TTY: AtomicBool = AtomicBool::new(false);
 /// A progress line is on screen and owns the cursor until something clears it.
 static OPEN: AtomicBool = AtomicBool::new(false);
 
-/// The label column every line lines up on, so a run reads as one block.
+/// Every line lines up on this label column, so a run reads as one block.
 const LABEL: usize = 9;
 
 /// Take the level from the command line, and hand it to the engine as well:
@@ -63,7 +63,7 @@ fn say(label: &str, text: &str) {
     let _ = writeln!(stderr(), "{label:>LABEL$}  {text}");
 }
 
-/// A step of the run: the display it found, the scene it loaded.
+/// A step of the run: a found display, a loaded scene.
 pub fn step(label: &str, text: impl AsRef<str>) {
     if level() >= NORMAL {
         say(label, text.as_ref());
@@ -77,14 +77,14 @@ pub fn detail(label: &str, text: impl AsRef<str>) {
     }
 }
 
-/// Something the run carried on through, and the reader would want to know.
+/// The run carried on through this, and the reader would want to know.
 pub fn warn(text: impl AsRef<str>) {
     if level() >= NORMAL {
         say("careful", text.as_ref());
     }
 }
 
-/// The line a run ends on.
+/// The last line of a run.
 pub fn summary(text: impl AsRef<str>) {
     if level() >= NORMAL {
         say("done", text.as_ref());
@@ -233,8 +233,8 @@ mod tests {
         );
     }
 
-    /// Dropped frames stay off the line until a run drops one, and a sink a
-    /// run gains shows up beside the rest.
+    /// Dropped frames stay off the line until a run drops one, and a sink
+    /// gained mid-run shows up beside the rest.
     #[test]
     fn dropped_frames_appear_only_once_there_are_any() {
         assert!(!running(240, 900, 33.0, 30.0, 0, "kms").contains("dropped"));

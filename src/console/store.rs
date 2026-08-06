@@ -1,4 +1,4 @@
-//! The scenes a console shows, edits and saves.
+//! A console shows, edits and saves these scenes.
 //!
 //! A store holds a directory of .scene.json and executable scenes. A save
 //! writes into
@@ -24,8 +24,8 @@ use crate::scene::{py_repr, Param, Scene};
 const SCENE_SUFFIX: &str = ".scene.json";
 
 /// Overlay a values sidecar onto the resolved scene. A filter pass takes the
-/// overlay too, because its params are tweakable. The code's current shape wins,
-/// so this reports an unknown name and skips it.
+/// overlay too, because its params are tweakable. The code decides which params
+/// exist, so this reports an unknown name and skips it.
 pub fn apply_values(scene: &mut Scene, name: &str, vals: &Value) {
     let empty = Map::new();
     let saved_passes = vals
@@ -82,11 +82,12 @@ pub fn apply_values(scene: &mut Scene, name: &str, vals: &Value) {
 pub struct SceneStore {
     pub dir: String,
     pub read_only: bool,
-    /// Scene args for the whole session. Every scene the store loads gets them.
+    /// Scene args for the whole session. The store hands them to every scene it
+    /// loads.
     pub args: Vec<String>,
     /// Each scene name and its path, in the order a scan found them.
     pub scenes: Vec<(String, String)>,
-    /// Filters every scene in this store ends with, after its own. A host
+    /// Every scene in this store ends with these filters, after its own. A host
     /// whose panel needs one (a 1-bit panel needs the dither) sets them here
     /// instead of writing them into every scene.
     pub filters: Vec<String>,
@@ -164,7 +165,7 @@ impl SceneStore {
         }
     }
 
-    /// The path a scene loads from. A saved modified copy shadows the original,
+    /// The path behind a scene load. A saved modified copy shadows the original,
     /// and nothing writes the original.
     pub fn path(&self, name: &str) -> ConsoleResult<String> {
         let p = self
@@ -181,8 +182,8 @@ impl SceneStore {
     /// A scene ready to render and edit: shader files inlined, declared filters
     /// expanded, saved values overlaid.
     ///
-    /// Every scene the session loads gets the session's scene args. A scene keeps
-    /// what it declares and ignores the rest.
+    /// The store hands the session's scene args to every scene it loads. A scene
+    /// keeps what it declares and ignores the rest.
     ///
     /// Every read goes through sources::record, so a caller that wraps this in
     /// collect() gets the files behind the result. The values sidecar stays out
@@ -383,7 +384,7 @@ mod tests {
         fs::write(path, text).unwrap();
     }
 
-    /// Write a .py the store takes for a scene. A scene process carries the
+    /// Write a .py that the store takes for a scene. A scene process carries the
     /// execute bit.
     fn write_scene(path: &str, text: &str) {
         use std::os::unix::fs::PermissionsExt;

@@ -25,14 +25,15 @@ use serde_json::Value;
 
 use crate::serve::{encode_bitrate, encode_size, Console};
 
-/// The size a render with no panel and no display takes, as in the CLI.
+/// A render with no panel and no display takes this size, as in the CLI.
 pub const DEFAULT_SIZE: (i32, i32) = (320, 240);
 
 /// The KMS scanout, as `--display` names it.
 pub const KMS: &str = "kms";
 
-/// A failure a host reads. `scene` marks what the caller wrote: the scene, the
-/// GLSL, a param name, a feed. Anything else is the driver or the system.
+/// A failure reported to a host. `scene` marks what the caller wrote: the
+/// scene, the GLSL, a param name, a feed. Anything else is the driver or the
+/// system.
 pub struct Fault {
     pub scene: bool,
     pub message: String,
@@ -64,8 +65,8 @@ fn system_fault(e: anyhow::Error) -> Fault {
     Fault::system(format!("{e:#}"))
 }
 
-/// What one frame or one skip reports: the numbers the loop hands a scene each
-/// tick.
+/// What one frame or one skip reports: the numbers that the loop hands a scene
+/// each tick.
 #[derive(Clone, Copy)]
 pub struct Tick {
     pub frame: u64,
@@ -88,7 +89,7 @@ impl Fed {
     }
 }
 
-/// The values one declared array takes.
+/// How many values one declared array takes.
 pub fn array_count(size: ArraySize) -> usize {
     match size {
         ArraySize::Linear(n) => n.max(0) as usize,
@@ -98,7 +99,7 @@ pub fn array_count(size: ArraySize) -> usize {
 
 /// One live param, as a host addresses it.
 pub struct ParamRef {
-    /// the name the wire carries: `pass.name`, or `name`
+    /// the name on the wire: `pass.name`, or `name`
     pub wire: String,
     /// the pass that holds it. None is scene scope.
     pub pass: Option<String>,
@@ -107,8 +108,8 @@ pub struct ParamRef {
     pub ty: String,
 }
 
-/// What the scene declares: the arrays a host feeds, the params it sets, and
-/// the passes a console addresses by index.
+/// What the scene declares. A host feeds the arrays and sets the params, and a
+/// console addresses the passes by index.
 ///
 /// A param answers to `pass.name` and to `name`. A bare name is the scene
 /// param, else the param of the first pass that declares it. This is the
@@ -165,7 +166,7 @@ impl Index {
         }
     }
 
-    /// The param a host names. `pass` addresses one pass, and a dotted name
+    /// The param named by a host. `pass` addresses one pass, and a dotted name
     /// carries its own.
     pub fn param(&self, pass: Option<&str>, name: &str) -> Outcome<&ParamRef> {
         let wire = match pass {
@@ -207,13 +208,13 @@ enum Sink {
     Panel(Box<dyn DisplayDriver>),
 }
 
-/// The scene a host names: a path, or a document it holds.
+/// The scene named by a host: a path, or a JSON document.
 pub enum Source {
     Path(String),
     Doc(Value),
 }
 
-/// The h264 stream cap a host asks for.
+/// The host's own h264 stream cap.
 #[derive(Clone, Copy)]
 pub enum StreamMax {
     Pixels(i32),
@@ -246,7 +247,7 @@ pub struct Session {
     /// The console's hardware H264 encoder. It issues GL calls, so it belongs
     /// to this thread, and it never outlives the renderer.
     h264: Option<HardwareH264>,
-    /// The rate the H264 stream declares: the display's refresh, else the
+    /// The rate that the H264 stream declares: the display's refresh, else the
     /// console's own cadence.
     hz: i32,
     pending: Vec<(String, Fed)>,
@@ -259,7 +260,7 @@ pub struct Session {
     lit: bool,
 }
 
-/// Load a scene the way `ghee render` loads one, filters included.
+/// Load a scene as `ghee render` loads one, filters included.
 fn load(source: Source) -> Outcome<(Scene, String)> {
     let (mut scene, name) = match source {
         Source::Path(path) => {
@@ -295,7 +296,7 @@ fn load(source: Source) -> Outcome<(Scene, String)> {
     Ok((scene, name))
 }
 
-/// The driver `output` names, built from `opts` as --display-opts builds one.
+/// The driver named by `output`, built from `opts` as --display-opts does.
 fn open_sink(output: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
     let Some(name) = output else {
         if !opts.is_empty() {
@@ -336,9 +337,9 @@ fn open_sink(output: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
     Ok(Sink::Panel((spec.open)(opts).map_err(system_fault)?))
 }
 
-/// (size, components) the render runs at. A panel states its own geometry and
-/// pixel layout, and a scanout takes the connected mode. Both win over the size
-/// the host asks for.
+/// (size, components) of the render. A panel states its own geometry and pixel
+/// layout, and a connected display states its mode. Both win over the host's
+/// own size.
 fn geometry(sink: &Sink, size: Option<(i32, i32)>) -> Outcome<((i32, i32), i32)> {
     match sink {
         Sink::Kms => match probe_display(None).or(size) {
@@ -386,7 +387,7 @@ impl Session {
             Renderer::new(w, h, components, None, kms, rgb565).map_err(system_fault)?;
         let err = renderer.setup(&scene).map_err(system_fault)?;
         if !err.is_empty() {
-            // the same line the command prints, without the engine's own newline
+            // the command's own line, without the engine's trailing newline
             return Err(Fault::scene(format!("compile error: {}", err.trim_end())));
         }
         let index = Arc::new(Index::of(&scene));
@@ -468,8 +469,8 @@ impl Session {
         self.renderer.components
     }
 
-    /// The tick this iteration carries, drawn or skipped. DT is the pinned step,
-    /// else the last measured period.
+    /// This iteration's tick, drawn or skipped. DT is the pinned step, else the
+    /// last measured period.
     fn tick(&self, t: f64) -> Tick {
         Tick {
             frame: self.frame,
@@ -482,9 +483,8 @@ impl Session {
         }
     }
 
-    /// The t this iteration runs at. Unpinned it is the wall clock since the
-    /// first frame: a scene synced to outside time must not drift with the
-    /// host's pace.
+    /// This iteration's t. Unpinned it is the wall clock since the first frame:
+    /// a scene synced to outside time must not drift with the host's pace.
     fn clock(&mut self, t0: f64) -> f64 {
         let started = *self.started.get_or_insert(t0);
         match self.timestep {
@@ -561,7 +561,7 @@ impl Session {
             ..
         } = self;
         let (w, h) = (renderer.width, renderer.height);
-        // The provider answers each declared array once. A name no feed set
+        // The provider answers each declared array once. An array with no feed
         // keeps what the texture holds.
         let mut provider = |name: &str, _size: ArraySize| -> Feed {
             match pending.iter().position(|(n, _)| n == name) {
@@ -651,9 +651,9 @@ impl Session {
     }
 
     /// This tick needs no render. The panel keeps its last frame. A console
-    /// reader still gets one: while a viewer wants a frame, the skip draws,
-    /// the way the CLI queues a preview for its console. A preview draw that
-    /// fails falls back to a plain skip; the host's own frame() reports it.
+    /// reader still gets one: while a viewer wants a frame, the skip draws, as
+    /// the CLI queues a preview for its console. A preview draw that fails
+    /// falls back to a plain skip; the host's own frame() reports it.
     pub fn skip(&mut self) -> Tick {
         if self.console.as_ref().is_some_and(Console::wants_draw) {
             if let Ok(tick) = self.frame() {
@@ -712,7 +712,7 @@ impl Session {
         Ok(())
     }
 
-    /// The params a console queued, applied before this frame draws.
+    /// The params queued by a console, applied before this frame draws.
     fn drain(&mut self) -> Outcome<()> {
         let Some(console) = self.console.as_ref() else {
             return Ok(());

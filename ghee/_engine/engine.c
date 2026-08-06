@@ -44,7 +44,7 @@ struct GheeScene {
     struct timespec start_time;
     bool has_time_override;              // when set, render uses time_override instead of the wall clock
     float time_override;
-    float dt;                            // seconds the last frame took, fed to every pass as DT
+    float dt;                            // how many seconds the last frame took, fed to every pass as DT
 
     // multipass: each pass has its own program + ping-pong buffer, and channels route
     // between passes (reading a pass's PREVIOUS-frame output). A pass whose channel
@@ -82,7 +82,7 @@ struct GheeScene {
     // GLES2 promises RGBA readback and nothing else. vc4 reads RGB too, v3d
     // hands back nothing for it, so a panel there would pack an all-black
     // frame. Where RGB is missing the readback takes RGBA into scratch and
-    // drops the alpha, which costs the boards that read RGB nothing.
+    // drops the alpha, which costs nothing on the boards that read RGB.
     bool reads_rgb;
     uint8_t *rgba_scratch;
     size_t rgba_scratch_size;
@@ -93,7 +93,7 @@ struct GheeScene {
     int mp_array_size[MP_MAX_ARRAYS];
     int mp_ndatatex[MP_MAX_PASSES];
     int mp_datatex[MP_MAX_PASSES][MP_MAX_DATATEX];   // texture unit -> array index
-    GLuint black_tex;                    // what a channel with no source samples
+    GLuint black_tex;                    // bound to a channel with no source pass
 
     bool profile;                        // when on, ghee_mp_render splits draw vs readback (adds a glFinish)
     double prof_draw_ms, prof_read_ms;   // last frame's split (profiling mode)
@@ -108,7 +108,7 @@ struct GheeScene {
     struct gbm_bo *disp_shown;   // buffer of the flip before that (still on glass until
                                  // the pending one completes, released after)
     bool disp_first;
-    // A render smaller than the mode scans out through the display's own
+    // A buffer smaller than the mode scans out through the display's own
     // scaler: the plane takes a source rectangle the size of the buffer and a
     // destination rectangle the size of the mode, and the hardware stretches
     // it. The GPU shades the smaller count, and the stretch costs nothing.
@@ -238,7 +238,7 @@ static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_so
 // ---- lifecycle ------------------------------------------------------------
 
 // Whether this card renders for itself. A card with no render node of its own
-// (an SPI panel the kernel drives) borrows a GPU through Mesa, and the two
+// (a kernel-driven SPI panel) borrows a GPU through Mesa, and the two
 // then share one buffer: the GPU's own tiling means nothing to the panel's
 // driver, which reads the memory row by row.
 // Mesa's loader prints a burst of "failed to retrieve device information" while
@@ -484,8 +484,8 @@ static uint32_t fb_for(GheeScene *g, struct gbm_bo *bo) {
 // Pick the display to drive: first connected connector with modes, its
 // encoder's CRTC (else the first), and the mode that CRTC already drives
 // (honours a video= override or whatever the console negotiated, falls back
-// to the connector's first). Shared by create and probe so the size the probe
-// reports is exactly the mode create ends up driving. -1 = nothing connected.
+// to the connector's first). Shared by create and probe, so probe reports
+// exactly the mode that create will drive. -1 = nothing connected.
 static int pick_display_mode(int fd, uint32_t *conn_out, uint32_t *crtc_out,
                              drmModeModeInfo *mode_out) {
     drmModeRes *res = drmModeGetResources(fd);
@@ -583,7 +583,7 @@ void ghee_destroy(GheeScene *g) {
     if (g->display_mode) {
         wait_flip(g);   // reap any in-flight flip before tearing the CRTC down
         if (g->disp_plane && g->disp_saved) {
-            // A scaled scanout set no mode, so it puts none back. The plane
+            // The scaled path set no mode, so destroy puts none back. The plane
             // still points at a buffer about to be freed, so hand it the old
             // framebuffer at full size and leave the CRTC alone.
             drmModeSetPlane(g->drm_fd, g->disp_plane, g->disp_crtc,
@@ -659,8 +659,8 @@ static bool mp_make_buffers(GheeScene *g, GLuint fbo[2], GLuint tex[2], int w, i
     return true;
 }
 
-// A channel with no source samples this instead of texture unit 0, which holds
-// whatever the last bind left there.
+// Bound to a channel with no source pass, instead of texture unit 0, which
+// holds whatever the last bind left there.
 static GLuint make_black_texture(void) {
     const uint8_t px[4] = { 0, 0, 0, 255 };
     GLuint tex = 0;
@@ -689,7 +689,7 @@ static void mp_free_passes(GheeScene *g) {
 
 // Compile a pass into the PENDING scene: program and buffers are allocated
 // beside the running scene, which keeps rendering until ghee_mp_commit. Returns
-// the pass index (the same index the committed scene uses) or -1.
+// the pass index (the commit keeps it) or -1.
 int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
     make_current(g);
     if (g->stage_count >= MP_MAX_PASSES) { set_error(g, "too many passes"); return -1; }
@@ -713,7 +713,7 @@ int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
 // sized output pass before it reaches here.
 bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     if (pass < 0 || pass >= g->stage_count || w <= 0 || h <= 0) {
-        set_error(g, "cannot size pass %d at %dx%d", pass, w, h);
+        set_error(g, "pass %d is not pending, or %dx%d is not a positive size", pass, w, h);
         return false;
     }
     make_current(g);
@@ -884,7 +884,7 @@ static int mp_array_bind(GheeScene *g, const char *name, int count, int rows, bo
 }
 
 // GLES2 pins a texture's texel type at the allocation, so every upload of one
-// array carries the type has_float_tex picked.
+// array carries the type that has_float_tex picked.
 static void mp_array_upload(bool fresh, int count, int rows, GLenum type, const void *px) {
     if (fresh)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, count, rows, 0, GL_LUMINANCE, type, px);
@@ -996,7 +996,7 @@ static void read_pixels(GheeScene *g, int w, int h, int components, uint8_t *out
     const size_t want = (size_t)w * h * 4;
     if (g->rgba_scratch_size < want) {
         uint8_t *grown = realloc(g->rgba_scratch, want);
-        if (!grown) { set_error(g, "%dx%d readback buffer failed", w, h); return; }
+        if (!grown) { set_error(g, "cannot allocate a %dx%d readback buffer", w, h); return; }
         g->rgba_scratch = grown;
         g->rgba_scratch_size = want;
     }
@@ -1007,7 +1007,7 @@ static void read_pixels(GheeScene *g, int w, int h, int components, uint8_t *out
     }
 }
 
-// The CRTC's primary plane. A scaled scanout drives the plane directly, and
+// The CRTC's primary plane. ghee drives it when the render is scaled, and
 // only the primary one covers the whole screen. The universal-planes cap is
 // what makes the kernel list it at all: without it a client sees the overlay
 // planes alone. 0 = none, and the caller then refuses the size.
@@ -1047,8 +1047,8 @@ static uint32_t primary_plane(int fd, uint32_t crtc_id) {
 
 // Whether this card will scan a width x height buffer across the whole mode.
 // A dumb buffer of that size goes on the plane and straight back off, so the
-// answer comes from the kernel rather than from what the driver looks like it
-// ought to support. A card that refuses either step keeps its old plane.
+// answer comes from the kernel rather than from a guess at what the driver
+// supports. A card that refuses either step keeps its old plane.
 static bool plane_scales(GheeScene *g, int width, int height) {
     struct drm_mode_create_dumb creq = { .width = width, .height = height, .bpp = 32 };
     if (drmIoctl(g->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq)) return false;
@@ -1146,7 +1146,7 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g->preview_tex, 0);
         const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            set_error(g, "%dx%d preview buffer failed: framebuffer 0x%X", pw, ph, status);
+            set_error(g, "%dx%d preview buffer is incomplete: framebuffer 0x%X", pw, ph, status);
             glDeleteFramebuffers(1, &g->preview_fbo);
             glDeleteTextures(1, &g->preview_tex);
             g->preview_fbo = 0;
@@ -1186,7 +1186,7 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
 //    feed/render overlap scanout instead of serializing with the vblank.
 // Blank the display, or light it again. Blanking stops the CRTC driving the
 // connector, which runs the kernel driver's own disable path: a panel turns
-// its display off and drops its backlight. The next present after a light
+// its display off and drops its backlight. After a relight, the next present
 // sets the mode again. A blanked display draws nothing at all, so the caller
 // paces its own loop while the display is dark.
 int ghee_display_blank(GheeScene *g, int blank) {
@@ -1325,13 +1325,13 @@ void ghee_clear_time(GheeScene *g) { g->has_time_override = false; }
 
 void ghee_set_dt(GheeScene *g, float dt) { g->dt = dt; }
 
-// Fragment texture units this GL exposes: a pass's channels plus its data
-// textures have to fit.
+// How many fragment texture units this GL exposes: a pass's channels plus its
+// data textures have to fit.
 int ghee_max_texture_units(GheeScene *g) { return g ? (int)g->max_units : 0; }
 
-// Whether a data texture is linear-filtered by this GL, the same condition
-// ghee_mp_set_array picks its filter from. False on V3D, which has float
-// textures but no OES_texture_float_linear, so a filtered fetch is nearest.
+// Whether this GL linear-filters a data texture. ghee_mp_set_array picks its
+// filter from the same condition. False on V3D, which has float textures but
+// no OES_texture_float_linear, so a filtered fetch is nearest.
 bool ghee_data_texture_linear(GheeScene *g) { return g && !(g->has_float_tex && !g->has_float_linear); }
 
 // The display mode's refresh rate in Hz, 0 outside display mode.

@@ -62,7 +62,7 @@ struct inbuf {
 struct GheeEncoder {
     int w, h, fps, bitrate;
     int vfd;
-    int vc4_fd;                 // KMS node the input BOs are allocated on
+    int vc4_fd;                 // KMS node that allocates the input BOs
     struct gbm_device *vc4_gbm;
     struct inbuf in[NBUF];
     void *cap_ptr[NCAP];
@@ -170,7 +170,7 @@ static void reclaim(GheeEncoder *e) {
 }
 
 // Push one frame through before create() returns. S_FMT, REQBUFS, STREAMON and
-// QBUF all succeed on a dmabuf the codec cannot import: the import happens
+// QBUF all succeed on a dmabuf that the codec cannot import: the import happens
 // later, inside the driver's device_run, and the only symptom is a buffer that
 // never comes back. Without this the failure surfaces several frames into the
 // render, past the point where the caller can still choose a software encoder.
@@ -199,7 +199,7 @@ static int probe_import(GheeEncoder *e) {
     reclaim(e);
     if (e->nfree < NBUF) return -1;
 
-    // Throw away the access unit the probe frame produced, then make the first
+    // Throw away the probe frame's access unit, then make the first
     // real frame an IDR again: it would otherwise be a P frame referencing a
     // picture nobody ever sees.
     struct pollfd cfd = { .fd = e->vfd, .events = POLLIN };
@@ -475,7 +475,7 @@ static int encode_common(GheeScene *g, GheeEncoder *e,
     return take_au(g, e, nal, len, is_key, NULL);
 }
 
-// Encode the frame a completed ghee_mp_render/ghee_mp_present call produced
+// Encode the frame left by the last ghee_mp_render/ghee_mp_present call
 // (display mirror: one render feeds the screen and the stream).
 int ghee_encoder_encode_last(GheeScene *g, GheeEncoder *e, const uint8_t **nal,
                              int *len, int *is_key) {

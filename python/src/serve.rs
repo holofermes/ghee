@@ -4,14 +4,14 @@
 //! and a read-only host: it serves the scene, the stats and the preview, and it
 //! sets live params.
 //!
-//! No request thread ever touches the engine. A /set lands on a queue the next
-//! frame drains, and a viewer reads the frame the last one published. The host
+//! No request thread ever touches the engine. A /set lands on a queue that the
+//! next frame drains, and a viewer reads the last published frame. The host
 //! owns the render, so this console switches no scene and compiles none.
 //!
 //! /h264 is the CLI console's stream: one encoder feeds every viewer, and it
 //! runs only while a viewer watches. The hardware lane issues GL calls, so the
 //! session drives it on the host's thread (session::Session::mirror). The
-//! software lane runs here, on the frames the console publishes.
+//! software lane runs here, on the published frames.
 
 use std::borrow::Cow;
 use std::io::Write;
@@ -45,31 +45,31 @@ const PREVIEW_QUALITY: u8 = 75;
 /// How long GET /frame.png waits for the host to draw.
 const FRAME_TIMEOUT: f64 = 4.0;
 
-/// The address a bare port binds to. The console has no auth, so it stays on
+/// A bare port binds to this address. The console has no auth, so it stays on
 /// loopback until a host names another address.
 pub const LOOPBACK: &str = "127.0.0.1";
 
-/// What the encoder takes: the host's stream cap, never past the frame the
-/// host renders. yuv420 takes even dimensions only. Both consoles answer
-/// /h264 with the same size and the same bitrate.
+/// What the encoder takes: the host's stream cap, never past the render size.
+/// yuv420 takes even dimensions only. Both consoles answer /h264 with the same
+/// size and the same bitrate.
 pub fn encode_size(w: i32, h: i32, longest: i32) -> (i32, i32) {
     let (sw, sh) = stream_size(w, h, longest);
     (sw.min(w & !1), sh.min(h & !1))
 }
 
-/// The bitrate the CLI console gives this size at this pace.
+/// The CLI console's bitrate for this size at this pace.
 pub fn encode_bitrate(w: i32, h: i32, fps: i32) -> i32 {
     stream_bitrate(w, h, fps, Options::default().bitrate) as i32
 }
 
-/// A param a request queued for the next frame.
+/// A param queued by a request for the next frame.
 pub type Queued = (Option<String>, String, String, ParamValue);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The last frame a viewer reads, and the number that says it is new.
+/// The last published frame, and the number that says it is new.
 #[derive(Default)]
 struct Snap {
     data: Vec<u8>,
@@ -121,7 +121,7 @@ impl Shared {
         self.hw_dead.load(Ordering::SeqCst) && self.fanout.nclients() > 0
     }
 
-    /// The frame the caller has not seen, once one lands.
+    /// The latest frame new to the caller, once one lands.
     fn next_frame(&self, seen: u64, timeout: f64) -> Option<(Vec<u8>, i32, i32, i32, u64)> {
         let deadline = monotonic() + timeout;
         let mut latest = lock(&self.latest);
@@ -149,7 +149,7 @@ impl Shared {
     }
 }
 
-/// The read-only host the console API runs on.
+/// The console API runs on this read-only host.
 struct Host(Arc<Shared>);
 
 impl ConsoleHost for Host {
@@ -221,7 +221,7 @@ impl ConsoleHost for Host {
 
     fn switch(&self, _name: Option<&str>) -> ConsoleResult<String> {
         Err(ConsoleError::read_only(
-            "this console renders the one scene its host opened",
+            "this console renders one scene, its host's own",
         ))
     }
 
@@ -344,7 +344,7 @@ impl Console {
         }
     }
 
-    /// The size and the colorSpace hint of the encoder the host started.
+    /// The size and the colorSpace hint of the host's encoder.
     pub fn h264_opened(&self, w: i32, h: i32, color: ColorSpace) {
         self.shared.fanout.opened(w, h, color);
     }
@@ -400,7 +400,7 @@ impl Console {
 }
 
 /// Software H264 for the /h264 viewers, on a host with no hardware encoder. It
-/// encodes the frames the console publishes, off the host's thread.
+/// encodes the published frames, off the host's thread.
 fn h264_sw_loop(shared: &Arc<Shared>) {
     let mut enc: Option<SoftwareH264> = None;
     let mut size = (0, 0);
@@ -616,7 +616,7 @@ fn h264(shared: &Arc<Shared>, request: Request, query: &Query) {
     shared.watchers.leave(&viewer);
 }
 
-/// One lossless PNG of the next frame the host draws.
+/// One lossless PNG of the next drawn frame.
 fn frame_png(shared: &Arc<Shared>, request: Request) {
     let seen = lock(&shared.latest).seq;
     shared.shots.fetch_add(1, Ordering::SeqCst);

@@ -1,7 +1,7 @@
 //! Golden frame check.
 //!
-//! The check renders every scene a manifest names. It compares each frame's
-//! sha256 against the pinned reference in tools/fixtures/golden.
+//! A manifest names the scenes. The check renders each one. It compares each
+//! frame's sha256 against the pinned reference in tools/fixtures/golden.
 //! Scene paths in the manifest are relative to the repo root.
 //! Run the check from the repo root.
 

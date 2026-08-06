@@ -76,7 +76,7 @@ fn obj_of<'a>(d: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Va
     }
 }
 
-/// The value form the error strings quote a scene back in: `None`, `True`,
+/// The error strings quote a scene back in this form: `None`, `True`,
 /// `False`, a quoted string, a shortest round-trip float.
 pub(crate) fn py_repr(v: &Value) -> String {
     match v {
@@ -250,7 +250,7 @@ fn read_shader(path: &Value, base_dir: Option<&str>, what: &str) -> Result<Strin
     }
 }
 
-/// The scene's shared GLSL. It arrives the two ways a pass's own GLSL does:
+/// The scene's shared GLSL. It arrives as a pass's own GLSL does:
 /// 'code' inline, or a 'shader' file next to the scene. None is no common block.
 /// "" is an empty block the console creates.
 fn common_block(d: &Map<String, Value>, base_dir: Option<&str>) -> Result<Option<String>> {
@@ -353,7 +353,7 @@ pub struct Param {
     pub min: Option<Value>,
     pub max: Option<Value>,
     pub step: Option<Value>,
-    /// The choices a string param offers. The console renders them as a
+    /// A string param offers these choices. The console renders them as a
     /// dropdown. Without them it renders a text input.
     pub options: Option<Vec<String>>,
 }
@@ -497,7 +497,7 @@ impl Param {
     }
 
     /// A string param is host-side, and it has no uniform. Use `new` with
-    /// `options` for the choices the console shows as a dropdown.
+    /// `options` for the choices in the console's dropdown.
     pub fn string(name: &str, value: &str) -> Param {
         Param::plain(name, "string", ParamValue::Str(value.to_string()))
     }
@@ -836,12 +836,12 @@ pub struct Pass {
     pub arrays: Vec<ArrayInput>,
     pub channels: Vec<Channel>,
     pub params: ParamMap,
-    /// A non-empty name marks a pass a named filter produced. The console
+    /// A non-empty name marks a pass as a named filter's output. The console
     /// renders such a pass read-only.
     pub filter: String,
-    /// The [w, h] this pass renders at. None is the renderer's size. A consumer
-    /// samples a sized pass through normalized UVs, so it ignores the size. The
-    /// output pass leaves this None.
+    /// The [w, h] of this pass's render. None is the renderer's size. A
+    /// consumer samples a sized pass through normalized UVs, so it ignores
+    /// the size. The output pass leaves this None.
     pub size: Option<(i64, i64)>,
 }
 
@@ -1209,12 +1209,12 @@ impl Scene {
     }
 }
 
-/// Chained construction on the Result a Pass constructor returns:
+/// Chained construction on a Pass constructor's Result:
 /// `Pass::of(name, code).array("level", 8).param(Param::float("gain", 1.0))?`.
 /// The first error stops the chain, and `?` returns it.
 pub trait PassBuilder {
-    /// Declare an array the host fills every frame. `8` is a 1x8 linear array,
-    /// `(16, 8)` a 16x8 grid.
+    /// Declare an array for the host to fill every frame. `8` is a 1x8 linear
+    /// array, `(16, 8)` a 16x8 grid.
     fn array<S: Into<ArraySize>>(self, name: &str, size: S) -> Result<Pass>;
 
     /// Declare a pass param. A second param of the same name replaces the first.
@@ -1263,7 +1263,7 @@ impl PassBuilder for Result<Pass> {
     }
 }
 
-/// Chained construction on the Result a Scene constructor returns:
+/// Chained construction on a Scene constructor's Result:
 /// `Scene::of(passes).param(Param::color("tint", [1.0, 0.0, 0.0]))?`.
 pub trait SceneBuilder {
     /// Declare a scene param. It is one uniform in every pass. A pass that
@@ -2361,7 +2361,7 @@ mod tests {
 
     #[test]
     fn to_dict_matches_the_reference_json() {
-        // The text to_dict serialises for this input: key order, dropped keys,
+        // What to_dict serialises for this input: key order, dropped keys,
         // and int or float per field.
         let d = json!({
             "version": 2,

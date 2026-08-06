@@ -1,7 +1,7 @@
 //! The console modules.
 //!
-//! core is the API. store holds the scenes. feeds supplies the host info the
-//! console fills in for itself. server mounts them on a render loop.
+//! core is the API. store holds the scenes. feeds fills in the host info.
+//! server mounts them on a render loop.
 
 pub mod core;
 pub mod feeds;

@@ -11,12 +11,12 @@ use serde_json::Value;
 
 pub use base::DisplayDriver;
 
-/// The options --display-opts sets. Each k=v pair parses to one value.
+/// --display-opts sets these options. Each k=v pair parses to one value.
 pub type Opts = [(String, Value)];
 
 /// A command byte and its data, empty for a command that takes none.
-/// A delay is command 0x00 carrying the milliseconds, the encoding
-/// panel-mipi-dbi reads.
+/// A delay is command 0x00 carrying the milliseconds, panel-mipi-dbi's own
+/// encoding.
 pub type Command = (u8, Vec<u8>);
 
 /// The kernel's own setup for a panel, what `ghee overlay` writes out.
@@ -28,7 +28,7 @@ pub struct Setup {
     pub lines: Vec<String>,
 }
 
-/// The firmware file panel-mipi-dbi loads: a 15-byte magic, the format
+/// panel-mipi-dbi loads this firmware file: a 15-byte magic, the format
 /// version, then each command as its byte, its parameter count and the
 /// parameters.
 pub fn firmware(init: &[Command]) -> Vec<u8> {
@@ -65,8 +65,7 @@ impl DriverOption {
         }
     }
 
-    /// An option the userspace driver alone acts on, like the format it puts
-    /// on the wire.
+    /// An option for the userspace driver alone, such as its wire format.
     pub const fn own(name: &'static str, default: Option<i64>) -> DriverOption {
         DriverOption {
             name,
@@ -110,8 +109,8 @@ fn opt<'a>(opts: &'a Opts, name: &str) -> Option<&'a Value> {
     opts.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v)
 }
 
-/// True when --display-opts set this option. A driver default describes the
-/// panel it was written for, which is the wrong answer for a kernel setup.
+/// True when --display-opts set this option. A driver default describes its
+/// own panel, which is the wrong answer for a kernel setup.
 pub(crate) fn given(opts: &Opts, name: &str) -> bool {
     opt(opts, name).is_some()
 }

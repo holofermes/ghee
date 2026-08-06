@@ -161,7 +161,7 @@ def build():
 
 @ghee.feed("amplitudes")
 def amplitudes(tick):
-    """Levels a spectrum would send, without one.
+    """Levels in place of a spectrum's own.
 
     Each band keeps a rate of its own, so neighbouring dials drift apart
     instead of reading as one clock repeated across the grid.

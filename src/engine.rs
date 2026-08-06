@@ -22,7 +22,7 @@ pub const COMMON_PASS: &str = "common";
 /// A vecN param reaches the shader as float uniforms with these suffixes.
 const VEC_SUFFIXES: [&str; 4] = ["_x", "_y", "_z", "_w"];
 
-/// The shader a setup() compile error sits in.
+/// The shader holding a setup() compile error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorPass {
     Common,
@@ -57,7 +57,7 @@ pub enum Feed {
 /// provider(name, size) returns this frame's data for one declared array.
 pub type Provider<'a> = &'a mut dyn FnMut(&str, ArraySize) -> Feed;
 
-/// The (width, rows) one array upload takes, and the data it carries.
+/// The (width, rows) of one array upload, and its data.
 ///
 /// A short 1xN feed uploads the values it holds, and a longer one is cut. A
 /// short mask zero-pads to the full shape, because the rows must line up.
@@ -177,7 +177,7 @@ pub fn pack_frame(rgb: &[u8], width: i32, height: i32, components: i32, bw: bool
     out
 }
 
-/// pack_frame into a buffer the caller holds. The call zeros the buffer first.
+/// pack_frame into a caller-held buffer. The call zeros the buffer first.
 pub fn pack_frame_into(
     rgb: &[u8],
     width: i32,
@@ -189,7 +189,7 @@ pub fn pack_frame_into(
     let frame = (i64::from(width) * i64::from(height) * i64::from(components)) as usize;
     let packed = packed_size(width, height, bw);
     // The packer reads three channels of every pixel. Fewer than 3 components
-    // reads past the frame span the check below covers.
+    // reads outside the span checked below.
     assert!(
         components >= 3,
         "packing needs 3+ components, got {components}"
@@ -246,7 +246,7 @@ fn error_line_number(err: &str) -> Option<i64> {
     None
 }
 
-/// Map a GL compile-error line to the line the author wrote.
+/// Map a GL compile-error line back to the author's own line.
 ///
 /// The error names a line of the assembled shader. Returns (line, in_common).
 /// A line inside the scene's prepended common block counts from the start of
@@ -287,9 +287,9 @@ pub struct Renderer {
     pub scene: Option<Scene>,
     /// The last setup() compile error text. "" means the setup succeeded.
     pub error: String,
-    /// The line of user code the last setup() compile error sits on.
+    /// The user-code line of the last setup() compile error.
     pub error_line: Option<i64>,
-    /// The pass the error sits in. Common is the scene's common block.
+    /// The pass holding the error. Common is the scene's common block.
     pub error_pass: Option<ErrorPass>,
     #[allow(dead_code)]
     pub display: bool,
@@ -577,7 +577,7 @@ impl Renderer {
         Ok(&self.rgb)
     }
 
-    /// render() into a buffer the host holds.
+    /// render() into a host-held buffer.
     /// out_size=(w, h) reads back a GPU-downscaled frame at that size.
     /// None reads back the full frame. present() downscales the same way.
     pub fn render_into(
@@ -764,7 +764,7 @@ impl Renderer {
         pack_frame(rgb, self.width, self.height, self.components, bw)
     }
 
-    /// pack() into a buffer the caller holds. The call zeros the buffer first.
+    /// pack() into a caller-held buffer. The call zeros the buffer first.
     #[allow(dead_code)]
     pub fn pack_into(&self, rgb: &[u8], bw: bool, out: &mut [u8]) {
         pack_frame_into(rgb, self.width, self.height, self.components, bw, out);
@@ -811,7 +811,7 @@ impl Renderer {
         }
     }
 
-    /// Set the `DT` uniform, the seconds a scene advances this frame.
+    /// Set the `DT` uniform, this frame's advance in seconds of scene time.
     /// DT rides the draw like `time`: one store here, one upload per pass.
     /// The default is 1/60 until a caller feeds a measured period.
     pub fn set_dt(&self, value: f64) {
@@ -901,7 +901,7 @@ mod tests {
         GPU.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The renderer these tests share, with the device lock.
+    /// One renderer for these tests, with the device lock.
     /// None means the host has no GL device.
     fn gpu() -> Option<(MutexGuard<'static, ()>, Renderer)> {
         let guard = lock();
@@ -995,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_display_device_names_the_card_it_found() {
+    fn probe_display_device_names_a_probed_card_and_its_size() {
         // A headless host probes to None.
         // Any other host reports a positive width and height on a card node.
         let _g = lock();
@@ -1035,9 +1035,9 @@ mod tests {
     }
 
     #[test]
-    fn a_flip_the_board_is_too_slow_to_finish_is_still_waited_for() {
-        // A page flip fences on the GPU finishing the frame. The wait scales
-        // with the render. The panel refresh does not bound it.
+    fn an_unfinished_flip_on_a_slow_board_is_still_waited_for() {
+        // The kernel holds a page flip until the GPU finishes the frame. The
+        // wait scales with the render. The panel refresh does not bound it.
         // A bound near one frame time leaves a slow board's flip pending.
         // The engine refuses every submit while a flip stays pending.
         let src = fs::read_to_string(concat!(
@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn a_compile_error_line_maps_back_to_the_code_its_author_wrote() {
+    fn a_compile_error_line_maps_back_to_the_authors_own_line() {
         let glsl = "#version 100\nprecision mediump float;\nfloat sat(float x){ return x; }\n\nvoid main(){\n  nope();\n}";
         let common = "float sat(float x){ return x; }";
         let code = "void main(){\n  nope();\n}";
@@ -1670,7 +1670,7 @@ mod tests {
         // The test compares every column of a rendered _sample(t) ramp against
         // the lerp above. It holds on a GL that linear-filters float textures.
         // It also holds on V3D, which has no float linear filtering.
-        // The reader the renderer emits makes the two agree.
+        // The renderer emits a reader that makes the two agree.
         let Some((_g, mut r)) = gpu() else { return };
         let vals: Vec<f32> = vec![0.10, 0.90, 0.30, 0.70, 0.50];
         let sc = array_scene(
@@ -1744,7 +1744,7 @@ mod tests {
         );
         assert_eq!(user_line("::7(2): x", glsl, code, None), (Some(3), false));
         assert_eq!(user_line("no digits :(", glsl, code, None), (None, false));
-        // Code the assembled source does not hold subtracts nothing.
+        // Pass code absent from the assembled source subtracts nothing.
         assert_eq!(
             user_line("0:6(3): e", glsl, "nowhere-in-glsl", common),
             (Some(6), false)
@@ -1842,7 +1842,7 @@ mod tests {
         assert!(!r
             .set_param("nope", "tint", "float", &ParamValue::Float(1.0))
             .unwrap());
-        // A name no pass declares sets nothing.
+        // An undeclared name sets nothing.
         assert!(!r
             .set_param("main", "ghost", "color", &ParamValue::Color([1.0; 3]))
             .unwrap());

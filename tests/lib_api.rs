@@ -1,4 +1,4 @@
-//! The lib's public surface, reached the way a Rust consumer reaches it.
+//! The lib's public surface, reached as a Rust consumer reaches it.
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -61,7 +61,7 @@ fn the_sugar_builds_what_the_constructors_build() {
 }
 
 #[test]
-fn a_size_the_scene_model_refuses_stops_the_chain() {
+fn a_size_refused_by_the_scene_model_stops_the_chain() {
     let e = Pass::of("main", FLAT)
         .array("level", 0)
         .param(Param::float("gain", 1.0))
@@ -122,7 +122,7 @@ fn each_param_constructor_carries_its_type_and_value() {
 }
 
 #[test]
-fn a_sugar_param_is_the_param_the_json_path_builds() {
+fn the_json_path_and_the_sugar_build_the_same_param() {
     let from_json = |d| Param::from_dict("gain", &d).unwrap();
     assert_eq!(
         from_json(json!({"type": "float", "value": 0.5})),
@@ -184,7 +184,7 @@ fn a_sugar_built_scene_renders_its_arrays_and_params() {
 }
 
 #[test]
-fn a_sugar_built_channel_reads_the_pass_it_names() {
+fn a_sugar_built_channel_reads_its_named_pass() {
     let scene = Scene::of(vec![
         Pass::of(
             "main",

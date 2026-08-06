@@ -1134,7 +1134,7 @@ impl Output for ConsoleSink {
             // The stream encodes at its own rate, not the display's. A panel
             // that asks for 63Hz asks the encoder for a rate it refuses at
             // this size, and the input port then fails to enable: the whole
-            // stream drops to software for a rate no viewer needed.
+            // stream drops to software for a rate that no viewer needed.
             let hz = console.stream_hz.max(1);
             let bitrate = stream_bitrate(w, h, hz, console.bitrate) as i32;
             match HardwareH264::new(&self.renderer.borrow(), w, h, hz, bitrate) {
@@ -1583,7 +1583,7 @@ pub fn render_loop(
         render.on_error = Some(Box::new(|e| {
             // One bad frame must not take the thread with it. Report it, and
             // keep rendering the last scene that worked. /stats reaches a
-            // browser, so it takes the stderr the terminal already holds.
+            // browser, so it repeats the stderr already on the terminal.
             let msg = format!("render: {e}");
             lock(&console.stat).error =
                 format!("render: {}", crate::procedural::process::with_stderr(e));
@@ -1942,8 +1942,8 @@ fn h264(console: &Arc<Console>, request: Request, query: &Query) {
         }
     }
     // The terminal chunk ends the response. Without it, keep-alive parks the
-    // socket and a viewer waits forever on a stream the server abandoned. A
-    // clean end is what sends the client to its MJPEG fallback.
+    // socket and a viewer waits forever on an abandoned stream. A clean end is
+    // what sends the client to its MJPEG fallback.
     let _ = w.write_all(b"0\r\n\r\n");
     let _ = w.flush();
     console.fanout.remove(&c);
@@ -2496,7 +2496,7 @@ mod tests {
         fanout.add();
         fanout.push(&key_au());
         assert!(Arc::ptr_eq(&fanout.rate, &shared));
-        // the JPEG path ticks the same counter the console publishes
+        // the JPEG path ticks the counter published as stream_fps
         let console = tmp_console("one-counter");
         assert!(Arc::ptr_eq(&console.fanout.rate, &console.stream_rate));
     }
@@ -2589,7 +2589,7 @@ mod tests {
     #[test]
     fn every_connection_under_one_vid_is_kept_alive_together() {
         // a page that falls back from h264 to MJPEG opens a second stream under
-        // the id it already pings with
+        // its existing ping id
         let hb = Heartbeat::new(0.05);
         let (a, b) = (hb.join(Some("abc")), hb.join(Some("abc")));
         thread::sleep(Duration::from_millis(80));
@@ -2649,7 +2649,7 @@ mod tests {
     // what /stats publishes
 
     #[test]
-    fn stats_carries_every_key_the_page_polls() {
+    fn stats_carries_every_key_polled_by_the_page() {
         let console = tmp_console("stats");
         let stats = console.stats();
         for key in [
@@ -2716,7 +2716,7 @@ mod tests {
         assert_eq!(doc["passes"][0]["name"], "main");
     }
 
-    // the loop run() drives
+    // run()'s own loop
 
     /// A sink that never leaves the thread that built it. A panel driver's SPI
     /// and GPIO handles work the same way.

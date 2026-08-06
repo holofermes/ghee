@@ -1,4 +1,4 @@
-//! The placeholder array data ghee feeds a scene when nothing else does.
+//! ghee feeds a scene this placeholder array data when nothing else does.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;

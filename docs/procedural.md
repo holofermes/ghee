@@ -47,8 +47,8 @@ After the handshake, stdout carries binary messages:
 
     kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE
 
-- kind 0 sets the named array. A 2D array sends w*h values, in the shape
-  the scene declared.
+- kind 0 sets the named array. A 2D array takes w*h values, in its declared
+  shape.
 - kind 1 sets the named live param. A float takes one value, a color three,
   a vecN takes N. A name of the form `pass.param` targets that one pass. A
   bare name targets the scene param, or the first pass that declares it.

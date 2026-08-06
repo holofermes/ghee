@@ -9,7 +9,7 @@
 //! frame time stops falling. It then measures the frame cost, and it derives
 //! the frame count from that cost.
 //!
-//! The result file is schema 2, the shape the harness compares.
+//! The result file is schema 2. The harness compares that shape.
 
 use std::collections::HashMap;
 use std::fs;
@@ -32,7 +32,7 @@ const SCHEMA: i64 = 2;
 const PROBE_ROUNDS: usize = 3;
 const PROBE_S: f64 = 0.05;
 
-/// The rungs a derived frame count snaps to.
+/// A derived frame count snaps to one of these rungs.
 /// The spacing is a factor of two, so a cost measurement moves 41% to cross a
 /// boundary. The same case then lands on the same rung run after run.
 const FRAME_RUNGS: [i64; 4] = [60, 120, 240, 480];
@@ -41,7 +41,7 @@ const FRAME_RUNGS: [i64; 4] = [60, 120, 240, 480];
 /// Below it the 1st percentile degrades into the minimum of the run.
 const MIN_POOLED: i64 = 200;
 
-/// The suite a run measures with no --suite.
+/// A run with no --suite measures this suite.
 const SUITE: &str = r#"{
   "reps": 10,
   "rep_ms": 250,
@@ -189,8 +189,8 @@ fn stats(xs: &[f64]) -> Map<String, Value> {
     m
 }
 
-/// Reduce one list of frame times per repetition to the numbers a comparison
-/// judges.
+/// Reduce one list of frame times per repetition to the numbers behind a
+/// comparison.
 ///
 /// `stable` is the comparison statistic. It is the 1st percentile of every
 /// measured frame. Interference only adds time, so the bottom of the
@@ -281,8 +281,8 @@ fn nearest_rung(x: f64) -> i64 {
     best
 }
 
-/// The frames a rep_ms repetition buys at this cost.
-/// The second value names the rung the count runs into, or None.
+/// At this cost, a rep_ms repetition buys this many frames.
+/// The second value names which bound the count ran into, or None.
 fn wanted_frames(ms_per_frame: f64, rep_ms: f64) -> (f64, Option<&'static str>) {
     let last = FRAME_RUNGS[FRAME_RUNGS.len() - 1] as f64;
     let wanted = if ms_per_frame > 0.0 {
@@ -423,7 +423,7 @@ fn format_plan(
     out.join("\n")
 }
 
-/// A float printed the way `%g` prints it.
+/// A float in `%g` form.
 /// A whole number loses its trailing zeros.
 fn num(x: f64) -> String {
     if x == x.trunc() && x.abs() < 1e15 {
@@ -802,7 +802,7 @@ fn governors() -> Vec<String> {
     seen
 }
 
-/// Governors this kernel offers.
+/// The kernel's own list of governors.
 fn governors_available() -> Vec<String> {
     let mut seen = Vec::new();
     for d in cpu_dirs() {
@@ -940,8 +940,8 @@ fn sha256_file(path: &Path) -> Option<String> {
     )
 }
 
-/// The facts a benchmark result is comparable within.
-/// A fact this call cannot derive is null.
+/// A benchmark result is comparable within these facts.
+/// A fact is null when this call cannot derive it.
 fn facts(dri: &str) -> Value {
     let exe = std::env::current_exe().unwrap_or_default();
     let src = std::env::var("GHEE_SRC")
@@ -1093,7 +1093,7 @@ fn suite_cases(suite: &Value) -> Result<Vec<CaseSpec>> {
 }
 
 /// The suite's settings with the command-line overrides applied.
-/// The keys come in the order the result file carries them.
+/// The keys come in the result file's own order.
 fn config(suite: &Value, a: &BenchArgs) -> Result<Map<String, Value>> {
     let mut cfg = Map::new();
     for k in [
@@ -1439,7 +1439,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_builtin_suite_is_the_shape_a_run_reads() {
+    fn the_builtin_suite_holds_eight_cases_and_every_setting_key() {
         let suite: Value = serde_json::from_str(SUITE).unwrap();
         let cases = suite_cases(&suite).unwrap();
         assert_eq!(cases.len(), 8);
@@ -1458,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn the_config_carries_the_keys_a_comparison_diffs() {
+    fn the_config_carries_the_eight_settings_in_one_fixed_order() {
         let suite: Value = serde_json::from_str(SUITE).unwrap();
         let a = BenchArgs {
             suite: None,
@@ -1540,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn a_count_outside_the_rungs_names_the_bound_it_hit() {
+    fn a_count_outside_the_rungs_names_its_bound() {
         // A case too cheap to time falls to the top rung, and reports no bound.
         assert_eq!(wanted_frames(0.0, 250.0), (480.0, None));
         let (wanted, bound) = wanted_frames(0.5, 250.0);
@@ -1551,7 +1551,7 @@ mod tests {
     }
 
     #[test]
-    fn the_statistics_are_the_ones_the_comparison_reads() {
+    fn median_percentile_and_rel_sd_match_their_definitions() {
         assert_eq!(median(&[3.0, 1.0, 2.0]), 2.0);
         assert_eq!(median(&[4.0, 1.0, 2.0, 3.0]), 2.5);
         let v: Vec<f64> = (1..=100).map(f64::from).collect();
@@ -1611,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn utc_is_the_stamp_the_result_file_carries() {
+    fn utc_prints_both_stamp_forms_including_a_leap_day() {
         assert_eq!(utc(0, true), "1970-01-01T00:00:00Z");
         assert_eq!(utc(0, false), "19700101-000000");
         assert_eq!(utc(1_700_000_000, true), "2023-11-14T22:13:20Z");
@@ -1636,7 +1636,7 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_prints_the_bound_a_case_ran_into() {
+    fn the_plan_names_the_bound_beside_the_wanted_count() {
         let rows = vec![PlanRow {
             name: "bars@128x32".into(),
             ms_per_frame: 0.384,

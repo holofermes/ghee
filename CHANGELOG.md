@@ -2,15 +2,15 @@
 
 ## Unreleased
 
-- `--display kms` is any connected KMS display: HDMI, or an SPI/I2C panel the
-  kernel drives.
+- `--display kms` is any connected KMS display: HDMI, or an SPI/I2C panel with
+  a kernel driver.
 - `ghee displays` lists every card with a connected display.
 - `ghee overlay` writes the kernel's setup for a bundled panel: the
-  config.txt lines, and the firmware file the overlay names.
+  config.txt lines, and the firmware file that overlay loads.
 - A KMS display blanks and lights through its kernel driver, which takes
   the panel's backlight or its display-off command with it.
 - The console takes a host filter list, applied after each scene's own.
-- `--stream-fps` sets the rate the console's /h264 encodes at, 30 by default.
+- `--stream-fps` sets the console's /h264 encode rate, 30 by default.
 - `--size` on a KMS display renders that size and the display scales it
   across the mode, so a scene can shade a quarter of the pixels and fill the
   screen.

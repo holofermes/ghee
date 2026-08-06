@@ -148,7 +148,7 @@ pub enum Takes {
     /// It answered with something else, so its arguments are its own.
     PassThrough,
     /// It was still starting when the wait ran out.
-    Slow,
+    Starting,
     /// Nothing asked it.
     Unasked,
 }
@@ -169,7 +169,7 @@ fn declarations(path: &str) -> Takes {
             None => Takes::PassThrough,
         },
         Answer::Silent => Takes::PassThrough,
-        Answer::Slow => Takes::Slow,
+        Answer::Starting => Takes::Starting,
     }
 }
 
@@ -179,7 +179,7 @@ enum Answer {
     /// It ran and said nothing, so it takes its arguments its own way.
     Silent,
     /// It was still running when the wait ran out, so nothing is known.
-    Slow,
+    Starting,
 }
 
 /// Run `<process> --ghee-args` and read the one line it answers with.
@@ -212,14 +212,15 @@ fn probe(path: &str) -> Answer {
         }
     });
     let answer = rx.recv_timeout(PROBE_WAIT).ok();
-    // Still running when the wait ran out is a slow scene. Gone already, with
-    // nothing on stdout, is a scene that takes no arguments this way.
+    // Still running when the wait ran out is a scene still starting. Gone
+    // already, with nothing on stdout, is a scene that takes no arguments
+    // this way.
     let running = matches!(child.try_wait(), Ok(None));
     let _ = child.kill();
     let _ = child.wait();
     match (answer, running) {
         (Some(line), _) => Answer::Line(line),
-        (None, true) => Answer::Slow,
+        (None, true) => Answer::Starting,
         (None, false) => Answer::Silent,
     }
 }
@@ -326,7 +327,7 @@ pub fn help(scenes: &[Declared], prog: &str) -> String {
                 out.push_str(&format!("\n{}: pass-through\n", scene.name));
                 continue;
             }
-            Takes::Slow => {
+            Takes::Starting => {
                 out.push_str(&format!(
                     "\n{}: still starting after {}s, so its arguments went unread. \
                      --no-probe skips the wait\n",
@@ -1195,17 +1196,17 @@ time.sleep(60)
     /// A scene still starting when the wait runs out is reported as that, so
     /// the listing can say why it is bare and how to skip the wait.
     #[test]
-    fn a_scene_slower_than_the_probe_wait_says_so() {
+    fn a_scene_still_starting_when_the_wait_ends_says_so() {
         let d = tmpdir("slow");
         let path = script(&d, "slow", "#!/bin/sh\nsleep 30\n");
         let started = Instant::now();
-        assert!(matches!(declarations(&path), Takes::Slow));
+        assert!(matches!(declarations(&path), Takes::Starting));
         assert!(started.elapsed() >= PROBE_WAIT, "gave up before the wait");
         assert!(started.elapsed() < PROBE_WAIT + Duration::from_secs(3));
     }
 
     /// A scene that runs and answers nothing takes its arguments its own way,
-    /// and it is not slow: it is already gone when the wait ends.
+    /// and it is not still starting: it is already gone when the wait ends.
     #[test]
     fn a_scene_that_answers_nothing_is_pass_through() {
         let d = tmpdir("passthrough");
@@ -1213,7 +1214,7 @@ time.sleep(60)
         assert!(matches!(declarations(&path), Takes::PassThrough));
     }
 
-    /// --no-probe asks nothing at all, so a slow scene costs no wait.
+    /// --no-probe asks nothing at all, so a scene still starting costs no wait.
     #[test]
     fn no_probe_asks_nothing() {
         let d = tmpdir("unasked");

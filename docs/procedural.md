@@ -24,8 +24,9 @@ write one JSON line and exit afterward:
 The types are `string`, `int`, `float`, `size` and `bool`.
 
 ghee gives the scene about two seconds to answer. If it answers, its
-arguments are listed, otherwise the scene is shown as pass-through, either
-way, everything after `--` reaches the scene untouched.
+arguments are listed, if it is still starting the listing says that,
+otherwise the scene is shown as pass-through, either way, everything after
+`--` reaches the scene untouched. `--no-probe` skips the asking.
 
 ## Start
 

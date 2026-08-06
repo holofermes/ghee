@@ -23,7 +23,7 @@ ARGS = [
     ghee.Arg(
         "particle-buffer",
         "size",
-        default="half",
+        default="eighth",
         help="the buffer the particle field renders at, magnified onto the frame",
     ),
     # A count, not a share of the frame: the shader unrolls the grid, so the

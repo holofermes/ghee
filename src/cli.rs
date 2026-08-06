@@ -387,8 +387,10 @@ fn prospective_size(a: &Ns) -> Option<(i32, i32)> {
 /// Everything else takes --size.
 fn geometry(a: &Ns, panel: &Panel) -> Result<((i32, i32), i32)> {
     match panel {
+        // ghee_display_create renders RGBA whatever --components asks for, so
+        // the readback writes four bytes a pixel.
         Panel::Kms => match a.size.or_else(|| probe_display(a.dri.as_deref())) {
-            Some(size) => Ok((size, a.components)),
+            Some(size) => Ok((size, 4)),
             None => Err(exit(format!(
                 "{}: no connected display to size from, pass --size WxH",
                 a.cmd

@@ -10,6 +10,7 @@
 - A KMS display blanks and lights through its kernel driver, which takes
   the panel's backlight or its display-off command with it.
 - The console takes a host filter list, applied after each scene's own.
+- `--stream-fps` sets the rate the console's /h264 encodes at, 30 by default.
 - `--size` on a KMS display renders that size and the display scales it
   across the mode, so a scene can shade a quarter of the pixels and fill the
   screen.
@@ -20,6 +21,7 @@
   pass-through, and `--no-probe` skips the wait.
 - Importing ghee no longer reads the installed metadata, which starts every
   Python scene about a second sooner on a Pi Zero.
+- Minor improvements.
 
 ## 0.3.0 - 2026-08-04
 

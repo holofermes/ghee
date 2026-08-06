@@ -517,11 +517,18 @@ def run(scene: Scene) -> None:
 
     A run under ghee answers the wire.
     A run of its own opens the scene on the bindings and drives it.
+
+    Ctrl-C reaches every process in the terminal's group, so ghee takes it
+    too and is already stopping. The scene ends where it stands, quietly: a
+    traceback here would say a scene crashed, and it did what it was told.
     """
-    if os.environ.get(WIRE):
-        _wire(scene)
-    else:
-        _direct(scene)
+    try:
+        if os.environ.get(WIRE):
+            _wire(scene)
+        else:
+            _direct(scene)
+    except KeyboardInterrupt:
+        pass
 
 
 def _wire(scene: Scene) -> None:

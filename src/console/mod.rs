@@ -129,6 +129,8 @@ fn extract_examples() -> std::io::Result<String> {
     let dir = base.join("ghee").join(format!("examples-{tag}"));
     let done = dir.join(".complete");
     if !done.exists() {
+        // Once per build, and it lands on whoever runs --demo first.
+        crate::report::progress("examples", format!("unpacking to {}", dir.display()));
         for (name, body) in &EXAMPLES {
             let path = dir.join(name);
             if let Some(parent) = path.parent() {
@@ -145,6 +147,7 @@ fn extract_examples() -> std::io::Result<String> {
             }
         }
         std::fs::write(done, b"")?;
+        crate::report::progress_done();
     }
     Ok(dir.to_string_lossy().into_owned())
 }

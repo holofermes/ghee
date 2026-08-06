@@ -46,6 +46,8 @@ GheeScene *ghee_create(int width, int height, int components, const char *dri_de
 // Needs DRM master. Present frames with ghee_mp_present.
 GheeScene *ghee_display_create(int width, int height, const char *dri_device, int rgb565, char **err);
 
+void ghee_set_verbosity(int level);
+
 // Last error message for this instance ("" if none). Cleared on read.
 const char *ghee_last_error(GheeScene *g);
 

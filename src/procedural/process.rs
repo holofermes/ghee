@@ -260,17 +260,34 @@ fn parse_declarations(line: &str) -> Option<Vec<ArgDecl>> {
 /// slow to start costs the wait once per scene, and a listing of ten costs it
 /// ten times.
 pub fn declare(scenes: &[(String, String)], ask: bool) -> Vec<Declared> {
-    scenes
-        .iter()
-        .map(|(name, path)| Declared {
-            name: name.clone(),
-            args: match executable(path) {
-                Some(_) if !ask => Takes::Unasked,
-                Some(exe) => declarations(&exe),
-                None => Takes::Args(Vec::new()),
-            },
-        })
-        .collect()
+    let jobs = match ask {
+        false => 1,
+        true => thread::available_parallelism().map_or(1, |n| n.get().min(4)),
+    };
+    let mut out: Vec<Declared> = Vec::with_capacity(scenes.len());
+    for batch in scenes.chunks(jobs) {
+        let waiting: Vec<&str> = batch.iter().map(|(name, _)| name.as_str()).collect();
+        crate::report::progress("scenes", format!("asking {}", waiting.join(" ")));
+        let mut handles = Vec::new();
+        for (name, path) in batch {
+            let (name, exe) = (name.clone(), executable(path));
+            handles.push(thread::spawn(move || Declared {
+                name,
+                args: match exe {
+                    Some(_) if !ask => Takes::Unasked,
+                    Some(exe) => declarations(&exe),
+                    None => Takes::Args(Vec::new()),
+                },
+            }));
+        }
+        for h in handles {
+            if let Ok(d) = h.join() {
+                out.push(d);
+            }
+        }
+    }
+    crate::report::progress_done();
+    out
 }
 
 // -------------------------------------------------------------------- help
@@ -527,13 +544,22 @@ impl SceneProcess {
             clean: 0,
             dead: None,
         };
+        // The wait here is the long one: the process starts an interpreter,
+        // imports what it needs and builds its scene before it answers. Seconds
+        // of it on a Pi Zero, and silence reads as a hang.
+        let name = Path::new(path)
+            .file_name()
+            .map_or(path, |n| n.to_str().unwrap_or(path));
+        crate::report::progress("scene", format!("starting {name}"));
         let line = match rx.recv_timeout(HANDSHAKE_WAIT) {
             Ok(line) => line,
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+                crate::report::progress_done();
                 let why = process.epitaph("did not complete the handshake");
                 return Err(anyhow!(why));
             }
         };
+        crate::report::progress_done();
         let doc: Value = serde_json::from_str(line.trim()).map_err(|e| {
             anyhow!(process.epitaph(&format!("handshake line is not a scene object: {e}")))
         })?;

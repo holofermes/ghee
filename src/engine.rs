@@ -465,7 +465,11 @@ impl Renderer {
         }
         let mut mp: Vec<(String, c_int)> = Vec::new();
         let hw_linear = self.data_texture_linear();
+        let total = scene.passes.len();
         for (i, p) in scene.passes.iter().enumerate() {
+            // A VC4 takes a while over a big shader, and a scene of several
+            // compiles them one after another with nothing to show for it.
+            crate::report::progress("compile", format!("pass {} of {total}, {}", i + 1, p.name));
             let glsl = p.glsl(Some(&scene.params), scene.common.as_deref(), hw_linear);
             let cglsl = CString::new(glsl.as_str())?;
             let mut idx = unsafe { ffi::ghee_mp_add_pass(self.handle, cglsl.as_ptr()) };
@@ -489,10 +493,12 @@ impl Renderer {
                 } else {
                     ErrorPass::Index(i)
                 });
+                crate::report::progress_done();
                 return Ok(err);
             }
             mp.push((p.name.clone(), idx));
         }
+        crate::report::progress_done();
         if unsafe { ffi::ghee_mp_commit(self.handle) } < 0 {
             self.error = or_else(self.last_error(), "commit failed");
             return Ok(self.error.clone());

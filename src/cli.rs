@@ -40,6 +40,7 @@ use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, SceneController}
 use crate::output::{expand_pattern, AdaptivePacer, FixedPacer, ImageSequence, RawStream, Scanout};
 use crate::procedural::process::{self, SceneProcess};
 use crate::procedural::{load_scene, scene_name};
+use crate::report;
 use crate::scene::Scene;
 use crate::stats::rate;
 
@@ -248,6 +249,7 @@ fn scene_args_help(a: &Ns) -> Result<()> {
 /// order: the ones the scene declares, then the ones --filters adds.
 fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
     let path = find_scene(text(&a.scene), a.demo)?;
+    report::detail("scene", &path);
     let (mut scene, mut process) = match process::executable(&path) {
         Some(exe) => {
             let (scene, fed) = SceneProcess::start(&exe, &a.scene_args)?;
@@ -598,6 +600,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
             a.cmd
         )));
     }
+    report::apply(a);
     // the scene loads first: it owns the tokens after `--` and their --help. A
     // scene the loader rejects fails before a panel opens. It builds its own
     // buffers as it loads, so it learns the render size before that.
@@ -671,6 +674,9 @@ fn cmd_render(a: &Ns) -> Result<()> {
         h264 = Some(stream);
     }
     let times: RefCell<Vec<f64>> = RefCell::new(Vec::new());
+    // a terminal watches the run, a pipe and a service unit do not
+    let live = report::tty() && report::level() >= report::NORMAL;
+    let keep = a.stats;
     let want = frames_of(a);
     let (ran, drawn, elapsed, out) = {
         let sinks = sink_list(&mut scanout, &mut sink, &mut file, &mut h264);
@@ -687,10 +693,20 @@ fn cmd_render(a: &Ns) -> Result<()> {
         lp.stopping = Some(Box::new(move || {
             want < 0 || SIGNALLED.load(Ordering::SeqCst) != 0
         }));
-        if a.stats {
-            lp.on_frame = Some(Box::new(|_, cost| times.borrow_mut().push(cost)));
+        if keep || live {
+            lp.on_frame = Some(Box::new(|lp, cost| {
+                if keep {
+                    times.borrow_mut().push(cost);
+                }
+                if live {
+                    report::frame(cost, lp.drawn, lp.frames, lp.frame - lp.drawn, || {
+                        lp.out().join("+")
+                    });
+                }
+            }));
         }
         let ran = lp.run();
+        report::frames_done();
         let out: Vec<String> = lp.out().iter().map(|d| (*d).to_string()).collect();
         (ran, lp.drawn, lp.elapsed, out)
     };
@@ -710,10 +726,10 @@ fn cmd_render(a: &Ns) -> Result<()> {
     ran?;
     closed?;
     if given(&a.output) && text(&a.output) != "-" {
-        println!("wrote {drawn} frame(s) to {}", text(&a.output));
+        report::step("wrote", format!("{drawn} frame(s) to {}", text(&a.output)));
     }
     if given(&a.h264) && text(&a.h264) != "-" {
-        eprintln!("wrote {drawn} frame(s) to {}", text(&a.h264));
+        report::step("wrote", format!("{drawn} frame(s) to {}", text(&a.h264)));
     }
     if a.stats {
         print_stats(&times.borrow(), elapsed, &out);
@@ -756,6 +772,7 @@ fn serve(
         preview_max: a.preview_max,
         preview_fps: f64::from(a.preview_fps),
         stream_max: a.stream_max,
+        stream_hz: a.stream_fps,
         bitrate: i64::from(a.bitrate),
         scene_args: a.scene_args.clone(),
         frames: frames_of(a).max(0) as u64,
@@ -836,7 +853,7 @@ fn print_stats(times: &[f64], wall: f64, out: &[String]) {
     if times.is_empty() {
         return;
     }
-    eprintln!("{}", stats_line(times, wall, out));
+    report::summary(stats_line(times, wall, out));
 }
 
 /// Where a serve run's frames go. A console with no panel and no file is still
@@ -884,7 +901,7 @@ fn cmd_isf_import(a: &ImportArgs) -> Result<()> {
     let mut f = File::create(&path).with_context(|| path.clone())?;
     f.write_all(body.as_bytes())?;
     f.write_all(b"\n")?;
-    println!("wrote {what} to {path}");
+    report::step("wrote", format!("{what} to {path}"));
     Ok(())
 }
 
@@ -1121,6 +1138,12 @@ struct RenderFlags {
     )]
     no_probe: bool,
 
+    #[arg(short, long, help = "errors only")]
+    quiet: bool,
+
+    #[arg(short, long, help = "the paths and formats behind each step")]
+    verbose: bool,
+
     #[arg(
         long,
         help = "frame count (default 1 for images, loop for a display, a stream \
@@ -1186,6 +1209,13 @@ struct ConsoleFlags {
                 default 0 = full render size)"
     )]
     stream_max: i32,
+
+    #[arg(
+        long,
+        default_value_t = 30,
+        help = "frame rate the /h264 stream encodes at (default 30)"
+    )]
+    stream_fps: i32,
 }
 
 #[derive(Args)]
@@ -1369,7 +1399,7 @@ fn isf_size(s: &str) -> Result<(i64, i64), String> {
 /// The namespace both render and serve resolve to. serve is render --serve
 /// over a directory. It carries render's whole namespace, and every flag it
 /// does not offer keeps its default.
-struct Ns {
+pub struct Ns {
     cmd: &'static str,
     scene: Option<String>,
     demo: bool,
@@ -1394,8 +1424,11 @@ struct Ns {
     preview_max: i32,
     preview_fps: i32,
     stream_max: i32,
+    stream_fps: i32,
     bitrate: i32,
     no_probe: bool,
+    pub quiet: bool,
+    pub verbose: bool,
     scene_args: Vec<String>,
 }
 
@@ -1415,6 +1448,8 @@ impl RenderArgs {
             filters: self.filters,
             stats: self.stats,
             no_probe: self.render.no_probe,
+            quiet: self.render.quiet,
+            verbose: self.render.verbose,
             display: self.render.display,
             display_opts: self.render.display_opts,
             rgb565: self.render.rgb565,
@@ -1427,6 +1462,7 @@ impl RenderArgs {
             preview_max: self.console.preview_max,
             preview_fps: self.console.preview_fps,
             stream_max: self.console.stream_max,
+            stream_fps: self.console.stream_fps,
             bitrate: self.bitrate,
             scene_args,
         }
@@ -1444,6 +1480,8 @@ impl ServeArgs {
             h264: None,
             serve: true,
             no_probe: self.render.no_probe,
+            quiet: self.render.quiet,
+            verbose: self.render.verbose,
             components: 4,
             save_opts: None,
             write_buffer: 16,
@@ -1462,6 +1500,7 @@ impl ServeArgs {
             preview_max: self.console.preview_max,
             preview_fps: self.console.preview_fps,
             stream_max: self.console.stream_max,
+            stream_fps: self.console.stream_fps,
             bitrate: self.bitrate,
             scene_args,
         }
@@ -1516,6 +1555,11 @@ fn clap_status(e: &clap::Error) -> i32 {
 /// dependency failure reaches the user as one line, with no stack. An argument
 /// error reads the same way. $GHEE_TRACEBACK asks for the whole error chain.
 pub fn main(argv: Vec<String>) -> i32 {
+    // A bare `ghee` and `ghee --version` greet, everything else works.
+    if argv.is_empty() || argv == ["--version"] || argv == ["-V"] {
+        eprint!("{}", report::splash(env!("CARGO_PKG_VERSION")));
+        return 0;
+    }
     let (own, scene_args) = split_scene_args(&argv);
     let cli = match Cli::try_parse_from(std::iter::once("ghee".to_string()).chain(own)) {
         Ok(cli) => cli,

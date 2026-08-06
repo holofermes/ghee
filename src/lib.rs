@@ -51,6 +51,7 @@ pub mod isf;
 pub mod looper;
 pub mod output;
 pub mod procedural;
+pub mod report;
 pub mod scene;
 pub mod sources;
 pub mod stats;

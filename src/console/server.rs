@@ -258,6 +258,7 @@ pub struct Console {
     pub preview_fps: f64,
     /// The cap on the h264 stream's longest side. 0 means full size.
     pub stream_max: i32,
+    pub stream_hz: i32,
     pub bitrate: i64,
     /// The frame components the renderer reads back. A panel that packs RGB asks
     /// for 3.
@@ -324,6 +325,7 @@ impl Console {
             preview_max: 480,
             preview_fps: 15.0,
             stream_max: 0,
+            stream_hz: 30,
             bitrate: 10_000_000,
             components: 4,
             frames: 0,
@@ -1053,8 +1055,6 @@ struct ConsoleSink {
     /// When the preview last refreshed.
     last: Cell<f64>,
     now: Cell<f64>,
-    /// The display refresh. A hardware encoder runs at this rate.
-    hz: i32,
 }
 
 /// Encodes with no output before the hardware lane is declared dead.
@@ -1131,7 +1131,11 @@ impl Output for ConsoleSink {
         }
         if self.enc.is_none() && !console.h264_hw_dead.load(Ordering::SeqCst) {
             let (w, h) = stream_size(console.w, console.h, console.stream_max);
-            let hz = if self.hz > 0 { self.hz } else { 30 };
+            // The stream encodes at its own rate, not the display's. A panel
+            // that asks for 63Hz asks the encoder for a rate it refuses at
+            // this size, and the input port then fails to enable: the whole
+            // stream drops to software for a rate no viewer needed.
+            let hz = console.stream_hz.max(1);
             let bitrate = stream_bitrate(w, h, hz, console.bitrate) as i32;
             match HardwareH264::new(&self.renderer.borrow(), w, h, hz, bitrate) {
                 Ok(enc) => {
@@ -1529,7 +1533,6 @@ pub fn render_loop(
         starved: 0,
         last: Cell::new(0.0),
         now: Cell::new(0.0),
-        hz,
     };
     let mut shot_sink = FrameShot {
         shot: Arc::clone(&console.shot),
@@ -2015,6 +2018,7 @@ pub struct Options {
     pub preview_max: i32,
     pub preview_fps: f64,
     pub stream_max: i32,
+    pub stream_hz: i32,
     pub bitrate: i64,
     /// The build-time arguments for every scene the console loads.
     pub scene_args: Vec<String>,
@@ -2054,6 +2058,7 @@ impl Default for Options {
             preview_max: 480,
             preview_fps: 15.0,
             stream_max: 0,
+            stream_hz: 30,
             bitrate: 10_000_000,
             scene_args: Vec::new(),
             store: None,
@@ -2083,6 +2088,7 @@ pub fn run(opts: Options) -> Result<()> {
         preview_max,
         preview_fps,
         stream_max,
+        stream_hz: stream_fps,
         bitrate,
         scene_args,
         store,
@@ -2122,6 +2128,7 @@ pub fn run(opts: Options) -> Result<()> {
     console.preview_max = preview_max;
     console.preview_fps = preview_fps;
     console.stream_max = stream_max;
+    console.stream_hz = stream_fps;
     console.bitrate = bitrate;
     console.components = components;
     console.frames = frames;

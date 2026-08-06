@@ -156,6 +156,10 @@ static const char *blit_fragment_source =
     "void main() { vec2 uv = vec2(v_texCoord.x, mix(v_texCoord.y, 1.0 - v_texCoord.y, flipY));"
     " gl_FragColor = texture2D(tex, uv); }";
 
+static int say_level = 1;
+void ghee_set_verbosity(int level) { say_level = level; }
+#define SAY(at, ...) do { if (say_level >= (at)) fprintf(stderr, __VA_ARGS__); } while (0)
+
 static bool wait_flip(GheeScene *g);        // both defined with ghee_mp_present below
 static uint32_t primary_plane(int fd, uint32_t crtc_id);
 static bool plane_scales(GheeScene *g, int width, int height);
@@ -299,7 +303,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         snprintf(early_err, sizeof(early_err), "eglInitialize failed: 0x%X", eglGetError());
         goto fail;
     }
-    fprintf(stderr, "ghee: EGL %d.%d on %s\n", major, minor, dev);
+    SAY(2, "      egl  %d.%d on %s\n", major, minor, dev);
 
     const GLint alphaSize = (components == 4) ? 8 : 0;
     const EGLint configAttribs[] = {
@@ -365,7 +369,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         config = configs[0];
     }
     if (scanout)
-        fprintf(stderr, "ghee: scanout format %s\n",
+        SAY(2, "   format  scanout %s\n",
                 surf_fmt == GBM_FORMAT_RGB565 ? "RGB565" : "XRGB8888");
 
     g->gbm_surface = gbm_surface_create(g->gbm, width, height, surf_fmt,
@@ -434,7 +438,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     const char *glexts = (const char *)glGetString(GL_EXTENSIONS);
     g->has_float_tex = glexts && strstr(glexts, "GL_OES_texture_float") != NULL;
     g->has_float_linear = glexts && strstr(glexts, "GL_OES_texture_float_linear") != NULL;
-    fprintf(stderr, "ghee: data-texture format = %s%s\n",
+    SAY(2, "   format  data texture %s%s\n",
             g->has_float_tex ? "float" : "8-bit LUMINANCE",
             g->has_float_tex ? (g->has_float_linear ? " (linear)" : " (nearest)") : " (linear)");
 
@@ -542,7 +546,7 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
         ghee_destroy(g);
         return NULL;
     }
-    fprintf(stderr, "ghee: display %s %ux%u@%u on connector %u\n",
+    SAY(1, "  display  %s %ux%u@%u on connector %u\n",
             g->disp_mode.name, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
             g->disp_mode.vrefresh, g->disp_conn);
 
@@ -559,7 +563,7 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
             ghee_destroy(g);
             return NULL;
         }
-        fprintf(stderr, "ghee: scanout scales %dx%d to %ux%u on plane %u\n",
+        SAY(1, "  scanout  scales %dx%d to %ux%u on plane %u\n",
                 width, height, g->disp_mode.hdisplay, g->disp_mode.vdisplay, g->disp_plane);
     }
 

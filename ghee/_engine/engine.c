@@ -1343,20 +1343,11 @@ void *ghee_i_egl_display(GheeScene *g) { return g->display; }
 void  ghee_i_make_current(GheeScene *g) { make_current(g); }
 void  ghee_i_error(GheeScene *g, const char *msg) { set_error(g, "%s", msg); }
 
-void ghee_i_render_frame(GheeScene *g) {
-    render_passes(g, elapsed_seconds(g), false);
-}
-
-void ghee_i_swap(GheeScene *g) {
-    for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;
-}
-
-void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY,
-                      int post_swap) {
+void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
     if (g->mp_count <= 0) { set_error(g, "blit: the scene has no passes"); return; }
     if (!ensure_blit(g)) return;
     const int last = g->mp_count - 1;
-    const int buf = post_swap ? 1 - g->mp_write[last] : g->mp_write[last];
+    const int buf = 1 - g->mp_write[last];
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, w, h);
     glClear(GL_COLOR_BUFFER_BIT);

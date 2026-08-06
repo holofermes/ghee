@@ -432,7 +432,7 @@ static int take_au(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len,
 // Blit the current final pass into a free dmabuf, queue it, wait for one
 // compressed access unit. Returns 0 with *nal/*len/*is_key set, 1 if the
 // encoder produced nothing yet (pipeline priming), <0 on error.
-static int encode_common(GheeScene *g, GheeEncoder *e, int post_swap,
+static int encode_common(GheeScene *g, GheeEncoder *e,
                          const uint8_t **nal, int *len, int *is_key) {
     reclaim(e);
     if (e->nfree == 0) {
@@ -446,7 +446,7 @@ static int encode_common(GheeScene *g, GheeEncoder *e, int post_swap,
     // flipY 0.0: an FBO's memory rows come out in glReadPixels order, which is
     // what the codec consumes top-first (same as the preview readback, opposite
     // of the scanout blit).
-    ghee_i_blit_last(g, e->in[idx].fbo, e->w, e->h, 0.0f, post_swap);
+    ghee_i_blit_last(g, e->in[idx].fbo, e->w, e->h, 0.0f);
     // The full fence is REQUIRED: there is no implicit sync between V3D and
     // bcm2835-codec, so the VPU reads the dmabuf the moment it is queued.
     // glFlush is not enough, and the encoder captures half-blitted tiles at
@@ -475,22 +475,12 @@ static int encode_common(GheeScene *g, GheeEncoder *e, int post_swap,
     return take_au(g, e, nal, len, is_key, NULL);
 }
 
-// Full frame: render the pass chain, encode it, no readback anywhere.
-int ghee_mp_render_encoded(GheeScene *g, GheeEncoder *e, const uint8_t **nal,
-                           int *len, int *is_key) {
-    ghee_i_make_current(g);
-    ghee_i_render_frame(g);
-    const int r = encode_common(g, e, 0, nal, len, is_key);
-    ghee_i_swap(g);
-    return r;
-}
-
 // Encode the frame a completed ghee_mp_render/ghee_mp_present call produced
 // (display mirror: one render feeds the screen and the stream).
 int ghee_encoder_encode_last(GheeScene *g, GheeEncoder *e, const uint8_t **nal,
                              int *len, int *is_key) {
     ghee_i_make_current(g);
-    return encode_common(g, e, 1, nal, len, is_key);
+    return encode_common(g, e, nal, len, is_key);
 }
 
 // End of stream: STOP once, then hand back what the encoder still owes, one

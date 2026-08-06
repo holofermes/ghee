@@ -112,13 +112,6 @@ extern "C" {
         bitrate: c_int,
         err: *mut *mut c_char,
     ) -> *mut GheeEncoder;
-    pub fn ghee_mp_render_encoded(
-        g: *mut GheeScene,
-        e: *mut GheeEncoder,
-        nal: *mut *const u8,
-        len: *mut c_int,
-        is_key: *mut c_int,
-    ) -> c_int;
     pub fn ghee_encoder_encode_last(
         g: *mut GheeScene,
         e: *mut GheeEncoder,

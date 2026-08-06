@@ -104,11 +104,9 @@ int ghee_display_blanked(GheeScene *g);
 // create fails cleanly (NULL + err) on boards without /dev/video11.
 typedef struct GheeEncoder GheeEncoder;
 GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrate, char **err);
-// Render + encode one frame (no readback). 0 = *nal/*len/*is_key set (valid
-// until the next call), 1 = encoder produced nothing yet, <0 = error.
-int  ghee_mp_render_encoded(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);
 // Encode the frame the last ghee_mp_render/ghee_mp_present produced (display
-// mirror: one render feeds screen and stream). Same returns.
+// mirror: one render feeds screen and stream). 0 = *nal/*len/*is_key set
+// (valid until the next call), 1 = encoder produced nothing yet, <0 = error.
 int  ghee_encoder_encode_last(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);
 void ghee_encoder_force_keyframe(GheeEncoder *e);   // instant join for a new viewer
 // End of stream: sends the encoder STOP once, then hands back the trailing

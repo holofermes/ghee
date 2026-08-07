@@ -8,7 +8,7 @@ use ghee::{cli, golden};
 
 /// Two checks on the engine itself. They stay out of `ghee --help`.
 const EXTRAS: &str =
-    "usage: ghee smoke [dri] [components] | ghee golden --manifest PATH [--dump DIR]";
+    "usage: ghee smoke [dri] [components] | ghee golden --manifest PATH [--dump DIR | --pin]";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -51,8 +51,9 @@ fn smoke(args: &[&str]) -> Result<()> {
 
 fn golden(args: &[&str]) -> Result<i32> {
     match args {
-        ["--manifest", path] => golden::run(path, None),
-        ["--manifest", path, "--dump", dir] => golden::run(path, Some(dir)),
+        ["--manifest", path] => golden::run(path, None, false),
+        ["--manifest", path, "--dump", dir] => golden::run(path, Some(dir), false),
+        ["--manifest", path, "--pin"] => golden::run(path, None, true),
         _ => bail!("{EXTRAS}"),
     }
 }

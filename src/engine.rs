@@ -842,6 +842,16 @@ impl Renderer {
         (draw, read)
     }
 
+    /// The GL this renderer runs on: GL_RENDERER and GL_VERSION in one string.
+    pub fn renderer(&self) -> String {
+        let r = unsafe { ffi::ghee_renderer(self.handle) };
+        if r.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(r) }.to_string_lossy().into_owned()
+        }
+    }
+
     pub fn last_error(&self) -> String {
         let e = unsafe { ffi::ghee_last_error(self.handle) };
         if e.is_null() {

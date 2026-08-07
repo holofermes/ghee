@@ -38,6 +38,9 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
 
 void ghee_set_verbosity(int level);
 
+// The GL this renderer runs on: GL_RENDERER and GL_VERSION in one string.
+const char *ghee_renderer(GheeScene *g);
+
 // Last error message for this instance ("" if none). Cleared on read.
 const char *ghee_last_error(GheeScene *g);
 

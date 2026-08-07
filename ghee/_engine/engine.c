@@ -124,6 +124,7 @@ struct GheeScene {
     int preview_w, preview_h;
     int keep_last;                     // >0: an encoder samples the final pass, never draw it direct
 
+    char renderer[160];                  // GL_RENDERER and GL_VERSION, captured at create
     char last_error[ERROR_BUFFER_SIZE];
 };
 
@@ -434,6 +435,9 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     glReadPixels(0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, probe);
     g->reads_rgb = glGetError() == GL_NO_ERROR && probe[0] > 200 && probe[1] < 60;
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+    snprintf(g->renderer, sizeof g->renderer, "%s, %s",
+             (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION));
 
     const char *glexts = (const char *)glGetString(GL_EXTENSIONS);
     g->has_float_tex = glexts && strstr(glexts, "GL_OES_texture_float") != NULL;
@@ -1315,6 +1319,9 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
 
     for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;  // swap all
 }
+
+// The GL this renderer runs on: GL_RENDERER and GL_VERSION in one string.
+const char *ghee_renderer(GheeScene *g) { return g ? g->renderer : ""; }
 
 void ghee_set_profiling(GheeScene *g, bool on) { g->profile = on; }
 

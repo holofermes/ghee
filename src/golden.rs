@@ -22,6 +22,10 @@ struct Manifest {
     components: i32,
     frames: usize,
     fps: f64,
+    /// The GL the shas were pinned on. The hashes are exact, so a different
+    /// GL fails them on rounding alone, and the report names it.
+    #[serde(default)]
+    renderer: Option<String>,
     scenes: Map<String, Value>,
 }
 
@@ -58,7 +62,7 @@ fn check_scene(
     name: &str,
     entry: &Entry,
     dump: Option<&str>,
-) -> Result<Option<usize>> {
+) -> Result<(Option<usize>, Vec<String>, String)> {
     let scene = Scene::load(&entry.path)?;
     let mut r = Renderer::new(man.width, man.height, man.components, None, false, false)?;
     let err = r.setup(&scene)?;
@@ -66,6 +70,8 @@ fn check_scene(
         bail!("setup failed: {err}");
     }
     r.set_dt(1.0 / man.fps);
+    let gl = r.renderer();
+    let mut shas = Vec::with_capacity(man.frames);
     let mut mismatch = None;
     for f in 0..man.frames {
         r.set_time(Some(f as f64 / man.fps));
@@ -90,16 +96,16 @@ fn check_scene(
         let sha = hex(&Sha256::digest(pixels));
         if mismatch.is_none() && entry.shas.get(f) != Some(&sha) {
             mismatch = Some(f);
-            if dump.is_none() {
-                return Ok(mismatch);
-            }
         }
+        shas.push(sha);
     }
-    Ok(mismatch)
+    Ok((mismatch, shas, gl))
 }
 
 /// The process exit code. A mismatch in any scene gives 1.
-pub fn run(manifest_path: &str, dump: Option<&str>) -> Result<i32> {
+/// `pin` renders every scene and writes the shas and the GL into the
+/// manifest, so the check passes on the board that pinned it.
+pub fn run(manifest_path: &str, dump: Option<&str>, pin: bool) -> Result<i32> {
     let text = fs::read_to_string(manifest_path)
         .with_context(|| format!("cannot read manifest {manifest_path}"))?;
     let man: Manifest = serde_json::from_str(&text)
@@ -108,19 +114,57 @@ pub fn run(manifest_path: &str, dump: Option<&str>) -> Result<i32> {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {dir}"))?;
     }
     let mut failed = false;
+    let mut host_gl = String::new();
+    let mut pinned: Map<String, Value> = Map::new();
     for (name, raw) in &man.scenes {
         let entry: Entry = serde_json::from_value(raw.clone())
             .map_err(|e| anyhow!("{manifest_path}: scene '{name}': {e}"))?;
         match check_scene(&man, name, &entry, dump) {
-            Ok(None) => println!("{name}: PASS ({} frames)", man.frames),
-            Ok(Some(f)) => {
-                println!("{name}: FAIL (first mismatch at frame {f})");
-                failed = true;
+            Ok((mismatch, shas, gl)) => {
+                host_gl = gl;
+                match (mismatch, pin) {
+                    (None, _) => println!("{name}: PASS ({} frames)", man.frames),
+                    (Some(f), false) => {
+                        println!("{name}: FAIL (first mismatch at frame {f})");
+                        failed = true;
+                    }
+                    (Some(f), true) => println!("{name}: repinned (first change at frame {f})"),
+                }
+                let mut e = Map::new();
+                e.insert("path".to_string(), Value::from(entry.path));
+                e.insert("shas".to_string(), Value::from(shas));
+                pinned.insert(name.clone(), Value::Object(e));
             }
             Err(e) => {
                 println!("{name}: FAIL ({e})");
                 failed = true;
             }
+        }
+    }
+    if pin {
+        if failed {
+            bail!("a scene failed to render, so the manifest keeps its shas");
+        }
+        let out = serde_json::json!({
+            "width": man.width,
+            "height": man.height,
+            "components": man.components,
+            "frames": man.frames,
+            "fps": man.fps,
+            "renderer": host_gl,
+            "scenes": pinned,
+        });
+        fs::write(manifest_path, serde_json::to_string_pretty(&out)? + "\n")
+            .with_context(|| format!("cannot write {manifest_path}"))?;
+        println!("pinned on {host_gl}");
+        return Ok(0);
+    }
+    if failed {
+        match man.renderer {
+            Some(p) if p != host_gl => {
+                println!("the manifest is pinned on {p}, and this host renders on {host_gl}")
+            }
+            _ => {}
         }
     }
     Ok(i32::from(failed))

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-08-06
 
 - `--display kms` is any connected KMS display: HDMI, or an SPI/I2C panel with
   a kernel driver.

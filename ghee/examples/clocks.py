@@ -14,7 +14,7 @@ Origin unconfirmed: this may descend from a Shadertoy, and no source is
 recorded. Credit it here if you find it.
 
     ghee render --demo clocks -o out.####.png --frames 60
-    ghee serve --demo clocks                  # cols and rows override the grid
+    ghee serve --demo                         # cols and rows override the grid
 """
 
 import ghee
@@ -59,7 +59,8 @@ void main(){
         float cur = rgbToFloat(texture2D(iChannel0, uv).rgb);
         float old = rgbToFloat(texture2D(iChannel0, texel(vec2(uv.x, RATE_ROWS/resolution.y))).rgb);
         float recentRate = fract(cur - old + 1.0) / RATE_ROWS;
-        float inc = mix(min(fftP / 255.0 * gain, MAX_INC), recentRate, damp);
+        // gain is calibrated to a 0.03 s frame
+        float inc = mix(min(fftP / 255.0 * gain * (DT / 0.03), MAX_INC), recentRate, damp);
         gl_FragColor = vec4(floatToRgb(cur + inc), 1.0);
     } else {
         gl_FragColor = vec4(texture2D(iChannel0, uv - vec2(0.0, px)).rgb, 1.0);
@@ -166,7 +167,7 @@ def amplitudes(tick):
     Each band keeps a rate of its own, so neighbouring dials drift apart
     instead of reading as one clock repeated across the grid.
     """
-    t = tick.frame * 0.03
+    t = tick.time
     out = array("f", bytes(4 * BANDS))
     for i in range(BANDS):
         x = i / (BANDS - 1)

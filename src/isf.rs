@@ -1114,12 +1114,7 @@ fn replace_word(hay: &[char], old: &str, new: &str) -> Vec<char> {
 /// `[A-Za-z_]\w*$` matched from the start. `$` also stands before one trailing
 /// newline.
 fn is_ident(s: &str) -> bool {
-    let s = s.strip_suffix('\n').unwrap_or(s);
-    let mut it = s.chars();
-    match it.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => it.all(is_word),
-        _ => false,
-    }
+    crate::scene::is_ident(s.strip_suffix('\n').unwrap_or(s))
 }
 
 /// `iChannel\d+$` matched from the start.

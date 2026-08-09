@@ -5,7 +5,7 @@
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::os::raw::{c_char, c_double, c_int};
+use std::os::raw::{c_char, c_double, c_int, c_void};
 use std::ptr;
 
 use anyhow::{anyhow, bail, Result};
@@ -56,6 +56,14 @@ pub enum Feed {
 
 /// provider(name, size) returns this frame's data for one declared array.
 pub type Provider<'a> = &'a mut dyn FnMut(&str, ArraySize) -> Feed;
+
+/// The pixels of one asset: tightly packed rows of `components` values.
+///
+/// U8 uploads the bytes as they lie. F32 needs a GL with float textures.
+pub enum AssetData<'a> {
+    U8(&'a [u8]),
+    F32(&'a [f32]),
+}
 
 /// The (width, rows) of one array upload, and its data.
 ///
@@ -655,6 +663,49 @@ impl Renderer {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Hand one named image asset to the engine.
+    ///
+    /// Every pass that reads the name gets it as a sampler uniform `name`,
+    /// plus a vec2 `name_size` of (width, height). An asset outlives the
+    /// scene: setup() keeps it, and the same name again replaces its pixels.
+    /// `linear` samples with GL_LINEAR, f32 pixels fall back to nearest
+    /// without data_texture_linear().
+    pub fn set_asset(
+        &self,
+        name: &str,
+        width: u32,
+        height: u32,
+        components: u32,
+        linear: bool,
+        data: AssetData<'_>,
+    ) -> Result<()> {
+        let want = width as usize * height as usize * components as usize;
+        let (ptr, len, is_f32) = match data {
+            AssetData::U8(d) => (d.as_ptr().cast::<c_void>(), d.len(), false),
+            AssetData::F32(d) => (d.as_ptr().cast::<c_void>(), d.len(), true),
+        };
+        // The engine reads this span. It carries no length of its own.
+        assert!(
+            len >= want,
+            "asset '{name}' at {width}x{height}x{components} needs {want} values, \
+             the data holds {len}"
+        );
+        let cname = CString::new(name)?;
+        unsafe {
+            ffi::ghee_mp_set_asset(
+                self.handle,
+                cname.as_ptr(),
+                ptr,
+                width as c_int,
+                height as c_int,
+                components as c_int,
+                c_int::from(is_f32),
+                c_int::from(linear),
+            );
         }
         Ok(())
     }
@@ -1664,6 +1715,36 @@ mod tests {
             let got = Sha256::digest(r.render(Some(&mut as_u8)).unwrap());
             assert_eq!(got, want, "{size}");
         }
+    }
+
+    #[test]
+    fn an_asset_binds_by_name_and_carries_its_size() {
+        let Some((_g, mut r)) = gpu() else { return };
+        // logo lands before setup, so the commit resolves it.
+        // late lands on the running scene.
+        let code = "uniform sampler2D logo; uniform vec2 logo_size; \
+                    uniform sampler2D late; \
+                    void main(){ gl_FragColor = vec4(\
+                    texture2D(logo, v_texCoord).r, \
+                    texture2D(late, v_texCoord).r, \
+                    logo_size.x / 8.0, 1.0); }";
+        r.set_asset("logo", 2, 2, 4, false, AssetData::U8(&[128u8; 16]))
+            .unwrap();
+        let sc = scene_of(json!([{"name": "main", "code": code}]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        r.set_asset("late", 1, 1, 1, false, AssetData::U8(&[64u8]))
+            .unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        for (c, want) in [(0, 128.0), (1, 64.0), (2, 64.0)] {
+            assert!((mean(&channel(&f, c)) - want).abs() <= 2.0, "channel {c}");
+        }
+        // The same name again replaces the pixels, at a new size.
+        r.set_asset("logo", 1, 1, 4, false, AssetData::U8(&[255u8; 4]))
+            .unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert!((mean(&channel(&f, 0)) - 255.0).abs() <= 2.0);
+        assert!((mean(&channel(&f, 2)) - 32.0).abs() <= 2.0);
     }
 
     /// GL LINEAR filtering with CLAMP_TO_EDGE on a 1xN row.

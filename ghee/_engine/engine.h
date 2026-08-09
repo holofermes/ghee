@@ -72,6 +72,16 @@ void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int co
 // LUMINANCE texture takes the bytes as they lie, so a large mask costs no
 // conversion at all.
 void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, int count, int rows);
+// An image asset: width x height pixels the host hands over once, bound as a
+// sampler uniform <name> on every pass whose program reads it, with a vec2
+// <name>_size of (width, height). components 1, 3 or 4 = LUMINANCE, RGB,
+// RGBA. is_f32 uploads floats and needs a GL with float textures. linear
+// samples with GL_LINEAR, f32 pixels fall back to nearest without
+// ghee_data_texture_linear. An asset outlives the scene: the same name again
+// replaces its pixels, ghee_destroy frees it.
+#define MP_MAX_ASSETS 8
+void ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
+                       int width, int height, int components, int is_f32, int linear);
 // Render the passes and swap. buffer_rgb NULL = no readback at all, pw/ph > 0 =
 // GPU-downscale the final pass to pw x ph and read back only that, otherwise the
 // full frame lands in buffer_rgb.

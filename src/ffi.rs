@@ -4,7 +4,7 @@
 //! ghee_mp_set_float_array is not here. ghee_mp_set_array replaces it.
 #![allow(dead_code)]
 
-use core::ffi::{c_char, c_double, c_int};
+use core::ffi::{c_char, c_double, c_int, c_void};
 
 #[repr(C)]
 pub struct GheeScene {
@@ -86,6 +86,16 @@ extern "C" {
         data: *const u8,
         count: c_int,
         rows: c_int,
+    );
+    pub fn ghee_mp_set_asset(
+        g: *mut GheeScene,
+        name: *const c_char,
+        data: *const c_void,
+        width: c_int,
+        height: c_int,
+        components: c_int,
+        is_f32: c_int,
+        linear: c_int,
     );
     pub fn ghee_mp_render(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_present(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);

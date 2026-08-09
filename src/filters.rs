@@ -114,12 +114,23 @@ pub fn apply_filters(
                 .cloned()
                 .unwrap_or_else(|| Value::Object(Map::new())),
         );
+        let own = d["name"].as_str().unwrap().to_string();
         let mut channel = Map::new();
         channel.insert("buffer".to_string(), Value::from(prev));
-        d.insert(
-            "channels".to_string(),
-            Value::Array(vec![Value::Object(channel)]),
-        );
+        let mut channels = vec![Value::Object(channel)];
+        // A filter def may declare more channels after the filtered frame.
+        // "self" names the filter's own previous frame, so an accumulator
+        // works on any scene.
+        if let Some(extra) = fd.get("channels").and_then(Value::as_array) {
+            for c in extra {
+                let mut c = c.clone();
+                if c.get("buffer").and_then(Value::as_str) == Some("self") {
+                    c["buffer"] = Value::from(own.clone());
+                }
+                channels.push(c);
+            }
+        }
+        d.insert("channels".to_string(), Value::Array(channels));
         let mut p = Pass::from_dict(&Value::Object(d), None)?;
         p.filter = name.clone(); // The console renders a filter pass read-only.
         scene.passes.push(p);
@@ -197,6 +208,23 @@ mod tests {
         let mut sc = Scene::of(vec![Pass::of("main", FLAT).unwrap()]).unwrap();
         apply_filters(&mut sc, &["does-not-exist".to_string()], None).unwrap();
         assert_eq!(names(&sc), ["main"]);
+    }
+
+    #[test]
+    fn a_filter_channel_names_itself_for_feedback() {
+        let _g = env_guard();
+        let mut reg = Map::new();
+        let accum: Value = serde_json::from_str(
+            r#"{"name":"accum","code":"void main(){gl_FragColor=mix(texture2D(iChannel1,gl_FragCoord.xy/resolution),texture2D(iChannel0,gl_FragCoord.xy/resolution),0.3);}","channels":[{"buffer":"self"}]}"#,
+        )
+        .unwrap();
+        reg.insert("accum".to_string(), accum);
+        let mut sc = Scene::of(vec![Pass::of("main", GOOD).unwrap()]).unwrap();
+        apply_filters(&mut sc, &["accum".to_string()], Some(&reg)).unwrap();
+        let filt = &sc.passes[1];
+        assert_eq!(filt.channels[0].buffer.as_deref(), Some("main"));
+        assert_eq!(filt.channels[1].buffer.as_deref(), Some("accum"));
+        Scene::of(sc.passes.clone()).unwrap();
     }
 
     #[test]

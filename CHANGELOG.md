@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A filter def may declare `channels`, use `self` to access the previous
+  frame.
 - Draw a kernel-driven panel on `--display kms` into buffers the GPU
   allocates and the panel imports, when the panel's card is a device apart
   from the GPU and takes them. A panel driver that reads each frame with

@@ -1016,6 +1016,7 @@ impl Pass {
             "uniform vec2 resolution;".to_string(),
             "uniform float time;".to_string(),
             "uniform float DT;".to_string(),
+            "uniform float frame;".to_string(),
             // VC4 shears gl_FragCoord.xy by about 1/3 px per row when a pass
             // samples its own output. The interpolated varying is exact. This
             // define maps gl_FragCoord onto the varying, so scene code that reads
@@ -1762,8 +1763,12 @@ mod tests {
         .unwrap();
         let g2 = s.passes[0].glsl(Some(&s.params), None, false);
         let head = g2.split("void main").next().unwrap().to_string();
-        let after_dt = head.split("uniform float DT;").nth(1).unwrap().to_string();
-        assert!(!after_dt.contains("uniform"));
+        let tail = head
+            .split("uniform float frame;")
+            .nth(1)
+            .unwrap()
+            .to_string();
+        assert!(!tail.contains("uniform"));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 - A filter def may declare `channels`, use `self` to access the previous
   frame.
+- Add `uniform float frame`.
 
 ## 0.4.0 - 2026-08-06
 

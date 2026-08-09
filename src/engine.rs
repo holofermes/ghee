@@ -11,6 +11,7 @@ use std::ptr;
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 
+use crate::assets::Pixels;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
 use crate::scene::{ArraySize, ParamValue, Scene};
@@ -478,7 +479,12 @@ impl Renderer {
             // A VC4 takes a while over a big shader, and a scene of several
             // compiles them one after another with nothing to show for it.
             crate::report::progress("compile", format!("pass {} of {total}, {}", i + 1, p.name));
-            let glsl = p.glsl(Some(&scene.params), scene.common.as_deref(), hw_linear);
+            let glsl = p.glsl(
+                Some(&scene.params),
+                scene.common.as_deref(),
+                &scene.assets,
+                hw_linear,
+            );
             let cglsl = CString::new(glsl.as_str())?;
             let mut idx = unsafe { ffi::ghee_mp_add_pass(self.handle, cglsl.as_ptr()) };
             if idx >= 0 {
@@ -521,6 +527,29 @@ impl Renderer {
             "float",
             &ParamValue::Float(f64::from(self.width) / f64::from(self.height.max(1))),
         )?;
+        // Assets go in before the channels and the arrays, so the engine's
+        // texture-unit budget counts them.
+        for a in &scene.assets {
+            let Some(img) = &a.image else {
+                self.error = format!(
+                    "asset '{}': '{}' was never loaded, the scene was built without a directory",
+                    a.name, a.file
+                );
+                return Ok(self.error.clone());
+            };
+            let data = match &img.pixels {
+                Pixels::U8(d) => AssetData::U8(d),
+                Pixels::F32(d) => AssetData::F32(d),
+            };
+            self.set_asset(
+                &a.name,
+                img.width,
+                img.height,
+                img.components,
+                a.linear,
+                data,
+            )?;
+        }
         for (i, p) in scene.passes.iter().enumerate() {
             for (c, ch) in p.channels.iter().enumerate() {
                 let src = match ch.buffer.as_deref() {

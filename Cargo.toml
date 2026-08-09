@@ -33,7 +33,11 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+# jpeg-decoder and png decode scene assets only. Encoding stays hand-rolled in
+# output.rs and jpeg-encoder. Default features off: jpeg-decoder pulls rayon.
+jpeg-decoder = { version = "0.3", default-features = false }
 jpeg-encoder = "0.6"
+png = "0.17"
 rppal = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

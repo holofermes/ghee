@@ -231,6 +231,21 @@ on the host: the scene consumes it for work like rasterizing text, and
 `options` turns its text box into a dropdown. A param declared on the scene
 is shared, every pass reads the one value.
 
+A scene declares an asset by file name, and the host decodes it and feeds
+it to every pass at setup time:
+
+```json
+{ "assets": { "noise": { "file": "noise.raw", "width": 32, "height": 32, "format": "u8" } } }
+```
+
+Every pass samples it as `uniform sampler2D noise` and reads a
+`uniform vec2 noise_size` of (width, height). Sampling is `nearest`
+unless the asset sets `"filter": "linear"`.
+
+`.png` and `.jpg` files are supported, as well as `.raw`: bare pixels
+that declare `width`, `height` and `format` (`u8` or little-endian
+`f32`), and `components` picks 1, 3 or 4 values per pixel, 1 by default.
+
 ## Procedural scenes
 
 A procedural scene is an executable that supplies its own scene and data,
@@ -245,7 +260,7 @@ supply the data, and `ghee.run` for the loop. A PEP 723 scene declares
 The python shim lets you also run the python file to render directly:
 `./scene.py --output kms --frames 300`.
 
-`ghee/examples/` holds `bluesun.py` and `hero.py`.
+`ghee/examples/` holds the bundled demos.
 
 ## The console
 

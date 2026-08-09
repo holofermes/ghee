@@ -715,6 +715,7 @@ mod tests {
             Vec::new(),
             scene_params,
             None,
+            Vec::new(),
         )
         .unwrap();
         apply_values(
@@ -765,6 +766,7 @@ mod tests {
             Vec::new(),
             scene_params,
             None,
+            Vec::new(),
         )
         .unwrap();
         apply_values(

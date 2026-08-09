@@ -520,7 +520,7 @@ fn build(
             pass_sizes[i].map(|(w, h)| Value::from(vec![w, h])),
         )?);
     }
-    let scene = Scene::new(passes, Value::from(1), Vec::new(), params, None)?;
+    let scene = Scene::new(passes, Value::from(1), Vec::new(), params, None, Vec::new())?;
     Ok((Built::Scene(scene), warn))
 }
 

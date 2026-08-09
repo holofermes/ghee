@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A scene declares `assets`: image files (png, jpeg, raw u8 or f32) that
+  every pass samples as `uniform sampler2D <name>` with a
+  `vec2 <name>_size`.
 - A filter def may declare `channels`, use `self` to access the previous
   frame.
 - Add `uniform float frame`.

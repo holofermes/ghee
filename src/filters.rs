@@ -249,10 +249,10 @@ mod tests {
         let filt = &sc.passes[1];
         assert_eq!(filt.filter, "dither");
         assert!(!filt
-            .glsl(Some(&sc.params), sc.common.as_deref(), false)
+            .glsl(Some(&sc.params), sc.common.as_deref(), &sc.assets, false)
             .contains(COMMON));
         assert!(sc.passes[0]
-            .glsl(Some(&sc.params), sc.common.as_deref(), false)
+            .glsl(Some(&sc.params), sc.common.as_deref(), &sc.assets, false)
             .contains(COMMON));
     }
 

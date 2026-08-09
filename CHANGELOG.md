@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A filter def may declare `channels`, use `self` to access the previous
+  frame.
+
 ## 0.4.0 - 2026-08-06
 
 - `--display kms` is any connected KMS display: HDMI, or an SPI/I2C panel with

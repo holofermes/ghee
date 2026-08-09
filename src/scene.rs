@@ -43,6 +43,17 @@ fn is_dim(v: &Value) -> bool {
     v.as_i64().is_some_and(|n| 0 < n && n <= MAX_DIM)
 }
 
+/// `[A-Za-z_]\w*$` matched from the start.
+pub(crate) fn is_ident(s: &str) -> bool {
+    let mut it = s.chars();
+    match it.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+            it.all(|c| c.is_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
 /// A JSON size is an int or a whole float. Any other value passes through
 /// unchanged, so the size check reports what the scene declares.
 fn to_int(v: &Value) -> Value {

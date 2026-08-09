@@ -179,6 +179,8 @@ ghee compiles the GLSL of every pass behind a preamble like this one:
 
 ```glsl
 uniform float time;                 // seconds since start
+uniform float DT;                   // seconds the last frame took
+uniform float frame;                // frames rendered, wraps at 2^20
 uniform vec2  resolution;           // buffer size in pixels
 varying vec2  v_texCoord;           // 0..1 across the buffer
 // gl_FragCoord maps to the varying, so Shadertoy

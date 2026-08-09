@@ -52,6 +52,7 @@ struct GheeScene {
     bool has_time_override;              // when set, render uses time_override instead of the wall clock
     float time_override;
     float dt;                            // how many seconds the last frame took, fed to every pass as DT
+    float frame;                         // frames rendered, fed to every pass as `frame`, wrapped to stay float-exact
 
     // multipass: each pass has its own program + ping-pong buffer, and channels route
     // between passes (reading a pass's PREVIOUS-frame output). A pass whose channel
@@ -66,6 +67,7 @@ struct GheeScene {
     int mp_nchan[MP_MAX_PASSES];
     GLint mp_timeLoc[MP_MAX_PASSES];
     GLint mp_dtLoc[MP_MAX_PASSES];
+    GLint mp_frameLoc[MP_MAX_PASSES];
     // Sampler uniform locations, resolved once: a link fixes them, and the
     // name lookup is the render loop's own cost otherwise.
     GLint mp_chanLoc[MP_MAX_PASSES][MP_MAX_CHANNELS];
@@ -975,6 +977,7 @@ int ghee_mp_commit(GheeScene *g) {
         if (rloc >= 0) glUniform2f(rloc, (float)g->mp_w[p], (float)g->mp_h[p]);
         g->mp_timeLoc[p] = glGetUniformLocation(prog, "time");
         g->mp_dtLoc[p] = glGetUniformLocation(prog, "DT");
+        g->mp_frameLoc[p] = glGetUniformLocation(prog, "frame");
         for (int c = 0; c < MP_MAX_CHANNELS; c++) {
             char nm[16];
             snprintf(nm, sizeof(nm), "iChannel%d", c);
@@ -1160,6 +1163,9 @@ static float elapsed_seconds(GheeScene *g) {
 // Only valid when nothing samples the last pass's output (no channel routes to
 // it and no preview readback this frame) -- the caller guarantees that.
 static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
+    // wrap frame at a power of two
+    g->frame += 1.0f;
+    if (g->frame >= 1048576.0f) g->frame = 0.0f;
     for (int p = 0; p < g->mp_count; p++) {
         const bool direct = direct_last && p == g->mp_count - 1;
         glBindFramebuffer(GL_FRAMEBUFFER, direct ? g->scan_fbo : g->mp_fbo[p][g->mp_write[p]]);
@@ -1175,6 +1181,7 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
         if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], direct && !g->lent_count ? -1.0f : 1.0f);
         if (g->mp_timeLoc[p] >= 0) glUniform1f(g->mp_timeLoc[p], elapsed);
         if (g->mp_dtLoc[p] >= 0) glUniform1f(g->mp_dtLoc[p], g->dt);
+        if (g->mp_frameLoc[p] >= 0) glUniform1f(g->mp_frameLoc[p], g->frame);
         for (int c = 0; c < g->mp_nchan[p]; c++) {
             const int src = g->mp_chan_src[p][c];
             glActiveTexture(GL_TEXTURE0 + c);

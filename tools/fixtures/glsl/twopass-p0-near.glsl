@@ -8,6 +8,7 @@ varying vec2 v_texCoord;
 uniform vec2 resolution;
 uniform float time;
 uniform float DT;
+uniform float frame;
 #define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)
 uniform sampler2D iChannel0;
 uniform float decay;

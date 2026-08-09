@@ -1699,7 +1699,12 @@ impl ConsoleHost for RenderLoopHost {
         Ok(name.to_string())
     }
 
-    fn apply_scene(&self, scene: Scene) -> ConsoleResult<()> {
+    fn apply_scene(&self, mut scene: Scene) -> ConsoleResult<()> {
+        // A posted scene names its asset files only. They resolve against the
+        // store, where GET /scene took them from.
+        scene
+            .load_assets(&self.console.store.dir)
+            .map_err(|e| ConsoleError::bad_request(e.to_string()))?;
         self.console.command(Command::SceneObj(Box::new(scene)));
         Ok(())
     }

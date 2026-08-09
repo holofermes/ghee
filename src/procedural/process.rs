@@ -565,7 +565,8 @@ impl SceneProcess {
         let doc: Value = serde_json::from_str(line.trim()).map_err(|e| {
             anyhow!(process.epitaph(&format!("handshake line is not a scene object: {e}")))
         })?;
-        let scene = Scene::from_dict(&doc, Some(&dir), Some(path))?;
+        let mut scene = Scene::from_dict(&doc, Some(&dir), Some(path))?;
+        scene.load_assets(&dir)?;
         process.writer = Some(write_ticks(stdin, Arc::clone(&process.outbox)));
         Ok((scene, process))
     }

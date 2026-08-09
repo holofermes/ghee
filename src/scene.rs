@@ -27,6 +27,9 @@ const PARAM_TYPES: [&str; 8] = [
 const MAX_DIM: i64 = 16384;
 const MAX_TEXELS: i64 = 1 << 24;
 
+// The engine's asset table holds MP_MAX_ASSETS entries.
+const MAX_ASSETS: usize = 8;
+
 fn vec_arity(ty: &str) -> Option<usize> {
     VEC_ARITY.iter().find(|(t, _)| *t == ty).map(|(_, n)| *n)
 }
@@ -802,6 +805,145 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     ]
 }
 
+/// A named image file. Every pass samples it as `uniform sampler2D <name>`
+/// and reads a `vec2 <name>_size` of (width, height).
+///
+/// A .raw file is bare pixels and declares its layout. A .png or .jpg file
+/// carries its own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asset {
+    pub name: String,
+    pub file: String,
+    /// GL_LINEAR when true. Nearest is the default.
+    pub linear: bool,
+    /// The declared layout of a .raw file. None for a decoded format.
+    pub raw: Option<RawLayout>,
+    /// The decoded pixels. load_assets fills them from the file.
+    pub image: Option<crate::assets::Image>,
+}
+
+/// A .raw file's declared pixel layout. f32 pixels are little-endian on
+/// disk and need a GL with float textures.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RawLayout {
+    pub width: i64,
+    pub height: i64,
+    pub components: i64,
+    pub is_f32: bool,
+}
+
+impl Asset {
+    pub fn from_dict(name: &str, d: &Value) -> Result<Asset> {
+        let Value::Object(o) = d else {
+            bail!("asset '{name}' needs an object, got {}", py_repr(d));
+        };
+        let file = match o.get("file") {
+            None => bail!("asset '{name}' has no 'file'"),
+            Some(Value::String(s)) => s.clone(),
+            Some(v) => bail!("asset '{name}' 'file' needs a filename, got {}", py_repr(v)),
+        };
+        let linear = match o.get("filter").filter(|v| !v.is_null()) {
+            None => false,
+            Some(Value::String(s)) if s == "nearest" => false,
+            Some(Value::String(s)) if s == "linear" => true,
+            Some(v) => bail!(
+                "asset '{name}' filter needs 'nearest' or 'linear', got {}",
+                py_repr(v)
+            ),
+        };
+        let ext = file
+            .rsplit_once('.')
+            .map_or(String::new(), |(_, e)| e.to_ascii_lowercase());
+        let raw = match ext.as_str() {
+            "raw" => {
+                for k in ["width", "height", "format"] {
+                    if !o.contains_key(k) {
+                        bail!("raw asset '{name}' has no '{k}'");
+                    }
+                }
+                let mut dims = [0i64; 2];
+                for (slot, k) in dims.iter_mut().zip(["width", "height"]) {
+                    let v = to_int(&o[k]);
+                    if !is_dim(&v) {
+                        bail!(
+                            "asset '{name}' {k} needs an int in 1..{MAX_DIM}, got {}",
+                            py_repr(&o[k])
+                        );
+                    }
+                    *slot = v.as_i64().unwrap_or(0);
+                }
+                let (w, h) = (dims[0], dims[1]);
+                if w * h > MAX_TEXELS {
+                    bail!("asset '{name}' is {w}x{h}, over the {MAX_TEXELS} pixel cap");
+                }
+                let is_f32 = match &o["format"] {
+                    Value::String(s) if s == "u8" => false,
+                    Value::String(s) if s == "f32" => true,
+                    v => bail!(
+                        "asset '{name}' format needs 'u8' or 'f32', got {}",
+                        py_repr(v)
+                    ),
+                };
+                let components = match o.get("components").filter(|v| !v.is_null()) {
+                    None => 1,
+                    Some(v) => match to_int(v).as_i64() {
+                        Some(c @ (1 | 3 | 4)) => c,
+                        _ => bail!(
+                            "asset '{name}' components needs 1, 3 or 4, got {}",
+                            py_repr(v)
+                        ),
+                    },
+                };
+                Some(RawLayout {
+                    width: w,
+                    height: h,
+                    components,
+                    is_f32,
+                })
+            }
+            "png" | "jpg" | "jpeg" => {
+                for k in ["width", "height", "format", "components"] {
+                    if o.contains_key(k) {
+                        bail!("asset '{name}' takes no '{k}', a .{ext} file carries its own");
+                    }
+                }
+                None
+            }
+            _ => bail!(
+                "asset '{name}' file {} needs a .raw, .png, .jpg or .jpeg extension",
+                py_str_repr(&file)
+            ),
+        };
+        Ok(Asset {
+            name: name.to_string(),
+            file,
+            linear,
+            raw,
+            image: None,
+        })
+    }
+
+    pub fn to_dict(&self) -> Value {
+        let mut d = Map::new();
+        d.insert("file".to_string(), Value::from(self.file.clone()));
+        if let Some(r) = &self.raw {
+            d.insert("width".to_string(), Value::from(r.width));
+            d.insert("height".to_string(), Value::from(r.height));
+            d.insert(
+                "format".to_string(),
+                Value::from(if r.is_f32 { "f32" } else { "u8" }),
+            );
+            if r.components != 1 {
+                d.insert("components".to_string(), Value::from(r.components));
+            }
+        }
+        if self.linear {
+            d.insert("filter".to_string(), Value::from("linear"));
+        }
+        Value::Object(d)
+    }
+}
+
 /// A numbered sampler -> iChannel<index>, bound to a pass's output buffer.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Channel {
@@ -1006,11 +1148,13 @@ impl Pass {
     }
 
     /// `hw_linear` is the target GPU's Renderer.data_texture_linear. False emits
-    /// the array readers that hold on any GPU.
+    /// the array readers that hold on any GPU. `assets` are the scene's assets,
+    /// every pass preamble declares them all.
     pub fn glsl(
         &self,
         scene_params: Option<&ParamMap>,
         common: Option<&str>,
+        assets: &[Asset],
         hw_linear: bool,
     ) -> String {
         let mut l: Vec<String> = vec![
@@ -1042,6 +1186,10 @@ impl Pass {
         }
         for i in 0..self.channels.len() {
             l.push(format!("uniform sampler2D iChannel{i};"));
+        }
+        for a in assets {
+            l.push(format!("uniform sampler2D {};", a.name));
+            l.push(format!("uniform vec2 {}_size;", a.name));
         }
         // Every pass takes the same scene param lines, ahead of its own params.
         for p in scene_params.iter().flat_map(|sp| sp.values()) {
@@ -1078,6 +1226,9 @@ pub struct Scene {
     /// follows the preamble. None is no common block. A filter pass never sees
     /// it.
     pub common: Option<String>,
+    /// Image assets: set up once by the host, available to every pass as a
+    /// sampler uniform plus a `<name>_size` vec2.
+    pub assets: Vec<Asset>,
 }
 
 impl Scene {
@@ -1087,6 +1238,7 @@ impl Scene {
         filters: Vec<String>,
         params: ParamMap,
         common: Option<String>,
+        assets: Vec<Asset>,
     ) -> Result<Scene> {
         {
             let mut seen: Vec<&str> = Vec::new();
@@ -1115,18 +1267,71 @@ impl Scene {
                 }
             }
         }
+        if assets.len() > MAX_ASSETS {
+            bail!("{} assets, over the {MAX_ASSETS} asset cap", assets.len());
+        }
+        // An asset name lands in every pass preamble as a uniform, so it must
+        // be a GLSL identifier, and it must not shadow an array or a param.
+        {
+            let mut seen: Vec<&str> = Vec::new();
+            for a in &assets {
+                if !is_ident(&a.name) {
+                    bail!(
+                        "asset name {} is not a GLSL identifier",
+                        py_str_repr(&a.name)
+                    );
+                }
+                if seen.contains(&a.name.as_str()) {
+                    bail!("asset '{}' is declared twice", a.name);
+                }
+                seen.push(&a.name);
+                if params.contains_key(&a.name) {
+                    bail!(
+                        "'{}' is an asset and a scene param, a name belongs to \
+                         one scope only",
+                        a.name
+                    );
+                }
+                for p in &passes {
+                    if p.params.contains_key(&a.name) {
+                        bail!(
+                            "'{}' is an asset and a param in pass '{}', a name \
+                             belongs to one scope only",
+                            a.name,
+                            p.name
+                        );
+                    }
+                    if p.arrays.iter().any(|ar| ar.name == a.name) {
+                        bail!(
+                            "'{}' is an asset and an array in pass '{}', a name \
+                             belongs to one scope only",
+                            a.name,
+                            p.name
+                        );
+                    }
+                }
+            }
+        }
         Ok(Scene {
             passes,
             version,
             filters,
             params,
             common,
+            assets,
         })
     }
 
     /// A scene with passes only. Every other field takes its default.
     pub fn of(passes: Vec<Pass>) -> Result<Scene> {
-        Scene::new(passes, Value::from(1), Vec::new(), ParamMap::new(), None)
+        Scene::new(
+            passes,
+            Value::from(1),
+            Vec::new(),
+            ParamMap::new(),
+            None,
+            Vec::new(),
+        )
     }
 
     pub fn output(&self) -> &Pass {
@@ -1156,6 +1361,10 @@ impl Scene {
             for (n, pd) in obj_of(o, "params")? {
                 params.insert(n.clone(), Param::from_dict(n, pd)?);
             }
+            let mut assets = Vec::new();
+            for (n, ad) in obj_of(o, "assets")? {
+                assets.push(Asset::from_dict(n, ad)?);
+            }
             let common = common_block(o, base_dir)?;
             Scene::new(
                 passes,
@@ -1163,6 +1372,7 @@ impl Scene {
                 filters.iter().map(py_str).collect(),
                 params,
                 common,
+                assets,
             )
         })()
         .map_err(|e| anyhow!("{src}: {e}"))
@@ -1191,6 +1401,15 @@ impl Scene {
             }
             out.insert("params".to_string(), Value::Object(m));
         }
+        // Only the file references. The console posts them back as they are,
+        // and the server resolves them against its store.
+        if !self.assets.is_empty() {
+            let mut m = Map::new();
+            for a in &self.assets {
+                m.insert(a.name.clone(), a.to_dict());
+            }
+            out.insert("assets".to_string(), Value::Object(m));
+        }
         Value::Object(out)
     }
 
@@ -1211,7 +1430,63 @@ impl Scene {
             Some(i) => abs[..i].to_string(),
             None => String::new(),
         };
-        Scene::from_dict(&data, Some(&base), Some(path))
+        let mut scene = Scene::from_dict(&data, Some(&base), Some(path))?;
+        scene
+            .load_assets(&base)
+            .map_err(|e| anyhow!("{path}: {e}"))?;
+        Ok(scene)
+    }
+
+    /// Read and decode every declared asset file.
+    ///
+    /// A file resolves inside `base_dir`, the scene's own directory, and never
+    /// outside it. A file absent there resolves one directory up: a copy saved
+    /// into modified/ keeps its assets beside the original scene. The error
+    /// names the path that failed.
+    pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
+        if self.assets.is_empty() {
+            return Ok(());
+        }
+        let root = normpath(&abspath(base_dir));
+        for a in &mut self.assets {
+            let full = normpath(&join(&root, &a.file));
+            if full != root && !full.starts_with(&format!("{root}/")) {
+                bail!(
+                    "asset '{}' file {} is outside the scene directory",
+                    a.name,
+                    py_str_repr(&a.file)
+                );
+            }
+            let mut path = full;
+            if !std::path::Path::new(&path).is_file() {
+                if let Some(i) = root.rfind('/') {
+                    let up = if i == 0 { "/" } else { &root[..i] };
+                    let fallback = normpath(&join(up, &a.file));
+                    if std::path::Path::new(&fallback).is_file() {
+                        path = fallback;
+                    }
+                }
+            }
+            let bytes = fs::read(&path)
+                .map_err(|e| anyhow!("asset '{}' ({path}): {}", a.name, strerror(&e)))?;
+            crate::sources::record(&path);
+            let decoded = match &a.raw {
+                Some(r) => crate::assets::decode_raw(
+                    &bytes,
+                    r.width as u32,
+                    r.height as u32,
+                    r.components as u32,
+                    r.is_f32,
+                ),
+                None if a.file.to_ascii_lowercase().ends_with(".png") => {
+                    crate::assets::decode_png(&bytes)
+                }
+                None => crate::assets::decode_jpeg(&bytes),
+            }
+            .map_err(|e| anyhow!("asset '{}' ({path}): {e}", a.name))?;
+            a.image = Some(decoded);
+        }
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -1290,7 +1565,7 @@ impl SceneBuilder for Result<Scene> {
     fn param(self, param: Param) -> Result<Scene> {
         let mut s = self?;
         s.params.insert(param.name.clone(), param);
-        Scene::new(s.passes, s.version, s.filters, s.params, s.common)
+        Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)
     }
 
     fn filters(self, names: &[&str]) -> Result<Scene> {
@@ -1329,7 +1604,7 @@ mod tests {
     fn preamble_has_resolution_no_orientation() {
         let g = Pass::of("main", "void main(){}")
             .unwrap()
-            .glsl(None, None, false);
+            .glsl(None, None, &[], false);
         assert!(g.contains("uniform vec2 resolution;"));
         assert!(g.contains("uniform float time;"));
         assert!(!g.contains("VERTICAL") && !g.contains("HORIZONTAL"));
@@ -1342,7 +1617,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let g = p.glsl(None, None, false);
+        let g = p.glsl(None, None, &[], false);
         assert!(g.contains("uniform sampler2D amps_tex;")); // An array is a 1xN data texture.
         assert!(g.contains("const int amps_size = 8;"));
         assert!(g.contains("amps_at"));
@@ -1438,7 +1713,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .glsl(None, None, false);
+        .glsl(None, None, &[], false);
         assert!(g.contains("uniform float tint_r;"));
         assert!(g.contains("uniform float tint_g;"));
         assert!(g.contains("uniform float tint_b;"));
@@ -1531,7 +1806,7 @@ mod tests {
             );
             let g = Pass::new("m", "void main(){}", vec![], vec![], params, "", None)
                 .unwrap()
-                .glsl(None, None, false);
+                .glsl(None, None, &[], false);
             for s in &sfx {
                 assert!(g.contains(&format!("uniform float {name}{s};")));
             }
@@ -1597,7 +1872,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let e = Scene::new(vec![p], json!(1), vec![], scene_params, None)
+        let e = Scene::new(vec![p], json!(1), vec![], scene_params, None, vec![])
             .unwrap_err()
             .to_string();
         assert!(e.contains("speed") && e.contains("main"), "{e}");
@@ -1646,10 +1921,11 @@ mod tests {
             vec![],
             params,
             None,
+            vec![],
         )
         .unwrap();
         for p in &sc.passes {
-            let g = p.glsl(Some(&sc.params), None, false);
+            let g = p.glsl(Some(&sc.params), None, &sc.assets, false);
             assert!(g.contains("uniform float gain;")); // A scalar is one uniform.
                                                         // A color decomposes to three floats plus a vec3 alias, in every pass.
             assert!(g.contains("uniform float tint_r;"));
@@ -1681,8 +1957,8 @@ mod tests {
         // An empty scene param map adds nothing to the preamble.
         for p in &sc.passes {
             assert_eq!(
-                p.glsl(Some(&sc.params), None, false),
-                p.glsl(None, None, false)
+                p.glsl(Some(&sc.params), None, &sc.assets, false),
+                p.glsl(None, None, &[], false)
             );
         }
     }
@@ -1756,7 +2032,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .glsl(None, None, false);
+        .glsl(None, None, &[], false);
         assert!(!g.split("void main").next().unwrap().contains("text"));
 
         let mut scene_params = ParamMap::new();
@@ -1770,9 +2046,10 @@ mod tests {
             vec![],
             scene_params,
             None,
+            vec![],
         )
         .unwrap();
-        let g2 = s.passes[0].glsl(Some(&s.params), None, false);
+        let g2 = s.passes[0].glsl(Some(&s.params), None, &s.assets, false);
         let head = g2.split("void main").next().unwrap().to_string();
         let tail = head
             .split("uniform float frame;")
@@ -2238,7 +2515,7 @@ mod tests {
         )
         .unwrap();
         for p in &sc.passes {
-            let g = p.glsl(Some(&sc.params), sc.common.as_deref(), false);
+            let g = p.glsl(Some(&sc.params), sc.common.as_deref(), &sc.assets, false);
             assert!(g.contains(COMMON));
             // The common block follows the preamble and precedes the pass code.
             let pre = g.find("uniform float time;").unwrap();
@@ -2251,8 +2528,266 @@ mod tests {
     #[test]
     fn no_common_assembles_exactly_as_before() {
         let p = Pass::of("m", CODE).unwrap();
-        assert_eq!(p.glsl(None, None, false), p.glsl(None, None, false));
-        assert_eq!(p.glsl(None, Some(""), false), p.glsl(None, None, false));
+        assert_eq!(
+            p.glsl(None, None, &[], false),
+            p.glsl(None, None, &[], false)
+        );
+        assert_eq!(
+            p.glsl(None, Some(""), &[], false),
+            p.glsl(None, None, &[], false)
+        );
+    }
+
+    // An asset is a named image file, decoded by the host and fed once.
+
+    fn asset_scene(assets: Value) -> Value {
+        json!({"version": 1, "passes": [{"name": "m", "code": GOOD}], "assets": assets})
+    }
+
+    #[test]
+    fn asset_schema_roundtrips() {
+        let d = json!({
+            "version": 1,
+            "passes": [{"name": "m", "code": GOOD}],
+            "assets": {
+                "stbn": {"file": "stbn.raw", "width": 64, "height": 32, "format": "f32"},
+                "mask": {"file": "mask.raw", "width": 8, "height": 8, "format": "u8",
+                         "components": 4},
+                "logo": {"file": "logo.png", "filter": "linear"},
+                "photo": {"file": "photo.jpg"},
+            },
+        });
+        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
+    }
+
+    #[test]
+    fn raw_asset_needs_width_height_and_format() {
+        for k in ["width", "height", "format"] {
+            let mut a = json!({"file": "d.raw", "width": 4, "height": 4, "format": "u8"});
+            a.as_object_mut().unwrap().remove(k);
+            let e = Scene::from_dict(&asset_scene(json!({ "d": a })), None, None)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(&format!("'{k}'")), "{k}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_decoded_asset_declares_no_layout() {
+        for k in ["width", "height", "format", "components"] {
+            let mut a = json!({"file": "logo.png"});
+            a.as_object_mut().unwrap().insert(k.to_string(), json!(4));
+            let e = Scene::from_dict(&asset_scene(json!({ "d": a })), None, None)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(&format!("'{k}'")), "{k}: {e}");
+        }
+    }
+
+    #[test]
+    fn raw_asset_format_is_u8_or_f32() {
+        let d = asset_scene(json!({"d": {"file": "d.raw", "width": 4, "height": 4,
+                                         "format": "u16"}}));
+        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
+        assert!(e.contains("'u8' or 'f32'") && e.contains("u16"), "{e}");
+    }
+
+    #[test]
+    fn raw_asset_components_are_1_3_or_4() {
+        let d = asset_scene(json!({"d": {"file": "d.raw", "width": 4, "height": 4,
+                                         "format": "u8", "components": 2}}));
+        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
+        assert!(e.contains("components") && e.contains("2"), "{e}");
+    }
+
+    #[test]
+    fn asset_filter_is_nearest_or_linear() {
+        let d = asset_scene(json!({"d": {"file": "logo.png", "filter": "cubic"}}));
+        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
+        assert!(e.contains("'nearest' or 'linear'"), "{e}");
+    }
+
+    #[test]
+    fn asset_kind_comes_from_the_extension() {
+        let d = asset_scene(json!({"d": {"file": "logo.bmp"}}));
+        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
+        assert!(e.contains(".raw, .png, .jpg or .jpeg"), "{e}");
+    }
+
+    #[test]
+    fn asset_name_is_a_glsl_identifier() {
+        for bad in ["2d", "no-dash", "sp ace", ""] {
+            let d = asset_scene(json!({bad: {"file": "logo.png"}}));
+            let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
+            assert!(e.contains("identifier"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn asset_names_collide_with_nothing() {
+        let collides = |d: &Value| {
+            Scene::from_dict(d, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("one scope only")
+        };
+        let vs_array = json!({
+            "version": 1,
+            "passes": [{"name": "m", "code": GOOD, "arrays": [{"name": "amps", "size": 8}]}],
+            "assets": {"amps": {"file": "amps.png"}},
+        });
+        assert!(collides(&vs_array));
+        let vs_scene_param = json!({
+            "version": 1,
+            "passes": [{"name": "m", "code": GOOD}],
+            "params": {"gain": {"type": "float", "value": 1.0}},
+            "assets": {"gain": {"file": "gain.png"}},
+        });
+        assert!(collides(&vs_scene_param));
+        let vs_pass_param = json!({
+            "version": 1,
+            "passes": [{"name": "m", "code": GOOD,
+                        "params": {"gain": {"type": "float", "value": 1.0}}}],
+            "assets": {"gain": {"file": "gain.png"}},
+        });
+        assert!(collides(&vs_pass_param));
+        // A JSON map holds a name once, so a duplicate needs the constructor.
+        let a = Asset::from_dict("logo", &json!({"file": "logo.png"})).unwrap();
+        let e = Scene::new(
+            vec![Pass::of("m", GOOD).unwrap()],
+            json!(1),
+            vec![],
+            ParamMap::new(),
+            None,
+            vec![a.clone(), a],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("twice"), "{e}");
+    }
+
+    #[test]
+    fn a_ninth_asset_hits_the_engine_cap() {
+        let mut m = Map::new();
+        for i in 0..9 {
+            m.insert(format!("a{i}"), json!({"file": format!("a{i}.png")}));
+        }
+        let e = Scene::from_dict(&asset_scene(Value::Object(m)), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("8"), "{e}");
+    }
+
+    #[test]
+    fn preamble_declares_asset_sampler_and_size() {
+        let sc = Scene::from_dict(
+            &asset_scene(json!({"logo": {"file": "logo.png"}})),
+            None,
+            None,
+        )
+        .unwrap();
+        let g = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, false);
+        assert!(g.contains("uniform sampler2D logo;"));
+        assert!(g.contains("uniform vec2 logo_size;"));
+    }
+
+    #[test]
+    fn a_raw_length_mismatch_names_the_path_and_the_shape() {
+        let dir = tmpdir("asset-mismatch");
+        fs::write(format!("{dir}/d.raw"), [0u8; 5]).unwrap();
+        let p = format!("{dir}/x.scene.json");
+        fs::write(
+            &p,
+            asset_scene(json!({"d": {"file": "d.raw", "width": 2, "height": 2,
+                                     "format": "u8"}}))
+            .to_string(),
+        )
+        .unwrap();
+        let e = Scene::load(&p).unwrap_err().to_string();
+        assert!(e.contains(&format!("{dir}/d.raw")), "{e}");
+        assert!(
+            e.contains("5 bytes") && e.contains("2x2x1") && e.contains("needs 4"),
+            "{e}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_f32_raw_asset_round_trips_little_endian() {
+        let dir = tmpdir("asset-f32");
+        let vals = [0.0f32, 0.5, -1.0, 3.25];
+        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        fs::write(format!("{dir}/d.raw"), &bytes).unwrap();
+        let p = format!("{dir}/x.scene.json");
+        fs::write(
+            &p,
+            asset_scene(json!({"d": {"file": "d.raw", "width": 4, "height": 1,
+                                     "format": "f32"}}))
+            .to_string(),
+        )
+        .unwrap();
+        let sc = Scene::load(&p).unwrap();
+        let img = sc.assets[0].image.as_ref().unwrap();
+        assert_eq!((img.width, img.height, img.components), (4, 1, 1));
+        assert_eq!(img.pixels, crate::assets::Pixels::F32(vals.to_vec()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_modified_copy_finds_assets_beside_the_original() {
+        // The store saves a scene into modified/ next to the original, and the
+        // saved copy keeps reading the original's asset files.
+        let dir = tmpdir("asset-fallback");
+        fs::create_dir_all(format!("{dir}/modified")).unwrap();
+        fs::write(format!("{dir}/d.raw"), [7u8; 4]).unwrap();
+        let p = format!("{dir}/modified/x.scene.json");
+        fs::write(
+            &p,
+            asset_scene(json!({"d": {"file": "d.raw", "width": 2, "height": 2,
+                                     "format": "u8"}}))
+            .to_string(),
+        )
+        .unwrap();
+        let sc = Scene::load(&p).unwrap();
+        let img = sc.assets[0].image.as_ref().unwrap();
+        assert_eq!(img.pixels, crate::assets::Pixels::U8(vec![7u8; 4]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_asset_never_escapes_the_scene_directory() {
+        let root = tmpdir("asset-escape");
+        let base = format!("{root}/scene");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(format!("{root}/secret.raw"), [0u8; 4]).unwrap();
+        let p = format!("{base}/x.scene.json");
+        fs::write(
+            &p,
+            asset_scene(
+                json!({"d": {"file": "../secret.raw", "width": 2, "height": 2,
+                                     "format": "u8"}}),
+            )
+            .to_string(),
+        )
+        .unwrap();
+        let e = Scene::load(&p).unwrap_err().to_string();
+        assert!(e.contains("outside the scene directory"), "{e}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_missing_asset_file_names_the_path() {
+        let dir = tmpdir("asset-missing");
+        let p = format!("{dir}/x.scene.json");
+        fs::write(
+            &p,
+            asset_scene(json!({"logo": {"file": "logo.png"}})).to_string(),
+        )
+        .unwrap();
+        let e = Scene::load(&p).unwrap_err().to_string();
+        assert!(e.contains(&format!("{dir}/logo.png")), "{e}");
+        assert!(e.contains("No such file or directory"), "{e}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     // The assembled source, byte for byte against the recorded fixtures.
@@ -2292,8 +2827,12 @@ mod tests {
                 .unwrap();
             let scene = fixture_scene(parts.next().unwrap());
             let want = fs::read_to_string(format!("{dir}/{f}")).unwrap();
-            let got =
-                scene.passes[idx].glsl(Some(&scene.params), scene.common.as_deref(), tag == "lin");
+            let got = scene.passes[idx].glsl(
+                Some(&scene.params),
+                scene.common.as_deref(),
+                &scene.assets,
+                tag == "lin",
+            );
             assert_eq!(got, want, "{f}");
         }
     }

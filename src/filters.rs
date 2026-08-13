@@ -14,10 +14,16 @@ use crate::scene::{Pass, Scene};
 
 /// The shipped filters. A binary carries no package directory, so the build
 /// compiles them in.
-const BUILTIN: [(&str, &str); 1] = [(
-    "dither.filter.json",
-    include_str!("../ghee/filters/dither.filter.json"),
-)];
+const BUILTIN: [(&str, &str); 2] = [
+    (
+        "dither.filter.json",
+        include_str!("../ghee/filters/dither.filter.json"),
+    ),
+    (
+        "frc.filter.json",
+        include_str!("../ghee/filters/frc.filter.json"),
+    ),
+];
 
 fn accept(out: &mut Map<String, Value>, path: &str, text: &str) {
     let parsed: Result<Value, _> = serde_json::from_str(text);
@@ -183,7 +189,9 @@ mod tests {
     #[test]
     fn registry_ships_dither() {
         let _g = env_guard();
-        assert!(load_filters(&[]).contains_key("dither"));
+        let reg = load_filters(&[]);
+        assert!(reg.contains_key("dither"));
+        assert!(reg.contains_key("frc"));
     }
 
     #[test]

@@ -170,6 +170,18 @@ pub fn probe_display(dri_device: Option<&str>) -> Option<(i32, i32)> {
     probe_display_device(dri_device).map(|(_, w, h)| (w, h))
 }
 
+/// True when GL on this card runs on the GPU.
+/// A display-only card (a panel under a kernel display driver) still gets
+/// hardware GL: Mesa pairs it with the render node and imports each frame
+/// back for the flip. False therefore means no usable render node exists,
+/// and the kms path refuses to run rather than render through llvmpipe.
+pub fn display_renders(dri_device: &str) -> bool {
+    let Ok(cdev) = CString::new(dri_device) else {
+        return true;
+    };
+    unsafe { ffi::ghee_display_renders(cdev.as_ptr()) != 0 }
+}
+
 /// The size of a packed frame in bytes.
 /// bw packs 1bpp. Otherwise the frame packs RGB565.
 pub fn packed_size(width: i32, height: i32, bw: bool) -> usize {
@@ -360,7 +372,7 @@ impl Renderer {
                 )
             };
             if r.handle.is_null() {
-                bail!("ghee_display_create failed: {}", err_text(err));
+                bail!("{}", err_text(err));
             }
             return Ok(r);
         }

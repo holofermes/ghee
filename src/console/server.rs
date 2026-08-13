@@ -40,7 +40,7 @@ use crate::looper::{ControllerSlot, Frame, Loop, Output, RenderTarget, SceneCont
 use crate::output::{encode_jpeg, encode_png, Scanout};
 use crate::scene::{ArraySize, Param, ParamValue, Scene};
 use crate::sources::{collect, Snapshot};
-use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG};
+use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG, DEST_PANEL};
 
 /// JPEG quality for the MJPEG preview
 pub const PREVIEW_QUALITY: u8 = 75;
@@ -492,15 +492,6 @@ impl Console {
         if let Some(server) = httpd {
             server.unblock();
         }
-    }
-
-    /// Record a failure the console cannot render through, and stop. run()
-    /// returns it, instead of leaving a server with no renderer.
-    fn fail(&self, msg: &str) {
-        *lock(&self.fatal) = msg.to_string();
-        lock(&self.stat).error = msg.to_string();
-        eprintln!("ghee console: {msg}");
-        self.stop();
     }
 }
 
@@ -1504,18 +1495,15 @@ fn set_scene_param(
 /// queue, the published scene and the stale snapshot. A frame error must not
 /// kill the thread.
 ///
-/// GL is thread-affine, so this creates the Renderer on the thread that renders.
-/// The sinks belong to the caller, and this draws to them from here. A driver
-/// bound to the calling thread works as a sink.
+/// GL is thread-affine, so the caller creates the Renderer on the thread that
+/// calls this. The sinks belong to the caller, and this draws to them from
+/// here. A driver bound to the calling thread works as a sink.
 pub fn render_loop(
     console: &Arc<Console>,
+    renderer: Rc<RefCell<Renderer>>,
     mut sinks: Vec<Box<dyn Output>>,
     on_stats: Option<StatsHook>,
 ) {
-    let renderer = match make_renderer(console) {
-        Ok(r) => Rc::new(RefCell::new(r)),
-        Err(e) => return console.fail(&format!("renderer: {e}")),
-    };
     let hz = if console.display {
         renderer.borrow().display_vrefresh()
     } else {
@@ -1540,6 +1528,7 @@ pub fn render_loop(
     let mut reported = String::new();
     let times: RefCell<Vec<f64>> = RefCell::new(Vec::new());
     let timed = on_stats.is_some();
+    let paced_by_panel = sinks.iter().any(|s| s.dest() == DEST_PANEL);
     let (elapsed, out): (f64, Vec<String>);
     {
         let mut refs: Vec<&mut dyn Output> = Vec::new();
@@ -1553,7 +1542,9 @@ pub fn render_loop(
         render.frames = console.frames;
         render.timestep = console.timestep;
         render.rate = Some(Arc::clone(&console.frame_rate));
-        render.rest = 0.003; // yield to the handler and encoder threads
+        // A panel sink blocks acquire() at its bus rate, and that wait is the
+        // yield. Any other loop rests so the handler and encoder threads run.
+        render.rest = if paced_by_panel { 0.0 } else { 0.003 };
         let feed = provider(console);
         render.provider = Some(Box::new(feed));
         render.controller = Some(&ctrl);
@@ -2178,19 +2169,28 @@ pub fn run(opts: Options) -> Result<()> {
             }
         })
     };
-    println!(
-        "ghee console: {} scenes [{}] on {host}:{port} (scenes={}, preview {}x{} {format})",
-        names.len(),
-        names
-            .iter()
-            .map(|n| format!("'{n}'"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        console.store.dir,
-        size.0,
-        size.1,
-    );
-    render_loop(&console, sinks, on_stats);
+
+    match make_renderer(&console) {
+        Ok(r) => {
+            println!(
+                "ghee console: {} scenes [{}] on {host}:{port} (scenes={}, preview {}x{} {format})",
+                names.len(),
+                names
+                    .iter()
+                    .map(|n| format!("'{n}'"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                console.store.dir,
+                size.0,
+                size.1,
+            );
+            render_loop(&console, Rc::new(RefCell::new(r)), sinks, on_stats);
+        }
+        Err(e) => {
+            lock(&console.stat).error = e.to_string();
+            *lock(&console.fatal) = e.to_string();
+        }
+    }
     // The loop is done, so nothing is left to serve. stop() unblocks the accept
     // thread, and the handlers it spawned end on the same flag.
     console.stop();

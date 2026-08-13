@@ -772,8 +772,10 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
         g->disp_plane = primary_plane(g->drm_fd, g->disp_crtc);
         if (!g->disp_plane || !plane_scales(g, width, height)) {
             snprintf(eb, sizeof(eb),
-                     "this display draws %ux%u and scales nothing, so it cannot take %dx%d",
-                     g->disp_mode.hdisplay, g->disp_mode.vdisplay, width, height);
+                     "this display is fixed at %ux%u with no scaler, so %dx%d does not fit. "
+                     "Render at %ux%u",
+                     g->disp_mode.hdisplay, g->disp_mode.vdisplay, width, height,
+                     g->disp_mode.hdisplay, g->disp_mode.vdisplay);
             if (err) *err = eb;
             ghee_destroy(g);
             return NULL;
@@ -1726,6 +1728,47 @@ void ghee_mp_reset(GheeScene *g) {
     make_current(g);
     ghee_mp_abort(g);
     mp_free_passes(g);
+}
+
+// Whether GL on this card runs on hardware. A display-only card (a panel
+// under a kernel display driver) still gets hardware GL when Mesa pairs it
+// with the render node, so software here means no usable render node exists.
+// A probe, so it stays quiet. Bring-up trouble reports 1: the display path
+// then runs as before and reports its own error.
+int ghee_display_renders(const char *dri_device) {
+    const char *dev = dri_device ? dri_device : DEFAULT_DRI_DEVICE;
+    int hw = 1;
+    struct gbm_device *gbm = NULL;
+    EGLDisplay dpy = EGL_NO_DISPLAY;
+    EGLContext ctx = EGL_NO_CONTEXT;
+    const int fd = open(dev, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return 1;
+    gbm = gbm_create_device(fd);
+    if (!gbm) goto out;
+    dpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, gbm, NULL);
+    if (dpy == EGL_NO_DISPLAY || eglInitialize(dpy, NULL, NULL) == EGL_FALSE) {
+        dpy = EGL_NO_DISPLAY;
+        goto out;
+    }
+    const EGLint attribs[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE };
+    const EGLint ctx_attribs[] = { EGL_CONTEXT_MAJOR_VERSION_KHR, 2, EGL_NONE };
+    EGLConfig config;
+    EGLint n = 0;
+    if (!eglChooseConfig(dpy, attribs, &config, 1, &n) || n < 1) goto out;
+    ctx = eglCreateContext(dpy, config, EGL_NO_CONTEXT, ctx_attribs);
+    if (ctx == EGL_NO_CONTEXT) goto out;
+    if (!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) goto out;
+    const char *renderer = (const char *)glGetString(GL_RENDERER);
+    if (renderer && (strstr(renderer, "llvmpipe") || strstr(renderer, "softpipe") ||
+                     strstr(renderer, "swrast")))
+        hw = 0;
+    eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+out:
+    if (ctx != EGL_NO_CONTEXT) eglDestroyContext(dpy, ctx);
+    if (dpy != EGL_NO_DISPLAY) eglTerminate(dpy);
+    if (gbm) gbm_device_destroy(gbm);
+    close(fd);
+    return hw;
 }
 
 // Pack an RGB(A) frame into a compact output format: 1-bit column-major (bw)

@@ -20,8 +20,11 @@ use std::fs::File;
 use std::io::{stdout, Stdout, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::error::{ContextKind, ErrorKind};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Map, Value};
@@ -31,13 +34,13 @@ use crate::console::examples_dir;
 use crate::console::server;
 use crate::console::store::SceneStore;
 use crate::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
-use crate::engine::{probe_display, Feed, Renderer};
+use crate::engine::{display_renders, probe_display, probe_display_device, Feed, Renderer};
 use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
 use crate::h264::H264Stream;
 use crate::isf::{read_isf, slug, to_filter, to_scene};
-use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, SceneController};
-use crate::output::{expand_pattern, AdaptivePacer, FixedPacer, ImageSequence, RawStream, Scanout};
+use crate::looper::{ControllerSlot, Frame, Loop, Output, OwnedFrame, Pacer, SceneController};
+use crate::output::{expand_pattern, FixedPacer, ImageSequence, RawStream, Scanout};
 use crate::procedural::process::{self, SceneProcess};
 use crate::procedural::{load_scene, scene_name};
 use crate::report;
@@ -297,7 +300,26 @@ fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
 enum Panel {
     None,
     Kms,
-    Driver(Box<dyn DisplayDriver>),
+    Driver(Box<dyn DisplayDriver + Send>),
+}
+
+/// Panel::Kms, after checking GL on the card runs on hardware. A display-only
+/// card (a panel under a kernel display driver) still gets hardware GL: Mesa
+/// pairs it with the render node and imports each frame back for the flip.
+/// Software GL here therefore means no usable render node at all, and ghee
+/// stops rather than render through llvmpipe. With no connected display this
+/// stays Panel::Kms, and geometry() reports that with its own error.
+fn kms_panel(a: &Ns) -> Result<Panel> {
+    let Some((dev, _, _)) = probe_display_device(a.dri.as_deref()) else {
+        return Ok(Panel::Kms);
+    };
+    if !display_renders(&dev) {
+        return Err(exit(format!(
+            "{}: GL on {dev} runs in software; no hardware render node pairs with this card",
+            a.cmd
+        )));
+    }
+    Ok(Panel::Kms)
 }
 
 fn panel_of(a: &Ns) -> Result<Panel> {
@@ -315,7 +337,7 @@ fn panel_of(a: &Ns) -> Result<Panel> {
                 a.cmd
             )));
         }
-        return Ok(Panel::Kms);
+        return kms_panel(a);
     }
     let Ok(spec) = get_driver(name) else {
         // --display takes an optional value, so it reads a path after it as a
@@ -398,7 +420,7 @@ fn geometry(a: &Ns, panel: &Panel) -> Result<((i32, i32), i32)> {
         },
         Panel::Driver(d) => match a.size {
             Some(_) => Err(exit(format!(
-                "{}: --size with --display {}, which draws {}x{} and scales nothing",
+                "{}: --display {} is fixed at {}x{}, drop --size",
                 a.cmd,
                 text(&a.display),
                 d.width(),
@@ -447,16 +469,16 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
 }
 
 /// Nothing paces a file or a pipe: that render runs as fast as it draws. A
-/// panel paces on its own bus speed. A KMS present waits out the display
-/// refresh. An H264 stream holds a fixed rate for its timestamps.
+/// panel sink blocks acquire() when the wire is a frame behind, so the bus
+/// paces an unpaced loop. A KMS present waits out the display refresh. An
+/// H264 stream holds a fixed rate for its timestamps.
 fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
     let fixed = a
         .fps
         .filter(|f| *f != 0.0)
         .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
     match panel {
-        Panel::Kms => fixed,
-        Panel::Driver(_) => fixed.or_else(|| Some(Box::new(AdaptivePacer::new()))),
+        Panel::Kms | Panel::Driver(_) => fixed,
         Panel::None if given(&a.h264) => Some(Box::new(FixedPacer::new(f64::from(h264_fps(a))))),
         Panel::None => None,
     }
@@ -478,37 +500,188 @@ fn frames_of(a: &Ns) -> i64 {
     }
 }
 
-/// A driver writes to a physical panel (drivers::base). The loop reaches a
-/// driver through this Output.
-struct PanelSink(Box<dyn DisplayDriver>);
+enum PanelJob {
+    Frame(OwnedFrame),
+    On,
+    Off,
+    Clear,
+    Stop,
+}
+
+/// A driver writes to a physical panel (drivers::base) over a bus that takes
+/// milliseconds a frame. The loop reaches a driver through this Output. The
+/// bus write runs on the sink's own thread, so the loop renders frame N+1
+/// while the wire carries frame N.
+///
+/// The pool holds two buffers: one on the wire, one under the render.
+/// acquire() blocks when the wire is a full frame behind, so an unpaced loop
+/// settles at the bus rate, and no frame is dropped.
+struct PanelSink {
+    dest: &'static str,
+    persists: bool,
+    native_format: &'static str,
+    allocated: usize,
+    jobs: Sender<PanelJob>,
+    free: Receiver<OwnedFrame>,
+    recycle: Sender<OwnedFrame>,
+    err: Arc<Mutex<Option<String>>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl PanelSink {
+    fn new(driver: Box<dyn DisplayDriver + Send>) -> PanelSink {
+        let (jobs, inbox) = channel::<PanelJob>();
+        let (recycle, free) = channel::<OwnedFrame>();
+        let err = Arc::new(Mutex::new(None));
+        let (dest, persists, native_format) =
+            (driver.dest(), driver.persists(), driver.native_format());
+        let worker = {
+            let (recycle, err) = (recycle.clone(), Arc::clone(&err));
+            std::thread::spawn(move || run_panel(driver, &inbox, &recycle, &err))
+        };
+        PanelSink {
+            dest,
+            persists,
+            native_format,
+            allocated: 0,
+            jobs,
+            free,
+            recycle,
+            err,
+            worker: Some(worker),
+        }
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.err.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Stop the writer once it drains. Report the failure it holds.
+    fn finish(&mut self) -> Result<()> {
+        let _ = self.jobs.send(PanelJob::Stop);
+        if let Some(worker) = self.worker.take() {
+            if worker.join().is_err() {
+                bail!("the panel writer thread died");
+            }
+        }
+        match self.failure() {
+            Some(e) => bail!(e),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The panel thread: write, recycle. The buffer belongs to the worker alone
+/// between submit and recycle, so the driver reads it in place. After a
+/// failure the worker keeps draining and recycling, so a blocked acquire()
+/// never starves. The error reaches the caller on the next acquire(), the
+/// next submit(), or on close().
+fn run_panel(
+    mut driver: Box<dyn DisplayDriver + Send>,
+    inbox: &Receiver<PanelJob>,
+    recycle: &Sender<OwnedFrame>,
+    err: &Arc<Mutex<Option<String>>>,
+) {
+    let note = |r: Result<()>| {
+        if let Err(e) = r {
+            let mut slot = err.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                *slot = Some(format!("{e:#}"));
+            }
+        }
+    };
+    loop {
+        match inbox.recv() {
+            Ok(PanelJob::Frame(buf)) => {
+                // the write never holds the lock, because acquire() reads it
+                // every frame from the render thread
+                let failed = err.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+                if !failed {
+                    note(driver.write(&buf.data));
+                }
+                let _ = recycle.send(buf);
+            }
+            Ok(PanelJob::On) => note(driver.turn_on()),
+            Ok(PanelJob::Off) => note(driver.turn_off()),
+            Ok(PanelJob::Clear) => note(driver.clear()),
+            Ok(PanelJob::Stop) | Err(_) => break,
+        }
+    }
+    note(driver.close());
+}
 
 impl Output for PanelSink {
     fn dest(&self) -> &str {
-        self.0.dest()
+        self.dest
     }
 
     fn persists(&self) -> bool {
-        self.0.persists()
+        self.persists
     }
 
+    fn pooled(&self) -> bool {
+        true
+    }
+
+    /// A buffer of `shape` to render into. It takes the recycled buffer
+    /// first. It grows the pool to two next. It blocks for the recycled
+    /// buffer last, which is the render's only wait. Single-producer: only
+    /// the render loop calls it.
+    fn acquire(&mut self, shape: (i32, i32, i32)) -> Result<OwnedFrame> {
+        if let Some(e) = self.failure() {
+            bail!(e);
+        }
+        if let Ok(buf) = self.free.try_recv() {
+            return Ok(buf);
+        }
+        if self.allocated < 2 {
+            self.allocated += 1;
+            return Ok(OwnedFrame::of(shape));
+        }
+        Ok(self.free.recv()?)
+    }
+
+    /// Queue a filled buffer for the wire.
+    fn submit(&mut self, buf: OwnedFrame) -> Result<()> {
+        if let Some(e) = self.failure() {
+            let _ = self.recycle.send(buf);
+            bail!(e);
+        }
+        // after close() no worker is left, so the frame goes nowhere
+        let _ = self.jobs.send(PanelJob::Frame(buf));
+        Ok(())
+    }
+
+    /// Copy a caller-owned frame into a pooled buffer and submit it.
     fn write(&mut self, frame: Frame<'_>) -> Result<()> {
-        self.0.write(frame.data)
+        let mut buf = self.acquire((frame.height, frame.width, frame.components))?;
+        buf.data.copy_from_slice(frame.data);
+        self.submit(buf)
     }
 
     fn turn_on(&mut self) -> Result<()> {
-        self.0.turn_on()
+        let _ = self.jobs.send(PanelJob::On);
+        Ok(())
     }
 
     fn turn_off(&mut self) -> Result<()> {
-        self.0.turn_off()
+        let _ = self.jobs.send(PanelJob::Off);
+        Ok(())
     }
 
     fn clear(&mut self) -> Result<()> {
-        self.0.clear()
+        let _ = self.jobs.send(PanelJob::Clear);
+        Ok(())
     }
 
     fn close(&mut self) -> Result<()> {
-        self.0.close()
+        self.finish()
+    }
+}
+
+impl Drop for PanelSink {
+    fn drop(&mut self) {
+        let _ = self.finish();
     }
 }
 
@@ -622,19 +795,18 @@ fn cmd_render(a: &Ns) -> Result<()> {
     let pace = pacer(a, &panel);
     let mut scanout = kms.then_some(Scanout);
     let mut sink = match panel {
-        Panel::Driver(d) => Some(PanelSink(d)),
+        Panel::Driver(d) => Some(PanelSink::new(d)),
         _ => None,
     };
     let mut file = file_sink(a)?;
     if a.serve {
         // The console draws on this thread, so it takes the sinks as they are.
-        // A panel driver's SPI and GPIO handles never leave the thread that
-        // opened them. The scanout is never a sink here. It is a mode of the
-        // Renderer itself.
+        // A panel driver's bus handles live on the sink's writer thread. The
+        // scanout is never a sink here. It is a mode of the Renderer itself.
         let mut sinks: Vec<Box<dyn Output>> = Vec::new();
         let mut native_format = None;
         if let Some(panel) = sink {
-            native_format = Some(panel.0.native_format().to_string());
+            native_format = Some(panel.native_format.to_string());
             sinks.push(Box::new(panel));
         }
         match file {

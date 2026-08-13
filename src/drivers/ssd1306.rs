@@ -143,7 +143,7 @@ const OPTIONS: [DriverOption; 2] = [
     DriverOption::new("addr", Some(DEFAULT_ADDR)),
 ];
 
-fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver>> {
+fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver + Send>> {
     let bus = int_opt(opts, "bus", DEFAULT_BUS)?;
     let Ok(bus) = u8::try_from(bus) else {
         bail!("no I2C bus {bus}");

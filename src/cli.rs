@@ -34,7 +34,7 @@ use crate::console::examples_dir;
 use crate::console::server;
 use crate::console::store::SceneStore;
 use crate::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
-use crate::engine::{display_renders, probe_display, probe_display_device, Feed, Renderer};
+use crate::engine::{probe_display, Feed, Renderer};
 use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
 use crate::h264::H264Stream;
@@ -303,25 +303,6 @@ enum Panel {
     Driver(Box<dyn DisplayDriver + Send>),
 }
 
-/// Panel::Kms, after checking GL on the card runs on hardware. A display-only
-/// card (a panel under a kernel display driver) still gets hardware GL: Mesa
-/// pairs it with the render node and imports each frame back for the flip.
-/// Software GL here therefore means no usable render node at all, and ghee
-/// stops rather than render through llvmpipe. With no connected display this
-/// stays Panel::Kms, and geometry() reports that with its own error.
-fn kms_panel(a: &Ns) -> Result<Panel> {
-    let Some((dev, _, _)) = probe_display_device(a.dri.as_deref()) else {
-        return Ok(Panel::Kms);
-    };
-    if !display_renders(&dev) {
-        return Err(exit(format!(
-            "{}: GL on {dev} runs in software; no hardware render node pairs with this card",
-            a.cmd
-        )));
-    }
-    Ok(Panel::Kms)
-}
-
 fn panel_of(a: &Ns) -> Result<Panel> {
     if !given(&a.display) {
         if given(&a.display_opts) {
@@ -337,7 +318,7 @@ fn panel_of(a: &Ns) -> Result<Panel> {
                 a.cmd
             )));
         }
-        return kms_panel(a);
+        return Ok(Panel::Kms);
     }
     let Ok(spec) = get_driver(name) else {
         // --display takes an optional value, so it reads a path after it as a

@@ -78,7 +78,7 @@ impl DriverOption {
 pub struct DriverSpec {
     pub name: &'static str,
     pub options: &'static [DriverOption],
-    pub open: fn(&Opts) -> Result<Box<dyn DisplayDriver>>,
+    pub open: fn(&Opts) -> Result<Box<dyn DisplayDriver + Send>>,
     /// The kernel setup for this panel, for `ghee overlay`.
     pub kernel: fn(&Opts) -> Result<Setup>,
 }

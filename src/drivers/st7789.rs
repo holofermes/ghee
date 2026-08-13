@@ -489,7 +489,7 @@ const OPTIONS: [DriverOption; 13] = [
     DriverOption::own("partial", Some(DEFAULT_PARTIAL)),
 ];
 
-fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver>> {
+fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver + Send>> {
     let baudrate = int_opt(opts, "baudrate", DEFAULT_BAUDRATE)?;
     let Ok(baudrate) = u32::try_from(baudrate) else {
         bail!("baudrate {baudrate} is not a clock speed");

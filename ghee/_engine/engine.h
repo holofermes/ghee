@@ -104,6 +104,12 @@ int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display m
 // 0 = width/height set, -1 = no device or nothing connected.
 int  ghee_display_probe(const char *dri_device, int *width, int *height);
 
+// Whether GL on this card runs on hardware. A display-only card (a panel
+// under a kernel display driver) still gets hardware GL when Mesa pairs it
+// with the render node, so 0 means no usable render node exists. Quiet, and
+// it touches no GL state of a live renderer.
+int ghee_display_renders(const char *dri_device);
+
 // Blank the display, or light it again (display mode only). Blanking stops
 // the CRTC driving the connector, which runs the kernel driver's own disable
 // path: a panel turns its display off and drops its backlight. A blanked

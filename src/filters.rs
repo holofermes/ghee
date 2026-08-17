@@ -14,7 +14,7 @@ use crate::scene::{Pass, Scene};
 
 /// The shipped filters. A binary carries no package directory, so the build
 /// compiles them in.
-const BUILTIN: [(&str, &str); 2] = [
+const BUILTIN: [(&str, &str); 3] = [
     (
         "dither.filter.json",
         include_str!("../ghee/filters/dither.filter.json"),
@@ -22,6 +22,10 @@ const BUILTIN: [(&str, &str); 2] = [
     (
         "frc.filter.json",
         include_str!("../ghee/filters/frc.filter.json"),
+    ),
+    (
+        "frc256.filter.json",
+        include_str!("../ghee/filters/frc256.filter.json"),
     ),
 ];
 
@@ -192,6 +196,7 @@ mod tests {
         let reg = load_filters(&[]);
         assert!(reg.contains_key("dither"));
         assert!(reg.contains_key("frc"));
+        assert!(reg.contains_key("frc256"));
     }
 
     #[test]

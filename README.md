@@ -238,6 +238,9 @@ it to every pass at setup time:
 { "assets": { "noise": { "file": "noise.raw", "width": 32, "height": 32, "format": "u8" } } }
 ```
 
+The file resolves next to the scene, then through the `$GHEE_ASSETS` env
+variable, colon-separated directories.
+
 Every pass samples it as `uniform sampler2D noise` and reads a
 `uniform vec2 noise_size` of (width, height). Sampling is `nearest`
 unless the asset sets `"filter": "linear"`.

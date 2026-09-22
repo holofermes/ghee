@@ -1441,13 +1441,23 @@ impl Scene {
     ///
     /// A file resolves inside `base_dir`, the scene's own directory, and never
     /// outside it. A file absent there resolves one directory up: a copy saved
-    /// into modified/ keeps its assets beside the original scene. The error
-    /// names the path that failed.
+    /// into modified/ keeps its assets beside the original scene. After that
+    /// it resolves through `$GHEE_ASSETS`, colon-separated directories, in
+    /// order. The error names every path tried.
     pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
         if self.assets.is_empty() {
             return Ok(());
         }
         let root = normpath(&abspath(base_dir));
+        let mut roots = vec![root.clone()];
+        if let Some(i) = root.rfind('/') {
+            roots.push(if i == 0 {
+                "/".to_string()
+            } else {
+                root[..i].to_string()
+            });
+        }
+        roots.extend(asset_dirs());
         for a in &mut self.assets {
             let full = normpath(&join(&root, &a.file));
             if full != root && !full.starts_with(&format!("{root}/")) {
@@ -1457,16 +1467,19 @@ impl Scene {
                     py_str_repr(&a.file)
                 );
             }
-            let mut path = full;
-            if !std::path::Path::new(&path).is_file() {
-                if let Some(i) = root.rfind('/') {
-                    let up = if i == 0 { "/" } else { &root[..i] };
-                    let fallback = normpath(&join(up, &a.file));
-                    if std::path::Path::new(&fallback).is_file() {
-                        path = fallback;
-                    }
-                }
-            }
+            let tried: Vec<String> = roots.iter().map(|r| normpath(&join(r, &a.file))).collect();
+            let Some(path) = tried
+                .iter()
+                .find(|p| std::path::Path::new(p.as_str()).is_file())
+                .cloned()
+            else {
+                bail!(
+                    "asset '{}' file {}: not found in {}",
+                    a.name,
+                    py_str_repr(&a.file),
+                    roots.join(", ")
+                );
+            };
             let bytes = fs::read(&path)
                 .map_err(|e| anyhow!("asset '{}' ({path}): {}", a.name, strerror(&e)))?;
             crate::sources::record(&path);
@@ -1494,6 +1507,16 @@ impl Scene {
         fs::write(path, serde_json::to_string_pretty(&self.to_dict())?)?;
         Ok(())
     }
+}
+
+/// The directories `$GHEE_ASSETS` names, colon-separated, absolute, in order.
+fn asset_dirs() -> Vec<String> {
+    std::env::var("GHEE_ASSETS")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .map(|d| normpath(&abspath(d)))
+        .collect()
 }
 
 /// Chained construction on a Pass constructor's Result:
@@ -2542,6 +2565,23 @@ mod tests {
 
     fn asset_scene(assets: Value) -> Value {
         json!({"version": 1, "passes": [{"name": "m", "code": GOOD}], "assets": assets})
+    }
+
+    #[test]
+    fn an_asset_resolves_through_ghee_assets_after_the_scene_directory() {
+        let scene_dir = tmpdir("asset-scene");
+        let asset_dir = tmpdir("asset-store");
+        fs::write(format!("{asset_dir}/ghee-assets-test.raw"), [1u8, 2, 3, 4]).unwrap();
+        let doc = asset_scene(json!({
+            "n": { "file": "ghee-assets-test.raw", "width": 2, "height": 2, "format": "u8" }
+        }));
+        let mut scene = Scene::from_dict(&doc, None, None).unwrap();
+        let e = scene.load_assets(&scene_dir).unwrap_err().to_string();
+        assert!(e.contains("not found in") && e.contains(&scene_dir), "{e}");
+        std::env::set_var("GHEE_ASSETS", &asset_dir);
+        scene.load_assets(&scene_dir).unwrap();
+        std::env::remove_var("GHEE_ASSETS");
+        assert!(scene.assets[0].image.is_some());
     }
 
     #[test]

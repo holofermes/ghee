@@ -1443,7 +1443,7 @@ impl Scene {
     /// outside it. A file absent there resolves one directory up: a copy saved
     /// into modified/ keeps its assets beside the original scene. After that
     /// it resolves through `$GHEE_ASSETS`, colon-separated directories, in
-    /// order. The error names every path tried.
+    /// order. The error names the first path and every other one tried.
     pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
         if self.assets.is_empty() {
             return Ok(());
@@ -1474,10 +1474,10 @@ impl Scene {
                 .cloned()
             else {
                 bail!(
-                    "asset '{}' file {}: not found in {}",
+                    "asset '{}' ({}): No such file or directory (also tried: {})",
                     a.name,
-                    py_str_repr(&a.file),
-                    roots.join(", ")
+                    tried[0],
+                    tried[1..].join(", ")
                 );
             };
             let bytes = fs::read(&path)
@@ -2577,7 +2577,7 @@ mod tests {
         }));
         let mut scene = Scene::from_dict(&doc, None, None).unwrap();
         let e = scene.load_assets(&scene_dir).unwrap_err().to_string();
-        assert!(e.contains("not found in") && e.contains(&scene_dir), "{e}");
+        assert!(e.contains("No such file") && e.contains(&scene_dir), "{e}");
         std::env::set_var("GHEE_ASSETS", &asset_dir);
         scene.load_assets(&scene_dir).unwrap();
         std::env::remove_var("GHEE_ASSETS");

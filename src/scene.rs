@@ -182,7 +182,7 @@ fn py_float(f: f64) -> String {
 }
 
 /// The OS message alone. io::Error prints an errno after it.
-fn strerror(e: &std::io::Error) -> String {
+pub(crate) fn strerror(e: &std::io::Error) -> String {
     let s = e.to_string();
     match s.find(" (os error ") {
         Some(i) => s[..i].to_string(),
@@ -191,7 +191,7 @@ fn strerror(e: &std::io::Error) -> String {
 }
 
 /// A lexical path cleanup. It does not resolve a symlink.
-fn normpath(path: &str) -> String {
+pub(crate) fn normpath(path: &str) -> String {
     let absolute = path.starts_with('/');
     let mut out: Vec<&str> = Vec::new();
     for part in path.split('/') {
@@ -222,7 +222,7 @@ fn abspath(path: &str) -> String {
     normpath(&format!("{}/{path}", cwd.to_string_lossy()))
 }
 
-fn join(root: &str, path: &str) -> String {
+pub(crate) fn join(root: &str, path: &str) -> String {
     if path.starts_with('/') {
         path.to_string()
     } else {
@@ -820,6 +820,10 @@ pub struct Asset {
     pub raw: Option<RawLayout>,
     /// The decoded pixels. load_assets fills them from the file.
     pub image: Option<crate::assets::Image>,
+    /// The filter that declared the asset, empty for the scene's own. The
+    /// filter loads it, its name carries the filter's as a prefix, and a save
+    /// leaves it out.
+    pub from_filter: String,
 }
 
 /// A .raw file's declared pixel layout. f32 pixels are little-endian on
@@ -833,6 +837,39 @@ pub struct RawLayout {
 }
 
 impl Asset {
+    /// The name the declaring code uses. A filter's asset drops the filter
+    /// prefix it runs under.
+    pub fn local_name(&self) -> &str {
+        if self.from_filter.is_empty() {
+            return &self.name;
+        }
+        self.name
+            .strip_prefix(&self.from_filter)
+            .and_then(|r| r.strip_prefix('_'))
+            .unwrap_or(&self.name)
+    }
+
+    /// Decode `bytes` as this asset's declared format. `what` names the source
+    /// in the error.
+    pub fn decode(&mut self, bytes: &[u8], what: &str) -> Result<()> {
+        let decoded = match &self.raw {
+            Some(r) => crate::assets::decode_raw(
+                bytes,
+                r.width as u32,
+                r.height as u32,
+                r.components as u32,
+                r.is_f32,
+            ),
+            None if self.file.to_ascii_lowercase().ends_with(".png") => {
+                crate::assets::decode_png(bytes)
+            }
+            None => crate::assets::decode_jpeg(bytes),
+        }
+        .map_err(|e| anyhow!("asset '{}' ({what}): {e}", self.name))?;
+        self.image = Some(decoded);
+        Ok(())
+    }
+
     pub fn from_dict(name: &str, d: &Value) -> Result<Asset> {
         let Value::Object(o) = d else {
             bail!("asset '{name}' needs an object, got {}", py_repr(d));
@@ -914,12 +951,21 @@ impl Asset {
                 py_str_repr(&file)
             ),
         };
+        let from_filter = match o.get("from_filter").filter(|v| !v.is_null()) {
+            None => String::new(),
+            Some(Value::String(s)) => s.clone(),
+            Some(v) => bail!(
+                "asset '{name}' from_filter needs a filter name, got {}",
+                py_repr(v)
+            ),
+        };
         Ok(Asset {
             name: name.to_string(),
             file,
             linear,
             raw,
             image: None,
+            from_filter,
         })
     }
 
@@ -939,6 +985,12 @@ impl Asset {
         }
         if self.linear {
             d.insert("filter".to_string(), Value::from("linear"));
+        }
+        if !self.from_filter.is_empty() {
+            d.insert(
+                "from_filter".to_string(),
+                Value::from(self.from_filter.clone()),
+            );
         }
         Value::Object(d)
     }
@@ -1148,8 +1200,9 @@ impl Pass {
     }
 
     /// `hw_linear` is the target GPU's Renderer.data_texture_linear. False emits
-    /// the array readers that hold on any GPU. `assets` are the scene's assets,
-    /// every pass preamble declares them all.
+    /// the array readers that hold on any GPU. `assets` are the scene's assets.
+    /// A pass of the scene's own declares the scene's assets. A filter pass
+    /// declares only its filter's, each under the name the filter wrote.
     pub fn glsl(
         &self,
         scene_params: Option<&ParamMap>,
@@ -1187,7 +1240,11 @@ impl Pass {
         for i in 0..self.channels.len() {
             l.push(format!("uniform sampler2D iChannel{i};"));
         }
-        for a in assets {
+        let own: Vec<&Asset> = assets
+            .iter()
+            .filter(|a| a.from_filter == self.filter)
+            .collect();
+        for a in &own {
             l.push(format!("uniform sampler2D {};", a.name));
             l.push(format!("uniform vec2 {}_size;", a.name));
         }
@@ -1200,6 +1257,16 @@ impl Pass {
         }
         for a in &self.arrays {
             l.extend(array_reader_lines(a, hw_linear));
+        }
+        // A filter's asset runs under its filter's prefix, so it never meets a
+        // scene name. The defines come last, after every declaration, and
+        // give the filter code back the name its author wrote.
+        for a in &own {
+            let local = a.local_name();
+            if local != a.name {
+                l.push(format!("#define {local} {}", a.name));
+                l.push(format!("#define {local}_size {}_size", a.name));
+            }
         }
         // An author writes a filter on its own, and ghee appends it to any
         // scene. The scene's common block never reaches it, so a filter name
@@ -1443,7 +1510,8 @@ impl Scene {
     /// outside it. A file absent there resolves one directory up: a copy saved
     /// into modified/ keeps its assets beside the original scene. After that
     /// it resolves through `$GHEE_ASSETS`, colon-separated directories, in
-    /// order. The error names the first path and every other one tried.
+    /// order. The error names the first path and every other one tried. A
+    /// filter's asset is the filter's to load.
     pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
         if self.assets.is_empty() {
             return Ok(());
@@ -1459,6 +1527,9 @@ impl Scene {
         }
         roots.extend(asset_dirs());
         for a in &mut self.assets {
+            if !a.from_filter.is_empty() {
+                continue; // the filter decoded it
+            }
             let full = normpath(&join(&root, &a.file));
             if full != root && !full.starts_with(&format!("{root}/")) {
                 bail!(
@@ -1483,21 +1554,7 @@ impl Scene {
             let bytes = fs::read(&path)
                 .map_err(|e| anyhow!("asset '{}' ({path}): {}", a.name, strerror(&e)))?;
             crate::sources::record(&path);
-            let decoded = match &a.raw {
-                Some(r) => crate::assets::decode_raw(
-                    &bytes,
-                    r.width as u32,
-                    r.height as u32,
-                    r.components as u32,
-                    r.is_f32,
-                ),
-                None if a.file.to_ascii_lowercase().ends_with(".png") => {
-                    crate::assets::decode_png(&bytes)
-                }
-                None => crate::assets::decode_jpeg(&bytes),
-            }
-            .map_err(|e| anyhow!("asset '{}' ({path}): {e}", a.name))?;
-            a.image = Some(decoded);
+            a.decode(&bytes, &path)?;
         }
         Ok(())
     }

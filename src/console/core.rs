@@ -29,7 +29,7 @@ use std::fmt;
 use serde_json::{Map, Value};
 
 use crate::console::{static_asset, WEB};
-use crate::filters::load_filters;
+use crate::filters::{filter_defs, rebuild_filters};
 use crate::scene::{py_repr, Scene};
 
 /// The console's cap on a request body. A POSTed scene is JSON text.
@@ -395,7 +395,7 @@ pub trait ConsoleHost {
 
     /// Each filter name and its definition, for the "+ filter" picker.
     fn filters(&self) -> ConsoleResult<Value> {
-        Ok(Value::Object(load_filters(&[])))
+        Ok(Value::Object(filter_defs()))
     }
 
     fn hwinfo(&self) -> ConsoleResult<Value> {
@@ -570,9 +570,14 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             return Ok(Response::json(&active_json(active)));
         }
         if path == "/scene" {
-            let scene = scene_of(&json_body(headers, body, "/scene")?, "/scene")?;
+            let mut scene = scene_of(&json_body(headers, body, "/scene")?, "/scene")?;
+            rebuild_filters(&mut scene, None)
+                .map_err(|e| ConsoleError::bad_request(format!("bad /scene: {e}")))?;
+            // The scene as it will run, so the console shows each filter pass
+            // as the filter built it.
+            let doc = scene.to_dict();
             h.apply_scene(scene)?;
-            return Ok(Response::text(200, "ok"));
+            return Ok(Response::json(&doc));
         }
         if path == "/save" {
             let d = json_body(headers, body, "/save")?;
@@ -1036,7 +1041,9 @@ mod tests {
             &json_ct(),
             SCENE.as_bytes(),
         );
-        assert_eq!((r.status, body(&r).as_str()), (200, "ok"));
+        assert_eq!(r.status, 200);
+        let doc: Value = serde_json::from_str(&body(&r)).unwrap();
+        assert_eq!(doc["passes"][0]["name"], "main");
         let calls = api.host.calls.borrow();
         match &calls[0] {
             Call::ApplyScene(scene) => assert_eq!(scene.passes[0].name, "main"),

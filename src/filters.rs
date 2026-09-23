@@ -10,7 +10,7 @@
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
 
-use crate::scene::{Pass, Scene};
+use crate::scene::{join, normpath, strerror, Asset, Pass, RawLayout, Scene};
 
 /// The shipped filters. A binary carries no package directory, so the build
 /// compiles them in.
@@ -29,23 +29,36 @@ const BUILTIN: [(&str, &str); 3] = [
     ),
 ];
 
-fn accept(out: &mut Map<String, Value>, path: &str, text: &str) {
+/// The files the shipped filters declare as assets, compiled in beside them.
+const BUILTIN_ASSETS: [(&str, &[u8]); 1] = [(
+    "bluenoise.png",
+    include_bytes!("../ghee/filters/bluenoise.png"),
+)];
+
+/// The directory a scanned filter came from, kept on its definition so its
+/// assets resolve beside it. A shipped filter has none.
+const DIR_KEY: &str = "_dir";
+
+/// Parse one filter file into `out`. The name it went in under, or None when
+/// the file was skipped.
+fn accept(out: &mut Map<String, Value>, path: &str, text: &str) -> Option<String> {
     let parsed: Result<Value, _> = serde_json::from_str(text);
     let fd = match parsed {
         Ok(v) => v,
         Err(e) => {
             eprintln!("filter {path}: skipped ({e})");
-            return;
+            return None;
         }
     };
     let named = fd.get("name").is_some_and(Value::is_string)
         && fd.get("code").is_some_and(Value::is_string);
     if !named {
         eprintln!("filter {path}: skipped (needs a string 'name' and 'code')");
-        return;
+        return None;
     }
     let name = fd["name"].as_str().unwrap_or_default().to_string();
-    out.insert(name, fd);
+    out.insert(name.clone(), fd);
+    Some(name)
 }
 
 /// name -> filter definition, one pass each. A later directory wins a name
@@ -74,12 +87,28 @@ pub fn load_filters(extra_dirs: &[&str]) -> Map<String, Value> {
         paths.sort();
         for p in paths {
             match std::fs::read_to_string(&p) {
-                Ok(text) => accept(&mut out, &p, &text),
+                Ok(text) => {
+                    if let Some(name) = accept(&mut out, &p, &text) {
+                        out[&name][DIR_KEY] = Value::from(d.to_string());
+                    }
+                }
                 Err(e) => eprintln!("filter {p}: skipped ({e})"),
             }
         }
     }
     out
+}
+
+/// The registry as the console's filter picker sees it, without the
+/// directories the scan came from.
+pub fn filter_defs() -> Map<String, Value> {
+    let mut reg = load_filters(&[]);
+    for fd in reg.values_mut() {
+        if let Some(o) = fd.as_object_mut() {
+            o.remove(DIR_KEY);
+        }
+    }
+    reg
 }
 
 /// Append each named filter as a pass, in order. Each one reads the pass before
@@ -108,43 +137,221 @@ pub fn apply_filters(
             );
             continue;
         };
-        let (Some(fname), Some(code)) = (
-            fd.get("name").and_then(Value::as_str),
-            fd.get("code").and_then(Value::as_str),
-        ) else {
+        let Some(fname) = fd.get("name").and_then(Value::as_str) else {
             bail!("filter '{name}': needs a string 'name' and 'code'");
         };
+        let own = unique(scene, fname);
         let prev = scene.passes[scene.passes.len() - 1].name.clone();
-        let mut d = Map::new();
-        d.insert("name".to_string(), Value::from(unique(scene, fname)));
-        d.insert("code".to_string(), Value::from(code));
-        d.insert(
-            "params".to_string(),
-            fd.get("params")
-                .cloned()
-                .unwrap_or_else(|| Value::Object(Map::new())),
-        );
-        let own = d["name"].as_str().unwrap().to_string();
-        let mut channel = Map::new();
-        channel.insert("buffer".to_string(), Value::from(prev));
-        let mut channels = vec![Value::Object(channel)];
-        // A filter def may declare more channels after the filtered frame.
-        // "self" names the filter's own previous frame, so an accumulator
-        // works on any scene.
-        if let Some(extra) = fd.get("channels").and_then(Value::as_array) {
-            for c in extra {
-                let mut c = c.clone();
-                if c.get("buffer").and_then(Value::as_str) == Some("self") {
-                    c["buffer"] = Value::from(own.clone());
-                }
-                channels.push(c);
+        let p = filter_pass(name, fd, &own, &prev, None)?;
+        scene.passes.push(p);
+        merge_assets(scene, name, fd)?;
+    }
+    Ok(())
+}
+
+/// Build the filters of a posted scene. A filter pass the post carries is
+/// rebuilt from its definition: the post gives its place, its name and its
+/// param values, the filter gives its code, channels and assets. A filter the
+/// scene's `filters` list names and no pass carries yet is appended, as a
+/// load from disk does, so a scene file posted as it is gets its filters. An
+/// unknown filter fails.
+pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>) -> Result<()> {
+    scene.assets.retain(|a| a.from_filter.is_empty());
+    let mut missing = scene.filters.clone();
+    for p in &scene.passes {
+        if let Some(i) = missing.iter().position(|n| *n == p.filter) {
+            missing.remove(i);
+        }
+    }
+    if missing.is_empty() && scene.passes.iter().all(|p| p.filter.is_empty()) {
+        return Ok(());
+    }
+    let loaded;
+    let reg = match registry {
+        Some(r) => r,
+        None => {
+            loaded = load_filters(&[]);
+            &loaded
+        }
+    };
+    let unknown = |name: &str| {
+        anyhow::anyhow!(
+            "filter '{name}': unknown (known: {})",
+            reg.keys().cloned().collect::<Vec<_>>().join(", ")
+        )
+    };
+    for i in 0..scene.passes.len() {
+        let name = scene.passes[i].filter.clone();
+        if name.is_empty() {
+            continue;
+        }
+        let fd = reg.get(&name).ok_or_else(|| unknown(&name))?;
+        if i == 0 {
+            bail!("filter '{name}': a filter pass needs a pass before it");
+        }
+        let own = scene.passes[i].name.clone();
+        let prev = scene.passes[i - 1].name.clone();
+        let p = filter_pass(&name, fd, &own, &prev, Some(&scene.passes[i]))?;
+        scene.passes[i] = p;
+        merge_assets(scene, &name, fd)?;
+    }
+    if let Some(name) = missing.iter().find(|n| !reg.contains_key(*n)) {
+        return Err(unknown(name));
+    }
+    apply_filters(scene, &missing, Some(reg))
+}
+
+/// One filter pass named `own`, reading `prev`. The param values of `was`
+/// replace the defaults where the filter still declares that param.
+fn filter_pass(name: &str, fd: &Value, own: &str, prev: &str, was: Option<&Pass>) -> Result<Pass> {
+    let Some(code) = fd.get("code").and_then(Value::as_str) else {
+        bail!("filter '{name}': needs a string 'name' and 'code'");
+    };
+    let mut params = fd
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    if let (Some(was), Value::Object(defs)) = (was, &mut params) {
+        for (n, def) in defs.iter_mut() {
+            if let (Some(p), Value::Object(def)) = (was.params.get(n), def) {
+                def.insert("value".to_string(), p.value.to_json());
             }
         }
-        d.insert("channels".to_string(), Value::Array(channels));
-        let mut p = Pass::from_dict(&Value::Object(d), None)?;
-        p.filter = name.clone(); // The console renders a filter pass read-only.
-        scene.passes.push(p);
     }
+    let mut d = Map::new();
+    d.insert("name".to_string(), Value::from(own));
+    d.insert("code".to_string(), Value::from(code));
+    d.insert("params".to_string(), params);
+    let mut channel = Map::new();
+    channel.insert("buffer".to_string(), Value::from(prev));
+    let mut channels = vec![Value::Object(channel)];
+    // A filter def may declare more channels after the filtered frame.
+    // "self" names the filter's own previous frame, so an accumulator
+    // works on any scene.
+    if let Some(extra) = fd.get("channels").and_then(Value::as_array) {
+        for c in extra {
+            let mut c = c.clone();
+            if c.get("buffer").and_then(Value::as_str) == Some("self") {
+                c["buffer"] = Value::from(own);
+            }
+            channels.push(c);
+        }
+    }
+    d.insert("channels".to_string(), Value::Array(channels));
+    let mut p = Pass::from_dict(&Value::Object(d), None)?;
+    p.filter = name.to_string(); // The console renders a filter pass read-only.
+    Ok(p)
+}
+
+/// A filter's declared assets join the scene's, marked as the filter's and
+/// named `<filter>_<asset>`, so none meets a scene name. Only the filter's own
+/// pass declares them, under the names the filter wrote. A filter applied twice
+/// shares one copy.
+fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
+    let Some(Value::Object(assets)) = fd.get("assets") else {
+        return Ok(());
+    };
+    let mut added = false;
+    for (aname, ad) in assets {
+        let full = format!("{filter}_{aname}");
+        if scene.assets.iter().any(|a| a.name == full) {
+            continue;
+        }
+        let mut asset =
+            Asset::from_dict(aname, ad).map_err(|e| anyhow::anyhow!("filter '{filter}': {e}"))?;
+        asset.name = full;
+        asset.from_filter = filter.to_string();
+        resolve_asset(&mut asset, fd)?;
+        scene.assets.push(asset);
+        added = true;
+    }
+    if added {
+        use std::mem::take;
+        *scene = Scene::new(
+            take(&mut scene.passes),
+            take(&mut scene.version),
+            take(&mut scene.filters),
+            take(&mut scene.params),
+            take(&mut scene.common),
+            take(&mut scene.assets),
+        )
+        .map_err(|e| anyhow::anyhow!("filter '{filter}': {e}"))?;
+    }
+    Ok(())
+}
+
+/// Read and decode a filter's asset. A shipped filter's file comes from the
+/// built-in table. A scanned filter's file resolves inside the directory the
+/// filter came from, and never outside it.
+fn resolve_asset(asset: &mut Asset, fd: &Value) -> Result<()> {
+    let filter = &asset.from_filter;
+    let Some(dir) = fd.get(DIR_KEY).and_then(Value::as_str) else {
+        let Some((_, bytes)) = BUILTIN_ASSETS.iter().find(|(f, _)| *f == asset.file) else {
+            bail!(
+                "filter '{filter}' asset '{}': {} is not a shipped file",
+                asset.name,
+                asset.file
+            );
+        };
+        let what = format!("shipped {}", asset.file);
+        return decode_once(asset, &what, None, || Ok(bytes.to_vec()));
+    };
+    let root = normpath(dir);
+    let path = normpath(&join(&root, &asset.file));
+    if !path.starts_with(&format!("{root}/")) {
+        bail!(
+            "filter '{filter}' asset '{}' file {} is outside the filter directory",
+            asset.name,
+            asset.file
+        );
+    }
+    let what = format!("filter '{filter}' asset '{}' ({path})", asset.name);
+    let io = |e: std::io::Error| anyhow::anyhow!("{what}: {}", strerror(&e));
+    let meta = std::fs::metadata(&path).map_err(io)?;
+    let stamp = (meta.modified().ok(), meta.len());
+    crate::sources::record(&path);
+    decode_once(asset, &path, Some(stamp), || {
+        std::fs::read(&path).map_err(io)
+    })
+}
+
+type Stamp = (Option<std::time::SystemTime>, u64);
+
+/// A decoded filter asset, by source.
+struct Decoded {
+    stamp: Option<Stamp>,
+    raw: Option<RawLayout>,
+    image: crate::assets::Image,
+}
+
+/// Every console post rebuilds its filters. The decoded pixels are kept, one
+/// entry per source, so a file decodes once until its size or mtime changes.
+static DECODED: std::sync::Mutex<Vec<(String, Decoded)>> = std::sync::Mutex::new(Vec::new());
+
+fn decode_once(
+    asset: &mut Asset,
+    source: &str,
+    stamp: Option<Stamp>,
+    read: impl FnOnce() -> Result<Vec<u8>>,
+) -> Result<()> {
+    let mut cache = DECODED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, d)) = cache.iter().find(|(k, _)| k == source) {
+        if d.stamp == stamp && d.raw == asset.raw {
+            asset.image = Some(d.image.clone());
+            return Ok(());
+        }
+    }
+    asset.decode(&read()?, source)?;
+    let image = asset.image.clone().expect("decoded");
+    cache.retain(|(k, _)| k != source);
+    cache.push((
+        source.to_string(),
+        Decoded {
+            stamp,
+            raw: asset.raw,
+            image,
+        },
+    ));
     Ok(())
 }
 
@@ -188,6 +395,310 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_shipped_filter_brings_its_asset() {
+        let _g = env_guard();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+        let a = sc
+            .assets
+            .iter()
+            .find(|a| a.name == "frc256_bluenoise")
+            .expect("bluenoise asset");
+        let img = a.image.as_ref().expect("decoded");
+        assert_eq!((img.width, img.height), (64, 64));
+        assert!(sc.passes.last().unwrap().name.starts_with("frc256"));
+    }
+
+    #[test]
+    fn a_scanned_filter_resolves_its_asset_beside_itself() {
+        let _g = env_guard();
+        let d = tmpdir("asset-filter");
+        std::fs::write(format!("{d}/m.raw"), [1u8, 2, 3, 4]).unwrap();
+        std::fs::write(
+            format!("{d}/masked.filter.json"),
+            json!({"name": "masked", "code": GOOD,
+                   "assets": {"m": {"file": "m.raw", "width": 2, "height": 2, "format": "u8"}}})
+            .to_string(),
+        )
+        .unwrap();
+        let reg = load_filters(&[&d]);
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        apply_filters(&mut sc, &["masked".to_string()], Some(&reg)).unwrap();
+        let a = sc
+            .assets
+            .iter()
+            .find(|a| a.name == "masked_m")
+            .expect("asset m");
+        assert_eq!(
+            (
+                a.image.as_ref().unwrap().width,
+                a.image.as_ref().unwrap().height
+            ),
+            (2, 2)
+        );
+    }
+
+    #[test]
+    fn a_posted_filter_pass_is_rebuilt_from_its_filter() {
+        // The console posts what GET /scene gave it. Only the filter's place,
+        // name and param values count; the code and the asset come from the
+        // filter.
+        let _g = env_guard();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+        let mut doc = sc.to_dict();
+        assert_eq!(
+            doc["assets"]["frc256_bluenoise"]["from_filter"],
+            json!("frc256")
+        );
+        doc["passes"][1]["code"] = json!("void main(){ gl_FragColor = vec4(0.0); }");
+        doc.as_object_mut().unwrap().remove("assets");
+        let mut back = Scene::from_dict(&doc, None, None).unwrap();
+        rebuild_filters(&mut back, None).unwrap();
+        assert_eq!(back.passes[1].code, sc.passes[1].code);
+        let img = back.assets[0].image.as_ref().expect("decoded");
+        assert_eq!((img.width, img.height), (64, 64));
+    }
+
+    #[test]
+    fn a_filter_asset_never_meets_a_scene_name() {
+        // The scene has its own bluenoise and a param of that name. The filter
+        // still samples its own mask under the name it wrote.
+        let _g = env_guard();
+        let d = tmpdir("clash");
+        std::fs::write(format!("{d}/bluenoise.raw"), [1u8, 2, 3, 4]).unwrap();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1,
+                    "passes": [{"name": "m", "code": GOOD}],
+                    "assets": {"bluenoise": {"file": "bluenoise.raw",
+                                             "width": 2, "height": 2, "format": "u8"}}}),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(&d).unwrap();
+        apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+        let names: Vec<&str> = sc.assets.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["bluenoise", "frc256_bluenoise"]);
+        let main = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, false);
+        assert!(main.contains("uniform sampler2D bluenoise;"));
+        assert!(!main.contains("frc256_bluenoise"));
+        let filt = sc.passes[1].glsl(Some(&sc.params), None, &sc.assets, false);
+        assert!(filt.contains("uniform sampler2D frc256_bluenoise;"));
+        assert!(filt.contains("#define bluenoise frc256_bluenoise"));
+        assert!(!filt.contains("uniform sampler2D bluenoise;"));
+
+        let mut sp = Scene::from_dict(
+            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
+                    "params": {"bluenoise": {"type": "float", "value": 0.5}}}),
+            None,
+            None,
+        )
+        .unwrap();
+        apply_filters(&mut sp, &["frc256".to_string()], None).unwrap();
+        let filt = sp.passes[1].glsl(Some(&sp.params), None, &sp.assets, false);
+        let (decl, def) = (
+            filt.find("uniform float bluenoise;").unwrap(),
+            filt.find("#define bluenoise ").unwrap(),
+        );
+        assert!(decl < def, "the define must follow every declaration");
+    }
+
+    #[test]
+    fn a_changed_filter_asset_decodes_again() {
+        let _g = env_guard();
+        let d = tmpdir("redecode");
+        let f = format!("{d}/m.raw");
+        std::fs::write(&f, [1u8, 2, 3, 4]).unwrap();
+        std::fs::write(
+            format!("{d}/masked.filter.json"),
+            json!({"name": "masked", "code": GOOD,
+                   "assets": {"m": {"file": "m.raw", "width": 2, "height": 2, "format": "u8"}}})
+            .to_string(),
+        )
+        .unwrap();
+        let reg = load_filters(&[&d]);
+        let first = |reg: &Map<String, Value>| {
+            let mut sc = Scene::from_dict(
+                &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+                None,
+                None,
+            )
+            .unwrap();
+            apply_filters(&mut sc, &["masked".to_string()], Some(reg)).unwrap();
+            sc.assets[0].image.clone().unwrap().pixels
+        };
+        let a = first(&reg);
+        assert_eq!(first(&reg), a);
+        std::fs::write(&f, [9u8, 9, 9, 9]).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_ne!(first(&reg), a);
+    }
+
+    #[test]
+    fn a_page_built_filter_stub_gets_the_whole_filter() {
+        // The console adds a filter as its name and place only.
+        let _g = env_guard();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [
+                {"name": "m", "code": GOOD},
+                {"name": "dither", "code": "", "filter": "dither",
+                 "params": {"levels": {"type": "float", "value": 4.0}}}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        rebuild_filters(&mut sc, None).unwrap();
+        let p = &sc.passes[1];
+        assert!(p.code.contains("main"));
+        assert_eq!(p.channels[0].buffer.as_deref(), Some("m"));
+        assert_eq!(p.params.get("levels").unwrap().value.to_json(), json!(4.0));
+        assert_eq!(p.params.get("amount").unwrap().value.to_json(), json!(1.0));
+    }
+
+    #[test]
+    fn a_posted_filter_list_is_applied() {
+        // A scene file posted as it is: its filters list and no filter pass.
+        let _g = env_guard();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "filters": ["frc256"],
+                    "passes": [{"name": "m", "code": GOOD}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        rebuild_filters(&mut sc, None).unwrap();
+        assert_eq!(names(&sc), ["m", "frc256"]);
+        assert_eq!(sc.passes[1].filter, "frc256");
+        assert_eq!(sc.assets[0].name, "frc256_bluenoise");
+        // Posted again with its pass, as the console sends it: no second copy.
+        let mut again = Scene::from_dict(&sc.to_dict(), None, None).unwrap();
+        rebuild_filters(&mut again, None).unwrap();
+        assert_eq!(names(&again), ["m", "frc256"]);
+    }
+
+    #[test]
+    fn a_listed_filter_the_post_leaves_out_stays_out() {
+        // The console mutes a filter by posting it as a plain pass and leaving
+        // its name out of the list.
+        let _g = env_guard();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "filters": [],
+                    "passes": [{"name": "m", "code": GOOD},
+                               {"name": "frc256", "code": GOOD}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        rebuild_filters(&mut sc, None).unwrap();
+        assert_eq!(names(&sc), ["m", "frc256"]);
+        assert!(sc.passes[1].filter.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_listed_filter_fails() {
+        let _g = env_guard();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "filters": ["nope"],
+                    "passes": [{"name": "m", "code": GOOD}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        let e = rebuild_filters(&mut sc, None).unwrap_err().to_string();
+        assert!(e.contains("'nope': unknown"), "{e}");
+    }
+
+    #[test]
+    fn an_unknown_posted_filter_fails() {
+        let _g = env_guard();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [
+                {"name": "m", "code": GOOD},
+                {"name": "x", "code": GOOD, "filter": "nope"}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        let e = rebuild_filters(&mut sc, None).unwrap_err().to_string();
+        assert!(e.contains("'nope': unknown"), "{e}");
+    }
+
+    #[test]
+    fn a_filter_asset_stays_inside_its_directory() {
+        let _g = env_guard();
+        let d = tmpdir("asset-escape");
+        std::fs::write(
+            format!("{d}/esc.filter.json"),
+            json!({"name": "esc", "code": GOOD,
+                   "assets": {"m": {"file": "../m.raw", "width": 2, "height": 2, "format": "u8"}}})
+            .to_string(),
+        )
+        .unwrap();
+        let reg = load_filters(&[&d]);
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        let e = apply_filters(&mut sc, &["esc".to_string()], Some(&reg))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("outside the filter directory"), "{e}");
+    }
+
+    #[test]
+    fn a_skipped_file_leaves_the_shipped_filter_alone() {
+        let _g = env_guard();
+        let d = tmpdir("skipped-shadow");
+        std::fs::write(
+            format!("{d}/frc256.filter.json"),
+            json!({"name": "frc256"}).to_string(),
+        )
+        .unwrap();
+        let reg = load_filters(&[&d]);
+        assert!(reg["frc256"].get(DIR_KEY).is_none());
+    }
+
+    #[test]
+    fn the_picker_sees_no_scan_directory() {
+        let _g = env_guard();
+        let d = tmpdir("picker");
+        std::fs::write(
+            format!("{d}/plain.filter.json"),
+            json!({"name": "plain", "code": GOOD}).to_string(),
+        )
+        .unwrap();
+        std::env::set_var("GHEE_FILTERS", &d);
+        let defs = filter_defs();
+        std::env::remove_var("GHEE_FILTERS");
+        assert!(defs.contains_key("plain"));
+        assert!(defs.values().all(|fd| fd.get(DIR_KEY).is_none()));
     }
 
     #[test]

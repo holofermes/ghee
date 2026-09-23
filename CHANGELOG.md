@@ -8,6 +8,14 @@
 - A filter def may declare `channels`, use `self` to access the previous
   frame.
 - Add `uniform float frame`.
+- A filter declares `assets` the way a scene does. A shipped filter's file is
+  compiled in, a scanned filter's resolves beside it. Only the filter's own
+  pass sees them, so they never clash with a scene's names.
+- `frc256` takes its per-pixel phase from a shipped 64x64 blue-noise mask.
+- `POST /scene` builds the scene's filters on the server: a filter pass is
+  rebuilt from its filter, keeping its place and param values, and a filter
+  the `filters` list names without a pass is appended. An unknown filter is
+  a 400. The reply is the scene as it will run.
 - Draw a kernel-driven panel on `--display kms` into buffers the GPU
   allocates and the panel imports, when the panel's card is a device apart
   from the GPU and takes them. A panel driver that reads each frame with

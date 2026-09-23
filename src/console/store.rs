@@ -274,6 +274,7 @@ impl SceneStore {
         // Store the scene unexpanded. A load rebuilds each filter pass from the
         // filters list.
         scene.passes.retain(|p| p.filter.is_empty());
+        scene.assets.retain(|a| a.from_filter.is_empty());
         write(&self.modified_path(name), &scene.to_dict())
     }
 }
@@ -506,6 +507,22 @@ mod tests {
         let written = read_json(&format!("{d}/modified/f{SCENE_SUFFIX}"));
         assert_eq!(written["filters"], serde_json::json!(["dither"]));
         assert_eq!(written["passes"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_save_leaves_a_filter_asset_out() {
+        let _g = crate::filters::env_guard();
+        let d = tmpdir("filterasset");
+        let mut doc = scene_json();
+        doc["filters"] = serde_json::json!(["frc256"]);
+        write_text(&format!("{d}/f{SCENE_SUFFIX}"), &doc.to_string());
+        let store = SceneStore::new(&d, false, Vec::new());
+        let scene = store.resolve("f").unwrap();
+        assert_eq!(scene.assets[0].from_filter, "frc256");
+        store.save("f", scene).unwrap();
+        let written = read_json(&format!("{d}/modified/f{SCENE_SUFFIX}"));
+        assert!(written.get("assets").is_none(), "{written}");
+        assert_eq!(store.resolve("f").unwrap().assets.len(), 1);
     }
 
     #[test]

@@ -825,19 +825,12 @@ function buildTabs(){
   wrap.appendChild(add); wrap.appendChild(menu); t.appendChild(wrap);
 }
 
-function addFilter(name){
-  const f = FILTERS[name];
-  if (!f) return;
-  const prev = work.passes[work.passes.length-1].name;
-  work.passes.push({
-    name: uniqueName(name),
-    code: f.code,
-    channels: [{ buffer: prev }],   // reads the frame so far
-    params: JSON.parse(JSON.stringify(f.params || {})),
-    filter: name,                    // read-only in the editor; tweak params only
-  });
+async function addFilter(name){
+  if (!FILTERS[name]) return;
+  // name and place only: the server builds the pass from the filter
+  work.passes.push({ name: uniqueName(name), code: "", channels: [], params: {}, filter: name });
   (work.filters = work.filters || []).push(name);  // save strips the pass, keeps this
-  curPass = work.passes.length - 1; markDirty(); postScene();
+  curPass = work.passes.length - 1; markDirty(); await postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
@@ -1175,6 +1168,7 @@ function compiledScene(){
   const passes = work.passes.slice(0, last+1).map((p,pi)=>{
     const q = clone(p); delete q.muted; delete q.codeEdited;
     if (p.muted){
+      delete q.filter;   // a muted filter runs as a plain pass-through
       delete q.shader; q.arrays = []; q.params = {};
       if (pi === 0){
         q.code = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
@@ -1186,8 +1180,14 @@ function compiledScene(){
     }
     return q;
   });
+  // the server appends a listed filter no pass carries: a muted one is a
+  // plain pass now, so its name stays out of the posted list
+  const filters = [...(work.filters || [])];
+  work.passes.forEach(p => {
+    if (p.filter && p.muted){ const i = filters.indexOf(p.filter); if (i >= 0) filters.splice(i, 1); }
+  });
   // the editor's own commonEdited flag never goes on the wire
-  return { ...work, common: hasCommon() ? {code: commonCode()} : undefined, passes };
+  return { ...work, filters, common: hasCommon() ? {code: commonCode()} : undefined, passes };
 }
 function toggleMute(i){
   const willMute = !work.passes[i].muted;
@@ -1196,7 +1196,21 @@ function toggleMute(i){
   postScene(); buildTabs(); buildParams(); refreshInfo();
 }
 async function postScene(){
-  await fetch("/scene", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(compiledScene())});
+  const r = await fetch("/scene", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(compiledScene())});
+  if (r.ok) adoptFilters(await r.json());
+}
+// A filter pass is the server's: take its code and channels as the server
+// built them, and any param it added. Values already here stay.
+function adoptFilters(doc){
+  (doc.passes||[]).forEach(d => {
+    if (!d.filter) return;
+    const p = work.passes.find(w => w.name === d.name && w.filter === d.filter);
+    if (!p) return;
+    p.code = d.code; p.channels = d.channels || [];
+    const params = {};
+    Object.entries(d.params||{}).forEach(([n, v]) => { params[n] = (p.params||{})[n] || v; });
+    p.params = params;
+  });
 }
 
 // shader

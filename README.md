@@ -295,7 +295,8 @@ ghee render --demo bars --filters dither --display ssd1306
 ```
 
 You can author your own `<name>.filter.json` files and add their
-directories to `$GHEE_FILTERS`, colon-separated.
+directories to `$GHEE_FILTERS`, colon-separated. A filter declares
+assets the way a scene does, and the file resolves beside the filter.
 
 ## ISF import
 

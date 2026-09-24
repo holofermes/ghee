@@ -28,7 +28,7 @@
 
 #define ERROR_BUFFER_SIZE 512
 #define DEFAULT_DRI_DEVICE "/dev/dri/card0"
-#define MP_MAX_PASSES 8
+#define MP_MAX_PASSES 16
 #define MP_MAX_CHANNELS 8
 #define MP_MAX_DATATEX 4
 #define MP_MAX_ARRAYS 16

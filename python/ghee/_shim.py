@@ -262,11 +262,11 @@ class Scene:
     texts: list[Text] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        files = {}
+        names = set()
         for a in self.assets:
-            if a.name in files:
+            if a.name in names:
                 raise ValueError(f"asset '{a.name}' is declared twice")
-            files[a.name] = a.file
+            names.add(a.name)
         seen = set()
         for t in self.texts:
             if t.name in seen:
@@ -278,7 +278,7 @@ class Scene:
                     f"text '{t.name}' needs a scene string param '{t.name}' "
                     "that holds its words"
                 )
-            if t.font not in files:
+            if t.font not in names:
                 raise ValueError(
                     f"text '{t.name}' font '{t.font}' is no asset of the scene"
                 )
@@ -515,7 +515,7 @@ def set_param(name: str, value, pass_: str | None = None) -> None:
     """Set a live param for this tick.
 
     A float takes one number, a color takes three, and a vecN takes N.
-    A string takes text, and a Text of its name lays the new words out.
+    A string takes words, and the Text of its name lays them out again.
     `pass_` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
     """

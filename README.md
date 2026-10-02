@@ -183,8 +183,8 @@ uniform float DT;                   // seconds the last frame took
 uniform float frame;                // frames rendered, wraps at 2^20
 uniform vec2  resolution;           // buffer size in pixels
 varying vec2  v_texCoord;           // 0..1 across the buffer, y = 0 at the top
-// gl_FragCoord maps to the varying, so Shadertoy
-// gl_FragCoord.xy / resolution math works unchanged
+// gl_FragCoord maps to the varying, so its y = 0 is at the
+// top too, where Shadertoy has y = 0 at the bottom
 
 // declared array, e.g. {"name": "amplitudes", "size": 16}:
 const int amplitudes_size;          // = 16
@@ -248,7 +248,7 @@ unless the asset sets `"filter": "linear"`.
 `.png` and `.jpg` files are supported, as well as `.raw`: bare pixels
 that declare `width`, `height` and `format` (`u8` or little-endian
 `f32`), and `components` picks 1, 3 or 4 values per pixel, 1 by default.
-A `.ttf` or `.otf` file is a font for a [text](#text), and no pass sees it.
+A `.ttf` or `.otf` file is a font for a [text](#text), and only the text reads it.
 
 ## Text
 
@@ -285,8 +285,8 @@ Every pass of the scene, filter passes excepted, reads the words through
 The console shows the param as a text box, and an edit lays the words out
 again live, with no recompile.
 
-The font is a TrueType or CFF/OTF file, and texts that name the same font
-asset share it.
+The font is a TrueType or OpenType font with outlines, and texts that name the
+same font asset share it.
 
 Lines break at each newline, and `align` sets each line `left`, `center` or
 `right` within the block, `left` by default. Every character draws as one
@@ -297,16 +297,16 @@ its words.
 
 `title_cover` ports Eric Lengyel's [Slug](https://github.com/EricLengyel/Slug)
 algorithm and computes coverage from the font's own curves, so the edges stay
-exact at any size.
+sharp at any size. Each control point moves by at most 1/4094 of its glyph's
+size, 0.17 px for a 1 em glyph at 700 pixels per em.
 
 On VC4 the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre,
 so a shader that needs exact centres, like the one above, samples at
 `floor(v_texCoord * resolution) + 0.5`.
 
-A scene's texts and image assets share a cap of 8, and a font takes none of
-it. The words must fit a
-1024x2048 data texture, at most 4 glyphs may overlap at one spot, and a glyph
-with more than 64 curves in one band fails.
+A scene holds at most 8 image assets and texts together. The words must fit
+a 1024x2048 data texture, at most 4 glyphs may overlap at one spot, and a
+glyph with more than 64 curves in one band fails.
 
 Render the bundled `lettering` example to a PNG:
 

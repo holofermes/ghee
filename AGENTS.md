@@ -119,8 +119,8 @@ emits its scene JSON and feeds its data. See `ghee/examples/`,
   that switch at a texture read, and a switch loses the condition flags. Its
   flag optimization can still leave a select after the switch reading a
   compare made before it: a `step`, a ternary, a comparison. Source order does
-  not prevent it. Put the pass's last texture read inside an `if` the compiler
-  cannot drop, and the shader compiles single-threaded. `VC4_DEBUG=qpu` then
+  not prevent it. Put the pass's last texture read inside an `if` that the
+  compiler cannot drop, and the shader compiles single-threaded. `VC4_DEBUG=qpu` then
   shows no `sig_thread_switch` in it:
 
   ```glsl

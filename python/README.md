@@ -51,8 +51,9 @@ h.close()       # also a context manager
 param, else the param of the first pass that declares it. A string param
 that a text draws lays out the new words, also with no recompile.
 
-A scene given as a dict or as JSON text resolves its files in the working
-directory, a scene file beside itself.
+A scene file, a Python scene that ghee runs included, finds its asset files
+beside itself. A scene given as a dict or as JSON text finds them in the
+working directory, and so does a Python scene in [direct mode](#direct-mode).
 
 `feed` holds the data for one declared array, and the next frame consumes
 it once. A uint8 buffer reaches the texture as byte / 255, a float32
@@ -109,9 +110,10 @@ The shim gives:
 ## Text
 
 `ghee.Text` draws the scene string param of its name on the GPU, from the
-outlines of a font, sharp at any size. Every pass reads the words with
-`float <name>_cover(vec2 p, float ppem)`: `p` in em from the top left of
-the block, y down like `v_texCoord`, and `ppem` the pixels per em.
+outlines of a font, sharp at any size. Every pass except a filter pass reads
+the words with `float <name>_cover(vec2 p, float ppem)`: `p` in em from the
+top left of the block, y down like `v_texCoord`, and `ppem` the pixels per
+em.
 `<name>_size` is the block in em. A new value of the param lays out the
 words again with no recompile, from `set_param` or the console.
 
@@ -122,9 +124,8 @@ words again with no recompile, from `set_param` or the console.
         passes=[ghee.Pass("main", CODE)],
     )
 
-The font is an asset file, beside the scene when ghee runs it and in the
-working directory in a direct run. `ghee render --demo lettering -o
-lettering.png --frames 1` shows the words at every size.
+`ghee render --demo lettering -o lettering.png --frames 1` shows the words
+at every size.
 
 ## Direct mode
 

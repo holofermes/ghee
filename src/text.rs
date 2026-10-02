@@ -1,9 +1,15 @@
 //! Text drawn on the GPU from the outlines of a font.
 //!
 //! A scene declares a text under the name of one of its string params, and the
-//! font asset to draw it with. Every pass of the scene then reads the coverage of
-//! those words at any point with `<name>_cover(p, ppem)`. The words change
-//! with the param, live, with no recompile.
+//! font asset to draw it with. Every pass of the scene except a filter pass
+//! then reads the coverage of those words at any point with
+//! `<name>_cover(p, ppem)`. The words change with the param, live, with no
+//! recompile.
+//!
+//! A draw, declared on a pass, puts a text into that pass's buffer after the
+//! pass's own quad, as one quad over each inked glyph. The draw's
+//! `glyph_place` maps a point of the block to a pixel of the pass, and its code
+//! colours the pixels of each quad from the glyph's coverage.
 //!
 //! Coverage follows the Slug algorithm by Eric Lengyel
 //! (https://jcgt.org/published/0006/02/02/, https://github.com/EricLengyel/Slug).
@@ -22,16 +28,17 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
+use crate::scene::py_repr;
+
 /// Texture width in texels. A power of two keeps every texel centre an exact
-/// binary fraction, so a NEAREST read lands on the texel the index names.
+/// binary fraction, so a NEAREST read lands on the texel named by the index.
 const TEX_W: usize = 1024;
 /// VC4's GL_MAX_TEXTURE_SIZE.
 const MAX_TEX_H: usize = 2048;
-/// Glyphs one grid cell lists. The shader loops over them.
+/// The most glyphs listed by one grid cell. The shader loops over them.
 const CELL_K: usize = 4;
-/// Texels a grid cell spends on one glyph. A cell's CELL_K * SLOT texels divide
-/// TEX_W, so a cell sits in one texture row, and the shader steps through it
-/// with both numbers written in.
+/// The texels of one glyph's slot in a grid cell. CELL_K * SLOT divides TEX_W,
+/// so a cell sits in one texture row.
 const SLOT: usize = 2;
 /// The shader's loop bound over the curves of one band.
 const BAND_CURVES: usize = 64;
@@ -50,8 +57,8 @@ const CUBIC_TOL: f64 = 1.0 / 4096.0;
 /// 11 bits a coordinate. A point lands within half a step of the outline on each
 /// axis, 1/4094 of the box: 0.17 px for a 1 em box at 700 px per em.
 const LATTICE: f64 = 2047.0;
-/// p2 rides as its offset from p3 in 10 bits, so a curve whose p2 lies further
-/// from p3 splits in two.
+/// A curve stores p2 as its offset from p3, in 10 bits. A curve whose p2 lies
+/// more than this many lattice steps from p3 on an axis splits in two.
 const OFFSET_MAX: i32 = 511;
 /// A glyph box size is 16 bits at 1/8192 em, and so is its corner, offset by
 /// 7 em, from the corner of a grid cell that lists the glyph.
@@ -59,6 +66,8 @@ const BOX_SCALE: f64 = 8192.0;
 const CORNER_OFFSET: f64 = 7.0;
 /// Glyph origins and the grid corner sit on a 1/4096 em lattice.
 const ORIGIN_SCALE: f64 = 4096.0;
+/// The top bit of a slot's 24-bit location marks the cell's last glyph.
+const LAST_GLYPH: usize = 1 << 23;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Align {
@@ -92,11 +101,14 @@ pub struct Text {
 impl Text {
     pub fn from_dict(name: &str, d: &Value) -> Result<Text> {
         let Value::Object(o) = d else {
-            bail!("text '{name}' needs an object, got {d}");
+            bail!("text '{name}' needs an object, got {}", py_repr(d));
         };
         let font = match o.get("font") {
             Some(Value::String(s)) if !s.is_empty() => s.clone(),
-            Some(v) => bail!("text '{name}' 'font' needs the name of a font asset, got {v}"),
+            Some(v) => bail!(
+                "text '{name}' 'font' needs the name of a font asset, got {}",
+                py_repr(v)
+            ),
             None => bail!("text '{name}' has no 'font'"),
         };
         let align = match o.get("align").filter(|v| !v.is_null()) {
@@ -104,8 +116,19 @@ impl Text {
             Some(Value::String(s)) if s == "left" => Align::Left,
             Some(Value::String(s)) if s == "center" => Align::Center,
             Some(Value::String(s)) if s == "right" => Align::Right,
-            Some(v) => bail!("text '{name}' align needs 'left', 'center' or 'right', got {v}"),
+            Some(v) => bail!(
+                "text '{name}' align needs 'left', 'center' or 'right', got {}",
+                py_repr(v)
+            ),
         };
+        match o.get("fill").filter(|v| !v.is_null()) {
+            None => {}
+            Some(Value::String(s)) if s == "outline" => {}
+            Some(Value::String(s)) if s == "mtsdf" => bail!(
+                "text '{name}' fill needs 'outline', got 'mtsdf': the MTSDF fill does not exist yet"
+            ),
+            Some(v) => bail!("text '{name}' fill needs 'outline', got {}", py_repr(v)),
+        }
         Ok(Text {
             name: name.to_string(),
             font,
@@ -148,18 +171,20 @@ pub struct Built {
     pub quads: Quads,
 }
 
-/// Floats a quad vertex holds: the attributes a0 to a3, a vec4 each.
+/// The floats of one quad vertex: the attributes glyph_a0 to glyph_a3, a vec4
+/// each.
 pub const QUAD_FLOATS: usize = 16;
 
 /// The quads of a text's inked glyphs, 4 vertices a quad at the corners
 /// (0, 0), (1, 0), (0, 1), (1, 1) of the glyph's box from its top left, so the
 /// triangles 0 1 2 and 2 1 3 cover it. A vertex holds QUAD_FLOATS floats:
 ///
-/// - a0: the corner x and y, the character index, the word index
-/// - a1: the ink box in em from the block's top left, y down: x0, y0, x1, y1
-/// - a2: the texel of the glyph's band entries, its horizontal bands, its
-///   vertical bands, 0
-/// - a3: the line index, the advance's start and end x in em, 0
+/// - glyph_a0: the corner x and y, the character index, the word index
+/// - glyph_a1: the ink box in em from the block's top left, y down: x0, y0,
+///   x1, y1
+/// - glyph_a2: the texel of the glyph's band entries, its horizontal bands,
+///   its vertical bands, 0
+/// - glyph_a3: the line index, the advance's start and end x in em, 0
 ///
 /// Every index counts from 0.
 pub struct Quads {
@@ -291,14 +316,20 @@ struct Glyph {
     curves: Vec<Curve>,
 }
 
-fn glyph(face: &ttf_parser::Face, gid: ttf_parser::GlyphId) -> Result<Option<Glyph>> {
+/// The outline of glyph `gid`, which draws the character `ch`. None for a glyph
+/// with no outline.
+fn glyph(face: &ttf_parser::Face, gid: ttf_parser::GlyphId, ch: char) -> Result<Option<Glyph>> {
     let mut o = Outline {
         scale: 1.0 / f64::from(face.units_per_em()),
         start: [0.0; 2],
         at: [0.0; 2],
         quads: Vec::new(),
     };
-    if face.outline_glyph(gid, &mut o).is_none() || o.quads.is_empty() {
+    let drawn = face.outline_glyph(gid, &mut o).is_some();
+    // Every contour is closed, and ttf-parser leaves the last contour of a CFF2
+    // glyph open.
+    ttf_parser::OutlineBuilder::close(&mut o);
+    if !drawn || o.quads.is_empty() {
         return Ok(None);
     }
     let mut lo = [f64::MAX; 2];
@@ -315,10 +346,11 @@ fn glyph(face: &ttf_parser::Face, gid: ttf_parser::GlyphId) -> Result<Option<Gly
     let mut size = [0.0; 2];
     for a in 0..2 {
         min[a] = (lo[a] * BOX_SCALE).floor() / BOX_SCALE;
-        let qsize = ((hi[a] - min[a]) * BOX_SCALE).ceil().max(1.0);
-        size[a] = qsize / BOX_SCALE;
-        if qsize > 65535.0 {
-            bail!("glyph {} spans more than 8 em", gid.0);
+        size[a] = ((hi[a] - min[a]) * BOX_SCALE).ceil().max(1.0) / BOX_SCALE;
+        // A grid cell holds a glyph's corner at most CORNER_OFFSET em from
+        // its own, and a cell lists the glyph up to INK_MARGIN past the box.
+        if size[a] + INK_MARGIN > CORNER_OFFSET {
+            bail!("{ch:?} spans more than {} em", CORNER_OFFSET - INK_MARGIN);
         }
     }
     let snap = |p: [f64; 2]| {
@@ -360,9 +392,9 @@ fn mirror(c: &Curve, axis: usize) -> Curve {
     })
 }
 
-/// `n` bands across `axis` (1: horizontal bands, split along y), each listing
-/// the curves it crosses. None when a band holds more curves than the shader's
-/// loop reads.
+/// `n` bands across `axis`, each listing the curves that cross it. Axis 1
+/// splits the box along y into horizontal bands, axis 0 along x into vertical
+/// ones. None when a band holds more curves than the shader's loop reads.
 fn bands(curves: &[Curve], axis: usize, n: usize, eps: f64) -> Option<Vec<Vec<usize>>> {
     let mut out = vec![Vec::new(); n];
     for (i, c) in curves.iter().enumerate() {
@@ -385,12 +417,14 @@ fn bands(curves: &[Curve], axis: usize, n: usize, eps: f64) -> Option<Vec<Vec<us
 /// A glyph placed in the block, its origin in em.
 struct Placed {
     gid: u16,
+    /// The character drawn by the glyph.
+    ch: char,
     x: f64,
     y: f64,
-    /// The character it draws, counted over the words.
+    /// The index of its character, counted over the words.
     index: usize,
-    /// The run of non-whitespace it belongs to, counted from 0. Whitespace
-    /// takes the run before it.
+    /// The index of its word, a run of non-whitespace, counted from 0.
+    /// Whitespace takes the word before it.
     word: usize,
     line: usize,
     /// Its advance from start to end x, in em.
@@ -410,9 +444,9 @@ fn kerning(face: &ttf_parser::Face, l: ttf_parser::GlyphId, r: ttf_parser::Glyph
 }
 
 /// The block holds the lines top to bottom. Glyph origins are in em from the
-/// block's bottom left, y up like the font's own units, and the shader flips
-/// the y down of its callers. Returns the placed glyphs and the block's width
-/// and height, in em.
+/// block's bottom left, y up like the font's own units, and the shader turns
+/// the y-down points of its callers y up. Returns the placed glyphs and the
+/// block's width and height, in em.
 fn layout(face: &ttf_parser::Face, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
     let upem = f64::from(face.units_per_em());
     let ascent = f64::from(face.ascender()) / upem;
@@ -453,6 +487,7 @@ fn layout(face: &ttf_parser::Face, words: &str, align: Align) -> (Vec<Placed>, f
             let advance = f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
             placed.push(Placed {
                 gid: gid.0,
+                ch,
                 x,
                 y,
                 index: at,
@@ -526,29 +561,51 @@ pub fn build(data: &[u8], words: &str, align: Align) -> Result<Built> {
     let mut glyphs: HashMap<u16, Option<Glyph>> = HashMap::new();
     for p in &placed {
         if let Entry::Vacant(e) = glyphs.entry(p.gid) {
-            e.insert(glyph(&face, ttf_parser::GlyphId(p.gid))?);
+            e.insert(glyph(&face, ttf_parser::GlyphId(p.gid), p.ch)?);
         }
     }
+    let mut built = pack_fitting(&placed, &glyphs, height)?;
+    built.uniforms.extend([("_w", width), ("_h", height)]);
+    Ok(built)
+}
+
+/// pack() at the most bands to an axis, up to BANDS, that fit the texture.
+fn pack_fitting(
+    placed: &[Placed],
+    glyphs: &HashMap<u16, Option<Glyph>>,
+    height: f64,
+) -> Result<Built> {
     let mut need = None;
     let mut nb = BANDS;
     while nb >= 1 {
-        match pack(&placed, &glyphs, nb, height) {
-            Ok(Ok(mut built)) => {
-                built.uniforms.extend([("_w", width), ("_h", height)]);
-                return Ok(built);
+        match pack(placed, glyphs, nb, height) {
+            Ok(built) => return Ok(built),
+            Err(Unpacked::TooTall(tex_h)) => need = Some(tex_h),
+            // Fewer bands hold more curves each. Once the words outgrow the
+            // texture, a band past BAND_CURVES at fewer bands means that no
+            // band count fits them.
+            Err(Unpacked::Band(_)) if need.is_some() => break,
+            Err(Unpacked::Band(ch)) => {
+                bail!("{ch:?} has more than {BAND_CURVES} curves in one band")
             }
-            Ok(Err(tex_h)) => need = Some(tex_h),
-            // A band past BAND_CURVES at fewer bands leaves the texture's
-            // size as the error.
-            Err(e) if need.is_none() => return Err(e),
-            Err(_) => break,
+            Err(Unpacked::Fail(e)) => return Err(e),
         }
         nb /= 2;
     }
     bail!(
-        "the words need a {TEX_W}x{} texture, past the {TEX_W}x{MAX_TEX_H} a VC4 holds",
+        "the words need a {TEX_W}x{} texture, and a VC4 holds {TEX_W}x{MAX_TEX_H} at most",
         need.unwrap_or(0)
     )
+}
+
+/// Why pack() refused the words.
+enum Unpacked {
+    /// The texture rows needed by the words, past MAX_TEX_H.
+    TooTall(usize),
+    /// The glyph of this character holds more than BAND_CURVES curves in a
+    /// band.
+    Band(char),
+    Fail(anyhow::Error),
 }
 
 /// The texture rows that hold `texels`.
@@ -560,14 +617,13 @@ fn tex_rows(texels: usize) -> usize {
 }
 
 /// Pack the glyphs, `nb` bands to an axis, and the grid into texels, and lay
-/// the quads over a block `height` em tall. Err holds the texture height the
-/// words need when it passes MAX_TEX_H.
+/// the quads over a block `height` em tall.
 fn pack(
     placed: &[Placed],
     glyphs: &HashMap<u16, Option<Glyph>>,
     nb: usize,
     height: f64,
-) -> Result<std::result::Result<Built, usize>> {
+) -> std::result::Result<Built, Unpacked> {
     // Texel 0 stays empty, so a slot that names a glyph is never all zero.
     let mut tex: Vec<[u8; 4]> = vec![[0; 4]];
     // Where each glyph's data starts. None for a glyph with no outline.
@@ -580,21 +636,16 @@ fn pack(
             starts.insert(p.gid, None);
             continue;
         };
-        let too_many = || {
-            anyhow!(
-                "glyph {} holds too many curves for {BAND_CURVES} a band",
-                p.gid
-            )
-        };
-        let hbands = bands(&g.curves, 1, nb, BAND_EPS / g.size[1]).ok_or_else(too_many)?;
-        let vbands = bands(&g.curves, 0, nb, BAND_EPS / g.size[0]).ok_or_else(too_many)?;
+        let hbands = bands(&g.curves, 1, nb, BAND_EPS / g.size[1]).ok_or(Unpacked::Band(p.ch))?;
+        let vbands = bands(&g.curves, 0, nb, BAND_EPS / g.size[0]).ok_or(Unpacked::Band(p.ch))?;
         let at = tex.len();
         starts.insert(p.gid, Some(at));
         // The box size opens the glyph's data, then the band entries.
         tex.resize(at + 1 + 2 * nb, [0; 4]);
         let sz = |a: usize| fixed(g.size[a], 0.0, BOX_SCALE).unwrap_or(0);
         tex[at] = u16x2(sz(0), sz(1));
-        // A band that lists the same curves as an earlier one reads its lists.
+        // A band whose curves match an earlier band's shares that band's
+        // lists.
         let mut lists: HashMap<(usize, &[usize]), usize> = HashMap::new();
         let all = hbands
             .iter()
@@ -683,7 +734,7 @@ fn pack(
                 + cols.saturating_mul(rows).saturating_mul(CELL_K * SLOT),
         );
         if need > MAX_TEX_H {
-            return Ok(Err(need));
+            return Err(Unpacked::TooTall(need));
         }
         let mut grid: Vec<Vec<Packed>> = vec![Vec::new(); cols * rows];
         for (g, b) in &boxes {
@@ -702,7 +753,9 @@ fn pack(
             break (cols, rows, grid);
         }
         if cell <= 1.0 / 16.0 {
-            bail!("more than {CELL_K} glyphs overlap at one spot");
+            return Err(Unpacked::Fail(anyhow!(
+                "more than {CELL_K} glyphs overlap at one spot"
+            )));
         }
         cell /= 2.0;
     };
@@ -717,10 +770,11 @@ fn pack(
             for (k, (h, lo, _)) in list.iter().enumerate() {
                 let rel = |a: usize| fixed(lo[a] - corner[a], CORNER_OFFSET, BOX_SCALE);
                 let (Some(bx), Some(by)) = (rel(0), rel(1)) else {
-                    bail!("a glyph box sits past {CORNER_OFFSET} em from its grid cell");
+                    return Err(Unpacked::Fail(anyhow!(
+                        "a glyph box sits past {CORNER_OFFSET} em from its grid cell"
+                    )));
                 };
-                // The top bit of a slot's location marks the cell's last glyph.
-                let last = if k + 1 == list.len() { 1 << 23 } else { 0 };
+                let last = if k + 1 == list.len() { LAST_GLYPH } else { 0 };
                 tex[at + k * SLOT] = u24u8(h | last, 0);
                 tex[at + k * SLOT + 1] = u16x2(bx, by);
             }
@@ -748,7 +802,7 @@ fn pack(
             floats.extend([a0, a1, a2, a3].iter().flatten().map(|v| *v as f32));
         }
     }
-    Ok(Ok(Built {
+    Ok(Built {
         width: TEX_W as u32,
         height: tex_h as u32,
         quads: Quads {
@@ -769,7 +823,7 @@ fn pack(
             ("_cells", cells as f64),
             ("_nb", nb as f64),
         ],
-    }))
+    })
 }
 
 /// The preamble lines of one text: its uniforms, its sampler, and the readers.
@@ -786,9 +840,8 @@ pub fn reader_lines(name: &str) -> Vec<String> {
 
 /// The lines of a draw's vertex shader ahead of the author's
 /// `vec2 glyph_place(vec2 em)`: the quad attributes, the text's size, the
-/// varyings, and the glyph values glyph_place reads. The caller's preamble
-/// declares `resolution` and `vflip`, with the precision the fragment stage
-/// gives them.
+/// varyings, and the glyph values read by glyph_place. The caller's preamble
+/// declares `resolution` and `vflip` at the fragment stage's precision.
 pub fn draw_vertex_head(name: &str) -> Vec<String> {
     lines(DRAW_VERTEX_HEAD, name)
 }
@@ -813,17 +866,37 @@ pub fn outline_fragment_tail(name: &str) -> Vec<String> {
     lines(OUTLINE_FRAGMENT_TAIL, name)
 }
 
+/// The lines of a GLSL template, with the constants of this module written in
+/// for their tokens, then `name` for NAME.
 fn lines(glsl: &str, name: &str) -> Vec<String> {
+    let f = |v: f64| format!("{v:?}");
+    // A token comes ahead of any shorter token inside it.
+    let consts = [
+        ("LATTICE_MID", f(LATTICE / 2.0)),
+        ("LATTICE", f(LATTICE)),
+        ("BAND_CURVES", BAND_CURVES.to_string()),
+        ("CELL_TEXELS", f((CELL_K * SLOT) as f64)),
+        ("CELL_K", CELL_K.to_string()),
+        ("SLOT", f(SLOT as f64)),
+        ("BOX_SCALE", f(BOX_SCALE)),
+        ("CORNER_OFFSET", f(CORNER_OFFSET)),
+        ("OFFSET_BIAS", f(f64::from(OFFSET_MAX + 1))),
+        ("LAST_BIT", f((LAST_GLYPH >> 16) as f64)),
+    ];
+    let mut glsl = glsl.to_string();
+    for (token, value) in &consts {
+        glsl = glsl.replace(token, value);
+    }
     glsl.replace("NAME", name)
         .lines()
         .map(str::to_string)
         .collect()
 }
 
-const DRAW_VERTEX_HEAD: &str = r#"attribute vec4 a0;
-attribute vec4 a1;
-attribute vec4 a2;
-attribute vec4 a3;
+const DRAW_VERTEX_HEAD: &str = r#"attribute vec4 glyph_a0;
+attribute vec4 glyph_a1;
+attribute vec4 glyph_a2;
+attribute vec4 glyph_a3;
 uniform float NAME_w;
 uniform float NAME_h;
 #define NAME_size vec2(NAME_w, NAME_h)
@@ -840,38 +913,42 @@ vec2 glyph_span;
 vec4 glyph_box;"#;
 
 const OUTLINE_VERTEX_MAIN: &str = r#"void main() {
-    glyph_index = a0.z;
-    glyph_word = a0.w;
-    glyph_line = a3.x;
-    glyph_span = a3.yz;
-    glyph_box = a1;
-    vec2 em = mix(a1.xy, a1.zw, a0.xy);
+    glyph_index = glyph_a0.z;
+    glyph_word = glyph_a0.w;
+    glyph_line = glyph_a3.x;
+    glyph_span = glyph_a3.yz;
+    glyph_box = glyph_a1;
+    vec2 em = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
     vec2 p = glyph_place(em);
-    // The pixels glyph_place moves per em along each em axis, exact for an
+    // The pixels moved by glyph_place per em along each em axis, exact for an
     // affine glyph_place.
     vec2 jx = (glyph_place(em + vec2(0.0625, 0.0)) - p) * 16.0;
     vec2 jy = (glyph_place(em + vec2(0.0, 0.0625)) - p) * 16.0;
-    float det = abs(jx.x * jy.y - jx.y * jy.x);
+    // det stays above 0, so a glyph scaled to nothing keeps every position
+    // finite.
+    float sdet = jx.x * jy.y - jx.y * jy.x;
+    float det = max(abs(sdet), 1.0 / 16384.0);
     // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
-    // up to 1/16 px off where this shader puts it.
+    // up to 1/16 px off the position set by this shader.
     vec2 grow = max(0.625 * vec2(length(jy), length(jx)) / det, vec2(PAD));
-    vec2 e = em + (a0.xy * 2.0 - 1.0) * grow;
+    vec2 e = em + (glyph_a0.xy * 2.0 - 1.0) * grow;
     vec2 px = glyph_place(e);
-    // The em a screen pixel spans along each em axis, as fwidth would.
+    // The em spanned by a screen pixel along each em axis, as fwidth gives it.
     vec2 fw = vec2(abs(jy.x) + abs(jy.y), abs(jx.x) + abs(jx.y)) / det;
-    vec2 sz = a1.zw - a1.xy;
-    // The sample on the glyph's lattice, y up, and the pixels a lattice step
-    // spans.
-    glyph_v0 = vec4(vec2(e.x - a1.x, a1.w - e.y) / sz * 2047.0, sz / (fw * 2047.0));
+    vec2 sz = glyph_a1.zw - glyph_a1.xy;
+    // The sample on the glyph's lattice, y up, and the pixels spanned by a
+    // lattice step.
+    glyph_v0 = vec4(vec2(e.x - glyph_a1.x, glyph_a1.w - e.y) / sz * LATTICE,
+                    sz / (fw * LATTICE));
     // glyph_ppem: the pixels per em of a placement that scales both axes
     // alike.
-    glyph_v1 = vec4(a2.xyz, sqrt(det));
-    glyph_v2 = vec4(e, a0.zw);
-    glyph_v3 = vec4(a3.xyz, 0.0);
-    // The lattice steps a pixel spans along x and along y of the pass.
-    vec2 k = 2047.0 / sz;
+    glyph_v1 = vec4(glyph_a2.xyz, sqrt(det));
+    glyph_v2 = vec4(e, glyph_a0.zw);
+    glyph_v3 = vec4(glyph_a3.xyz, 0.0);
+    // The lattice steps spanned by a pixel along x and along y of the pass.
+    vec2 k = LATTICE / sz;
     glyph_v4 = vec4(k.x * jy.y, -k.x * jy.x, k.y * jx.y, -k.y * jx.x)
-             / (jx.x * jy.y - jx.y * jy.x);
+             / (sdet < 0.0 ? -det : det);
     v_texCoord = px / resolution;
     gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, vflip), 0.0, 1.0);
 }"#;
@@ -889,19 +966,17 @@ varying vec4 glyph_v4;
 #define glyph_line float(int(glyph_v3.x + 0.5))
 #define glyph_span glyph_v3.yz
 #define glyph_ppem glyph_v1.w
-#define glyph_dist glyph_dist_needs_fill_mtsdf
-#define glyph_soft glyph_soft_needs_fill_mtsdf
 float glyph_c = 0.0;
 float glyph_cover() { return glyph_c; }
-// The fill reads its texture ahead of the author's main: on VC4 a value
-// computed ahead of a texture read and used after it comes back wrong.
+// The author's main runs as glyph_main, after the fill: the fill computes the
+// coverage once a pixel, and glyph_cover() returns it at every call.
 #define main glyph_main"#;
 
 const OUTLINE_FRAGMENT_TAIL: &str = r#"#undef main
 void main() {
-    // VC4 lands a vertex up to 1/16 px off where the vertex shader put it, and
-    // the varyings follow the vertex, so the sample moves to the pixel centre
-    // as v_texCoord tells it.
+    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
+    // shader, and the varyings follow the vertex, so the sample moves to the
+    // pixel centre given by v_texCoord.
     vec2 px = v_texCoord * resolution;
     vec2 d = floor(px) + 0.5 - px;
     vec2 u = glyph_v0.xy + vec2(dot(glyph_v4.xy, d), dot(glyph_v4.zw, d));
@@ -924,10 +999,10 @@ uniform float NAME_cell;
 uniform float NAME_cells;
 uniform float NAME_nb;
 #define NAME_size vec2(NAME_w, NAME_h)
-// The Pi 5 reads a texel back too coarse to take bits from the raw values, so
-// every byte goes through int() first: a read of byte b lies near b / 255, and
-// int(t * 255.5) floors to b. On VC4, float(int(x)) takes 2 instructions and
-// floor(x) 4, and every floor here takes x >= 0.
+// A texture read on the Pi 5 returns a byte too coarse to take bits from as it
+// is, so every byte goes through int() first: a read of byte b lies near
+// b / 255, and int(t * 255.5) floors to b. On VC4, float(int(x)) takes 2
+// instructions and floor(x) 4, and every floor here takes x >= 0.
 vec4 NAME_texel(float i) {
     float row = float(int(i * NAME_itw));
     vec2 at = vec2(i - row * NAME_tw + 0.5, row + 0.5);
@@ -945,10 +1020,10 @@ vec2 NAME_list(vec4 band, float dir) {
 vec3 NAME_lattice(vec4 t) {
     vec4 b = vec4(ivec4(t * 255.5));
     vec2 hi = vec2(ivec2(b.ba * (1.0 / 32.0)));
-    return vec3(b.rg * 8.0 + hi, (b.b - hi.x * 32.0) * 32.0 + b.a - hi.y * 32.0 - 512.0);
+    return vec3(b.rg * 8.0 + hi, (b.b - hi.x * 32.0) * 32.0 + b.a - hi.y * 32.0 - OFFSET_BIAS);
 }
 // Where the curve crosses y = 0, as x. The roots of a t^2 - 2b t + c, each
-// from the form that cancels no digits.
+// from the form of the quadratic formula that subtracts no near-equal values.
 vec2 NAME_cross(vec2 p1, vec2 p2, vec2 p3) {
     vec2 a = p1 - p2 * 2.0 + p3;
     vec2 b = p1 - p2;
@@ -973,17 +1048,17 @@ vec2 NAME_cross(vec2 p1, vec2 p2, vec2 p3) {
 float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
     vec2 m = 0.5 / ppu;
     float cov = 0.0;
-    if (u.x > -m.x && u.y > -m.y && u.x < 2047.0 + m.x && u.y < 2047.0 + m.y) {
-        vec2 band = min(vec2(ivec2(max(u.yx, 0.0) * (nb / 2047.0))), nb - 1.0);
+    if (u.x > -m.x && u.y > -m.y && u.x < LATTICE + m.x && u.y < LATTICE + m.y) {
+        vec2 band = min(vec2(ivec2(max(u.yx, 0.0) * (nb / LATTICE))), nb - 1.0);
         vec4 hb = NAME_texel(h + band.x);
         // Each ray runs toward the nearer edge of the box. A ray toward -
         // reads its band mirrored, so its coverage flips sign.
-        float dx = u.x < 1023.5 ? -1.0 : 1.0;
-        vec2 uh = vec2(dx > 0.0 ? u.x : 2047.0 - u.x, u.y);
+        float dx = u.x < LATTICE_MID ? -1.0 : 1.0;
+        vec2 uh = vec2(dx > 0.0 ? u.x : LATTICE - u.x, u.y);
         float xcov = 0.0;
         float xwgt = 0.0;
         vec2 at = NAME_list(hb, dx);
-        for (int i = 0; i < 64; i++) {
+        for (int i = 0; i < BAND_CURVES; i++) {
             if (float(i) >= hb.a) break;
             vec3 c1 = NAME_lattice(texture2D(NAME_tex, at));
             vec3 c3 = NAME_lattice(texture2D(NAME_tex, at + vec2(NAME_itw, 0.0)));
@@ -991,11 +1066,11 @@ float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
             vec2 p1 = c1.xy - uh;
             vec2 p3 = c3.xy - uh;
             vec2 p2 = p3 + vec2(c1.z, c3.z);
-            // Sorted by their far end: a curve behind the pixel crosses
-            // nothing the pixel sees, and neither does any after it.
+            // Sorted by their far end, largest first: a curve wholly behind
+            // the pixel adds nothing, and neither does any after it.
             if (max(max(p1.x, p2.x), p3.x) * ppu.x < -0.5) break;
-            // Which roots count, from the signs of the control points: the
-            // table 0x2E74.
+            // Which roots count, by the signs of p1.y, p2.y and p3.y: Slug's
+            // lookup table 0x2E74, written out as logic.
             bool n1 = p1.y < 0.0;
             bool n2 = p2.y < 0.0;
             bool n3 = p3.y < 0.0;
@@ -1011,12 +1086,12 @@ float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
         }
         xcov *= dx;
         vec4 vb = NAME_texel(h + nb.x + band.y);
-        float dy = u.y < 1023.5 ? -1.0 : 1.0;
-        vec2 uv = vec2(u.x, dy > 0.0 ? u.y : 2047.0 - u.y);
+        float dy = u.y < LATTICE_MID ? -1.0 : 1.0;
+        vec2 uv = vec2(u.x, dy > 0.0 ? u.y : LATTICE - u.y);
         float ycov = 0.0;
         float ywgt = 0.0;
         at = NAME_list(vb, dy);
-        for (int i = 0; i < 64; i++) {
+        for (int i = 0; i < BAND_CURVES; i++) {
             if (float(i) >= vb.a) break;
             vec3 c1 = NAME_lattice(texture2D(NAME_tex, at));
             vec3 c3 = NAME_lattice(texture2D(NAME_tex, at + vec2(NAME_itw, 0.0)));
@@ -1025,8 +1100,8 @@ float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
             vec2 p3 = (c3.xy - uv).yx;
             vec2 p2 = p3 + vec2(c3.z, c1.z);
             if (max(max(p1.x, p2.x), p3.x) * ppu.y < -0.5) break;
-            // Which roots count, from the signs of the control points: the
-            // table 0x2E74.
+            // Which roots count, by the signs of p1.y, p2.y and p3.y: Slug's
+            // lookup table 0x2E74, written out as logic.
             bool n1 = p1.y < 0.0;
             bool n2 = p2.y < 0.0;
             bool n3 = p3.y < 0.0;
@@ -1049,31 +1124,31 @@ float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
 // The coverage of the glyph whose data starts at texel h, at q in em from its
 // box's corner. Its data holds its box size, then its band entries.
 float NAME_glyph(float h, vec2 q, vec2 sz, float ppem) {
-    return NAME_outline(h + 1.0, vec2(NAME_nb), q / sz * 2047.0, sz * (ppem / 2047.0));
+    return NAME_outline(h + 1.0, vec2(NAME_nb), q / sz * LATTICE, sz * (ppem / LATTICE));
 }
-// The coverage of the words at at, in em from the top left of the block, y
+// The coverage of the words at p, in em from the top left of the block, y
 // down like v_texCoord, drawn at ppem pixels per em.
-float NAME_cover(vec2 at, float ppem) {
+float NAME_cover(vec2 p, float ppem) {
     float cov = 0.0;
-    vec2 p = vec2(at.x, NAME_h - at.y);
-    vec2 g = (p - vec2(NAME_gx, NAME_gy)) / NAME_cell;
+    vec2 at = vec2(p.x, NAME_h - p.y);
+    vec2 g = (at - vec2(NAME_gx, NAME_gy)) / NAME_cell;
     if (g.x >= 0.0 && g.y >= 0.0 && g.x < NAME_cols && g.y < NAME_rows) {
         vec2 c = vec2(ivec2(g));
-        float cell = NAME_cells + (c.y * NAME_cols + c.x) * 8.0;
+        float cell = NAME_cells + (c.y * NAME_cols + c.x) * CELL_TEXELS;
         float row = float(int(cell * NAME_itw));
         vec2 slot = vec2(cell - row * NAME_tw + 0.5, row + 0.5) * vec2(NAME_itw, NAME_ith);
-        vec2 pc = p - vec2(NAME_gx, NAME_gy) - c * NAME_cell;
+        vec2 pc = at - vec2(NAME_gx, NAME_gy) - c * NAME_cell;
         // An empty slot, or the one marked last, ends the cell.
-        for (int k = 0; k < 64; k++) {
+        for (int k = 0; k < CELL_K; k++) {
             vec4 a = vec4(ivec4(texture2D(NAME_tex, slot) * 255.5));
             if (a.r + a.g + a.b < 0.5) break;
             vec4 b = vec4(ivec4(texture2D(NAME_tex, slot + vec2(NAME_itw, 0.0)) * 255.5));
-            slot.x += NAME_itw * 2.0;
-            float last = a.r >= 128.0 ? 1.0 : 0.0;
-            float h = ((a.r - last * 128.0) * 256.0 + a.g) * 256.0 + a.b;
-            vec2 lo = (b.rb * 256.0 + b.ga) * (1.0 / 8192.0) - 7.0;
+            slot.x += NAME_itw * SLOT;
+            float last = a.r >= LAST_BIT ? 1.0 : 0.0;
+            float h = ((a.r - last * LAST_BIT) * 256.0 + a.g) * 256.0 + a.b;
+            vec2 lo = (b.rb * 256.0 + b.ga) * (1.0 / BOX_SCALE) - CORNER_OFFSET;
             vec4 s = NAME_texel(h);
-            vec2 sz = (s.rb * 256.0 + s.ga) * (1.0 / 8192.0);
+            vec2 sz = (s.rb * 256.0 + s.ga) * (1.0 / BOX_SCALE);
             cov = max(cov, NAME_glyph(h, pc - lo, sz, ppem));
             if (last > 0.5) break;
         }
@@ -1098,6 +1173,61 @@ mod tests {
 
     fn fields(p: &[Placed]) -> Vec<(usize, usize, usize)> {
         p.iter().map(|p| (p.index, p.word, p.line)).collect()
+    }
+
+    /// A glyph of `curves` vertical lines, each across the whole box.
+    fn lines_glyph(curves: usize) -> Glyph {
+        let step = LATTICE as usize / (curves + 1);
+        Glyph {
+            min: [0.0, 0.0],
+            size: [0.5, 0.5],
+            curves: (1..=curves)
+                .map(|i| {
+                    let x = (i * step) as u16;
+                    [[x, 0], [x, 1023], [x, LATTICE as u16]]
+                })
+                .collect(),
+        }
+    }
+
+    fn at_origin(gid: u16, ch: char) -> Placed {
+        Placed {
+            gid,
+            ch,
+            x: 0.0,
+            y: 0.0,
+            index: 0,
+            word: 0,
+            line: 0,
+            span: [0.0, 0.5],
+        }
+    }
+
+    #[test]
+    fn a_band_past_its_loop_bound_names_the_character() {
+        let glyphs = HashMap::from([(7, Some(lines_glyph(BAND_CURVES + 1)))]);
+        let got = pack(&[at_origin(7, 'x')], &glyphs, BANDS, 1.0);
+        assert!(matches!(got, Err(Unpacked::Band('x'))));
+        let e = pack_fitting(&[at_origin(7, 'x')], &glyphs, 1.0)
+            .err()
+            .unwrap();
+        assert_eq!(e.to_string(), "'x' has more than 64 curves in one band");
+    }
+
+    #[test]
+    fn an_overlap_at_fewer_bands_reports_the_overlap() {
+        // The glyphs outgrow the texture at 64 bands and fit it at 32, all
+        // at one spot.
+        let n = 20_000;
+        let glyphs: HashMap<u16, Option<Glyph>> =
+            (0..n).map(|g| (g, Some(lines_glyph(1)))).collect();
+        let placed: Vec<Placed> = (0..n).map(|g| at_origin(g, 'x')).collect();
+        assert!(matches!(
+            pack(&placed, &glyphs, BANDS, 1.0),
+            Err(Unpacked::TooTall(_))
+        ));
+        let e = pack_fitting(&placed, &glyphs, 1.0).err().unwrap();
+        assert_eq!(e.to_string(), "more than 4 glyphs overlap at one spot");
     }
 
     #[test]

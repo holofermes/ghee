@@ -29,9 +29,9 @@
 - Declare an asset from Python with `ghee.Asset` and a text with `ghee.Text`,
   in `Scene(assets=[...], texts=[...])`.
 - Add `--demo lettering`, words drawn from a font.
-- A procedural scene sets a string param with message kind 3, so its words
-  reach a text over the wire.
-- `ghee.open` loads the assets of a scene given as a dict or as JSON text,
+- Set a string param from a procedural scene with message kind 3, so its
+  words reach a text over the wire.
+- Load the assets of a scene given to `ghee.open` as a dict or as JSON text
   from the working directory.
 
 ## 0.4.0 - 2026-08-06

@@ -88,21 +88,25 @@ impl Blend {
     }
 }
 
-/// Quads a pass draws into its own buffer after its full-screen quad, with a
-/// vertex and a fragment shader of their own.
-///
-/// A vertex holds 1 to 4 `vec4` attributes, `a0` to `a3`, and a quad's 4
-/// vertices are its corners in triangle-strip order. The program reads its
-/// pass's uniforms, channels, arrays and assets under the same names. Its
-/// vertex shader flips `gl_Position.y` by the uniform `vflip`, as the pass's
-/// own quad does.
+/// A layer for ghee_mp_add_layer, as engine.h describes it. Each scene draw
+/// reaches the engine as one.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Layer {
-    /// The name of the pass the layer draws into.
+pub(crate) struct Layer {
+    /// The name of the pass that the layer draws into.
     pub pass: String,
     pub vertex: String,
     pub fragment: String,
     pub blend: Blend,
+}
+
+/// A scene draw that the engine holds as a layer.
+struct DrawLayer {
+    /// The engine's index of the layer.
+    layer: c_int,
+    /// The scene text of the draw.
+    text: String,
+    /// The draw in an error, as "pass 'main' draw 0".
+    name: String,
 }
 
 /// The (width, rows) of one array upload, and its data.
@@ -327,17 +331,10 @@ fn user_line(err: &str, glsl: &str, code: &str, common: Option<&str>) -> (Option
     (Some((line - at).max(1)), false)
 }
 
-/// A draw's compile error, naming its pass, the draw, and the line of the
-/// draw's own GLSL it falls on.
-fn draw_error(
-    pass: &str,
-    k: usize,
-    d: &Draw,
-    err: &str,
-    vs: &str,
-    fs: &str,
-    common: Option<&str>,
-) -> String {
+/// The compile error of the draw named `draw`, with the line where it falls in
+/// the draw's own GLSL or in the common block. An error on another line
+/// carries none.
+fn draw_error(draw: &str, d: &Draw, err: &str, vs: &str, fs: &str, common: Option<&str>) -> String {
     // A log may open with a warning, so the line comes from the first error.
     let first = |log: &'_ str| {
         log.lines()
@@ -345,15 +342,48 @@ fn draw_error(
             .unwrap_or(log)
             .to_string()
     };
-    let (line, part) = match err.strip_prefix("vertex shader: ") {
-        Some(e) => (user_line(&first(e), vs, &d.place, None), "place"),
-        None => (user_line(&first(err), fs, &d.code, common), "code"),
+    let (log, glsl, own, part, call, needs) = match err.strip_prefix("vertex shader: ") {
+        Some(e) => (
+            first(e),
+            vs,
+            d.place.as_str(),
+            "place",
+            "glyph_place(",
+            "vec2 glyph_place(vec2 em)",
+        ),
+        None => (
+            first(err),
+            fs,
+            d.code.as_str(),
+            "code",
+            "glyph_main();",
+            "a void main()",
+        ),
     };
-    match line {
-        (Some(n), false) => format!("pass '{pass}' draw {k}, line {n} of its {part}: {err}"),
-        (Some(n), true) => format!("pass '{pass}' draw {k}, line {n} of the common block: {err}"),
-        (None, _) => format!("pass '{pass}' draw {k}: {err}"),
+    let Some(line) = error_line_number(&log) else {
+        return format!("{draw}: {err}");
+    };
+    // The draw's own GLSL is the last match of it in the assembled source.
+    let at = glsl
+        .rfind(own)
+        .map_or(0, |p| glsl[..p].matches('\n').count() as i64);
+    let lines = own.lines().count() as i64;
+    if line > at && line <= at + lines {
+        return format!("{draw}, line {} of its {part}: {err}", line - at);
     }
+    if part == "code" {
+        if let (Some(n), true) = user_line(&log, glsl, own, common) {
+            return format!("{draw}, line {n} of the common block: {err}");
+        }
+    }
+    // After the draw's own GLSL, ghee's main calls the function it defines.
+    let src = usize::try_from(line - 1)
+        .ok()
+        .and_then(|i| glsl.lines().nth(i));
+    if line > at + lines && src.is_some_and(|l| l.contains(call)) {
+        return format!("{draw}: its {part} needs {needs}");
+    }
+    format!("{draw}: {err}")
 }
 
 fn size_repr(size: ArraySize) -> String {
@@ -386,13 +416,14 @@ pub struct Renderer {
     mp: Vec<(String, c_int)>,
     /// array name -> size, in declaration order.
     feeds: Vec<(String, ArraySize)>,
-    /// The texts whose data textures the engine holds. A setup frees the ones
-    /// its scene no longer declares, so their asset slots come back.
-    text_names: std::cell::RefCell<Vec<String>>,
-    /// The engine index of each layer setup_layers() took, in its order.
+    /// The engine assets uploaded for the scene: its image assets, and the
+    /// data texture `<name>_tex` of each text. A setup frees those that its
+    /// new scene does not declare, so their asset slots come back.
+    scene_assets: std::cell::RefCell<Vec<String>>,
+    /// The engine index of each layer passed to setup_layers(), in order.
     layers: Vec<c_int>,
-    /// The engine index of each scene draw's layer, and its text.
-    draws: Vec<(c_int, String)>,
+    /// The scene's draws, in the order of their passes.
+    draws: Vec<DrawLayer>,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
 }
@@ -423,7 +454,7 @@ impl Renderer {
             display,
             mp: Vec::new(),
             feeds: Vec::new(),
-            text_names: std::cell::RefCell::new(Vec::new()),
+            scene_assets: std::cell::RefCell::new(Vec::new()),
             layers: Vec::new(),
             draws: Vec::new(),
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
@@ -496,25 +527,13 @@ impl Renderer {
         self.setup_layers(scene, &[])
     }
 
-    /// setup() with layers, each drawn into the pass it names after that
+    /// setup() with layers. Each layer draws into its named pass, after that
     /// pass's quad and the pass's draws, in the order given. A layer's compile
     /// error reports its pass.
-    pub fn setup_layers(&mut self, scene: &Scene, layers: &[Layer]) -> Result<String> {
+    pub(crate) fn setup_layers(&mut self, scene: &Scene, layers: &[Layer]) -> Result<String> {
         self.error = String::new();
         self.error_line = None;
         self.error_pass = None;
-        let stale: Vec<String> = self
-            .text_names
-            .borrow()
-            .iter()
-            .filter(|n| !scene.texts.iter().any(|t| &t.name == *n))
-            .cloned()
-            .collect();
-        for name in stale {
-            let cname = CString::new(format!("{name}_tex"))?;
-            unsafe { ffi::ghee_mp_drop_asset(self.handle, cname.as_ptr()) };
-            self.text_names.borrow_mut().retain(|n| n != &name);
-        }
         if scene.passes.is_empty() {
             self.error = "scene has no passes".to_string();
             return Ok(self.error.clone());
@@ -591,24 +610,25 @@ impl Renderer {
                 );
                 return Ok(self.error.clone());
             }
+            // A draw samples its text's texture on top of its pass's inputs.
+            if !p.draws.is_empty() && want as i64 + 1 > i64::from(units) {
+                self.error = format!(
+                    "pass '{}' draw 0 needs {} texture units; this GPU has {units}",
+                    p.name,
+                    want + 1
+                );
+                return Ok(self.error.clone());
+            }
+        }
+        if let Some(e) = scene.undeclared_draw() {
+            self.error = e;
+            return Ok(self.error.clone());
         }
         let mut mp: Vec<(String, c_int)> = Vec::new();
         let mut layer_ix: Vec<c_int> = vec![-1; layers.len()];
-        let mut draw_ix: Vec<(c_int, String)> = Vec::new();
+        let mut draws: Vec<DrawLayer> = Vec::new();
         let hw_linear = self.data_texture_linear();
         let total = scene.passes.len();
-        if let Some((p, d)) = scene.passes.iter().find_map(|p| {
-            p.draws
-                .iter()
-                .find(|d| !scene.texts.iter().any(|t| t.name == d.text))
-                .map(|d| (p, d))
-        }) {
-            self.error = format!(
-                "pass '{}' draws text '{}', which the scene does not declare",
-                p.name, d.text
-            );
-            return Ok(self.error.clone());
-        }
         for (i, p) in scene.passes.iter().enumerate() {
             // A VC4 takes a while over a big shader, and a scene of several
             // compiles them one after another with nothing to show for it.
@@ -620,7 +640,7 @@ impl Renderer {
                 &scene.texts,
                 hw_linear,
             );
-            let cglsl = CString::new(glsl.as_str())?;
+            let cglsl = self.staged_cstring(&glsl)?;
             let mut idx = unsafe { ffi::ghee_mp_add_pass(self.handle, cglsl.as_ptr()) };
             if idx >= 0 {
                 if let Some((w, h)) = p.size {
@@ -643,33 +663,51 @@ impl Renderer {
                     &scene.texts,
                     hw_linear,
                 );
-                let (cvs, cfs) = (CString::new(vs.as_str())?, CString::new(fs.as_str())?);
-                let blend = d.blend.engine();
+                let name = format!("pass '{}' draw {k}", p.name);
+                let (cname, cvs, cfs) = (
+                    self.staged_cstring(&name)?,
+                    self.staged_cstring(&vs)?,
+                    self.staged_cstring(&fs)?,
+                );
                 let li = unsafe {
-                    ffi::ghee_mp_add_layer(self.handle, idx, cvs.as_ptr(), cfs.as_ptr(), blend)
+                    ffi::ghee_mp_add_layer(
+                        self.handle,
+                        idx,
+                        cname.as_ptr(),
+                        cvs.as_ptr(),
+                        cfs.as_ptr(),
+                        d.blend.engine(),
+                    )
                 };
                 if li < 0 {
                     let err = or_else(self.last_error(), "compile error");
                     unsafe { ffi::ghee_mp_abort(self.handle) };
-                    self.error = draw_error(&p.name, k, d, &err, &vs, &fs, scene.common.as_deref());
+                    self.error = draw_error(&name, d, &err, &vs, &fs, scene.common.as_deref());
                     self.error_pass = Some(ErrorPass::Index(i));
                     crate::report::progress_done();
                     return Ok(self.error.clone());
                 }
-                draw_ix.push((li, d.text.clone()));
+                draws.push(DrawLayer {
+                    layer: li,
+                    text: d.text.clone(),
+                    name,
+                });
             }
             for (k, l) in layers.iter().enumerate().filter(|(_, l)| l.pass == p.name) {
                 if idx < 0 {
                     break;
                 }
-                let (vs, fs) = (
-                    CString::new(l.vertex.as_str())?,
-                    CString::new(l.fragment.as_str())?,
+                let name = format!("layer {k}");
+                let (cname, vs, fs) = (
+                    self.staged_cstring(&name)?,
+                    self.staged_cstring(&l.vertex)?,
+                    self.staged_cstring(&l.fragment)?,
                 );
                 layer_ix[k] = unsafe {
                     ffi::ghee_mp_add_layer(
                         self.handle,
                         idx,
+                        cname.as_ptr(),
                         vs.as_ptr(),
                         fs.as_ptr(),
                         l.blend.engine(),
@@ -678,7 +716,7 @@ impl Renderer {
                 if layer_ix[k] < 0 {
                     let err = or_else(self.last_error(), "compile error");
                     unsafe { ffi::ghee_mp_abort(self.handle) };
-                    self.error = format!("layer {k}: {err}");
+                    self.error = format!("{name}: {err}");
                     self.error_pass = Some(ErrorPass::Index(i));
                     crate::report::progress_done();
                     return Ok(self.error.clone());
@@ -707,7 +745,28 @@ impl Renderer {
         }
         self.mp = mp;
         self.layers = layer_ix;
-        self.draws = draw_ix;
+        self.draws = draws;
+        // The engine assets of the old scene that the new one does not declare
+        // go, and their slots come back.
+        let keep: Vec<String> = scene
+            .assets
+            .iter()
+            .filter(|a| !a.is_font())
+            .map(|a| a.name.clone())
+            .chain(scene.texts.iter().map(|t| format!("{}_tex", t.name)))
+            .collect();
+        let stale: Vec<String> = self
+            .scene_assets
+            .borrow()
+            .iter()
+            .filter(|n| !keep.contains(n))
+            .cloned()
+            .collect();
+        for name in stale {
+            let cname = CString::new(name.as_str())?;
+            unsafe { ffi::ghee_mp_drop_asset(self.handle, cname.as_ptr()) };
+            self.scene_assets.borrow_mut().retain(|n| n != &name);
+        }
         // The output aspect reaches every pass that declares it.
         // A pass with its own size reads that size off `resolution`.
         // Such a pass cannot derive the shape of the frame.
@@ -739,9 +798,10 @@ impl Renderer {
                 a.linear,
                 data,
             )?;
+            self.scene_asset(&a.name);
         }
         // A text builds from the scene's string param of its name, through
-        // set_scene_param below, and it looks itself up in self.scene.
+        // set_text below, and it looks itself up in self.scene.
         self.scene = Some(scene.clone());
         for (i, p) in scene.passes.iter().enumerate() {
             for (c, ch) in p.channels.iter().enumerate() {
@@ -804,16 +864,22 @@ impl Renderer {
         Ok(String::new())
     }
 
-    /// The quads of layer `layer`, an index into the layers setup_layers()
-    /// took: 4 vertices a quad of `nattr` vec4s each, so 16 * nattr floats a
-    /// quad. They replace the last set.
-    pub fn set_layer_quads(&self, layer: usize, data: &[f32], nattr: usize) -> Result<()> {
+    /// The quads of layer `layer`, an index into the layers passed to
+    /// setup_layers(): 4 vertices a quad of `nattr` vec4s each, so 16 * nattr
+    /// floats a quad. They replace the last set.
+    #[cfg(test)]
+    pub(crate) fn set_layer_quads(&self, layer: usize, data: &[f32], nattr: usize) -> Result<()> {
         let Some(&idx) = self.layers.get(layer) else {
-            bail!("no layer {layer}: the scene holds {}", self.layers.len());
+            let n = self.layers.len();
+            bail!(
+                "no layer {layer}: setup_layers() took {n} {}",
+                if n == 1 { "layer" } else { "layers" }
+            );
         };
         self.layer_quads(idx, &format!("layer {layer}"), data, nattr)
     }
 
+    /// Hand the engine layer `idx` its quads. `layer` names it in an error.
     fn layer_quads(&self, idx: c_int, layer: &str, data: &[f32], nattr: usize) -> Result<()> {
         if !(1..=4).contains(&nattr) {
             bail!("{layer}: a vertex holds 1 to 4 attributes, got {nattr}");
@@ -821,7 +887,7 @@ impl Renderer {
         let per_quad = 16 * nattr;
         if !data.len().is_multiple_of(per_quad) {
             bail!(
-                "{layer}: {} floats are no whole number of quads of {per_quad}",
+                "{layer}: a quad takes {per_quad} floats, and {} is not a multiple of {per_quad}",
                 data.len()
             );
         }
@@ -1105,15 +1171,35 @@ impl Renderer {
                 self.set_uniform(*idx, &uniform, "float", Value::from(*v))?;
             }
         }
-        for (idx, _) in self.draws.iter().filter(|(_, t)| t == name) {
-            let what = format!("a draw of text '{name}'");
-            self.layer_quads(*idx, &what, &built.quads.floats, built.quads.per_vertex / 4)?;
+        for d in self.draws.iter().filter(|d| d.text == name) {
+            self.layer_quads(
+                d.layer,
+                &d.name,
+                &built.quads.floats,
+                built.quads.per_vertex / 4,
+            )?;
         }
-        let mut names = self.text_names.borrow_mut();
+        self.scene_asset(&format!("{name}_tex"));
+        Ok(true)
+    }
+
+    /// Record `name` among the engine assets uploaded for the scene.
+    fn scene_asset(&self, name: &str) {
+        let mut names = self.scene_assets.borrow_mut();
         if !names.iter().any(|n| n == name) {
             names.push(name.to_string());
         }
-        Ok(true)
+    }
+
+    /// `s` as a C string for a call that stages a pass or a layer. A NUL in
+    /// `s` drops the staged passes and layers first, so no later commit runs
+    /// them.
+    fn staged_cstring(&self, s: &str) -> Result<CString> {
+        CString::new(s).map_err(|e| {
+            unsafe { ffi::ghee_mp_abort(self.handle) };
+            crate::report::progress_done();
+            e.into()
+        })
     }
 
     /// Pack an RGB(A) frame to 1bpp (bw) or RGB565.
@@ -1224,6 +1310,7 @@ impl Renderer {
         unsafe { ffi::ghee_mp_reset(self.handle) };
         self.mp = Vec::new();
         self.layers = Vec::new();
+        self.draws = Vec::new();
         self.feeds = Vec::new();
     }
 
@@ -1746,6 +1833,58 @@ mod tests {
         for c in 0..3 {
             assert!((mean(&channel(&f, c)) as i64 - 128).abs() <= 2);
         }
+    }
+
+    #[test]
+    fn every_image_asset_a_renderer_meets_binds() {
+        // The engine binds 8 assets at a time, so each setup hands back the
+        // slots of the image assets that its scene no longer declares. An
+        // asset set by the host stays.
+        let Some((_g, mut r)) = gpu() else { return };
+        r.set_asset("host", 1, 1, 1, false, AssetData::U8(&[200u8]))
+            .unwrap();
+        for i in 0..12u8 {
+            let name = format!("img{i}");
+            let code = format!(
+                "uniform sampler2D host; void main(){{ \
+                 gl_FragColor = vec4(texture2D({name}, vec2(0.5)).r, \
+                 texture2D(host, vec2(0.5)).r, 0.0, 1.0); }}"
+            );
+            let mut sc = Scene::from_dict(
+                &json!({"version": 1, "assets": {name.clone(): {"file": format!("{name}.png")}},
+                        "passes": [{"name": "main", "code": code}]}),
+                None,
+                None,
+            )
+            .unwrap();
+            sc.assets[0].image = Some(crate::assets::Image {
+                width: 1,
+                height: 1,
+                components: 1,
+                pixels: Pixels::U8(vec![i * 20]),
+            });
+            assert_eq!(r.setup(&sc).unwrap(), "", "{name}");
+            r.set_time(Some(0.0));
+            let f = r.render(None).unwrap();
+            assert_eq!((f[0], f[1]), (i * 20, 200), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_nul_in_a_shader_drops_the_passes_staged_before_it() {
+        // The engine stages 16 passes at most, so a stale stage of 15 would
+        // refuse the second pass of the next scene.
+        let Some((_g, mut r)) = gpu() else { return };
+        let mut passes: Vec<Value> = (0..15)
+            .map(|i| json!({"name": format!("p{i}"), "code": FLAT}))
+            .collect();
+        passes.push(json!({"name": "main", "code": "void main(){}\u{0}"}));
+        assert!(r.setup(&scene_of(Value::from(passes))).is_err());
+        let two = scene_of(json!([{"name": "a", "code": FLAT},
+            {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]));
+        assert_eq!(r.setup(&two).unwrap(), "");
+        r.set_time(Some(0.0));
+        assert_eq!(&r.render(None).unwrap()[..4], [255; 4]);
     }
 
     #[test]
@@ -2375,17 +2514,17 @@ mod tests {
     const PRECISION: &str = "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\n\
         precision highp float;\n#else\nprecision mediump float;\n#endif\n";
 
-    /// a0.xy is the vertex in pass pixels, y down like v_texCoord, and a1
-    /// the premultiplied colour.
+    /// glyph_a0.xy is the vertex in pass pixels, y down like v_texCoord, and
+    /// glyph_a1 the premultiplied colour.
     fn layer_vs(extra: &str) -> String {
         format!(
-            "{PRECISION}attribute vec4 a0; attribute vec4 a1;\n\
+            "{PRECISION}attribute vec4 glyph_a0; attribute vec4 glyph_a1;\n\
              uniform vec2 resolution; uniform float vflip;\n\
              varying vec4 v_color; varying vec2 v_px;\n{extra}\n\
              void main() {{\n\
-               vec2 ndc = a0.xy / resolution * 2.0 - 1.0;\n\
+               vec2 ndc = glyph_a0.xy / resolution * 2.0 - 1.0;\n\
                gl_Position = vec4(ndc.x, ndc.y * vflip, 0.0, 1.0);\n\
-               v_color = a1; v_px = a0.xy;\n\
+               v_color = glyph_a1; v_px = glyph_a0.xy;\n\
              }}"
         )
     }
@@ -2569,8 +2708,8 @@ mod tests {
         let l = Layer {
             pass: "main".to_string(),
             vertex: layer_vs("uniform float shift; uniform float level;").replace(
-                "v_px = a0.xy;",
-                "v_px = a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / resolution.x;",
+                "v_px = glyph_a0.xy;",
+                "v_px = glyph_a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / resolution.x;",
             ),
             fragment: layer_fs(
                 "uniform float level; uniform sampler2D vals_tex; uniform sampler2D pad;\n\
@@ -2672,7 +2811,7 @@ mod tests {
         let mut bad = layer("main", PLAIN_FS, Blend::Over);
         bad.vertex = bad
             .vertex
-            .replace("v_color = a1;", "v_color = no_such_symbol;");
+            .replace("v_color = glyph_a1;", "v_color = no_such_symbol;");
         let err = r.setup_layers(&flat_scene(), &[bad]).unwrap();
         assert!(err.starts_with("layer 0: vertex shader:"), "{err}");
         assert_eq!(r.error_pass, Some(ErrorPass::Index(0)));
@@ -2710,7 +2849,7 @@ mod tests {
         let one = quad(0.0, 0.0, 1.0, 1.0, [1.0; 4]);
         assert_eq!(
             r.set_layer_quads(1, &one, 2).unwrap_err().to_string(),
-            "no layer 1: the scene holds 1"
+            "no layer 1: setup_layers() took 1 layer"
         );
         assert_eq!(
             r.set_layer_quads(0, &one, 5).unwrap_err().to_string(),
@@ -2718,7 +2857,7 @@ mod tests {
         );
         assert_eq!(
             r.set_layer_quads(0, &one[1..], 2).unwrap_err().to_string(),
-            "layer 0: 31 floats are no whole number of quads of 32"
+            "layer 0: a quad takes 32 floats, and 31 is not a multiple of 32"
         );
         // setup() drops the layers with the scene.
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
@@ -2730,11 +2869,11 @@ mod tests {
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         let vs = format!(
-            "{PRECISION}attribute vec4 a0; attribute vec4 a1; attribute vec4 a2; attribute vec4 a3;\n\
+            "{PRECISION}attribute vec4 glyph_a0; attribute vec4 glyph_a1; attribute vec4 glyph_a2; attribute vec4 glyph_a3;\n\
              uniform vec2 resolution; uniform float vflip; varying vec4 v_color;\n\
-             void main() {{ vec2 ndc = a0.xy / resolution * 2.0 - 1.0;\n\
+             void main() {{ vec2 ndc = glyph_a0.xy / resolution * 2.0 - 1.0;\n\
                gl_Position = vec4(ndc.x, ndc.y * vflip, 0.0, 1.0);\n\
-               v_color = vec4(a1.x, a2.y, a3.z, 1.0); }}"
+               v_color = vec4(glyph_a1.x, glyph_a2.y, glyph_a3.z, 1.0); }}"
         );
         let l = Layer {
             pass: "main".to_string(),

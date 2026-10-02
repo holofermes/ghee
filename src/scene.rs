@@ -34,7 +34,7 @@ const MAX_TEXELS: i64 = 1 << 24;
 // The engine's asset table holds MP_MAX_ASSETS entries.
 const MAX_ASSETS: usize = 8;
 
-// The engine draws MP_MAX_LAYERS layers, one a draw.
+// A draw is one engine layer, and the engine holds MP_MAX_LAYERS layers.
 const MAX_DRAWS: usize = 16;
 
 fn vec_arity(ty: &str) -> Option<usize> {
@@ -814,7 +814,7 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
 
 /// A named image or font file. Every pass samples an image as
 /// `uniform sampler2D <name>` and reads a `vec2 <name>_size` of (width,
-/// height). A text names a font, and no pass sees it.
+/// height). A text names a font, and only the text reads it.
 ///
 /// A .raw file is bare pixels and declares its layout. A .png or .jpg file
 /// carries its own. A .ttf or .otf file is a font.
@@ -1068,10 +1068,11 @@ impl Channel {
 /// A text drawn as one quad a glyph into its pass's buffer, after the pass's
 /// own quad.
 ///
-/// `place` defines `vec2 glyph_place(vec2 em)`: the pass pixel, in the space of
-/// `v_texCoord * resolution`, where a point of the block lands, given in em
-/// from the block's top left, y down. `code` colours a glyph's pixels with its
-/// own `void main()`, premultiplied by alpha.
+/// `place` defines `vec2 glyph_place(vec2 em)`. It takes a point of the block,
+/// in em from the block's top left with y down, and returns the pass pixel
+/// where that point lands, in the space of `v_texCoord * resolution`. `code`
+/// colours a glyph's pixels with its own `void main()`, premultiplied by
+/// alpha.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draw {
     /// A name in the scene's texts.
@@ -1079,7 +1080,8 @@ pub struct Draw {
     pub code: String,
     pub place: String,
     pub blend: Blend,
-    /// Em the quads reach past the ink, for an effect around the outline.
+    /// How far the quads reach past the ink, in em, for an effect around the
+    /// outline.
     pub pad: f64,
 }
 
@@ -1363,9 +1365,9 @@ impl Pass {
     /// The vertex and the fragment shader of draw `k`. The fragment shader holds
     /// the pass's preamble and the scene's common block, then the draw's code.
     /// The vertex shader declares the same uniforms at the same precision,
-    /// since GLSL ES links a uniform both stages declare only when the two
-    /// match, and then the draw's place. It reads no texture: GLES2 may offer
-    /// a vertex shader no texture unit.
+    /// since GLSL ES links a uniform declared by both stages only when the two
+    /// declarations match, and then the draw's place. It reads no texture:
+    /// GLES2 may offer a vertex shader no texture unit.
     pub fn draw_glsl(
         &self,
         k: usize,
@@ -1378,7 +1380,7 @@ impl Pass {
         let d = &self.draws[k];
         let mut v: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         // The fragment stage's int defaults to mediump and the vertex stage's
-        // to highp, so an int uniform both declare needs this to link.
+        // to highp, so an int uniform declared in both needs this to link.
         v.push("precision mediump int;".to_string());
         v.extend(
             [
@@ -1543,6 +1545,22 @@ impl Scene {
                 seen.push(&p.name);
             }
         }
+        // A draw's vertex shader declares every param beside the attributes
+        // glyph_a0 to glyph_a3 and the uniform vflip, and ghee names the
+        // other values of a draw glyph_*.
+        let kept = |nm: &str| nm == "vflip" || nm.starts_with("glyph_");
+        if let Some(nm) = params.keys().find(|n| kept(n)) {
+            bail!("param '{nm}': ghee keeps the name vflip and the names that start with glyph_");
+        }
+        for p in &passes {
+            if let Some(nm) = p.params.keys().find(|n| kept(n)) {
+                bail!(
+                    "param '{nm}' in pass '{}': ghee keeps the name vflip and the names that \
+                     start with glyph_",
+                    p.name
+                );
+            }
+        }
         // A name belongs to one scope only. A scene param already reaches every
         // pass, so a pass that declares the same name redeclares it. The error
         // names the param and the pass.
@@ -1619,7 +1637,7 @@ impl Scene {
         let images = self.assets.iter().filter(|a| !a.is_font()).count();
         if images + texts.len() > MAX_ASSETS {
             bail!(
-                "{} image assets and texts, over the {MAX_ASSETS} the engine binds",
+                "{} image assets and texts, over the cap of {MAX_ASSETS}",
                 images + texts.len()
             );
         }
@@ -1672,21 +1690,28 @@ impl Scene {
         }
         let draws = self.passes.iter().map(|p| p.draws.len()).sum::<usize>();
         if draws > MAX_DRAWS {
-            bail!("{draws} draws, over the {MAX_DRAWS} the engine draws");
-        }
-        for p in &self.passes {
-            for (k, d) in p.draws.iter().enumerate() {
-                if !texts.iter().any(|t| t.name == d.text) {
-                    bail!(
-                        "pass '{}' draw {k} draws text '{}', which the scene does not declare",
-                        p.name,
-                        d.text
-                    );
-                }
-            }
+            bail!("{draws} draws, over the cap of {MAX_DRAWS}");
         }
         self.texts = texts;
+        if let Some(e) = self.undeclared_draw() {
+            bail!("{e}");
+        }
         Ok(self)
+    }
+
+    /// The error for the first draw whose text the scene does not declare.
+    pub(crate) fn undeclared_draw(&self) -> Option<String> {
+        self.passes.iter().find_map(|p| {
+            let (k, d) = p
+                .draws
+                .iter()
+                .enumerate()
+                .find(|(_, d)| !self.texts.iter().any(|t| t.name == d.text))?;
+            Some(format!(
+                "pass '{}' draw {k} names text '{}', which the scene does not declare",
+                p.name, d.text
+            ))
+        })
     }
 
     /// A scene with passes only. Every other field takes its default.
@@ -1937,7 +1962,7 @@ impl PassBuilder for Result<Pass> {
 
     fn size(self, width: i64, height: i64) -> Result<Pass> {
         let p = self?;
-        Pass::new(
+        let mut sized = Pass::new(
             &p.name,
             &p.code,
             p.arrays,
@@ -1945,7 +1970,9 @@ impl PassBuilder for Result<Pass> {
             p.params,
             &p.filter,
             Some(Value::from(vec![width, height])),
-        )
+        )?;
+        sized.draws = p.draws;
+        Ok(sized)
     }
 }
 
@@ -1998,6 +2025,19 @@ mod tests {
 
     fn repo(rel: &str) -> String {
         format!("{}/{rel}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn a_sized_pass_keeps_its_draws() {
+        let mut p = Pass::of("a", GOOD).unwrap();
+        p.draws = vec![Draw::from_dict(
+            "pass 'a' draw 0",
+            &json!({"text": "t", "code": GOOD, "place": "vec2 glyph_place(vec2 em) { return em; }"}),
+        )
+        .unwrap()];
+        let sized = Ok::<Pass, anyhow::Error>(p.clone()).size(8, 4).unwrap();
+        assert_eq!(sized.size, Some((8, 4)));
+        assert_eq!(sized.draws, p.draws);
     }
 
     #[test]

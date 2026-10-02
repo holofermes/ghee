@@ -84,18 +84,19 @@ void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, i
 bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
                        int width, int height, int components, int is_f32, int linear);
 void ghee_mp_drop_asset(GheeScene *g, const char *name);
-// A layer: quads a pass draws into its own buffer after its full-screen quad,
-// in the order the layers were added, with a vertex and a fragment shader of
-// its own. A vertex holds 1 to 4 vec4 attributes, a0 to a3. A quad's 4
-// vertices are its corners in triangle-strip order, drawn as the triangles
-// (0, 1, 2) and (2, 1, 3). A layer reads its pass's uniforms, channels, arrays
-// and assets under the same names, and `vflip` as the shared quad vertex
-// shader does. Blending composes premultiplied colour: over is
+// A layer: quads drawn by a pass into its own buffer after its full-screen
+// quad, with a vertex and a fragment shader of their own, in the order of the
+// ghee_mp_add_layer calls. A vertex holds 1 to 4 vec4 attributes, glyph_a0 to
+// glyph_a3. A quad's 4 vertices are its corners in triangle-strip order, drawn
+// as the triangles (0, 1, 2) and (2, 1, 3). A layer reads its pass's uniforms,
+// channels, arrays and assets under the same names, and `vflip` as the shared
+// quad vertex shader does. Blending composes premultiplied colour: over is
 // src + dst * (1 - src.a), add is src + dst, replace is src.
 enum { GHEE_BLEND_OVER, GHEE_BLEND_ADD, GHEE_BLEND_REPLACE };
 // Staged like ghee_mp_add_pass: `pass` is a pending pass, the commit keeps the
-// returned index, and an abort drops the layer. -1 = refused.
-int  ghee_mp_add_layer(GheeScene *g, int pass, const char *vertex_source,
+// returned index, and an abort drops the layer. `name` stands for the layer in
+// its errors. -1 = refused.
+int  ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
                        const char *fragment_source, int blend);
 // The quads of a committed layer: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.

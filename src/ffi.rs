@@ -105,6 +105,7 @@ extern "C" {
     pub fn ghee_mp_add_layer(
         g: *mut GheeScene,
         pass: c_int,
+        name: *const c_char,
         vertex_source: *const c_char,
         fragment_source: *const c_char,
         blend: c_int,

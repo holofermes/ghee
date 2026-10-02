@@ -21,6 +21,8 @@
   from the GPU and takes them. A panel driver that reads each frame with
   the CPU (ssd130x, gud, udl) then shows what the GPU drew, where on a
   Pi 5 it showed stale fragments of earlier frames.
+- Keep the picture on a KMS display whole when the display refuses a page
+  flip, where the next frame drew into the buffer still on screen.
 - Draw text on the GPU from a font. A scene declares `texts`, each named
   after the scene string param that holds its words and naming a `.ttf` or
   `.otf` asset as its font, and every scene pass, filter passes excepted,

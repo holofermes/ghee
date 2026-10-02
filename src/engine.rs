@@ -2059,14 +2059,20 @@ mod tests {
         assert!(unreaped.contains("release_bo(g, bo)"));
         assert!(!unreaped.contains("drmModePageFlip"));
 
-        let flipped = present
+        let (flipped, refused) = present
             .split("if (!drmModePageFlip")
             .nth(1)
             .unwrap()
-            .split("} else")
-            .next()
+            .split_once("} else")
             .unwrap();
         assert!(flipped.contains("g->flip_failed = false;"));
+        assert!(flipped.contains("g->disp_prev = bo;"));
+
+        // A refused flip leaves disp_prev on glass.
+        // Drawing into a buffer on glass tears the picture.
+        let refused = refused.split("\n    }").next().unwrap();
+        assert!(refused.contains("release_bo(g, bo)"));
+        assert!(!refused.contains("g->disp_prev =") && !refused.contains("g->disp_shown ="));
     }
 
     #[test]

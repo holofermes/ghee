@@ -114,10 +114,19 @@ emits its scene JSON and feeds its data. See `ghee/examples/`,
   `Param` changes with no recompile.
 - Per-frame data arrives as a declared array. ghee binds the array as a texture.
   The shader reads it with `name_at(i)` or `name_sample2(uv)`.
-- **On VC4, hoist the texture reads of a pass above the math that depends on
-  them.** A value computed ahead of the texture reads, and consumed after them,
-  comes back wrong. The error shows in 4x4 pixel blocks, in both directions.
-  Every part of the expression reads correct alone, so the fault is the compiler.
+- **On VC4, a short pass that reads a texture can draw wrong 4x4 pixel
+  blocks.** Mesa's vc4 compiler runs a short fragment shader in two threads
+  that switch at a texture read, and a switch loses the condition flags. Its
+  flag optimization can still leave a select after the switch reading a
+  compare made before it: a `step`, a ternary, a comparison. Source order does
+  not prevent it. Put the pass's last texture read inside an `if` the compiler
+  cannot drop, and the shader compiles single-threaded. `VC4_DEBUG=qpu` then
+  shows no `sig_thread_switch` in it:
+
+  ```glsl
+  vec4 c = vec4(0.0);
+  if (gl_FragCoord.x >= 0.0) c = texture2D(tex, uv);
+  ```
 - **A cheap reject around an expensive per-pixel loop body pays on VC4.** VC4
   skips an `if` that a whole 16-pixel block fails, and an always-false body then
   costs almost nothing. Write the reject as an `if` block. A function with an

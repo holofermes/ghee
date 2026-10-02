@@ -748,6 +748,20 @@ static void release_bo(GheeScene *g, struct gbm_bo *bo) {
     if (bo && !g->lent_count) gbm_surface_release_buffer(g->gbm_surface, bo);
 }
 
+// The connector if a display with modes is on it, else NULL.
+// drmModeGetConnectorCurrent reads the kernel's cached connector state.
+// drmModeGetConnector probes the connector first, and on HDMI the probe
+// rereads the EDID over the live cable. A connector caches no modes until
+// its first probe.
+static drmModeConnector *connected_display(int fd, uint32_t id) {
+    for (int probe = 0; probe < 2; probe++) {
+        drmModeConnector *c = probe ? drmModeGetConnector(fd, id) : drmModeGetConnectorCurrent(fd, id);
+        if (c && c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) return c;
+        if (c) drmModeFreeConnector(c);
+    }
+    return NULL;
+}
+
 // Pick the display to drive: first connected connector with modes, its
 // encoder's CRTC (else the first), and the mode that CRTC already drives
 // (honours a video= override or whatever the console negotiated, falls back
@@ -758,11 +772,8 @@ static int pick_display_mode(int fd, uint32_t *conn_out, uint32_t *crtc_out,
     drmModeRes *res = drmModeGetResources(fd);
     if (!res) return -1;
     drmModeConnector *conn = NULL;
-    for (int i = 0; i < res->count_connectors; i++) {
-        drmModeConnector *c = drmModeGetConnector(fd, res->connectors[i]);
-        if (c && c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) { conn = c; break; }
-        if (c) drmModeFreeConnector(c);
-    }
+    for (int i = 0; i < res->count_connectors && !conn; i++)
+        conn = connected_display(fd, res->connectors[i]);
     if (!conn) { drmModeFreeResources(res); return -1; }
     drmModeEncoder *enc = drmModeGetEncoder(fd, conn->encoder_id);
     uint32_t crtc = (enc && enc->crtc_id) ? enc->crtc_id : res->crtcs[0];

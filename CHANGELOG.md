@@ -16,6 +16,9 @@
   rebuilt from its filter, keeping its place and param values, and a filter
   the `filters` list names without a pass is appended. An unknown filter is
   a 400. The reply is the scene as it will run.
+- Find a KMS display for `ghee displays` and `--display kms` in the
+  kernel's cached connector state, and probe a connector, which rereads an
+  HDMI display's EDID, only when that state lists no modes.
 - Draw a kernel-driven panel on `--display kms` into buffers the GPU
   allocates and the panel imports, when the panel's card is a device apart
   from the GPU and takes them. A panel driver that reads each frame with

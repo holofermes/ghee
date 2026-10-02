@@ -1071,7 +1071,7 @@ mod tests {
             .split("} else")
             .next()
             .unwrap();
-        assert!(unreaped.contains("gbm_surface_release_buffer(g->gbm_surface, bo)"));
+        assert!(unreaped.contains("release_bo(g, bo)"));
         assert!(!unreaped.contains("drmModePageFlip"));
 
         let flipped = present

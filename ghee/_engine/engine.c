@@ -2,6 +2,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -12,12 +13,16 @@
 #include <time.h>
 #include <string.h>
 #include <gbm.h>
+#include <drm_fourcc.h>
 #include <fcntl.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <poll.h>
 #include <errno.h>
+#include <limits.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include "engine.h"
 #include "engine_internal.h"
 
@@ -28,6 +33,8 @@
 #define MP_MAX_DATATEX 4
 #define MP_MAX_ARRAYS 16
 #define FLIP_STUCK_MS 5000
+// One buffer on glass, one behind a pending flip, one to draw into.
+#define LENT_BUFFERS 3
 
 struct GheeScene {
     int width, height, components;
@@ -108,6 +115,17 @@ struct GheeScene {
     struct gbm_bo *disp_shown;   // buffer of the flip before that (still on glass until
                                  // the pending one completes, released after)
     bool disp_first;
+    // A display driver that reads each frame with the CPU (ssd130x, gud, udl)
+    // maps its own dumb buffers cached, and nothing keeps that cache coherent
+    // with a GPU writing into them. So when the card is a display-only device
+    // apart from the GPU, the GPU allocates the scanout buffers on its render
+    // node and lends them to the card, which imports them. vc4 keeps Mesa's
+    // path either way: as the GPU, Mesa already lends vc4's buffers to the
+    // display, and as the display, vc4's dumb buffers are uncached.
+    int gpu_fd;                  // the render node holding the lent buffers, -1 otherwise
+    int lent_count;              // 0 when the window surface's buffers scan out
+    struct { struct gbm_bo *bo; EGLImageKHR image; GLuint tex, fbo; } lent[LENT_BUFFERS];
+    GLuint scan_fbo;             // the scanout target of this present: 0 or a lent buffer's FBO
     // A buffer smaller than the mode scans out through the display's own
     // scaler: the plane takes a source rectangle the size of the buffer and a
     // destination rectangle the size of the mode, and the hardware stretches
@@ -133,8 +151,10 @@ static double ms_between(struct timespec a, struct timespec b) {
 }
 
 // vflip = -1 renders geometry y-mirrored: used when a pass draws straight into
-// the scanout buffer (GL is bottom-origin, the display scans top-first). The
-// fragment's v_texCoord is untouched, so user-shader semantics don't change.
+// the window surface, which Mesa stores top row first. A lent scanout buffer is
+// an FBO and keeps GL's row order, the order the readback outputs carry, so a
+// pass draws into it unmirrored. The fragment's v_texCoord is untouched, so
+// user-shader semantics don't change.
 static const char *vertex_shader_source =
     "#version 100\n"
     "attribute vec4 position;"
@@ -146,8 +166,8 @@ static const char *vertex_shader_source =
     "   v_texCoord = texCoord;"
     "}";
 
-// Present blit: sample the final pass texture onto the window surface. Flips Y
-// because GL framebuffers are bottom-origin and the display scans out top-first.
+// Present blit: sample the final pass texture onto the scanout target. flipY
+// mirrors it for the window surface, which Mesa stores top row first.
 static const char *blit_fragment_source =
     "#version 100\n"
     "precision mediump float;"
@@ -264,6 +284,95 @@ static void unhush_stderr(int saved) {
     close(saved);
 }
 
+static bool driver_is(int fd, const char *name) {
+    drmVersionPtr v = drmGetVersion(fd);
+    const bool is = v && v->name && strcmp(v->name, name) == 0;
+    drmFreeVersion(v);
+    return is;
+}
+
+// The sysfs device behind a DRM node. A card and its own render node resolve
+// to the same device. out holds PATH_MAX bytes.
+static bool node_device(int fd, char *out) {
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISCHR(st.st_mode)) return false;
+    char link[64];
+    snprintf(link, sizeof link, "/sys/dev/char/%u:%u/device", major(st.st_rdev), minor(st.st_rdev));
+    return realpath(link, out) != NULL;
+}
+
+static void gem_close(int fd, uint32_t handle) {
+    struct drm_gem_close c = { .handle = handle };
+    drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &c);
+}
+
+// Import a GPU buffer into the display card and wrap it in a framebuffer
+// there. The handle and the framebuffer belong to the card. On failure errno
+// holds the card's refusal.
+static bool card_import(int card, struct gbm_bo *bo, uint32_t *handle, uint32_t *fb) {
+    const int fd = gbm_bo_get_fd(bo);
+    if (fd < 0) return false;
+    const int refused = drmPrimeFDToHandle(card, fd, handle);
+    const int e = errno;
+    close(fd);
+    if (refused) { errno = e; return false; }
+    const uint32_t handles[4] = { *handle }, strides[4] = { gbm_bo_get_stride(bo) }, offsets[4] = { 0 };
+    if (drmModeAddFB2(card, gbm_bo_get_width(bo), gbm_bo_get_height(bo), GBM_FORMAT_XRGB8888,
+                      handles, strides, offsets, fb, 0)) {
+        const int e2 = errno;
+        gem_close(card, *handle);
+        errno = e2;
+        return false;
+    }
+    return true;
+}
+
+// A GBM device on the render node of the GPU that Mesa pairs with the card,
+// when the card takes lent buffers: a display-only device apart from the GPU,
+// neither driver vc4, and a test buffer from the GPU imports. NULL keeps the
+// window surface.
+static struct gbm_device *lending_gpu(GheeScene *g, int width, int height) {
+    if (driver_is(g->drm_fd, "vc4")) return NULL;
+    PFNEGLQUERYDISPLAYATTRIBEXTPROC query_display =
+        (PFNEGLQUERYDISPLAYATTRIBEXTPROC)eglGetProcAddress("eglQueryDisplayAttribEXT");
+    PFNEGLQUERYDEVICESTRINGEXTPROC query_device =
+        (PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
+    EGLAttrib dev = 0;
+    if (!query_display || !query_device || !query_display(g->display, EGL_DEVICE_EXT, &dev)) return NULL;
+    const char *egl_node = query_device((EGLDeviceEXT)dev, EGL_DRM_RENDER_NODE_FILE_EXT);
+    if (!egl_node) return NULL;
+    char node[PATH_MAX];
+    snprintf(node, sizeof node, "%s", egl_node);
+    const int fd = open(node, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    char card_dev[PATH_MAX], gpu_dev[PATH_MAX];
+    if (!node_device(g->drm_fd, card_dev) || !node_device(fd, gpu_dev) ||
+        strcmp(card_dev, gpu_dev) == 0 || driver_is(fd, "vc4")) {
+        close(fd);
+        return NULL;
+    }
+    struct gbm_device *gbm = gbm_create_device(fd);
+    struct gbm_bo *bo = gbm ? gbm_bo_create(gbm, width, height, GBM_FORMAT_XRGB8888,
+                                            GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR) : NULL;
+    uint32_t handle = 0, fb = 0;
+    const bool takes = bo && card_import(g->drm_fd, bo, &handle, &fb);
+    if (takes) {
+        drmModeRmFB(g->drm_fd, fb);
+        gem_close(g->drm_fd, handle);
+    } else {
+        SAY(2, "  scanout  the display cannot import buffers from %s: %s\n",
+                node, bo ? strerror(errno) : "no linear buffer");
+    }
+    if (bo) gbm_bo_destroy(bo);
+    if (!takes) {
+        if (gbm) gbm_device_destroy(gbm);
+        close(fd);
+        return NULL;
+    }
+    SAY(1, "  scanout  buffers from %s, imported by the display\n", node);
+    return gbm;
+}
+
 static GheeScene *create_impl(int width, int height, int components, const char *dri_device, int scanout, int rgb565, char **err) {
     static char early_err[ERROR_BUFFER_SIZE];
     early_err[0] = '\0';
@@ -274,6 +383,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     g->height = height;
     g->components = components;
     g->drm_fd = -1;
+    g->gpu_fd = -1;
     g->display = EGL_NO_DISPLAY;
 
     const char *dev = dri_device ? dri_device : DEFAULT_DRI_DEVICE;
@@ -305,6 +415,23 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         goto fail;
     }
     SAY(2, "      egl  %d.%d on %s\n", major, minor, dev);
+
+    struct gbm_device *lender = scanout ? lending_gpu(g, width, height) : NULL;
+    if (lender) {
+        eglTerminate(g->display);
+        gbm_device_destroy(g->gbm);
+        g->gbm = lender;
+        g->gpu_fd = gbm_device_get_fd(lender);
+        const int hushed_gpu = hush_stderr();
+        g->display = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, g->gbm, NULL);
+        const EGLBoolean gpu_ready = g->display != EGL_NO_DISPLAY &&
+                                     eglInitialize(g->display, &major, &minor);
+        unhush_stderr(hushed_gpu);
+        if (!gpu_ready) {
+            snprintf(early_err, sizeof(early_err), "eglInitialize on the GPU's render node failed: 0x%X", eglGetError());
+            goto fail;
+        }
+    }
 
     const GLint alphaSize = (components == 4) ? 8 : 0;
     const EGLint configAttribs[] = {
@@ -347,7 +474,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     EGLConfig config = NULL;
     EGLint numConfigs = 0;
     uint32_t surf_fmt = GBM_FORMAT_XRGB8888;
-    if (scanout && rgb565 &&
+    if (scanout && rgb565 && !lender &&
         eglChooseConfig(g->display, configAttribs565, configs, 64, &numConfigs) &&
         numConfigs > 0) {
         // the chosen config's native visual must equal the GBM surface format,
@@ -373,14 +500,16 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         SAY(2, "   format  scanout %s\n",
                 surf_fmt == GBM_FORMAT_RGB565 ? "RGB565" : "XRGB8888");
 
-    g->gbm_surface = gbm_surface_create(g->gbm, width, height, surf_fmt,
-        GBM_BO_USE_RENDERING | (scanout ? GBM_BO_USE_SCANOUT : 0));
-    if (!g->gbm_surface) { snprintf(early_err, sizeof(early_err), "gbm_surface_create failed"); goto fail; }
-
-    g->surface = eglCreatePlatformWindowSurface(g->display, config, g->gbm_surface, NULL);
+    if (!lender) {
+        g->gbm_surface = gbm_surface_create(g->gbm, width, height, surf_fmt,
+            GBM_BO_USE_RENDERING | (scanout ? GBM_BO_USE_SCANOUT : 0));
+        if (!g->gbm_surface) { snprintf(early_err, sizeof(early_err), "gbm_surface_create failed"); goto fail; }
+        g->surface = eglCreatePlatformWindowSurface(g->display, config, g->gbm_surface, NULL);
+    }
     if (g->surface == EGL_NO_SURFACE) {
         // Desktop Mesa rejects the GBM window surface (EGL_BAD_MATCH) that the Pi's
-        // VC4 accepts. Rendering goes to FBOs, so fall back to a surfaceless context.
+        // VC4 accepts, and lent scanout buffers carry FBOs of their own. Rendering
+        // goes to FBOs, so a surfaceless context serves.
         const char *exts = eglQueryString(g->display, EGL_EXTENSIONS);
         if (!exts || !strstr(exts, "EGL_KHR_surfaceless_context")) {
             snprintf(early_err, sizeof(early_err), "eglCreatePlatformWindowSurface failed: 0x%X", eglGetError());
@@ -461,11 +590,15 @@ GheeScene *ghee_create(int width, int height, int components, const char *dri_de
 }
 
 // One DRM framebuffer per GBM bo, cached in the bo's user data (added once).
-struct bo_fb { int drm_fd; uint32_t fb_id; };
+// A lent bo also holds the card's handle from its import, 0 otherwise.
+struct bo_fb { int drm_fd; uint32_t fb_id; uint32_t handle; };
 static void bo_destroy_fb(struct gbm_bo *bo, void *data) {
     (void)bo;
     struct bo_fb *f = data;
-    if (f) { if (f->fb_id) drmModeRmFB(f->drm_fd, f->fb_id); free(f); }
+    if (!f) return;
+    if (f->fb_id) drmModeRmFB(f->drm_fd, f->fb_id);
+    if (f->handle) gem_close(f->drm_fd, f->handle);
+    free(f);
 }
 static uint32_t fb_for(GheeScene *g, struct gbm_bo *bo) {
     struct bo_fb *cached = gbm_bo_get_user_data(bo);
@@ -483,6 +616,72 @@ static uint32_t fb_for(GheeScene *g, struct gbm_bo *bo) {
     f->drm_fd = g->drm_fd; f->fb_id = fb;
     gbm_bo_set_user_data(bo, f, bo_destroy_fb);
     return fb;
+}
+
+// Allocate the lent buffers on the GPU, import each into the card with its
+// framebuffer, and wrap each in an FBO for the GPU to draw into. The context
+// must be current. false leaves the reason in eb.
+static bool lend_buffers(GheeScene *g, char *eb, size_t n) {
+    PFNEGLCREATEIMAGEKHRPROC create_image = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_target =
+        (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    if (!create_image || !image_target) { snprintf(eb, n, "EGL on the GPU cannot import a dma-buf"); return false; }
+    for (int i = 0; i < LENT_BUFFERS; i++) {
+        struct gbm_bo *bo = gbm_bo_create(g->gbm, g->width, g->height, GBM_FORMAT_XRGB8888,
+                                          GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+        if (!bo) { snprintf(eb, n, "the GPU cannot allocate a linear %dx%d scanout buffer", g->width, g->height); return false; }
+        g->lent[i].bo = bo;
+        g->lent_count = i + 1;
+        uint32_t handle = 0, fb = 0;
+        if (!card_import(g->drm_fd, bo, &handle, &fb)) {
+            snprintf(eb, n, "the display refused a scanout buffer from the GPU: %s", strerror(errno));
+            return false;
+        }
+        struct bo_fb *f = calloc(1, sizeof *f);
+        if (!f) { drmModeRmFB(g->drm_fd, fb); gem_close(g->drm_fd, handle); snprintf(eb, n, "out of memory"); return false; }
+        f->drm_fd = g->drm_fd; f->fb_id = fb; f->handle = handle;
+        gbm_bo_set_user_data(bo, f, bo_destroy_fb);
+        // v3d reads a dma-buf that arrives without a modifier as tiled.
+        uint64_t mod = gbm_bo_get_modifier(bo);
+        if (mod == DRM_FORMAT_MOD_INVALID) mod = DRM_FORMAT_MOD_LINEAR;
+        const int fd = gbm_bo_get_fd(bo);
+        if (fd < 0) { snprintf(eb, n, "cannot export a scanout buffer from the GPU"); return false; }
+        const EGLint attr[] = {
+            EGL_WIDTH, g->width,
+            EGL_HEIGHT, g->height,
+            EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_XRGB8888,
+            EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)gbm_bo_get_stride(bo),
+            EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(mod & 0xffffffff),
+            EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(mod >> 32),
+            EGL_NONE };
+        g->lent[i].image = create_image(g->display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attr);
+        close(fd);
+        if (g->lent[i].image == EGL_NO_IMAGE_KHR) {
+            snprintf(eb, n, "EGL cannot import its own scanout buffer: 0x%X", eglGetError());
+            return false;
+        }
+        glGenTextures(1, &g->lent[i].tex);
+        glBindTexture(GL_TEXTURE_2D, g->lent[i].tex);
+        image_target(GL_TEXTURE_2D, g->lent[i].image);
+        glGenFramebuffers(1, &g->lent[i].fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, g->lent[i].fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g->lent[i].tex, 0);
+        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            snprintf(eb, n, "a scanout buffer from the GPU is incomplete as a framebuffer: 0x%X", status);
+            return false;
+        }
+    }
+    return true;
+}
+
+// Hand a buffer back once the display lets go of it. A lent buffer is free as
+// soon as it is neither disp_prev nor disp_shown.
+static void release_bo(GheeScene *g, struct gbm_bo *bo) {
+    if (bo && !g->lent_count) gbm_surface_release_buffer(g->gbm_surface, bo);
 }
 
 // Pick the display to drive: first connected connector with modes, its
@@ -572,6 +771,7 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
     }
 
     make_current(g);
+    if (g->gpu_fd >= 0 && !lend_buffers(g, eb, sizeof eb)) { if (err) *err = eb; ghee_destroy(g); return NULL; }
     if (!ensure_blit(g)) { if (err) *err = "blit shader failed"; ghee_destroy(g); return NULL; }
     g->display_mode = true;
     g->disp_first = true;
@@ -599,11 +799,18 @@ void ghee_destroy(GheeScene *g) {
             drmModeSetCrtc(g->drm_fd, g->disp_saved->crtc_id, g->disp_saved->buffer_id,
                            g->disp_saved->x, g->disp_saved->y, &g->disp_conn, 1, &g->disp_saved->mode);
         }
-        if (g->disp_shown) gbm_surface_release_buffer(g->gbm_surface, g->disp_shown);
-        if (g->disp_prev) gbm_surface_release_buffer(g->gbm_surface, g->disp_prev);
+        release_bo(g, g->disp_shown);
+        release_bo(g, g->disp_prev);
         drmDropMaster(g->drm_fd);
     }
     if (have_gl) {
+        PFNEGLDESTROYIMAGEKHRPROC destroy_image =
+            (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+        for (int i = 0; i < g->lent_count; i++) {
+            if (g->lent[i].fbo) glDeleteFramebuffers(1, &g->lent[i].fbo);
+            if (g->lent[i].tex) glDeleteTextures(1, &g->lent[i].tex);
+            if (g->lent[i].image != EGL_NO_IMAGE_KHR && destroy_image) destroy_image(g->display, g->lent[i].image);
+        }
         if (g->preview_fbo) { glDeleteFramebuffers(1, &g->preview_fbo); glDeleteTextures(1, &g->preview_tex); }
         if (g->blit_prog) glDeleteProgram(g->blit_prog);
         if (g->VBO) glDeleteBuffers(1, &g->VBO);
@@ -617,8 +824,10 @@ void ghee_destroy(GheeScene *g) {
         eglTerminate(g->display);
     }
     free(g->rgba_scratch);
+    for (int i = 0; i < g->lent_count; i++) gbm_bo_destroy(g->lent[i].bo);
     if (g->gbm_surface) gbm_surface_destroy(g->gbm_surface);
     if (g->gbm) gbm_device_destroy(g->gbm);
+    if (g->gpu_fd >= 0) close(g->gpu_fd);
     if (g->drm_fd >= 0) close(g->drm_fd);
     free(g);
 }
@@ -953,7 +1162,7 @@ static float elapsed_seconds(GheeScene *g) {
 static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     for (int p = 0; p < g->mp_count; p++) {
         const bool direct = direct_last && p == g->mp_count - 1;
-        glBindFramebuffer(GL_FRAMEBUFFER, direct ? 0 : g->mp_fbo[p][g->mp_write[p]]);
+        glBindFramebuffer(GL_FRAMEBUFFER, direct ? g->scan_fbo : g->mp_fbo[p][g->mp_write[p]]);
         // The per-pass buffer size. The output pass is always full-size (the caller
         // enforces that), so the direct scanout draw still gets the display
         // viewport.
@@ -963,7 +1172,7 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
         // full-frame tile read from memory before the draw.
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(g->mp_program[p]);
-        if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], direct ? -1.0f : 1.0f);
+        if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], direct && !g->lent_count ? -1.0f : 1.0f);
         if (g->mp_timeLoc[p] >= 0) glUniform1f(g->mp_timeLoc[p], elapsed);
         if (g->mp_dtLoc[p] >= 0) glUniform1f(g->mp_dtLoc[p], g->dt);
         for (int c = 0; c < g->mp_nchan[p]; c++) {
@@ -1208,8 +1417,10 @@ int ghee_display_blank(GheeScene *g, int blank) {
     }
     // Nothing scans these out now, and the next light starts from a fresh
     // front buffer.
-    if (g->disp_shown) { gbm_surface_release_buffer(g->gbm_surface, g->disp_shown); g->disp_shown = NULL; }
-    if (g->disp_prev) { gbm_surface_release_buffer(g->gbm_surface, g->disp_prev); g->disp_prev = NULL; }
+    release_bo(g, g->disp_shown);
+    g->disp_shown = NULL;
+    release_bo(g, g->disp_prev);
+    g->disp_prev = NULL;
     g->disp_blanked = true;
     return 0;
 }
@@ -1225,14 +1436,21 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     for (int p = 0; p < g->mp_count && direct; p++)
         for (int c = 0; c < g->mp_nchan[p]; c++)
             if (g->mp_chan_src[p][c] == last) { direct = false; break; }
+    struct gbm_bo *bo = NULL;
+    for (int i = 0; i < g->lent_count && !bo; i++)
+        if (g->lent[i].bo != g->disp_prev && g->lent[i].bo != g->disp_shown) {
+            bo = g->lent[i].bo;
+            g->scan_fbo = g->lent[i].fbo;
+        }
+    if (g->lent_count && !bo) { set_error(g, "present: every lent scanout buffer is still on the display"); return; }
     render_passes(g, elapsed_seconds(g), direct);
 
     if (!direct) {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, g->scan_fbo);
         glViewport(0, 0, g->width, g->height);
         glClear(GL_COLOR_BUFFER_BIT);   // skip the tile load (see render_passes)
         glUseProgram(g->blit_prog);
-        glUniform1f(g->blit_flip, 1.0f);   // scanout: GL bottom-origin -> top-first display
+        glUniform1f(g->blit_flip, g->lent_count ? 0.0f : 1.0f);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
         glUniform1i(g->blit_sampler, 0);
@@ -1244,9 +1462,14 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         glEnableVertexAttribArray(1);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
-    eglSwapBuffers(g->display, g->surface);
-
-    struct gbm_bo *bo = gbm_surface_lock_front_buffer(g->gbm_surface);
+    if (g->lent_count) {
+        // The page flip waits on the fence of the GPU's writes, so a flush
+        // is enough to hand the buffer on.
+        glFlush();
+    } else {
+        eglSwapBuffers(g->display, g->surface);
+        bo = gbm_surface_lock_front_buffer(g->gbm_surface);
+    }
     uint32_t fb = fb_for(g, bo);
     if (g->disp_plane) {
         // The mode is already set: the plane carries each frame from here, and
@@ -1259,11 +1482,11 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
             g->disp_first = false;
         }
         if (set_scaled_plane(g, fb, g->width, g->height)) {
-            if (g->disp_shown) gbm_surface_release_buffer(g->gbm_surface, g->disp_shown);
+            release_bo(g, g->disp_shown);
             g->disp_shown = g->disp_prev;
             g->disp_prev = bo;
         } else {
-            gbm_surface_release_buffer(g->gbm_surface, bo);
+            release_bo(g, bo);
         }
     } else if (g->disp_first) {
         if (!g->disp_saved) g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
@@ -1272,9 +1495,9 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         g->disp_first = false;
         g->disp_prev = bo;               // on glass now (SetCrtc is immediate)
     } else if (!wait_flip(g)) {
-        gbm_surface_release_buffer(g->gbm_surface, bo);
+        release_bo(g, bo);
     } else {                             // the previous flip's buffer is on glass
-        if (g->disp_shown) gbm_surface_release_buffer(g->gbm_surface, g->disp_shown);
+        release_bo(g, g->disp_shown);
         g->disp_shown = g->disp_prev;    // displaced once the flip below completes
         if (!drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL)) {
             g->flip_pending = true;

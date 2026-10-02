@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Draw a kernel-driven panel on `--display kms` into buffers the GPU
+  allocates and the panel imports, when the panel's card is a device apart
+  from the GPU and takes them. A panel driver that reads each frame with
+  the CPU (ssd130x, gud, udl) then shows what the GPU drew, where on a
+  Pi 5 it showed stale fragments of earlier frames.
+
 ## 0.4.0 - 2026-08-06
 
 - `--display kms` is any connected KMS display: HDMI, or an SPI/I2C panel with

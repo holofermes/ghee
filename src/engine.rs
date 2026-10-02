@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::assets::Pixels;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
-use crate::scene::{ArraySize, ParamValue, Scene};
+use crate::scene::{ArraySize, Draw, ParamValue, Scene};
 
 /// error_pass for a compile error in the scene's common block.
 /// A pass error reports the pass index.
@@ -64,6 +64,45 @@ pub type Provider<'a> = &'a mut dyn FnMut(&str, ArraySize) -> Feed;
 pub enum AssetData<'a> {
     U8(&'a [u8]),
     F32(&'a [f32]),
+}
+
+/// How a layer's colour lands on its pass's buffer. The colour is
+/// premultiplied by its alpha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blend {
+    /// src + dst * (1 - src.a)
+    Over,
+    /// src + dst
+    Add,
+    /// src
+    Replace,
+}
+
+impl Blend {
+    fn engine(self) -> c_int {
+        match self {
+            Blend::Over => ffi::GHEE_BLEND_OVER,
+            Blend::Add => ffi::GHEE_BLEND_ADD,
+            Blend::Replace => ffi::GHEE_BLEND_REPLACE,
+        }
+    }
+}
+
+/// Quads a pass draws into its own buffer after its full-screen quad, with a
+/// vertex and a fragment shader of their own.
+///
+/// A vertex holds 1 to 4 `vec4` attributes, `a0` to `a3`, and a quad's 4
+/// vertices are its corners in triangle-strip order. The program reads its
+/// pass's uniforms, channels, arrays and assets under the same names. Its
+/// vertex shader flips `gl_Position.y` by the uniform `vflip`, as the pass's
+/// own quad does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layer {
+    /// The name of the pass the layer draws into.
+    pub pass: String,
+    pub vertex: String,
+    pub fragment: String,
+    pub blend: Blend,
 }
 
 /// The (width, rows) of one array upload, and its data.
@@ -288,6 +327,35 @@ fn user_line(err: &str, glsl: &str, code: &str, common: Option<&str>) -> (Option
     (Some((line - at).max(1)), false)
 }
 
+/// A draw's compile error, naming its pass, the draw, and the line of the
+/// draw's own GLSL it falls on.
+fn draw_error(
+    pass: &str,
+    k: usize,
+    d: &Draw,
+    err: &str,
+    vs: &str,
+    fs: &str,
+    common: Option<&str>,
+) -> String {
+    // A log may open with a warning, so the line comes from the first error.
+    let first = |log: &'_ str| {
+        log.lines()
+            .find(|l| l.contains("error"))
+            .unwrap_or(log)
+            .to_string()
+    };
+    let (line, part) = match err.strip_prefix("vertex shader: ") {
+        Some(e) => (user_line(&first(e), vs, &d.place, None), "place"),
+        None => (user_line(&first(err), fs, &d.code, common), "code"),
+    };
+    match line {
+        (Some(n), false) => format!("pass '{pass}' draw {k}, line {n} of its {part}: {err}"),
+        (Some(n), true) => format!("pass '{pass}' draw {k}, line {n} of the common block: {err}"),
+        (None, _) => format!("pass '{pass}' draw {k}: {err}"),
+    }
+}
+
 fn size_repr(size: ArraySize) -> String {
     match size {
         ArraySize::Linear(n) => n.to_string(),
@@ -321,6 +389,10 @@ pub struct Renderer {
     /// The texts whose data textures the engine holds. A setup frees the ones
     /// its scene no longer declares, so their asset slots come back.
     text_names: std::cell::RefCell<Vec<String>>,
+    /// The engine index of each layer setup_layers() took, in its order.
+    layers: Vec<c_int>,
+    /// The engine index of each scene draw's layer, and its text.
+    draws: Vec<(c_int, String)>,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
 }
@@ -352,6 +424,8 @@ impl Renderer {
             mp: Vec::new(),
             feeds: Vec::new(),
             text_names: std::cell::RefCell::new(Vec::new()),
+            layers: Vec::new(),
+            draws: Vec::new(),
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
             handle: ptr::null_mut(),
         };
@@ -419,6 +493,13 @@ impl Renderer {
     /// An error in the scene's common block sets error_pass to Common.
     /// error_line then counts from the start of that block.
     pub fn setup(&mut self, scene: &Scene) -> Result<String> {
+        self.setup_layers(scene, &[])
+    }
+
+    /// setup() with layers, each drawn into the pass it names after that
+    /// pass's quad and the pass's draws, in the order given. A layer's compile
+    /// error reports its pass.
+    pub fn setup_layers(&mut self, scene: &Scene, layers: &[Layer]) -> Result<String> {
         self.error = String::new();
         self.error_line = None;
         self.error_pass = None;
@@ -486,6 +567,17 @@ impl Renderer {
                 }
             }
         }
+        if let Some((k, l)) = layers
+            .iter()
+            .enumerate()
+            .find(|(_, l)| !names.contains(&l.pass.as_str()))
+        {
+            self.error = format!(
+                "layer {k} draws into pass '{}', which is not a pass in this scene",
+                l.pass
+            );
+            return Ok(self.error.clone());
+        }
         let units = self.max_texture_units();
         for p in &scene.passes {
             let mut used: Vec<&str> = p.arrays.iter().map(|a| a.name.as_str()).collect();
@@ -501,8 +593,22 @@ impl Renderer {
             }
         }
         let mut mp: Vec<(String, c_int)> = Vec::new();
+        let mut layer_ix: Vec<c_int> = vec![-1; layers.len()];
+        let mut draw_ix: Vec<(c_int, String)> = Vec::new();
         let hw_linear = self.data_texture_linear();
         let total = scene.passes.len();
+        if let Some((p, d)) = scene.passes.iter().find_map(|p| {
+            p.draws
+                .iter()
+                .find(|d| !scene.texts.iter().any(|t| t.name == d.text))
+                .map(|d| (p, d))
+        }) {
+            self.error = format!(
+                "pass '{}' draws text '{}', which the scene does not declare",
+                p.name, d.text
+            );
+            return Ok(self.error.clone());
+        }
         for (i, p) in scene.passes.iter().enumerate() {
             // A VC4 takes a while over a big shader, and a scene of several
             // compiles them one after another with nothing to show for it.
@@ -523,6 +629,59 @@ impl Renderer {
                     } {
                         idx = -1;
                     }
+                }
+            }
+            for (k, d) in p.draws.iter().enumerate() {
+                if idx < 0 {
+                    break;
+                }
+                let (vs, fs) = p.draw_glsl(
+                    k,
+                    Some(&scene.params),
+                    scene.common.as_deref(),
+                    &scene.assets,
+                    &scene.texts,
+                    hw_linear,
+                );
+                let (cvs, cfs) = (CString::new(vs.as_str())?, CString::new(fs.as_str())?);
+                let blend = d.blend.engine();
+                let li = unsafe {
+                    ffi::ghee_mp_add_layer(self.handle, idx, cvs.as_ptr(), cfs.as_ptr(), blend)
+                };
+                if li < 0 {
+                    let err = or_else(self.last_error(), "compile error");
+                    unsafe { ffi::ghee_mp_abort(self.handle) };
+                    self.error = draw_error(&p.name, k, d, &err, &vs, &fs, scene.common.as_deref());
+                    self.error_pass = Some(ErrorPass::Index(i));
+                    crate::report::progress_done();
+                    return Ok(self.error.clone());
+                }
+                draw_ix.push((li, d.text.clone()));
+            }
+            for (k, l) in layers.iter().enumerate().filter(|(_, l)| l.pass == p.name) {
+                if idx < 0 {
+                    break;
+                }
+                let (vs, fs) = (
+                    CString::new(l.vertex.as_str())?,
+                    CString::new(l.fragment.as_str())?,
+                );
+                layer_ix[k] = unsafe {
+                    ffi::ghee_mp_add_layer(
+                        self.handle,
+                        idx,
+                        vs.as_ptr(),
+                        fs.as_ptr(),
+                        l.blend.engine(),
+                    )
+                };
+                if layer_ix[k] < 0 {
+                    let err = or_else(self.last_error(), "compile error");
+                    unsafe { ffi::ghee_mp_abort(self.handle) };
+                    self.error = format!("layer {k}: {err}");
+                    self.error_pass = Some(ErrorPass::Index(i));
+                    crate::report::progress_done();
+                    return Ok(self.error.clone());
                 }
             }
             if idx < 0 {
@@ -547,6 +706,8 @@ impl Renderer {
             return Ok(self.error.clone());
         }
         self.mp = mp;
+        self.layers = layer_ix;
+        self.draws = draw_ix;
         // The output aspect reaches every pass that declares it.
         // A pass with its own size reads that size off `resolution`.
         // Such a pass cannot derive the shape of the frame.
@@ -641,6 +802,39 @@ impl Renderer {
         }
         self.feeds = feeds;
         Ok(String::new())
+    }
+
+    /// The quads of layer `layer`, an index into the layers setup_layers()
+    /// took: 4 vertices a quad of `nattr` vec4s each, so 16 * nattr floats a
+    /// quad. They replace the last set.
+    pub fn set_layer_quads(&self, layer: usize, data: &[f32], nattr: usize) -> Result<()> {
+        let Some(&idx) = self.layers.get(layer) else {
+            bail!("no layer {layer}: the scene holds {}", self.layers.len());
+        };
+        self.layer_quads(idx, &format!("layer {layer}"), data, nattr)
+    }
+
+    fn layer_quads(&self, idx: c_int, layer: &str, data: &[f32], nattr: usize) -> Result<()> {
+        if !(1..=4).contains(&nattr) {
+            bail!("{layer}: a vertex holds 1 to 4 attributes, got {nattr}");
+        }
+        let per_quad = 16 * nattr;
+        if !data.len().is_multiple_of(per_quad) {
+            bail!(
+                "{layer}: {} floats are no whole number of quads of {per_quad}",
+                data.len()
+            );
+        }
+        let quads = c_int::try_from(data.len() / per_quad)?;
+        if !unsafe {
+            ffi::ghee_mp_set_layer_quads(self.handle, idx, data.as_ptr(), quads, nattr as c_int)
+        } {
+            bail!(
+                "{}",
+                or_else(self.last_error(), &format!("{layer} refused its quads"))
+            );
+        }
+        Ok(())
     }
 
     /// Render all passes. The final pass is the returned RGB(A) frame.
@@ -911,6 +1105,10 @@ impl Renderer {
                 self.set_uniform(*idx, &uniform, "float", Value::from(*v))?;
             }
         }
+        for (idx, _) in self.draws.iter().filter(|(_, t)| t == name) {
+            let what = format!("a draw of text '{name}'");
+            self.layer_quads(*idx, &what, &built.quads.floats, built.quads.per_vertex / 4)?;
+        }
         let mut names = self.text_names.borrow_mut();
         if !names.iter().any(|n| n == name) {
             names.push(name.to_string());
@@ -1025,6 +1223,7 @@ impl Renderer {
     pub fn reset(&mut self) {
         unsafe { ffi::ghee_mp_reset(self.handle) };
         self.mp = Vec::new();
+        self.layers = Vec::new();
         self.feeds = Vec::new();
     }
 
@@ -2167,5 +2366,402 @@ mod tests {
                 .unwrap();
             assert_eq!(buf, out);
         }
+    }
+
+    // Layers
+
+    /// The preamble's precision block. A uniform both stages declare must
+    /// carry one precision in both.
+    const PRECISION: &str = "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\n\
+        precision highp float;\n#else\nprecision mediump float;\n#endif\n";
+
+    /// a0.xy is the vertex in pass pixels, y down like v_texCoord, and a1
+    /// the premultiplied colour.
+    fn layer_vs(extra: &str) -> String {
+        format!(
+            "{PRECISION}attribute vec4 a0; attribute vec4 a1;\n\
+             uniform vec2 resolution; uniform float vflip;\n\
+             varying vec4 v_color; varying vec2 v_px;\n{extra}\n\
+             void main() {{\n\
+               vec2 ndc = a0.xy / resolution * 2.0 - 1.0;\n\
+               gl_Position = vec4(ndc.x, ndc.y * vflip, 0.0, 1.0);\n\
+               v_color = a1; v_px = a0.xy;\n\
+             }}"
+        )
+    }
+
+    fn layer_fs(body: &str) -> String {
+        format!("{PRECISION}varying vec4 v_color; varying vec2 v_px;\n{body}")
+    }
+
+    const PLAIN_FS: &str = "void main(){ gl_FragColor = v_color; }";
+
+    fn layer(pass: &str, fs_body: &str, blend: Blend) -> Layer {
+        Layer {
+            pass: pass.to_string(),
+            vertex: layer_vs(""),
+            fragment: layer_fs(fs_body),
+            blend,
+        }
+    }
+
+    /// One quad over the pixels [x0, x1) x [y0, y1), in triangle-strip order.
+    fn quad(x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]) -> Vec<f32> {
+        [(x0, y0), (x1, y0), (x0, y1), (x1, y1)]
+            .iter()
+            .flat_map(|&(x, y)| [x, y, 0.0, 0.0, color[0], color[1], color[2], color[3]])
+            .collect()
+    }
+
+    fn rgb_at(f: &[u8], x: usize, y: usize) -> [f64; 3] {
+        [0, 1, 2].map(|c| px(f, W, x, y, c))
+    }
+
+    fn near3(got: [f64; 3], want: [f64; 3]) -> bool {
+        got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 2.0)
+    }
+
+    const GRAY: &str = "void main(){ gl_FragColor = vec4(0.5, 0.5, 0.5, 1.0); }";
+
+    #[test]
+    fn each_blend_mode_composes_its_formula_over_the_pass() {
+        let Some((_g, mut r)) = gpu() else { return };
+        // src (0.25, 0, 0, 0.5) premultiplied, over a gray pass of 0.5.
+        let src = [0.25, 0.0, 0.0, 0.5];
+        for (blend, want) in [
+            (Blend::Over, [128.0, 64.0, 64.0]),
+            (Blend::Add, [191.0, 128.0, 128.0]),
+            (Blend::Replace, [64.0, 0.0, 0.0]),
+        ] {
+            let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+            let l = layer("main", PLAIN_FS, blend);
+            assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "", "{blend:?}");
+            r.set_layer_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, src), 2)
+                .unwrap();
+            let f = r.render(None).unwrap().to_vec();
+            for (x, y) in [(0, 0), (W / 2 - 1, H - 1), (W / 4, H / 2)] {
+                let got = rgb_at(&f, x, y);
+                assert!(near3(got, want), "{blend:?} at ({x}, {y}): {got:?}");
+            }
+            for (x, y) in [(W / 2, 0), (W - 1, H - 1)] {
+                let got = rgb_at(&f, x, y);
+                assert!(
+                    near3(got, [128.0; 3]),
+                    "{blend:?} outside at ({x}, {y}): {got:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_layer_lands_with_rows_counted_like_v_tex_coord() {
+        // The pass paints the top rows, v_texCoord.y < 0.25, red. The layer
+        // covers the same rows by pixel and adds green.
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([{"name": "main", "code":
+            "void main(){ gl_FragColor = vec4(v_texCoord.y < 0.25 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
+        assert_eq!(
+            r.setup_layers(&sc, &[layer("main", PLAIN_FS, Blend::Add)])
+                .unwrap(),
+            ""
+        );
+        let rows = (H / 4) as f32;
+        r.set_layer_quads(0, &quad(0.0, 0.0, W as f32, rows, [0.0, 1.0, 0.0, 1.0]), 2)
+            .unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert!(near3(rgb_at(&f, 5, 0), [255.0, 255.0, 0.0]));
+        assert!(near3(rgb_at(&f, 5, H / 4 - 1), [255.0, 255.0, 0.0]));
+        assert!(near3(rgb_at(&f, 5, H / 4), [0.0, 0.0, 0.0]));
+        assert!(near3(rgb_at(&f, 5, H - 1), [0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn quads_past_one_16_bit_draw_land_where_their_vertices_say() {
+        // The first draw holds 16383 quads. Quads 0..W*H paint each pixel
+        // green, the next fill the first draw with nothing, and as many past
+        // it paint each pixel red. Every pixel ends yellow only if the second
+        // draw reads its own vertices.
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([{"name": "main", "code":
+            "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"}]));
+        assert_eq!(
+            r.setup_layers(&sc, &[layer("main", PLAIN_FS, Blend::Add)])
+                .unwrap(),
+            ""
+        );
+        let mut data = Vec::new();
+        let pixels = |color: [f32; 4], data: &mut Vec<f32>| {
+            for y in 0..H {
+                for x in 0..W {
+                    let (x, y) = (x as f32, y as f32);
+                    data.extend(quad(x, y, x + 1.0, y + 1.0, color));
+                }
+            }
+        };
+        pixels([0.0, 1.0, 0.0, 1.0], &mut data);
+        let empty = quad(0.0, 0.0, 0.0, 0.0, [1.0; 4]);
+        for _ in W * H..16383 {
+            data.extend(&empty);
+        }
+        pixels([1.0, 0.0, 0.0, 1.0], &mut data);
+        assert_eq!(data.len() / 32, 16383 + W * H);
+        r.set_layer_quads(0, &data, 2).unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        for y in 0..H {
+            for x in 0..W {
+                let got = rgb_at(&f, x, y);
+                assert!(near3(got, [255.0, 255.0, 0.0]), "({x}, {y}): {got:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn layers_of_a_pass_draw_in_order_and_new_quads_replace_the_old() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let layers = [
+            layer("main", PLAIN_FS, Blend::Replace),
+            layer("main", PLAIN_FS, Blend::Replace),
+        ];
+        assert_eq!(r.setup_layers(&sc, &layers).unwrap(), "");
+        let all = |c| quad(0.0, 0.0, W as f32, H as f32, c);
+        r.set_layer_quads(0, &all([1.0, 0.0, 0.0, 1.0]), 2).unwrap();
+        r.set_layer_quads(1, &all([0.0, 0.0, 1.0, 1.0]), 2).unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert!(near3(rgb_at(&f, 3, 3), [0.0, 0.0, 255.0]));
+        // No quads draw nothing, and the first layer shows again.
+        r.set_layer_quads(1, &[], 2).unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert!(near3(rgb_at(&f, 3, 3), [255.0, 0.0, 0.0]));
+        r.set_layer_quads(0, &quad(0.0, 0.0, 1.0, 1.0, [0.0, 1.0, 0.0, 1.0]), 2)
+            .unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert!(near3(rgb_at(&f, 0, 0), [0.0, 255.0, 0.0]));
+        assert!(near3(rgb_at(&f, 3, 3), [128.0; 3]));
+    }
+
+    #[test]
+    fn a_layer_reads_scene_params_in_both_stages_and_its_pass_inputs() {
+        // The vertex stage shifts the quad by `shift` pixels once `level` is
+        // set, and the fragment stage writes `level`, an array texel, an asset
+        // texel and the channel. `level` and `resolution` sit in both stages.
+        let Some((_g, mut r)) = gpu() else { return };
+        r.set_asset("pad", 1, 1, 1, false, AssetData::U8(&[64u8]))
+            .unwrap();
+        let sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "params": {
+                    "level": {"type": "float", "value": 0.0},
+                    "shift": {"type": "float", "value": 0.0},
+                },
+                "passes": [
+                    {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.75, 1.0); }"},
+                    {"name": "main", "channels": [{"buffer": "a"}],
+                     "arrays": [{"name": "vals", "size": 4}],
+                     "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
+                ],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        let l = Layer {
+            pass: "main".to_string(),
+            vertex: layer_vs("uniform float shift; uniform float level;").replace(
+                "v_px = a0.xy;",
+                "v_px = a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / resolution.x;",
+            ),
+            fragment: layer_fs(
+                "uniform float level; uniform sampler2D vals_tex; uniform sampler2D pad;\n\
+                 uniform sampler2D iChannel0; uniform vec2 pad_size; uniform vec2 resolution;\n\
+                 void main(){ gl_FragColor = vec4(level, \
+                   texture2D(vals_tex, vec2(0.125, 0.5)).r * 0.5 + texture2D(pad, vec2(0.5)).r, \
+                   texture2D(iChannel0, v_px / resolution).b * pad_size.x, 1.0); }",
+            ),
+            blend: Blend::Replace,
+        };
+        assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
+        r.set_time(Some(0.0));
+        assert!(r
+            .set_scene_param("level", "float", &ParamValue::Float(0.5))
+            .unwrap());
+        assert!(r
+            .set_scene_param("shift", "float", &ParamValue::Float(8.0))
+            .unwrap());
+        r.set_layer_quads(0, &quad(0.0, 0.0, 8.0, H as f32, [0.0; 4]), 2)
+            .unwrap();
+        let f = {
+            let mut provider = |_: &str, _: ArraySize| Feed::Data(vec![0.5; 4]);
+            r.render(Some(&mut provider)).unwrap().to_vec()
+        };
+        // 0.5 * 0.5 + 64 / 255 is 0.501.
+        let want = [128.0, 128.0, 191.0];
+        assert!(near3(rgb_at(&f, 8, 4), want), "{:?}", rgb_at(&f, 8, 4));
+        assert!(near3(rgb_at(&f, 15, 4), want), "{:?}", rgb_at(&f, 15, 4));
+        assert!(near3(rgb_at(&f, 7, 4), [0.0; 3]), "{:?}", rgb_at(&f, 7, 4));
+        assert!(
+            near3(rgb_at(&f, 16, 4), [0.0; 3]),
+            "{:?}",
+            rgb_at(&f, 16, 4)
+        );
+    }
+
+    #[test]
+    fn a_layer_reads_an_asset_its_pass_never_samples_and_one_set_later() {
+        let Some((_g, mut r)) = gpu() else { return };
+        r.set_asset("early", 1, 1, 1, false, AssetData::U8(&[64u8]))
+            .unwrap();
+        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let l = layer(
+            "main",
+            "uniform sampler2D early; uniform sampler2D late;\n\
+             void main(){ gl_FragColor = vec4(texture2D(early, vec2(0.5)).r, \
+               texture2D(late, vec2(0.5)).r, 0.0, 1.0); }",
+            Blend::Replace,
+        );
+        assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
+        r.set_asset("late", 1, 1, 1, false, AssetData::U8(&[191u8]))
+            .unwrap();
+        r.set_layer_quads(0, &quad(0.0, 0.0, W as f32, H as f32, [0.0; 4]), 2)
+            .unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert!(
+            near3(rgb_at(&f, 1, 1), [64.0, 191.0, 0.0]),
+            "{:?}",
+            rgb_at(&f, 1, 1)
+        );
+    }
+
+    #[test]
+    fn a_later_pass_samples_the_layer_drawn_into_an_earlier_one() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([
+            {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
+            {"name": "main", "channels": [{"buffer": "a"}],
+             "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }"},
+        ]));
+        assert_eq!(
+            r.setup_layers(&sc, &[layer("a", PLAIN_FS, Blend::Over)])
+                .unwrap(),
+            ""
+        );
+        r.set_layer_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, [1.0; 4]), 2)
+            .unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert!(near3(rgb_at(&f, 2, 2), [255.0; 3]));
+        assert!(near3(rgb_at(&f, W - 3, 2), [0.0; 3]));
+    }
+
+    #[test]
+    fn a_broken_layer_leaves_the_running_scene_and_names_its_stage() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        assert_eq!(
+            r.setup_layers(&sc, &[layer("main", PLAIN_FS, Blend::Replace)])
+                .unwrap(),
+            ""
+        );
+        r.set_layer_quads(
+            0,
+            &quad(0.0, 0.0, W as f32, H as f32, [1.0, 0.0, 0.0, 1.0]),
+            2,
+        )
+        .unwrap();
+        let before = r.render(None).unwrap().to_vec();
+        let mut bad = layer("main", PLAIN_FS, Blend::Over);
+        bad.vertex = bad
+            .vertex
+            .replace("v_color = a1;", "v_color = no_such_symbol;");
+        let err = r.setup_layers(&flat_scene(), &[bad]).unwrap();
+        assert!(err.starts_with("layer 0: vertex shader:"), "{err}");
+        assert_eq!(r.error_pass, Some(ErrorPass::Index(0)));
+        let bad = layer(
+            "main",
+            "void main(){ gl_FragColor = no_such_symbol; }",
+            Blend::Over,
+        );
+        let err = r.setup_layers(&flat_scene(), &[bad]).unwrap();
+        assert!(
+            err.starts_with("layer 0: ") && !err.contains("vertex shader"),
+            "{err}"
+        );
+        assert_eq!(r.render(None).unwrap(), &before[..]);
+        // The old layer still takes quads.
+        r.set_layer_quads(0, &[], 2).unwrap();
+        assert!(near3(rgb_at(r.render(None).unwrap(), 1, 1), [128.0; 3]));
+    }
+
+    #[test]
+    fn a_layer_and_its_quads_are_checked_before_the_engine_sees_them() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let err = r
+            .setup_layers(&flat_scene(), &[layer("typo", PLAIN_FS, Blend::Over)])
+            .unwrap();
+        assert_eq!(
+            err,
+            "layer 0 draws into pass 'typo', which is not a pass in this scene"
+        );
+        assert_eq!(
+            r.setup_layers(&flat_scene(), &[layer("main", PLAIN_FS, Blend::Over)])
+                .unwrap(),
+            ""
+        );
+        let one = quad(0.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        assert_eq!(
+            r.set_layer_quads(1, &one, 2).unwrap_err().to_string(),
+            "no layer 1: the scene holds 1"
+        );
+        assert_eq!(
+            r.set_layer_quads(0, &one, 5).unwrap_err().to_string(),
+            "layer 0: a vertex holds 1 to 4 attributes, got 5"
+        );
+        assert_eq!(
+            r.set_layer_quads(0, &one[1..], 2).unwrap_err().to_string(),
+            "layer 0: 31 floats are no whole number of quads of 32"
+        );
+        // setup() drops the layers with the scene.
+        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        assert!(r.set_layer_quads(0, &one, 2).is_err());
+    }
+
+    #[test]
+    fn a_layer_with_four_attributes_reads_each_one() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let vs = format!(
+            "{PRECISION}attribute vec4 a0; attribute vec4 a1; attribute vec4 a2; attribute vec4 a3;\n\
+             uniform vec2 resolution; uniform float vflip; varying vec4 v_color;\n\
+             void main() {{ vec2 ndc = a0.xy / resolution * 2.0 - 1.0;\n\
+               gl_Position = vec4(ndc.x, ndc.y * vflip, 0.0, 1.0);\n\
+               v_color = vec4(a1.x, a2.y, a3.z, 1.0); }}"
+        );
+        let l = Layer {
+            pass: "main".to_string(),
+            vertex: vs,
+            fragment: format!("{PRECISION}varying vec4 v_color;\n{PLAIN_FS}"),
+            blend: Blend::Replace,
+        };
+        assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
+        let data: Vec<f32> = [
+            (0.0, 0.0),
+            (W as f32, 0.0),
+            (0.0, H as f32),
+            (W as f32, H as f32),
+        ]
+        .iter()
+        .flat_map(|&(x, y)| {
+            [
+                x, y, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.75, 0.0,
+            ]
+        })
+        .collect();
+        r.set_layer_quads(0, &data, 4).unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert!(
+            near3(rgb_at(&f, 9, 9), [64.0, 128.0, 191.0]),
+            "{:?}",
+            rgb_at(&f, 9, 9)
+        );
     }
 }

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde_json::{json, Map, Value};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
-use ghee::engine::{probe_dri_devices, Renderer};
+use ghee::engine::{probe_dri_devices, ErrorPass, Renderer};
 use ghee::filters::apply_filters;
 use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
 use ghee::text::{self, Align, Text};
@@ -309,11 +309,33 @@ const TOL: u8 = 4;
 /// Channel `c` of an RGBA `frame` w pixels wide against the reference: full
 /// inside the outline, none outside it, away from the edges.
 fn assert_draws(frame: &[u8], w: usize, c: usize, laid: &Laid, fit: Fit, what: &str) {
+    assert_draws_at(
+        frame,
+        w,
+        c,
+        laid,
+        |x, y| fit.em(x, y),
+        EDGE / fit.ppem,
+        what,
+    );
+}
+
+/// assert_draws where `em` maps pixel (x, y) into the block and `edge` is
+/// EDGE in em.
+fn assert_draws_at(
+    frame: &[u8],
+    w: usize,
+    c: usize,
+    laid: &Laid,
+    em: impl Fn(usize, usize) -> [f64; 2],
+    edge: f64,
+    what: &str,
+) {
     let h = frame.len() / 4 / w;
     let (mut inside, mut outside, mut off) = (0, 0, Vec::new());
     for y in 0..h {
         for x in 0..w {
-            let Some(is_in) = laid.inside(fit.em(x, y), EDGE / fit.ppem) else {
+            let Some(is_in) = laid.inside(em(x, y), edge) else {
                 continue;
             };
             let want = if is_in {
@@ -1212,4 +1234,388 @@ fn a_filter_after_a_text_compiles() {
     let mut sc = loaded(&label_scene(SANS, "I", Align::Left, fit));
     apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
     assert_eq!(r.setup(&sc).unwrap(), "");
+}
+
+// Draws
+
+/// Quad `i`'s vertex `v`: a0 to a3.
+fn vertex(q: &text::Quads, i: usize, v: usize) -> [[f32; 4]; 4] {
+    let at = (i * 4 + v) * q.per_vertex;
+    let f = &q.floats[at..at + 16];
+    [0, 1, 2, 3].map(|k| [f[k * 4], f[k * 4 + 1], f[k * 4 + 2], f[k * 4 + 3]])
+}
+
+#[test]
+fn a_quad_spans_each_inked_glyph_with_its_indices() {
+    let words = "AV To\nghee";
+    let built = text::build(&font(SANS), words, Align::Center).unwrap();
+    let q = &built.quads;
+    // A0 V1 T3 o4 g6 h7 e8 e9: every character counts, the space and the
+    // newline too, and neither takes a quad.
+    let want = [
+        (0, 0, 0),
+        (1, 0, 0),
+        (3, 1, 0),
+        (4, 1, 0),
+        (6, 2, 1),
+        (7, 2, 1),
+        (8, 2, 1),
+        (9, 2, 1),
+    ];
+    assert_eq!((q.count, q.per_vertex), (want.len(), text::QUAD_FLOATS));
+    assert_eq!(q.floats.len(), q.count * 4 * q.per_vertex);
+    let laid = lay(SANS, words, Align::Center);
+    let inked: Vec<&Outline> = laid.glyphs.iter().filter(|g| !g.segs.is_empty()).collect();
+    let texels = (built.width * built.height) as f32;
+    for (i, (&(index, word, line), g)) in want.iter().zip(&inked).enumerate() {
+        let a = vertex(q, i, 0);
+        for (v, corner) in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+            .iter()
+            .enumerate()
+        {
+            let b = vertex(q, i, v);
+            assert_eq!(&b[0][..2], corner, "quad {i} vertex {v}");
+            assert_eq!(
+                (&b[0][2..], &b[1..]),
+                (&a[0][2..], &a[1..]),
+                "quad {i} vertex {v}"
+            );
+        }
+        assert_eq!(a[0][2..], [index as f32, word as f32], "quad {i}");
+        // The box holds the ink, quantized outward by less than 1/64 em.
+        let [x0, y0, x1, y1] = a[1].map(f64::from);
+        for (got, ink, out) in [
+            (x0, g.lo[0], -1.0),
+            (y0, g.lo[1], -1.0),
+            (x1, g.hi[0], 1.0),
+            (y1, g.hi[1], 1.0),
+        ] {
+            let past = (got - ink) * out;
+            assert!(
+                (-1e-6..1.0 / 64.0).contains(&past),
+                "quad {i}: box {:?} ink {:?} {:?}",
+                a[1],
+                g.lo,
+                g.hi
+            );
+        }
+        assert!(a[2][0] >= 1.0 && a[2][0] < texels, "quad {i}: {:?}", a[2]);
+        assert!(a[2][1] == a[2][2] && [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0].contains(&a[2][1]));
+        assert_eq!(
+            (a[2][3], a[3][0], a[3][3]),
+            (0.0, line as f32, 0.0),
+            "quad {i}"
+        );
+        // The advance starts at the origin, left of the ink of these letters.
+        assert!(
+            a[3][1] < a[3][2] && a[3][1] <= a[1][2],
+            "quad {i}: {:?}",
+            a[3]
+        );
+    }
+}
+
+// Draws
+
+/// A draw's place that puts the block where `fit` does.
+fn fit_place(fit: Fit) -> String {
+    format!(
+        "vec2 glyph_place(vec2 em) {{ return vec2({:.4}, {:.4}) + em * {:.4}; }}",
+        fit.x, fit.y, fit.ppem
+    )
+}
+
+const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
+/// White coverage, premultiplied.
+const WHITE: &str = "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c); }";
+
+/// label_scene with the words drawn by one draw over a black pass.
+fn draw_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
+    let mut doc = label_scene(file, words, align, fit);
+    doc["passes"][0] = json!({"name": "main", "code": BLACK,
+        "draws": [{"text": "label", "code": WHITE, "place": fit_place(fit)}]});
+    doc
+}
+
+/// The red channels of two RGBA frames: the pixels more than 1 level apart,
+/// and the largest difference.
+fn apart(a: &[u8], b: &[u8]) -> (usize, u8) {
+    a.iter()
+        .zip(b)
+        .step_by(4)
+        .map(|(x, y)| x.abs_diff(*y))
+        .fold((0, 0), |(n, m), d| (n + usize::from(d > 1), m.max(d)))
+}
+
+/// Slug's coverage jumps at a glyph's corner, where the last bits of the
+/// sample decide it, and a draw reaches its sample by another sum than
+/// `<name>_cover` does. Every other pixel lands within 1 level.
+const CORNERS: f64 = 0.005;
+
+fn assert_like_cover(draw: &[u8], cover: &[u8], what: &str) {
+    let inked = cover.iter().step_by(4).filter(|v| **v > 0).count();
+    let (n, m) = apart(draw, cover);
+    assert!(inked > 200, "{what}: {inked} pixels inked");
+    assert!(
+        (n as f64) <= CORNERS * inked as f64,
+        "{what}: {n} of {inked} inked pixels more than 1 level apart, at most {m}"
+    );
+}
+
+#[test]
+fn a_draw_covers_as_the_text_does() {
+    let Some((_g, mut r)) = gpu(320, 120) else {
+        return;
+    };
+    let cases = [
+        (SANS, "AV To\nghee", 13.0),
+        (SANS, "Wave fjord {}@", 29.5625),
+        (SANS, "ghee", 61.0),
+        (CFF, "IO OI", 37.25),
+    ];
+    for (file, words, ppem) in cases {
+        for (dx, dy) in [(0.0, 0.0), (0.3125, 0.6875)] {
+            let fit = Fit {
+                x: 6.0 + dx,
+                y: 4.0 + dy,
+                ppem,
+            };
+            let what = format!("{file} {words:?} at {ppem} px/em, +({dx}, {dy})");
+            let cover = render(&mut r, &loaded(&label_scene(file, words, Align::Left, fit)));
+            let draw = render(&mut r, &loaded(&draw_scene(file, words, Align::Left, fit)));
+            assert_like_cover(&draw, &cover, &what);
+        }
+    }
+}
+
+#[test]
+fn a_draw_follows_its_words_live() {
+    let (w, h) = (256, 64);
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 40.0,
+    };
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let want = render(
+        &mut r,
+        &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
+    );
+    let before = render(&mut r, &loaded(&draw_scene(SANS, "I", Align::Left, fit)));
+    assert!(r
+        .set_scene_param("label", "string", &ParamValue::Str("ghee".into()))
+        .unwrap());
+    r.set_time(Some(0.0));
+    let after = r.render(None).unwrap().to_vec();
+    assert!(after != before, "the draw kept the old words");
+    assert_like_cover(&after, &want, "ghee after I");
+}
+
+#[test]
+fn a_rotated_and_scaled_draw_lands_its_outline() {
+    let (w, h) = (240, 160);
+    let words = "ghee";
+    let laid = lay(SANS, words, Align::Left);
+    let (a, s): (f64, f64) = (0.4, 52.0);
+    let (cx, cy) = (120.0, 80.0);
+    let place = format!(
+        "vec2 glyph_place(vec2 em) {{
+    vec2 d = (em - 0.5 * label_size) * {s:.4};
+    return vec2({cx:.4}, {cy:.4}) + mat2({c:.6}, {sn:.6}, {nsn:.6}, {c:.6}) * d;
+}}",
+        c = a.cos(),
+        sn = a.sin(),
+        nsn = -a.sin()
+    );
+    let mut doc = label_scene(SANS, words, Align::Left, Fit::of(1.0, 1.0, w, h));
+    doc["passes"][0] = json!({"name": "main", "code": BLACK,
+        "draws": [{"text": "label", "code": WHITE, "place": place}]});
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let frame = render(&mut r, &loaded(&doc));
+    // The pixel centre back through the rotation into the block.
+    let em = |x: usize, y: usize| {
+        let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+        let (u, v) = (a.cos() * dx + a.sin() * dy, -a.sin() * dx + a.cos() * dy);
+        [u / s + 0.5 * laid.width, v / s + 0.5 * laid.height]
+    };
+    assert_draws_at(&frame, w, 0, &laid, em, EDGE / s, "rotated ghee");
+}
+
+#[test]
+fn draws_land_in_their_order_and_pad_past_the_ink() {
+    let (w, h) = (96, 96);
+    let fit = Fit {
+        x: 32.0,
+        y: 8.0,
+        ppem: 64.0,
+    };
+    let mut doc = label_scene(SANS, "I", Align::Left, fit);
+    let place = fit_place(fit);
+    doc["passes"][0] = json!({"name": "main", "code": BLACK, "draws": [
+        {"text": "label", "place": place, "pad": 0.25, "blend": "add",
+         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 0.5); }"},
+        {"text": "label", "place": place, "code": WHITE},
+    ]});
+    let laid = lay(SANS, "I", Align::Left);
+    let g = &laid.glyphs[0];
+    let px = |em: [f64; 2]| {
+        let (x, y) = (fit.x + em[0] * fit.ppem, fit.y + em[1] * fit.ppem);
+        (x as usize, y as usize)
+    };
+    let mid = (g.lo[1] + g.hi[1]) / 2.0;
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let frame = render(&mut r, &loaded(&doc));
+    let at = |(x, y): (usize, usize)| &frame[(y * w + x) * 4..(y * w + x) * 4 + 3];
+    // The fill lands over the pad: white on the stem.
+    assert_eq!(at(px([(g.lo[0] + g.hi[0]) / 2.0, mid])), [255, 255, 255]);
+    // The pad reaches 1/4 em past the ink box.
+    assert_eq!(at(px([g.lo[0] - 0.15, mid])), [0, 0, 128]);
+    assert_eq!(at(px([g.hi[0] + 0.15, mid])), [0, 0, 128]);
+    assert_eq!(at(px([g.hi[0] + 0.4, mid])), [0, 0, 0]);
+}
+
+#[test]
+fn a_draw_reads_int_params_in_both_stages() {
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 30.0,
+    };
+    let mut doc = draw_scene(SANS, "ghee", Align::Left, fit);
+    doc["params"]["n"] = json!({"type": "int", "value": 0});
+    doc["passes"][0]["params"] = json!({"m": {"type": "int", "value": 0}});
+    doc["passes"][0]["draws"][0]["place"] =
+        json!(fit_place(fit).replace("return ", "return vec2(float(n + m)) + "));
+    doc["passes"][0]["draws"][0]["code"] =
+        json!(WHITE.replace("vec4(c)", "vec4(c * float(1 + n - m))"));
+    let Some((_g, mut r)) = gpu(160, 48) else {
+        return;
+    };
+    let want = render(
+        &mut r,
+        &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
+    );
+    let got = render(&mut r, &loaded(&doc));
+    assert_like_cover(&got, &want, "int params");
+}
+
+#[test]
+fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 30.0,
+    };
+    let good = draw_scene(SANS, "I", Align::Left, fit);
+    let Some((_g, mut r)) = gpu(64, 48) else {
+        return;
+    };
+    let first = render(&mut r, &loaded(&good));
+    let mut bad = good.clone();
+    bad["passes"][0]["draws"][0]["code"] =
+        json!("void main(){\n    float c = glyph_cover();\n    nope(c);\n}");
+    let e = r.setup(&loaded(&bad)).unwrap();
+    assert!(
+        e.starts_with("pass 'main' draw 0, line 3 of its code: "),
+        "{e}"
+    );
+    assert_eq!(r.error_pass, Some(ErrorPass::Index(0)));
+    // The console marks error_line in the pass's own code, which holds no draw.
+    assert_eq!(r.error_line, None);
+    let mut bad = good.clone();
+    bad["passes"][0]["draws"][0]["place"] =
+        json!("vec2 glyph_place(vec2 em) {\n    return nope;\n}");
+    let e = r.setup(&loaded(&bad)).unwrap();
+    assert!(
+        e.starts_with("pass 'main' draw 0, line 2 of its place: "),
+        "{e}"
+    );
+    // The running scene stays.
+    r.set_time(Some(0.0));
+    assert!(r.render(None).unwrap() == first.as_slice());
+}
+
+#[test]
+fn draws_round_trip_and_over_and_no_pad_are_the_defaults() {
+    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+    doc["passes"][0]["draws"] = json!([
+        {"text": "label", "code": WHITE, "place": "vec2 glyph_place(vec2 em) { return em; }"},
+        {"text": "label", "code": WHITE, "place": "vec2 glyph_place(vec2 em) { return em; }",
+         "blend": "add", "pad": 0.125},
+        {"text": "label", "code": WHITE, "place": "vec2 glyph_place(vec2 em) { return em; }",
+         "blend": "over", "pad": 0},
+    ]);
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    let back = sc.to_dict();
+    assert_eq!(back["passes"][0]["draws"][0], doc["passes"][0]["draws"][0]);
+    assert_eq!(back["passes"][0]["draws"][1], doc["passes"][0]["draws"][1]);
+    assert_eq!(
+        back["passes"][0]["draws"][2], doc["passes"][0]["draws"][0],
+        "over and pad 0 are left out"
+    );
+    assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
+}
+
+#[test]
+fn a_draw_declaration_names_what_it_lacks() {
+    let place = "vec2 glyph_place(vec2 em) { return em; }";
+    let with = |draws: Value| {
+        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+        doc["passes"][0]["draws"] = draws;
+        scene_err(&doc)
+    };
+    let one = |d: Value| with(json!([d]));
+    let cases = [
+        (with(json!(3)), "pass 'main': 'draws' needs a list, got 3"),
+        (one(json!(3)), "pass 'main' draw 0 needs an object, got 3"),
+        (
+            one(json!({"code": WHITE, "place": place})),
+            "pass 'main' draw 0 has no 'text', the name of a scene text",
+        ),
+        (
+            one(json!({"text": "label", "place": place})),
+            "pass 'main' draw 0 has no 'code', fragment GLSL with its own void main()",
+        ),
+        (
+            one(json!({"text": "label", "code": WHITE})),
+            "pass 'main' draw 0 has no 'place', vertex GLSL that defines vec2 glyph_place(vec2 em)",
+        ),
+        (
+            one(json!({"text": "label", "code": " ", "place": place})),
+            "pass 'main' draw 0 'code' needs fragment GLSL with its own void main(), got ' '",
+        ),
+        (
+            one(json!({"text": "label", "code": WHITE, "place": place, "blend": "max"})),
+            "pass 'main' draw 0 blend needs 'over', 'add' or 'replace', got 'max'",
+        ),
+        (
+            one(json!({"text": "label", "code": WHITE, "place": place, "pad": -1})),
+            "pass 'main' draw 0 pad needs a number of em, 0 or more, got -1",
+        ),
+        (
+            one(json!({"text": "words", "code": WHITE, "place": place})),
+            "pass 'main' draw 0 draws text 'words', which the scene does not declare",
+        ),
+        (
+            with(Value::from(vec![
+                json!({"text": "label", "code": WHITE, "place": place});
+                17
+            ])),
+            "17 draws, over the 16 the engine draws",
+        ),
+    ];
+    for (got, want) in cases {
+        assert!(got.ends_with(want), "{got}\n  wants {want}");
+    }
+    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+    doc["passes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "d", "code": BLACK, "filter": "dither",
+            "draws": [{"text": "label", "code": WHITE, "place": place}]}));
+    let got = scene_err(&doc);
+    assert!(
+        got.ends_with("pass 'd' is filter 'dither', and a filter pass takes no draws"),
+        "{got}"
+    );
 }

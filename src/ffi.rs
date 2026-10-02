@@ -19,6 +19,10 @@ pub struct GheeEncoder {
 pub const PARAM_TYPE_FLOAT: c_int = 0;
 pub const PARAM_TYPE_INT: c_int = 1;
 
+pub const GHEE_BLEND_OVER: c_int = 0;
+pub const GHEE_BLEND_ADD: c_int = 1;
+pub const GHEE_BLEND_REPLACE: c_int = 2;
+
 #[repr(C)]
 pub struct FloatParam {
     pub value: f32,
@@ -98,6 +102,20 @@ extern "C" {
         linear: c_int,
     ) -> bool;
     pub fn ghee_mp_drop_asset(g: *mut GheeScene, name: *const c_char);
+    pub fn ghee_mp_add_layer(
+        g: *mut GheeScene,
+        pass: c_int,
+        vertex_source: *const c_char,
+        fragment_source: *const c_char,
+        blend: c_int,
+    ) -> c_int;
+    pub fn ghee_mp_set_layer_quads(
+        g: *mut GheeScene,
+        layer: c_int,
+        data: *const f32,
+        quads: c_int,
+        nattr: c_int,
+    ) -> bool;
     pub fn ghee_mp_render(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_present(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_reset(g: *mut GheeScene);

@@ -35,6 +35,26 @@
 #define FLIP_STUCK_MS 5000
 // One buffer on glass, one behind a pending flip, one to draw into.
 #define LENT_BUFFERS 3
+#define MP_MAX_LAYERS 16
+#define MP_LAYER_ATTRIBS 4
+// GLES2 guarantees 16-bit indices alone, and a quad takes 4 vertices, so a
+// layer of more quads than this draws in chunks.
+#define QUAD_CHUNK 16383
+
+// A layer: quads a pass draws into its own buffer after its full-screen quad,
+// with a program of its own. Each vertex holds `nattr` vec4 attributes,
+// a0 to a3.
+struct mp_layer {
+    int pass;
+    GLuint program;
+    int blend;                           // GHEE_BLEND_*
+    GLuint vbo, vao;
+    int quads, nattr;
+    GLint timeLoc, dtLoc, frameLoc, vflipLoc;
+    GLint chanLoc[MP_MAX_CHANNELS];
+    GLint dataLoc[MP_MAX_DATATEX];
+    GLint assetLoc[MP_MAX_ASSETS], assetSizeLoc[MP_MAX_ASSETS];
+};
 
 struct GheeScene {
     int width, height, components;
@@ -83,6 +103,11 @@ struct GheeScene {
     GLuint stage_fbo[MP_MAX_PASSES][2];
     GLuint stage_tex[MP_MAX_PASSES][2];
     int stage_w[MP_MAX_PASSES], stage_h[MP_MAX_PASSES];
+
+    // Layers, staged with the passes and committed with them.
+    int mp_nlayer, stage_nlayer;
+    struct mp_layer mp_layer[MP_MAX_LAYERS], stage_layer[MP_MAX_LAYERS];
+    GLuint quad_ibo;                     // QUAD_CHUNK quads of indices, shared by every layer
 
     // data textures: a float array bound as a count x rows sampler (<name>_tex) so a
     // computed index samples it in one fetch, dodging the VC4 uniform-array unroll cap.
@@ -235,22 +260,26 @@ static GLuint create_shader(GheeScene *g, GLenum type, const char *source) {
     if (!ok) {
         char info[ERROR_BUFFER_SIZE];
         glGetShaderInfoLog(shader, ERROR_BUFFER_SIZE, NULL, info);
-        set_error(g, "%s", info);
+        set_error(g, "%s%s", type == GL_VERTEX_SHADER ? "vertex shader: " : "", info);
         glDeleteShader(shader);
         return 0;
     }
     return shader;
 }
 
-static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_source) {
-    const GLuint vs = create_shader(g, GL_VERTEX_SHADER, vertex_shader_source);
+// The attributes bind to locations 0, 1, ... in the order `attribs` names them,
+// so a vertex layout set once holds for every program that reads it.
+static GLuint create_program(GheeScene *g, const char *vertex_source, const char *fragment_source,
+                             const char *const *attribs, int nattribs) {
+    const GLuint vs = create_shader(g, GL_VERTEX_SHADER, vertex_source);
     if (!vs) return 0;
-    const GLuint fs = create_shader(g, GL_FRAGMENT_SHADER, fragment_shader_source);
+    const GLuint fs = create_shader(g, GL_FRAGMENT_SHADER, fragment_source);
     if (!fs) { glDeleteShader(vs); return 0; }
 
     const GLuint program = glCreateProgram();
     glAttachShader(program, vs);
     glAttachShader(program, fs);
+    for (int i = 0; i < nattribs; i++) glBindAttribLocation(program, (GLuint)i, attribs[i]);
     glLinkProgram(program);
     GLint ok;
     glGetProgramiv(program, GL_LINK_STATUS, &ok);
@@ -266,6 +295,14 @@ static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_so
     glDeleteShader(vs);
     glDeleteShader(fs);
     return program;
+}
+
+static const char *const quad_attribs[] = { "position", "texCoord" };
+static const char *const layer_attribs[MP_LAYER_ATTRIBS] = { "a0", "a1", "a2", "a3" };
+
+// A program on the shared full-screen quad vertex shader.
+static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_source) {
+    return create_program(g, vertex_shader_source, fragment_shader_source, quad_attribs, 2);
 }
 
 // ---- lifecycle ------------------------------------------------------------
@@ -455,8 +492,9 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         EGL_ALPHA_SIZE, alphaSize,
         EGL_DEPTH_SIZE, 24,
         EGL_STENCIL_SIZE, 8,
-        // no MSAA: ghee only draws fullscreen quads, so multisampling has zero
-        // visual effect and (on VC4) quadruples the per-pixel tile work
+        // no MSAA: a pass and a layer antialias in their own shaders, so
+        // multisampling adds nothing visible and (on VC4) quadruples the
+        // per-pixel tile work
         EGL_SAMPLE_BUFFERS, 0,
         EGL_SAMPLES, 0,
         EGL_NONE
@@ -477,7 +515,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         EGL_DEPTH_SIZE, 24,
         EGL_STENCIL_SIZE, 8,
         // no MSAA on the scanout surface: 4x samples quadruple the per-pixel
-        // tile work for zero visual gain on fullscreen-quad scenes
+        // tile work, and the shaders antialias their own edges
         EGL_SAMPLE_BUFFERS, 0,
         EGL_SAMPLES, 0,
         EGL_NONE
@@ -830,6 +868,7 @@ void ghee_destroy(GheeScene *g) {
         if (g->VBO) glDeleteBuffers(1, &g->VBO);
         if (g->VAO) glDeleteVertexArrays(1, &g->VAO);
         ghee_mp_reset(g);   // all pass programs/buffers + the pending scene
+        if (g->quad_ibo) glDeleteBuffers(1, &g->quad_ibo);
         if (g->mp_nasset > 0) glDeleteTextures(g->mp_nasset, g->mp_asset_tex);
         eglMakeCurrent(g->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     }
@@ -902,8 +941,18 @@ static GLuint make_black_texture(void) {
     return tex;
 }
 
-// Free the running scene's passes and the array textures they share.
+static void mp_free_layers(struct mp_layer *ls, int *n) {
+    for (int i = 0; i < *n; i++) {
+        if (ls[i].program) glDeleteProgram(ls[i].program);
+        if (ls[i].vbo) glDeleteBuffers(1, &ls[i].vbo);
+        if (ls[i].vao) glDeleteVertexArrays(1, &ls[i].vao);
+    }
+    *n = 0;
+}
+
+// Free the running scene's passes, their layers and the array textures they share.
 static void mp_free_passes(GheeScene *g) {
+    mp_free_layers(g->mp_layer, &g->mp_nlayer);
     for (int p = 0; p < g->mp_count; p++) {
         if (g->mp_program[p]) glDeleteProgram(g->mp_program[p]);
         mp_free_buffers(g->mp_fbo[p], g->mp_tex[p]);
@@ -955,10 +1004,29 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     return true;
 }
 
+int ghee_mp_add_layer(GheeScene *g, int pass, const char *vertex_source,
+                      const char *fragment_source, int blend) {
+    if (pass < 0 || pass >= g->stage_count) { set_error(g, "layer: pass %d is not pending", pass); return -1; }
+    if (g->stage_nlayer >= MP_MAX_LAYERS) { set_error(g, "more than %d layers in the scene", MP_MAX_LAYERS); return -1; }
+    if (blend < GHEE_BLEND_OVER || blend > GHEE_BLEND_REPLACE) { set_error(g, "layer: no blend mode %d", blend); return -1; }
+    make_current(g);
+    const GLuint prog = create_program(g, vertex_source, fragment_source, layer_attribs, MP_LAYER_ATTRIBS);
+    if (!prog) return -1;
+    struct mp_layer *l = &g->stage_layer[g->stage_nlayer];
+    memset(l, 0, sizeof *l);
+    l->pass = pass;
+    l->program = prog;
+    l->blend = blend;
+    glGenBuffers(1, &l->vbo);
+    glGenVertexArrays(1, &l->vao);
+    return g->stage_nlayer++;
+}
+
 // Drop the pending passes (a scene that failed to compile).
 void ghee_mp_abort(GheeScene *g) {
     if (g->stage_count <= 0) return;
     make_current(g);
+    mp_free_layers(g->stage_layer, &g->stage_nlayer);
     for (int p = 0; p < g->stage_count; p++) {
         glDeleteProgram(g->stage_program[p]);
         mp_free_buffers(g->stage_fbo[p], g->stage_tex[p]);
@@ -1008,14 +1076,110 @@ int ghee_mp_commit(GheeScene *g) {
     }
     g->mp_count = g->stage_count;
     g->stage_count = 0;
+    for (int i = 0; i < g->stage_nlayer; i++) {
+        struct mp_layer *l = &g->mp_layer[i];
+        *l = g->stage_layer[i];
+        glUseProgram(l->program);
+        const GLint rloc = glGetUniformLocation(l->program, "resolution");
+        if (rloc >= 0) glUniform2f(rloc, (float)g->mp_w[l->pass], (float)g->mp_h[l->pass]);
+        l->timeLoc = glGetUniformLocation(l->program, "time");
+        l->dtLoc = glGetUniformLocation(l->program, "DT");
+        l->frameLoc = glGetUniformLocation(l->program, "frame");
+        l->vflipLoc = glGetUniformLocation(l->program, "vflip");
+        if (l->vflipLoc >= 0) glUniform1f(l->vflipLoc, 1.0f);
+        for (int c = 0; c < MP_MAX_CHANNELS; c++) {
+            char nm[16];
+            snprintf(nm, sizeof(nm), "iChannel%d", c);
+            l->chanLoc[c] = glGetUniformLocation(l->program, nm);
+        }
+        for (int d = 0; d < MP_MAX_DATATEX; d++) l->dataLoc[d] = -1;
+        for (int a = 0; a < g->mp_nasset; a++) {
+            char nm[72];
+            snprintf(nm, sizeof(nm), "%s_size", g->mp_asset_name[a]);
+            l->assetLoc[a] = glGetUniformLocation(l->program, g->mp_asset_name[a]);
+            l->assetSizeLoc[a] = glGetUniformLocation(l->program, nm);
+        }
+        l->quads = 0;
+    }
+    g->mp_nlayer = g->stage_nlayer;
+    g->stage_nlayer = 0;
     return g->mp_count;
 }
 
-// assets sampled by the pass, one texture unit each
-static int mp_pass_assets(GheeScene *g, int pass) {
+static bool make_quad_indices(GheeScene *g) {
+    GLushort *ix = malloc((size_t)QUAD_CHUNK * 6 * sizeof *ix);
+    if (!ix) { set_error(g, "no memory for the quad indices"); return false; }
+    for (int q = 0; q < QUAD_CHUNK; q++) {
+        const GLushort v = (GLushort)(q * 4);
+        GLushort *o = ix + (size_t)q * 6;
+        o[0] = v; o[1] = v + 1; o[2] = v + 2;
+        o[3] = v + 2; o[4] = v + 1; o[5] = v + 3;
+    }
+    glGenBuffers(1, &g->quad_ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g->quad_ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)QUAD_CHUNK * 6 * sizeof *ix, ix, GL_STATIC_DRAW);
+    free(ix);
+    return true;
+}
+
+bool ghee_mp_set_layer_quads(GheeScene *g, int layer, const float *data, int quads, int nattr) {
+    if (layer < 0 || layer >= g->mp_nlayer) { set_error(g, "no layer %d in the scene", layer); return false; }
+    if (quads < 0 || nattr < 1 || nattr > MP_LAYER_ATTRIBS) {
+        set_error(g, "layer %d: %d quads of %d attributes a vertex, where a vertex holds 1 to %d",
+                  layer, quads, nattr, MP_LAYER_ATTRIBS);
+        return false;
+    }
+    const size_t bytes = (size_t)quads * 4 * (size_t)nattr * 4 * sizeof(GLfloat);
+    if (bytes > (size_t)PTRDIFF_MAX) { set_error(g, "layer %d: %d quads overflow a buffer", layer, quads); return false; }
+    struct mp_layer *l = &g->mp_layer[layer];
+    make_current(g);
+    glBindVertexArray(l->vao);
+    if (!g->quad_ibo && !make_quad_indices(g)) { glBindVertexArray(g->VAO); return false; }
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g->quad_ibo);
+    for (int k = 0; k < MP_LAYER_ATTRIBS; k++) {
+        if (k < nattr) glEnableVertexAttribArray(k);
+        else glDisableVertexAttribArray(k);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
+    while (glGetError() != GL_NO_ERROR) { }
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, data, GL_DYNAMIC_DRAW);
+    const GLenum err = glGetError();
+    glBindVertexArray(g->VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+    if (err != GL_NO_ERROR) {
+        l->quads = 0;
+        set_error(g, "layer %d: the upload of %d quads failed: GL 0x%X", layer, quads, err);
+        return false;
+    }
+    l->quads = quads;
+    l->nattr = nattr;
+    return true;
+}
+
+// assets sampled by the pass's own program, one texture unit each
+static int mp_own_assets(GheeScene *g, int pass) {
     int n = 0;
     for (int a = 0; a < g->mp_nasset; a++)
         if (g->mp_assetLoc[pass][a] >= 0) n++;
+    return n;
+}
+
+static int mp_layer_assets(GheeScene *g, int layer) {
+    int n = 0;
+    for (int a = 0; a < g->mp_nasset; a++)
+        if (g->mp_layer[layer].assetLoc[a] >= 0) n++;
+    return n;
+}
+
+// The most asset units one program of the pass takes: its own, or one of its
+// layers'. A layer shares the pass's channel and array units.
+static int mp_pass_assets(GheeScene *g, int pass) {
+    int n = mp_own_assets(g, pass);
+    for (int l = 0; l < g->mp_nlayer; l++) {
+        if (g->mp_layer[l].pass != pass) continue;
+        const int m = mp_layer_assets(g, l);
+        if (m > n) n = m;
+    }
     return n;
 }
 
@@ -1039,11 +1203,9 @@ bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
     return true;
 }
 
-bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
-    if (pass < 0 || pass >= g->mp_count) return false;
-    make_current(g);
-    glUseProgram(g->mp_program[pass]);
-    const GLint loc = glGetUniformLocation(g->mp_program[pass], param->name);
+static bool program_uniform(GLuint program, const parameter_t *param) {
+    glUseProgram(program);
+    const GLint loc = glGetUniformLocation(program, param->name);
     if (loc < 0) return false;
     switch (param->type) {
         case PARAM_TYPE_FLOAT: glUniform1f(loc, param->value.float_param->value); break;
@@ -1051,6 +1213,16 @@ bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
         default: return false;
     }
     return true;
+}
+
+// The value reaches the pass's program and every layer of the pass.
+bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
+    if (pass < 0 || pass >= g->mp_count) return false;
+    make_current(g);
+    bool any = program_uniform(g->mp_program[pass], param);
+    for (int l = 0; l < g->mp_nlayer; l++)
+        if (g->mp_layer[l].pass == pass) any = program_uniform(g->mp_layer[l].program, param) || any;
+    return any;
 }
 
 // Unused: superseded by ghee_mp_set_array.
@@ -1101,6 +1273,10 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
     glUseProgram(g->mp_program[pass]);
     g->mp_dataLoc[pass][g->mp_ndatatex[pass]] =
         glGetUniformLocation(g->mp_program[pass], g->mp_array_name[idx]);
+    for (int l = 0; l < g->mp_nlayer; l++)
+        if (g->mp_layer[l].pass == pass)
+            g->mp_layer[l].dataLoc[g->mp_ndatatex[pass]] =
+                glGetUniformLocation(g->mp_layer[l].program, g->mp_array_name[idx]);
     g->mp_datatex[pass][g->mp_ndatatex[pass]++] = idx;
     return idx;
 }
@@ -1223,10 +1399,22 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
         for (int p = 0; p < g->mp_count; p++) {
             loc[p] = glGetUniformLocation(g->mp_program[p], name);
             sloc[p] = glGetUniformLocation(g->mp_program[p], nm);
-            const int want = g->mp_nchan[p] + g->mp_ndatatex[p] + mp_pass_assets(g, p) + 1;
+            const int want = g->mp_nchan[p] + g->mp_ndatatex[p] + mp_own_assets(g, p) + 1;
             if (loc[p] >= 0 && want > g->max_units) {
                 set_error(g, "pass %d wants %d texture units, this GL has %d",
                           p, want, (int)g->max_units);
+                return false;
+            }
+        }
+        GLint lloc[MP_MAX_LAYERS], lsloc[MP_MAX_LAYERS];
+        for (int l = 0; l < g->mp_nlayer; l++) {
+            const int p = g->mp_layer[l].pass;
+            lloc[l] = glGetUniformLocation(g->mp_layer[l].program, name);
+            lsloc[l] = glGetUniformLocation(g->mp_layer[l].program, nm);
+            const int want = g->mp_nchan[p] + g->mp_ndatatex[p] + mp_layer_assets(g, l) + 1;
+            if (lloc[l] >= 0 && want > g->max_units) {
+                set_error(g, "layer %d of pass %d wants %d texture units, this GL has %d",
+                          l, p, want, (int)g->max_units);
                 return false;
             }
         }
@@ -1236,6 +1424,10 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
         for (int p = 0; p < g->mp_count; p++) {
             g->mp_assetLoc[p][idx] = loc[p];
             g->mp_assetSizeLoc[p][idx] = sloc[p];
+        }
+        for (int l = 0; l < g->mp_nlayer; l++) {
+            g->mp_layer[l].assetLoc[idx] = lloc[l];
+            g->mp_layer[l].assetSizeLoc[idx] = lsloc[l];
         }
     }
     glActiveTexture(GL_TEXTURE0);
@@ -1267,6 +1459,10 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name) {
             g->mp_assetLoc[p][a] = g->mp_assetLoc[p][a + 1];
             g->mp_assetSizeLoc[p][a] = g->mp_assetSizeLoc[p][a + 1];
         }
+        for (int l = 0; l < g->mp_nlayer; l++) {
+            g->mp_layer[l].assetLoc[a] = g->mp_layer[l].assetLoc[a + 1];
+            g->mp_layer[l].assetSizeLoc[a] = g->mp_layer[l].assetSizeLoc[a + 1];
+        }
     }
     g->mp_nasset--;
 }
@@ -1276,6 +1472,59 @@ static float elapsed_seconds(GheeScene *g) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     return g->has_time_override ? g->time_override
         : (now.tv_sec - g->start_time.tv_sec) + (now.tv_nsec - g->start_time.tv_nsec) / 1e9f;
+}
+
+// Draw the layers of pass p into the bound target, after the pass's quad. The
+// pass's channel and array textures stay bound, so a layer points its
+// samplers at the same units, and binds its assets after them.
+static void mp_draw_layers(GheeScene *g, int p, float vflip, float elapsed) {
+    bool drew = false;
+    for (int i = 0; i < g->mp_nlayer; i++) {
+        const struct mp_layer *l = &g->mp_layer[i];
+        if (l->pass != p || l->quads <= 0) continue;
+        glUseProgram(l->program);
+        if (l->vflipLoc >= 0) glUniform1f(l->vflipLoc, vflip);
+        if (l->timeLoc >= 0) glUniform1f(l->timeLoc, elapsed);
+        if (l->dtLoc >= 0) glUniform1f(l->dtLoc, g->dt);
+        if (l->frameLoc >= 0) glUniform1f(l->frameLoc, g->frame);
+        for (int c = 0; c < g->mp_nchan[p]; c++)
+            if (l->chanLoc[c] >= 0) glUniform1i(l->chanLoc[c], c);
+        for (int d = 0; d < g->mp_ndatatex[p]; d++)
+            if (l->dataLoc[d] >= 0) glUniform1i(l->dataLoc[d], g->mp_nchan[p] + d);
+        int unit = g->mp_nchan[p] + g->mp_ndatatex[p];
+        for (int a = 0; a < g->mp_nasset; a++) {
+            if (l->assetSizeLoc[a] >= 0)
+                glUniform2f(l->assetSizeLoc[a], (float)g->mp_asset_w[a], (float)g->mp_asset_h[a]);
+            if (l->assetLoc[a] < 0) continue;
+            glActiveTexture(GL_TEXTURE0 + unit);
+            glBindTexture(GL_TEXTURE_2D, g->mp_asset_tex[a]);
+            glUniform1i(l->assetLoc[a], unit);
+            unit++;
+        }
+        if (l->blend == GHEE_BLEND_REPLACE) {
+            glDisable(GL_BLEND);
+        } else {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, l->blend == GHEE_BLEND_ADD ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+        }
+        glBindVertexArray(l->vao);
+        glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
+        const GLsizei stride = l->nattr * 4 * (GLsizei)sizeof(GLfloat);
+        for (int at = 0; at < l->quads; at += QUAD_CHUNK) {
+            const int n = l->quads - at < QUAD_CHUNK ? l->quads - at : QUAD_CHUNK;
+            const size_t base = (size_t)at * 4 * (size_t)stride;
+            for (int k = 0; k < l->nattr; k++)
+                glVertexAttribPointer(k, 4, GL_FLOAT, GL_FALSE, stride,
+                                      (const GLvoid *)(base + (size_t)k * 4 * sizeof(GLfloat)));
+            glDrawElements(GL_TRIANGLES, n * 6, GL_UNSIGNED_SHORT, (const GLvoid *)0);
+        }
+        drew = true;
+    }
+    if (drew) {
+        glDisable(GL_BLEND);
+        glBindVertexArray(g->VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+    }
 }
 
 // Render every pass into its FBO (shared by readback and display present).
@@ -1299,7 +1548,8 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
         // full-frame tile read from memory before the draw.
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(g->mp_program[p]);
-        if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], direct && !g->lent_count ? -1.0f : 1.0f);
+        const float vflip = direct && !g->lent_count ? -1.0f : 1.0f;
+        if (g->mp_vflipLoc[p] >= 0) glUniform1f(g->mp_vflipLoc[p], vflip);
         if (g->mp_timeLoc[p] >= 0) glUniform1f(g->mp_timeLoc[p], elapsed);
         if (g->mp_dtLoc[p] >= 0) glUniform1f(g->mp_dtLoc[p], g->dt);
         if (g->mp_frameLoc[p] >= 0) glUniform1f(g->mp_frameLoc[p], g->frame);
@@ -1336,6 +1586,7 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
             unit++;
         }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        mp_draw_layers(g, p, vflip, elapsed);
     }
 }
 

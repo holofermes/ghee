@@ -11,6 +11,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
+use crate::engine::Blend;
 use crate::text::Text;
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
@@ -32,6 +33,9 @@ const MAX_TEXELS: i64 = 1 << 24;
 
 // The engine's asset table holds MP_MAX_ASSETS entries.
 const MAX_ASSETS: usize = 8;
+
+// The engine draws MP_MAX_LAYERS layers, one a draw.
+const MAX_DRAWS: usize = 16;
 
 fn vec_arity(ty: &str) -> Option<usize> {
     VEC_ARITY.iter().find(|(t, _)| *t == ty).map(|(_, n)| *n)
@@ -1061,6 +1065,90 @@ impl Channel {
     }
 }
 
+/// A text drawn as one quad a glyph into its pass's buffer, after the pass's
+/// own quad.
+///
+/// `place` defines `vec2 glyph_place(vec2 em)`: the pass pixel, in the space of
+/// `v_texCoord * resolution`, where a point of the block lands, given in em
+/// from the block's top left, y down. `code` colours a glyph's pixels with its
+/// own `void main()`, premultiplied by alpha.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Draw {
+    /// A name in the scene's texts.
+    pub text: String,
+    pub code: String,
+    pub place: String,
+    pub blend: Blend,
+    /// Em the quads reach past the ink, for an effect around the outline.
+    pub pad: f64,
+}
+
+impl Draw {
+    /// `what` names the draw in an error, as "pass 'main' draw 0".
+    pub fn from_dict(what: &str, d: &Value) -> Result<Draw> {
+        let Value::Object(o) = d else {
+            bail!("{what} needs an object, got {}", py_repr(d));
+        };
+        let glsl = |key: &str, holds: &str| match o.get(key) {
+            Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
+            Some(v) => bail!("{what} '{key}' needs {holds}, got {}", py_repr(v)),
+            None => bail!("{what} has no '{key}', {holds}"),
+        };
+        let text = glsl("text", "the name of a scene text")?;
+        let code = glsl("code", "fragment GLSL with its own void main()")?;
+        let place = glsl(
+            "place",
+            "vertex GLSL that defines vec2 glyph_place(vec2 em)",
+        )?;
+        let blend = match o.get("blend").filter(|v| !v.is_null()) {
+            None => Blend::Over,
+            Some(Value::String(b)) if b == "over" => Blend::Over,
+            Some(Value::String(b)) if b == "add" => Blend::Add,
+            Some(Value::String(b)) if b == "replace" => Blend::Replace,
+            Some(v) => bail!(
+                "{what} blend needs 'over', 'add' or 'replace', got {}",
+                py_repr(v)
+            ),
+        };
+        let pad = match o.get("pad").filter(|v| !v.is_null()) {
+            None => 0.0,
+            Some(v) => match v.as_f64() {
+                Some(f) if f.is_finite() && f >= 0.0 => f,
+                _ => bail!(
+                    "{what} pad needs a number of em, 0 or more, got {}",
+                    py_repr(v)
+                ),
+            },
+        };
+        Ok(Draw {
+            text,
+            code,
+            place,
+            blend,
+            pad,
+        })
+    }
+
+    pub fn to_dict(&self) -> Value {
+        let mut d = Map::new();
+        d.insert("text".to_string(), Value::from(self.text.clone()));
+        d.insert("code".to_string(), Value::from(self.code.clone()));
+        d.insert("place".to_string(), Value::from(self.place.clone()));
+        let blend = match self.blend {
+            Blend::Over => None,
+            Blend::Add => Some("add"),
+            Blend::Replace => Some("replace"),
+        };
+        if let Some(b) = blend {
+            d.insert("blend".to_string(), Value::from(b));
+        }
+        if self.pad != 0.0 {
+            d.insert("pad".to_string(), Value::from(self.pad));
+        }
+        Value::Object(d)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pass {
     pub name: String,
@@ -1075,6 +1163,8 @@ pub struct Pass {
     /// consumer samples a sized pass through normalized UVs, so it ignores
     /// the size. The output pass leaves this None.
     pub size: Option<(i64, i64)>,
+    /// Texts drawn into this pass's buffer after its quad, in order.
+    pub draws: Vec<Draw>,
 }
 
 impl Pass {
@@ -1113,6 +1203,7 @@ impl Pass {
             params,
             filter: filter.to_string(),
             size,
+            draws: Vec::new(),
         })
     }
 
@@ -1171,7 +1262,7 @@ impl Pass {
                 Ok((arrays, channels, params))
             })()
             .map_err(|e| anyhow!("pass '{name}': {e}"))?;
-        Pass::new(
+        let mut pass = Pass::new(
             &name,
             &code,
             arrays,
@@ -1181,7 +1272,21 @@ impl Pass {
                 .filter(|v| !v.is_null())
                 .map_or(String::new(), py_str),
             o.get("size").cloned(),
-        )
+        )?;
+        pass.draws = list_of(o, "draws")
+            .map_err(|e| anyhow!("pass '{name}': {e}"))?
+            .iter()
+            .enumerate()
+            .map(|(k, dd)| Draw::from_dict(&format!("pass '{name}' draw {k}"), dd))
+            .collect::<Result<Vec<_>>>()?;
+        // A filter is written apart from any scene, and a text belongs to one.
+        if !pass.filter.is_empty() && !pass.draws.is_empty() {
+            bail!(
+                "pass '{name}' is filter '{}', and a filter pass takes no draws",
+                pass.filter
+            );
+        }
+        Ok(pass)
     }
 
     pub fn to_dict(&self) -> Value {
@@ -1223,6 +1328,12 @@ impl Pass {
         if !self.filter.is_empty() {
             out.insert("filter".to_string(), Value::from(self.filter.clone()));
         }
+        if !self.draws.is_empty() {
+            out.insert(
+                "draws".to_string(),
+                Value::from(self.draws.iter().map(Draw::to_dict).collect::<Vec<_>>()),
+            );
+        }
         Value::Object(out)
     }
 
@@ -1238,28 +1349,97 @@ impl Pass {
         texts: &[Text],
         hw_linear: bool,
     ) -> String {
-        let mut l: Vec<String> = vec![
-            "#version 100".to_string(),
-            // mediump cannot hold a texel coord like (col+0.5)/w. A feedback pass
-            // that resamples its own output then drifts a fraction of a pixel per
-            // frame. highp keeps a ping-pong buffer stable, and VC4 supports it.
-            "#ifdef GL_FRAGMENT_PRECISION_HIGH".to_string(),
-            "precision highp float;".to_string(),
-            "#else".to_string(),
-            "precision mediump float;".to_string(),
-            "#endif".to_string(),
-            "varying vec2 v_texCoord;".to_string(),
-            "uniform vec2 resolution;".to_string(),
-            "uniform float time;".to_string(),
-            "uniform float DT;".to_string(),
-            "uniform float frame;".to_string(),
-            // VC4 shears gl_FragCoord.xy by about 1/3 px per row when a pass
-            // samples its own output. The interpolated varying stays within
-            // 0.04 px of the pixel centre. This define maps gl_FragCoord onto
-            // the varying, so scene code that reads gl_FragCoord.xy/resolution
-            // samples feedback without drift.
-            "#define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)".to_string(),
-        ];
+        let l = self.preamble(scene_params, assets, texts, hw_linear);
+        // An author writes a filter on its own, and ghee appends it to any
+        // scene. The scene's common block never reaches it, so a filter name
+        // never collides with a scene name.
+        let body = match common {
+            Some(c) if !c.is_empty() && self.filter.is_empty() => format!("{c}\n\n{}", self.code),
+            _ => self.code.clone(),
+        };
+        format!("{}\n\n{body}", l.join("\n"))
+    }
+
+    /// The vertex and the fragment shader of draw `k`. The fragment shader holds
+    /// the pass's preamble and the scene's common block, then the draw's code.
+    /// The vertex shader declares the same uniforms at the same precision,
+    /// since GLSL ES links a uniform both stages declare only when the two
+    /// match, and then the draw's place. It reads no texture: GLES2 may offer
+    /// a vertex shader no texture unit.
+    pub fn draw_glsl(
+        &self,
+        k: usize,
+        scene_params: Option<&ParamMap>,
+        common: Option<&str>,
+        assets: &[Asset],
+        texts: &[Text],
+        hw_linear: bool,
+    ) -> (String, String) {
+        let d = &self.draws[k];
+        let mut v: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
+        // The fragment stage's int defaults to mediump and the vertex stage's
+        // to highp, so an int uniform both declare needs this to link.
+        v.push("precision mediump int;".to_string());
+        v.extend(
+            [
+                "uniform vec2 resolution;",
+                "uniform float time;",
+                "uniform float DT;",
+                "uniform float frame;",
+                "uniform float vflip;",
+            ]
+            .map(str::to_string),
+        );
+        for p in scene_params.iter().flat_map(|sp| sp.values()) {
+            v.extend(param_uniform_lines(p));
+        }
+        for p in self.params.values() {
+            v.extend(param_uniform_lines(p));
+        }
+        v.extend(crate::text::draw_vertex_head(&d.text));
+        v.push(String::new());
+        v.push(d.place.clone());
+        v.push(String::new());
+        v.extend(crate::text::outline_vertex_main(d.pad));
+
+        let mut f = self.preamble(scene_params, assets, texts, hw_linear);
+        f.push(String::new());
+        if let Some(c) = common.filter(|c| !c.is_empty()) {
+            f.push(c.to_string());
+            f.push(String::new());
+        }
+        f.extend(crate::text::outline_fragment_head(&d.text));
+        f.push(String::new());
+        f.push(d.code.clone());
+        f.push(String::new());
+        f.extend(crate::text::outline_fragment_tail(&d.text));
+        (v.join("\n"), f.join("\n"))
+    }
+
+    fn preamble(
+        &self,
+        scene_params: Option<&ParamMap>,
+        assets: &[Asset],
+        texts: &[Text],
+        hw_linear: bool,
+    ) -> Vec<String> {
+        let mut l: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
+        l.extend(
+            [
+                "varying vec2 v_texCoord;",
+                "uniform vec2 resolution;",
+                "uniform float time;",
+                "uniform float DT;",
+                "uniform float frame;",
+                // VC4 shears gl_FragCoord.xy by about 1/3 px per row when a pass
+                // samples its own output. The interpolated varying stays within
+                // 0.04 px of the pixel centre. This define maps gl_FragCoord onto
+                // the varying, so scene code that reads gl_FragCoord.xy/resolution
+                // samples feedback without drift.
+                "#define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)",
+            ]
+            .map(str::to_string),
+        );
         for a in &self.arrays {
             l.push(format!("uniform sampler2D {}_tex;", a.name));
             if let ArraySize::Linear(n) = a.size {
@@ -1303,16 +1483,21 @@ impl Pass {
                 l.push(format!("#define {local}_size {}_size", a.name));
             }
         }
-        // An author writes a filter on its own, and ghee appends it to any
-        // scene. The scene's common block never reaches it, so a filter name
-        // never collides with a scene name.
-        let body = match common {
-            Some(c) if !c.is_empty() && self.filter.is_empty() => format!("{c}\n\n{}", self.code),
-            _ => self.code.clone(),
-        };
-        format!("{}\n\n{body}", l.join("\n"))
+        l
     }
 }
+
+// mediump cannot hold a texel coord like (col+0.5)/w. A feedback pass that
+// resamples its own output then drifts a fraction of a pixel per frame. highp
+// keeps a ping-pong buffer stable, and VC4 supports it.
+const PRECISION: [&str; 6] = [
+    "#version 100",
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH",
+    "precision highp float;",
+    "#else",
+    "precision mediump float;",
+    "#endif",
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene {
@@ -1481,6 +1666,21 @@ impl Scene {
                          scope only",
                         t.name,
                         p.name
+                    );
+                }
+            }
+        }
+        let draws = self.passes.iter().map(|p| p.draws.len()).sum::<usize>();
+        if draws > MAX_DRAWS {
+            bail!("{draws} draws, over the {MAX_DRAWS} the engine draws");
+        }
+        for p in &self.passes {
+            for (k, d) in p.draws.iter().enumerate() {
+                if !texts.iter().any(|t| t.name == d.text) {
+                    bail!(
+                        "pass '{}' draw {k} draws text '{}', which the scene does not declare",
+                        p.name,
+                        d.text
                     );
                 }
             }

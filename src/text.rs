@@ -144,6 +144,28 @@ pub struct Built {
     pub texels: Vec<u8>,
     /// Uniform suffixes after the text's name, each a float.
     pub uniforms: Vec<(&'static str, f64)>,
+    /// One quad per inked glyph, for a draw. Its glyph data is this texture's.
+    pub quads: Quads,
+}
+
+/// Floats a quad vertex holds: the attributes a0 to a3, a vec4 each.
+pub const QUAD_FLOATS: usize = 16;
+
+/// The quads of a text's inked glyphs, 4 vertices a quad at the corners
+/// (0, 0), (1, 0), (0, 1), (1, 1) of the glyph's box from its top left, so the
+/// triangles 0 1 2 and 2 1 3 cover it. A vertex holds QUAD_FLOATS floats:
+///
+/// - a0: the corner x and y, the character index, the word index
+/// - a1: the ink box in em from the block's top left, y down: x0, y0, x1, y1
+/// - a2: the texel of the glyph's band entries, its horizontal bands, its
+///   vertical bands, 0
+/// - a3: the line index, the advance's start and end x in em, 0
+///
+/// Every index counts from 0.
+pub struct Quads {
+    pub floats: Vec<f32>,
+    pub per_vertex: usize,
+    pub count: usize,
 }
 
 /// One quadratic curve, three control points in em.
@@ -365,6 +387,14 @@ struct Placed {
     gid: u16,
     x: f64,
     y: f64,
+    /// The character it draws, counted over the words.
+    index: usize,
+    /// The run of non-whitespace it belongs to, counted from 0. Whitespace
+    /// takes the run before it.
+    word: usize,
+    line: usize,
+    /// Its advance from start to end x, in em.
+    span: [f64; 2],
 }
 
 fn kerning(face: &ttf_parser::Face, l: ttf_parser::GlyphId, r: ttf_parser::GlyphId) -> f64 {
@@ -393,12 +423,25 @@ fn layout(face: &ttf_parser::Face, words: &str, align: Align) -> (Vec<Placed>, f
     let height = line * lines.len() as f64;
     let mut placed = Vec::new();
     let mut widths = Vec::new();
+    let mut index = 0;
+    let (mut word, mut in_word, mut any_word) = (0, false, false);
     for (k, text) in lines.iter().enumerate() {
         let y = height - ascent - line * k as f64;
         let first = placed.len();
         let mut x = 0.0;
         let mut prev: Option<ttf_parser::GlyphId> = None;
-        for ch in text.chars() {
+        // A draw's glyph_index counts every character of the words, the
+        // newline that ends a line too.
+        for (i, ch) in text.chars().enumerate() {
+            let at = index + i;
+            if ch.is_whitespace() {
+                in_word = false;
+            } else {
+                if !in_word && any_word {
+                    word += 1;
+                }
+                (in_word, any_word) = (true, true);
+            }
             let ch = if ch == '\t' { ' ' } else { ch };
             if ch.is_control() {
                 continue;
@@ -407,10 +450,21 @@ fn layout(face: &ttf_parser::Face, words: &str, align: Align) -> (Vec<Placed>, f
             if let Some(p) = prev {
                 x += kerning(face, p, gid) / upem;
             }
-            placed.push(Placed { gid: gid.0, x, y });
-            x += f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
+            let advance = f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
+            placed.push(Placed {
+                gid: gid.0,
+                x,
+                y,
+                index: at,
+                word,
+                line: k,
+                span: [x, x + advance],
+            });
+            x += advance;
             prev = Some(gid);
         }
+        index += text.chars().count() + 1;
+        in_word = false;
         widths.push((first, placed.len(), x));
     }
     let width = widths.iter().map(|w| w.2).fold(0.0, f64::max);
@@ -422,6 +476,7 @@ fn layout(face: &ttf_parser::Face, words: &str, align: Align) -> (Vec<Placed>, f
         };
         for p in &mut placed[from..to] {
             p.x += shift;
+            p.span = p.span.map(|v| v + shift);
         }
     }
     (placed, width, height)
@@ -477,7 +532,7 @@ pub fn build(data: &[u8], words: &str, align: Align) -> Result<Built> {
     let mut need = None;
     let mut nb = BANDS;
     while nb >= 1 {
-        match pack(&placed, &glyphs, nb) {
+        match pack(&placed, &glyphs, nb, height) {
             Ok(Ok(mut built)) => {
                 built.uniforms.extend([("_w", width), ("_h", height)]);
                 return Ok(built);
@@ -504,12 +559,14 @@ fn tex_rows(texels: usize) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Pack the glyphs, `nb` bands to an axis, and the grid into texels. Err holds
-/// the texture height the words need when it passes MAX_TEX_H.
+/// Pack the glyphs, `nb` bands to an axis, and the grid into texels, and lay
+/// the quads over a block `height` em tall. Err holds the texture height the
+/// words need when it passes MAX_TEX_H.
 fn pack(
     placed: &[Placed],
     glyphs: &HashMap<u16, Option<Glyph>>,
     nb: usize,
+    height: f64,
 ) -> Result<std::result::Result<Built, usize>> {
     // Texel 0 stays empty, so a slot that names a glyph is never all zero.
     let mut tex: Vec<[u8; 4]> = vec![[0; 4]];
@@ -579,21 +636,29 @@ fn pack(
     // corners on the 1/BOX_SCALE em one, so a glyph that spans cells decodes to
     // the same box in each of them.
     let snap = |v: f64| (v * ORIGIN_SCALE).round() / ORIGIN_SCALE;
-    let boxes: Vec<(Packed, [f64; 4])> = placed
+    let inked: Vec<(&Placed, Packed)> = placed
         .iter()
         .filter_map(|p| {
             let at = starts[&p.gid]?;
             let g = glyphs[&p.gid].as_ref()?;
-            let lo = [snap(p.x) + g.min[0], snap(p.y) + g.min[1]];
             Some((
-                (at, lo, g.size),
+                p,
+                (at, [snap(p.x) + g.min[0], snap(p.y) + g.min[1]], g.size),
+            ))
+        })
+        .collect();
+    let boxes: Vec<(Packed, [f64; 4])> = inked
+        .iter()
+        .map(|&(_, (at, lo, size))| {
+            (
+                (at, lo, size),
                 [
                     lo[0] - INK_MARGIN,
                     lo[1] - INK_MARGIN,
-                    lo[0] + g.size[0] + INK_MARGIN,
-                    lo[1] + g.size[1] + INK_MARGIN,
+                    lo[0] + size[0] + INK_MARGIN,
+                    lo[1] + size[1] + INK_MARGIN,
                 ],
-            ))
+            )
         })
         .collect();
     let (mut gx, mut gy, mut gx1, mut gy1) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
@@ -667,9 +732,30 @@ fn pack(
     for (i, t) in tex.iter().enumerate() {
         texels[i * 4..i * 4 + 4].copy_from_slice(t);
     }
+    let mut floats = Vec::with_capacity(inked.len() * 4 * QUAD_FLOATS);
+    for (p, (at, lo, size)) in &inked {
+        // The box flips to y down, the way a draw's caller counts.
+        let a1 = [
+            lo[0],
+            height - lo[1] - size[1],
+            lo[0] + size[0],
+            height - lo[1],
+        ];
+        let a2 = [(at + 1) as f64, nb as f64, nb as f64, 0.0];
+        let a3 = [p.line as f64, p.span[0], p.span[1], 0.0];
+        for corner in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+            let a0 = [corner[0], corner[1], p.index as f64, p.word as f64];
+            floats.extend([a0, a1, a2, a3].iter().flatten().map(|v| *v as f32));
+        }
+    }
     Ok(Ok(Built {
         width: TEX_W as u32,
         height: tex_h as u32,
+        quads: Quads {
+            floats,
+            per_vertex: QUAD_FLOATS,
+            count: inked.len(),
+        },
         texels,
         uniforms: vec![
             ("_tw", TEX_W as f64),
@@ -695,11 +781,134 @@ fn pack(
 /// per em from its caller. The roots come from the stable form of the
 /// quadratic formula, which also covers a curve that is a line.
 pub fn reader_lines(name: &str) -> Vec<String> {
-    GLSL.replace("NAME", name)
+    lines(GLSL, name)
+}
+
+/// The lines of a draw's vertex shader ahead of the author's
+/// `vec2 glyph_place(vec2 em)`: the quad attributes, the text's size, the
+/// varyings, and the glyph values glyph_place reads. The caller's preamble
+/// declares `resolution` and `vflip`, with the precision the fragment stage
+/// gives them.
+pub fn draw_vertex_head(name: &str) -> Vec<String> {
+    lines(DRAW_VERTEX_HEAD, name)
+}
+
+/// The vertex main of an outline draw, after glyph_place. Each box edge moves
+/// out 5/8 of a screen pixel, or `pad` em where that reaches further.
+pub fn outline_vertex_main(pad: f64) -> Vec<String> {
+    lines(OUTLINE_VERTEX_MAIN, "")
+        .into_iter()
+        .map(|l| l.replace("PAD", &format!("{pad:?}")))
+        .collect()
+}
+
+/// The lines of an outline draw's fragment shader between the text's reader
+/// lines and the author's code.
+pub fn outline_fragment_head(name: &str) -> Vec<String> {
+    lines(OUTLINE_FRAGMENT_HEAD, name)
+}
+
+/// The lines of an outline draw's fragment shader after the author's code.
+pub fn outline_fragment_tail(name: &str) -> Vec<String> {
+    lines(OUTLINE_FRAGMENT_TAIL, name)
+}
+
+fn lines(glsl: &str, name: &str) -> Vec<String> {
+    glsl.replace("NAME", name)
         .lines()
         .map(str::to_string)
         .collect()
 }
+
+const DRAW_VERTEX_HEAD: &str = r#"attribute vec4 a0;
+attribute vec4 a1;
+attribute vec4 a2;
+attribute vec4 a3;
+uniform float NAME_w;
+uniform float NAME_h;
+#define NAME_size vec2(NAME_w, NAME_h)
+varying vec2 v_texCoord;
+varying vec4 glyph_v0;
+varying vec4 glyph_v1;
+varying vec4 glyph_v2;
+varying vec4 glyph_v3;
+varying vec4 glyph_v4;
+float glyph_index;
+float glyph_word;
+float glyph_line;
+vec2 glyph_span;
+vec4 glyph_box;"#;
+
+const OUTLINE_VERTEX_MAIN: &str = r#"void main() {
+    glyph_index = a0.z;
+    glyph_word = a0.w;
+    glyph_line = a3.x;
+    glyph_span = a3.yz;
+    glyph_box = a1;
+    vec2 em = mix(a1.xy, a1.zw, a0.xy);
+    vec2 p = glyph_place(em);
+    // The pixels glyph_place moves per em along each em axis, exact for an
+    // affine glyph_place.
+    vec2 jx = (glyph_place(em + vec2(0.0625, 0.0)) - p) * 16.0;
+    vec2 jy = (glyph_place(em + vec2(0.0, 0.0625)) - p) * 16.0;
+    float det = abs(jx.x * jy.y - jx.y * jy.x);
+    // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
+    // up to 1/16 px off where this shader puts it.
+    vec2 grow = max(0.625 * vec2(length(jy), length(jx)) / det, vec2(PAD));
+    vec2 e = em + (a0.xy * 2.0 - 1.0) * grow;
+    vec2 px = glyph_place(e);
+    // The em a screen pixel spans along each em axis, as fwidth would.
+    vec2 fw = vec2(abs(jy.x) + abs(jy.y), abs(jx.x) + abs(jx.y)) / det;
+    vec2 sz = a1.zw - a1.xy;
+    // The sample on the glyph's lattice, y up, and the pixels a lattice step
+    // spans.
+    glyph_v0 = vec4(vec2(e.x - a1.x, a1.w - e.y) / sz * 2047.0, sz / (fw * 2047.0));
+    // glyph_ppem: the pixels per em of a placement that scales both axes
+    // alike.
+    glyph_v1 = vec4(a2.xyz, sqrt(det));
+    glyph_v2 = vec4(e, a0.zw);
+    glyph_v3 = vec4(a3.xyz, 0.0);
+    // The lattice steps a pixel spans along x and along y of the pass.
+    vec2 k = 2047.0 / sz;
+    glyph_v4 = vec4(k.x * jy.y, -k.x * jy.x, k.y * jx.y, -k.y * jx.x)
+             / (jx.x * jy.y - jx.y * jy.x);
+    v_texCoord = px / resolution;
+    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, vflip), 0.0, 1.0);
+}"#;
+
+const OUTLINE_FRAGMENT_HEAD: &str = r#"varying vec4 glyph_v0;
+varying vec4 glyph_v1;
+varying vec4 glyph_v2;
+varying vec4 glyph_v3;
+varying vec4 glyph_v4;
+// A varying that holds one value at every vertex may still interpolate a hair
+// off it, so an index rounds.
+#define glyph_em glyph_v2.xy
+#define glyph_index float(int(glyph_v2.z + 0.5))
+#define glyph_word float(int(glyph_v2.w + 0.5))
+#define glyph_line float(int(glyph_v3.x + 0.5))
+#define glyph_span glyph_v3.yz
+#define glyph_ppem glyph_v1.w
+#define glyph_dist glyph_dist_needs_fill_mtsdf
+#define glyph_soft glyph_soft_needs_fill_mtsdf
+float glyph_c = 0.0;
+float glyph_cover() { return glyph_c; }
+// The fill reads its texture ahead of the author's main: on VC4 a value
+// computed ahead of a texture read and used after it comes back wrong.
+#define main glyph_main"#;
+
+const OUTLINE_FRAGMENT_TAIL: &str = r#"#undef main
+void main() {
+    // VC4 lands a vertex up to 1/16 px off where the vertex shader put it, and
+    // the varyings follow the vertex, so the sample moves to the pixel centre
+    // as v_texCoord tells it.
+    vec2 px = v_texCoord * resolution;
+    vec2 d = floor(px) + 0.5 - px;
+    vec2 u = glyph_v0.xy + vec2(dot(glyph_v4.xy, d), dot(glyph_v4.zw, d));
+    glyph_c = NAME_outline(float(int(glyph_v1.x + 0.5)), vec2(ivec2(glyph_v1.yz + 0.5)),
+                           u, glyph_v0.zw);
+    glyph_main();
+}"#;
 
 const GLSL: &str = r#"uniform sampler2D NAME_tex;
 uniform float NAME_tw;
@@ -758,18 +967,15 @@ vec2 NAME_cross(vec2 p1, vec2 p2, vec2 p3) {
     t2 = disc > 0.0 ? t2 : tm;
     return vec2((a.x * t1 - b.x * 2.0) * t1 + p1.x, (a.x * t2 - b.x * 2.0) * t2 + p1.x);
 }
-// The coverage of the glyph whose data starts at texel h, at q in em from its
-// box's corner. Its data holds its box size, then NAME_nb horizontal bands,
-// then as many vertical ones.
-float NAME_glyph(float h, vec2 q, vec2 sz, float ppem) {
-    // On the glyph's lattice: the sample, and the pixels a step spans.
-    vec2 u = q / sz * 2047.0;
-    vec2 ppu = sz * (ppem / 2047.0);
+// The coverage of a glyph at u on its lattice, y up, drawn at ppu pixels a
+// lattice step. Its band entries start at texel h: nb.x horizontal bands, then
+// nb.y vertical ones.
+float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
     vec2 m = 0.5 / ppu;
     float cov = 0.0;
     if (u.x > -m.x && u.y > -m.y && u.x < 2047.0 + m.x && u.y < 2047.0 + m.y) {
-        vec2 band = min(vec2(ivec2(max(u.yx, 0.0) * (NAME_nb / 2047.0))), NAME_nb - 1.0);
-        vec4 hb = NAME_texel(h + 1.0 + band.x);
+        vec2 band = min(vec2(ivec2(max(u.yx, 0.0) * (nb / 2047.0))), nb - 1.0);
+        vec4 hb = NAME_texel(h + band.x);
         // Each ray runs toward the nearer edge of the box. A ray toward -
         // reads its band mirrored, so its coverage flips sign.
         float dx = u.x < 1023.5 ? -1.0 : 1.0;
@@ -804,7 +1010,7 @@ float NAME_glyph(float h, vec2 q, vec2 sz, float ppem) {
             }
         }
         xcov *= dx;
-        vec4 vb = NAME_texel(h + 1.0 + NAME_nb + band.y);
+        vec4 vb = NAME_texel(h + nb.x + band.y);
         float dy = u.y < 1023.5 ? -1.0 : 1.0;
         vec2 uv = vec2(u.x, dy > 0.0 ? u.y : 2047.0 - u.y);
         float ycov = 0.0;
@@ -840,6 +1046,11 @@ float NAME_glyph(float h, vec2 q, vec2 sz, float ppem) {
     }
     return cov;
 }
+// The coverage of the glyph whose data starts at texel h, at q in em from its
+// box's corner. Its data holds its box size, then its band entries.
+float NAME_glyph(float h, vec2 q, vec2 sz, float ppem) {
+    return NAME_outline(h + 1.0, vec2(NAME_nb), q / sz * 2047.0, sz * (ppem / 2047.0));
+}
 // The coverage of the words at at, in em from the top left of the block, y
 // down like v_texCoord, drawn at ppem pixels per em.
 float NAME_cover(vec2 at, float ppem) {
@@ -869,3 +1080,76 @@ float NAME_cover(vec2 at, float ppem) {
     }
     return cov;
 }"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn laid(words: &str, align: Align) -> (Vec<Placed>, f64) {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tools/fixtures/fonts/DejaVuSans-ASCII.ttf"
+        );
+        let data = std::fs::read(path).unwrap();
+        let face = ttf_parser::Face::parse(&data, 0).unwrap();
+        let (placed, width, _) = layout(&face, words, align);
+        (placed, width)
+    }
+
+    fn fields(p: &[Placed]) -> Vec<(usize, usize, usize)> {
+        p.iter().map(|p| (p.index, p.word, p.line)).collect()
+    }
+
+    #[test]
+    fn every_character_counts_and_whitespace_keeps_the_word_before_it() {
+        let (p, _) = laid("ab c\nd", Align::Left);
+        assert_eq!(
+            fields(&p),
+            [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 1, 0), (5, 2, 1)]
+        );
+    }
+
+    #[test]
+    fn leading_whitespace_is_word_0_and_a_control_character_counts_unplaced() {
+        let (p, _) = laid(" \tab\u{7}  c\n\nd", Align::Left);
+        assert_eq!(
+            fields(&p),
+            [
+                (0, 0, 0),
+                (1, 0, 0),
+                (2, 0, 0),
+                (3, 0, 0),
+                (5, 0, 0),
+                (6, 0, 0),
+                (7, 1, 0),
+                (10, 2, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_span_runs_from_the_origin_one_advance_and_kerns_into_the_next() {
+        let (p, _) = laid("AVA", Align::Left);
+        for g in &p {
+            assert_eq!(g.span[0], g.x);
+            assert!(g.span[1] > g.span[0]);
+        }
+        // The font kerns A and V together.
+        assert!(p[1].span[0] < p[0].span[1]);
+        assert!(p[2].span[0] < p[1].span[1]);
+    }
+
+    #[test]
+    fn a_span_shifts_with_its_line() {
+        let (left, _) = laid("AV To\nghee", Align::Left);
+        let (centre, width) = laid("AV To\nghee", Align::Center);
+        let (right, _) = laid("AV To\nghee", Align::Right);
+        let end = left[8].span[1];
+        for (l, (c, r)) in left.iter().zip(centre.iter().zip(&right)) {
+            let shift = if l.line == 1 { width - end } else { 0.0 };
+            assert!((c.span[0] - l.span[0] - shift / 2.0).abs() < 1e-12);
+            assert!((r.span[1] - l.span[1] - shift).abs() < 1e-12);
+            assert_eq!((c.x, r.x), (c.span[0], r.span[0]));
+        }
+    }
+}

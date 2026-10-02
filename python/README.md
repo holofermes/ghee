@@ -132,9 +132,10 @@ words again with no recompile, from `set_param` or the console.
 A text problem leaves the scene running, and `set_param` raises nothing for
 it: ghee logs it once on stderr, and the console shows it. A font that fails
 to load draws every character as an error box, diagonal stripes of coverage.
-A character whose glyph has no outline, such as an emoji of a bitmap-only
-font, draws an error box in its place, and the rest of the words draw. Words
-that do not fit leave the last words that did.
+A character whose glyph has neither an outline nor a colour bitmap draws an
+error box in its place, and the rest of the words draw. Words that do not fit
+leave the last words that did. An emoji of a colour font has no coverage, and
+only a draw paints it.
 
 `ghee render --demo lettering -o lettering.png --frames 1` shows the words
 at every size.

@@ -1,7 +1,8 @@
 //! Text drawn on the GPU from the outlines of a font.
 //!
 //! A scene declares a text under the name of one of its string params, and the
-//! font asset to draw it with. Every pass of the scene except a filter pass
+//! font assets to draw it with, in order: each character draws from the first
+//! font whose cmap holds it. Every pass of the scene except a filter pass
 //! then reads the coverage of those words at any point with
 //! `<name>_cover(p, ppem)`. The words change with the param, live, with no
 //! recompile.
@@ -12,7 +13,9 @@
 //! colours the pixels of each quad from the glyph's coverage. The text's fill
 //! gives that coverage: the MTSDF fill reads one texel of the glyph's field in
 //! an atlas, which `crate::atlas` builds, and the outline fill computes it from
-//! the curves as `<name>_cover` does.
+//! the curves as `<name>_cover` does. A colour glyph, a bitmap with no
+//! outline, draws through the draw's colour layer, which `crate::colour`
+//! describes.
 //!
 //! Coverage follows the Slug algorithm by Eric Lengyel
 //! (https://jcgt.org/published/0006/02/02/, https://github.com/EricLengyel/Slug).
@@ -26,19 +29,23 @@
 //! bytes of a texel, a 24-bit offset three, and a curve two texels.
 //!
 //! A text problem leaves the scene running. A character whose glyph has no
-//! outline, or one past a limit, draws an error box: hazard stripes, laid out
-//! as an outline, so `<name>_cover` reads them as coverage, and a draw's
-//! error-box layer paints them yellow and black. Every character of a font
-//! that failed to load draws one. Words that fit no texture leave the last
-//! words that did.
+//! outline and no colour bitmap, or one past a limit, draws an error box:
+//! hazard stripes, laid out as an outline, so `<name>_cover` reads them as
+//! coverage, and a draw's error-box layer paints them yellow and black. A
+//! font that failed to load drops out of its text's fonts, and when none is
+//! left, every character draws an error box. Words that fit no texture leave
+//! the last words that did.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
+use ttf_parser::{Face, GlyphId};
 
 use crate::atlas::{self, Cell};
+use crate::colour;
 use crate::scene::py_repr;
 
 /// Texture width in texels. A power of two keeps every texel centre an exact
@@ -128,12 +135,13 @@ pub type Font = std::result::Result<Arc<Vec<u8>>, String>;
 /// A problem met by a layout. The text still draws.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fault {
-    /// The font failed to load, for the reason held, and every character
-    /// takes an error box.
+    /// A font failed to load, for the reason held, and the text draws from
+    /// its other fonts. With none left, every character takes an error box.
     Font(String),
-    /// These characters need ink, the font gives their glyphs no outline,
-    /// and each takes an error box.
-    NoOutline(Vec<char>),
+    /// These characters need ink, the font at this index in the text's
+    /// fonts gives their glyphs no outline and no colour bitmap, and each
+    /// takes an error box.
+    NoOutline(usize, Vec<char>),
     /// The glyph of this character is past the limit named, and it takes an
     /// error box.
     Glyph(char, String),
@@ -184,17 +192,18 @@ const ATLAS_MAX: u64 = atlas::MAX_SIZE as u64;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Text {
     pub name: String,
-    /// The name of the scene's font asset.
-    pub font: String,
+    /// The names of the scene's font assets, in the order that a character
+    /// looks for its glyph. Line height and baseline come from the first.
+    pub fonts: Vec<String>,
     pub align: Align,
     pub fill: Fill,
     /// The MTSDF atlas: texels per em of a glyph's cell, and the distance
     /// range in texels.
     pub px_per_em: u32,
     pub range: u32,
-    /// The font asset's bytes, or why they failed to load. load_assets fills
-    /// them.
-    pub data: Option<Font>,
+    /// Each font asset's bytes, or why they failed to load, in the order of
+    /// `fonts`. load_assets fills them.
+    pub data: Option<Vec<Font>>,
 }
 
 impl Text {
@@ -202,13 +211,20 @@ impl Text {
         let Value::Object(o) = d else {
             bail!("text '{name}' needs an object, got {}", py_repr(d));
         };
-        let font = match o.get("font") {
-            Some(Value::String(s)) if !s.is_empty() => s.clone(),
-            Some(v) => bail!(
-                "text '{name}' 'font' needs the name of a font asset, got {}",
-                py_repr(v)
-            ),
+        let named = |v: &Value| match v {
+            Value::String(s) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        let fonts = match o.get("font") {
+            Some(Value::Array(a)) if !a.is_empty() => a.iter().map(named).collect(),
+            Some(v) => named(v).map(|s| vec![s]),
             None => bail!("text '{name}' has no 'font'"),
+        };
+        let Some(fonts) = fonts else {
+            bail!(
+                "text '{name}' 'font' needs the name of a font asset or a list of them, got {}",
+                py_repr(&o["font"])
+            );
         };
         let align = match o.get("align").filter(|v| !v.is_null()) {
             None => Align::Left,
@@ -256,7 +272,7 @@ impl Text {
         }
         Ok(Text {
             name: name.to_string(),
-            font,
+            fonts,
             align,
             fill,
             px_per_em,
@@ -267,7 +283,11 @@ impl Text {
 
     pub fn to_dict(&self) -> Value {
         let mut d = Map::new();
-        d.insert("font".to_string(), Value::from(self.font.clone()));
+        let font = match &self.fonts[..] {
+            [one] => Value::from(one.clone()),
+            all => Value::from(all.to_vec()),
+        };
+        d.insert("font".to_string(), font);
         if self.align != Align::Left {
             d.insert("align".to_string(), Value::from(self.align.as_str()));
         }
@@ -287,17 +307,33 @@ impl Text {
         Value::Object(d)
     }
 
-    /// Lay out `words` and pack them. Fails when the font was never loaded.
+    /// Lay out `words` and pack them. Fails when the fonts were never loaded.
     pub fn build(&self, words: &str) -> Result<Layout> {
         match &self.data {
             None => bail!(
                 "text '{}': font '{}' was never loaded, the scene was built without a directory",
                 self.name,
-                self.font
+                self.fonts[0]
             ),
-            Some(Ok(data)) => Ok(build(data, words, self.align)),
-            Some(Err(why)) => Ok(boxes(why.clone(), words, self.align)),
+            Some(fonts) => Ok(build(fonts, words, self.align)),
         }
+    }
+
+    /// True when a font of the text that loaded holds colour bitmaps, a CBDT
+    /// or an sbix table.
+    pub fn has_colour(&self) -> bool {
+        self.data.iter().flatten().flatten().any(|d| {
+            Face::parse(d, 0).is_ok_and(|f| f.tables().cbdt.is_some() || f.tables().sbix.is_some())
+        })
+    }
+
+    /// True when a font of the text that loaded holds outlines.
+    pub fn has_outlines(&self) -> bool {
+        self.data
+            .iter()
+            .flatten()
+            .flatten()
+            .any(|d| Face::parse(d, 0).is_ok_and(|f| outlined(&f)))
     }
 }
 
@@ -314,13 +350,18 @@ pub struct Built {
     pub quads: Quads,
     /// One quad per error box, for a draw's error-box layer.
     pub boxes: Quads,
-    /// The glyphs drawn from the font, for the quads of the MTSDF fill.
+    /// The glyphs drawn from the fonts' outlines, for the quads of the MTSDF
+    /// fill.
     pub glyphs: Vec<Placement>,
+    /// The colour glyphs, for a draw's colour layer.
+    pub colour: Vec<Placement>,
 }
 
-/// A glyph of the font, placed in the block.
+/// A glyph of a font, placed in the block.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placement {
+    /// The index of its font in the text's fonts.
+    pub font: usize,
     pub gid: u16,
     pub ch: char,
     /// The glyph's origin in em from the block's top left, y down.
@@ -347,8 +388,8 @@ pub const QUAD_FLOATS: usize = 16;
 ///   x1, y1
 /// - glyph_a2, outline fill: the texel of the glyph's band entries, its
 ///   horizontal bands, its vertical bands, 0
-/// - glyph_a2, MTSDF fill: the atlas texel coordinate at (x0, y0), and the
-///   texels per em along x and along y
+/// - glyph_a2, MTSDF fill and colour glyphs: the atlas texel coordinate at
+///   (x0, y0), and the texels per em along x and along y
 /// - glyph_a3: the line index, the advance's start and end x in em, 0
 ///
 /// Every index counts from 0.
@@ -487,7 +528,7 @@ struct Glyph {
 
 /// The closed contours of glyph `gid` in em, y up, none for a glyph with no
 /// outline.
-fn contours(face: &ttf_parser::Face, gid: ttf_parser::GlyphId) -> Vec<Vec<Quad>> {
+fn contours(face: &Face, gid: GlyphId) -> Vec<Vec<Quad>> {
     let mut o = Outline {
         scale: 1.0 / f64::from(face.units_per_em()),
         start: [0.0; 2],
@@ -507,10 +548,7 @@ fn contours(face: &ttf_parser::Face, gid: ttf_parser::GlyphId) -> Vec<Vec<Quad>>
 
 /// The outline of glyph `gid`. None for a glyph with no outline. An error
 /// names the limit of a glyph past it.
-fn glyph(
-    face: &ttf_parser::Face,
-    gid: ttf_parser::GlyphId,
-) -> std::result::Result<Option<Glyph>, String> {
+fn glyph(face: &Face, gid: GlyphId) -> std::result::Result<Option<Glyph>, String> {
     let quads = contours(face, gid).concat();
     if quads.is_empty() {
         return Ok(None);
@@ -540,34 +578,107 @@ fn glyph(
     Ok(Some(Glyph { min, size, curves }))
 }
 
-/// The glyph that a layout draws for `ch`, found in the font or not, None
-/// when it draws nothing for it. A character the font lacks draws glyph 0,
+/// The glyph that a layout draws for `ch`, found in its font or not, None
+/// when it draws nothing for it. A character that no font has draws glyph 0,
 /// the missing-glyph box, unless it needs no ink.
-fn ink_glyph(found: Option<ttf_parser::GlyphId>, ch: char) -> Option<u16> {
+fn ink_glyph(found: Option<GlyphId>, ch: char) -> Option<u16> {
     (found.is_some() || needs_ink(ch)).then(|| found.map_or(0, |g| g.0))
 }
 
-/// A font's glyphs for the MTSDF atlas.
-pub struct AtlasFont(pub Arc<Vec<u8>>);
+/// A text's fonts, parsed, in order. None stands for a font that failed to
+/// load or to parse.
+type Faces<'a> = [Option<Face<'a>>];
+
+fn faces(fonts: &[Font]) -> Vec<Option<Face<'_>>> {
+    fonts
+        .iter()
+        .map(|f| f.as_ref().ok().and_then(|d| Face::parse(d, 0).ok()))
+        .collect()
+}
+
+/// The font of `faces` that draws `ch`, its index, and its glyph for `ch`:
+/// the first font whose cmap holds `ch`, else the first font, with no glyph,
+/// which then draws its missing-glyph box. None when no font loaded.
+fn pick<'f, 'a>(faces: &'f Faces<'a>, ch: char) -> Option<(usize, &'f Face<'a>, Option<GlyphId>)> {
+    let mut first = None;
+    for (i, face) in faces.iter().enumerate() {
+        let Some(face) = face else { continue };
+        if let Some(g) = face.glyph_index(ch) {
+            return Some((i, face, Some(g)));
+        }
+        first.get_or_insert((i, face, None));
+    }
+    first
+}
+
+/// True when `face` holds outlines, TrueType or CFF.
+fn outlined(face: &Face) -> bool {
+    let t = face.tables();
+    t.glyf.is_some() || t.cff.is_some() || t.cff2.is_some()
+}
+
+/// True when glyph `gid` of `face` is a colour glyph: a PNG bitmap and no
+/// outline.
+fn is_colour(face: &Face, gid: GlyphId) -> bool {
+    colour::bitmap(face, gid).is_some() && contours(face, gid).is_empty()
+}
+
+/// The atlas id of glyph `gid` of the font at index `font` in a text's fonts.
+pub fn atlas_id(font: usize, gid: u16) -> u32 {
+    (font as u32) << 16 | u32::from(gid)
+}
+
+/// A text's fonts, for its MTSDF atlas. Glyph `gid` of the font at index `i`
+/// takes the atlas id `i << 16 | gid`.
+pub struct AtlasFont(pub Vec<Font>);
 
 impl atlas::Font for AtlasFont {
-    fn bytes(&self) -> &[u8] {
-        &self.0
+    /// A text whose one font with outlines comes first keys its atlas with
+    /// that font's sha256, so it shares the atlas of a text of that font
+    /// alone. Any other text keys it with the sha256 of each such font's
+    /// index, as 4 bytes little-endian, and sha256, in order. A font with no
+    /// outline gives the atlas no glyph, and it stays out of the key.
+    fn key(&self) -> [u8; 32] {
+        let outlined: Vec<(usize, &[u8])> = self
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| {
+                let d = f.as_ref().ok()?;
+                outlined(&Face::parse(d, 0).ok()?).then_some((i, &d[..]))
+            })
+            .collect();
+        if let [(0, d)] = outlined[..] {
+            return Sha256::digest(d).into();
+        }
+        let mut h = Sha256::new();
+        for (i, d) in outlined {
+            h.update((i as u32).to_le_bytes());
+            h.update(Sha256::digest(d));
+        }
+        h.finalize().into()
     }
 
-    fn glyph(&self, ch: char) -> Option<u16> {
+    /// A colour glyph draws from the colour atlas, and takes no id here.
+    fn glyph(&self, ch: char) -> Option<u32> {
         let ch = if ch == '\t' { ' ' } else { ch };
         if ch.is_control() {
             return None;
         }
-        let face = ttf_parser::Face::parse(&self.0, 0).ok()?;
-        ink_glyph(face.glyph_index(ch), ch)
+        let faces = faces(&self.0);
+        let (i, face, found) = pick(&faces, ch)?;
+        let gid = ink_glyph(found, ch)?;
+        (!is_colour(face, GlyphId(gid))).then(|| atlas_id(i, gid))
     }
 
-    fn outline(&self, gid: u16) -> Result<Vec<Vec<atlas::Curve>>> {
-        let face =
-            ttf_parser::Face::parse(&self.0, 0).map_err(|e| anyhow!("unreadable font: {e}"))?;
-        Ok(contours(&face, ttf_parser::GlyphId(gid)))
+    fn outline(&self, id: u32) -> Result<Vec<Vec<atlas::Curve>>> {
+        let font = self
+            .0
+            .get((id >> 16) as usize)
+            .and_then(|f| f.as_ref().ok());
+        let font = font.ok_or_else(|| anyhow!("no font holds atlas id {id}"))?;
+        let face = Face::parse(font, 0).map_err(|e| anyhow!("unreadable font: {e}"))?;
+        Ok(contours(&face, GlyphId(id as u16)))
     }
 }
 
@@ -687,10 +798,20 @@ fn bands(curves: &[Curve], axis: usize, n: usize, eps: f64) -> Option<Vec<Vec<us
 /// What a placed character draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Ink {
-    /// The outline of this glyph of the font.
-    Glyph(u16),
+    /// The outline of a glyph: the index of its font in the text's fonts,
+    /// and its glyph id.
+    Glyph(usize, u16),
+    /// The bitmap of a colour glyph, which only a draw's colour layer draws.
+    Colour(usize, u16),
     /// An error box.
     Box,
+}
+
+impl Ink {
+    /// The ink drawn from the text's texture of curves.
+    fn curves(self) -> Option<Ink> {
+        (!matches!(self, Ink::Colour(..))).then_some(self)
+    }
 }
 
 /// A character placed in the block, its origin in em. An error box's origin
@@ -711,7 +832,7 @@ struct Placed {
     span: [f64; 2],
 }
 
-fn kerning(face: &ttf_parser::Face, l: ttf_parser::GlyphId, r: ttf_parser::GlyphId) -> f64 {
+fn kerning(face: &Face, l: GlyphId, r: GlyphId) -> f64 {
     let Some(kern) = face.tables().kern else {
         return 0.0;
     };
@@ -728,17 +849,19 @@ fn kerning(face: &ttf_parser::Face, l: ttf_parser::GlyphId, r: ttf_parser::Glyph
 /// the y-down points of its callers y up. Returns the placed glyphs and the
 /// block's width and height, in em.
 ///
-/// With no face, the font failed to load, and every character that needs ink
-/// takes an error box, ERROR_ADVANCE wide.
-fn layout(face: Option<&ttf_parser::Face>, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
-    let (upem, ascent, line) = match face {
+/// Line height and baseline come from the first font of `faces`, and each
+/// glyph's advance and kerning from its own font. Two glyphs of two fonts
+/// do not kern. With no font in `faces`, every character that needs ink takes
+/// an error box, ERROR_ADVANCE wide.
+fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
+    let (ascent, line) = match faces.iter().flatten().next() {
         Some(face) => {
             let upem = f64::from(face.units_per_em());
             let line = f64::from(face.ascender()) - f64::from(face.descender())
                 + f64::from(face.line_gap());
-            (upem, f64::from(face.ascender()) / upem, line / upem)
+            (f64::from(face.ascender()) / upem, line / upem)
         }
-        None => (1.0, ERROR_ASCENT, ERROR_LINE),
+        None => (ERROR_ASCENT, ERROR_LINE),
     };
     let lines: Vec<&str> = words.split('\n').collect();
     let height = line * lines.len() as f64;
@@ -750,7 +873,7 @@ fn layout(face: Option<&ttf_parser::Face>, words: &str, align: Align) -> (Vec<Pl
         let y = height - ascent - line * k as f64;
         let first = placed.len();
         let mut x = 0.0;
-        let mut prev: Option<ttf_parser::GlyphId> = None;
+        let mut prev: Option<(usize, GlyphId)> = None;
         // A draw's glyph_index counts every character of the words, the
         // newline that ends a line too.
         for (i, ch) in text.chars().enumerate() {
@@ -767,20 +890,21 @@ fn layout(face: Option<&ttf_parser::Face>, words: &str, align: Align) -> (Vec<Pl
             if ch.is_control() {
                 continue;
             }
-            let (ink, origin, advance) = match face {
-                // A default ignorable that the font lacks takes no room.
-                Some(face) if ignorable(ch) && face.glyph_index(ch).is_none() => (None, x, 0.0),
-                Some(face) => {
-                    // A character that the font lacks draws its glyph 0, the
-                    // missing-glyph box, and whitespace leaves the box out.
-                    let found = face.glyph_index(ch);
-                    let gid = found.unwrap_or(ttf_parser::GlyphId(0));
-                    if let Some(p) = prev {
+            let (ink, origin, advance) = match pick(faces, ch) {
+                // A default ignorable that no font has takes no room.
+                Some((_, _, None)) if ignorable(ch) => (None, x, 0.0),
+                Some((f, face, found)) => {
+                    // A character that no font has draws glyph 0 of the
+                    // first, the missing-glyph box, and whitespace leaves the
+                    // box out.
+                    let upem = f64::from(face.units_per_em());
+                    let gid = found.unwrap_or(GlyphId(0));
+                    if let Some((_, p)) = prev.filter(|(pf, _)| *pf == f) {
                         x += kerning(face, p, gid) / upem;
                     }
-                    prev = Some(gid);
+                    prev = Some((f, gid));
                     let advance = f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
-                    (ink_glyph(found, ch).map(Ink::Glyph), x, advance)
+                    (ink_glyph(found, ch).map(|g| Ink::Glyph(f, g)), x, advance)
                 }
                 None if ignorable(ch) => (None, x, 0.0),
                 None if needs_ink(ch) => (
@@ -857,43 +981,59 @@ fn curve_texels(c: &Curve) -> [[u8; 4]; 2] {
 /// bottom left, and the size.
 type Packed = (usize, [f64; 2], [f64; 2]);
 
-/// Lay out `words` in the font `data` and pack glyphs and grid into texels.
-pub fn build(data: &[u8], words: &str, align: Align) -> Layout {
-    let face = match ttf_parser::Face::parse(data, 0) {
-        Ok(face) => face,
-        Err(e) => return boxes(format!("unreadable font: {e}"), words, align),
-    };
-    let (mut placed, width, height) = layout(Some(&face), words, align);
-    let (glyphs, faults) = settle(&mut placed, |gid| glyph(&face, ttf_parser::GlyphId(gid)));
+/// Lay out `words` in `fonts`, in order, and pack glyphs and grid into
+/// texels. A font that failed to load or to parse drops out with a fault.
+pub fn build(fonts: &[Font], words: &str, align: Align) -> Layout {
+    let faces = faces(fonts);
+    let (mut placed, width, height) = layout(&faces, words, align);
+    let (glyphs, mut faults) = settle(
+        &mut placed,
+        |f, gid| {
+            faces[f]
+                .as_ref()
+                .map_or(Ok(None), |face| glyph(face, GlyphId(gid)))
+        },
+        |f, gid| {
+            faces[f]
+                .as_ref()
+                .is_some_and(|face| colour::bitmap(face, GlyphId(gid)).is_some())
+        },
+    );
+    let failed = fonts
+        .iter()
+        .zip(&faces)
+        .filter_map(|(f, face)| match (f, face) {
+            (Err(why), _) => Some(why.clone()),
+            (Ok(d), None) => Some(format!("unreadable font: {}", Face::parse(d, 0).err()?)),
+            _ => None,
+        });
+    let failed: Vec<Fault> = failed.map(Fault::Font).collect();
+    faults.splice(0..0, failed);
     finish(&placed, &glyphs, faults, width, height)
 }
 
-/// Lay out `words` for a font that failed to load, `why`: an error box for
-/// every character that needs ink.
-fn boxes(why: String, words: &str, align: Align) -> Layout {
-    let (mut placed, width, height) = layout(None, words, align);
-    let (glyphs, mut faults) = settle(&mut placed, |_| Ok(None));
-    faults.insert(0, Fault::Font(why));
-    finish(&placed, &glyphs, faults, width, height)
-}
-
-/// Settle what each placed character draws, with `outline` reading the
-/// outline of a glyph of the font. A glyph with no outline draws nothing, or
-/// an error box in place of a character that needs ink. A glyph past a limit
-/// draws an error box. Returns the glyph of each ink, and the faults met.
+/// Settle what each placed character draws. `outline` reads the outline of
+/// a glyph, and `bitmap` says whether the glyph has a colour bitmap, each
+/// given the index of the glyph's font and its glyph id. A glyph with no
+/// outline draws nothing for a character that needs no ink, its bitmap where
+/// it has one, and an error box otherwise. A glyph past a limit draws an
+/// error box. Returns the glyph of each ink, and the faults met.
 fn settle(
     placed: &mut [Placed],
-    mut outline: impl FnMut(u16) -> std::result::Result<Option<Glyph>, String>,
+    mut outline: impl FnMut(usize, u16) -> std::result::Result<Option<Glyph>, String>,
+    mut bitmap: impl FnMut(usize, u16) -> bool,
 ) -> (HashMap<Ink, Glyph>, Vec<Fault>) {
-    let mut read: HashMap<u16, std::result::Result<Option<Glyph>, String>> = HashMap::new();
-    let mut missing: Vec<char> = Vec::new();
+    type Read = std::result::Result<Option<Glyph>, String>;
+    let mut read: HashMap<(usize, u16), Read> = HashMap::new();
+    let mut coloured: HashMap<(usize, u16), bool> = HashMap::new();
+    let mut missing: Vec<(usize, Vec<char>)> = Vec::new();
     let mut past: Vec<(char, String)> = Vec::new();
     for p in placed.iter_mut() {
-        let Some(Ink::Glyph(gid)) = p.ink else {
+        let Some(Ink::Glyph(f, gid)) = p.ink else {
             continue;
         };
-        let got = read.entry(gid).or_insert_with(|| {
-            let g = outline(gid)?;
+        let got = read.entry((f, gid)).or_insert_with(|| {
+            let g = outline(f, gid)?;
             // Every band of a glyph is read by one loop of BAND_CURVES, and a
             // glyph of no more curves fits any band.
             match &g {
@@ -913,9 +1053,20 @@ fn settle(
                 p.ink = None;
                 continue;
             }
+            Ok(None) if *coloured.entry((f, gid)).or_insert_with(|| bitmap(f, gid)) => {
+                p.ink = Some(Ink::Colour(f, gid));
+                continue;
+            }
             Ok(None) => {
-                if !missing.contains(&p.ch) {
-                    missing.push(p.ch);
+                let at = match missing.iter().position(|m| m.0 == f) {
+                    Some(at) => at,
+                    None => {
+                        missing.push((f, Vec::new()));
+                        missing.len() - 1
+                    }
+                };
+                if !missing[at].1.contains(&p.ch) {
+                    missing[at].1.push(p.ch);
                 }
             }
             Err(why) => {
@@ -929,15 +1080,15 @@ fn settle(
     }
     let mut glyphs: HashMap<Ink, Glyph> = read
         .into_iter()
-        .filter_map(|(gid, g)| Some((Ink::Glyph(gid), g.ok()??)))
+        .filter_map(|((f, gid), g)| Some((Ink::Glyph(f, gid), g.ok()??)))
         .collect();
     if placed.iter().any(|p| p.ink == Some(Ink::Box)) {
         glyphs.insert(Ink::Box, error_box());
     }
-    let mut faults = Vec::new();
-    if !missing.is_empty() {
-        faults.push(Fault::NoOutline(missing));
-    }
+    let mut faults: Vec<Fault> = missing
+        .into_iter()
+        .map(|(f, chars)| Fault::NoOutline(f, chars))
+        .collect();
     faults.extend(past.into_iter().map(|(ch, why)| Fault::Glyph(ch, why)));
     (glyphs, faults)
 }
@@ -953,21 +1104,23 @@ fn finish(
     let built = match pack_fitting(placed, glyphs, height) {
         Ok(mut built) => {
             built.uniforms.extend([("_w", width), ("_h", height)]);
-            built.glyphs = placed
-                .iter()
-                .filter_map(|p| match p.ink {
-                    Some(Ink::Glyph(gid)) => Some(Placement {
-                        gid,
-                        ch: p.ch,
-                        origin: [p.x, height - p.y],
-                        index: p.index,
-                        word: p.word,
-                        line: p.line,
-                        span: p.span,
-                    }),
-                    _ => None,
-                })
-                .collect();
+            let placement = |p: &Placed, font: usize, gid: u16| Placement {
+                font,
+                gid,
+                ch: p.ch,
+                origin: [p.x, height - p.y],
+                index: p.index,
+                word: p.word,
+                line: p.line,
+                span: p.span,
+            };
+            for p in placed {
+                match p.ink {
+                    Some(Ink::Glyph(f, gid)) => built.glyphs.push(placement(p, f, gid)),
+                    Some(Ink::Colour(f, gid)) => built.colour.push(placement(p, f, gid)),
+                    _ => {}
+                }
+            }
             Some(built)
         }
         Err(e) => {
@@ -1034,7 +1187,9 @@ fn pack(
     // Where the data of each ink's glyph starts.
     let mut starts: HashMap<Ink, usize> = HashMap::new();
     for p in placed {
-        let Some(ink) = p.ink else { continue };
+        let Some(ink) = p.ink.and_then(Ink::curves) else {
+            continue;
+        };
         if starts.contains_key(&ink) {
             continue;
         }
@@ -1093,7 +1248,7 @@ fn pack(
     let inked: Vec<(&Placed, Packed)> = placed
         .iter()
         .filter_map(|p| {
-            let ink = p.ink?;
+            let ink = p.ink.and_then(Ink::curves)?;
             let (at, g) = (starts[&ink], &glyphs[&ink]);
             Some((
                 p,
@@ -1223,6 +1378,7 @@ fn pack(
         quads: quads(false),
         boxes: quads(true),
         glyphs: Vec::new(),
+        colour: Vec::new(),
         texels,
         uniforms: vec![
             ("_tw", TEX_W as f64),
@@ -1239,22 +1395,20 @@ fn pack(
     })
 }
 
-/// The quads of the MTSDF fill over `glyphs`, each from its glyph's cell in an
-/// atlas of `px_em` texels per em, as `cell` gives it, and an error box for
-/// each glyph that has none. Returns the glyph quads, the error boxes, and the
-/// glyphs with no cell.
-pub fn mtsdf_quads(
+/// The quads over `glyphs` that read an atlas, the MTSDF atlas or the colour
+/// atlas, each from its glyph's cell and the cell's texels per em, as `cell`
+/// gives them, and an error box for each glyph that has none. Returns the
+/// glyph quads, the error boxes, and the glyphs with no cell.
+pub fn atlas_quads(
     glyphs: &[Placement],
-    px_em: u32,
-    mut cell: impl FnMut(u16) -> Option<Cell>,
+    mut cell: impl FnMut(&Placement) -> Option<(Cell, f64)>,
 ) -> (Quads, Quads, Vec<&Placement>) {
-    let s = f64::from(px_em);
     let (mut drawn, mut boxes) = (Vec::new(), Vec::new());
     let mut missing = Vec::new();
     for p in glyphs {
         let [ox, oy] = p.origin;
-        let (a1, a2, out) = match cell(p.gid) {
-            Some(c) => {
+        let (a1, a2, out) = match cell(p) {
+            Some((c, s)) => {
                 let [x0, y0, x1, y1] = c.ink;
                 // The texel coordinate of the box's top left: y runs up the
                 // atlas and down the block.
@@ -1368,9 +1522,10 @@ pub fn box_fragment() -> Vec<String> {
 }
 
 /// The GLSL names made by text `name`: every NAME_ name in the templates of its
-/// readers and its draws, the MTSDF draw's too with `atlas`, and the
-/// `<sampler>_size` set by the engine beside each texture.
-pub fn names(name: &str, atlas: bool) -> Vec<String> {
+/// readers and its draws, the MTSDF draw's too with `atlas`, the colour
+/// layer's with `colour`, and the `<sampler>_size` set by the engine beside
+/// each texture.
+pub fn names(name: &str, atlas: bool, colour: bool) -> Vec<String> {
     let mut glsl = vec![
         GLSL,
         DRAW_VERTEX_HEAD,
@@ -1379,6 +1534,9 @@ pub fn names(name: &str, atlas: bool) -> Vec<String> {
     ];
     if atlas {
         glsl.extend([MTSDF_VERTEX_MAIN, MTSDF_FRAGMENT_HEAD, MTSDF_FRAGMENT_TAIL]);
+    }
+    if colour {
+        glsl.extend([crate::colour::VERTEX_MAIN, crate::colour::FRAGMENT]);
     }
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut out: Vec<String> = Vec::new();
@@ -1818,8 +1976,8 @@ mod tests {
             "/tools/fixtures/fonts/DejaVuSans-ASCII.ttf"
         );
         let data = std::fs::read(path).unwrap();
-        let face = ttf_parser::Face::parse(&data, 0).unwrap();
-        let (placed, width, _) = layout(Some(&face), words, align);
+        let faces = [Some(Face::parse(&data, 0).unwrap())];
+        let (placed, width, _) = layout(&faces, words, align);
         (placed, width)
     }
 
@@ -1844,7 +2002,7 @@ mod tests {
 
     fn at_origin(gid: u16, ch: char) -> Placed {
         Placed {
-            ink: Some(Ink::Glyph(gid)),
+            ink: Some(Ink::Glyph(0, gid)),
             ch,
             x: 0.0,
             y: 0.0,
@@ -1857,7 +2015,7 @@ mod tests {
 
     #[test]
     fn a_band_past_its_loop_bound_names_the_character() {
-        let glyphs = HashMap::from([(Ink::Glyph(7), lines_glyph(BAND_CURVES + 1))]);
+        let glyphs = HashMap::from([(Ink::Glyph(0, 7), lines_glyph(BAND_CURVES + 1))]);
         let got = pack(&[at_origin(7, 'x')], &glyphs, BANDS, 1.0);
         assert!(matches!(got, Err(Unpacked::Band('x'))));
         let e = pack_fitting(&[at_origin(7, 'x')], &glyphs, 1.0)
@@ -1871,13 +2029,17 @@ mod tests {
         let mut placed = [at_origin(7, 'x'), at_origin(8, 'y'), at_origin(7, 'x')];
         placed[1].span = [0.5, 1.0];
         placed[2].span = [1.0, 1.5];
-        let (glyphs, faults) = settle(&mut placed, |gid| {
-            Ok(Some(lines_glyph(if gid == 7 {
-                BAND_CURVES + 1
-            } else {
-                1
-            })))
-        });
+        let (glyphs, faults) = settle(
+            &mut placed,
+            |_, gid| {
+                Ok(Some(lines_glyph(if gid == 7 {
+                    BAND_CURVES + 1
+                } else {
+                    1
+                })))
+            },
+            |_, _| false,
+        );
         assert_eq!(
             faults,
             [Fault::Glyph(
@@ -1886,7 +2048,10 @@ mod tests {
             )]
         );
         let inks: Vec<Option<Ink>> = placed.iter().map(|p| p.ink).collect();
-        assert_eq!(inks, [Some(Ink::Box), Some(Ink::Glyph(8)), Some(Ink::Box)]);
+        assert_eq!(
+            inks,
+            [Some(Ink::Box), Some(Ink::Glyph(0, 8)), Some(Ink::Box)]
+        );
         // A box stands centred in its advance.
         assert_eq!(placed[2].x, 1.25 - ERROR_BOX[0] / 2.0);
         let built = pack_fitting(&placed, &glyphs, 1.0).unwrap();
@@ -1905,21 +2070,21 @@ mod tests {
             '😀',
         ];
         let mut placed: Vec<Placed> = chars.iter().map(|c| at_origin(3, *c)).collect();
-        let (glyphs, faults) = settle(&mut placed, |_| Ok(None));
+        let (glyphs, faults) = settle(&mut placed, |_, _| Ok(None), |_, _| false);
         let boxed: Vec<char> = placed
             .iter()
             .filter(|p| p.ink == Some(Ink::Box))
             .map(|p| p.ch)
             .collect();
         assert_eq!(boxed, ['a', '😀']);
-        assert!(placed.iter().all(|p| p.ink != Some(Ink::Glyph(3))));
-        assert_eq!(faults, [Fault::NoOutline(vec!['a', '😀'])]);
+        assert!(placed.iter().all(|p| p.ink != Some(Ink::Glyph(0, 3))));
+        assert_eq!(faults, [Fault::NoOutline(0, vec!['a', '😀'])]);
         assert_eq!(glyphs.keys().collect::<Vec<_>>(), [&Ink::Box]);
     }
 
     #[test]
     fn a_font_that_failed_to_load_takes_a_box_a_character() {
-        let (placed, width, height) = layout(None, "ab c\u{200b}d\ne", Align::Left);
+        let (placed, width, height) = layout(&[None], "ab c\u{200b}d\ne", Align::Left);
         let inks: Vec<(char, bool)> = placed
             .iter()
             .map(|p| (p.ch, p.ink == Some(Ink::Box)))
@@ -1964,7 +2129,8 @@ mod tests {
         // The glyphs outgrow the texture at 64 bands and fit it at 32, all
         // at one spot.
         let n = 20_000;
-        let glyphs: HashMap<Ink, Glyph> = (0..n).map(|g| (Ink::Glyph(g), lines_glyph(1))).collect();
+        let glyphs: HashMap<Ink, Glyph> =
+            (0..n).map(|g| (Ink::Glyph(0, g), lines_glyph(1))).collect();
         let placed: Vec<Placed> = (0..n).map(|g| at_origin(g, 'x')).collect();
         assert!(matches!(
             pack(&placed, &glyphs, BANDS, 1.0),

@@ -23,6 +23,10 @@ pub const GHEE_BLEND_OVER: c_int = 0;
 pub const GHEE_BLEND_ADD: c_int = 1;
 pub const GHEE_BLEND_REPLACE: c_int = 2;
 
+pub const GHEE_FILTER_NEAREST: c_int = 0;
+pub const GHEE_FILTER_LINEAR: c_int = 1;
+pub const GHEE_FILTER_MIPMAP: c_int = 2;
+
 #[repr(C)]
 pub struct FloatParam {
     pub value: f32,
@@ -104,7 +108,7 @@ extern "C" {
         height: c_int,
         components: c_int,
         is_f32: c_int,
-        linear: c_int,
+        filter: c_int,
     ) -> bool;
     pub fn ghee_mp_set_asset_rows(
         g: *mut GheeScene,

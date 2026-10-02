@@ -40,6 +40,7 @@ pub mod assets;
 pub mod atlas;
 pub mod bench;
 pub mod cli;
+pub mod colour;
 pub mod console;
 pub mod cparam;
 pub mod drivers;

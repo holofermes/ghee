@@ -34,8 +34,8 @@ const MAX_TEXELS: i64 = 1 << 24;
 // The engine's asset table holds MP_MAX_ASSETS entries.
 const MAX_ASSETS: usize = 16;
 
-// A draw takes two engine layers, its own and its error boxes', and the
-// engine holds MP_MAX_LAYERS layers.
+// A draw takes three engine layers at most, its own, its colour glyphs' and
+// its error boxes', and the engine holds MP_MAX_LAYERS layers.
 const MAX_DRAWS: usize = 16;
 
 fn vec_arity(ty: &str) -> Option<usize> {
@@ -1500,6 +1500,16 @@ impl Pass {
         (v, f.join("\n"))
     }
 
+    /// The vertex and the fragment shader of the colour layer of draw `k`:
+    /// the draw's own place, and ghee's read of the text's colour atlas.
+    pub fn draw_colour_glsl(&self, k: usize, scene_params: Option<&ParamMap>) -> (String, String) {
+        let d = &self.draws[k];
+        let v = self.draw_vertex(d, scene_params, crate::colour::vertex_main(&d.text));
+        let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
+        f.extend(crate::colour::fragment(&d.text));
+        (v, f.join("\n"))
+    }
+
     /// The vertex shader of draw `d`, with `main` after its place.
     fn draw_vertex(&self, d: &Draw, scene_params: Option<&ParamMap>, main: Vec<String>) -> String {
         let mut v: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
@@ -1748,18 +1758,25 @@ impl Scene {
         })
     }
 
+    /// The error for the engine textures of the image assets and of `texts`
+    /// past MAX_ASSETS. A text takes the texture of its curves, and a text
+    /// that a draw names takes its MTSDF atlas under the MTSDF fill, and its
+    /// colour atlas when its loaded fonts hold colour bitmaps.
+    fn over_texture_cap(&self, texts: &[Text]) -> Option<String> {
+        let images = self.assets.iter().filter(|a| !a.is_font()).count();
+        let drawn = || texts.iter().filter(|t| self.draws_text(&t.name));
+        let atlases = drawn().filter(|t| t.fill == Fill::Mtsdf).count();
+        let colours = drawn().filter(|t| t.has_colour()).count();
+        let n = images + texts.len() + atlases + colours;
+        (n > MAX_ASSETS).then(|| {
+            format!("{n} image assets, texts and text atlases, over the cap of {MAX_ASSETS}")
+        })
+    }
+
     /// The scene with `texts` in place of its own.
     pub fn with_texts(mut self, texts: Vec<Text>) -> Result<Scene> {
-        let images = self.assets.iter().filter(|a| !a.is_font()).count();
-        // A text takes the texture of its curves, and an MTSDF text that a
-        // draw names takes its atlas too.
-        let atlases = texts
-            .iter()
-            .filter(|t| t.fill == Fill::Mtsdf && self.draws_text(&t.name))
-            .count();
-        let n = images + texts.len() + atlases;
-        if n > MAX_ASSETS {
-            bail!("{n} image assets, texts and text atlases, over the cap of {MAX_ASSETS}");
+        if let Some(e) = self.over_texture_cap(&texts) {
+            bail!("{e}");
         }
         let mut seen: Vec<&str> = Vec::new();
         for t in &texts {
@@ -1773,19 +1790,16 @@ impl Scene {
                 bail!("text '{}' is declared twice", t.name);
             }
             seen.push(&t.name);
-            match self.assets.iter().find(|a| a.name == t.font) {
-                Some(a) if a.is_font() => {}
-                Some(a) => bail!(
-                    "text '{}' font '{}' is the image {}, a font is a .ttf or .otf file",
-                    t.name,
-                    t.font,
-                    py_str_repr(&a.file)
-                ),
-                None => bail!(
-                    "text '{}' font '{}' is no asset of the scene",
-                    t.name,
-                    t.font
-                ),
+            for font in &t.fonts {
+                match self.assets.iter().find(|a| a.name == *font) {
+                    Some(a) if a.is_font() => {}
+                    Some(a) => bail!(
+                        "text '{}' font '{font}' is the image {}, a font is a .ttf or .otf file",
+                        t.name,
+                        py_str_repr(&a.file)
+                    ),
+                    None => bail!("text '{}' font '{font}' is no asset of the scene", t.name),
+                }
             }
             match self.params.get(&t.name) {
                 Some(p) if p.ty == "string" => {}
@@ -1837,8 +1851,10 @@ impl Scene {
             }
         }
         for t in &texts {
-            let atlas = t.fill == Fill::Mtsdf && self.draws_text(&t.name);
-            let made = crate::text::names(&t.name, atlas);
+            // The fonts load after this check, so a drawn text makes the names
+            // of a colour layer whether or not a font holds colour bitmaps.
+            let drawn = self.draws_text(&t.name);
+            let made = crate::text::names(&t.name, drawn && t.fill == Fill::Mtsdf, drawn);
             for n in &made {
                 if let Some((_, owner)) = owners.iter().find(|(name, _)| name == n) {
                     bail!(
@@ -2074,11 +2090,18 @@ impl Scene {
             }
         }
         for t in &mut self.texts {
-            t.data = self
-                .assets
+            t.data = t
+                .fonts
                 .iter()
-                .find(|a| a.name == t.font)
-                .and_then(|a| a.font.clone());
+                .map(|f| {
+                    let a = self.assets.iter().find(|a| a.name == *f)?;
+                    a.font.clone()
+                })
+                .collect();
+        }
+        // A text's colour atlas counts once its fonts are loaded.
+        if let Some(e) = self.over_texture_cap(&self.texts) {
+            bail!("{e}");
         }
         Ok(())
     }

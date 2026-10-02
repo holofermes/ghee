@@ -149,11 +149,14 @@ pub(crate) struct Layer {
     pub alpha: Alpha,
 }
 
-/// A scene draw that the engine holds as a layer, and the layer of its error
-/// boxes.
+/// A scene draw that the engine holds as a layer, and the layers of its
+/// colour glyphs and of its error boxes.
 struct DrawLayer {
     /// The engine's index of the layer.
     layer: c_int,
+    /// The engine's index of the colour layer, -1 for a text whose fonts
+    /// hold no colour bitmaps.
+    colour: c_int,
     /// The engine's index of the error-box layer.
     boxes: c_int,
     /// The scene text of the draw.
@@ -164,7 +167,7 @@ struct DrawLayer {
 
 /// One atlas generator, and the engine textures that hold its atlas.
 struct AtlasSlot {
-    font: Arc<Vec<u8>>,
+    fonts: Vec<text::Font>,
     px_em: u32,
     range: u32,
     gen: atlas::Generator,
@@ -179,8 +182,18 @@ struct Held {
     laid: Layout,
 }
 
-/// The font that an atlas generator reads, from the font file's bytes.
-type AtlasFont = Box<dyn Fn(&Arc<Vec<u8>>) -> Arc<dyn atlas::Font>>;
+/// The font that an atlas generator reads, from a text's fonts.
+type AtlasFont = Box<dyn Fn(&[text::Font]) -> Arc<dyn atlas::Font>>;
+
+/// The colour atlas of one text, the engine asset `<name>_emoji`.
+#[derive(Default)]
+struct ColourAtlas {
+    atlas: atlas::Atlas,
+    /// The texels per em of each glyph's bitmap, by atlas id.
+    scale: HashMap<u32, f64>,
+    /// Why each glyph that failed took no cell, by atlas id.
+    failed: HashMap<u32, String>,
+}
 
 /// The problems of one scene text, a line each.
 #[derive(Clone, Default, PartialEq)]
@@ -549,6 +562,9 @@ pub struct Renderer {
     /// The new words of each MTSDF text still waiting for their glyphs, by
     /// the text's name. The text draws its last words meanwhile.
     held: std::cell::RefCell<HashMap<String, Held>>,
+    /// The colour atlas of each drawn text whose words held colour glyphs,
+    /// by the text's name.
+    colours: std::cell::RefCell<HashMap<String, ColourAtlas>>,
     /// set_time() pinned the time, so a render waits for held words.
     pinned: std::cell::Cell<bool>,
     /// The font of an atlas generator.
@@ -595,8 +611,9 @@ impl Renderer {
             text_errors_seq: std::cell::Cell::new(0),
             atlases: std::cell::RefCell::new(Vec::new()),
             held: std::cell::RefCell::new(HashMap::new()),
+            colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(false),
-            atlas_font: Box::new(|bytes| Arc::new(text::AtlasFont(bytes.clone()))),
+            atlas_font: Box::new(|fonts| Arc::new(text::AtlasFont(fonts.to_vec()))),
             atlas_cache: None,
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
             handle: ptr::null_mut(),
@@ -866,14 +883,51 @@ impl Renderer {
                 }
                 draws.push(DrawLayer {
                     layer: li,
+                    colour: -1,
                     boxes: -1,
                     text: d.text.clone(),
                     name,
                 });
             }
-            // The error boxes of each draw come after every draw of the pass,
-            // so none hides them.
+            // The colour glyphs of each draw come after every draw of the
+            // pass, and the error boxes after them, so none hides an error
+            // box.
             let first = draws.len() - if idx < 0 { 0 } else { p.draws.len() };
+            for (k, dl) in draws[first..].iter_mut().enumerate() {
+                let coloured = scene
+                    .texts
+                    .iter()
+                    .any(|t| t.name == dl.text && t.has_colour());
+                if !coloured {
+                    continue;
+                }
+                let (vs, fs) = p.draw_colour_glsl(k, Some(&scene.params));
+                let name = format!("{} colour glyphs", dl.name);
+                let (cname, cvs, cfs) = (
+                    self.staged_cstring(&name)?,
+                    self.staged_cstring(&vs)?,
+                    self.staged_cstring(&fs)?,
+                );
+                dl.colour = unsafe {
+                    ffi::ghee_mp_add_layer(
+                        self.handle,
+                        idx,
+                        cname.as_ptr(),
+                        cvs.as_ptr(),
+                        cfs.as_ptr(),
+                        p.draws[k].blend.engine(),
+                        c_int::from(p.draws[k].alpha == Alpha::Keep),
+                    )
+                };
+                if dl.colour < 0 {
+                    let err = or_else(self.last_error(), "compile error");
+                    unsafe { ffi::ghee_mp_abort(self.handle) };
+                    self.error = format!("{name}: {err}");
+                    self.error_pass = Some(ErrorPass::Index(i));
+                    crate::report::progress_done();
+                    return Ok(self.error.clone());
+                }
+            }
             for (k, dl) in draws[first..].iter_mut().enumerate() {
                 let (vs, fs) = p.draw_box_glsl(k, Some(&scene.params));
                 let name = format!("{} error boxes", dl.name);
@@ -963,6 +1017,8 @@ impl Renderer {
             self.text_errors_seq.set(self.text_errors_seq.get() + 1);
         }
         self.held.borrow_mut().clear();
+        // A colour atlas starts again with the words that need it.
+        self.colours.borrow_mut().clear();
         self.set_atlases(scene)?;
         // The engine assets of the old scene that the new one does not declare
         // go, and their slots come back.
@@ -1249,6 +1305,25 @@ impl Renderer {
         linear: bool,
         data: AssetData<'_>,
     ) -> Result<()> {
+        let filter = match linear {
+            true => ffi::GHEE_FILTER_LINEAR,
+            false => ffi::GHEE_FILTER_NEAREST,
+        };
+        self.put_asset(name, width, height, components, filter, data)
+    }
+
+    /// set_asset() with a filter of the engine's: GHEE_FILTER_NEAREST,
+    /// GHEE_FILTER_LINEAR, or GHEE_FILTER_MIPMAP for 8-bit pixels at a
+    /// power-of-two size.
+    fn put_asset(
+        &self,
+        name: &str,
+        width: u32,
+        height: u32,
+        components: u32,
+        filter: c_int,
+        data: AssetData<'_>,
+    ) -> Result<()> {
         let want = width as usize * height as usize * components as usize;
         let (ptr, len, is_f32) = match data {
             AssetData::U8(d) => (d.as_ptr().cast::<c_void>(), d.len(), false),
@@ -1270,7 +1345,7 @@ impl Renderer {
                 height as c_int,
                 components as c_int,
                 c_int::from(is_f32),
-                c_int::from(linear),
+                filter,
             )
         };
         if !ok {
@@ -1456,7 +1531,10 @@ impl Renderer {
                 let slot = self.atlas_of(name).map(|i| &atlases[i]);
                 let made = slot.and_then(|s| {
                     s.gen.with(|a| {
-                        text::mtsdf_quads(&built.glyphs, s.px_em, |gid| a.cells.get(&gid).copied())
+                        text::atlas_quads(&built.glyphs, |p| {
+                            let cell = a.cells.get(&text::atlas_id(p.font, p.gid));
+                            Some((*cell?, f64::from(s.px_em)))
+                        })
                     })
                 });
                 match (slot, made) {
@@ -1468,7 +1546,7 @@ impl Renderer {
                                 continue;
                             }
                             told.push(p.ch);
-                            let why = match slot.gen.failure(p.gid) {
+                            let why = match slot.gen.failure(text::atlas_id(p.font, p.gid)) {
                                 Some(e) => format!("has no field in the atlas: {e}"),
                                 None => "has no field in the atlas".to_string(),
                             };
@@ -1480,6 +1558,8 @@ impl Renderer {
                 }
             }
         };
+        let colour = self.colour_quads(text, &built.colour, &mut faults)?;
+        boxes.extend(&colour.1);
         self.text_faults(text, &faults, true);
         self.set_asset(
             &format!("{name}_tex"),
@@ -1499,12 +1579,84 @@ impl Renderer {
         for d in self.draws.iter().filter(|d| d.text == *name) {
             for (layer, floats, what) in [
                 (d.layer, &quads, d.name.clone()),
+                (d.colour, &colour.0, format!("{} colour glyphs", d.name)),
                 (d.boxes, &boxes, format!("{} error boxes", d.name)),
             ] {
-                self.layer_quads(layer, &what, floats, text::QUAD_FLOATS / 4)?;
+                if layer >= 0 {
+                    self.layer_quads(layer, &what, floats, text::QUAD_FLOATS / 4)?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// The quads of the colour glyphs `glyphs` of `text`, for its draws'
+    /// colour layers, and an error box for each glyph whose bitmap failed,
+    /// with a fault in `faults`. The first colour glyph of the text makes its
+    /// colour atlas, and every new one decodes into it and uploads.
+    fn colour_quads(
+        &self,
+        text: &Text,
+        glyphs: &[text::Placement],
+        faults: &mut Vec<Fault>,
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
+        let name = &text.name;
+        let drawn = self.draws.iter().any(|d| d.text == *name && d.colour >= 0);
+        if glyphs.is_empty() || !drawn {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let fonts = text.data.as_deref().unwrap_or_default();
+        let mut colours = self.colours.borrow_mut();
+        let slot = colours.entry(name.clone()).or_default();
+        for p in glyphs {
+            let id = text::atlas_id(p.font, p.gid);
+            if slot.atlas.cells.contains_key(&id) || slot.failed.contains_key(&id) {
+                continue;
+            }
+            let face = fonts.get(p.font).and_then(|f| f.as_ref().ok());
+            let face = face.and_then(|d| ttf_parser::Face::parse(d, 0).ok());
+            let made = match face {
+                Some(face) => crate::colour::field(&face, p.gid),
+                None => Err(anyhow!("its font is unreadable")),
+            };
+            match made.and_then(|(f, s)| Ok((slot.atlas.insert(id, &f)?, s))) {
+                Ok((_, s)) => {
+                    slot.scale.insert(id, s);
+                }
+                Err(e) => {
+                    slot.failed.insert(id, format!("{e:#}"));
+                }
+            }
+        }
+        // A new atlas's first update holds all of it, as does a grown one's.
+        if let Some(u) = slot.atlas.update() {
+            let tex = format!("{name}_emoji");
+            if u.resized {
+                let data = AssetData::U8(&u.rows[0].texels);
+                self.put_asset(&tex, u.width, u.height, 4, ffi::GHEE_FILTER_MIPMAP, data)?;
+                self.scene_asset(&tex);
+            } else {
+                for r in &u.rows {
+                    self.set_asset_rows(&tex, r.y, u.width, &r.texels)?;
+                }
+            }
+        }
+        let (quads, boxes, missing) = text::atlas_quads(glyphs, |p| {
+            let id = text::atlas_id(p.font, p.gid);
+            Some((*slot.atlas.cells.get(&id)?, slot.scale[&id]))
+        });
+        let mut told: Vec<char> = Vec::new();
+        for p in missing {
+            if !told.contains(&p.ch) {
+                told.push(p.ch);
+                let why = &slot.failed[&text::atlas_id(p.font, p.gid)];
+                faults.push(Fault::Glyph(
+                    p.ch,
+                    format!("has no bitmap in the colour atlas: {why}"),
+                ));
+            }
+        }
+        Ok((quads.floats, boxes.floats))
     }
 
     /// Set up the atlases of `scene`: one generator per font, px/em and range
@@ -1514,12 +1666,12 @@ impl Renderer {
         let mut old = std::mem::take(&mut *self.atlases.borrow_mut());
         let mut slots: Vec<AtlasSlot> = Vec::new();
         for t in &scene.texts {
-            let Some(Ok(font)) = &t.data else { continue };
-            if t.fill != Fill::Mtsdf || !scene.draws_text(&t.name) {
+            let Some(fonts) = &t.data else { continue };
+            if t.fill != Fill::Mtsdf || !scene.draws_text(&t.name) || !t.has_outlines() {
                 continue;
             }
             let same =
-                |s: &AtlasSlot| s.px_em == t.px_per_em && s.range == t.range && s.font == *font;
+                |s: &AtlasSlot| s.px_em == t.px_per_em && s.range == t.range && s.fonts == *fonts;
             let i = match slots.iter().position(same) {
                 Some(i) => i,
                 None => {
@@ -1530,11 +1682,11 @@ impl Renderer {
                             s
                         }
                         None => AtlasSlot {
-                            font: font.clone(),
+                            fonts: fonts.clone(),
                             px_em: t.px_per_em,
                             range: t.range,
                             gen: atlas::Generator::new(
-                                (self.atlas_font)(font),
+                                (self.atlas_font)(fonts),
                                 atlas::Config {
                                     px_em: t.px_per_em,
                                     range: t.range,
@@ -1606,7 +1758,8 @@ impl Renderer {
             for (tex, fresh) in slot.textures.iter_mut() {
                 if *fresh {
                     let up = slot.gen.with(|a| {
-                        self.set_asset(tex, a.width, a.height, 4, true, AssetData::U8(&a.texels))
+                        let data = AssetData::U8(&a.texels);
+                        self.put_asset(tex, a.width, a.height, 4, ffi::GHEE_FILTER_LINEAR, data)
                     });
                     let Some(up) = up else { continue };
                     up?;
@@ -1616,8 +1769,8 @@ impl Renderer {
                 }
                 let Some(u) = &update else { continue };
                 if u.resized {
-                    let all = &u.rows[0].texels;
-                    self.set_asset(tex, u.width, u.height, 4, true, AssetData::U8(all))?;
+                    let data = AssetData::U8(&u.rows[0].texels);
+                    self.put_asset(tex, u.width, u.height, 4, ffi::GHEE_FILTER_LINEAR, data)?;
                     continue;
                 }
                 for r in &u.rows {
@@ -1668,11 +1821,11 @@ impl Renderer {
         let mut reported = self.reported.borrow_mut();
         // True the first time since the setup that a cause comes up.
         let mut fresh = |cause: String| reported.insert(cause);
-        let no_outline = |cs: &[char]| {
+        let no_outline = |f: usize, cs: &[char]| {
             let list: Vec<String> = cs.iter().map(|c| format!("{c:?}")).collect();
             format!(
                 "text '{name}': font '{}' has no outline for {}",
-                text.font,
+                text.fonts[f],
                 list.join(", ")
             )
         };
@@ -1699,21 +1852,21 @@ impl Renderer {
                     why.clone()
                 }
                 // Each character logs once.
-                Fault::NoOutline(chars) => {
+                Fault::NoOutline(f, chars) => {
                     let new: Vec<char> = chars
                         .iter()
                         .copied()
                         .filter(|c| fresh(format!("ink\0{name}\0{c}")))
                         .collect();
                     if !new.is_empty() {
-                        crate::report::warn(no_outline(&new));
+                        crate::report::warn(no_outline(*f, &new));
                     }
-                    no_outline(chars)
+                    no_outline(*f, chars)
                 }
                 Fault::Glyph(ch, why) => format!("text '{name}': {ch:?} {why}"),
                 Fault::Layout(why) => format!("text '{name}': {why}"),
             };
-            if !matches!(f, Fault::Font(_) | Fault::NoOutline(_)) && fresh(line.clone()) {
+            if !matches!(f, Fault::Font(_) | Fault::NoOutline(..)) && fresh(line.clone()) {
                 crate::report::warn(&line);
             }
             match f {
@@ -1917,6 +2070,7 @@ impl Renderer {
         self.feeds = Vec::new();
         self.held.borrow_mut().clear();
         self.atlases.borrow_mut().clear();
+        self.colours.borrow_mut().clear();
     }
 
     pub fn close(&mut self) {
@@ -3734,6 +3888,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_colour_atlas_exists_once_the_words_hold_a_colour_glyph() {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let load = |font: Value| {
+            let mut sc = Scene::from_dict(
+                &json!({
+                    "version": 1,
+                    "params": {"label": {"type": "string", "value": "AV"}},
+                    "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},
+                               "emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
+                    "texts": {"label": {"font": font}},
+                    "passes": [{"name": "main",
+                        "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                        "draws": [{"text": "label",
+                            "code": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
+                            "place": "vec2 glyph_place(vec2 em) { return em * 20.0; }"}]}],
+                }),
+                None,
+                None,
+            )
+            .unwrap();
+            sc.load_assets(fonts).unwrap();
+            sc
+        };
+        let Some((_g, mut r)) = gpu() else { return };
+        let emoji = |r: &Renderer| {
+            let held = r.scene_assets.borrow().iter().any(|n| n == "label_emoji");
+            (r.colours.borrow().len(), held)
+        };
+        // A text whose fonts hold no colour bitmaps takes no colour layer.
+        assert_eq!(r.setup(&load(json!("sans"))).unwrap(), "");
+        assert_eq!((r.draws[0].colour, r.layers.len()), (-1, 0));
+        assert_eq!(emoji(&r), (0, false));
+        // A colour font gives the draw its colour layer, and the atlas waits
+        // for a colour glyph in the words.
+        assert_eq!(r.setup(&load(json!(["sans", "emoji"]))).unwrap(), "");
+        assert!(r.draws[0].colour >= 0);
+        assert_eq!(emoji(&r), (0, false));
+        assert!(r.set_text("label", "A\u{1f600}").unwrap());
+        // A render with the time pinned waits for the held words.
+        r.set_time(Some(0.0));
+        r.render(None).unwrap();
+        assert_eq!(emoji(&r), (1, true));
+        assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
+        // A new setup frees the atlas until its words need it again.
+        assert_eq!(r.setup(&load(json!(["sans", "emoji"]))).unwrap(), "");
+        assert_eq!(emoji(&r), (0, false));
+    }
+
     // The MTSDF fill's atlas
 
     /// The fixture font for an atlas, with two switches. Until `visible`, the
@@ -3747,14 +3950,14 @@ mod tests {
     }
 
     const LATE: &str = "QZ";
-    const BIG: u16 = 0xf000;
+    const BIG: u32 = 0xf000;
 
     impl Switched {
         fn new() -> Arc<Switched> {
             let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
             let bytes = fs::read(format!("{fonts}/DejaVuSans-ASCII.ttf")).unwrap();
             Arc::new(Switched {
-                inner: text::AtlasFont(Arc::new(bytes)),
+                inner: text::AtlasFont(vec![Ok(Arc::new(bytes))]),
                 visible: false.into(),
                 open: true.into(),
             })
@@ -3766,21 +3969,21 @@ mod tests {
     }
 
     impl atlas::Font for Switched {
-        fn bytes(&self) -> &[u8] {
-            self.inner.bytes()
+        fn key(&self) -> [u8; 32] {
+            self.inner.key()
         }
 
-        fn glyph(&self, ch: char) -> Option<u16> {
+        fn glyph(&self, ch: char) -> Option<u32> {
             let on =
                 |f: &std::sync::atomic::AtomicBool| f.load(std::sync::atomic::Ordering::SeqCst);
             match u32::from(ch) {
-                c @ 0xe000..=0xe0ff => Some(BIG + (c - 0xe000) as u16),
+                c @ 0xe000..=0xe0ff => Some(BIG + (c - 0xe000)),
                 _ if LATE.contains(ch) && !on(&self.visible) => None,
                 _ => self.inner.glyph(ch),
             }
         }
 
-        fn outline(&self, gid: u16) -> Result<Vec<Vec<atlas::Curve>>> {
+        fn outline(&self, gid: u32) -> Result<Vec<Vec<atlas::Curve>>> {
             if gid >= BIG {
                 let o = self.inner.outline(self.inner.glyph('O').unwrap())?;
                 return Ok(o

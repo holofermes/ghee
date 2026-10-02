@@ -16,7 +16,7 @@
 //! changed, for the upload, and [`Generator::failure`] says why a glyph took
 //! no cell.
 //!
-//! The cache keeps one file per font sha256, px/em and range in
+//! The cache keeps one file per font key, px/em and range in
 //! `$XDG_CACHE_HOME/ghee/atlas/`, else `~/.cache/ghee/atlas/`.
 
 use std::collections::{HashMap, HashSet};
@@ -73,14 +73,17 @@ pub fn preload() -> impl Iterator<Item = char> {
 /// is {start, end, end}.
 pub type Curve = [[f64; 2]; 3];
 
-/// The font a generator draws its glyphs from.
+/// The font a generator draws its glyphs from. A glyph takes an id of the
+/// font's choosing, the key of its cell in the atlas.
 pub trait Font: Send + Sync {
-    /// The font file. Its sha256 keys the cache.
-    fn bytes(&self) -> &[u8];
-    /// The glyph the layout draws for `ch`, None when it draws nothing for it.
-    fn glyph(&self, ch: char) -> Option<u16>;
-    /// The closed contours of glyph `gid`, none for a glyph without ink.
-    fn outline(&self, gid: u16) -> Result<Vec<Vec<Curve>>>;
+    /// The sha256 that keys the cache. Two fonts with one key give every id
+    /// the same outline.
+    fn key(&self) -> [u8; 32];
+    /// The id of the glyph that the layout draws for `ch`, None when it
+    /// draws nothing for it.
+    fn glyph(&self, ch: char) -> Option<u32>;
+    /// The closed contours of glyph `id`, none for a glyph without ink.
+    fn outline(&self, id: u32) -> Result<Vec<Vec<Curve>>>;
 }
 
 /// One glyph's MTSDF, before it takes a cell.
@@ -211,7 +214,7 @@ pub struct Atlas {
     /// RGBA8, row-major, row 0 at texture coordinate v = 0.
     pub texels: Vec<u8>,
     /// Each glyph's cell, by glyph id.
-    pub cells: HashMap<u16, Cell>,
+    pub cells: HashMap<u32, Cell>,
     /// Bottom to top, with no gap between two.
     shelves: Vec<Shelf>,
     /// Rows changed since the last update, as runs from a first row to an end.
@@ -257,7 +260,7 @@ pub struct Rows {
 impl Atlas {
     /// Put `field` in a free cell for glyph `gid`, growing the atlas when no
     /// shelf has room.
-    pub fn insert(&mut self, gid: u16, field: &Field) -> Result<Cell> {
+    pub fn insert(&mut self, gid: u32, field: &Field) -> Result<Cell> {
         let (w, h) = (field.width, field.height);
         if w > MAX_SIZE || h > MAX_SIZE {
             bail!("its {w}x{h} cell is larger than the {MAX_SIZE}x{MAX_SIZE} atlas");
@@ -443,7 +446,7 @@ struct State {
     /// Requested characters the worker has yet to take.
     queue: Vec<char>,
     /// Why each failed glyph took no cell, by glyph id.
-    failed: HashMap<u16, String>,
+    failed: HashMap<u32, String>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -498,7 +501,7 @@ impl Generator {
 
     /// Why glyph `gid` failed, None unless it did. A failed glyph stays out
     /// of the atlas and counts as ready.
-    pub fn failure(&self, gid: u16) -> Option<String> {
+    pub fn failure(&self, gid: u32) -> Option<String> {
         let s = self.started.get()?;
         lock(&s.shared.state).failed.get(&gid).cloned()
     }
@@ -553,7 +556,7 @@ impl Drop for Generator {
 /// The worker: the cache or the preload first, then each request as it comes.
 fn work(shared: &Shared, font: &dyn Font, config: &Config) {
     let key = Key {
-        font: Sha256::digest(font.bytes()).into(),
+        font: font.key(),
         px_em: config.px_em,
         range: config.range,
     };
@@ -573,7 +576,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
         lock(&shared.state).atlas = atlas;
     }
     // Glyphs without ink.
-    let mut blank: HashSet<u16> = HashSet::new();
+    let mut blank: HashSet<u32> = HashSet::new();
     loop {
         let batch = {
             let mut st = lock(&shared.state);
@@ -585,13 +588,13 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
             }
             std::mem::take(&mut st.queue)
         };
-        let asked: Vec<(char, Option<u16>)> = batch.iter().map(|&c| (c, font.glyph(c))).collect();
-        let extra: Vec<Option<u16>> = if preloading {
+        let asked: Vec<(char, Option<u32>)> = batch.iter().map(|&c| (c, font.glyph(c))).collect();
+        let extra: Vec<Option<u32>> = if preloading {
             preload().map(|c| font.glyph(c)).collect()
         } else {
             Vec::new()
         };
-        let mut jobs: Vec<u16> = Vec::new();
+        let mut jobs: Vec<u32> = Vec::new();
         {
             let mut st = lock(&shared.state);
             let mut seen = HashSet::new();
@@ -653,10 +656,10 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
 /// took a cell.
 fn settle(
     st: &mut State,
-    asked: &[(char, Option<u16>)],
-    gid: u16,
+    asked: &[(char, Option<u32>)],
+    gid: u32,
     made: Result<Option<Field>>,
-    blank: &mut HashSet<u16>,
+    blank: &mut HashSet<u32>,
 ) -> bool {
     let took = match made.and_then(|f| f.map(|f| st.atlas.insert(gid, &f)).transpose()) {
         Ok(Some(_)) => true,
@@ -678,7 +681,7 @@ fn settle(
 }
 
 /// One glyph's field. A panic inside fdsm fails this glyph alone.
-fn make(font: &dyn Font, gid: u16, config: &Config) -> Result<Option<Field>> {
+fn make(font: &dyn Font, gid: u32, config: &Config) -> Result<Option<Field>> {
     catch_unwind(AssertUnwindSafe(|| {
         field(&font.outline(gid)?, config.px_em, config.range)
     }))
@@ -689,10 +692,10 @@ fn make(font: &dyn Font, gid: u16, config: &Config) -> Result<Option<Field>> {
 /// stay out.
 fn make_all(
     font: &dyn Font,
-    jobs: &[u16],
+    jobs: &[u32],
     config: &Config,
     stop: &AtomicBool,
-) -> Vec<(u16, Result<Option<Field>>)> {
+) -> Vec<(u32, Result<Option<Field>>)> {
     let cores = thread::available_parallelism().map_or(1, |n| n.get());
     let next = AtomicUsize::new(0);
     thread::scope(|s| {
@@ -744,7 +747,7 @@ fn cache_dir(config: &Config) -> std::result::Result<PathBuf, &'static str> {
 /// What a cache file holds an atlas for.
 #[derive(Clone, Debug, PartialEq)]
 struct Key {
-    /// The font file's sha256.
+    /// The font's key.
     font: [u8; 32],
     px_em: u32,
     range: u32,
@@ -787,7 +790,7 @@ fn encode(key: &Key, a: &Atlas) -> Vec<u8> {
     cells.sort_unstable_by_key(|(gid, _)| **gid);
     put_u32(&mut b, cells.len() as u32);
     for (gid, c) in cells {
-        put_u32(&mut b, u32::from(*gid));
+        put_u32(&mut b, *gid);
         for v in c.rect {
             put_u32(&mut b, v);
         }
@@ -859,7 +862,7 @@ fn decode(key: &Key, bytes: &[u8]) -> Option<Atlas> {
     }
     let mut cells = HashMap::new();
     for _ in 0..r.u32()? {
-        let gid = u16::try_from(r.u32()?).ok()?;
+        let gid = r.u32()?;
         let rect = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
         let ink = [r.f64()?, r.f64()?, r.f64()?, r.f64()?];
         let pad = r.f64()?;
@@ -933,7 +936,7 @@ mod tests {
 
     fn key(font: &dyn Font, config: &Config) -> Key {
         Key {
-            font: Sha256::digest(font.bytes()).into(),
+            font: font.key(),
             px_em: config.px_em,
             range: config.range,
         }
@@ -1004,15 +1007,15 @@ mod tests {
     }
 
     impl Font for Ttf {
-        fn bytes(&self) -> &[u8] {
-            &self.data
+        fn key(&self) -> [u8; 32] {
+            Sha256::digest(&self.data).into()
         }
 
-        fn glyph(&self, ch: char) -> Option<u16> {
-            self.face().glyph_index(ch).map(|g| g.0)
+        fn glyph(&self, ch: char) -> Option<u32> {
+            self.face().glyph_index(ch).map(|g| u32::from(g.0))
         }
 
-        fn outline(&self, gid: u16) -> Result<Vec<Vec<Curve>>> {
+        fn outline(&self, gid: u32) -> Result<Vec<Vec<Curve>>> {
             self.outlines.fetch_add(1, Ordering::Relaxed);
             let face = self.face();
             let mut b = Contours {
@@ -1021,7 +1024,7 @@ mod tests {
                 at: [0.0; 2],
                 out: Vec::new(),
             };
-            face.outline_glyph(ttf_parser::GlyphId(gid), &mut b);
+            face.outline_glyph(ttf_parser::GlyphId(gid as u16), &mut b);
             Ok(b.out)
         }
     }
@@ -1048,17 +1051,17 @@ mod tests {
     }
 
     impl Font for Boxes {
-        fn bytes(&self) -> &[u8] {
-            &self.tag
+        fn key(&self) -> [u8; 32] {
+            Sha256::digest(self.tag).into()
         }
 
-        fn glyph(&self, ch: char) -> Option<u16> {
-            u16::try_from(u32::from(ch)).ok()
+        fn glyph(&self, ch: char) -> Option<u32> {
+            Some(u32::from(ch))
         }
 
-        fn outline(&self, gid: u16) -> Result<Vec<Vec<Curve>>> {
+        fn outline(&self, gid: u32) -> Result<Vec<Vec<Curve>>> {
             self.outlines.fetch_add(1, Ordering::Relaxed);
-            Ok(match char::from_u32(u32::from(gid)) {
+            Ok(match char::from_u32(gid) {
                 Some(' ') => Vec::new(),
                 Some('W') => rect(0.0, 0.0, 100.0, 0.7),
                 _ => rect(0.05, 0.0, 0.55, 0.7),
@@ -1079,12 +1082,12 @@ mod tests {
     }
 
     /// A w x h field whose texels name `gid`.
-    fn pattern(gid: u16, w: u32, h: u32) -> Field {
+    fn pattern(gid: u32, w: u32, h: u32) -> Field {
         Field {
             width: w,
             height: h,
             texels: (0..w * h * 4)
-                .map(|i| (i.wrapping_mul(31) ^ u32::from(gid).wrapping_mul(97)) as u8)
+                .map(|i| (i.wrapping_mul(31) ^ gid.wrapping_mul(97)) as u8)
                 .collect(),
             ink: [0.0, 0.0, 1.0, 1.0],
             pad: 4.0,
@@ -1156,7 +1159,7 @@ mod tests {
         let mut a = Atlas::default();
         let mut fields = Vec::new();
         let mut seed = 1u32;
-        for gid in 0..400u16 {
+        for gid in 0..400u32 {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let f = pattern(gid, 8 + (seed >> 8) % 40, 8 + (seed >> 20) % 48);
             a.insert(gid, &f).unwrap();
@@ -1236,10 +1239,10 @@ mod tests {
 
     // The cache
 
-    fn filled(n: u16) -> Atlas {
+    fn filled(n: u32) -> Atlas {
         let mut a = Atlas::default();
         for gid in 0..n {
-            let f = pattern(gid, 10 + u32::from(gid) % 13, 12 + u32::from(gid) % 9);
+            let f = pattern(gid, 10 + gid % 13, 12 + gid % 9);
             a.insert(gid * 3, &f).unwrap();
         }
         a
@@ -1439,13 +1442,15 @@ mod tests {
         // W fails in the preload, and counts as ready.
         wait(&g, "AWB");
         assert_eq!(
-            g.failure('W' as u16).as_deref(),
+            g.failure(u32::from('W')).as_deref(),
             Some("its 3208x31 cell is larger than the 2048x2048 atlas")
         );
-        assert!(g.failure('A' as u16).is_none() && g.failure(' ' as u16).is_none());
+        assert!(g.failure(u32::from('A')).is_none() && g.failure(u32::from(' ')).is_none());
         g.with(|a| {
-            assert!(a.cells.contains_key(&('A' as u16)) && a.cells.contains_key(&('B' as u16)));
-            assert!(!a.cells.contains_key(&('W' as u16)));
+            assert!(
+                a.cells.contains_key(&(u32::from('A'))) && a.cells.contains_key(&(u32::from('B')))
+            );
+            assert!(!a.cells.contains_key(&(u32::from('W'))));
         })
         .unwrap();
         drop(g);

@@ -292,15 +292,26 @@ Every pass of the scene, filter passes excepted, reads the words through
 The console shows the param as a text box, and an edit lays the words out
 again live, with no recompile.
 
-The font is a TrueType or OpenType font with outlines, and texts that name the
-same font asset share it.
+A font is a TrueType or OpenType font with outlines, or a colour emoji font
+with PNG bitmaps in a CBDT or sbix table, such as Noto Color Emoji. Texts that
+name the same font asset share it. `font` takes one asset or a list of them,
+`"font": ["sans", "emoji"]`, and each character draws from the first font in
+the list whose cmap holds it, while a character that no font has draws the
+first font's missing-glyph box. Line height and baseline come from the first
+font.
 
 Lines break at each newline, and `align` sets each line `left`, `center` or
 `right` within the block, `left` by default. Every character draws as one
-glyph, spaced by the advances and the pair kerning of the font's `kern` table.
-Careful: a font that kerns through GPOS alone draws unkerned. Text that needs
-shaping goes in as a host-rasterized 2D input, the way the `text` demo draws
-its words.
+glyph, spaced by the advances and the pair kerning of its font's `kern`
+table, and two glyphs of two fonts take no kerning. Careful: a font that kerns
+through GPOS alone draws unkerned. Text that needs shaping goes in as a
+host-rasterized 2D input, the way the `text` demo draws its words. An emoji
+sequence draws one code point at a time: a flag shows its two
+regional-indicator letters, a sequence joined by U+200D shows each of its
+emoji, and variation selectors and the joiner take no room.
+
+A colour glyph, a bitmap with no outline, has no coverage in `title_cover`.
+Only a [draw](#draws) paints it.
 
 `title_cover` ports Eric Lengyel's [Slug](https://github.com/EricLengyel/Slug)
 algorithm and computes coverage from the font's own curves, so the edges stay
@@ -311,17 +322,19 @@ On VC4 the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre,
 so a shader that needs exact centres, like the one above, samples at
 `floor(v_texCoord * resolution) + 0.5`.
 
-A scene holds at most 16 image assets, texts and text atlases together, and a
-text drawn with the MTSDF fill takes an atlas. The words must fit a 1024x2048
+A scene holds at most 16 image assets, texts and text atlases together. A
+text drawn with the MTSDF fill takes an atlas, and a drawn text with a colour
+font takes one more for its colour glyphs. The words must fit a 1024x2048
 data texture, at most 4 glyphs may overlap at one spot, and a glyph holds at
 most 64 curves in one band.
 
 A text problem leaves the scene running: ghee logs it once, and the console
-shows it. A font that fails to load draws every character as an error box,
-diagonal stripes of coverage in `title_cover`. A character whose glyph has no
-outline, such as an emoji of a bitmap-only font, a glyph past the curve limit,
-and in an MTSDF draw a glyph too large for the atlas each draw an error box in
-their place, and the rest of the words draw.
+shows it. A font that fails to load drops out of its text's fonts, and a text
+with no font left draws every character as an error box, diagonal stripes of
+coverage in `title_cover`. A character whose glyph has neither an outline nor
+a colour bitmap, a glyph past the curve limit, and in a draw a glyph too large
+for its atlas each draw an error box in their place, and the rest of the words
+draw.
 Words that do not fit leave the last words that did, and a scene whose first
 words do not fit draws none.
 
@@ -397,6 +410,15 @@ default. `glyph_soft` reads no distance past it, and `pad` stops there.
 
 `outline` computes the coverage from the curves, as `title_cover` does, and
 draws with no `glyph_dist` or `glyph_soft`.
+
+A draw paints the text's colour glyphs itself, after every draw of its pass,
+and `code` never runs for them. Each glyph shows its bitmap from the font's
+largest strike, through mipmaps that keep it smooth at text size, placed by
+`place` like any other glyph and blended by the draw's `blend` and `alpha`.
+The bitmaps decode into an RGBA atlas when the words first hold them. The
+atlas grows to 2048x2048 at most, room for 132 emoji of Noto Color Emoji, and
+an emoji past it draws an error box. Careful: every draw of the text paints
+the colour glyphs, so a glow or a shadow draw paints a copy of its own.
 
 On a Pi Zero 2 W, seven lines of 216 characters at 46 pixels per em, in a
 1280x800 frame, draw in 3.2 ms with `mtsdf` and in 22.7 ms with `outline`,

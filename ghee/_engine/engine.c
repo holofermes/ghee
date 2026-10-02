@@ -35,7 +35,7 @@
 #define FLIP_STUCK_MS 5000
 // One buffer on glass, one behind a pending flip, one to draw into.
 #define LENT_BUFFERS 3
-#define MP_MAX_LAYERS 32
+#define MP_MAX_LAYERS 48
 // The texture units one program binds at most, on any GPU. VC4 has 16.
 #define MP_MAX_UNITS 16
 #define MP_LAYER_ATTRIBS 4
@@ -144,6 +144,7 @@ struct GheeScene {
     char mp_asset_name[MP_MAX_ASSETS][64];        // sampler uniform name
     int mp_asset_w[MP_MAX_ASSETS], mp_asset_h[MP_MAX_ASSETS];
     GLenum mp_asset_fmt[MP_MAX_ASSETS], mp_asset_type[MP_MAX_ASSETS];
+    bool mp_asset_mip[MP_MAX_ASSETS];             // mipmaps, made again after each upload
     GLuint black_tex;                    // bound to a channel with no source pass
 
     bool keep_alpha;                     // readbacks carry the final pass's alpha
@@ -1400,9 +1401,19 @@ static int mp_asset_index(GheeScene *g, const char *name) {
 // commit rebinds it, the same name again replaces it, ghee_mp_drop_asset or
 // ghee_destroy frees it.
 bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
-                       int width, int height, int components, int is_f32, int linear) {
+                       int width, int height, int components, int is_f32, int filter) {
     if (width <= 0 || height <= 0) {
         set_error(g, "asset '%s' is %dx%d", name, width, height);
+        return false;
+    }
+    const bool mip = filter == GHEE_FILTER_MIPMAP;
+    // GLES2 mipmaps a power-of-two texture alone.
+    if (mip && ((width & (width - 1)) || (height & (height - 1)))) {
+        set_error(g, "asset '%s' is %dx%d, and mipmaps need a power-of-two size", name, width, height);
+        return false;
+    }
+    if (mip && is_f32) {
+        set_error(g, "asset '%s': mipmaps need 8-bit pixels", name);
         return false;
     }
     GLenum fmt;
@@ -1454,17 +1465,20 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g->mp_asset_tex[idx]);
-    const GLint filt = linear && !(is_f32 && !g->has_float_linear) ? GL_LINEAR : GL_NEAREST;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt);
+    const GLint filt = filter != GHEE_FILTER_NEAREST && !(is_f32 && !g->has_float_linear)
+                     ? GL_LINEAR : GL_NEAREST;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mip ? GL_LINEAR_MIPMAP_LINEAR : filt);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     const GLenum type = is_f32 ? GL_FLOAT : GL_UNSIGNED_BYTE;
     glTexImage2D(GL_TEXTURE_2D, 0, fmt, width, height, 0, fmt, type, data);
+    if (mip) glGenerateMipmap(GL_TEXTURE_2D);
     g->mp_asset_w[idx] = width;
     g->mp_asset_h[idx] = height;
     g->mp_asset_fmt[idx] = fmt;
     g->mp_asset_type[idx] = type;
+    g->mp_asset_mip[idx] = mip;
     return true;
 }
 
@@ -1486,6 +1500,7 @@ bool ghee_mp_set_asset_rows(GheeScene *g, const char *name, const void *data, in
     glBindTexture(GL_TEXTURE_2D, g->mp_asset_tex[idx]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, g->mp_asset_w[idx], rows, g->mp_asset_fmt[idx],
                     g->mp_asset_type[idx], data);
+    if (g->mp_asset_mip[idx]) glGenerateMipmap(GL_TEXTURE_2D);
     return true;
 }
 
@@ -1502,6 +1517,7 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name) {
         g->mp_asset_h[a] = g->mp_asset_h[a + 1];
         g->mp_asset_fmt[a] = g->mp_asset_fmt[a + 1];
         g->mp_asset_type[a] = g->mp_asset_type[a + 1];
+        g->mp_asset_mip[a] = g->mp_asset_mip[a + 1];
         for (int p = 0; p < MP_MAX_PASSES; p++) {
             g->mp_loc[p].asset[a] = g->mp_loc[p].asset[a + 1];
             g->mp_loc[p].assetSize[a] = g->mp_loc[p].assetSize[a + 1];

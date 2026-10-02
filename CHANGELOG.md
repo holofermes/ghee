@@ -81,6 +81,12 @@
 - Ship NOTICE and the DejaVu font's license in the deb under
   `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
   LICENSE and NOTICE in the wheel.
+- Take a list of fonts on a text, `"font": ["sans", "emoji"]`, and draw each
+  character from the first font whose cmap holds it.
+- Paint colour emoji in draws: a glyph with a PNG bitmap in a CBDT or sbix
+  table and no outline shows its bitmap, mipmapped, placed by the draw's
+  `place`. `<name>_cover` reads it as no ink, and a font of colour bitmaps
+  alone draws its emoji in draws in place of error boxes.
 
 ## 0.4.0 - 2026-08-06
 

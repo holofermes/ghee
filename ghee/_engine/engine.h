@@ -79,14 +79,17 @@ void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, i
 // An image asset: width x height pixels the host hands over once, bound as a
 // sampler uniform <name> on every pass whose program reads it, with a vec2
 // <name>_size of (width, height). components 1, 3 or 4 = LUMINANCE, RGB,
-// RGBA. is_f32 uploads floats and needs a GL with float textures. linear
-// samples with GL_LINEAR, f32 pixels fall back to nearest without
-// ghee_data_texture_linear. An asset outlives the scene: the same name again
-// replaces its pixels, ghee_mp_drop_asset or ghee_destroy frees it. Returns
-// false with ghee_last_error set when the engine refuses the asset.
+// RGBA. is_f32 uploads floats and needs a GL with float textures. filter
+// GHEE_FILTER_LINEAR samples with GL_LINEAR, f32 pixels fall back to nearest
+// without ghee_data_texture_linear. GHEE_FILTER_MIPMAP samples 8-bit pixels
+// with GL_LINEAR_MIPMAP_LINEAR from mipmaps that every upload makes again,
+// and needs a power-of-two size. An asset outlives the scene: the same name
+// again replaces its pixels, ghee_mp_drop_asset or ghee_destroy frees it.
+// Returns false with ghee_last_error set when the engine refuses the asset.
 #define MP_MAX_ASSETS 16
+enum { GHEE_FILTER_NEAREST, GHEE_FILTER_LINEAR, GHEE_FILTER_MIPMAP };
 bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
-                       int width, int height, int components, int is_f32, int linear);
+                       int width, int height, int components, int is_f32, int filter);
 // Replace rows y to y + rows of a set asset with `data`, rows of its full
 // width in the layout of its last ghee_mp_set_asset. Returns false with
 // ghee_last_error set for an asset that is not set or rows past its height.

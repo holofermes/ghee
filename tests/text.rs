@@ -26,9 +26,18 @@ const CFF2: &str = "NotoSansCJKjp-IO-CFF2.otf";
 /// Noto Color Emoji cut by fontTools' subset to space, U+200D, U+1F600 and
 /// U+1F642: colour bitmaps, no outlines.
 const EMOJI: &str = "NotoColorEmoji-Smiles.ttf";
+/// EMOJI rebuilt by fontTools' FontBuilder with its two bitmaps in an sbix
+/// table at 109 px/em, beside a strike at 20 px/em of flat green, and empty
+/// TrueType outlines.
+const EMOJI_SBIX: &str = "NotoColorEmoji-Smiles-sbix.ttf";
 
 fn font(file: &str) -> Vec<u8> {
     fs::read(format!("{FONTS}/{file}")).unwrap()
+}
+
+/// The fonts of a text of `bytes` alone.
+fn alone(bytes: &[u8]) -> Vec<text::Font> {
+    vec![Ok(Arc::new(bytes.to_vec()))]
 }
 
 /// A Renderer opens a GL device, and load_assets reads $GHEE_ASSETS. A test
@@ -450,7 +459,7 @@ fn block(built: &text::Built) -> (f64, f64) {
 
 /// The layout of `words` in a fixture font that draws every one of them.
 fn drawn(file: &str, words: &str, align: Align) -> text::Built {
-    let laid = text::build(&font(file), words, align);
+    let laid = text::build(&alone(&font(file)), words, align);
     assert_eq!(laid.faults, [], "{words:?}");
     laid.built.unwrap()
 }
@@ -536,7 +545,7 @@ fn a_cff_font_lays_out_like_a_truetype_one() {
 
 #[test]
 fn bytes_that_are_no_font_draw_a_box_a_character() {
-    let laid = text::build(b"not a font", "I O", Align::Left);
+    let laid = text::build(&alone(b"not a font"), "I O", Align::Left);
     assert!(
         matches!(&laid.faults[..], [text::Fault::Font(why)] if why.starts_with("unreadable font")),
         "{:?}",
@@ -545,7 +554,7 @@ fn bytes_that_are_no_font_draw_a_box_a_character() {
     let built = laid.built.unwrap();
     assert_eq!((built.quads.count, built.boxes.count), (0, 2));
     let mut t = Text::from_dict("label", &json!({"font": "face"})).unwrap();
-    t.data = Some(Err("asset 'face' (face.ttf): gone".to_string()));
+    t.data = Some(vec![Err("asset 'face' (face.ttf): gone".to_string())]);
     let laid = t.build("I O").unwrap();
     assert_eq!(
         laid.faults,
@@ -568,7 +577,7 @@ fn a_text_built_before_its_font_loads_names_the_font() {
 
 /// The one fault of words that fit no texture.
 fn refused(words: &str) -> String {
-    let laid = text::build(&font(SANS), words, Align::Left);
+    let laid = text::build(&alone(&font(SANS)), words, Align::Left);
     assert!(laid.built.is_none());
     match &laid.faults[..] {
         [text::Fault::Layout(why)] => why.clone(),
@@ -802,7 +811,7 @@ fn a_text_name_collides_with_nothing() {
 }
 
 #[test]
-fn a_text_makes_the_names_of_its_readers_and_an_mtsdf_draw_the_atlas_names() {
+fn a_text_makes_the_names_of_its_readers_and_a_draw_the_names_of_its_atlases() {
     let sorted = |mut v: Vec<String>| {
         v.sort();
         v
@@ -812,9 +821,11 @@ fn a_text_makes_the_names_of_its_readers_and_an_mtsdf_draw_the_atlas_names() {
         "cells", "nb", "size", "texel", "list", "lattice", "cross", "outline", "glyph", "cover",
     ];
     let names = |suffixes: &[&str]| sorted(suffixes.iter().map(|s| format!("label_{s}")).collect());
-    assert_eq!(sorted(text::names("label", false)), names(&readers));
+    assert_eq!(sorted(text::names("label", false, false)), names(&readers));
     let atlas = [&readers[..], &["atlas", "atlas_size"]].concat();
-    assert_eq!(sorted(text::names("label", true)), names(&atlas));
+    assert_eq!(sorted(text::names("label", true, false)), names(&atlas));
+    let colour = [&readers[..], &["emoji", "emoji_size"]].concat();
+    assert_eq!(sorted(text::names("label", false, true)), names(&colour));
 }
 
 /// The draw of text `label` that paints its coverage white.
@@ -840,6 +851,10 @@ fn a_name_made_by_a_text_collides_with_nothing() {
     atlas["passes"][0]["draws"] = white_draw();
     let mut text = texts_scene(json!({"label": {"font": "sans"}, "label_atlas": {"font": "sans"}}));
     text["passes"][0]["draws"] = white_draw();
+    // A drawn text makes the names of its colour atlas before its fonts load.
+    let mut colour = label();
+    colour["assets"]["label_emoji"] = json!({"file": "label.png"});
+    colour["passes"][0]["draws"] = white_draw();
     for (doc, want) in [
         (
             scene_param,
@@ -868,6 +883,10 @@ fn a_name_made_by_a_text_collides_with_nothing() {
             text,
             "text 'label' and text 'label_atlas' both make the GLSL name 'label_atlas_size'",
         ),
+        (
+            colour,
+            "asset 'label_emoji' and text 'label' both make the GLSL name 'label_emoji_size'",
+        ),
     ] {
         assert_eq!(scene_err(&doc), format!("scene: {want}"));
     }
@@ -884,7 +903,8 @@ fn a_name_beside_the_names_of_a_text_compiles() {
     }));
     doc["params"]["label_width"] = float.clone();
     doc["passes"][0]["name"] = json!("label_tex");
-    doc["passes"][0]["params"] = json!({"label_atlas": float, "label_ws": float});
+    doc["passes"][0]["params"] =
+        json!({"label_atlas": float, "label_ws": float, "label_emojis": float});
     doc["passes"][0]["arrays"] = json!([{"name": "label_texels", "size": 4}]);
     doc["passes"][0]["draws"] = white_draw();
     let mut image = doc.clone();
@@ -940,9 +960,11 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     let place = "vec2 glyph_place(vec2 glyph_q) { return glyph_q * 48.0 + 8.0; }";
     let draw = "void main(){ gl_FragColor = vec4(vec3(glyph_cover()), 1.0); }";
     let mut doc = texts_scene(json!({
-        "label": {"font": "sans"},
+        "label": {"font": ["sans", "emoji"]},
         "title": {"font": "sans", "fill": "outline"},
     }));
+    doc["assets"]["emoji"] = json!({"file": EMOJI});
+    doc["params"]["label"]["value"] = json!("I\u{1f600}");
     doc["passes"][0]["code"] = json!(
         "void main(){ gl_FragColor = vec4(vec3(title_cover(v_texCoord * title_size, 32.0)), 1.0); }"
     );
@@ -960,7 +982,8 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
         for k in 0..p.draws.len() {
             let (v, f) = p.draw_glsl(k, Some(&sc.params), None, &sc.assets, &sc.texts, hw_linear);
             let (bv, bf) = p.draw_box_glsl(k, Some(&sc.params));
-            glsl.extend([v, f, bv, bf]);
+            let (cv, cf) = p.draw_colour_glsl(k, Some(&sc.params));
+            glsl.extend([v, f, bv, bf, cv, cf]);
         }
     }
     // A vec param is a #define, which rewrites a field selection too: a vec
@@ -989,6 +1012,9 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     let Some((_g, mut r)) = gpu(W, H) else { return };
     let plain = render(&mut r, &loaded(&doc));
     assert!(plain.contains(&255), "the scene draws nothing");
+    // The passes and the draws paint grey, and the emoji paints colour.
+    let coloured = |f: &[u8]| f.chunks_exact(4).any(|p| p[0] != p[2]);
+    assert!(coloured(&plain), "the scene draws no emoji");
     assert!(render(&mut r, &loaded(&named)) == plain, "{names:?}");
 }
 
@@ -1061,7 +1087,7 @@ fn texts_survive_a_filter_asset_and_a_built_param() {
         None,
     )
     .unwrap();
-    sc.texts[0].data = Some(Ok(Arc::new(font(SANS))));
+    sc.texts[0].data = Some(alone(&font(SANS)));
     let texts = sc.texts.clone();
     apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
     assert!(sc.assets.iter().any(|a| a.name == "frc256_bluenoise"));
@@ -1088,7 +1114,7 @@ fn with_assets_env<T>(assets: &str, f: impl FnOnce() -> T) -> T {
 
 fn font_data(sc: &Scene, name: &str) -> Vec<u8> {
     let t = sc.texts.iter().find(|t| t.name == name).unwrap();
-    t.data.clone().unwrap().unwrap().to_vec()
+    t.data.clone().unwrap()[0].clone().unwrap().to_vec()
 }
 
 /// A scene whose text `label` draws in the font asset `face`, the file
@@ -1149,14 +1175,17 @@ fn texts_in_one_font_share_its_bytes() {
     .unwrap();
     sc.load_assets(FONTS).unwrap();
     let (a, b) = (sc.texts[0].data.as_ref(), sc.texts[1].data.as_ref());
-    let (a, b) = (a.unwrap().as_ref().unwrap(), b.unwrap().as_ref().unwrap());
+    let (a, b) = (
+        a.unwrap()[0].as_ref().unwrap(),
+        b.unwrap()[0].as_ref().unwrap(),
+    );
     assert!(Arc::ptr_eq(a, b));
 }
 
 /// Why the font of `sc`'s text `label` failed to load.
 fn font_failure(sc: &Scene) -> String {
     let t = sc.texts.iter().find(|t| t.name == "label").unwrap();
-    t.data.clone().unwrap().err().unwrap()
+    t.data.clone().unwrap()[0].clone().err().unwrap()
 }
 
 #[test]
@@ -1682,7 +1711,7 @@ fn assert_hazard(frame: &[u8], w: usize, fit: Fit, rects: &[[f64; 4]], what: &st
 fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
     let words = "Ag j\nI";
     let mut t = Text::from_dict("label", &json!({"font": "face"})).unwrap();
-    t.data = Some(Err("gone".to_string()));
+    t.data = Some(vec![Err("gone".to_string())]);
     let laid = t.build(words).unwrap();
     let rects = box_rects(&laid);
     assert_eq!(rects.len(), 4);
@@ -1715,7 +1744,7 @@ fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
 #[test]
 fn an_unreadable_font_draws_a_box_a_character() {
     let words = "Ag";
-    let laid = text::build(b"not a font", words, Align::Left);
+    let laid = text::build(&alone(b"not a font"), words, Align::Left);
     let rects = box_rects(&laid);
     let (bw, bh) = block(laid.built.as_ref().unwrap());
     let fit = Fit::of(bw, bh, W, H);
@@ -1737,51 +1766,43 @@ fn an_unreadable_font_draws_a_box_a_character() {
 }
 
 #[test]
-fn a_bitmap_font_draws_boxes_where_ink_should_be_and_nothing_else() {
+fn a_colour_font_alone_draws_its_emoji_in_draws_and_nothing_through_cover() {
     // A space, a zero-width joiner the font maps, and a variation selector
     // it lacks need no ink.
     let words = "\u{1f600} \u{200d}\u{1f642}\u{fe0f}";
-    let laid = text::build(&font(EMOJI), words, Align::Left);
-    assert_eq!(
-        laid.faults,
-        [text::Fault::NoOutline(vec!['\u{1f600}', '\u{1f642}'])]
-    );
+    let fonts = alone(&font(EMOJI));
+    let laid = text::build(&fonts, words, Align::Left);
+    assert_eq!(laid.faults, []);
     let built = laid.built.as_ref().unwrap();
-    assert_eq!((built.quads.count, built.boxes.count), (0, 2));
-    // Each box stands centred in its character's advance, three advances
-    // across the block.
+    assert_eq!((built.quads.count, built.boxes.count), (0, 0));
+    assert!(built.glyphs.is_empty());
+    let chars: Vec<char> = built.colour.iter().map(|p| p.ch).collect();
+    assert_eq!(chars, ['\u{1f600}', '\u{1f642}']);
+    // The space and the two emoji take an advance each.
     let data = font(EMOJI);
     let face = Face::parse(&data, 0).unwrap();
     let advance =
         f64::from(face.glyph_hor_advance(GlyphId(3)).unwrap()) / f64::from(face.units_per_em());
-    let (bw, bh) = block(built);
+    let (bw, _) = block(built);
     assert!((bw - 3.0 * advance).abs() < 1e-9, "{bw}");
-    let rects = box_rects(&laid);
-    for (i, (r, slot)) in rects.iter().zip([0.0, 2.0]).enumerate() {
-        let mid = (slot + 0.5) * advance;
-        assert!(((r[0] + r[2]) / 2.0 - mid).abs() < 1e-4, "box {i}: {r:?}");
-        assert!(
-            (r[2] - r[0] - text::ERROR_BOX[0]).abs() < 1e-4,
-            "box {i}: {r:?}"
-        );
-    }
-    let fit = Fit::of(bw, bh, W, H);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
-    let cover = render(
-        &mut r,
-        &loaded(&label_scene(EMOJI, words, Align::Left, fit)),
-    );
-    assert_striped(&cover, W, fit, &rects, "emoji");
-    assert_eq!(
-        r.text_errors(),
-        ["text 'label': font 'face' has no outline for '\u{1f600}', '\u{1f642}'"]
-    );
-    for fill in FILLS {
-        let draw = render(
+    let (w, h) = (160, 150);
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    for (k, ch) in ['\u{1f600}', '\u{1f642}'].into_iter().enumerate() {
+        let b = bitmap(EMOJI, ch);
+        let (fit, at) = bitmap_fit(built, k, &b, 1.0, [8.0, 6.0]);
+        let cover = render(
             &mut r,
-            &loaded(&filled(hazard_scene(EMOJI, words, fit), fill)),
+            &loaded(&label_scene(EMOJI, words, Align::Left, fit)),
         );
-        assert_hazard(&draw, W, fit, &rects, &format!("emoji {fill} draw"));
+        assert!(blank(&cover, 0), "_cover drew a colour glyph");
+        assert_eq!(r.text_errors(), [] as [String; 0]);
+        for fill in FILLS {
+            let mut doc = filled(hazard_scene(EMOJI, words, fit), fill);
+            doc["passes"][0]["draws"][0]["place"] = json!(exact_place(fit));
+            let draw = render(&mut r, &loaded(&doc));
+            assert_bitmap(&draw, w, &b, at, 1, [0, 0, 128], &format!("{fill} {ch}"));
+            assert_eq!(r.text_errors(), [] as [String; 0]);
+        }
     }
 }
 
@@ -1851,18 +1872,15 @@ fn a_draw_keeps_its_last_words_and_their_boxes_past_words_that_fit_no_texture() 
     };
     let Some((_g, mut r)) = gpu(W, H) else { return };
     for fill in FILLS {
-        let doc = filled(hazard_scene(EMOJI, "\u{1f600}", fit), fill);
+        let doc = filled(hazard_scene("Missing.ttf", "x", fit), fill);
         let before = render(&mut r, &loaded(&doc));
-        assert!(r.set_text("label", &"\u{1f600}".repeat(400_000)).unwrap());
+        assert!(r.set_text("label", &"x".repeat(400_000)).unwrap());
         r.set_time(Some(0.0));
         assert!(r.render(None).unwrap() == before.as_slice(), "{fill}");
         // The box stays, and so does the problem behind it.
         let errors = r.text_errors();
         assert_eq!(errors.len(), 2, "{fill}: {errors:?}");
-        assert!(
-            errors[0].contains("has no outline for '\u{1f600}'"),
-            "{fill}: {errors:?}"
-        );
+        assert!(errors[0].contains("Missing.ttf"), "{fill}: {errors:?}");
         assert!(errors[1].contains("VC4"), "{fill}: {errors:?}");
     }
 }
@@ -2851,7 +2869,7 @@ fn a_glyph_the_atlas_cannot_hold_draws_an_error_box_and_says_why() {
     // A range of 2048 texels pads every cell past the atlas. The advances of m
     // and w are wider than a box.
     let words = "mw";
-    let laid = text::build(&font(SANS), words, Align::Left);
+    let laid = text::build(&alone(&font(SANS)), words, Align::Left);
     let built = laid.built.as_ref().unwrap();
     let (bw, bh) = block(built);
     let fit = Fit::of(bw, bh, W, H);
@@ -2956,4 +2974,473 @@ fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
     assert_eq!(without.join("\n"), fixture("draw-outline.frag"));
     assert_eq!(bvs, fixture("draw-box.vert"));
     assert_eq!(bfs, fixture("draw-box.frag"));
+}
+
+// Colour glyphs
+
+/// The fonts of a text, in order, from the fixtures.
+fn listed(files: &[&str]) -> Vec<text::Font> {
+    files.iter().map(|f| Ok(Arc::new(font(f)))).collect()
+}
+
+/// A colour bitmap of a fixture font, at its largest strike.
+struct Bitmap {
+    /// The bottom left corner in pixels from the glyph's origin, y up.
+    x: f64,
+    y: f64,
+    w: usize,
+    h: usize,
+    /// Pixels per em.
+    ppem: f64,
+    /// RGBA premultiplied by alpha, rows from the top.
+    px: Vec<[u8; 4]>,
+}
+
+fn bitmap(file: &str, ch: char) -> Bitmap {
+    let data = font(file);
+    let face = Face::parse(&data, 0).unwrap();
+    let img = face
+        .glyph_raster_image(face.glyph_index(ch).unwrap(), u16::MAX)
+        .unwrap();
+    let mut d = png::Decoder::new(img.data);
+    d.set_transformations(png::Transformations::EXPAND);
+    let mut reader = d.read_info().unwrap();
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).unwrap();
+    let n = match info.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        c => panic!("{c:?}"),
+    };
+    let px = buf[..info.buffer_size()]
+        .chunks_exact(n)
+        .map(|p| {
+            let a = if n == 4 { p[3] } else { 255 };
+            let m = |c: u8| ((u32::from(c) * u32::from(a) + 127) / 255) as u8;
+            [m(p[0]), m(p[1]), m(p[2]), a]
+        })
+        .collect();
+    Bitmap {
+        x: f64::from(img.x),
+        y: f64::from(img.y),
+        w: info.width as usize,
+        h: info.height as usize,
+        ppem: f64::from(img.pixels_per_em),
+        px,
+    }
+}
+
+/// The fit that draws colour glyph `k` of `built` at 1 / `shrink` of its
+/// bitmap's pixels per em, the top left of the bitmap on the pixel corner
+/// `corner`, and that pixel.
+fn bitmap_fit(
+    built: &text::Built,
+    k: usize,
+    b: &Bitmap,
+    shrink: f64,
+    corner: [f64; 2],
+) -> (Fit, [usize; 2]) {
+    let o = built.colour[k].origin;
+    let em = [o[0] + b.x / b.ppem, o[1] - (b.y + b.h as f64) / b.ppem];
+    let ppem = b.ppem / shrink;
+    let fit = Fit {
+        x: corner[0] - em[0] * ppem,
+        y: corner[1] - em[1] * ppem,
+        ppem,
+    };
+    (fit, corner.map(|v| v as usize))
+}
+
+/// The draw's place for `fit`, at full precision.
+fn exact_place(fit: Fit) -> String {
+    format!(
+        "vec2 glyph_place(vec2 em) {{ return vec2({:?}, {:?}) + em * {:?}; }}",
+        fit.x, fit.y, fit.ppem
+    )
+}
+
+/// The RGBA `frame`, w pixels wide, shows bitmap `b` with its top left at
+/// pixel `at`, shrunk by `shrink` as each `shrink` x `shrink` block of its
+/// pixels averaged, over the opaque colour `under`.
+fn assert_bitmap(
+    frame: &[u8],
+    w: usize,
+    b: &Bitmap,
+    at: [usize; 2],
+    shrink: usize,
+    under: [u8; 3],
+    what: &str,
+) {
+    let tol = if shrink == 1 { 2 } else { 4 };
+    let (mut worst, mut off) = (0, Vec::new());
+    for j in 0..b.h / shrink {
+        for i in 0..b.w / shrink {
+            let mut sum = [0u32; 4];
+            for dy in 0..shrink {
+                for dx in 0..shrink {
+                    let p = b.px[(j * shrink + dy) * b.w + i * shrink + dx];
+                    for c in 0..4 {
+                        sum[c] += u32::from(p[c]);
+                    }
+                }
+            }
+            let n = (shrink * shrink) as f64;
+            let a = f64::from(sum[3]) / n;
+            let got = &frame[((at[1] + j) * w + at[0] + i) * 4..][..3];
+            for c in 0..3 {
+                let want = f64::from(sum[c]) / n + f64::from(under[c]) * (1.0 - a / 255.0);
+                let d = (f64::from(got[c]) - want).abs();
+                worst = worst.max(d.round() as u32);
+                if d > f64::from(tol) {
+                    off.push((i, j, c, got[c], want.round()));
+                }
+            }
+        }
+    }
+    assert!(
+        off.is_empty(),
+        "{what}: {} channels off, worst {worst}, (x, y, c, got, want) {:?}",
+        off.len(),
+        &off[..off.len().min(8)]
+    );
+}
+
+/// A scene of text `label` in the fonts `files`, assets `f0`, `f1` and on,
+/// drawn white over a black pass by a draw of `fill` placed by `place`.
+fn colour_scene(files: &[&str], words: &str, fill: &str, place: &str) -> Value {
+    let assets: Map<String, Value> = files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (format!("f{i}"), json!({"file": f})))
+        .collect();
+    let fonts: Vec<String> = (0..files.len()).map(|i| format!("f{i}")).collect();
+    json!({
+        "version": 1,
+        "params": {"label": {"type": "string", "value": words}},
+        "assets": assets,
+        "texts": {"label": {"font": fonts, "fill": fill}},
+        "passes": [{"name": "main", "code": BLACK,
+            "draws": [{"text": "label", "code": WHITE, "place": place}]}],
+    })
+}
+
+#[test]
+fn a_text_takes_each_character_from_the_first_font_that_has_it() {
+    let em = |file: &str, ch: char| {
+        let data = font(file);
+        let face = Face::parse(&data, 0).unwrap();
+        let g = face.glyph_index(ch).unwrap_or(GlyphId(0));
+        f64::from(face.glyph_hor_advance(g).unwrap()) / f64::from(face.units_per_em())
+    };
+    let line = |file: &str| {
+        let data = font(file);
+        let f = Face::parse(&data, 0).unwrap();
+        f64::from(f.ascender() - f.descender() + f.line_gap()) / f64::from(f.units_per_em())
+    };
+    // Letters from the text font, emoji from the emoji font, and a character
+    // that neither has from glyph 0 of the first, the missing-glyph box.
+    let words = "A\u{1f600}b\u{3042}";
+    let laid = text::build(&listed(&[SANS, EMOJI]), words, Align::Left);
+    assert_eq!(laid.faults, []);
+    let built = laid.built.as_ref().unwrap();
+    let glyphs: Vec<(char, usize)> = built.glyphs.iter().map(|p| (p.ch, p.font)).collect();
+    assert_eq!(glyphs, [('A', 0), ('b', 0), ('\u{3042}', 0)]);
+    assert_eq!(built.glyphs[2].gid, 0);
+    let colour: Vec<(char, usize)> = built.colour.iter().map(|p| (p.ch, p.font)).collect();
+    assert_eq!(colour, [('\u{1f600}', 1)]);
+    // Each glyph advances by its own font's advance, and the line height
+    // and the baseline are the first font's.
+    let spans: Vec<f64> = built
+        .glyphs
+        .iter()
+        .chain(&built.colour)
+        .map(|p| p.span[1] - p.span[0])
+        .collect();
+    let want = [
+        em(SANS, 'A'),
+        em(SANS, 'b'),
+        em(SANS, '\u{3042}'),
+        em(EMOJI, '\u{1f600}'),
+    ];
+    for (got, want) in spans.iter().zip(want) {
+        assert!((got - want).abs() < 1e-12, "{spans:?}");
+    }
+    assert_eq!(built.colour[0].span[0], built.glyphs[0].span[1]);
+    assert_eq!(block(built).1, line(SANS));
+    // The other way round, the letters fall through to the text font, and
+    // the emoji font's glyph 0 has no ink.
+    let laid = text::build(&listed(&[EMOJI, SANS]), words, Align::Left);
+    assert_eq!(laid.faults, [text::Fault::NoOutline(0, vec!['\u{3042}'])]);
+    let built = laid.built.as_ref().unwrap();
+    let glyphs: Vec<(char, usize)> = built.glyphs.iter().map(|p| (p.ch, p.font)).collect();
+    assert_eq!(glyphs, [('A', 1), ('b', 1)]);
+    assert_eq!(built.colour[0].font, 0);
+    assert_eq!(built.boxes.count, 1);
+    assert_eq!(block(built).1, line(EMOJI));
+}
+
+#[test]
+fn glyphs_of_two_fonts_do_not_kern() {
+    // A pair that the text font kerns, its second character taken from a
+    // font ahead of it.
+    let data = font(SANS);
+    let face = Face::parse(&data, 0).unwrap();
+    let o = face.glyph_index('O').unwrap();
+    let kern = |l: GlyphId| {
+        let t = face.tables().kern.unwrap();
+        t.subtables
+            .into_iter()
+            .filter_map(|s| s.glyphs_kerning(l, o))
+            .sum::<i16>()
+    };
+    let l = ('!'..='~')
+        .find(|c| kern(face.glyph_index(*c).unwrap()) != 0)
+        .unwrap();
+    let words = format!("{l}O");
+    let alone = text::build(&listed(&[SANS]), &words, Align::Left);
+    let g = &alone.built.as_ref().unwrap().glyphs;
+    assert!(g[1].span[0] != g[0].span[1], "{l}O kerns in {SANS}");
+    let laid = text::build(&listed(&[CFF, SANS]), &words, Align::Left);
+    let g = &laid.built.as_ref().unwrap().glyphs;
+    assert_eq!((g[0].font, g[1].font), (1, 0));
+    assert_eq!(g[1].span[0], g[0].span[1]);
+}
+
+#[test]
+fn default_ignorables_take_no_room_between_colour_glyphs() {
+    // Neither font maps U+FE0F, and the emoji font maps U+200D with no
+    // advance. A sequence draws its parts one by one.
+    let laid = text::build(
+        &listed(&[SANS, EMOJI]),
+        "\u{1f600}\u{fe0f}\u{200d}\u{1f642}\u{fe0f}",
+        Align::Left,
+    );
+    assert_eq!(laid.faults, []);
+    let built = laid.built.as_ref().unwrap();
+    let c = &built.colour;
+    assert_eq!(c.len(), 2);
+    assert_eq!(c[1].span[0], c[0].span[1]);
+    assert_eq!(c[1].index, 3);
+    assert!((block(built).0 - c[1].span[1]).abs() < 1e-12);
+}
+
+#[test]
+fn a_text_round_trips_its_fonts_and_names_a_bad_list() {
+    let doc = texts_scene(json!({
+        "label": {"font": ["sans", "cff"]},
+        "title": {"font": ["cff"]},
+    }));
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    assert_eq!(sc.texts[0].fonts, ["sans", "cff"]);
+    // A list of one saves as the name.
+    assert_eq!(
+        sc.to_dict()["texts"],
+        json!({"label": {"font": ["sans", "cff"]}, "title": {"font": "cff"}})
+    );
+    for (font, want) in [
+        (
+            json!([]),
+            "text 'label' 'font' needs the name of a font asset or a list of them, got []",
+        ),
+        (
+            json!(["sans", 3]),
+            "text 'label' 'font' needs the name of a font asset or a list of them, got ['sans', 3]",
+        ),
+        (
+            json!(["sans", "nope"]),
+            "text 'label' font 'nope' is no asset of the scene",
+        ),
+    ] {
+        let e = scene_err(&texts_scene(json!({"label": {"font": font}})));
+        assert!(e.ends_with(want), "{e}");
+    }
+}
+
+#[test]
+fn a_draw_paints_its_colour_glyphs_in_their_own_colours() {
+    let words = "\u{1f600}I";
+    let (w, h) = (220, 150);
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    // The sbix font carries a strike of flat green beside the bitmaps, and
+    // the largest strike draws.
+    for file in [EMOJI, EMOJI_SBIX] {
+        let laid = text::build(&listed(&[SANS, file]), words, Align::Left);
+        let built = laid.built.as_ref().unwrap();
+        let b = bitmap(file, '\u{1f600}');
+        assert_eq!(b.ppem, 109.0);
+        let (fit, at) = bitmap_fit(built, 0, &b, 1.0, [8.0, 6.0]);
+        for fill in FILLS {
+            let what = format!("{file} {fill}");
+            let doc = colour_scene(&[SANS, file], words, fill, &exact_place(fit));
+            let frame = render(&mut r, &loaded(&doc));
+            assert_bitmap(&frame, w, &b, at, 1, [0, 0, 0], &what);
+            assert_eq!(r.text_errors(), [] as [String; 0], "{what}");
+            // The draw's own code paints the I white.
+            let i = &built.glyphs[0];
+            let x = fit.x + (i.span[0] + i.span[1]) / 2.0 * fit.ppem;
+            let y = fit.y + (i.origin[1] - 0.3) * fit.ppem;
+            let px = &frame[((y as usize) * w + x as usize) * 4..][..3];
+            assert_eq!(px, [255, 255, 255], "{what}");
+        }
+    }
+}
+
+#[test]
+fn a_colour_glyph_shrinks_through_its_mipmaps() {
+    // At a quarter of its strike, each pixel of the bitmap's box shows the
+    // average of a 4 x 4 block of the bitmap: mip level 2.
+    let words = "\u{1f600}";
+    let laid = text::build(&listed(&[SANS, EMOJI]), words, Align::Left);
+    let b = bitmap(EMOJI, '\u{1f600}');
+    let (fit, at) = bitmap_fit(laid.built.as_ref().unwrap(), 0, &b, 4.0, [5.0, 3.0]);
+    let Some((_g, mut r)) = gpu(48, 40) else {
+        return;
+    };
+    let doc = colour_scene(&[SANS, EMOJI], words, "mtsdf", &exact_place(fit));
+    let frame = render(&mut r, &loaded(&doc));
+    assert_bitmap(&frame, 48, &b, at, 4, [0, 0, 0], "a quarter");
+}
+
+#[test]
+fn a_colour_glyph_moves_with_its_letter() {
+    let words = "I\u{1f600}";
+    let fit = Fit {
+        x: 4.0,
+        y: 2.0,
+        ppem: 40.0,
+    };
+    let (w, h) = (128, 56);
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let still = render(
+        &mut r,
+        &loaded(&colour_scene(
+            &[SANS, EMOJI],
+            words,
+            "mtsdf",
+            &fit_place(fit),
+        )),
+    );
+    // glyph_place moves the emoji alone, 32 pixels to the right.
+    let moving = format!(
+        "vec2 glyph_place(vec2 em) {{ return vec2({:?}, {:?}) + em * {:?} \
+         + vec2(glyph_index > 0.5 ? 32.0 : 0.0, 0.0); }}",
+        fit.x, fit.y, fit.ppem
+    );
+    let moved = render(
+        &mut r,
+        &loaded(&colour_scene(&[SANS, EMOJI], words, "mtsdf", &moving)),
+    );
+    // The emoji is the only colour in either frame.
+    let coloured = |f: &[u8], x: usize, y: usize| {
+        let p = &f[(y * w + x) * 4..][..3];
+        p[0] != p[2]
+    };
+    let (mut n, mut off) = (0, 0);
+    for y in 0..h {
+        for x in 0..w - 32 {
+            if coloured(&still, x, y) {
+                n += 1;
+                let (a, b) = (
+                    &still[(y * w + x) * 4..][..3],
+                    &moved[(y * w + x + 32) * 4..][..3],
+                );
+                off += usize::from(a != b);
+            }
+            assert!(!coloured(&moved, x, y) || x >= 32 && coloured(&still, x - 32, y));
+        }
+    }
+    assert!(n > 500 && off == 0, "{n} coloured pixels, {off} off");
+}
+
+#[test]
+fn cover_reads_a_colour_glyph_as_no_ink_and_says_nothing() {
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 40.0,
+    };
+    let Some((_g, mut r)) = gpu(128, 56) else {
+        return;
+    };
+    let want = render(&mut r, &loaded(&label_scene(SANS, "I", Align::Left, fit)));
+    let mut doc = label_scene(SANS, "I\u{1f600}", Align::Left, fit);
+    doc["assets"]["emoji"] = json!({"file": EMOJI});
+    doc["texts"]["label"]["font"] = json!(["face", "emoji"]);
+    let got = render(&mut r, &loaded(&doc));
+    assert!(got == want, "the emoji changed the coverage");
+    assert_eq!(r.text_errors(), [] as [String; 0]);
+}
+
+#[test]
+fn a_colour_glyph_keeps_the_pass_alpha_with_alpha_keep() {
+    let words = "\u{1f600}";
+    let fit = Fit {
+        x: 2.0,
+        y: 2.0,
+        ppem: 40.0,
+    };
+    let Some((_g, mut r)) = gpu(56, 56) else {
+        return;
+    };
+    r.set_alpha(true);
+    let mut frames = Vec::new();
+    for alpha in ["blend", "keep"] {
+        let mut doc = colour_scene(&[SANS, EMOJI], words, "mtsdf", &fit_place(fit));
+        doc["passes"][0]["code"] =
+            json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
+        doc["passes"][0]["draws"][0]["alpha"] = json!(alpha);
+        frames.push(render(&mut r, &loaded(&doc)));
+    }
+    let (blend, keep) = (&frames[0], &frames[1]);
+    for c in 0..3 {
+        assert_eq!(plane(blend, c), plane(keep, c), "channel {c}");
+    }
+    assert!(plane(keep, 0).iter().any(|v| *v > 200), "no emoji drawn");
+    let half = alphas(keep)[0];
+    assert!(half.abs_diff(128) <= 1, "{half}");
+    assert!(alphas(keep).iter().all(|a| *a == half));
+    assert!(alphas(blend).contains(&255));
+}
+
+#[test]
+fn a_colour_atlas_counts_against_the_engine_cap() {
+    // An outline draw of a text with a colour font: its curves and its
+    // colour atlas, beside n image assets.
+    let dir = tmpdir("colour-cap");
+    for f in [SANS, EMOJI] {
+        fs::write(format!("{dir}/{f}"), font(f)).unwrap();
+    }
+    let mut png = Vec::new();
+    let mut enc = png::Encoder::new(&mut png, 1, 1);
+    enc.set_color(png::ColorType::Grayscale);
+    enc.write_header().unwrap().write_image_data(&[0]).unwrap();
+    let doc = |n: usize, files: &[&str]| {
+        let mut doc = colour_scene(
+            files,
+            "I",
+            "outline",
+            "vec2 glyph_place(vec2 em) { return em; }",
+        );
+        for i in 0..n {
+            fs::write(format!("{dir}/a{i}.png"), &png).unwrap();
+            doc["assets"][format!("a{i}")] = json!({"file": format!("a{i}.png")});
+        }
+        doc
+    };
+    let _g = lock();
+    let load = |doc: &Value| {
+        let mut sc = Scene::from_dict(doc, None, None)?;
+        with_assets_env("", || sc.load_assets(&dir))
+    };
+    assert!(load(&doc(15, &[SANS])).is_ok());
+    assert!(load(&doc(14, &[SANS, EMOJI])).is_ok());
+    // The colour atlas counts once the fonts load.
+    let over = doc(15, &[SANS, EMOJI]);
+    assert!(Scene::from_dict(&over, None, None).is_ok());
+    let e = load(&over).unwrap_err().to_string();
+    assert_eq!(
+        e,
+        "17 image assets, texts and text atlases, over the cap of 16"
+    );
+    fs::remove_dir_all(&dir).unwrap();
 }

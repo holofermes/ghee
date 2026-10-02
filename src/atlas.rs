@@ -1299,30 +1299,40 @@ mod tests {
         let big = encode(&KEY, &big);
         assert!(big.len() > 500_000);
         save(&path, &small).unwrap();
-        let done = AtomicUsize::new(0);
-        let reads = thread::scope(|s| {
+        // The writers save until the reader has read READS times, so every
+        // read overlaps writes however the threads are scheduled.
+        const READS: usize = 200;
+        let (saved, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
+        let bad = thread::scope(|s| {
             for k in 0..4 {
-                let (path, small, big, done) = (&path, &small, &big, &done);
+                let (path, small, big, saved, stop) = (&path, &small, &big, &saved, &stop);
                 s.spawn(move || {
-                    for i in 0..25 {
-                        save(path, if (i + k) % 2 == 0 { small } else { big }).unwrap();
+                    let mut i = k;
+                    while !stop.load(Ordering::Relaxed) {
+                        save(path, if i % 2 == 0 { small } else { big }).unwrap();
+                        saved.fetch_add(1, Ordering::Relaxed);
+                        i += 1;
                     }
-                    done.fetch_add(1, Ordering::Relaxed);
                 });
             }
-            let mut reads = 0;
-            while done.load(Ordering::Relaxed) < 4 {
-                let b = fs::read(&path).unwrap();
-                assert!(
-                    decode(&KEY, &b).is_some(),
-                    "read {reads}: {} bytes",
-                    b.len()
-                );
-                reads += 1;
+            while saved.load(Ordering::Relaxed) < 4 {
+                thread::yield_now();
             }
-            reads
+            let mut bad = None;
+            for read in 0..READS {
+                match fs::read(&path) {
+                    Ok(b) if decode(&KEY, &b).is_some() => {}
+                    Ok(b) => bad = Some(format!("read {read}: {} bytes", b.len())),
+                    Err(e) => bad = Some(format!("read {read}: {e}")),
+                }
+                if bad.is_some() {
+                    break;
+                }
+            }
+            stop.store(true, Ordering::Relaxed);
+            bad
         });
-        assert!(reads > 10, "{reads} reads");
+        assert_eq!(bad, None);
         let left: Vec<_> = fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name())

@@ -48,6 +48,39 @@ impl ErrorPass {
     }
 }
 
+/// A draw's GLSL: `code` is its fragment shader, `place` its vertex shader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawPart {
+    Code,
+    Place,
+}
+
+impl DrawPart {
+    /// The draw's key that holds this GLSL.
+    pub fn key(self) -> &'static str {
+        match self {
+            DrawPart::Code => "code",
+            DrawPart::Place => "place",
+        }
+    }
+}
+
+/// The draw holding a setup() compile error, in the pass of error_pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ErrorDraw {
+    /// The draw's index in its pass's draws.
+    pub index: usize,
+    /// The GLSL holding the error. error_line counts from its first line.
+    pub part: DrawPart,
+}
+
+impl ErrorDraw {
+    /// The wire form, `{"index": 0, "part": "code"}`.
+    pub fn to_json(self) -> Value {
+        serde_json::json!({"index": self.index, "part": self.part.key()})
+    }
+}
+
 /// What a provider returns for one declared array.
 ///
 /// DataU8 is the same array from bytes, where the value is byte / 255. A mask
@@ -381,10 +414,26 @@ fn user_line(err: &str, glsl: &str, code: &str, common: Option<&str>) -> (Option
     (Some((line - at).max(1)), false)
 }
 
+/// A draw's compile error, and where it falls: `line` counts in the draw's
+/// `part`, or in the scene's common block when `common` is set. An error on
+/// another line carries none.
+struct DrawFault {
+    message: String,
+    part: DrawPart,
+    line: Option<i64>,
+    common: bool,
+}
+
 /// The compile error of the draw named `draw`, with the line where it falls in
-/// the draw's own GLSL or in the common block. An error on another line
-/// carries none.
-fn draw_error(draw: &str, d: &Draw, err: &str, vs: &str, fs: &str, common: Option<&str>) -> String {
+/// the draw's own GLSL or in the common block.
+fn draw_error(
+    draw: &str,
+    d: &Draw,
+    err: &str,
+    vs: &str,
+    fs: &str,
+    common: Option<&str>,
+) -> DrawFault {
     // A log may open with a warning, so the line comes from the first error.
     let first = |log: &'_ str| {
         log.lines()
@@ -397,7 +446,7 @@ fn draw_error(draw: &str, d: &Draw, err: &str, vs: &str, fs: &str, common: Optio
             first(e),
             vs,
             d.place.as_str(),
-            "place",
+            DrawPart::Place,
             "glyph_place(",
             "vec2 glyph_place(vec2 em)",
         ),
@@ -405,25 +454,35 @@ fn draw_error(draw: &str, d: &Draw, err: &str, vs: &str, fs: &str, common: Optio
             first(err),
             fs,
             d.code.as_str(),
-            "code",
+            DrawPart::Code,
             "glyph_main();",
             "a void main()",
         ),
     };
+    let fault = |message: String, line: Option<i64>, in_common: bool| DrawFault {
+        message,
+        part,
+        line,
+        common: in_common,
+    };
     let Some(line) = error_line_number(&log) else {
-        return format!("{draw}: {err}");
+        return fault(format!("{draw}: {err}"), None, false);
     };
     // The draw's own GLSL is the last match of it in the assembled source.
     let at = glsl
         .rfind(own)
         .map_or(0, |p| glsl[..p].matches('\n').count() as i64);
     let lines = own.lines().count() as i64;
+    let key = part.key();
     if line > at && line <= at + lines {
-        return format!("{draw}, line {} of its {part}: {err}", line - at);
+        let n = line - at;
+        let message = format!("{draw}, line {n} of its {key}: {err}");
+        return fault(message, Some(n), false);
     }
-    if part == "code" {
+    if part == DrawPart::Code {
         if let (Some(n), true) = user_line(&log, glsl, own, common) {
-            return format!("{draw}, line {n} of the common block: {err}");
+            let message = format!("{draw}, line {n} of the common block: {err}");
+            return fault(message, Some(n), true);
         }
     }
     // After the draw's own GLSL, ghee's main calls the function it defines.
@@ -431,9 +490,9 @@ fn draw_error(draw: &str, d: &Draw, err: &str, vs: &str, fs: &str, common: Optio
         .ok()
         .and_then(|i| glsl.lines().nth(i));
     if line > at + lines && src.is_some_and(|l| l.contains(call)) {
-        return format!("{draw}: its {part} needs {needs}");
+        return fault(format!("{draw}: its {key} needs {needs}"), None, false);
     }
-    format!("{draw}: {err}")
+    fault(format!("{draw}: {err}"), None, false)
 }
 
 fn size_repr(size: ArraySize) -> String {
@@ -460,6 +519,8 @@ pub struct Renderer {
     pub error_line: Option<i64>,
     /// The pass holding the error. Common is the scene's common block.
     pub error_pass: Option<ErrorPass>,
+    /// The draw holding the error, in the pass of error_pass.
+    pub error_draw: Option<ErrorDraw>,
     #[allow(dead_code)]
     pub display: bool,
     /// The readbacks keep the output pass's alpha. set_alpha() sets it.
@@ -521,6 +582,7 @@ impl Renderer {
             error: String::new(),
             error_line: None,
             error_pass: None,
+            error_draw: None,
             display,
             alpha: false,
             mp: Vec::new(),
@@ -601,7 +663,9 @@ impl Renderer {
     /// for a scene the engine refuses.
     /// A compile error sets error_line and error_pass to the user-code line.
     /// An error in the scene's common block sets error_pass to Common.
-    /// error_line then counts from the start of that block.
+    /// error_line then counts from the start of that block. An error in a
+    /// draw's own GLSL sets error_draw too, and error_line counts in that
+    /// GLSL.
     pub fn setup(&mut self, scene: &Scene) -> Result<String> {
         self.setup_layers(scene, &[])
     }
@@ -613,6 +677,7 @@ impl Renderer {
         self.error = String::new();
         self.error_line = None;
         self.error_pass = None;
+        self.error_draw = None;
         if scene.passes.is_empty() {
             self.error = "scene has no passes".to_string();
             return Ok(self.error.clone());
@@ -784,8 +849,18 @@ impl Renderer {
                 if li < 0 {
                     let err = or_else(self.last_error(), "compile error");
                     unsafe { ffi::ghee_mp_abort(self.handle) };
-                    self.error = draw_error(&name, d, &err, &vs, &fs, scene.common.as_deref());
-                    self.error_pass = Some(ErrorPass::Index(i));
+                    let f = draw_error(&name, d, &err, &vs, &fs, scene.common.as_deref());
+                    self.error = f.message;
+                    self.error_line = f.line;
+                    if f.common {
+                        self.error_pass = Some(ErrorPass::Common);
+                    } else {
+                        self.error_pass = Some(ErrorPass::Index(i));
+                        self.error_draw = Some(ErrorDraw {
+                            index: k,
+                            part: f.part,
+                        });
+                    }
                     crate::report::progress_done();
                     return Ok(self.error.clone());
                 }

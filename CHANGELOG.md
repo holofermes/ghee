@@ -65,6 +65,13 @@
 - Draw a text into a pass from Python with `ghee.Draw` in
   `Pass(draws=[...])`, and leave out the code of a pass of draws alone.
 - Set a text's `fill` and `atlas` from Python on `ghee.Text`.
+- Edit a pass's draws in the console. Each draw opens in a tab after its
+  pass's tab, with its `place` and its `code` in editors and its text,
+  blend, alpha and pad as controls, and `+` adds a draw to the open pass.
+- Report the draw that holds a compile error in `/stats` as `error_draw`,
+  and count `error_line` in that draw's GLSL.
+- Edit a free-text string param in the console over several lines.
+- Show in the console why the server refused a posted scene.
 
 ## 0.4.0 - 2026-08-06
 

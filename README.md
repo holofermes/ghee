@@ -422,8 +422,8 @@ The python shim lets you also run the python file to render directly:
 
 `ghee serve <scenes_dir>` starts the console on `127.0.0.1:8090`: a
 hardware accelerated live preview of the running scene, the GLSL of each
-pass editable with compile errors inline, param sliders, pass muting and a
-filter picker, and edits hot-reload into the running renderer.
+pass and each draw editable with compile errors inline, param sliders, pass
+muting and a filter picker, and edits hot-reload into the running renderer.
 See [docs/http.md](docs/http.md) for its API.
 
 ![the console editing a live scene](https://raw.githubusercontent.com/holofermes/ghee/main/media/console.png)

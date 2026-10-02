@@ -147,6 +147,7 @@
   .row .strinp, .row .strsel{width:100%; min-width:0; background:var(--well);
                border:1px solid var(--line); color:inherit; border-radius:4px;
                font:inherit; font-size:12px; padding:4px 6px}
+  textarea.strinp{display:block; margin:0; resize:vertical; line-height:1.4}
   /* bool: the switch lives inside the label so the whole row is a tap target */
   .row label.boolrow{align-items:center; gap:12px; cursor:pointer; min-height:22px}
   .boolbox{-webkit-appearance:none; appearance:none; flex:none; margin:0; position:relative;
@@ -262,6 +263,16 @@
   .inputs{display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:12px; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .chip{border:1px solid var(--line); border-radius:7px; padding:3px 8px; color:var(--muted); cursor:help; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .chip.arr{color:var(--ink); border-color:var(--accent)}
+  /* a draw's tab follows its pass's tab, a step in */
+  .tab.dr::before{content:"↳"; color:var(--muted)}
+  .tab.dr .lbl{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .drawctl .chan input{width:52px; background:transparent; border:0; outline:none; padding:0 2px;
+    color:inherit; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .edhead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:0 0 5px; flex:0 0 auto; cursor:help}
+  .editor + .edhead{margin-top:12px}
+  .shadercard .editor.place{flex:0 0 auto; min-height:0}
+  .shadercard .editor.place>textarea{height:150px; resize:vertical}
+  .shadercard>[hidden]{display:none}
   @media (max-width:640px){
     html,body{height:auto}
     body{height:auto; overflow:auto; display:block; padding:12px}
@@ -349,7 +360,11 @@
     <div class="tabs" id="tabs"></div>
     <div class="channels" id="channels"></div>
     <div class="inputs" id="inputs"></div>
-    <div class="editor"><pre id="hl" aria-hidden="true"></pre><textarea id="code" spellcheck="false"></textarea><div class="errmark" id="errmark"></div></div>
+    <div class="channels drawctl" id="drawctl" hidden></div>
+    <div class="edhead" id="placeHead" title="vertex GLSL: vec2 glyph_place(vec2 em) returns the pass pixel where a point of the block lands" hidden>place · vertex</div>
+    <div class="editor place" id="placeEd" hidden><pre aria-hidden="true"></pre><textarea spellcheck="false" aria-label="place"></textarea><div class="errmark"></div></div>
+    <div class="edhead" id="codeHead" title="fragment GLSL: a void main() that writes colour premultiplied by alpha" hidden>code · fragment</div>
+    <div class="editor" id="codeEd"><pre aria-hidden="true"></pre><textarea id="code" spellcheck="false"></textarea><div class="errmark"></div></div>
     <div class="err" id="err"></div>
   </div>
 </div>
@@ -375,9 +390,12 @@ const onCommon = () => curPass === COMMON;
 const hasCommon = () => !!(work && work.common && typeof work.common.code === "string");
 const commonCode = () => (hasCommon() ? work.common.code : "");
 function setCommon(code){ work.common = {code, commonEdited: true}; }
-let lastDisplay = null, lastStats = null, compileTimer = null, errLine = 0;
+// the draw of the open pass in the editors, or null for the pass's own code
+let curDraw = null;
+const onDraw = () => !onCommon() && curDraw != null;
+const openDraw = () => (onDraw() ? work.passes[curPass].draws[curDraw] : null);
+let lastDisplay = null, lastStats = null, compileTimer = null;
 let devModel = "", devGpu = "";
-const codeEl = () => $("#code"), hlEl = () => $("#hl");
 const FRAME = $(".frame"), SCREEN = FRAME.parentElement, IMG = $("#stream"), CV = $("#streamcv");
 
 function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -399,7 +417,27 @@ function highlight(src){
   }
   return out + esc(src.slice(last)) + "\n";
 }
-function syncHL(){ hlEl().innerHTML = highlight(codeEl().value); hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; }
+// A GLSL editor: a transparent textarea over its highlighted copy, and a bar
+// that marks the error line.
+function editor(box){
+  const ta = box.querySelector("textarea"), hl = box.querySelector("pre"), bar = box.querySelector(".errmark");
+  const ed = {
+    box, ta, line: 0,
+    sync(){ hl.innerHTML = highlight(ta.value); ed.scroll(); },
+    scroll(){ hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; ed.mark(ed.line); },
+    mark(line){
+      ed.line = line;
+      if (!line || line < 1){ bar.style.display = "none"; return; }
+      const cs = getComputedStyle(ta), lh = parseFloat(cs.lineHeight), pad = parseFloat(cs.paddingTop);
+      bar.style.height = lh + "px";
+      bar.style.top = (pad + (line - 1) * lh - ta.scrollTop) + "px";
+      bar.style.display = "block";
+    },
+  };
+  ta.addEventListener("scroll", ed.scroll);
+  return ed;
+}
+const CODE = editor($("#codeEd")), PLACE = editor($("#placeEd"));
 
 const statNum = (v, d, unit) => (typeof v === "number" ? v.toFixed(d) + (unit || "") : "-");
 function refreshInfo(){
@@ -554,14 +592,6 @@ function toggleFullscreen(){
   if (pipWin || pipPending) return;   // a pop-out mid-open would move the frame back out
   SCREEN.requestFullscreen().catch(e => console.warn("fullscreen:", e));
 }
-function applyErrorLine(line){
-  const m = $("#errmark"), t = codeEl();
-  if (!line || line < 1){ m.style.display = "none"; return; }
-  const cs = getComputedStyle(t), lh = parseFloat(cs.lineHeight), pad = parseFloat(cs.paddingTop);
-  m.style.height = lh + "px";
-  m.style.top = (pad + (line - 1) * lh - t.scrollTop) + "px";
-  m.style.display = "block";
-}
 async function loadHwinfo(){
   try{
     const h = await jget("/hwinfo");
@@ -581,7 +611,7 @@ function norm(s){
   return JSON.stringify(s, (k,v) => {
     if ((k==="channels"||k==="arrays") && Array.isArray(v) && !v.length) return undefined;
     if (k==="params" && v && !Array.isArray(v) && typeof v==="object" && !Object.keys(v).length) return undefined;
-    if (k==="muted" || k==="codeEdited" || k==="commonEdited") return undefined;   // editor state, not a scene edit
+    if (k==="muted" || k==="codeEdited" || k==="commonEdited" || k==="drawsEdited") return undefined;   // editor state, not a scene edit
     return v;
   });
 }
@@ -740,6 +770,8 @@ function mergeNewParams(pristine, work){
     // current source, so new uniforms arrive with the code that reads them
     if (!wp.codeEdited && typeof p.code === "string" && wp.code !== p.code)
       wp.code = p.code;
+    // and so do its draws
+    if (!wp.drawsEdited){ if (p.draws) wp.draws = clone(p.draws); else delete wp.draws; }
   });
   // same for the common block: one added to the file since this copy was saved
   // shows up, one edited here stays as the user left it
@@ -754,18 +786,19 @@ async function loadScene(name){
   work = saved ? JSON.parse(saved) : clone(pristine);
   if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
-  curPass = 0;
+  curPass = 0; curDraw = null; postErr = "";
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
     $("#tabs").innerHTML = ""; $("#channels").innerHTML = ""; $("#inputs").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">no passes, not shader-editable</div>';
-    codeEl().value = ""; syncHL(); applyErrorLine(0); refreshInfo(); updateStatus();
+    CODE.ta.value = ""; CODE.sync(); showDraw(null); showErrors(); refreshInfo(); updateStatus();
     return;
   }
   if (saved) { await postScene(); }     // re-apply working copy to the render
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 }
 
-function setPass(i){ curPass = i; buildTabs(); buildChannels(); loadCode(); }
+function setPass(i){ curPass = i; curDraw = null; buildTabs(); buildChannels(); loadCode(); }
+function setDraw(i, k){ curPass = i; curDraw = k; buildTabs(); buildChannels(); loadCode(); }
 function uniqueName(base){ const names=new Set(work.passes.map(p=>p.name)); let n=base,k=1; while(names.has(n)){ n=base+k; k++; } return n; }
 
 function buildTabs(){
@@ -786,7 +819,7 @@ function buildTabs(){
   }
   work.passes.forEach((p,i)=>{
     const tab = document.createElement("span");
-    tab.className = "tab" + (i===curPass ? " active" : "") + (p.muted ? " off" : "") + (p.filter ? " filt" : "");
+    tab.className = "tab" + (i===curPass && curDraw==null ? " active" : "") + (p.muted ? " off" : "") + (p.filter ? " filt" : "");
     const lbl = document.createElement("span"); lbl.className = "lbl";
     lbl.textContent = (p.filter ? "ƒ " : "") + p.name;   // f = filter (read-only)
     lbl.title = p.filter ? `filter: ${p.filter} (read-only, tweak params)` : "double-click to rename";
@@ -803,6 +836,7 @@ function buildTabs(){
       tab.appendChild(x);
     }
     t.appendChild(tab);
+    (p.draws || []).forEach((d, k) => t.appendChild(drawTab(p, i, d, k)));
   });
   // one "+" for both: an empty pass, or any known filter
   const wrap = document.createElement("span"); wrap.className="addwrap";
@@ -816,6 +850,8 @@ function buildTabs(){
     menu.appendChild(it);
   };
   item("empty pass", addPass);
+  const host = drawHost();
+  if (host != null) item("draw in " + work.passes[host].name, ()=>addDraw(host));
   if (!hasCommon()) item("common", addCommon);   // one per scene
   const fnames = Object.keys(FILTERS);
   if (fnames.length){
@@ -825,12 +861,102 @@ function buildTabs(){
   wrap.appendChild(add); wrap.appendChild(menu); t.appendChild(wrap);
 }
 
+const hasCode = p => !!(p.code || "").trim();
+function drawTab(p, i, d, k){
+  const tab = el("span", "tab dr" + (i===curPass && k===curDraw ? " active" : "") + (p.muted ? " off" : ""));
+  const lbl = el("span", "lbl", d.text);
+  lbl.title = `pass ${p.name}, draw ${k}: text ${d.text}`;
+  lbl.addEventListener("click", ()=> setDraw(i, k));
+  tab.appendChild(lbl);
+  if (hasCode(p) || p.draws.length > 1){   // a pass with no code keeps one draw
+    const x = el("span", "x", "×"); x.title = "delete draw";
+    x.addEventListener("click", e=>{ e.stopPropagation(); delDraw(i, k); });
+    tab.appendChild(x);
+  }
+  return tab;
+}
+
+// the pass that "+" adds a draw to: the open one, when the scene has a text to
+// draw and the pass is not a filter
+function drawHost(){
+  if (onCommon() || !Object.keys(work.texts || {}).length) return null;
+  return work.passes[curPass].filter ? null : curPass;
+}
+
+function addDraw(i){
+  const p = work.passes[i], t = Object.keys(work.texts)[0];
+  (p.draws = p.draws || []).push({
+    text: t,
+    place: `vec2 glyph_place(vec2 em) {\n  float ppem = 32.0;\n  return 0.5 * (resolution - ${t}_size * ppem) + em * ppem;\n}\n`,
+    code: "void main() {\n  float c = glyph_cover();\n  gl_FragColor = vec4(vec3(c), c);\n}\n",
+  });
+  p.drawsEdited = true;
+  curPass = i; curDraw = p.draws.length - 1; markDirty(); postScene();
+  buildTabs(); buildChannels(); loadCode();
+}
+
+function delDraw(i, k){
+  const p = work.passes[i];
+  p.draws.splice(k, 1);
+  if (!p.draws.length) delete p.draws;
+  p.drawsEdited = true;
+  if (curPass === i && curDraw != null){ if (curDraw === k) curDraw = null; else if (curDraw > k) curDraw--; }
+  markDirty(); postScene();
+  buildTabs(); buildChannels(); loadCode();
+}
+
+// A draw's own settings. A value at its default leaves the key out, as the
+// server writes the scene back.
+const DRAW_PICKS = {blend: ["over", "add", "replace"], alpha: ["blend", "keep"]};
+function buildDrawCtl(){
+  const box = $("#drawctl"), d = openDraw();
+  box.innerHTML = "";
+  if (!d) return;
+  const p = work.passes[curPass];
+  const edit = () => { p.drawsEdited = true; markDirty(); postScene(); };
+  box.appendChild(el("span", null, "draw " + curDraw));
+  const pill = (label, ctl) => {
+    const w = el("span", "chan");
+    w.appendChild(el("span", null, label)); w.appendChild(ctl);
+    box.appendChild(w);
+  };
+  const pick = (opts, value, set) => {
+    const sel = el("select");
+    opts.forEach(o => { const op = el("option", null, o); op.value = o; sel.appendChild(op); });
+    sel.value = value;
+    sel.addEventListener("change", ()=>{ set(sel.value); edit(); });
+    return sel;
+  };
+  const texts = Object.keys(work.texts || {});
+  pill("text", pick(texts.includes(d.text) ? texts : texts.concat([d.text]), d.text, v => { d.text = v; buildTabs(); }));
+  for (const [key, opts] of Object.entries(DRAW_PICKS))
+    pill(key, pick(opts, d[key] || opts[0], v => { if (v === opts[0]) delete d[key]; else d[key] = v; }));
+  const pad = el("input");
+  pad.type = "number"; pad.min = "0"; pad.step = "0.01"; pad.value = d.pad || 0;
+  pad.title = "em past the ink, room for an effect around the outline";
+  const setPad = () => {
+    const v = parseFloat(pad.value);
+    if (!(v >= 0) || v === (d.pad || 0)) return;
+    if (v) d.pad = v; else delete d.pad;
+    edit();
+  };
+  let t = null;
+  pad.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(setPad, 300); });
+  pad.addEventListener("change", ()=>{ clearTimeout(t); setPad(); });
+  pill("pad", pad);
+}
+
+// the place editor and the draw's settings show while a draw is open
+function showDraw(d){
+  for (const n of [$("#drawctl"), $("#placeHead"), PLACE.box, $("#codeHead")]) n.hidden = !d;
+}
+
 async function addFilter(name){
   if (!FILTERS[name]) return;
   // name and place only: the server builds the pass from the filter
   work.passes.push({ name: uniqueName(name), code: "", channels: [], params: {}, filter: name });
   (work.filters = work.filters || []).push(name);  // save strips the pass, keeps this
-  curPass = work.passes.length - 1; markDirty(); await postScene();
+  curPass = work.passes.length - 1; curDraw = null; markDirty(); await postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
@@ -852,13 +978,14 @@ function renamePass(i, lbl){
 
 function addCommon(){
   work.common = {code: ""};
-  curPass = COMMON; markDirty(); postScene();
+  curPass = COMMON; curDraw = null; markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
 function delCommon(){
   delete work.common;
   if (onCommon()) curPass = 0;
+  curDraw = null;
   markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
@@ -866,7 +993,7 @@ function delCommon(){
 function addPass(){
   const name = uniqueName("pass");
   work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
-  curPass = work.passes.length - 1; markDirty(); postScene();
+  curPass = work.passes.length - 1; curDraw = null; markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
@@ -880,6 +1007,7 @@ function delPass(i){
   }
   work.passes.forEach(p => { p.channels = (p.channels||[]).filter(c => c.buffer !== name); });
   if (curPass >= work.passes.length) curPass = work.passes.length - 1;
+  curDraw = null;
   markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
@@ -920,11 +1048,12 @@ function buildInputs(){
   });
 }
 function loadCode(){
-  const ta = codeEl(), p = onCommon() ? null : work.passes[curPass];
-  ta.value = p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
+  const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass], d = openDraw();
+  ta.value = d ? d.code : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
   ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
-  ta.closest(".editor").classList.toggle("readonly", !!(p && p.filter));
-  syncHL(); syncAddRow();
+  CODE.box.classList.toggle("readonly", !!(p && p.filter));
+  if (d){ PLACE.ta.value = d.place; PLACE.ta.scrollTop = 0; PLACE.sync(); }
+  showDraw(d); buildDrawCtl(); CODE.sync(); showErrors(); syncAddRow();
 }
 
 // the common block owns no params, so the add-param row can only target the scene
@@ -983,10 +1112,12 @@ function buildParamRow(box, pm, name, scope){
       sel.addEventListener("change", ()=> set(sel.value));
       row.appendChild(sel);
     } else {
-      const inp = el("input", "strinp");
-      inp.type = "text"; inp.value = pm.value;
+      // free text runs over several lines, the box shows up to 8 of them
+      const inp = el("textarea", "strinp");
+      const fit = () => { inp.rows = Math.min(8, Math.max(2, inp.value.split("\n").length)); };
+      inp.value = pm.value; fit();
       let t = null;
-      inp.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(()=> set(inp.value), 300); });
+      inp.addEventListener("input", ()=>{ fit(); clearTimeout(t); t = setTimeout(()=> set(inp.value), 300); });
       inp.addEventListener("change", ()=>{ clearTimeout(t); set(inp.value); });
       row.appendChild(inp);
     }
@@ -1166,10 +1297,10 @@ const EYE_OFF = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" str
 function compiledScene(){
   let last = -1; work.passes.forEach((p,i)=>{ if(!p.muted) last = i; });
   const passes = work.passes.slice(0, last+1).map((p,pi)=>{
-    const q = clone(p); delete q.muted; delete q.codeEdited;
+    const q = clone(p); delete q.muted; delete q.codeEdited; delete q.drawsEdited;
     if (p.muted){
       delete q.filter;   // a muted filter runs as a plain pass-through
-      delete q.shader; q.arrays = []; q.params = {};
+      delete q.shader; delete q.draws; q.arrays = []; q.params = {};
       if (pi === 0){
         q.code = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
         q.channels = [];
@@ -1195,9 +1326,14 @@ function toggleMute(i){
   work.passes[i].muted = willMute;
   postScene(); buildTabs(); buildParams(); refreshInfo();
 }
+// The server refuses a scene it cannot build, a draw with blank GLSL for one,
+// and the refusal shows until a posted scene builds.
+let postErr = "";
 async function postScene(){
   const r = await fetch("/scene", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(compiledScene())});
-  if (r.ok) adoptFilters(await r.json());
+  if (r.ok){ postErr = ""; adoptFilters(await r.json()); }
+  else postErr = await r.text();
+  showErrors();
 }
 // A filter pass is the server's: take its code and channels as the server
 // built them, and any param it added. Values already here stay.
@@ -1214,20 +1350,29 @@ function adoptFilters(doc){
 }
 
 // shader
-codeEl().addEventListener("input", ()=>{
-  if (onCommon()) setCommon(codeEl().value);
+function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
+// hand-edited code and draws: merge keeps them as they are
+CODE.ta.addEventListener("input", ()=>{
+  const d = openDraw();
+  if (onCommon()) setCommon(CODE.ta.value);
+  else if (d){ d.code = CODE.ta.value; work.passes[curPass].drawsEdited = true; }
   else {
-    work.passes[curPass].code = codeEl().value;
-    work.passes[curPass].codeEdited = true;   // hand-edited: merge keeps it as is
+    work.passes[curPass].code = CODE.ta.value;
+    work.passes[curPass].codeEdited = true;
   }
-  syncHL(); markDirty();
-  clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350);   // live compile
+  CODE.sync(); liveCompile();
 });
-codeEl().addEventListener("scroll", ()=>{ hlEl().scrollTop = codeEl().scrollTop; hlEl().scrollLeft = codeEl().scrollLeft; applyErrorLine(errLine); });
+PLACE.ta.addEventListener("input", ()=>{
+  openDraw().place = PLACE.ta.value; work.passes[curPass].drawsEdited = true;
+  PLACE.sync(); liveCompile();
+});
 
 // top-bar actions
 $("#apply").addEventListener("click", async ()=>{
-  if (onCommon()) setCommon(codeEl().value); else work.passes[curPass].code = codeEl().value;
+  const d = openDraw();
+  if (onCommon()) setCommon(CODE.ta.value);
+  else if (d){ d.code = CODE.ta.value; d.place = PLACE.ta.value; }
+  else work.passes[curPass].code = CODE.ta.value;
   await postScene(); markDirty();
   if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files
     const b = $("#apply");
@@ -1247,7 +1392,7 @@ $("#save").addEventListener("click", async ()=>{
 });
 $("#reset").addEventListener("click", async ()=>{
   localStorage.removeItem(KEY(active));
-  work = clone(pristine); await postScene(); curPass = 0;
+  work = clone(pristine); await postScene(); curPass = 0; curDraw = null;
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 });
 
@@ -1379,6 +1524,17 @@ $("#pAdd").addEventListener("click", ()=>{
   buildParams(); markDirty();
 });
 
+// A refused post shows first, then the running scene's compile error. Its
+// line marks the editor that shows the GLSL holding it.
+function showErrors(){
+  const s = lastStats || {}, e = $("#err"), msg = postErr || s.error || "";
+  e.textContent = msg; e.classList.toggle("show", !!msg);
+  const here = !postErr && s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass);
+  const ed = s.error_draw, inDraw = here && ed && ed.index === curDraw;
+  CODE.mark(here && (ed ? inDraw && ed.part === "code" : curDraw == null) ? s.error_line : 0);
+  PLACE.mark(inDraw && ed.part === "place" ? s.error_line : 0);
+}
+
 async function poll(){
   try{
     const s = await jget("/stats");
@@ -1386,12 +1542,7 @@ async function poll(){
     staleScene = !!s.stale;
     lastStats = s;
     if (s.display) lastDisplay = s.display;
-    refreshInfo(); applyRotation();
-    errLine = (s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass)) ? s.error_line : 0;
-    applyErrorLine(errLine);
-    const e = $("#err");
-    if (s.error){ e.textContent = s.error; e.classList.add("show"); }
-    else { e.classList.remove("show"); }
+    refreshInfo(); applyRotation(); showErrors();
   }catch(_){ pollFails++; }
   showNotices();
   setTimeout(poll, 600);

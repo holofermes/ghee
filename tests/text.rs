@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde_json::{json, Map, Value};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
-use ghee::engine::{probe_dri_devices, ErrorPass, Renderer};
+use ghee::engine::{probe_dri_devices, DrawPart, ErrorDraw, ErrorPass, Renderer};
 use ghee::filters::apply_filters;
 use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
 use ghee::text::{self, Align, Fill, Text};
@@ -1988,9 +1988,10 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
         e.starts_with("pass 'main' draw 0, line 3 of its code: "),
         "{e}"
     );
+    let at = |index, part| Some(ErrorDraw { index, part });
     assert_eq!(r.error_pass, Some(ErrorPass::Index(0)));
-    // The console marks error_line in the pass's own code, which holds no draw.
-    assert_eq!(r.error_line, None);
+    assert_eq!(r.error_draw, at(0, DrawPart::Code));
+    assert_eq!(r.error_line, Some(3));
     let mut bad = good.clone();
     bad["passes"][0]["draws"][0]["place"] =
         json!("vec2 glyph_place(vec2 em) {\n    return nope;\n}");
@@ -1999,6 +2000,8 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
         e.starts_with("pass 'main' draw 0, line 2 of its place: "),
         "{e}"
     );
+    assert_eq!(r.error_draw, at(0, DrawPart::Place));
+    assert_eq!(r.error_line, Some(2));
     // An error on ghee's own lines carries no line, and a missing function
     // is named.
     let mut bad = good.clone();
@@ -2006,6 +2009,8 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
         json!("float shade(){\n    return glyph_cover();\n}\nfloat x = 0.0;");
     let e = r.setup(&loaded(&bad)).unwrap();
     assert_eq!(e, "pass 'main' draw 0: its code needs a void main()");
+    assert_eq!(r.error_draw, at(0, DrawPart::Code));
+    assert_eq!(r.error_line, None);
     let mut bad = good.clone();
     bad["passes"][0]["draws"][0]["place"] = json!("vec2 place(vec2 em) {\n    return em;\n}");
     let e = r.setup(&loaded(&bad)).unwrap();
@@ -2013,6 +2018,19 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
         e,
         "pass 'main' draw 0: its place needs vec2 glyph_place(vec2 em)"
     );
+    assert_eq!(r.error_draw, at(0, DrawPart::Place));
+    // A line of the common block counts in the block, as a pass's would.
+    let mut bad = good.clone();
+    bad["passes"][0] = json!({"name": "main", "draws": bad["passes"][0]["draws"]});
+    bad["common"] = json!({"code": "float twice(float x) {\n    return nope;\n}"});
+    let e = r.setup(&loaded(&bad)).unwrap();
+    assert!(
+        e.starts_with("pass 'main' draw 0, line 2 of the common block: "),
+        "{e}"
+    );
+    assert_eq!(r.error_pass, Some(ErrorPass::Common));
+    assert_eq!(r.error_draw, None);
+    assert_eq!(r.error_line, Some(2));
     // The running scene stays.
     r.set_time(Some(0.0));
     assert!(r.render(None).unwrap() == first.as_slice());

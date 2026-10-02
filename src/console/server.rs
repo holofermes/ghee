@@ -30,7 +30,7 @@ use crate::console::core::{
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
 use crate::console::store::SceneStore;
-use crate::engine::{ErrorPass, Feed, Provider, Renderer};
+use crate::engine::{ErrorDraw, ErrorPass, Feed, Provider, Renderer};
 use crate::feeds::demo_feed;
 use crate::h264::{
     avcc, build_config, split_annexb, wire_frame, ColorSpace, HardwareH264, SoftwareH264, HW_COLOR,
@@ -238,6 +238,7 @@ struct Stat {
     display: Value,
     error_line: Option<i64>,
     error_pass: Option<ErrorPass>,
+    error_draw: Option<ErrorDraw>,
 }
 
 /// A source for one declared array: the host's data for this frame.
@@ -432,6 +433,10 @@ impl Console {
                 "error_pass".to_string(),
                 stat.error_pass.map_or(Value::Null, ErrorPass::to_json),
             );
+            d.insert(
+                "error_draw".to_string(),
+                stat.error_draw.map_or(Value::Null, ErrorDraw::to_json),
+            );
         }
         let stale = lock(&self.sources).as_mut().is_some_and(Snapshot::stale);
         d.insert(
@@ -457,6 +462,7 @@ impl Console {
         stat.error = String::new();
         stat.error_line = None;
         stat.error_pass = None;
+        stat.error_draw = None;
     }
 
     /// Republish the running document from the scene the loop holds. The render
@@ -1326,6 +1332,7 @@ fn set_scene(
             stat.error = err.clone();
             stat.error_line = renderer.borrow().error_line;
             stat.error_pass = renderer.borrow().error_pass;
+            stat.error_draw = renderer.borrow().error_draw;
         }
         if let Some(last) = st.borrow().scene.as_ref() {
             let _ = renderer.borrow_mut().setup(last); // keep the last good scene rendering
@@ -2697,6 +2704,7 @@ mod tests {
             "error",
             "error_line",
             "error_pass",
+            "error_draw",
             "active",
             "display",
             "stale",

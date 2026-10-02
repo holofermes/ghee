@@ -322,8 +322,18 @@ impl Atlas {
         })
     }
 
-    /// The first row above every shelf.
-    fn top(&self) -> u32 {
+    /// Forget the changes since the last update, and say what they were:
+    /// Some(true) when the size changed, Some(false) for new cells alone. For
+    /// a caller that uploads from `texels` itself.
+    pub fn take_change(&mut self) -> Option<bool> {
+        let resized = std::mem::take(&mut self.resized);
+        let rows = std::mem::take(&mut self.dirty);
+        (resized || !rows.is_empty()).then_some(resized)
+    }
+
+    /// The first row above every shelf. Every cell lies below it, and every
+    /// texel from it up is transparent.
+    pub fn top(&self) -> u32 {
         self.shelves.last().map_or(0, |s| s.y + s.height)
     }
 

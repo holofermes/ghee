@@ -323,10 +323,10 @@ so a shader that needs exact centres, like the one above, samples at
 `floor(v_texCoord * resolution) + 0.5`.
 
 A scene holds at most 16 image assets, texts and text atlases together. A
-text drawn with the MTSDF fill takes an atlas, and a drawn text with a colour
-font takes one more for its colour glyphs. The words must fit a 1024x2048
-data texture, at most 4 glyphs may overlap at one spot, and a glyph holds at
-most 64 curves in one band.
+text drawn with the MTSDF fill takes an atlas, and a text with a colour font
+takes one more for its colour glyphs when a draw paints them. The words must
+fit a 1024x2048 data texture, at most 4 glyphs may overlap at one spot, and a
+glyph holds at most 64 curves in one band.
 
 A text problem leaves the scene running: ghee logs it once, and the console
 shows it. A font that fails to load drops out of its text's fonts, and a text
@@ -368,6 +368,9 @@ This draw puts `title` in amber at 48 pixels per em, centred in the pass:
 - `alpha` is `blend` by default, and `keep` leaves the pass's alpha as it was.
 - `pad` grows each quad that many em past the ink, room for an effect around
   the outline, 0 by default.
+- `emoji` sets whether the draw paints the text's colour glyphs. By default
+  the last draw of the text in its pass paints them, and the draws under it,
+  a glow or a shadow, paint none.
 
 `code` reads:
 
@@ -411,14 +414,14 @@ default. `glyph_soft` reads no distance past it, and `pad` stops there.
 `outline` computes the coverage from the curves, as `title_cover` does, and
 draws with no `glyph_dist` or `glyph_soft`.
 
-A draw paints the text's colour glyphs itself, after every draw of its pass,
-and `code` never runs for them. Each glyph shows its bitmap from the font's
-largest strike, through mipmaps that keep it smooth at text size, placed by
-`place` like any other glyph and blended by the draw's `blend` and `alpha`.
-The bitmaps decode into an RGBA atlas when the words first hold them. The
-atlas grows to 2048x2048 at most, room for 132 emoji of Noto Color Emoji, and
-an emoji past it draws an error box. Careful: every draw of the text paints
-the colour glyphs, so a glow or a shadow draw paints a copy of its own.
+A draw with `emoji` paints the text's colour glyphs itself, after every draw
+of its pass, and `code` never runs for them. Each glyph shows its bitmap from
+the font's largest strike, through mipmaps that keep it smooth at text size,
+placed by `place` like any other glyph and blended by the draw's `blend` and
+`alpha`. A shadow draw with `"emoji": true` paints a copy of its own. The
+bitmaps decode into an RGBA atlas when the words first hold them. The atlas
+grows to 2048x2048 at most, room for 132 emoji of Noto Color Emoji, and an
+emoji past it draws an error box.
 
 On a Pi Zero 2 W, seven lines of 216 characters at 46 pixels per em, in a
 1280x800 frame, draw in 3.2 ms with `mtsdf` and in 22.7 ms with `outline`,

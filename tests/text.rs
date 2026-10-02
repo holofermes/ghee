@@ -797,6 +797,23 @@ fn a_text_name_is_a_glsl_identifier_declared_once() {
 }
 
 #[test]
+fn a_text_name_that_makes_a_glyph_name_is_refused() {
+    let why = "and every name that starts with glyph_ belongs to ghee";
+    for (name, made) in [("glyph", "glyph_tex"), ("glyph_label", "glyph_label_tex")] {
+        assert_eq!(
+            scene_err(&texts_scene(json!({name: {"font": "sans"}}))),
+            format!("scene: text '{name}' makes the GLSL name '{made}', {why}")
+        );
+    }
+    // A text named glyphs makes glyphs_tex, beside ghee's names.
+    let mut doc = texts_scene(json!({"glyphs": {"font": "sans"}}));
+    doc["passes"][0]["draws"] = json!([{"text": "glyphs", "code": WHITE,
+        "place": "vec2 glyph_place(vec2 em) { return em * 40.0; }"}]);
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
+}
+
+#[test]
 fn a_text_name_collides_with_nothing() {
     let one_scope = |doc: &Value| scene_err(doc).contains("a name belongs to one scope only");
     let mut vs_array = texts_scene(json!({"label": {"font": "sans"}}));
@@ -1016,6 +1033,73 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     let coloured = |f: &[u8]| f.chunks_exact(4).any(|p| p[0] != p[2]);
     assert!(coloured(&plain), "the scene draws no emoji");
     assert!(render(&mut r, &loaded(&named)) == plain, "{names:?}");
+}
+
+#[test]
+fn a_vec_or_color_param_named_like_a_swizzle_is_refused_where_its_glsl_selects_it() {
+    let bg = json!({"type": "color", "value": [0.0, 0.0, 0.0]});
+    let code = |field: &str| {
+        format!(
+            "void main(){{\n    vec4 v = vec4(v_texCoord, 0.25, 1.0);\n    \
+             gl_FragColor = vec4(v.{field}, 0.0, 1.0);\n}}"
+        )
+    };
+    let place = "vec2 glyph_place(vec2 em) { return em * 24.0; }";
+    let scene = |params: Value, code: &str| {
+        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+        doc["params"]
+            .as_object_mut()
+            .unwrap()
+            .extend(params.as_object().unwrap().clone());
+        doc["passes"][0]["code"] = json!(code);
+        doc
+    };
+    let why = "a color named like a swizzle rewrites the .bg";
+    // The pass code selects .bg on its third line.
+    assert_eq!(
+        scene_err(&scene(json!({"bg": bg}), &code("bg"))),
+        format!("scene: param 'bg': {why} on line 3 of pass 'main'")
+    );
+    // So does a draw's code, under a param of the draw's pass.
+    let mut drawn = scene(json!({}), &code("rg"));
+    drawn["passes"][0]["params"] = json!({"bg": bg});
+    drawn["passes"][0]["draws"] = json!([{"text": "label", "place": place,
+        "code": "void main(){\n    gl_FragColor = vec4(vec3(glyph_cover()).bg, 0.0, 1.0);\n}"}]);
+    assert_eq!(
+        scene_err(&drawn),
+        format!(
+            "scene: param 'bg' in pass 'main': {why} on line 2 of the code of pass 'main' draw 0"
+        )
+    );
+    // ghee's own GLSL of a draw selects .xy.
+    let mut doc = scene(
+        json!({"xy": {"type": "vec2", "value": [0.0, 0.0]}}),
+        &code("rg"),
+    );
+    doc["passes"][0]["draws"] = json!([{"text": "label", "place": place, "code": WHITE}]);
+    assert_eq!(
+        scene_err(&doc),
+        "scene: param 'xy': a vec2 named like a swizzle rewrites the .xy in ghee's GLSL of \
+         pass 'main' draw 0"
+    );
+    // A filter's code, appended after the load, selects .rgb.
+    let rgb = json!({"rgb": {"type": "color", "value": [0.0, 0.0, 0.0]}});
+    let mut sc = Scene::from_dict(&scene(rgb, &code("rg")), None, None).unwrap();
+    let e = apply_filters(&mut sc, &["dither".to_string()], None).unwrap_err();
+    assert!(
+        e.to_string()
+            .starts_with("param 'rgb': a color named like a swizzle rewrites the .rgb on line "),
+        "{e}"
+    );
+    // bg and the near misses beside it leave the frame as it was: .bga, .bg in
+    // comments, and a float named rg beside .rg, which declares a uniform in
+    // place of a #define.
+    let near = "void main(){\n    vec4 v = vec4(v_texCoord, 0.25, 1.0); // v.bg\n    \
+                /* v.bg\n    v.bg */ gl_FragColor = vec4(v.bga.xy, v.rg.x, 1.0);\n}";
+    let params = json!({"bg": bg, "rg": {"type": "float", "value": 0.0}});
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let plain = render(&mut r, &loaded(&scene(json!({}), near)));
+    assert!(render(&mut r, &loaded(&scene(params, near))) == plain);
 }
 
 #[test]
@@ -2336,6 +2420,10 @@ fn a_draw_declaration_names_what_it_lacks() {
             "pass 'main' draw 0 alpha needs 'blend' or 'keep', got 'add'",
         ),
         (
+            one(json!({"text": "label", "code": WHITE, "place": place, "emoji": "yes"})),
+            "pass 'main' draw 0 emoji needs true or false, got 'yes'",
+        ),
+        (
             one(json!({"text": "words", "code": WHITE, "place": place})),
             "pass 'main' draw 0 names text 'words', which the scene does not declare",
         ),
@@ -3403,6 +3491,90 @@ fn a_colour_glyph_keeps_the_pass_alpha_with_alpha_keep() {
 }
 
 #[test]
+fn the_last_draw_of_a_text_in_a_pass_paints_its_emoji_and_emoji_says_otherwise() {
+    let place = "vec2 glyph_place(vec2 em) { return em; }";
+    let draw = |text: &str, emoji: Option<bool>| {
+        let mut d = json!({"text": text, "code": WHITE, "place": place});
+        if let Some(e) = emoji {
+            d["emoji"] = json!(e);
+        }
+        d
+    };
+    let mut doc = texts_scene(json!({"label": {"font": "sans"}, "title": {"font": "sans"}}));
+    doc["passes"][0]["draws"] = json!([
+        draw("label", Some(false)),
+        draw("label", Some(true)),
+        draw("title", None),
+        draw("label", Some(true)),
+    ]);
+    doc["passes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "top", "code": BLACK, "draws": [draw("label", Some(false))]}));
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    let paints = |sc: &Scene| -> Vec<Vec<bool>> {
+        sc.passes
+            .iter()
+            .map(|p| (0..p.draws.len()).map(|k| p.paints_emoji(k)).collect())
+            .collect()
+    };
+    let want = vec![vec![false, true, true, true], vec![false]];
+    assert_eq!(paints(&sc), want);
+    // The dict holds emoji where it differs from the default of its place.
+    let back = sc.to_dict();
+    let draws = &back["passes"][0]["draws"];
+    assert_eq!(draws[0], draw("label", None));
+    assert_eq!(draws[1], draw("label", Some(true)));
+    assert_eq!(draws[2], draw("title", None));
+    assert_eq!(draws[3], draw("label", None));
+    assert_eq!(back["passes"][1]["draws"][0], draw("label", Some(false)));
+    assert_eq!(paints(&Scene::from_dict(&back, None, None).unwrap()), want);
+}
+
+#[test]
+fn a_shadow_and_a_glow_paint_no_emoji_unless_emoji_says_so() {
+    // Three draws of one text, a shadow, a glow and the fill, each 40 pixels
+    // right of the one before.
+    let (w, h) = (128, 40);
+    let place = |k: usize| {
+        format!(
+            "vec2 glyph_place(vec2 em) {{ return vec2({:?}, 4.0) + em * 24.0; }}",
+            4.0 + 40.0 * k as f64
+        )
+    };
+    let doc = |emoji: [Option<bool>; 3]| {
+        let mut doc = colour_scene(&[SANS, EMOJI], "\u{1f600}", "mtsdf", &place(0));
+        let draws: Vec<Value> = (0..3)
+            .map(|k| {
+                let mut d = json!({"text": "label", "code": WHITE, "place": place(k)});
+                if let Some(e) = emoji[k] {
+                    d["emoji"] = json!(e);
+                }
+                d
+            })
+            .collect();
+        doc["passes"][0]["draws"] = json!(draws);
+        doc
+    };
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    // The draws whose 40 pixels hold an emoji, over the black pass.
+    let mut painted = |doc: &Value| -> Vec<bool> {
+        let frame = render(&mut r, &loaded(doc));
+        assert_eq!(r.text_errors(), [] as [String; 0]);
+        (0..3)
+            .map(|k| {
+                (0..h).any(|y| {
+                    (k * 40..k * 40 + 40).any(|x| frame[(y * w + x) * 4..][..3] != [0, 0, 0])
+                })
+            })
+            .collect()
+    };
+    assert_eq!(painted(&doc([None; 3])), [false, false, true]);
+    assert_eq!(painted(&doc([Some(true), None, None])), [true, false, true]);
+    assert_eq!(painted(&doc([None, None, Some(false)])), [false; 3]);
+}
+
+#[test]
 fn a_colour_atlas_counts_against_the_engine_cap() {
     // An outline draw of a text with a colour font: its curves and its
     // colour atlas, beside n image assets.
@@ -3442,5 +3614,9 @@ fn a_colour_atlas_counts_against_the_engine_cap() {
         e,
         "17 image assets, texts and text atlases, over the cap of 16"
     );
+    // A text whose draws paint no emoji takes no colour atlas.
+    let mut unpainted = over.clone();
+    unpainted["passes"][0]["draws"][0]["emoji"] = json!(false);
+    assert!(load(&unpainted).is_ok());
     fs::remove_dir_all(&dir).unwrap();
 }

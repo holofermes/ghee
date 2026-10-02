@@ -166,6 +166,8 @@ class Draw:
     around the outline.
     `alpha` is blend, where the pass's alpha blends the way the colour does,
     or keep, where it stays as it was.
+    `emoji` sets whether the draw paints the text's colour glyphs. None
+    leaves them to the last draw of the text in its pass.
     """
 
     text: str
@@ -174,6 +176,7 @@ class Draw:
     blend: str = "over"
     pad: float = 0.0
     alpha: str = "blend"
+    emoji: bool | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text:
@@ -205,6 +208,10 @@ class Draw:
         ):
             raise ValueError(f"{what} pad needs a number of em, 0 or more, got {pad!r}")
         self.pad = float(pad)
+        if self.emoji is not None and not isinstance(self.emoji, bool):
+            raise ValueError(
+                f"{what} emoji needs True, False or None, got {self.emoji!r}"
+            )
 
     def to_dict(self) -> dict:
         d: dict = {"text": self.text, "code": self.code, "place": self.place}
@@ -214,6 +221,8 @@ class Draw:
             d["alpha"] = self.alpha
         if self.pad:
             d["pad"] = self.pad
+        if self.emoji is not None:
+            d["emoji"] = self.emoji
         return d
 
 
@@ -300,7 +309,8 @@ class Text:
     float <name>_cover(vec2 p, float ppem): p in em from the top left of
     the block, y down like v_texCoord, and ppem the pixels per em.
     vec2 <name>_size is the block, in em.
-    `font` is the name of the scene's font Asset.
+    `font` is the name of a font Asset of the scene, or a list of them: each
+    character draws from the first font whose cmap holds it.
     `align` lines up the lines of the block: left, center or right.
     `fill` is where a Draw of the text takes its coverage from: mtsdf reads
     an atlas of the glyphs' distance fields, and outline computes it from
@@ -321,8 +331,8 @@ class Text:
         fonts = self.font if isinstance(self.font, list) else [self.font]
         if not fonts or not all(isinstance(f, str) and f for f in fonts):
             raise ValueError(
-                f"text '{self.name}' 'font' needs the name of a font asset, "
-                f"got {self.font!r}"
+                f"text '{self.name}' 'font' needs the name of a font asset or a "
+                f"list of them, got {self.font!r}"
             )
         if self.align not in _ALIGNS:
             raise ValueError(

@@ -292,12 +292,30 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
 def test_a_draw_and_a_text_leave_their_defaults_out():
     shim = load()
     draw = shim.Draw("words", INK, PLACE)
-    assert (draw.blend, draw.pad, draw.alpha) == ("over", 0.0, "blend")
+    assert (draw.blend, draw.pad, draw.alpha, draw.emoji) == (
+        "over",
+        0.0,
+        "blend",
+        None,
+    )
     assert draw.to_dict() == {"text": "words", "code": INK, "place": PLACE}
     text = shim.Text("words", "sans")
     assert (text.fill, text.atlas) == ("mtsdf", None)
     assert text.to_dict() == {"font": "sans"}
     assert "draws" not in shim.Pass("main", "void main(){}").to_dict()
+
+
+def test_a_draw_sends_emoji_when_it_is_set():
+    shim = load()
+    for emoji in (True, False):
+        assert shim.Draw("words", INK, PLACE, emoji=emoji).to_dict() == {
+            "text": "words",
+            "code": INK,
+            "place": PLACE,
+            "emoji": emoji,
+        }
+    with pytest.raises(ValueError, match="emoji needs True, False or None, got 1"):
+        shim.Draw("words", INK, PLACE, emoji=1)
 
 
 def test_a_pass_of_draws_alone_has_no_code():

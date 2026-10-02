@@ -117,6 +117,16 @@ extern "C" {
         y: c_int,
         rows: c_int,
     ) -> bool;
+    pub fn ghee_mp_set_asset_rect(
+        g: *mut GheeScene,
+        name: *const c_char,
+        level: c_int,
+        x: c_int,
+        y: c_int,
+        w: c_int,
+        h: c_int,
+        data: *const c_void,
+    ) -> bool;
     pub fn ghee_mp_drop_asset(g: *mut GheeScene, name: *const c_char);
     pub fn ghee_mp_add_layer(
         g: *mut GheeScene,

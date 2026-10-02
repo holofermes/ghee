@@ -144,7 +144,7 @@ struct GheeScene {
     char mp_asset_name[MP_MAX_ASSETS][64];        // sampler uniform name
     int mp_asset_w[MP_MAX_ASSETS], mp_asset_h[MP_MAX_ASSETS];
     GLenum mp_asset_fmt[MP_MAX_ASSETS], mp_asset_type[MP_MAX_ASSETS];
-    bool mp_asset_mip[MP_MAX_ASSETS];             // mipmaps, made again after each upload
+    bool mp_asset_mip[MP_MAX_ASSETS];             // every mip level, down to 1x1
     GLuint black_tex;                    // bound to a channel with no source pass
 
     bool keep_alpha;                     // readbacks carry the final pass's alpha
@@ -1473,7 +1473,12 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     const GLenum type = is_f32 ? GL_FLOAT : GL_UNSIGNED_BYTE;
     glTexImage2D(GL_TEXTURE_2D, 0, fmt, width, height, 0, fmt, type, data);
-    if (mip) glGenerateMipmap(GL_TEXTURE_2D);
+    // The levels below 0 take their pixels from ghee_mp_set_asset_rect.
+    for (int l = 1, w = width, h = height; mip && (w > 1 || h > 1); l++) {
+        w = w > 1 ? w / 2 : 1;
+        h = h > 1 ? h / 2 : 1;
+        glTexImage2D(GL_TEXTURE_2D, l, fmt, w, h, 0, fmt, type, NULL);
+    }
     g->mp_asset_w[idx] = width;
     g->mp_asset_h[idx] = height;
     g->mp_asset_fmt[idx] = fmt;
@@ -1500,7 +1505,42 @@ bool ghee_mp_set_asset_rows(GheeScene *g, const char *name, const void *data, in
     glBindTexture(GL_TEXTURE_2D, g->mp_asset_tex[idx]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, g->mp_asset_w[idx], rows, g->mp_asset_fmt[idx],
                     g->mp_asset_type[idx], data);
-    if (g->mp_asset_mip[idx]) glGenerateMipmap(GL_TEXTURE_2D);
+    return true;
+}
+
+// Replace a w x h rect at (x, y) of one mip level of a set asset.
+bool ghee_mp_set_asset_rect(GheeScene *g, const char *name, int level,
+                            int x, int y, int w, int h, const void *data) {
+    const int idx = mp_asset_index(g, name);
+    if (idx < 0) {
+        set_error(g, "asset '%s' is not set", name);
+        return false;
+    }
+    int lw = g->mp_asset_w[idx], lh = g->mp_asset_h[idx], last = 0;
+    if (g->mp_asset_mip[idx]) {
+        for (int sw = lw, sh = lh; sw > 1 || sh > 1; last++) {
+            sw = sw > 1 ? sw / 2 : 1;
+            sh = sh > 1 ? sh / 2 : 1;
+        }
+    }
+    if (level < 0 || level > last) {
+        set_error(g, "asset '%s' has mip levels 0 to %d, and no level %d", name, last, level);
+        return false;
+    }
+    for (int l = 0; l < level; l++) {
+        lw = lw > 1 ? lw / 2 : 1;
+        lh = lh > 1 ? lh / 2 : 1;
+    }
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x > lw - w || y > lh - h) {
+        set_error(g, "asset '%s' level %d is %dx%d, and a %dx%d rect at (%d, %d) does not fit it",
+                  name, level, lw, lh, w, h, x, y);
+        return false;
+    }
+    make_current(g);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g->mp_asset_tex[idx]);
+    glTexSubImage2D(GL_TEXTURE_2D, level, x, y, w, h, g->mp_asset_fmt[idx],
+                    g->mp_asset_type[idx], data);
     return true;
 }
 

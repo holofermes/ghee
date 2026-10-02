@@ -796,6 +796,46 @@ fn declared_names(lines: &[String]) -> Vec<String> {
     out
 }
 
+/// The line, 1 on, where GLSL `src` first selects the field `name`: a `.`
+/// followed by `name` as a whole word, outside the comments.
+fn field_line(src: &str, name: &str) -> Option<usize> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut comment = false;
+    for (i, line) in src.lines().enumerate() {
+        let mut code = String::new();
+        let mut rest = line;
+        while !rest.is_empty() {
+            if comment {
+                let Some(end) = rest.find("*/") else { break };
+                rest = &rest[end + 2..];
+                comment = false;
+                continue;
+            }
+            let (line_at, block_at) = (rest.find("//"), rest.find("/*"));
+            match block_at.filter(|b| line_at.is_none_or(|l| *b < l)) {
+                Some(b) => {
+                    code.push_str(&rest[..b]);
+                    code.push(' ');
+                    rest = &rest[b + 2..];
+                    comment = true;
+                }
+                None => {
+                    code.push_str(&rest[..line_at.unwrap_or(rest.len())]);
+                    break;
+                }
+            }
+        }
+        let selects = code.match_indices('.').any(|(at, _)| {
+            let after = &code[at + 1..];
+            after.starts_with(name) && !after[name.len()..].starts_with(ident)
+        });
+        if selects {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
 /// The preamble readers for one declared array, bound as a data texture.
 ///
 /// `_at(i)` is one fetch at a computed coord. VC4 needs no uniform-array unroll
@@ -1135,6 +1175,9 @@ pub struct Draw {
     /// How far the quads reach past the ink, in em, for an effect around the
     /// outline.
     pub pad: f64,
+    /// The draw paints the text's colour glyphs. None paints them from the
+    /// last draw of the text in its pass alone, as Pass::paints_emoji says.
+    pub emoji: Option<bool>,
 }
 
 impl Draw {
@@ -1180,6 +1223,11 @@ impl Draw {
                 ),
             },
         };
+        let emoji = match o.get("emoji").filter(|v| !v.is_null()) {
+            None => None,
+            Some(Value::Bool(b)) => Some(*b),
+            Some(v) => bail!("{what} emoji needs true or false, got {}", py_repr(v)),
+        };
         Ok(Draw {
             text,
             code,
@@ -1187,10 +1235,13 @@ impl Draw {
             blend,
             alpha,
             pad,
+            emoji,
         })
     }
 
-    pub fn to_dict(&self) -> Value {
+    /// `last` is the default of `emoji` at the draw's place in its pass, and
+    /// the dict holds `emoji` only when the draw sets it otherwise.
+    pub fn to_dict(&self, last: bool) -> Value {
         let mut d = Map::new();
         d.insert("text".to_string(), Value::from(self.text.clone()));
         d.insert("code".to_string(), Value::from(self.code.clone()));
@@ -1208,6 +1259,9 @@ impl Draw {
         }
         if self.pad != 0.0 {
             d.insert("pad".to_string(), Value::from(self.pad));
+        }
+        if let Some(e) = self.emoji.filter(|e| *e != last) {
+            d.insert("emoji".to_string(), Value::from(e));
         }
         Value::Object(d)
     }
@@ -1410,12 +1464,24 @@ impl Pass {
             out.insert("filter".to_string(), Value::from(self.filter.clone()));
         }
         if !self.draws.is_empty() {
-            out.insert(
-                "draws".to_string(),
-                Value::from(self.draws.iter().map(Draw::to_dict).collect::<Vec<_>>()),
-            );
+            let draws: Vec<Value> = (0..self.draws.len())
+                .map(|k| self.draws[k].to_dict(self.last_of_text(k)))
+                .collect();
+            out.insert("draws".to_string(), Value::from(draws));
         }
         Value::Object(out)
+    }
+
+    /// True when draw `k` is the last draw of its text in this pass.
+    fn last_of_text(&self, k: usize) -> bool {
+        let text = &self.draws[k].text;
+        !self.draws[k + 1..].iter().any(|d| d.text == *text)
+    }
+
+    /// True when draw `k` paints its text's colour glyphs: its `emoji`, else
+    /// when it is the last draw of its text in this pass.
+    pub fn paints_emoji(&self, k: usize) -> bool {
+        self.draws[k].emoji.unwrap_or_else(|| self.last_of_text(k))
     }
 
     /// `hw_linear` is the target GPU's Renderer.data_texture_linear. False emits
@@ -1747,7 +1813,7 @@ impl Scene {
                 }
             }
         }
-        Ok(Scene {
+        let scene = Scene {
             passes,
             version,
             filters,
@@ -1755,18 +1821,115 @@ impl Scene {
             common,
             assets,
             texts: Vec::new(),
-        })
+        };
+        if let Some(e) = scene.swizzle_use() {
+            bail!("{e}");
+        }
+        Ok(scene)
+    }
+
+    /// The error for a vec or color param named like a swizzle, such as `bg`,
+    /// whose #define reaches GLSL that selects that swizzle, `.bg`, which the
+    /// #define rewrites. A scene param reaches every pass, a pass param its
+    /// own pass, and either one reaches the pass's code, the common block,
+    /// the code and the place of the pass's draws, and ghee's GLSL of the
+    /// draws of a text that the scene holds.
+    pub(crate) fn swizzle_use(&self) -> Option<String> {
+        let swizzle = |p: &&Param| {
+            let n = &p.name;
+            (p.ty == "color" || vec_arity(&p.ty).is_some())
+                && (1..=4).contains(&n.len())
+                && ["xyzw", "rgba", "stpq"]
+                    .iter()
+                    .any(|set| n.chars().all(|c| set.contains(c)))
+        };
+        let scopes = std::iter::once((&self.params, None))
+            .chain(self.passes.iter().map(|p| (&p.params, Some(p))));
+        for (params, own) in scopes {
+            for p in params.values().filter(swizzle) {
+                let reached = own.map_or(self.passes.iter().collect(), |p| vec![p]);
+                let Some(at) = reached.iter().find_map(|pass| self.selects(pass, &p.name)) else {
+                    continue;
+                };
+                let whose = match own {
+                    Some(pass) => format!("param '{}' in pass '{}'", p.name, pass.name),
+                    None => format!("param '{}'", p.name),
+                };
+                return Some(format!(
+                    "{whose}: a {} named like a swizzle rewrites the .{} {at}",
+                    p.ty, p.name
+                ));
+            }
+        }
+        None
+    }
+
+    /// Where the GLSL of `pass`, as a param of its reaches it, first selects
+    /// the field `name`, as "on line 3 of pass 'main'".
+    fn selects(&self, pass: &Pass, name: &str) -> Option<String> {
+        let common = self.common.as_deref().filter(|_| pass.filter.is_empty());
+        let mut sources = vec![
+            (pass.code.clone(), format!("pass '{}'", pass.name)),
+            (
+                common.unwrap_or("").to_string(),
+                "the common block".to_string(),
+            ),
+        ];
+        for (k, d) in pass.draws.iter().enumerate() {
+            let draw = format!("pass '{}' draw {k}", pass.name);
+            sources.push((d.code.clone(), format!("the code of {draw}")));
+            sources.push((d.place.clone(), format!("the place of {draw}")));
+        }
+        for (src, what) in &sources {
+            if let Some(line) = field_line(src, name) {
+                return Some(format!("on line {line} of {what}"));
+            }
+        }
+        for (k, d) in pass.draws.iter().enumerate() {
+            let Some(t) = self.texts.iter().find(|t| t.name == d.text) else {
+                continue;
+            };
+            let mut ghee = crate::text::draw_vertex_head(&d.text);
+            ghee.extend(crate::text::outline_vertex_main(0.0));
+            if t.fill == Fill::Mtsdf {
+                ghee.extend(crate::text::mtsdf_vertex_main(
+                    &d.text,
+                    d.pad,
+                    t.px_per_em,
+                    t.range,
+                ));
+                ghee.extend(crate::text::mtsdf_fragment_head(&d.text));
+                ghee.extend(crate::text::mtsdf_fragment_tail(&d.text));
+            } else {
+                ghee.extend(crate::text::outline_vertex_main(d.pad));
+                ghee.extend(crate::text::outline_fragment_head(&d.text));
+                ghee.extend(crate::text::outline_fragment_tail(&d.text));
+            }
+            if pass.paints_emoji(k) {
+                ghee.extend(crate::colour::vertex_main(&d.text));
+            }
+            if field_line(&ghee.join("\n"), name).is_some() {
+                return Some(format!("in ghee's GLSL of pass '{}' draw {k}", pass.name));
+            }
+        }
+        None
     }
 
     /// The error for the engine textures of the image assets and of `texts`
-    /// past MAX_ASSETS. A text takes the texture of its curves, and a text
-    /// that a draw names takes its MTSDF atlas under the MTSDF fill, and its
-    /// colour atlas when its loaded fonts hold colour bitmaps.
+    /// past MAX_ASSETS. A text takes the texture of its curves, a text that a
+    /// draw names takes its MTSDF atlas under the MTSDF fill, and a text whose
+    /// colour glyphs a draw paints takes its colour atlas when its loaded
+    /// fonts hold colour bitmaps.
     fn over_texture_cap(&self, texts: &[Text]) -> Option<String> {
         let images = self.assets.iter().filter(|a| !a.is_font()).count();
-        let drawn = || texts.iter().filter(|t| self.draws_text(&t.name));
-        let atlases = drawn().filter(|t| t.fill == Fill::Mtsdf).count();
-        let colours = drawn().filter(|t| t.has_colour()).count();
+        let atlases = texts
+            .iter()
+            .filter(|t| t.fill == Fill::Mtsdf && self.draws_text(&t.name))
+            .count();
+        let colours = texts
+            .iter()
+            .filter(|t| self.paints_emoji(&t.name) && t.has_colour())
+            .count();
         let n = images + texts.len() + atlases + colours;
         (n > MAX_ASSETS).then(|| {
             format!("{n} image assets, texts and text atlases, over the cap of {MAX_ASSETS}")
@@ -1784,6 +1947,14 @@ impl Scene {
                 bail!(
                     "text name {} is not a GLSL identifier",
                     py_str_repr(&t.name)
+                );
+            }
+            let made = crate::text::names(&t.name, true, true);
+            if let Some(n) = made.iter().find(|n| n.starts_with("glyph_")) {
+                bail!(
+                    "text '{}' makes the GLSL name '{n}', and every name that starts with \
+                     glyph_ belongs to ghee",
+                    t.name
                 );
             }
             if seen.contains(&t.name.as_str()) {
@@ -1851,10 +2022,11 @@ impl Scene {
             }
         }
         for t in &texts {
-            // The fonts load after this check, so a drawn text makes the names
-            // of a colour layer whether or not a font holds colour bitmaps.
-            let drawn = self.draws_text(&t.name);
-            let made = crate::text::names(&t.name, drawn && t.fill == Fill::Mtsdf, drawn);
+            // The fonts load after this check, so a text whose colour glyphs a
+            // draw paints makes the names of a colour layer whether or not a
+            // font holds colour bitmaps.
+            let atlas = t.fill == Fill::Mtsdf && self.draws_text(&t.name);
+            let made = crate::text::names(&t.name, atlas, self.paints_emoji(&t.name));
             for n in &made {
                 if let Some((_, owner)) = owners.iter().find(|(name, _)| name == n) {
                     bail!(
@@ -1873,6 +2045,9 @@ impl Scene {
         if let Some(e) = self.undeclared_draw() {
             bail!("{e}");
         }
+        if let Some(e) = self.swizzle_use() {
+            bail!("{e}");
+        }
         Ok(self)
     }
 
@@ -1881,6 +2056,13 @@ impl Scene {
         self.passes
             .iter()
             .any(|p| p.draws.iter().any(|d| d.text == name))
+    }
+
+    /// True when a draw of the scene paints the colour glyphs of text `name`.
+    pub fn paints_emoji(&self, name: &str) -> bool {
+        self.passes
+            .iter()
+            .any(|p| (0..p.draws.len()).any(|k| p.draws[k].text == name && p.paints_emoji(k)))
     }
 
     /// The error for the first draw whose text the scene does not declare.

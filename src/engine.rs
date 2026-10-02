@@ -154,8 +154,8 @@ pub(crate) struct Layer {
 struct DrawLayer {
     /// The engine's index of the layer.
     layer: c_int,
-    /// The engine's index of the colour layer, -1 for a text whose fonts
-    /// hold no colour bitmaps.
+    /// The engine's index of the colour layer, -1 for a draw that paints no
+    /// colour glyphs or a text whose fonts hold no colour bitmaps.
     colour: c_int,
     /// The engine's index of the error-box layer.
     boxes: c_int,
@@ -189,6 +189,8 @@ type AtlasFont = Box<dyn Fn(&[text::Font]) -> Arc<dyn atlas::Font>>;
 #[derive(Default)]
 struct ColourAtlas {
     atlas: atlas::Atlas,
+    /// The atlas's mip levels below level 0.
+    mips: crate::colour::Mips,
     /// The texels per em of each glyph's bitmap, by atlas id.
     scale: HashMap<u32, f64>,
     /// Why each glyph that failed took no cell, by atlas id.
@@ -894,10 +896,11 @@ impl Renderer {
             // box.
             let first = draws.len() - if idx < 0 { 0 } else { p.draws.len() };
             for (k, dl) in draws[first..].iter_mut().enumerate() {
-                let coloured = scene
-                    .texts
-                    .iter()
-                    .any(|t| t.name == dl.text && t.has_colour());
+                let coloured = p.paints_emoji(k)
+                    && scene
+                        .texts
+                        .iter()
+                        .any(|t| t.name == dl.text && t.has_colour());
                 if !coloured {
                     continue;
                 }
@@ -1608,6 +1611,7 @@ impl Renderer {
         let fonts = text.data.as_deref().unwrap_or_default();
         let mut colours = self.colours.borrow_mut();
         let slot = colours.entry(name.clone()).or_default();
+        let mut cells: Vec<crate::colour::Rect> = Vec::new();
         for p in glyphs {
             let id = text::atlas_id(p.font, p.gid);
             if slot.atlas.cells.contains_key(&id) || slot.failed.contains_key(&id) {
@@ -1620,24 +1624,44 @@ impl Renderer {
                 None => Err(anyhow!("its font is unreadable")),
             };
             match made.and_then(|(f, s)| Ok((slot.atlas.insert(id, &f)?, s))) {
-                Ok((_, s)) => {
+                Ok((cell, s)) => {
                     slot.scale.insert(id, s);
+                    cells.push(cell.rect);
                 }
                 Err(e) => {
                     slot.failed.insert(id, format!("{e:#}"));
                 }
             }
         }
-        // A new atlas's first update holds all of it, as does a grown one's.
-        if let Some(u) = slot.atlas.update() {
+        // A new atlas's first update holds all of it, as does a grown one's,
+        // and uploads every level whole. Otherwise the new cells upload the
+        // rects that they changed in each level.
+        if let Some(resized) = slot.atlas.take_change() {
             let tex = format!("{name}_emoji");
-            if u.resized {
-                let data = AssetData::U8(&u.rows[0].texels);
-                self.put_asset(&tex, u.width, u.height, 4, ffi::GHEE_FILTER_MIPMAP, data)?;
+            let (w, h) = (slot.atlas.width, slot.atlas.height);
+            if resized {
+                slot.mips = crate::colour::Mips::new(w, h);
+                let top = slot.atlas.top();
+                slot.mips.refresh(&slot.atlas.texels, w, h, [0, 0, w, top]);
+                let data = AssetData::U8(&slot.atlas.texels);
+                self.put_asset(&tex, w, h, 4, ffi::GHEE_FILTER_MIPMAP, data)?;
                 self.scene_asset(&tex);
+                for k in 1..=slot.mips.count() {
+                    let (lw, lh, texels) = slot.mips.level(k);
+                    self.set_asset_rect(&tex, k, [0, 0, lw, lh], texels)?;
+                }
             } else {
-                for r in &u.rows {
-                    self.set_asset_rows(&tex, r.y, u.width, &r.texels)?;
+                let changed = slot.mips.refresh_cells(&slot.atlas.texels, w, h, &cells);
+                for (level, rect) in changed {
+                    let (lw, texels) = match level {
+                        0 => (w, &slot.atlas.texels[..]),
+                        _ => {
+                            let (lw, _, texels) = slot.mips.level(level);
+                            (lw, texels)
+                        }
+                    };
+                    let texels = crate::colour::crop(texels, lw, rect);
+                    self.set_asset_rect(&tex, level, rect, &texels)?;
                 }
             }
         }
@@ -1777,6 +1801,47 @@ impl Renderer {
                     self.set_asset_rows(tex, r.y, u.width, &r.texels)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Replace `rect` of mip level `level` of asset `name` with `texels`,
+    /// RGBA8 rows of the rect's width.
+    fn set_asset_rect(
+        &self,
+        name: &str,
+        level: usize,
+        rect: crate::colour::Rect,
+        texels: &[u8],
+    ) -> Result<()> {
+        let [x, y, w, h] = rect;
+        if texels.len() != w as usize * h as usize * 4 {
+            bail!(
+                "asset '{name}': {} bytes are no {w}x{h} rect of RGBA8",
+                texels.len()
+            );
+        }
+        let cname = CString::new(name)?;
+        let ok = unsafe {
+            ffi::ghee_mp_set_asset_rect(
+                self.handle,
+                cname.as_ptr(),
+                level as c_int,
+                x as c_int,
+                y as c_int,
+                w as c_int,
+                h as c_int,
+                texels.as_ptr().cast::<c_void>(),
+            )
+        };
+        if !ok {
+            bail!(
+                "{}",
+                or_else(
+                    self.last_error(),
+                    &format!("asset '{name}' refused level {level}")
+                )
+            );
         }
         Ok(())
     }
@@ -3935,6 +4000,84 @@ mod tests {
         // A new setup frees the atlas until its words need it again.
         assert_eq!(r.setup(&load(json!(["sans", "emoji"]))).unwrap(), "");
         assert_eq!(emoji(&r), (0, false));
+    }
+
+    #[test]
+    fn a_new_colour_glyph_uploads_its_cell_at_every_level_as_a_whole_atlas_does() {
+        // Five draws of the words, at 1, 1/2, 1/4, 1/8 and 1/16 of the
+        // bitmaps' 109 pixels per em, each read from its own mip level.
+        let (w, h) = (400, 224);
+        let draws: Vec<Value> = (0..5)
+            .map(|k| {
+                let s = 109.0 / f64::from(1 << k);
+                let at = [[4.0, 4.0], [4.0, 140.0], [150.0, 140.0], [230.0, 140.0], [280.0, 140.0]][k];
+                json!({"text": "label", "emoji": true,
+                    "code": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
+                    "place": format!("vec2 glyph_place(vec2 em) {{ return vec2({:?}, {:?}) + em * {s:?}; }}",
+                        at[0], at[1])})
+            })
+            .collect();
+        let mut sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "params": {"label": {"type": "string", "value": "A"}},
+                "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},
+                           "emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
+                "texts": {"label": {"font": ["sans", "emoji"], "fill": "outline"}},
+                "passes": [{"name": "main",
+                    "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                    "draws": draws}],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts"))
+            .unwrap();
+        let _g = lock();
+        let Some(mut r) = probe_dri_devices()
+            .iter()
+            .find_map(|d| Renderer::new(w, h, 4, Some(d), false, false).ok())
+        else {
+            eprintln!("no GL device for rendering");
+            return;
+        };
+        // A blank cell grows the atlas to 512 texels wide, room for both
+        // emoji on one shelf, so the second emoji leaves the size as it was.
+        let start = |r: &mut Renderer, words: &str| {
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            let blank = atlas::Field {
+                width: 512,
+                height: 16,
+                texels: vec![0; 512 * 16 * 4],
+                ink: [0.0; 4],
+                pad: 0.0,
+            };
+            let mut colours = r.colours.borrow_mut();
+            let slot = colours.entry("label".to_string()).or_default();
+            slot.atlas.insert(u32::MAX, &blank).unwrap();
+            drop(colours);
+            assert!(r.set_text("label", words).unwrap());
+        };
+        let size = |r: &Renderer| {
+            let c = r.colours.borrow();
+            (c["label"].atlas.width, c["label"].atlas.height)
+        };
+        start(&mut r, "\u{1f600}");
+        let first = size(&r);
+        assert!(r.set_text("label", "\u{1f600}\u{1f642}").unwrap());
+        assert_eq!(size(&r), first);
+        r.set_time(Some(0.0));
+        let cell = r.render(None).unwrap().to_vec();
+        start(&mut r, "\u{1f600}\u{1f642}");
+        assert_eq!(size(&r), first);
+        let whole = r.render(None).unwrap().to_vec();
+        assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
+        assert!(
+            whole.chunks_exact(4).any(|p| p[0] != p[2]),
+            "no emoji drawn"
+        );
+        assert!(cell == whole);
     }
 
     // The MTSDF fill's atlas

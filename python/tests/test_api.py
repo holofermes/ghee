@@ -392,3 +392,38 @@ def test_a_pass_of_draws_alone_starts_transparent(monkeypatch):
         h.set_param("words", "")
         h.frame()
         assert h.pixels() == bytes([0, 0, 255, 255]) * (96 * 32)
+
+
+def test_a_text_draws_a_letter_and_an_emoji_from_its_list_of_fonts(monkeypatch):
+    """The I comes from sans, white, and the emoji from the emoji font, in its
+    own colours to the right of the I."""
+    monkeypatch.chdir(REPO / "tools" / "fixtures" / "fonts")
+    scene = ghee.Scene(
+        params={"words": ghee.Param("words", "string", "I\U0001f600")},
+        assets=[
+            ghee.Asset("sans", "DejaVuSans-ASCII.ttf"),
+            ghee.Asset("emoji", "NotoColorEmoji-Smiles.ttf"),
+        ],
+        texts=[ghee.Text("words", ["sans", "emoji"])],
+        passes=[
+            ghee.Pass(
+                "main",
+                "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                draws=[
+                    ghee.Draw(
+                        "words",
+                        "void main(){ gl_FragColor = vec4(glyph_cover()); }",
+                        "vec2 glyph_place(vec2 em) { return em * 24.0; }",
+                    )
+                ],
+            )
+        ],
+    )
+    with ghee.open(scene.to_dict(), width=48, height=32, timestep=0) as h:
+        h.frame()
+        px = h.pixels()
+    at = [(i // 4 % 48, px[i : i + 3]) for i in range(0, len(px), 4)]
+    letter = [x for x, (r, g, b) in at if r == g == b and r > 200]
+    emoji = [x for x, (r, g, b) in at if r - b > 100]
+    assert emoji
+    assert any(x < min(emoji) for x in letter)

@@ -129,9 +129,16 @@ words again with no recompile, from `set_param` or the console.
         passes=[ghee.Pass("main", CODE)],
     )
 
+`font` names one font asset or a list of them. With
+`ghee.Text("words", ["sans", "emoji"])`, each character draws from the first
+font in the list whose cmap holds it, letters from `sans` and emoji from a
+colour emoji font such as Noto Color Emoji. Line height and baseline come
+from the first font.
+
 A text problem leaves the scene running, and `set_param` raises nothing for
 it: ghee logs it once on stderr, and the console shows it. A font that fails
-to load draws every character as an error box, diagonal stripes of coverage.
+to load drops out of the list, and a text with no font left draws every
+character as an error box, diagonal stripes of coverage.
 A character whose glyph has neither an outline nor a colour bitmap draws an
 error box in its place, and the rest of the words draw. Words that do not fit
 leave the last words that did. An emoji of a colour font has no coverage, and
@@ -167,7 +174,7 @@ centred on black:
         passes=[ghee.Pass("main", BLACK, draws=[ghee.Draw("words", AMBER, PLACE)])],
     )
 
-`ghee.Draw(text, code, place, blend="over", pad=0.0, alpha="blend")`:
+`ghee.Draw(text, code, place, blend="over", pad=0.0, alpha="blend", emoji=None)`:
 
 - `text` names a `ghee.Text` of the scene.
 - `code` holds a `void main()` that writes colour premultiplied by alpha.
@@ -178,6 +185,9 @@ centred on black:
 - `pad` grows each quad that many em past the ink, room for an effect
   around the outline.
 - `alpha` is `"blend"`, and `"keep"` leaves the pass's alpha as it was.
+- `emoji` sets whether the draw paints the text's colour glyphs. `None`
+  leaves them to the last draw of the text in its pass, so a shadow drawn
+  under the fill paints no copy.
 
 A pass of draws alone, `ghee.Pass("words", draws=[...])`, starts each frame
 transparent, a layer that a later pass reads through a channel.

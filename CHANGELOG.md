@@ -87,6 +87,16 @@
   table and no outline shows its bitmap, mipmapped, placed by the draw's
   `place`. `<name>_cover` reads it as no ink, and a font of colour bitmaps
   alone draws its emoji in draws in place of error boxes.
+- Paint a text's colour emoji from the last draw of the text in its pass
+  alone, so a shadow or a glow paints no copy, and set `"emoji": true` or
+  `false` on a draw, `emoji=` on `ghee.Draw`, to choose otherwise.
+- Draw a text from a list of fonts in Python,
+  `ghee.Text("words", ["sans", "emoji"])`.
+- Refuse a scene where a vec or color param named like a swizzle, such as
+  `bg`, reaches GLSL that selects that swizzle, `.bg`, and name the line,
+  where the param's `#define` broke the shader.
+- Refuse a text named `glyph` or named with the `glyph_` prefix, whose GLSL
+  names fall among ghee's `glyph_` names.
 
 ## 0.4.0 - 2026-08-06
 

@@ -2686,8 +2686,8 @@ fn laid_baseline(laid: &text::Layout) -> f64 {
 #[test]
 fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
     // A draw of the outline fill, its shaders recorded before the MTSDF fill
-    // came: the fragment shader gains the two lines that name it, and nothing
-    // else changes.
+    // came: the fragment shader gains the lines that name it and the read
+    // that keeps VC4 on one thread, and nothing else changes.
     let doc = json!({
         "version": 1,
         "params": {
@@ -2734,6 +2734,12 @@ fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
         "// Distances come from the MTSDF fill's field, and a compile error names it.",
         "#define glyph_dist glyph_dist_needs_fill_mtsdf",
         "#define glyph_soft glyph_soft_needs_fill_mtsdf",
+        "    // On VC4 a shader whose last texture read sits outside an if runs in two",
+        "    // threads, whose switch loses the condition flags. A read after the",
+        "    // author's code that never runs, in an if that the compiler cannot drop,",
+        "    // keeps the shader on one thread whatever textures the author's code",
+        "    // reads.",
+        "    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(t_tex, v_texCoord);",
     ];
     assert!(named.iter().all(|l| fs.lines().any(|f| f == *l)));
     let without: Vec<&str> = fs.lines().filter(|l| !named.contains(l)).collect();

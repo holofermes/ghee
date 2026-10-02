@@ -1490,6 +1490,12 @@ void main() {
     glyph_c = NAME_outline(float(int(glyph_v1.x + 0.5)), vec2(ivec2(glyph_v1.yz + 0.5)),
                            u, glyph_v0.zw);
     glyph_main();
+    // On VC4 a shader whose last texture read sits outside an if runs in two
+    // threads, whose switch loses the condition flags. A read after the
+    // author's code that never runs, in an if that the compiler cannot drop,
+    // keeps the shader on one thread whatever textures the author's code
+    // reads.
+    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(NAME_tex, v_texCoord);
 }"#;
 
 const MTSDF_VERTEX_MAIN: &str = r#"uniform vec2 NAME_atlas_size;

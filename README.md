@@ -399,7 +399,7 @@ default. `glyph_soft` reads no distance past it, and `pad` stops there.
 draws with no `glyph_dist` or `glyph_soft`.
 
 On a Pi Zero 2 W, seven lines of 216 characters at 46 pixels per em, in a
-1280x800 frame, draw in 3.1 ms with `mtsdf` and in 22.3 ms with `outline`,
+1280x800 frame, draw in 3.2 ms with `mtsdf` and in 22.7 ms with `outline`,
 2.1 ms of each the background pass.
 
 ## Procedural scenes

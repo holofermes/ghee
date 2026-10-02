@@ -49,7 +49,11 @@ void ghee_destroy(GheeScene *g);
 // Building a scene is staged: add_pass (and set_pass_size) compile and allocate
 // the PENDING passes, commit makes them the scene, abort drops them. The running
 // scene keeps rendering until the commit, so a compile error costs nothing.
-int  ghee_mp_add_pass(GheeScene *g, const char *glsl_source);
+// `name` stands for the pass in its errors. A NULL glsl_source makes a pass
+// with no quad: each frame it clears to transparent black and draws its layers
+// alone. `alpha` gives the buffer an alpha channel, else the buffer stores RGB
+// and every read of its alpha gives 1.
+int  ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, int alpha);
 // Set a pending pass's buffer size (default = renderer W,H). Call after
 // ghee_mp_add_pass, before ghee_mp_commit. The last pass must keep the renderer
 // size (it feeds readback/scanout), consumers sample any pass through normalized
@@ -80,7 +84,7 @@ void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, i
 // ghee_data_texture_linear. An asset outlives the scene: the same name again
 // replaces its pixels, ghee_mp_drop_asset or ghee_destroy frees it. Returns
 // false with ghee_last_error set when the engine refuses the asset.
-#define MP_MAX_ASSETS 8
+#define MP_MAX_ASSETS 16
 bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
                        int width, int height, int components, int is_f32, int linear);
 void ghee_mp_drop_asset(GheeScene *g, const char *name);
@@ -91,25 +95,35 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name);
 // as the triangles (0, 1, 2) and (2, 1, 3). A layer reads its pass's uniforms,
 // channels, arrays and assets under the same names, and `vflip` as the shared
 // quad vertex shader does. Blending composes premultiplied colour: over is
-// src + dst * (1 - src.a), add is src + dst, replace is src.
+// src + dst * (1 - src.a), add is src + dst, replace is src. The alpha channel
+// blends the same way, and keep_alpha leaves the buffer's alpha as it was.
 enum { GHEE_BLEND_OVER, GHEE_BLEND_ADD, GHEE_BLEND_REPLACE };
 // Staged like ghee_mp_add_pass: `pass` is a pending pass, the commit keeps the
 // returned index, and an abort drops the layer. `name` stands for the layer in
 // its errors. -1 = refused.
 int  ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
-                       const char *fragment_source, int blend);
+                       const char *fragment_source, int blend, int keep_alpha);
 // The quads of a committed layer: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.
 bool ghee_mp_set_layer_quads(GheeScene *g, int layer, const float *data, int quads, int nattr);
 // Render the passes and swap. buffer_rgb NULL = no readback at all, pw/ph > 0 =
 // GPU-downscale the final pass to pw x ph and read back only that, otherwise the
-// full frame lands in buffer_rgb.
+// full frame lands in buffer_rgb. A 4-component readback reads alpha 255 unless
+// ghee_keep_alpha is on.
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 // Render the passes and scan the final buffer out to the display (display mode
 // only). buffer_rgb non-NULL also reads the frame back (for a console mirror).
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 void ghee_mp_reset(GheeScene *g);
-int  ghee_max_texture_units(GheeScene *g);   // a pass's channels + arrays must fit
+// Keep the final pass's alpha in 4-component readbacks, the full frame and the
+// downscaled one. Off by default. The scanout and the encoder input take alpha
+// 1 either way.
+void ghee_keep_alpha(GheeScene *g, int keep);
+// The texture units one program of a pass binds at most: its pass's channels and
+// arrays, then the assets it samples. min(16, GL_MAX_TEXTURE_IMAGE_UNITS): VC4
+// has 16, so a pass that fits one Pi fits them all.
+int  ghee_max_texture_units(GheeScene *g);
+int  ghee_gl_texture_units(GheeScene *g);    // GL_MAX_TEXTURE_IMAGE_UNITS itself
 bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 
 void ghee_set_profiling(GheeScene *g, bool on);

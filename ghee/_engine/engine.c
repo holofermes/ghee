@@ -36,6 +36,8 @@
 // One buffer on glass, one behind a pending flip, one to draw into.
 #define LENT_BUFFERS 3
 #define MP_MAX_LAYERS 32
+// The texture units one program binds at most, on any GPU. VC4 has 16.
+#define MP_MAX_UNITS 16
 #define MP_LAYER_ATTRIBS 4
 // GLES2 guarantees 16-bit indices alone, and a quad takes 4 vertices, so a
 // layer of more quads than this draws in chunks.
@@ -58,6 +60,7 @@ struct mp_layer {
     char name[96];                       // the layer's name in an error
     GLuint program;
     int blend;                           // GHEE_BLEND_*
+    bool keep_alpha;                     // leaves the buffer's alpha as it was
     GLuint vbo, vao;
     int quads, nattr;                    // nattr vec4 attributes a vertex
     struct mp_locs loc;
@@ -85,7 +88,9 @@ struct GheeScene {
     // between passes (reading a pass's PREVIOUS-frame output). A pass whose channel
     // points at itself = feedback. Last pass -> screen.
     int mp_count;
-    GLuint mp_program[MP_MAX_PASSES];
+    GLuint mp_program[MP_MAX_PASSES];    // 0 = a pass of layers alone, with no quad
+    char mp_name[MP_MAX_PASSES][96];     // the pass's name in an error
+    bool mp_alpha[MP_MAX_PASSES];        // the buffer stores alpha, else RGB
     GLuint mp_fbo[MP_MAX_PASSES][2];
     GLuint mp_tex[MP_MAX_PASSES][2];
     int mp_w[MP_MAX_PASSES], mp_h[MP_MAX_PASSES];   // per-pass buffer size, W,H until set
@@ -93,7 +98,8 @@ struct GheeScene {
     int mp_chan_src[MP_MAX_PASSES][MP_MAX_CHANNELS];  // channel -> source pass index, -1 = none
     int mp_nchan[MP_MAX_PASSES];
     struct mp_locs mp_loc[MP_MAX_PASSES];
-    GLint max_units;                     // GL_MAX_TEXTURE_IMAGE_UNITS (8 on VC4)
+    GLint gl_units;                      // GL_MAX_TEXTURE_IMAGE_UNITS, 16 on VC4
+    GLint max_units;                     // min(MP_MAX_UNITS, gl_units)
 
     // pending scene: passes compiled and allocated beside the running ones and
     // made the scene by ghee_mp_commit, so a compile error leaves the running
@@ -103,6 +109,8 @@ struct GheeScene {
     GLuint stage_fbo[MP_MAX_PASSES][2];
     GLuint stage_tex[MP_MAX_PASSES][2];
     int stage_w[MP_MAX_PASSES], stage_h[MP_MAX_PASSES];
+    char stage_name[MP_MAX_PASSES][96];
+    bool stage_alpha[MP_MAX_PASSES];
 
     // Layers, staged with the passes and committed with them.
     int mp_nlayer, stage_nlayer;
@@ -137,6 +145,7 @@ struct GheeScene {
     int mp_asset_w[MP_MAX_ASSETS], mp_asset_h[MP_MAX_ASSETS];
     GLuint black_tex;                    // bound to a channel with no source pass
 
+    bool keep_alpha;                     // readbacks carry the final pass's alpha
     bool profile;                        // when on, ghee_mp_render splits draw vs readback (adds a glFinish)
     double prof_draw_ms, prof_read_ms;   // last frame's split (profiling mode)
 
@@ -172,7 +181,7 @@ struct GheeScene {
     bool flip_pending;           // a submitted page flip whose event hasn't been reaped
     bool flip_failed;            // a refused flip, reported once instead of every frame
     GLuint blit_prog;
-    GLint blit_sampler, blit_flip;
+    GLint blit_sampler, blit_flip, blit_opaque;
     GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
     int preview_w, preview_h;
     int keep_last;                     // >0: an encoder samples the final pass, never draw it direct
@@ -202,15 +211,18 @@ static const char *vertex_shader_source =
     "}";
 
 // Present blit: sample the final pass texture onto the scanout target. flipY
-// mirrors it for the window surface, which Mesa stores top row first.
+// mirrors it for the window surface, which Mesa stores top row first, and
+// opaque 1 writes alpha 1.
 static const char *blit_fragment_source =
     "#version 100\n"
     "precision mediump float;"
     "varying vec2 v_texCoord;"
     "uniform sampler2D tex;"
     "uniform float flipY;"
+    "uniform float opaque;"
     "void main() { vec2 uv = vec2(v_texCoord.x, mix(v_texCoord.y, 1.0 - v_texCoord.y, flipY));"
-    " gl_FragColor = texture2D(tex, uv); }";
+    " vec4 c = texture2D(tex, uv);"
+    " gl_FragColor = vec4(c.rgb, max(c.a, opaque)); }";
 
 static int say_level = 1;
 void ghee_set_verbosity(int level) { say_level = level; }
@@ -600,8 +612,9 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &g->max_units);
-    if (g->max_units < 1) g->max_units = 8;
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &g->gl_units);
+    if (g->gl_units < 1) g->gl_units = 8;   // the GLES2 minimum
+    g->max_units = g->gl_units < MP_MAX_UNITS ? g->gl_units : MP_MAX_UNITS;
 
     // GL_IMPLEMENTATION_COLOR_READ_FORMAT answers RGBA on hardware that reads
     // RGB perfectly well, so the probe reads a known pixel instead: a driver
@@ -898,14 +911,17 @@ static void mp_free_buffers(GLuint fbo[2], GLuint tex[2]) {
     fbo[0] = fbo[1] = tex[0] = tex[1] = 0;
 }
 
-static bool mp_make_buffers(GheeScene *g, GLuint fbo[2], GLuint tex[2], int w, int h) {
+// A pass with a quad starts opaque black, a pass of layers alone transparent.
+static bool mp_make_buffers(GheeScene *g, GLuint fbo[2], GLuint tex[2], int w, int h,
+                            bool alpha, bool quad) {
+    const GLenum fmt = alpha ? GL_RGBA : GL_RGB;
     while (glGetError() != GL_NO_ERROR) { }
     glGenFramebuffers(2, fbo);
     glGenTextures(2, tex);
     for (int i = 0; i < 2; i++) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
         glBindTexture(GL_TEXTURE_2D, tex[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -919,9 +935,10 @@ static bool mp_make_buffers(GheeScene *g, GLuint fbo[2], GLuint tex[2], int w, i
             mp_free_buffers(fbo, tex);
             return false;
         }
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClearColor(0.0f, 0.0f, 0.0f, quad ? 1.0f : 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
     }
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     return true;
 }
@@ -967,16 +984,19 @@ static void mp_free_passes(GheeScene *g) {
 // Compile a pass into the PENDING scene: program and buffers are allocated
 // beside the running scene, which keeps rendering until ghee_mp_commit. Returns
 // the pass index (the commit keeps it) or -1.
-int ghee_mp_add_pass(GheeScene *g, const char *glsl_source) {
+int ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, int alpha) {
     make_current(g);
     if (g->stage_count >= MP_MAX_PASSES) { set_error(g, "too many passes"); return -1; }
-    const GLuint prog = create_shader_program(g, glsl_source);
-    if (!prog) return -1;
+    GLuint prog = 0;
+    if (glsl_source && !(prog = create_shader_program(g, glsl_source))) return -1;
     const int idx = g->stage_count;
-    if (!mp_make_buffers(g, g->stage_fbo[idx], g->stage_tex[idx], g->width, g->height)) {
-        glDeleteProgram(prog);
+    if (!mp_make_buffers(g, g->stage_fbo[idx], g->stage_tex[idx], g->width, g->height,
+                         alpha, prog != 0)) {
+        if (prog) glDeleteProgram(prog);
         return -1;
     }
+    snprintf(g->stage_name[idx], sizeof g->stage_name[idx], "%s", name ? name : "a pass");
+    g->stage_alpha[idx] = alpha;
     g->stage_program[idx] = prog;
     g->stage_w[idx] = g->width;
     g->stage_h[idx] = g->height;
@@ -995,7 +1015,8 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     }
     make_current(g);
     GLuint fbo[2], tex[2];
-    if (!mp_make_buffers(g, fbo, tex, w, h)) return false;
+    if (!mp_make_buffers(g, fbo, tex, w, h, g->stage_alpha[pass], g->stage_program[pass] != 0))
+        return false;
     mp_free_buffers(g->stage_fbo[pass], g->stage_tex[pass]);
     memcpy(g->stage_fbo[pass], fbo, sizeof fbo);
     memcpy(g->stage_tex[pass], tex, sizeof tex);
@@ -1005,7 +1026,7 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
 }
 
 int ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
-                      const char *fragment_source, int blend) {
+                      const char *fragment_source, int blend, int keep_alpha) {
     if (pass < 0 || pass >= g->stage_count) { set_error(g, "%s: pass %d is not pending", name, pass); return -1; }
     if (g->stage_nlayer >= MP_MAX_LAYERS) { set_error(g, "%s: over the cap of %d draws", name, MP_MAX_LAYERS); return -1; }
     if (blend < GHEE_BLEND_OVER || blend > GHEE_BLEND_REPLACE) { set_error(g, "%s: no blend mode %d", name, blend); return -1; }
@@ -1018,6 +1039,7 @@ int ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vert
     snprintf(l->name, sizeof l->name, "%s", name);
     l->program = prog;
     l->blend = blend;
+    l->keep_alpha = keep_alpha;
     glGenBuffers(1, &l->vbo);
     glGenVertexArrays(1, &l->vao);
     return g->stage_nlayer++;
@@ -1029,15 +1051,20 @@ void ghee_mp_abort(GheeScene *g) {
     make_current(g);
     mp_free_layers(g->stage_layer, &g->stage_nlayer);
     for (int p = 0; p < g->stage_count; p++) {
-        glDeleteProgram(g->stage_program[p]);
+        if (g->stage_program[p]) glDeleteProgram(g->stage_program[p]);
         mp_free_buffers(g->stage_fbo[p], g->stage_tex[p]);
     }
     g->stage_count = 0;
 }
 
 // Resolve the locations of a committed program that draws into a w x h buffer,
-// and set its resolution and an unflipped vflip.
+// and set its resolution and an unflipped vflip. Program 0, a pass with no
+// quad, has no uniforms.
 static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *loc) {
+    if (!prog) {
+        memset(loc, 0xff, sizeof *loc);   // every location -1
+        return;
+    }
     glUseProgram(prog);
     const GLint rloc = glGetUniformLocation(prog, "resolution");
     if (rloc >= 0) glUniform2f(rloc, (float)w, (float)h);
@@ -1075,6 +1102,8 @@ int ghee_mp_commit(GheeScene *g) {
         memcpy(g->mp_tex[p], g->stage_tex[p], sizeof g->mp_tex[p]);
         g->mp_w[p] = g->stage_w[p];
         g->mp_h[p] = g->stage_h[p];
+        memcpy(g->mp_name[p], g->stage_name[p], sizeof g->mp_name[p]);
+        g->mp_alpha[p] = g->stage_alpha[p];
         g->mp_write[p] = 0;
         g->mp_nchan[p] = 0;
         g->mp_ndatatex[p] = 0;
@@ -1157,16 +1186,28 @@ static int mp_assets(GheeScene *g, const struct mp_locs *loc) {
     return n;
 }
 
-// The most asset units one program of the pass takes: its own, or one of its
-// layers'. A layer shares the pass's channel and array units.
-static int mp_pass_assets(GheeScene *g, int pass) {
-    int n = mp_assets(g, &g->mp_loc[pass]);
+// Whether the program named `name` fits in `want` texture units, with the
+// error set when it does not.
+static bool units_fit(GheeScene *g, const char *name, int want) {
+    if (want <= g->max_units) return true;
+    if (g->gl_units > MP_MAX_UNITS)
+        set_error(g, "%s needs %d texture units, a pass binds at most %d", name, want, (int)g->max_units);
+    else
+        set_error(g, "%s needs %d texture units, this GPU has %d", name, want, (int)g->max_units);
+    return false;
+}
+
+// Whether pass p fits its texture units with nchan channels and ndata arrays:
+// its own program and each of its layers, every one with the assets it
+// samples. A layer shares the pass's channel and array units.
+static bool mp_pass_fits(GheeScene *g, int p, int nchan, int ndata) {
+    if (!units_fit(g, g->mp_name[p], nchan + ndata + mp_assets(g, &g->mp_loc[p]))) return false;
     for (int l = 0; l < g->mp_nlayer; l++) {
-        if (g->mp_layer[l].pass != pass) continue;
-        const int m = mp_assets(g, &g->mp_layer[l].loc);
-        if (m > n) n = m;
+        const struct mp_layer *ly = &g->mp_layer[l];
+        if (ly->pass == p && !units_fit(g, ly->name, nchan + ndata + mp_assets(g, &ly->loc)))
+            return false;
     }
-    return n;
+    return true;
 }
 
 bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
@@ -1179,17 +1220,14 @@ bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
         return false;
     }
     const int nchan = (channel + 1 > g->mp_nchan[pass]) ? channel + 1 : g->mp_nchan[pass];
-    if (nchan + g->mp_ndatatex[pass] + mp_pass_assets(g, pass) > g->max_units) {
-        set_error(g, "pass %d needs %d texture units, this GPU has %d",
-                  pass, nchan + g->mp_ndatatex[pass] + mp_pass_assets(g, pass), (int)g->max_units);
-        return false;
-    }
+    if (!mp_pass_fits(g, pass, nchan, g->mp_ndatatex[pass])) return false;
     g->mp_chan_src[pass][channel] = src_pass;
     g->mp_nchan[pass] = nchan;
     return true;
 }
 
 static bool program_uniform(GLuint program, const parameter_t *param) {
+    if (!program) return false;
     glUseProgram(program);
     const GLint loc = glGetUniformLocation(program, param->name);
     if (loc < 0) return false;
@@ -1213,7 +1251,7 @@ bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
 
 // Unused: superseded by ghee_mp_set_array.
 void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count) {
-    if (pass < 0 || pass >= g->mp_count) return;
+    if (pass < 0 || pass >= g->mp_count || !g->mp_program[pass]) return;
     make_current(g);
     glUseProgram(g->mp_program[pass]);
     const GLint loc = glGetUniformLocation(g->mp_program[pass], name);
@@ -1239,15 +1277,10 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
     for (int i = 0; idx >= 0 && i < g->mp_ndatatex[pass]; i++)
         if (g->mp_datatex[pass][i] == idx) return idx;
     if (g->mp_ndatatex[pass] >= MP_MAX_DATATEX) {
-        set_error(g, "pass %d declares more than %d arrays", pass, MP_MAX_DATATEX);
+        set_error(g, "%s declares more than %d arrays", g->mp_name[pass], MP_MAX_DATATEX);
         return -1;
     }
-    if (g->mp_nchan[pass] + g->mp_ndatatex[pass] + mp_pass_assets(g, pass) + 1 > g->max_units) {
-        set_error(g, "pass %d needs %d texture units, this GPU has %d",
-                  pass, g->mp_nchan[pass] + g->mp_ndatatex[pass] + mp_pass_assets(g, pass) + 1,
-                  (int)g->max_units);
-        return -1;
-    }
+    if (!mp_pass_fits(g, pass, g->mp_nchan[pass], g->mp_ndatatex[pass] + 1)) return -1;
     if (idx < 0) {
         if (g->mp_narray >= MP_MAX_ARRAYS) { set_error(g, "more than %d arrays in the scene", MP_MAX_ARRAYS); return -1; }
         make_current(g);
@@ -1256,9 +1289,11 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
         glGenTextures(1, &g->mp_array_tex[idx]);
         g->mp_array_size[idx] = 0;
     }
-    glUseProgram(g->mp_program[pass]);
-    g->mp_loc[pass].data[g->mp_ndatatex[pass]] =
-        glGetUniformLocation(g->mp_program[pass], g->mp_array_name[idx]);
+    if (g->mp_program[pass]) {
+        glUseProgram(g->mp_program[pass]);
+        g->mp_loc[pass].data[g->mp_ndatatex[pass]] =
+            glGetUniformLocation(g->mp_program[pass], g->mp_array_name[idx]);
+    }
     for (int l = 0; l < g->mp_nlayer; l++)
         if (g->mp_layer[l].pass == pass)
             g->mp_layer[l].loc.data[g->mp_ndatatex[pass]] =
@@ -1373,48 +1408,37 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
     }
     make_current(g);
     int idx = mp_asset_index(g, name);
-    if (idx < 0) {
+    const bool fresh = idx < 0;
+    if (fresh) {
         if (g->mp_nasset >= MP_MAX_ASSETS) {
             set_error(g, "asset '%s': the engine holds %d assets already", name, MP_MAX_ASSETS);
             return false;
         }
         // assets set before the commit resolve there, later ones resolve here
-        GLint loc[MP_MAX_PASSES], sloc[MP_MAX_PASSES];
+        idx = g->mp_nasset++;
         char nm[72];
         snprintf(nm, sizeof(nm), "%s_size", name);
         for (int p = 0; p < g->mp_count; p++) {
-            loc[p] = glGetUniformLocation(g->mp_program[p], name);
-            sloc[p] = glGetUniformLocation(g->mp_program[p], nm);
-            const int want = g->mp_nchan[p] + g->mp_ndatatex[p] + mp_assets(g, &g->mp_loc[p]) + 1;
-            if (loc[p] >= 0 && want > g->max_units) {
-                set_error(g, "pass %d needs %d texture units, this GPU has %d",
-                          p, want, (int)g->max_units);
-                return false;
-            }
+            const GLuint prog = g->mp_program[p];
+            g->mp_loc[p].asset[idx] = prog ? glGetUniformLocation(prog, name) : -1;
+            g->mp_loc[p].assetSize[idx] = prog ? glGetUniformLocation(prog, nm) : -1;
         }
-        GLint lloc[MP_MAX_LAYERS], lsloc[MP_MAX_LAYERS];
         for (int l = 0; l < g->mp_nlayer; l++) {
-            const int p = g->mp_layer[l].pass;
-            lloc[l] = glGetUniformLocation(g->mp_layer[l].program, name);
-            lsloc[l] = glGetUniformLocation(g->mp_layer[l].program, nm);
-            const int want = g->mp_nchan[p] + g->mp_ndatatex[p] + mp_assets(g, &g->mp_layer[l].loc) + 1;
-            if (lloc[l] >= 0 && want > g->max_units) {
-                set_error(g, "%s needs %d texture units, this GPU has %d",
-                          g->mp_layer[l].name, want, (int)g->max_units);
-                return false;
-            }
+            g->mp_layer[l].loc.asset[idx] = glGetUniformLocation(g->mp_layer[l].program, name);
+            g->mp_layer[l].loc.assetSize[idx] = glGetUniformLocation(g->mp_layer[l].program, nm);
         }
-        idx = g->mp_nasset++;
+    }
+    // A commit resolves the assets already held into its programs, so an asset
+    // set again counts too.
+    for (int p = 0; p < g->mp_count; p++) {
+        if (!mp_pass_fits(g, p, g->mp_nchan[p], g->mp_ndatatex[p])) {
+            if (fresh) g->mp_nasset--;
+            return false;
+        }
+    }
+    if (fresh) {
         snprintf(g->mp_asset_name[idx], 64, "%s", name);
         glGenTextures(1, &g->mp_asset_tex[idx]);
-        for (int p = 0; p < g->mp_count; p++) {
-            g->mp_loc[p].asset[idx] = loc[p];
-            g->mp_loc[p].assetSize[idx] = sloc[p];
-        }
-        for (int l = 0; l < g->mp_nlayer; l++) {
-            g->mp_layer[l].loc.asset[idx] = lloc[l];
-            g->mp_layer[l].loc.assetSize[idx] = lsloc[l];
-        }
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g->mp_asset_tex[idx]);
@@ -1515,11 +1539,14 @@ static void mp_draw_layers(GheeScene *g, int p, float vflip, float elapsed) {
         if (l->pass != p || l->quads <= 0) continue;
         glUseProgram(l->program);
         mp_bind(g, p, &l->loc, vflip, elapsed, false);
-        if (l->blend == GHEE_BLEND_REPLACE) {
+        if (l->blend == GHEE_BLEND_REPLACE && !l->keep_alpha) {
             glDisable(GL_BLEND);
         } else {
+            const GLenum dst = l->blend == GHEE_BLEND_OVER ? GL_ONE_MINUS_SRC_ALPHA
+                             : l->blend == GHEE_BLEND_ADD ? GL_ONE : GL_ZERO;
             glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, l->blend == GHEE_BLEND_ADD ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+            if (l->keep_alpha) glBlendFuncSeparate(GL_ONE, dst, GL_ZERO, GL_ONE);
+            else glBlendFunc(GL_ONE, dst);
         }
         glBindVertexArray(l->vao);
         glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
@@ -1557,14 +1584,23 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
         // enforces that), so the direct scanout draw still gets the display
         // viewport.
         glViewport(0, 0, g->mp_w[p], g->mp_h[p]);
-        // The fullscreen quad overwrites every pixel, so the clear is invisible, and
-        // on tiled GPUs (VC4) it flags the target as not-loaded, skipping a
-        // full-frame tile read from memory before the draw.
-        glClear(GL_COLOR_BUFFER_BIT);
-        glUseProgram(g->mp_program[p]);
         const float vflip = direct && !g->lent_count ? -1.0f : 1.0f;
-        mp_bind(g, p, &g->mp_loc[p], vflip, elapsed, true);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (g->mp_program[p]) {
+            // The fullscreen quad overwrites every pixel, so the clear is invisible, and
+            // on tiled GPUs (VC4) it flags the target as not-loaded, skipping a
+            // full-frame tile read from memory before the draw.
+            glClear(GL_COLOR_BUFFER_BIT);
+            glUseProgram(g->mp_program[p]);
+            mp_bind(g, p, &g->mp_loc[p], vflip, elapsed, true);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        } else {
+            // A pass of layers alone draws them over transparent black. The
+            // bind leaves the channels and the arrays bound for the layers.
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            mp_bind(g, p, &g->mp_loc[p], vflip, elapsed, true);
+        }
         mp_draw_layers(g, p, vflip, elapsed);
     }
 }
@@ -1706,6 +1742,7 @@ static bool ensure_blit(GheeScene *g) {
     if (!g->blit_prog) return false;
     g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");
     g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
+    g->blit_opaque = glGetUniformLocation(g->blit_prog, "opaque");
     glUseProgram(g->blit_prog);   // shared VS: neutral vflip (blit flips in the fragment)
     const GLint bvf = glGetUniformLocation(g->blit_prog, "vflip");
     if (bvf >= 0) glUniform1f(bvf, 1.0f);
@@ -1746,6 +1783,7 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     glViewport(0, 0, pw, ph);
     glUseProgram(g->blit_prog);
     glUniform1f(g->blit_flip, 0.0f);   // preview matches glReadPixels orientation
+    glUniform1f(g->blit_opaque, g->keep_alpha ? 0.0f : 1.0f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
     glUniform1i(g->blit_sampler, 0);
@@ -1822,6 +1860,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         glClear(GL_COLOR_BUFFER_BIT);   // skip the tile load (see render_passes)
         glUseProgram(g->blit_prog);
         glUniform1f(g->blit_flip, g->lent_count ? 0.0f : 1.0f);
+        glUniform1f(g->blit_opaque, 1.0f);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
         glUniform1i(g->blit_sampler, 0);
@@ -1903,6 +1942,12 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     } else if (buffer_rgb) {
         glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[last][g->mp_write[last]]);
         read_pixels(g, g->width, g->height, g->components, buffer_rgb);
+        // An RGB buffer reads back alpha 255 by itself. A final pass that
+        // stores its alpha takes 255 here.
+        if (g->components == 4 && g->mp_alpha[last] && !g->keep_alpha) {
+            uint8_t *a = buffer_rgb + 3;
+            for (size_t i = 0, n = (size_t)g->width * g->height; i < n; i++, a += 4) *a = 255;
+        }
     }
 
     if (g->profile) {
@@ -1926,9 +1971,11 @@ void ghee_clear_time(GheeScene *g) { g->has_time_override = false; }
 
 void ghee_set_dt(GheeScene *g, float dt) { g->dt = dt; }
 
-// How many fragment texture units this GL exposes: a pass's channels plus its
-// data textures have to fit.
+void ghee_keep_alpha(GheeScene *g, int keep) { g->keep_alpha = keep; }
+
 int ghee_max_texture_units(GheeScene *g) { return g ? (int)g->max_units : 0; }
+
+int ghee_gl_texture_units(GheeScene *g) { return g ? (int)g->gl_units : 0; }
 
 // Whether this GL linear-filters a data texture. ghee_mp_set_array picks its
 // filter from the same condition. False on V3D, which has float textures but
@@ -1954,6 +2001,7 @@ void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(g->blit_prog);
     glUniform1f(g->blit_flip, flipY);
+    glUniform1f(g->blit_opaque, 1.0f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][buf]);
     glUniform1i(g->blit_sampler, 0);

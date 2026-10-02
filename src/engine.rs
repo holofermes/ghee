@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::assets::Pixels;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
-use crate::scene::{ArraySize, Draw, ParamValue, Scene};
+use crate::scene::{ArraySize, Draw, ParamValue, Pass, Scene};
 use crate::text::{Fault, Text};
 
 /// error_pass for a compile error in the scene's common block.
@@ -90,6 +90,15 @@ impl Blend {
     }
 }
 
+/// What a layer does to its pass's alpha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Alpha {
+    /// The alpha blends the way the colour does.
+    Blend,
+    /// The pass's alpha stays as it was.
+    Keep,
+}
+
 /// A layer for ghee_mp_add_layer, as engine.h describes it. Each scene draw
 /// reaches the engine as one.
 #[derive(Clone, Debug, PartialEq)]
@@ -99,6 +108,7 @@ pub(crate) struct Layer {
     pub vertex: String,
     pub fragment: String,
     pub blend: Blend,
+    pub alpha: Alpha,
 }
 
 /// A scene draw that the engine holds as a layer, and the layer of its error
@@ -427,6 +437,8 @@ pub struct Renderer {
     pub error_pass: Option<ErrorPass>,
     #[allow(dead_code)]
     pub display: bool,
+    /// The readbacks keep the output pass's alpha. set_alpha() sets it.
+    alpha: bool,
     /// pass name -> engine pass index, in the order setup() adds the passes.
     mp: Vec<(String, c_int)>,
     /// array name -> size, in declaration order.
@@ -473,6 +485,7 @@ impl Renderer {
             error_line: None,
             error_pass: None,
             display,
+            alpha: false,
             mp: Vec::new(),
             feeds: Vec::new(),
             scene_assets: std::cell::RefCell::new(Vec::new()),
@@ -621,30 +634,29 @@ impl Renderer {
             );
             return Ok(self.error.clone());
         }
-        let units = self.max_texture_units();
+        // The engine counts the assets and the texts that each program
+        // samples once it compiles. These counts come first, and a scene
+        // that they refuse leaves the running scene in place.
         for p in &scene.passes {
             let mut used: Vec<&str> = p.arrays.iter().map(|a| a.name.as_str()).collect();
             used.sort_unstable();
             used.dedup();
             let want = p.channels.len() + used.len();
-            if want as i64 > i64::from(units) {
-                self.error = format!(
-                    "pass '{}' needs {want} texture units, this GPU has {units}",
-                    p.name
-                );
-                return Ok(self.error.clone());
-            }
+            let mut over = self.units_error(&format!("pass '{}'", p.name), want);
             // A draw samples its text's texture on top of its pass's inputs.
-            if !p.draws.is_empty() && want as i64 + 1 > i64::from(units) {
-                self.error = format!(
-                    "pass '{}' draw 0 needs {} texture units, this GPU has {units}",
-                    p.name,
-                    want + 1
-                );
+            if over.is_none() && !p.draws.is_empty() {
+                over = self.units_error(&format!("pass '{}' draw 0", p.name), want + 1);
+            }
+            if let Some(e) = over {
+                self.error = e;
                 return Ok(self.error.clone());
             }
         }
         if let Some(e) = scene.undeclared_draw() {
+            self.error = e;
+            return Ok(self.error.clone());
+        }
+        if let Some(e) = scene.passes.iter().find_map(Pass::empty) {
             self.error = e;
             return Ok(self.error.clone());
         }
@@ -653,19 +665,42 @@ impl Renderer {
         let mut draws: Vec<DrawLayer> = Vec::new();
         let hw_linear = self.data_texture_linear();
         let total = scene.passes.len();
+        // Every pass buffer stores alpha but the output pass's, which stores
+        // it only when the readback keeps it or a channel reads it. An RGB
+        // buffer reads back alpha 255 at no cost.
+        let out = last.name.as_str();
+        let out_read = scene
+            .passes
+            .iter()
+            .any(|p| p.channels.iter().any(|c| c.buffer.as_deref() == Some(out)));
         for (i, p) in scene.passes.iter().enumerate() {
             // A VC4 takes a while over a big shader, and a scene of several
             // compiles them one after another with nothing to show for it.
             crate::report::progress("compile", format!("pass {} of {total}, {}", i + 1, p.name));
-            let glsl = p.glsl(
-                Some(&scene.params),
-                scene.common.as_deref(),
-                &scene.assets,
-                &scene.texts,
-                hw_linear,
-            );
+            let glsl = match p.has_code() {
+                true => p.glsl(
+                    Some(&scene.params),
+                    scene.common.as_deref(),
+                    &scene.assets,
+                    &scene.texts,
+                    hw_linear,
+                ),
+                false => String::new(),
+            };
+            let cname = self.staged_cstring(&format!("pass '{}'", p.name))?;
             let cglsl = self.staged_cstring(&glsl)?;
-            let mut idx = unsafe { ffi::ghee_mp_add_pass(self.handle, cglsl.as_ptr()) };
+            let alpha = i + 1 < total || self.alpha || out_read;
+            let mut idx = unsafe {
+                ffi::ghee_mp_add_pass(
+                    self.handle,
+                    cname.as_ptr(),
+                    match p.has_code() {
+                        true => cglsl.as_ptr(),
+                        false => ptr::null(),
+                    },
+                    c_int::from(alpha),
+                )
+            };
             if idx >= 0 {
                 if let Some((w, h)) = p.size {
                     if !unsafe {
@@ -701,6 +736,7 @@ impl Renderer {
                         cvs.as_ptr(),
                         cfs.as_ptr(),
                         d.blend.engine(),
+                        c_int::from(d.alpha == Alpha::Keep),
                     )
                 };
                 if li < 0 {
@@ -737,6 +773,7 @@ impl Renderer {
                         cvs.as_ptr(),
                         cfs.as_ptr(),
                         Blend::Over.engine(),
+                        c_int::from(p.draws[k].alpha == Alpha::Keep),
                     )
                 };
                 if dl.boxes < 0 {
@@ -766,6 +803,7 @@ impl Renderer {
                         vs.as_ptr(),
                         fs.as_ptr(),
                         l.blend.engine(),
+                        c_int::from(l.alpha == Alpha::Keep),
                     )
                 };
                 if layer_ix[k] < 0 {
@@ -851,14 +889,19 @@ impl Renderer {
                 Pixels::U8(d) => AssetData::U8(d),
                 Pixels::F32(d) => AssetData::F32(d),
             };
-            self.set_asset(
+            // A pass past its texture units refuses the scene here, as
+            // anywhere else.
+            if let Err(e) = self.set_asset(
                 &a.name,
                 img.width,
                 img.height,
                 img.components,
                 a.linear,
                 data,
-            )?;
+            ) {
+                self.error = e.to_string();
+                return Ok(self.error.clone());
+            }
             self.scene_asset(&a.name);
         }
         // A text builds from the scene's string param of its name, through
@@ -1435,10 +1478,34 @@ impl Renderer {
         unsafe { ffi::ghee_set_dt(self.handle, value as f32) };
     }
 
-    /// The fragment texture units this GPU exposes. VC4 exposes 8.
-    /// A pass fits its channels and its array inputs in this budget.
+    /// The texture units one program of a pass binds at most: the pass's
+    /// channels and arrays, then the assets and the texts that the program
+    /// samples. It is the GPU's own count, capped at 16.
     pub fn max_texture_units(&self) -> i32 {
         unsafe { ffi::ghee_max_texture_units(self.handle) }
+    }
+
+    /// The error for `what`, a pass or a draw, when `want` texture units are
+    /// past max_texture_units(). The engine words its own the same way.
+    fn units_error(&self, what: &str, want: usize) -> Option<String> {
+        let units = self.max_texture_units();
+        if want as i64 <= i64::from(units) {
+            return None;
+        }
+        let has = match unsafe { ffi::ghee_gl_texture_units(self.handle) } > units {
+            true => "a pass binds at most",
+            false => "this GPU has",
+        };
+        Some(format!("{what} needs {want} texture units, {has} {units}"))
+    }
+
+    /// Keep the output pass's alpha in 4-component frames. Off by default,
+    /// and every frame then reads alpha 255. A 3-component frame and the
+    /// scanout carry no alpha, and the H264 input stays opaque. It takes
+    /// effect at the next setup().
+    pub fn set_alpha(&mut self, keep: bool) {
+        self.alpha = keep;
+        unsafe { ffi::ghee_keep_alpha(self.handle, c_int::from(keep)) };
     }
 
     /// True when this GPU linear-filters the float textures that carry arrays.
@@ -1576,6 +1643,15 @@ mod tests {
 
     fn px(frame: &[u8], w: usize, x: usize, y: usize, c: usize) -> f64 {
         f64::from(frame[(y * w + x) * COMPONENTS + c])
+    }
+
+    /// The refusal of `what`, which needs `want` texture units, on this GPU.
+    fn over_units(r: &Renderer, what: &str, want: usize) -> String {
+        let units = r.max_texture_units();
+        match unsafe { ffi::ghee_gl_texture_units(r.handle()) } > 16 {
+            true => format!("{what} needs {want} texture units, a pass binds at most {units}"),
+            false => format!("{what} needs {want} texture units, this GPU has {units}"),
+        }
     }
 
     #[test]
@@ -1873,8 +1949,11 @@ mod tests {
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
 
-        let raw = CString::new(RAW).unwrap();
-        let idx = unsafe { ffi::ghee_mp_add_pass(r.handle(), raw.as_ptr()) };
+        let (name, raw) = (
+            CString::new("pass 'raw'").unwrap(),
+            CString::new(RAW).unwrap(),
+        );
+        let idx = unsafe { ffi::ghee_mp_add_pass(r.handle(), name.as_ptr(), raw.as_ptr(), 1) };
         assert_eq!(idx, 0);
         assert!(!unsafe { ffi::ghee_mp_set_pass_size(r.handle(), idx, 1 << 17, 1 << 17) });
         assert!(r.last_error().contains("pass buffer failed"));
@@ -2010,13 +2089,13 @@ mod tests {
 
     #[test]
     fn a_setup_frees_the_slots_of_old_image_assets() {
-        // The engine binds 8 assets at a time, so each setup hands back the
+        // The engine binds 16 assets at a time, so each setup hands back the
         // slots of the image assets that its scene no longer declares. An
         // asset set by the host stays.
         let Some((_g, mut r)) = gpu() else { return };
         r.set_asset("host", 1, 1, 1, false, AssetData::U8(&[200u8]))
             .unwrap();
-        for i in 0..12u8 {
+        for i in 0..20u8 {
             let name = format!("img{i}");
             let code = format!(
                 "uniform sampler2D host; void main(){{ \
@@ -2034,12 +2113,12 @@ mod tests {
                 width: 1,
                 height: 1,
                 components: 1,
-                pixels: Pixels::U8(vec![i * 20]),
+                pixels: Pixels::U8(vec![i * 12]),
             });
             assert_eq!(r.setup(&sc).unwrap(), "", "{name}");
             r.set_time(Some(0.0));
             let f = r.render(None).unwrap();
-            assert_eq!((f[0], f[1]), (i * 20, 200), "{name}");
+            assert_eq!((f[0], f[1]), (i * 12, 200), "{name}");
         }
     }
 
@@ -2081,12 +2160,147 @@ mod tests {
         ]));
         assert_eq!(
             r.setup(&greedy).unwrap(),
-            format!(
-                "pass 'main' needs {} texture units, this GPU has {units}",
-                units + 1
-            )
+            over_units(&r, "pass 'main'", units + 1)
         );
         assert_eq!(r.render(None).unwrap(), before);
+    }
+
+    #[test]
+    fn a_pass_binds_16_texture_units_at_most_on_any_gpu() {
+        let Some((_g, r)) = gpu() else { return };
+        let gl = unsafe { ffi::ghee_gl_texture_units(r.handle()) };
+        assert_eq!(r.max_texture_units(), gl.min(16));
+    }
+
+    #[test]
+    fn the_assets_a_pass_samples_count_against_its_texture_units() {
+        // main samples an asset in every unit, and a channel takes one more.
+        let Some((_g, mut r)) = gpu() else { return };
+        let units = r.max_texture_units() as usize;
+        let names: Vec<String> = (0..units).map(|i| format!("img{i}")).collect();
+        let sum: Vec<String> = names
+            .iter()
+            .map(|n| format!("texture2D({n}, vec2(0.5)).r"))
+            .collect();
+        let scene = |channels: Value| {
+            let assets: serde_json::Map<String, Value> = names
+                .iter()
+                .map(|n| (n.clone(), json!({"file": format!("{n}.png")})))
+                .collect();
+            let mut sc = Scene::from_dict(
+                &json!({"version": 1, "assets": assets, "passes": [
+                    {"name": "a", "code": FLAT},
+                    {"name": "main", "channels": channels, "code": format!(
+                        "void main(){{ gl_FragColor = vec4({}); }}", sum.join(" + "))},
+                ]}),
+                None,
+                None,
+            )
+            .unwrap();
+            for a in &mut sc.assets {
+                a.image = Some(crate::assets::Image {
+                    width: 1,
+                    height: 1,
+                    components: 1,
+                    pixels: Pixels::U8(vec![1]),
+                });
+            }
+            sc
+        };
+        assert_eq!(r.setup(&scene(json!([]))).unwrap(), "");
+        assert_eq!(
+            r.setup(&scene(json!([{"buffer": "a"}]))).unwrap(),
+            over_units(&r, "pass 'main'", units + 1)
+        );
+    }
+
+    const HALF: &str = "void main(){ gl_FragColor = vec4(0.25, 0.5, 0.0, 0.5); }";
+
+    fn first_frames(r: &mut Renderer, sc: &Scene, n: usize) -> Vec<u8> {
+        assert_eq!(r.setup(sc).unwrap(), "");
+        let mut f = Vec::new();
+        for i in 0..n {
+            r.set_time(Some(i as f64 / 60.0));
+            f = r.render(None).unwrap().to_vec();
+        }
+        f
+    }
+
+    #[test]
+    fn a_readback_reads_alpha_255_unless_the_alpha_is_kept() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([{"name": "main", "code": HALF}]));
+        let opaque = first_frames(&mut r, &sc, 1);
+        assert!(channel(&opaque, 3).iter().all(|a| *a == 255.0));
+        let small = (W as i32 / 2, H as i32 / 2);
+        let scaled = r.render_scaled(None, small).unwrap();
+        assert!(channel(&scaled, 3).iter().all(|a| *a == 255.0));
+        r.set_alpha(true);
+        let kept = first_frames(&mut r, &sc, 1);
+        assert!(channel(&kept, 3).iter().all(|a| (a - 127.5).abs() <= 1.0));
+        let scaled = r.render_scaled(None, small).unwrap();
+        assert!(channel(&scaled, 3).iter().all(|a| (a - 127.5).abs() <= 1.0));
+        for c in 0..3 {
+            assert_eq!(channel(&opaque, c), channel(&kept, c), "channel {c}");
+        }
+        // A 3-component frame reads the same colour with the alpha kept.
+        drop(r);
+        let dev = probe_dri_devices()
+            .into_iter()
+            .find(|d| Renderer::new(8, 8, 3, Some(d), false, false).is_ok())
+            .unwrap();
+        let mut rgb = Vec::new();
+        for keep in [false, true] {
+            let mut r3 = Renderer::new(8, 8, 3, Some(&dev), false, false).unwrap();
+            r3.set_alpha(keep);
+            assert_eq!(r3.setup(&sc).unwrap(), "");
+            r3.set_time(Some(0.0));
+            rgb.push(r3.render(None).unwrap().to_vec());
+        }
+        assert_eq!(rgb[0][..3], [64, 128, 0]);
+        assert_eq!(rgb[0], rgb[1]);
+    }
+
+    #[test]
+    fn a_channel_reads_the_alpha_its_pass_wrote() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([
+            {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0, 1.0, 1.0, 0.25); }"},
+            {"name": "main", "channels": [{"buffer": "a"}], "code":
+                "void main(){ gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).a, 0.0, 0.0, 1.0); }"},
+        ]));
+        let f = first_frames(&mut r, &sc, 1);
+        assert!(channel(&f, 0).iter().all(|v| (v - 63.75).abs() <= 1.0));
+    }
+
+    #[test]
+    fn an_output_pass_that_a_channel_reads_keeps_its_alpha_and_reads_back_opaque() {
+        // main writes the alpha it held a frame ago into red, and 0.5 into
+        // alpha.
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(
+            json!([{"name": "main", "channels": [{"buffer": "main"}], "code":
+            "void main(){ gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).a, 0.0, 0.0, 0.5); }"}]),
+        );
+        let f = first_frames(&mut r, &sc, 2);
+        assert!(channel(&f, 0).iter().all(|v| (v - 127.5).abs() <= 1.0));
+        assert!(channel(&f, 3).iter().all(|a| *a == 255.0));
+        r.set_alpha(true);
+        let kept = first_frames(&mut r, &sc, 2);
+        assert_eq!(channel(&kept, 0), channel(&f, 0));
+        assert!(channel(&kept, 3).iter().all(|a| (a - 127.5).abs() <= 1.0));
+    }
+
+    #[test]
+    fn a_pass_with_no_code_and_no_draws_is_refused_naming_it() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let mut sc = flat_scene();
+        sc.passes[0].code = String::new();
+        assert_eq!(
+            r.setup(&sc).unwrap(),
+            "pass 'main' has no 'code' (inline GLSL), no 'shader' (a file next to the scene) \
+             and no 'draws'"
+        );
     }
 
     #[test]
@@ -2717,6 +2931,7 @@ mod tests {
             vertex: layer_vs(""),
             fragment: layer_fs(fs_body),
             blend,
+            alpha: Alpha::Blend,
         }
     }
 
@@ -2895,6 +3110,7 @@ mod tests {
                    texture2D(iChannel0, v_px / resolution).b * pad_size.x, 1.0); }",
             ),
             blend: Blend::Replace,
+            alpha: Alpha::Blend,
         };
         assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
         r.set_time(Some(0.0));
@@ -3056,6 +3272,7 @@ mod tests {
             vertex: vs,
             fragment: format!("{PRECISION}varying vec4 v_color;\n{PLAIN_FS}"),
             blend: Blend::Replace,
+            alpha: Alpha::Blend,
         };
         assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
         let data: Vec<f32> = [
@@ -3136,6 +3353,7 @@ mod tests {
             vertex: vs,
             fragment: fs,
             blend: Blend::Over,
+            alpha: Alpha::Blend,
         };
         assert_eq!(r.setup_layers(&alone, &[l]).unwrap(), "");
         r.set_layer_quads(0, &built.quads.floats, 4).unwrap();

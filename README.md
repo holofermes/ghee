@@ -175,6 +175,13 @@ previous frame. ghee sends the last pass to the output.
 Each pass renders at its own resolution, and samples another pass through
 normalized coordinates.
 
+A pass buffer holds 8-bit RGBA, and a channel reads the alpha that its pass
+wrote. The output is opaque: a frame reads alpha 255, unless
+`ghee render --alpha` keeps the output pass's alpha in RGBA frames.
+
+A pass binds at most 16 textures: its channels, its arrays, and the assets
+and texts that it samples.
+
 ghee compiles the GLSL of every pass behind a preamble like this one:
 
 ```glsl
@@ -304,7 +311,7 @@ On VC4 the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre,
 so a shader that needs exact centres, like the one above, samples at
 `floor(v_texCoord * resolution) + 0.5`.
 
-A scene holds at most 8 image assets and texts together. The words must fit
+A scene holds at most 16 image assets and texts together. The words must fit
 a 1024x2048 data texture, at most 4 glyphs may overlap at one spot, and a
 glyph holds at most 64 curves in one band.
 
@@ -315,6 +322,10 @@ outline, such as an emoji of a bitmap-only font, and a glyph past the curve
 limit each draw an error box in their place, and the rest of the words draw.
 Words that do not fit leave the last words that did, and a scene whose first
 words do not fit draws none.
+
+A pass can also draw a text straight into its buffer, through `draws`. A
+pass with `draws` and no `code` starts each frame transparent and holds the
+words alone, a layer that later passes read through a channel and composite.
 
 Render the bundled `lettering` example to a PNG:
 
@@ -386,7 +397,7 @@ ghee isf import shader.fs --size 640x480
 
 ghee refuses three kinds of ISF:
 
-- `FLOAT` pass buffers. ghee's pass buffers are 8-bit RGB.
+- `FLOAT` pass buffers. ghee's pass buffers are 8-bit RGBA.
 - `IMPORTED` external images. ghee scenes have no image inputs.
 - a vertex shader, or a body reading a varying. ghee's vertex shader is
   fixed.

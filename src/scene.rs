@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
-use crate::engine::Blend;
+use crate::engine::{Alpha, Blend};
 use crate::text::Text;
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
@@ -32,7 +32,7 @@ const MAX_DIM: i64 = 16384;
 const MAX_TEXELS: i64 = 1 << 24;
 
 // The engine's asset table holds MP_MAX_ASSETS entries.
-const MAX_ASSETS: usize = 8;
+const MAX_ASSETS: usize = 16;
 
 // A draw takes two engine layers, its own and its error boxes', and the
 // engine holds MP_MAX_LAYERS layers.
@@ -1087,6 +1087,7 @@ pub struct Draw {
     pub code: String,
     pub place: String,
     pub blend: Blend,
+    pub alpha: Alpha,
     /// How far the quads reach past the ink, in em, for an effect around the
     /// outline.
     pub pad: f64,
@@ -1119,6 +1120,12 @@ impl Draw {
                 py_repr(v)
             ),
         };
+        let alpha = match o.get("alpha").filter(|v| !v.is_null()) {
+            None => Alpha::Blend,
+            Some(Value::String(a)) if a == "blend" => Alpha::Blend,
+            Some(Value::String(a)) if a == "keep" => Alpha::Keep,
+            Some(v) => bail!("{what} alpha needs 'blend' or 'keep', got {}", py_repr(v)),
+        };
         let pad = match o.get("pad").filter(|v| !v.is_null()) {
             None => 0.0,
             Some(v) => match v.as_f64() {
@@ -1134,6 +1141,7 @@ impl Draw {
             code,
             place,
             blend,
+            alpha,
             pad,
         })
     }
@@ -1151,6 +1159,9 @@ impl Draw {
         if let Some(b) = blend {
             d.insert("blend".to_string(), Value::from(b));
         }
+        if self.alpha == Alpha::Keep {
+            d.insert("alpha".to_string(), Value::from("keep"));
+        }
         if self.pad != 0.0 {
             d.insert("pad".to_string(), Value::from(self.pad));
         }
@@ -1161,6 +1172,8 @@ impl Draw {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pass {
     pub name: String,
+    /// The pass's fragment shader. A pass with draws may leave it empty: the
+    /// pass then starts each frame transparent and draws its draws alone.
     pub code: String,
     pub arrays: Vec<ArrayInput>,
     pub channels: Vec<Channel>,
@@ -1229,6 +1242,22 @@ impl Pass {
         )
     }
 
+    /// False for a pass of draws alone, with no quad of its own.
+    pub fn has_code(&self) -> bool {
+        !self.code.trim().is_empty()
+    }
+
+    /// The error for a pass with no code and no draws, which draws nothing.
+    pub(crate) fn empty(&self) -> Option<String> {
+        (!self.has_code() && self.draws.is_empty()).then(|| {
+            format!(
+                "pass '{}' has no 'code' (inline GLSL), no 'shader' (a file next to \
+                 the scene) and no 'draws'",
+                self.name
+            )
+        })
+    }
+
     /// True when a channel reads this pass's own buffer.
     #[allow(dead_code)]
     pub fn reads_self(&self) -> bool {
@@ -1242,17 +1271,10 @@ impl Pass {
             bail!("a pass needs a JSON object, got {}", py_repr(d));
         };
         let name = o.get("name").map_or("main".to_string(), py_str);
-        let code = match o.get("code").filter(|v| !v.is_null()) {
-            Some(v) => py_str(v),
-            None => {
-                if !o.contains_key("shader") {
-                    bail!(
-                        "pass '{name}' has neither 'code' (inline GLSL) nor \
-                         'shader' (a file next to the scene)"
-                    );
-                }
-                read_shader(&o["shader"], base_dir, &format!("pass '{name}'"))?
-            }
+        let code = match (o.get("code").filter(|v| !v.is_null()), o.get("shader")) {
+            (Some(v), _) => py_str(v),
+            (None, Some(s)) => read_shader(s, base_dir, &format!("pass '{name}'"))?,
+            (None, None) => String::new(),
         };
         let (arrays, channels, params) =
             (|| -> Result<(Vec<ArrayInput>, Vec<Channel>, ParamMap)> {
@@ -1295,13 +1317,19 @@ impl Pass {
                 pass.filter
             );
         }
+        // A filter pass takes its code from its filter, which fills it in later.
+        if let Some(e) = pass.empty().filter(|_| pass.filter.is_empty()) {
+            bail!("{e}");
+        }
         Ok(pass)
     }
 
     pub fn to_dict(&self) -> Value {
         let mut out = Map::new();
         out.insert("name".to_string(), Value::from(self.name.clone()));
-        out.insert("code".to_string(), Value::from(self.code.clone()));
+        if self.has_code() || self.draws.is_empty() {
+            out.insert("code".to_string(), Value::from(self.code.clone()));
+        }
         if let Some((w, h)) = self.size {
             out.insert("size".to_string(), Value::from(vec![w, h]));
         }
@@ -1554,6 +1582,13 @@ impl Scene {
         common: Option<String>,
         assets: Vec<Asset>,
     ) -> Result<Scene> {
+        if let Some(e) = passes
+            .iter()
+            .filter(|p| p.filter.is_empty())
+            .find_map(Pass::empty)
+        {
+            bail!("{e}");
+        }
         {
             let mut seen: Vec<&str> = Vec::new();
             for p in &passes {
@@ -2776,7 +2811,7 @@ mod tests {
                 json!({"version": 1, "passes": "oops"}),
             ),
             (
-                "neither 'code'",
+                "pass 'm' has no 'code'",
                 json!({"version": 1, "passes": [{"name": "m"}]}),
             ),
             (
@@ -3163,15 +3198,19 @@ mod tests {
     }
 
     #[test]
-    fn a_ninth_asset_hits_the_engine_cap() {
-        let mut m = Map::new();
-        for i in 0..9 {
-            m.insert(format!("a{i}"), json!({"file": format!("a{i}.png")}));
-        }
-        let e = Scene::from_dict(&asset_scene(Value::Object(m)), None, None)
+    fn a_seventeenth_asset_hits_the_engine_cap() {
+        let assets = |n: usize| {
+            let mut m = Map::new();
+            for i in 0..n {
+                m.insert(format!("a{i}"), json!({"file": format!("a{i}.png")}));
+            }
+            asset_scene(Value::Object(m))
+        };
+        assert!(Scene::from_dict(&assets(16), None, None).is_ok());
+        let e = Scene::from_dict(&assets(17), None, None)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("8"), "{e}");
+        assert!(e.ends_with("17 image assets, over the 16 asset cap"), "{e}");
     }
 
     #[test]

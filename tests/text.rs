@@ -746,10 +746,10 @@ fn image_assets_and_texts_share_the_engine_cap() {
         }
         doc
     };
-    assert!(Scene::from_dict(&with_images(7), None, None).is_ok());
-    let e = scene_err(&with_images(8));
+    assert!(Scene::from_dict(&with_images(15), None, None).is_ok());
+    let e = scene_err(&with_images(16));
     assert!(
-        e.ends_with("9 image assets and texts, over the cap of 8"),
+        e.ends_with("17 image assets and texts, over the cap of 16"),
         "{e}"
     );
 }
@@ -1269,12 +1269,12 @@ fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
 
 #[test]
 fn a_setup_frees_the_asset_slots_of_old_texts() {
-    // The engine binds 8 assets at a time, so each setup has to hand back
+    // The engine binds 16 assets at a time, so each setup has to hand back
     // the slots of the texts that its scene no longer declares.
     let laid = lay(SANS, "I", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
     let Some((_g, mut r)) = gpu(W, H) else { return };
-    for i in 0..12 {
+    for i in 0..20 {
         let name = format!("t{i}");
         let doc = json!({
             "version": 1,
@@ -1930,7 +1930,9 @@ fn draws_round_trip_and_over_and_no_pad_are_the_defaults() {
         {"text": "label", "code": WHITE, "place": "vec2 glyph_place(vec2 em) { return em; }",
          "blend": "add", "pad": 0.125},
         {"text": "label", "code": WHITE, "place": "vec2 glyph_place(vec2 em) { return em; }",
-         "blend": "over", "pad": 0},
+         "blend": "over", "pad": 0, "alpha": "blend"},
+        {"text": "label", "code": WHITE, "place": "vec2 glyph_place(vec2 em) { return em; }",
+         "alpha": "keep"},
     ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let back = sc.to_dict();
@@ -1938,9 +1940,36 @@ fn draws_round_trip_and_over_and_no_pad_are_the_defaults() {
     assert_eq!(back["passes"][0]["draws"][1], doc["passes"][0]["draws"][1]);
     assert_eq!(
         back["passes"][0]["draws"][2], doc["passes"][0]["draws"][0],
-        "over and pad 0 are left out"
+        "over, pad 0 and alpha blend are left out"
     );
+    assert_eq!(back["passes"][0]["draws"][3], doc["passes"][0]["draws"][3]);
     assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
+}
+
+#[test]
+fn a_pass_of_draws_alone_round_trips_with_no_code_and_a_pass_of_neither_is_refused() {
+    let place = "vec2 glyph_place(vec2 em) { return em; }";
+    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+    doc["passes"] = json!([
+        {"name": "words", "draws": [{"text": "label", "code": WHITE, "place": place}]},
+        {"name": "main", "code": BLACK},
+    ]);
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    assert!(!sc.passes[0].has_code());
+    let back = sc.to_dict();
+    assert_eq!(back["passes"][0], doc["passes"][0]);
+    assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
+    for words in [
+        json!({"name": "words"}),
+        json!({"name": "words", "code": " "}),
+    ] {
+        doc["passes"][0] = words;
+        assert_eq!(
+            scene_err(&doc),
+            "scene: pass 'words' has no 'code' (inline GLSL), no 'shader' (a file next to \
+             the scene) and no 'draws'"
+        );
+    }
 }
 
 #[test]
@@ -1978,6 +2007,10 @@ fn a_draw_declaration_names_what_it_lacks() {
         (
             one(json!({"text": "label", "code": WHITE, "place": place, "pad": -1})),
             "pass 'main' draw 0 pad needs a number of em, 0 or more, got -1",
+        ),
+        (
+            one(json!({"text": "label", "code": WHITE, "place": place, "alpha": "add"})),
+            "pass 'main' draw 0 alpha needs 'blend' or 'keep', got 'add'",
         ),
         (
             one(json!({"text": "words", "code": WHITE, "place": place})),
@@ -2130,15 +2163,165 @@ fn a_draw_past_the_texture_units_fails_naming_the_draw() {
     main["arrays"] = json!([{"name": "v", "size": 4}]);
     main["code"] = json!("void main(){ gl_FragColor = vec4(v_at(0)); }");
     doc["passes"] = json!([{"name": "a", "code": BLACK}, main]);
+    let past = match unsafe { ghee::ffi::ghee_gl_texture_units(r.handle()) } > 16 {
+        true => "a pass binds at most",
+        false => "this GPU has",
+    };
     assert_eq!(
         r.setup(&loaded(&doc)).unwrap(),
         format!(
-            "pass 'main' draw 0 needs {} texture units, this GPU has {units}",
+            "pass 'main' draw 0 needs {} texture units, {past} {units}",
             units + 1
         )
     );
     r.set_time(Some(0.0));
     assert!(r.render(None).unwrap() == before.as_slice());
+}
+
+#[test]
+fn a_draw_that_samples_past_the_texture_units_fails_naming_the_draw() {
+    // main reads one channel, and its draw samples the label's texture and an
+    // image in every other unit.
+    let Some((_g, mut r)) = gpu(64, 48) else {
+        return;
+    };
+    let units = r.max_texture_units() as usize;
+    let dir = tmpdir("units");
+    fs::copy(format!("{FONTS}/{SANS}"), format!("{dir}/{SANS}")).unwrap();
+    let names: Vec<String> = (0..units - 1).map(|i| format!("img{i}")).collect();
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 30.0,
+    };
+    let mut doc = draw_scene(SANS, "I", Align::Left, fit);
+    for n in &names {
+        fs::write(format!("{dir}/{n}.raw"), [128u8]).unwrap();
+        doc["assets"][n] =
+            json!({"file": format!("{n}.raw"), "width": 1, "height": 1, "format": "u8"});
+    }
+    let sum: Vec<String> = names
+        .iter()
+        .map(|n| format!("texture2D({n}, vec2(0.5)).r"))
+        .collect();
+    doc["passes"][0]["draws"][0]["code"] = json!(format!(
+        "void main(){{ gl_FragColor = vec4(glyph_cover() * ({})); }}",
+        sum.join(" + ")
+    ));
+    let scene = |doc: &Value| {
+        let mut sc = Scene::from_dict(doc, None, None).unwrap();
+        sc.load_assets(&dir).unwrap();
+        sc
+    };
+    assert_eq!(r.setup(&scene(&doc)).unwrap(), "");
+    let main = doc["passes"][0].clone();
+    doc["passes"] = json!([{"name": "a", "code": BLACK}, main]);
+    doc["passes"][1]["channels"] = json!([{"buffer": "a"}]);
+    let past = match unsafe { ghee::ffi::ghee_gl_texture_units(r.handle()) } > 16 {
+        true => "a pass binds at most",
+        false => "this GPU has",
+    };
+    assert_eq!(
+        r.setup(&scene(&doc)).unwrap(),
+        format!(
+            "pass 'main' draw 0 needs {} texture units, {past} {units}",
+            units + 1
+        )
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The alpha channel of an RGBA frame.
+fn alphas(frame: &[u8]) -> Vec<u8> {
+    frame.iter().skip(3).step_by(4).copied().collect()
+}
+
+/// One channel of an RGBA frame.
+fn plane(frame: &[u8], c: usize) -> Vec<u8> {
+    frame.iter().skip(c).step_by(4).copied().collect()
+}
+
+const I_FIT: Fit = Fit {
+    x: 4.0,
+    y: 4.0,
+    ppem: 40.0,
+};
+
+/// draw_scene with its draw in a pass of draws alone, `words`, and that pass
+/// the output.
+fn words_only() -> Value {
+    let mut doc = draw_scene(SANS, "I", Align::Left, I_FIT);
+    let draws = doc["passes"][0]["draws"].clone();
+    doc["passes"] = json!([{"name": "words", "draws": draws}]);
+    doc
+}
+
+#[test]
+fn a_draw_over_a_transparent_pass_leaves_its_coverage_in_alpha() {
+    let Some((_g, mut r)) = gpu(64, 56) else {
+        return;
+    };
+    let opaque = render(&mut r, &loaded(&words_only()));
+    assert!(alphas(&opaque).iter().all(|a| *a == 255));
+    r.set_alpha(true);
+    let kept = render(&mut r, &loaded(&words_only()));
+    // White coverage, premultiplied: each of r, g, b and a is the coverage.
+    let cover = plane(&kept, 0);
+    assert_eq!(alphas(&kept), cover);
+    assert_eq!(plane(&opaque, 0), cover);
+    assert!(cover.contains(&255) && cover.contains(&0));
+    assert!(cover.iter().any(|c| (1..255).contains(c)), "no edge pixel");
+}
+
+#[test]
+fn a_pass_of_draws_alone_starts_transparent_and_a_later_pass_composites_it() {
+    let Some((_g, mut r)) = gpu(64, 56) else {
+        return;
+    };
+    // The same draw over black, and the words pass composited over blue.
+    let over_black = render(&mut r, &loaded(&draw_scene(SANS, "I", Align::Left, I_FIT)));
+    let mut doc = words_only();
+    doc["passes"].as_array_mut().unwrap().push(json!({
+        "name": "main",
+        "channels": [{"buffer": "words"}],
+        "code": "void main(){ vec4 t = texture2D(iChannel0, v_texCoord); \
+                 gl_FragColor = vec4(vec3(0.0, 0.0, 1.0) * (1.0 - t.a) + t.rgb, 1.0); }",
+    }));
+    let composed = render(&mut r, &loaded(&doc));
+    assert!(plane(&over_black, 0).contains(&255));
+    for c in [0, 1] {
+        let worst = plane(&composed, c)
+            .iter()
+            .zip(plane(&over_black, c))
+            .map(|(a, b)| a.abs_diff(b))
+            .max();
+        assert!(worst <= Some(1), "channel {c}: {worst:?}");
+    }
+    assert!(plane(&composed, 2).iter().all(|b| *b >= 254));
+}
+
+#[test]
+fn a_draw_that_keeps_alpha_leaves_the_pass_alpha() {
+    let Some((_g, mut r)) = gpu(64, 56) else {
+        return;
+    };
+    r.set_alpha(true);
+    let mut frames = Vec::new();
+    for alpha in ["blend", "keep"] {
+        let mut doc = draw_scene(SANS, "I", Align::Left, I_FIT);
+        doc["passes"][0]["code"] =
+            json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
+        doc["passes"][0]["draws"][0]["alpha"] = json!(alpha);
+        frames.push(render(&mut r, &loaded(&doc)));
+    }
+    let (blend, keep) = (&frames[0], &frames[1]);
+    for c in 0..3 {
+        assert_eq!(plane(blend, c), plane(keep, c), "channel {c}");
+    }
+    let half = alphas(keep)[0];
+    assert!(half.abs_diff(128) <= 1, "{half}");
+    assert!(alphas(keep).iter().all(|a| *a == half));
+    assert!(alphas(blend).contains(&255));
 }
 
 #[test]

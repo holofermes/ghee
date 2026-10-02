@@ -371,6 +371,7 @@ impl Handle {
 /// own size.
 /// `fps` caps the pace. None runs free.
 /// `timestep` pins time to frame*S, so a render repeats bit for bit.
+/// `alpha` keeps the output pass's alpha in pixels(), opaque without it.
 /// `stats` serves the ghee console on that port, on 127.0.0.1. A (host, port)
 /// pair binds it elsewhere. `stream_max` caps the console's h264 stream on
 /// its longest side: pixels, or a fraction of the render size.
@@ -386,6 +387,7 @@ impl Handle {
     stream_max=None,
     verbose=false,
     timestep=None,
+    alpha=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn open(
@@ -399,6 +401,7 @@ fn open(
     stream_max: Option<&Bound<'_, PyAny>>,
     verbose: bool,
     timestep: Option<f64>,
+    alpha: bool,
 ) -> PyResult<Handle> {
     let source = source_of(scene)?;
     let stats = stats.map(bind_of).transpose()?;
@@ -429,6 +432,7 @@ fn open(
         stats,
         stream_max,
         verbose,
+        alpha,
     })
     .map_err(fault)?;
     Ok(Handle {

@@ -37,6 +37,15 @@
   show it in the console. A font that fails to load draws every character as
   an error box, a glyph with no outline or past a limit draws one in its
   place, and words that do not fit leave the last words that did.
+- Store alpha in every pass buffer, so a channel reads the alpha that its
+  pass wrote. Keep every frame opaque unless `ghee render --alpha` or
+  `ghee.open(..., alpha=True)` keeps the output pass's alpha.
+- Blend a draw's alpha the way its colour blends, and leave the pass's alpha
+  as it was with `"alpha": "keep"`.
+- Let a pass with `draws` leave out `code`: it starts each frame transparent
+  and holds its draws alone.
+- Bind at most 16 textures in a pass on every GPU, and raise the cap of
+  image assets and texts in a scene to 16.
 
 ## 0.4.0 - 2026-08-06
 

@@ -303,3 +303,53 @@ def test_a_scene_file_resolves_its_font_beside_itself(tmp_path):
     with ghee.open(scene_file(tmp_path, WORDS), width=96, height=32) as h:
         h.frame()
         assert max(h.pixels()[0::4]) == 255
+
+
+HALF = {
+    "version": 1,
+    "passes": [
+        {
+            "name": "main",
+            "code": "void main(){ gl_FragColor = vec4(0.25, 0.5, 0.0, 0.5); }",
+        }
+    ],
+}
+
+
+def test_a_frame_is_opaque_unless_open_keeps_the_alpha():
+    with ghee.open(HALF, width=8, height=8) as h:
+        h.frame()
+        assert pixel(h) == (64, 128, 0, 255)
+    with ghee.open(HALF, width=8, height=8, alpha=True) as h:
+        h.frame()
+        r, g, b, a = pixel(h)
+        assert (r, g, b) == (64, 128, 0)
+        assert abs(a - 128) <= 1
+
+
+def words_over_half(alpha):
+    """WORDS drawn white by a draw over a half-transparent pass."""
+    draw = {
+        "text": "words",
+        "code": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
+        "place": "vec2 glyph_place(vec2 em) { return em * 24.0; }",
+    }
+    if alpha:
+        draw["alpha"] = alpha
+    under = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }"
+    return {**WORDS, "passes": [{"name": "main", "code": under, "draws": [draw]}]}
+
+
+def test_a_draw_that_keeps_alpha_leaves_the_pass_alpha(monkeypatch):
+    monkeypatch.chdir(REPO / "ghee" / "examples")
+    frames = {}
+    for alpha in [None, "keep"]:
+        with ghee.open(words_over_half(alpha), width=96, height=32, alpha=True) as h:
+            h.frame()
+            frames[alpha] = h.pixels()
+    blend, keep = frames[None], frames["keep"]
+    assert max(keep[0::4]) == 255  # the words drew
+    assert {a for a in keep[3::4]} <= {127, 128}
+    assert max(blend[3::4]) == 255
+    for c in range(3):
+        assert blend[c::4] == keep[c::4]

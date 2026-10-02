@@ -266,6 +266,8 @@ pub struct Console {
     /// The frame components the renderer reads back. A panel that packs RGB asks
     /// for 3.
     pub components: i32,
+    /// The readback keeps the output pass's alpha.
+    pub alpha: bool,
     /// 0 renders until stop(). A count ends the console with the render.
     pub frames: u64,
     /// Pin engine time to frame * this, for a reproducible render.
@@ -331,6 +333,7 @@ impl Console {
             stream_hz: 30,
             bitrate: 10_000_000,
             components: 4,
+            alpha: false,
             frames: 0,
             timestep: None,
             dri: None,
@@ -1256,6 +1259,12 @@ impl RenderTarget for SharedRenderer {
 /// 4, because desktop Mesa refuses an RGB glReadPixels. A panel sink asks for 3,
 /// which is what it packs from.
 fn make_renderer(console: &Console) -> Result<Renderer> {
+    let mut r = open_renderer(console)?;
+    r.set_alpha(console.alpha);
+    Ok(r)
+}
+
+fn open_renderer(console: &Console) -> Result<Renderer> {
     if console.display {
         let dev = console
             .dri
@@ -2049,6 +2058,8 @@ pub struct Options {
     /// The pixel format a panel sink packs to, for /stats.
     pub native_format: Option<String>,
     pub components: i32,
+    /// Keep the output pass's alpha in 4-component frames.
+    pub alpha: bool,
     /// 0 serves until stop(). A count ends the console with the render.
     pub frames: u64,
     pub timestep: Option<f64>,
@@ -2080,6 +2091,7 @@ impl Default for Options {
             sinks: Vec::new(),
             native_format: None,
             components: 4,
+            alpha: false,
             frames: 0,
             timestep: None,
             dri_device: None,
@@ -2109,6 +2121,7 @@ pub fn run(opts: Options) -> Result<()> {
         sinks,
         native_format,
         components,
+        alpha,
         frames,
         timestep,
         dri_device,
@@ -2145,6 +2158,7 @@ pub fn run(opts: Options) -> Result<()> {
     console.stream_hz = stream_fps;
     console.bitrate = bitrate;
     console.components = components;
+    console.alpha = alpha;
     console.frames = frames;
     console.timestep = timestep;
     console.dri = dri_device;

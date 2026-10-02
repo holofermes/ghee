@@ -235,6 +235,8 @@ pub struct Opening {
     pub stats: Option<(String, u16)>,
     pub stream_max: Option<StreamMax>,
     pub verbose: bool,
+    /// Keep the output pass's alpha in the frames.
+    pub alpha: bool,
 }
 
 pub struct Session {
@@ -378,6 +380,7 @@ impl Session {
             stats,
             stream_max,
             verbose,
+            alpha,
         } = opening;
         let (scene, name) = load(source)?;
         let sink = open_sink(output.as_deref(), &opts)?;
@@ -389,6 +392,7 @@ impl Session {
             .is_some_and(|(_, v)| truthy(v));
         let mut renderer =
             Renderer::new(w, h, components, None, kms, rgb565).map_err(system_fault)?;
+        renderer.set_alpha(alpha);
         let err = renderer.setup(&scene).map_err(system_fault)?;
         if !err.is_empty() {
             // the command's own line, without the engine's trailing newline

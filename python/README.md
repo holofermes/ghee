@@ -28,6 +28,7 @@ h = ghee.open(
     stream_max=None,   # h264 stream cap: pixels, or a fraction of the render size
     verbose=False,
     timestep=None,     # pin time to frame*S for a reproducible render
+    alpha=False,       # keep the output pass's alpha in pixels()
 )
 
 h.set_param("gain", 1.5)                 # a scene param
@@ -64,6 +65,9 @@ changes it.
 `frame` draws and hands the frame to the output. `time` is the wall clock
 since the first frame, `dt` is the measured frame period, and `timestep`
 pins both to `frame * S`.
+
+`pixels` reads alpha 255 in every pixel, unless `alpha=True` keeps the
+alpha that the output pass wrote.
 
 `skip` takes the tick and draws nothing, the panel keeps its last frame.
 

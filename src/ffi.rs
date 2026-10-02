@@ -65,7 +65,12 @@ extern "C" {
     pub fn ghee_renderer(g: *mut GheeScene) -> *const c_char;
     pub fn ghee_last_error(g: *mut GheeScene) -> *const c_char;
     pub fn ghee_destroy(g: *mut GheeScene);
-    pub fn ghee_mp_add_pass(g: *mut GheeScene, glsl_source: *const c_char) -> c_int;
+    pub fn ghee_mp_add_pass(
+        g: *mut GheeScene,
+        name: *const c_char,
+        glsl_source: *const c_char,
+        alpha: c_int,
+    ) -> c_int;
     pub fn ghee_mp_set_pass_size(g: *mut GheeScene, pass: c_int, w: c_int, h: c_int) -> bool;
     pub fn ghee_mp_commit(g: *mut GheeScene) -> c_int;
     pub fn ghee_mp_abort(g: *mut GheeScene);
@@ -109,6 +114,7 @@ extern "C" {
         vertex_source: *const c_char,
         fragment_source: *const c_char,
         blend: c_int,
+        keep_alpha: c_int,
     ) -> c_int;
     pub fn ghee_mp_set_layer_quads(
         g: *mut GheeScene,
@@ -120,7 +126,9 @@ extern "C" {
     pub fn ghee_mp_render(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_present(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_reset(g: *mut GheeScene);
+    pub fn ghee_keep_alpha(g: *mut GheeScene, keep: c_int);
     pub fn ghee_max_texture_units(g: *mut GheeScene) -> c_int;
+    pub fn ghee_gl_texture_units(g: *mut GheeScene) -> c_int;
     pub fn ghee_data_texture_linear(g: *mut GheeScene) -> bool;
     pub fn ghee_set_profiling(g: *mut GheeScene, on: bool);
     pub fn ghee_set_time(g: *mut GheeScene, t: f32);

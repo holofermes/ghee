@@ -822,6 +822,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     let controller: ControllerSlot =
         RefCell::new(process.map(|f| Box::new(f) as Box<dyn SceneController>));
     let mut r = Renderer::new(w, h, components, dri.as_deref(), kms, a.rgb565)?;
+    r.set_alpha(a.alpha);
     let err = r.setup(&scene)?;
     if !err.is_empty() {
         return Err(exit(format!("compile error: {err}")));
@@ -936,6 +937,7 @@ fn serve(
         store,
         size,
         components,
+        alpha: a.alpha,
         sinks,
         native_format,
         display: kms,
@@ -1429,6 +1431,13 @@ struct RenderArgs {
 
     #[arg(
         long,
+        help = "keep the output pass's alpha in RGBA frames, which are opaque \
+                without it"
+    )]
+    alpha: bool,
+
+    #[arg(
+        long,
         value_name = "K=V,...",
         help = "extra options passed to the image encoder, e.g. quality=90 or \
                 lossless=True (ignored for -o -)"
@@ -1578,6 +1587,7 @@ pub struct Ns {
     h264: Option<String>,
     serve: bool,
     components: i32,
+    alpha: bool,
     save_opts: Option<String>,
     write_buffer: i64,
     fps: Option<f64>,
@@ -1613,6 +1623,7 @@ impl RenderArgs {
             h264: self.h264,
             serve: self.serve,
             components: self.components,
+            alpha: self.alpha,
             save_opts: self.save_opts,
             write_buffer: self.write_buffer,
             fps: self.fps,
@@ -1654,6 +1665,7 @@ impl ServeArgs {
             quiet: self.render.quiet,
             verbose: self.render.verbose,
             components: 4,
+            alpha: false,
             save_opts: None,
             write_buffer: 16,
             fps: None,

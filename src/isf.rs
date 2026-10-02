@@ -562,7 +562,7 @@ fn refuse_unrunnable(meta: &Map<String, Value>, body: &str, vertex_shader: bool)
         .collect();
     if !floats.is_empty() {
         return Err(isf_error(format!(
-            "buffer(s) {} are FLOAT; ghee's pass buffers are 8-bit RGB, so an \
+            "buffer(s) {} are FLOAT; ghee's pass buffers are 8-bit RGBA, so an \
              accumulator saturates within a few seconds and the scene freezes \
              without ever reporting an error",
             floats.join(", ")

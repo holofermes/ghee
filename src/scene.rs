@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
 use crate::engine::{Alpha, Blend};
-use crate::text::Text;
+use crate::text::{Fill, Text};
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
@@ -1413,33 +1413,51 @@ impl Pass {
         hw_linear: bool,
     ) -> (String, String) {
         let d = &self.draws[k];
-        let v = self.draw_vertex(d, scene_params, d.pad);
+        let text = texts.iter().find(|t| t.name == d.text);
+        let main = match text {
+            Some(t) if t.fill == Fill::Mtsdf => {
+                crate::text::mtsdf_vertex_main(&d.text, d.pad, t.px_per_em, t.range)
+            }
+            _ => crate::text::outline_vertex_main(d.pad),
+        };
+        let v = self.draw_vertex(d, scene_params, main);
         let mut f = self.preamble(scene_params, assets, texts, hw_linear);
         f.push(String::new());
         if let Some(c) = common.filter(|c| !c.is_empty()) {
             f.push(c.to_string());
             f.push(String::new());
         }
-        f.extend(crate::text::outline_fragment_head(&d.text));
+        let (head, tail) = match text.map(|t| t.fill) {
+            Some(Fill::Mtsdf) => (
+                crate::text::mtsdf_fragment_head(&d.text),
+                crate::text::mtsdf_fragment_tail(&d.text),
+            ),
+            _ => (
+                crate::text::outline_fragment_head(&d.text),
+                crate::text::outline_fragment_tail(&d.text),
+            ),
+        };
+        f.extend(head);
         f.push(String::new());
         f.push(d.code.clone());
         f.push(String::new());
-        f.extend(crate::text::outline_fragment_tail(&d.text));
+        f.extend(tail);
         (v, f.join("\n"))
     }
 
     /// The vertex and the fragment shader of the error boxes of draw `k`: the
-    /// draw's own vertex shader with no pad, so its place puts each box where
-    /// a glyph would go, and ghee's hazard stripes.
+    /// draw's own place with the outline fill's vertex main and no pad, so each
+    /// box lands where a glyph would go, and ghee's hazard stripes.
     pub fn draw_box_glsl(&self, k: usize, scene_params: Option<&ParamMap>) -> (String, String) {
-        let v = self.draw_vertex(&self.draws[k], scene_params, 0.0);
+        let main = crate::text::outline_vertex_main(0.0);
+        let v = self.draw_vertex(&self.draws[k], scene_params, main);
         let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         f.extend(crate::text::box_fragment());
         (v, f.join("\n"))
     }
 
-    /// The vertex shader of draw `d`, its quads grown by `pad` em.
-    fn draw_vertex(&self, d: &Draw, scene_params: Option<&ParamMap>, pad: f64) -> String {
+    /// The vertex shader of draw `d`, with `main` after its place.
+    fn draw_vertex(&self, d: &Draw, scene_params: Option<&ParamMap>, main: Vec<String>) -> String {
         let mut v: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         // The fragment stage's int defaults to mediump and the vertex stage's
         // to highp, so an int uniform declared in both needs this to link.
@@ -1464,7 +1482,7 @@ impl Pass {
         v.push(String::new());
         v.push(d.place.clone());
         v.push(String::new());
-        v.extend(crate::text::outline_vertex_main(pad));
+        v.extend(main);
         v.join("\n")
     }
 
@@ -1691,11 +1709,15 @@ impl Scene {
     /// The scene with `texts` in place of its own.
     pub fn with_texts(mut self, texts: Vec<Text>) -> Result<Scene> {
         let images = self.assets.iter().filter(|a| !a.is_font()).count();
-        if images + texts.len() > MAX_ASSETS {
-            bail!(
-                "{} image assets and texts, over the cap of {MAX_ASSETS}",
-                images + texts.len()
-            );
+        // A text takes the texture of its curves, and an MTSDF text that a
+        // draw names takes its atlas too.
+        let atlases = texts
+            .iter()
+            .filter(|t| t.fill == Fill::Mtsdf && self.draws_text(&t.name))
+            .count();
+        let n = images + texts.len() + atlases;
+        if n > MAX_ASSETS {
+            bail!("{n} image assets, texts and text atlases, over the cap of {MAX_ASSETS}");
         }
         let mut seen: Vec<&str> = Vec::new();
         for t in &texts {
@@ -1753,6 +1775,13 @@ impl Scene {
             bail!("{e}");
         }
         Ok(self)
+    }
+
+    /// True when a draw of the scene names text `name`.
+    pub fn draws_text(&self, name: &str) -> bool {
+        self.passes
+            .iter()
+            .any(|p| p.draws.iter().any(|d| d.text == name))
     }
 
     /// The error for the first draw whose text the scene does not declare.

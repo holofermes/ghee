@@ -87,6 +87,10 @@ void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, i
 #define MP_MAX_ASSETS 16
 bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
                        int width, int height, int components, int is_f32, int linear);
+// Replace rows y to y + rows of a set asset with `data`, rows of its full
+// width in the layout of its last ghee_mp_set_asset. Returns false with
+// ghee_last_error set for an asset that is not set or rows past its height.
+bool ghee_mp_set_asset_rows(GheeScene *g, const char *name, const void *data, int y, int rows);
 void ghee_mp_drop_asset(GheeScene *g, const char *name);
 // A layer: quads drawn by a pass into its own buffer after its full-screen
 // quad, with a vertex and a fragment shader of their own, in the order of the

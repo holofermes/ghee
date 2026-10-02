@@ -139,6 +139,11 @@ that do not fit leave the last words that did.
 `ghee render --demo lettering -o lettering.png --frames 1` shows the words
 at every size.
 
+A scene given to `ghee.open` can also draw a text into a pass, see
+[Draws](https://github.com/holofermes/ghee#draws). New words of a text drawn
+with the MTSDF fill wait for the glyphs that its atlas lacks, and the last
+words stay on screen meanwhile. With `timestep` set, `frame()` waits for them.
+
 ## Direct mode
 
 The same scene file runs two ways. When ghee starts it, as `ghee render

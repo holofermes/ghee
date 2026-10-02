@@ -9,7 +9,10 @@
 //! A draw, declared on a pass, puts a text into that pass's buffer after the
 //! pass's own quad, as one quad over each inked glyph. The draw's
 //! `glyph_place` maps a point of the block to a pixel of the pass, and its code
-//! colours the pixels of each quad from the glyph's coverage.
+//! colours the pixels of each quad from the glyph's coverage. The text's fill
+//! gives that coverage: the MTSDF fill reads one texel of the glyph's field in
+//! an atlas, which `crate::atlas` builds, and the outline fill computes it from
+//! the curves as `<name>_cover` does.
 //!
 //! Coverage follows the Slug algorithm by Eric Lengyel
 //! (https://jcgt.org/published/0006/02/02/, https://github.com/EricLengyel/Slug).
@@ -35,6 +38,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
+use crate::atlas::{self, Cell};
 use crate::scene::py_repr;
 
 /// Texture width in texels. A power of two keeps every texel centre an exact
@@ -162,6 +166,19 @@ impl Align {
     }
 }
 
+/// Where a draw of the text takes each pixel's coverage from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fill {
+    /// One read of the glyph's MTSDF in an atlas, with the distance to the
+    /// outline for effects.
+    Mtsdf,
+    /// The glyph's curves, as `<name>_cover` reads them.
+    Outline,
+}
+
+/// The largest px/em and range of an atlas: the side of the atlas.
+const ATLAS_MAX: u64 = atlas::MAX_SIZE as u64;
+
 /// A text a scene declares. Its words are the scene string param of the same
 /// name.
 #[derive(Clone, Debug, PartialEq)]
@@ -170,6 +187,11 @@ pub struct Text {
     /// The name of the scene's font asset.
     pub font: String,
     pub align: Align,
+    pub fill: Fill,
+    /// The MTSDF atlas: texels per em of a glyph's cell, and the distance
+    /// range in texels.
+    pub px_per_em: u32,
+    pub range: u32,
     /// The font asset's bytes, or why they failed to load. load_assets fills
     /// them.
     pub data: Option<Font>,
@@ -198,15 +220,47 @@ impl Text {
                 py_repr(v)
             ),
         };
-        match o.get("fill").filter(|v| !v.is_null()) {
+        let fill = match o.get("fill").filter(|v| !v.is_null()) {
+            None => Fill::Mtsdf,
+            Some(Value::String(s)) if s == "mtsdf" => Fill::Mtsdf,
+            Some(Value::String(s)) if s == "outline" => Fill::Outline,
+            Some(v) => bail!(
+                "text '{name}' fill needs 'mtsdf' or 'outline', got {}",
+                py_repr(v)
+            ),
+        };
+        let (mut px_per_em, mut range) = (atlas::PX_EM, atlas::RANGE);
+        match o.get("atlas").filter(|v| !v.is_null()) {
             None => {}
-            Some(Value::String(s)) if s == "outline" => {}
-            Some(v) => bail!("text '{name}' fill needs 'outline', got {}", py_repr(v)),
+            Some(Value::Object(a)) => {
+                for (k, v) in a {
+                    let slot = match k.as_str() {
+                        "px_per_em" => &mut px_per_em,
+                        "range" => &mut range,
+                        _ => bail!("text '{name}' atlas takes 'px_per_em' and 'range', got '{k}'"),
+                    };
+                    *slot = match v.as_u64() {
+                        Some(n) if (1..=ATLAS_MAX).contains(&n) => n as u32,
+                        _ => bail!(
+                            "text '{name}' atlas {k} needs a whole number from 1 to {ATLAS_MAX}, \
+                             got {}",
+                            py_repr(v)
+                        ),
+                    };
+                }
+            }
+            Some(v) => bail!(
+                "text '{name}' atlas needs an object with 'px_per_em' and 'range', got {}",
+                py_repr(v)
+            ),
         }
         Ok(Text {
             name: name.to_string(),
             font,
             align,
+            fill,
+            px_per_em,
+            range,
             data: None,
         })
     }
@@ -216,6 +270,19 @@ impl Text {
         d.insert("font".to_string(), Value::from(self.font.clone()));
         if self.align != Align::Left {
             d.insert("align".to_string(), Value::from(self.align.as_str()));
+        }
+        if self.fill == Fill::Outline {
+            d.insert("fill".to_string(), Value::from("outline"));
+        }
+        let mut a = Map::new();
+        if self.px_per_em != atlas::PX_EM {
+            a.insert("px_per_em".to_string(), Value::from(self.px_per_em));
+        }
+        if self.range != atlas::RANGE {
+            a.insert("range".to_string(), Value::from(self.range));
+        }
+        if !a.is_empty() {
+            d.insert("atlas".to_string(), Value::Object(a));
         }
         Value::Object(d)
     }
@@ -242,11 +309,29 @@ pub struct Built {
     pub texels: Vec<u8>,
     /// Uniform suffixes after the text's name, each a float.
     pub uniforms: Vec<(&'static str, f64)>,
-    /// One quad per glyph drawn from the font, for a draw. Its glyph data is
-    /// this texture's.
+    /// One quad per glyph drawn from the font, for a draw of the outline
+    /// fill. Its glyph data is this texture's.
     pub quads: Quads,
     /// One quad per error box, for a draw's error-box layer.
     pub boxes: Quads,
+    /// The glyphs drawn from the font, for the quads of the MTSDF fill.
+    pub glyphs: Vec<Placement>,
+}
+
+/// A glyph of the font, placed in the block.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placement {
+    pub gid: u16,
+    pub ch: char,
+    /// The glyph's origin in em from the block's top left, y down.
+    pub origin: [f64; 2],
+    /// The index of its character, counted over the words.
+    pub index: usize,
+    /// The index of its word, counted from 0.
+    pub word: usize,
+    pub line: usize,
+    /// Its advance from start to end x, in em.
+    pub span: [f64; 2],
 }
 
 /// The floats of one quad vertex: the attributes glyph_a0 to glyph_a3, a vec4
@@ -260,8 +345,10 @@ pub const QUAD_FLOATS: usize = 16;
 /// - glyph_a0: the corner x and y, the character index, the word index
 /// - glyph_a1: the ink box in em from the block's top left, y down: x0, y0,
 ///   x1, y1
-/// - glyph_a2: the texel of the glyph's band entries, its horizontal bands,
-///   its vertical bands, 0
+/// - glyph_a2, outline fill: the texel of the glyph's band entries, its
+///   horizontal bands, its vertical bands, 0
+/// - glyph_a2, MTSDF fill: the atlas texel coordinate at (x0, y0), and the
+///   texels per em along x and along y
 /// - glyph_a3: the line index, the advance's start and end x in em, 0
 ///
 /// Every index counts from 0.
@@ -279,7 +366,7 @@ struct Outline {
     scale: f64,
     start: [f64; 2],
     at: [f64; 2],
-    quads: Vec<Quad>,
+    contours: Vec<Vec<Quad>>,
 }
 
 impl Outline {
@@ -289,7 +376,10 @@ impl Outline {
 
     fn push(&mut self, q: Quad) {
         if q[0] != q[1] || q[0] != q[2] {
-            self.quads.push(q);
+            match self.contours.last_mut() {
+                Some(c) => c.push(q),
+                None => self.contours.push(vec![q]),
+            }
         }
     }
 
@@ -310,6 +400,7 @@ impl ttf_parser::OutlineBuilder for Outline {
         let p = self.point(x, y);
         self.start = p;
         self.at = p;
+        self.contours.push(Vec::new());
     }
 
     fn line_to(&mut self, x: f32, y: f32) {
@@ -394,28 +485,39 @@ struct Glyph {
     curves: Vec<Curve>,
 }
 
+/// The closed contours of glyph `gid` in em, y up, none for a glyph with no
+/// outline.
+fn contours(face: &ttf_parser::Face, gid: ttf_parser::GlyphId) -> Vec<Vec<Quad>> {
+    let mut o = Outline {
+        scale: 1.0 / f64::from(face.units_per_em()),
+        start: [0.0; 2],
+        at: [0.0; 2],
+        contours: Vec::new(),
+    };
+    let drawn = face.outline_glyph(gid, &mut o).is_some();
+    // Coverage and the MTSDF need closed contours, and ttf-parser leaves the
+    // last contour of a CFF2 glyph open.
+    ttf_parser::OutlineBuilder::close(&mut o);
+    if !drawn {
+        return Vec::new();
+    }
+    o.contours.retain(|c| !c.is_empty());
+    o.contours
+}
+
 /// The outline of glyph `gid`. None for a glyph with no outline. An error
 /// names the limit of a glyph past it.
 fn glyph(
     face: &ttf_parser::Face,
     gid: ttf_parser::GlyphId,
 ) -> std::result::Result<Option<Glyph>, String> {
-    let mut o = Outline {
-        scale: 1.0 / f64::from(face.units_per_em()),
-        start: [0.0; 2],
-        at: [0.0; 2],
-        quads: Vec::new(),
-    };
-    let drawn = face.outline_glyph(gid, &mut o).is_some();
-    // Coverage needs closed contours, and ttf-parser leaves the last contour
-    // of a CFF2 glyph open.
-    ttf_parser::OutlineBuilder::close(&mut o);
-    if !drawn || o.quads.is_empty() {
+    let quads = contours(face, gid).concat();
+    if quads.is_empty() {
         return Ok(None);
     }
     let mut lo = [f64::MAX; 2];
     let mut hi = [f64::MIN; 2];
-    for q in &o.quads {
+    for q in &quads {
         for p in q {
             for a in 0..2 {
                 lo[a] = lo[a].min(p[a]);
@@ -434,8 +536,39 @@ fn glyph(
             return Err(format!("spans more than {} em", CORNER_OFFSET - INK_MARGIN));
         }
     }
-    let curves = on_lattice(&o.quads, min, size);
+    let curves = on_lattice(&quads, min, size);
     Ok(Some(Glyph { min, size, curves }))
+}
+
+/// The glyph that a layout draws for `ch`, found in the font or not, None
+/// when it draws nothing for it. A character the font lacks draws glyph 0,
+/// the missing-glyph box, unless it needs no ink.
+fn ink_glyph(found: Option<ttf_parser::GlyphId>, ch: char) -> Option<u16> {
+    (found.is_some() || needs_ink(ch)).then(|| found.map_or(0, |g| g.0))
+}
+
+/// A font's glyphs for the MTSDF atlas.
+pub struct AtlasFont(pub Arc<Vec<u8>>);
+
+impl atlas::Font for AtlasFont {
+    fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    fn glyph(&self, ch: char) -> Option<u16> {
+        let ch = if ch == '\t' { ' ' } else { ch };
+        if ch.is_control() {
+            return None;
+        }
+        let face = ttf_parser::Face::parse(&self.0, 0).ok()?;
+        ink_glyph(face.glyph_index(ch), ch)
+    }
+
+    fn outline(&self, gid: u16) -> Result<Vec<Vec<atlas::Curve>>> {
+        let face =
+            ttf_parser::Face::parse(&self.0, 0).map_err(|e| anyhow!("unreadable font: {e}"))?;
+        Ok(contours(&face, ttf_parser::GlyphId(gid)))
+    }
 }
 
 /// `quads` on the lattice of a box at `min`, `size` em.
@@ -647,8 +780,7 @@ fn layout(face: Option<&ttf_parser::Face>, words: &str, align: Align) -> (Vec<Pl
                     }
                     prev = Some(gid);
                     let advance = f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
-                    let ink = (found.is_some() || needs_ink(ch)).then_some(Ink::Glyph(gid.0));
-                    (ink, x, advance)
+                    (ink_glyph(found, ch).map(Ink::Glyph), x, advance)
                 }
                 None if ignorable(ch) => (None, x, 0.0),
                 None if needs_ink(ch) => (
@@ -821,6 +953,21 @@ fn finish(
     let built = match pack_fitting(placed, glyphs, height) {
         Ok(mut built) => {
             built.uniforms.extend([("_w", width), ("_h", height)]);
+            built.glyphs = placed
+                .iter()
+                .filter_map(|p| match p.ink {
+                    Some(Ink::Glyph(gid)) => Some(Placement {
+                        gid,
+                        ch: p.ch,
+                        origin: [p.x, height - p.y],
+                        index: p.index,
+                        word: p.word,
+                        line: p.line,
+                        span: p.span,
+                    }),
+                    _ => None,
+                })
+                .collect();
             Some(built)
         }
         Err(e) => {
@@ -1075,6 +1222,7 @@ fn pack(
         height: tex_h as u32,
         quads: quads(false),
         boxes: quads(true),
+        glyphs: Vec::new(),
         texels,
         uniforms: vec![
             ("_tw", TEX_W as f64),
@@ -1089,6 +1237,59 @@ fn pack(
             ("_nb", nb as f64),
         ],
     })
+}
+
+/// The quads of the MTSDF fill over `glyphs`, each from its glyph's cell in an
+/// atlas of `px_em` texels per em, as `cell` gives it, and an error box for
+/// each glyph that has none. Returns the glyph quads, the error boxes, and the
+/// glyphs with no cell.
+pub fn mtsdf_quads(
+    glyphs: &[Placement],
+    px_em: u32,
+    mut cell: impl FnMut(u16) -> Option<Cell>,
+) -> (Quads, Quads, Vec<&Placement>) {
+    let s = f64::from(px_em);
+    let (mut drawn, mut boxes) = (Vec::new(), Vec::new());
+    let mut missing = Vec::new();
+    for p in glyphs {
+        let [ox, oy] = p.origin;
+        let (a1, a2, out) = match cell(p.gid) {
+            Some(c) => {
+                let [x0, y0, x1, y1] = c.ink;
+                // The texel coordinate of the box's top left: y runs up the
+                // atlas and down the block.
+                let t = [
+                    f64::from(c.rect[0]) + c.pad,
+                    f64::from(c.rect[1]) + c.pad + (y1 - y0) * s,
+                ];
+                (
+                    [ox + x0, oy - y1, ox + x1, oy - y0],
+                    [t[0], t[1], s, -s],
+                    &mut drawn,
+                )
+            }
+            None => {
+                missing.push(p);
+                let x = (p.span[0] + p.span[1] - ERROR_BOX[0]) / 2.0;
+                (
+                    [x, oy - ERROR_BOX[1], x + ERROR_BOX[0], oy],
+                    [0.0; 4],
+                    &mut boxes,
+                )
+            }
+        };
+        let a3 = [p.line as f64, p.span[0], p.span[1], 0.0];
+        for corner in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+            let a0 = [corner[0], corner[1], p.index as f64, p.word as f64];
+            out.extend([a0, a1, a2, a3].iter().flatten().map(|v| *v as f32));
+        }
+    }
+    let quads = |floats: Vec<f32>| Quads {
+        count: floats.len() / (4 * QUAD_FLOATS),
+        floats,
+        per_vertex: QUAD_FLOATS,
+    };
+    (quads(drawn), quads(boxes), missing)
 }
 
 /// The preamble lines of one text: its uniforms, its sampler, and the readers.
@@ -1124,6 +1325,34 @@ pub fn outline_vertex_main(pad: f64) -> Vec<String> {
 /// lines and the author's code.
 pub fn outline_fragment_head(name: &str) -> Vec<String> {
     lines(OUTLINE_FRAGMENT_HEAD, name)
+}
+
+/// The vertex main of an MTSDF draw of text `name`, after glyph_place, for an
+/// atlas of `px_em` texels per em and a range of `range` texels. Each box edge
+/// moves out 5/8 of a screen pixel, or `pad` em where that reaches further,
+/// and never past the field's reach, half the range.
+pub fn mtsdf_vertex_main(name: &str, pad: f64, px_em: u32, range: u32) -> Vec<String> {
+    let range_em = f64::from(range) / f64::from(px_em);
+    let reach = range_em / 2.0;
+    lines(MTSDF_VERTEX_MAIN, name)
+        .into_iter()
+        .map(|l| {
+            l.replace("PAD", &format!("{:?}", pad.min(reach)))
+                .replace("REACH", &format!("{reach:?}"))
+                .replace("RANGE_EM", &format!("{range_em:?}"))
+        })
+        .collect()
+}
+
+/// The lines of an MTSDF draw's fragment shader between the preamble and the
+/// author's code.
+pub fn mtsdf_fragment_head(name: &str) -> Vec<String> {
+    lines(MTSDF_FRAGMENT_HEAD, name)
+}
+
+/// The lines of an MTSDF draw's fragment shader after the author's code.
+pub fn mtsdf_fragment_tail(name: &str) -> Vec<String> {
+    lines(MTSDF_FRAGMENT_TAIL, name)
 }
 
 /// The lines of an outline draw's fragment shader after the author's code.
@@ -1243,6 +1472,9 @@ varying vec4 glyph_v4;
 #define glyph_ppem glyph_v1.w
 float glyph_c = 0.0;
 float glyph_cover() { return glyph_c; }
+// Distances come from the MTSDF fill's field, and a compile error names it.
+#define glyph_dist glyph_dist_needs_fill_mtsdf
+#define glyph_soft glyph_soft_needs_fill_mtsdf
 // The author's main runs as glyph_main, after the fill: the fill computes the
 // coverage once a pixel, and glyph_cover() returns it at every call.
 #define main glyph_main"#;
@@ -1258,6 +1490,79 @@ void main() {
     glyph_c = NAME_outline(float(int(glyph_v1.x + 0.5)), vec2(ivec2(glyph_v1.yz + 0.5)),
                            u, glyph_v0.zw);
     glyph_main();
+}"#;
+
+const MTSDF_VERTEX_MAIN: &str = r#"uniform vec2 NAME_atlas_size;
+void main() {
+    glyph_index = glyph_a0.z;
+    glyph_word = glyph_a0.w;
+    glyph_line = glyph_a3.x;
+    glyph_span = glyph_a3.yz;
+    glyph_box = glyph_a1;
+    vec2 em = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
+    vec2 p = glyph_place(em);
+    // The pixels moved by glyph_place per em along each em axis, exact for an
+    // affine glyph_place.
+    vec2 jx = (glyph_place(em + vec2(0.0625, 0.0)) - p) * 16.0;
+    vec2 jy = (glyph_place(em + vec2(0.0, 0.0625)) - p) * 16.0;
+    // det stays above 0, so a glyph scaled to nothing keeps every position
+    // finite.
+    float det = max(abs(jx.x * jy.y - jx.y * jy.x), 1.0 / 16384.0);
+    // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
+    // up to 1/16 px off the position set by this shader. A read past the
+    // reach would take a neighbouring cell's texels.
+    vec2 grow = min(max(0.625 * vec2(length(jy), length(jx)) / det, vec2(PAD)), vec2(REACH));
+    vec2 e = em + (glyph_a0.xy * 2.0 - 1.0) * grow;
+    vec2 px = glyph_place(e);
+    // The em spanned by a screen pixel along each em axis, as fwidth gives it.
+    vec2 fw = vec2(abs(jy.x) + abs(jy.y), abs(jx.x) + abs(jx.y)) / det;
+    vec2 t = glyph_a2.xy + (e - glyph_a1.xy) * glyph_a2.zw;
+    // The field's range in screen pixels. msdfgen holds it at 1 or more.
+    float range = max(RANGE_EM * 0.5 * (1.0 / fw.x + 1.0 / fw.y), 1.0);
+    // glyph_ppem: the pixels per em of a placement that scales both axes
+    // alike.
+    glyph_v0 = vec4(t / NAME_atlas_size, range, sqrt(det));
+    glyph_v2 = vec4(e, glyph_a0.zw);
+    glyph_v3 = vec4(glyph_a3.xyz, 0.0);
+    v_texCoord = px / resolution;
+    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, vflip), 0.0, 1.0);
+}"#;
+
+const MTSDF_FRAGMENT_HEAD: &str = r#"uniform sampler2D NAME_atlas;
+varying vec4 glyph_v0;
+varying vec4 glyph_v2;
+varying vec4 glyph_v3;
+// A varying that holds one value at every vertex may still interpolate a hair
+// off it, so an index rounds.
+#define glyph_em glyph_v2.xy
+#define glyph_index float(int(glyph_v2.z + 0.5))
+#define glyph_word float(int(glyph_v2.w + 0.5))
+#define glyph_line float(int(glyph_v3.x + 0.5))
+#define glyph_span glyph_v3.yz
+#define glyph_ppem glyph_v0.w
+// The glyph's field under this pixel: the median of red, green and blue is
+// the distance to the outline, alpha the true distance, each 0.5 on the
+// outline and growing inward over the range.
+vec4 glyph_t = vec4(0.0);
+float glyph_dist() {
+    vec3 c = glyph_t.rgb;
+    return glyph_v0.z * (max(min(c.r, c.g), min(max(c.r, c.g), c.b)) - 0.5);
+}
+float glyph_soft() { return glyph_v0.z * (glyph_t.a - 0.5); }
+float glyph_cover() { return clamp(glyph_dist() + 0.5, 0.0, 1.0); }
+// The author's main runs as glyph_main, after the read of the field.
+#define main glyph_main"#;
+
+const MTSDF_FRAGMENT_TAIL: &str = r#"#undef main
+void main() {
+    // On VC4 a short shader whose last texture read sits outside an if runs
+    // in two threads, whose switch loses the condition flags. The read of the
+    // field, and a read after the author's code that never runs, sit in ifs
+    // that the compiler cannot drop, so the shader stays on one thread
+    // whatever textures the author's code reads.
+    if (gl_FragCoord.x >= 0.0) glyph_t = texture2D(NAME_atlas, glyph_v0.xy);
+    glyph_main();
+    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(NAME_atlas, glyph_v0.xy);
 }"#;
 
 const BOX_FRAGMENT: &str = r#"varying vec2 v_texCoord;

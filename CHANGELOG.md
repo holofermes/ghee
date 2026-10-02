@@ -46,6 +46,17 @@
   and holds its draws alone.
 - Bind at most 16 textures in a pass on every GPU, and raise the cap of
   image assets and texts in a scene to 16.
+- Fill a draw's glyphs from an MTSDF atlas by default, and read the distance
+  to the outline with `glyph_dist()` and `glyph_soft()` for outlines, glows
+  and shadows. `"fill": "outline"` on a text keeps the coverage from the
+  curves, and `atlas` sets the atlas's `px_per_em` and `range`.
+- Generate a font's atlas on every core at its first use, cache it in
+  `$XDG_CACHE_HOME/ghee/atlas`, and keep a text's last words on screen until
+  the glyphs of the new ones are in. A setup and a render with `--timestep`
+  wait for them.
+- Draw an error box for a glyph that the atlas cannot hold, and say why.
+- Count the atlas of a text drawn with the MTSDF fill against the 16 image
+  assets and texts of a scene, and against the 16 textures of a pass.
 
 ## 0.4.0 - 2026-08-06
 

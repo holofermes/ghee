@@ -13,7 +13,7 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 use ghee::engine::{probe_dri_devices, ErrorPass, Renderer};
 use ghee::filters::apply_filters;
 use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
-use ghee::text::{self, Align, Text};
+use ghee::text::{self, Align, Fill, Text};
 
 const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
 /// DejaVu Sans cut to printable ASCII, TrueType outlines, a kern table.
@@ -41,9 +41,13 @@ fn lock() -> MutexGuard<'static, ()> {
 }
 
 /// A w x h RGBA renderer on the first GL device that opens. None = no device,
-/// and the test reports the skip.
+/// and the test reports the skip. Its atlases cache under the temp directory.
 fn gpu(w: usize, h: usize) -> Option<(MutexGuard<'static, ()>, Renderer)> {
     let guard = lock();
+    std::env::set_var(
+        "XDG_CACHE_HOME",
+        std::env::temp_dir().join("ghee-text-cache"),
+    );
     let mut errs = Vec::new();
     for dev in probe_dri_devices() {
         match Renderer::new(w as i32, h as i32, 4, Some(&dev), false, false) {
@@ -231,6 +235,25 @@ fn lay(file: &str, words: &str, align: Align) -> Laid {
 }
 
 impl Laid {
+    /// The distance from `p` to the outline in em, below 0 inside it.
+    fn distance(&self, p: [f64; 2]) -> f64 {
+        let mut d = f64::MAX;
+        for [a, b] in self.glyphs.iter().flat_map(|g| &g.segs) {
+            let v = [b[0] - a[0], b[1] - a[1]];
+            let len2 = v[0] * v[0] + v[1] * v[1];
+            let t = if len2 > 0.0 {
+                (((p[0] - a[0]) * v[0] + (p[1] - a[1]) * v[1]) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            d = d.min((p[0] - a[0] - t * v[0]).hypot(p[1] - a[1] - t * v[1]));
+        }
+        match self.inside(p, 0.0) {
+            Some(true) => -d,
+            _ => d,
+        }
+    }
+
     /// Whether `p` lies inside the outline, by nonzero winding, the fill rule
     /// of TrueType and CFF alike. None within `edge` em of an edge.
     fn inside(&self, p: [f64; 2], edge: f64) -> Option<bool> {
@@ -617,14 +640,36 @@ fn texts_round_trip_and_left_is_the_default() {
         assert_eq!(sc.texts[0].align, Align::Left);
         assert_eq!(sc.to_dict()["texts"], json!({"label": {"font": "sans"}}));
     }
-    // The outline fill is the one fill, so a save leaves it out.
-    let sc = Scene::from_dict(
-        &texts_scene(json!({"label": {"font": "sans", "fill": "outline"}})),
-        None,
-        None,
-    )
-    .unwrap();
-    assert_eq!(sc.to_dict()["texts"], json!({"label": {"font": "sans"}}));
+    // MTSDF is the default fill, at 32 px/em and a range of 6, and a save
+    // leaves the defaults out.
+    assert_eq!(
+        (sc.texts[0].fill, sc.texts[0].px_per_em, sc.texts[0].range),
+        (Fill::Mtsdf, 32, 6)
+    );
+    let doc = texts_scene(json!({
+        "label": {"font": "sans", "fill": "mtsdf", "atlas": {"px_per_em": 32, "range": 6}},
+        "title": {"font": "sans", "fill": "outline"},
+        "tail": {"font": "sans", "atlas": {"px_per_em": 48}},
+        "foot": {"font": "sans", "atlas": {"range": 4}},
+    }));
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    assert_eq!(
+        sc.to_dict()["texts"],
+        json!({
+            "label": {"font": "sans"},
+            "title": {"font": "sans", "fill": "outline"},
+            "tail": {"font": "sans", "atlas": {"px_per_em": 48}},
+            "foot": {"font": "sans", "atlas": {"range": 4}},
+        })
+    );
+    assert_eq!(sc.texts[1].fill, Fill::Outline);
+    assert_eq!((sc.texts[2].px_per_em, sc.texts[2].range), (48, 6));
+    assert_eq!((sc.texts[3].px_per_em, sc.texts[3].range), (32, 4));
+    assert_eq!(
+        Scene::from_dict(&sc.to_dict(), None, None).unwrap(),
+        sc,
+        "a save reloads the same texts"
+    );
 }
 
 #[test]
@@ -672,12 +717,32 @@ fn a_text_declaration_names_what_it_lacks() {
             "text 'label' align needs 'left', 'center' or 'right', got 'middle'",
         ),
         (
-            json!({"font": "sans", "fill": "mtsdf"}),
-            "text 'label' fill needs 'outline', got 'mtsdf'",
+            json!({"font": "sans", "fill": "msdf"}),
+            "text 'label' fill needs 'mtsdf' or 'outline', got 'msdf'",
         ),
         (
             json!({"font": "sans", "fill": 3}),
-            "text 'label' fill needs 'outline', got 3",
+            "text 'label' fill needs 'mtsdf' or 'outline', got 3",
+        ),
+        (
+            json!({"font": "sans", "atlas": 32}),
+            "text 'label' atlas needs an object with 'px_per_em' and 'range', got 32",
+        ),
+        (
+            json!({"font": "sans", "atlas": {"px_em": 32}}),
+            "text 'label' atlas takes 'px_per_em' and 'range', got 'px_em'",
+        ),
+        (
+            json!({"font": "sans", "atlas": {"px_per_em": 0}}),
+            "text 'label' atlas px_per_em needs a whole number from 1 to 2048, got 0",
+        ),
+        (
+            json!({"font": "sans", "atlas": {"range": 6.5}}),
+            "text 'label' atlas range needs a whole number from 1 to 2048, got 6.5",
+        ),
+        (
+            json!({"font": "sans", "atlas": {"range": 4096}}),
+            "text 'label' atlas range needs a whole number from 1 to 2048, got 4096",
         ),
     ] {
         let e = scene_err(&texts_scene(json!({ "label": td })));
@@ -737,21 +802,31 @@ fn a_text_name_collides_with_nothing() {
 }
 
 #[test]
-fn image_assets_and_texts_share_the_engine_cap() {
-    // The two font assets beside them take no slot.
-    let with_images = |n: usize| {
+fn image_assets_texts_and_their_atlases_share_the_engine_cap() {
+    // The two font assets beside them take no slot, and a text drawn by an
+    // MTSDF draw takes its atlas too.
+    let with_images = |n: usize, fill: Option<&str>| {
         let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
         for i in 0..n {
             doc["assets"][format!("a{i}")] = json!({"file": format!("a{i}.png")});
         }
+        if let Some(fill) = fill {
+            doc["texts"]["label"]["fill"] = json!(fill);
+            doc["passes"][0]["draws"] = json!([{"text": "label", "code": WHITE,
+                "place": "vec2 glyph_place(vec2 em) { return em; }"}]);
+        }
         doc
     };
-    assert!(Scene::from_dict(&with_images(15), None, None).is_ok());
-    let e = scene_err(&with_images(16));
-    assert!(
-        e.ends_with("17 image assets and texts, over the cap of 16"),
-        "{e}"
-    );
+    assert!(Scene::from_dict(&with_images(15, None), None, None).is_ok());
+    assert!(Scene::from_dict(&with_images(15, Some("outline")), None, None).is_ok());
+    assert!(Scene::from_dict(&with_images(14, Some("mtsdf")), None, None).is_ok());
+    for (n, fill) in [(16, None), (15, Some("mtsdf"))] {
+        let e = scene_err(&with_images(n, fill));
+        assert!(
+            e.ends_with("17 image assets, texts and text atlases, over the cap of 16"),
+            "{e}"
+        );
+    }
 }
 
 #[test]
@@ -1434,13 +1509,16 @@ fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
         errors.len() == 1 && errors[0].starts_with(&want),
         "{errors:?}"
     );
-    let draw = render(&mut r, &loaded(&hazard_scene("Missing.ttf", words, fit)));
-    assert_hazard(&draw, W, fit, &rects, "draw");
-    // New words lay out in boxes too.
-    assert!(r.set_text("label", "I").unwrap());
-    r.set_time(Some(0.0));
-    let one = r.render(None).unwrap().to_vec();
-    assert_hazard(&one, W, fit, &rects[..1], "one box");
+    for fill in FILLS {
+        let doc = filled(hazard_scene("Missing.ttf", words, fit), fill);
+        let draw = render(&mut r, &loaded(&doc));
+        assert_hazard(&draw, W, fit, &rects, &format!("{fill} draw"));
+        // New words lay out in boxes too.
+        assert!(r.set_text("label", "I").unwrap());
+        r.set_time(Some(0.0));
+        let one = r.render(None).unwrap().to_vec();
+        assert_hazard(&one, W, fit, &rects[..1], &format!("{fill} one box"));
+    }
 }
 
 #[test]
@@ -1507,8 +1585,13 @@ fn a_bitmap_font_draws_boxes_where_ink_should_be_and_nothing_else() {
         r.text_errors(),
         ["text 'label': font 'face' has no outline for '\u{1f600}', '\u{1f642}'"]
     );
-    let draw = render(&mut r, &loaded(&hazard_scene(EMOJI, words, fit)));
-    assert_hazard(&draw, W, fit, &rects, "emoji draw");
+    for fill in FILLS {
+        let draw = render(
+            &mut r,
+            &loaded(&filled(hazard_scene(EMOJI, words, fit), fill)),
+        );
+        assert_hazard(&draw, W, fit, &rects, &format!("emoji {fill} draw"));
+    }
 }
 
 #[test]
@@ -1576,18 +1659,21 @@ fn a_draw_keeps_its_last_words_and_their_boxes_past_words_that_fit_no_texture() 
         ppem: 48.0,
     };
     let Some((_g, mut r)) = gpu(W, H) else { return };
-    let before = render(&mut r, &loaded(&hazard_scene(EMOJI, "\u{1f600}", fit)));
-    assert!(r.set_text("label", &"\u{1f600}".repeat(400_000)).unwrap());
-    r.set_time(Some(0.0));
-    assert!(r.render(None).unwrap() == before.as_slice());
-    // The box stays, and so does the problem behind it.
-    let errors = r.text_errors();
-    assert_eq!(errors.len(), 2, "{errors:?}");
-    assert!(
-        errors[0].contains("has no outline for '\u{1f600}'"),
-        "{errors:?}"
-    );
-    assert!(errors[1].contains("VC4"), "{errors:?}");
+    for fill in FILLS {
+        let doc = filled(hazard_scene(EMOJI, "\u{1f600}", fit), fill);
+        let before = render(&mut r, &loaded(&doc));
+        assert!(r.set_text("label", &"\u{1f600}".repeat(400_000)).unwrap());
+        r.set_time(Some(0.0));
+        assert!(r.render(None).unwrap() == before.as_slice(), "{fill}");
+        // The box stays, and so does the problem behind it.
+        let errors = r.text_errors();
+        assert_eq!(errors.len(), 2, "{fill}: {errors:?}");
+        assert!(
+            errors[0].contains("has no outline for '\u{1f600}'"),
+            "{fill}: {errors:?}"
+        );
+        assert!(errors[1].contains("VC4"), "{fill}: {errors:?}");
+    }
 }
 
 // Draws
@@ -1692,13 +1778,22 @@ const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
 /// White coverage, premultiplied.
 const WHITE: &str = "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c); }";
 
-/// label_scene with the words drawn by one draw over a black pass.
+/// label_scene with the words drawn by one draw over a black pass, in the
+/// outline fill.
 fn draw_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, align, fit);
     doc["passes"][0] = json!({"name": "main", "code": BLACK,
         "draws": [{"text": "label", "code": WHITE, "place": fit_place(fit)}]});
+    filled(doc, "outline")
+}
+
+/// `doc` with its text `label` in `fill`.
+fn filled(mut doc: Value, fill: &str) -> Value {
+    doc["texts"]["label"]["fill"] = json!(fill);
     doc
 }
+
+const FILLS: [&str; 2] = ["mtsdf", "outline"];
 
 /// The red channels of two RGBA frames: the pixels more than 1 level apart,
 /// and the largest difference.
@@ -1812,7 +1907,8 @@ fn draws_land_in_their_order_and_pad_past_the_ink() {
         y: 8.0,
         ppem: 64.0,
     };
-    let mut doc = label_scene(SANS, "I", Align::Left, fit);
+    // The outline fill takes any pad.
+    let mut doc = filled(label_scene(SANS, "I", Align::Left, fit), "outline");
     let place = fit_place(fit);
     doc["passes"][0] = json!({"name": "main", "code": BLACK, "draws": [
         {"text": "label", "place": place, "pad": 0.25, "blend": "add",
@@ -2049,7 +2145,7 @@ fn a_draw_on_a_sized_pass_covers_as_the_text_does_there() {
     let fit = Fit::of(laid.width, laid.height, w / 2, h / 2);
     let show = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
     let sized = |pass: Value| {
-        let mut doc = label_scene(SANS, words, Align::Left, fit);
+        let mut doc = filled(label_scene(SANS, words, Align::Left, fit), "outline");
         let mut a = pass;
         a["name"] = json!("a");
         a["size"] = json!([w / 2, h / 2]);
@@ -2074,7 +2170,7 @@ fn one_text_drawn_by_two_passes_follows_its_words_in_both() {
         ppem: 40.0,
     };
     let place = fit_place(fit);
-    let mut doc = label_scene(SANS, "AV", Align::Left, fit);
+    let mut doc = filled(label_scene(SANS, "AV", Align::Left, fit), "outline");
     doc["passes"] = json!([
         {"name": "a", "code": BLACK, "draws": [{"text": "label", "place": place,
             "code": "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c, 0.0, 0.0, c); }"}]},
@@ -2306,22 +2402,24 @@ fn a_draw_that_keeps_alpha_leaves_the_pass_alpha() {
         return;
     };
     r.set_alpha(true);
-    let mut frames = Vec::new();
-    for alpha in ["blend", "keep"] {
-        let mut doc = draw_scene(SANS, "I", Align::Left, I_FIT);
-        doc["passes"][0]["code"] =
-            json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
-        doc["passes"][0]["draws"][0]["alpha"] = json!(alpha);
-        frames.push(render(&mut r, &loaded(&doc)));
+    for fill in FILLS {
+        let mut frames = Vec::new();
+        for alpha in ["blend", "keep"] {
+            let mut doc = filled(draw_scene(SANS, "I", Align::Left, I_FIT), fill);
+            doc["passes"][0]["code"] =
+                json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
+            doc["passes"][0]["draws"][0]["alpha"] = json!(alpha);
+            frames.push(render(&mut r, &loaded(&doc)));
+        }
+        let (blend, keep) = (&frames[0], &frames[1]);
+        for c in 0..3 {
+            assert_eq!(plane(blend, c), plane(keep, c), "{fill} channel {c}");
+        }
+        let half = alphas(keep)[0];
+        assert!(half.abs_diff(128) <= 1, "{fill}: {half}");
+        assert!(alphas(keep).iter().all(|a| *a == half), "{fill}");
+        assert!(alphas(blend).contains(&255), "{fill}");
     }
-    let (blend, keep) = (&frames[0], &frames[1]);
-    for c in 0..3 {
-        assert_eq!(plane(blend, c), plane(keep, c), "channel {c}");
-    }
-    let half = alphas(keep)[0];
-    assert!(half.abs_diff(128) <= 1, "{half}");
-    assert!(alphas(keep).iter().all(|a| *a == half));
-    assert!(alphas(blend).contains(&255));
 }
 
 #[test]
@@ -2337,4 +2435,310 @@ fn a_reset_drops_the_draws_with_the_scene() {
     render(&mut r, &loaded(&draw_scene(SANS, "I", Align::Left, fit)));
     r.reset();
     assert!(r.set_text("label", "O").unwrap());
+}
+
+// The MTSDF fill
+
+/// The signed distance in pixels from the centre of pixel (x, y) to the
+/// outline of `laid` placed by `fit`, below 0 inside.
+fn px_distance(laid: &Laid, fit: Fit, x: usize, y: usize) -> f64 {
+    laid.distance(fit.em(x, y)) * fit.ppem
+}
+
+#[test]
+fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
+    // One glyph a frame, so no quad overlaps another: a bowl, and corners.
+    for words in ["e", "k"] {
+        let laid = lay(SANS, words, Align::Left);
+        let g = &laid.glyphs[0];
+        let fit = Fit {
+            x: 16.0,
+            y: 8.0,
+            ppem: 64.0,
+        };
+        let (w, h) = (
+            (laid.width * fit.ppem + 32.0).ceil() as usize,
+            (laid.height * fit.ppem + 16.0).ceil() as usize,
+        );
+        // Red is the fill, green a 3 px ring outside it in a quad padded 4 px,
+        // and blue a glow that halves every 1.4 px, in a quad padded past the
+        // field's reach.
+        let mut doc = label_scene(SANS, words, Align::Left, fit);
+        doc["passes"][0] = json!({"name": "main", "code": BLACK, "draws": [
+            {"text": "label", "place": fit_place(fit), "blend": "add", "pad": 1.0,
+             "code": "void main(){ float g = exp(-max(-glyph_soft(), 0.0) / 2.0); \
+                      gl_FragColor = vec4(0.0, 0.0, g, 0.0); }"},
+            {"text": "label", "place": fit_place(fit), "blend": "add", "pad": 0.0625,
+             "code": "void main(){ float fill = clamp(glyph_dist() + 0.5, 0.0, 1.0); \
+                      float ring = clamp(glyph_soft() + 3.5, 0.0, 1.0); \
+                      gl_FragColor = vec4(fill, ring - fill, 0.0, 0.0); }"},
+        ]});
+        let Some((_g, mut r)) = gpu(w, h) else { return };
+        let frame = render(&mut r, &loaded(&doc));
+        let at = |x: usize, y: usize, c: usize| frame[(y * w + x) * 4 + c];
+        // The field holds the true distance up to its reach, 6 px here, and
+        // the glow's quad spans the ink box grown by that much.
+        let reach = 0.09375 * fit.ppem;
+        let (mut seen, mut off) = ([0usize; 6], Vec::new());
+        for y in 0..h {
+            for x in 0..w {
+                let d = px_distance(&laid, fit, x, y);
+                let p = fit.em(x, y);
+                let past = (0..2)
+                    .map(|a| (g.lo[a] - p[a]).max(p[a] - g.hi[a]) * fit.ppem)
+                    .fold(f64::MIN, f64::max);
+                let mut check = |k: usize, c: usize, want: f64, tol: f64| {
+                    seen[k] += 1;
+                    let got = f64::from(at(x, y, c));
+                    if (got - want).abs() > tol {
+                        off.push((x, y, d, c, got, want));
+                    }
+                };
+                if d < -1.5 {
+                    check(0, 0, 255.0, 4.0);
+                    check(0, 1, 0.0, 4.0);
+                    check(0, 2, 255.0, 4.0);
+                }
+                if (1.5..2.25).contains(&d) {
+                    check(1, 0, 0.0, 4.0);
+                    check(1, 1, 255.0, 4.0);
+                }
+                if d > 4.5 {
+                    check(2, 0, 0.0, 4.0);
+                    check(2, 1, 0.0, 4.0);
+                }
+                if d > reach + 1.0 && past < reach - 1.0 {
+                    check(4, 2, 255.0 * (-reach / 2.0).exp(), 4.0);
+                }
+                if past > reach + 1.0 {
+                    check(5, 2, 0.0, 0.0);
+                }
+                // The glow read back as a distance, within 1/2 px of the
+                // outline's. Inside the box, a counter's walls face each other,
+                // and a bilinear read across the ridge between them falls
+                // short.
+                if (0.75..4.5).contains(&d) && (0.5..reach - 1.0).contains(&past) {
+                    seen[3] += 1;
+                    let got = -2.0 * (f64::from(at(x, y, 2)) / 255.0).ln();
+                    if (got - d).abs() > 0.5 {
+                        off.push((x, y, d, 2, got, d));
+                    }
+                }
+            }
+        }
+        assert!(seen.iter().all(|n| *n > 50), "{words}: {seen:?}");
+        assert!(
+            off.is_empty(),
+            "{words}: {} pixels off, (x, y, d, channel, got, want) {:?}",
+            off.len(),
+            &off[..off.len().min(8)]
+        );
+    }
+}
+
+#[test]
+fn an_mtsdf_draw_pads_its_quads_up_to_the_reach_of_the_field() {
+    let fit = Fit {
+        x: 16.0,
+        y: 8.0,
+        ppem: 64.0,
+    };
+    let (w, h) = (96, 96);
+    let laid = lay(SANS, "I", Align::Left);
+    let g = &laid.glyphs[0];
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    for (pad, range, reach) in [(1.0, 6, 0.09375), (0.05, 6, 0.05), (1.0, 4, 0.0625)] {
+        let mut doc = label_scene(SANS, "I", Align::Left, fit);
+        doc["texts"]["label"]["atlas"] = json!({"range": range});
+        doc["passes"][0] = json!({"name": "main", "code": BLACK, "draws": [
+            {"text": "label", "place": fit_place(fit), "pad": pad,
+             "code": "void main(){ gl_FragColor = vec4(1.0); }"}]});
+        let frame = render(&mut r, &loaded(&doc));
+        // The pixels from the ink box along x, at the middle of the stem.
+        let y = (fit.y + (g.lo[1] + g.hi[1]) / 2.0 * fit.ppem) as usize;
+        let lit = |x: f64| frame[(y * w + x as usize) * 4] == 255;
+        let edge = (
+            fit.x + (g.hi[0] + reach) * fit.ppem,
+            fit.x + (g.lo[0] - reach) * fit.ppem,
+        );
+        let what = format!("pad {pad}, range {range}");
+        assert!(lit(edge.0 - 1.0) && !lit(edge.0 + 1.0), "{what}: right");
+        assert!(lit(edge.1 + 1.0) && !lit(edge.1 - 1.0), "{what}: left");
+    }
+}
+
+#[test]
+fn the_outline_fill_names_the_mtsdf_fill_for_a_distance() {
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 30.0,
+    };
+    let Some((_g, mut r)) = gpu(64, 48) else {
+        return;
+    };
+    for (call, missing) in [
+        ("glyph_dist()", "glyph_dist_needs_fill_mtsdf"),
+        ("glyph_soft()", "glyph_soft_needs_fill_mtsdf"),
+    ] {
+        let mut doc = draw_scene(SANS, "I", Align::Left, fit);
+        doc["passes"][0]["draws"][0]["code"] = json!(format!(
+            "void main(){{\n    float d = {call};\n    gl_FragColor = vec4(d);\n}}"
+        ));
+        let e = r.setup(&loaded(&doc)).unwrap();
+        assert!(
+            e.starts_with("pass 'main' draw 0, line 2 of its code: ") && e.contains(missing),
+            "{e}"
+        );
+        assert_eq!(r.setup(&loaded(&filled(doc, "mtsdf"))).unwrap(), "");
+    }
+}
+
+/// The threads of this process named `name`.
+fn threads_named(name: &str) -> usize {
+    fs::read_dir("/proc/self/task")
+        .unwrap()
+        .flatten()
+        .filter(|t| fs::read_to_string(t.path().join("comm")).is_ok_and(|c| c.trim_end() == name))
+        .count()
+}
+
+#[test]
+fn only_an_mtsdf_draw_starts_an_atlas() {
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 30.0,
+    };
+    let Some((_g, mut r)) = gpu(64, 48) else {
+        return;
+    };
+    let cache = tmpdir("no-atlas");
+    std::env::set_var("XDG_CACHE_HOME", &cache);
+    // An outline draw, and an MTSDF text that no draw names.
+    let outline = draw_scene(SANS, "I", Align::Left, fit);
+    let undrawn = label_scene(SANS, "I", Align::Left, fit);
+    for doc in [&outline, &undrawn] {
+        render(&mut r, &loaded(doc));
+        assert_eq!(threads_named("ghee-atlas"), 0);
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+    }
+    render(&mut r, &loaded(&filled(outline, "mtsdf")));
+    assert_eq!(threads_named("ghee-atlas"), 1);
+    // The worker writes the cache after the glyphs are in.
+    let file = std::path::Path::new(&cache).join("ghee/atlas");
+    let t0 = std::time::Instant::now();
+    while fs::read_dir(&file).map_or(0, |d| d.count()) == 0 {
+        assert!(t0.elapsed().as_secs() < 20, "no cache file");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    drop(r);
+    assert_eq!(threads_named("ghee-atlas"), 0);
+    fs::remove_dir_all(&cache).unwrap();
+}
+
+#[test]
+fn a_glyph_the_atlas_cannot_hold_draws_an_error_box_and_says_why() {
+    // A range of 2048 texels pads every cell past the atlas. The advances of m
+    // and w are wider than a box.
+    let words = "mw";
+    let laid = text::build(&font(SANS), words, Align::Left);
+    let built = laid.built.as_ref().unwrap();
+    let (bw, bh) = block(built);
+    let fit = Fit::of(bw, bh, W, H);
+    let mut doc = hazard_scene(SANS, words, fit);
+    doc["texts"]["label"]["atlas"] = json!({"range": 2048});
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let frame = render(&mut r, &loaded(&doc));
+    // Each box stands centred in its character's advance, on the baseline.
+    let q = &built.quads;
+    let rects: Vec<[f64; 4]> = (0..q.count)
+        .map(|i| {
+            let v = vertex(q, i, 0);
+            let mid = f64::from(v[3][1] + v[3][2]) / 2.0;
+            let base = laid_baseline(&laid);
+            [
+                mid - text::ERROR_BOX[0] / 2.0,
+                base - text::ERROR_BOX[1],
+                mid + text::ERROR_BOX[0] / 2.0,
+                base,
+            ]
+        })
+        .collect();
+    assert_hazard(&frame, W, fit, &rects, "atlas boxes");
+    let errors = r.text_errors();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    for (e, ch) in errors.iter().zip(['m', 'w']) {
+        let want = format!("text 'label': '{ch}' has no field in the atlas: its ");
+        assert!(
+            e.starts_with(&want) && e.ends_with("cell is larger than the 2048x2048 atlas"),
+            "{e}"
+        );
+    }
+}
+
+/// The baseline of a one-line layout, in em from the block's top.
+fn laid_baseline(laid: &text::Layout) -> f64 {
+    let g = &laid.built.as_ref().unwrap().glyphs[0];
+    g.origin[1]
+}
+
+#[test]
+fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
+    // A draw of the outline fill, its shaders recorded before the MTSDF fill
+    // came: the fragment shader gains the two lines that name it, and nothing
+    // else changes.
+    let doc = json!({
+        "version": 1,
+        "params": {
+            "t": {"type": "string", "value": "ghee"},
+            "sung": {"type": "float", "value": 2.5},
+            "n": {"type": "int", "value": 3},
+            "ink": {"type": "color", "value": [0.9, 0.9, 1.0]},
+        },
+        "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+        "texts": {"t": {"font": "sans", "align": "center", "fill": "outline"}},
+        "common": {"code": "float twice(float x) { return 2.0 * x; }"},
+        "passes": [{
+            "name": "main",
+            "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+            "params": {"gain": {"type": "float", "value": 1.0}},
+            "arrays": [{"name": "times", "size": 64}],
+            "draws": [{
+                "text": "t",
+                "pad": 0.05,
+                "place": "vec2 glyph_place(vec2 em) {\n    vec2 off = (resolution - t_size * 46.0) * 0.5;\n    return off + em * 46.0;\n}",
+                "code": "void main() {\n    float c = glyph_cover() * gain;\n    float k = clamp(sung - glyph_index, 0.0, 1.0);\n    gl_FragColor = vec4(ink * c * twice(k), c);\n}"
+            }]
+        }]
+    });
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    let p = &sc.passes[0];
+    let (vs, fs) = p.draw_glsl(
+        0,
+        Some(&sc.params),
+        sc.common.as_deref(),
+        &sc.assets,
+        &sc.texts,
+        false,
+    );
+    let (bvs, bfs) = p.draw_box_glsl(0, Some(&sc.params));
+    let fixture = |f: &str| {
+        fs::read_to_string(format!(
+            "{}/tools/fixtures/glsl/{f}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
+    };
+    let named = [
+        "// Distances come from the MTSDF fill's field, and a compile error names it.",
+        "#define glyph_dist glyph_dist_needs_fill_mtsdf",
+        "#define glyph_soft glyph_soft_needs_fill_mtsdf",
+    ];
+    assert!(named.iter().all(|l| fs.lines().any(|f| f == *l)));
+    let without: Vec<&str> = fs.lines().filter(|l| !named.contains(l)).collect();
+    assert_eq!(vs, fixture("draw-outline.vert"));
+    assert_eq!(without.join("\n"), fixture("draw-outline.frag"));
+    assert_eq!(bvs, fixture("draw-box.vert"));
+    assert_eq!(bfs, fixture("draw-box.frag"));
 }

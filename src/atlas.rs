@@ -12,8 +12,9 @@
 //! [`preload`] set on every core, and after that generates each other
 //! requested glyph, one at a time. [`Generator::request`] answers at once with
 //! the characters still pending, so the caller can hold new words until their
-//! glyphs are ready, and [`Generator::update`] hands over the texels that
-//! changed, for the upload.
+//! glyphs are ready, [`Generator::update`] hands over the texels that
+//! changed, for the upload, and [`Generator::failure`] says why a glyph took
+//! no cell.
 //!
 //! The cache keeps one file per font sha256, px/em and range in
 //! `$XDG_CACHE_HOME/ghee/atlas/`, else `~/.cache/ghee/atlas/`.
@@ -441,8 +442,8 @@ struct State {
     chars: HashMap<char, bool>,
     /// Requested characters the worker has yet to take.
     queue: Vec<char>,
-    /// Errors the caller has yet to take.
-    errors: Vec<String>,
+    /// Why each failed glyph took no cell, by glyph id.
+    failed: HashMap<u16, String>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -495,14 +496,11 @@ impl Generator {
         pending
     }
 
-    /// The errors of the glyphs that failed since the last call, each naming
-    /// its character. A failed glyph stays out of the atlas and counts as
-    /// ready.
-    pub fn errors(&self) -> Vec<String> {
-        self.started
-            .get()
-            .map(|s| std::mem::take(&mut lock(&s.shared.state).errors))
-            .unwrap_or_default()
+    /// Why glyph `gid` failed, None unless it did. A failed glyph stays out
+    /// of the atlas and counts as ready.
+    pub fn failure(&self, gid: u16) -> Option<String> {
+        let s = self.started.get()?;
+        lock(&s.shared.state).failed.get(&gid).cloned()
     }
 
     /// `f` on the atlas as it stands, None before the first request. The
@@ -523,7 +521,7 @@ impl Generator {
                 atlas: Atlas::default(),
                 chars: HashMap::new(),
                 queue: Vec::new(),
-                errors: Vec::new(),
+                failed: HashMap::new(),
             }),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
@@ -574,7 +572,8 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
     if let Some(atlas) = cached {
         lock(&shared.state).atlas = atlas;
     }
-    let mut none = Cellless::default();
+    // Glyphs without ink.
+    let mut blank: HashSet<u16> = HashSet::new();
     loop {
         let batch = {
             let mut st = lock(&shared.state);
@@ -597,16 +596,16 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
             let mut st = lock(&shared.state);
             let mut seen = HashSet::new();
             for g in asked.iter().map(|a| a.1).chain(extra).flatten() {
-                if !st.atlas.cells.contains_key(&g) && !none.holds(g) && seen.insert(g) {
+                let made = st.atlas.cells.contains_key(&g)
+                    || blank.contains(&g)
+                    || st.failed.contains_key(&g);
+                if !made && seen.insert(g) {
                     jobs.push(g);
                 }
             }
             for &(c, g) in &asked {
                 if g.is_none_or(|g| !seen.contains(&g)) {
                     st.chars.insert(c, true);
-                    if let Some(g) = g {
-                        none.tell(&mut st, g, c);
-                    }
                 }
             }
         }
@@ -627,7 +626,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
             });
             let mut st = lock(&shared.state);
             for (gid, f) in made {
-                added |= settle(&mut st, &asked, gid, f, &mut none);
+                added |= settle(&mut st, &asked, gid, f, &mut blank);
             }
         } else {
             for &gid in &jobs {
@@ -635,7 +634,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
                     return;
                 }
                 let f = make(font, gid, config);
-                added |= settle(&mut lock(&shared.state), &asked, gid, f, &mut none);
+                added |= settle(&mut lock(&shared.state), &asked, gid, f, &mut blank);
             }
         }
         if let (true, Some(path)) = (added, &file) {
@@ -649,57 +648,30 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
     }
 }
 
-/// The glyphs a worker made that hold no cell.
-#[derive(Default)]
-struct Cellless {
-    /// Glyphs without ink.
-    blank: HashSet<u16>,
-    /// Each failed glyph's error, and whether a request has heard it.
-    failed: HashMap<u16, (String, bool)>,
-}
-
-impl Cellless {
-    fn holds(&self, gid: u16) -> bool {
-        self.blank.contains(&gid) || self.failed.contains_key(&gid)
-    }
-
-    /// Hand glyph `gid`'s error to the caller, named after `ch`, the first
-    /// time a request asks for it. A preloaded glyph that failed stays quiet
-    /// until then.
-    fn tell(&mut self, st: &mut State, gid: u16, ch: char) {
-        if let Some((e, told)) = self.failed.get_mut(&gid) {
-            if !*told {
-                *told = true;
-                st.errors
-                    .push(format!("glyph {ch:?} (U+{:04X}): {e}", u32::from(ch)));
-            }
-        }
-    }
-}
-
-/// Put a made glyph in the atlas, or its error in `none`, and mark the
-/// characters that asked for it ready. True when it took a cell.
+/// Put a made glyph in the atlas, its error in the state, or its id in
+/// `blank`, and mark the characters that asked for it ready. True when it
+/// took a cell.
 fn settle(
     st: &mut State,
     asked: &[(char, Option<u16>)],
     gid: u16,
     made: Result<Option<Field>>,
-    none: &mut Cellless,
+    blank: &mut HashSet<u16>,
 ) -> bool {
     let took = match made.and_then(|f| f.map(|f| st.atlas.insert(gid, &f)).transpose()) {
-        Ok(cell) => cell.is_some(),
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            blank.insert(gid);
+            false
+        }
         Err(e) => {
-            none.failed.insert(gid, (format!("{e:#}"), false));
+            st.failed.insert(gid, format!("{e:#}"));
             false
         }
     };
-    if !took && !none.failed.contains_key(&gid) {
-        none.blank.insert(gid);
-    }
     for &(c, g) in asked {
         if g == Some(gid) {
             st.chars.insert(c, true);
-            none.tell(st, gid, c);
         }
     }
     took
@@ -1367,7 +1339,7 @@ mod tests {
         let font = boxes(1);
         let g = Generator::new(font.clone(), cached(&dir)).unwrap();
         assert!(g.started.get().is_none());
-        assert!(g.with(|_| ()).is_none() && g.update().is_none() && g.errors().is_empty());
+        assert!(g.with(|_| ()).is_none() && g.update().is_none() && g.failure(97).is_none());
         assert!(!dir.exists());
         assert_eq!(font.outlines.load(Ordering::Relaxed), 0);
         assert_eq!(g.request("baab".chars()), ['a', 'b']);
@@ -1389,8 +1361,8 @@ mod tests {
             [' ', ',', 'H', 'd', 'e', 'l', 'o', 'r', 'w']
         );
         wait(&g, words);
-        assert!(g.errors().is_empty());
         let gid = |ch| font.glyph(ch).unwrap();
+        assert!(words.chars().all(|ch| g.failure(gid(ch)).is_none()));
         g.with(|a| {
             assert!(!a.cells.contains_key(&gid(' ')));
             for ch in ('!'..='~').chain(words.chars().filter(|c| *c != ' ')) {
@@ -1442,7 +1414,7 @@ mod tests {
             font.outlines.store(0, Ordering::Relaxed);
             let g = Generator::new(font.clone(), cached(&dir)).unwrap();
             wait(&g, "abc");
-            assert!(g.errors().is_empty());
+            assert!(g.with(|a| a.cells.len()).unwrap() > 190);
             drop(g);
             assert!(font.outlines.load(Ordering::Relaxed) >= 3);
             assert!(decode(&k, &fs::read(&path).unwrap()).is_some());
@@ -1451,19 +1423,16 @@ mod tests {
     }
 
     #[test]
-    fn a_glyph_too_large_fails_alone_naming_its_character() {
+    fn a_glyph_too_large_fails_alone_and_says_why() {
         let dir = tmp("large");
         let g = Generator::new(boxes(3), cached(&dir)).unwrap();
-        wait(&g, "A");
-        // W failed in the preload, and says so once a request asks for it.
-        assert!(g.errors().is_empty());
+        // W fails in the preload, and counts as ready.
         wait(&g, "AWB");
         assert_eq!(
-            g.errors(),
-            ["glyph 'W' (U+0057): its 3208x31 cell is larger than the 2048x2048 atlas"]
+            g.failure('W' as u16).as_deref(),
+            Some("its 3208x31 cell is larger than the 2048x2048 atlas")
         );
-        wait(&g, "W");
-        assert!(g.errors().is_empty());
+        assert!(g.failure('A' as u16).is_none() && g.failure(' ' as u16).is_none());
         g.with(|a| {
             assert!(a.cells.contains_key(&('A' as u16)) && a.cells.contains_key(&('B' as u16)));
             assert!(!a.cells.contains_key(&('W' as u16)));
@@ -1497,7 +1466,7 @@ mod tests {
         let g = Generator::new(boxes(5), cached(&file.join("atlas"))).unwrap();
         wait(&g, "abc");
         wait(&g, "\u{3042}");
-        assert!(g.errors().is_empty());
+        assert!(g.failure(0x3042).is_none());
         assert!(g.with(|a| a.cells.len()).unwrap() > 190);
         drop(g);
         fs::remove_file(&file).unwrap();

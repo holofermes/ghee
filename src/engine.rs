@@ -7,16 +7,21 @@ use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::os::raw::{c_char, c_double, c_int, c_void};
+use std::path::PathBuf;
 use std::ptr;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 
 use crate::assets::Pixels;
+use crate::atlas;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
 use crate::scene::{ArraySize, Draw, ParamValue, Pass, Scene};
-use crate::text::{Fault, Text};
+use crate::text::{self, Fault, Fill, Layout, Text};
 
 /// error_pass for a compile error in the scene's common block.
 /// A pass error reports the pass index.
@@ -123,6 +128,26 @@ struct DrawLayer {
     /// The draw in an error, as "pass 'main' draw 0".
     name: String,
 }
+
+/// One atlas generator, and the engine textures that hold its atlas.
+struct AtlasSlot {
+    font: Arc<Vec<u8>>,
+    px_em: u32,
+    range: u32,
+    gen: atlas::Generator,
+    /// The engine asset `<name>_atlas` of each text drawn from this atlas, and
+    /// whether it still waits for its first upload, which takes all of it.
+    textures: Vec<(String, bool)>,
+}
+
+/// New words of a text that wait for the atlas to hold their glyphs.
+struct Held {
+    words: String,
+    laid: Layout,
+}
+
+/// The font that an atlas generator reads, from the font file's bytes.
+type AtlasFont = Box<dyn Fn(&Arc<Vec<u8>>) -> Arc<dyn atlas::Font>>;
 
 /// The problems of one scene text, a line each.
 #[derive(Clone, Default, PartialEq)]
@@ -457,6 +482,18 @@ pub struct Renderer {
     text_errors: std::cell::RefCell<HashMap<String, TextErrors>>,
     /// Counts the changes to text_errors.
     text_errors_seq: std::cell::Cell<u64>,
+    /// One atlas per font, px/em and range among the texts that a draw fills
+    /// with MTSDF.
+    atlases: std::cell::RefCell<Vec<AtlasSlot>>,
+    /// The new words of each MTSDF text still waiting for their glyphs, by
+    /// the text's name. The text draws its last words meanwhile.
+    held: std::cell::RefCell<HashMap<String, Held>>,
+    /// set_time() pinned the time, so a render waits for held words.
+    pinned: std::cell::Cell<bool>,
+    /// The font of an atlas generator.
+    atlas_font: AtlasFont,
+    /// The atlas cache directory. None takes the generator's own.
+    atlas_cache: Option<PathBuf>,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
 }
@@ -494,6 +531,11 @@ impl Renderer {
             reported: std::cell::RefCell::new(HashSet::new()),
             text_errors: std::cell::RefCell::new(HashMap::new()),
             text_errors_seq: std::cell::Cell::new(0),
+            atlases: std::cell::RefCell::new(Vec::new()),
+            held: std::cell::RefCell::new(HashMap::new()),
+            pinned: std::cell::Cell::new(false),
+            atlas_font: Box::new(|bytes| Arc::new(text::AtlasFont(bytes.clone()))),
+            atlas_cache: None,
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
             handle: ptr::null_mut(),
         };
@@ -845,14 +887,23 @@ impl Renderer {
             self.text_errors.borrow_mut().clear();
             self.text_errors_seq.set(self.text_errors_seq.get() + 1);
         }
+        self.held.borrow_mut().clear();
+        self.set_atlases(scene)?;
         // The engine assets of the old scene that the new one does not declare
         // go, and their slots come back.
+        let atlases: Vec<String> = self
+            .atlases
+            .borrow()
+            .iter()
+            .flat_map(|s| s.textures.iter().map(|t| t.0.clone()))
+            .collect();
         let keep: Vec<String> = scene
             .assets
             .iter()
             .filter(|a| !a.is_font())
             .map(|a| a.name.clone())
             .chain(scene.texts.iter().map(|t| format!("{}_tex", t.name)))
+            .chain(atlases)
             .collect();
         let stale: Vec<String> = self
             .scene_assets
@@ -944,6 +995,11 @@ impl Renderer {
                 continue;
             }
             self.set_scene_param(nm, &pm.ty, &pm.value)?;
+        }
+        // The first frame draws the words: they wait here for their glyphs.
+        if let Err(e) = self.tick_texts(true) {
+            self.error = e.to_string();
+            return Ok(self.error.clone());
         }
 
         let mut feeds: Vec<(String, ArraySize)> = Vec::new();
@@ -1069,12 +1125,14 @@ impl Renderer {
         Ok(())
     }
 
-    /// Upload each declared array for this frame, once per unique name.
+    /// Upload each declared array for this frame, once per unique name, and
+    /// the glyphs that the atlases gained.
     ///
     /// A render uploads what the provider returns. An Unchanged answer states
     /// that the texture already holds this array, and the upload is skipped.
     /// The engine never caches or compares data.
     fn feed(&self, provider: Option<Provider<'_>>) -> Result<()> {
+        self.tick_texts(false)?;
         let Some(provider) = provider else {
             return Ok(());
         };
@@ -1259,6 +1317,10 @@ impl Renderer {
     /// the last words that did. Each problem logs once, and text_errors()
     /// holds it while it lasts. An error is a font that was never loaded, or
     /// a texture or quads that the engine refuses.
+    ///
+    /// New words of an MTSDF text whose glyphs the atlas does not hold yet
+    /// wait for them, and the text draws its last words meanwhile. A render
+    /// with the time pinned by set_time() waits for them, and so does a setup.
     pub fn set_text(&self, name: &str, words: &str) -> Result<bool> {
         let Some(text) = self
             .scene
@@ -1268,10 +1330,82 @@ impl Renderer {
             return Ok(false);
         };
         let laid = text.build(words)?;
-        self.text_faults(text, &laid.faults, laid.built.is_some());
-        let Some(built) = laid.built else {
-            return Ok(true);
+        self.held.borrow_mut().remove(name);
+        if laid.built.is_some() {
+            if let Some(i) = self.atlas_of(name) {
+                if !self.atlases.borrow()[i]
+                    .gen
+                    .request(words.chars())
+                    .is_empty()
+                {
+                    let held = Held {
+                        words: words.to_string(),
+                        laid,
+                    };
+                    self.held.borrow_mut().insert(name.to_string(), held);
+                    return Ok(true);
+                }
+            }
+        }
+        self.show(text, laid)?;
+        Ok(true)
+    }
+
+    /// The index in `atlases` of the atlas that the draws of text `name`
+    /// read, None when no draw of it takes the MTSDF fill.
+    fn atlas_of(&self, name: &str) -> Option<usize> {
+        let tex = format!("{name}_atlas");
+        self.atlases
+            .borrow()
+            .iter()
+            .position(|s| s.textures.iter().any(|t| t.0 == tex))
+    }
+
+    /// Draw `laid`, new words of `text`, from now on, and log their problems.
+    /// Words that did not lay out leave the last words drawn.
+    fn show(&self, text: &Text, laid: Layout) -> Result<()> {
+        let name = &text.name;
+        let Layout { built, mut faults } = laid;
+        let Some(built) = built else {
+            self.text_faults(text, &faults, false);
+            return Ok(());
         };
+        // The quads of the text's fill, and under MTSDF an error box for each
+        // glyph that the atlas holds no field for. An MTSDF text with no atlas
+        // has a font that failed to load, and draws error boxes alone.
+        let mut boxes = built.boxes.floats.clone();
+        let quads = match text.fill {
+            Fill::Outline => built.quads.floats.clone(),
+            Fill::Mtsdf => {
+                let atlases = self.atlases.borrow();
+                let slot = self.atlas_of(name).map(|i| &atlases[i]);
+                let made = slot.and_then(|s| {
+                    s.gen.with(|a| {
+                        text::mtsdf_quads(&built.glyphs, s.px_em, |gid| a.cells.get(&gid).copied())
+                    })
+                });
+                match (slot, made) {
+                    (Some(slot), Some((quads, more, missing))) => {
+                        boxes.extend(&more.floats);
+                        let mut told: Vec<char> = Vec::new();
+                        for p in missing {
+                            if told.contains(&p.ch) {
+                                continue;
+                            }
+                            told.push(p.ch);
+                            let why = match slot.gen.failure(p.gid) {
+                                Some(e) => format!("has no field in the atlas: {e}"),
+                                None => "has no field in the atlas".to_string(),
+                            };
+                            faults.push(Fault::Glyph(p.ch, why));
+                        }
+                        quads.floats
+                    }
+                    _ => Vec::new(),
+                }
+            }
+        };
+        self.text_faults(text, &faults, true);
         self.set_asset(
             &format!("{name}_tex"),
             built.width,
@@ -1287,15 +1421,168 @@ impl Renderer {
                 self.set_uniform(*idx, &uniform, "float", Value::from(*v))?;
             }
         }
-        for d in self.draws.iter().filter(|d| d.text == name) {
-            for (layer, quads, what) in [
-                (d.layer, &built.quads, d.name.clone()),
-                (d.boxes, &built.boxes, format!("{} error boxes", d.name)),
+        for d in self.draws.iter().filter(|d| d.text == *name) {
+            for (layer, floats, what) in [
+                (d.layer, &quads, d.name.clone()),
+                (d.boxes, &boxes, format!("{} error boxes", d.name)),
             ] {
-                self.layer_quads(layer, &what, &quads.floats, quads.per_vertex / 4)?;
+                self.layer_quads(layer, &what, floats, text::QUAD_FLOATS / 4)?;
             }
         }
-        Ok(true)
+        Ok(())
+    }
+
+    /// Set up the atlases of `scene`: one generator per font, px/em and range
+    /// among its texts that a draw fills with MTSDF. A generator that the last
+    /// scene used carries on, and the others stop.
+    fn set_atlases(&self, scene: &Scene) -> Result<()> {
+        let mut old = std::mem::take(&mut *self.atlases.borrow_mut());
+        let mut slots: Vec<AtlasSlot> = Vec::new();
+        for t in &scene.texts {
+            let Some(Ok(font)) = &t.data else { continue };
+            if t.fill != Fill::Mtsdf || !scene.draws_text(&t.name) {
+                continue;
+            }
+            let same =
+                |s: &AtlasSlot| s.px_em == t.px_per_em && s.range == t.range && s.font == *font;
+            let i = match slots.iter().position(same) {
+                Some(i) => i,
+                None => {
+                    let slot = match old.iter().position(same) {
+                        Some(j) => {
+                            let mut s = old.swap_remove(j);
+                            s.textures.clear();
+                            s
+                        }
+                        None => AtlasSlot {
+                            font: font.clone(),
+                            px_em: t.px_per_em,
+                            range: t.range,
+                            gen: atlas::Generator::new(
+                                (self.atlas_font)(font),
+                                atlas::Config {
+                                    px_em: t.px_per_em,
+                                    range: t.range,
+                                    cache: self.atlas_cache.clone(),
+                                },
+                            )?,
+                            textures: Vec::new(),
+                        },
+                    };
+                    slots.push(slot);
+                    slots.len() - 1
+                }
+            };
+            slots[i].textures.push((format!("{}_atlas", t.name), true));
+        }
+        drop(old);
+        *self.atlases.borrow_mut() = slots;
+        Ok(())
+    }
+
+    /// Hand the engine what the atlases gained, then draw the held words
+    /// whose glyphs are all in. With `wait`, or with the time pinned, every
+    /// held text waits for its glyphs first.
+    fn tick_texts(&self, wait: bool) -> Result<()> {
+        if self.atlases.borrow().is_empty() {
+            return Ok(());
+        }
+        let wait = wait || self.pinned.get();
+        let mut ready: Vec<String> = Vec::new();
+        for (name, h) in self.held.borrow().iter() {
+            let Some(i) = self.atlas_of(name) else {
+                ready.push(name.clone());
+                continue;
+            };
+            let atlases = self.atlases.borrow();
+            let done = loop {
+                if atlases[i].gen.request(h.words.chars()).is_empty() {
+                    break true;
+                }
+                if !wait {
+                    break false;
+                }
+                thread::sleep(Duration::from_millis(1));
+            };
+            if done {
+                ready.push(name.clone());
+            }
+        }
+        self.upload_atlases()?;
+        for name in ready {
+            let Some(h) = self.held.borrow_mut().remove(&name) else {
+                continue;
+            };
+            let scene = self.scene.as_ref();
+            if let Some(text) = scene.and_then(|s| s.texts.iter().find(|t| t.name == name)) {
+                self.show(text, h.laid)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Upload the texels that each atlas gained: all of it to a texture new to
+    /// the atlas, and to the others the rows that changed, or all of it again
+    /// when the atlas grew.
+    fn upload_atlases(&self) -> Result<()> {
+        let mut atlases = self.atlases.borrow_mut();
+        for slot in atlases.iter_mut() {
+            let update = slot.gen.update();
+            for (tex, fresh) in slot.textures.iter_mut() {
+                if *fresh {
+                    let up = slot.gen.with(|a| {
+                        self.set_asset(tex, a.width, a.height, 4, true, AssetData::U8(&a.texels))
+                    });
+                    let Some(up) = up else { continue };
+                    up?;
+                    *fresh = false;
+                    self.scene_asset(tex);
+                    continue;
+                }
+                let Some(u) = &update else { continue };
+                if u.resized {
+                    let all = &u.rows[0].texels;
+                    self.set_asset(tex, u.width, u.height, 4, true, AssetData::U8(all))?;
+                    continue;
+                }
+                for r in &u.rows {
+                    self.set_asset_rows(tex, r.y, u.width, &r.texels)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace the rows of asset `name` from row `y` up with `texels`, RGBA8
+    /// rows `width` texels wide.
+    fn set_asset_rows(&self, name: &str, y: u32, width: u32, texels: &[u8]) -> Result<()> {
+        let row = width as usize * 4;
+        if row == 0 || !texels.len().is_multiple_of(row) {
+            bail!(
+                "asset '{name}': {} bytes are no whole rows of {width} texels",
+                texels.len()
+            );
+        }
+        let cname = CString::new(name)?;
+        let ok = unsafe {
+            ffi::ghee_mp_set_asset_rows(
+                self.handle,
+                cname.as_ptr(),
+                texels.as_ptr().cast::<c_void>(),
+                y as c_int,
+                (texels.len() / row) as c_int,
+            )
+        };
+        if !ok {
+            bail!(
+                "{}",
+                or_else(
+                    self.last_error(),
+                    &format!("asset '{name}' refused its rows")
+                )
+            );
+        }
+        Ok(())
     }
 
     /// Log each new cause among the `faults` of a layout of `text`, and hold
@@ -1465,6 +1752,7 @@ impl Renderer {
     /// The default is the monotonic clock since the engine start.
     /// None returns the uniform to that clock.
     pub fn set_time(&self, t: Option<f64>) {
+        self.pinned.set(t.is_some());
         match t {
             None => unsafe { ffi::ghee_clear_time(self.handle) },
             Some(t) => unsafe { ffi::ghee_set_time(self.handle, t as f32) },
@@ -1552,6 +1840,8 @@ impl Renderer {
         self.layers = Vec::new();
         self.draws = Vec::new();
         self.feeds = Vec::new();
+        self.held.borrow_mut().clear();
+        self.atlases.borrow_mut().clear();
     }
 
     pub fn close(&mut self) {
@@ -3311,7 +3601,7 @@ mod tests {
                     "version": 1,
                     "params": {"label": {"type": "string", "value": "AV"}},
                     "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-                    "texts": {"label": {"font": "sans"}},
+                    "texts": {"label": {"font": "sans", "fill": "outline"}},
                     "passes": [{"name": "main", "draws": draws,
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }"}],
                 }),
@@ -3361,5 +3651,273 @@ mod tests {
             frame(&mut r) == drawn,
             "the error-box layer changed the frame"
         );
+    }
+
+    // The MTSDF fill's atlas
+
+    /// The fixture font for an atlas, with two switches. Until `visible`, the
+    /// glyphs of LATE draw nothing to the atlas, so its preload leaves them
+    /// out, and until `open`, their outlines wait. A character from U+E000
+    /// takes a glyph of its own, 'O' three times as large, drawn by no layout.
+    struct Switched {
+        inner: text::AtlasFont,
+        visible: std::sync::atomic::AtomicBool,
+        open: std::sync::atomic::AtomicBool,
+    }
+
+    const LATE: &str = "QZ";
+    const BIG: u16 = 0xf000;
+
+    impl Switched {
+        fn new() -> Arc<Switched> {
+            let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+            let bytes = fs::read(format!("{fonts}/DejaVuSans-ASCII.ttf")).unwrap();
+            Arc::new(Switched {
+                inner: text::AtlasFont(Arc::new(bytes)),
+                visible: false.into(),
+                open: true.into(),
+            })
+        }
+
+        fn set(&self, flag: &std::sync::atomic::AtomicBool, on: bool) {
+            flag.store(on, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl atlas::Font for Switched {
+        fn bytes(&self) -> &[u8] {
+            self.inner.bytes()
+        }
+
+        fn glyph(&self, ch: char) -> Option<u16> {
+            let on =
+                |f: &std::sync::atomic::AtomicBool| f.load(std::sync::atomic::Ordering::SeqCst);
+            match u32::from(ch) {
+                c @ 0xe000..=0xe0ff => Some(BIG + (c - 0xe000) as u16),
+                _ if LATE.contains(ch) && !on(&self.visible) => None,
+                _ => self.inner.glyph(ch),
+            }
+        }
+
+        fn outline(&self, gid: u16) -> Result<Vec<Vec<atlas::Curve>>> {
+            if gid >= BIG {
+                let o = self.inner.outline(self.inner.glyph('O').unwrap())?;
+                return Ok(o
+                    .into_iter()
+                    .map(|c| {
+                        c.into_iter()
+                            .map(|q| q.map(|p| p.map(|v| v * 3.0)))
+                            .collect()
+                    })
+                    .collect());
+            }
+            let late = LATE.chars().any(|c| self.inner.glyph(c) == Some(gid));
+            while late && !self.open.load(std::sync::atomic::Ordering::SeqCst) {
+                sleep(Duration::from_millis(1));
+            }
+            self.inner.outline(gid)
+        }
+    }
+
+    /// A text drawn white over black by an MTSDF draw, at 40 px/em.
+    fn mtsdf_scene(words: &str) -> Scene {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let mut sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "params": {"label": {"type": "string", "value": words}},
+                "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+                "texts": {"label": {"font": "sans"}},
+                "passes": [{"name": "main",
+                    "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                    "draws": [{"text": "label",
+                        "place": "vec2 glyph_place(vec2 em) { return vec2(2.0, 1.0) + em * 40.0; }",
+                        "code": "void main(){ gl_FragColor = vec4(glyph_cover()); }"}]}],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(fonts).unwrap();
+        sc
+    }
+
+    /// A renderer whose atlases read `font` and cache in a fresh directory,
+    /// which the caller removes.
+    fn switched(
+        font: &Arc<Switched>,
+        tag: &str,
+    ) -> Option<(MutexGuard<'static, ()>, Renderer, PathBuf)> {
+        let (g, mut r) = gpu()?;
+        let f = font.clone();
+        r.atlas_font = Box::new(move |_| f.clone());
+        let dir = std::env::temp_dir().join(format!("ghee-engine-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        r.atlas_cache = Some(dir.clone());
+        Some((g, r, dir))
+    }
+
+    fn still(r: &mut Renderer) -> Vec<u8> {
+        r.render(None).unwrap().to_vec()
+    }
+
+    /// The largest difference between two frames.
+    fn worst(a: &[u8], b: &[u8]) -> u8 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The frame of `words` in a scene of their own, with every glyph in the
+    /// atlas from the start.
+    fn reference(words: &str) -> Vec<u8> {
+        let Some((_g, mut r)) = gpu() else {
+            return Vec::new();
+        };
+        let dir = std::env::temp_dir().join(format!("ghee-engine-{}-ref", std::process::id()));
+        r.atlas_cache = Some(dir.clone());
+        assert_eq!(r.setup(&mtsdf_scene(words)).unwrap(), "");
+        r.set_time(Some(0.0));
+        let f = still(&mut r);
+        drop(r);
+        let _ = fs::remove_dir_all(&dir);
+        f
+    }
+
+    #[test]
+    fn new_words_hold_the_last_until_their_glyphs_are_in() {
+        let (want_av, want_avz) = (reference("AV"), reference("AVZ"));
+        let font = Switched::new();
+        let Some((_g, mut r, dir)) = switched(&font, "hold") else {
+            return;
+        };
+        assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
+        let size = |r: &Renderer| {
+            r.atlases.borrow()[0]
+                .gen
+                .with(|a| (a.width, a.height))
+                .unwrap()
+        };
+        let before = size(&r);
+        let av = still(&mut r);
+        assert!(worst(&av, &want_av) <= 1);
+        font.set(&font.visible, true);
+        font.set(&font.open, false);
+        assert!(r.set_text("label", "AVZ").unwrap());
+        for _ in 0..5 {
+            sleep(Duration::from_millis(20));
+            assert!(still(&mut r) == av, "the words switched before Z was in");
+        }
+        font.set(&font.open, true);
+        let t0 = std::time::Instant::now();
+        let shown = loop {
+            let f = still(&mut r);
+            if f != av {
+                break f;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(20), "Z never came in");
+            sleep(Duration::from_millis(1));
+        };
+        assert!(
+            worst(&shown, &want_avz) <= 1,
+            "{}",
+            worst(&shown, &want_avz)
+        );
+        // Z took a cell in the atlas as it stood: rows, no new texture.
+        assert_eq!(size(&r), before);
+        drop(r);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn with_the_time_pinned_a_render_waits_for_the_glyphs() {
+        let want = reference("AVQ");
+        let font = Switched::new();
+        let Some((_g, mut r, dir)) = switched(&font, "pinned") else {
+            return;
+        };
+        assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
+        r.set_time(Some(0.0));
+        let av = still(&mut r);
+        font.set(&font.visible, true);
+        font.set(&font.open, false);
+        assert!(r.set_text("label", "AVQ").unwrap());
+        let opener = {
+            let font = font.clone();
+            thread::spawn(move || {
+                sleep(Duration::from_millis(300));
+                font.set(&font.open, true);
+            })
+        };
+        let t0 = std::time::Instant::now();
+        let f = still(&mut r);
+        assert!(
+            t0.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            t0.elapsed()
+        );
+        opener.join().unwrap();
+        assert!(f != av && worst(&f, &want) <= 1, "{}", worst(&f, &want));
+        drop(r);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_atlas_that_grows_uploads_again_and_draws_the_same() {
+        let want = reference("AVQ");
+        let font = Switched::new();
+        let Some((_g, mut r, dir)) = switched(&font, "grow") else {
+            return;
+        };
+        assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
+        r.set_time(Some(0.0));
+        let av = still(&mut r);
+        let size = |r: &Renderer| {
+            r.atlases.borrow()[0]
+                .gen
+                .with(|a| (a.width, a.height))
+                .unwrap()
+        };
+        let before = size(&r);
+        let big: String = (0..40)
+            .map(|i| char::from_u32(0xe000 + i).unwrap())
+            .collect();
+        let t0 = std::time::Instant::now();
+        while !r.atlases.borrow()[0].gen.request(big.chars()).is_empty() {
+            assert!(
+                t0.elapsed() < Duration::from_secs(60),
+                "the big glyphs never came in"
+            );
+            sleep(Duration::from_millis(1));
+        }
+        let after = size(&r);
+        assert!(
+            after.0 * after.1 > before.0 * before.1,
+            "{before:?} to {after:?}"
+        );
+        assert!(still(&mut r) == av, "the grown atlas moved the glyphs");
+        // New words after the growth take their glyphs from the new texture.
+        font.set(&font.visible, true);
+        assert!(r.set_text("label", "AVQ").unwrap());
+        let f = still(&mut r);
+        assert!(worst(&f, &want) <= 1, "{}", worst(&f, &want));
+        drop(r);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_scene_of_outline_draws_starts_no_atlas() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let mut sc = mtsdf_scene("AV");
+        sc.texts[0].fill = Fill::Outline;
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        assert!(r.atlases.borrow().is_empty());
+        // A text that no draw names takes no atlas either.
+        let mut sc = mtsdf_scene("AV");
+        sc.passes[0].draws.clear();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        assert!(r.atlases.borrow().is_empty());
     }
 }

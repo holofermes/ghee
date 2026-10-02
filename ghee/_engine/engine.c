@@ -143,6 +143,7 @@ struct GheeScene {
     GLuint mp_asset_tex[MP_MAX_ASSETS];
     char mp_asset_name[MP_MAX_ASSETS][64];        // sampler uniform name
     int mp_asset_w[MP_MAX_ASSETS], mp_asset_h[MP_MAX_ASSETS];
+    GLenum mp_asset_fmt[MP_MAX_ASSETS], mp_asset_type[MP_MAX_ASSETS];
     GLuint black_tex;                    // bound to a channel with no source pass
 
     bool keep_alpha;                     // readbacks carry the final pass's alpha
@@ -1447,10 +1448,33 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, fmt, width, height, 0, fmt,
-                 is_f32 ? GL_FLOAT : GL_UNSIGNED_BYTE, data);
+    const GLenum type = is_f32 ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    glTexImage2D(GL_TEXTURE_2D, 0, fmt, width, height, 0, fmt, type, data);
     g->mp_asset_w[idx] = width;
     g->mp_asset_h[idx] = height;
+    g->mp_asset_fmt[idx] = fmt;
+    g->mp_asset_type[idx] = type;
+    return true;
+}
+
+// Replace rows y to y + rows of a set asset, each its full width, in the
+// layout of its last ghee_mp_set_asset.
+bool ghee_mp_set_asset_rows(GheeScene *g, const char *name, const void *data, int y, int rows) {
+    const int idx = mp_asset_index(g, name);
+    if (idx < 0) {
+        set_error(g, "asset '%s' is not set", name);
+        return false;
+    }
+    if (y < 0 || rows <= 0 || y > g->mp_asset_h[idx] - rows) {
+        set_error(g, "asset '%s' is %d rows high, and %d rows from row %d do not fit it",
+                  name, g->mp_asset_h[idx], rows, y);
+        return false;
+    }
+    make_current(g);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g->mp_asset_tex[idx]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, g->mp_asset_w[idx], rows, g->mp_asset_fmt[idx],
+                    g->mp_asset_type[idx], data);
     return true;
 }
 
@@ -1465,6 +1489,8 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name) {
         memcpy(g->mp_asset_name[a], g->mp_asset_name[a + 1], sizeof g->mp_asset_name[a]);
         g->mp_asset_w[a] = g->mp_asset_w[a + 1];
         g->mp_asset_h[a] = g->mp_asset_h[a + 1];
+        g->mp_asset_fmt[a] = g->mp_asset_fmt[a + 1];
+        g->mp_asset_type[a] = g->mp_asset_type[a + 1];
         for (int p = 0; p < MP_MAX_PASSES; p++) {
             g->mp_loc[p].asset[a] = g->mp_loc[p].asset[a + 1];
             g->mp_loc[p].assetSize[a] = g->mp_loc[p].assetSize[a + 1];

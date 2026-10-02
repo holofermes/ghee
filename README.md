@@ -179,8 +179,8 @@ A pass buffer holds 8-bit RGBA, and a channel reads the alpha that its pass
 wrote. The output is opaque: a frame reads alpha 255, unless
 `ghee render --alpha` keeps the output pass's alpha in RGBA frames.
 
-A pass binds at most 16 textures: its channels, its arrays, and the assets
-and texts that it samples.
+A pass binds at most 16 textures: its channels, its arrays, and the assets,
+texts and text atlases that it samples.
 
 ghee compiles the GLSL of every pass behind a preamble like this one:
 
@@ -311,27 +311,96 @@ On VC4 the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre,
 so a shader that needs exact centres, like the one above, samples at
 `floor(v_texCoord * resolution) + 0.5`.
 
-A scene holds at most 16 image assets and texts together. The words must fit
-a 1024x2048 data texture, at most 4 glyphs may overlap at one spot, and a
-glyph holds at most 64 curves in one band.
+A scene holds at most 16 image assets, texts and text atlases together, and a
+text drawn with the MTSDF fill takes an atlas. The words must fit a 1024x2048
+data texture, at most 4 glyphs may overlap at one spot, and a glyph holds at
+most 64 curves in one band.
 
 A text problem leaves the scene running: ghee logs it once, and the console
 shows it. A font that fails to load draws every character as an error box,
 diagonal stripes of coverage in `title_cover`. A character whose glyph has no
-outline, such as an emoji of a bitmap-only font, and a glyph past the curve
-limit each draw an error box in their place, and the rest of the words draw.
+outline, such as an emoji of a bitmap-only font, a glyph past the curve limit,
+and in an MTSDF draw a glyph too large for the atlas each draw an error box in
+their place, and the rest of the words draw.
 Words that do not fit leave the last words that did, and a scene whose first
 words do not fit draws none.
-
-A pass can also draw a text straight into its buffer, through `draws`. A
-pass with `draws` and no `code` starts each frame transparent and holds the
-words alone, a layer that later passes read through a channel and composite.
 
 Render the bundled `lettering` example to a PNG:
 
 ```
 ghee render --demo lettering -o lettering.png --frames 1
 ```
+
+## Draws
+
+A pass draws a text straight into its buffer through `draws`, after its own
+quad: one quad over each glyph, coloured by the draw's own fragment shader.
+This draw puts `title` in amber at 48 pixels per em, centred in the pass:
+
+```json
+"draws": [{
+  "text": "title",
+  "place": "vec2 glyph_place(vec2 em) { return (resolution - title_size * 48.0) * 0.5 + em * 48.0; }",
+  "code": "void main() { float c = glyph_cover(); gl_FragColor = vec4(vec3(1.0, 0.7, 0.2) * c, c); }"
+}]
+```
+
+- `text` names a scene text.
+- `place` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
+  block, in em from its top left with y down, to the pass pixel where it
+  lands. It runs at the corners of each glyph's quad, so a glyph moves
+  rigidly.
+- `code` holds a `void main()` that writes colour premultiplied by alpha.
+- `blend` is `over` by default, `add` or `replace`.
+- `alpha` is `blend` by default, and `keep` leaves the pass's alpha as it was.
+- `pad` grows each quad that many em past the ink, room for an effect around
+  the outline, 0 by default.
+
+`code` reads:
+
+```glsl
+float glyph_cover();   // coverage 0..1
+float glyph_dist();    // signed distance to the outline in pixels, > 0 inside
+float glyph_soft();    // true signed distance in pixels, round at corners
+vec2  glyph_em;        // the point in em, as glyph_place takes it
+float glyph_index;     // the character's index in the words, newlines counted
+float glyph_word;      // the index of its word
+float glyph_line;      // the index of its line
+vec2  glyph_span;      // its advance, start and end x in em
+float glyph_ppem;      // pixels per em at this glyph
+```
+
+`place` reads `glyph_index`, `glyph_word`, `glyph_line`, `glyph_span`,
+`glyph_box` (the ink box in em) and every uniform, and no texture. Draws
+render in list order, so a first draw of the same text puts a glow or a
+shadow under the fill of every glyph. A pass with `draws` and no `code` starts
+each frame transparent and holds the words alone, a layer that later passes
+read through a channel and composite.
+
+The text's `fill` sets where the coverage comes from. `mtsdf`, the default,
+reads one texel a pixel from an atlas of the glyphs' MTSDFs: multi-channel
+signed distance fields, with the true distance in alpha. The first use of a
+font generates its ASCII and Latin-1 on every core, 0.6 s on a Pi Zero 2 W,
+and caches the atlas in `$XDG_CACHE_HOME/ghee/atlas`, else
+`~/.cache/ghee/atlas`. Any other character follows when words first need it,
+and the text keeps its last words on screen until every glyph of the new
+ones is in. A setup waits for them, and so does a render with `--timestep`.
+`atlas` on the text sets the texels per em of a glyph and the distance range
+in texels. The defaults:
+
+```json
+"texts": { "title": { "font": "sans", "atlas": { "px_per_em": 32, "range": 6 } } }
+```
+
+The field reaches `range / 2 / px_per_em` em past the outline, 0.094 em by
+default. `glyph_soft` reads no distance past it, and `pad` stops there.
+
+`outline` computes the coverage from the curves, as `title_cover` does, and
+draws with no `glyph_dist` or `glyph_soft`.
+
+On a Pi Zero 2 W, seven lines of 216 characters at 46 pixels per em, in a
+1280x800 frame, draw in 3.1 ms with `mtsdf` and in 22.3 ms with `outline`,
+2.1 ms of each the background pass.
 
 ## Procedural scenes
 

@@ -182,9 +182,9 @@ uniform float time;                 // seconds since start
 uniform float DT;                   // seconds the last frame took
 uniform float frame;                // frames rendered, wraps at 2^20
 uniform vec2  resolution;           // buffer size in pixels
-varying vec2  v_texCoord;           // 0..1 across the buffer
+varying vec2  v_texCoord;           // 0..1 across the buffer, y = 0 at the top
 // gl_FragCoord maps to the varying, so Shadertoy
-// gl_FragCoord.xy / resolution math is exact
+// gl_FragCoord.xy / resolution math works unchanged
 
 // declared array, e.g. {"name": "amplitudes", "size": 16}:
 const int amplitudes_size;          // = 16
@@ -226,10 +226,10 @@ metadata:
 
 The preamble turns that into `uniform float gain;`, and the console renders
 every param as a live control. The types are `float`, `int`, `bool`,
-`color` (a `vec3` in the shader), `vec2/3/4`, and `string`. A string stays
-on the host: the scene consumes it for work like rasterizing text, and
-`options` turns its text box into a dropdown. A param declared on the scene
-is shared, every pass reads the one value.
+`color` (a `vec3` in the shader), `vec2/3/4`, and `string`. A string reaches
+the shader only through a [text](#text) of the same name, a procedural scene
+gets it on its ticks, and `options` turns its text box into a dropdown. A
+param declared on the scene is shared, every pass reads the one value.
 
 A scene declares an asset by file name, and the host decodes it and feeds
 it to every pass at setup time:
@@ -248,6 +248,71 @@ unless the asset sets `"filter": "linear"`.
 `.png` and `.jpg` files are supported, as well as `.raw`: bare pixels
 that declare `width`, `height` and `format` (`u8` or little-endian
 `f32`), and `components` picks 1, 3 or 4 values per pixel, 1 by default.
+A `.ttf` or `.otf` file is a font for a [text](#text), and no pass sees it.
+
+## Text
+
+A scene draws text on the GPU from a font asset. It declares the text under
+the name of a scene string param, and that param holds the words:
+
+```json
+{
+  "version": 1,
+  "params": { "title": { "type": "string", "value": "hello" } },
+  "assets": { "sans": { "file": "DejaVuSans.ttf" } },
+  "texts": { "title": { "font": "sans", "align": "center" } },
+  "passes": [{ "name": "main", "shader": "title.glsl" }]
+}
+```
+
+and `title.glsl` draws the words white on black, centred in the frame at 48
+pixels to the em:
+
+```glsl
+void main() {
+  float ppem = 48.0;
+  vec2 px = floor(v_texCoord * resolution) + 0.5;
+  vec2 p = (px - 0.5 * (resolution - title_size * ppem)) / ppem;
+  gl_FragColor = vec4(vec3(title_cover(p, ppem)), 1.0);
+}
+```
+
+Every pass of the scene, filter passes excepted, reads the words through
+`float title_cover(vec2 p, float ppem)`: the coverage 0..1 of the words at
+`p`, in em from the block's top left, y down like `v_texCoord`, drawn at
+`ppem` pixels per em. `title_size` holds the block's width and height in em.
+
+The console shows the param as a text box, and an edit lays the words out
+again live, with no recompile.
+
+The font is a TrueType or CFF/OTF file, and texts that name the same font
+asset share it.
+
+Lines break at each newline, and `align` sets each line `left`, `center` or
+`right` within the block, `left` by default. Every character draws as one
+glyph, spaced by the advances and the pair kerning of the font's `kern` table.
+Careful: a font that kerns through GPOS alone draws unkerned. Text that needs
+shaping goes in as a host-rasterized 2D input, the way the `text` demo draws
+its words.
+
+`title_cover` ports Eric Lengyel's [Slug](https://github.com/EricLengyel/Slug)
+algorithm and computes coverage from the font's own curves, so the edges stay
+exact at any size.
+
+On VC4 the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre,
+so a shader that needs exact centres, like the one above, samples at
+`floor(v_texCoord * resolution) + 0.5`.
+
+A scene's texts and image assets share a cap of 8, and a font takes none of
+it. The words must fit a
+1024x2048 data texture, at most 4 glyphs may overlap at one spot, and a glyph
+with more than 64 curves in one band fails.
+
+Render the bundled `lettering` example to a PNG:
+
+```
+ghee render --demo lettering -o lettering.png --frames 1
+```
 
 ## Procedural scenes
 
@@ -426,6 +491,7 @@ sha256 of each frame against the pinned reference in `tools/fixtures/golden/`.
 
 ## License
 
-MIT.
+MIT. The text shader ports Eric Lengyel's Slug, also MIT, and
+[NOTICE](NOTICE) carries its copyright notice.
 
 ![](https://fabiopiparo.com/pixel.gif?site=ghee)

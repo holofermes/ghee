@@ -33,6 +33,7 @@ h = ghee.open(
 h.set_param("gain", 1.5)                 # a scene param
 h.set_param("snap", 1.0, pass_="hold")   # the param of one pass
 h.set_param("hold.snap", 1.0)            # the same param, dotted
+h.set_param("words", "hello")            # a string param, drawn by a text
 
 h.feed("level", bars)      # bytes, bytearray, memoryview, array, numpy, numbers
 tick = h.frame()           # {"frame": 12, "time": 0.4, "dt": 0.0166}
@@ -47,7 +48,11 @@ h.close()       # also a context manager
 ## What each call does
 
 `set_param` sets a live uniform, no recompile. A bare name is the scene
-param, else the param of the first pass that declares it.
+param, else the param of the first pass that declares it. A string param
+that a text draws lays out the new words, also with no recompile.
+
+A scene given as a dict or as JSON text resolves its files in the working
+directory, a scene file beside itself.
 
 `feed` holds the data for one declared array, and the next frame consumes
 it once. A uint8 buffer reaches the texture as byte / 255, a float32
@@ -92,13 +97,34 @@ declare `ghee-render` inline:
 
 The shim gives:
 
-- `ghee.Scene / Pass / Param / ArrayInput / Channel`: build the scene
+- `ghee.Scene / Pass / Param / ArrayInput / Channel / Asset / Text`: build
+  the scene
 - `ghee.Arg`, `ghee.args([...])`: argument declarations, and the `-- --help` answer
 - `@ghee.feed("name")`: the values of a named array, each tick. A uint8
   buffer, `bytes` or a numpy uint8 array
 - `@ghee.tick`: a hook for each tick, with `ghee.set_param(name, value)` and
   `ghee.skip()`
 - `ghee.run(scene)`: the handshake, then the tick loop
+
+## Text
+
+`ghee.Text` draws the scene string param of its name on the GPU, from the
+outlines of a font, sharp at any size. Every pass reads the words with
+`float <name>_cover(vec2 p, float ppem)`: `p` in em from the top left of
+the block, y down like `v_texCoord`, and `ppem` the pixels per em.
+`<name>_size` is the block in em. A new value of the param lays out the
+words again with no recompile, from `set_param` or the console.
+
+    scene = ghee.Scene(
+        params={"words": ghee.Param("words", "string", "hello")},
+        assets=[ghee.Asset("sans", "DejaVuSans.ttf")],
+        texts=[ghee.Text("words", "sans", align="center")],
+        passes=[ghee.Pass("main", CODE)],
+    )
+
+The font is an asset file, beside the scene when ghee runs it and in the
+working directory in a direct run. `ghee render --demo lettering -o
+lettering.png --frames 1` shows the words at every size.
 
 ## Direct mode
 
@@ -132,3 +158,10 @@ The wire suits small per-frame data. Megabyte-scale data costs a
 serialization and two copies for each frame, and on a small Pi that shows
 up as a low frame rate. A data-heavy host takes `ghee.open` instead: the
 renderer in the same process, no pipe.
+
+## License
+
+MIT. The text shader ports Eric Lengyel's
+[Slug](https://github.com/EricLengyel/Slug), also MIT, and
+[NOTICE](https://github.com/holofermes/ghee/blob/main/NOTICE) carries its
+copyright notice.

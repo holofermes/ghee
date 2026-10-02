@@ -42,6 +42,7 @@ from typing import Any
 
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 _PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC)
+_ALIGNS = ("left", "center", "right")
 
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
 WIRE = "GHEE_WIRE"
@@ -57,7 +58,8 @@ class Param:
     The scene, the console and the scene process name it the same way.
     A color is [r, g, b] in 0..1.
     A vecK is K numbers.
-    A string stays host-side, and reaches the scene process in the tick line.
+    A string reaches the scene process in the tick line, and a Text of its
+    name draws it.
     """
 
     name: str
@@ -180,6 +182,65 @@ class Pass:
 
 
 @dataclass
+class Asset:
+    """A named file a scene declares once.
+
+    An image (.png, .jpg) is `uniform sampler2D <name>` in every pass, and
+    `vec2 <name>_size` is its size in pixels. A font (.ttf, .otf) is for a
+    Text to name. `file` resolves beside the scene when ghee runs it, and in
+    the working directory in a direct run.
+    """
+
+    name: str
+    file: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, str) or not self.file:
+            raise ValueError(
+                f"asset '{self.name}' 'file' needs a filename, got {self.file!r}"
+            )
+
+    def to_dict(self) -> dict:
+        return {"file": self.file}
+
+
+@dataclass
+class Text:
+    """Words that the GPU draws from the outlines of a font.
+
+    The words are the scene string param of the same name, and they change
+    with it, live.
+    Every scene pass reads them with float <name>_cover(vec2 p, float ppem):
+    p in em from the top left of the block, y down like v_texCoord, and ppem
+    the pixels per em. vec2 <name>_size is the block, in em.
+    `font` is the name of the scene's font Asset.
+    `align` lines up the lines of the block: left, center or right.
+    """
+
+    name: str
+    font: str
+    align: str = "left"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.font, str) or not self.font:
+            raise ValueError(
+                f"text '{self.name}' 'font' needs the name of a font asset, "
+                f"got {self.font!r}"
+            )
+        if self.align not in _ALIGNS:
+            raise ValueError(
+                f"text '{self.name}' align needs 'left', 'center' or 'right', "
+                f"got {self.align!r}"
+            )
+
+    def to_dict(self) -> dict:
+        d: dict = {"font": self.font}
+        if self.align != "left":
+            d["align"] = self.align
+        return d
+
+
+@dataclass
 class Scene:
     """The passes in render order, plus what they share.
 
@@ -187,6 +248,9 @@ class Scene:
     `common` is GLSL that ghee puts in front of each pass.
     `filters` are named post-process passes that ghee appends after the
     scene's own.
+    `assets` are the image and font files the scene names.
+    `texts` are words drawn from a font, each one the scene string param of
+    its name.
     """
 
     passes: list[Pass] = field(default_factory=list)
@@ -194,6 +258,30 @@ class Scene:
     filters: list[str] = field(default_factory=list)
     params: dict[str, Param] = field(default_factory=dict)
     common: str | None = None
+    assets: list[Asset] = field(default_factory=list)
+    texts: list[Text] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        files = {}
+        for a in self.assets:
+            if a.name in files:
+                raise ValueError(f"asset '{a.name}' is declared twice")
+            files[a.name] = a.file
+        seen = set()
+        for t in self.texts:
+            if t.name in seen:
+                raise ValueError(f"text '{t.name}' is declared twice")
+            seen.add(t.name)
+            p = self.params.get(t.name)
+            if p is None or p.type != "string":
+                raise ValueError(
+                    f"text '{t.name}' needs a scene string param '{t.name}' "
+                    "that holds its words"
+                )
+            if t.font not in files:
+                raise ValueError(
+                    f"text '{t.name}' font '{t.font}' is no asset of the scene"
+                )
 
     def to_dict(self) -> dict:
         out: dict = {
@@ -206,6 +294,10 @@ class Scene:
             out["filters"] = self.filters
         if self.params:
             out["params"] = {n: p.to_dict() for n, p in self.params.items()}
+        if self.assets:
+            out["assets"] = {a.name: a.to_dict() for a in self.assets}
+        if self.texts:
+            out["texts"] = {t.name: t.to_dict() for t in self.texts}
         return out
 
 
@@ -423,6 +515,7 @@ def set_param(name: str, value, pass_: str | None = None) -> None:
     """Set a live param for this tick.
 
     A float takes one number, a color takes three, and a vecN takes N.
+    A string takes text, and a Text of its name lays the new words out.
     `pass_` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
     """
@@ -430,6 +523,10 @@ def set_param(name: str, value, pass_: str | None = None) -> None:
         _HANDLE.set_param(name, value, pass_=pass_)
         return
     wire = f"{pass_}.{name}" if pass_ else name
+    if isinstance(value, str):
+        text = value.encode("utf-8")
+        _OUT.append(_message(3, wire, len(text), text))
+        return
     count, body = _f32((value,) if isinstance(value, (int, float)) else value)
     _OUT.append(_message(1, wire, count, body))
 

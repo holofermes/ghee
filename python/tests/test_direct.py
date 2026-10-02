@@ -6,12 +6,14 @@ in sys.modules stands in for the renderer, bar the last test.
 """
 
 import io
+import shutil
 import signal
 import subprocess
 import sys
 import types
 
 import pytest
+from conftest import REPO
 from test_shim import load, scene_of
 
 
@@ -231,3 +233,66 @@ def test_a_scene_file_renders_itself(tmp_path):
         "tick 1 0.5 0.5 {}",
         "tick 2 1.0 0.5 {}",
     ]
+
+
+TEXT_SCENE = '''#!/usr/bin/env python3
+"""A scene that sets new words each tick, in a font beside it."""
+
+import hashlib
+
+import ghee
+from ghee import _shim
+
+CODE = (
+    "void main(){ vec2 px = floor(v_texCoord * resolution) + 0.5;"
+    " gl_FragColor = vec4(vec3(words_cover(px / 12.0, 12.0)), 1.0); }"
+)
+
+
+@ghee.tick
+def hook(t):
+    if t.frame:
+        print(hashlib.sha256(_shim._HANDLE.pixels()).hexdigest())
+    ghee.set_param("words", ("ab", "cd")[t.frame % 2])
+
+
+ghee.run(
+    ghee.Scene(
+        passes=[ghee.Pass("main", CODE)],
+        params={"words": ghee.Param("words", "string", "ab")},
+        assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
+        texts=[ghee.Text("words", "sans")],
+    )
+)
+'''
+
+
+def test_a_direct_run_finds_its_font_in_the_working_directory(tmp_path):
+    """Run from the scene's directory, the font beside it loads, and each
+    frame draws the words that the tick before it set."""
+    scene_dir = tmp_path / "scene"
+    (scene_dir / "fonts").mkdir(parents=True)
+    shutil.copy(REPO / "ghee/examples/fonts/DejaVuSans-Latin.ttf", scene_dir / "fonts")
+    path = scene_dir / "words.py"
+    path.write_text(TEXT_SCENE)
+    ran = subprocess.run(
+        [
+            sys.executable,
+            str(path),
+            "--output",
+            "none",
+            "--size",
+            "48x16",
+            "--frames",
+            "4",
+            "--timestep",
+            "0",
+        ],
+        cwd=scene_dir,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert ran.returncode == 0, ran.stderr
+    ab, cd, ab_again = ran.stdout.split()
+    assert ab != cd and ab == ab_again

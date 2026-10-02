@@ -78,10 +78,12 @@ void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, i
 // RGBA. is_f32 uploads floats and needs a GL with float textures. linear
 // samples with GL_LINEAR, f32 pixels fall back to nearest without
 // ghee_data_texture_linear. An asset outlives the scene: the same name again
-// replaces its pixels, ghee_destroy frees it.
+// replaces its pixels, ghee_mp_drop_asset or ghee_destroy frees it. Returns
+// false with ghee_last_error set when the engine refuses the asset.
 #define MP_MAX_ASSETS 8
-void ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
+bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
                        int width, int height, int components, int is_f32, int linear);
+void ghee_mp_drop_asset(GheeScene *g, const char *name);
 // Render the passes and swap. buffer_rgb NULL = no readback at all, pw/ph > 0 =
 // GPU-downscale the final pass to pw x ph and read back only that, otherwise the
 // full frame lands in buffer_rgb.

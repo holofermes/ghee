@@ -259,6 +259,11 @@ fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
         }
         let mut asset =
             Asset::from_dict(aname, ad).map_err(|e| anyhow::anyhow!("filter '{filter}': {e}"))?;
+        if asset.is_font() {
+            anyhow::bail!(
+                "filter '{filter}': asset '{aname}' is a font, a filter takes images only"
+            );
+        }
         asset.name = full;
         asset.from_filter = filter.to_string();
         resolve_asset(&mut asset, fd)?;
@@ -267,6 +272,7 @@ fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
     }
     if added {
         use std::mem::take;
+        let texts = take(&mut scene.texts);
         *scene = Scene::new(
             take(&mut scene.passes),
             take(&mut scene.version),
@@ -275,6 +281,7 @@ fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
             take(&mut scene.common),
             take(&mut scene.assets),
         )
+        .and_then(|s| s.with_texts(texts))
         .map_err(|e| anyhow::anyhow!("filter '{filter}': {e}"))?;
     }
     Ok(())
@@ -418,6 +425,33 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_takes_no_font_asset() {
+        let _g = env_guard();
+        let d = tmpdir("font-filter");
+        std::fs::write(
+            format!("{d}/lettered.filter.json"),
+            json!({"name": "lettered", "code": GOOD,
+                   "assets": {"face": {"file": "face.ttf"}}})
+            .to_string(),
+        )
+        .unwrap();
+        let reg = load_filters(&[&d]);
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        let e = apply_filters(&mut sc, &["lettered".to_string()], Some(&reg))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            "filter 'lettered': asset 'face' is a font, a filter takes images only"
+        );
+    }
+
+    #[test]
     fn a_scanned_filter_resolves_its_asset_beside_itself() {
         let _g = env_guard();
         let d = tmpdir("asset-filter");
@@ -498,10 +532,10 @@ mod tests {
         apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
         let names: Vec<&str> = sc.assets.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["bluenoise", "frc256_bluenoise"]);
-        let main = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, false);
+        let main = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, &[], false);
         assert!(main.contains("uniform sampler2D bluenoise;"));
         assert!(!main.contains("frc256_bluenoise"));
-        let filt = sc.passes[1].glsl(Some(&sc.params), None, &sc.assets, false);
+        let filt = sc.passes[1].glsl(Some(&sc.params), None, &sc.assets, &[], false);
         assert!(filt.contains("uniform sampler2D frc256_bluenoise;"));
         assert!(filt.contains("#define bluenoise frc256_bluenoise"));
         assert!(!filt.contains("uniform sampler2D bluenoise;"));
@@ -514,7 +548,7 @@ mod tests {
         )
         .unwrap();
         apply_filters(&mut sp, &["frc256".to_string()], None).unwrap();
-        let filt = sp.passes[1].glsl(Some(&sp.params), None, &sp.assets, false);
+        let filt = sp.passes[1].glsl(Some(&sp.params), None, &sp.assets, &[], false);
         let (decl, def) = (
             filt.find("uniform float bluenoise;").unwrap(),
             filt.find("#define bluenoise ").unwrap(),
@@ -773,10 +807,22 @@ mod tests {
         let filt = &sc.passes[1];
         assert_eq!(filt.filter, "dither");
         assert!(!filt
-            .glsl(Some(&sc.params), sc.common.as_deref(), &sc.assets, false)
+            .glsl(
+                Some(&sc.params),
+                sc.common.as_deref(),
+                &sc.assets,
+                &[],
+                false
+            )
             .contains(COMMON));
         assert!(sc.passes[0]
-            .glsl(Some(&sc.params), sc.common.as_deref(), &sc.assets, false)
+            .glsl(
+                Some(&sc.params),
+                sc.common.as_deref(),
+                &sc.assets,
+                &[],
+                false
+            )
             .contains(COMMON));
     }
 

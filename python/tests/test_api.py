@@ -2,10 +2,11 @@
 
 import array
 import json
+import shutil
 import threading
 import time
 
-from conftest import RED, scene_file
+from conftest import RED, REPO, scene_file
 
 import ghee
 
@@ -237,3 +238,54 @@ def test_a_host_feeds_a_mask_a_state_and_per_pass_params():
         held = h.pixels()
         h.skip()
         assert h.pixels() == held
+
+
+FONT = "fonts/DejaVuSans-Latin.ttf"
+
+# the words at 24 pixels per em, from the top left of the frame
+WORDS = {
+    "version": 1,
+    "params": {"words": {"type": "string", "value": "ghee"}},
+    "assets": {"sans": {"file": FONT}},
+    "texts": {"words": {"font": "sans"}},
+    "passes": [
+        {
+            "name": "main",
+            "code": (
+                "void main(){ vec2 px = floor(v_texCoord * resolution) + 0.5;"
+                " gl_FragColor = vec4(vec3(words_cover(px / 24.0, 24.0)), 1.0); }"
+            ),
+        }
+    ],
+}
+
+
+def test_new_words_lay_out_on_the_next_frame(monkeypatch):
+    monkeypatch.chdir(REPO / "ghee" / "examples")
+    with ghee.open(WORDS, width=96, height=32, timestep=0) as h:
+        h.frame()
+        ghee_drawn = h.pixels()
+        assert max(ghee_drawn[0::4]) == 255  # full cover inside a stroke
+        h.set_param("words", "lettering")
+        h.frame()
+        assert h.pixels() != ghee_drawn
+        h.set_param("words", "ghee")
+        h.frame()
+        assert h.pixels() == ghee_drawn
+
+
+def test_a_dict_scene_resolves_its_font_in_the_working_directory(tmp_path, monkeypatch):
+    (tmp_path / "fonts").mkdir()
+    shutil.copy(REPO / "ghee" / "examples" / FONT, tmp_path / "fonts")
+    monkeypatch.chdir(tmp_path)
+    with ghee.open(WORDS, width=96, height=32) as h:
+        h.frame()
+        assert max(h.pixels()[0::4]) == 255
+
+
+def test_a_scene_file_resolves_its_font_beside_itself(tmp_path):
+    (tmp_path / "fonts").mkdir()
+    shutil.copy(REPO / "ghee" / "examples" / FONT, tmp_path / "fonts")
+    with ghee.open(scene_file(tmp_path, WORDS), width=96, height=32) as h:
+        h.frame()
+        assert max(h.pixels()[0::4]) == 255

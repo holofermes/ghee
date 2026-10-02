@@ -208,7 +208,8 @@ enum Sink {
     Panel(Box<dyn DisplayDriver>),
 }
 
-/// The scene named by a host: a path, or a JSON document.
+/// The scene named by a host: a path, or a JSON document. A document's files
+/// resolve in the working directory.
 pub enum Source {
     Path(String),
     Doc(Value),
@@ -273,10 +274,11 @@ fn load(source: Source) -> Outcome<(Scene, String)> {
             let scene = load_scene(&path, &[], true).map_err(scene_fault)?;
             (scene, scene_name(&path))
         }
-        Source::Doc(doc) => (
-            Scene::from_dict(&doc, None, None).map_err(scene_fault)?,
-            "scene".to_string(),
-        ),
+        Source::Doc(doc) => {
+            let mut scene = Scene::from_dict(&doc, Some("."), None).map_err(scene_fault)?;
+            scene.load_assets(".").map_err(scene_fault)?;
+            (scene, "scene".to_string())
+        }
     };
     let wanted = scene.filters.clone();
     let reg = load_filters(&[]);
@@ -687,12 +689,18 @@ impl Session {
         Ok(&self.buf)
     }
 
-    /// Set one live param, with no recompile.
+    /// Set one live param, with no recompile. A string param of a text's name
+    /// lays the text out again.
     pub fn set_param(&mut self, pass: Option<&str>, name: &str, value: &Value) -> Outcome<()> {
         let p = self.index.param(pass, name)?;
         let v = coerce(&p.ty, value).map_err(scene_fault)?;
+        // A string param fails only on words that its text cannot lay out.
+        let fault = match p.ty.as_str() {
+            "string" => scene_fault,
+            _ => system_fault,
+        };
         RenderTarget::set_param(&self.renderer, p.pass.as_deref(), &p.uniform, &p.ty, &v)
-            .map_err(system_fault)?;
+            .map_err(fault)?;
         Ok(())
     }
 

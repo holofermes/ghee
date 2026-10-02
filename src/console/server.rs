@@ -1471,9 +1471,8 @@ fn set_scene_param(
             .ty
             .clone();
         let v = coerce(&ty, value)?;
-        if ty != "string" {
-            renderer.borrow().set_scene_param(name, &ty, &v)?;
-        }
+        // A string param of a text's name lays the text out again.
+        renderer.borrow().set_scene_param(name, &ty, &v)?;
         told(ctrl, name, &v);
         scene
             .params
@@ -2719,6 +2718,59 @@ mod tests {
         let host = RenderLoopHost::new(Arc::clone(&console));
         let doc = host.scene_def(Some("one")).unwrap();
         assert_eq!(doc["passes"][0]["name"], "main");
+    }
+
+    // a text
+
+    /// The words of `label` stretched over the frame, in the fixture font.
+    fn text_scene(words: &str) -> Scene {
+        let doc = serde_json::json!({
+            "version": 1,
+            "params": {"label": {"type": "string", "value": words}},
+            "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+            "texts": {"label": {"font": "sans"}},
+            "passes": [{"name": "main", "code": "void main(){ \
+                float c = label_cover(v_texCoord * label_size, resolution.y / label_size.y); \
+                gl_FragColor = vec4(c, c, c, 1.0); }"}],
+        });
+        let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+        sc.load_assets(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts"))
+            .unwrap();
+        sc
+    }
+
+    #[test]
+    fn a_posted_string_param_relays_its_text() {
+        let Some(r) = crate::engine::probe_dri_devices()
+            .iter()
+            .find_map(|dev| Renderer::new(32, 24, 4, Some(dev), false, false).ok())
+        else {
+            eprintln!("no GL device for the console");
+            return;
+        };
+        let renderer = RefCell::new(r);
+        let console = tmp_console("text");
+        let st = RefCell::new(Running { scene: None });
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let frame = || {
+            renderer.borrow().set_time(Some(0.0));
+            renderer.borrow_mut().render(None).unwrap().to_vec()
+        };
+        let set = |sc| set_scene(&console, &renderer, &st, sc, None, None);
+        assert_eq!(set(text_scene("I")), "");
+        let i = frame();
+        // what a POST /set queues
+        let host = RenderLoopHost::new(Arc::clone(&console));
+        host.set_param(Scope::Scene, "label", Value::from("O"))
+            .unwrap();
+        assert!(drain(&console, &renderer, &st, &ctrl));
+        let o = frame();
+        assert!(o != i, "the frame kept the old words");
+        let running = lock(&console.running).clone().unwrap().1;
+        assert_eq!(running["params"]["label"]["value"], "O");
+        // the relayed words draw what a scene built on them draws
+        assert_eq!(set(text_scene("O")), "");
+        assert!(frame() == o, "the relayed words drew another frame");
     }
 
     // run()'s own loop

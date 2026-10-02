@@ -66,6 +66,25 @@ def test_a_param_the_scene_does_not_declare():
             h.set_param("gain", 1.0, pass_="nosuchpass")
 
 
+def test_a_font_that_is_nowhere(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    doc = {
+        "version": 1,
+        "params": {"words": {"type": "string", "value": "hi"}},
+        "assets": {"sans": {"file": "fonts/Missing.ttf"}},
+        "texts": {"words": {"font": "sans"}},
+        "passes": [
+            {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}
+        ],
+    }
+    with pytest.raises(ValueError) as raised:
+        ghee.open(doc, width=8, height=8)
+    # the first path tried is the working directory's
+    assert str(raised.value).startswith(
+        f"asset 'sans' ({tmp_path}/fonts/Missing.ttf): No such file or directory"
+    )
+
+
 def test_a_feed_the_scene_does_not_declare():
     with ghee.open(RED, width=8, height=8) as h:
         with pytest.raises(ValueError) as raised:

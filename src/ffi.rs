@@ -96,7 +96,8 @@ extern "C" {
         components: c_int,
         is_f32: c_int,
         linear: c_int,
-    );
+    ) -> bool;
+    pub fn ghee_mp_drop_asset(g: *mut GheeScene, name: *const c_char);
     pub fn ghee_mp_render(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_present(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_reset(g: *mut GheeScene);

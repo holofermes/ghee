@@ -54,7 +54,10 @@ def drive(shim, scene, ticks, monkeypatch):
 
 
 def messages(buf):
-    """The wire back to (kind, name, values). Kind 4 carries one byte each."""
+    """The wire back to (kind, name, values).
+
+    Kind 4 carries one byte for each value, and kind 3 carries text.
+    """
     out, i = [], 0
     while i < len(buf):
         kind = buf[i]
@@ -68,6 +71,10 @@ def messages(buf):
         i += nlen
         (count,) = struct.unpack_from("<I", buf, i)
         i += 4
+        if kind == 3:
+            out.append((3, name, buf[i : i + count].decode()))
+            i += count
+            continue
         width = 1 if kind == 4 else 4
         fmt = f"<{count}B" if kind == 4 else f"<{count}f"
         out.append((kind, name, list(struct.unpack_from(fmt, buf, i))))
@@ -163,6 +170,63 @@ def test_an_array_declares_its_size_and_its_count():
     flat, grid = shim.ArrayInput("bins", 16), shim.ArrayInput("mask", [8, 4])
     assert flat.to_dict() == {"name": "bins", "size": 16} and flat.count == 16
     assert grid.to_dict() == {"name": "mask", "size": [8, 4]} and grid.count == 32
+
+
+def words_scene(shim, texts):
+    return shim.Scene(
+        passes=[shim.Pass("main", "void main(){}")],
+        params={"words": shim.Param("words", "string", "hi")},
+        assets=[shim.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
+        texts=texts,
+    )
+
+
+def test_a_text_is_the_scene_string_param_of_its_name():
+    shim = load()
+    built = words_scene(shim, [shim.Text("words", "sans", align="center")]).to_dict()
+    assert built == {
+        "version": 1,
+        "passes": [{"name": "main", "code": "void main(){}"}],
+        "params": {"words": {"type": "string", "value": "hi"}},
+        "assets": {"sans": {"file": "fonts/DejaVuSans-Latin.ttf"}},
+        "texts": {"words": {"font": "sans", "align": "center"}},
+    }
+    # left is the default, and the document leaves it out
+    assert shim.Text("words", "sans").to_dict() == {"font": "sans"}
+    assert "texts" not in words_scene(shim, []).to_dict()
+
+
+def test_an_asset_is_its_file():
+    shim = load()
+    scene = shim.Scene(
+        passes=[shim.Pass("main", "void main(){}")],
+        assets=[shim.Asset("logo", "logo.png")],
+    )
+    assert scene.to_dict()["assets"] == {"logo": {"file": "logo.png"}}
+    assert "assets" not in shim.Scene(passes=[]).to_dict()
+    with pytest.raises(ValueError, match="asset 'logo' 'file' needs a filename"):
+        shim.Asset("logo", "")
+    with pytest.raises(ValueError, match="asset 'logo' is declared twice"):
+        shim.Scene(assets=[shim.Asset("logo", "a.png"), shim.Asset("logo", "b.png")])
+
+
+def test_a_text_says_what_it_needs():
+    shim = load()
+    with pytest.raises(ValueError, match="align needs 'left', 'center' or 'right'"):
+        shim.Text("words", "sans", align="middle")
+    with pytest.raises(ValueError, match="'font' needs the name of a font asset"):
+        shim.Text("words", "")
+    with pytest.raises(ValueError, match="needs a scene string param 'title'"):
+        words_scene(shim, [shim.Text("title", "sans")])
+    with pytest.raises(ValueError, match="needs a scene string param 'gain'"):
+        shim.Scene(
+            params={"gain": shim.Param("gain", "float", 1.0)},
+            texts=[shim.Text("gain", "sans")],
+        )
+    with pytest.raises(ValueError, match="text 'words' is declared twice"):
+        words_scene(shim, [shim.Text("words", "sans"), shim.Text("words", "sans")])
+    with pytest.raises(ValueError, match="text 'words' font 'serif' is no asset"):
+        words_scene(shim, [shim.Text("words", "serif")])
 
 
 def test_a_param_of_an_unknown_type_says_so():
@@ -296,6 +360,20 @@ def test_a_param_and_a_clean_tick(monkeypatch):
     assert rest.endswith(b"\x02")
 
 
+def test_a_string_param_goes_out_as_text(monkeypatch):
+    """kind 3: the UTF-8 bytes, and the count is their length."""
+    shim = load()
+
+    @shim.tick
+    def hook(tick):
+        shim.set_param("words", "café")
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
+    assert messages(rest) == [(3, "words", "café")]
+    assert rest == b"\x03\x05words\x05\x00\x00\x00caf\xc3\xa9"
+
+
 def test_a_feed_of_the_wrong_length_names_the_array(monkeypatch):
     shim = load()
 
@@ -398,10 +476,12 @@ def test_the_tick_line_carries_the_string_params(monkeypatch):
 SURFACE = [
     "Arg",
     "ArrayInput",
+    "Asset",
     "Channel",
     "Param",
     "Pass",
     "Scene",
+    "Text",
     "Tick",
     "args",
     "feed",

@@ -43,6 +43,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 tiny_http = "0.12"
+# ttf-parser reads the outlines and metrics a scene text draws. Default
+# features off: a text lays out with the kern table alone.
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 
 [build-dependencies]
 cc = "1"

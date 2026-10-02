@@ -25,7 +25,8 @@ loopback, or open it with `--host` only on a network you trust.
 ## Change
 
 - `POST /set?pass=&name=&value=[&type=]`: a live uniform, no recompile.
-  `pass=scene` sets the scene param.
+  `pass=scene` sets the scene param, and the string param of a text lays its
+  words out again.
 - `POST /switch?name=`: switch to a named scene. Switching to the active
   name reloads it from disk.
 - `POST /next`, `POST /prev`: step through the scene list.

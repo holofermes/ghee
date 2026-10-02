@@ -318,6 +318,9 @@ pub struct Renderer {
     mp: Vec<(String, c_int)>,
     /// array name -> size, in declaration order.
     feeds: Vec<(String, ArraySize)>,
+    /// The texts whose data textures the engine holds. A setup frees the ones
+    /// its scene no longer declares, so their asset slots come back.
+    text_names: std::cell::RefCell<Vec<String>>,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
 }
@@ -348,6 +351,7 @@ impl Renderer {
             display,
             mp: Vec::new(),
             feeds: Vec::new(),
+            text_names: std::cell::RefCell::new(Vec::new()),
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
             handle: ptr::null_mut(),
         };
@@ -418,6 +422,18 @@ impl Renderer {
         self.error = String::new();
         self.error_line = None;
         self.error_pass = None;
+        let stale: Vec<String> = self
+            .text_names
+            .borrow()
+            .iter()
+            .filter(|n| !scene.texts.iter().any(|t| &t.name == *n))
+            .cloned()
+            .collect();
+        for name in stale {
+            let cname = CString::new(format!("{name}_tex"))?;
+            unsafe { ffi::ghee_mp_drop_asset(self.handle, cname.as_ptr()) };
+            self.text_names.borrow_mut().retain(|n| n != &name);
+        }
         if scene.passes.is_empty() {
             self.error = "scene has no passes".to_string();
             return Ok(self.error.clone());
@@ -495,6 +511,7 @@ impl Renderer {
                 Some(&scene.params),
                 scene.common.as_deref(),
                 &scene.assets,
+                &scene.texts,
                 hw_linear,
             );
             let cglsl = CString::new(glsl.as_str())?;
@@ -541,7 +558,7 @@ impl Renderer {
         )?;
         // Assets go in before the channels and the arrays, so the engine's
         // texture-unit budget counts them.
-        for a in &scene.assets {
+        for a in scene.assets.iter().filter(|a| !a.is_font()) {
             let Some(img) = &a.image else {
                 self.error = format!(
                     "asset '{}': '{}' was never loaded, the scene was built without a directory",
@@ -562,6 +579,9 @@ impl Renderer {
                 data,
             )?;
         }
+        // A text builds from the scene's string param of its name, through
+        // set_scene_param below, and it looks itself up in self.scene.
+        self.scene = Some(scene.clone());
         for (i, p) in scene.passes.iter().enumerate() {
             for (c, ch) in p.channels.iter().enumerate() {
                 let src = match ch.buffer.as_deref() {
@@ -587,11 +607,18 @@ impl Renderer {
                 self.set_param(&p.name, nm, &pm.ty, &pm.value)?;
             }
         }
-        // A scene param sits in every preamble, so it reaches every pass.
+        // A scene param sits in every preamble, so it reaches every pass. A
+        // text that cannot be laid out refuses the scene, as an asset does.
         for (nm, pm) in scene.params.iter() {
+            if let ParamValue::Str(words) = &pm.value {
+                if let Err(e) = self.set_text(nm, words) {
+                    self.error = e.to_string();
+                    return Ok(self.error.clone());
+                }
+                continue;
+            }
             self.set_scene_param(nm, &pm.ty, &pm.value)?;
         }
-        self.scene = Some(scene.clone());
 
         let mut feeds: Vec<(String, ArraySize)> = Vec::new();
         for (i, p) in scene.passes.iter().enumerate() {
@@ -736,7 +763,7 @@ impl Renderer {
              the data holds {len}"
         );
         let cname = CString::new(name)?;
-        unsafe {
+        let ok = unsafe {
             ffi::ghee_mp_set_asset(
                 self.handle,
                 cname.as_ptr(),
@@ -746,6 +773,12 @@ impl Renderer {
                 components as c_int,
                 c_int::from(is_f32),
                 c_int::from(linear),
+            )
+        };
+        if !ok {
+            bail!(
+                "{}",
+                or_else(self.last_error(), &format!("asset '{name}' refused"))
             );
         }
         Ok(())
@@ -842,12 +875,47 @@ impl Renderer {
     /// the engine skips it.
     /// Returns true when at least one pass takes the value.
     pub fn set_scene_param(&self, name: &str, ptype: &str, value: &ParamValue) -> Result<bool> {
+        if let ParamValue::Str(words) = value {
+            return self.set_text(name, words);
+        }
         let oks = self
             .mp
             .iter()
             .map(|(pn, _)| self.set_param(pn, name, ptype, value))
             .collect::<Result<Vec<bool>>>()?;
         Ok(oks.into_iter().any(|o| o))
+    }
+
+    /// Lay out new words for the scene text `name` and upload them, with no
+    /// recompile. Returns false when the scene holds no text of that name.
+    pub fn set_text(&self, name: &str, words: &str) -> Result<bool> {
+        let Some(text) = self
+            .scene
+            .as_ref()
+            .and_then(|s| s.texts.iter().find(|t| t.name == name))
+        else {
+            return Ok(false);
+        };
+        let built = text.build(words)?;
+        self.set_asset(
+            &format!("{name}_tex"),
+            built.width,
+            built.height,
+            4,
+            false,
+            AssetData::U8(&built.texels),
+        )?;
+        for (suffix, v) in &built.uniforms {
+            let uniform = format!("{name}{suffix}");
+            for (_, idx) in &self.mp {
+                self.set_uniform(*idx, &uniform, "float", Value::from(*v))?;
+            }
+        }
+        let mut names = self.text_names.borrow_mut();
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+        Ok(true)
     }
 
     /// Pack an RGB(A) frame to 1bpp (bw) or RGB565.

@@ -21,6 +21,18 @@
   from the GPU and takes them. A panel driver that reads each frame with
   the CPU (ssd130x, gud, udl) then shows what the GPU drew, where on a
   Pi 5 it showed stale fragments of earlier frames.
+- Draw text on the GPU from a font. A scene declares `texts`, each named
+  after the scene string param that holds its words and naming a `.ttf` or
+  `.otf` asset as its font, and every scene pass reads `<name>_cover(p, ppem)`
+  and `<name>_size`. An edit to the param lays the words out again, with no
+  recompile.
+- Declare an asset from Python with `ghee.Asset` and a text with `ghee.Text`,
+  in `Scene(assets=[...], texts=[...])`.
+- Add `--demo lettering`, words drawn from a font.
+- A procedural scene sets a string param with message kind 3, so its words
+  reach a text over the wire.
+- `ghee.open` loads the assets of a scene given as a dict or as JSON text,
+  from the working directory.
 
 ## 0.4.0 - 2026-08-06
 

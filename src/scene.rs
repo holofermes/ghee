@@ -6,9 +6,12 @@
 //! names an array or a param, and the engine binds it by that name.
 
 use std::fs;
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
+
+use crate::text::Text;
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
@@ -805,11 +808,12 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     ]
 }
 
-/// A named image file. Every pass samples it as `uniform sampler2D <name>`
-/// and reads a `vec2 <name>_size` of (width, height).
+/// A named image or font file. Every pass samples an image as
+/// `uniform sampler2D <name>` and reads a `vec2 <name>_size` of (width,
+/// height). A text names a font, and no pass sees it.
 ///
 /// A .raw file is bare pixels and declares its layout. A .png or .jpg file
-/// carries its own.
+/// carries its own. A .ttf or .otf file is a font.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Asset {
     pub name: String,
@@ -820,6 +824,8 @@ pub struct Asset {
     pub raw: Option<RawLayout>,
     /// The decoded pixels. load_assets fills them from the file.
     pub image: Option<crate::assets::Image>,
+    /// A font file's bytes. load_assets fills them.
+    pub font: Option<Arc<Vec<u8>>>,
     /// The filter that declared the asset, empty for the scene's own. The
     /// filter loads it, its name carries the filter's as a prefix, and a save
     /// leaves it out.
@@ -849,9 +855,21 @@ impl Asset {
             .unwrap_or(&self.name)
     }
 
+    /// A .ttf or .otf file.
+    pub fn is_font(&self) -> bool {
+        let f = self.file.to_ascii_lowercase();
+        f.ends_with(".ttf") || f.ends_with(".otf")
+    }
+
     /// Decode `bytes` as this asset's declared format. `what` names the source
     /// in the error.
     pub fn decode(&mut self, bytes: &[u8], what: &str) -> Result<()> {
+        if self.is_font() {
+            ttf_parser::Face::parse(bytes, 0)
+                .map_err(|e| anyhow!("asset '{}' ({what}): unreadable font: {e}", self.name))?;
+            self.font = Some(Arc::new(bytes.to_vec()));
+            return Ok(());
+        }
         let decoded = match &self.raw {
             Some(r) => crate::assets::decode_raw(
                 bytes,
@@ -946,8 +964,16 @@ impl Asset {
                 }
                 None
             }
+            "ttf" | "otf" => {
+                for k in ["width", "height", "format", "components", "filter"] {
+                    if o.contains_key(k) {
+                        bail!("asset '{name}' takes no '{k}', a .{ext} file is a font");
+                    }
+                }
+                None
+            }
             _ => bail!(
-                "asset '{name}' file {} needs a .raw, .png, .jpg or .jpeg extension",
+                "asset '{name}' file {} needs a .raw, .png, .jpg, .jpeg, .ttf or .otf extension",
                 py_str_repr(&file)
             ),
         };
@@ -965,6 +991,7 @@ impl Asset {
             linear,
             raw,
             image: None,
+            font: None,
             from_filter,
         })
     }
@@ -1208,6 +1235,7 @@ impl Pass {
         scene_params: Option<&ParamMap>,
         common: Option<&str>,
         assets: &[Asset],
+        texts: &[Text],
         hw_linear: bool,
     ) -> String {
         let mut l: Vec<String> = vec![
@@ -1226,9 +1254,10 @@ impl Pass {
             "uniform float DT;".to_string(),
             "uniform float frame;".to_string(),
             // VC4 shears gl_FragCoord.xy by about 1/3 px per row when a pass
-            // samples its own output. The interpolated varying is exact. This
-            // define maps gl_FragCoord onto the varying, so scene code that reads
-            // gl_FragCoord.xy/resolution samples feedback without drift.
+            // samples its own output. The interpolated varying stays within
+            // 0.04 px of the pixel centre. This define maps gl_FragCoord onto
+            // the varying, so scene code that reads gl_FragCoord.xy/resolution
+            // samples feedback without drift.
             "#define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)".to_string(),
         ];
         for a in &self.arrays {
@@ -1242,7 +1271,7 @@ impl Pass {
         }
         let own: Vec<&Asset> = assets
             .iter()
-            .filter(|a| a.from_filter == self.filter)
+            .filter(|a| a.from_filter == self.filter && !a.is_font())
             .collect();
         for a in &own {
             l.push(format!("uniform sampler2D {};", a.name));
@@ -1257,6 +1286,12 @@ impl Pass {
         }
         for a in &self.arrays {
             l.extend(array_reader_lines(a, hw_linear));
+        }
+        // A text belongs to the scene, so a filter pass never reads one.
+        if self.filter.is_empty() {
+            for t in texts {
+                l.extend(crate::text::reader_lines(&t.name));
+            }
         }
         // A filter's asset runs under its filter's prefix, so it never meets a
         // scene name. The defines come last, after every declaration, and
@@ -1296,6 +1331,9 @@ pub struct Scene {
     /// Image assets: set up once by the host, available to every pass as a
     /// sampler uniform plus a `<name>_size` vec2.
     pub assets: Vec<Asset>,
+    /// Texts the GPU draws from a font. Each draws the scene string param of
+    /// its name, and every scene pass reads it with `<name>_cover`.
+    pub texts: Vec<Text>,
 }
 
 impl Scene {
@@ -1334,8 +1372,9 @@ impl Scene {
                 }
             }
         }
-        if assets.len() > MAX_ASSETS {
-            bail!("{} assets, over the {MAX_ASSETS} asset cap", assets.len());
+        let images = assets.iter().filter(|a| !a.is_font()).count();
+        if images > MAX_ASSETS {
+            bail!("{images} image assets, over the {MAX_ASSETS} asset cap");
         }
         // An asset name lands in every pass preamble as a uniform, so it must
         // be a GLSL identifier, and it must not shadow an array or a param.
@@ -1386,7 +1425,68 @@ impl Scene {
             params,
             common,
             assets,
+            texts: Vec::new(),
         })
+    }
+
+    /// The scene with `texts` in place of its own.
+    pub fn with_texts(mut self, texts: Vec<Text>) -> Result<Scene> {
+        let images = self.assets.iter().filter(|a| !a.is_font()).count();
+        if images + texts.len() > MAX_ASSETS {
+            bail!(
+                "{} image assets and texts, over the {MAX_ASSETS} the engine binds",
+                images + texts.len()
+            );
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for t in &texts {
+            if !is_ident(&t.name) {
+                bail!(
+                    "text name {} is not a GLSL identifier",
+                    py_str_repr(&t.name)
+                );
+            }
+            if seen.contains(&t.name.as_str()) {
+                bail!("text '{}' is declared twice", t.name);
+            }
+            seen.push(&t.name);
+            match self.assets.iter().find(|a| a.name == t.font) {
+                Some(a) if a.is_font() => {}
+                Some(a) => bail!(
+                    "text '{}' font '{}' is the image {}, a font is a .ttf or .otf file",
+                    t.name,
+                    t.font,
+                    py_str_repr(&a.file)
+                ),
+                None => bail!(
+                    "text '{}' font '{}' is no asset of the scene",
+                    t.name,
+                    t.font
+                ),
+            }
+            match self.params.get(&t.name) {
+                Some(p) if p.ty == "string" => {}
+                _ => bail!(
+                    "text '{}' needs a scene string param '{}' that holds its words",
+                    t.name,
+                    t.name
+                ),
+            }
+            // An asset or a pass param of this name already collides with the
+            // scene param in Scene::new.
+            for p in &self.passes {
+                if p.arrays.iter().any(|a| a.name == t.name) {
+                    bail!(
+                        "'{}' is a text and a name in pass '{}', a name belongs to one \
+                         scope only",
+                        t.name,
+                        p.name
+                    );
+                }
+            }
+        }
+        self.texts = texts;
+        Ok(self)
     }
 
     /// A scene with passes only. Every other field takes its default.
@@ -1432,6 +1532,10 @@ impl Scene {
             for (n, ad) in obj_of(o, "assets")? {
                 assets.push(Asset::from_dict(n, ad)?);
             }
+            let mut texts = Vec::new();
+            for (n, td) in obj_of(o, "texts")? {
+                texts.push(Text::from_dict(n, td)?);
+            }
             let common = common_block(o, base_dir)?;
             Scene::new(
                 passes,
@@ -1440,7 +1544,8 @@ impl Scene {
                 params,
                 common,
                 assets,
-            )
+            )?
+            .with_texts(texts)
         })()
         .map_err(|e| anyhow!("{src}: {e}"))
     }
@@ -1477,6 +1582,13 @@ impl Scene {
             }
             out.insert("assets".to_string(), Value::Object(m));
         }
+        if !self.texts.is_empty() {
+            let mut m = Map::new();
+            for t in &self.texts {
+                m.insert(t.name.clone(), t.to_dict());
+            }
+            out.insert("texts".to_string(), Value::Object(m));
+        }
         Value::Object(out)
     }
 
@@ -1504,7 +1616,7 @@ impl Scene {
         Ok(scene)
     }
 
-    /// Read and decode every declared asset file.
+    /// Read and decode every declared asset file, and hand each text its font.
     ///
     /// A file resolves inside `base_dir`, the scene's own directory, and never
     /// outside it. A file absent there resolves one directory up: a copy saved
@@ -1555,6 +1667,13 @@ impl Scene {
                 .map_err(|e| anyhow!("asset '{}' ({path}): {}", a.name, strerror(&e)))?;
             crate::sources::record(&path);
             a.decode(&bytes, &path)?;
+        }
+        for t in &mut self.texts {
+            t.data = self
+                .assets
+                .iter()
+                .find(|a| a.name == t.font)
+                .and_then(|a| a.font.clone());
         }
         Ok(())
     }
@@ -1645,7 +1764,8 @@ impl SceneBuilder for Result<Scene> {
     fn param(self, param: Param) -> Result<Scene> {
         let mut s = self?;
         s.params.insert(param.name.clone(), param);
-        Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)
+        Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)?
+            .with_texts(s.texts)
     }
 
     fn filters(self, names: &[&str]) -> Result<Scene> {
@@ -1684,7 +1804,7 @@ mod tests {
     fn preamble_has_resolution_no_orientation() {
         let g = Pass::of("main", "void main(){}")
             .unwrap()
-            .glsl(None, None, &[], false);
+            .glsl(None, None, &[], &[], false);
         assert!(g.contains("uniform vec2 resolution;"));
         assert!(g.contains("uniform float time;"));
         assert!(!g.contains("VERTICAL") && !g.contains("HORIZONTAL"));
@@ -1697,7 +1817,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let g = p.glsl(None, None, &[], false);
+        let g = p.glsl(None, None, &[], &[], false);
         assert!(g.contains("uniform sampler2D amps_tex;")); // An array is a 1xN data texture.
         assert!(g.contains("const int amps_size = 8;"));
         assert!(g.contains("amps_at"));
@@ -1793,7 +1913,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .glsl(None, None, &[], false);
+        .glsl(None, None, &[], &[], false);
         assert!(g.contains("uniform float tint_r;"));
         assert!(g.contains("uniform float tint_g;"));
         assert!(g.contains("uniform float tint_b;"));
@@ -1886,7 +2006,7 @@ mod tests {
             );
             let g = Pass::new("m", "void main(){}", vec![], vec![], params, "", None)
                 .unwrap()
-                .glsl(None, None, &[], false);
+                .glsl(None, None, &[], &[], false);
             for s in &sfx {
                 assert!(g.contains(&format!("uniform float {name}{s};")));
             }
@@ -2005,7 +2125,7 @@ mod tests {
         )
         .unwrap();
         for p in &sc.passes {
-            let g = p.glsl(Some(&sc.params), None, &sc.assets, false);
+            let g = p.glsl(Some(&sc.params), None, &sc.assets, &[], false);
             assert!(g.contains("uniform float gain;")); // A scalar is one uniform.
                                                         // A color decomposes to three floats plus a vec3 alias, in every pass.
             assert!(g.contains("uniform float tint_r;"));
@@ -2037,8 +2157,8 @@ mod tests {
         // An empty scene param map adds nothing to the preamble.
         for p in &sc.passes {
             assert_eq!(
-                p.glsl(Some(&sc.params), None, &sc.assets, false),
-                p.glsl(None, None, &[], false)
+                p.glsl(Some(&sc.params), None, &sc.assets, &[], false),
+                p.glsl(None, None, &[], &[], false)
             );
         }
     }
@@ -2112,7 +2232,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .glsl(None, None, &[], false);
+        .glsl(None, None, &[], &[], false);
         assert!(!g.split("void main").next().unwrap().contains("text"));
 
         let mut scene_params = ParamMap::new();
@@ -2129,7 +2249,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let g2 = s.passes[0].glsl(Some(&s.params), None, &s.assets, false);
+        let g2 = s.passes[0].glsl(Some(&s.params), None, &s.assets, &[], false);
         let head = g2.split("void main").next().unwrap().to_string();
         let tail = head
             .split("uniform float frame;")
@@ -2595,7 +2715,13 @@ mod tests {
         )
         .unwrap();
         for p in &sc.passes {
-            let g = p.glsl(Some(&sc.params), sc.common.as_deref(), &sc.assets, false);
+            let g = p.glsl(
+                Some(&sc.params),
+                sc.common.as_deref(),
+                &sc.assets,
+                &[],
+                false,
+            );
             assert!(g.contains(COMMON));
             // The common block follows the preamble and precedes the pass code.
             let pre = g.find("uniform float time;").unwrap();
@@ -2609,12 +2735,12 @@ mod tests {
     fn no_common_assembles_exactly_as_before() {
         let p = Pass::of("m", CODE).unwrap();
         assert_eq!(
-            p.glsl(None, None, &[], false),
-            p.glsl(None, None, &[], false)
+            p.glsl(None, None, &[], &[], false),
+            p.glsl(None, None, &[], &[], false)
         );
         assert_eq!(
-            p.glsl(None, Some(""), &[], false),
-            p.glsl(None, None, &[], false)
+            p.glsl(None, Some(""), &[], &[], false),
+            p.glsl(None, None, &[], &[], false)
         );
     }
 
@@ -2708,7 +2834,7 @@ mod tests {
     fn asset_kind_comes_from_the_extension() {
         let d = asset_scene(json!({"d": {"file": "logo.bmp"}}));
         let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(e.contains(".raw, .png, .jpg or .jpeg"), "{e}");
+        assert!(e.contains(".raw, .png, .jpg, .jpeg, .ttf or .otf"), "{e}");
     }
 
     #[test]
@@ -2783,7 +2909,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let g = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, false);
+        let g = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, &[], false);
         assert!(g.contains("uniform sampler2D logo;"));
         assert!(g.contains("uniform vec2 logo_size;"));
     }
@@ -2928,6 +3054,7 @@ mod tests {
                 Some(&scene.params),
                 scene.common.as_deref(),
                 &scene.assets,
+                &scene.texts,
                 tag == "lin",
             );
             assert_eq!(got, want, "{f}");

@@ -1188,10 +1188,14 @@ static int mp_asset_index(GheeScene *g, const char *name) {
 // Upload one named image asset. Every pass whose program reads the name gets
 // it as a sampler uniform <name> and a vec2 <name>_size of (width, height),
 // bound after the channels and the arrays. An asset outlives the scene: a
-// commit rebinds it, the same name again replaces it, ghee_destroy frees it.
-void ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
+// commit rebinds it, the same name again replaces it, ghee_mp_drop_asset or
+// ghee_destroy frees it.
+bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
                        int width, int height, int components, int is_f32, int linear) {
-    if (width <= 0 || height <= 0) return;
+    if (width <= 0 || height <= 0) {
+        set_error(g, "asset '%s' is %dx%d", name, width, height);
+        return false;
+    }
     GLenum fmt;
     switch (components) {
         case 1: fmt = GL_LUMINANCE; break;
@@ -1199,18 +1203,18 @@ void ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
         case 4: fmt = GL_RGBA; break;
         default:
             set_error(g, "asset '%s': %d components is not 1, 3 or 4", name, components);
-            return;
+            return false;
     }
     if (is_f32 && !g->has_float_tex) {
         set_error(g, "asset '%s': this GL has no float textures", name);
-        return;
+        return false;
     }
     make_current(g);
     int idx = mp_asset_index(g, name);
     if (idx < 0) {
         if (g->mp_nasset >= MP_MAX_ASSETS) {
-            set_error(g, "more than %d assets", MP_MAX_ASSETS);
-            return;
+            set_error(g, "asset '%s': the engine holds %d assets already", name, MP_MAX_ASSETS);
+            return false;
         }
         // assets set before the commit resolve there, later ones resolve here
         GLint loc[MP_MAX_PASSES], sloc[MP_MAX_PASSES];
@@ -1223,7 +1227,7 @@ void ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
             if (loc[p] >= 0 && want > g->max_units) {
                 set_error(g, "pass %d wants %d texture units, this GL has %d",
                           p, want, (int)g->max_units);
-                return;
+                return false;
             }
         }
         idx = g->mp_nasset++;
@@ -1245,6 +1249,26 @@ void ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
                  is_f32 ? GL_FLOAT : GL_UNSIGNED_BYTE, data);
     g->mp_asset_w[idx] = width;
     g->mp_asset_h[idx] = height;
+    return true;
+}
+
+// Free one named asset and its slot. An unknown name is a no-op.
+void ghee_mp_drop_asset(GheeScene *g, const char *name) {
+    const int idx = mp_asset_index(g, name);
+    if (idx < 0) return;
+    make_current(g);
+    glDeleteTextures(1, &g->mp_asset_tex[idx]);
+    for (int a = idx; a + 1 < g->mp_nasset; a++) {
+        g->mp_asset_tex[a] = g->mp_asset_tex[a + 1];
+        memcpy(g->mp_asset_name[a], g->mp_asset_name[a + 1], sizeof g->mp_asset_name[a]);
+        g->mp_asset_w[a] = g->mp_asset_w[a + 1];
+        g->mp_asset_h[a] = g->mp_asset_h[a + 1];
+        for (int p = 0; p < MP_MAX_PASSES; p++) {
+            g->mp_assetLoc[p][a] = g->mp_assetLoc[p][a + 1];
+            g->mp_assetSizeLoc[p][a] = g->mp_assetSizeLoc[p][a + 1];
+        }
+    }
+    g->mp_nasset--;
 }
 
 static float elapsed_seconds(GheeScene *g) {

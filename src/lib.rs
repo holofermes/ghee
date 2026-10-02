@@ -56,3 +56,4 @@ pub mod report;
 pub mod scene;
 pub mod sources;
 pub mod stats;
+pub mod text;

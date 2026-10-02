@@ -83,6 +83,7 @@ fn render_size() -> Option<String> {
 const SET_ARRAY: u8 = 0;
 const SET_PARAM: u8 = 1;
 const CLEAN: u8 = 2;
+const SET_STRING: u8 = 3;
 const SET_ARRAY_U8: u8 = 4;
 
 const SIGTERM: c_int = 15;
@@ -375,11 +376,17 @@ enum ArrayData {
     U8(Vec<u8>),
 }
 
+/// One param message: the numbers of kind 1, or the text of kind 3.
+enum ParamData {
+    F32(Vec<f32>),
+    Str(String),
+}
+
 /// What the reader thread takes off stdout between two drains.
 #[derive(Default)]
 struct Inbox {
     arrays: Vec<(String, ArrayData)>,
-    params: Vec<(String, Vec<f32>)>,
+    params: Vec<(String, ParamData)>,
     /// The process calls these ticks clean.
     clean: u32,
     /// stdout ended, so the process is gone.
@@ -483,7 +490,7 @@ pub struct SceneProcess {
     /// Array data still waiting for a frame, newest for each name.
     data: HashMap<String, ArrayData>,
     /// Param values that wait for a renderer.
-    incoming: Vec<(String, Vec<f32>)>,
+    incoming: Vec<(String, ParamData)>,
     /// param name -> (the pass that holds it, its type). None is scene scope.
     params: HashMap<String, (Option<String>, String)>,
     /// The string params as they stand, and the last values read by the
@@ -748,16 +755,25 @@ impl SceneController for SceneProcess {
     }
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
-        for (name, values) in std::mem::take(&mut self.incoming) {
+        for (name, data) in std::mem::take(&mut self.incoming) {
             let Some((pass, ty)) = self.params.get(&name) else {
                 continue; // a param this scene does not hold
             };
-            let Some(value) = as_param(ty, &values) else {
+            let value = match data {
+                ParamData::F32(values) => as_param(ty, &values),
+                ParamData::Str(text) => (ty == "string").then_some(ParamValue::Str(text)),
+            };
+            let Some(value) = value else {
                 continue;
             };
             // a dotted name carries its pass, and the uniform is the tail
             let param = name.rsplit_once('.').map_or(name.as_str(), |(_, p)| p);
             renderer.set_param(pass.as_deref(), param, ty, &value)?;
+            // The process wrote this text itself, so no tick carries it back.
+            if let (ParamValue::Str(text), Some(held)) = (&value, self.strings.get_mut(&name)) {
+                held.clone_from(text);
+                self.sent.insert(name, text.clone());
+            }
         }
         Ok(())
     }
@@ -780,7 +796,7 @@ impl SceneController for SceneProcess {
 }
 
 /// The floats of a param message, as the param's own type.
-/// None means the message is short, or the param is host-side.
+/// None means the message is short, or the param takes text.
 fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
     let at = |i: usize| values.get(i).map(|v| f64::from(*v));
     match ty {
@@ -889,6 +905,7 @@ fn read_stream(
 
 /// kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE.
 /// Kind 4 carries count u8 bytes instead, and the value is byte / 255.
+/// Kind 3 carries count bytes of UTF-8 text.
 /// Kind 2 (clean) is the single byte.
 fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> {
     loop {
@@ -901,9 +918,9 @@ fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> 
             held.clean = held.clean.saturating_add(1);
             continue;
         }
-        if !matches!(kind[0], SET_ARRAY | SET_PARAM | SET_ARRAY_U8) {
+        if !matches!(kind[0], SET_ARRAY | SET_PARAM | SET_STRING | SET_ARRAY_U8) {
             return Err(format!(
-                "wrote message kind {} (0, 1, 2 or 4 only)",
+                "wrote message kind {} (0, 1, 2, 3 or 4 only)",
                 kind[0]
             ));
         }
@@ -922,7 +939,11 @@ fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> 
                 "wrote a message of {count} values, over the {MAX_VALUES} cap"
             ));
         }
-        let width = if kind[0] == SET_ARRAY_U8 { 1 } else { 4 };
+        let width = if matches!(kind[0], SET_STRING | SET_ARRAY_U8) {
+            1
+        } else {
+            4
+        };
         let mut body = vec![0u8; count * width];
         if out.read_exact(&mut body).is_err() {
             return Ok(());
@@ -932,6 +953,11 @@ fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> 
             newest(&mut lock(inbox).arrays, name, ArrayData::U8(body));
             continue;
         }
+        if kind[0] == SET_STRING {
+            let text = String::from_utf8_lossy(&body).into_owned();
+            newest(&mut lock(inbox).params, name, ParamData::Str(text));
+            continue;
+        }
         let values: Vec<f32> = body
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -939,7 +965,7 @@ fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> 
         let mut held = lock(inbox);
         match kind[0] {
             SET_ARRAY => newest(&mut held.arrays, name, ArrayData::F32(values)),
-            _ => newest(&mut held.params, name, values),
+            _ => newest(&mut held.params, name, ParamData::F32(values)),
         }
     }
 }
@@ -1432,6 +1458,53 @@ sleep 60
         ));
     }
 
+    /// A process that sets its string param as kind 3 text, after a kind 1
+    /// message to the same name, and sends kind 3 text to a float param.
+    const STRING_SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "params": {"words": {"type": "string", "value": "GHEE"}, "gain": {"type": "float", "value": 0.0}}, "passes": [{"name": "main", "code": "void main(){}"}]}'
+# kind 1, words, the float 1.0
+printf '\001\005words\001\000\000\000\000\000\200\077'
+# kind 3, gain, the text "x"
+printf '\003\004gain\001\000\000\000x'
+# kind 3, words, the text "hi"
+printf '\003\005words\002\000\000\000hi'
+while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
+"#;
+
+    #[test]
+    fn a_kind_3_message_sets_a_string_param_that_no_tick_carries_back() {
+        let d = tmpdir("string");
+        let path = script(&d, "words", STRING_SCRIPT);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        f.tick(0, 0.0, 1.0 / 60.0).unwrap();
+        ticks(&d, 1);
+        let text = |f: &SceneProcess| {
+            f.incoming
+                .iter()
+                .any(|(n, v)| n == "words" && matches!(v, ParamData::Str(_)))
+        };
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            text(&f)
+        }));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        // the newest message for a name wins, and text sets no float param
+        assert_eq!(
+            stub.set.borrow().as_slice(),
+            [(None, "words".to_string(), ParamValue::Str("hi".to_string()))]
+        );
+        f.tick(1, 0.0, 1.0 / 60.0).unwrap();
+        ticks(&d, 2);
+        f.on_param("words", "GHEE");
+        f.tick(2, 0.0, 1.0 / 60.0).unwrap();
+        let seen = ticks(&d, 3);
+        assert_eq!(seen[0]["params"], serde_json::json!({"words": "GHEE"}));
+        assert_eq!(seen[1]["params"], serde_json::json!({}));
+        assert_eq!(seen[2]["params"], serde_json::json!({"words": "GHEE"}));
+    }
+
     #[test]
     fn a_scene_that_exits_mid_run_is_an_error_that_holds_its_stderr() {
         let d = tmpdir("died");
@@ -1634,7 +1707,7 @@ sleep 60
         }
         let e = last.unwrap_err().to_string();
         assert!(
-            e.contains("wrote message kind 7 (0, 1, 2 or 4 only)"),
+            e.contains("wrote message kind 7 (0, 1, 2, 3 or 4 only)"),
             "{e}"
         );
     }

@@ -37,6 +37,7 @@
 //! ```
 
 pub mod assets;
+pub mod atlas;
 pub mod bench;
 pub mod cli;
 pub mod console;

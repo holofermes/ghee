@@ -33,6 +33,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+# fdsm generates the MTSDF glyph atlas, and its API writes into an image buffer.
+fdsm = { version = "0.8", default-features = false }
+image = { version = "0.25", default-features = false }
 # jpeg-decoder and png decode scene assets only. Encoding stays hand-rolled in
 # output.rs and jpeg-encoder. Default features off: jpeg-decoder pulls rayon.
 jpeg-decoder = { version = "0.3", default-features = false }

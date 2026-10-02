@@ -1178,14 +1178,19 @@ sleep 60
     }
 
     /// Run ticks until the process answers, or give up.
+    /// Ticks until `done` holds, for up to 10 s: a scene's interpreter can take
+    /// seconds to start on a loaded machine.
     fn pump(f: &mut SceneProcess, mut done: impl FnMut(&mut SceneProcess) -> bool) -> bool {
-        for frame in 0..200u64 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut frame = 0u64;
+        while Instant::now() < deadline {
             if f.tick(frame, frame as f64 / 60.0, 1.0 / 60.0).is_err() {
                 return false;
             }
             if done(f) {
                 return true;
             }
+            frame += 1;
             thread::sleep(Duration::from_millis(10));
         }
         false

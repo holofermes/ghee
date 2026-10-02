@@ -306,7 +306,15 @@ so a shader that needs exact centres, like the one above, samples at
 
 A scene holds at most 8 image assets and texts together. The words must fit
 a 1024x2048 data texture, at most 4 glyphs may overlap at one spot, and a
-glyph with more than 64 curves in one band fails.
+glyph holds at most 64 curves in one band.
+
+A text problem leaves the scene running: ghee logs it once, and the console
+shows it. A font that fails to load draws every character as an error box,
+diagonal stripes of coverage in `title_cover`. A character whose glyph has no
+outline, such as an emoji of a bitmap-only font, and a glyph past the curve
+limit each draw an error box in their place, and the rest of the words draw.
+Words that do not fit leave the last words that did, and a scene whose first
+words do not fit draws none.
 
 Render the bundled `lettering` example to a PNG:
 

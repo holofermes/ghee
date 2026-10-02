@@ -35,7 +35,7 @@
 #define FLIP_STUCK_MS 5000
 // One buffer on glass, one behind a pending flip, one to draw into.
 #define LENT_BUFFERS 3
-#define MP_MAX_LAYERS 16
+#define MP_MAX_LAYERS 32
 #define MP_LAYER_ATTRIBS 4
 // GLES2 guarantees 16-bit indices alone, and a quad takes 4 vertices, so a
 // layer of more quads than this draws in chunks.
@@ -1007,7 +1007,7 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
 int ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
                       const char *fragment_source, int blend) {
     if (pass < 0 || pass >= g->stage_count) { set_error(g, "%s: pass %d is not pending", name, pass); return -1; }
-    if (g->stage_nlayer >= MP_MAX_LAYERS) { set_error(g, "%s: the engine draws %d at most", name, MP_MAX_LAYERS); return -1; }
+    if (g->stage_nlayer >= MP_MAX_LAYERS) { set_error(g, "%s: over the cap of %d draws", name, MP_MAX_LAYERS); return -1; }
     if (blend < GHEE_BLEND_OVER || blend > GHEE_BLEND_REPLACE) { set_error(g, "%s: no blend mode %d", name, blend); return -1; }
     make_current(g);
     const GLuint prog = create_program(g, vertex_source, fragment_source, layer_attribs, MP_LAYER_ATTRIBS);
@@ -1118,7 +1118,7 @@ bool ghee_mp_set_layer_quads(GheeScene *g, int layer, const float *data, int qua
                   l->name, quads, nattr, MP_LAYER_ATTRIBS);
         return false;
     }
-    // The check divides, since a size_t product wraps on a 32-bit board.
+    // A size_t product wraps on a 32-bit target.
     const size_t quad_bytes = 4 * (size_t)nattr * 4 * sizeof(GLfloat);
     if ((size_t)quads > (size_t)PTRDIFF_MAX / quad_bytes) {
         set_error(g, "%s: %d quads overflow a buffer", l->name, quads);
@@ -1180,7 +1180,7 @@ bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
     }
     const int nchan = (channel + 1 > g->mp_nchan[pass]) ? channel + 1 : g->mp_nchan[pass];
     if (nchan + g->mp_ndatatex[pass] + mp_pass_assets(g, pass) > g->max_units) {
-        set_error(g, "pass %d wants %d texture units, this GL has %d",
+        set_error(g, "pass %d needs %d texture units, this GPU has %d",
                   pass, nchan + g->mp_ndatatex[pass] + mp_pass_assets(g, pass), (int)g->max_units);
         return false;
     }
@@ -1243,7 +1243,7 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
         return -1;
     }
     if (g->mp_nchan[pass] + g->mp_ndatatex[pass] + mp_pass_assets(g, pass) + 1 > g->max_units) {
-        set_error(g, "pass %d wants %d texture units, this GL has %d",
+        set_error(g, "pass %d needs %d texture units, this GPU has %d",
                   pass, g->mp_nchan[pass] + g->mp_ndatatex[pass] + mp_pass_assets(g, pass) + 1,
                   (int)g->max_units);
         return -1;
@@ -1387,7 +1387,7 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
             sloc[p] = glGetUniformLocation(g->mp_program[p], nm);
             const int want = g->mp_nchan[p] + g->mp_ndatatex[p] + mp_assets(g, &g->mp_loc[p]) + 1;
             if (loc[p] >= 0 && want > g->max_units) {
-                set_error(g, "pass %d wants %d texture units, this GL has %d",
+                set_error(g, "pass %d needs %d texture units, this GPU has %d",
                           p, want, (int)g->max_units);
                 return false;
             }
@@ -1399,7 +1399,7 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
             lsloc[l] = glGetUniformLocation(g->mp_layer[l].program, nm);
             const int want = g->mp_nchan[p] + g->mp_ndatatex[p] + mp_assets(g, &g->mp_layer[l].loc) + 1;
             if (lloc[l] >= 0 && want > g->max_units) {
-                set_error(g, "%s wants %d texture units, this GL has %d",
+                set_error(g, "%s needs %d texture units, this GPU has %d",
                           g->mp_layer[l].name, want, (int)g->max_units);
                 return false;
             }

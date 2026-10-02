@@ -259,6 +259,8 @@ pub struct Session {
     period: Option<f64>,
     frame: u64,
     lit: bool,
+    /// The renderer's text_errors_seq() at the console's last look.
+    text_errors: u64,
 }
 
 /// Load a scene as `ghee render` loads one, filters included.
@@ -460,6 +462,7 @@ impl Session {
             period: None,
             frame: 0,
             lit: false,
+            text_errors: u64::MAX,
         })
     }
 
@@ -540,6 +543,11 @@ impl Session {
         let end = monotonic();
         if let Some(c) = self.console.as_ref() {
             c.frame_done(end - t0);
+            let seq = self.renderer.text_errors_seq();
+            if seq != self.text_errors {
+                self.text_errors = seq;
+                c.text_errors(&self.renderer.text_errors());
+            }
             if want {
                 let (w, h) = self.size();
                 c.publish(&self.buf, w, h, self.renderer.components);
@@ -694,9 +702,8 @@ impl Session {
     pub fn set_param(&mut self, pass: Option<&str>, name: &str, value: &Value) -> Outcome<()> {
         let p = self.index.param(pass, name)?;
         let v = coerce(&p.ty, value).map_err(scene_fault)?;
-        // A string param fails on words that its text cannot lay out, or on a
-        // text texture or quads that the engine refuses, and both are the
-        // scene's.
+        // A string param fails on a text texture or quads that the engine
+        // refuses, and both report as scene faults.
         let fault = match p.ty.as_str() {
             "string" => scene_fault,
             _ => system_fault,

@@ -51,9 +51,10 @@ h.close()       # also a context manager
 param, else the param of the first pass that declares it. A string param
 that a text draws lays out the new words, also with no recompile.
 
-A scene file, a Python scene that ghee runs included, finds its asset files
-beside itself. A scene given as a dict or as JSON text finds them in the
-working directory, and so does a Python scene in [direct mode](#direct-mode).
+A scene file finds its asset files beside itself, and so does a Python
+scene that ghee runs. A scene given as a dict or as JSON text finds them in
+the working directory, and so does a Python scene in
+[direct mode](#direct-mode).
 
 `feed` holds the data for one declared array, and the next frame consumes
 it once. A uint8 buffer reaches the texture as byte / 255, a float32
@@ -123,6 +124,13 @@ words again with no recompile, from `set_param` or the console.
         texts=[ghee.Text("words", "sans", align="center")],
         passes=[ghee.Pass("main", CODE)],
     )
+
+A text problem leaves the scene running, and `set_param` raises nothing for
+it: ghee logs it once on stderr, and the console shows it. A font that fails
+to load draws every character as an error box, diagonal stripes of coverage.
+A character whose glyph has no outline, such as an emoji of a bitmap-only
+font, draws an error box in its place, and the rest of the words draw. Words
+that do not fit leave the last words that did.
 
 `ghee render --demo lettering -o lettering.png --frames 1` shows the words
 at every size.

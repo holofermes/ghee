@@ -20,6 +20,12 @@ const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts")
 const SANS: &str = "DejaVuSans-ASCII.ttf";
 /// Noto Sans CJK JP cut to I and O, CFF outlines.
 const CFF: &str = "NotoSansCJKjp-IO.otf";
+/// CFF converted to CFF2 by fontTools' cffLib.CFFToCFF2, with no variation
+/// store.
+const CFF2: &str = "NotoSansCJKjp-IO-CFF2.otf";
+/// Noto Color Emoji cut by fontTools' subset to space, U+200D, U+1F600 and
+/// U+1F642: colour bitmaps, no outlines.
+const EMOJI: &str = "NotoColorEmoji-Smiles.ttf";
 
 fn font(file: &str) -> Vec<u8> {
     fs::read(format!("{FONTS}/{file}")).unwrap()
@@ -419,8 +425,15 @@ fn block(built: &text::Built) -> (f64, f64) {
     (get("_w"), get("_h"))
 }
 
+/// The layout of `words` in a fixture font that draws every one of them.
+fn drawn(file: &str, words: &str, align: Align) -> text::Built {
+    let laid = text::build(&font(file), words, align);
+    assert_eq!(laid.faults, [], "{words:?}");
+    laid.built.unwrap()
+}
+
 fn built(file: &str, words: &str, align: Align) -> (f64, f64) {
-    block(&text::build(&font(file), words, align).unwrap())
+    block(&drawn(file, words, align))
 }
 
 fn near(got: (f64, f64), want: (f64, f64)) -> bool {
@@ -499,16 +512,25 @@ fn a_cff_font_lays_out_like_a_truetype_one() {
 }
 
 #[test]
-fn bytes_that_are_no_font_fail_as_an_unreadable_font() {
-    let e = text::build(b"not a font", "I", Align::Left)
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(e.starts_with("unreadable font"), "{e}");
+fn bytes_that_are_no_font_draw_a_box_a_character() {
+    let laid = text::build(b"not a font", "I O", Align::Left);
+    assert!(
+        matches!(&laid.faults[..], [text::Fault::Font(why)] if why.starts_with("unreadable font")),
+        "{:?}",
+        laid.faults
+    );
+    let built = laid.built.unwrap();
+    assert_eq!((built.quads.count, built.boxes.count), (0, 2));
     let mut t = Text::from_dict("label", &json!({"font": "face"})).unwrap();
-    t.data = Some(Arc::new(b"not a font".to_vec()));
-    let e = t.build("I").err().unwrap().to_string();
-    assert!(e.starts_with("text 'label': unreadable font"), "{e}");
+    t.data = Some(Err("asset 'face' (face.ttf): gone".to_string()));
+    let laid = t.build("I O").unwrap();
+    assert_eq!(
+        laid.faults,
+        [text::Fault::Font(
+            "asset 'face' (face.ttf): gone".to_string()
+        )]
+    );
+    assert_eq!(laid.built.unwrap().boxes.count, 2);
 }
 
 #[test]
@@ -521,25 +543,27 @@ fn a_text_built_before_its_font_loads_names_the_font() {
     );
 }
 
+/// The one fault of words that fit no texture.
+fn refused(words: &str) -> String {
+    let laid = text::build(&font(SANS), words, Align::Left);
+    assert!(laid.built.is_none());
+    match &laid.faults[..] {
+        [text::Fault::Layout(why)] => why.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
-fn words_past_a_vc4_texture_fail_naming_the_limit() {
+fn words_past_a_vc4_texture_lay_out_nothing_naming_the_limit() {
     // One line of glyphs, far past what one texture holds.
-    let words = "I".repeat(400_000);
-    let e = text::build(&font(SANS), &words, Align::Left)
-        .err()
-        .unwrap()
-        .to_string();
+    let e = refused(&"I".repeat(400_000));
     assert!(e.contains("VC4"), "{e}");
 }
 
 #[test]
-fn a_block_too_wide_and_too_tall_for_the_texture_fails_naming_the_limit() {
+fn a_block_too_wide_and_too_tall_for_the_texture_lays_out_nothing_naming_the_limit() {
     // Few glyphs over a vast block: its grid alone would take gigabytes.
-    let words = "I".repeat(30_000) + &"\n".repeat(30_000);
-    let e = text::build(&font(SANS), &words, Align::Left)
-        .err()
-        .unwrap()
-        .to_string();
+    let e = refused(&("I".repeat(30_000) + &"\n".repeat(30_000)));
     assert!(e.contains("VC4"), "{e}");
 }
 
@@ -649,7 +673,7 @@ fn a_text_declaration_names_what_it_lacks() {
         ),
         (
             json!({"font": "sans", "fill": "mtsdf"}),
-            "text 'label' fill needs 'outline', got 'mtsdf': the MTSDF fill does not exist yet",
+            "text 'label' fill needs 'outline', got 'mtsdf'",
         ),
         (
             json!({"font": "sans", "fill": 3}),
@@ -771,7 +795,7 @@ fn texts_survive_a_filter_asset_and_a_built_param() {
         None,
     )
     .unwrap();
-    sc.texts[0].data = Some(Arc::new(font(SANS)));
+    sc.texts[0].data = Some(Ok(Arc::new(font(SANS))));
     let texts = sc.texts.clone();
     apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
     assert!(sc.assets.iter().any(|a| a.name == "frc256_bluenoise"));
@@ -798,7 +822,7 @@ fn with_assets_env<T>(assets: &str, f: impl FnOnce() -> T) -> T {
 
 fn font_data(sc: &Scene, name: &str) -> Vec<u8> {
     let t = sc.texts.iter().find(|t| t.name == name).unwrap();
-    t.data.as_ref().unwrap().to_vec()
+    t.data.clone().unwrap().unwrap().to_vec()
 }
 
 /// A scene whose text `label` draws in the font asset `face`, the file
@@ -859,7 +883,14 @@ fn texts_in_one_font_share_its_bytes() {
     .unwrap();
     sc.load_assets(FONTS).unwrap();
     let (a, b) = (sc.texts[0].data.as_ref(), sc.texts[1].data.as_ref());
-    assert!(Arc::ptr_eq(a.unwrap(), b.unwrap()));
+    let (a, b) = (a.unwrap().as_ref().unwrap(), b.unwrap().as_ref().unwrap());
+    assert!(Arc::ptr_eq(a, b));
+}
+
+/// Why the font of `sc`'s text `label` failed to load.
+fn font_failure(sc: &Scene) -> String {
+    let t = sc.texts.iter().find(|t| t.name == "label").unwrap();
+    t.data.clone().unwrap().err().unwrap()
 }
 
 #[test]
@@ -872,18 +903,35 @@ fn a_missing_font_names_the_first_path_and_every_other_one_tried() {
     }
     let file = format!("ghee-text-missing-{}.ttf", std::process::id());
     let mut sc = face_scene(&file);
-    let e = with_assets_env(&store, || sc.load_assets(&dir))
-        .err()
-        .unwrap()
-        .to_string();
+    with_assets_env(&store, || sc.load_assets(&dir)).unwrap();
     assert_eq!(
-        e,
+        font_failure(&sc),
         format!(
             "asset 'face' ({dir}/{file}): No such file or directory \
              (also tried: {root}/{file}, {store}/{file})"
         )
     );
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_missing_image_still_fails_the_load() {
+    let _g = lock();
+    let dir = tmpdir("noimage");
+    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+    doc["assets"]["logo"] = json!({"file": "logo.png"});
+    let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+    fs::write(format!("{dir}/{SANS}"), font(SANS)).unwrap();
+    fs::write(format!("{dir}/{CFF}"), font(CFF)).unwrap();
+    let e = with_assets_env("", || sc.load_assets(&dir))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        e.starts_with(&format!("asset 'logo' ({dir}/logo.png): No such file")),
+        "{e}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -906,15 +954,13 @@ fn a_font_outside_the_scene_directory_is_refused() {
 }
 
 #[test]
-fn a_font_file_that_is_no_font_fails_its_load() {
+fn a_font_file_that_is_no_font_loads_as_its_failure() {
     let _g = lock();
     let dir = tmpdir("nofont");
     fs::write(format!("{dir}/bad.ttf"), b"not a font").unwrap();
     let mut sc = face_scene("bad.ttf");
-    let e = with_assets_env("", || sc.load_assets(&dir))
-        .err()
-        .unwrap()
-        .to_string();
+    with_assets_env("", || sc.load_assets(&dir)).unwrap();
+    let e = font_failure(&sc);
     assert!(
         e.starts_with(&format!("asset 'face' ({dir}/bad.ttf): unreadable font")),
         "{e}"
@@ -1092,17 +1138,19 @@ fn a_string_param_relays_the_text_live() {
     let f = r.render(None).unwrap().to_vec();
     assert_draws(&f, W, 0, &o, fit, "O");
     assert!(f.iter().skip(1).step_by(4).all(|g| *g == 255));
-    // Words the texture cannot hold fail, and the last words stay.
-    let e = r
-        .set_text("label", &"I".repeat(400_000))
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(e.contains("VC4"), "{e}");
+    // Words the texture cannot hold leave the last words, and the error
+    // stands until words lay out again.
+    assert!(r.set_text("label", &"I".repeat(400_000)).unwrap());
     let f = r.render(None).unwrap().to_vec();
     assert_draws(&f, W, 0, &o, fit, "O kept");
+    let errors = r.text_errors();
+    assert!(
+        errors.len() == 1 && errors[0].starts_with("text 'label': ") && errors[0].contains("VC4"),
+        "{errors:?}"
+    );
     assert!(r.set_text("label", "").unwrap());
     assert!(blank(r.render(None).unwrap(), 0));
+    assert_eq!(r.text_errors(), [] as [String; 0]);
     // A string param of no text's name draws nothing.
     assert!(!r
         .set_scene_param("ghost", "string", &ParamValue::Str("O".to_string()))
@@ -1220,7 +1268,7 @@ fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
 }
 
 #[test]
-fn every_text_name_a_renderer_meets_draws() {
+fn a_setup_frees_the_asset_slots_of_old_texts() {
     // The engine binds 8 assets at a time, so each setup has to hand back
     // the slots of the texts that its scene no longer declares.
     let laid = lay(SANS, "I", Align::Left);
@@ -1252,6 +1300,296 @@ fn a_filter_after_a_text_compiles() {
     assert_eq!(r.setup(&sc).unwrap(), "");
 }
 
+// Text problems
+
+/// The error boxes of a layout: x0, y0, x1, y1 in em from the block's top
+/// left, y down.
+fn box_rects(laid: &text::Layout) -> Vec<[f64; 4]> {
+    let b = &laid.built.as_ref().unwrap().boxes;
+    (0..b.count)
+        .map(|i| vertex(b, i, 0)[1].map(f64::from))
+        .collect()
+}
+
+/// What a w x h frame shows at each pixel more than EDGE pixels from every
+/// edge of the error boxes `rects` and of their stripes, as `fit` places the
+/// block: Some(true) on a yellow stripe, Some(false) on a black one, None
+/// outside every box. Returns the pixels seen of each kind, yellow, black
+/// and outside.
+fn each_box_pixel(
+    w: usize,
+    h: usize,
+    fit: Fit,
+    rects: &[[f64; 4]],
+    mut f: impl FnMut(usize, usize, Option<bool>),
+) -> [usize; 3] {
+    let edge = EDGE / fit.ppem;
+    let mut seen = [0; 3];
+    for y in 0..h {
+        for x in 0..w {
+            let p = fit.em(x, y);
+            let near = rects.iter().any(|r| {
+                let out = (p[0] - r[0])
+                    .min(r[2] - p[0])
+                    .min(p[1] - r[1])
+                    .min(r[3] - p[1]);
+                out.abs() <= edge
+            });
+            if near {
+                continue;
+            }
+            let Some(r) = rects
+                .iter()
+                .find(|r| p[0] > r[0] && p[0] < r[2] && p[1] > r[1] && p[1] < r[3])
+            else {
+                seen[2] += 1;
+                f(x, y, None);
+                continue;
+            };
+            // x - y from the box's bottom left, y up, in stripe widths.
+            let c = ((p[0] - r[0]) - (r[3] - p[1])) / text::STRIPE;
+            if (c - c.round()).abs() * text::STRIPE / std::f64::consts::SQRT_2 <= edge {
+                continue;
+            }
+            let yellow = c.floor().rem_euclid(2.0) == 0.0;
+            seen[usize::from(!yellow)] += 1;
+            f(x, y, Some(yellow));
+        }
+    }
+    seen
+}
+
+/// Channel 0 of an RGBA frame shows full coverage on the yellow stripes of
+/// the boxes and none on the black ones or outside them.
+fn assert_striped(frame: &[u8], w: usize, fit: Fit, rects: &[[f64; 4]], what: &str) {
+    let h = frame.len() / 4 / w;
+    let mut off = Vec::new();
+    let seen = each_box_pixel(w, h, fit, rects, |x, y, yellow| {
+        let want = if yellow == Some(true) { 255 } else { 0 };
+        let got = frame[(y * w + x) * 4];
+        if got.abs_diff(want) > TOL {
+            off.push((x, y, got, want));
+        }
+    });
+    assert!(seen.iter().all(|n| *n > 50), "{what}: {seen:?}");
+    assert!(
+        off.is_empty(),
+        "{what}: (x, y, got, want) {:?}",
+        &off[..off.len().min(8)]
+    );
+}
+
+/// label_scene with the words drawn by a white draw over a blue pass.
+fn hazard_scene(file: &str, words: &str, fit: Fit) -> Value {
+    let mut doc = label_scene(file, words, Align::Left, fit);
+    doc["passes"][0] = json!({"name": "main",
+        "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }",
+        "draws": [{"text": "label", "code": WHITE, "place": fit_place(fit)}]});
+    doc
+}
+
+/// An RGBA frame shows the error boxes `rects` as hazard stripes, yellow
+/// and black, and the blue pass outside them.
+fn assert_hazard(frame: &[u8], w: usize, fit: Fit, rects: &[[f64; 4]], what: &str) {
+    let h = frame.len() / 4 / w;
+    let mut off = Vec::new();
+    let seen = each_box_pixel(w, h, fit, rects, |x, y, yellow| {
+        let want = match yellow {
+            Some(true) => [255, 204, 0],
+            Some(false) => [0, 0, 0],
+            None => [0, 0, 128],
+        };
+        let got = &frame[(y * w + x) * 4..(y * w + x) * 4 + 3];
+        if got.iter().zip(want).any(|(g, w)| g.abs_diff(w) > TOL) {
+            off.push((x, y, got.to_vec()));
+        }
+    });
+    assert!(seen.iter().all(|n| *n > 50), "{what}: {seen:?}");
+    assert!(
+        off.is_empty(),
+        "{what}: (x, y, got) {:?}",
+        &off[..off.len().min(8)]
+    );
+}
+
+#[test]
+fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
+    let words = "Ag j\nI";
+    let mut t = Text::from_dict("label", &json!({"font": "face"})).unwrap();
+    t.data = Some(Err("gone".to_string()));
+    let laid = t.build(words).unwrap();
+    let rects = box_rects(&laid);
+    assert_eq!(rects.len(), 4);
+    let (bw, bh) = block(laid.built.as_ref().unwrap());
+    let fit = Fit::of(bw, bh, W, H);
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let cover = render(
+        &mut r,
+        &loaded(&label_scene("Missing.ttf", words, Align::Left, fit)),
+    );
+    assert_striped(&cover, W, fit, &rects, "_cover");
+    let errors = r.text_errors();
+    let want = format!("asset 'face' ({FONTS}/Missing.ttf): No such file or directory");
+    assert!(
+        errors.len() == 1 && errors[0].starts_with(&want),
+        "{errors:?}"
+    );
+    let draw = render(&mut r, &loaded(&hazard_scene("Missing.ttf", words, fit)));
+    assert_hazard(&draw, W, fit, &rects, "draw");
+    // New words lay out in boxes too.
+    assert!(r.set_text("label", "I").unwrap());
+    r.set_time(Some(0.0));
+    let one = r.render(None).unwrap().to_vec();
+    assert_hazard(&one, W, fit, &rects[..1], "one box");
+}
+
+#[test]
+fn an_unreadable_font_draws_a_box_a_character() {
+    let words = "Ag";
+    let laid = text::build(b"not a font", words, Align::Left);
+    let rects = box_rects(&laid);
+    let (bw, bh) = block(laid.built.as_ref().unwrap());
+    let fit = Fit::of(bw, bh, W, H);
+    let dir = tmpdir("unreadable");
+    fs::write(format!("{dir}/bad.ttf"), b"not a font").unwrap();
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let mut sc =
+        Scene::from_dict(&label_scene("bad.ttf", words, Align::Left, fit), None, None).unwrap();
+    with_assets_env("", || sc.load_assets(&dir)).unwrap();
+    let cover = render(&mut r, &sc);
+    assert_striped(&cover, W, fit, &rects, "unreadable");
+    let errors = r.text_errors();
+    let want = format!("asset 'face' ({dir}/bad.ttf): unreadable font");
+    assert!(
+        errors.len() == 1 && errors[0].starts_with(&want),
+        "{errors:?}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_bitmap_font_draws_boxes_where_ink_should_be_and_nothing_else() {
+    // A space, a zero-width joiner the font maps, and a variation selector
+    // it lacks need no ink.
+    let words = "\u{1f600} \u{200d}\u{1f642}\u{fe0f}";
+    let laid = text::build(&font(EMOJI), words, Align::Left);
+    assert_eq!(
+        laid.faults,
+        [text::Fault::NoOutline(vec!['\u{1f600}', '\u{1f642}'])]
+    );
+    let built = laid.built.as_ref().unwrap();
+    assert_eq!((built.quads.count, built.boxes.count), (0, 2));
+    // Each box stands centred in its character's advance, three advances
+    // across the block.
+    let data = font(EMOJI);
+    let face = Face::parse(&data, 0).unwrap();
+    let advance =
+        f64::from(face.glyph_hor_advance(GlyphId(3)).unwrap()) / f64::from(face.units_per_em());
+    let (bw, bh) = block(built);
+    assert!((bw - 3.0 * advance).abs() < 1e-9, "{bw}");
+    let rects = box_rects(&laid);
+    for (i, (r, slot)) in rects.iter().zip([0.0, 2.0]).enumerate() {
+        let mid = (slot + 0.5) * advance;
+        assert!(((r[0] + r[2]) / 2.0 - mid).abs() < 1e-4, "box {i}: {r:?}");
+        assert!(
+            (r[2] - r[0] - text::ERROR_BOX[0]).abs() < 1e-4,
+            "box {i}: {r:?}"
+        );
+    }
+    let fit = Fit::of(bw, bh, W, H);
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let cover = render(
+        &mut r,
+        &loaded(&label_scene(EMOJI, words, Align::Left, fit)),
+    );
+    assert_striped(&cover, W, fit, &rects, "emoji");
+    assert_eq!(
+        r.text_errors(),
+        ["text 'label': font 'face' has no outline for '\u{1f600}', '\u{1f642}'"]
+    );
+    let draw = render(&mut r, &loaded(&hazard_scene(EMOJI, words, fit)));
+    assert_hazard(&draw, W, fit, &rects, "emoji draw");
+}
+
+#[test]
+fn a_cff2_font_without_a_variation_store_draws_like_its_cff_source() {
+    let words = "IO\nOI";
+    assert!(near(
+        built(CFF2, words, Align::Center),
+        built(CFF, words, Align::Center)
+    ));
+    let laid = lay(CFF, words, Align::Center);
+    let fit = Fit::of(laid.width, laid.height, W, H);
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let cff = render(
+        &mut r,
+        &loaded(&label_scene(CFF, words, Align::Center, fit)),
+    );
+    let cff2 = render(
+        &mut r,
+        &loaded(&label_scene(CFF2, words, Align::Center, fit)),
+    );
+    assert_draws(&cff2, W, 0, &laid, fit, "CFF2");
+    let (n, m) = apart(&cff2, &cff);
+    assert!(n == 0 && m <= 1, "{n} pixels apart, at most {m}");
+    let cff = render(&mut r, &loaded(&draw_scene(CFF, words, Align::Center, fit)));
+    let cff2 = render(
+        &mut r,
+        &loaded(&draw_scene(CFF2, words, Align::Center, fit)),
+    );
+    let (n, m) = apart(&cff2, &cff);
+    assert!(n == 0 && m <= 1, "draws: {n} pixels apart, at most {m}");
+}
+
+#[test]
+fn words_that_fit_no_texture_at_setup_draw_nothing_and_the_scene_runs() {
+    let fit = Fit {
+        x: 8.0,
+        y: 8.0,
+        ppem: 64.0,
+    };
+    let words = "I".repeat(400_000);
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    for doc in [
+        label_scene(SANS, &words, Align::Left, fit),
+        draw_scene(SANS, &words, Align::Left, fit),
+    ] {
+        let f = render(&mut r, &loaded(&doc));
+        assert!(blank(&f, 0));
+        let errors = r.text_errors();
+        assert!(
+            errors.len() == 1 && errors[0].starts_with("text 'label': the words need a "),
+            "{errors:?}"
+        );
+        assert!(r.set_text("label", "I").unwrap());
+        r.set_time(Some(0.0));
+        assert!(!blank(r.render(None).unwrap(), 0));
+        assert_eq!(r.text_errors(), [] as [String; 0]);
+    }
+}
+
+#[test]
+fn a_draw_keeps_its_last_words_and_their_boxes_past_words_that_fit_no_texture() {
+    let fit = Fit {
+        x: 8.0,
+        y: 8.0,
+        ppem: 48.0,
+    };
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let before = render(&mut r, &loaded(&hazard_scene(EMOJI, "\u{1f600}", fit)));
+    assert!(r.set_text("label", &"\u{1f600}".repeat(400_000)).unwrap());
+    r.set_time(Some(0.0));
+    assert!(r.render(None).unwrap() == before.as_slice());
+    // The box stays, and so does the problem behind it.
+    let errors = r.text_errors();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(
+        errors[0].contains("has no outline for '\u{1f600}'"),
+        "{errors:?}"
+    );
+    assert!(errors[1].contains("VC4"), "{errors:?}");
+}
+
 // Draws
 
 /// Quad `i`'s vertex `v`: glyph_a0 to glyph_a3.
@@ -1264,7 +1602,7 @@ fn vertex(q: &text::Quads, i: usize, v: usize) -> [[f32; 4]; 4] {
 #[test]
 fn a_quad_spans_each_inked_glyph_with_its_indices() {
     let words = "AV To\nghee";
-    let built = text::build(&font(SANS), words, Align::Center).unwrap();
+    let built = drawn(SANS, words, Align::Center);
     let q = &built.quads;
     // A0 V1 T3 o4 g6 h7 e8 e9: every character counts, the space and the
     // newline too, and neither takes a quad.
@@ -1752,7 +2090,12 @@ fn a_param_takes_an_old_attribute_name_and_ghee_keeps_vflip_and_glyph_names() {
     );
     let got = render(&mut r, &loaded(&doc));
     assert_like_cover(&got, &want, "a param named a1");
-    let kept = "ghee keeps the name vflip and the names that start with glyph_";
+    // A scene with no draw takes the names.
+    let mut doc = label_scene(SANS, "ghee", Align::Left, fit);
+    doc["params"]["vflip"] = json!({"type": "float", "value": 1.0});
+    doc["passes"][0]["params"] = json!({"glyph_index": {"type": "float", "value": 1.0}});
+    assert!(Scene::from_dict(&doc, None, None).is_ok());
+    let kept = "vflip and every name that starts with glyph_ belong to ghee";
     for name in ["vflip", "glyph_a1", "glyph_index"] {
         let mut doc = draw_scene(SANS, "ghee", Align::Left, fit);
         doc["params"][name] = json!({"type": "float", "value": 1.0});
@@ -1790,7 +2133,7 @@ fn a_draw_past_the_texture_units_fails_naming_the_draw() {
     assert_eq!(
         r.setup(&loaded(&doc)).unwrap(),
         format!(
-            "pass 'main' draw 0 needs {} texture units; this GPU has {units}",
+            "pass 'main' draw 0 needs {} texture units, this GPU has {units}",
             units + 1
         )
     );

@@ -231,6 +231,9 @@ struct Latest {
 struct Stat {
     frame_ms: f64,
     error: String,
+    /// The renderer's text_errors(), a line each. /stats reports them while
+    /// no other error stands.
+    texts: String,
     active: Option<String>,
     display: Value,
     error_line: Option<i64>,
@@ -408,7 +411,11 @@ impl Console {
         {
             let stat = lock(&self.stat);
             d.insert("frame_ms".to_string(), Value::from(stat.frame_ms));
-            d.insert("error".to_string(), Value::from(stat.error.clone()));
+            let error = match stat.error.is_empty() {
+                true => &stat.texts,
+                false => &stat.error,
+            };
+            d.insert("error".to_string(), Value::from(error.clone()));
             d.insert(
                 "active".to_string(),
                 stat.active.clone().map_or(Value::Null, Value::from),
@@ -1490,6 +1497,16 @@ fn set_scene_param(
     }
 }
 
+/// Publish the renderer's text problems for /stats, when they changed since
+/// the count `seen`.
+fn publish_text_errors(console: &Console, renderer: &Renderer, seen: &Cell<u64>) {
+    let seq = renderer.text_errors_seq();
+    if seq != seen.get() {
+        seen.set(seq);
+        lock(&console.stat).texts = renderer.text_errors().join("\n");
+    }
+}
+
 /// Run the console's render loop on this thread. The console adds the command
 /// queue, the published scene and the stale snapshot. A frame error must not
 /// kill the thread.
@@ -1526,6 +1543,7 @@ pub fn render_loop(
     };
     let mut reported = String::new();
     let times: RefCell<Vec<f64>> = RefCell::new(Vec::new());
+    let text_errors = Cell::new(renderer.borrow().text_errors_seq());
     let timed = on_stats.is_some();
     let paced_by_panel = sinks.iter().any(|s| s.dest() == DEST_PANEL);
     let (elapsed, out): (f64, Vec<String>);
@@ -1566,6 +1584,7 @@ pub fn render_loop(
         render.stopping = Some(Box::new(|| console.stopping()));
         render.on_frame = Some(Box::new(|_loop, cost| {
             lock(&console.stat).frame_ms = cost * 1000.0;
+            publish_text_errors(console, &renderer.borrow(), &text_errors);
             if timed {
                 times.borrow_mut().push(cost);
             }
@@ -2771,6 +2790,55 @@ mod tests {
         // the relayed words draw what a scene built on them draws
         assert_eq!(set(text_scene("O")), "");
         assert!(frame() == o, "the relayed words drew another frame");
+    }
+
+    #[test]
+    fn posted_words_past_the_texture_keep_the_last_words_and_show_why() {
+        let Some(r) = crate::engine::probe_dri_devices()
+            .iter()
+            .find_map(|dev| Renderer::new(32, 24, 4, Some(dev), false, false).ok())
+        else {
+            eprintln!("no GL device for the console");
+            return;
+        };
+        let renderer = RefCell::new(r);
+        let console = tmp_console("toolong");
+        let st = RefCell::new(Running { scene: None });
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let seen = Cell::new(renderer.borrow().text_errors_seq());
+        let frame = || {
+            renderer.borrow().set_time(Some(0.0));
+            renderer.borrow_mut().render(None).unwrap().to_vec()
+        };
+        let error = || {
+            publish_text_errors(&console, &renderer.borrow(), &seen);
+            console.stats()["error"].as_str().unwrap().to_string()
+        };
+        assert_eq!(
+            set_scene(&console, &renderer, &st, text_scene("O"), None, None),
+            ""
+        );
+        let o = frame();
+        assert_eq!(error(), "");
+        let host = RenderLoopHost::new(Arc::clone(&console));
+        let long = "I".repeat(400_000);
+        host.set_param(Scope::Scene, "label", Value::from(long.as_str()))
+            .unwrap();
+        assert!(drain(&console, &renderer, &st, &ctrl));
+        assert!(frame() == o, "the last words went");
+        let e = error();
+        assert!(e.starts_with("text 'label': ") && e.contains("VC4"), "{e}");
+        // The document holds the words posted.
+        let running = lock(&console.running).clone().unwrap().1;
+        assert_eq!(running["params"]["label"]["value"], long.as_str());
+        // A scene error outranks a text error.
+        lock(&console.stat).error = "compile error".to_string();
+        assert_eq!(error(), "compile error");
+        lock(&console.stat).error = String::new();
+        host.set_param(Scope::Scene, "label", Value::from("I"))
+            .unwrap();
+        assert!(drain(&console, &renderer, &st, &ctrl));
+        assert_eq!(error(), "");
     }
 
     // run()'s own loop

@@ -23,9 +23,9 @@
   Pi 5 it showed stale fragments of earlier frames.
 - Draw text on the GPU from a font. A scene declares `texts`, each named
   after the scene string param that holds its words and naming a `.ttf` or
-  `.otf` asset as its font, and every scene pass reads `<name>_cover(p, ppem)`
-  and `<name>_size`. An edit to the param lays the words out again, with no
-  recompile.
+  `.otf` asset as its font, and every scene pass, filter passes excepted,
+  reads `<name>_cover(p, ppem)` and `<name>_size`. An edit to the param lays
+  the words out again, with no recompile.
 - Declare an asset from Python with `ghee.Asset` and a text with `ghee.Text`,
   in `Scene(assets=[...], texts=[...])`.
 - Add `--demo lettering`, words drawn from a font.
@@ -33,6 +33,10 @@
   words reach a text over the wire.
 - Load the assets of a scene given to `ghee.open` as a dict or as JSON text
   from the working directory.
+- Keep the scene running through a text problem, log the problem once, and
+  show it in the console. A font that fails to load draws every character as
+  an error box, a glyph with no outline or past a limit draws one in its
+  place, and words that do not fit leave the last words that did.
 
 ## 0.4.0 - 2026-08-06
 

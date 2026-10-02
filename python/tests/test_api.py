@@ -274,6 +274,20 @@ def test_new_words_lay_out_on_the_next_frame(monkeypatch):
         assert h.pixels() == ghee_drawn
 
 
+def test_words_past_the_texture_keep_the_last_words(monkeypatch, capfd):
+    monkeypatch.chdir(REPO / "ghee" / "examples")
+    with ghee.open(WORDS, width=96, height=32, timestep=0) as h:
+        h.frame()
+        ghee_drawn = h.pixels()
+        for _ in range(2):
+            h.set_param("words", "I" * 400_000)
+            h.frame()
+            assert h.pixels() == ghee_drawn
+    # logged once, however many times the words came
+    err = capfd.readouterr().err
+    assert err.count("text 'words': the words need a ") == 1, err
+
+
 def test_a_dict_scene_resolves_its_font_in_the_working_directory(tmp_path, monkeypatch):
     (tmp_path / "fonts").mkdir()
     shutil.copy(REPO / "ghee" / "examples" / FONT, tmp_path / "fonts")

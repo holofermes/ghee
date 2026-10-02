@@ -34,7 +34,8 @@ const MAX_TEXELS: i64 = 1 << 24;
 // The engine's asset table holds MP_MAX_ASSETS entries.
 const MAX_ASSETS: usize = 8;
 
-// A draw is one engine layer, and the engine holds MP_MAX_LAYERS layers.
+// A draw takes two engine layers, its own and its error boxes', and the
+// engine holds MP_MAX_LAYERS layers.
 const MAX_DRAWS: usize = 16;
 
 fn vec_arity(ty: &str) -> Option<usize> {
@@ -828,8 +829,9 @@ pub struct Asset {
     pub raw: Option<RawLayout>,
     /// The decoded pixels. load_assets fills them from the file.
     pub image: Option<crate::assets::Image>,
-    /// A font file's bytes. load_assets fills them.
-    pub font: Option<Arc<Vec<u8>>>,
+    /// A font file's bytes, or why they failed to load. load_assets fills
+    /// them.
+    pub font: Option<crate::text::Font>,
     /// The filter that declared the asset, empty for the scene's own. The
     /// filter loads it, its name carries the filter's as a prefix, and a save
     /// leaves it out.
@@ -866,12 +868,17 @@ impl Asset {
     }
 
     /// Decode `bytes` as this asset's declared format. `what` names the source
-    /// in the error.
+    /// in the error. A font that fails to parse keeps the error for its texts,
+    /// which draw error boxes.
     pub fn decode(&mut self, bytes: &[u8], what: &str) -> Result<()> {
         if self.is_font() {
-            ttf_parser::Face::parse(bytes, 0)
-                .map_err(|e| anyhow!("asset '{}' ({what}): unreadable font: {e}", self.name))?;
-            self.font = Some(Arc::new(bytes.to_vec()));
+            self.font = Some(match ttf_parser::Face::parse(bytes, 0) {
+                Ok(_) => Ok(Arc::new(bytes.to_vec())),
+                Err(e) => Err(format!(
+                    "asset '{}' ({what}): unreadable font: {e}",
+                    self.name
+                )),
+            });
             return Ok(());
         }
         let decoded = match &self.raw {
@@ -1378,6 +1385,33 @@ impl Pass {
         hw_linear: bool,
     ) -> (String, String) {
         let d = &self.draws[k];
+        let v = self.draw_vertex(d, scene_params, d.pad);
+        let mut f = self.preamble(scene_params, assets, texts, hw_linear);
+        f.push(String::new());
+        if let Some(c) = common.filter(|c| !c.is_empty()) {
+            f.push(c.to_string());
+            f.push(String::new());
+        }
+        f.extend(crate::text::outline_fragment_head(&d.text));
+        f.push(String::new());
+        f.push(d.code.clone());
+        f.push(String::new());
+        f.extend(crate::text::outline_fragment_tail(&d.text));
+        (v, f.join("\n"))
+    }
+
+    /// The vertex and the fragment shader of the error boxes of draw `k`: the
+    /// draw's own vertex shader with no pad, so its place puts each box where
+    /// a glyph would go, and ghee's hazard stripes.
+    pub fn draw_box_glsl(&self, k: usize, scene_params: Option<&ParamMap>) -> (String, String) {
+        let v = self.draw_vertex(&self.draws[k], scene_params, 0.0);
+        let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
+        f.extend(crate::text::box_fragment());
+        (v, f.join("\n"))
+    }
+
+    /// The vertex shader of draw `d`, its quads grown by `pad` em.
+    fn draw_vertex(&self, d: &Draw, scene_params: Option<&ParamMap>, pad: f64) -> String {
         let mut v: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         // The fragment stage's int defaults to mediump and the vertex stage's
         // to highp, so an int uniform declared in both needs this to link.
@@ -1402,20 +1436,8 @@ impl Pass {
         v.push(String::new());
         v.push(d.place.clone());
         v.push(String::new());
-        v.extend(crate::text::outline_vertex_main(d.pad));
-
-        let mut f = self.preamble(scene_params, assets, texts, hw_linear);
-        f.push(String::new());
-        if let Some(c) = common.filter(|c| !c.is_empty()) {
-            f.push(c.to_string());
-            f.push(String::new());
-        }
-        f.extend(crate::text::outline_fragment_head(&d.text));
-        f.push(String::new());
-        f.push(d.code.clone());
-        f.push(String::new());
-        f.extend(crate::text::outline_fragment_tail(&d.text));
-        (v.join("\n"), f.join("\n"))
+        v.extend(crate::text::outline_vertex_main(pad));
+        v.join("\n")
     }
 
     fn preamble(
@@ -1548,17 +1570,16 @@ impl Scene {
         // A draw's vertex shader declares every param beside the attributes
         // glyph_a0 to glyph_a3 and the uniform vflip, and ghee names the
         // other values of a draw glyph_*.
-        let kept = |nm: &str| nm == "vflip" || nm.starts_with("glyph_");
-        if let Some(nm) = params.keys().find(|n| kept(n)) {
-            bail!("param '{nm}': ghee keeps the name vflip and the names that start with glyph_");
-        }
-        for p in &passes {
-            if let Some(nm) = p.params.keys().find(|n| kept(n)) {
-                bail!(
-                    "param '{nm}' in pass '{}': ghee keeps the name vflip and the names that \
-                     start with glyph_",
-                    p.name
-                );
+        if passes.iter().any(|p| !p.draws.is_empty()) {
+            let kept = |nm: &str| nm == "vflip" || nm.starts_with("glyph_");
+            let why = "vflip and every name that starts with glyph_ belong to ghee";
+            if let Some(nm) = params.keys().find(|n| kept(n)) {
+                bail!("param '{nm}': {why}");
+            }
+            for p in &passes {
+                if let Some(nm) = p.params.keys().find(|n| kept(n)) {
+                    bail!("param '{nm}' in pass '{}': {why}", p.name);
+                }
             }
         }
         // A name belongs to one scope only. A scene param already reaches every
@@ -1876,22 +1897,34 @@ impl Scene {
                 );
             }
             let tried: Vec<String> = roots.iter().map(|r| normpath(&join(r, &a.file))).collect();
-            let Some(path) = tried
+            let read = match tried
                 .iter()
                 .find(|p| std::path::Path::new(p.as_str()).is_file())
-                .cloned()
-            else {
-                bail!(
-                    "asset '{}' ({}): No such file or directory (also tried: {})",
-                    a.name,
-                    tried[0],
-                    tried[1..].join(", ")
-                );
+            {
+                None => {
+                    // A font file that shows up later marks the scene stale.
+                    crate::sources::record(&tried[0]);
+                    Err(format!(
+                        "asset '{}' ({}): No such file or directory (also tried: {})",
+                        a.name,
+                        tried[0],
+                        tried[1..].join(", ")
+                    ))
+                }
+                Some(path) => {
+                    crate::sources::record(path);
+                    fs::read(path)
+                        .map(|bytes| (bytes, path.clone()))
+                        .map_err(|e| format!("asset '{}' ({path}): {}", a.name, strerror(&e)))
+                }
             };
-            let bytes = fs::read(&path)
-                .map_err(|e| anyhow!("asset '{}' ({path}): {}", a.name, strerror(&e)))?;
-            crate::sources::record(&path);
-            a.decode(&bytes, &path)?;
+            match read {
+                Ok((bytes, path)) => a.decode(&bytes, &path)?,
+                // A font that fails to load leaves the scene running, and its
+                // texts draw error boxes.
+                Err(why) if a.is_font() => a.font = Some(Err(why)),
+                Err(why) => bail!("{why}"),
+            }
         }
         for t in &mut self.texts {
             t.data = self

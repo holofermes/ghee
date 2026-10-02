@@ -2,6 +2,7 @@
 //!
 //! $GHEE_DRI selects the DRI device.
 
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -15,6 +16,7 @@ use crate::assets::Pixels;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
 use crate::scene::{ArraySize, Draw, ParamValue, Scene};
+use crate::text::{Fault, Text};
 
 /// error_pass for a compile error in the scene's common block.
 /// A pass error reports the pass index.
@@ -99,14 +101,26 @@ pub(crate) struct Layer {
     pub blend: Blend,
 }
 
-/// A scene draw that the engine holds as a layer.
+/// A scene draw that the engine holds as a layer, and the layer of its error
+/// boxes.
 struct DrawLayer {
     /// The engine's index of the layer.
     layer: c_int,
+    /// The engine's index of the error-box layer.
+    boxes: c_int,
     /// The scene text of the draw.
     text: String,
     /// The draw in an error, as "pass 'main' draw 0".
     name: String,
+}
+
+/// The problems of one scene text, a line each.
+#[derive(Clone, Default, PartialEq)]
+struct TextErrors {
+    /// The problems of the words on screen.
+    drawn: Vec<String>,
+    /// Why the last words failed to lay out, when they did.
+    refused: Option<String>,
 }
 
 /// The (width, rows) of one array upload, and its data.
@@ -324,7 +338,8 @@ fn user_line(err: &str, glsl: &str, code: &str, common: Option<&str>) -> (Option
     if let Some(c) = common.filter(|c| !c.is_empty()) {
         let cpos = glsl[..pos.unwrap_or(glsl.len())].rfind(c);
         let cat = cpos.map_or(-1, |p| glsl[..p].matches('\n').count() as i64);
-        if cat >= 0 && cat < line && line <= at {
+        let lines = c.lines().count() as i64;
+        if cat >= 0 && cat < line && line <= cat + lines && line <= at {
             return (Some((line - cat).max(1)), true);
         }
     }
@@ -424,6 +439,12 @@ pub struct Renderer {
     layers: Vec<c_int>,
     /// The scene's draws, in the order of their passes.
     draws: Vec<DrawLayer>,
+    /// The text problem causes logged since the setup, so each logs once.
+    reported: std::cell::RefCell<HashSet<String>>,
+    /// The problems of each scene text, by its name.
+    text_errors: std::cell::RefCell<HashMap<String, TextErrors>>,
+    /// Counts the changes to text_errors.
+    text_errors_seq: std::cell::Cell<u64>,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
 }
@@ -457,6 +478,9 @@ impl Renderer {
             scene_assets: std::cell::RefCell::new(Vec::new()),
             layers: Vec::new(),
             draws: Vec::new(),
+            reported: std::cell::RefCell::new(HashSet::new()),
+            text_errors: std::cell::RefCell::new(HashMap::new()),
+            text_errors_seq: std::cell::Cell::new(0),
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
             handle: ptr::null_mut(),
         };
@@ -605,7 +629,7 @@ impl Renderer {
             let want = p.channels.len() + used.len();
             if want as i64 > i64::from(units) {
                 self.error = format!(
-                    "pass '{}' needs {want} texture units; this GPU has {units}",
+                    "pass '{}' needs {want} texture units, this GPU has {units}",
                     p.name
                 );
                 return Ok(self.error.clone());
@@ -613,7 +637,7 @@ impl Renderer {
             // A draw samples its text's texture on top of its pass's inputs.
             if !p.draws.is_empty() && want as i64 + 1 > i64::from(units) {
                 self.error = format!(
-                    "pass '{}' draw 0 needs {} texture units; this GPU has {units}",
+                    "pass '{}' draw 0 needs {} texture units, this GPU has {units}",
                     p.name,
                     want + 1
                 );
@@ -689,9 +713,40 @@ impl Renderer {
                 }
                 draws.push(DrawLayer {
                     layer: li,
+                    boxes: -1,
                     text: d.text.clone(),
                     name,
                 });
+            }
+            // The error boxes of each draw come after every draw of the pass,
+            // so none hides them.
+            let first = draws.len() - if idx < 0 { 0 } else { p.draws.len() };
+            for (k, dl) in draws[first..].iter_mut().enumerate() {
+                let (vs, fs) = p.draw_box_glsl(k, Some(&scene.params));
+                let name = format!("{} error boxes", dl.name);
+                let (cname, cvs, cfs) = (
+                    self.staged_cstring(&name)?,
+                    self.staged_cstring(&vs)?,
+                    self.staged_cstring(&fs)?,
+                );
+                dl.boxes = unsafe {
+                    ffi::ghee_mp_add_layer(
+                        self.handle,
+                        idx,
+                        cname.as_ptr(),
+                        cvs.as_ptr(),
+                        cfs.as_ptr(),
+                        Blend::Over.engine(),
+                    )
+                };
+                if dl.boxes < 0 {
+                    let err = or_else(self.last_error(), "compile error");
+                    unsafe { ffi::ghee_mp_abort(self.handle) };
+                    self.error = format!("{name}: {err}");
+                    self.error_pass = Some(ErrorPass::Index(i));
+                    crate::report::progress_done();
+                    return Ok(self.error.clone());
+                }
             }
             for (k, l) in layers.iter().enumerate().filter(|(_, l)| l.pass == p.name) {
                 if idx < 0 {
@@ -746,6 +801,12 @@ impl Renderer {
         self.mp = mp;
         self.layers = layer_ix;
         self.draws = draws;
+        // A new scene logs its text problems afresh.
+        self.reported.borrow_mut().clear();
+        if !self.text_errors.borrow().is_empty() {
+            self.text_errors.borrow_mut().clear();
+            self.text_errors_seq.set(self.text_errors_seq.get() + 1);
+        }
         // The engine assets of the old scene that the new one does not declare
         // go, and their slots come back.
         let keep: Vec<String> = scene
@@ -829,7 +890,8 @@ impl Renderer {
             }
         }
         // A scene param sits in every preamble, so it reaches every pass. A
-        // text that cannot be laid out refuses the scene, as an asset does.
+        // text that the engine refuses, or one whose font was never loaded,
+        // refuses the scene, as an asset does.
         for (nm, pm) in scene.params.iter() {
             if let ParamValue::Str(words) = &pm.value {
                 if let Err(e) = self.set_text(nm, words) {
@@ -1148,6 +1210,12 @@ impl Renderer {
 
     /// Lay out new words for the scene text `name` and upload them, with no
     /// recompile. Returns false when the scene holds no text of that name.
+    ///
+    /// A text problem fails nothing: the text draws an error box for each
+    /// character that it cannot draw, and words that fit no texture leave
+    /// the last words that did. Each problem logs once, and text_errors()
+    /// holds it while it lasts. An error is a font that was never loaded, or
+    /// a texture or quads that the engine refuses.
     pub fn set_text(&self, name: &str, words: &str) -> Result<bool> {
         let Some(text) = self
             .scene
@@ -1156,7 +1224,11 @@ impl Renderer {
         else {
             return Ok(false);
         };
-        let built = text.build(words)?;
+        let laid = text.build(words)?;
+        self.text_faults(text, &laid.faults, laid.built.is_some());
+        let Some(built) = laid.built else {
+            return Ok(true);
+        };
         self.set_asset(
             &format!("{name}_tex"),
             built.width,
@@ -1165,6 +1237,7 @@ impl Renderer {
             false,
             AssetData::U8(&built.texels),
         )?;
+        self.scene_asset(&format!("{name}_tex"));
         for (suffix, v) in &built.uniforms {
             let uniform = format!("{name}{suffix}");
             for (_, idx) in &self.mp {
@@ -1172,15 +1245,115 @@ impl Renderer {
             }
         }
         for d in self.draws.iter().filter(|d| d.text == name) {
-            self.layer_quads(
-                d.layer,
-                &d.name,
-                &built.quads.floats,
-                built.quads.per_vertex / 4,
-            )?;
+            for (layer, quads, what) in [
+                (d.layer, &built.quads, d.name.clone()),
+                (d.boxes, &built.boxes, format!("{} error boxes", d.name)),
+            ] {
+                self.layer_quads(layer, &what, &quads.floats, quads.per_vertex / 4)?;
+            }
         }
-        self.scene_asset(&format!("{name}_tex"));
         Ok(true)
+    }
+
+    /// Log each new cause among the `faults` of a layout of `text`, and hold
+    /// them for text_errors(). Words that did not lay out, `drawn` false,
+    /// leave the problems of the words still on screen.
+    fn text_faults(&self, text: &Text, faults: &[Fault], drawn: bool) {
+        let name = &text.name;
+        let mut reported = self.reported.borrow_mut();
+        // True the first time since the setup that a cause comes up.
+        let mut fresh = |cause: String| reported.insert(cause);
+        let no_outline = |cs: &[char]| {
+            let list: Vec<String> = cs.iter().map(|c| format!("{c:?}")).collect();
+            format!(
+                "text '{name}': font '{}' has no outline for {}",
+                text.font,
+                list.join(", ")
+            )
+        };
+        let mut now = match drawn {
+            true => TextErrors::default(),
+            false => TextErrors {
+                refused: None,
+                ..self
+                    .text_errors
+                    .borrow()
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default()
+            },
+        };
+        for f in faults {
+            let line = match f {
+                // The reason names the asset, which every text in the font
+                // shares.
+                Fault::Font(why) => {
+                    if fresh(format!("font\0{why}")) {
+                        crate::report::warn(why);
+                    }
+                    why.clone()
+                }
+                // Each character logs once.
+                Fault::NoOutline(chars) => {
+                    let new: Vec<char> = chars
+                        .iter()
+                        .copied()
+                        .filter(|c| fresh(format!("ink\0{name}\0{c}")))
+                        .collect();
+                    if !new.is_empty() {
+                        crate::report::warn(no_outline(&new));
+                    }
+                    no_outline(chars)
+                }
+                Fault::Glyph(ch, why) => format!("text '{name}': {ch:?} {why}"),
+                Fault::Layout(why) => format!("text '{name}': {why}"),
+            };
+            if !matches!(f, Fault::Font(_) | Fault::NoOutline(_)) && fresh(line.clone()) {
+                crate::report::warn(&line);
+            }
+            match f {
+                Fault::Layout(_) => now.refused = Some(line),
+                _ if drawn => now.drawn.push(line),
+                _ => {}
+            }
+        }
+        drop(reported);
+        let mut all = self.text_errors.borrow_mut();
+        let empty = TextErrors::default();
+        if all.get(name).unwrap_or(&empty) != &now {
+            self.text_errors_seq.set(self.text_errors_seq.get() + 1);
+            if now == empty {
+                all.remove(name);
+            } else {
+                all.insert(name.clone(), now);
+            }
+        }
+    }
+
+    /// The problems of the scene's texts, a line each: a font that failed to
+    /// load, characters drawn as error boxes, words that do not fit.
+    pub fn text_errors(&self) -> Vec<String> {
+        let all = self.text_errors.borrow();
+        let Some(scene) = self.scene.as_ref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = Vec::new();
+        for t in &scene.texts {
+            if let Some(e) = all.get(&t.name) {
+                for line in e.drawn.iter().chain(&e.refused) {
+                    // Texts in one font share its failure.
+                    if !out.contains(line) {
+                        out.push(line.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A count that changes whenever text_errors() does.
+    pub fn text_errors_seq(&self) -> u64 {
+        self.text_errors_seq.get()
     }
 
     /// Record `name` among the engine assets uploaded for the scene.
@@ -1836,7 +2009,7 @@ mod tests {
     }
 
     #[test]
-    fn every_image_asset_a_renderer_meets_binds() {
+    fn a_setup_frees_the_slots_of_old_image_assets() {
         // The engine binds 8 assets at a time, so each setup hands back the
         // slots of the image assets that its scene no longer declares. An
         // asset set by the host stays.
@@ -1909,7 +2082,7 @@ mod tests {
         assert_eq!(
             r.setup(&greedy).unwrap(),
             format!(
-                "pass 'main' needs {} texture units; this GPU has {units}",
+                "pass 'main' needs {} texture units, this GPU has {units}",
                 units + 1
             )
         );
@@ -2271,6 +2444,9 @@ mod tests {
         assert_eq!(user_line("0:5(1): x", glsl, code, common), (Some(1), false));
         // A line at or above the common block start belongs to the pass.
         assert_eq!(user_line("0:2(1): x", glsl, code, common), (Some(1), false));
+        // So does a line past the common block's end.
+        assert_eq!(user_line("0:4(1): x", glsl, code, common), (Some(1), false));
+        assert_eq!(user_line("0:3(1): x", glsl, code, common), (Some(1), true));
         assert_eq!(
             user_line("0:99(1): x", glsl, code, common),
             (Some(95), false)
@@ -2901,6 +3077,71 @@ mod tests {
             near3(rgb_at(&f, 9, 9), [64.0, 128.0, 191.0]),
             "{:?}",
             rgb_at(&f, 9, 9)
+        );
+    }
+
+    #[test]
+    fn a_draw_with_no_error_boxes_renders_as_the_draw_alone() {
+        // The scene `with` holds a draw, and so an error-box layer. `alone`
+        // holds the same draw as a plain layer, with none behind it.
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let place = "vec2 glyph_place(vec2 em) { return vec2(3.0, 2.0) + em * 30.0; }";
+        let code = "void main(){ float c = glyph_cover(); \
+                    gl_FragColor = vec4(c, c * 0.5, 0.0, c); }";
+        let load = |draws: Value| {
+            let mut sc = Scene::from_dict(
+                &json!({
+                    "version": 1,
+                    "params": {"label": {"type": "string", "value": "AV"}},
+                    "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+                    "texts": {"label": {"font": "sans"}},
+                    "passes": [{"name": "main", "draws": draws,
+                        "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }"}],
+                }),
+                None,
+                None,
+            )
+            .unwrap();
+            sc.load_assets(fonts).unwrap();
+            sc
+        };
+        let with = load(json!([{"text": "label", "code": code, "place": place}]));
+        let alone = load(json!([]));
+        let Some((_g, mut r)) = gpu() else { return };
+        let frame = |r: &mut Renderer| {
+            r.set_time(Some(0.0));
+            r.render(None).unwrap().to_vec()
+        };
+        assert_eq!(r.setup(&with).unwrap(), "");
+        let built = with.texts[0].build("AV").unwrap().built.unwrap();
+        assert_eq!((built.quads.count, built.boxes.count), (2, 0));
+        let drawn = frame(&mut r);
+        assert!(r.text_errors().is_empty());
+        // The error-box layer is live: given the glyphs' quads, it covers
+        // them.
+        let boxes = r.draws[0].boxes;
+        r.layer_quads(boxes, "boxes", &built.quads.floats, 4)
+            .unwrap();
+        assert!(frame(&mut r) != drawn, "the error-box layer drew nothing");
+        let (vs, fs) = with.passes[0].draw_glsl(
+            0,
+            Some(&with.params),
+            None,
+            &with.assets,
+            &with.texts,
+            r.data_texture_linear(),
+        );
+        let l = Layer {
+            pass: "main".to_string(),
+            vertex: vs,
+            fragment: fs,
+            blend: Blend::Over,
+        };
+        assert_eq!(r.setup_layers(&alone, &[l]).unwrap(), "");
+        r.set_layer_quads(0, &built.quads.floats, 4).unwrap();
+        assert!(
+            frame(&mut r) == drawn,
+            "the error-box layer changed the frame"
         );
     }
 }

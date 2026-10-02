@@ -21,8 +21,15 @@
 //! The data rides in one RGBA8 texture read with NEAREST, so a GL without
 //! float or integer textures, the VC4, holds it. A 16-bit value spans two
 //! bytes of a texel, a 24-bit offset three, and a curve two texels.
+//!
+//! A text problem leaves the scene running. A character whose glyph has no
+//! outline, or one past a limit, draws an error box: hazard stripes, laid out
+//! as an outline, so `<name>_cover` reads them as coverage, and a draw's
+//! error-box layer paints them yellow and black. Every character of a font
+//! that failed to load draws one. Words that fit no texture leave the last
+//! words that did.
 
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
@@ -68,6 +75,75 @@ const CORNER_OFFSET: f64 = 7.0;
 const ORIGIN_SCALE: f64 = 4096.0;
 /// The top bit of a slot's 24-bit location marks the cell's last glyph.
 const LAST_GLYPH: usize = 1 << 23;
+/// An error box in em, sized like a sans font's capitals. It stands on the
+/// baseline, centred in its character's advance. A font that failed to load
+/// takes ERROR_ADVANCE a character, its first baseline ERROR_ASCENT below the
+/// top of the block, and ERROR_LINE a line.
+pub const ERROR_BOX: [f64; 2] = [0.625, 0.75];
+const ERROR_ADVANCE: f64 = 0.75;
+const ERROR_ASCENT: f64 = 1.0;
+const ERROR_LINE: f64 = 1.25;
+/// The width along x of one hazard stripe of an error box, in em. The
+/// stripes run at 45 degrees, up to the right.
+pub const STRIPE: f64 = 0.125;
+/// Unicode's Default_Ignorable_Code_Point ranges: format characters, joiners,
+/// variation selectors and fillers.
+const IGNORABLE: [(char, char); 17] = [
+    ('\u{ad}', '\u{ad}'),
+    ('\u{34f}', '\u{34f}'),
+    ('\u{61c}', '\u{61c}'),
+    ('\u{115f}', '\u{1160}'),
+    ('\u{17b4}', '\u{17b5}'),
+    ('\u{180b}', '\u{180f}'),
+    ('\u{200b}', '\u{200f}'),
+    ('\u{202a}', '\u{202e}'),
+    ('\u{2060}', '\u{206f}'),
+    ('\u{3164}', '\u{3164}'),
+    ('\u{fe00}', '\u{fe0f}'),
+    ('\u{feff}', '\u{feff}'),
+    ('\u{ffa0}', '\u{ffa0}'),
+    ('\u{fff0}', '\u{fff8}'),
+    ('\u{1bca0}', '\u{1bca3}'),
+    ('\u{1d173}', '\u{1d17a}'),
+    ('\u{e0000}', '\u{e0fff}'),
+];
+
+fn ignorable(ch: char) -> bool {
+    IGNORABLE.iter().any(|(lo, hi)| (*lo..=*hi).contains(&ch))
+}
+
+/// Whitespace, control characters and default ignorables draw no ink, so
+/// their glyphs have no outline to miss.
+fn needs_ink(ch: char) -> bool {
+    !(ch.is_whitespace() || ch.is_control() || ignorable(ch))
+}
+
+/// A font asset's bytes, or the reason they failed to load.
+pub type Font = std::result::Result<Arc<Vec<u8>>, String>;
+
+/// A problem met by a layout. The text still draws.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fault {
+    /// The font failed to load, for the reason held, and every character
+    /// takes an error box.
+    Font(String),
+    /// These characters need ink, the font gives their glyphs no outline,
+    /// and each takes an error box.
+    NoOutline(Vec<char>),
+    /// The glyph of this character is past the limit named, and it takes an
+    /// error box.
+    Glyph(char, String),
+    /// The words are past the limit named, and the text keeps its last
+    /// words.
+    Layout(String),
+}
+
+/// New words, laid out.
+pub struct Layout {
+    /// None when the words fit no texture.
+    pub built: Option<Built>,
+    pub faults: Vec<Fault>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Align {
@@ -94,8 +170,9 @@ pub struct Text {
     /// The name of the scene's font asset.
     pub font: String,
     pub align: Align,
-    /// The font asset's bytes. load_assets fills them.
-    pub data: Option<Arc<Vec<u8>>>,
+    /// The font asset's bytes, or why they failed to load. load_assets fills
+    /// them.
+    pub data: Option<Font>,
 }
 
 impl Text {
@@ -124,9 +201,6 @@ impl Text {
         match o.get("fill").filter(|v| !v.is_null()) {
             None => {}
             Some(Value::String(s)) if s == "outline" => {}
-            Some(Value::String(s)) if s == "mtsdf" => bail!(
-                "text '{name}' fill needs 'outline', got 'mtsdf': the MTSDF fill does not exist yet"
-            ),
             Some(v) => bail!("text '{name}' fill needs 'outline', got {}", py_repr(v)),
         }
         Ok(Text {
@@ -147,15 +221,16 @@ impl Text {
     }
 
     /// Lay out `words` and pack them. Fails when the font was never loaded.
-    pub fn build(&self, words: &str) -> Result<Built> {
-        let data = self.data.as_ref().ok_or_else(|| {
-            anyhow!(
+    pub fn build(&self, words: &str) -> Result<Layout> {
+        match &self.data {
+            None => bail!(
                 "text '{}': font '{}' was never loaded, the scene was built without a directory",
                 self.name,
                 self.font
-            )
-        })?;
-        build(data, words, self.align).map_err(|e| anyhow!("text '{}': {e}", self.name))
+            ),
+            Some(Ok(data)) => Ok(build(data, words, self.align)),
+            Some(Err(why)) => Ok(boxes(why.clone(), words, self.align)),
+        }
     }
 }
 
@@ -167,8 +242,11 @@ pub struct Built {
     pub texels: Vec<u8>,
     /// Uniform suffixes after the text's name, each a float.
     pub uniforms: Vec<(&'static str, f64)>,
-    /// One quad per inked glyph, for a draw. Its glyph data is this texture's.
+    /// One quad per glyph drawn from the font, for a draw. Its glyph data is
+    /// this texture's.
     pub quads: Quads,
+    /// One quad per error box, for a draw's error-box layer.
+    pub boxes: Quads,
 }
 
 /// The floats of one quad vertex: the attributes glyph_a0 to glyph_a3, a vec4
@@ -316,9 +394,12 @@ struct Glyph {
     curves: Vec<Curve>,
 }
 
-/// The outline of glyph `gid`, which draws the character `ch`. None for a glyph
-/// with no outline.
-fn glyph(face: &ttf_parser::Face, gid: ttf_parser::GlyphId, ch: char) -> Result<Option<Glyph>> {
+/// The outline of glyph `gid`. None for a glyph with no outline. An error
+/// names the limit of a glyph past it.
+fn glyph(
+    face: &ttf_parser::Face,
+    gid: ttf_parser::GlyphId,
+) -> std::result::Result<Option<Glyph>, String> {
     let mut o = Outline {
         scale: 1.0 / f64::from(face.units_per_em()),
         start: [0.0; 2],
@@ -326,8 +407,8 @@ fn glyph(face: &ttf_parser::Face, gid: ttf_parser::GlyphId, ch: char) -> Result<
         quads: Vec::new(),
     };
     let drawn = face.outline_glyph(gid, &mut o).is_some();
-    // Every contour is closed, and ttf-parser leaves the last contour of a CFF2
-    // glyph open.
+    // Coverage needs closed contours, and ttf-parser leaves the last contour
+    // of a CFF2 glyph open.
     ttf_parser::OutlineBuilder::close(&mut o);
     if !drawn || o.quads.is_empty() {
         return Ok(None);
@@ -350,9 +431,15 @@ fn glyph(face: &ttf_parser::Face, gid: ttf_parser::GlyphId, ch: char) -> Result<
         // A grid cell holds a glyph's corner at most CORNER_OFFSET em from
         // its own, and a cell lists the glyph up to INK_MARGIN past the box.
         if size[a] + INK_MARGIN > CORNER_OFFSET {
-            bail!("{ch:?} spans more than {} em", CORNER_OFFSET - INK_MARGIN);
+            return Err(format!("spans more than {} em", CORNER_OFFSET - INK_MARGIN));
         }
     }
+    let curves = on_lattice(&o.quads, min, size);
+    Ok(Some(Glyph { min, size, curves }))
+}
+
+/// `quads` on the lattice of a box at `min`, `size` em.
+fn on_lattice(quads: &[Quad], min: [f64; 2], size: [f64; 2]) -> Vec<Curve> {
     let snap = |p: [f64; 2]| {
         [0, 1].map(|a| {
             ((p[a] - min[a]) / size[a] * LATTICE)
@@ -361,7 +448,7 @@ fn glyph(face: &ttf_parser::Face, gid: ttf_parser::GlyphId, ch: char) -> Result<
         })
     };
     let mut curves: Vec<Curve> = Vec::new();
-    let mut todo: Vec<Quad> = o.quads.iter().rev().copied().collect();
+    let mut todo: Vec<Quad> = quads.iter().rev().copied().collect();
     while let Some(q) = todo.pop() {
         let c = q.map(snap);
         let far = (0..2).any(|a| (i32::from(c[1][a]) - i32::from(c[2][a])).abs() > OFFSET_MAX);
@@ -375,7 +462,57 @@ fn glyph(face: &ttf_parser::Face, gid: ttf_parser::GlyphId, ch: char) -> Result<
             curves.push(c);
         }
     }
-    Ok(Some(Glyph { min, size, curves }))
+    curves
+}
+
+/// The part of the convex polygon `poly` where `f` is 0 or more, for an
+/// `f` linear in the point.
+fn clip(poly: &[[f64; 2]], f: impl Fn([f64; 2]) -> f64) -> Vec<[f64; 2]> {
+    let mut out = Vec::new();
+    for (i, &a) in poly.iter().enumerate() {
+        let b = poly[(i + 1) % poly.len()];
+        let (fa, fb) = (f(a), f(b));
+        if fa >= 0.0 {
+            out.push(a);
+        }
+        if (fa >= 0.0) != (fb >= 0.0) {
+            out.push(lerp(a, b, fa / (fa - fb)));
+        }
+    }
+    out
+}
+
+/// The error box as a glyph: its yellow stripes, clipped to the box, as the
+/// outline. Stripe k covers x - y from 2k to 2k + 1 STRIPE, in em from the
+/// box's bottom left, y up.
+fn error_box() -> Glyph {
+    let [w, h] = ERROR_BOX;
+    let mut quads: Vec<Quad> = Vec::new();
+    let first = (-h / (2.0 * STRIPE)).floor() as i32;
+    let last = (w / (2.0 * STRIPE)).ceil() as i32;
+    for k in first..=last {
+        let (c0, c1) = (f64::from(2 * k) * STRIPE, f64::from(2 * k + 1) * STRIPE);
+        let rect = [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]];
+        let stripe = clip(&clip(&rect, |p| p[0] - p[1] - c0), |p| c1 - p[0] + p[1]);
+        let area: f64 = (0..stripe.len())
+            .map(|i| {
+                let (a, b) = (stripe[i], stripe[(i + 1) % stripe.len()]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum();
+        if area.abs() < 1e-9 {
+            continue;
+        }
+        for (i, &a) in stripe.iter().enumerate() {
+            let b = stripe[(i + 1) % stripe.len()];
+            quads.push([a, b, b]);
+        }
+    }
+    Glyph {
+        min: [0.0; 2],
+        size: ERROR_BOX,
+        curves: on_lattice(&quads, [0.0; 2], ERROR_BOX),
+    }
 }
 
 /// The lowest and highest lattice step of a curve along `axis`.
@@ -414,10 +551,20 @@ fn bands(curves: &[Curve], axis: usize, n: usize, eps: f64) -> Option<Vec<Vec<us
     out.iter().all(|b| b.len() <= BAND_CURVES).then_some(out)
 }
 
-/// A glyph placed in the block, its origin in em.
+/// What a placed character draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Ink {
+    /// The outline of this glyph of the font.
+    Glyph(u16),
+    /// An error box.
+    Box,
+}
+
+/// A character placed in the block, its origin in em. An error box's origin
+/// is the box's bottom left corner.
 struct Placed {
-    gid: u16,
-    /// The character drawn by the glyph.
+    /// None draws nothing.
+    ink: Option<Ink>,
     ch: char,
     x: f64,
     y: f64,
@@ -447,12 +594,19 @@ fn kerning(face: &ttf_parser::Face, l: ttf_parser::GlyphId, r: ttf_parser::Glyph
 /// block's bottom left, y up like the font's own units, and the shader turns
 /// the y-down points of its callers y up. Returns the placed glyphs and the
 /// block's width and height, in em.
-fn layout(face: &ttf_parser::Face, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
-    let upem = f64::from(face.units_per_em());
-    let ascent = f64::from(face.ascender()) / upem;
-    let line = (f64::from(face.ascender()) - f64::from(face.descender())
-        + f64::from(face.line_gap()))
-        / upem;
+///
+/// With no face, the font failed to load, and every character that needs ink
+/// takes an error box, ERROR_ADVANCE wide.
+fn layout(face: Option<&ttf_parser::Face>, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
+    let (upem, ascent, line) = match face {
+        Some(face) => {
+            let upem = f64::from(face.units_per_em());
+            let line = f64::from(face.ascender()) - f64::from(face.descender())
+                + f64::from(face.line_gap());
+            (upem, f64::from(face.ascender()) / upem, line / upem)
+        }
+        None => (1.0, ERROR_ASCENT, ERROR_LINE),
+    };
     let lines: Vec<&str> = words.split('\n').collect();
     let height = line * lines.len() as f64;
     let mut placed = Vec::new();
@@ -480,15 +634,34 @@ fn layout(face: &ttf_parser::Face, words: &str, align: Align) -> (Vec<Placed>, f
             if ch.is_control() {
                 continue;
             }
-            let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
-            if let Some(p) = prev {
-                x += kerning(face, p, gid) / upem;
-            }
-            let advance = f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
+            let (ink, origin, advance) = match face {
+                // A default ignorable that the font lacks takes no room.
+                Some(face) if ignorable(ch) && face.glyph_index(ch).is_none() => (None, x, 0.0),
+                Some(face) => {
+                    // A character that the font lacks draws its glyph 0, the
+                    // missing-glyph box, and whitespace leaves the box out.
+                    let found = face.glyph_index(ch);
+                    let gid = found.unwrap_or(ttf_parser::GlyphId(0));
+                    if let Some(p) = prev {
+                        x += kerning(face, p, gid) / upem;
+                    }
+                    prev = Some(gid);
+                    let advance = f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
+                    let ink = (found.is_some() || needs_ink(ch)).then_some(Ink::Glyph(gid.0));
+                    (ink, x, advance)
+                }
+                None if ignorable(ch) => (None, x, 0.0),
+                None if needs_ink(ch) => (
+                    Some(Ink::Box),
+                    x + (ERROR_ADVANCE - ERROR_BOX[0]) / 2.0,
+                    ERROR_ADVANCE,
+                ),
+                None => (None, x, ERROR_ADVANCE),
+            };
             placed.push(Placed {
-                gid: gid.0,
+                ink,
                 ch,
-                x,
+                x: origin,
                 y,
                 index: at,
                 word,
@@ -496,7 +669,6 @@ fn layout(face: &ttf_parser::Face, words: &str, align: Align) -> (Vec<Placed>, f
                 span: [x, x + advance],
             });
             x += advance;
-            prev = Some(gid);
         }
         index += text.chars().count() + 1;
         in_word = false;
@@ -554,27 +726,113 @@ fn curve_texels(c: &Curve) -> [[u8; 4]; 2] {
 type Packed = (usize, [f64; 2], [f64; 2]);
 
 /// Lay out `words` in the font `data` and pack glyphs and grid into texels.
-pub fn build(data: &[u8], words: &str, align: Align) -> Result<Built> {
-    let face = ttf_parser::Face::parse(data, 0).map_err(|e| anyhow!("unreadable font: {e}"))?;
-    let (placed, width, height) = layout(&face, words, align);
-    // None for a glyph with no outline.
-    let mut glyphs: HashMap<u16, Option<Glyph>> = HashMap::new();
-    for p in &placed {
-        if let Entry::Vacant(e) = glyphs.entry(p.gid) {
-            e.insert(glyph(&face, ttf_parser::GlyphId(p.gid), p.ch)?);
+pub fn build(data: &[u8], words: &str, align: Align) -> Layout {
+    let face = match ttf_parser::Face::parse(data, 0) {
+        Ok(face) => face,
+        Err(e) => return boxes(format!("unreadable font: {e}"), words, align),
+    };
+    let (mut placed, width, height) = layout(Some(&face), words, align);
+    let (glyphs, faults) = settle(&mut placed, |gid| glyph(&face, ttf_parser::GlyphId(gid)));
+    finish(&placed, &glyphs, faults, width, height)
+}
+
+/// Lay out `words` for a font that failed to load, `why`: an error box for
+/// every character that needs ink.
+fn boxes(why: String, words: &str, align: Align) -> Layout {
+    let (mut placed, width, height) = layout(None, words, align);
+    let (glyphs, mut faults) = settle(&mut placed, |_| Ok(None));
+    faults.insert(0, Fault::Font(why));
+    finish(&placed, &glyphs, faults, width, height)
+}
+
+/// Settle what each placed character draws, with `outline` reading the
+/// outline of a glyph of the font. A glyph with no outline draws nothing, or
+/// an error box in place of a character that needs ink. A glyph past a limit
+/// draws an error box. Returns the glyph of each ink, and the faults met.
+fn settle(
+    placed: &mut [Placed],
+    mut outline: impl FnMut(u16) -> std::result::Result<Option<Glyph>, String>,
+) -> (HashMap<Ink, Glyph>, Vec<Fault>) {
+    let mut read: HashMap<u16, std::result::Result<Option<Glyph>, String>> = HashMap::new();
+    let mut missing: Vec<char> = Vec::new();
+    let mut past: Vec<(char, String)> = Vec::new();
+    for p in placed.iter_mut() {
+        let Some(Ink::Glyph(gid)) = p.ink else {
+            continue;
+        };
+        let got = read.entry(gid).or_insert_with(|| {
+            let g = outline(gid)?;
+            // Every band of a glyph is read by one loop of BAND_CURVES, and a
+            // glyph of no more curves fits any band.
+            match &g {
+                Some(g)
+                    if g.curves.len() > BAND_CURVES
+                        && (bands(&g.curves, 1, BANDS, BAND_EPS / g.size[1]).is_none()
+                            || bands(&g.curves, 0, BANDS, BAND_EPS / g.size[0]).is_none()) =>
+                {
+                    Err(format!("has more than {BAND_CURVES} curves in one band"))
+                }
+                _ => Ok(g),
+            }
+        });
+        match got {
+            Ok(Some(_)) => continue,
+            Ok(None) if !needs_ink(p.ch) => {
+                p.ink = None;
+                continue;
+            }
+            Ok(None) => {
+                if !missing.contains(&p.ch) {
+                    missing.push(p.ch);
+                }
+            }
+            Err(why) => {
+                if !past.iter().any(|(c, _)| *c == p.ch) {
+                    past.push((p.ch, why.clone()));
+                }
+            }
         }
+        p.ink = Some(Ink::Box);
+        p.x = (p.span[0] + p.span[1] - ERROR_BOX[0]) / 2.0;
     }
-    let mut built = pack_fitting(&placed, &glyphs, height)?;
-    built.uniforms.extend([("_w", width), ("_h", height)]);
-    Ok(built)
+    let mut glyphs: HashMap<Ink, Glyph> = read
+        .into_iter()
+        .filter_map(|(gid, g)| Some((Ink::Glyph(gid), g.ok()??)))
+        .collect();
+    if placed.iter().any(|p| p.ink == Some(Ink::Box)) {
+        glyphs.insert(Ink::Box, error_box());
+    }
+    let mut faults = Vec::new();
+    if !missing.is_empty() {
+        faults.push(Fault::NoOutline(missing));
+    }
+    faults.extend(past.into_iter().map(|(ch, why)| Fault::Glyph(ch, why)));
+    (glyphs, faults)
+}
+
+/// Pack the placed glyphs into a layout of a block `width` x `height` em.
+fn finish(
+    placed: &[Placed],
+    glyphs: &HashMap<Ink, Glyph>,
+    mut faults: Vec<Fault>,
+    width: f64,
+    height: f64,
+) -> Layout {
+    let built = match pack_fitting(placed, glyphs, height) {
+        Ok(mut built) => {
+            built.uniforms.extend([("_w", width), ("_h", height)]);
+            Some(built)
+        }
+        Err(e) => {
+            faults.push(Fault::Layout(e.to_string()));
+            None
+        }
+    };
+    Layout { built, faults }
 }
 
 /// pack() at the most bands to an axis, up to BANDS, that fit the texture.
-fn pack_fitting(
-    placed: &[Placed],
-    glyphs: &HashMap<u16, Option<Glyph>>,
-    height: f64,
-) -> Result<Built> {
+fn pack_fitting(placed: &[Placed], glyphs: &HashMap<Ink, Glyph>, height: f64) -> Result<Built> {
     let mut need = None;
     let mut nb = BANDS;
     while nb >= 1 {
@@ -620,26 +878,24 @@ fn tex_rows(texels: usize) -> usize {
 /// the quads over a block `height` em tall.
 fn pack(
     placed: &[Placed],
-    glyphs: &HashMap<u16, Option<Glyph>>,
+    glyphs: &HashMap<Ink, Glyph>,
     nb: usize,
     height: f64,
 ) -> std::result::Result<Built, Unpacked> {
     // Texel 0 stays empty, so a slot that names a glyph is never all zero.
     let mut tex: Vec<[u8; 4]> = vec![[0; 4]];
-    // Where each glyph's data starts. None for a glyph with no outline.
-    let mut starts: HashMap<u16, Option<usize>> = HashMap::new();
+    // Where the data of each ink's glyph starts.
+    let mut starts: HashMap<Ink, usize> = HashMap::new();
     for p in placed {
-        if starts.contains_key(&p.gid) {
+        let Some(ink) = p.ink else { continue };
+        if starts.contains_key(&ink) {
             continue;
         }
-        let Some(g) = &glyphs[&p.gid] else {
-            starts.insert(p.gid, None);
-            continue;
-        };
+        let g = &glyphs[&ink];
         let hbands = bands(&g.curves, 1, nb, BAND_EPS / g.size[1]).ok_or(Unpacked::Band(p.ch))?;
         let vbands = bands(&g.curves, 0, nb, BAND_EPS / g.size[0]).ok_or(Unpacked::Band(p.ch))?;
         let at = tex.len();
-        starts.insert(p.gid, Some(at));
+        starts.insert(ink, at);
         // The box size opens the glyph's data, then the band entries.
         tex.resize(at + 1 + 2 * nb, [0; 4]);
         let sz = |a: usize| fixed(g.size[a], 0.0, BOX_SCALE).unwrap_or(0);
@@ -690,8 +946,8 @@ fn pack(
     let inked: Vec<(&Placed, Packed)> = placed
         .iter()
         .filter_map(|p| {
-            let at = starts[&p.gid]?;
-            let g = glyphs[&p.gid].as_ref()?;
+            let ink = p.ink?;
+            let (at, g) = (starts[&ink], &glyphs[&ink]);
             Some((
                 p,
                 (at, [snap(p.x) + g.min[0], snap(p.y) + g.min[1]], g.size),
@@ -786,30 +1042,39 @@ fn pack(
     for (i, t) in tex.iter().enumerate() {
         texels[i * 4..i * 4 + 4].copy_from_slice(t);
     }
-    let mut floats = Vec::with_capacity(inked.len() * 4 * QUAD_FLOATS);
-    for (p, (at, lo, size)) in &inked {
-        // The box flips to y down, the way a draw's caller counts.
-        let a1 = [
-            lo[0],
-            height - lo[1] - size[1],
-            lo[0] + size[0],
-            height - lo[1],
-        ];
-        let a2 = [(at + 1) as f64, nb as f64, nb as f64, 0.0];
-        let a3 = [p.line as f64, p.span[0], p.span[1], 0.0];
-        for corner in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
-            let a0 = [corner[0], corner[1], p.index as f64, p.word as f64];
-            floats.extend([a0, a1, a2, a3].iter().flatten().map(|v| *v as f32));
+    let quads = |boxed: bool| {
+        let mut floats = Vec::new();
+        let mut count = 0;
+        for (p, (at, lo, size)) in &inked {
+            if (p.ink == Some(Ink::Box)) != boxed {
+                continue;
+            }
+            // The box flips to y down, the way a draw's caller counts.
+            let a1 = [
+                lo[0],
+                height - lo[1] - size[1],
+                lo[0] + size[0],
+                height - lo[1],
+            ];
+            let a2 = [(at + 1) as f64, nb as f64, nb as f64, 0.0];
+            let a3 = [p.line as f64, p.span[0], p.span[1], 0.0];
+            for corner in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+                let a0 = [corner[0], corner[1], p.index as f64, p.word as f64];
+                floats.extend([a0, a1, a2, a3].iter().flatten().map(|v| *v as f32));
+            }
+            count += 1;
         }
-    }
+        Quads {
+            floats,
+            per_vertex: QUAD_FLOATS,
+            count,
+        }
+    };
     Ok(Built {
         width: TEX_W as u32,
         height: tex_h as u32,
-        quads: Quads {
-            floats,
-            per_vertex: QUAD_FLOATS,
-            count: inked.len(),
-        },
+        quads: quads(false),
+        boxes: quads(true),
         texels,
         uniforms: vec![
             ("_tw", TEX_W as f64),
@@ -866,6 +1131,13 @@ pub fn outline_fragment_tail(name: &str) -> Vec<String> {
     lines(OUTLINE_FRAGMENT_TAIL, name)
 }
 
+/// The fragment shader of a draw's error boxes after its precision lines:
+/// yellow and black hazard stripes over each box, opaque, as error_box()
+/// lays them out.
+pub fn box_fragment() -> Vec<String> {
+    lines(BOX_FRAGMENT, "")
+}
+
 /// The lines of a GLSL template, with the constants of this module written in
 /// for their tokens, then `name` for NAME.
 fn lines(glsl: &str, name: &str) -> Vec<String> {
@@ -882,6 +1154,9 @@ fn lines(glsl: &str, name: &str) -> Vec<String> {
         ("CORNER_OFFSET", f(CORNER_OFFSET)),
         ("OFFSET_BIAS", f(f64::from(OFFSET_MAX + 1))),
         ("LAST_BIT", f((LAST_GLYPH >> 16) as f64)),
+        ("ERROR_BOX_W", f(ERROR_BOX[0])),
+        ("ERROR_BOX_H", f(ERROR_BOX[1])),
+        ("STRIPE", f(STRIPE)),
     ];
     let mut glsl = glsl.to_string();
     for (token, value) in &consts {
@@ -983,6 +1258,30 @@ void main() {
     glyph_c = NAME_outline(float(int(glyph_v1.x + 0.5)), vec2(ivec2(glyph_v1.yz + 0.5)),
                            u, glyph_v0.zw);
     glyph_main();
+}"#;
+
+const BOX_FRAGMENT: &str = r#"varying vec2 v_texCoord;
+uniform vec2 resolution;
+varying vec4 glyph_v0;
+varying vec4 glyph_v4;
+void main() {
+    // The sample moves to the pixel centre, as the outline fill's does.
+    vec2 px = v_texCoord * resolution;
+    vec2 d = floor(px) + 0.5 - px;
+    vec2 u = glyph_v0.xy + vec2(dot(glyph_v4.xy, d), dot(glyph_v4.zw, d));
+    // The box's coverage, antialiased over a pixel at each edge.
+    vec2 edge = clamp(min(u, LATTICE - u) * glyph_v0.zw + 0.5, 0.0, 1.0);
+    float a = edge.x * edge.y;
+    // Yellow where (x - y) / the stripe width has an even floor, x and y in
+    // em from the box's bottom left.
+    vec2 box = vec2(ERROR_BOX_W, ERROR_BOX_H);
+    vec2 em = u * box / LATTICE;
+    float s = (em.x - em.y) / STRIPE - 0.5;
+    float t = abs(fract(s * 0.5) * 2.0 - 1.0) - 0.5;
+    // The em spanned by a pixel along each axis of the box.
+    vec2 fw = box / (LATTICE * glyph_v0.zw);
+    float yellow = clamp(t * STRIPE / (fw.x + fw.y) + 0.5, 0.0, 1.0);
+    gl_FragColor = vec4(vec3(1.0, 0.8, 0.0) * (yellow * a), a);
 }"#;
 
 const GLSL: &str = r#"uniform sampler2D NAME_tex;
@@ -1167,7 +1466,7 @@ mod tests {
         );
         let data = std::fs::read(path).unwrap();
         let face = ttf_parser::Face::parse(&data, 0).unwrap();
-        let (placed, width, _) = layout(&face, words, align);
+        let (placed, width, _) = layout(Some(&face), words, align);
         (placed, width)
     }
 
@@ -1192,7 +1491,7 @@ mod tests {
 
     fn at_origin(gid: u16, ch: char) -> Placed {
         Placed {
-            gid,
+            ink: Some(Ink::Glyph(gid)),
             ch,
             x: 0.0,
             y: 0.0,
@@ -1205,7 +1504,7 @@ mod tests {
 
     #[test]
     fn a_band_past_its_loop_bound_names_the_character() {
-        let glyphs = HashMap::from([(7, Some(lines_glyph(BAND_CURVES + 1)))]);
+        let glyphs = HashMap::from([(Ink::Glyph(7), lines_glyph(BAND_CURVES + 1))]);
         let got = pack(&[at_origin(7, 'x')], &glyphs, BANDS, 1.0);
         assert!(matches!(got, Err(Unpacked::Band('x'))));
         let e = pack_fitting(&[at_origin(7, 'x')], &glyphs, 1.0)
@@ -1215,12 +1514,104 @@ mod tests {
     }
 
     #[test]
+    fn a_glyph_past_the_band_bound_takes_an_error_box_and_the_rest_draw() {
+        let mut placed = [at_origin(7, 'x'), at_origin(8, 'y'), at_origin(7, 'x')];
+        placed[1].span = [0.5, 1.0];
+        placed[2].span = [1.0, 1.5];
+        let (glyphs, faults) = settle(&mut placed, |gid| {
+            Ok(Some(lines_glyph(if gid == 7 {
+                BAND_CURVES + 1
+            } else {
+                1
+            })))
+        });
+        assert_eq!(
+            faults,
+            [Fault::Glyph(
+                'x',
+                "has more than 64 curves in one band".to_string()
+            )]
+        );
+        let inks: Vec<Option<Ink>> = placed.iter().map(|p| p.ink).collect();
+        assert_eq!(inks, [Some(Ink::Box), Some(Ink::Glyph(8)), Some(Ink::Box)]);
+        // A box stands centred in its advance.
+        assert_eq!(placed[2].x, 1.25 - ERROR_BOX[0] / 2.0);
+        let built = pack_fitting(&placed, &glyphs, 1.0).unwrap();
+        assert_eq!((built.quads.count, built.boxes.count), (1, 2));
+    }
+
+    #[test]
+    fn a_glyph_with_no_outline_takes_a_box_only_where_its_character_needs_ink() {
+        let chars = [
+            'a',
+            ' ',
+            '\u{a0}',
+            '\u{200d}',
+            '\u{fe0f}',
+            '\u{e0101}',
+            '😀',
+        ];
+        let mut placed: Vec<Placed> = chars.iter().map(|c| at_origin(3, *c)).collect();
+        let (glyphs, faults) = settle(&mut placed, |_| Ok(None));
+        let boxed: Vec<char> = placed
+            .iter()
+            .filter(|p| p.ink == Some(Ink::Box))
+            .map(|p| p.ch)
+            .collect();
+        assert_eq!(boxed, ['a', '😀']);
+        assert!(placed.iter().all(|p| p.ink != Some(Ink::Glyph(3))));
+        assert_eq!(faults, [Fault::NoOutline(vec!['a', '😀'])]);
+        assert_eq!(glyphs.keys().collect::<Vec<_>>(), [&Ink::Box]);
+    }
+
+    #[test]
+    fn a_font_that_failed_to_load_takes_a_box_a_character() {
+        let (placed, width, height) = layout(None, "ab c\u{200b}d\ne", Align::Left);
+        let inks: Vec<(char, bool)> = placed
+            .iter()
+            .map(|p| (p.ch, p.ink == Some(Ink::Box)))
+            .collect();
+        assert_eq!(
+            inks,
+            [
+                ('a', true),
+                ('b', true),
+                (' ', false),
+                ('c', true),
+                ('\u{200b}', false),
+                ('d', true),
+                ('e', true)
+            ]
+        );
+        assert_eq!((width, height), (5.0 * ERROR_ADVANCE, 2.0 * ERROR_LINE));
+        // The zero-width space takes no room.
+        assert_eq!(placed[5].span, [4.0 * ERROR_ADVANCE, 5.0 * ERROR_ADVANCE]);
+        assert_eq!(placed[6].y, ERROR_LINE - ERROR_ASCENT);
+    }
+
+    #[test]
+    fn the_error_box_fills_its_box_with_stripes_one_loop_reads() {
+        let g = error_box();
+        assert_eq!((g.min, g.size), ([0.0; 2], ERROR_BOX));
+        // Stripes reach every edge of the box.
+        let top = LATTICE as u16;
+        for (axis, at) in [(0, 0), (0, top), (1, 0), (1, top)] {
+            assert!(
+                g.curves.iter().flatten().any(|p| p[axis] == at),
+                "axis {axis} at {at}"
+            );
+        }
+        for axis in [0, 1] {
+            assert!(bands(&g.curves, axis, BANDS, BAND_EPS).is_some());
+        }
+    }
+
+    #[test]
     fn an_overlap_at_fewer_bands_reports_the_overlap() {
         // The glyphs outgrow the texture at 64 bands and fit it at 32, all
         // at one spot.
         let n = 20_000;
-        let glyphs: HashMap<u16, Option<Glyph>> =
-            (0..n).map(|g| (g, Some(lines_glyph(1)))).collect();
+        let glyphs: HashMap<Ink, Glyph> = (0..n).map(|g| (Ink::Glyph(g), lines_glyph(1))).collect();
         let placed: Vec<Placed> = (0..n).map(|g| at_origin(g, 'x')).collect();
         assert!(matches!(
             pack(&placed, &glyphs, BANDS, 1.0),

@@ -6,7 +6,9 @@ thread error is a RuntimeError.
 
 import json
 import queue
+import shutil
 import subprocess
+import sys
 import threading
 
 import pytest
@@ -66,7 +68,7 @@ def test_a_param_the_scene_does_not_declare():
             h.set_param("gain", 1.0, pass_="nosuchpass")
 
 
-def test_a_font_that_is_nowhere(tmp_path, monkeypatch):
+def test_a_font_that_is_nowhere_draws_error_boxes(tmp_path, monkeypatch, capfd):
     monkeypatch.chdir(tmp_path)
     doc = {
         "version": 1,
@@ -74,15 +76,75 @@ def test_a_font_that_is_nowhere(tmp_path, monkeypatch):
         "assets": {"sans": {"file": "fonts/Missing.ttf"}},
         "texts": {"words": {"font": "sans"}},
         "passes": [
-            {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}
+            {
+                "name": "main",
+                "code": (
+                    "void main(){ vec2 px = floor(v_texCoord * resolution) + 0.5;"
+                    " gl_FragColor = vec4(vec3(words_cover(px / 16.0, 16.0)), 1.0); }"
+                ),
+            }
         ],
     }
-    with pytest.raises(ValueError) as raised:
-        ghee.open(doc, width=8, height=8)
+    with ghee.open(doc, width=32, height=24, timestep=0) as h:
+        h.frame()
+        assert max(h.pixels()[0::4]) == 255  # a stripe of a box
+        h.set_param("words", "ho")
+        h.frame()
     # the first path tried is the working directory's
-    assert str(raised.value).startswith(
+    assert (
         f"asset 'sans' ({tmp_path}/fonts/Missing.ttf): No such file or directory"
+        in capfd.readouterr().err
     )
+
+
+WIRE_WORDS = """#!{python}
+import ghee
+
+CODE = (
+    "void main(){{ vec2 px = floor(v_texCoord * resolution) + 0.5;"
+    " gl_FragColor = vec4(vec3(words_cover(px / 12.0, 12.0)), 1.0); }}"
+)
+
+
+@ghee.tick
+def hook(t):
+    if t.frame:
+        ghee.set_param("words", "I" * 400_000)
+
+
+ghee.run(
+    ghee.Scene(
+        passes=[ghee.Pass("main", CODE)],
+        params={{"words": ghee.Param("words", "string", "ab")}},
+        assets=[ghee.Asset("sans", "{font}")],
+        texts=[ghee.Text("words", "sans")],
+    )
+)
+"""
+
+
+def test_words_past_the_texture_from_a_procedural_scene_end_no_run(tmp_path):
+    if not CLI.exists():
+        pytest.skip(f"no {CLI} to run the scene")
+    (tmp_path / "fonts").mkdir()
+    shutil.copy(REPO / "ghee/examples/fonts/DejaVuSans-Latin.ttf", tmp_path / "fonts")
+    path = tmp_path / "words.py"
+    path.write_text(
+        WIRE_WORDS.format(python=sys.executable, font="fonts/DejaVuSans-Latin.ttf")
+    )
+    path.chmod(0o755)
+    ran = subprocess.run(
+        [str(CLI), "render", str(path), "-o", str(tmp_path / "f.####.png")]
+        + ["--size", "48x16", "--frames", "20", "--fps", "20", "--timestep", "0"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stderr.count("text 'words': the words need a ") == 1, ran.stderr
+    # words that do not fit leave the last words
+    frames = {(tmp_path / f"f.{i:04d}.png").read_bytes() for i in range(20)}
+    assert len(frames) == 1
 
 
 def test_a_feed_the_scene_does_not_declare():

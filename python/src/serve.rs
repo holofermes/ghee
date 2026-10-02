@@ -89,6 +89,8 @@ pub struct Shared {
     queue: Mutex<Vec<Queued>>,
     rate: Mutex<FrameRate>,
     frame_ms: Mutex<f64>,
+    /// The renderer's text_errors(), a line each.
+    texts: Mutex<String>,
     drawn: AtomicU64,
     skipped: AtomicU64,
     latest: Mutex<Snap>,
@@ -164,7 +166,7 @@ impl ConsoleHost for Host {
             out.push(DEST_H264.to_string());
         }
         d.insert("out".to_string(), Value::from(out));
-        d.insert("error".to_string(), Value::from(""));
+        d.insert("error".to_string(), Value::from(lock(&s.texts).clone()));
         d.insert("error_line".to_string(), Value::Null);
         d.insert("error_pass".to_string(), Value::Null);
         d.insert("active".to_string(), Value::from(s.name.clone()));
@@ -268,6 +270,7 @@ impl Console {
             queue: Mutex::new(Vec::new()),
             rate: Mutex::new(FrameRate::new()),
             frame_ms: Mutex::new(0.0),
+            texts: Mutex::new(String::new()),
             drawn: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
             latest: Mutex::new(Snap::default()),
@@ -364,6 +367,11 @@ impl Console {
         lock(&s.rate).tick(None);
         *lock(&s.frame_ms) = cost * 1000.0;
         s.drawn.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The problems of the scene's texts, a line each, for /stats.
+    pub fn text_errors(&self, lines: &[String]) {
+        *lock(&self.shared.texts) = lines.join("\n");
     }
 
     pub fn skipped(&self) {

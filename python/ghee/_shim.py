@@ -210,9 +210,10 @@ class Text:
 
     The words are the scene string param of the same name, and they change
     with it, live.
-    Every scene pass reads them with float <name>_cover(vec2 p, float ppem):
-    p in em from the top left of the block, y down like v_texCoord, and ppem
-    the pixels per em. vec2 <name>_size is the block, in em.
+    Every scene pass, filter passes excepted, reads them with
+    float <name>_cover(vec2 p, float ppem): p in em from the top left of
+    the block, y down like v_texCoord, and ppem the pixels per em.
+    vec2 <name>_size is the block, in em.
     `font` is the name of the scene's font Asset.
     `align` lines up the lines of the block: left, center or right.
     """

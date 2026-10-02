@@ -353,3 +353,42 @@ def test_a_draw_that_keeps_alpha_leaves_the_pass_alpha(monkeypatch):
     assert max(blend[3::4]) == 255
     for c in range(3):
         assert blend[c::4] == keep[c::4]
+
+
+def test_a_pass_of_draws_alone_starts_transparent(monkeypatch):
+    """A layer of white words alone, which the output pass lays over blue."""
+    monkeypatch.chdir(REPO / "ghee" / "examples")
+    scene = ghee.Scene(
+        params={"words": ghee.Param("words", "string", "ghee")},
+        assets=[ghee.Asset("sans", FONT)],
+        texts=[ghee.Text("words", "sans")],
+        passes=[
+            ghee.Pass(
+                "ink",
+                draws=[
+                    ghee.Draw(
+                        "words",
+                        "void main(){ gl_FragColor = vec4(glyph_cover()); }",
+                        "vec2 glyph_place(vec2 em) { return em * 24.0; }",
+                    )
+                ],
+            ),
+            ghee.Pass(
+                "main",
+                "void main(){ vec4 c = texture2D(iChannel0, v_texCoord);"
+                " gl_FragColor = vec4(c.rgb + vec3(0.0, 0.0, 1.0 - c.a), 1.0); }",
+                channels=[ghee.Channel("ink")],
+            ),
+        ],
+    )
+    with ghee.open(scene.to_dict(), width=96, height=32, timestep=0) as h:
+        h.frame()
+        px = h.pixels()
+        assert set(px[2::4]) == {255}  # blue under the words, and between
+        assert px[0::4] == px[1::4]
+        assert max(px[0::4]) == 255  # the words drew
+        assert px[0::4].count(0) > len(px) // 8  # clear outside the words
+        # each frame starts clear, so no words leave nothing behind
+        h.set_param("words", "")
+        h.frame()
+        assert h.pixels() == bytes([0, 0, 255, 255]) * (96 * 32)

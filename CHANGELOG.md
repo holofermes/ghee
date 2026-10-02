@@ -62,6 +62,9 @@
 - Draw an error box for a glyph that the atlas cannot hold, and say why.
 - Count the atlas of a text drawn with the MTSDF fill against the 16 image
   assets and texts of a scene, and against the 16 textures of a pass.
+- Draw a text into a pass from Python with `ghee.Draw` in
+  `Pass(draws=[...])`, and leave out the code of a pass of draws alone.
+- Set a text's `fill` and `atlas` from Python on `ghee.Text`.
 
 ## 0.4.0 - 2026-08-06
 

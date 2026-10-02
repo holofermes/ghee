@@ -103,8 +103,8 @@ declare `ghee-render` inline:
 
 The shim gives:
 
-- `ghee.Scene / Pass / Param / ArrayInput / Channel / Asset / Text`: build
-  the scene
+- `ghee.Scene / Pass / Param / ArrayInput / Channel / Asset / Text / Draw`:
+  build the scene
 - `ghee.Arg`, `ghee.args([...])`: argument declarations, and the `-- --help` answer
 - `@ghee.feed("name")`: the values of a named array, each tick. A uint8
   buffer, `bytes` or a numpy uint8 array
@@ -139,10 +139,57 @@ that do not fit leave the last words that did.
 `ghee render --demo lettering -o lettering.png --frames 1` shows the words
 at every size.
 
-A scene given to `ghee.open` can also draw a text into a pass, see
-[Draws](https://github.com/holofermes/ghee#draws). New words of a text drawn
-with the MTSDF fill wait for the glyphs that its atlas lacks, and the last
-words stay on screen meanwhile. With `timestep` set, `frame()` waits for them.
+## Draws
+
+`ghee.Draw` draws a text straight into the buffer of its pass, after the
+pass's own code: one quad over each glyph, coloured by the draw's own
+fragment shader. This scene draws `words` in amber at 48 pixels per em,
+centred on black:
+
+    PLACE = """
+    vec2 glyph_place(vec2 em) {
+      return (resolution - words_size * 48.0) * 0.5 + em * 48.0;
+    }
+    """
+    AMBER = """
+    void main() {
+      float c = glyph_cover();
+      gl_FragColor = vec4(vec3(1.0, 0.7, 0.2) * c, c);
+    }
+    """
+    BLACK = "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"
+
+    scene = ghee.Scene(
+        params={"words": ghee.Param("words", "string", "hello")},
+        assets=[ghee.Asset("sans", "DejaVuSans.ttf")],
+        texts=[ghee.Text("words", "sans")],
+        passes=[ghee.Pass("main", BLACK, draws=[ghee.Draw("words", AMBER, PLACE)])],
+    )
+
+`ghee.Draw(text, code, place, blend="over", pad=0.0, alpha="blend")`:
+
+- `text` names a `ghee.Text` of the scene.
+- `code` holds a `void main()` that writes colour premultiplied by alpha.
+- `place` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
+  block, in em from its top left with y down, to the pass pixel where it
+  lands.
+- `blend` is `"over"`, `"add"` or `"replace"`.
+- `pad` grows each quad that many em past the ink, room for an effect
+  around the outline.
+- `alpha` is `"blend"`, and `"keep"` leaves the pass's alpha as it was.
+
+A pass of draws alone, `ghee.Pass("words", draws=[...])`, starts each frame
+transparent, a layer that a later pass reads through a channel.
+
+`fill` on `ghee.Text` sets where a draw of the text takes its coverage
+from: `"mtsdf"`, the default, reads an atlas of the glyphs' distance fields,
+and `"outline"` computes it from the curves. `atlas`, a dict of `px_per_em`
+and `range`, sets the atlas. New words of a text drawn with the MTSDF fill
+wait for the glyphs that its atlas lacks, and the last words stay on screen
+meanwhile. With `timestep` set, `frame()` waits for them.
+
+[Draws](https://github.com/holofermes/ghee#draws) holds the GLSL that
+`code` and `place` read, and the cost of each fill.
 
 ## Direct mode
 

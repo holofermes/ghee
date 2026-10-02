@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import array
 import json
+import math
 import os
 import signal
 import sys
@@ -43,6 +44,10 @@ from typing import Any
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 _PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC)
 _ALIGNS = ("left", "center", "right")
+_FILLS = ("mtsdf", "outline")
+_ATLAS_KEYS = ("px_per_em", "range")
+_BLENDS = ("over", "add", "replace")
+_ALPHAS = ("blend", "keep")
 
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
 WIRE = "GHEE_WIRE"
@@ -147,27 +152,106 @@ class Channel:
 
 
 @dataclass
+class Draw:
+    """A text drawn into the buffer of its pass, one quad over each glyph.
+
+    `text` names a Text of the scene.
+    `code` holds a void main() that colours a glyph's pixels, premultiplied
+    by alpha.
+    `place` defines vec2 glyph_place(vec2 em), which takes a point of the
+    block, in em from its top left with y down, to the pass pixel where it
+    lands.
+    `blend` is over, add or replace.
+    `pad` grows each quad that many em past the ink, room for an effect
+    around the outline.
+    `alpha` is blend, where the pass's alpha blends the way the colour does,
+    or keep, where it stays as it was.
+    """
+
+    text: str
+    code: str
+    place: str
+    blend: str = "over"
+    pad: float = 0.0
+    alpha: str = "blend"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str) or not self.text:
+            raise ValueError(
+                f"a draw's 'text' needs the name of a scene text, got {self.text!r}"
+            )
+        what = f"draw of text '{self.text}'"
+        for key, holds in (
+            ("code", "fragment GLSL with its own void main()"),
+            ("place", "vertex GLSL that defines vec2 glyph_place(vec2 em)"),
+        ):
+            v = getattr(self, key)
+            if not isinstance(v, str) or not v.strip():
+                raise ValueError(f"{what} '{key}' needs {holds}, got {v!r}")
+        if self.blend not in _BLENDS:
+            raise ValueError(
+                f"{what} blend needs 'over', 'add' or 'replace', got {self.blend!r}"
+            )
+        if self.alpha not in _ALPHAS:
+            raise ValueError(
+                f"{what} alpha needs 'blend' or 'keep', got {self.alpha!r}"
+            )
+        pad = self.pad
+        if (
+            isinstance(pad, bool)
+            or not isinstance(pad, (int, float))
+            or not math.isfinite(pad)
+            or pad < 0
+        ):
+            raise ValueError(f"{what} pad needs a number of em, 0 or more, got {pad!r}")
+        self.pad = float(pad)
+
+    def to_dict(self) -> dict:
+        d: dict = {"text": self.text, "code": self.code, "place": self.place}
+        if self.blend != "over":
+            d["blend"] = self.blend
+        if self.alpha != "blend":
+            d["alpha"] = self.alpha
+        if self.pad:
+            d["pad"] = self.pad
+        return d
+
+
+@dataclass
 class Pass:
     """One fragment shader.
 
     `size` renders the pass at its own [w, h].
     The last pass leaves `size` None, because it feeds the display.
+    `draws` draw texts into the pass's buffer after its code, in order.
+    A pass with draws and no code starts each frame transparent.
     """
 
     name: str
-    code: str
+    code: str = ""
     arrays: list[ArrayInput] = field(default_factory=list)
     channels: list[Channel] = field(default_factory=list)
     params: dict[str, Param] = field(default_factory=dict)
     filter: str = ""
     size: tuple[int, int] | None = None
+    draws: list[Draw] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.size is not None:
             self.size = (int(self.size[0]), int(self.size[1]))
+        if self.filter and self.draws:
+            raise ValueError(
+                f"pass '{self.name}' is filter '{self.filter}', and a filter pass "
+                "takes no draws"
+            )
+        # A filter pass takes its code from its filter.
+        if not self.filter and not self.code.strip() and not self.draws:
+            raise ValueError(f"pass '{self.name}' has no code and no draws")
 
     def to_dict(self) -> dict:
-        out: dict = {"name": self.name, "code": self.code}
+        out: dict = {"name": self.name}
+        if self.code.strip() or not self.draws:
+            out["code"] = self.code
         if self.size is not None:
             out["size"] = list(self.size)
         if self.arrays:
@@ -178,6 +262,8 @@ class Pass:
             out["params"] = {n: p.to_dict() for n, p in self.params.items()}
         if self.filter:
             out["filter"] = self.filter
+        if self.draws:
+            out["draws"] = [d.to_dict() for d in self.draws]
         return out
 
 
@@ -216,14 +302,24 @@ class Text:
     vec2 <name>_size is the block, in em.
     `font` is the name of the scene's font Asset.
     `align` lines up the lines of the block: left, center or right.
+    `fill` is where a Draw of the text takes its coverage from: mtsdf reads
+    an atlas of the glyphs' distance fields, and outline computes it from
+    the curves.
+    `atlas` sets the texels per em of a glyph in the MTSDF atlas and the
+    distance range in texels, {"px_per_em": 32, "range": 6} by default.
     """
 
     name: str
-    font: str
+    font: str | list[str]
     align: str = "left"
+    fill: str = "mtsdf"
+    atlas: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.font, str) or not self.font:
+        if isinstance(self.font, tuple):
+            self.font = list(self.font)
+        fonts = self.font if isinstance(self.font, list) else [self.font]
+        if not fonts or not all(isinstance(f, str) and f for f in fonts):
             raise ValueError(
                 f"text '{self.name}' 'font' needs the name of a font asset, "
                 f"got {self.font!r}"
@@ -233,11 +329,34 @@ class Text:
                 f"text '{self.name}' align needs 'left', 'center' or 'right', "
                 f"got {self.align!r}"
             )
+        if self.fill not in _FILLS:
+            raise ValueError(
+                f"text '{self.name}' fill needs 'mtsdf' or 'outline', got {self.fill!r}"
+            )
+        if self.atlas is not None and not isinstance(self.atlas, dict):
+            raise ValueError(
+                f"text '{self.name}' atlas needs a dict with 'px_per_em' and "
+                f"'range', got {self.atlas!r}"
+            )
+        for k, v in (self.atlas or {}).items():
+            if k not in _ATLAS_KEYS:
+                raise ValueError(
+                    f"text '{self.name}' atlas takes 'px_per_em' and 'range', got {k!r}"
+                )
+            if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+                raise ValueError(
+                    f"text '{self.name}' atlas {k} needs a whole number, 1 or more, "
+                    f"got {v!r}"
+                )
 
     def to_dict(self) -> dict:
         d: dict = {"font": self.font}
         if self.align != "left":
             d["align"] = self.align
+        if self.fill != "mtsdf":
+            d["fill"] = self.fill
+        if self.atlas:
+            d["atlas"] = {k: self.atlas[k] for k in _ATLAS_KEYS if k in self.atlas}
         return d
 
 
@@ -251,7 +370,7 @@ class Scene:
     scene's own.
     `assets` are the image and font files the scene names.
     `texts` are words drawn from a font, each one the scene string param of
-    its name.
+    its name, and a Draw in a pass names one of them.
     """
 
     passes: list[Pass] = field(default_factory=list)
@@ -279,10 +398,18 @@ class Scene:
                     f"text '{t.name}' needs a scene string param '{t.name}' "
                     "that holds its words"
                 )
-            if t.font not in names:
-                raise ValueError(
-                    f"text '{t.name}' font '{t.font}' is no asset of the scene"
-                )
+            for font in [t.font] if isinstance(t.font, str) else t.font:
+                if font not in names:
+                    raise ValueError(
+                        f"text '{t.name}' font '{font}' is no asset of the scene"
+                    )
+        for p in self.passes:
+            for k, d in enumerate(p.draws):
+                if d.text not in seen:
+                    raise ValueError(
+                        f"pass '{p.name}' draw {k} names text '{d.text}', which "
+                        "the scene does not declare"
+                    )
 
     def to_dict(self) -> dict:
         out: dict = {

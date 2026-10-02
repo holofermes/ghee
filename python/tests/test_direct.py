@@ -296,3 +296,87 @@ def test_a_direct_run_finds_its_font_in_the_working_directory(tmp_path):
     assert ran.returncode == 0, ran.stderr
     ab, cd, ab_again = ran.stdout.split()
     assert ab != cd and ab == ab_again
+
+
+DRAW_SCENE = '''#!/usr/bin/env python3
+"""A scene whose draw puts its words at a spot that each tick moves."""
+
+import ghee
+from ghee import _shim
+
+SPOTS = [[4.0, 4.0], [36.0, 12.0]]
+
+
+@ghee.tick
+def hook(t):
+    if t.frame:
+        print(_shim._HANDLE.pixels().hex())
+    if t.frame < len(SPOTS):
+        ghee.set_param("spot", SPOTS[t.frame])
+
+
+ghee.run(
+    ghee.Scene(
+        passes=[
+            ghee.Pass(
+                "main",
+                "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                draws=[
+                    ghee.Draw(
+                        "words",
+                        "void main(){ gl_FragColor = vec4(glyph_cover()); }",
+                        "vec2 glyph_place(vec2 em) { return spot + em * 16.0; }",
+                    )
+                ],
+            )
+        ],
+        params={
+            "words": ghee.Param("words", "string", "ab"),
+            "spot": ghee.Param("spot", "vec2", [0.0, 0.0]),
+        },
+        assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
+        texts=[ghee.Text("words", "sans")],
+    )
+)
+'''
+
+
+def ink(frame, width):
+    """{(x, y): red} of every pixel that the words cover, from a hex frame."""
+    px = bytes.fromhex(frame)
+    return {
+        (i // 4 % width, i // 4 // width): px[i] for i in range(0, len(px), 4) if px[i]
+    }
+
+
+def test_a_scene_file_draws_its_words_where_its_draw_places_them(tmp_path):
+    """The words land at the spot that `place` reads, and move with it."""
+    scene_dir = tmp_path / "scene"
+    (scene_dir / "fonts").mkdir(parents=True)
+    shutil.copy(REPO / "ghee/examples/fonts/DejaVuSans-Latin.ttf", scene_dir / "fonts")
+    path = scene_dir / "draw.py"
+    path.write_text(DRAW_SCENE)
+    ran = subprocess.run(
+        [
+            sys.executable,
+            str(path),
+            "--output",
+            "none",
+            "--size",
+            "64x32",
+            "--frames",
+            "3",
+            "--timestep",
+            "0",
+        ],
+        cwd=scene_dir,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert ran.returncode == 0, ran.stderr
+    first, moved = (ink(f, 64) for f in ran.stdout.split())
+    assert max(first.values()) == 255
+    assert min(x for x, _ in first) >= 4 and min(y for _, y in first) >= 4
+    assert moved == {(x + 32, y + 8): v for (x, y), v in first.items()}

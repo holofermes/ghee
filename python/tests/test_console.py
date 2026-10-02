@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from conftest import RED
+from conftest import RED, REPO
 
 import ghee
 
@@ -121,6 +121,52 @@ def test_the_console_serves_the_scene_it_renders(served):
     assert [p["name"] for p in scene["passes"]] == ["main"]
     assert scene["params"]["tint"]["type"] == "color"
     assert "dither" in json_of(port, "/filters")
+
+
+INK = "void main(){ gl_FragColor = vec4(glyph_cover()); }"
+PLACE = "vec2 glyph_place(vec2 em) { return em * 24.0; }"
+
+
+def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
+    """The renderer reads the shim's draws and texts, and writes them back the
+    same: every key under its own name, every default left out on both sides."""
+    monkeypatch.chdir(REPO / "ghee" / "examples")
+    scene = ghee.Scene(
+        params={
+            "words": ghee.Param("words", "string", "hi"),
+            "title": ghee.Param("title", "string", "ho"),
+        },
+        assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
+        texts=[
+            ghee.Text(
+                "words", "sans", align="right", atlas={"px_per_em": 24, "range": 4}
+            ),
+            ghee.Text("title", "sans", fill="outline"),
+        ],
+        passes=[
+            ghee.Pass(
+                "ink",
+                draws=[
+                    ghee.Draw(
+                        "words", INK, PLACE, blend="add", pad=0.0625, alpha="keep"
+                    ),
+                    ghee.Draw("title", INK, PLACE, blend="replace"),
+                ],
+            ),
+            ghee.Pass(
+                "main",
+                "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
+                channels=[ghee.Channel("ink")],
+                draws=[ghee.Draw("words", INK, PLACE)],
+            ),
+        ],
+    ).to_dict()
+    port = free_port()
+    with ghee.open(scene, width=32, height=32, stats=port) as h:
+        h.frame()
+        served = json_of(port, "/scene")
+    assert served == scene
+    assert json.dumps(served) == json.dumps(scene)
 
 
 def test_the_console_serves_its_own_page(served):

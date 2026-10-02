@@ -229,6 +229,145 @@ def test_a_text_says_what_it_needs():
         words_scene(shim, [shim.Text("words", "serif")])
 
 
+INK = "void main(){ gl_FragColor = vec4(glyph_cover()); }"
+PLACE = "vec2 glyph_place(vec2 em) { return em * 24.0; }"
+
+
+def drawn_scene(shim, passes, text=None):
+    return shim.Scene(
+        passes=passes,
+        params={"words": shim.Param("words", "string", "hi")},
+        assets=[shim.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
+        texts=[text or shim.Text("words", "sans")],
+    )
+
+
+def test_a_draw_and_its_text_take_the_scene_json_keys():
+    shim = load()
+    built = drawn_scene(
+        shim,
+        [
+            shim.Pass(
+                "main",
+                "void main(){}",
+                draws=[
+                    shim.Draw("words", INK, PLACE, blend="add", pad=0.25, alpha="keep")
+                ],
+            )
+        ],
+        shim.Text("words", "sans", fill="outline", atlas={"range": 4, "px_per_em": 24}),
+    ).to_dict()
+    recorded = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){}",
+                "draws": [
+                    {
+                        "text": "words",
+                        "code": INK,
+                        "place": PLACE,
+                        "blend": "add",
+                        "alpha": "keep",
+                        "pad": 0.25,
+                    }
+                ],
+            }
+        ],
+        "params": {"words": {"type": "string", "value": "hi"}},
+        "assets": {"sans": {"file": "fonts/DejaVuSans-Latin.ttf"}},
+        "texts": {
+            "words": {
+                "font": "sans",
+                "fill": "outline",
+                "atlas": {"px_per_em": 24, "range": 4},
+            }
+        },
+    }
+    assert built == recorded
+    assert json.dumps(built) == json.dumps(recorded)  # key order too
+
+
+def test_a_draw_and_a_text_leave_their_defaults_out():
+    shim = load()
+    draw = shim.Draw("words", INK, PLACE)
+    assert (draw.blend, draw.pad, draw.alpha) == ("over", 0.0, "blend")
+    assert draw.to_dict() == {"text": "words", "code": INK, "place": PLACE}
+    text = shim.Text("words", "sans")
+    assert (text.fill, text.atlas) == ("mtsdf", None)
+    assert text.to_dict() == {"font": "sans"}
+    assert "draws" not in shim.Pass("main", "void main(){}").to_dict()
+
+
+def test_a_pass_of_draws_alone_has_no_code():
+    shim = load()
+    layer = shim.Pass("ink", draws=[shim.Draw("words", INK, PLACE)])
+    assert layer.to_dict() == {
+        "name": "ink",
+        "draws": [{"text": "words", "code": INK, "place": PLACE}],
+    }
+    assert "code" not in drawn_scene(shim, [layer]).to_dict()["passes"][0]
+    with pytest.raises(ValueError, match="pass 'main' has no code and no draws"):
+        shim.Pass("main")
+    # a filter pass takes its code from its filter, and no draws
+    assert shim.Pass("dither", filter="dither").to_dict()["code"] == ""
+    with pytest.raises(ValueError, match="a filter pass takes no draws"):
+        shim.Pass("dither", filter="dither", draws=[shim.Draw("words", INK, PLACE)])
+
+
+def test_a_draw_says_what_it_needs():
+    shim = load()
+    with pytest.raises(ValueError, match="blend needs 'over', 'add' or 'replace'"):
+        shim.Draw("words", INK, PLACE, blend="mix")
+    with pytest.raises(ValueError, match="alpha needs 'blend' or 'keep', got 'opaque'"):
+        shim.Draw("words", INK, PLACE, alpha="opaque")
+    for pad in (-0.1, float("nan"), True, "0.1"):
+        with pytest.raises(ValueError, match="pad needs a number of em, 0 or more"):
+            shim.Draw("words", INK, PLACE, pad=pad)
+    with pytest.raises(ValueError, match="'code' needs fragment GLSL"):
+        shim.Draw("words", "  ", PLACE)
+    with pytest.raises(ValueError, match="'place' needs vertex GLSL"):
+        shim.Draw("words", INK, None)
+    with pytest.raises(ValueError, match="'text' needs the name of a scene text"):
+        shim.Draw("", INK, PLACE)
+    with pytest.raises(
+        ValueError,
+        match="pass 'main' draw 0 names text 'title', which the scene does not declare",
+    ):
+        drawn_scene(shim, [shim.Pass("main", draws=[shim.Draw("title", INK, PLACE)])])
+
+
+def test_a_text_fill_and_atlas_say_what_they_need():
+    shim = load()
+    with pytest.raises(ValueError, match="fill needs 'mtsdf' or 'outline', got 'sdf'"):
+        shim.Text("words", "sans", fill="sdf")
+    with pytest.raises(
+        ValueError, match="atlas takes 'px_per_em' and 'range', got 'px'"
+    ):
+        shim.Text("words", "sans", atlas={"px": 32})
+    for n in (0, 1.5, True):
+        with pytest.raises(ValueError, match="atlas range needs a whole number"):
+            shim.Text("words", "sans", atlas={"range": n})
+    with pytest.raises(ValueError, match="atlas needs a dict with 'px_per_em'"):
+        shim.Text("words", "sans", atlas=32)
+
+
+def test_a_font_list_goes_out_as_given():
+    shim = load()
+    scene = shim.Scene(
+        passes=[shim.Pass("main", "void main(){}")],
+        params={"words": shim.Param("words", "string", "hi")},
+        assets=[shim.Asset("sans", "sans.ttf"), shim.Asset("emoji", "emoji.ttf")],
+        texts=[shim.Text("words", ("sans", "emoji"))],
+    )
+    assert scene.to_dict()["texts"] == {"words": {"font": ["sans", "emoji"]}}
+    with pytest.raises(ValueError, match="text 'words' font 'serif' is no asset"):
+        drawn_scene(shim, [], shim.Text("words", ["sans", "serif"]))
+    with pytest.raises(ValueError, match="'font' needs the name of a font asset"):
+        shim.Text("words", ["sans", ""])
+
+
 def test_a_param_of_an_unknown_type_says_so():
     shim = load()
     with pytest.raises(ValueError, match="unknown type"):
@@ -478,6 +617,7 @@ SURFACE = [
     "ArrayInput",
     "Asset",
     "Channel",
+    "Draw",
     "Param",
     "Pass",
     "Scene",

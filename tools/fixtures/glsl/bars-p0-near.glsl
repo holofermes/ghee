@@ -12,8 +12,6 @@ uniform float frame;
 #define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)
 uniform sampler2D amplitudes_tex;
 const int amplitudes_size = 16;
-uniform float gain;
-uniform float glow;
 float amplitudes_at(int i0){ return texture2D(amplitudes_tex, vec2((float(i0)+0.5)/float(amplitudes_size), 0.5)).r; }
 float amplitudes_sample(float t){
   float x = t * float(amplitudes_size) - 0.5;
@@ -23,6 +21,8 @@ float amplitudes_sample(float t){
   float b = amplitudes_at(int(clamp(i + 1.0, 0.0, last)));
   return mix(a, b, x - i);
 }
+uniform float gain;
+uniform float glow;
 
 vec3 palette(float t) {
     vec3 a = vec3(0.42, 0.40, 0.52);

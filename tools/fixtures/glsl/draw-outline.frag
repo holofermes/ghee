@@ -12,13 +12,6 @@ uniform float frame;
 #define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)
 uniform sampler2D times_tex;
 const int times_size = 64;
-uniform float sung;
-uniform int n;
-uniform float ink_r;
-uniform float ink_g;
-uniform float ink_b;
-#define ink vec3(ink_r, ink_g, ink_b)
-uniform float gain;
 float times_at(int i0){ return texture2D(times_tex, vec2((float(i0)+0.5)/float(times_size), 0.5)).r; }
 float times_sample(float t){
   float x = t * float(times_size) - 0.5;
@@ -198,6 +191,13 @@ float t_cover(vec2 p, float ppem) {
     }
     return cov;
 }
+uniform float sung;
+uniform int n;
+uniform float ink_r;
+uniform float ink_g;
+uniform float ink_b;
+#define ink vec3(ink_r, ink_g, ink_b)
+uniform float gain;
 
 float twice(float x) { return 2.0 * x; }
 
@@ -231,10 +231,10 @@ void main() {
     // VC4 lands a vertex up to 1/16 px off the position set by the vertex
     // shader, and the varyings follow the vertex, so the sample moves to the
     // pixel centre given by v_texCoord.
-    vec2 px = v_texCoord * resolution;
-    vec2 d = floor(px) + 0.5 - px;
-    vec2 u = glyph_v0.xy + vec2(dot(glyph_v4.xy, d), dot(glyph_v4.zw, d));
+    vec2 glyph_px = v_texCoord * resolution;
+    vec2 glyph_d = floor(glyph_px) + 0.5 - glyph_px;
+    vec2 glyph_u = glyph_v0.xy + vec2(dot(glyph_v4.xy, glyph_d), dot(glyph_v4.zw, glyph_d));
     glyph_c = t_outline(float(int(glyph_v1.x + 0.5)), vec2(ivec2(glyph_v1.yz + 0.5)),
-                           u, glyph_v0.zw);
+                           glyph_u, glyph_v0.zw);
     glyph_main();
 }

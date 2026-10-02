@@ -752,6 +752,50 @@ impl ArrayInput {
     }
 }
 
+/// The preamble declarations of one array: its data texture, and the length
+/// of a 1xN array.
+fn array_lines(a: &ArrayInput) -> Vec<String> {
+    let mut l = vec![format!("uniform sampler2D {}_tex;", a.name)];
+    if let ArraySize::Linear(n) = a.size {
+        l.push(format!("const int {}_size = {n};", a.name));
+    }
+    l
+}
+
+/// The preamble declarations of one image asset: its sampler and its size.
+fn asset_lines(a: &Asset) -> Vec<String> {
+    vec![
+        format!("uniform sampler2D {};", a.name),
+        format!("uniform vec2 {}_size;", a.name),
+    ]
+}
+
+/// The names declared at file scope by the GLSL `lines` that ghee writes: a
+/// uniform, a constant, a #define, or a function defined at the start of a
+/// line.
+fn declared_names(lines: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for l in lines {
+        if l.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let w: Vec<&str> = l
+            .split(|c: char| c.is_whitespace() || c == '(' || c == ';')
+            .filter(|w| !w.is_empty())
+            .collect();
+        let name = match w.first() {
+            Some(&"#define") => w.get(1),
+            Some(&"uniform" | &"const") => w.get(2),
+            Some(_) if l.contains('(') => w.get(1),
+            _ => None,
+        };
+        if let Some(n) = name.filter(|n| is_ident(n)) {
+            out.push(n.to_string());
+        }
+    }
+    out
+}
+
 /// The preamble readers for one declared array, bound as a data texture.
 ///
 /// `_at(i)` is one fetch at a computed coord. VC4 needs no uniform-array unroll
@@ -1511,10 +1555,7 @@ impl Pass {
             .map(str::to_string),
         );
         for a in &self.arrays {
-            l.push(format!("uniform sampler2D {}_tex;", a.name));
-            if let ArraySize::Linear(n) = a.size {
-                l.push(format!("const int {}_size = {n};", a.name));
-            }
+            l.extend(array_lines(a));
         }
         for i in 0..self.channels.len() {
             l.push(format!("uniform sampler2D iChannel{i};"));
@@ -1524,15 +1565,7 @@ impl Pass {
             .filter(|a| a.from_filter == self.filter && !a.is_font())
             .collect();
         for a in &own {
-            l.push(format!("uniform sampler2D {};", a.name));
-            l.push(format!("uniform vec2 {}_size;", a.name));
-        }
-        // Every pass takes the same scene param lines, ahead of its own params.
-        for p in scene_params.iter().flat_map(|sp| sp.values()) {
-            l.extend(param_uniform_lines(p));
-        }
-        for p in self.params.values() {
-            l.extend(param_uniform_lines(p));
+            l.extend(asset_lines(a));
         }
         for a in &self.arrays {
             l.extend(array_reader_lines(a, hw_linear));
@@ -1542,6 +1575,15 @@ impl Pass {
             for t in texts {
                 l.extend(crate::text::reader_lines(&t.name));
             }
+        }
+        // A vec or color param is a #define, which rewrites every later use of
+        // its name, so the params follow every reader above. Every pass takes
+        // the same scene param lines, ahead of its own params.
+        for p in scene_params.iter().flat_map(|sp| sp.values()) {
+            l.extend(param_uniform_lines(p));
+        }
+        for p in self.params.values() {
+            l.extend(param_uniform_lines(p));
         }
         // A filter's asset runs under its filter's prefix, so it never meets a
         // scene name. The defines come last, after every declaration, and
@@ -1765,6 +1807,47 @@ impl Scene {
                     );
                 }
             }
+        }
+        // A GLSL name has one owner. The names that a text makes from its own
+        // name meet the names of the params, the arrays, the image assets and
+        // the other texts in the passes, the draws and the engine's bindings.
+        let mut owners: Vec<(String, String)> = Vec::new();
+        for p in self.params.values() {
+            for n in declared_names(&param_uniform_lines(p)) {
+                owners.push((n, format!("scene param '{}'", p.name)));
+            }
+        }
+        for pass in &self.passes {
+            for p in pass.params.values() {
+                for n in declared_names(&param_uniform_lines(p)) {
+                    owners.push((n, format!("param '{}' in pass '{}'", p.name, pass.name)));
+                }
+            }
+            for a in &pass.arrays {
+                let mut lines = array_lines(a);
+                lines.extend(array_reader_lines(a, false));
+                for n in declared_names(&lines) {
+                    owners.push((n, format!("array '{}' in pass '{}'", a.name, pass.name)));
+                }
+            }
+        }
+        for a in self.assets.iter().filter(|a| !a.is_font()) {
+            for n in declared_names(&asset_lines(a)) {
+                owners.push((n, format!("asset '{}'", a.name)));
+            }
+        }
+        for t in &texts {
+            let atlas = t.fill == Fill::Mtsdf && self.draws_text(&t.name);
+            let made = crate::text::names(&t.name, atlas);
+            for n in &made {
+                if let Some((_, owner)) = owners.iter().find(|(name, _)| name == n) {
+                    bail!(
+                        "{owner} and text '{}' both make the GLSL name '{n}'",
+                        t.name
+                    );
+                }
+            }
+            owners.extend(made.into_iter().map(|n| (n, format!("text '{}'", t.name))));
         }
         let draws = self.passes.iter().map(|p| p.draws.len()).sum::<usize>();
         if draws > MAX_DRAWS {

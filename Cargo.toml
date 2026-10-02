@@ -15,6 +15,7 @@ maintainer = "holofermes <1163915+holofermes@users.noreply.github.com>"
 revision = ""
 section = "graphics"
 priority = "optional"
+license-file = ["LICENSE", "0"]
 depends = "libdrm2, libgbm1, libegl1, libgles2, python3 (>= 3.9)"
 conflicts = "python3-ghee"
 replaces = "python3-ghee"
@@ -24,6 +25,8 @@ replaces = "python3-ghee"
 assets = [
     ["target/release/ghee", "usr/bin/", "755"],
     ["target/pydist/**/*", "usr/lib/python3/dist-packages/", "644"],
+    ["NOTICE", "usr/share/doc/ghee/", "644"],
+    ["ghee/examples/fonts/LICENSE-DejaVu.txt", "usr/share/doc/ghee/", "644"],
 ]
 
 [[bin]]

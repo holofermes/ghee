@@ -1367,6 +1367,43 @@ pub fn box_fragment() -> Vec<String> {
     lines(BOX_FRAGMENT, "")
 }
 
+/// The GLSL names made by text `name`: every NAME_ name in the templates of its
+/// readers and its draws, the MTSDF draw's too with `atlas`, and the
+/// `<sampler>_size` set by the engine beside each texture.
+pub fn names(name: &str, atlas: bool) -> Vec<String> {
+    let mut glsl = vec![
+        GLSL,
+        DRAW_VERTEX_HEAD,
+        OUTLINE_FRAGMENT_HEAD,
+        OUTLINE_FRAGMENT_TAIL,
+    ];
+    if atlas {
+        glsl.extend([MTSDF_VERTEX_MAIN, MTSDF_FRAGMENT_HEAD, MTSDF_FRAGMENT_TAIL]);
+    }
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out: Vec<String> = Vec::new();
+    for t in glsl {
+        for (i, _) in t.match_indices("NAME_") {
+            let head = &t[..i];
+            if head.ends_with(ident) {
+                continue;
+            }
+            let rest = &t[i + "NAME".len()..];
+            let suffix = &rest[..rest.find(|c| !ident(c)).unwrap_or(rest.len())];
+            let mut found = vec![format!("{name}{suffix}")];
+            if head.ends_with("uniform sampler2D ") {
+                found.push(format!("{name}{suffix}_size"));
+            }
+            for n in found {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The lines of a GLSL template, with the constants of this module written in
 /// for their tokens, then `name` for NAME.
 fn lines(glsl: &str, name: &str) -> Vec<String> {
@@ -1422,38 +1459,40 @@ const OUTLINE_VERTEX_MAIN: &str = r#"void main() {
     glyph_line = glyph_a3.x;
     glyph_span = glyph_a3.yz;
     glyph_box = glyph_a1;
-    vec2 em = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
-    vec2 p = glyph_place(em);
+    vec2 glyph_corner = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
+    vec2 glyph_p = glyph_place(glyph_corner);
     // The pixels moved by glyph_place per em along each em axis, exact for an
     // affine glyph_place.
-    vec2 jx = (glyph_place(em + vec2(0.0625, 0.0)) - p) * 16.0;
-    vec2 jy = (glyph_place(em + vec2(0.0, 0.0625)) - p) * 16.0;
-    // det stays above 0, so a glyph scaled to nothing keeps every position
-    // finite.
-    float sdet = jx.x * jy.y - jx.y * jy.x;
-    float det = max(abs(sdet), 1.0 / 16384.0);
+    vec2 glyph_jx = (glyph_place(glyph_corner + vec2(0.0625, 0.0)) - glyph_p) * 16.0;
+    vec2 glyph_jy = (glyph_place(glyph_corner + vec2(0.0, 0.0625)) - glyph_p) * 16.0;
+    // glyph_det stays above 0, so a glyph scaled to nothing keeps every
+    // position finite.
+    float glyph_sdet = glyph_jx.x * glyph_jy.y - glyph_jx.y * glyph_jy.x;
+    float glyph_det = max(abs(glyph_sdet), 1.0 / 16384.0);
     // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
     // up to 1/16 px off the position set by this shader.
-    vec2 grow = max(0.625 * vec2(length(jy), length(jx)) / det, vec2(PAD));
-    vec2 e = em + (glyph_a0.xy * 2.0 - 1.0) * grow;
-    vec2 px = glyph_place(e);
+    vec2 glyph_grow = max(0.625 * vec2(length(glyph_jy), length(glyph_jx)) / glyph_det, vec2(PAD));
+    vec2 glyph_e = glyph_corner + (glyph_a0.xy * 2.0 - 1.0) * glyph_grow;
+    vec2 glyph_px = glyph_place(glyph_e);
     // The em spanned by a screen pixel along each em axis, as fwidth gives it.
-    vec2 fw = vec2(abs(jy.x) + abs(jy.y), abs(jx.x) + abs(jx.y)) / det;
-    vec2 sz = glyph_a1.zw - glyph_a1.xy;
+    vec2 glyph_fw = vec2(abs(glyph_jy.x) + abs(glyph_jy.y),
+                         abs(glyph_jx.x) + abs(glyph_jx.y)) / glyph_det;
+    vec2 glyph_sz = glyph_a1.zw - glyph_a1.xy;
     // The sample on the glyph's lattice, y up, and the pixels spanned by a
     // lattice step.
-    glyph_v0 = vec4(vec2(e.x - glyph_a1.x, glyph_a1.w - e.y) / sz * LATTICE,
-                    sz / (fw * LATTICE));
+    glyph_v0 = vec4(vec2(glyph_e.x - glyph_a1.x, glyph_a1.w - glyph_e.y) / glyph_sz * LATTICE,
+                    glyph_sz / (glyph_fw * LATTICE));
     // glyph_ppem: the pixels per em of a placement that scales both axes
     // alike.
-    glyph_v1 = vec4(glyph_a2.xyz, sqrt(det));
-    glyph_v2 = vec4(e, glyph_a0.zw);
+    glyph_v1 = vec4(glyph_a2.xyz, sqrt(glyph_det));
+    glyph_v2 = vec4(glyph_e, glyph_a0.zw);
     glyph_v3 = vec4(glyph_a3.xyz, 0.0);
     // The lattice steps spanned by a pixel along x and along y of the pass.
-    vec2 k = LATTICE / sz;
-    glyph_v4 = vec4(k.x * jy.y, -k.x * jy.x, k.y * jx.y, -k.y * jx.x)
-             / (sdet < 0.0 ? -det : det);
-    v_texCoord = px / resolution;
+    vec2 glyph_k = LATTICE / glyph_sz;
+    glyph_v4 = vec4(glyph_k.x * glyph_jy.y, -glyph_k.x * glyph_jy.x,
+                    glyph_k.y * glyph_jx.y, -glyph_k.y * glyph_jx.x)
+             / (glyph_sdet < 0.0 ? -glyph_det : glyph_det);
+    v_texCoord = glyph_px / resolution;
     gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, vflip), 0.0, 1.0);
 }"#;
 
@@ -1484,11 +1523,11 @@ void main() {
     // VC4 lands a vertex up to 1/16 px off the position set by the vertex
     // shader, and the varyings follow the vertex, so the sample moves to the
     // pixel centre given by v_texCoord.
-    vec2 px = v_texCoord * resolution;
-    vec2 d = floor(px) + 0.5 - px;
-    vec2 u = glyph_v0.xy + vec2(dot(glyph_v4.xy, d), dot(glyph_v4.zw, d));
+    vec2 glyph_px = v_texCoord * resolution;
+    vec2 glyph_d = floor(glyph_px) + 0.5 - glyph_px;
+    vec2 glyph_u = glyph_v0.xy + vec2(dot(glyph_v4.xy, glyph_d), dot(glyph_v4.zw, glyph_d));
     glyph_c = NAME_outline(float(int(glyph_v1.x + 0.5)), vec2(ivec2(glyph_v1.yz + 0.5)),
-                           u, glyph_v0.zw);
+                           glyph_u, glyph_v0.zw);
     glyph_main();
     // On VC4 a shader whose last texture read sits outside an if runs in two
     // threads, whose switch loses the condition flags. A read after the
@@ -1505,32 +1544,35 @@ void main() {
     glyph_line = glyph_a3.x;
     glyph_span = glyph_a3.yz;
     glyph_box = glyph_a1;
-    vec2 em = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
-    vec2 p = glyph_place(em);
+    vec2 glyph_corner = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
+    vec2 glyph_p = glyph_place(glyph_corner);
     // The pixels moved by glyph_place per em along each em axis, exact for an
     // affine glyph_place.
-    vec2 jx = (glyph_place(em + vec2(0.0625, 0.0)) - p) * 16.0;
-    vec2 jy = (glyph_place(em + vec2(0.0, 0.0625)) - p) * 16.0;
-    // det stays above 0, so a glyph scaled to nothing keeps every position
-    // finite.
-    float det = max(abs(jx.x * jy.y - jx.y * jy.x), 1.0 / 16384.0);
+    vec2 glyph_jx = (glyph_place(glyph_corner + vec2(0.0625, 0.0)) - glyph_p) * 16.0;
+    vec2 glyph_jy = (glyph_place(glyph_corner + vec2(0.0, 0.0625)) - glyph_p) * 16.0;
+    // glyph_det stays above 0, so a glyph scaled to nothing keeps every
+    // position finite.
+    float glyph_det = max(abs(glyph_jx.x * glyph_jy.y - glyph_jx.y * glyph_jy.x),
+                          1.0 / 16384.0);
     // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
     // up to 1/16 px off the position set by this shader. A read past the
     // reach would take a neighbouring cell's texels.
-    vec2 grow = min(max(0.625 * vec2(length(jy), length(jx)) / det, vec2(PAD)), vec2(REACH));
-    vec2 e = em + (glyph_a0.xy * 2.0 - 1.0) * grow;
-    vec2 px = glyph_place(e);
+    vec2 glyph_grow = min(max(0.625 * vec2(length(glyph_jy), length(glyph_jx)) / glyph_det,
+                              vec2(PAD)), vec2(REACH));
+    vec2 glyph_e = glyph_corner + (glyph_a0.xy * 2.0 - 1.0) * glyph_grow;
+    vec2 glyph_px = glyph_place(glyph_e);
     // The em spanned by a screen pixel along each em axis, as fwidth gives it.
-    vec2 fw = vec2(abs(jy.x) + abs(jy.y), abs(jx.x) + abs(jx.y)) / det;
-    vec2 t = glyph_a2.xy + (e - glyph_a1.xy) * glyph_a2.zw;
+    vec2 glyph_fw = vec2(abs(glyph_jy.x) + abs(glyph_jy.y),
+                         abs(glyph_jx.x) + abs(glyph_jx.y)) / glyph_det;
+    vec2 glyph_tc = glyph_a2.xy + (glyph_e - glyph_a1.xy) * glyph_a2.zw;
     // The field's range in screen pixels. msdfgen holds it at 1 or more.
-    float range = max(RANGE_EM * 0.5 * (1.0 / fw.x + 1.0 / fw.y), 1.0);
+    float glyph_range = max(RANGE_EM * 0.5 * (1.0 / glyph_fw.x + 1.0 / glyph_fw.y), 1.0);
     // glyph_ppem: the pixels per em of a placement that scales both axes
     // alike.
-    glyph_v0 = vec4(t / NAME_atlas_size, range, sqrt(det));
-    glyph_v2 = vec4(e, glyph_a0.zw);
+    glyph_v0 = vec4(glyph_tc / NAME_atlas_size, glyph_range, sqrt(glyph_det));
+    glyph_v2 = vec4(glyph_e, glyph_a0.zw);
     glyph_v3 = vec4(glyph_a3.xyz, 0.0);
-    v_texCoord = px / resolution;
+    v_texCoord = glyph_px / resolution;
     gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, vflip), 0.0, 1.0);
 }"#;
 
@@ -1551,8 +1593,8 @@ varying vec4 glyph_v3;
 // outline and growing inward over the range.
 vec4 glyph_t = vec4(0.0);
 float glyph_dist() {
-    vec3 c = glyph_t.rgb;
-    return glyph_v0.z * (max(min(c.r, c.g), min(max(c.r, c.g), c.b)) - 0.5);
+    return glyph_v0.z * (max(min(glyph_t.r, glyph_t.g), min(max(glyph_t.r, glyph_t.g), glyph_t.b))
+                         - 0.5);
 }
 float glyph_soft() { return glyph_v0.z * (glyph_t.a - 0.5); }
 float glyph_cover() { return clamp(glyph_dist() + 0.5, 0.0, 1.0); }

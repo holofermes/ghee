@@ -802,6 +802,197 @@ fn a_text_name_collides_with_nothing() {
 }
 
 #[test]
+fn a_text_makes_the_names_of_its_readers_and_an_mtsdf_draw_the_atlas_names() {
+    let sorted = |mut v: Vec<String>| {
+        v.sort();
+        v
+    };
+    let readers = [
+        "tex", "tex_size", "tw", "itw", "ith", "w", "h", "gx", "gy", "cols", "rows", "cell",
+        "cells", "nb", "size", "texel", "list", "lattice", "cross", "outline", "glyph", "cover",
+    ];
+    let names = |suffixes: &[&str]| sorted(suffixes.iter().map(|s| format!("label_{s}")).collect());
+    assert_eq!(sorted(text::names("label", false)), names(&readers));
+    let atlas = [&readers[..], &["atlas", "atlas_size"]].concat();
+    assert_eq!(sorted(text::names("label", true)), names(&atlas));
+}
+
+/// The draw of text `label` that paints its coverage white.
+fn white_draw() -> Value {
+    json!([{"text": "label", "code": WHITE,
+            "place": "vec2 glyph_place(vec2 em) { return em; }"}])
+}
+
+#[test]
+fn a_name_made_by_a_text_collides_with_nothing() {
+    let float = json!({"type": "float", "value": 1.0});
+    let label = || texts_scene(json!({"label": {"font": "sans"}}));
+    let mut scene_param = label();
+    scene_param["params"]["label_w"] = float.clone();
+    let mut pass_param = label();
+    pass_param["passes"][0]["params"] = json!({"label_cover": float});
+    let mut array = label();
+    array["passes"][0]["arrays"] = json!([{"name": "label_tex", "size": 4}]);
+    let mut asset = label();
+    asset["assets"]["label_tex"] = json!({"file": "label.png"});
+    let mut atlas = label();
+    atlas["passes"][0]["params"] = json!({"label_atlas": float});
+    atlas["passes"][0]["draws"] = white_draw();
+    let mut text = texts_scene(json!({"label": {"font": "sans"}, "label_atlas": {"font": "sans"}}));
+    text["passes"][0]["draws"] = white_draw();
+    for (doc, want) in [
+        (
+            scene_param,
+            "scene param 'label_w' and text 'label' both make the GLSL name 'label_w'",
+        ),
+        (
+            pass_param,
+            "param 'label_cover' in pass 'main' and text 'label' both make the GLSL name \
+             'label_cover'",
+        ),
+        (
+            array,
+            "array 'label_tex' in pass 'main' and text 'label' both make the GLSL name \
+             'label_tex_size'",
+        ),
+        (
+            asset,
+            "asset 'label_tex' and text 'label' both make the GLSL name 'label_tex'",
+        ),
+        (
+            atlas,
+            "param 'label_atlas' in pass 'main' and text 'label' both make the GLSL name \
+             'label_atlas'",
+        ),
+        (
+            text,
+            "text 'label' and text 'label_atlas' both make the GLSL name 'label_atlas_size'",
+        ),
+    ] {
+        assert_eq!(scene_err(&doc), format!("scene: {want}"));
+    }
+}
+
+#[test]
+fn a_name_beside_the_names_of_a_text_compiles() {
+    // Text 'label' takes the outline fill, so it makes no atlas names, and a
+    // pass name never reaches GLSL.
+    let float = json!({"type": "float", "value": 1.0});
+    let mut doc = texts_scene(json!({
+        "label": {"font": "sans", "fill": "outline"},
+        "labels": {"font": "sans"},
+    }));
+    doc["params"]["label_width"] = float.clone();
+    doc["passes"][0]["name"] = json!("label_tex");
+    doc["passes"][0]["params"] = json!({"label_atlas": float, "label_ws": float});
+    doc["passes"][0]["arrays"] = json!([{"name": "label_texels", "size": 4}]);
+    doc["passes"][0]["draws"] = white_draw();
+    let mut image = doc.clone();
+    image["assets"]["label_texture"] = json!({"file": "label.png"});
+    assert!(Scene::from_dict(&image, None, None).is_ok());
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
+}
+
+/// The names declared after a type in GLSL `src`, the locals and the function
+/// parameters, outside the comments and the file-scope declarations, and
+/// except the glyph_ names that belong to ghee.
+fn locals(src: &str) -> Vec<String> {
+    let types = [
+        "bool", "int", "float", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+    ];
+    let scope = ["uniform", "varying", "attribute", "const", "precision"];
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out: Vec<String> = Vec::new();
+    for line in src.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let first = code.split_whitespace().next().unwrap_or("");
+        if first.starts_with('#') || scope.contains(&first) {
+            continue;
+        }
+        // Each word, and the text up to the next word.
+        let mut words: Vec<(&str, &str)> = Vec::new();
+        let mut rest = code;
+        while let Some(i) = rest.find(ident) {
+            let tail = &rest[i..];
+            let n = tail.find(|c| !ident(c)).unwrap_or(tail.len());
+            let gap = &tail[n..];
+            let next = gap.find(ident).unwrap_or(gap.len());
+            words.push((&tail[..n], &gap[..next]));
+            rest = gap;
+        }
+        for pair in words.windows(2) {
+            let ((ty, gap), (name, after)) = (pair[0], pair[1]);
+            let declared = types.contains(&ty)
+                && !gap.is_empty()
+                && gap.trim().is_empty()
+                && !after.trim_start().starts_with('(');
+            if declared && !name.starts_with("glyph_") && !out.iter().any(|o| o == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
+    let place = "vec2 glyph_place(vec2 glyph_q) { return glyph_q * 48.0 + 8.0; }";
+    let draw = "void main(){ gl_FragColor = vec4(vec3(glyph_cover()), 1.0); }";
+    let mut doc = texts_scene(json!({
+        "label": {"font": "sans"},
+        "title": {"font": "sans", "fill": "outline"},
+    }));
+    doc["passes"][0]["code"] = json!(
+        "void main(){ gl_FragColor = vec4(vec3(title_cover(v_texCoord * title_size, 32.0)), 1.0); }"
+    );
+    doc["passes"][0]["arrays"] =
+        json!([{"name": "amps", "size": 4}, {"name": "mask", "size": [4, 4]}]);
+    doc["passes"][0]["draws"] = json!([
+        {"text": "label", "code": draw, "place": place},
+        {"text": "title", "code": draw, "place": place},
+    ]);
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    let p = &sc.passes[0];
+    let mut glsl: Vec<String> = Vec::new();
+    for hw_linear in [false, true] {
+        glsl.push(p.glsl(Some(&sc.params), None, &sc.assets, &sc.texts, hw_linear));
+        for k in 0..p.draws.len() {
+            let (v, f) = p.draw_glsl(k, Some(&sc.params), None, &sc.assets, &sc.texts, hw_linear);
+            let (bv, bf) = p.draw_box_glsl(k, Some(&sc.params));
+            glsl.extend([v, f, bv, bf]);
+        }
+    }
+    // A vec param is a #define, which rewrites a field selection too: a vec
+    // param named x breaks every .x after the param lines, the author's own
+    // included.
+    let fields: Vec<&str> = glsl
+        .iter()
+        .flat_map(|g| g.split('.').skip(1))
+        .map(|f| {
+            f.split(|c: char| !c.is_ascii_alphanumeric())
+                .next()
+                .unwrap_or("")
+        })
+        .collect();
+    let mut names: Vec<String> = Vec::new();
+    for n in glsl.iter().flat_map(|g| locals(g)) {
+        if !names.contains(&n) && !fields.contains(&n.as_str()) {
+            names.push(n);
+        }
+    }
+    assert!(names.iter().any(|n| n == "at"), "{names:?}");
+    let mut named = doc.clone();
+    for n in &names {
+        named["params"][n] = json!({"type": "vec2", "value": [0.0, 0.0]});
+    }
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let plain = render(&mut r, &loaded(&doc));
+    assert!(plain.contains(&255), "the scene draws nothing");
+    assert!(render(&mut r, &loaded(&named)) == plain, "{names:?}");
+}
+
+#[test]
 fn image_assets_texts_and_their_atlases_share_the_engine_cap() {
     // The two font assets beside them take no slot, and a text drawn by an
     // MTSDF draw takes its atlas too.
@@ -2703,9 +2894,9 @@ fn laid_baseline(laid: &text::Layout) -> f64 {
 
 #[test]
 fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
-    // A draw of the outline fill, its shaders recorded before the MTSDF fill
-    // came: the fragment shader gains the lines that name it and the read
-    // that keeps VC4 on one thread, and nothing else changes.
+    // A draw of the outline fill against the shaders pinned in the fixtures,
+    // whose fragment shader leaves out the lines that name the MTSDF fill and
+    // the read that keeps VC4 on one thread.
     let doc = json!({
         "version": 1,
         "params": {

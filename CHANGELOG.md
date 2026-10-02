@@ -72,6 +72,15 @@
   and count `error_line` in that draw's GLSL.
 - Edit a free-text string param in the console over several lines.
 - Show in the console why the server refused a posted scene.
+- Refuse a scene where a param, an array, an image asset or another text
+  takes a GLSL name made by a text, such as `<name>_w` or `<name>_atlas`, and
+  name both in the error.
+- Compile a pass whose vec or color param shares its name with a local of
+  ghee's array or text readers, such as `t` or `at`, where the param's
+  `#define` broke the reader.
+- Ship NOTICE and the DejaVu font's license in the deb under
+  `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
+  LICENSE and NOTICE in the wheel.
 
 ## 0.4.0 - 2026-08-06
 

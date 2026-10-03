@@ -207,6 +207,11 @@
 - Write the last frame to a `.png` or a `.jpg` file with `h.save(path)`,
   numbered by its tick through a run of `#` as `ghee render -o` numbers
   its files.
+- Take the flags of `ghee render` in a direct run of a Python scene: `-o`
+  for image files or raw frames on stdout, `--display` and
+  `--display-opts`, `--serve`, `--port` and `--host` for the console, and
+  `--stats` for the timing summary, where `--output` named the display and
+  `--stats` the console's port.
 
 ## 0.4.0 - 2026-08-06
 

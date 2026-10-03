@@ -695,19 +695,81 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
     return _HOST
 
 
+def _display_opts(s: str) -> dict:
+    """K=V,... as `ghee render --display-opts` takes it: each value a Python
+    literal, else its text."""
+    import ast
+
+    opts = {}
+    for pair in s.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        k, eq, v = pair.partition("=")
+        if not eq:
+            raise argparse.ArgumentTypeError(f"wants k=v pairs, got '{pair}'")
+        try:
+            opts[k.strip()] = ast.literal_eval(v.strip())
+        except (ValueError, SyntaxError):
+            opts[k.strip()] = v.strip()
+    return opts
+
+
+def _image_pattern(s: str) -> str:
+    """An -o value: a .png or .jpg name or pattern, or '-'."""
+    if s == "-" or s.lower().endswith((".png", ".jpg", ".jpeg")):
+        return s
+    raise argparse.ArgumentTypeError(
+        f"wants an image pattern such as frame.####.png, or '-', got {s!r}; "
+        "a display takes --display"
+    )
+
+
 def _host_flags(p: argparse.ArgumentParser) -> None:
     """What a direct run takes on top of the scene's own args.
 
-    Each flag is the flag that `ghee render` spells the same way.
+    Each flag is the flag that `ghee render` spells the same way. With no -o
+    and no --serve, the frames go to the connected display.
     A scene that declares one of these names collides here, and argparse says
     so.
     """
     p.add_argument(
+        "-o",
         "--output",
-        default="kms",
+        type=_image_pattern,
+        metavar="PATTERN",
+        help="image pattern (frame.####.png), or '-' for raw RGBA frames to stdout",
+    )
+    p.add_argument(
+        "--display",
+        nargs="?",
+        const="kms",
         metavar="NAME",
-        help="a display driver name, 'kms', or 'none' for a headless render "
-        "(default: kms)",
+        help="a display driver name, or bare or 'kms' for the connected KMS "
+        "display (the default with no -o and no --serve)",
+    )
+    p.add_argument(
+        "--display-opts",
+        type=_display_opts,
+        default={},
+        metavar="K=V,...",
+        help="options for the --display driver",
+    )
+    p.add_argument(
+        "--serve", action="store_true", help="also run the console on this render"
+    )
+    p.add_argument(
+        "--port",
+        type=int,
+        default=8090,
+        metavar="PORT",
+        help="the console's port (default: 8090)",
+    )
+    p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        metavar="HOST",
+        help="the console's bind address (default: 127.0.0.1)",
     )
     p.add_argument(
         "--size",
@@ -717,7 +779,9 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--fps", type=float, metavar="N", help="frame rate cap")
     p.add_argument(
-        "--stats", type=int, metavar="PORT", help="serve the console on PORT"
+        "--stats",
+        action="store_true",
+        help="print a timing summary when the render ends",
     )
     p.add_argument(
         "--frames",
@@ -1038,20 +1102,53 @@ def _script_dir() -> str | None:
     return os.path.dirname(os.path.abspath(path)) if path else None
 
 
+def _display(a) -> str | None:
+    """The display of a direct run: --display, else the connected display
+    when the run names no -o and no --serve, else none."""
+    if a.display is not None or a.output is not None or a.serve:
+        return a.display
+    return "kms"
+
+
 def _open(scene: Scene, a):
-    """Open the scene on the bindings. `--output none` renders headless."""
+    """Open the scene on the bindings."""
     from ghee import open as open_scene
 
     w, h = a.size or (None, None)
     return open_scene(
         scene.to_dict(),
-        output=None if a.output == "none" else a.output,
+        output=_display(a),
+        opts=a.display_opts or None,
         width=w,
         height=h,
         fps=a.fps,
-        stats=a.stats,
+        stats=(a.host, a.port) if a.serve else None,
         timestep=a.timestep,
         base_dir=_script_dir(),
+    )
+
+
+def _destinations(a) -> str:
+    """Where a direct run's frames go, as `ghee render --stats` names them."""
+    out = []
+    display = _display(a)
+    if display is not None:
+        out.append("kms" if display == "kms" else "panel")
+    if a.output is not None:
+        out.append("pipe" if a.output == "-" else "file")
+    if not out:
+        out.append("console")
+    return "+".join(out)
+
+
+def _summary(times: list, wall: float, a) -> str:
+    """The line of `ghee render --stats`."""
+    n = len(times)
+    return (
+        f"{'done':>9}  stats: {n} frame(s) in {wall:.2f}s, "
+        f"{1000 * sum(times) / n:.2f} ms/frame (min {1000 * min(times):.2f}, "
+        f"max {1000 * max(times):.2f}), {n / wall if wall > 0 else 0:.1f} fps -> "
+        f"{_destinations(a)}"
     )
 
 
@@ -1074,6 +1171,7 @@ def _direct(scene: Scene) -> None:
     caught = [(s, signal.signal(s, _stop)) for s in (signal.SIGINT, signal.SIGTERM)]
     _HANDLE = handle
     frame, started, last = 0, time.monotonic(), 0.0
+    times: list = []
     try:
         while not _STOPPED and (a.frames == 0 or frame < a.frames):
             now = (
@@ -1090,13 +1188,23 @@ def _direct(scene: Scene) -> None:
                 values = fn(t)
                 if values is not None:
                     handle.feed(name, values)
-            if _CLEAN:
+            # A file or a pipe takes every frame, as under `ghee render`.
+            if _CLEAN and a.output is None:
                 handle.skip()
             else:
+                drawn = time.monotonic()
                 handle.frame()
+                if a.output == "-":
+                    sys.stdout.buffer.write(handle.pixels())
+                    sys.stdout.buffer.flush()
+                elif a.output is not None:
+                    handle.save(a.output)
+                times.append(time.monotonic() - drawn)
             frame += 1
     finally:
         _HANDLE = None
         for s, held in caught:
             signal.signal(s, held)
         handle.close()
+    if a.stats and times:
+        print(_summary(times, time.monotonic() - started, a), file=sys.stderr)

@@ -232,19 +232,23 @@ spectrum.py` or from a scenes directory, `run()` feeds ghee over the
 When you run the file itself, `run()` opens the embedded renderer and
 renders directly:
 
-    ./spectrum.py --output kms --frames 300
-    ./spectrum.py --bins 32 --output none --size 320x240 --frames 1
+    ./spectrum.py --display --frames 300
+    ./spectrum.py -o frame.####.png --size 320x240 --frames 60
 
 ghee sets `GHEE_WIRE=1` in every scene process it starts, and `run()`
 tells the two apart by it.
 
-The scene takes its own arguments first, then these:
+The scene takes its own arguments first, then these flags of `ghee render`:
 
-- `--output NAME`: a driver name, `kms`, or `none` for a headless render
-  (default `kms`)
+- `-o PATTERN`: image files, as `frame.####.png`, or `-` for raw RGBA
+  frames on stdout. Files and the pipe take every frame, a skipped one too
+- `--display [NAME]`: a driver name, or bare or `kms` for the connected
+  display, the default with no `-o` and no `--serve`
+- `--display-opts K=V,...`: the options of the display driver
+- `--serve`, `--port PORT`, `--host HOST`: the console
 - `--size WxH`: the render size. A display or a panel states its own
-- `--fps N`, `--stats PORT`, `--timestep S`: as `ghee render` takes them
-- `--frames N`: 0 runs until SIGINT or SIGTERM (default 0)
+- `--fps N`, `--stats`, `--timestep S`, and `--frames N`, where 0 runs
+  until SIGINT or SIGTERM (default 0)
 
 The feeds, the hooks and `ghee.skip()` work the same. The tick keeps its
 wire shape, with `params` empty. If one of your own arguments collides with

@@ -476,7 +476,7 @@ supply the data, and `ghee.run` for the loop. A PEP 723 scene declares
 `ghee-render` inline under `#!/usr/bin/env -S uv run --script`.
 
 The python shim lets you also run the python file to render directly:
-`./scene.py --output kms --frames 300`.
+`./scene.py --display --frames 300`.
 
 `ghee/examples/` holds the bundled demos.
 

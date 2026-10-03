@@ -59,5 +59,10 @@ ttf-parser = { path = "vendor/ttf-parser", default-features = false, features = 
 [build-dependencies]
 cc = "1"
 
+[lints.rust]
+# A host without a GL device builds the tests with `--cfg ghee_no_gpu`, which
+# reports every test that needs one as ignored.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ghee_no_gpu)"] }
+
 [profile.release]
 lto = "thin"

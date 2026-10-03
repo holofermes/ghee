@@ -2209,22 +2209,26 @@ void main() {
 
     // --- on a GPU ----------------------------------------------------------
 
-    /// The renderer these tests share. None when there is no GL device.
-    fn renderer() -> Option<crate::engine::Renderer> {
+    /// The renderer these tests share.
+    fn renderer() -> crate::engine::Renderer {
         let mut errs = Vec::new();
         for dev in crate::engine::probe_dri_devices() {
             match crate::engine::Renderer::new(64, 48, 4, Some(&dev), false, false) {
-                Ok(r) => return Some(r),
+                Ok(r) => return r,
                 Err(e) => errs.push(format!("{dev}: {e}")),
             }
         }
-        eprintln!("no GL device for rendering: {}", errs.join("; "));
-        None
+        panic!(
+            "no GL device opens ({}). A host without one runs the tests under \
+             RUSTFLAGS=\"--cfg ghee_no_gpu\", which reports them as ignored",
+            errs.join("; ")
+        );
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn imported_scenes_compile_and_render() {
-        let Some(mut r) = renderer() else { return };
+        let mut r = renderer();
         let (w, h, comp) = (r.width as usize, r.height as usize, r.components as usize);
         for (src, name) in [(FILTER, "f.fs"), (TWO_PASS, "t.fs"), (AUDIO, "a.fs")] {
             let (sc, _) = to_scene(src, name, (w as i64, h as i64), false).unwrap();

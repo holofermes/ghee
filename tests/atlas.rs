@@ -19,18 +19,20 @@ const LYRICS: &str = "the radio hums a borrowed tune\n\
 const W: usize = 1280;
 const H: usize = 800;
 
-/// A W x H RGBA renderer on the first GL device that opens. None = no device,
-/// and the test reports the skip.
-fn gpu() -> Option<Renderer> {
+/// A W x H RGBA renderer on the first GL device that opens.
+fn gpu() -> Renderer {
     let mut errs = Vec::new();
     for dev in probe_dri_devices() {
         match Renderer::new(W as i32, H as i32, 4, Some(&dev), false, false) {
-            Ok(r) => return Some(r),
+            Ok(r) => return r,
             Err(e) => errs.push(format!("{dev}: {e}")),
         }
     }
-    eprintln!("no GL device for rendering: {}", errs.join("; "));
-    None
+    panic!(
+        "no GL device opens ({}). A host without one runs the tests under \
+         RUSTFLAGS=\"--cfg ghee_no_gpu\", which reports them as ignored",
+        errs.join("; ")
+    );
 }
 
 /// The lyrics centred at 46 px/em: in a pass of `code`, with `layers`.
@@ -49,12 +51,13 @@ fn frame(r: &mut Renderer, code: &str, layers: serde_json::Value) -> Vec<u8> {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn the_mtsdf_fill_at_46_px_em_matches_exact_coverage() {
     std::env::set_var(
         "XDG_CACHE_HOME",
         std::env::temp_dir().join("ghee-text-cache"),
     );
-    let Some(mut r) = gpu() else { return };
+    let mut r = gpu();
     let cover = frame(
         &mut r,
         "void main() {\n\

@@ -2270,13 +2270,12 @@ mod tests {
     }
 
     /// One renderer for these tests, with the device lock.
-    /// None means the host has no GL device.
-    fn gpu() -> Option<(MutexGuard<'static, ()>, Renderer)> {
+    fn gpu() -> (MutexGuard<'static, ()>, Renderer) {
         gpu_at(W, H)
     }
 
     /// gpu() at a size of its own.
-    fn gpu_at(w: usize, h: usize) -> Option<(MutexGuard<'static, ()>, Renderer)> {
+    fn gpu_at(w: usize, h: usize) -> (MutexGuard<'static, ()>, Renderer) {
         let guard = lock();
         let mut errs = Vec::new();
         for dev in probe_dri_devices() {
@@ -2288,12 +2287,15 @@ mod tests {
                 false,
                 false,
             ) {
-                Ok(r) => return Some((guard, r)),
+                Ok(r) => return (guard, r),
                 Err(e) => errs.push(format!("{dev}: {e}")),
             }
         }
-        eprintln!("no GL device for rendering: {}", errs.join("; "));
-        None
+        panic!(
+            "no GL device opens ({}). A host without one runs the tests under \
+             RUSTFLAGS=\"--cfg ghee_no_gpu\", which reports them as ignored",
+            errs.join("; ")
+        );
     }
 
     fn scene_of(passes: Value) -> Scene {
@@ -2392,6 +2394,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn display_create_fails_once_without_drm_master() {
         let _g = lock();
         if fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0) {
@@ -2494,15 +2497,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn setup_rejects_a_scene_with_no_passes() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let empty = Scene::of(Vec::new()).unwrap();
         assert!(r.setup(&empty).unwrap().contains("no passes"));
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn channel_naming_no_pass_is_rejected() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([
             {"name": "a", "code": FLAT},
             {"name": "b", "channels": [{"buffer": "a"}, {"buffer": "typo"}], "code": FLAT},
@@ -2514,9 +2519,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn channel_bound_to_nothing_is_allowed() {
         // buffer=None is the unbound channel. The scene stays valid.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([
             {"name": "a", "channels": [{"buffer": null}], "code": FLAT},
         ]));
@@ -2524,8 +2530,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn setup_rejects_a_scene_in_a_fixed_order() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sized = json!([{"name": "a", "code": FLAT, "size": [8, 8]}]);
         assert_eq!(
             r.setup(&scene_of(sized)).unwrap(),
@@ -2558,10 +2565,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn unbound_channel_reads_black() {
         // 'leak' leaves a white texture bound on unit 0.
         // Channel 0 of 'main' is unbound, and it reads black.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sample = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
         let sc = scene_of(json!([
             {"name": "bright", "code": "void main(){ gl_FragColor = vec4(1.0); }"},
@@ -2579,8 +2587,9 @@ mod tests {
     /// A sized pass renders at its own size, so its `resolution` is not the
     /// frame size. `aspect` carries the shape of the output.
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn every_pass_reads_the_output_aspect() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let red = "uniform float aspect;\nvoid main(){ \
                    gl_FragColor = vec4(aspect * 0.5, 0.0, 0.0, 1.0); }";
         let through = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
@@ -2610,8 +2619,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn compile_error_leaves_the_running_scene() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
@@ -2626,8 +2636,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn unallocatable_pass_buffer_fails_loudly() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
@@ -2645,8 +2656,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn render_on_an_empty_scene_reports_instead_of_indexing() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         r.reset();
         r.render(None).unwrap();
         assert!(r.last_error().contains("no passes"));
@@ -2654,11 +2666,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_degenerate_out_size_cannot_undersize_the_readback_buffer() {
         // The engine downscales only for positive dimensions.
         // A zero or negative dimension falls through to the full-frame readback.
         // The buffer check sizes for that readback.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         r.set_time(Some(0.0));
         for bad in [(0, 6), (8, 0), (-4, -6)] {
@@ -2679,8 +2692,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn downscaled_readback_matches_the_full_frame() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         r.set_time(Some(0.0));
         let full = r.render(None).unwrap().to_vec();
@@ -2701,8 +2715,9 @@ mod tests {
          fract(p.y * 0.093), 1.0); }";
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_whole_multiple_readback_repeats_each_pixel() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         assert_eq!(
             r.setup(&scene_of(json!([{"name": "main", "code": SPECKLE}])))
                 .unwrap(),
@@ -2727,10 +2742,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_whole_multiple_readback_leaves_feedback_filtered() {
         // Frame 1 draws one-pixel stripes, and each later frame reads the last
         // one half a pixel over. A linear fetch there blends two stripes.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
             "channels": [{"buffer": "main"}],
@@ -2750,8 +2766,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn render_into_a_caller_buffer() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         r.set_time(Some(0.0));
         let full = r.render(None).unwrap().to_vec();
@@ -2761,10 +2778,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn draw_renders_with_no_readback() {
         // The scene feeds back: each frame adds to the last.
         // A draw() that renders shows up in the next readback.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
             "channels": [{"buffer": "main"}],
@@ -2781,8 +2799,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn one_upload_per_array_name() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([
             {
                 "name": "a",
@@ -2825,6 +2844,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_text_lays_out_its_curves_only_for_a_program_that_reads_them() {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
         let layer = |fill: &str, fragment: &str| json!({"fill": fill, "layers": [{"text": "t", "px_per_em": 20, "fragment": fragment}]});
@@ -2832,7 +2852,7 @@ mod tests {
         let covered = "void main(){ gl_FragColor = vec4(t_cover(glyph_em, 20.0)); }";
         let pass_reads = "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }";
         let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         for (code, how, reads) in [
             (black, layer("mtsdf", white), false),
             (pass_reads, json!({}), true),
@@ -2859,11 +2879,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_setup_frees_the_slots_of_old_image_assets() {
         // The engine binds 16 assets at a time, so each setup hands back the
         // slots of the image assets that its scene no longer declares. An
         // asset set by the host stays.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         r.set_asset("host", 1, 1, 1, false, AssetData::U8(&[200u8]))
             .unwrap();
         for i in 0..20u8 {
@@ -2894,10 +2915,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_nul_in_a_shader_drops_the_passes_staged_before_it() {
         // The engine stages 16 passes at most, so a stale stage of 15 would
         // refuse the second pass of the next scene.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let mut passes: Vec<Value> = (0..15)
             .map(|i| json!({"name": format!("p{i}"), "code": FLAT}))
             .collect();
@@ -2911,8 +2933,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn texture_unit_budget_rejects_a_greedy_pass() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
@@ -2937,11 +2960,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_reads_a_channel_or_an_array_in_every_texture_unit() {
         // main reads pass a through all but five of its units and five arrays
         // through the rest, and pass a declares twelve arrays of its own, so
         // the scene holds seventeen.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let units = r.max_texture_units() as usize;
         let own: Vec<Value> = (0..12)
             .map(|i| json!({"name": format!("a{i}"), "size": 4}))
@@ -2973,9 +2997,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_name_of_300_characters_reaches_its_uniform() {
         // A param, an array and an asset, each named past any fixed buffer.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let (p, a, i) = ("p".repeat(300), "a".repeat(300), "i".repeat(300));
         let mut sc = Scene::from_dict(
             &json!({"version": 1,
@@ -3006,10 +3031,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_scene_past_16_passes_is_refused_counting_its_filters() {
         // The filters come from the registry, which $GHEE_FILTERS extends.
         let _f = crate::filters::env_guard();
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let passes = |n: usize| -> Vec<Value> {
             (0..n)
                 .map(|i| json!({"name": format!("p{i}"), "code": FLAT}))
@@ -3030,18 +3056,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_binds_16_texture_units_at_most_on_any_gpu() {
-        let Some((_g, r)) = gpu() else { return };
+        let (_g, r) = gpu();
         let gl = unsafe { ffi::ghee_gl_texture_units(r.handle()) };
         assert_eq!(r.max_texture_units(), gl.min(16));
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn the_assets_a_pass_samples_count_against_its_texture_units() {
         // The scene holds four assets past the units of one pass. main
         // samples an asset in every unit, pass a samples the other four, and
         // a channel on main takes one unit more.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let units = r.max_texture_units() as usize;
         let names: Vec<String> = (0..units + 4).map(|i| format!("img{i}")).collect();
         let sum = |names: &[String]| -> String {
@@ -3112,8 +3140,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_readback_reads_alpha_255_unless_the_alpha_is_kept() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code": HALF}]));
         let opaque = first_frames(&mut r, &sc, 1);
         assert!(channel(&opaque, 3).iter().all(|a| *a == 255.0));
@@ -3147,8 +3176,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_channel_reads_the_alpha_its_pass_wrote() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([
             {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0, 1.0, 1.0, 0.25); }"},
             {"name": "main", "channels": [{"buffer": "a"}], "code":
@@ -3159,10 +3189,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn an_output_pass_that_a_channel_reads_keeps_its_alpha_and_reads_back_opaque() {
         // main writes the alpha it held a frame ago into red, and 0.5 into
         // alpha.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(
             json!([{"name": "main", "channels": [{"buffer": "main"}], "code":
             "void main(){ gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).a, 0.0, 0.0, 0.5); }"}]),
@@ -3177,8 +3208,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_with_no_code_and_no_layers_is_refused_naming_it() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let mut sc = flat_scene();
         sc.passes[0].code = String::new();
         assert_eq!(
@@ -3189,8 +3221,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn channel_source_pass_is_bound_checked() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         assert!(!unsafe { ffi::ghee_mp_set_channel(r.handle(), 0, 0, 7) });
         assert!(unsafe { ffi::ghee_mp_set_channel(r.handle(), 0, 0, -1) });
@@ -3198,8 +3231,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn set_time_none_returns_to_the_wall_clock() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
             "code": "void main(){ gl_FragColor = vec4(mod(time * 37.0, 1.0), 0.0, 0.0, 1.0); }",
@@ -3215,11 +3249,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn set_dt_reaches_every_pass() {
         // DT rides the draw like time, so one store lands in every pass.
         // Red carries the first pass's DT through a channel.
         // Green carries the second pass's DT.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([
             {"name": "src", "code": "void main(){ gl_FragColor = vec4(DT, 0.0, 0.0, 1.0); }"},
             {
@@ -3249,8 +3284,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn closing_a_second_renderer_leaves_the_first_alive() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = flat_scene();
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -3266,8 +3302,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_short_2d_feed_is_zero_padded_and_a_long_1d_one_is_cut() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         // The shader reads the second half of mask.
         // The provider feeds vals past its declared size.
         let sc = scene_of(json!([{
@@ -3289,8 +3326,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn an_unchanged_feed_leaves_the_texture_alone() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
             "arrays": [{"name": "vals", "size": 4}],
@@ -3306,8 +3344,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn an_error_in_the_common_reports_the_common_line() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let bad = "float sat(float x){ return clamp(x, 0.0, 1.0); }\nfloat b(){ return nope(); }";
         let sc = Scene::from_dict(
             &json!({
@@ -3328,8 +3367,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn an_error_in_a_pass_still_reports_that_pass() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = Scene::from_dict(
             &json!({
                 "version": 1,
@@ -3368,8 +3408,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn array_samples_correctly() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = array_scene(
             "void main(){ vec2 uv=gl_FragCoord.xy/resolution; \
              gl_FragColor=vec4(vec3(vals_at(int(uv.x*float(vals_size-1)))),1.0); }",
@@ -3389,8 +3430,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn sample_interpolates() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = array_scene(
             "void main(){ vec2 uv=gl_FragCoord.xy/resolution; \
              gl_FragColor=vec4(vec3(vals_sample(uv.x)),1.0); }",
@@ -3407,11 +3449,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_u8_feed_renders_what_the_same_floats_render() {
         // The two wire forms name the same values: byte / 255. The frames must
         // match to the pixel, on a float data texture and on an 8-bit one.
         use sha2::{Digest, Sha256};
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let bytes: Vec<u8> = (0..N).map(|i| (i * 4) as u8).collect();
         let floats: Vec<f32> = bytes.iter().map(|b| f32::from(*b) / 255.0).collect();
         for (code, size) in [
@@ -3437,8 +3480,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn an_asset_binds_by_name_and_carries_its_size() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         // logo lands before setup, so the commit resolves it.
         // late lands on the running scene.
         let code = "uniform sampler2D logo; uniform vec2 logo_size; \
@@ -3476,12 +3520,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn sample_matches_texel_lerp() {
         // The test compares every column of a rendered _sample(t) ramp against
         // the lerp above. It holds on a GL that linear-filters float textures.
         // It also holds on V3D, which has no float linear filtering.
         // The renderer emits a reader that makes the two agree.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let vals: Vec<f32> = vec![0.10, 0.90, 0.30, 0.70, 0.50];
         let sc = array_scene(
             "void main(){ gl_FragColor=vec4(vec3(vals_sample(v_texCoord.x)),1.0); }",
@@ -3503,9 +3548,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn sample2_matches_bilinear() {
         // _sample2 reads points mid-texel in one axis, in both, and in neither.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let m: Vec<f32> = vec![0.0, 1.0, 0.5, 0.25]; // A 2x2 mask, indexed [y][x].
         for (uv, want) in [
             ((0.5, 0.5), 0.4375),             // The centre reads all four texels.
@@ -3583,8 +3629,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn setup_error_strings_match_the_reference() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         // A 2D size prints as a pair. A 1D size prints as an int.
         let clash = json!([
             {"name": "a", "code": FLAT, "arrays": [{"name": "v", "size": [3, 5]}]},
@@ -3609,11 +3656,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn the_texture_budget_counts_an_array_name_once() {
         // A name declared twice on one pass takes one texture unit, so the
         // budget passes it. A scene load refuses the redeclaration, and so
         // does the compiler.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let units = r.max_texture_units() as usize;
         let channels: Vec<Value> = (0..units - 1).map(|_| json!({"buffer": "a"})).collect();
         let mut sc = scene_of(json!([
@@ -3636,10 +3684,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_vec_or_color_param_sets_one_vector_uniform() {
         // This shader reads tint.r, off.x and off.y, so the whole of each
         // vector uniform is live.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
             "code": "void main(){ gl_FragColor = vec4(tint.r, off.x, off.y, 1.0); }",
@@ -3700,8 +3749,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn vec_and_color_values_reach_glsl_from_the_scene_and_a_set() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let code = "void main(){ float x = v_texCoord.x; \
                     gl_FragColor = x < 0.25 ? vec4(a, 0.0, 1.0) : x < 0.5 ? vec4(b, 1.0) \
                     : x < 0.75 ? vec4(c.xyz * c.w, 1.0) : vec4(tint, 1.0); }";
@@ -3749,8 +3799,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_local_shadows_a_vec_param_as_it_shadows_any_uniform() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let code = "vec3 lift(vec3 tint){ return tint + 0.25; }\n\
                     void main(){ vec3 tint = vec3(0.0, 0.25, 0.0); \
                     gl_FragColor = vec4(lift(tint), 1.0); }";
@@ -3795,10 +3846,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_with_mipmaps_read_small_reads_its_average() {
-        let Some((_g, mut r)) = gpu_at(64, 64) else {
-            return;
-        };
+        let (_g, mut r) = gpu_at(64, 64);
         let read = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord + 0.5 / 256.0); }";
         let reds = |f: &[u8]| {
             (0..64 * 64)
@@ -3849,10 +3899,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_scene_param_reaches_every_pass_not_just_the_first() {
         // 'a' writes P to red. 'main' adds P to green through the channel.
         // A set that stops at the first pass leaves green at its default.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = Scene::from_dict(
             &json!({
                 "version": 1,
@@ -3886,8 +3937,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn feed_lengths_that_miss_the_declared_size() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
             "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "vals", "size": 3}],
@@ -3939,10 +3991,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_readback_size_is_w_times_h_times_components() {
         // out_size reads back a GPU-scaled frame at that exact size.
         // The size scales up or down, and on either axis alone.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
             "code": "void main(){ gl_FragColor = vec4(v_texCoord.x, v_texCoord.y, 0.25, 1.0); }",
@@ -4015,8 +4068,9 @@ mod tests {
     const GRAY: &str = "void main(){ gl_FragColor = vec4(0.5, 0.5, 0.5, 1.0); }";
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn each_blend_mode_composes_its_formula_over_the_pass() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         // src (0.25, 0, 0, 0.5) premultiplied, over a gray pass of 0.5.
         let src = [0.25, 0.0, 0.0, 0.5];
         for (blend, want) in [
@@ -4045,10 +4099,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_lands_with_rows_counted_like_v_tex_coord() {
         // The pass paints the top rows, v_texCoord.y < 0.25, red. The batch
         // covers the same rows by pixel and adds green.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code":
             "void main(){ gl_FragColor = vec4(v_texCoord.y < 0.25 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
         assert_eq!(
@@ -4067,12 +4122,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn quads_past_one_16_bit_draw_land_where_their_vertices_say() {
         // The first draw holds 16383 quads. Quads 0..W*H paint each pixel
         // green, the next fill the first draw with nothing, and as many past
         // it paint each pixel red. Every pixel ends yellow only if the second
         // draw reads its own vertices.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code":
             "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"}]));
         assert_eq!(
@@ -4107,9 +4163,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_draws_a_hundred_batches() {
         // Each batch adds 1/255 of red over black.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
         let sc = scene_of(json!([{"name": "main", "code": black}]));
         let batches: Vec<Batch> = (0..100)
@@ -4130,8 +4187,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn batches_of_a_pass_draw_in_order_and_new_quads_replace_the_old() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         let batches = [
             batch("main", PLAIN_FS, Blend::Replace),
@@ -4155,11 +4213,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_reads_scene_params_in_both_stages_and_its_pass_inputs() {
         // The vertex stage shifts the quad by `shift` pixels once `level` is
         // set, and the fragment stage writes `level`, an array texel, an asset
         // texel and the channel. `level` and `resolution` sit in both stages.
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         r.set_asset("pad", 1, 1, 1, false, AssetData::U8(&[64u8]))
             .unwrap();
         let sc = Scene::from_dict(
@@ -4222,8 +4281,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_reads_an_asset_its_pass_never_samples_and_one_set_later() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         r.set_asset("early", 1, 1, 1, false, AssetData::U8(&[64u8]))
             .unwrap();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
@@ -4248,8 +4308,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_later_pass_samples_the_batch_drawn_into_an_earlier_one() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([
             {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
             {"name": "main", "channels": [{"buffer": "a"}],
@@ -4268,8 +4329,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_broken_batch_leaves_the_running_scene_and_names_its_stage() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         assert_eq!(
             r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Replace)])
@@ -4307,8 +4369,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_and_its_quads_are_checked_before_the_engine_sees_them() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let err = r
             .setup_batches(&flat_scene(), &[batch("typo", PLAIN_FS, Blend::Over)])
             .unwrap();
@@ -4340,8 +4403,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_with_four_attributes_reads_each_one() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         let vs = format!(
             "{PRECISION}attribute vec4 ghee_a0; attribute vec4 ghee_a1; attribute vec4 ghee_a2; attribute vec4 ghee_a3;\n\
@@ -4380,6 +4444,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_layer_with_no_error_boxes_renders_as_the_layer_alone() {
         // The scene `with` holds a layer, and so an error-box batch. `alone`
         // holds the same layer as a plain batch, with none behind it.
@@ -4405,7 +4470,7 @@ mod tests {
         };
         let with = load(json!([{"text": "label", "fragment": code, "vertex": place}]));
         let alone = load(json!([]));
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let frame = |r: &mut Renderer| {
             r.set_time(Some(0.0));
             r.render(None).unwrap().to_vec()
@@ -4457,10 +4522,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn the_words_a_text_holds_lay_out_once() {
-        let Some((_g, mut r)) = gpu() else {
-            return;
-        };
+        let (_g, mut r) = gpu();
         let words = "the words a text holds\n".repeat(90);
         assert_eq!(r.setup(&cover_scene(&words, "left")).unwrap(), "");
         r.set_time(Some(0.0));
@@ -4488,6 +4552,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_colour_atlas_exists_once_the_words_hold_a_colour_glyph() {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
         let load = |font: Value| {
@@ -4510,7 +4575,7 @@ mod tests {
             sc.load_assets(fonts).unwrap();
             sc
         };
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let emoji = |r: &Renderer| {
             let held = r
                 .scene_assets
@@ -4540,6 +4605,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_new_colour_glyph_uploads_its_cell_at_every_level_as_a_whole_atlas_does() {
         // Five layers of the words, at 1, 1/2, 1/4, 1/8 and 1/16 of the
         // bitmaps' 109 pixels per em, each read from its own mip level.
@@ -4570,14 +4636,7 @@ mod tests {
         .unwrap();
         sc.load_assets(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts"))
             .unwrap();
-        let _g = lock();
-        let Some(mut r) = probe_dri_devices()
-            .iter()
-            .find_map(|d| Renderer::new(w, h, 4, Some(d), false, false).ok())
-        else {
-            eprintln!("no GL device for rendering");
-            return;
-        };
+        let (_g, mut r) = gpu_at(w as usize, h as usize);
         // A blank cell grows the atlas to 512 texels wide, room for both
         // emoji on one shelf, so the second emoji leaves the size as it was.
         let start = |r: &mut Renderer, words: &str| {
@@ -4706,17 +4765,14 @@ mod tests {
 
     /// A renderer whose atlases read `font` and cache in a fresh directory,
     /// which the caller removes.
-    fn switched(
-        font: &Arc<Switched>,
-        tag: &str,
-    ) -> Option<(MutexGuard<'static, ()>, Renderer, PathBuf)> {
-        let (g, mut r) = gpu()?;
+    fn switched(font: &Arc<Switched>, tag: &str) -> (MutexGuard<'static, ()>, Renderer, PathBuf) {
+        let (g, mut r) = gpu();
         let f = font.clone();
         r.atlas_font = Box::new(move |_| f.clone());
         let dir = std::env::temp_dir().join(format!("ghee-engine-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         r.atlas_cache = Some(dir.clone());
-        Some((g, r, dir))
+        (g, r, dir)
     }
 
     fn still(r: &mut Renderer) -> Vec<u8> {
@@ -4735,9 +4791,7 @@ mod tests {
     /// The frame of `words` in a scene of their own, with every glyph in the
     /// atlas from the start.
     fn reference(words: &str) -> Vec<u8> {
-        let Some((_g, mut r)) = gpu() else {
-            return Vec::new();
-        };
+        let (_g, mut r) = gpu();
         let dir = std::env::temp_dir().join(format!("ghee-engine-{}-ref", std::process::id()));
         r.atlas_cache = Some(dir.clone());
         assert_eq!(r.setup(&mtsdf_scene(words)).unwrap(), "");
@@ -4749,12 +4803,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn new_words_hold_the_last_until_their_glyphs_are_in() {
         let (want_av, want_avz) = (reference("AV"), reference("AVZ"));
         let font = Switched::new();
-        let Some((_g, mut r, dir)) = switched(&font, "hold") else {
-            return;
-        };
+        let (_g, mut r, dir) = switched(&font, "hold");
         assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
         let size = |r: &Renderer| {
             r.atlases.borrow()[0]
@@ -4794,12 +4847,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn with_the_time_pinned_a_render_waits_for_the_glyphs() {
         let want = reference("AVQ");
         let font = Switched::new();
-        let Some((_g, mut r, dir)) = switched(&font, "pinned") else {
-            return;
-        };
+        let (_g, mut r, dir) = switched(&font, "pinned");
         assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
         r.set_time(Some(0.0));
         let av = still(&mut r);
@@ -4827,12 +4879,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn an_atlas_that_grows_uploads_again_and_draws_the_same() {
         let want = reference("AVQ");
         let font = Switched::new();
-        let Some((_g, mut r, dir)) = switched(&font, "grow") else {
-            return;
-        };
+        let (_g, mut r, dir) = switched(&font, "grow");
         assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
         r.set_time(Some(0.0));
         let av = still(&mut r);
@@ -4870,8 +4921,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_scene_of_slug_layers_starts_no_atlas() {
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let mut sc = mtsdf_scene("AV");
         sc.texts[0].fill = Fill::Slug;
         assert_eq!(r.setup(&sc).unwrap(), "");

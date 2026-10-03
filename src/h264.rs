@@ -757,16 +757,21 @@ mod tests {
     /// One GL device, one Renderer at a time.
     static GPU: Mutex<()> = Mutex::new(());
 
-    /// The renderer these tests share. None where there is no GL device.
-    fn gpu() -> Option<(MutexGuard<'static, ()>, Renderer)> {
+    /// The renderer these tests share.
+    fn gpu() -> (MutexGuard<'static, ()>, Renderer) {
         let guard = GPU.lock().unwrap_or_else(|e| e.into_inner());
+        let mut errs = Vec::new();
         for dev in probe_dri_devices() {
-            if let Ok(r) = Renderer::new(64, 48, 4, Some(&dev), false, false) {
-                return Some((guard, r));
+            match Renderer::new(64, 48, 4, Some(&dev), false, false) {
+                Ok(r) => return (guard, r),
+                Err(e) => errs.push(format!("{dev}: {e}")),
             }
         }
-        eprintln!("no GL device for rendering");
-        None
+        panic!(
+            "no GL device opens ({}). A host without one runs the tests under \
+             RUSTFLAGS=\"--cfg ghee_no_gpu\", which reports them as ignored",
+            errs.join("; ")
+        );
     }
 
     fn have_ffmpeg() -> bool {
@@ -1103,11 +1108,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_tiny_frame_reaches_the_hardware_encoder_scaled_up() {
         if !Path::new("/dev/video11").exists() {
             return; // no hardware encoder on this board
         }
-        let Some((_g, mut r)) = gpu() else { return };
+        let (_g, mut r) = gpu();
         let scene = crate::scene::Scene::from_dict(
             &serde_json::json!({"version": 1, "passes": [{"name": "main",
                 "code": "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }"}]}),
@@ -1136,11 +1142,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn hardware_unavailable_falls_back() {
         if Path::new("/dev/video11").exists() {
             return; // this board has a hardware encoder, so nothing falls back
         }
-        let Some((_g, r)) = gpu() else { return };
+        let (_g, r) = gpu();
         assert!(HardwareH264::new(&r, 64, 64, 30, 4_000_000).is_err());
         if on_path("ffmpeg") {
             let mut enc = make_encoder(&r, 64, 64, 30, 4_000_000, 4).unwrap();

@@ -2414,22 +2414,20 @@ mod tests {
         )))
     }
 
-    /// Whether a GL device opens. `run` builds its own renderer, so a test
-    /// that calls it reports the skip and passes where no device opens. The
-    /// answer is cached: one probe opens one renderer for the whole process.
-    fn have_gl() -> bool {
-        static GL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *GL.get_or_init(|| {
-            let mut errs = Vec::new();
-            for dev in crate::engine::probe_dri_devices() {
-                match crate::engine::Renderer::new(8, 8, 4, Some(&dev), false, false) {
-                    Ok(_) => return true,
-                    Err(e) => errs.push(format!("{dev}: {e}")),
-                }
+    /// A renderer on the first GL device that opens.
+    fn gpu(w: i32, h: i32) -> Renderer {
+        let mut errs = Vec::new();
+        for dev in crate::engine::probe_dri_devices() {
+            match Renderer::new(w, h, 4, Some(&dev), false, false) {
+                Ok(r) => return r,
+                Err(e) => errs.push(format!("{dev}: {e}")),
             }
-            eprintln!("no GL device for the console: {}", errs.join("; "));
-            false
-        })
+        }
+        panic!(
+            "no GL device opens ({}). A host without one runs the tests under \
+             RUSTFLAGS=\"--cfg ghee_no_gpu\", which reports them as ignored",
+            errs.join("; ")
+        );
     }
 
     fn key_au() -> Vec<u8> {
@@ -3147,15 +3145,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_posted_string_param_relays_its_text() {
-        let Some(r) = crate::engine::probe_dri_devices()
-            .iter()
-            .find_map(|dev| Renderer::new(32, 24, 4, Some(dev), false, false).ok())
-        else {
-            eprintln!("no GL device for the console");
-            return;
-        };
-        let renderer = RefCell::new(r);
+        let renderer = RefCell::new(gpu(32, 24));
         let console = tmp_console("text");
         let st = RefCell::new(Running { scene: None });
         let ctrl: ControllerSlot = RefCell::new(None);
@@ -3181,15 +3173,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn posted_words_past_the_texture_keep_the_last_words_and_show_why() {
-        let Some(r) = crate::engine::probe_dri_devices()
-            .iter()
-            .find_map(|dev| Renderer::new(32, 24, 4, Some(dev), false, false).ok())
-        else {
-            eprintln!("no GL device for the console");
-            return;
-        };
-        let renderer = RefCell::new(r);
+        let renderer = RefCell::new(gpu(32, 24));
         let console = tmp_console("toolong");
         let st = RefCell::new(Running { scene: None });
         let ctrl: ControllerSlot = RefCell::new(None);
@@ -3251,10 +3237,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn the_console_draws_to_a_thread_bound_sink_on_the_callers_thread() {
-        if !have_gl() {
-            return;
-        }
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
         let console = tmp_console("bound"); // for its scene directory
         let drawn = Rc::new(Cell::new(0));
         let ran = run(Options {
@@ -3275,10 +3260,9 @@ mod tests {
 
     /// --stats needs this to print its line after a bounded serve run.
     #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_bounded_console_run_hands_back_its_timing() {
-        if !have_gl() {
-            return;
-        }
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
         let console = tmp_console("stats");
         let summary: Summary = Rc::new(RefCell::new(None));
         let got = Rc::clone(&summary);

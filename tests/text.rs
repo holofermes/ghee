@@ -55,9 +55,9 @@ fn lock() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A w x h RGBA renderer on the first GL device that opens. None = no device,
-/// and the test reports the skip. Its atlases cache under the temp directory.
-fn gpu(w: usize, h: usize) -> Option<(MutexGuard<'static, ()>, Renderer)> {
+/// A w x h RGBA renderer on the first GL device that opens. Its atlases cache
+/// under the temp directory.
+fn gpu(w: usize, h: usize) -> (MutexGuard<'static, ()>, Renderer) {
     let guard = lock();
     std::env::set_var(
         "XDG_CACHE_HOME",
@@ -66,12 +66,15 @@ fn gpu(w: usize, h: usize) -> Option<(MutexGuard<'static, ()>, Renderer)> {
     let mut errs = Vec::new();
     for dev in probe_dri_devices() {
         match Renderer::new(w as i32, h as i32, 4, Some(&dev), false, false) {
-            Ok(r) => return Some((guard, r)),
+            Ok(r) => return (guard, r),
             Err(e) => errs.push(format!("{dev}: {e}")),
         }
     }
-    eprintln!("no GL device for rendering: {}", errs.join("; "));
-    None
+    panic!(
+        "no GL device opens ({}). A host without one runs the tests under \
+         RUSTFLAGS=\"--cfg ghee_no_gpu\", which reports them as ignored",
+        errs.join("; ")
+    );
 }
 
 fn tmpdir(tag: &str) -> String {
@@ -850,6 +853,7 @@ fn a_text_name_is_a_glsl_identifier_declared_once() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_text_named_like_a_layer_helper_is_refused() {
     // A text named glyph declares glyph_cover, which a layer declares too.
     assert_eq!(
@@ -861,7 +865,7 @@ fn a_text_named_like_a_layer_helper_is_refused() {
         let mut doc = texts_scene(json!({name: {"font": "sans"}}));
         doc["passes"][0]["layers"] = json!([{"text": name, "fragment": WHITE,
             "vertex": "vec2 glyph_place(vec2 em) { return em * 40.0; }"}]);
-        let Some((_g, mut r)) = gpu(W, H) else { return };
+        let (_g, mut r) = gpu(W, H);
         assert_eq!(r.setup(&loaded(&doc)).unwrap(), "", "{name}");
     }
 }
@@ -918,6 +922,7 @@ fn a_name_declared_by_a_text_collides_with_nothing() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_name_beside_the_names_of_a_text_compiles() {
     // ghee's own names for a text start with ghee_, so label_w, label_atlas,
     // label_tex and label_emoji are free, and two texts never meet in them.
@@ -944,7 +949,7 @@ fn a_name_beside_the_names_of_a_text_compiles() {
     let mut image = doc.clone();
     image["assets"]["label_tex"] = json!({"file": "label.png"});
     assert!(Scene::from_dict(&image, None, None).is_ok());
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
     let f = render(&mut r, &loaded(&doc));
     assert!(f.contains(&255), "the layers paint nothing");
@@ -993,6 +998,7 @@ fn locals(src: &str) -> Vec<String> {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     let place = "vec2 glyph_place(vec2 glyph_q) { return glyph_q * 48.0 + 8.0; }";
     let ink = "void main(){ gl_FragColor = vec4(vec3(glyph_cover()), 1.0); }";
@@ -1034,7 +1040,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     for n in &names {
         named["params"][n] = json!({"type": "vec2", "value": [0.0, 0.0]});
     }
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let plain = render(&mut r, &loaded(&doc));
     assert!(plain.contains(&255), "the scene draws nothing");
     // The passes and the layers paint grey, and the emoji paints colour.
@@ -1044,6 +1050,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
     let red = json!({"type": "color", "value": [1.0, 0.0, 0.0]});
     let code = |read: &str| {
@@ -1059,7 +1066,7 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
         doc["passes"][0]["code"] = json!(code);
         doc
     };
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     // The pass selects .bg and reads the color bg, which multiplies by 1.
     let plain = render(&mut r, &loaded(&scene(json!({}), &code("v.bg"))));
     let bg = scene(json!({"bg": red}), &code("v.bg * bg.r"));
@@ -1326,10 +1333,11 @@ const W: usize = 192;
 const H: usize = 128;
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_fitted_capital_i_covers_its_stem_and_nothing_beside_it() {
     let laid = lay(SANS, "I", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&label_scene(SANS, "I", Align::Left, fit)));
     assert_draws(&f, W, 0, &laid, fit, "I");
 
@@ -1383,9 +1391,10 @@ fn a_fitted_capital_i_covers_its_stem_and_nothing_beside_it() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn two_lines_take_their_alignment() {
     let words = "AV To\nghee";
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let mut frames = Vec::new();
     for align in [Align::Left, Align::Center, Align::Right] {
         let laid = lay(SANS, words, align);
@@ -1398,31 +1407,34 @@ fn two_lines_take_their_alignment() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn cubic_outlines_draw() {
     let laid = lay(CFF, "IO", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&label_scene(CFF, "IO", Align::Left, fit)));
     assert_draws(&f, W, 0, &laid, fit, "IO");
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_missing_character_draws_glyph_0() {
     let laid = lay(SANS, "I字", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&label_scene(SANS, "I字", Align::Left, fit)));
     assert_draws(&f, W, 0, &laid, fit, "I字");
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn empty_words_cover_nothing() {
     let fit = Fit {
         x: 8.0,
         y: 8.0,
         ppem: 64.0,
     };
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     for words in ["", "\n", " "] {
         let f = render(&mut r, &loaded(&label_scene(SANS, words, Align::Left, fit)));
         assert!(blank(&f, 0), "{words:?}");
@@ -1430,6 +1442,7 @@ fn empty_words_cover_nothing() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn size_reads_the_block_in_em() {
     let words = "AV To\nghee";
     let laid = lay(SANS, words, Align::Center);
@@ -1443,12 +1456,13 @@ fn size_reads_the_block_in_em() {
              abs(label_size.y - {:.6}) < 1e-4 ? 1.0 : 0.0, 0.0, 1.0); }}",
             laid.width, laid.height)}],
     });
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&doc));
     assert_eq!(&f[..4], [255, 255, 0, 255]);
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_string_param_relays_the_text_live() {
     let (i, o) = (lay(SANS, "I", Align::Left), lay(SANS, "O", Align::Left));
     let fit = Fit::of(o.width, o.height, W, H);
@@ -1458,7 +1472,7 @@ fn a_string_param_relays_the_text_live() {
         "void main(){{ gl_FragColor = vec4({}, gain, 0.0, 1.0); }}",
         fit.cover("label")
     ));
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&doc));
     assert_draws(&f, W, 0, &i, fit, "I");
     // gain takes a value the scene does not hold, so a rebuild from the scene
@@ -1492,6 +1506,7 @@ fn a_string_param_relays_the_text_live() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_text_reaches_every_pass() {
     let laid = lay(SANS, "AV", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
@@ -1507,7 +1522,7 @@ fn a_text_reaches_every_pass() {
                  0.0, 1.0); }}", fit.cover("label"))},
         ],
     });
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&doc));
     assert_draws(&f, W, 0, &laid, fit, "pass a");
     assert_draws(&f, W, 1, &laid, fit, "pass main");
@@ -1521,6 +1536,7 @@ fn a_text_reaches_every_pass() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn two_texts_draw_their_own_words() {
     let (label, title) = (lay(SANS, "AV", Align::Left), lay(CFF, "O", Align::Left));
     let fit = Fit::of(
@@ -1537,13 +1553,14 @@ fn two_texts_draw_their_own_words() {
             "void main(){{ gl_FragColor = vec4({}, {}, 0.0, 1.0); }}",
             fit.cover("label"), fit.cover("title"))}],
     });
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&doc));
     assert_draws(&f, W, 0, &label, fit, "label");
     assert_draws(&f, W, 1, &title, fit, "title");
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_later_setup_draws_its_own_text() {
     let words = ["I", "O", "AV"];
     let laid: Vec<Laid> = words.iter().map(|w| lay(SANS, w, Align::Left)).collect();
@@ -1553,7 +1570,7 @@ fn a_later_setup_draws_its_own_text() {
         W,
         H,
     );
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     for (w, l) in words.iter().zip(&laid) {
         let f = render(&mut r, &loaded(&label_scene(SANS, w, Align::Left, fit)));
         assert_draws(&f, W, 0, l, fit, w);
@@ -1583,6 +1600,7 @@ fn a_later_setup_draws_its_own_text() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
     let fit = Fit {
         x: 8.0,
@@ -1590,7 +1608,7 @@ fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
         ppem: 64.0,
     };
     let sc = Scene::from_dict(&label_scene(SANS, "I", Align::Left, fit), None, None).unwrap();
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     assert_eq!(
         r.setup(&sc).unwrap(),
         "text 'label': font 'face' was never loaded, the scene was built without a directory"
@@ -1598,12 +1616,13 @@ fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_setup_frees_the_asset_slots_of_old_texts() {
     // The engine binds 16 assets at a time, so each setup has to hand back
     // the slots of the texts that its scene no longer declares.
     let laid = lay(SANS, "I", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     for i in 0..20 {
         let name = format!("t{i}");
         let doc = json!({
@@ -1620,10 +1639,11 @@ fn a_setup_frees_the_asset_slots_of_old_texts() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_filter_after_a_text_compiles() {
     let laid = lay(SANS, "I", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let mut sc = loaded(&label_scene(SANS, "I", Align::Left, fit));
     apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
     assert_eq!(r.setup(&sc).unwrap(), "");
@@ -1742,6 +1762,7 @@ fn assert_hazard(frame: &[u8], w: usize, fit: Fit, rects: &[[f64; 4]], what: &st
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
     let words = "Ag j\nI";
     let mut t = Text::from_dict("label", &json!({"font": "face"})).unwrap();
@@ -1751,7 +1772,7 @@ fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
     assert_eq!(rects.len(), 4);
     let (bw, bh) = block(laid.built.as_ref().unwrap());
     let fit = Fit::of(bw, bh, W, H);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let cover = render(
         &mut r,
         &loaded(&label_scene("Missing.ttf", words, Align::Left, fit)),
@@ -1776,6 +1797,7 @@ fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_font_names_an_asset_or_a_file_and_a_list_mixes_both() {
     let words = "I\u{1f600}";
     let fit = Fit {
@@ -1783,7 +1805,7 @@ fn a_font_names_an_asset_or_a_file_and_a_list_mixes_both() {
         y: 4.0,
         ppem: 30.0,
     };
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let assets = colour_scene(&[SANS, EMOJI], words, "mtsdf", &fit_place(fit));
     let want = render(&mut r, &loaded(&assets));
     // The files themselves, and an asset beside a file.
@@ -1814,6 +1836,7 @@ fn a_font_names_an_asset_or_a_file_and_a_list_mixes_both() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn an_unreadable_font_draws_a_box_a_character() {
     let words = "Ag";
     let laid = text::build(&alone(b"not a font"), words, Align::Left);
@@ -1822,7 +1845,7 @@ fn an_unreadable_font_draws_a_box_a_character() {
     let fit = Fit::of(bw, bh, W, H);
     let dir = tmpdir("unreadable");
     fs::write(format!("{dir}/bad.ttf"), b"not a font").unwrap();
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let mut sc =
         Scene::from_dict(&label_scene("bad.ttf", words, Align::Left, fit), None, None).unwrap();
     with_assets_env("", || sc.load_assets(&dir)).unwrap();
@@ -1838,6 +1861,7 @@ fn an_unreadable_font_draws_a_box_a_character() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_colour_font_alone_draws_its_emoji_in_layers_and_nothing_through_cover() {
     // A space, a zero-width joiner the font maps, and a variation selector
     // it lacks need no ink.
@@ -1858,7 +1882,7 @@ fn a_colour_font_alone_draws_its_emoji_in_layers_and_nothing_through_cover() {
     let (bw, _) = block(built);
     assert!((bw - 3.0 * advance).abs() < 1e-9, "{bw}");
     let (w, h) = (160, 150);
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     for (k, ch) in ['\u{1f600}', '\u{1f642}'].into_iter().enumerate() {
         let b = bitmap(EMOJI, ch);
         let (fit, at) = bitmap_fit(built, k, &b, 1.0, [8.0, 6.0]);
@@ -1879,6 +1903,7 @@ fn a_colour_font_alone_draws_its_emoji_in_layers_and_nothing_through_cover() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_cff2_font_without_a_variation_store_draws_like_its_cff_source() {
     let words = "IO\nOI";
     assert!(near(
@@ -1887,7 +1912,7 @@ fn a_cff2_font_without_a_variation_store_draws_like_its_cff_source() {
     ));
     let laid = lay(CFF, words, Align::Center);
     let fit = Fit::of(laid.width, laid.height, W, H);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let cff = render(
         &mut r,
         &loaded(&label_scene(CFF, words, Align::Center, fit)),
@@ -1912,6 +1937,7 @@ fn a_cff2_font_without_a_variation_store_draws_like_its_cff_source() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn words_that_fit_no_texture_at_setup_draw_nothing_and_the_scene_runs() {
     let fit = Fit {
         x: 8.0,
@@ -1919,7 +1945,7 @@ fn words_that_fit_no_texture_at_setup_draw_nothing_and_the_scene_runs() {
         ppem: 64.0,
     };
     let words = "I".repeat(400_000);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     for doc in [
         label_scene(SANS, &words, Align::Left, fit),
         layer_scene(SANS, &words, Align::Left, fit),
@@ -1939,13 +1965,14 @@ fn words_that_fit_no_texture_at_setup_draw_nothing_and_the_scene_runs() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_slug_layer_keeps_its_last_words_and_their_boxes_past_words_that_fit_no_texture() {
     let fit = Fit {
         x: 8.0,
         y: 8.0,
         ppem: 48.0,
     };
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let doc = filled(hazard_scene("Missing.ttf", "x", fit), "slug");
     let before = render(&mut r, &loaded(&doc));
     assert!(r.set_text("label", &"x".repeat(400_000)).unwrap());
@@ -2070,6 +2097,7 @@ fn layer_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_vertex_reads_the_glyph_values_the_frame_uniforms_the_params_its_text_size_and_the_common_block(
 ) {
     let fit = Fit {
@@ -2077,7 +2105,7 @@ fn a_vertex_reads_the_glyph_values_the_frame_uniforms_the_params_its_text_size_a
         y: 8.0,
         ppem: 48.0,
     };
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let reads = "glyph_index + glyph_word + glyph_line + glyph_span.x + glyph_box.x \
                  + resolution.x + time + DT + frame + shift + k + label_size.x + twice(1.0)";
     for fill in FILLS {
@@ -2143,10 +2171,9 @@ fn assert_like_cover(layered: &[u8], cover: &[u8], what: &str) {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_covers_as_the_text_does() {
-    let Some((_g, mut r)) = gpu(320, 120) else {
-        return;
-    };
+    let (_g, mut r) = gpu(320, 120);
     let cases = [
         (SANS, "AV To\nghee", 13.0),
         (SANS, "Wave fjord {}@", 29.5625),
@@ -2169,6 +2196,7 @@ fn a_layer_covers_as_the_text_does() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_follows_its_words_live() {
     let (w, h) = (256, 64);
     let fit = Fit {
@@ -2176,7 +2204,7 @@ fn a_layer_follows_its_words_live() {
         y: 4.0,
         ppem: 40.0,
     };
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     let want = render(
         &mut r,
         &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
@@ -2192,6 +2220,7 @@ fn a_layer_follows_its_words_live() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_rotated_and_scaled_layer_lands_its_outline() {
     let (w, h) = (240, 160);
     let words = "ghee";
@@ -2210,7 +2239,7 @@ fn a_rotated_and_scaled_layer_lands_its_outline() {
     let mut doc = label_scene(SANS, words, Align::Left, Fit::of(1.0, 1.0, w, h));
     doc["passes"][0] = json!({"name": "main", "code": BLACK,
         "layers": [{"text": "label", "fragment": WHITE, "vertex": place}]});
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     let frame = render(&mut r, &loaded(&doc));
     // The pixel centre back through the rotation into the block.
     let em = |x: usize, y: usize| {
@@ -2222,6 +2251,7 @@ fn a_rotated_and_scaled_layer_lands_its_outline() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn layers_land_in_their_order_and_pad_past_the_ink() {
     let (w, h) = (96, 96);
     let fit = Fit {
@@ -2245,7 +2275,7 @@ fn layers_land_in_their_order_and_pad_past_the_ink() {
         (x as usize, y as usize)
     };
     let mid = (g.lo[1] + g.hi[1]) / 2.0;
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     let frame = render(&mut r, &loaded(&doc));
     let at = |(x, y): (usize, usize)| &frame[(y * w + x) * 4..(y * w + x) * 4 + 3];
     // The red fill lands over the pad: a pad added after it would leave blue
@@ -2258,6 +2288,7 @@ fn layers_land_in_their_order_and_pad_past_the_ink() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_reads_int_params_in_both_stages() {
     let fit = Fit {
         x: 4.0,
@@ -2274,9 +2305,7 @@ fn a_layer_reads_int_params_in_both_stages() {
         json!(fit_place(fit).replace("return ", "return vec2(float(n), float(m)) + "));
     doc["passes"][0]["layers"][0]["fragment"] =
         json!(WHITE.replace("vec4(c)", "vec4(c * float(n - m))"));
-    let Some((_g, mut r)) = gpu(160, 48) else {
-        return;
-    };
+    let (_g, mut r) = gpu(160, 48);
     let moved = Fit {
         x: fit.x + 3.0,
         y: fit.y + 2.0,
@@ -2291,6 +2320,7 @@ fn a_layer_reads_int_params_in_both_stages() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_compile_error_names_the_pass_the_layer_and_its_line() {
     let fit = Fit {
         x: 4.0,
@@ -2298,9 +2328,7 @@ fn a_layer_compile_error_names_the_pass_the_layer_and_its_line() {
         ppem: 30.0,
     };
     let good = layer_scene(SANS, "I", Align::Left, fit);
-    let Some((_g, mut r)) = gpu(64, 48) else {
-        return;
-    };
+    let (_g, mut r) = gpu(64, 48);
     let first = render(&mut r, &loaded(&good));
     let mut bad = good.clone();
     bad["passes"][0]["layers"][0]["fragment"] =
@@ -2367,6 +2395,7 @@ fn a_layer_compile_error_names_the_pass_the_layer_and_its_line() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_with_no_vertex_centres_its_words_and_with_no_fragment_draws_them_white() {
     let (w, h) = (160, 64);
     let laid = lay(SANS, "ghee", Align::Left);
@@ -2376,7 +2405,7 @@ fn a_layer_with_no_vertex_centres_its_words_and_with_no_fragment_draws_them_whit
         y: (h as f64 - laid.height * ppem) / 2.0,
         ppem,
     };
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     for fill in FILLS {
         let scene = |layer: Value| {
             let mut doc = filled(label_scene(SANS, "ghee", Align::Left, fit), fill);
@@ -2618,6 +2647,7 @@ fn a_layer_declaration_names_what_it_lacks() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_on_a_sized_pass_covers_as_the_text_does_there() {
     // Pass a renders at half the frame on each axis, and main shows it.
     let (w, h) = (320, 120);
@@ -2635,13 +2665,14 @@ fn a_layer_on_a_sized_pass_covers_as_the_text_does_there() {
     };
     let cover = sized(label_scene(SANS, words, Align::Left, fit)["passes"][0].clone());
     let layered = sized(layer_scene(SANS, words, Align::Left, fit)["passes"][0].clone());
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     let want = render(&mut r, &cover);
     let got = render(&mut r, &layered);
     assert_like_cover(&got, &want, "a layer on a 160x60 pass");
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn one_text_drawn_by_two_passes_follows_its_words_in_both() {
     // Pass a draws the words in red. main shows a and adds them in green.
     let (w, h) = (256, 64);
@@ -2660,7 +2691,7 @@ fn one_text_drawn_by_two_passes_follows_its_words_in_both() {
          "layers": [{"text": "label", "vertex": place, "blend": "add",
             "fragment": "void main(){ float c = glyph_cover(); gl_FragColor = vec4(0.0, c, 0.0, c); }"}]},
     ]);
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     let words = ["AV", "ghee"];
     let wants: Vec<Vec<u8>> = words
         .iter()
@@ -2682,15 +2713,14 @@ fn one_text_drawn_by_two_passes_follows_its_words_in_both() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_param_takes_a_name_of_ghees_glsl_without_its_prefix() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
         ppem: 30.0,
     };
-    let Some((_g, mut r)) = gpu(160, 48) else {
-        return;
-    };
+    let (_g, mut r) = gpu(160, 48);
     let want = render(
         &mut r,
         &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
@@ -2734,6 +2764,7 @@ fn a_param_takes_a_name_of_ghees_glsl_without_its_prefix() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_past_the_texture_units_fails_naming_the_layer() {
     // main's channels and array take every unit, and its layer needs one
     // more for the text.
@@ -2742,9 +2773,7 @@ fn a_layer_past_the_texture_units_fails_naming_the_layer() {
         y: 4.0,
         ppem: 30.0,
     };
-    let Some((_g, mut r)) = gpu(160, 48) else {
-        return;
-    };
+    let (_g, mut r) = gpu(160, 48);
     let before = render(&mut r, &loaded(&layer_scene(SANS, "I", Align::Left, fit)));
     let units = r.max_texture_units() as usize;
     let mut doc = layer_scene(SANS, "I", Align::Left, fit);
@@ -2770,12 +2799,11 @@ fn a_layer_past_the_texture_units_fails_naming_the_layer() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_that_samples_past_the_texture_units_fails_naming_the_layer() {
     // main reads one channel, and its layer samples the label's texture and an
     // image in every other unit.
-    let Some((_g, mut r)) = gpu(64, 48) else {
-        return;
-    };
+    let (_g, mut r) = gpu(64, 48);
     let units = r.max_texture_units() as usize;
     let dir = tmpdir("units");
     fs::copy(format!("{FONTS}/{SANS}"), format!("{dir}/{SANS}")).unwrap();
@@ -2848,10 +2876,9 @@ fn words_only() -> Value {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_over_a_transparent_pass_leaves_its_coverage_in_alpha() {
-    let Some((_g, mut r)) = gpu(64, 56) else {
-        return;
-    };
+    let (_g, mut r) = gpu(64, 56);
     let opaque = render(&mut r, &loaded(&words_only()));
     assert!(alphas(&opaque).iter().all(|a| *a == 255));
     r.set_alpha(true);
@@ -2865,10 +2892,9 @@ fn a_layer_over_a_transparent_pass_leaves_its_coverage_in_alpha() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_pass_of_layers_alone_starts_transparent_and_a_later_pass_composites_it() {
-    let Some((_g, mut r)) = gpu(64, 56) else {
-        return;
-    };
+    let (_g, mut r) = gpu(64, 56);
     // The same layer over black, and the words pass composited over blue.
     let over_black = render(&mut r, &loaded(&layer_scene(SANS, "I", Align::Left, I_FIT)));
     let mut doc = words_only();
@@ -2892,10 +2918,9 @@ fn a_pass_of_layers_alone_starts_transparent_and_a_later_pass_composites_it() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_blends_the_pass_alpha_as_its_colour() {
-    let Some((_g, mut r)) = gpu(64, 56) else {
-        return;
-    };
+    let (_g, mut r) = gpu(64, 56);
     r.set_alpha(true);
     for fill in FILLS {
         let mut doc = filled(layer_scene(SANS, "I", Align::Left, I_FIT), fill);
@@ -2910,15 +2935,14 @@ fn a_layer_blends_the_pass_alpha_as_its_colour() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_reset_drops_the_layers_with_the_scene() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
         ppem: 30.0,
     };
-    let Some((_g, mut r)) = gpu(64, 48) else {
-        return;
-    };
+    let (_g, mut r) = gpu(64, 48);
     render(&mut r, &loaded(&layer_scene(SANS, "I", Align::Left, fit)));
     r.reset();
     assert!(r.set_text("label", "O").unwrap());
@@ -2933,6 +2957,7 @@ fn px_distance(laid: &Laid, fit: Fit, x: usize, y: usize) -> f64 {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
     // One glyph a frame, so no quad overlaps another: a bowl, and corners.
     for words in ["e", "k"] {
@@ -2959,7 +2984,7 @@ fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
                       float ring = clamp(glyph_soft() + 3.5, 0.0, 1.0); \
                       gl_FragColor = vec4(fill, ring - fill, 0.0, 0.0); }"},
         ]});
-        let Some((_g, mut r)) = gpu(w, h) else { return };
+        let (_g, mut r) = gpu(w, h);
         let frame = render(&mut r, &loaded(&doc));
         let at = |x: usize, y: usize, c: usize| frame[(y * w + x) * 4 + c];
         // The field holds the true distance up to its reach, the glow's pad,
@@ -3023,6 +3048,7 @@ fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn an_mtsdf_layer_pads_its_quads_by_its_pad() {
     let fit = Fit {
         x: 24.0,
@@ -3032,7 +3058,7 @@ fn an_mtsdf_layer_pads_its_quads_by_its_pad() {
     let (w, h) = (96, 96);
     let laid = lay(SANS, "I", Align::Left);
     let g = &laid.glyphs[0];
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     // 0.25 em reaches past the field of the least range, 6 texels at 32 px/em.
     for pad in [0.25, 0.05] {
         let mut doc = label_scene(SANS, "I", Align::Left, fit);
@@ -3053,6 +3079,7 @@ fn an_mtsdf_layer_pads_its_quads_by_its_pad() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn an_mtsdf_field_reaches_the_largest_pad_of_its_texts_layers() {
     let laid = lay(SANS, "I", Align::Left);
     let g = &laid.glyphs[0];
@@ -3083,7 +3110,7 @@ fn an_mtsdf_field_reaches_the_largest_pad_of_its_texts_layers() {
     ]);
     let sc = loaded(&doc);
     assert_eq!(sc.atlas_range("label"), 32);
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     let frame = render(&mut r, &sc);
     let (mut seen, mut off) = (0, Vec::new());
     for y in 0..h {
@@ -3147,15 +3174,14 @@ fn an_mtsdf_atlas_takes_its_range_from_the_layers_of_its_text() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn the_slug_fill_names_the_mtsdf_fill_for_a_distance() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
         ppem: 30.0,
     };
-    let Some((_g, mut r)) = gpu(64, 48) else {
-        return;
-    };
+    let (_g, mut r) = gpu(64, 48);
     for read in ["glyph_dist", "glyph_soft"] {
         let mut doc = layer_scene(SANS, "I", Align::Left, fit);
         doc["passes"][0]["layers"][0]["fragment"] = json!(format!(
@@ -3184,15 +3210,14 @@ fn threads_named(name: &str) -> usize {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn only_an_mtsdf_layer_starts_an_atlas() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
         ppem: 30.0,
     };
-    let Some((_g, mut r)) = gpu(64, 48) else {
-        return;
-    };
+    let (_g, mut r) = gpu(64, 48);
     let cache = tmpdir("no-atlas");
     std::env::set_var("XDG_CACHE_HOME", &cache);
     // A slug layer, and an MTSDF text that no layer names.
@@ -3218,6 +3243,7 @@ fn only_an_mtsdf_layer_starts_an_atlas() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_glyph_the_atlas_cannot_hold_draws_an_error_box_and_says_why() {
     // A pad of 32 em takes a range of 2048 texels, which pads every cell past
     // the atlas. The advances of m and w are wider than a box.
@@ -3228,7 +3254,7 @@ fn a_glyph_the_atlas_cannot_hold_draws_an_error_box_and_says_why() {
     let fit = Fit::of(bw, bh, W, H);
     let mut doc = hazard_scene(SANS, words, fit);
     doc["passes"][0]["layers"][0]["pad"] = json!(32.0);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let (_g, mut r) = gpu(W, H);
     let frame = render(&mut r, &loaded(&doc));
     // Each box stands centred in its character's advance, on the baseline.
     let q = &built.quads;
@@ -3636,10 +3662,11 @@ fn a_text_round_trips_its_fonts_and_names_a_bad_list() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_paints_its_colour_glyphs_in_their_own_colours() {
     let words = "\u{1f600}I";
     let (w, h) = (220, 150);
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     // The sbix font carries a strike of flat green beside the bitmaps, and
     // the largest strike draws.
     for file in [EMOJI, EMOJI_SBIX] {
@@ -3665,10 +3692,11 @@ fn a_layer_paints_its_colour_glyphs_in_their_own_colours() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_paints_the_colour_glyph_that_an_emoji_selector_takes() {
     let words = "\u{2764}\u{fe0f}";
     let (w, h) = (220, 150);
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     let laid = text::build(&listed(&[HEART, EMOJI_HEART]), words, Align::Left);
     let built = laid.built.as_ref().unwrap();
     let b = bitmap(EMOJI_HEART, '\u{2764}');
@@ -3682,6 +3710,7 @@ fn a_layer_paints_the_colour_glyph_that_an_emoji_selector_takes() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_colour_glyph_shrinks_through_its_mipmaps() {
     // At a quarter of its strike, each pixel of the bitmap's box shows the
     // average of a 4 x 4 block of the bitmap: mip level 2.
@@ -3689,15 +3718,14 @@ fn a_colour_glyph_shrinks_through_its_mipmaps() {
     let laid = text::build(&listed(&[SANS, EMOJI]), words, Align::Left);
     let b = bitmap(EMOJI, '\u{1f600}');
     let (fit, at) = bitmap_fit(laid.built.as_ref().unwrap(), 0, &b, 4.0, [5.0, 3.0]);
-    let Some((_g, mut r)) = gpu(48, 40) else {
-        return;
-    };
+    let (_g, mut r) = gpu(48, 40);
     let doc = colour_scene(&[SANS, EMOJI], words, "mtsdf", &exact_place(fit));
     let frame = render(&mut r, &loaded(&doc));
     assert_bitmap(&frame, 48, &b, at, 4, [0, 0, 0], "a quarter");
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_colour_glyph_moves_with_its_letter() {
     let words = "I\u{1f600}";
     let fit = Fit {
@@ -3706,7 +3734,7 @@ fn a_colour_glyph_moves_with_its_letter() {
         ppem: 40.0,
     };
     let (w, h) = (128, 56);
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     let still = render(
         &mut r,
         &loaded(&colour_scene(
@@ -3749,15 +3777,14 @@ fn a_colour_glyph_moves_with_its_letter() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn cover_reads_a_colour_glyph_as_no_ink_and_says_nothing() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
         ppem: 40.0,
     };
-    let Some((_g, mut r)) = gpu(128, 56) else {
-        return;
-    };
+    let (_g, mut r) = gpu(128, 56);
     let want = render(&mut r, &loaded(&label_scene(SANS, "I", Align::Left, fit)));
     let mut doc = label_scene(SANS, "I\u{1f600}", Align::Left, fit);
     doc["assets"]["emoji"] = json!({"file": EMOJI});
@@ -3768,6 +3795,7 @@ fn cover_reads_a_colour_glyph_as_no_ink_and_says_nothing() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_colour_glyph_blends_the_pass_alpha_as_its_colour() {
     let words = "\u{1f600}";
     let fit = Fit {
@@ -3775,9 +3803,7 @@ fn a_colour_glyph_blends_the_pass_alpha_as_its_colour() {
         y: 2.0,
         ppem: 40.0,
     };
-    let Some((_g, mut r)) = gpu(56, 56) else {
-        return;
-    };
+    let (_g, mut r) = gpu(56, 56);
     r.set_alpha(true);
     let mut doc = colour_scene(&[SANS, EMOJI], words, "mtsdf", &fit_place(fit));
     doc["passes"][0]["code"] = json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
@@ -3829,6 +3855,7 @@ fn the_last_layer_of_a_text_in_a_pass_paints_its_emoji_and_emoji_says_otherwise(
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_shadow_and_a_glow_paint_no_emoji_unless_emoji_says_so() {
     // Three layers of one text, a shadow, a glow and the fill, each 40 pixels
     // right of the one before.
@@ -3853,7 +3880,7 @@ fn a_shadow_and_a_glow_paint_no_emoji_unless_emoji_says_so() {
         doc["passes"][0]["layers"] = json!(layers);
         doc
     };
-    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let (_g, mut r) = gpu(w, h);
     // The layers whose 40 pixels hold an emoji, over the black pass.
     let mut painted = |doc: &Value| -> Vec<bool> {
         let frame = render(&mut r, &loaded(doc));

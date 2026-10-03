@@ -13,19 +13,21 @@ const FLAT: &str = "void main(){ gl_FragColor = vec4(vec3(0.5), 1.0); }";
 /// One Renderer at a time: the tests that render hold this.
 static GPU: Mutex<()> = Mutex::new(());
 
-/// A renderer on the first GL device that opens. None = no device, and the
-/// tests that need one report the skip.
-fn gpu() -> Option<(MutexGuard<'static, ()>, Renderer)> {
+/// A renderer on the first GL device that opens.
+fn gpu() -> (MutexGuard<'static, ()>, Renderer) {
     let guard = GPU.lock().unwrap_or_else(|e| e.into_inner());
     let mut errs = Vec::new();
     for dev in probe_dri_devices() {
         match Renderer::new(64, 48, 4, Some(&dev), false, false) {
-            Ok(r) => return Some((guard, r)),
+            Ok(r) => return (guard, r),
             Err(e) => errs.push(format!("{dev}: {e}")),
         }
     }
-    eprintln!("no GL device for rendering: {}", errs.join("; "));
-    None
+    panic!(
+        "no GL device opens ({}). A host without one runs the tests under \
+         RUSTFLAGS=\"--cfg ghee_no_gpu\", which reports them as ignored",
+        errs.join("; ")
+    );
 }
 
 #[test]
@@ -165,6 +167,7 @@ fn a_scene_filter_name_resolves_to_an_appended_pass() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_sugar_built_scene_renders_its_arrays_and_params() {
     let scene = Scene::of(vec![Pass::of(
         "main",
@@ -174,7 +177,7 @@ fn a_sugar_built_scene_renders_its_arrays_and_params() {
     .param(Param::float("gain", 1.0))
     .unwrap()])
     .unwrap();
-    let Some((_g, mut r)) = gpu() else { return };
+    let (_g, mut r) = gpu();
     assert_eq!(r.setup(&scene).unwrap(), "");
     let frame = r
         .render(Some(&mut |_name, _size| Feed::Data(vec![1.0; 4])))
@@ -183,6 +186,7 @@ fn a_sugar_built_scene_renders_its_arrays_and_params() {
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_sugar_built_channel_reads_its_named_pass() {
     let scene = Scene::of(vec![
         Pass::of(
@@ -198,7 +202,7 @@ fn a_sugar_built_channel_reads_its_named_pass() {
         .unwrap(),
     ])
     .unwrap();
-    let Some((_g, mut r)) = gpu() else { return };
+    let (_g, mut r) = gpu();
     assert_eq!(r.setup(&scene).unwrap(), "");
     let frame = r.render(None).unwrap();
     assert_eq!(&frame[..4], [255, 0, 255, 255]);

@@ -1493,7 +1493,7 @@ impl Pass {
             Some(t) if t.fill == Fill::Mtsdf => {
                 crate::text::mtsdf_vertex_main(&d.text, d.pad, t.px_per_em, t.range)
             }
-            _ => crate::text::outline_vertex_main(d.pad),
+            _ => crate::text::slug_vertex_main(d.pad),
         };
         let v = self.draw_vertex(d, scene_params, main);
         let mut f = self.preamble(scene_params, assets, texts, hw_linear);
@@ -1508,8 +1508,8 @@ impl Pass {
                 crate::text::mtsdf_fragment_tail(&d.text),
             ),
             _ => (
-                crate::text::outline_fragment_head(&d.text),
-                crate::text::outline_fragment_tail(&d.text),
+                crate::text::slug_fragment_head(&d.text),
+                crate::text::slug_fragment_tail(&d.text),
             ),
         };
         f.extend(head);
@@ -1521,10 +1521,10 @@ impl Pass {
     }
 
     /// The vertex and the fragment shader of the error boxes of draw `k`: the
-    /// draw's own place with the outline fill's vertex main and no pad, so each
+    /// draw's own place with the slug fill's vertex main and no pad, so each
     /// box lands where a glyph would go, and ghee's hazard stripes.
     pub fn draw_box_glsl(&self, k: usize, scene_params: Option<&ParamMap>) -> (String, String) {
-        let main = crate::text::outline_vertex_main(0.0);
+        let main = crate::text::slug_vertex_main(0.0);
         let v = self.draw_vertex(&self.draws[k], scene_params, main);
         let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         f.extend(crate::text::box_fragment());

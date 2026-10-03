@@ -654,7 +654,7 @@ fn texts_round_trip_and_left_is_the_default() {
     );
     let doc = texts_scene(json!({
         "label": {"font": "sans", "fill": "mtsdf", "atlas": {"px_per_em": 32, "range": 6}},
-        "title": {"font": "sans", "fill": "outline"},
+        "title": {"font": "sans", "fill": "slug"},
         "tail": {"font": "sans", "atlas": {"px_per_em": 48}},
         "foot": {"font": "sans", "atlas": {"range": 4}},
     }));
@@ -663,12 +663,12 @@ fn texts_round_trip_and_left_is_the_default() {
         sc.to_dict()["texts"],
         json!({
             "label": {"font": "sans"},
-            "title": {"font": "sans", "fill": "outline"},
+            "title": {"font": "sans", "fill": "slug"},
             "tail": {"font": "sans", "atlas": {"px_per_em": 48}},
             "foot": {"font": "sans", "atlas": {"range": 4}},
         })
     );
-    assert_eq!(sc.texts[1].fill, Fill::Outline);
+    assert_eq!(sc.texts[1].fill, Fill::Slug);
     assert_eq!((sc.texts[2].px_per_em, sc.texts[2].range), (48, 6));
     assert_eq!((sc.texts[3].px_per_em, sc.texts[3].range), (32, 4));
     assert_eq!(
@@ -724,11 +724,22 @@ fn a_text_declaration_names_what_it_lacks() {
         ),
         (
             json!({"font": "sans", "fill": "msdf"}),
-            "text 'label' fill needs 'mtsdf' or 'outline', got 'msdf'",
+            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, \
+             or 'slug', exact edges at any size, got 'msdf'",
         ),
         (
             json!({"font": "sans", "fill": 3}),
-            "text 'label' fill needs 'mtsdf' or 'outline', got 3",
+            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, \
+             or 'slug', exact edges at any size, got 3",
+        ),
+        (
+            json!({"font": "sans", "fill": "outline"}),
+            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, \
+             or 'slug', exact edges at any size, got 'outline'",
+        ),
+        (
+            json!({"font": "sans", "fill": "slug", "atlas": {"px_per_em": 32}}),
+            "text 'label' takes no 'atlas' with \"fill\": \"slug\", which reads the curves",
         ),
         (
             json!({"font": "sans", "atlas": 32}),
@@ -870,7 +881,7 @@ fn a_name_beside_the_names_of_a_text_compiles() {
     let mut doc = texts_scene(json!({
         "label": {"font": ["sans", "emoji"]},
         "label_atlas": {"font": "sans"},
-        "labels": {"font": "sans", "fill": "outline"},
+        "labels": {"font": "sans", "fill": "slug"},
     }));
     doc["assets"]["emoji"] = json!({"file": EMOJI});
     doc["params"]["label"]["value"] = json!("I\u{1f600}");
@@ -942,7 +953,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     let draw = "void main(){ gl_FragColor = vec4(vec3(glyph_cover()), 1.0); }";
     let mut doc = texts_scene(json!({
         "label": {"font": ["sans", "emoji"]},
-        "title": {"font": "sans", "fill": "outline"},
+        "title": {"font": "sans", "fill": "slug"},
     }));
     doc["assets"]["emoji"] = json!({"file": EMOJI});
     doc["params"]["label"]["value"] = json!("I\u{1f600}");
@@ -1051,7 +1062,7 @@ fn image_assets_texts_and_their_atlases_share_the_engine_cap() {
         doc
     };
     assert!(Scene::from_dict(&with_images(15, None), None, None).is_ok());
-    assert!(Scene::from_dict(&with_images(15, Some("outline")), None, None).is_ok());
+    assert!(Scene::from_dict(&with_images(15, Some("slug")), None, None).is_ok());
     assert!(Scene::from_dict(&with_images(14, Some("mtsdf")), None, None).is_ok());
     for (n, fill) in [(16, None), (15, Some("mtsdf"))] {
         let e = scene_err(&with_images(n, fill));
@@ -2004,12 +2015,12 @@ const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
 const WHITE: &str = "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c); }";
 
 /// label_scene with the words drawn by one draw over a black pass, in the
-/// outline fill.
+/// slug fill.
 fn draw_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, align, fit);
     doc["passes"][0] = json!({"name": "main", "code": BLACK,
         "draws": [{"text": "label", "code": WHITE, "place": fit_place(fit)}]});
-    filled(doc, "outline")
+    filled(doc, "slug")
 }
 
 #[test]
@@ -2048,7 +2059,7 @@ fn filled(mut doc: Value, fill: &str) -> Value {
     doc
 }
 
-const FILLS: [&str; 2] = ["mtsdf", "outline"];
+const FILLS: [&str; 2] = ["mtsdf", "slug"];
 
 /// The red channels of two RGBA frames: the pixels more than 1 level apart,
 /// and the largest difference.
@@ -2162,8 +2173,8 @@ fn draws_land_in_their_order_and_pad_past_the_ink() {
         y: 8.0,
         ppem: 64.0,
     };
-    // The outline fill takes any pad.
-    let mut doc = filled(label_scene(SANS, "I", Align::Left, fit), "outline");
+    // The slug fill takes any pad.
+    let mut doc = filled(label_scene(SANS, "I", Align::Left, fit), "slug");
     let place = fit_place(fit);
     doc["passes"][0] = json!({"name": "main", "code": BLACK, "draws": [
         {"text": "label", "place": place, "pad": 0.25, "blend": "add",
@@ -2422,7 +2433,7 @@ fn a_draw_on_a_sized_pass_covers_as_the_text_does_there() {
     let fit = Fit::of(laid.width, laid.height, w / 2, h / 2);
     let show = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
     let sized = |pass: Value| {
-        let mut doc = filled(label_scene(SANS, words, Align::Left, fit), "outline");
+        let mut doc = filled(label_scene(SANS, words, Align::Left, fit), "slug");
         let mut a = pass;
         a["name"] = json!("a");
         a["size"] = json!([w / 2, h / 2]);
@@ -2447,7 +2458,7 @@ fn one_text_drawn_by_two_passes_follows_its_words_in_both() {
         ppem: 40.0,
     };
     let place = fit_place(fit);
-    let mut doc = filled(label_scene(SANS, "AV", Align::Left, fit), "outline");
+    let mut doc = filled(label_scene(SANS, "AV", Align::Left, fit), "slug");
     doc["passes"] = json!([
         {"name": "a", "code": BLACK, "draws": [{"text": "label", "place": place,
             "code": "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c, 0.0, 0.0, c); }"}]},
@@ -2859,7 +2870,7 @@ fn an_mtsdf_draw_pads_its_quads_up_to_the_reach_of_the_field() {
 }
 
 #[test]
-fn the_outline_fill_names_the_mtsdf_fill_for_a_distance() {
+fn the_slug_fill_names_the_mtsdf_fill_for_a_distance() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
@@ -2868,19 +2879,20 @@ fn the_outline_fill_names_the_mtsdf_fill_for_a_distance() {
     let Some((_g, mut r)) = gpu(64, 48) else {
         return;
     };
-    for (call, missing) in [
-        ("glyph_dist()", "glyph_dist_needs_fill_mtsdf"),
-        ("glyph_soft()", "glyph_soft_needs_fill_mtsdf"),
-    ] {
+    for read in ["glyph_dist", "glyph_soft"] {
         let mut doc = draw_scene(SANS, "I", Align::Left, fit);
         doc["passes"][0]["draws"][0]["code"] = json!(format!(
-            "void main(){{\n    float d = {call};\n    gl_FragColor = vec4(d);\n}}"
+            "void main(){{\n    float d = {read}();\n    gl_FragColor = vec4(d);\n}}"
         ));
         let e = r.setup(&loaded(&doc)).unwrap();
-        assert!(
-            e.starts_with("pass 'main' draw 0, line 2 of its code: ") && e.contains(missing),
-            "{e}"
+        assert_eq!(
+            e,
+            format!(
+                "pass 'main' draw 0, line 2 of its code: {read} needs \"fill\": \"mtsdf\" on \
+                 text 'label'"
+            )
         );
+        assert_eq!(r.error_line, Some(2));
         assert_eq!(r.setup(&loaded(&filled(doc, "mtsdf"))).unwrap(), "");
     }
 }
@@ -2906,15 +2918,15 @@ fn only_an_mtsdf_draw_starts_an_atlas() {
     };
     let cache = tmpdir("no-atlas");
     std::env::set_var("XDG_CACHE_HOME", &cache);
-    // An outline draw, and an MTSDF text that no draw names.
-    let outline = draw_scene(SANS, "I", Align::Left, fit);
+    // A slug draw, and an MTSDF text that no draw names.
+    let slug = draw_scene(SANS, "I", Align::Left, fit);
     let undrawn = label_scene(SANS, "I", Align::Left, fit);
-    for doc in [&outline, &undrawn] {
+    for doc in [&slug, &undrawn] {
         render(&mut r, &loaded(doc));
         assert_eq!(threads_named("ghee-atlas"), 0);
         assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
     }
-    render(&mut r, &loaded(&filled(outline, "mtsdf")));
+    render(&mut r, &loaded(&filled(slug, "mtsdf")));
     assert_eq!(threads_named("ghee-atlas"), 1);
     // The worker writes the cache after the glyphs are in.
     let file = std::path::Path::new(&cache).join("ghee/atlas");
@@ -2975,8 +2987,8 @@ fn laid_baseline(laid: &text::Layout) -> f64 {
 }
 
 #[test]
-fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
-    // A draw of the outline fill against the shaders pinned in the fixtures,
+fn the_slug_fill_assembles_as_before_the_mtsdf_fill() {
+    // A draw of the slug fill against the shaders pinned in the fixtures,
     // whose fragment shader leaves out the lines that name the MTSDF fill and
     // the read that keeps VC4 on one thread.
     let doc = json!({
@@ -2988,7 +3000,7 @@ fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
             "ink": {"type": "color", "value": [0.9, 0.9, 1.0]},
         },
         "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-        "texts": {"t": {"font": "sans", "align": "center", "fill": "outline"}},
+        "texts": {"t": {"font": "sans", "align": "center", "fill": "slug"}},
         "common": {"code": "float twice(float x) { return 2.0 * x; }"},
         "passes": [{
             "name": "main",
@@ -3034,8 +3046,8 @@ fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
     ];
     assert!(named.iter().all(|l| fs.lines().any(|f| f == *l)));
     let without: Vec<&str> = fs.lines().filter(|l| !named.contains(l)).collect();
-    assert_eq!(vs, fixture("draw-outline.vert"));
-    assert_eq!(without.join("\n"), fixture("draw-outline.frag"));
+    assert_eq!(vs, fixture("draw-slug.vert"));
+    assert_eq!(without.join("\n"), fixture("draw-slug.frag"));
     assert_eq!(bvs, fixture("draw-box.vert"));
     assert_eq!(bfs, fixture("draw-box.frag"));
 }
@@ -3599,7 +3611,7 @@ fn a_shadow_and_a_glow_paint_no_emoji_unless_emoji_says_so() {
 
 #[test]
 fn a_colour_atlas_counts_against_the_engine_cap() {
-    // An outline draw of a text with a colour font: its curves and its
+    // A slug draw of a text with a colour font: its curves and its
     // colour atlas, beside n image assets.
     let dir = tmpdir("colour-cap");
     for f in [SANS, EMOJI] {
@@ -3613,7 +3625,7 @@ fn a_colour_atlas_counts_against_the_engine_cap() {
         let mut doc = colour_scene(
             files,
             "I",
-            "outline",
+            "slug",
             "vec2 glyph_place(vec2 em) { return em; }",
         );
         for i in 0..n {

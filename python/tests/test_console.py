@@ -142,7 +142,7 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
             ghee.Text(
                 "words", "sans", align="right", atlas={"px_per_em": 24, "range": 4}
             ),
-            ghee.Text("title", "sans", fill="outline"),
+            ghee.Text("title", "sans", fill="slug"),
         ],
         passes=[
             ghee.Pass(

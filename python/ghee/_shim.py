@@ -45,7 +45,7 @@ from typing import Any
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 _PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC)
 _ALIGNS = ("left", "center", "right")
-_FILLS = ("mtsdf", "outline")
+_FILLS = ("mtsdf", "slug")
 _ATLAS_KEYS = ("px_per_em", "range")
 _BLENDS = ("over", "add", "replace")
 _ALPHAS = ("blend", "keep")
@@ -326,8 +326,9 @@ class Text:
     character draws from the first font whose cmap holds it.
     `align` lines up the lines of the block: left, center or right.
     `fill` is where a Draw of the text takes its coverage from: mtsdf reads
-    an atlas of the glyphs' distance fields, and outline computes it from
-    the curves.
+    an atlas of the glyphs' distance fields, fast and with glyph_dist and
+    glyph_soft, and slug computes Slug's exact coverage from the curves,
+    exact edges at any size.
     `atlas` sets the texels per em of a glyph in the MTSDF atlas and the
     distance range in texels, {"px_per_em": 32, "range": 6} by default.
     """
@@ -354,7 +355,14 @@ class Text:
             )
         if self.fill not in _FILLS:
             raise ValueError(
-                f"text '{self.name}' fill needs 'mtsdf' or 'outline', got {self.fill!r}"
+                f"text '{self.name}' fill needs 'mtsdf', fast and with glyph_dist "
+                "and glyph_soft, or 'slug', exact edges at any size, "
+                f"got {self.fill!r}"
+            )
+        if self.fill == "slug" and self.atlas is not None:
+            raise ValueError(
+                f"text '{self.name}' takes no 'atlas' with \"fill\": \"slug\", "
+                "which reads the curves"
             )
         if self.atlas is not None and not isinstance(self.atlas, dict):
             raise ValueError(

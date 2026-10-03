@@ -416,10 +416,13 @@ shadow under the fill of every glyph. A pass with `draws` and no `code` starts
 each frame transparent and holds the words alone, a layer that later passes
 read through a channel and composite.
 
-The text's `fill` sets where the coverage comes from. `mtsdf`, the default,
-takes one bilinear sample a pixel, with no mipmaps, from an atlas of the
-glyphs' MTSDFs: multi-channel
-signed distance fields, with the true distance in alpha. The first use of a
+The text's `fill` sets where a draw takes the coverage from. `slug` draws
+exact edges at any size, and `mtsdf`, the default, draws fast and gives the
+distances that outlines, glows and shadows read.
+
+`mtsdf` takes one bilinear sample a pixel, with no mipmaps, from an atlas of
+the glyphs' MTSDFs: multi-channel signed distance fields, with the true
+distance in alpha. The first use of a
 font generates its ASCII and Latin-1 on every core, 0.6 s on a Pi Zero 2 W,
 and caches the atlas in `$XDG_CACHE_HOME/ghee/atlas`, else
 `~/.cache/ghee/atlas`. Any other character follows when words first need it,
@@ -435,8 +438,10 @@ in texels. The defaults:
 The field reaches `range / 2 / px_per_em` em past the outline, 0.094 em by
 default. `glyph_soft` reads no distance past it, and `pad` stops there.
 
-`outline` computes the coverage from the curves, as `title_cover` does, and
-draws with no `glyph_dist` or `glyph_soft`.
+`slug` computes the coverage in each glyph's quad from the font's curves,
+with Slug's exact method, as `title_cover` does. It reads no atlas, takes no
+`atlas` key, and leaves out `glyph_dist` and `glyph_soft`: a draw that reads
+one fails to compile, and the error names `"fill": "mtsdf"`.
 
 A draw with `emoji` paints the text's colour glyphs itself, after every draw
 of its pass, and `code` never runs for them. Each glyph shows its bitmap from
@@ -448,7 +453,7 @@ grows to 2048x2048 at most, room for 132 emoji of Noto Color Emoji, and an
 emoji past it draws an error box.
 
 On a Pi Zero 2 W, seven lines of 216 characters at 46 pixels per em, in a
-1280x800 frame, draw in 3.2 ms with `mtsdf` and in 22.7 ms with `outline`,
+1280x800 frame, draw in 3.2 ms with `mtsdf` and in 22.7 ms with `slug`,
 2.1 ms of each the background pass.
 
 ## Procedural scenes

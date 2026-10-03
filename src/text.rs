@@ -12,8 +12,8 @@
 //! `glyph_place` maps a point of the block to a pixel of the pass, and its code
 //! colours the pixels of each quad from the glyph's coverage. The text's fill
 //! gives that coverage: the MTSDF fill takes one bilinear sample of the
-//! glyph's field in an atlas, which `crate::atlas` builds, and the outline
-//! fill computes it from the curves as `<name>_cover` does. A colour glyph, a
+//! glyph's field in an atlas, which `crate::atlas` builds, and the slug fill
+//! computes it from the curves as `<name>_cover` does. A colour glyph, a
 //! bitmap with no outline, draws through the draw's colour layer, which
 //! `crate::colour` describes.
 //!
@@ -177,11 +177,12 @@ impl Align {
 /// Where a draw of the text takes each pixel's coverage from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fill {
-    /// One read of the glyph's MTSDF in an atlas, with the distance to the
-    /// outline for effects.
+    /// One read of the glyph's MTSDF in an atlas: fast, with the distance to
+    /// the outline for effects.
     Mtsdf,
-    /// The glyph's curves, as `<name>_cover` reads them.
-    Outline,
+    /// Slug's exact coverage from the glyph's curves, as `<name>_cover` reads
+    /// it, sharp at any size.
+    Slug,
 }
 
 /// The largest px/em and range of an atlas: the side of the atlas.
@@ -239,12 +240,16 @@ impl Text {
         let fill = match o.get("fill").filter(|v| !v.is_null()) {
             None => Fill::Mtsdf,
             Some(Value::String(s)) if s == "mtsdf" => Fill::Mtsdf,
-            Some(Value::String(s)) if s == "outline" => Fill::Outline,
+            Some(Value::String(s)) if s == "slug" => Fill::Slug,
             Some(v) => bail!(
-                "text '{name}' fill needs 'mtsdf' or 'outline', got {}",
+                "text '{name}' fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, \
+                 or 'slug', exact edges at any size, got {}",
                 py_repr(v)
             ),
         };
+        if fill == Fill::Slug && o.get("atlas").is_some_and(|v| !v.is_null()) {
+            bail!("text '{name}' takes no 'atlas' with \"fill\": \"slug\", which reads the curves");
+        }
         let (mut px_per_em, mut range) = (atlas::PX_EM, atlas::RANGE);
         match o.get("atlas").filter(|v| !v.is_null()) {
             None => {}
@@ -291,8 +296,8 @@ impl Text {
         if self.align != Align::Left {
             d.insert("align".to_string(), Value::from(self.align.as_str()));
         }
-        if self.fill == Fill::Outline {
-            d.insert("fill".to_string(), Value::from("outline"));
+        if self.fill == Fill::Slug {
+            d.insert("fill".to_string(), Value::from("slug"));
         }
         let mut a = Map::new();
         if self.px_per_em != atlas::PX_EM {
@@ -348,8 +353,8 @@ pub struct Built {
     /// Float uniforms, each named by internal() from the text's name and its
     /// suffix.
     pub uniforms: Vec<(&'static str, f64)>,
-    /// One quad per glyph drawn from the font, for a draw of the outline
-    /// fill. Its glyph data is this texture's.
+    /// One quad per glyph drawn from the font, for a draw of the slug fill.
+    /// Its glyph data is this texture's.
     pub quads: Quads,
     /// One quad per error box, for a draw's error-box layer.
     pub boxes: Quads,
@@ -389,7 +394,7 @@ pub const QUAD_FLOATS: usize = 16;
 /// - ghee_a0: the corner x and y, the character index, the word index
 /// - ghee_a1: the ink box in em from the block's top left, y down: x0, y0,
 ///   x1, y1
-/// - ghee_a2, outline fill: the texel of the glyph's band entries, its
+/// - ghee_a2, slug fill: the texel of the glyph's band entries, its
 ///   horizontal bands, its vertical bands, 0
 /// - ghee_a2, MTSDF fill and colour glyphs: the atlas texel coordinate at
 ///   (x0, y0), and the texels per em along x and along y
@@ -1496,19 +1501,19 @@ pub fn draw_vertex_head(name: &str) -> Vec<String> {
     lines(DRAW_VERTEX_HEAD, name)
 }
 
-/// The vertex main of an outline draw, after glyph_place. Each box edge moves
+/// The vertex main of a slug draw, after glyph_place. Each box edge moves
 /// out 5/8 of a screen pixel, or `pad` em where that reaches further.
-pub fn outline_vertex_main(pad: f64) -> Vec<String> {
-    lines(OUTLINE_VERTEX_MAIN, "")
+pub fn slug_vertex_main(pad: f64) -> Vec<String> {
+    lines(SLUG_VERTEX_MAIN, "")
         .into_iter()
         .map(|l| l.replace("PAD", &format!("{pad:?}")))
         .collect()
 }
 
-/// The lines of an outline draw's fragment shader between the text's reader
+/// The lines of a slug draw's fragment shader between the text's reader
 /// lines and the author's code.
-pub fn outline_fragment_head(name: &str) -> Vec<String> {
-    lines(OUTLINE_FRAGMENT_HEAD, name)
+pub fn slug_fragment_head(name: &str) -> Vec<String> {
+    lines(SLUG_FRAGMENT_HEAD, name)
 }
 
 /// The vertex main of an MTSDF draw of text `name`, after glyph_place, for an
@@ -1539,9 +1544,9 @@ pub fn mtsdf_fragment_tail(name: &str) -> Vec<String> {
     lines(MTSDF_FRAGMENT_TAIL, name)
 }
 
-/// The lines of an outline draw's fragment shader after the author's code.
-pub fn outline_fragment_tail(name: &str) -> Vec<String> {
-    lines(OUTLINE_FRAGMENT_TAIL, name)
+/// The lines of a slug draw's fragment shader after the author's code.
+pub fn slug_fragment_tail(name: &str) -> Vec<String> {
+    lines(SLUG_FRAGMENT_TAIL, name)
 }
 
 /// The fragment shader of a draw's error boxes after its precision lines:
@@ -1563,6 +1568,13 @@ pub fn names(name: &str) -> Vec<String> {
     }
     out
 }
+
+/// The distances that a slug draw leaves undeclared, each with the name that
+/// it stands for there, so a compile error names it.
+pub const SLUG_UNDECLARED: [(&str, &str); 2] = [
+    ("glyph_dist", "glyph_dist_needs_fill_mtsdf"),
+    ("glyph_soft", "glyph_soft_needs_fill_mtsdf"),
+];
 
 /// The names that a draw's GLSL declares for its author: the function the
 /// author defines, and the values and functions the author reads.
@@ -1593,8 +1605,8 @@ fn template_names(name: &str) -> Vec<String> {
     let glsl = [
         GLSL,
         DRAW_VERTEX_HEAD,
-        OUTLINE_FRAGMENT_HEAD,
-        OUTLINE_FRAGMENT_TAIL,
+        SLUG_FRAGMENT_HEAD,
+        SLUG_FRAGMENT_TAIL,
         MTSDF_VERTEX_MAIN,
         MTSDF_FRAGMENT_HEAD,
         MTSDF_FRAGMENT_TAIL,
@@ -1674,7 +1686,7 @@ float glyph_line;
 vec2 glyph_span;
 vec4 glyph_box;"#;
 
-const OUTLINE_VERTEX_MAIN: &str = r#"void main() {
+const SLUG_VERTEX_MAIN: &str = r#"void main() {
     glyph_index = ghee_a0.z;
     glyph_word = ghee_a0.w;
     glyph_line = ghee_a3.x;
@@ -1717,7 +1729,7 @@ const OUTLINE_VERTEX_MAIN: &str = r#"void main() {
     gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
 }"#;
 
-const OUTLINE_FRAGMENT_HEAD: &str = r#"varying vec4 ghee_v0;
+const SLUG_FRAGMENT_HEAD: &str = r#"varying vec4 ghee_v0;
 varying vec4 ghee_v1;
 varying vec4 ghee_v2;
 varying vec4 ghee_v3;
@@ -1739,7 +1751,7 @@ float glyph_cover() { return ghee_c; }
 // coverage once a pixel, and glyph_cover() returns it at every call.
 #define main ghee_main"#;
 
-const OUTLINE_FRAGMENT_TAIL: &str = r#"#undef main
+const SLUG_FRAGMENT_TAIL: &str = r#"#undef main
 void main() {
     // VC4 lands a vertex up to 1/16 px off the position set by the vertex
     // shader, and the varyings follow the vertex, so the sample moves to the
@@ -1839,7 +1851,7 @@ uniform vec2 resolution;
 varying vec4 ghee_v0;
 varying vec4 ghee_v4;
 void main() {
-    // The sample moves to the pixel centre, as the outline fill's does.
+    // The sample moves to the pixel centre, as the slug fill's does.
     vec2 px = v_texCoord * resolution;
     vec2 d = floor(px) + 0.5 - px;
     vec2 u = ghee_v0.xy + vec2(dot(ghee_v4.xy, d), dot(ghee_v4.zw, d));
@@ -2047,12 +2059,23 @@ mod tests {
     }
 
     #[test]
+    fn a_slug_draw_stands_a_name_in_for_each_distance() {
+        let head = lines(SLUG_FRAGMENT_HEAD, "t");
+        for (read, stand_in) in SLUG_UNDECLARED {
+            assert!(
+                head.contains(&format!("#define {read} {stand_in}")),
+                "{read}"
+            );
+        }
+    }
+
+    #[test]
     fn a_draw_names_its_own_values_with_ghees_prefix() {
         let draw = [
             DRAW_VERTEX_HEAD,
-            OUTLINE_VERTEX_MAIN,
-            OUTLINE_FRAGMENT_HEAD,
-            OUTLINE_FRAGMENT_TAIL,
+            SLUG_VERTEX_MAIN,
+            SLUG_FRAGMENT_HEAD,
+            SLUG_FRAGMENT_TAIL,
             MTSDF_VERTEX_MAIN,
             MTSDF_FRAGMENT_HEAD,
             MTSDF_FRAGMENT_TAIL,

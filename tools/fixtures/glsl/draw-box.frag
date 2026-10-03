@@ -9,7 +9,7 @@ uniform vec2 resolution;
 varying vec4 ghee_v0;
 varying vec4 ghee_v4;
 void main() {
-    // The sample moves to the pixel centre, as the outline fill's does.
+    // The sample moves to the pixel centre, as the slug fill's does.
     vec2 px = v_texCoord * resolution;
     vec2 d = floor(px) + 0.5 - px;
     vec2 u = ghee_v0.xy + vec2(dot(ghee_v4.xy, d), dot(ghee_v4.zw, d));

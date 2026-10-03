@@ -472,6 +472,15 @@ fn draw_error(
             "a void main()",
         ),
     };
+    // A slug draw declares no distances, and its compile error names the
+    // stand-in for the one that the code reads.
+    let slug = text::SLUG_UNDECLARED
+        .iter()
+        .find(|(_, s)| part == DrawPart::Code && log.contains(s));
+    let err = match slug {
+        Some((read, _)) => format!("{read} needs \"fill\": \"mtsdf\" on text '{}'", d.text),
+        None => err.to_string(),
+    };
     let fault = |message: String, line: Option<i64>, in_common: bool| DrawFault {
         message,
         part,
@@ -1552,7 +1561,7 @@ impl Renderer {
         // has no font with outlines left, and still draws its colour glyphs.
         let mut boxes = built.boxes.floats.clone();
         let quads = match text.fill {
-            Fill::Outline => built.quads.floats.clone(),
+            Fill::Slug => built.quads.floats.clone(),
             Fill::Mtsdf => {
                 let atlases = self.atlases.borrow();
                 let slot = self.atlas_of(name).map(|i| &atlases[i]);
@@ -4184,7 +4193,7 @@ mod tests {
                     "version": 1,
                     "params": {"label": {"type": "string", "value": "AV"}},
                     "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-                    "texts": {"label": {"font": "sans", "fill": "outline"}},
+                    "texts": {"label": {"font": "sans", "fill": "slug"}},
                     "passes": [{"name": "main", "draws": draws,
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }"}],
                 }),
@@ -4362,7 +4371,7 @@ mod tests {
                 "params": {"label": {"type": "string", "value": "A"}},
                 "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},
                            "emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
-                "texts": {"label": {"font": ["sans", "emoji"], "fill": "outline"}},
+                "texts": {"label": {"font": ["sans", "emoji"], "fill": "slug"}},
                 "passes": [{"name": "main",
                     "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                     "draws": draws}],
@@ -4674,10 +4683,10 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_of_outline_draws_starts_no_atlas() {
+    fn a_scene_of_slug_draws_starts_no_atlas() {
         let Some((_g, mut r)) = gpu() else { return };
         let mut sc = mtsdf_scene("AV");
-        sc.texts[0].fill = Fill::Outline;
+        sc.texts[0].fill = Fill::Slug;
         assert_eq!(r.setup(&sc).unwrap(), "");
         assert!(r.atlases.borrow().is_empty());
         // A text that no draw names takes no atlas either.

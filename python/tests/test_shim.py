@@ -268,7 +268,7 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
                 ],
             )
         ],
-        shim.Text("words", "sans", fill="outline", atlas={"range": 4, "px_per_em": 24}),
+        shim.Text("words", "sans", fill="slug"),
     ).to_dict()
     recorded = {
         "version": 1,
@@ -291,11 +291,7 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
         "params": {"words": {"type": "string", "value": "hi"}},
         "assets": {"sans": {"file": "fonts/DejaVuSans-Latin.ttf"}},
         "texts": {
-            "words": {
-                "font": "sans",
-                "fill": "outline",
-                "atlas": {"px_per_em": 24, "range": 4},
-            }
+            "words": {"font": "sans", "fill": "slug"}
         },
     }
     assert built == recorded
@@ -371,8 +367,17 @@ def test_a_draw_says_what_it_needs():
 
 def test_a_text_fill_and_atlas_say_what_they_need():
     shim = load()
-    with pytest.raises(ValueError, match="fill needs 'mtsdf' or 'outline', got 'sdf'"):
-        shim.Text("words", "sans", fill="sdf")
+    for fill in ("sdf", "outline"):
+        with pytest.raises(
+            ValueError,
+            match=f"fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, "
+            f"or 'slug', exact edges at any size, got '{fill}'",
+        ):
+            shim.Text("words", "sans", fill=fill)
+    with pytest.raises(
+        ValueError, match="""takes no 'atlas' with "fill": "slug", which reads the curves"""
+    ):
+        shim.Text("words", "sans", fill="slug", atlas={"px_per_em": 32})
     with pytest.raises(
         ValueError, match="atlas takes 'px_per_em' and 'range', got 'px'"
     ):

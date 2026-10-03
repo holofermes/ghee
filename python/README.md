@@ -200,9 +200,10 @@ A pass of draws alone, `ghee.Pass("words", draws=[...])`, starts each frame
 transparent, a layer that a later pass reads through a channel.
 
 `fill` on `ghee.Text` sets where a draw of the text takes its coverage
-from: `"mtsdf"`, the default, reads an atlas of the glyphs' distance fields,
-and `"outline"` computes it from the curves. `atlas`, a dict of `px_per_em`
-and `range`, sets the atlas. New words of a text drawn with the MTSDF fill
+from: `"slug"` computes it from the curves, exact edges at any size, and
+`"mtsdf"`, the default, reads an atlas of the glyphs' distance fields, fast
+and with `glyph_dist` and `glyph_soft`. `atlas`, a dict of `px_per_em` and
+`range`, sets the MTSDF atlas. New words of a text drawn with the MTSDF fill
 wait for the glyphs that its atlas lacks, and the last words stay on screen
 meanwhile. With `timestep` set, `frame()` waits for them.
 

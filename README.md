@@ -387,8 +387,9 @@ This draw puts `title` in amber at 48 pixels per em, centred in the pass:
 - `code` holds a `void main()` that writes colour premultiplied by alpha.
 - `blend` is `over` by default, `add` or `replace`.
 - `alpha` is `blend` by default, and `keep` leaves the pass's alpha as it was.
-- `pad` grows each quad that many em past the ink, room for an effect around
-  the outline, 0 by default.
+- `pad` is how far past the letters the draw reaches, in em, for a glow or an
+  outline, 0 by default. Each quad grows that far past the ink, and
+  `glyph_dist` and `glyph_soft` reach at least that far.
 - `emoji` sets whether the draw paints the text's colour glyphs. By default
   the last draw of the text in its pass paints them, and the draws under it,
   a glow or a shadow, paint none.
@@ -428,15 +429,16 @@ and caches the atlas in `$XDG_CACHE_HOME/ghee/atlas`, else
 `~/.cache/ghee/atlas`. Any other character follows when words first need it,
 and the text keeps its last words on screen until every glyph of the new
 ones is in. A setup waits for them, and so does a render with `--timestep`.
-`atlas` on the text sets the texels per em of a glyph and the distance range
-in texels. The defaults:
+`atlas` on the text sets the texels per em of a glyph, 32 by default:
 
 ```json
-"texts": { "title": { "font": "sans", "atlas": { "px_per_em": 32, "range": 6 } } }
+"texts": { "title": { "font": "sans", "atlas": { "px_per_em": 48 } } }
 ```
 
-The field reaches `range / 2 / px_per_em` em past the outline, 0.094 em by
-default. `glyph_soft` reads no distance past it, and `pad` stops there.
+The field reaches past the outline as far as the largest `pad` of the
+text's draws, so a glow fits with no tuning, and 3 texels at least, 0.094 em
+at 32 texels per em. Its 8 bits span that whole reach, so a large pad
+coarsens the edges of every draw of the text.
 
 `slug` computes the coverage in each glyph's quad from the font's curves,
 with Slug's exact method, as `title_cover` does. It reads no atlas, takes no

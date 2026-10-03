@@ -189,8 +189,8 @@ centred on black:
   block, in em from its top left with y down, to the pass pixel where it
   lands.
 - `blend` is `"over"`, `"add"` or `"replace"`.
-- `pad` grows each quad that many em past the ink, room for an effect
-  around the outline.
+- `pad` is how far past the letters the draw reaches, in em, for a glow or
+  an outline.
 - `alpha` is `"blend"`, and `"keep"` leaves the pass's alpha as it was.
 - `emoji` sets whether the draw paints the text's colour glyphs. `None`
   leaves them to the last draw of the text in its pass, so a shadow drawn
@@ -202,8 +202,9 @@ transparent, a layer that a later pass reads through a channel.
 `fill` on `ghee.Text` sets where a draw of the text takes its coverage
 from: `"slug"` computes it from the curves, exact edges at any size, and
 `"mtsdf"`, the default, reads an atlas of the glyphs' distance fields, fast
-and with `glyph_dist` and `glyph_soft`. `atlas`, a dict of `px_per_em` and
-`range`, sets the MTSDF atlas. New words of a text drawn with the MTSDF fill
+and with `glyph_dist` and `glyph_soft`. `atlas={"px_per_em": 48}` sets the
+texels per em of the atlas, whose field reaches as far as the largest `pad`
+of the text's draws. New words of a text drawn with the MTSDF fill
 wait for the glyphs that its atlas lacks, and the last words stay on screen
 meanwhile. With `timestep` set, `frame()` waits for them.
 

@@ -378,13 +378,17 @@ def test_a_text_fill_and_atlas_say_what_they_need():
         ValueError, match="""takes no 'atlas' with "fill": "slug", which reads the curves"""
     ):
         shim.Text("words", "sans", fill="slug", atlas={"px_per_em": 32})
-    with pytest.raises(
-        ValueError, match="atlas takes 'px_per_em' and 'range', got 'px'"
-    ):
+    with pytest.raises(ValueError, match="atlas takes 'px_per_em', got 'px'"):
         shim.Text("words", "sans", atlas={"px": 32})
+    with pytest.raises(
+        ValueError,
+        match="atlas takes no 'range': the field reaches the largest 'pad' of the "
+        "text's draws",
+    ):
+        shim.Text("words", "sans", atlas={"px_per_em": 32, "range": 6})
     for n in (0, 1.5, True):
-        with pytest.raises(ValueError, match="atlas range needs a whole number"):
-            shim.Text("words", "sans", atlas={"range": n})
+        with pytest.raises(ValueError, match="atlas px_per_em needs a whole number"):
+            shim.Text("words", "sans", atlas={"px_per_em": n})
     with pytest.raises(ValueError, match="atlas needs a dict with 'px_per_em'"):
         shim.Text("words", "sans", atlas=32)
 

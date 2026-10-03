@@ -1478,27 +1478,24 @@ impl Pass {
     /// since GLSL ES links a uniform declared by both stages only when the two
     /// declarations match, and then the draw's place. It reads no texture:
     /// GLES2 may offer a vertex shader no texture unit.
-    pub fn draw_glsl(
-        &self,
-        k: usize,
-        scene_params: Option<&ParamMap>,
-        common: Option<&str>,
-        assets: &[Asset],
-        texts: &[Text],
-        hw_linear: bool,
-    ) -> (String, String) {
+    ///
+    /// `scene` is the scene of the pass, and `hw_linear` as glsl() takes it.
+    pub fn draw_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
         let d = &self.draws[k];
-        let text = texts.iter().find(|t| t.name == d.text);
+        let text = scene.texts.iter().find(|t| t.name == d.text);
         let main = match text {
-            Some(t) if t.fill == Fill::Mtsdf => {
-                crate::text::mtsdf_vertex_main(&d.text, d.pad, t.px_per_em, t.range)
-            }
+            Some(t) if t.fill == Fill::Mtsdf => crate::text::mtsdf_vertex_main(
+                &d.text,
+                d.pad,
+                t.px_per_em,
+                scene.atlas_range(&d.text),
+            ),
             _ => crate::text::slug_vertex_main(d.pad),
         };
-        let v = self.draw_vertex(d, scene_params, main);
-        let mut f = self.preamble(scene_params, assets, texts, hw_linear);
+        let v = self.draw_vertex(d, Some(&scene.params), main);
+        let mut f = self.preamble(Some(&scene.params), &scene.assets, &scene.texts, hw_linear);
         f.push(String::new());
-        if let Some(c) = common.filter(|c| !c.is_empty()) {
+        if let Some(c) = scene.common.as_deref().filter(|c| !c.is_empty()) {
             f.push(c.to_string());
             f.push(String::new());
         }
@@ -1910,10 +1907,51 @@ impl Scene {
         if let Some(e) = self.undeclared_draw() {
             bail!("{e}");
         }
+        for t in self.texts.iter().filter(|t| t.fill == Fill::Mtsdf) {
+            let (pad, draw) = self.largest_pad(&t.name);
+            let range = crate::text::atlas_range(t.px_per_em, pad);
+            if let (Some(draw), true) = (draw, range > crate::text::ATLAS_MAX) {
+                bail!(
+                    "{draw} pad {} needs an atlas range of {range} texels at the {} px_per_em \
+                     of text '{}', over the cap of {}",
+                    py_float(pad),
+                    t.px_per_em,
+                    t.name,
+                    crate::text::ATLAS_MAX
+                );
+            }
+        }
         if let Some(e) = self.name_clash() {
             bail!("{e}");
         }
         Ok(self)
+    }
+
+    /// The distance range in texels of the MTSDF atlas of text `name`: the
+    /// field reaches the largest `pad` of the text's draws, at the text's
+    /// px_per_em.
+    pub fn atlas_range(&self, name: &str) -> u32 {
+        let px_per_em = self
+            .texts
+            .iter()
+            .find(|t| t.name == name)
+            .map_or(crate::atlas::PX_EM, |t| t.px_per_em);
+        let range = crate::text::atlas_range(px_per_em, self.largest_pad(name).0);
+        u32::try_from(range).unwrap_or(u32::MAX)
+    }
+
+    /// The largest `pad` of the draws of text `name`, and the draw that sets
+    /// it as "pass 'main' draw 0", None when no draw pads.
+    fn largest_pad(&self, name: &str) -> (f64, Option<String>) {
+        let mut most = (0.0, None);
+        for p in &self.passes {
+            for (k, d) in p.draws.iter().enumerate() {
+                if d.text == name && d.pad > most.0 {
+                    most = (d.pad, Some(format!("pass '{}' draw {k}", p.name)));
+                }
+            }
+        }
+        most
     }
 
     /// True when a draw of the scene names text `name`.

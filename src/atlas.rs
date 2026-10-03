@@ -41,8 +41,8 @@ use sha2::{Digest, Sha256};
 
 /// Pixels per em of a cell, unless a text sets its own.
 pub const PX_EM: u32 = 32;
-/// The distance range in texels, unless a text sets its own. A field spans
-/// half of it on each side of the outline.
+/// The least distance range in texels. A field spans half of the range on
+/// each side of the outline.
 pub const RANGE: u32 = 6;
 /// VC4's GL_MAX_TEXTURE_SIZE. An atlas grows to this on each side and no
 /// further.

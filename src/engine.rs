@@ -875,14 +875,7 @@ impl Renderer {
                 if idx < 0 {
                     break;
                 }
-                let (vs, fs) = p.draw_glsl(
-                    k,
-                    Some(&scene.params),
-                    scene.common.as_deref(),
-                    &scene.assets,
-                    &scene.texts,
-                    hw_linear,
-                );
+                let (vs, fs) = p.draw_glsl(k, scene, hw_linear);
                 let name = format!("pass '{}' draw {k}", p.name);
                 let (cname, cvs, cfs) = (
                     self.staged_cstring(&name)?,
@@ -1731,8 +1724,9 @@ impl Renderer {
             if t.fill != Fill::Mtsdf || !scene.draws_text(&t.name) || !t.has_outlines() {
                 continue;
             }
+            let range = scene.atlas_range(&t.name);
             let same =
-                |s: &AtlasSlot| s.px_em == t.px_per_em && s.range == t.range && s.fonts == *fonts;
+                |s: &AtlasSlot| s.px_em == t.px_per_em && s.range == range && s.fonts == *fonts;
             let i = match slots.iter().position(same) {
                 Some(i) => i,
                 None => {
@@ -1745,12 +1739,12 @@ impl Renderer {
                         None => AtlasSlot {
                             fonts: fonts.clone(),
                             px_em: t.px_per_em,
-                            range: t.range,
+                            range,
                             gen: atlas::Generator::new(
                                 (self.atlas_font)(fonts),
                                 atlas::Config {
                                     px_em: t.px_per_em,
-                                    range: t.range,
+                                    range,
                                     cache: self.atlas_cache.clone(),
                                 },
                             )?,
@@ -4222,14 +4216,7 @@ mod tests {
         r.layer_quads(boxes, "boxes", &built.quads.floats, 4)
             .unwrap();
         assert!(frame(&mut r) != drawn, "the error-box layer drew nothing");
-        let (vs, fs) = with.passes[0].draw_glsl(
-            0,
-            Some(&with.params),
-            None,
-            &with.assets,
-            &with.texts,
-            r.data_texture_linear(),
-        );
+        let (vs, fs) = with.passes[0].draw_glsl(0, &with, r.data_texture_linear());
         let l = Layer {
             pass: "main".to_string(),
             vertex: vs,

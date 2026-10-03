@@ -46,7 +46,6 @@ _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 _PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC)
 _ALIGNS = ("left", "center", "right")
 _FILLS = ("mtsdf", "slug")
-_ATLAS_KEYS = ("px_per_em", "range")
 _BLENDS = ("over", "add", "replace")
 _ALPHAS = ("blend", "keep")
 
@@ -166,8 +165,8 @@ class Draw:
     block, in em from its top left with y down, to the pass pixel where it
     lands.
     `blend` is over, add or replace.
-    `pad` grows each quad that many em past the ink, room for an effect
-    around the outline.
+    `pad` is how far past the letters the draw reaches, in em, for a glow or
+    an outline.
     `alpha` is blend, where the pass's alpha blends the way the colour does,
     or keep, where it stays as it was.
     `emoji` sets whether the draw paints the text's colour glyphs. None
@@ -329,8 +328,9 @@ class Text:
     an atlas of the glyphs' distance fields, fast and with glyph_dist and
     glyph_soft, and slug computes Slug's exact coverage from the curves,
     exact edges at any size.
-    `atlas` sets the texels per em of a glyph in the MTSDF atlas and the
-    distance range in texels, {"px_per_em": 32, "range": 6} by default.
+    `atlas` sets the texels per em of a glyph in the MTSDF atlas,
+    {"px_per_em": 32} by default. The atlas's field reaches the largest pad
+    of the text's draws.
     """
 
     name: str
@@ -366,13 +366,18 @@ class Text:
             )
         if self.atlas is not None and not isinstance(self.atlas, dict):
             raise ValueError(
-                f"text '{self.name}' atlas needs a dict with 'px_per_em' and "
-                f"'range', got {self.atlas!r}"
+                f"text '{self.name}' atlas needs a dict with 'px_per_em', "
+                f"got {self.atlas!r}"
             )
         for k, v in (self.atlas or {}).items():
-            if k not in _ATLAS_KEYS:
+            if k == "range":
                 raise ValueError(
-                    f"text '{self.name}' atlas takes 'px_per_em' and 'range', got {k!r}"
+                    f"text '{self.name}' atlas takes no 'range': the field reaches "
+                    "the largest 'pad' of the text's draws"
+                )
+            if k != "px_per_em":
+                raise ValueError(
+                    f"text '{self.name}' atlas takes 'px_per_em', got {k!r}"
                 )
             if isinstance(v, bool) or not isinstance(v, int) or v < 1:
                 raise ValueError(
@@ -387,7 +392,7 @@ class Text:
         if self.fill != "mtsdf":
             d["fill"] = self.fill
         if self.atlas:
-            d["atlas"] = {k: self.atlas[k] for k in _ATLAS_KEYS if k in self.atlas}
+            d["atlas"] = dict(self.atlas)
         return d
 
 

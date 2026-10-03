@@ -646,17 +646,20 @@ fn texts_round_trip_and_left_is_the_default() {
         assert_eq!(sc.texts[0].align, Align::Left);
         assert_eq!(sc.to_dict()["texts"], json!({"label": {"font": "sans"}}));
     }
-    // MTSDF is the default fill, at 32 px/em and a range of 6, and a save
-    // leaves the defaults out.
+    // MTSDF is the default fill, at 32 px/em and a range of 6 with no draw,
+    // and a save leaves the defaults out.
     assert_eq!(
-        (sc.texts[0].fill, sc.texts[0].px_per_em, sc.texts[0].range),
+        (
+            sc.texts[0].fill,
+            sc.texts[0].px_per_em,
+            sc.atlas_range("label")
+        ),
         (Fill::Mtsdf, 32, 6)
     );
     let doc = texts_scene(json!({
-        "label": {"font": "sans", "fill": "mtsdf", "atlas": {"px_per_em": 32, "range": 6}},
+        "label": {"font": "sans", "fill": "mtsdf", "atlas": {"px_per_em": 32}},
         "title": {"font": "sans", "fill": "slug"},
         "tail": {"font": "sans", "atlas": {"px_per_em": 48}},
-        "foot": {"font": "sans", "atlas": {"range": 4}},
     }));
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     assert_eq!(
@@ -665,12 +668,10 @@ fn texts_round_trip_and_left_is_the_default() {
             "label": {"font": "sans"},
             "title": {"font": "sans", "fill": "slug"},
             "tail": {"font": "sans", "atlas": {"px_per_em": 48}},
-            "foot": {"font": "sans", "atlas": {"range": 4}},
         })
     );
     assert_eq!(sc.texts[1].fill, Fill::Slug);
-    assert_eq!((sc.texts[2].px_per_em, sc.texts[2].range), (48, 6));
-    assert_eq!((sc.texts[3].px_per_em, sc.texts[3].range), (32, 4));
+    assert_eq!(sc.texts[2].px_per_em, 48);
     assert_eq!(
         Scene::from_dict(&sc.to_dict(), None, None).unwrap(),
         sc,
@@ -743,23 +744,28 @@ fn a_text_declaration_names_what_it_lacks() {
         ),
         (
             json!({"font": "sans", "atlas": 32}),
-            "text 'label' atlas needs an object with 'px_per_em' and 'range', got 32",
+            "text 'label' atlas needs an object with 'px_per_em', got 32",
         ),
         (
             json!({"font": "sans", "atlas": {"px_em": 32}}),
-            "text 'label' atlas takes 'px_per_em' and 'range', got 'px_em'",
+            "text 'label' atlas takes 'px_per_em', got 'px_em'",
+        ),
+        (
+            json!({"font": "sans", "atlas": {"range": 6}}),
+            "text 'label' atlas takes no 'range': the field reaches the largest 'pad' of \
+             the text's draws",
         ),
         (
             json!({"font": "sans", "atlas": {"px_per_em": 0}}),
             "text 'label' atlas px_per_em needs a whole number from 1 to 2048, got 0",
         ),
         (
-            json!({"font": "sans", "atlas": {"range": 6.5}}),
-            "text 'label' atlas range needs a whole number from 1 to 2048, got 6.5",
+            json!({"font": "sans", "atlas": {"px_per_em": 6.5}}),
+            "text 'label' atlas px_per_em needs a whole number from 1 to 2048, got 6.5",
         ),
         (
-            json!({"font": "sans", "atlas": {"range": 4096}}),
-            "text 'label' atlas range needs a whole number from 1 to 2048, got 4096",
+            json!({"font": "sans", "atlas": {"px_per_em": 4096}}),
+            "text 'label' atlas px_per_em needs a whole number from 1 to 2048, got 4096",
         ),
     ] {
         let e = scene_err(&texts_scene(json!({ "label": td })));
@@ -972,7 +978,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     for hw_linear in [false, true] {
         glsl.push(p.glsl(Some(&sc.params), None, &sc.assets, &sc.texts, hw_linear));
         for k in 0..p.draws.len() {
-            let (v, f) = p.draw_glsl(k, Some(&sc.params), None, &sc.assets, &sc.texts, hw_linear);
+            let (v, f) = p.draw_glsl(k, &sc, hw_linear);
             let (bv, bf) = p.draw_box_glsl(k, Some(&sc.params));
             let (cv, cf) = p.draw_colour_glsl(k, Some(&sc.params));
             glsl.extend([v, f, bv, bf, cv, cf]);
@@ -2763,11 +2769,10 @@ fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
             (laid.height * fit.ppem + 16.0).ceil() as usize,
         );
         // Red is the fill, green a 3 px ring outside it in a quad padded 4 px,
-        // and blue a glow that halves every 1.4 px, in a quad padded past the
-        // field's reach.
+        // and blue a glow that halves every 1.4 px, in a quad padded 8 px.
         let mut doc = label_scene(SANS, words, Align::Left, fit);
         doc["passes"][0] = json!({"name": "main", "code": BLACK, "draws": [
-            {"text": "label", "place": fit_place(fit), "blend": "add", "pad": 1.0,
+            {"text": "label", "place": fit_place(fit), "blend": "add", "pad": 0.125,
              "code": "void main(){ float g = exp(-max(-glyph_soft(), 0.0) / 2.0); \
                       gl_FragColor = vec4(0.0, 0.0, g, 0.0); }"},
             {"text": "label", "place": fit_place(fit), "blend": "add", "pad": 0.0625,
@@ -2778,9 +2783,9 @@ fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
         let Some((_g, mut r)) = gpu(w, h) else { return };
         let frame = render(&mut r, &loaded(&doc));
         let at = |x: usize, y: usize, c: usize| frame[(y * w + x) * 4 + c];
-        // The field holds the true distance up to its reach, 6 px here, and
-        // the glow's quad spans the ink box grown by that much.
-        let reach = 0.09375 * fit.ppem;
+        // The field holds the true distance up to its reach, the glow's pad,
+        // and the glow's quad spans the ink box grown by that much.
+        let reach = 0.125 * fit.ppem;
         let (mut seen, mut off) = ([0usize; 6], Vec::new());
         for y in 0..h {
             for x in 0..w {
@@ -2839,9 +2844,9 @@ fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
 }
 
 #[test]
-fn an_mtsdf_draw_pads_its_quads_up_to_the_reach_of_the_field() {
+fn an_mtsdf_draw_pads_its_quads_by_its_pad() {
     let fit = Fit {
-        x: 16.0,
+        x: 24.0,
         y: 8.0,
         ppem: 64.0,
     };
@@ -2849,9 +2854,9 @@ fn an_mtsdf_draw_pads_its_quads_up_to_the_reach_of_the_field() {
     let laid = lay(SANS, "I", Align::Left);
     let g = &laid.glyphs[0];
     let Some((_g, mut r)) = gpu(w, h) else { return };
-    for (pad, range, reach) in [(1.0, 6, 0.09375), (0.05, 6, 0.05), (1.0, 4, 0.0625)] {
+    // 0.25 em reaches past the field of the least range, 6 texels at 32 px/em.
+    for pad in [0.25, 0.05] {
         let mut doc = label_scene(SANS, "I", Align::Left, fit);
-        doc["texts"]["label"]["atlas"] = json!({"range": range});
         doc["passes"][0] = json!({"name": "main", "code": BLACK, "draws": [
             {"text": "label", "place": fit_place(fit), "pad": pad,
              "code": "void main(){ gl_FragColor = vec4(1.0); }"}]});
@@ -2860,13 +2865,106 @@ fn an_mtsdf_draw_pads_its_quads_up_to_the_reach_of_the_field() {
         let y = (fit.y + (g.lo[1] + g.hi[1]) / 2.0 * fit.ppem) as usize;
         let lit = |x: f64| frame[(y * w + x as usize) * 4] == 255;
         let edge = (
-            fit.x + (g.hi[0] + reach) * fit.ppem,
-            fit.x + (g.lo[0] - reach) * fit.ppem,
+            fit.x + (g.hi[0] + pad) * fit.ppem,
+            fit.x + (g.lo[0] - pad) * fit.ppem,
         );
-        let what = format!("pad {pad}, range {range}");
-        assert!(lit(edge.0 - 1.0) && !lit(edge.0 + 1.0), "{what}: right");
-        assert!(lit(edge.1 + 1.0) && !lit(edge.1 - 1.0), "{what}: left");
+        assert!(lit(edge.0 - 1.0) && !lit(edge.0 + 1.0), "pad {pad}: right");
+        assert!(lit(edge.1 + 1.0) && !lit(edge.1 - 1.0), "pad {pad}: left");
     }
+}
+
+#[test]
+fn an_mtsdf_field_reaches_the_largest_pad_of_its_texts_draws() {
+    let laid = lay(SANS, "I", Align::Left);
+    let g = &laid.glyphs[0];
+    let fit = Fit {
+        x: 40.0,
+        y: 40.0,
+        ppem: 64.0,
+    };
+    let (w, h) = (
+        (laid.width * fit.ppem + 80.0).ceil() as usize,
+        (laid.height * fit.ppem + 80.0).ceil() as usize,
+    );
+    // The fill pads nothing, and a glow in a second pass pads 0.5 em, 32 px,
+    // which takes a range of 32 texels at 32 px/em. Blue holds the true
+    // distance outside the glyph, 255 at 32 px.
+    let pad = 0.5;
+    let mut doc = label_scene(SANS, "I", Align::Left, fit);
+    let glow =
+        "void main(){ gl_FragColor = vec4(0.0, 0.0, clamp(-glyph_soft() / 32.0, 0.0, 1.0), 0.0); }";
+    let fill = "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c, 0.0, 0.0, c); }";
+    doc["passes"] = json!([
+        {"name": "fill", "code": BLACK, "draws": [
+            {"text": "label", "place": fit_place(fit), "code": fill}]},
+        {"name": "main", "channels": [{"buffer": "fill"}],
+         "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
+         "draws": [{"text": "label", "place": fit_place(fit), "pad": pad, "blend": "add",
+                    "code": glow}]},
+    ]);
+    let sc = loaded(&doc);
+    assert_eq!(sc.atlas_range("label"), 32);
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let frame = render(&mut r, &sc);
+    let (mut seen, mut off) = (0, Vec::new());
+    for y in 0..h {
+        for x in 0..w {
+            let d = px_distance(&laid, fit, x, y);
+            let p = fit.em(x, y);
+            let past = (0..2)
+                .map(|a| (g.lo[a] - p[a]).max(p[a] - g.hi[a]) * fit.ppem)
+                .fold(f64::MIN, f64::max);
+            // Inside the quad, out to 1 px short of the pad, where the least
+            // range reaches 3 px.
+            if (1.0..pad * fit.ppem - 1.0).contains(&d) && past < pad * fit.ppem - 1.0 {
+                seen += usize::from(d > 8.0);
+                let got = f64::from(frame[(y * w + x) * 4 + 2]) / 255.0 * 32.0;
+                if (got - d).abs() > 1.0 {
+                    off.push((x, y, d, got));
+                }
+            }
+        }
+    }
+    assert!(seen > 500, "{seen}");
+    assert!(
+        off.is_empty(),
+        "{} pixels off, (x, y, d, got) {:?}",
+        off.len(),
+        &off[..off.len().min(8)]
+    );
+}
+
+#[test]
+fn an_mtsdf_atlas_takes_its_range_from_the_draws_of_its_text() {
+    let place = "vec2 glyph_place(vec2 em) { return em; }";
+    let draw = |pad: f64| json!({"text": "label", "place": place, "code": WHITE, "pad": pad});
+    let mut doc = texts_scene(json!({
+        "label": {"font": "sans"},
+        "title": {"font": "sans", "atlas": {"px_per_em": 48}},
+    }));
+    doc["passes"] = json!([
+        {"name": "a", "draws": [draw(0.1), draw(0.3)]},
+        {"name": "main", "code": BLACK, "draws": [draw(0.2),
+            {"text": "title", "place": place, "code": WHITE, "pad": 0.25}]},
+    ]);
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    // ceil(2 * 0.3 * 32) and 2 * 0.25 * 48
+    assert_eq!((sc.atlas_range("label"), sc.atlas_range("title")), (20, 24));
+    // A small pad takes the least range.
+    doc["passes"][0]["draws"] = json!([draw(0.05)]);
+    doc["passes"][1]["draws"] = json!([draw(0.0)]);
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    assert_eq!(sc.atlas_range("label"), 6);
+    // A pad past the side of an atlas refuses the scene, and the slug fill
+    // takes any pad.
+    doc["passes"][1]["draws"] = json!([draw(33.0)]);
+    assert_eq!(
+        scene_err(&doc),
+        "scene: pass 'main' draw 0 pad 33.0 needs an atlas range of 2112 texels at the 32 \
+         px_per_em of text 'label', over the cap of 2048"
+    );
+    doc["texts"]["label"]["fill"] = json!("slug");
+    assert!(Scene::from_dict(&doc, None, None).is_ok());
 }
 
 #[test]
@@ -2942,15 +3040,15 @@ fn only_an_mtsdf_draw_starts_an_atlas() {
 
 #[test]
 fn a_glyph_the_atlas_cannot_hold_draws_an_error_box_and_says_why() {
-    // A range of 2048 texels pads every cell past the atlas. The advances of m
-    // and w are wider than a box.
+    // A pad of 32 em takes a range of 2048 texels, which pads every cell past
+    // the atlas. The advances of m and w are wider than a box.
     let words = "mw";
     let laid = text::build(&alone(&font(SANS)), words, Align::Left);
     let built = laid.built.as_ref().unwrap();
     let (bw, bh) = block(built);
     let fit = Fit::of(bw, bh, W, H);
     let mut doc = hazard_scene(SANS, words, fit);
-    doc["texts"]["label"]["atlas"] = json!({"range": 2048});
+    doc["passes"][0]["draws"][0]["pad"] = json!(32.0);
     let Some((_g, mut r)) = gpu(W, H) else { return };
     let frame = render(&mut r, &loaded(&doc));
     // Each box stands centred in its character's advance, on the baseline.
@@ -3017,14 +3115,7 @@ fn the_slug_fill_assembles_as_before_the_mtsdf_fill() {
     });
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let p = &sc.passes[0];
-    let (vs, fs) = p.draw_glsl(
-        0,
-        Some(&sc.params),
-        sc.common.as_deref(),
-        &sc.assets,
-        &sc.texts,
-        false,
-    );
+    let (vs, fs) = p.draw_glsl(0, &sc, false);
     let (bvs, bfs) = p.draw_box_glsl(0, Some(&sc.params));
     let fixture = |f: &str| {
         fs::read_to_string(format!(

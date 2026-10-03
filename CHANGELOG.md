@@ -56,7 +56,9 @@
   outlines, glows and shadows. `"fill": "slug"` on a text computes Slug's
   exact coverage from the curves in each glyph's quad, exact edges at any
   size, and names `"fill": "mtsdf"` in the error of a draw that reads a
-  distance. `atlas` sets the MTSDF atlas's `px_per_em` and `range`.
+  distance. `atlas` sets the MTSDF atlas's `px_per_em`, and the atlas's
+  field reaches as far as the largest `pad` of the text's draws, so a glow
+  fits with no tuning.
 - Generate a font's atlas on every core at its first use, cache it in
   `$XDG_CACHE_HOME/ghee/atlas`, and keep a text's last words on screen until
   the glyphs of the new ones are in. A setup and a render with `--timestep`

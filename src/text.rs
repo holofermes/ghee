@@ -186,7 +186,14 @@ pub enum Fill {
 }
 
 /// The largest px/em and range of an atlas: the side of the atlas.
-const ATLAS_MAX: u64 = atlas::MAX_SIZE as u64;
+pub const ATLAS_MAX: u64 = atlas::MAX_SIZE as u64;
+
+/// The distance range in texels of an MTSDF atlas at `px_per_em` whose field
+/// reaches `pad` em past the outline: half the range reaches each side, and
+/// the range is atlas::RANGE at least.
+pub fn atlas_range(px_per_em: u32, pad: f64) -> u64 {
+    ((2.0 * pad * f64::from(px_per_em)).ceil() as u64).max(u64::from(atlas::RANGE))
+}
 
 /// A text a scene declares. Its words are the scene string param of the same
 /// name.
@@ -198,10 +205,10 @@ pub struct Text {
     pub fonts: Vec<String>,
     pub align: Align,
     pub fill: Fill,
-    /// The MTSDF atlas: texels per em of a glyph's cell, and the distance
-    /// range in texels.
+    /// The texels per em of a glyph's cell in the MTSDF atlas. The atlas's
+    /// distance range follows the draws of the text, as
+    /// Scene::atlas_range gives it.
     pub px_per_em: u32,
-    pub range: u32,
     /// Each font asset's bytes, or why they failed to load, in the order of
     /// `fonts`. load_assets fills them.
     pub data: Option<Vec<Font>>,
@@ -250,17 +257,20 @@ impl Text {
         if fill == Fill::Slug && o.get("atlas").is_some_and(|v| !v.is_null()) {
             bail!("text '{name}' takes no 'atlas' with \"fill\": \"slug\", which reads the curves");
         }
-        let (mut px_per_em, mut range) = (atlas::PX_EM, atlas::RANGE);
+        let mut px_per_em = atlas::PX_EM;
         match o.get("atlas").filter(|v| !v.is_null()) {
             None => {}
             Some(Value::Object(a)) => {
                 for (k, v) in a {
-                    let slot = match k.as_str() {
-                        "px_per_em" => &mut px_per_em,
-                        "range" => &mut range,
-                        _ => bail!("text '{name}' atlas takes 'px_per_em' and 'range', got '{k}'"),
-                    };
-                    *slot = match v.as_u64() {
+                    match k.as_str() {
+                        "px_per_em" => {}
+                        "range" => bail!(
+                            "text '{name}' atlas takes no 'range': the field reaches the \
+                             largest 'pad' of the text's draws"
+                        ),
+                        _ => bail!("text '{name}' atlas takes 'px_per_em', got '{k}'"),
+                    }
+                    px_per_em = match v.as_u64() {
                         Some(n) if (1..=ATLAS_MAX).contains(&n) => n as u32,
                         _ => bail!(
                             "text '{name}' atlas {k} needs a whole number from 1 to {ATLAS_MAX}, \
@@ -271,7 +281,7 @@ impl Text {
                 }
             }
             Some(v) => bail!(
-                "text '{name}' atlas needs an object with 'px_per_em' and 'range', got {}",
+                "text '{name}' atlas needs an object with 'px_per_em', got {}",
                 py_repr(v)
             ),
         }
@@ -281,7 +291,6 @@ impl Text {
             align,
             fill,
             px_per_em,
-            range,
             data: None,
         })
     }
@@ -299,14 +308,9 @@ impl Text {
         if self.fill == Fill::Slug {
             d.insert("fill".to_string(), Value::from("slug"));
         }
-        let mut a = Map::new();
         if self.px_per_em != atlas::PX_EM {
+            let mut a = Map::new();
             a.insert("px_per_em".to_string(), Value::from(self.px_per_em));
-        }
-        if self.range != atlas::RANGE {
-            a.insert("range".to_string(), Value::from(self.range));
-        }
-        if !a.is_empty() {
             d.insert("atlas".to_string(), Value::Object(a));
         }
         Value::Object(d)

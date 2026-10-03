@@ -175,7 +175,10 @@ current frame, a channel on the pass itself or a later one sees the
 previous frame. ghee sends the last pass to the output.
 
 Each pass renders at its own resolution, and samples another pass through
-normalized coordinates.
+normalized coordinates. A pass with `"mipmaps": true` builds the mip chain of
+its buffer after each frame, and every channel that reads it samples it
+trilinearly, so a layer read far away and minified, such as words in
+perspective, stays calm.
 
 A pass buffer holds 8-bit RGBA, and a channel reads the alpha that its pass
 wrote. The output is opaque: a frame reads alpha 255, unless

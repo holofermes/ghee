@@ -78,6 +78,11 @@
   and up as the name of a param, an array, an asset or a text, and any name
   that starts with `ghee_`, which ghee takes for every name that it writes
   into a shader for itself.
+- Build the mip chain of a pass's buffer after each frame with
+  `"mipmaps": true`, or `mipmaps=True` on `ghee.Pass`, and sample it
+  trilinearly through every channel that reads it, so a layer read far away
+  and minified stays calm. On a GPU without OES_texture_npot, ghee refuses
+  a pass size that is no power of two.
 - Rename an ISF input or pass target named like a built-in, such as `frame`,
   or named with the `ghee_` prefix, and rename an input's param with it,
   where an input named `time` kept the name on its param.

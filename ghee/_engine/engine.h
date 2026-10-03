@@ -64,6 +64,11 @@ int  ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, i
 // size (it feeds readback/scanout), consumers sample any pass through normalized
 // UVs.
 bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h);
+// Give a pending pass a mip chain: after the pass renders each frame, the
+// engine builds the levels below its buffer, and every read of the buffer
+// samples with GL_LINEAR_MIPMAP_LINEAR. A GPU without ghee_mipmaps_npot
+// takes a power-of-two size alone. false with ghee_last_error set on refusal.
+bool ghee_mp_set_pass_mipmaps(GheeScene *g, int pass);
 int  ghee_mp_commit(GheeScene *g);   // -> pass count, -1 = nothing pending
 void ghee_mp_abort(GheeScene *g);
 bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);
@@ -148,6 +153,7 @@ void ghee_keep_alpha(GheeScene *g, int keep);
 int  ghee_max_texture_units(GheeScene *g);
 int  ghee_gl_texture_units(GheeScene *g);    // GL_MAX_TEXTURE_IMAGE_UNITS itself
 bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
+bool ghee_mipmaps_npot(GheeScene *g);        // GPU mipmaps a texture of any size
 
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);

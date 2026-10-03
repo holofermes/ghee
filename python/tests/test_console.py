@@ -147,6 +147,8 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
         passes=[
             ghee.Pass(
                 "ink",
+                size=(64, 32),
+                mipmaps=True,
                 draws=[
                     ghee.Draw(
                         "words", INK, PLACE, blend="add", pad=0.0625, alpha="keep"

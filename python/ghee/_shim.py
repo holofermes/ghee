@@ -236,6 +236,8 @@ class Pass:
 
     `size` renders the pass at its own [w, h].
     The last pass leaves `size` None, because it feeds the display.
+    `mipmaps` builds the mip chain of the pass's buffer after each frame, so
+    a pass that reads it far smaller than its size samples it smooth.
     `draws` draw texts into the pass's buffer after its code, in order.
     A pass with draws and no code starts each frame transparent.
     """
@@ -248,10 +250,15 @@ class Pass:
     filter: str = ""
     size: tuple[int, int] | None = None
     draws: list[Draw] = field(default_factory=list)
+    mipmaps: bool = False
 
     def __post_init__(self) -> None:
         if self.size is not None:
             self.size = (int(self.size[0]), int(self.size[1]))
+        if not isinstance(self.mipmaps, bool):
+            raise ValueError(
+                f"pass '{self.name}' mipmaps needs True or False, got {self.mipmaps!r}"
+            )
         if self.filter and self.draws:
             raise ValueError(
                 f"pass '{self.name}' is filter '{self.filter}', and a filter pass "
@@ -267,6 +274,8 @@ class Pass:
             out["code"] = self.code
         if self.size is not None:
             out["size"] = list(self.size)
+        if self.mipmaps:
+            out["mipmaps"] = True
         if self.arrays:
             out["arrays"] = [a.to_dict() for a in self.arrays]
         if self.channels:

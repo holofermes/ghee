@@ -508,6 +508,16 @@ fn draw_error(
     fault(format!("{draw}: {err}"), None, false)
 }
 
+/// The refusal of pass `name` with mipmaps at `w` x `h`, on a GPU that
+/// mipmaps a texture of any size when `npot`, and a power-of-two size alone
+/// otherwise.
+fn mip_refusal(name: &str, w: i64, h: i64, npot: bool) -> Option<String> {
+    let pot = |n: i64| n > 0 && n & (n - 1) == 0;
+    (!(npot || pot(w) && pot(h))).then(|| {
+        format!("pass '{name}' takes mipmaps at {w}x{h}, and this GPU mipmaps a power-of-two size alone")
+    })
+}
+
 fn size_repr(size: ArraySize) -> String {
     match size {
         ArraySize::Linear(n) => n.to_string(),
@@ -736,6 +746,16 @@ impl Renderer {
             );
             return Ok(self.error.clone());
         }
+        let npot = self.mipmaps_npot();
+        for p in scene.passes.iter().filter(|p| p.mipmaps) {
+            let (w, h) = p
+                .size
+                .unwrap_or((i64::from(self.width), i64::from(self.height)));
+            if let Some(e) = mip_refusal(&p.name, w, h, npot) {
+                self.error = e;
+                return Ok(self.error.clone());
+            }
+        }
         // A channel binds to a pass by name. A name that names no pass is an
         // error. buffer=None is the unbound channel, and it reads black.
         let names: Vec<&str> = scene.passes.iter().map(|p| p.name.as_str()).collect();
@@ -837,6 +857,10 @@ impl Renderer {
                         idx = -1;
                     }
                 }
+            }
+            if idx >= 0 && p.mipmaps && !unsafe { ffi::ghee_mp_set_pass_mipmaps(self.handle, idx) }
+            {
+                idx = -1;
             }
             for (k, d) in p.draws.iter().enumerate() {
                 if idx < 0 {
@@ -2102,6 +2126,12 @@ impl Renderer {
         unsafe { ffi::ghee_data_texture_linear(self.handle) }
     }
 
+    /// True when the GPU mipmaps a pass buffer of any size, false when it
+    /// mipmaps a power-of-two size alone.
+    pub fn mipmaps_npot(&self) -> bool {
+        unsafe { ffi::ghee_mipmaps_npot(self.handle) }
+    }
+
     /// The last frame's split, as (draw_ms, read_ms).
     /// draw_ms is the GPU render of every pass.
     /// read_ms is the glReadPixels readback.
@@ -2191,12 +2221,17 @@ mod tests {
     /// One renderer for these tests, with the device lock.
     /// None means the host has no GL device.
     fn gpu() -> Option<(MutexGuard<'static, ()>, Renderer)> {
+        gpu_at(W, H)
+    }
+
+    /// gpu() at a size of its own.
+    fn gpu_at(w: usize, h: usize) -> Option<(MutexGuard<'static, ()>, Renderer)> {
         let guard = lock();
         let mut errs = Vec::new();
         for dev in probe_dri_devices() {
             match Renderer::new(
-                W as i32,
-                H as i32,
+                w as i32,
+                h as i32,
                 COMPONENTS as i32,
                 Some(&dev),
                 false,
@@ -3529,6 +3564,87 @@ mod tests {
             near(&quarters(&f)[..1], &[[0.25, 0.5, 0.25, 1.0]]),
             "{:?}",
             quarters(&f)
+        );
+    }
+
+    #[test]
+    fn a_pass_takes_mipmaps_at_a_size_that_the_gpu_mipmaps() {
+        assert_eq!(mip_refusal("words", 1024, 512, false), None);
+        assert_eq!(mip_refusal("words", 1, 1, false), None);
+        assert_eq!(mip_refusal("words", 1280, 800, true), None);
+        assert_eq!(
+            mip_refusal("words", 1280, 800, false).as_deref(),
+            Some(
+                "pass 'words' takes mipmaps at 1280x800, and this GPU mipmaps a \
+                 power-of-two size alone"
+            )
+        );
+        assert!(mip_refusal("words", 1024, 800, false).is_some());
+    }
+
+    /// A 256x256 pass `check` of one-pixel black and white squares, times
+    /// the param `level`, and the output pass, which reads it a quarter
+    /// size at the texel centres through `main`'s code.
+    fn checker_scene(mipmaps: bool, main: &str) -> Scene {
+        scene_of(json!([
+            {"name": "check", "size": [256, 256], "mipmaps": mipmaps,
+             "params": {"level": {"type": "float", "value": 1.0}},
+             "code": "void main(){ vec2 t = floor(v_texCoord * 256.0); \
+                      gl_FragColor = vec4(vec3(mod(t.x + t.y, 2.0) * level), 1.0); }"},
+            {"name": "main", "channels": [{"buffer": "check"}], "code": main},
+        ]))
+    }
+
+    #[test]
+    fn a_pass_with_mipmaps_read_small_reads_its_average() {
+        let Some((_g, mut r)) = gpu_at(64, 64) else {
+            return;
+        };
+        let read = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord + 0.5 / 256.0); }";
+        let reds = |f: &[u8]| {
+            (0..64 * 64)
+                .map(|i| f64::from(f[i * COMPONENTS]))
+                .collect::<Vec<_>>()
+        };
+        // Read at a texel centre with no mip chain, the checker gives black.
+        assert_eq!(r.setup(&checker_scene(false, read)).unwrap(), "");
+        r.set_time(Some(0.0));
+        let f = r.render(None).unwrap().to_vec();
+        assert!(reds(&f).iter().all(|v| *v == 0.0), "{:?}", &reds(&f)[..8]);
+        // Four texels a pixel read from level 2, where each texel averages
+        // 16 of the checker's.
+        assert_eq!(r.setup(&checker_scene(true, read)).unwrap(), "");
+        r.set_time(Some(0.0));
+        let f = r.render(None).unwrap().to_vec();
+        assert!(
+            reds(&f).iter().all(|v| (v - 127.5).abs() <= 1.5),
+            "{:?}",
+            &reds(&f)[..8]
+        );
+        // The chain follows each frame.
+        assert!(r
+            .set_param("check", "level", "float", &ParamValue::Float(0.0))
+            .unwrap());
+        let f = r.render(None).unwrap().to_vec();
+        assert!(reds(&f).iter().all(|v| *v == 0.0), "{:?}", &reds(&f)[..8]);
+        // A layer that reads the pass through its channel samples the chain
+        // too.
+        let red = "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }";
+        let fs = "uniform sampler2D iChannel0; uniform vec2 resolution;\n\
+                  void main(){ gl_FragColor = texture2D(iChannel0, v_px / resolution + 0.5 / 256.0); }";
+        let layers = [layer("main", fs, Blend::Replace)];
+        assert_eq!(
+            r.setup_layers(&checker_scene(true, red), &layers).unwrap(),
+            ""
+        );
+        r.set_layer_quads(0, &quad(0.0, 0.0, 64.0, 64.0, [0.0; 4]), 2)
+            .unwrap();
+        r.set_time(Some(0.0));
+        let f = r.render(None).unwrap().to_vec();
+        assert!(
+            reds(&f).iter().all(|v| (v - 127.5).abs() <= 1.5),
+            "{:?}",
+            &reds(&f)[..8]
         );
     }
 

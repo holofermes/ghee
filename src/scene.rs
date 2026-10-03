@@ -1233,6 +1233,9 @@ pub struct Pass {
     /// consumer samples a sized pass through normalized UVs, so it ignores
     /// the size. The output pass leaves this None.
     pub size: Option<(i64, i64)>,
+    /// The pass's buffer holds a mip chain, built after the pass renders each
+    /// frame, and every channel that reads it samples trilinearly.
+    pub mipmaps: bool,
     /// Texts drawn into this pass's buffer after its quad, in order.
     pub draws: Vec<Draw>,
 }
@@ -1273,6 +1276,7 @@ impl Pass {
             params,
             filter: filter.to_string(),
             size,
+            mipmaps: false,
             draws: Vec::new(),
         })
     }
@@ -1352,6 +1356,14 @@ impl Pass {
                 .map_or(String::new(), py_str),
             o.get("size").cloned(),
         )?;
+        pass.mipmaps = match o.get("mipmaps").filter(|v| !v.is_null()) {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(v) => bail!(
+                "pass '{name}' mipmaps needs true or false, got {}",
+                py_repr(v)
+            ),
+        };
         pass.draws = list_of(o, "draws")
             .map_err(|e| anyhow!("pass '{name}': {e}"))?
             .iter()
@@ -1380,6 +1392,9 @@ impl Pass {
         }
         if let Some((w, h)) = self.size {
             out.insert("size".to_string(), Value::from(vec![w, h]));
+        }
+        if self.mipmaps {
+            out.insert("mipmaps".to_string(), Value::from(true));
         }
         if !self.arrays.is_empty() {
             out.insert(
@@ -2202,6 +2217,7 @@ impl PassBuilder for Result<Pass> {
             &p.filter,
             Some(Value::from(vec![width, height])),
         )?;
+        sized.mipmaps = p.mipmaps;
         sized.draws = p.draws;
         Ok(sized)
     }
@@ -2319,6 +2335,35 @@ mod tests {
             ],
         });
         assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
+    }
+
+    #[test]
+    fn pass_mipmaps_roundtrip() {
+        let d = json!({
+            "version": 1,
+            "passes": [
+                {"name": "pre", "code": "void main(){}", "size": [64, 32], "mipmaps": true},
+                {"name": "main", "code": "void main(){}"},
+            ],
+        });
+        let sc = Scene::from_dict(&d, None, None).unwrap();
+        assert!(sc.passes[0].mipmaps && !sc.passes[1].mipmaps);
+        assert_eq!(sc.to_dict(), d);
+        let sized = Ok::<Pass, anyhow::Error>(sc.passes[0].clone())
+            .size(8, 4)
+            .unwrap();
+        assert!(sized.mipmaps);
+        // false is the default, and a save leaves it out.
+        let off = json!({"version": 1, "passes": [{"name": "m", "code": "x", "mipmaps": false}]});
+        assert_eq!(
+            Scene::from_dict(&off, None, None).unwrap().to_dict(),
+            json!({"version": 1, "passes": [{"name": "m", "code": "x"}]})
+        );
+        let bad = json!({"version": 1, "passes": [{"name": "m", "code": "x", "mipmaps": "yes"}]});
+        assert_eq!(
+            Scene::from_dict(&bad, None, None).unwrap_err().to_string(),
+            "scene: pass 'm' mipmaps needs true or false, got 'yes'"
+        );
     }
 
     #[test]

@@ -85,6 +85,7 @@ extern "C" {
         alpha: c_int,
     ) -> c_int;
     pub fn ghee_mp_set_pass_size(g: *mut GheeScene, pass: c_int, w: c_int, h: c_int) -> bool;
+    pub fn ghee_mp_set_pass_mipmaps(g: *mut GheeScene, pass: c_int) -> bool;
     pub fn ghee_mp_commit(g: *mut GheeScene) -> c_int;
     pub fn ghee_mp_abort(g: *mut GheeScene);
     pub fn ghee_mp_set_channel(
@@ -160,6 +161,7 @@ extern "C" {
     pub fn ghee_max_texture_units(g: *mut GheeScene) -> c_int;
     pub fn ghee_gl_texture_units(g: *mut GheeScene) -> c_int;
     pub fn ghee_data_texture_linear(g: *mut GheeScene) -> bool;
+    pub fn ghee_mipmaps_npot(g: *mut GheeScene) -> bool;
     pub fn ghee_set_profiling(g: *mut GheeScene, on: bool);
     pub fn ghee_set_time(g: *mut GheeScene, t: f32);
     pub fn ghee_clear_time(g: *mut GheeScene);

@@ -95,6 +95,7 @@ struct GheeScene {
     GLuint mp_tex[MP_MAX_PASSES][2];
     int mp_w[MP_MAX_PASSES], mp_h[MP_MAX_PASSES];   // per-pass buffer size, W,H until set
     int mp_write[MP_MAX_PASSES];
+    bool mp_mip[MP_MAX_PASSES];          // the buffer holds a mip chain, built after each render
     int mp_chan_src[MP_MAX_PASSES][MP_MAX_CHANNELS];  // channel -> source pass index, -1 = none
     int mp_nchan[MP_MAX_PASSES];
     struct mp_locs mp_loc[MP_MAX_PASSES];
@@ -111,6 +112,7 @@ struct GheeScene {
     int stage_w[MP_MAX_PASSES], stage_h[MP_MAX_PASSES];
     char stage_name[MP_MAX_PASSES][96];
     bool stage_alpha[MP_MAX_PASSES];
+    bool stage_mip[MP_MAX_PASSES];
 
     // Layers, staged with the passes and committed with them.
     int mp_nlayer, stage_nlayer;
@@ -129,6 +131,7 @@ struct GheeScene {
     uint8_t *rgba_scratch;
     size_t rgba_scratch_size;
     bool has_float_tex, has_float_linear;   // OES_texture_float[_linear] on this GL
+    bool has_npot;                       // mipmaps a texture of any size: GLES 3 or OES_texture_npot
     int mp_narray;
     GLuint mp_array_tex[MP_MAX_ARRAYS];
     char mp_array_name[MP_MAX_ARRAYS][64];        // sampler uniform name
@@ -636,6 +639,9 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     const char *glexts = (const char *)glGetString(GL_EXTENSIONS);
     g->has_float_tex = glexts && strstr(glexts, "GL_OES_texture_float") != NULL;
     g->has_float_linear = glexts && strstr(glexts, "GL_OES_texture_float_linear") != NULL;
+    const char *version = (const char *)glGetString(GL_VERSION);
+    g->has_npot = (glexts && strstr(glexts, "GL_OES_texture_npot") != NULL) ||
+                  (version && strncmp(version, "OpenGL ES 3", 11) == 0);
     SAY(2, "   format  data texture %s%s\n",
             g->has_float_tex ? "float" : "8-bit LUMINANCE",
             g->has_float_tex ? (g->has_float_linear ? " (linear)" : " (nearest)") : " (linear)");
@@ -971,6 +977,17 @@ static GLuint make_black_texture(void) {
     return tex;
 }
 
+// Sample both buffers of a pass trilinearly, and fill their levels below 0
+// from what they hold, so a read before the pass first renders finds a
+// complete texture.
+static void mp_mip_buffers(GLuint tex[2]) {
+    for (int i = 0; i < 2; i++) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+}
+
 static void mp_free_layers(struct mp_layer *ls, int *n) {
     for (int i = 0; i < *n; i++) {
         if (ls[i].program) glDeleteProgram(ls[i].program);
@@ -1010,6 +1027,7 @@ int ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, in
     }
     snprintf(g->stage_name[idx], sizeof g->stage_name[idx], "%s", name ? name : "a pass");
     g->stage_alpha[idx] = alpha;
+    g->stage_mip[idx] = false;
     g->stage_program[idx] = prog;
     g->stage_w[idx] = g->width;
     g->stage_h[idx] = g->height;
@@ -1021,11 +1039,21 @@ int ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, in
 // ghee_mp_add_pass, before ghee_mp_commit. The last (output) pass must keep the
 // renderer size (its buffer feeds readback/scanout), and Renderer::setup rejects a
 // sized output pass before it reaches here.
+// Whether pending pass `pass` can hold a mip chain at w x h, with the error
+// set when it cannot.
+static bool mips_fit(GheeScene *g, int pass, int w, int h) {
+    if (g->has_npot || (!(w & (w - 1)) && !(h & (h - 1)))) return true;
+    set_error(g, "%s takes mipmaps at %dx%d, and this GPU mipmaps a power-of-two size alone",
+              g->stage_name[pass], w, h);
+    return false;
+}
+
 bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     if (pass < 0 || pass >= g->stage_count || w <= 0 || h <= 0) {
         set_error(g, "pass %d is not pending, or %dx%d is not a positive size", pass, w, h);
         return false;
     }
+    if (g->stage_mip[pass] && !mips_fit(g, pass, w, h)) return false;
     make_current(g);
     GLuint fbo[2], tex[2];
     if (!mp_make_buffers(g, fbo, tex, w, h, g->stage_alpha[pass], g->stage_program[pass] != 0))
@@ -1035,6 +1063,19 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     memcpy(g->stage_tex[pass], tex, sizeof tex);
     g->stage_w[pass] = w;
     g->stage_h[pass] = h;
+    if (g->stage_mip[pass]) mp_mip_buffers(tex);
+    return true;
+}
+
+bool ghee_mp_set_pass_mipmaps(GheeScene *g, int pass) {
+    if (pass < 0 || pass >= g->stage_count) {
+        set_error(g, "pass %d is not pending", pass);
+        return false;
+    }
+    if (!mips_fit(g, pass, g->stage_w[pass], g->stage_h[pass])) return false;
+    make_current(g);
+    mp_mip_buffers(g->stage_tex[pass]);
+    g->stage_mip[pass] = true;
     return true;
 }
 
@@ -1117,6 +1158,7 @@ int ghee_mp_commit(GheeScene *g) {
         g->mp_h[p] = g->stage_h[p];
         memcpy(g->mp_name[p], g->stage_name[p], sizeof g->mp_name[p]);
         g->mp_alpha[p] = g->stage_alpha[p];
+        g->mp_mip[p] = g->stage_mip[p];
         g->mp_write[p] = 0;
         g->mp_nchan[p] = 0;
         g->mp_ndatatex[p] = 0;
@@ -1698,6 +1740,11 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
             mp_bind(g, p, &g->mp_loc[p], vflip, elapsed, true);
         }
         mp_draw_layers(g, p, vflip, elapsed);
+        if (g->mp_mip[p] && !direct) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g->mp_tex[p][g->mp_write[p]]);
+            glGenerateMipmap(GL_TEXTURE_2D);
+        }
     }
 }
 
@@ -2089,6 +2136,8 @@ int ghee_gl_texture_units(GheeScene *g) { return g ? (int)g->gl_units : 0; }
 // filter from the same condition. False on V3D, which has float textures but
 // no OES_texture_float_linear, so a filtered fetch is nearest.
 bool ghee_data_texture_linear(GheeScene *g) { return g && !(g->has_float_tex && !g->has_float_linear); }
+
+bool ghee_mipmaps_npot(GheeScene *g) { return g && g->has_npot; }
 
 // The display mode's refresh rate in Hz, 0 outside display mode.
 int ghee_display_vrefresh(GheeScene *g) { return g ? (int)g->disp_mode.vrefresh : 0; }

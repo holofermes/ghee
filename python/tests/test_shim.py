@@ -115,6 +115,7 @@ RECORDED = {
             "name": "grid",
             "code": "void main(){}",
             "size": [64, 32],
+            "mipmaps": True,
             "arrays": [{"name": "bins", "size": 16}, {"name": "mask", "size": [8, 4]}],
         },
         {
@@ -152,6 +153,7 @@ def test_the_scene_json_is_the_recorded_json():
                 name="grid",
                 code="void main(){}",
                 size=(64, 32),
+                mipmaps=True,
                 arrays=[shim.ArrayInput("bins", 16), shim.ArrayInput("mask", (8, 4))],
             ),
             shim.Pass(

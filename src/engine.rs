@@ -622,6 +622,9 @@ pub struct Renderer {
     /// shader, on a GL that filters a float texture itself.
     #[cfg(test)]
     shader_lerp: bool,
+    /// The layouts run by set_text, for a test to count.
+    #[cfg(test)]
+    layouts: std::cell::Cell<usize>,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
 }
@@ -670,6 +673,8 @@ impl Renderer {
             atlas_cache: None,
             #[cfg(test)]
             shader_lerp: false,
+            #[cfg(test)]
+            layouts: std::cell::Cell::new(0),
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
             handle: ptr::null_mut(),
         };
@@ -1552,6 +1557,8 @@ impl Renderer {
         if self.words.borrow().get(name).is_some_and(|w| w == words) {
             return Ok(true);
         }
+        #[cfg(test)]
+        self.layouts.set(self.layouts.get() + 1);
         let laid = match self.curves.contains(name) {
             true => text.build(words)?,
             false => text.place(words)?,
@@ -2858,7 +2865,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_setup_frees_the_slots_of_old_image_assets() {
+    fn a_setup_frees_the_slots_of_the_last_scenes_image_assets() {
         // The engine binds 16 assets at a time, so each setup hands back the
         // slots of the image assets that its scene no longer declares. An
         // asset set by the host stays.
@@ -3346,7 +3353,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn an_error_in_a_pass_still_reports_that_pass() {
+    fn an_error_in_a_pass_after_a_common_block_names_that_pass_and_its_line() {
         let (_g, mut r) = gpu();
         let sc = Scene::from_dict(
             &json!({
@@ -4199,7 +4206,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn batches_of_a_pass_draw_in_order_and_new_quads_replace_the_old() {
+    fn batches_of_a_pass_draw_in_order_and_new_quads_replace_the_last() {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         let batches = [
@@ -4540,20 +4547,14 @@ mod tests {
         assert_eq!(r.setup(&cover_scene(&words, "left")).unwrap(), "");
         r.set_time(Some(0.0));
         let left = still(&mut r);
-        let t = std::time::Instant::now();
         assert!(r.set_text("label", "other words").unwrap());
         assert!(r.set_text("label", &words).unwrap());
-        let layout = t.elapsed() / 2;
         assert!(still(&mut r) == left);
-        let t = std::time::Instant::now();
+        let laid = r.layouts.get();
         for _ in 0..100 {
             assert!(r.set_text("label", &words).unwrap());
         }
-        let again = t.elapsed();
-        assert!(
-            again < layout * 10,
-            "100 sets of the words held took {again:?}, one layout {layout:?}"
-        );
+        assert_eq!(r.layouts.get(), laid);
         assert!(still(&mut r) == left);
         // A new setup lays the same words out for its own text.
         assert_eq!(r.setup(&cover_scene("I\nIIIIII", "left")).unwrap(), "");

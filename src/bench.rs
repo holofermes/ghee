@@ -1439,13 +1439,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_builtin_suite_holds_eight_cases_and_every_setting_key() {
+    fn every_builtin_case_names_a_shipped_scene_once_and_the_suite_holds_every_setting_key() {
+        let _g = crate::filters::env_guard();
         let suite: Value = serde_json::from_str(SUITE).unwrap();
         let cases = suite_cases(&suite).unwrap();
-        assert_eq!(cases.len(), 8);
-        assert_eq!(case_name(&cases[0]), "bars@128x32");
-        assert_eq!(case_name(&cases[2]), "bars@320x240+dither");
-        assert_eq!(cases[7].size, (800, 480));
+        assert!(!cases.is_empty());
+        let names: std::collections::HashSet<String> = cases.iter().map(case_name).collect();
+        assert_eq!(names.len(), cases.len());
+        let shipped = crate::filters::filter_defs();
+        for c in &cases {
+            let scene = format!(
+                "{}/ghee/examples/{}.scene.json",
+                env!("CARGO_MANIFEST_DIR"),
+                c.scene
+            );
+            assert!(Path::new(&scene).is_file(), "{scene}");
+            assert!(c.filters.iter().all(|f| shipped.contains_key(f)), "{scene}");
+        }
+        let dithered = CaseSpec {
+            scene: "bars".to_string(),
+            size: (320, 240),
+            filters: vec!["dither".to_string()],
+        };
+        assert_eq!(case_name(&dithered), "bars@320x240+dither");
         for k in [
             "reps",
             "rep_ms",

@@ -2187,7 +2187,7 @@ void main() {
     }
 
     #[test]
-    fn heavy_shader_warns_but_still_imports() {
+    fn a_heavy_shader_imports_with_a_warning() {
         let src = isf_body(
             json!({"INPUTS": [{"NAME": "inputImage", "TYPE": "image"}]}),
             "void main(){ vec4 c = vec4(0.0);\n\

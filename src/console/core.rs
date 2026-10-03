@@ -1453,7 +1453,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_declaring_its_own_get_routes_still_mutates_through_post() {
+    fn a_host_declaring_its_own_get_routes_mutates_through_post() {
         // A host that keeps GET /set for its scripts relabels the request as a
         // POST. The core keeps its refusal.
         let api = ConsoleAPI::new(FakeHost::new()).with_post_only(&[]);

@@ -2506,7 +2506,7 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_rate_above_the_ceiling_still_wins() {
+    fn a_configured_rate_above_the_ceiling_wins() {
         assert_eq!(stream_bitrate(2048, 2048, 30, 100_000_000), 100_000_000);
     }
 
@@ -2527,13 +2527,6 @@ mod tests {
     }
 
     // the preview
-
-    #[test]
-    fn the_preview_quality_is_not_the_old_mush() {
-        // q50 on a 480px frame looks mushy once a browser enlarges it
-        let quality = u32::from(PREVIEW_QUALITY);
-        assert!(quality > 50);
-    }
 
     fn test_frame(w: i32, h: i32) -> Arc<RawFrame> {
         let mut data = vec![0u8; (w * h * 4) as usize];

@@ -1894,7 +1894,7 @@ mod tests {
     }
 
     #[test]
-    fn own_flags_are_still_validated() {
+    fn a_flag_that_ghee_does_not_take_is_refused_by_name() {
         let e = Cli::try_parse_from(argv(&["ghee", "render", "text", "--nosuchflag"]))
             .err()
             .unwrap();

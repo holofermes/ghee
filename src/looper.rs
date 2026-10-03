@@ -1307,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn a_skipped_frame_still_advances_the_frame_number() {
+    fn a_skipped_frame_advances_the_frame_number() {
         struct Watcher(Arc<Mutex<Vec<u64>>>);
 
         impl SceneController for Watcher {
@@ -1630,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sink_is_still_turned_off_when_a_frame_raises() {
+    fn a_sink_is_turned_off_when_a_frame_raises() {
         let mut r = Recorder::default();
         let mut s = Sink::new();
         s.boom = true;

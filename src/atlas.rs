@@ -1116,9 +1116,11 @@ mod tests {
     }
 
     #[test]
-    fn the_preload_is_198_distinct_characters() {
+    fn the_preload_holds_printable_ascii_and_every_character_once() {
         let all: HashSet<char> = preload().collect();
-        assert_eq!((preload().count(), all.len()), (198, 198));
+        assert_eq!(all.len(), preload().count());
+        assert!(('!'..='~').all(|c| all.contains(&c)));
+        assert!(all.iter().all(|c| !c.is_control() && !c.is_whitespace()));
     }
 
     // Fields

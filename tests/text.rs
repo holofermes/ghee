@@ -1257,7 +1257,7 @@ fn a_missing_font_names_its_path_and_the_directories_of_ghee_assets() {
 }
 
 #[test]
-fn a_missing_image_still_fails_the_load() {
+fn a_missing_image_fails_the_load() {
     let _g = lock();
     let dir = tmpdir("noimage");
     let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
@@ -1588,7 +1588,7 @@ fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_setup_frees_the_asset_slots_of_old_texts() {
+fn a_setup_frees_the_asset_slots_of_the_last_scenes_texts() {
     // The engine binds 16 assets at a time, so each setup has to hand back
     // the slots of the texts that its scene no longer declares.
     let laid = lay(SANS, "I", Align::Left);
@@ -2580,7 +2580,7 @@ fn a_layer_declaration_names_what_it_lacks() {
         ),
     ];
     for (got, want) in cases {
-        assert!(got.ends_with(want), "{got}\n  wants {want}");
+        assert_eq!(got, format!("scene: {want}"));
     }
     let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
     doc["passes"]
@@ -2588,10 +2588,9 @@ fn a_layer_declaration_names_what_it_lacks() {
         .unwrap()
         .push(json!({"name": "d", "code": BLACK, "filter": "dither",
             "layers": [{"text": "label", "fragment": WHITE, "vertex": place}]}));
-    let got = scene_err(&doc);
-    assert!(
-        got.ends_with("pass 'd' is filter 'dither', and a filter pass takes no layers"),
-        "{got}"
+    assert_eq!(
+        scene_err(&doc),
+        "scene: pass 'd' is filter 'dither', and a filter pass takes no layers"
     );
 }
 
@@ -2885,7 +2884,7 @@ fn a_layer_blends_the_pass_alpha_as_its_colour() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_reset_drops_the_layers_with_the_scene() {
+fn a_text_set_after_a_reset_reaches_no_layer_of_the_dropped_scene() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
@@ -3619,7 +3618,7 @@ fn a_text_round_trips_its_fonts_and_names_a_bad_list() {
         ),
     ] {
         let e = scene_err(&texts_scene(json!({"label": {"font": font}})));
-        assert!(e.ends_with(want), "{e}");
+        assert_eq!(e, format!("scene: {want}"));
     }
 }
 

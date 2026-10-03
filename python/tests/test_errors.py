@@ -146,6 +146,68 @@ def test_words_past_the_texture_from_a_procedural_scene_end_no_run(tmp_path):
     assert len(frames) == 1
 
 
+PLACE = "vec2 glyph_place(vec2 em) { return em * 12.0; }"
+
+# a layer whose blend ghee does not know
+MISTAKE = {
+    "version": 1,
+    "passes": [
+        {
+            "name": "main",
+            "code": "void main(){ gl_FragColor = vec4(1.0); }",
+            "layers": [{"text": "words", "vertex": PLACE, "blend": "mix"}],
+        }
+    ],
+    "texts": {"words": {"value": "hi", "font": "sans.ttf"}},
+}
+
+MISTAKE_SCENE = """#!{python}
+import ghee
+
+ghee.run(
+    ghee.Scene(
+        passes=[
+            ghee.Pass(
+                "main",
+                "void main(){{ gl_FragColor = vec4(1.0); }}",
+                layers=[ghee.Layer("words", vertex={place!r}, blend="mix")],
+            )
+        ],
+        texts=[ghee.Text("words", "sans.ttf", "hi")],
+    )
+)
+"""
+
+
+def test_a_scene_mistake_reads_as_ghee_wrote_it_in_open_a_direct_run_and_ghee_render(
+    tmp_path,
+):
+    with pytest.raises(ValueError) as raised:
+        ghee.open(MISTAKE, width=8, height=8)
+    message = str(raised.value)
+    assert "blend" in message
+    path = tmp_path / "mistake.py"
+    path.write_text(MISTAKE_SCENE.format(python=sys.executable, place=PLACE))
+    path.chmod(0o755)
+    out = ["-o", str(tmp_path / "f.png"), "--size", "8x8"]
+    direct = subprocess.run(
+        [str(path), *out], capture_output=True, check=False, text=True, timeout=120
+    )
+    assert direct.returncode == 1
+    assert direct.stderr.splitlines()[-1] == f"ValueError: {message}"
+    if not CLI.exists():
+        pytest.skip(f"no {CLI} to run the scene")
+    ran = subprocess.run(
+        [str(CLI), "render", str(path), *out],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=120,
+    )
+    assert ran.returncode == 1
+    assert ran.stderr.count(message.removeprefix("scene: ")) == 1, ran.stderr
+
+
 def test_a_feed_the_scene_does_not_declare():
     with ghee.open(RED, width=8, height=8) as h:
         with pytest.raises(ValueError) as raised:

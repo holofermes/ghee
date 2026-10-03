@@ -220,51 +220,49 @@ def test_an_asset_is_its_file():
     )
     assert scene.to_dict()["assets"] == {"logo": {"file": "logo.png"}}
     assert "assets" not in shim.Scene(passes=[]).to_dict()
-    with pytest.raises(ValueError, match="asset 'logo' 'file' needs a filename"):
-        shim.Asset("logo", "")
-    with pytest.raises(ValueError, match="asset 'logo' is declared twice"):
-        shim.Scene(assets=[shim.Asset("logo", "a.png"), shim.Asset("logo", "b.png")])
 
 
-def test_a_text_says_what_it_needs():
+@pytest.mark.parametrize("kind", ["asset", "text"])
+def test_two_assets_or_two_texts_of_one_name_are_refused(kind):
+    """The document keys them by name, where the second would hide the first."""
     shim = load()
-    with pytest.raises(ValueError, match="align needs 'left', 'center' or 'right'"):
-        shim.Text("words", "sans", align="middle")
-    with pytest.raises(ValueError, match="'font' needs the name of a font asset"):
-        shim.Text("words", "")
-    with pytest.raises(ValueError, match="value needs words in a string, got 3"):
-        shim.Text("words", "sans", 3)
-    for ty, value in (("float", 1.0), ("string", "hi")):
-        with pytest.raises(
-            ValueError,
-            match="scene param 'gain' has the name of text 'gain', which holds its "
-            "words in its 'value'",
-        ):
-            shim.Scene(
-                params={"gain": shim.Param("gain", ty, value)},
-                texts=[shim.Text("gain", "sans.ttf")],
+    twins = {
+        "asset": {"assets": [shim.Asset("logo", "a.png"), shim.Asset("logo", "b.png")]},
+        "text": {"texts": [shim.Text("logo", "sans"), shim.Text("logo", "serif")]},
+    }
+    with pytest.raises(ValueError) as raised:
+        shim.Scene(**twins[kind])
+    assert str(raised.value) == f"{kind} 'logo' is declared twice"
+
+
+def test_numpy_numbers_build_a_document_that_json_takes():
+    shim = load()
+    np = pytest.importorskip("numpy")
+    scene = shim.Scene(
+        passes=[
+            shim.Pass(
+                "main",
+                "void main(){}",
+                size=(np.int64(64), np.int64(32)),
+                arrays=[shim.ArrayInput("mask", np.array([8, 4]))],
+                params={"tint": shim.Param("tint", "color", np.array([1, 0.5, 0]))},
             )
-    with pytest.raises(
-        ValueError,
-        match="param 'gain' in pass 'main' has the name of text 'gain', which holds",
-    ):
-        shim.Scene(
-            passes=[
-                shim.Pass(
-                    "main",
-                    "void main(){}",
-                    params={"gain": shim.Param("gain", "float", 1.0)},
-                )
-            ],
-            texts=[shim.Text("gain", "sans.ttf")],
-        )
-    with pytest.raises(ValueError, match="text 'words' is declared twice"):
-        words_scene(shim, [shim.Text("words", "sans"), shim.Text("words", "sans")])
-    with pytest.raises(
-        ValueError,
-        match="text 'words' font 'serif' is no asset of the scene and no .ttf or .otf file",
-    ):
-        words_scene(shim, [shim.Text("words", "serif")])
+        ],
+        params={"gain": shim.Param("gain", "float", np.float32(0.5), max=np.int64(2))},
+    )
+    assert json.loads(json.dumps(scene.to_dict())) == {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){}",
+                "size": [64, 32],
+                "arrays": [{"name": "mask", "size": [8, 4]}],
+                "params": {"tint": {"type": "color", "value": [1.0, 0.5, 0.0]}},
+            }
+        ],
+        "params": {"gain": {"type": "float", "value": 0.5, "max": 2}},
+    }
 
 
 INK = "void main(){ gl_FragColor = vec4(glyph_cover()); }"
@@ -350,8 +348,6 @@ def test_a_layer_sends_emoji_when_it_is_set():
             "fragment": INK,
             "emoji": emoji,
         }
-    with pytest.raises(ValueError, match="emoji needs True, False or None, got 1"):
-        shim.Layer("words", INK, PLACE, emoji=1)
 
 
 def test_a_pass_of_layers_alone_has_no_code():
@@ -362,46 +358,8 @@ def test_a_pass_of_layers_alone_has_no_code():
         "layers": [{"text": "words", "vertex": PLACE, "fragment": INK}],
     }
     assert "code" not in drawn_scene(shim, [alone]).to_dict()["passes"][0]
-    with pytest.raises(ValueError, match="pass 'main' has no code and no layers"):
-        shim.Pass("main")
-    # a filter pass takes its code from its filter, and no layers
+    # a filter pass takes its code from its filter
     assert shim.Pass("dither", filter="dither").to_dict()["code"] == ""
-    with pytest.raises(ValueError, match="a filter pass takes no layers"):
-        shim.Pass("dither", filter="dither", layers=[shim.Layer("words", INK, PLACE)])
-
-
-def test_a_layer_says_what_it_needs():
-    shim = load()
-    with pytest.raises(ValueError, match="blend needs 'over', 'add' or 'replace'"):
-        shim.Layer("words", INK, PLACE, blend="mix")
-    for pad in (-0.1, float("nan"), True, "0.1"):
-        with pytest.raises(ValueError, match="pad needs a number of em, 0 or more"):
-            shim.Layer("words", INK, PLACE, pad=pad)
-    with pytest.raises(ValueError, match="'fragment' needs fragment GLSL"):
-        shim.Layer("words", "  ", PLACE)
-    with pytest.raises(ValueError, match="'vertex' needs vertex GLSL"):
-        shim.Layer("words", INK, " ")
-    with pytest.raises(
-        ValueError,
-        match="needs 'px_per_em', the pixels per em of the words centred in the "
-        "pass, or 'vertex', GLSL that defines",
-    ):
-        shim.Layer("words", INK)
-    with pytest.raises(ValueError, match="takes 'vertex' or 'px_per_em', got both"):
-        shim.Layer("words", INK, PLACE, px_per_em=32)
-    for px in (0, -1.0, float("inf"), True, "32"):
-        with pytest.raises(
-            ValueError, match="px_per_em needs a number of pixels above 0"
-        ):
-            shim.Layer("words", px_per_em=px)
-    with pytest.raises(ValueError, match="'text' needs the name of a scene text"):
-        shim.Layer("", INK, PLACE)
-    with pytest.raises(
-        ValueError,
-        match="pass 'main' layer 'title' names text 'title', which the scene does not "
-        "declare",
-    ):
-        drawn_scene(shim, [shim.Pass("main", layers=[shim.Layer("title", INK, PLACE)])])
 
 
 @pytest.mark.parametrize(
@@ -422,61 +380,6 @@ def test_a_keyword_that_a_layer_renamed_names_the_new_one(keyword, error):
     assert str(raised.value) == error
 
 
-def test_a_layer_name_takes_letters_digits_and_dashes_unique_in_its_pass():
-    shim = load()
-
-    def err(make, *args, **kw):
-        with pytest.raises(ValueError) as e:
-            make(*args, **kw)
-        return str(e.value)
-
-    for bad in ("my glow", "", 3):
-        assert err(shim.Layer, "words", INK, PLACE, name=bad) == (
-            "layer of text 'words' name needs one or more ASCII letters, digits, "
-            f"'_' or '-', got {bad!r}"
-        )
-    assert err(shim.Layer, "words", INK, PLACE, blend="mix", name="glow") == (
-        "layer 'glow' blend needs 'over', 'add' or 'replace', got 'mix'"
-    )
-    glow = shim.Layer("words", INK, PLACE, name="glow-2_b")
-    words = shim.Layer("words", INK, PLACE)
-    named_words = shim.Layer("words", INK, PLACE, name="words")
-    for twins, label in (((glow, glow), "glow-2_b"), ((words, named_words), "words")):
-        assert err(shim.Pass, "main", layers=list(twins)) == (
-            f"pass 'main' has two layers that go by '{label}'"
-        )
-    shim.Pass("main", layers=[words, words, glow])
-
-
-def test_a_text_fill_and_atlas_say_what_they_need():
-    shim = load()
-    for fill in ("sdf", "outline"):
-        with pytest.raises(
-            ValueError,
-            match=f"fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, "
-            f"or 'slug', exact edges at any size, got '{fill}'",
-        ):
-            shim.Text("words", "sans", fill=fill)
-    with pytest.raises(
-        ValueError,
-        match="""takes no 'atlas' with "fill": "slug", which reads the curves""",
-    ):
-        shim.Text("words", "sans", fill="slug", atlas={"px_per_em": 32})
-    with pytest.raises(ValueError, match="atlas takes 'px_per_em', got 'px'"):
-        shim.Text("words", "sans", atlas={"px": 32})
-    with pytest.raises(
-        ValueError,
-        match="atlas takes no 'range': the field reaches the largest 'pad' of the "
-        "text's layers",
-    ):
-        shim.Text("words", "sans", atlas={"px_per_em": 32, "range": 6})
-    for n in (0, 1.5, True):
-        with pytest.raises(ValueError, match="atlas px_per_em needs a whole number"):
-            shim.Text("words", "sans", atlas={"px_per_em": n})
-    with pytest.raises(ValueError, match="atlas needs a dict with 'px_per_em'"):
-        shim.Text("words", "sans", atlas=32)
-
-
 def test_a_font_list_goes_out_as_given():
     shim = load()
     scene = shim.Scene(
@@ -487,18 +390,6 @@ def test_a_font_list_goes_out_as_given():
     assert scene.to_dict()["texts"] == {
         "words": {"value": "hi", "font": ["sans", "emoji"]}
     }
-    with pytest.raises(ValueError, match="text 'words' font 'serif' is no asset"):
-        drawn_scene(shim, [], shim.Text("words", ["sans", "serif"]))
-    with pytest.raises(ValueError, match="'font' needs the name of a font asset"):
-        shim.Text("words", ["sans", ""])
-
-
-def test_a_param_of_an_unknown_type_says_so():
-    shim = load()
-    with pytest.raises(ValueError, match="unknown type"):
-        shim.Param("gain", "double", 1.0)
-    with pytest.raises(ValueError, match="needs 3 numbers"):
-        shim.Param("tint", "color", [1.0, 0.0])
 
 
 # ---------------------------------------------------------------------- args

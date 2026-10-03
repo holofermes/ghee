@@ -33,14 +33,13 @@ from __future__ import annotations
 import argparse
 import array
 import json
-import math
 import numbers
 import os
 import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -54,11 +53,6 @@ Fill = Literal["mtsdf", "slug"]
 Blend = Literal["over", "add", "replace"]
 ArgType = Literal["string", "int", "float", "size", "bool"]
 
-_PARAM_TYPES = get_args(ParamType)
-_ALIGNS = get_args(Align)
-_FILLS = get_args(Fill)
-_BLENDS = get_args(Blend)
-
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
 WIRE = "GHEE_WIRE"
 # ghee sets this when it reads kind 5 and the handshake's "lockstep". Without
@@ -67,6 +61,31 @@ LOCKSTEP = "GHEE_LOCKSTEP"
 
 
 # ---------------------------------------------------------------- scene model
+
+
+def _plain(v: Any) -> Any:
+    """`v` in the types that json and the bindings both take: a tuple as a
+    list, a path as its str, a numpy number or array as its Python value.
+    Anything else goes out as given, for ghee to judge."""
+    if isinstance(v, os.PathLike):
+        return os.fspath(v)
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _plain(x) for k, x in v.items()}
+    if isinstance(v, (str, bytes)) or not hasattr(v, "tolist"):
+        return v
+    return v.tolist()
+
+
+def _floats(v: Any) -> Any:
+    """`v` as `_plain` leaves it, with each real number in it a float."""
+    v = _plain(v)
+    if isinstance(v, list):
+        return [_floats(x) for x in v]
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    return v
 
 
 @dataclass
@@ -88,34 +107,13 @@ class Param:
     step: float | None = None
     options: list[str] | None = None
 
-    def __post_init__(self) -> None:
-        if self.type not in _PARAM_TYPES:
-            raise ValueError(
-                f"param '{self.name}' has unknown type {self.type!r}; "
-                f"known types: {', '.join(_PARAM_TYPES)}"
-            )
-        n = 3 if self.type == "color" else _VEC.get(self.type)
-        if n is not None:
-            v = list(self.value)
-            if len(v) != n:
-                raise ValueError(f"param '{self.name}' needs {n} numbers, got {v!r}")
-            self.value = [float(x) for x in v]
-        elif self.type == "float":
-            self.value = float(self.value)
-        elif self.type == "int":
-            self.value = int(self.value)
-        elif self.type == "bool":
-            self.value = bool(self.value)
-        elif not isinstance(self.value, str):
-            raise ValueError(
-                f"string param '{self.name}' needs a string, got {self.value!r}"
-            )
-
     def to_dict(self) -> dict:
-        d: dict = {"type": self.type, "value": self.value}
+        floats = self.type in ("float", "color", *_VEC)
+        value = _floats(self.value) if floats else _plain(self.value)
+        d: dict = {"type": self.type, "value": value}
         for k in ("min", "max", "step", "options"):
             if getattr(self, k) is not None:
-                d[k] = getattr(self, k)
+                d[k] = _plain(getattr(self, k))
         return d
 
 
@@ -128,30 +126,20 @@ class ArrayInput:
     """
 
     name: str
-    size: Any
-
-    def __post_init__(self) -> None:
-        if isinstance(self.size, (list, tuple)):
-            if len(self.size) != 2:
-                raise ValueError(
-                    f"array '{self.name}' size needs an int or [w, h], "
-                    f"got {self.size!r}"
-                )
-            self.size = (int(self.size[0]), int(self.size[1]))
-        else:
-            self.size = int(self.size)
+    size: int | tuple[int, int]
 
     @property
     def is_2d(self) -> bool:
-        return not isinstance(self.size, int)
+        return isinstance(_plain(self.size), list)
 
     @property
     def count(self) -> int:
         """How many values one message carries. A 2D array sends w*h values."""
-        return self.size[0] * self.size[1] if self.is_2d else self.size
+        size = _plain(self.size)
+        return size[0] * size[1] if isinstance(size, list) else size
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "size": list(self.size) if self.is_2d else self.size}
+        return {"name": self.name, "size": _plain(self.size)}
 
 
 @dataclass
@@ -162,31 +150,6 @@ class Channel:
 
     def to_dict(self) -> dict:
         return {"buffer": self.buffer}
-
-
-def _is_layer_name(name: object) -> bool:
-    """ASCII letters, digits, '_' and '-'. A name holds no space, so it never
-    reads as the label of a layer without one, such as "t 2"."""
-    return (
-        isinstance(name, str)
-        and name != ""
-        and all(c.isascii() and (c.isalnum() or c in "_-") for c in name)
-    )
-
-
-def _layer_labels(layers: list[Layer]) -> list[str]:
-    """What each layer goes by: its name, else its text, numbered from the
-    text's second layer without a name, as "t", "t 2", "t 3"."""
-    seen: list[str] = []
-    out = []
-    for d in layers:
-        if d.name is not None:
-            out.append(d.name)
-            continue
-        seen.append(d.text)
-        n = seen.count(d.text)
-        out.append(d.text if n == 1 else f"{d.text} {n}")
-    return out
 
 
 @dataclass
@@ -236,78 +199,21 @@ class Layer:
             )
         return super().__new__(cls)
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.text, str) or not self.text:
-            raise ValueError(
-                f"a layer's 'text' needs the name of a scene text, got {self.text!r}"
-            )
-        what = f"layer of text '{self.text}'"
-        if self.name is not None:
-            if not _is_layer_name(self.name):
-                raise ValueError(
-                    f"{what} name needs one or more ASCII letters, digits, '_' or "
-                    f"'-', got {self.name!r}"
-                )
-            what = f"layer '{self.name}'"
-        if self.vertex is not None and self.px_per_em is not None:
-            raise ValueError(f"{what} takes 'vertex' or 'px_per_em', got both")
-        if self.vertex is None and self.px_per_em is None:
-            raise ValueError(
-                f"{what} needs 'px_per_em', the pixels per em of the words centred "
-                "in the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)"
-            )
-        for key, holds in (
-            ("vertex", "vertex GLSL that defines vec2 glyph_place(vec2 em)"),
-            ("fragment", "fragment GLSL with its own void main()"),
-        ):
-            v = getattr(self, key)
-            if v is not None and (not isinstance(v, str) or not v.strip()):
-                raise ValueError(f"{what} '{key}' needs {holds}, got {v!r}")
-        px = self.px_per_em
-        if px is not None:
-            if (
-                isinstance(px, bool)
-                or not isinstance(px, (int, float))
-                or not math.isfinite(px)
-                or px <= 0
-            ):
-                raise ValueError(
-                    f"{what} px_per_em needs a number of pixels above 0, got {px!r}"
-                )
-            self.px_per_em = float(px)
-        if self.blend not in _BLENDS:
-            raise ValueError(
-                f"{what} blend needs 'over', 'add' or 'replace', got {self.blend!r}"
-            )
-        pad = self.pad
-        if (
-            isinstance(pad, bool)
-            or not isinstance(pad, (int, float))
-            or not math.isfinite(pad)
-            or pad < 0
-        ):
-            raise ValueError(f"{what} pad needs a number of em, 0 or more, got {pad!r}")
-        self.pad = float(pad)
-        if self.emoji is not None and not isinstance(self.emoji, bool):
-            raise ValueError(
-                f"{what} emoji needs True, False or None, got {self.emoji!r}"
-            )
-
     def to_dict(self) -> dict:
         d: dict = {} if self.name is None else {"name": self.name}
         d["text"] = self.text
         if self.vertex is not None:
             d["vertex"] = self.vertex
-        else:
-            d["px_per_em"] = self.px_per_em
+        if self.px_per_em is not None:
+            d["px_per_em"] = _floats(self.px_per_em)
         if self.fragment is not None:
             d["fragment"] = self.fragment
         if self.blend != "over":
             d["blend"] = self.blend
-        if self.pad:
-            d["pad"] = self.pad
+        if self.pad != 0.0:
+            d["pad"] = _floats(self.pad)
         if self.emoji is not None:
-            d["emoji"] = self.emoji
+            d["emoji"] = _plain(self.emoji)
         return d
 
 
@@ -333,36 +239,15 @@ class Pass:
     layers: list[Layer] = field(default_factory=list)
     mipmaps: bool = False
 
-    def __post_init__(self) -> None:
-        if self.size is not None:
-            self.size = (int(self.size[0]), int(self.size[1]))
-        if not isinstance(self.mipmaps, bool):
-            raise ValueError(
-                f"pass '{self.name}' mipmaps needs True or False, got {self.mipmaps!r}"
-            )
-        if self.filter and self.layers:
-            raise ValueError(
-                f"pass '{self.name}' is filter '{self.filter}', and a filter pass "
-                "takes no layers"
-            )
-        labels = _layer_labels(self.layers)
-        for k, label in enumerate(labels):
-            if label in labels[:k]:
-                raise ValueError(
-                    f"pass '{self.name}' has two layers that go by '{label}'"
-                )
-        # A filter pass takes its code from its filter.
-        if not self.filter and not self.code.strip() and not self.layers:
-            raise ValueError(f"pass '{self.name}' has no code and no layers")
-
     def to_dict(self) -> dict:
         out: dict = {"name": self.name}
-        if self.code.strip() or not self.layers:
-            out["code"] = self.code
+        code = self.code
+        if not self.layers or not isinstance(code, str) or code.strip():
+            out["code"] = code
         if self.size is not None:
-            out["size"] = list(self.size)
-        if self.mipmaps:
-            out["mipmaps"] = True
+            out["size"] = _plain(self.size)
+        if self.mipmaps is not False:
+            out["mipmaps"] = _plain(self.mipmaps)
         if self.arrays:
             out["arrays"] = [a.to_dict() for a in self.arrays]
         if self.channels:
@@ -389,21 +274,8 @@ class Asset:
     name: str
     file: str | os.PathLike[str]
 
-    def __post_init__(self) -> None:
-        if isinstance(self.file, os.PathLike):
-            self.file = os.fspath(self.file)
-        if not isinstance(self.file, str) or not self.file:
-            raise ValueError(
-                f"asset '{self.name}' 'file' needs a filename, got {self.file!r}"
-            )
-
     def to_dict(self) -> dict:
-        return {"file": self.file}
-
-
-def _font_file(name: str) -> bool:
-    """A .ttf or .otf file. A text's font that names none is an Asset."""
-    return name.lower().endswith((".ttf", ".otf"))
+        return {"file": _plain(self.file)}
 
 
 @dataclass
@@ -436,70 +308,14 @@ class Text:
     fill: Fill = "mtsdf"
     atlas: dict[str, int] | None = None
 
-    def __post_init__(self) -> None:
-        if isinstance(self.font, os.PathLike):
-            self.font = os.fspath(self.font)
-        if isinstance(self.font, tuple):
-            self.font = list(self.font)
-        if isinstance(self.font, list):
-            self.font = [
-                os.fspath(f) if isinstance(f, os.PathLike) else f for f in self.font
-            ]
-        fonts = self.font if isinstance(self.font, list) else [self.font]
-        if not fonts or not all(isinstance(f, str) and f for f in fonts):
-            raise ValueError(
-                f"text '{self.name}' 'font' needs the name of a font asset or a "
-                f".ttf or .otf file, or a list of them, got {self.font!r}"
-            )
-        if not isinstance(self.value, str):
-            raise ValueError(
-                f"text '{self.name}' value needs words in a string, got {self.value!r}"
-            )
-        if self.align not in _ALIGNS:
-            raise ValueError(
-                f"text '{self.name}' align needs 'left', 'center' or 'right', "
-                f"got {self.align!r}"
-            )
-        if self.fill not in _FILLS:
-            raise ValueError(
-                f"text '{self.name}' fill needs 'mtsdf', fast and with glyph_dist "
-                "and glyph_soft, or 'slug', exact edges at any size, "
-                f"got {self.fill!r}"
-            )
-        if self.fill == "slug" and self.atlas is not None:
-            raise ValueError(
-                f"text '{self.name}' takes no 'atlas' with \"fill\": \"slug\", "
-                "which reads the curves"
-            )
-        if self.atlas is not None and not isinstance(self.atlas, dict):
-            raise ValueError(
-                f"text '{self.name}' atlas needs a dict with 'px_per_em', "
-                f"got {self.atlas!r}"
-            )
-        for k, v in (self.atlas or {}).items():
-            if k == "range":
-                raise ValueError(
-                    f"text '{self.name}' atlas takes no 'range': the field reaches "
-                    "the largest 'pad' of the text's layers"
-                )
-            if k != "px_per_em":
-                raise ValueError(
-                    f"text '{self.name}' atlas takes 'px_per_em', got {k!r}"
-                )
-            if isinstance(v, bool) or not isinstance(v, int) or v < 1:
-                raise ValueError(
-                    f"text '{self.name}' atlas {k} needs a whole number, 1 or more, "
-                    f"got {v!r}"
-                )
-
     def to_dict(self) -> dict:
-        d: dict = {"value": self.value, "font": self.font}
+        d: dict = {"value": self.value, "font": _plain(self.font)}
         if self.align != "left":
             d["align"] = self.align
         if self.fill != "mtsdf":
             d["fill"] = self.fill
-        if self.atlas:
-            d["atlas"] = dict(self.atlas)
+        if self.atlas is not None:
+            d["atlas"] = _plain(self.atlas)
         return d
 
 
@@ -515,6 +331,7 @@ class Scene:
     `texts` are words drawn from a font, and a Layer in a pass names one of
     them. ghee declares the string param of each text's name, which holds its
     words.
+    Two assets, or two texts, of one name raise ValueError.
     """
 
     passes: list[Pass] = field(default_factory=list)
@@ -526,41 +343,11 @@ class Scene:
     texts: list[Text] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        names = set()
-        for a in self.assets:
-            if a.name in names:
-                raise ValueError(f"asset '{a.name}' is declared twice")
-            names.add(a.name)
-        seen = set()
-        for t in self.texts:
-            if t.name in seen:
-                raise ValueError(f"text '{t.name}' is declared twice")
-            seen.add(t.name)
-            n = t.name
-            if n in self.params:
-                raise ValueError(
-                    f"scene param '{n}' has the name of text '{n}', which holds its "
-                    "words in its 'value'"
-                )
-            for p in self.passes:
-                if n in p.params:
-                    raise ValueError(
-                        f"param '{n}' in pass '{p.name}' has the name of text '{n}', "
-                        "which holds its words in its 'value'"
-                    )
-            for font in [t.font] if isinstance(t.font, str) else t.font:
-                if font not in names and not _font_file(font):
-                    raise ValueError(
-                        f"text '{t.name}' font '{font}' is no asset of the scene and "
-                        "no .ttf or .otf file"
-                    )
-        for p in self.passes:
-            for d, label in zip(p.layers, _layer_labels(p.layers)):
-                if d.text not in seen:
-                    raise ValueError(
-                        f"pass '{p.name}' layer '{label}' names text '{d.text}', "
-                        "which the scene does not declare"
-                    )
+        for kind, named in (("asset", self.assets), ("text", self.texts)):
+            names = [x.name for x in named]
+            for n in names:
+                if names.count(n) > 1:
+                    raise ValueError(f"{kind} '{n}' is declared twice")
 
     def to_dict(self) -> dict:
         out: dict = {
@@ -570,7 +357,7 @@ class Scene:
         if self.common is not None:
             out["common"] = {"code": self.common}
         if self.filters:
-            out["filters"] = self.filters
+            out["filters"] = list(self.filters)
         if self.params:
             out["params"] = {n: p.to_dict() for n, p in self.params.items()}
         if self.assets:
@@ -1013,19 +800,19 @@ def _tick(line: str) -> Tick:
     )
 
 
-def _counts(scene: Scene) -> dict:
-    """How many values each declared array takes, keyed by name.
+def _arrays(scene: Scene) -> dict:
+    """The declared arrays, keyed by name.
 
     A feed of an undeclared name stops the run here.
     """
-    counts = {a.name: a.count for p in scene.passes for a in p.arrays}
+    arrays = {a.name: a for p in scene.passes for a in p.arrays}
     for name in _FEEDS:
-        if name not in counts:
+        if name not in arrays:
             raise ValueError(
                 f"feed '{name}' is not an array this scene declares "
-                f"({', '.join(counts) or 'none'})"
+                f"({', '.join(arrays) or 'none'})"
             )
-    return counts
+    return arrays
 
 
 def run(scene: Scene) -> None:
@@ -1065,7 +852,7 @@ def _wire(scene: Scene) -> None:
         hello["lockstep"] = True
     out.write(json.dumps(hello).encode("utf-8") + b"\n")
     out.flush()
-    counts = _counts(scene)
+    arrays = _arrays(scene)
     for line in sys.stdin:
         if not line.strip():
             continue
@@ -1079,10 +866,10 @@ def _wire(scene: Scene) -> None:
             if values is None:
                 continue
             count, msg = _array_message(name, values)
-            if count != counts[name]:
-                raise ValueError(
-                    f"array '{name}' takes {counts[name]} values, got {count}"
-                )
+            # ghee sends ticks only for a scene that it took, so the size is valid
+            want = arrays[name].count
+            if count != want:
+                raise ValueError(f"array '{name}' takes {want} values, got {count}")
             _OUT.append(msg)
         if _CLEAN:
             _OUT.append(b"\x02")
@@ -1173,7 +960,7 @@ def _direct(scene: Scene) -> None:
     """
     global _CLEAN, _HANDLE
     a = _HOST if _HOST is not None else _host_args()
-    _counts(scene)
+    _arrays(scene)
     handle = _open(scene, a)
     del _STOPPED[:]
     caught = [(s, signal.signal(s, _stop)) for s in (signal.SIGINT, signal.SIGTERM)]

@@ -223,20 +223,26 @@
   .addparam input.name{width:130px}
   .muted{color:var(--muted); font-size:12px}
   /* passes read as real tabs: an underline parent over the channels/inputs/code below it */
-  .tabs{display:flex; gap:2px; align-items:flex-end; flex-wrap:wrap; border-bottom:1px solid var(--line); margin-bottom:14px; flex:0 0 auto}
-  .tab{display:inline-flex; align-items:center; gap:7px; padding:7px 12px; border:0; border-bottom:2px solid transparent; border-radius:7px 7px 0 0; background:transparent; cursor:pointer; font-size:13px; color:var(--muted); user-select:none; margin-bottom:-1px}
+  /* a tap anywhere on a tab opens it. Only the open tab carries its mute and
+     remove buttons, apart from the label, so a tap that opens a tab never
+     removes one */
+  .tabs{display:flex; gap:4px 2px; align-items:flex-end; flex-wrap:wrap; border-bottom:1px solid var(--line); margin-bottom:14px; flex:0 0 auto}
+  .tab{display:inline-flex; align-items:center; gap:7px; min-height:36px; padding:0 12px; border:0; border-bottom:2px solid transparent; border-radius:7px 7px 0 0; background:transparent; cursor:pointer; font-size:13px; color:var(--muted); user-select:none; margin-bottom:-1px}
   .tab:hover{color:var(--ink); background:var(--code-bg)}
   .tab.active{color:var(--ink); border-bottom-color:var(--accent); font-weight:600}
-  .tab .x{opacity:.5; font-size:13px; line-height:1}
-  .tab .x:hover{opacity:1; color:var(--hot)}
-  .tab .m{opacity:.5; font-size:10px; line-height:1; cursor:pointer; display:inline-flex; align-items:center}
-  .tab .m:hover{opacity:1; color:var(--ink)}
+  .tab .tp{color:var(--muted); font-weight:400}
+  .tacts{display:inline-flex; align-items:center; gap:2px; margin-left:6px; padding-left:6px; border-left:1px solid var(--line)}
+  .tbtn{display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0;
+    border:0; border-radius:7px; background:transparent; box-shadow:none; color:var(--muted); font-size:16px; line-height:1}
+  .tbtn:hover{color:var(--ink); background:var(--well)}
+  .tbtn.x:hover{color:var(--hot)}
+  .tbtn svg{width:14px; height:14px}
   .pgroup{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:14px 0 2px}
   .pgroup:first-child{margin-top:2px}
   .tab.off{opacity:.4} .tab.off.active{opacity:.7}
   .tab.off .lbl{text-decoration:line-through}
   .tab input{background:transparent; border:0; outline:none; color:inherit; font:inherit; width:84px; padding:0}
-  .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:12px}
+  .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:15px; min-width:36px; justify-content:center}
   .tab.filt .lbl{color:var(--accent)}
   .tab.cm{margin-right:5px; border-right:1px solid var(--line)}
   .tab.cm .lbl{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -263,15 +269,20 @@
   .inputs{display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:12px; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .chip{border:1px solid var(--line); border-radius:7px; padding:3px 8px; color:var(--muted); cursor:help; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .chip.arr{color:var(--ink); border-color:var(--accent)}
-  /* a draw's tab follows its pass's tab, a step in */
-  .tab.dr::before{content:"↳"; color:var(--muted)}
-  .tab.dr .lbl{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .drawctl .chan input{width:52px; background:transparent; border:0; outline:none; padding:0 2px;
     color:inherit; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .edhead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:0 0 5px; flex:0 0 auto; cursor:help}
   .editor + .edhead{margin-top:12px}
   .shadercard .editor.vertex{flex:0 0 auto; min-height:0}
   .shadercard>[hidden]{display:none}
+  /* touch: tabs and their buttons take a fingertip */
+  @media (pointer:coarse){
+    .tab{min-height:44px; padding:0 14px; font-size:14px}
+    .tab.add{min-width:48px; font-size:18px}
+    .tbtn{width:40px; height:40px; font-size:20px; border-radius:10px}
+    .tbtn svg{width:18px; height:18px}
+    .tacts{margin-left:8px; padding-left:4px; gap:4px}
+  }
   @media (max-width:640px){
     html,body{height:auto}
     body{height:auto; overflow:auto; display:block; padding:12px}
@@ -795,46 +806,66 @@ async function loadScene(name){
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 }
 
+// What each draw of pass p goes by, as ghee names it in an error: its name,
+// else its text, numbered from the text's second draw without a name.
+function drawLabels(p){
+  const seen = {};
+  return (p.draws || []).map(d => {
+    if (d.name) return d.name;
+    const n = seen[d.text] = (seen[d.text] || 0) + 1;
+    return n === 1 ? d.text : `${d.text} ${n}`;
+  });
+}
+const drawTabName = (p, k) => `${p.name} › ${drawLabels(p)[k]}`;
+
 function setPass(i){ curPass = i; curDraw = null; buildTabs(); buildChannels(); loadCode(); }
 function setDraw(i, k){ curPass = i; curDraw = k; buildTabs(); buildChannels(); loadCode(); }
 function uniqueName(base){ const names=new Set(work.passes.map(p=>p.name)); let n=base,k=1; while(names.has(n)){ n=base+k; k++; } return n; }
+
+// A tab opens on a tap anywhere on it. Only the open tab gets its actions.
+function tabEl(classes, open, onOpen){
+  const tab = el("span", ["tab", ...classes, open ? "active" : ""].filter(Boolean).join(" "));
+  if (!open) tab.addEventListener("click", onOpen);
+  return tab;
+}
+// The open tab's buttons, after a rule that sets them apart from its label.
+// `icon` is the console's own markup, never scene data.
+function tabActs(tab, acts){
+  const box = el("span", "tacts");
+  acts.forEach(a => {
+    const b = el("button", "tbtn " + a.cls);
+    b.type = "button"; b.innerHTML = a.icon; b.title = a.title;
+    b.setAttribute("aria-label", a.title);
+    b.addEventListener("click", e => { e.stopPropagation(); a.fn(); });
+    box.appendChild(b);
+  });
+  tab.appendChild(box);
+}
 
 function buildTabs(){
   const t = $("#tabs"); t.innerHTML = "";
   if (hasCommon()){
     // pinned ahead of every pass, and never muted: it compiles into all of them
-    const tab = document.createElement("span");
-    tab.className = "tab cm" + (onCommon() ? " active" : "");
-    const lbl = document.createElement("span"); lbl.className = "lbl";
-    lbl.textContent = "common";
+    const tab = tabEl(["cm"], onCommon(), ()=> setPass(COMMON));
+    const lbl = el("span", "lbl", "common");
     lbl.title = "GLSL prepended to every pass in this scene";
-    lbl.addEventListener("click", ()=> setPass(COMMON));
     tab.appendChild(lbl);
-    const x = document.createElement("span"); x.className="x"; x.textContent="×"; x.title="delete the common block";
-    x.addEventListener("click", e=>{ e.stopPropagation(); delCommon(); });
-    tab.appendChild(x);
+    if (onCommon()) tabActs(tab, [{cls: "x", icon: "×", title: "remove the common block", fn: delCommon}]);
     t.appendChild(tab);
   }
   work.passes.forEach((p,i)=>{
-    const tab = document.createElement("span");
-    tab.className = "tab" + (i===curPass && curDraw==null ? " active" : "") + (p.muted ? " off" : "") + (p.filter ? " filt" : "");
-    const lbl = document.createElement("span"); lbl.className = "lbl";
-    lbl.textContent = (p.filter ? "ƒ " : "") + p.name;   // f = filter (read-only)
+    const open = i===curPass && curDraw==null;
+    const tab = tabEl([p.muted ? "off" : "", p.filter ? "filt" : ""], open, ()=> setPass(i));
+    const lbl = el("span", "lbl", (p.filter ? "ƒ " : "") + p.name);   // f = filter (read-only)
     lbl.title = p.filter ? `filter: ${p.filter} (read-only, tweak params)` : "double-click to rename";
-    lbl.addEventListener("click", ()=> setPass(i));
     if (!p.filter) lbl.addEventListener("dblclick", ()=> renamePass(i, lbl));
     tab.appendChild(lbl);
-    if (work.passes.length > 1){
-      const m = document.createElement("span"); m.className="m"; m.innerHTML = p.muted ? EYE_OFF : EYE;
-      m.title = p.muted ? "muted (click to show)" : "mute this pass";
-      m.addEventListener("click", e=>{ e.stopPropagation(); toggleMute(i); });
-      tab.appendChild(m);
-      const x = document.createElement("span"); x.className="x"; x.textContent="×"; x.title="delete pass";
-      x.addEventListener("click", e=>{ e.stopPropagation(); delPass(i); });
-      tab.appendChild(x);
-    }
+    if (open && work.passes.length > 1) tabActs(tab, [
+      {cls: "m", icon: p.muted ? EYE_OFF : EYE, title: p.muted ? "muted, show this pass" : "mute this pass", fn: ()=> toggleMute(i)},
+      {cls: "x", icon: "×", title: "remove pass " + p.name, fn: ()=> delPass(i)},
+    ]);
     t.appendChild(tab);
-    (p.draws || []).forEach((d, k) => t.appendChild(drawTab(p, i, d, k)));
+    (p.draws || []).forEach((d, k) => t.appendChild(drawTab(p, i, k)));
   });
   // one "+" for both: an empty pass, or any known filter
   const wrap = document.createElement("span"); wrap.className="addwrap";
@@ -860,17 +891,16 @@ function buildTabs(){
 }
 
 const hasCode = p => !!(p.code || "").trim();
-function drawTab(p, i, d, k){
-  const tab = el("span", "tab dr" + (i===curPass && k===curDraw ? " active" : "") + (p.muted ? " off" : ""));
-  const lbl = el("span", "lbl", d.text);
-  lbl.title = `pass ${p.name}, draw ${k}: text ${d.text}`;
-  lbl.addEventListener("click", ()=> setDraw(i, k));
+function drawTab(p, i, k){
+  const open = i===curPass && k===curDraw;
+  const tab = tabEl(["dr", p.muted ? "off" : ""], open, ()=> setDraw(i, k));
+  const lbl = el("span", "lbl");
+  lbl.appendChild(el("span", "tp", p.name + " ›"));
+  lbl.appendChild(document.createTextNode(" " + drawLabels(p)[k]));
+  lbl.title = `a draw of text ${p.draws[k].text} in pass ${p.name}`;
   tab.appendChild(lbl);
-  if (hasCode(p) || p.draws.length > 1){   // a pass with no code keeps one draw
-    const x = el("span", "x", "×"); x.title = "delete draw";
-    x.addEventListener("click", e=>{ e.stopPropagation(); delDraw(i, k); });
-    tab.appendChild(x);
-  }
+  if (open && (hasCode(p) || p.draws.length > 1))   // a pass with no code keeps one draw
+    tabActs(tab, [{cls: "x", icon: "×", title: "remove draw " + drawTabName(p, k), fn: ()=> delDraw(i, k)}]);
   return tab;
 }
 
@@ -895,6 +925,7 @@ function addDraw(i){
 
 function delDraw(i, k){
   const p = work.passes[i];
+  if (!confirm(`Remove draw ${drawTabName(p, k)}?`)) return;
   p.draws.splice(k, 1);
   if (!p.draws.length) delete p.draws;
   p.drawsEdited = true;
@@ -981,6 +1012,7 @@ function addCommon(){
 }
 
 function delCommon(){
+  if (!confirm("Remove the common block?")) return;
   delete work.common;
   if (onCommon()) curPass = 0;
   curDraw = null;
@@ -997,7 +1029,8 @@ function addPass(){
 
 function delPass(i){
   if (work.passes.length <= 1) return;
-  const name = work.passes[i].name, filt = work.passes[i].filter;
+  const name = work.passes[i].name, filt = work.passes[i].filter, n = (work.passes[i].draws || []).length;
+  if (!confirm(`Remove pass ${name}${n > 1 ? ` and its ${n} draws` : n ? " and its draw" : ""}?`)) return;
   work.passes.splice(i,1);
   if (filt && Array.isArray(work.filters)){
     const fi = work.filters.indexOf(filt);

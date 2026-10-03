@@ -79,8 +79,9 @@
   the code of a pass of draws alone.
 - Set a text's `fill` and `atlas` from Python on `ghee.Text`.
 - Edit a pass's draws in the console. Each draw opens in a tab after its
-  pass's tab, with its `vertex` and its `fragment` in editors and its text,
-  blend and pad as controls, and `+` adds a draw to the open pass.
+  pass's tab, named by its pass and the name that it goes by, `main › glow`,
+  with its `vertex` and its `fragment` in editors and its text, blend and
+  pad as controls, and `+` adds a draw to the open pass.
 - Name a draw with `name`, or `name=` on `ghee.Draw`, unique among the
   draws of its pass, and call a draw in an error by its name, else by its
   text's name, `title`, and `title 2` for a second draw of that text without
@@ -168,6 +169,9 @@
 - Grow each GLSL editor of the console with its code, and scroll the
   column or the page that holds it, where a long shader scrolled inside a
   box of fixed height, and keep a compile error in sight under it.
+- Open a console tab with a tap anywhere on it, keep the mute and remove
+  buttons on the open tab alone, apart from its label, and ask before a
+  pass, a draw or the common block goes.
 
 ## 0.4.0 - 2026-08-06
 

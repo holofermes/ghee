@@ -187,8 +187,9 @@ struct AtlasSlot {
     px_em: u32,
     range: u32,
     gen: atlas::Generator,
-    /// The engine asset `<name>_atlas` of each text drawn from this atlas, and
-    /// whether it still waits for its first upload, which takes all of it.
+    /// The engine asset `ghee_<name>_atlas` of each text drawn from this
+    /// atlas, and whether it still waits for its first upload, which takes all
+    /// of it.
     textures: Vec<(String, bool)>,
 }
 
@@ -201,7 +202,7 @@ struct Held {
 /// The font that an atlas generator reads, from a text's fonts.
 type AtlasFont = Box<dyn Fn(&[text::Font]) -> Arc<dyn atlas::Font>>;
 
-/// The colour atlas of one text, the engine asset `<name>_emoji`.
+/// The colour atlas of one text, the engine asset `ghee_<name>_emoji`.
 #[derive(Default)]
 struct ColourAtlas {
     atlas: atlas::Atlas,
@@ -582,8 +583,8 @@ pub struct Renderer {
     /// array name -> size, in declaration order.
     feeds: Vec<(String, ArraySize)>,
     /// The engine assets uploaded for the scene: its image assets, and the
-    /// data texture `<name>_tex` of each text. A setup frees those that its
-    /// new scene does not declare, so their asset slots come back.
+    /// data texture `ghee_<name>_tex` of each text. A setup frees those that
+    /// its new scene does not declare, so their asset slots come back.
     scene_assets: std::cell::RefCell<Vec<String>>,
     /// The engine index of each batch passed to setup_batches(), in order.
     #[cfg(test)]

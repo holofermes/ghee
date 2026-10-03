@@ -24,8 +24,8 @@ use serde_json::{Map, Value};
 use tiny_http::{Header, Request, Server, StatusCode};
 
 use crate::console::core::{
-    parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers, Query, Response,
-    Scope,
+    declared_type, parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers,
+    Query, Response, Scope,
 };
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
@@ -1745,6 +1745,16 @@ impl ConsoleHost for RenderLoopHost {
         Ok(())
     }
 
+    /// The /set lands on the scene that renders, so its type comes from the
+    /// running document. scene_def would start a procedural scene's process
+    /// when no document runs.
+    fn param_type(&self, scope: Scope, name: &str) -> ConsoleResult<Option<String>> {
+        match lock(&self.console.running).as_ref() {
+            Some((_, doc)) => Ok(declared_type(doc, scope, name)),
+            None => Err(ConsoleError::not_found("no scene")),
+        }
+    }
+
     fn switch(&self, name: Option<&str>) -> ConsoleResult<String> {
         let name = name.unwrap_or_default();
         if !self.console.store.contains(name) {
@@ -2983,6 +2993,25 @@ mod tests {
         sc.load_assets(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts"))
             .unwrap();
         sc
+    }
+
+    #[test]
+    fn a_set_takes_its_type_from_the_running_scene() {
+        let console = tmp_console("settype");
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
+        let r = set("pass=scene&name=label&value=O");
+        assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
+        console.publish(&text_scene("I"));
+        assert_eq!(set("pass=scene&name=label&value=hello").status, 200);
+        match console.q.take() {
+            Some(Command::SceneParam(name, v)) => {
+                assert_eq!((name.as_str(), v), ("label", Value::from("hello")));
+            }
+            _ => panic!("no scene param queued"),
+        }
+        assert_eq!(set("pass=scene&name=nope&value=1").status, 400);
+        assert!(console.q.take().is_none());
     }
 
     #[test]

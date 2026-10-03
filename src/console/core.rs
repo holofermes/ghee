@@ -408,6 +408,12 @@ pub trait ConsoleHost {
     /// for a scene-scoped param.
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()>;
 
+    /// The type declared by the running scene for a param, or None when its
+    /// scope holds no param of that name. A /set value parses by it.
+    fn param_type(&self, scope: Scope, name: &str) -> ConsoleResult<Option<String>> {
+        Ok(declared_type(&self.scene_def(None)?, scope, name))
+    }
+
     /// Make name active and return the new active name.
     fn switch(&self, name: Option<&str>) -> ConsoleResult<String>;
 
@@ -557,7 +563,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     ) -> ConsoleResult<Response> {
         let h = &self.host;
         if path == "/set" {
-            let (scope, name, value) = match parse_set(query) {
+            let (scope, name, value) = match parse_set(h, query)? {
                 Ok(parts) => parts,
                 Err(e) => return Ok(Response::text(400, &format!("bad /set: {e}"))),
             };
@@ -614,13 +620,51 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     }
 }
 
-/// The (scope, name, value) of a /set, or the first thing wrong with it.
-fn parse_set(query: &Query) -> Result<(Scope, String, Value), String> {
-    let raw = query.get("value").ok_or("'value'")?;
-    let value = parse_param_value(query.get("type").map_or("float", String::as_str), raw)?;
-    let scope = parse_scope(query.get("pass").ok_or("'pass'")?)?;
-    let name = query.get("name").ok_or("'name'")?;
-    Ok((scope, name.clone(), value))
+/// The (scope, name, value) of a /set, or the first thing wrong with it. The
+/// value parses by its type= field when the request has one, else by the type
+/// that the host reports for the param. The outer error is the host's own.
+fn parse_set(
+    host: &impl ConsoleHost,
+    query: &Query,
+) -> ConsoleResult<Result<(Scope, String, Value), String>> {
+    let parts = || -> Result<(Scope, String, &String), String> {
+        let raw = query.get("value").ok_or("'value'")?;
+        let scope = parse_scope(query.get("pass").ok_or("'pass'")?)?;
+        let name = query.get("name").ok_or("'name'")?;
+        Ok((scope, name.clone(), raw))
+    };
+    let (scope, name, raw) = match parts() {
+        Ok(p) => p,
+        Err(e) => return Ok(Err(e)),
+    };
+    let ty = match query.get("type") {
+        Some(t) => t.clone(),
+        None => match host.param_type(scope, &name)? {
+            Some(t) => t,
+            None => return Ok(Err(undeclared(scope, &name))),
+        },
+    };
+    Ok(parse_param_value(&ty, raw).map(|value| (scope, name, value)))
+}
+
+fn undeclared(scope: Scope, name: &str) -> String {
+    match scope {
+        Scope::Scene => format!("the scene has no param '{name}'"),
+        Scope::Pass(i) => format!("pass {i} has no param '{name}'"),
+    }
+}
+
+/// The type of a param in a scene document, or None when the scope holds no
+/// param of that name.
+pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
+    let params = match scope {
+        Scope::Scene => doc.get("params"),
+        Scope::Pass(i) => doc
+            .get("passes")?
+            .get(usize::try_from(i).ok()?)?
+            .get("params"),
+    };
+    Some(params?.get(name)?.get("type")?.as_str()?.to_string())
 }
 
 fn active_json(active: String) -> Value {
@@ -661,7 +705,11 @@ mod tests {
     use super::*;
 
     const SCENE: &str = r#"{"version": 1,
-        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
+        "params": {"tint": {"type": "float", "value": 0.0},
+                   "title": {"type": "string", "value": "hi"}},
+        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
+                    "params": {"k": {"type": "float", "value": 0.0},
+                               "on": {"type": "bool", "value": false}}}]}"#;
 
     fn scene_json() -> Value {
         serde_json::from_str(SCENE).unwrap()
@@ -954,12 +1002,89 @@ mod tests {
         );
         assert_eq!(
             *api.host.calls.borrow(),
+            vec![
+                Call::SceneDef(None),
+                Call::SetParam(Scope::Scene, "tint".to_string(), Value::from(0.5))
+            ]
+        );
+    }
+
+    #[test]
+    fn set_parses_the_value_by_the_declared_type() {
+        for (pass, name, raw, want) in [
+            ("scene", "title", "hello", Value::from("hello")),
+            ("scene", "title", "1.5", Value::from("1.5")),
+            ("0", "on", "true", Value::from(true)),
+            ("0", "k", "2", Value::from(2.0)),
+        ] {
+            let api = api();
+            let r = post(
+                &api,
+                "/set",
+                &[("pass", pass), ("name", name), ("value", raw)],
+            );
+            assert_eq!((r.status, body(&r).as_str()), (200, "ok"), "{name}");
+            let scope = parse_scope(pass).unwrap();
+            assert_eq!(
+                api.host.calls.borrow().last(),
+                Some(&Call::SetParam(scope, name.to_string(), want)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_set_type_overrides_the_declared_one() {
+        let api = api();
+        post(
+            &api,
+            "/set",
+            &[
+                ("pass", "scene"),
+                ("name", "title"),
+                ("type", "float"),
+                ("value", "2"),
+            ],
+        );
+        assert_eq!(
+            *api.host.calls.borrow(),
             vec![Call::SetParam(
                 Scope::Scene,
-                "tint".to_string(),
-                Value::from(0.5)
+                "title".to_string(),
+                Value::from(2.0)
             )]
         );
+    }
+
+    #[test]
+    fn a_set_of_an_undeclared_param_names_it() {
+        for (pass, want) in [
+            ("scene", "bad /set: the scene has no param 'nope'"),
+            ("0", "bad /set: pass 0 has no param 'nope'"),
+            ("3", "bad /set: pass 3 has no param 'nope'"),
+        ] {
+            let api = api();
+            let r = post(
+                &api,
+                "/set",
+                &[("pass", pass), ("name", "nope"), ("value", "1")],
+            );
+            assert_eq!((r.status, body(&r).as_str()), (400, want));
+            assert_eq!(*api.host.calls.borrow(), vec![Call::SceneDef(None)]);
+        }
+    }
+
+    #[test]
+    fn a_set_carries_the_host_error_of_its_type_lookup() {
+        let mut host = FakeHost::new();
+        host.boom = true;
+        let api = ConsoleAPI::new(host);
+        let r = post(
+            &api,
+            "/set",
+            &[("pass", "0"), ("name", "k"), ("value", "1")],
+        );
+        assert_eq!((r.status, body(&r).as_str()), (500, "build x: kaboom"));
     }
 
     #[test]
@@ -987,7 +1112,12 @@ mod tests {
             let r = post(&api, "/set", &q);
             assert_eq!(r.status, 400, "{q:?}");
             assert!(body(&r).contains("bad /set"), "{}", body(&r));
-            assert!(api.host.calls.borrow().is_empty());
+            assert!(!api
+                .host
+                .calls
+                .borrow()
+                .iter()
+                .any(|c| matches!(c, Call::SetParam(..))));
         }
     }
 
@@ -1206,11 +1336,10 @@ mod tests {
         );
         assert_eq!(
             *api.host.calls.borrow(),
-            vec![Call::SetParam(
-                Scope::Pass(0),
-                "k".to_string(),
-                Value::from(1.0)
-            )]
+            vec![
+                Call::SceneDef(None),
+                Call::SetParam(Scope::Pass(0), "k".to_string(), Value::from(1.0))
+            ]
         );
     }
 

@@ -106,6 +106,8 @@
   a stream whose encoder fails with a type 3 frame that carries the reason.
 - Show the console preview in MJPEG when the H264 stream decodes no frame in
   5 s.
+- Parse a `/set` value by the param's declared type, so a string, a bool or
+  a color needs no `type=`, and name a param that the scene lacks.
 
 ## 0.4.0 - 2026-08-06
 

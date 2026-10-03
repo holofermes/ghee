@@ -179,12 +179,12 @@ def test_the_console_serves_its_own_page(served):
 
 def test_a_set_lands_on_the_next_frame(served):
     h, port = served
-    assert post(port, "/set?pass=0&name=gain&value=0.25&type=float")[0] == 200
+    assert post(port, "/set?pass=0&name=gain&value=0.25")[0] == 200
     h.feed("level", LEVEL)
     h.frame()
     assert abs(h.pixels()[0] - 64) <= 2
     # a scene param takes the scene scope
-    assert post(port, "/set?pass=scene&name=tint&value=0,1,0&type=color")[0] == 200
+    assert post(port, "/set?pass=scene&name=tint&value=0,1,0")[0] == 200
     h.feed("level", LEVEL)
     h.frame()
     assert h.pixels()[1] > 0 and h.pixels()[0] == 0
@@ -193,7 +193,7 @@ def test_a_set_lands_on_the_next_frame(served):
 def test_a_set_the_scene_refuses(served):
     _, port = served
     with pytest.raises(urllib.error.HTTPError) as raised:
-        post(port, "/set?pass=scene&name=nope&value=1&type=float")
+        post(port, "/set?pass=scene&name=nope&value=1")
     assert raised.value.code == 400
 
 

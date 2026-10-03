@@ -1093,9 +1093,8 @@ function slider(mn, mx, step, value){
 // One control per param, for both scopes. `scope` is the /set pass= target: a
 // pass index for a pass-scoped param, "scene" for a scene-scoped one.
 function buildParamRow(box, pm, name, scope){
-  const send = (type, value) => {
-    const t = type ? "&type=" + type : "";
-    fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}${t}&value=${encodeURIComponent(value)}`, {method:"POST"});
+  const send = value => {
+    fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&value=${encodeURIComponent(value)}`, {method:"POST"});
     markDirty();
   };
   const row = el("div", "row");
@@ -1103,7 +1102,7 @@ function buildParamRow(box, pm, name, scope){
     // host-side value (the scene controller consumes it): dropdown when the
     // param declares options, free text otherwise
     paramLabel(row, name);
-    const set = v => { pm.value = v; send("string", v); };
+    const set = v => { pm.value = v; send(v); };
     if (Array.isArray(pm.options) && pm.options.length){
       const sel = el("select", "strsel");
       const opts = pm.options.includes(pm.value) ? pm.options : pm.options.concat([pm.value]);
@@ -1133,7 +1132,7 @@ function buildParamRow(box, pm, name, scope){
     inp.checked = !!pm.value;
     inp.addEventListener("change", ()=>{
       pm.value = inp.checked;
-      send("bool", inp.checked ? "true" : "false");
+      send(inp.checked ? "true" : "false");
     });
     lab.appendChild(inp);
     row.appendChild(lab);
@@ -1147,7 +1146,7 @@ function buildParamRow(box, pm, name, scope){
     inp.addEventListener("input", ()=>{
       const rgb = hexToRgb(inp.value);
       pm.value = rgb; val.textContent = inp.value;
-      send("color", rgb.map(x=>x.toFixed(3)).join(","));
+      send(rgb.map(x=>x.toFixed(3)).join(","));
     });
     row.appendChild(inp);
     box.appendChild(row);
@@ -1193,7 +1192,7 @@ function buildParamRow(box, pm, name, scope){
       nx.value = (+x).toFixed(3); ny.value = (+y).toFixed(3);
       val.textContent = `${(+x).toFixed(3)}, ${(+y).toFixed(3)}`;
     };
-    const push = () => send("vec2", pm.value.map(x=>(+x).toFixed(3)).join(","));
+    const push = () => send(pm.value.map(x=>(+x).toFixed(3)).join(","));
     const fromPad = ev => {
       const b = pad.getBoundingClientRect();
       const x = ((ev.clientX - b.left) / b.width * 2 - 1) * R;
@@ -1236,7 +1235,7 @@ function buildParamRow(box, pm, name, scope){
       inp.addEventListener("input", ()=>{
         const v = parseFloat(inp.value);
         pm.value[c] = v; val.textContent = v.toFixed(3);
-        send(pm.type, pm.value.map(x=>(+x).toFixed(3)).join(","));
+        send(pm.value.map(x=>(+x).toFixed(3)).join(","));
       });
       r.appendChild(inp);
       box.appendChild(r);
@@ -1251,7 +1250,7 @@ function buildParamRow(box, pm, name, scope){
   inp.addEventListener("input", ()=>{
     const v = pm.type==="int" ? parseInt(inp.value,10) : parseFloat(inp.value);
     pm.value = v; val.textContent = fmt(v);
-    send(null, v);
+    send(v);
   });
   row.appendChild(inp);
   box.appendChild(row);

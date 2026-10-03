@@ -269,19 +269,31 @@
   .inputs{display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:12px; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .chip{border:1px solid var(--line); border-radius:7px; padding:3px 8px; color:var(--muted); cursor:help; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .chip.arr{color:var(--ink); border-color:var(--accent)}
-  .drawctl .chan input{width:52px; background:transparent; border:0; outline:none; padding:0 2px;
-    color:inherit; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* a field: its label, its control, and a one-line hint under the control */
+  .field{display:grid; grid-template-columns:52px minmax(0,1fr); gap:4px 12px; align-items:center; margin:10px 0}
+  .field>.k{font-size:13px; color:var(--accent); align-self:start; padding-top:5px}
+  .field>.hint{grid-column:2; font-size:12px; line-height:1.35; color:var(--muted)}
+  .field select, .field input{min-width:0; background-color:var(--well); border:1px solid var(--line); border-radius:6px;
+    color:var(--ink); box-shadow:none; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; padding:5px 8px}
+  .field select{padding-right:28px; justify-self:start; max-width:100%}
+  .field input{width:100%; max-width:260px}
+  .field input[type=number]{max-width:110px}
+  .drawctl{margin:0 0 6px}
   .edhead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:0 0 5px; flex:0 0 auto; cursor:help}
+  .edhead .nm{text-transform:none; letter-spacing:0; color:var(--ink); font-size:12px; margin-left:6px}
   .editor + .edhead{margin-top:12px}
   .shadercard .editor.vertex{flex:0 0 auto; min-height:0}
   .shadercard>[hidden]{display:none}
-  /* touch: tabs and their buttons take a fingertip */
+  /* touch: tabs, their buttons and the fields take a fingertip */
   @media (pointer:coarse){
     .tab{min-height:44px; padding:0 14px; font-size:14px}
     .tab.add{min-width:48px; font-size:18px}
     .tbtn{width:40px; height:40px; font-size:20px; border-radius:10px}
     .tbtn svg{width:18px; height:18px}
     .tacts{margin-left:8px; padding-left:4px; gap:4px}
+    .field select, .field input{font-size:14px; padding:9px 10px; min-height:40px}
+    .field select{padding-right:30px}
+    .field>.k{padding-top:10px}
   }
   @media (max-width:640px){
     html,body{height:auto}
@@ -369,7 +381,7 @@
     <div class="tabs" id="tabs"></div>
     <div class="channels" id="channels"></div>
     <div class="inputs" id="inputs"></div>
-    <div class="channels drawctl" id="drawctl" hidden></div>
+    <div class="drawctl" id="drawctl" hidden></div>
     <div class="edhead" id="vertexHead" title="vertex GLSL: vec2 glyph_place(vec2 em) returns the pass pixel where a point of the block lands" hidden>vertex</div>
     <div class="editor vertex" id="vertexEd" hidden><pre aria-hidden="true"></pre><textarea spellcheck="false" aria-label="vertex"></textarea><div class="errmark"></div></div>
     <div class="edhead" id="fragmentHead" title="fragment GLSL: a void main() that writes colour premultiplied by alpha" hidden>fragment</div>
@@ -934,35 +946,46 @@ function delDraw(i, k){
   buildTabs(); buildChannels(); loadCode();
 }
 
+// A field: a label, a control, and a one-line hint under the control.
+let fieldSeq = 0;
+function field(box, key, ctl, hint){
+  const f = el("div", "field"), k = el("label", "k", key);
+  const target = ctl.matches("input, select, textarea") ? ctl : ctl.querySelector("textarea");
+  target.id = "f" + (++fieldSeq); k.htmlFor = target.id;
+  f.appendChild(k); f.appendChild(ctl);
+  if (hint) f.appendChild(el("div", "hint", hint));
+  box.appendChild(f);
+  return f;
+}
+function pick(opts, value, set){
+  const sel = el("select");
+  opts.forEach(o => { const op = el("option", null, o); op.value = o; sel.appendChild(op); });
+  sel.value = value;
+  sel.addEventListener("change", ()=> set(sel.value));
+  return sel;
+}
+
 // A draw's own settings. A value at its default leaves the key out, as the
 // server writes the scene back.
-const DRAW_PICKS = {blend: ["over", "add", "replace"]};
 function buildDrawCtl(){
   const box = $("#drawctl"), d = openDraw();
   box.innerHTML = "";
   if (!d) return;
   const p = work.passes[curPass];
   const edit = () => { p.drawsEdited = true; markDirty(); postScene(); };
-  box.appendChild(el("span", null, "draw " + curDraw));
-  const pill = (label, ctl) => {
-    const w = el("span", "chan");
-    w.appendChild(el("span", null, label)); w.appendChild(ctl);
-    box.appendChild(w);
-  };
-  const pick = (opts, value, set) => {
-    const sel = el("select");
-    opts.forEach(o => { const op = el("option", null, o); op.value = o; sel.appendChild(op); });
-    sel.value = value;
-    sel.addEventListener("change", ()=>{ set(sel.value); edit(); });
-    return sel;
-  };
+  const head = el("div", "edhead", "draw");
+  head.appendChild(el("span", "nm", drawTabName(p, curDraw)));
+  box.appendChild(head);
   const texts = Object.keys(work.texts || {});
-  pill("text", pick(texts.includes(d.text) ? texts : texts.concat([d.text]), d.text, v => { d.text = v; buildTabs(); }));
-  for (const [key, opts] of Object.entries(DRAW_PICKS))
-    pill(key, pick(opts, d[key] || opts[0], v => { if (v === opts[0]) delete d[key]; else d[key] = v; }));
+  field(box, "text", pick(texts.includes(d.text) ? texts : texts.concat([d.text]), d.text, v => {
+    d.text = v; edit(); buildTabs(); buildDrawCtl();
+  }), "the scene text that it draws");
+  field(box, "blend", pick(["over", "add", "replace"], d.blend || "over", v => {
+    if (v === "over") delete d.blend; else d.blend = v;
+    edit();
+  }), "over lays it on what the pass holds, add brightens it, replace overwrites it");
   const pad = el("input");
   pad.type = "number"; pad.min = "0"; pad.step = "0.01"; pad.value = d.pad || 0;
-  pad.title = "em past the ink, room for an effect around the outline";
   const setPad = () => {
     const v = parseFloat(pad.value);
     if (!(v >= 0) || v === (d.pad || 0)) return;
@@ -972,7 +995,7 @@ function buildDrawCtl(){
   let t = null;
   pad.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(setPad, 300); });
   pad.addEventListener("change", ()=>{ clearTimeout(t); setPad(); });
-  pill("pad", pad);
+  field(box, "pad", pad, "how far past the letters the draw reaches, in em, room for a glow or a shadow");
 }
 
 // the vertex editor and the draw's settings show while a draw is open

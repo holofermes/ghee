@@ -81,7 +81,7 @@
 - Edit a pass's draws in the console. Each draw opens in a tab after its
   pass's tab, named by its pass and the name that it goes by, `main › glow`,
   with its `vertex` and its `fragment` in editors and its text, blend and
-  pad as controls, and `+` adds a draw to the open pass.
+  pad as fields with a hint each, and `+` adds a draw to the open pass.
 - Name a draw with `name`, or `name=` on `ghee.Draw`, unique among the
   draws of its pass, and call a draw in an error by its name, else by its
   text's name, `title`, and `title 2` for a second draw of that text without

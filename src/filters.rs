@@ -405,11 +405,8 @@ mod tests {
         sc.passes.iter().map(|p| p.name.clone()).collect()
     }
 
-    fn tmpdir(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ghee-filters-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d.to_string_lossy().into_owned()
+    fn tmpdir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(&format!("filters-{tag}"))
     }
 
     #[test]
@@ -881,7 +878,6 @@ mod tests {
             Some(v) => std::env::set_var("GHEE_FILTERS", v),
             None => std::env::remove_var("GHEE_FILTERS"),
         }
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

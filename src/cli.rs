@@ -1817,17 +1817,17 @@ mod tests {
         }
     }
 
-    fn tmpdir(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ghee-cli-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d.to_string_lossy().into_owned()
+    fn tmpdir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(&format!("cli-{tag}"))
     }
 
-    fn scene_file(tag: &str) -> String {
-        let path = format!("{}/s.scene.json", tmpdir(tag));
+    /// A scene file in a directory of its own, which lives as long as the
+    /// TempDir.
+    fn scene_file(tag: &str) -> (crate::testing::TempDir, String) {
+        let d = tmpdir(tag);
+        let path = format!("{d}/s.scene.json");
         fs::write(&path, SCENE).unwrap();
-        path
+        (d, path)
     }
 
     #[test]
@@ -2004,7 +2004,7 @@ mod tests {
 
     #[test]
     fn a_render_with_nowhere_to_go_says_so() {
-        let path = scene_file("nowhere");
+        let (_d, path) = scene_file("nowhere");
         assert_eq!(
             run(&["render", &path]).unwrap_err().to_string(),
             "render: pass -o PATTERN, --display NAME, --h264 PATH or --serve"
@@ -2058,17 +2058,21 @@ mod tests {
     /// --demo is what puts the bundled examples on the search path.
     #[test]
     fn a_bundled_name_only_resolves_with_demo() {
-        std::env::set_var("GHEE_EXAMPLES", "ghee/examples");
+        let _e = crate::console::repo_examples();
         assert!(
             failure(find_scene("bars", false)).starts_with("no scene 'bars' (searched: cwd"),
             "resolved without --demo"
         );
-        assert_eq!(find_scene("bars", true).unwrap(), "ghee/examples/bars");
+        assert_eq!(
+            find_scene("bars", true).unwrap(),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/ghee/examples/bars")
+        );
     }
 
     #[test]
     fn a_scene_path_is_taken_as_written() {
-        let path = scene_file("asis");
+        let _e = crate::console::repo_examples();
+        let (_d, path) = scene_file("asis");
         let stem = path.trim_end_matches(".scene.json");
         assert_eq!(find_scene(&path, false).unwrap(), path);
         assert_eq!(find_scene(stem, false).unwrap(), stem);
@@ -2254,7 +2258,7 @@ mod tests {
 
     #[test]
     fn the_scene_loaded_for_a_render_carries_its_filters() {
-        let path = scene_file("filters");
+        let (_d, path) = scene_file("filters");
         let (scene, process) = scene_of(&ns(&["render", &path, "--filters", "dither"])).unwrap();
         assert_eq!(scene.passes.len(), 2);
         assert_eq!(scene.passes[1].name, "dither");
@@ -2276,7 +2280,8 @@ mod tests {
 
     #[test]
     fn render_serve_on_one_scene_serves_that_scene_alone() {
-        let path = scene_file("one");
+        let _e = crate::console::repo_examples();
+        let (_d, path) = scene_file("one");
         let a = ns(&["render", &path, "--serve"]);
         let store = one_scene_store(&a, &path).unwrap();
         assert_eq!(store.names(), ["s"]);
@@ -2288,7 +2293,7 @@ mod tests {
     /// command reaches it.
     #[test]
     fn a_bundled_scene_is_read_only() {
-        std::env::set_var("GHEE_EXAMPLES", "ghee/examples");
+        let _e = crate::console::repo_examples();
         let path = "ghee/examples/bars.scene.json";
         assert!(in_examples(path));
         let a = ns(&["render", "--demo", "bars", "--serve"]);

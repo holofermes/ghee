@@ -376,11 +376,8 @@ mod tests {
         serde_json::from_str(SCENE).unwrap()
     }
 
-    fn tmpdir(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ghee-store-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d.to_string_lossy().into_owned()
+    fn tmpdir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(&format!("store-{tag}"))
     }
 
     fn write_text(path: &str, text: &str) {
@@ -424,7 +421,7 @@ mod tests {
     }
 
     /// A directory of two JSON scenes.
-    fn scenes(tag: &str) -> (String, SceneStore) {
+    fn scenes(tag: &str) -> (crate::testing::TempDir, SceneStore) {
         let d = tmpdir(tag);
         write_text(&format!("{d}/one{SCENE_SUFFIX}"), SCENE);
         write_text(&format!("{d}/two{SCENE_SUFFIX}"), SCENE);
@@ -505,7 +502,6 @@ mod tests {
             "{}",
             e.message
         );
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -624,7 +620,7 @@ mod tests {
 
     // a procedural scene: the values sidecar a save writes
 
-    fn procedural_store(tag: &str) -> (String, SceneStore) {
+    fn procedural_store(tag: &str) -> (crate::testing::TempDir, SceneStore) {
         let d = tmpdir(tag);
         write_scene(&format!("{d}/proc.py"), "#!/bin/sh\nexit 0\n");
         let store = SceneStore::new(&d, false, Vec::new());

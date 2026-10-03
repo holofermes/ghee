@@ -2538,6 +2538,12 @@ impl Scene {
     /// `$GHEE_ASSETS`. Reach::Inside refuses a path outside `base_dir`. A
     /// filter's asset is the filter's to load.
     pub fn load_assets_in(&mut self, base_dir: &str, reach: Reach) -> Result<()> {
+        self.load_assets_from(base_dir, reach, &asset_dirs())
+    }
+
+    /// load_assets_in() with `more` in place of the directories of
+    /// `$GHEE_ASSETS`.
+    fn load_assets_from(&mut self, base_dir: &str, reach: Reach, more: &[String]) -> Result<()> {
         let font_files = self
             .texts
             .iter()
@@ -2547,7 +2553,6 @@ impl Scene {
             return Ok(());
         }
         let root = normpath(&abspath(base_dir));
-        let more = asset_dirs();
         let outside =
             |file: &str| reach == Reach::Inside && !inside(&normpath(&join(&root, file)), &root);
         // The bytes of `file` and the path that held them, or why no path did,
@@ -2555,7 +2560,7 @@ impl Scene {
         let read = |file: &str, what: &str| {
             let roots = match file.starts_with('/') {
                 true => &[][..],
-                false => &more[..],
+                false => more,
             };
             let first = normpath(&join(&root, file));
             let found = std::iter::once(first.clone())
@@ -2746,11 +2751,8 @@ mod tests {
         Param::new(name, ty, value, None, None, None, None)
     }
 
-    fn tmpdir(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ghee-scene-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d.to_string_lossy().into_owned()
+    fn tmpdir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(&format!("scene-{tag}"))
     }
 
     fn repo(rel: &str) -> String {
@@ -3256,7 +3258,6 @@ mod tests {
                 .to_string();
             assert!(e.contains("outside the scene directory"), "{path}: {e}");
         }
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -3267,7 +3268,6 @@ mod tests {
         let d = json!({"version": 1, "passes": [{"name": "main", "shader": "sub/in.glsl"}]});
         let sc = Scene::from_dict(&d, Some(&base), None).unwrap();
         assert_eq!(sc.passes[0].code, GOOD);
-        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -3297,7 +3297,6 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("No such file or directory"), "{msg}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     // A param value is typed.
@@ -3580,7 +3579,6 @@ mod tests {
             assert!(msg.contains(fragment), "{msg}");
             assert!(msg.contains(&p), "{msg}");
         }
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -3590,7 +3588,6 @@ mod tests {
         fs::write(&p, "{oops").unwrap();
         let e = Scene::load(&p).unwrap_err().to_string();
         assert!(e.contains("invalid JSON") && e.contains(&p), "{e}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -3687,7 +3684,6 @@ mod tests {
             .to_string();
             assert!(e.contains("outside the scene directory"), "{path}: {e}");
         }
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -3704,7 +3700,6 @@ mod tests {
             msg.contains(&p) && msg.contains("common") && msg.contains("gone.glsl"),
             "{msg}"
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -3726,7 +3721,6 @@ mod tests {
         assert_eq!(sc.common.as_deref(), Some(COMMON));
         // The console posts code back inline, and a save writes the same form.
         assert_eq!(sc.to_dict()["common"], json!({"code": COMMON}));
-        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -3740,7 +3734,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(Scene::load(&p).unwrap().common.as_deref(), Some(COMMON));
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -3813,17 +3806,30 @@ mod tests {
     fn an_asset_resolves_through_ghee_assets_after_the_scene_directory() {
         let scene_dir = tmpdir("asset-scene");
         let asset_dir = tmpdir("asset-store");
-        fs::write(format!("{asset_dir}/ghee-assets-test.raw"), [1u8, 2, 3, 4]).unwrap();
-        let doc = asset_scene(json!({
-            "n": { "file": "ghee-assets-test.raw", "width": 2, "height": 2, "format": "u8" }
-        }));
+        fs::write(format!("{asset_dir}/n.raw"), [1u8, 2, 3, 4]).unwrap();
+        fs::write(format!("{scene_dir}/m.raw"), [5u8, 6, 7, 8]).unwrap();
+        fs::write(format!("{asset_dir}/m.raw"), [0u8; 4]).unwrap();
+        let raw = |file: &str| json!({"file": file, "width": 2, "height": 2, "format": "u8"});
+        let doc = asset_scene(json!({"n": raw("n.raw"), "m": raw("m.raw")}));
         let mut scene = Scene::from_dict(&doc, None, None).unwrap();
-        let e = scene.load_assets(&scene_dir).unwrap_err().to_string();
-        assert!(e.contains("No such file") && e.contains(&scene_dir), "{e}");
-        std::env::set_var("GHEE_ASSETS", &asset_dir);
-        scene.load_assets(&scene_dir).unwrap();
-        std::env::remove_var("GHEE_ASSETS");
-        assert!(scene.assets[0].image.is_some());
+        let e = scene
+            .load_assets_from(&scene_dir, Reach::Any, &[])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            format!(
+                "asset 'n' ({scene_dir}/n.raw): No such file or directory, and \
+                 $GHEE_ASSETS names no directory"
+            )
+        );
+        scene
+            .load_assets_from(&scene_dir, Reach::Any, &[asset_dir.to_string()])
+            .unwrap();
+        let px = |i: usize| scene.assets[i].image.as_ref().unwrap().pixels.clone();
+        assert_eq!(px(0), crate::assets::Pixels::U8(vec![1, 2, 3, 4]));
+        // the scene directory comes first
+        assert_eq!(px(1), crate::assets::Pixels::U8(vec![5, 6, 7, 8]));
     }
 
     #[test]
@@ -4245,7 +4251,6 @@ mod tests {
             e.contains("5 bytes") && e.contains("2x2x1") && e.contains("needs 4"),
             "{e}"
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -4266,7 +4271,6 @@ mod tests {
         let img = sc.assets[0].image.as_ref().unwrap();
         assert_eq!((img.width, img.height, img.components), (4, 1, 1));
         assert_eq!(img.pixels, crate::assets::Pixels::F32(vals.to_vec()));
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -4290,7 +4294,6 @@ mod tests {
         assert_eq!(px(0), crate::assets::Pixels::U8(vec![7u8; 4]));
         assert_eq!(px(1), crate::assets::Pixels::U8(vec![9u8; 4]));
         assert_eq!(sc.passes[0].code, GOOD);
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -4313,7 +4316,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("outside the scene directory"), "{e}");
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -4355,7 +4357,6 @@ mod tests {
         .unwrap();
         let e = missing.load_assets("/").unwrap_err().to_string();
         assert!(e.contains("(/ghee-no-such.png)"), "{e}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -4370,7 +4371,6 @@ mod tests {
         let e = Scene::load(&p).unwrap_err().to_string();
         assert!(e.contains(&format!("{dir}/logo.png")), "{e}");
         assert!(e.contains("No such file or directory"), "{e}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -4380,7 +4380,6 @@ mod tests {
         let p = format!("{dir}/echo.scene.json");
         sc.save(&p).unwrap();
         assert_eq!(Scene::load(&p).unwrap().to_dict(), sc.to_dict());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

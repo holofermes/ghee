@@ -1128,7 +1128,6 @@ fn write_ticks(mut stdin: ChildStdin, outbox: Arc<(Mutex<Outbox>, Condvar)>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A process that answers the probe, then hands over a scene.
     /// It feeds one array and one param for each tick.
@@ -1185,13 +1184,8 @@ printf '\000\005state\002\000\000\000\000\000\200\076\000\000\200\077'
 sleep 60
 "#;
 
-    fn tmpdir(tag: &str) -> String {
-        static SEQ: AtomicU32 = AtomicU32::new(0);
-        let n = SEQ.fetch_add(1, Ordering::SeqCst);
-        let d = std::env::temp_dir().join(format!("ghee-proc-{}-{tag}{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d.to_string_lossy().into_owned()
+    fn tmpdir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(&format!("proc-{tag}"))
     }
 
     fn script(dir: &str, name: &str, body: &str) -> String {

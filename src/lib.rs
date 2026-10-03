@@ -58,4 +58,6 @@ pub(crate) mod report;
 pub mod scene;
 pub(crate) mod sources;
 pub mod stats;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod text;

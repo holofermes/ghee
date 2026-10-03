@@ -184,11 +184,8 @@ mod tests {
         import ghee\n\
         ghee.run(ghee.Scene(passes=[]))\n";
 
-    fn tmpdir(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ghee-procedural-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d.to_string_lossy().into_owned()
+    fn tmpdir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(&format!("procedural-{tag}"))
     }
 
     fn repo(rel: &str) -> String {
@@ -229,7 +226,8 @@ mod tests {
 
     #[test]
     fn json_plus_executable_resolves_both() {
-        let d = format!("{}/wob", tmpdir("wob"));
+        let root = tmpdir("wob");
+        let d = format!("{root}/wob");
         fs::create_dir_all(&d).unwrap();
         fs::write(format!("{d}/wob{SUFFIX}"), JSON_SCENE).unwrap();
         let py = format!("{d}/wob.py");
@@ -256,7 +254,8 @@ mod tests {
 
     #[test]
     fn a_module_without_the_bit_is_not_a_scene() {
-        let d = format!("{}/module", tmpdir("module"));
+        let root = tmpdir("module");
+        let d = format!("{root}/module");
         fs::create_dir_all(&d).unwrap();
         fs::write(format!("{d}/mod{SUFFIX}"), JSON_SCENE).unwrap();
         fs::write(format!("{d}/mod.py"), "# a module the scenes import\n").unwrap();

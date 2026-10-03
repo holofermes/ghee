@@ -2388,16 +2388,13 @@ mod tests {
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
     const SC: &[u8] = &[0, 0, 0, 1];
 
-    fn tmp_console(tag: &str) -> Arc<Console> {
-        let d = std::env::temp_dir().join(format!("ghee-console-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+    /// A console over a directory of one scene, which lives as long as the
+    /// TempDir.
+    fn tmp_console(tag: &str) -> (crate::testing::TempDir, Arc<Console>) {
+        let d = crate::testing::TempDir::new(&format!("console-{tag}"));
         fs::write(d.join("one.scene.json"), SCENE).unwrap();
-        Arc::new(Console::new(SceneStore::new(
-            &d.to_string_lossy(),
-            true,
-            Vec::new(),
-        )))
+        let console = Arc::new(Console::new(SceneStore::new(&d, true, Vec::new())));
+        (d, console)
     }
 
     /// A renderer on the first GL device that opens.
@@ -2592,7 +2589,7 @@ mod tests {
 
     #[test]
     fn a_frame_bigger_than_the_preview_cap_is_downscaled() {
-        let mut console = tmp_console("preview");
+        let (_d, mut console) = tmp_console("preview");
         Arc::get_mut(&mut console).unwrap().preview_max = 120;
         console.count_clients(1); // the encoder only works while a viewer is counted
         let worker = {
@@ -2608,7 +2605,7 @@ mod tests {
 
     #[test]
     fn a_frame_inside_the_cap_keeps_its_size() {
-        let console = tmp_console("preview-small");
+        let (_d, console) = tmp_console("preview-small");
         console.count_clients(1);
         let worker = {
             let console = Arc::clone(&console);
@@ -2676,7 +2673,7 @@ mod tests {
         fanout.push(&key_au());
         assert!(Arc::ptr_eq(&fanout.rate, &shared));
         // the JPEG path ticks the counter published as stream_fps
-        let console = tmp_console("one-counter");
+        let (_d, console) = tmp_console("one-counter");
         assert!(Arc::ptr_eq(&console.fanout.rate, &console.stream_rate));
     }
 
@@ -2730,7 +2727,7 @@ mod tests {
 
     #[test]
     fn a_late_unit_of_an_ended_stream_never_ends_the_next_one() {
-        let console = tmp_console("late-au");
+        let (_d, console) = tmp_console("late-au");
         let first = console.fanout.add();
         console.hardware_failed("no hardware encoder");
         let owned = console.software_stream().unwrap();
@@ -2965,7 +2962,7 @@ mod tests {
 
     #[test]
     fn client_count_is_atomic() {
-        let console = tmp_console("counts");
+        let (_d, console) = tmp_console("counts");
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let console = Arc::clone(&console);
@@ -2990,7 +2987,7 @@ mod tests {
 
     #[test]
     fn stats_carries_every_key_polled_by_the_page() {
-        let console = tmp_console("stats");
+        let (_d, console) = tmp_console("stats");
         let stats = console.stats();
         for key in [
             "fps",
@@ -3014,7 +3011,7 @@ mod tests {
 
     #[test]
     fn a_stream_viewer_shows_up_in_the_destinations() {
-        let console = tmp_console("dests");
+        let (_d, console) = tmp_console("dests");
         console.count_clients(1);
         assert_eq!(console.stats()["out"], serde_json::json!(["mjpeg"]));
         let c = console.fanout.add();
@@ -3028,7 +3025,7 @@ mod tests {
 
     #[test]
     fn the_host_refuses_a_scene_it_does_not_have() {
-        let console = tmp_console("host");
+        let (_d, console) = tmp_console("host");
         let host = RenderLoopHost::new(Arc::clone(&console));
         assert_eq!(host.scene_names(), Ok(vec!["one".to_string()]));
         assert_eq!(
@@ -3041,7 +3038,7 @@ mod tests {
 
     #[test]
     fn a_switch_rides_the_command_queue() {
-        let console = tmp_console("switch");
+        let (_d, console) = tmp_console("switch");
         let host = RenderLoopHost::new(Arc::clone(&console));
         assert_eq!(host.switch(Some("one")), Ok("one".to_string()));
         match console.q.take() {
@@ -3052,17 +3049,11 @@ mod tests {
 
     #[test]
     fn an_edit_behind_a_switch_names_the_scene_that_the_switch_asked_for() {
-        let d = std::env::temp_dir().join(format!("ghee-console-{}-edit", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let d = crate::testing::TempDir::new("console-edit");
         for name in ["one", "two"] {
             fs::write(d.join(format!("{name}.scene.json")), SCENE).unwrap();
         }
-        let console = Arc::new(Console::new(SceneStore::new(
-            &d.to_string_lossy(),
-            true,
-            Vec::new(),
-        )));
+        let console = Arc::new(Console::new(SceneStore::new(&d, true, Vec::new())));
         let host = RenderLoopHost::new(Arc::clone(&console));
         host.switch(Some("one")).unwrap();
         host.switch(Some("two")).unwrap();
@@ -3082,12 +3073,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(ran, 1);
-        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn a_scene_def_off_disk_is_the_file() {
-        let console = tmp_console("def");
+        let (_d, console) = tmp_console("def");
         let host = RenderLoopHost::new(Arc::clone(&console));
         let doc = host.scene_def(Some("one")).unwrap();
         assert_eq!(doc["passes"][0]["name"], "main");
@@ -3113,7 +3103,7 @@ mod tests {
 
     #[test]
     fn a_set_takes_its_type_from_the_running_scene() {
-        let console = tmp_console("settype");
+        let (_d, console) = tmp_console("settype");
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
         let r = set("pass=scene&name=label&value=O");
@@ -3134,7 +3124,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_posted_string_param_relays_its_text() {
         let renderer = RefCell::new(gpu(32, 24));
-        let console = tmp_console("text");
+        let (_d, console) = tmp_console("text");
         let st = RefCell::new(Running { scene: None });
         let ctrl: ControllerSlot = RefCell::new(None);
         let frame = || {
@@ -3162,7 +3152,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn posted_words_past_the_texture_keep_the_last_words_and_show_why() {
         let renderer = RefCell::new(gpu(32, 24));
-        let console = tmp_console("toolong");
+        let (_d, console) = tmp_console("toolong");
         let st = RefCell::new(Running { scene: None });
         let ctrl: ControllerSlot = RefCell::new(None);
         let seen = Cell::new(renderer.borrow().text_errors_seq());
@@ -3226,7 +3216,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn the_console_draws_to_a_thread_bound_sink_on_the_callers_thread() {
         drop(gpu(8, 8)); // run() opens a renderer of its own on that device
-        let console = tmp_console("bound"); // for its scene directory
+        let (_d, console) = tmp_console("bound"); // for its scene directory
         let drawn = Rc::new(Cell::new(0));
         let ran = run(Options {
             store: Some(SceneStore::new(&console.store.dir, true, Vec::new())),
@@ -3249,7 +3239,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_bounded_console_run_hands_back_its_timing() {
         drop(gpu(8, 8)); // run() opens a renderer of its own on that device
-        let console = tmp_console("stats");
+        let (_d, console) = tmp_console("stats");
         let summary: Summary = Rc::new(RefCell::new(None));
         let got = Rc::clone(&summary);
         let ran = run(Options {

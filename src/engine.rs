@@ -2860,7 +2860,9 @@ mod tests {
         let covered = "void main(){ gl_FragColor = vec4(t_cover(glyph_em, 20.0)); }";
         let pass_reads = "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }";
         let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
+        let cache = crate::testing::TempDir::new("engine-curves");
         let (_g, mut r) = gpu();
+        r.atlas_cache = Some(cache.join("atlas"));
         for (code, how, reads) in [
             (black, layer("mtsdf", white), false),
             (pass_reads, json!({}), true),
@@ -4616,7 +4618,9 @@ mod tests {
             sc.load_assets(fonts).unwrap();
             sc
         };
+        let cache = crate::testing::TempDir::new("engine-colour");
         let (_g, mut r) = gpu();
+        r.atlas_cache = Some(cache.join("atlas"));
         let emoji = |r: &Renderer| {
             let held = r
                 .scene_assets

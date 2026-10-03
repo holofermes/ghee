@@ -161,11 +161,8 @@ mod tests {
 
     const CODE: &str = "void main(){ gl_FragColor = vec4(1.0); }";
 
-    fn tmpdir(tag: &str) -> PathBuf {
-        let d = env::temp_dir().join(format!("ghee-sources-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d
+    fn tmpdir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(&format!("sources-{tag}"))
     }
 
     /// A new mtime over identical content. A file copy leaves this behind.
@@ -189,10 +186,12 @@ mod tests {
         touch(path);
     }
 
-    fn watched(tag: &str) -> PathBuf {
-        let p = tmpdir(tag).join("watched.glsl");
+    /// A file in a directory of its own, which lives as long as the TempDir.
+    fn watched(tag: &str) -> (crate::testing::TempDir, PathBuf) {
+        let d = tmpdir(tag);
+        let p = d.join("watched.glsl");
         fs::write(&p, CODE).unwrap();
-        p
+        (d, p)
     }
 
     #[test]
@@ -238,13 +237,13 @@ mod tests {
 
     #[test]
     fn untouched_files_are_not_stale() {
-        let p = watched("untouched");
+        let (_d, p) = watched("untouched");
         assert!(!snap(&[&p]).stale());
     }
 
     #[test]
     fn changed_content_is_stale() {
-        let p = watched("changed");
+        let (_d, p) = watched("changed");
         let mut s = snap(&[&p]);
         write(&p, &CODE.replace("1.0", "0.5"));
         assert!(s.stale());
@@ -252,7 +251,7 @@ mod tests {
 
     #[test]
     fn a_copy_that_only_rewrote_the_mtime_is_not_stale() {
-        let p = watched("copied");
+        let (_d, p) = watched("copied");
         let mut s = snap(&[&p]);
         touch(&p);
         assert!(!s.stale());
@@ -262,7 +261,7 @@ mod tests {
     fn a_copied_file_is_not_hashed_twice() {
         // the snapshot takes the new mtime, so a copied tree costs one hash
         // per file
-        let p = watched("rehash");
+        let (_d, p) = watched("rehash");
         let mut s = snap(&[&p]);
         touch(&p);
         assert!(!s.stale());
@@ -271,7 +270,7 @@ mod tests {
 
     #[test]
     fn a_file_that_disappeared_is_stale() {
-        let p = watched("gone");
+        let (_d, p) = watched("gone");
         let mut s = snap(&[&p]);
         fs::remove_file(&p).unwrap();
         assert!(s.stale());
@@ -284,7 +283,7 @@ mod tests {
 
     #[test]
     fn an_unchanged_file_is_never_hashed_again() {
-        let p = watched("unchanged");
+        let (_d, p) = watched("unchanged");
         let mut s = snap(&[&p]);
         let seen = s.files[&p].clone();
         for _ in 0..5 {
@@ -295,7 +294,7 @@ mod tests {
 
     #[test]
     fn disk_is_read_at_most_once_an_interval() {
-        let p = watched("interval");
+        let (_d, p) = watched("interval");
         let now = std::sync::Arc::new(std::sync::Mutex::new(1000.0f64));
         let clock = std::sync::Arc::clone(&now);
         let mut s = Snapshot::with([&p], 10.0, Box::new(move || *clock.lock().unwrap()));

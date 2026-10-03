@@ -142,6 +142,15 @@ pub fn examples_dir() -> Option<String> {
 }
 
 fn extract_examples() -> std::io::Result<String> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    extract_examples_in(&base)
+}
+
+/// extract_examples() under the cache directory `base`.
+fn extract_examples_in(base: &std::path::Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     for (name, body) in &EXAMPLES {
@@ -155,10 +164,6 @@ fn extract_examples() -> std::io::Result<String> {
         .take(6)
         .map(|b| format!("{b:02x}"))
         .collect();
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
     let dir = base.join("ghee").join(format!("examples-{tag}"));
     let done = dir.join(".complete");
     if !done.exists() {
@@ -185,20 +190,49 @@ fn extract_examples() -> std::io::Result<String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// $GHEE_EXAMPLES on the repo's examples, for a test that reaches
+/// examples_dir(). The variable is process-wide, so every such test holds
+/// this, and the drop puts the variable back.
+#[cfg(test)]
+pub(crate) struct ExamplesEnv {
+    saved: Option<std::ffi::OsString>,
+    _held: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+pub(crate) fn repo_examples() -> ExamplesEnv {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = std::env::var_os("GHEE_EXAMPLES");
+    std::env::set_var(
+        "GHEE_EXAMPLES",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/ghee/examples"),
+    );
+    ExamplesEnv { saved, _held: held }
+}
+
+#[cfg(test)]
+impl Drop for ExamplesEnv {
+    fn drop(&mut self) {
+        match self.saved.take() {
+            Some(v) => std::env::set_var("GHEE_EXAMPLES", v),
+            None => std::env::remove_var("GHEE_EXAMPLES"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_embedded_examples_extract_and_resolve() {
-        let dir = examples_dir().unwrap();
-        let dir = std::path::Path::new(&dir);
-        assert!(dir.join("bars.scene.json").is_file());
-        assert!(dir.join("lib/look.py").is_file());
-        // examples_dir answers with $GHEE_EXAMPLES when it is set, so read the
-        // extraction itself
-        let out = extract_examples().unwrap();
+        let cache = std::env::temp_dir().join(format!("ghee-examples-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let out = extract_examples_in(&cache).unwrap();
         let out = std::path::Path::new(&out);
+        assert!(out.join("bars.scene.json").is_file());
+        assert!(out.join("lib/look.py").is_file());
         assert!(out.join("hero.py").is_file());
         #[cfg(unix)]
         {
@@ -208,7 +242,8 @@ mod tests {
                 .permissions();
             assert_eq!(perms.mode() & 0o111, 0o111);
         }
-        let scene = crate::scene::Scene::load(dir.join("bars.scene.json").to_str().unwrap());
+        let scene = crate::scene::Scene::load(out.join("bars.scene.json").to_str().unwrap());
         assert!(scene.is_ok());
+        std::fs::remove_dir_all(&cache).unwrap();
     }
 }

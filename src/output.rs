@@ -615,22 +615,17 @@ fn unpremultiply(px: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
-    use std::path::PathBuf;
     use std::thread::sleep;
     use std::time::Duration;
 
     use super::*;
 
-    fn tmpdir(tag: &str) -> PathBuf {
-        let d = env::temp_dir().join(format!("ghee-output-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d
+    fn tmpdir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(&format!("output-{tag}"))
     }
 
-    fn at(dir: &Path, name: &str) -> String {
-        dir.join(name).to_string_lossy().into_owned()
+    fn at(dir: impl AsRef<Path>, name: &str) -> String {
+        dir.as_ref().join(name).to_string_lossy().into_owned()
     }
 
     /// n frames of (8, 6, 4), each a flat value with an opaque alpha.

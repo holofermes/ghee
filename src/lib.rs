@@ -36,26 +36,26 @@
 //! # }
 //! ```
 
-pub mod assets;
-pub mod atlas;
-pub mod bench;
+pub(crate) mod assets;
+pub(crate) mod atlas;
+pub(crate) mod bench;
 pub mod cli;
-pub mod colour;
+pub(crate) mod colour;
 pub mod console;
-pub mod cparam;
+pub(crate) mod cparam;
 pub mod drivers;
 pub mod engine;
-pub mod feeds;
+pub(crate) mod feeds;
 pub mod ffi;
 pub mod filters;
 pub mod golden;
 pub mod h264;
-pub mod isf;
+pub(crate) mod isf;
 pub mod looper;
 pub mod output;
 pub mod procedural;
-pub mod report;
+pub(crate) mod report;
 pub mod scene;
-pub mod sources;
+pub(crate) mod sources;
 pub mod stats;
 pub mod text;

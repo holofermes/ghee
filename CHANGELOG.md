@@ -197,6 +197,8 @@
   through `<name>_cover` or a draw of the slug fill, so words that the
   MTSDF fill alone draws lay out with no curve data and meet neither the
   1024x2048 texture nor the 64 curves of a band.
+- Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
+  `feeds`, `isf`, `report` and `sources` modules inside the crate.
 
 ## 0.4.0 - 2026-08-06
 

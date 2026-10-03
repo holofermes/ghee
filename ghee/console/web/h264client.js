@@ -1,7 +1,8 @@
 // attachH264(canvas, url, {onconfig, onstats, onfail}) -> {stop}
 // Reads the /h264 framed stream ([u8 type][u32 BE len][payload]; type 0 =
-// decoder config JSON, 1 = key AU, 2 = delta AU, AVCC payloads), decodes with
-// WebCodecs VideoDecoder, draws VideoFrames to the canvas.
+// decoder config JSON, 1 = key AU, 2 = delta AU, AVCC payloads, 3 = the UTF-8
+// reason the stream ends), decodes with WebCodecs VideoDecoder, draws
+// VideoFrames to the canvas.
 function attachH264(canvas, url, opts) {
   opts = opts || {};
   const ctx = canvas.getContext('2d');
@@ -19,7 +20,7 @@ function attachH264(canvas, url, opts) {
   const fail = e => { if (!stopped) { teardown(); opts.onfail && opts.onfail(String(e)); } };
 
   function configure(cfg) {
-    // a mid-stream config (encoder respawn, size change) replaces the decoder;
+    // a mid-stream config (a resync, a size change) replaces the decoder;
     // the old one has to be closed or it keeps its hardware slot
     if (decoder && decoder.state !== 'closed') decoder.close();
     canvas.width = cfg.codedWidth; canvas.height = cfg.codedHeight;
@@ -69,7 +70,10 @@ function attachH264(canvas, url, opts) {
 
   (async () => {
     const res = await fetch(url, { signal: abort.signal });
-    if (!res.ok) throw new Error('h264 stream: HTTP ' + res.status);
+    if (!res.ok) {
+      const why = await res.text().catch(() => '');
+      throw new Error('h264 stream: HTTP ' + res.status + (why ? ': ' + why : ''));
+    }
     reader = res.body.getReader();
     let buf = new Uint8Array(0);
     const cat = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
@@ -85,6 +89,7 @@ function attachH264(canvas, url, opts) {
         const payload = buf.slice(5, 5 + len);
         buf = buf.slice(5 + len);
         if (type === 0) configure(JSON.parse(new TextDecoder().decode(payload)));
+        else if (type === 3) { fail(new TextDecoder().decode(payload)); return; }
         else if (decoder && decoder.state === 'configured') {
           decoder.decode(new EncodedVideoChunk({
             type: type === 1 ? 'key' : 'delta',

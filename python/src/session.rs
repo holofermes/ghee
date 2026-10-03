@@ -615,9 +615,9 @@ impl Session {
 
     /// The console's hardware H264 mirror: encode the frame just drawn, with no
     /// readback. The engine holds the final pass in its FBO while the encoder
-    /// exists, so encode_last() always has a texture to sample. A failure hands
-    /// the stream to the software lane, because a stream is no reason to fail
-    /// the host's frame.
+    /// exists, so encode_last() always has a texture to sample. A failure goes
+    /// to Console::hardware_failed and never to the host's frame, because a
+    /// stream is no reason to fail the frame.
     fn mirror(&mut self) {
         let Session {
             renderer,

@@ -1,6 +1,7 @@
 """The console the host embeds: what it serves, and what a /set does."""
 
 import json
+import os
 import shutil
 import socket
 import threading
@@ -281,6 +282,28 @@ def test_h264_serves_what_webcodecs_decodes(served):
     au = msgs[1][1]
     nal = int.from_bytes(au[:4], "big")  # AVCC: a length in front of each NAL
     assert 0 < nal <= len(au) - 4
+
+
+@pytest.mark.skipif(
+    os.path.exists("/dev/video11"), reason="this board encodes H264 in hardware"
+)
+def test_a_stream_with_no_encoder_answers_503_with_the_reason(monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent")  # no ffmpeg, so no software lane
+    port = free_port()
+    with ghee.open(RED, width=32, height=32, stats=port) as h:
+        h.feed("level", LEVEL)
+        h.frame()
+
+        def read():
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20)
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode()
+            return 200, ""
+
+        status, why = watching(h, read)
+    assert status == 503
+    assert "no H264 encoder" in why and "ffmpeg" in why, why
 
 
 @needs_ffmpeg

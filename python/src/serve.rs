@@ -26,10 +26,10 @@ use ghee::console::core::{
     Scope,
 };
 use ghee::console::server::{
-    coerce, stream_bitrate, stream_head, stream_size, H264Fanout, Heartbeat, Options, H264_FPS,
+    coerce, serve_h264, stream_bitrate, stream_size, H264Fanout, Heartbeat, Options, H264_FPS,
     VIEWER_DEADLINE,
 };
-use ghee::h264::{ColorSpace, SoftwareH264, SW_COLOR};
+use ghee::h264::{no_encoder, ColorSpace, SoftwareH264, SW_COLOR};
 use ghee::looper::Frame;
 use ghee::output::{encode_jpeg, encode_png};
 use ghee::scene::{ParamValue, Scene};
@@ -106,6 +106,8 @@ pub struct Shared {
     /// The last viewer to leave clears it, and the next stream tries hardware
     /// again.
     hw_dead: AtomicBool,
+    /// Why the hardware lane failed this stream.
+    hw_why: Mutex<String>,
     /// The h264 cap for the longest side. 0 streams the render size.
     stream_longest: i32,
     verbose: bool,
@@ -281,6 +283,7 @@ impl Console {
             fanout: H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))),
             watchers: Heartbeat::new(VIEWER_DEADLINE),
             hw_dead: AtomicBool::new(false),
+            hw_why: Mutex::new(String::new()),
             stream_longest,
             verbose,
             stopping: AtomicBool::new(false),
@@ -337,14 +340,24 @@ impl Console {
             s.hw_dead.store(false, Ordering::SeqCst);
             return false;
         }
-        !s.hw_dead.load(Ordering::SeqCst)
+        !s.hw_dead.load(Ordering::SeqCst) && s.fanout.failure().is_none()
     }
 
-    /// The hardware lane failed, so the software lane takes this stream.
+    /// The hardware lane failed. Before the stream's first access unit the
+    /// software lane takes the stream, and after it the stream ends.
     pub fn hardware_failed(&self, why: &str) {
-        self.shared.hw_dead.store(true, Ordering::SeqCst);
-        if self.shared.verbose {
-            eprintln!("ghee console: h264: {why}; using software encoder");
+        let s = &self.shared;
+        if s.fanout.began() {
+            if s.verbose {
+                eprintln!("ghee console: h264: {why}");
+            }
+            s.fanout.fail(why);
+            return;
+        }
+        *lock(&s.hw_why) = why.to_string();
+        s.hw_dead.store(true, Ordering::SeqCst);
+        if s.verbose {
+            eprintln!("ghee console: h264: {why}, using software encoder");
         }
     }
 
@@ -415,7 +428,7 @@ fn h264_sw_loop(shared: &Arc<Shared>) {
     let mut size = (0, 0);
     let mut seen = 0;
     while !shared.stopping() {
-        if !shared.software_h264() {
+        if !shared.software_h264() || shared.fanout.failure().is_some() {
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -452,26 +465,22 @@ fn h264_sw_loop(shared: &Arc<Shared>) {
                     shared.fanout.opened(ew, eh, SW_COLOR);
                 }
                 Err(e) => {
+                    let why = no_encoder(&lock(&shared.hw_why), &e.to_string());
                     if shared.verbose {
-                        eprintln!("ghee console: h264: {e}");
+                        eprintln!("ghee console: h264: {why}");
                     }
-                    // back off in slices: stop() joins this thread
-                    for _ in 0..20 {
-                        if shared.stopping() {
-                            break;
-                        }
-                        thread::sleep(Duration::from_millis(250));
-                    }
+                    shared.fanout.fail(&why);
                     continue;
                 }
             }
         }
         let e = enc.as_mut().expect("the encoder was just created");
         if let Err(err) = e.feed(&crop(&data, w, h, components, (ew, eh))) {
-            // a dead encoder process must not kill this thread
+            let why = format!("software encoder died: {err}");
             if shared.verbose {
-                eprintln!("ghee console: h264: software encoder died ({err}); respawning");
+                eprintln!("ghee console: h264: {why}");
             }
+            shared.fanout.fail(&why);
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -590,37 +599,13 @@ fn stream(shared: &Arc<Shared>, request: Request) {
     shared.viewers.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// Framed H264 for WebCodecs: [u8 type][u32 len], 0=config JSON, 1=key AU,
-/// 2=delta AU. The encoder runs while a viewer holds this request open.
+/// Framed H264 for WebCodecs, docs/http.md holds the wire. The encoder runs
+/// while a viewer holds this request open.
 fn h264(shared: &Arc<Shared>, request: Request, query: &Query) {
-    let mut w = request.into_writer();
-    if stream_head(
-        &mut w,
-        "application/octet-stream",
-        &["Cache-Control: no-store", "Transfer-Encoding: chunked"],
-    )
-    .is_err()
-    {
-        return;
-    }
     let c = shared.fanout.add();
     let viewer = shared.watchers.join(query.get("vid").map(String::as_str));
-    while !shared.stopping() {
-        if shared.watchers.gone(&viewer) {
-            break;
-        }
-        let Some(blob) = c.get(Duration::from_secs(1)) else {
-            continue;
-        };
-        let head = format!("{:X}\r\n", blob.len());
-        if w.write_all(head.as_bytes()).is_err()
-            || w.write_all(&blob).is_err()
-            || w.write_all(b"\r\n").is_err()
-            || w.flush().is_err()
-        {
-            break;
-        }
-    }
+    let alive = || !shared.stopping() && !shared.watchers.gone(&viewer);
+    serve_h264(request, &shared.fanout, &c, &alive);
     shared.fanout.remove(&c);
     shared.watchers.leave(&viewer);
 }

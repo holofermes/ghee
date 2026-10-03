@@ -155,6 +155,9 @@ pub fn build_config(sps: &[u8], pps: &[u8], w: i32, h: i32, color: Option<ColorS
     serde_json::to_vec(&cfg).expect("decoder config serialises")
 }
 
+/// The wire's error type: the payload is the UTF-8 reason the stream ends.
+pub const WIRE_ERROR: u8 = 3;
+
 /// Browser wire framing: [u8 type][u32 BE len][payload].
 pub fn wire_frame(t: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(5 + payload.len());
@@ -180,6 +183,11 @@ pub fn hw_size(w: i32, h: i32) -> (i32, i32) {
         k += 1;
     }
     (w * k, h * k)
+}
+
+/// The reason a stream has no encoder, from the reason of each lane.
+pub fn no_encoder(hardware: &str, software: &str) -> String {
+    format!("no H264 encoder. hardware: {hardware}. software: {software}")
 }
 
 /// An access unit and its keyframe flag. None while nothing is ready.
@@ -598,7 +606,7 @@ pub fn make_encoder(
     };
     match SoftwareH264::new(w, h, fps, bitrate, components) {
         Ok(enc) => Ok(Encoder::Software(enc)),
-        Err(sw_err) => bail!("no H264 encoder. hardware: {hw_err}. software: {sw_err}"),
+        Err(sw_err) => bail!(no_encoder(&hw_err.to_string(), &sw_err.to_string())),
     }
 }
 

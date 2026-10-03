@@ -45,8 +45,12 @@ loopback, or open it with `--host` only on a network you trust.
 
 - `GET /stream?vid=`: MJPEG, one part per rendered frame.
 - `GET /h264?vid=`: framed H264 for WebCodecs, `[u8 type][u32 len]` with
-  type 0 = config JSON, 1 = key AU, 2 = delta AU, AVCC inside. One shared
-  encoder feeds every viewer, and it runs only while a viewer watches.
+  type 0 = config JSON, 1 = key AU, 2 = delta AU, AVCC inside, and 3 = the
+  UTF-8 reason the stream ends. One shared encoder feeds every viewer, and
+  it runs only while a viewer watches. The status line waits for the first
+  frame, so a stream with no encoder that can start answers 503 with the
+  reason as the body. An encoder that fails after the first frame ends the
+  stream with a type 3 frame.
 - `POST /ping?vid=`: heartbeat for the streams opened under that vid.
 
 For example, set the scene param `gain` to `0.8` and read back the

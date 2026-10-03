@@ -102,6 +102,8 @@
   encoder refused it. A 128x32 panel streams at 256x64.
 - Read back a frame at a whole multiple of the render size with each pixel a
   square block, in `Renderer::render_into` and `render_scaled`.
+- Answer `/h264` with 503 and the reason when no encoder can start, and end
+  a stream whose encoder fails with a type 3 frame that carries the reason.
 
 ## 0.4.0 - 2026-08-06
 

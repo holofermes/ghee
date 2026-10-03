@@ -33,8 +33,8 @@ use crate::console::store::SceneStore;
 use crate::engine::{ErrorDraw, ErrorPass, Feed, Provider, Renderer};
 use crate::feeds::demo_feed;
 use crate::h264::{
-    avcc, build_config, split_annexb, wire_frame, ColorSpace, HardwareH264, SoftwareH264, HW_COLOR,
-    NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, SW_COLOR,
+    avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
+    SoftwareH264, HW_COLOR, NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, SW_COLOR, WIRE_ERROR,
 };
 use crate::looper::{ControllerSlot, Frame, Loop, Output, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
@@ -313,6 +313,8 @@ pub struct Console {
     /// The last viewer to leave clears it. A stall or a busy codec belongs to
     /// the stream it happened in, and the software lane costs a readback.
     h264_hw_dead: AtomicBool,
+    /// Why the hardware lane failed this stream.
+    h264_hw_why: Mutex<String>,
     httpd: Mutex<Option<Arc<Server>>>,
 }
 
@@ -363,6 +365,7 @@ impl Console {
             stopping,
             fatal: Mutex::new(String::new()),
             h264_hw_dead: AtomicBool::new(false),
+            h264_hw_why: Mutex::new(String::new()),
             httpd: Mutex::new(None),
         }
     }
@@ -492,6 +495,19 @@ impl Console {
     /// instead.
     fn software_h264(&self) -> bool {
         self.h264_hw_dead.load(Ordering::SeqCst) && self.fanout.nclients() > 0
+    }
+
+    /// The hardware lane failed. Before the stream's first access unit the
+    /// software lane takes the stream, and after it the stream ends.
+    fn hardware_failed(&self, why: &str) {
+        if self.fanout.began() {
+            eprintln!("h264: {why}");
+            self.fanout.fail(why);
+            return;
+        }
+        *lock(&self.h264_hw_why) = why.to_string();
+        self.h264_hw_dead.store(true, Ordering::SeqCst);
+        eprintln!("h264: {why}, using software encoder");
     }
 
     /// Shut the server down, and signal the render loop and the encode threads.
@@ -688,9 +704,11 @@ pub struct H264Fanout {
     /// The decoder colorSpace hint (HW_COLOR or SW_COLOR). Same owner as size.
     color: Mutex<Option<ColorSpace>>,
     want_key: AtomicBool,
-    /// No encoder can serve this stream. A viewer waiting on an impossible
-    /// stream must be released, or it never falls back to MJPEG.
-    dead: AtomicBool,
+    /// The reason this stream ends. Every viewer ends with it, and the last
+    /// viewer to leave clears it.
+    failure: Mutex<Option<String>>,
+    /// An access unit reached a viewer since the first one joined.
+    began: AtomicBool,
     rate: Arc<Mutex<FrameRate>>,
 }
 
@@ -702,19 +720,30 @@ impl H264Fanout {
             size: Mutex::new((0, 0)),
             color: Mutex::new(None),
             want_key: AtomicBool::new(false),
-            dead: AtomicBool::new(false),
+            failure: Mutex::new(None),
+            began: AtomicBool::new(false),
             rate,
         }
     }
 
-    /// The last lane failed to start. Viewers drop, and their client falls
-    /// back. The next stream tries again.
-    pub fn fail(&self) {
-        self.dead.store(true, Ordering::SeqCst);
+    /// End this stream for every viewer, with the reason. The first reason
+    /// stands. The next stream tries every lane again.
+    pub fn fail(&self, why: &str) {
+        lock(&self.failure).get_or_insert_with(|| why.to_string());
+        for c in lock(&self.clients).iter() {
+            let _queue = lock(&c.state);
+            c.ready.notify_all();
+        }
     }
 
-    pub fn is_dead(&self) -> bool {
-        self.dead.load(Ordering::SeqCst)
+    pub fn failure(&self) -> Option<String> {
+        lock(&self.failure).clone()
+    }
+
+    /// True once an access unit has reached a viewer of this stream. A lane
+    /// that fails after that ends the stream.
+    pub fn began(&self) -> bool {
+        self.began.load(Ordering::SeqCst)
     }
 
     pub fn nclients(&self) -> usize {
@@ -737,7 +766,8 @@ impl H264Fanout {
         let mut clients = lock(&self.clients);
         clients.retain(|x| !Arc::ptr_eq(x, c));
         if clients.is_empty() {
-            self.dead.store(false, Ordering::SeqCst);
+            *lock(&self.failure) = None;
+            self.began.store(false, Ordering::SeqCst);
         }
     }
 
@@ -783,6 +813,7 @@ impl H264Fanout {
             c.offer(&frame, config.as_ref());
         }
         if !clients.is_empty() {
+            self.began.store(true, Ordering::SeqCst);
             lock(&self.rate).tick(None);
         }
         // A waiting client rejoins at the next keyframe. Keep asking for one
@@ -817,7 +848,7 @@ pub fn h264_sw_loop(console: &Console) {
     let mut size = (0, 0);
     let mut last_seq = u64::MAX;
     while !console.stopping() {
-        if !console.software_h264() {
+        if !console.software_h264() || console.fanout.failure().is_some() {
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -865,17 +896,18 @@ pub fn h264_sw_loop(console: &Console) {
                     console.fanout.opened(w, h, SW_COLOR);
                 }
                 Err(e) => {
-                    eprintln!("h264: software encoder unavailable: {e}");
-                    console.fanout.fail();
-                    thread::sleep(Duration::from_secs(5));
+                    let why = no_encoder(&lock(&console.h264_hw_why), &e.to_string());
+                    eprintln!("h264: {why}");
+                    console.fanout.fail(&why);
                     continue;
                 }
             }
         }
         let e = enc.as_mut().expect("the encoder was just created");
         if let Err(err) = e.feed(&rgb.data) {
-            // a dead encoder process must not kill this thread
-            eprintln!("h264: software encoder died ({err}), respawning");
+            let why = format!("software encoder died: {err}");
+            eprintln!("h264: {why}");
+            console.fanout.fail(&why);
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -1136,6 +1168,12 @@ impl Output for ConsoleSink {
             }
             return Ok(());
         }
+        if console.fanout.failure().is_some() {
+            if let Some(mut enc) = self.enc.take() {
+                enc.close();
+            }
+            return Ok(());
+        }
         if self.enc.is_none() && !console.h264_hw_dead.load(Ordering::SeqCst) {
             let (w, h) = stream_size(console.w, console.h, console.stream_max);
             // The stream encodes at its own rate, not the display's. A panel
@@ -1150,11 +1188,7 @@ impl Output for ConsoleSink {
                     self.enc = Some(enc);
                     self.starved = 0;
                 }
-                Err(e) => {
-                    // h264_sw_loop takes this stream over
-                    console.h264_hw_dead.store(true, Ordering::SeqCst);
-                    eprintln!("h264: {e}, using software encoder");
-                }
+                Err(e) => console.hardware_failed(&e.to_string()),
             }
         }
         let Some(enc) = self.enc.as_mut() else {
@@ -1163,28 +1197,24 @@ impl Output for ConsoleSink {
         if console.fanout.wants_key() {
             enc.force_keyframe();
         }
-        match enc.encode_last() {
+        let failed = match enc.encode_last() {
             Ok((Some(au), _)) => {
                 self.starved = 0;
                 console.fanout.push(au);
+                None
             }
             Ok((None, _)) => {
                 self.starved += 1;
-                if self.starved >= HW_STARVE_LIMIT {
-                    let mut enc = self.enc.take().expect("the encoder is still here");
-                    enc.close();
-                    console.h264_hw_dead.store(true, Ordering::SeqCst);
-                    eprintln!(
-                        "h264: no output in {HW_STARVE_LIMIT} frames; using software encoder"
-                    );
-                }
+                (self.starved >= HW_STARVE_LIMIT)
+                    .then(|| format!("hardware encoder gave no output in {HW_STARVE_LIMIT} frames"))
             }
-            Err(e) => {
-                let mut enc = self.enc.take().expect("the encoder is still here");
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(why) = failed {
+            if let Some(mut enc) = self.enc.take() {
                 enc.close();
-                console.h264_hw_dead.store(true, Ordering::SeqCst);
-                eprintln!("h264: {e}, using software encoder");
             }
+            console.hardware_failed(&why);
         }
         Ok(())
     }
@@ -1941,7 +1971,32 @@ fn stream(console: &Arc<Console>, request: Request, query: &Query) {
     console.viewers.leave(&viewer);
 }
 
-fn h264(console: &Arc<Console>, request: Request, query: &Query) {
+/// One chunk of a chunked response.
+fn write_chunk(w: &mut dyn Write, blob: &[u8]) -> std::io::Result<()> {
+    w.write_all(format!("{:X}\r\n", blob.len()).as_bytes())?;
+    w.write_all(blob)?;
+    w.write_all(b"\r\n")?;
+    w.flush()
+}
+
+/// Serve one /h264 viewer from the fanout while `alive` holds. The status line
+/// waits for the viewer's first blob, so a stream that cannot start answers
+/// 503 with the reason. A stream that fails later ends on a WIRE_ERROR frame.
+pub fn serve_h264(request: Request, fanout: &H264Fanout, c: &H264Client, alive: &dyn Fn() -> bool) {
+    let first = loop {
+        if let Some(why) = fanout.failure() {
+            return send(request, &Response::text(503, &why));
+        }
+        if !alive() {
+            return send(
+                request,
+                &Response::text(503, "the stream closed before its first frame"),
+            );
+        }
+        if let Some(blob) = c.get(Duration::from_secs(1)) {
+            break blob;
+        }
+    };
     let mut w = request.into_writer();
     if stream_head(
         &mut w,
@@ -1952,22 +2007,25 @@ fn h264(console: &Arc<Console>, request: Request, query: &Query) {
     {
         return;
     }
-    let c = console.fanout.add();
-    let viewer = console.viewers.join(query.get("vid").map(String::as_str));
-    console.q.put(Command::Preview); // wake an idle scene so the stream starts
-    while !console.stopping() {
-        if console.viewers.gone(&viewer) || console.fanout.is_dead() {
-            break;
-        }
-        let Some(blob) = c.get(Duration::from_secs(1)) else {
-            continue;
+    let mut next = Some(first);
+    loop {
+        let blob = match next.take() {
+            Some(blob) => blob,
+            None => {
+                if let Some(why) = fanout.failure() {
+                    let _ = write_chunk(&mut w, &wire_frame(WIRE_ERROR, why.as_bytes()));
+                    break;
+                }
+                if !alive() {
+                    break;
+                }
+                match c.get(Duration::from_secs(1)) {
+                    Some(blob) => blob,
+                    None => continue,
+                }
+            }
         };
-        let head = format!("{:X}\r\n", blob.len());
-        if w.write_all(head.as_bytes()).is_err()
-            || w.write_all(&blob).is_err()
-            || w.write_all(b"\r\n").is_err()
-            || w.flush().is_err()
-        {
+        if write_chunk(&mut w, &blob).is_err() {
             break;
         }
     }
@@ -1976,6 +2034,14 @@ fn h264(console: &Arc<Console>, request: Request, query: &Query) {
     // what sends the client to its MJPEG fallback.
     let _ = w.write_all(b"0\r\n\r\n");
     let _ = w.flush();
+}
+
+fn h264(console: &Arc<Console>, request: Request, query: &Query) {
+    let c = console.fanout.add();
+    let viewer = console.viewers.join(query.get("vid").map(String::as_str));
+    console.q.put(Command::Preview); // wake an idle scene so the stream starts
+    let alive = || !console.stopping() && !console.viewers.gone(&viewer);
+    serve_h264(request, &console.fanout, &c, &alive);
     console.fanout.remove(&c);
     console.viewers.leave(&viewer);
     // The encoder tears down on the next drawn frame, and a clean scene skips
@@ -2558,6 +2624,145 @@ mod tests {
         assert!(queued <= H264_LAG_FRAMES + 2, "{queued}");
         assert!(!lock(&c.state).started);
         assert!(fanout.want_key.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_failure_wakes_a_waiting_viewer_and_the_first_reason_stands() {
+        let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
+        let c = fanout.add();
+        let failer = {
+            let fanout = Arc::clone(&fanout);
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                fanout.fail("first");
+                fanout.fail("second");
+            })
+        };
+        let t0 = monotonic();
+        assert!(c.get(Duration::from_secs(5)).is_none());
+        assert!(monotonic() - t0 < 2.0);
+        failer.join().unwrap();
+        assert_eq!(fanout.failure().as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn the_last_viewer_to_leave_clears_the_failure_and_the_start() {
+        let fanout = H264Fanout::new(Arc::new(Mutex::new(FrameRate::new())));
+        let (a, b) = (fanout.add(), fanout.add());
+        assert!(!fanout.began());
+        fanout.push(&key_au());
+        assert!(fanout.began());
+        fanout.fail("gone");
+        fanout.remove(&a);
+        assert!(fanout.failure().is_some() && fanout.began());
+        fanout.remove(&b);
+        assert!(fanout.failure().is_none() && !fanout.began());
+    }
+
+    /// One GET /h264 served by serve_h264, as the raw bytes on the socket.
+    /// `run` drives the fanout while the request is served.
+    fn h264_exchange(
+        fanout: Arc<H264Fanout>,
+        run: impl FnOnce(&H264Fanout) + Send + 'static,
+    ) -> Vec<u8> {
+        use std::io::Read;
+        use std::net::TcpStream;
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let client = thread::spawn(move || {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            s.write_all(b"GET /h264 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut out = Vec::new();
+            let _ = s.read_to_end(&mut out); // the stream ends on its own terminal chunk
+            out
+        });
+        let request = server.recv().unwrap();
+        let c = fanout.add();
+        let driver = {
+            let fanout = Arc::clone(&fanout);
+            thread::spawn(move || run(&fanout))
+        };
+        serve_h264(request, &fanout, &c, &|| true);
+        fanout.remove(&c);
+        driver.join().unwrap();
+        client.join().unwrap()
+    }
+
+    /// The body of a chunked response, and whether its terminal chunk arrived.
+    fn dechunk(body: &[u8]) -> (Vec<u8>, bool) {
+        let mut out = Vec::new();
+        let mut at = 0;
+        while let Some(end) = find(body, b"\r\n", at) {
+            let n =
+                usize::from_str_radix(std::str::from_utf8(&body[at..end]).unwrap(), 16).unwrap();
+            if n == 0 {
+                return (out, true);
+            }
+            out.extend_from_slice(&body[end + 2..end + 2 + n]);
+            at = end + 2 + n + 2;
+        }
+        (out, false)
+    }
+
+    fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+        hay.get(from..)?
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .map(|i| i + from)
+    }
+
+    #[test]
+    fn a_stream_that_cannot_start_answers_503_with_the_reason() {
+        let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
+        let why = "no H264 encoder. hardware: none here. software: no ffmpeg";
+        let out = h264_exchange(fanout, move |f| {
+            thread::sleep(Duration::from_millis(100));
+            f.fail(why);
+        });
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 503"), "{text}");
+        assert!(text.ends_with(why), "{text}");
+    }
+
+    #[test]
+    fn a_stream_that_fails_after_its_start_ends_on_an_error_frame() {
+        let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
+        let why = "hardware encode failed: stalled";
+        let out = h264_exchange(fanout, move |f| {
+            thread::sleep(Duration::from_millis(100));
+            f.opened(256, 64, HW_COLOR);
+            f.push(&key_au());
+            thread::sleep(Duration::from_millis(100));
+            f.fail(why);
+        });
+        let head_end = find(&out, b"\r\n\r\n", 0).unwrap();
+        let head = String::from_utf8_lossy(&out[..head_end]);
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let (body, ended) = dechunk(&out[head_end + 4..]);
+        assert!(ended);
+        let mut msgs = Vec::new();
+        let mut at = 0;
+        while at < body.len() {
+            let n = u32::from_be_bytes(body[at + 1..at + 5].try_into().unwrap()) as usize;
+            msgs.push((body[at], body[at + 5..at + 5 + n].to_vec()));
+            at += 5 + n;
+        }
+        let types: Vec<u8> = msgs.iter().map(|m| m.0).collect();
+        assert_eq!(types, vec![0, 1, WIRE_ERROR]);
+        let cfg: Value = serde_json::from_slice(&msgs[0].1).unwrap();
+        assert_eq!(
+            (cfg["codedWidth"].as_i64(), cfg["codedHeight"].as_i64()),
+            (Some(256), Some(64))
+        );
+        assert_eq!(msgs[2].1, why.as_bytes());
+    }
+
+    #[test]
+    fn the_page_ends_its_stream_on_the_error_frame() {
+        let js = include_str!("../../ghee/console/web/h264client.js");
+        assert!(js.contains(&format!("type === {WIRE_ERROR}")));
     }
 
     // the still

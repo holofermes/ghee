@@ -108,6 +108,9 @@
   5 s.
 - Parse a `/set` value by the param's declared type, so a string, a bool or
   a color needs no `type=`, and name a param that the scene lacks.
+- Write straight colour into a PNG of an RGBA frame, from `--alpha` and the
+  console's `/frame.png`, where it held the premultiplied colour and drew
+  dark fringes. A raw frame and `pixels()` keep the colour premultiplied.
 
 ## 0.4.0 - 2026-08-06
 

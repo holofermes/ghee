@@ -67,7 +67,7 @@ since the first frame, `dt` is the measured frame period, and `timestep`
 pins both to `frame * S`.
 
 `pixels` reads alpha 255 in every pixel, unless `alpha=True` keeps the
-alpha that the output pass wrote.
+alpha that the output pass wrote, with the colour premultiplied by it.
 
 `skip` takes the tick and draws nothing, the panel keeps its last frame.
 

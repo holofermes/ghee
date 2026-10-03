@@ -565,7 +565,8 @@ fn png_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&crc32(&body).to_be_bytes());
 }
 
-/// A frame as an 8-bit RGB or RGBA PNG.
+/// A frame as an 8-bit RGB or RGBA PNG. An RGBA frame holds colour
+/// premultiplied by alpha, and the PNG holds it straight.
 pub fn encode_png(frame: Frame<'_>) -> Result<Vec<u8>> {
     let color = match frame.components {
         3 => 2u8,
@@ -577,7 +578,11 @@ pub fn encode_png(frame: Frame<'_>) -> Result<Vec<u8>> {
     let mut raw = Vec::with_capacity(height * (stride + 1));
     for row in frame.data.chunks(stride).take(height) {
         raw.push(0); // filter type: none
+        let start = raw.len();
         raw.extend_from_slice(row);
+        if frame.components == 4 {
+            unpremultiply(&mut raw[start..]);
+        }
     }
     let mut head = Vec::with_capacity(13);
     head.extend_from_slice(&(width as u32).to_be_bytes());
@@ -589,6 +594,23 @@ pub fn encode_png(frame: Frame<'_>) -> Result<Vec<u8>> {
     png_chunk(&mut out, b"IDAT", &zlib_stored(&raw));
     png_chunk(&mut out, b"IEND", &[]);
     Ok(out)
+}
+
+/// Divide each colour of RGBA pixels by its alpha, rounded to the nearest
+/// byte. An opaque pixel keeps its bytes, and a transparent one turns black.
+fn unpremultiply(px: &mut [u8]) {
+    for p in px.chunks_exact_mut(4) {
+        let a = u32::from(p[3]);
+        if a == 255 {
+            continue;
+        }
+        for c in &mut p[..3] {
+            *c = match a {
+                0 => 0,
+                _ => ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8,
+            };
+        }
+    }
 }
 
 #[cfg(test)]
@@ -911,6 +933,38 @@ mod tests {
             assert_eq!(row[0], 0); // filter: none
             assert_eq!(&row[1..], want);
         }
+    }
+
+    /// The pixels of a PNG that encode_png wrote: stored blocks, no filter.
+    fn png_pixels(png: &[u8], stride: usize) -> Vec<u8> {
+        let len = u32::from_be_bytes(png[33..37].try_into().unwrap()) as usize;
+        let idat = &png[41..41 + len];
+        let n = u16::from_le_bytes(idat[3..5].try_into().unwrap()) as usize;
+        idat[7..2 + 5 + n]
+            .chunks(stride + 1)
+            .flat_map(|row| row[1..].to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn a_png_holds_straight_alpha_and_a_raw_stream_the_frame_as_drawn() {
+        let mut buf = OwnedFrame::of((1, 5, 4));
+        let drawn = [
+            10, 20, 30, 255, // opaque
+            20, 10, 0, 40, // premultiplied by 40/255
+            64, 128, 32, 128, // premultiplied by 128/255
+            9, 9, 9, 0, // transparent
+            90, 60, 30, 30, // more colour than alpha, as an add blend leaves it
+        ];
+        buf.data.copy_from_slice(&drawn);
+        let png = encode_png(buf.view()).unwrap();
+        assert_eq!(
+            png_pixels(&png, 20),
+            [10, 20, 30, 255, 128, 64, 0, 40, 128, 255, 64, 128, 0, 0, 0, 0, 255, 255, 255, 30]
+        );
+        let mut rs = RawStream::new(Vec::new());
+        rs.write(buf.view()).unwrap();
+        assert_eq!(rs.stream, drawn);
     }
 
     #[test]

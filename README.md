@@ -179,7 +179,10 @@ normalized coordinates.
 
 A pass buffer holds 8-bit RGBA, and a channel reads the alpha that its pass
 wrote. The output is opaque: a frame reads alpha 255, unless
-`ghee render --alpha` keeps the output pass's alpha in RGBA frames.
+`ghee render --alpha` keeps the output pass's alpha in RGBA frames. ghee
+takes the colour of such a frame as premultiplied by that alpha, the way
+draws blend it. A raw frame on `-o -` keeps it premultiplied, and a PNG file
+holds it straight.
 
 A pass binds at most 16 textures: its channels, its arrays, and the assets,
 texts and text atlases that it samples.

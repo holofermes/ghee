@@ -139,12 +139,17 @@ mod tests {
     }
 
     #[test]
-    fn an_rgba_png_round_trips_through_the_project_encoder() {
-        let data: Vec<u8> = (0..2 * 2 * 4).map(|i| i * 15).collect();
-        let png = encode_png(frame(&data, 2, 2, 4)).unwrap();
+    fn an_rgba_png_round_trips_through_the_project_encoder_as_straight_colour() {
+        let drawn = [10, 20, 30, 255, 20, 10, 0, 40, 64, 128, 32, 128, 0, 0, 0, 0];
+        let png = encode_png(frame(&drawn, 2, 2, 4)).unwrap();
         let img = decode_png(&png).unwrap();
         assert_eq!((img.width, img.height, img.components), (2, 2, 4));
-        assert_eq!(img.pixels, Pixels::U8(data));
+        assert_eq!(
+            img.pixels,
+            Pixels::U8(vec![
+                10, 20, 30, 255, 128, 64, 0, 40, 128, 255, 64, 128, 0, 0, 0, 0
+            ])
+        );
     }
 
     /// output.rs writes RGB and RGBA only, so the other shapes come from the

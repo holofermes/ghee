@@ -165,10 +165,16 @@ PLACE = "vec2 glyph_place(vec2 em) { return em * 24.0; }"
 
 
 def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
-    """The renderer reads the shim's draws and texts, and writes them back the
-    same: every key under its own name, every default left out on both sides."""
+    """The renderer reads the shim's scene, which it would refuse for a key
+    that it does not take, and writes it back the same: every key under its
+    own name, every default left out on both sides."""
     monkeypatch.chdir(REPO / "ghee" / "examples")
     scene = ghee.Scene(
+        common="float halved(float x){ return x * 0.5; }",
+        params={
+            "gain": ghee.Param("gain", "float", 0.5, min=0, max=1, step=0.25),
+            "mood": ghee.Param("mood", "string", "calm", options=["calm", "wild"]),
+        },
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
         texts=[
             ghee.Text("words", "sans", "hi", align="right", atlas={"px_per_em": 24}),
@@ -179,9 +185,12 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
                 "ink",
                 size=(64, 32),
                 mipmaps=True,
+                arrays=[ghee.ArrayInput("level", 4), ghee.ArrayInput("mask", (4, 2))],
                 draws=[
-                    ghee.Draw("words", INK, PLACE, blend="add", pad=0.0625),
-                    ghee.Draw("title", px_per_em=24, blend="replace"),
+                    ghee.Draw(
+                        "words", INK, PLACE, blend="add", pad=0.0625, name="glow"
+                    ),
+                    ghee.Draw("title", px_per_em=24, blend="replace", emoji=False),
                 ],
             ),
             ghee.Pass(

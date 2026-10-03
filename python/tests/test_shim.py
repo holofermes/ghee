@@ -404,6 +404,24 @@ def test_a_draw_says_what_it_needs():
         drawn_scene(shim, [shim.Pass("main", draws=[shim.Draw("title", INK, PLACE)])])
 
 
+@pytest.mark.parametrize(
+    "keyword,error",
+    [
+        ("code", "ghee.Draw takes its fragment GLSL in fragment=, got code="),
+        ("place", "ghee.Draw takes its vertex GLSL in vertex=, got place="),
+        (
+            "alpha",
+            "ghee.Draw takes no alpha=: its alpha blends by blend=, as its colour does",
+        ),
+    ],
+)
+def test_a_keyword_that_a_draw_renamed_names_the_new_one(keyword, error):
+    shim = load()
+    with pytest.raises(TypeError) as raised:
+        shim.Draw("words", px_per_em=32, **{keyword: INK})
+    assert str(raised.value) == error
+
+
 def test_a_draw_name_takes_letters_digits_and_dashes_unique_in_its_pass():
     shim = load()
 

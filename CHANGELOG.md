@@ -202,6 +202,8 @@
 - Take a `ghee.Scene` in `ghee.open`, and an `os.PathLike` wherever the
   Python API takes a path: `ghee.open`, `base_dir`, an asset's file and a
   text's fonts.
+- Name the new keyword in the TypeError of `ghee.Draw` given `code=`,
+  `place=` or `alpha=`, as the scene JSON names the new key.
 
 ## 0.4.0 - 2026-08-06
 

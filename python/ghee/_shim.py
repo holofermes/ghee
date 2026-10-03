@@ -40,7 +40,10 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
 
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 
@@ -211,6 +214,19 @@ class Draw:
     pad: float = 0.0
     emoji: bool | None = None
     name: str | None = None
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        # The keywords that the scene JSON renamed, which the dataclass would
+        # refuse with no word of the new name.
+        for old, new in (("code", "fragment"), ("place", "vertex")):
+            if old in kwargs:
+                raise TypeError(f"ghee.Draw takes its {new} GLSL in {new}=, got {old}=")
+        if "alpha" in kwargs:
+            raise TypeError(
+                "ghee.Draw takes no alpha=: its alpha blends by blend=, as its "
+                "colour does"
+            )
+        return super().__new__(cls)
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text:

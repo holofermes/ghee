@@ -468,7 +468,7 @@ fn draw_error(
             fs,
             d.code.as_str(),
             DrawPart::Code,
-            "glyph_main();",
+            "ghee_main();",
             "a void main()",
         ),
     };
@@ -1039,7 +1039,7 @@ impl Renderer {
             .iter()
             .filter(|a| !a.is_font())
             .map(|a| a.name.clone())
-            .chain(scene.texts.iter().map(|t| format!("{}_tex", t.name)))
+            .chain(scene.texts.iter().map(|t| text::internal(&t.name, "_tex")))
             .chain(atlases)
             .collect();
         let stale: Vec<String> = self
@@ -1507,7 +1507,7 @@ impl Renderer {
     /// The index in `atlases` of the atlas that the draws of text `name`
     /// read, None when no draw of it takes the MTSDF fill.
     fn atlas_of(&self, name: &str) -> Option<usize> {
-        let tex = format!("{name}_atlas");
+        let tex = text::internal(name, "_atlas");
         self.atlases
             .borrow()
             .iter()
@@ -1565,19 +1565,23 @@ impl Renderer {
         boxes.extend(&colour.1);
         self.text_faults(text, &faults, true);
         self.set_asset(
-            &format!("{name}_tex"),
+            &text::internal(name, "_tex"),
             built.width,
             built.height,
             4,
             false,
             AssetData::U8(&built.texels),
         )?;
-        self.scene_asset(&format!("{name}_tex"));
+        self.scene_asset(&text::internal(name, "_tex"));
         for (suffix, v) in &built.uniforms {
-            let uniform = format!("{name}{suffix}");
+            let uniform = text::internal(name, suffix);
             for (_, idx) in &self.mp {
                 self.set_uniform(*idx, &uniform, "float", Value::from(*v))?;
             }
+        }
+        let size = Value::from(built.size.to_vec());
+        for (_, idx) in &self.mp {
+            self.set_uniform(*idx, &format!("{name}_size"), "vec2", size.clone())?;
         }
         for d in self.draws.iter().filter(|d| d.text == *name) {
             for (layer, floats, what) in [
@@ -1637,7 +1641,7 @@ impl Renderer {
         // and uploads every level whole. Otherwise the new cells upload the
         // rects that they changed in each level.
         if let Some(resized) = slot.atlas.take_change() {
-            let tex = format!("{name}_emoji");
+            let tex = text::internal(name, "_emoji");
             let (w, h) = (slot.atlas.width, slot.atlas.height);
             if resized {
                 slot.mips = crate::colour::Mips::new(w, h);
@@ -1724,7 +1728,9 @@ impl Renderer {
                     slots.len() - 1
                 }
             };
-            slots[i].textures.push((format!("{}_atlas", t.name), true));
+            slots[i]
+                .textures
+                .push((text::internal(&t.name, "_atlas"), true));
         }
         drop(old);
         *self.atlases.borrow_mut() = slots;
@@ -3371,16 +3377,23 @@ mod tests {
     #[test]
     fn the_texture_budget_counts_an_array_name_once() {
         // A name declared twice on one pass takes one texture unit, so the
-        // budget passes it. The compiler stops it on the redeclaration.
+        // budget passes it. A scene load refuses the redeclaration, and so
+        // does the compiler.
         let Some((_g, mut r)) = gpu() else { return };
         let units = r.max_texture_units() as usize;
         let channels: Vec<Value> = (0..units - 1).map(|_| json!({"buffer": "a"})).collect();
-        let sc = scene_of(json!([
+        let mut sc = scene_of(json!([
             {"name": "a", "code": FLAT},
             {"name": "main", "channels": channels,
-             "arrays": [{"name": "v", "size": 4}, {"name": "v", "size": 4}],
+             "arrays": [{"name": "v", "size": 4}],
              "code": "void main(){ gl_FragColor = vec4(v_at(0)); }"},
         ]));
+        let v = sc.passes[1].arrays[0].clone();
+        sc.passes[1].arrays.push(v);
+        assert_eq!(
+            sc.name_clash().as_deref(),
+            Some("array 'v' in pass 'main' is declared twice")
+        );
         let err = r.setup(&sc).unwrap();
         assert!(!err.contains("texture units"), "{err}");
         if !err.is_empty() {
@@ -3637,17 +3650,17 @@ mod tests {
     const PRECISION: &str = "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\n\
         precision highp float;\n#else\nprecision mediump float;\n#endif\n";
 
-    /// glyph_a0.xy is the vertex in pass pixels, y down like v_texCoord, and
-    /// glyph_a1 the premultiplied colour.
+    /// ghee_a0.xy is the vertex in pass pixels, y down like v_texCoord, and
+    /// ghee_a1 the premultiplied colour.
     fn layer_vs(extra: &str) -> String {
         format!(
-            "{PRECISION}attribute vec4 glyph_a0; attribute vec4 glyph_a1;\n\
-             uniform vec2 resolution; uniform float vflip;\n\
+            "{PRECISION}attribute vec4 ghee_a0; attribute vec4 ghee_a1;\n\
+             uniform vec2 resolution; uniform float ghee_vflip;\n\
              varying vec4 v_color; varying vec2 v_px;\n{extra}\n\
              void main() {{\n\
-               vec2 ndc = glyph_a0.xy / resolution * 2.0 - 1.0;\n\
-               gl_Position = vec4(ndc.x, ndc.y * vflip, 0.0, 1.0);\n\
-               v_color = glyph_a1; v_px = glyph_a0.xy;\n\
+               vec2 ndc = ghee_a0.xy / resolution * 2.0 - 1.0;\n\
+               gl_Position = vec4(ndc.x, ndc.y * ghee_vflip, 0.0, 1.0);\n\
+               v_color = ghee_a1; v_px = ghee_a0.xy;\n\
              }}"
         )
     }
@@ -3843,8 +3856,8 @@ mod tests {
         let l = Layer {
             pass: "main".to_string(),
             vertex: layer_vs("uniform float shift; uniform float level;").replace(
-                "v_px = glyph_a0.xy;",
-                "v_px = glyph_a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / resolution.x;",
+                "v_px = ghee_a0.xy;",
+                "v_px = ghee_a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / resolution.x;",
             ),
             fragment: layer_fs(
                 "uniform float level; uniform sampler2D vals_tex; uniform sampler2D pad;\n\
@@ -3947,7 +3960,7 @@ mod tests {
         let mut bad = layer("main", PLAIN_FS, Blend::Over);
         bad.vertex = bad
             .vertex
-            .replace("v_color = glyph_a1;", "v_color = no_such_symbol;");
+            .replace("v_color = ghee_a1;", "v_color = no_such_symbol;");
         let err = r.setup_layers(&flat_scene(), &[bad]).unwrap();
         assert!(err.starts_with("layer 0: vertex shader:"), "{err}");
         assert_eq!(r.error_pass, Some(ErrorPass::Index(0)));
@@ -4005,11 +4018,11 @@ mod tests {
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         let vs = format!(
-            "{PRECISION}attribute vec4 glyph_a0; attribute vec4 glyph_a1; attribute vec4 glyph_a2; attribute vec4 glyph_a3;\n\
-             uniform vec2 resolution; uniform float vflip; varying vec4 v_color;\n\
-             void main() {{ vec2 ndc = glyph_a0.xy / resolution * 2.0 - 1.0;\n\
-               gl_Position = vec4(ndc.x, ndc.y * vflip, 0.0, 1.0);\n\
-               v_color = vec4(glyph_a1.x, glyph_a2.y, glyph_a3.z, 1.0); }}"
+            "{PRECISION}attribute vec4 ghee_a0; attribute vec4 ghee_a1; attribute vec4 ghee_a2; attribute vec4 ghee_a3;\n\
+             uniform vec2 resolution; uniform float ghee_vflip; varying vec4 v_color;\n\
+             void main() {{ vec2 ndc = ghee_a0.xy / resolution * 2.0 - 1.0;\n\
+               gl_Position = vec4(ndc.x, ndc.y * ghee_vflip, 0.0, 1.0);\n\
+               v_color = vec4(ghee_a1.x, ghee_a2.y, ghee_a3.z, 1.0); }}"
         );
         let l = Layer {
             pass: "main".to_string(),
@@ -4185,7 +4198,11 @@ mod tests {
         };
         let Some((_g, mut r)) = gpu() else { return };
         let emoji = |r: &Renderer| {
-            let held = r.scene_assets.borrow().iter().any(|n| n == "label_emoji");
+            let held = r
+                .scene_assets
+                .borrow()
+                .iter()
+                .any(|n| n == "ghee_label_emoji");
             (r.colours.borrow().len(), held)
         };
         // A text whose fonts hold no colour bitmaps takes no colour layer.

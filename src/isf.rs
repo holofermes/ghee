@@ -46,10 +46,6 @@ const FETCH_BUDGET: i64 = 200;
 // Texture units on VC4, the smallest GPU ghee targets.
 const VC4_UNITS: usize = 8;
 
-// ghee's own preamble owns these names. An ISF input or target with one of
-// these shadows it, so the import renames it here and in the body.
-const RESERVED: [&str; 3] = ["time", "resolution", "v_texCoord"];
-
 /// to_scene and to_filter render at this size when the caller names none.
 #[allow(dead_code)]
 pub const DEFAULT_SIZE: (i64, i64) = (320, 240);
@@ -392,7 +388,7 @@ fn build(
     warn.extend(
         renames
             .iter()
-            .map(|(a, b)| format!("'{a}' is a ghee preamble name, renamed to '{b}'")),
+            .map(|(a, b)| format!("'{a}' belongs to ghee, renamed to '{b}'")),
     );
 
     let count = pass_meta.len().max(1);
@@ -794,9 +790,10 @@ fn passes_of(meta: &Map<String, Value>) -> Result<Vec<Map<String, Value>>> {
     }
 }
 
-/// An ISF name can also be a ghee preamble name, such as a target called `time`.
-/// It shadows the uniform that the shim maps TIME onto. Rename it, and every
-/// reference to it in the body, before anything else reads the body.
+/// An ISF name can also be a name that ghee declares itself, built in such
+/// as a target called `time`, or with ghee's prefix, and a scene refuses it.
+/// Rename it, and every reference to it in the body, before anything else
+/// reads the body.
 fn rename_reserved(
     body: &str,
     inputs: &mut [Input],
@@ -812,14 +809,15 @@ fn rename_reserved(
     let mut chars: Vec<char> = body.chars().collect();
     let mut renames = Vec::new();
     for old in taken {
-        if !RESERVED.contains(&old.as_str()) && !is_channel_name(&old) {
+        if !crate::scene::built_in(&old) && !old.starts_with(crate::scene::PREFIX) {
             continue;
         }
         let new = format!("isf_{old}");
         chars = replace_word(&chars, &old, &new);
-        for i in inputs.iter_mut() {
-            if i.name == old {
-                i.name = new.clone();
+        for i in inputs.iter_mut().filter(|i| i.name == old) {
+            i.name = new.clone();
+            if let Some(p) = &mut i.param {
+                p.name = new.clone();
             }
         }
         for p in pass_meta.iter_mut() {
@@ -1116,15 +1114,6 @@ fn replace_word(hay: &[char], old: &str, new: &str) -> Vec<char> {
 /// newline.
 fn is_ident(s: &str) -> bool {
     crate::scene::is_ident(s.strip_suffix('\n').unwrap_or(s))
-}
-
-/// `iChannel\d+$` matched from the start.
-fn is_channel_name(s: &str) -> bool {
-    let s = s.strip_suffix('\n').unwrap_or(s);
-    match s.strip_prefix("iChannel") {
-        Some(digits) => !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()),
-        None => false,
-    }
 }
 
 /// src with every comment blanked, and every preprocessor directive too when
@@ -1889,6 +1878,25 @@ void main() {
         assert_eq!(names(&sc), ["isf_time", "out"]);
         assert!(sc.passes[0].code.contains("IMG_THIS_PIXEL(isf_time)"));
         assert!(warn.iter().any(|w| w.contains("renamed to 'isf_time'")));
+        // Every built-in and every name with ghee's prefix takes the rename.
+        let src = isf_body(
+            json!({"INPUTS": [{"NAME": "frame", "TYPE": "float"},
+                              {"NAME": "ghee_k", "TYPE": "float"},
+                              {"NAME": "frames", "TYPE": "float"}]}),
+            "void main(){ gl_FragColor = vec4(frame, ghee_k, frames, 1.0); }",
+        );
+        let (sc, warn) = to_scene(&src, "r.fs", (8, 8), false).unwrap();
+        let params: Vec<&String> = sc.params.keys().chain(sc.passes[0].params.keys()).collect();
+        assert_eq!(params, ["isf_frame", "isf_ghee_k", "frames"]);
+        assert!(sc.passes[0]
+            .code
+            .contains("vec4(isf_frame, isf_ghee_k, frames, 1.0)"));
+        assert_eq!(
+            warn.iter()
+                .filter(|w| w.contains("belongs to ghee"))
+                .count(),
+            2
+        );
     }
 
     #[test]

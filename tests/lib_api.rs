@@ -148,8 +148,7 @@ fn a_scene_param_cannot_shadow_a_pass_param() {
         .unwrap_err();
     assert_eq!(
         e.to_string(),
-        "param 'gain' is declared at scene scope and in pass 'main'; \
-         a name belongs to one scope only"
+        "scene param 'gain' and param 'gain' in pass 'main' both declare 'gain'"
     );
 }
 

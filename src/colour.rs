@@ -257,50 +257,50 @@ pub fn fragment(name: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) const VERTEX_MAIN: &str = r#"uniform vec2 NAME_emoji_size;
+pub(crate) const VERTEX_MAIN: &str = r#"uniform vec2 ghee_NAME_emoji_size;
 void main() {
-    glyph_index = glyph_a0.z;
-    glyph_word = glyph_a0.w;
-    glyph_line = glyph_a3.x;
-    glyph_span = glyph_a3.yz;
-    glyph_box = glyph_a1;
-    vec2 glyph_corner = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
-    vec2 glyph_p = glyph_place(glyph_corner);
+    glyph_index = ghee_a0.z;
+    glyph_word = ghee_a0.w;
+    glyph_line = ghee_a3.x;
+    glyph_span = ghee_a3.yz;
+    glyph_box = ghee_a1;
+    vec2 ghee_corner = mix(ghee_a1.xy, ghee_a1.zw, ghee_a0.xy);
+    vec2 ghee_p = glyph_place(ghee_corner);
     // The pixels moved by glyph_place per em along each em axis, exact for an
     // affine glyph_place.
-    vec2 glyph_jx = (glyph_place(glyph_corner + vec2(0.0625, 0.0)) - glyph_p) * 16.0;
-    vec2 glyph_jy = (glyph_place(glyph_corner + vec2(0.0, 0.0625)) - glyph_p) * 16.0;
-    // glyph_det stays above 0, so a glyph scaled to nothing keeps every
+    vec2 ghee_jx = (glyph_place(ghee_corner + vec2(0.0625, 0.0)) - ghee_p) * 16.0;
+    vec2 ghee_jy = (glyph_place(ghee_corner + vec2(0.0, 0.0625)) - ghee_p) * 16.0;
+    // ghee_det stays above 0, so a glyph scaled to nothing keeps every
     // position finite.
-    float glyph_det = max(abs(glyph_jx.x * glyph_jy.y - glyph_jx.y * glyph_jy.x),
-                          1.0 / 16384.0);
+    float ghee_det = max(abs(ghee_jx.x * ghee_jy.y - ghee_jx.y * ghee_jy.x),
+                         1.0 / 16384.0);
     // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
     // up to 1/16 px off the position set by this shader. A read further than
     // REACH texels past the bitmap could take a neighbouring cell's.
-    vec2 glyph_grow = min(0.625 * vec2(length(glyph_jy), length(glyph_jx)) / glyph_det,
-                          vec2(REACH / glyph_a2.z));
-    vec2 glyph_e = glyph_corner + (glyph_a0.xy * 2.0 - 1.0) * glyph_grow;
-    vec2 glyph_px = glyph_place(glyph_e);
-    vec2 glyph_tc = glyph_a2.xy + (glyph_e - glyph_a1.xy) * glyph_a2.zw;
+    vec2 ghee_grow = min(0.625 * vec2(length(ghee_jy), length(ghee_jx)) / ghee_det,
+                         vec2(REACH / ghee_a2.z));
+    vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_grow;
+    vec2 ghee_px = glyph_place(ghee_e);
+    vec2 ghee_tc = ghee_a2.xy + (ghee_e - ghee_a1.xy) * ghee_a2.zw;
     // GL picks the mip level from the atlas texels spanned by a pixel along x
     // or along y of the pass, whichever is more. A bias in the read holds the
     // level at MAX_LEVEL at most.
-    float glyph_rho = glyph_a2.z * max(length(vec2(glyph_jy.y, glyph_jx.y)),
-                                       length(vec2(glyph_jy.x, glyph_jx.x))) / glyph_det;
-    float glyph_lod = log2(max(glyph_rho, 1.0 / 65536.0));
-    glyph_v0 = vec4(glyph_tc / NAME_emoji_size, min(glyph_lod, MAX_LEVEL) - glyph_lod, 0.0);
-    v_texCoord = glyph_px / resolution;
-    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, vflip), 0.0, 1.0);
+    float ghee_rho = ghee_a2.z * max(length(vec2(ghee_jy.y, ghee_jx.y)),
+                                      length(vec2(ghee_jy.x, ghee_jx.x))) / ghee_det;
+    float ghee_lod = log2(max(ghee_rho, 1.0 / 65536.0));
+    ghee_v0 = vec4(ghee_tc / ghee_NAME_emoji_size, min(ghee_lod, MAX_LEVEL) - ghee_lod, 0.0);
+    v_texCoord = ghee_px / resolution;
+    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
 }"#;
 
-pub(crate) const FRAGMENT: &str = r#"uniform sampler2D NAME_emoji;
-varying vec4 glyph_v0;
+pub(crate) const FRAGMENT: &str = r#"uniform sampler2D ghee_NAME_emoji;
+varying vec4 ghee_v0;
 void main() {
     // On VC4 a short shader whose texture read sits outside an if runs in two
     // threads, whose switch loses the condition flags. The read sits in an if
     // that the compiler cannot drop, so the shader stays on one thread.
     vec4 c = vec4(0.0);
-    if (gl_FragCoord.x >= 0.0) c = texture2D(NAME_emoji, glyph_v0.xy, glyph_v0.z);
+    if (gl_FragCoord.x >= 0.0) c = texture2D(ghee_NAME_emoji, ghee_v0.xy, ghee_v0.z);
     gl_FragColor = c;
 }"#;
 

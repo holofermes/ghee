@@ -18,6 +18,23 @@ const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool
 
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 
+/// Every name that ghee writes into GLSL and an author never writes starts
+/// with this prefix: a text's own uniforms, textures and functions, a draw's
+/// attributes, varyings and locals, and the vertex flip.
+pub const PREFIX: &str = "ghee_";
+
+/// The uniforms and the varying that ghee declares in every pass for its
+/// author to read, beside iChannel0 and up.
+const BUILT_INS: [&str; 5] = ["time", "DT", "frame", "resolution", "v_texCoord"];
+
+/// True for a name that ghee declares in every pass for its author to read.
+pub(crate) fn built_in(name: &str) -> bool {
+    BUILT_INS.contains(&name)
+        || name
+            .strip_prefix("iChannel")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 const PARAM_TYPES: [&str; 8] = [
     "float", "int", "bool", "color", "string", "vec2", "vec3", "vec4",
 ];
@@ -1521,7 +1538,7 @@ impl Pass {
                 "uniform float time;",
                 "uniform float DT;",
                 "uniform float frame;",
-                "uniform float vflip;",
+                "uniform float ghee_vflip;",
             ]
             .map(str::to_string),
         );
@@ -1672,41 +1689,12 @@ impl Scene {
                 seen.push(&p.name);
             }
         }
-        // A draw's vertex shader declares every param beside the attributes
-        // glyph_a0 to glyph_a3 and the uniform vflip, and ghee names the
-        // other values of a draw glyph_*.
-        if passes.iter().any(|p| !p.draws.is_empty()) {
-            let kept = |nm: &str| nm == "vflip" || nm.starts_with("glyph_");
-            let why = "vflip and every name that starts with glyph_ belong to ghee";
-            if let Some(nm) = params.keys().find(|n| kept(n)) {
-                bail!("param '{nm}': {why}");
-            }
-            for p in &passes {
-                if let Some(nm) = p.params.keys().find(|n| kept(n)) {
-                    bail!("param '{nm}' in pass '{}': {why}", p.name);
-                }
-            }
-        }
-        // A name belongs to one scope only. A scene param already reaches every
-        // pass, so a pass that declares the same name redeclares it. The error
-        // names the param and the pass.
-        for p in &passes {
-            for nm in p.params.keys() {
-                if params.contains_key(nm) {
-                    bail!(
-                        "param '{nm}' is declared at scene scope and in pass '{}'; \
-                         a name belongs to one scope only",
-                        p.name
-                    );
-                }
-            }
-        }
         let images = assets.iter().filter(|a| !a.is_font()).count();
         if images > MAX_ASSETS {
             bail!("{images} image assets, over the {MAX_ASSETS} asset cap");
         }
         // An asset name lands in every pass preamble as a uniform, so it must
-        // be a GLSL identifier, and it must not shadow an array or a param.
+        // be a GLSL identifier.
         {
             let mut seen: Vec<&str> = Vec::new();
             for a in &assets {
@@ -1720,34 +1708,9 @@ impl Scene {
                     bail!("asset '{}' is declared twice", a.name);
                 }
                 seen.push(&a.name);
-                if params.contains_key(&a.name) {
-                    bail!(
-                        "'{}' is an asset and a scene param, a name belongs to \
-                         one scope only",
-                        a.name
-                    );
-                }
-                for p in &passes {
-                    if p.params.contains_key(&a.name) {
-                        bail!(
-                            "'{}' is an asset and a param in pass '{}', a name \
-                             belongs to one scope only",
-                            a.name,
-                            p.name
-                        );
-                    }
-                    if p.arrays.iter().any(|ar| ar.name == a.name) {
-                        bail!(
-                            "'{}' is an asset and an array in pass '{}', a name \
-                             belongs to one scope only",
-                            a.name,
-                            p.name
-                        );
-                    }
-                }
             }
         }
-        Ok(Scene {
+        let scene = Scene {
             passes,
             version,
             filters,
@@ -1755,7 +1718,115 @@ impl Scene {
             common,
             assets,
             texts: Vec::new(),
-        })
+        };
+        if let Some(e) = scene.name_clash() {
+            bail!("{e}");
+        }
+        Ok(scene)
+    }
+
+    /// The error for the first declared name that GLSL cannot take: a param
+    /// or an array name that is no GLSL identifier, a name that ghee declares
+    /// itself, built in or with its prefix, or one GLSL name that two
+    /// declarations make in one pass.
+    ///
+    /// A scene param reaches every pass, an image asset, a text and a draw's
+    /// GLSL every pass of the scene's own, a filter's asset the passes of its
+    /// filter, and a pass param or an array its own pass. A draw's GLSL takes
+    /// its names in every scene pass, whether or not the pass draws.
+    pub(crate) fn name_clash(&self) -> Option<String> {
+        // Each declaration as its kind, its name, where it is declared, and
+        // whether its name reaches GLSL as it is.
+        let mut kinds: Vec<(&str, &str, String, bool)> = Vec::new();
+        for p in self.params.values() {
+            kinds.push(("scene param", &p.name, String::new(), p.ty != "string"));
+        }
+        for a in &self.assets {
+            match a.from_filter.as_str() {
+                "" => kinds.push(("asset", &a.name, String::new(), false)),
+                f => kinds.push(("asset", a.local_name(), format!(" of filter '{f}'"), false)),
+            }
+        }
+        for t in &self.texts {
+            kinds.push(("text", &t.name, String::new(), false));
+        }
+        for pass in &self.passes {
+            let at = format!(" in pass '{}'", pass.name);
+            for p in pass.params.values() {
+                kinds.push(("param", &p.name, at.clone(), p.ty != "string"));
+            }
+            for a in &pass.arrays {
+                kinds.push(("array", &a.name, at.clone(), true));
+            }
+        }
+        for (kind, name, at, glsl) in &kinds {
+            if *glsl && !is_ident(name) {
+                return Some(format!(
+                    "{kind} name {}{at} is not a GLSL identifier",
+                    py_str_repr(name)
+                ));
+            }
+            if built_in(name) {
+                return Some(format!("{kind} '{name}'{at}: '{name}' is built in"));
+            }
+            if name.starts_with(PREFIX) {
+                return Some(format!(
+                    "{kind} '{name}'{at}: a name that starts with {PREFIX} belongs to ghee"
+                ));
+            }
+        }
+        let draws = "the draws".to_string();
+        for pass in &self.passes {
+            let own = pass.filter.is_empty();
+            let mut names: Vec<(String, String)> = Vec::new();
+            for p in self.params.values().filter(|p| p.ty != "string") {
+                names.push((p.name.clone(), format!("scene param '{}'", p.name)));
+            }
+            for a in &self.assets {
+                if a.from_filter != pass.filter || a.is_font() {
+                    continue;
+                }
+                let owner = match a.from_filter.as_str() {
+                    "" => format!("asset '{}'", a.name),
+                    f => format!("asset '{}' of filter '{f}'", a.local_name()),
+                };
+                for n in declared_names(&asset_lines(a)) {
+                    names.push((n, owner.clone()));
+                }
+            }
+            if own {
+                for t in &self.texts {
+                    for n in crate::text::names(&t.name) {
+                        names.push((n, format!("text '{}'", t.name)));
+                    }
+                }
+                for n in crate::text::DRAW_NAMES {
+                    names.push((n.to_string(), draws.clone()));
+                }
+            }
+            for p in pass.params.values().filter(|p| p.ty != "string") {
+                let owner = format!("param '{}' in pass '{}'", p.name, pass.name);
+                names.push((p.name.clone(), owner));
+            }
+            for a in &pass.arrays {
+                let owner = format!("array '{}' in pass '{}'", a.name, pass.name);
+                let mut lines = array_lines(a);
+                lines.extend(array_reader_lines(a, false));
+                for n in declared_names(&lines) {
+                    names.push((n, owner.clone()));
+                }
+            }
+            for (i, (n, owner)) in names.iter().enumerate() {
+                let Some((_, first)) = names[..i].iter().find(|(m, _)| m == n) else {
+                    continue;
+                };
+                if first == owner {
+                    return Some(format!("{owner} is declared twice"));
+                }
+                return Some(format!("{first} and {owner} both declare '{n}'"));
+            }
+        }
+        None
     }
 
     /// The error for the engine textures of the image assets and of `texts`
@@ -1792,14 +1863,6 @@ impl Scene {
                     py_str_repr(&t.name)
                 );
             }
-            let made = crate::text::names(&t.name, true, true);
-            if let Some(n) = made.iter().find(|n| n.starts_with("glyph_")) {
-                bail!(
-                    "text '{}' makes the GLSL name '{n}', and every name that starts with \
-                     glyph_ belongs to ghee",
-                    t.name
-                );
-            }
             if seen.contains(&t.name.as_str()) {
                 bail!("text '{}' is declared twice", t.name);
             }
@@ -1823,62 +1886,6 @@ impl Scene {
                     t.name
                 ),
             }
-            // An asset or a pass param of this name already collides with the
-            // scene param in Scene::new.
-            for p in &self.passes {
-                if p.arrays.iter().any(|a| a.name == t.name) {
-                    bail!(
-                        "'{}' is a text and a name in pass '{}', a name belongs to one \
-                         scope only",
-                        t.name,
-                        p.name
-                    );
-                }
-            }
-        }
-        // A GLSL name has one owner. The names that a text makes from its own
-        // name meet the names of the params, the arrays, the image assets and
-        // the other texts in the passes, the draws and the engine's bindings.
-        let mut owners: Vec<(String, String)> = Vec::new();
-        for p in self.params.values() {
-            for n in declared_names(&param_uniform_lines(p)) {
-                owners.push((n, format!("scene param '{}'", p.name)));
-            }
-        }
-        for pass in &self.passes {
-            for p in pass.params.values() {
-                for n in declared_names(&param_uniform_lines(p)) {
-                    owners.push((n, format!("param '{}' in pass '{}'", p.name, pass.name)));
-                }
-            }
-            for a in &pass.arrays {
-                let mut lines = array_lines(a);
-                lines.extend(array_reader_lines(a, false));
-                for n in declared_names(&lines) {
-                    owners.push((n, format!("array '{}' in pass '{}'", a.name, pass.name)));
-                }
-            }
-        }
-        for a in self.assets.iter().filter(|a| !a.is_font()) {
-            for n in declared_names(&asset_lines(a)) {
-                owners.push((n, format!("asset '{}'", a.name)));
-            }
-        }
-        for t in &texts {
-            // The fonts load after this check, so a text whose colour glyphs a
-            // draw paints makes the names of a colour layer whether or not a
-            // font holds colour bitmaps.
-            let atlas = t.fill == Fill::Mtsdf && self.draws_text(&t.name);
-            let made = crate::text::names(&t.name, atlas, self.paints_emoji(&t.name));
-            for n in &made {
-                if let Some((_, owner)) = owners.iter().find(|(name, _)| name == n) {
-                    bail!(
-                        "{owner} and text '{}' both make the GLSL name '{n}'",
-                        t.name
-                    );
-                }
-            }
-            owners.extend(made.into_iter().map(|n| (n, format!("text '{}'", t.name))));
         }
         let draws = self.passes.iter().map(|p| p.draws.len()).sum::<usize>();
         if draws > MAX_DRAWS {
@@ -1886,6 +1893,9 @@ impl Scene {
         }
         self.texts = texts;
         if let Some(e) = self.undeclared_draw() {
+            bail!("{e}");
+        }
+        if let Some(e) = self.name_clash() {
             bail!("{e}");
         }
         Ok(self)
@@ -3270,32 +3280,36 @@ mod tests {
 
     #[test]
     fn asset_names_collide_with_nothing() {
-        let collides = |d: &Value| {
-            Scene::from_dict(d, None, None)
-                .unwrap_err()
-                .to_string()
-                .contains("one scope only")
-        };
+        let err = |d: &Value| Scene::from_dict(d, None, None).unwrap_err().to_string();
         let vs_array = json!({
             "version": 1,
             "passes": [{"name": "m", "code": GOOD, "arrays": [{"name": "amps", "size": 8}]}],
             "assets": {"amps": {"file": "amps.png"}},
         });
-        assert!(collides(&vs_array));
+        assert_eq!(
+            err(&vs_array),
+            "scene: asset 'amps' and array 'amps' in pass 'm' both declare 'amps_size'"
+        );
         let vs_scene_param = json!({
             "version": 1,
             "passes": [{"name": "m", "code": GOOD}],
             "params": {"gain": {"type": "float", "value": 1.0}},
             "assets": {"gain": {"file": "gain.png"}},
         });
-        assert!(collides(&vs_scene_param));
+        assert_eq!(
+            err(&vs_scene_param),
+            "scene: scene param 'gain' and asset 'gain' both declare 'gain'"
+        );
         let vs_pass_param = json!({
             "version": 1,
             "passes": [{"name": "m", "code": GOOD,
                         "params": {"gain": {"type": "float", "value": 1.0}}}],
             "assets": {"gain": {"file": "gain.png"}},
         });
-        assert!(collides(&vs_pass_param));
+        assert_eq!(
+            err(&vs_pass_param),
+            "scene: asset 'gain' and param 'gain' in pass 'm' both declare 'gain'"
+        );
         // A JSON map holds a name once, so a duplicate needs the constructor.
         let a = Asset::from_dict("logo", &json!({"file": "logo.png"})).unwrap();
         let e = Scene::new(
@@ -3309,6 +3323,252 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("twice"), "{e}");
+    }
+
+    /// A scene of passes `a` and `b`, a text `label` and the font asset
+    /// `sans`, with `extra` merged in at the top and `pass` merged into `a`.
+    fn named(extra: Value, pass: Value) -> Value {
+        let mut d = json!({
+            "version": 1,
+            "params": {"label": {"type": "string", "value": "hi"}},
+            "assets": {"sans": {"file": "sans.ttf"}},
+            "texts": {"label": {"font": "sans"}},
+            "passes": [{"name": "a", "code": GOOD}, {"name": "b", "code": GOOD}],
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            match d.get_mut(k).and_then(Value::as_object_mut) {
+                Some(o) => o.extend(v.as_object().unwrap().clone()),
+                None => d[k] = v.clone(),
+            }
+        }
+        for (k, v) in pass.as_object().unwrap() {
+            d["passes"][0][k] = v.clone();
+        }
+        d
+    }
+
+    fn named_err(extra: Value, pass: Value) -> String {
+        match Scene::from_dict(&named(extra, pass), None, None) {
+            Ok(_) => "loads".to_string(),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn two_declarations_of_one_glsl_name_in_a_pass_are_refused_naming_both() {
+        let f = json!({"type": "float", "value": 1.0});
+        let c = json!({"type": "color", "value": [1.0, 0.0, 0.0]});
+        for (extra, pass, want) in [
+            (
+                json!({"params": {"gain": f}}),
+                json!({"params": {"gain": c}}),
+                "scene param 'gain' and param 'gain' in pass 'a' both declare 'gain'",
+            ),
+            (
+                json!({"params": {"amps_at": f}}),
+                json!({"arrays": [{"name": "amps", "size": 4}]}),
+                "scene param 'amps_at' and array 'amps' in pass 'a' both declare 'amps_at'",
+            ),
+            (
+                json!({}),
+                json!({"arrays": [{"name": "amps", "size": [4, 4]}],
+                       "params": {"amps_sample2": f}}),
+                "param 'amps_sample2' in pass 'a' and array 'amps' in pass 'a' both declare \
+                 'amps_sample2'",
+            ),
+            (
+                json!({}),
+                json!({"arrays": [{"name": "amps", "size": 4}, {"name": "amps", "size": 4}]}),
+                "array 'amps' in pass 'a' is declared twice",
+            ),
+            (
+                json!({"assets": {"logo_size": {"file": "l.png"}, "logo": {"file": "l.png"}}}),
+                json!({}),
+                "asset 'logo_size' and asset 'logo' both declare 'logo_size'",
+            ),
+            (
+                json!({"params": {"label_cover": c}}),
+                json!({}),
+                "scene param 'label_cover' and text 'label' both declare 'label_cover'",
+            ),
+            (
+                json!({}),
+                json!({"arrays": [{"name": "label", "size": 4}]}),
+                "text 'label' and array 'label' in pass 'a' both declare 'label_size'",
+            ),
+            (
+                json!({"params": {"glyph_cover": f}}),
+                json!({}),
+                "scene param 'glyph_cover' and the draws both declare 'glyph_cover'",
+            ),
+            (
+                json!({}),
+                json!({"params": {"glyph_place": f}}),
+                "the draws and param 'glyph_place' in pass 'a' both declare 'glyph_place'",
+            ),
+        ] {
+            assert_eq!(named_err(extra, pass), format!("scene: {want}"));
+        }
+    }
+
+    #[test]
+    fn a_name_beside_another_declares_its_own() {
+        let f = json!({"type": "float", "value": 1.0});
+        // Near misses of every name above: a name that only starts like one,
+        // a 2D array beside a text, a param of each pass, a string param, and
+        // a name that only looks like ghee's.
+        let extra = json!({
+            "params": {"gains": f, "amps_ats": f, "label_covers": f, "glyph_size": f,
+                       "glyph": f, "ghee": f, "gheex": f, "Ghee_x": f, "frames": f,
+                       "DTs": f, "iChannel": f, "iChannelx": f, "times": f,
+                       "words": {"type": "string", "value": "w"}},
+            "assets": {"logo": {"file": "l.png"}, "logos": {"file": "l.png"}},
+        });
+        let pass = json!({"params": {"gain": f, "words": f, "logo_sizes": f},
+                          "arrays": [{"name": "label", "size": [4, 4]}]});
+        let mut d = named(extra, pass);
+        d["passes"][1]["params"] = json!({"gain": f});
+        assert!(Scene::from_dict(&d, None, None).is_ok());
+    }
+
+    #[test]
+    fn a_built_in_name_is_refused_as_any_declared_name() {
+        let f = json!({"type": "float", "value": 1.0});
+        for name in [
+            "time",
+            "DT",
+            "frame",
+            "resolution",
+            "v_texCoord",
+            "iChannel0",
+            "iChannel12",
+        ] {
+            let why = format!("'{name}' is built in");
+            for (extra, pass, owner) in [
+                (
+                    json!({"params": {name: f}}),
+                    json!({}),
+                    format!("scene param '{name}'"),
+                ),
+                (
+                    json!({}),
+                    json!({"params": {name: f}}),
+                    format!("param '{name}' in pass 'a'"),
+                ),
+                (
+                    json!({}),
+                    json!({"arrays": [{"name": name, "size": 4}]}),
+                    format!("array '{name}' in pass 'a'"),
+                ),
+                (
+                    json!({"assets": {name: {"file": "x.png"}}}),
+                    json!({}),
+                    format!("asset '{name}'"),
+                ),
+            ] {
+                assert_eq!(named_err(extra, pass), format!("scene: {owner}: {why}"));
+            }
+            let mut d = named(
+                json!({"params": {name: {"type": "string", "value": "w"}}}),
+                json!({}),
+            );
+            d["texts"][name] = json!({"font": "sans"});
+            d["params"][name] = json!({"type": "string", "value": "w"});
+            let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
+            assert_eq!(e, format!("scene: scene param '{name}': {why}"));
+        }
+    }
+
+    #[test]
+    fn a_name_with_ghees_prefix_is_refused_as_any_declared_name() {
+        let f = json!({"type": "float", "value": 1.0});
+        let why = "a name that starts with ghee_ belongs to ghee";
+        for (extra, pass, owner) in [
+            (
+                json!({"params": {"ghee_k": f}}),
+                json!({}),
+                "scene param 'ghee_k'",
+            ),
+            (
+                json!({}),
+                json!({"params": {"ghee_k": f}}),
+                "param 'ghee_k' in pass 'a'",
+            ),
+            (
+                json!({}),
+                json!({"arrays": [{"name": "ghee_k", "size": 4}]}),
+                "array 'ghee_k' in pass 'a'",
+            ),
+            (
+                json!({"assets": {"ghee_k": {"file": "x.png"}}}),
+                json!({}),
+                "asset 'ghee_k'",
+            ),
+            (
+                json!({"params": {"ghee_label": {"type": "string", "value": "w"}},
+                       "texts": {"ghee_label": {"font": "sans"}}}),
+                json!({}),
+                "scene param 'ghee_label'",
+            ),
+        ] {
+            assert_eq!(named_err(extra, pass), format!("scene: {owner}: {why}"));
+        }
+    }
+
+    #[test]
+    fn a_param_or_an_array_name_is_a_glsl_identifier() {
+        let f = json!({"type": "float", "value": 1.0});
+        for (extra, pass, want) in [
+            (
+                json!({"params": {"a b": f}}),
+                json!({}),
+                "scene param name 'a b' is not a GLSL identifier",
+            ),
+            (
+                json!({}),
+                json!({"params": {"2x": f}}),
+                "param name '2x' in pass 'a' is not a GLSL identifier",
+            ),
+            (
+                json!({}),
+                json!({"arrays": [{"name": "a-b", "size": 4}]}),
+                "array name 'a-b' in pass 'a' is not a GLSL identifier",
+            ),
+        ] {
+            assert_eq!(named_err(extra, pass), format!("scene: {want}"));
+        }
+        // A string param reaches no GLSL.
+        let words = json!({"params": {"two words": {"type": "string", "value": "w"}}});
+        assert_eq!(named_err(words, json!({})), "loads");
+    }
+
+    #[test]
+    fn a_filter_meets_the_scene_names_that_reach_its_pass() {
+        let _g = crate::filters::env_guard();
+        let f = json!({"type": "float", "value": 1.0});
+        let mut sc = Scene::from_dict(
+            &named(json!({"params": {"amount": f}}), json!({})),
+            None,
+            None,
+        )
+        .unwrap();
+        let e = crate::filters::apply_filters(&mut sc, &["dither".to_string()], None).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "scene param 'amount' and param 'amount' in pass 'dither' both declare 'amount'"
+        );
+        let doc = named(json!({"params": {"frc256_bluenoise": f}}), json!({}));
+        let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+        let e = crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "filter 'frc256': scene param 'frc256_bluenoise' and asset 'bluenoise' of filter \
+             'frc256' both declare 'frc256_bluenoise'"
+        );
+        // A text's names and a draw's stay out of a filter pass.
+        let doc = named(json!({"params": {"bluenoise": f}}), json!({}));
+        let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+        crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
     }
 
     #[test]

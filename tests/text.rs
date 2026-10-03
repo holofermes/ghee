@@ -450,17 +450,8 @@ fn render(r: &mut Renderer, sc: &Scene) -> Vec<u8> {
 // text::build
 
 /// The block size of a built text, in em.
-/// Built carries it only as the uniforms behind `<name>_size`.
 fn block(built: &text::Built) -> (f64, f64) {
-    let get = |suffix: &str| {
-        built
-            .uniforms
-            .iter()
-            .find(|(s, _)| *s == suffix)
-            .unwrap_or_else(|| panic!("no {suffix} uniform"))
-            .1
-    };
-    (get("_w"), get("_h"))
+    (built.size[0], built.size[1])
 }
 
 /// The layout of `words` in a fixture font that draws every one of them.
@@ -803,112 +794,67 @@ fn a_text_name_is_a_glsl_identifier_declared_once() {
 }
 
 #[test]
-fn a_text_name_that_makes_a_glyph_name_is_refused() {
-    let why = "and every name that starts with glyph_ belongs to ghee";
-    for (name, made) in [("glyph", "glyph_tex"), ("glyph_label", "glyph_label_tex")] {
-        assert_eq!(
-            scene_err(&texts_scene(json!({name: {"font": "sans"}}))),
-            format!("scene: text '{name}' makes the GLSL name '{made}', {why}")
-        );
+fn a_text_named_like_a_draw_helper_is_refused() {
+    // A text named glyph declares glyph_cover, which a draw declares too.
+    assert_eq!(
+        scene_err(&texts_scene(json!({"glyph": {"font": "sans"}}))),
+        "scene: text 'glyph' and the draws both declare 'glyph_cover'"
+    );
+    // glyph_label and glyphs declare names of their own, beside ghee's.
+    for name in ["glyph_label", "glyphs"] {
+        let mut doc = texts_scene(json!({name: {"font": "sans"}}));
+        doc["passes"][0]["draws"] = json!([{"text": name, "code": WHITE,
+            "place": "vec2 glyph_place(vec2 em) { return em * 40.0; }"}]);
+        let Some((_g, mut r)) = gpu(W, H) else { return };
+        assert_eq!(r.setup(&loaded(&doc)).unwrap(), "", "{name}");
     }
-    // A text named glyphs makes glyphs_tex, beside ghee's names.
-    let mut doc = texts_scene(json!({"glyphs": {"font": "sans"}}));
-    doc["passes"][0]["draws"] = json!([{"text": "glyphs", "code": WHITE,
-        "place": "vec2 glyph_place(vec2 em) { return em * 40.0; }"}]);
-    let Some((_g, mut r)) = gpu(W, H) else { return };
-    assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
 }
 
 #[test]
 fn a_text_name_collides_with_nothing() {
-    let one_scope = |doc: &Value| scene_err(doc).contains("a name belongs to one scope only");
     let mut vs_array = texts_scene(json!({"label": {"font": "sans"}}));
     vs_array["passes"][0]["arrays"] = json!([{"name": "label", "size": 4}]);
     assert_eq!(
         scene_err(&vs_array),
-        "scene: 'label' is a text and a name in pass 'main', a name belongs to one scope only"
+        "scene: text 'label' and array 'label' in pass 'main' both declare 'label_size'"
     );
     let mut vs_asset = texts_scene(json!({"label": {"font": "sans"}}));
     vs_asset["assets"]["label"] = json!({"file": "label.png"});
-    assert!(one_scope(&vs_asset));
+    assert_eq!(
+        scene_err(&vs_asset),
+        "scene: asset 'label' and text 'label' both declare 'label_size'"
+    );
 }
 
 #[test]
-fn a_text_makes_the_names_of_its_readers_and_a_draw_the_names_of_its_atlases() {
-    let sorted = |mut v: Vec<String>| {
-        v.sort();
-        v
-    };
-    let readers = [
-        "tex", "tex_size", "tw", "itw", "ith", "w", "h", "gx", "gy", "cols", "rows", "cell",
-        "cells", "nb", "size", "texel", "list", "lattice", "cross", "outline", "glyph", "cover",
-    ];
-    let names = |suffixes: &[&str]| sorted(suffixes.iter().map(|s| format!("label_{s}")).collect());
-    assert_eq!(sorted(text::names("label", false, false)), names(&readers));
-    let atlas = [&readers[..], &["atlas", "atlas_size"]].concat();
-    assert_eq!(sorted(text::names("label", true, false)), names(&atlas));
-    let colour = [&readers[..], &["emoji", "emoji_size"]].concat();
-    assert_eq!(sorted(text::names("label", false, true)), names(&colour));
-}
-
-/// The draw of text `label` that paints its coverage white.
-fn white_draw() -> Value {
-    json!([{"text": "label", "code": WHITE,
-            "place": "vec2 glyph_place(vec2 em) { return em; }"}])
+fn a_text_declares_its_cover_and_its_size_for_an_author() {
+    let mut names = text::names("label");
+    names.sort();
+    assert_eq!(names, ["label_cover", "label_size"]);
 }
 
 #[test]
-fn a_name_made_by_a_text_collides_with_nothing() {
+fn a_name_declared_by_a_text_collides_with_nothing() {
     let float = json!({"type": "float", "value": 1.0});
     let label = || texts_scene(json!({"label": {"font": "sans"}}));
     let mut scene_param = label();
-    scene_param["params"]["label_w"] = float.clone();
+    scene_param["params"]["label_size"] = float.clone();
     let mut pass_param = label();
     pass_param["passes"][0]["params"] = json!({"label_cover": float});
-    let mut array = label();
-    array["passes"][0]["arrays"] = json!([{"name": "label_tex", "size": 4}]);
     let mut asset = label();
-    asset["assets"]["label_tex"] = json!({"file": "label.png"});
-    let mut atlas = label();
-    atlas["passes"][0]["params"] = json!({"label_atlas": float});
-    atlas["passes"][0]["draws"] = white_draw();
-    let mut text = texts_scene(json!({"label": {"font": "sans"}, "label_atlas": {"font": "sans"}}));
-    text["passes"][0]["draws"] = white_draw();
-    // A drawn text makes the names of its colour atlas before its fonts load.
-    let mut colour = label();
-    colour["assets"]["label_emoji"] = json!({"file": "label.png"});
-    colour["passes"][0]["draws"] = white_draw();
+    asset["assets"]["label_cover"] = json!({"file": "label.png"});
     for (doc, want) in [
         (
             scene_param,
-            "scene param 'label_w' and text 'label' both make the GLSL name 'label_w'",
+            "scene param 'label_size' and text 'label' both declare 'label_size'",
         ),
         (
             pass_param,
-            "param 'label_cover' in pass 'main' and text 'label' both make the GLSL name \
-             'label_cover'",
-        ),
-        (
-            array,
-            "array 'label_tex' in pass 'main' and text 'label' both make the GLSL name \
-             'label_tex_size'",
+            "text 'label' and param 'label_cover' in pass 'main' both declare 'label_cover'",
         ),
         (
             asset,
-            "asset 'label_tex' and text 'label' both make the GLSL name 'label_tex'",
-        ),
-        (
-            atlas,
-            "param 'label_atlas' in pass 'main' and text 'label' both make the GLSL name \
-             'label_atlas'",
-        ),
-        (
-            text,
-            "text 'label' and text 'label_atlas' both make the GLSL name 'label_atlas_size'",
-        ),
-        (
-            colour,
-            "asset 'label_emoji' and text 'label' both make the GLSL name 'label_emoji_size'",
+            "asset 'label_cover' and text 'label' both declare 'label_cover'",
         ),
     ] {
         assert_eq!(scene_err(&doc), format!("scene: {want}"));
@@ -917,29 +863,40 @@ fn a_name_made_by_a_text_collides_with_nothing() {
 
 #[test]
 fn a_name_beside_the_names_of_a_text_compiles() {
-    // Text 'label' takes the outline fill, so it makes no atlas names, and a
-    // pass name never reaches GLSL.
+    // ghee's own names for a text start with ghee_, so label_w, label_atlas,
+    // label_tex and label_emoji are free, and two texts never meet in them.
+    // A pass name never reaches GLSL.
     let float = json!({"type": "float", "value": 1.0});
     let mut doc = texts_scene(json!({
-        "label": {"font": "sans", "fill": "outline"},
-        "labels": {"font": "sans"},
+        "label": {"font": ["sans", "emoji"]},
+        "label_atlas": {"font": "sans"},
+        "labels": {"font": "sans", "fill": "outline"},
     }));
-    doc["params"]["label_width"] = float.clone();
+    doc["assets"]["emoji"] = json!({"file": EMOJI});
+    doc["params"]["label"]["value"] = json!("I\u{1f600}");
+    doc["params"]["label_w"] = float.clone();
+    doc["params"]["label_sizes"] = float.clone();
     doc["passes"][0]["name"] = json!("label_tex");
     doc["passes"][0]["params"] =
-        json!({"label_atlas": float, "label_ws": float, "label_emojis": float});
+        json!({"label_emoji_size": float, "label_emoji": float, "label_covers": float});
     doc["passes"][0]["arrays"] = json!([{"name": "label_texels", "size": 4}]);
-    doc["passes"][0]["draws"] = white_draw();
+    doc["passes"][0]["draws"] = json!([
+        {"text": "label", "code": WHITE, "place": "vec2 glyph_place(vec2 em) { return em * 24.0; }"},
+        {"text": "label_atlas", "code": WHITE,
+         "place": "vec2 glyph_place(vec2 em) { return vec2(0.0, 40.0) + em * 24.0; }"},
+    ]);
     let mut image = doc.clone();
-    image["assets"]["label_texture"] = json!({"file": "label.png"});
+    image["assets"]["label_tex"] = json!({"file": "label.png"});
     assert!(Scene::from_dict(&image, None, None).is_ok());
     let Some((_g, mut r)) = gpu(W, H) else { return };
     assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
+    let f = render(&mut r, &loaded(&doc));
+    assert!(f.contains(&255), "the draws paint nothing");
 }
 
 /// The names declared after a type in GLSL `src`, the locals and the function
 /// parameters, outside the comments and the file-scope declarations, and
-/// except the glyph_ names that belong to ghee.
+/// except ghee's own names and the glyph_ names of a draw.
 fn locals(src: &str) -> Vec<String> {
     let types = [
         "bool", "int", "float", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
@@ -970,7 +927,8 @@ fn locals(src: &str) -> Vec<String> {
                 && !gap.is_empty()
                 && gap.trim().is_empty()
                 && !after.trim_start().starts_with('(');
-            if declared && !name.starts_with("glyph_") && !out.iter().any(|o| o == name) {
+            let ghees = name.starts_with("glyph_") || name.starts_with("ghee_");
+            if declared && !ghees && !out.iter().any(|o| o == name) {
                 out.push(name.to_string());
             }
         }
@@ -2520,15 +2478,12 @@ fn one_text_drawn_by_two_passes_follows_its_words_in_both() {
 }
 
 #[test]
-fn a_param_takes_an_old_attribute_name_and_ghee_keeps_vflip_and_glyph_names() {
+fn a_param_takes_a_name_of_ghees_glsl_without_its_prefix() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
         ppem: 30.0,
     };
-    let mut doc = draw_scene(SANS, "ghee", Align::Left, fit);
-    doc["params"]["a1"] = json!({"type": "float", "value": 1.0});
-    doc["passes"][0]["draws"][0]["code"] = json!(WHITE.replace("vec4(c)", "vec4(c * a1)"));
     let Some((_g, mut r)) = gpu(160, 48) else {
         return;
     };
@@ -2536,25 +2491,42 @@ fn a_param_takes_an_old_attribute_name_and_ghee_keeps_vflip_and_glyph_names() {
         &mut r,
         &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
     );
-    let got = render(&mut r, &loaded(&doc));
-    assert_like_cover(&got, &want, "a param named a1");
-    // A scene with no draw takes the names.
-    let mut doc = label_scene(SANS, "ghee", Align::Left, fit);
-    doc["params"]["vflip"] = json!({"type": "float", "value": 1.0});
-    doc["passes"][0]["params"] = json!({"glyph_index": {"type": "float", "value": 1.0}});
-    assert!(Scene::from_dict(&doc, None, None).is_ok());
-    let kept = "vflip and every name that starts with glyph_ belong to ghee";
-    for name in ["vflip", "glyph_a1", "glyph_index"] {
+    // ghee's attributes, its vertex flip and its locals take the ghee_ prefix.
+    for name in ["a1", "vflip", "glyph_a1", "glyph_corner", "glyph_main"] {
         let mut doc = draw_scene(SANS, "ghee", Align::Left, fit);
         doc["params"][name] = json!({"type": "float", "value": 1.0});
-        assert_eq!(scene_err(&doc), format!("scene: param '{name}': {kept}"));
-        let mut doc = draw_scene(SANS, "ghee", Align::Left, fit);
-        doc["passes"][0]["params"] = json!({name: {"type": "float", "value": 1.0}});
-        assert_eq!(
-            scene_err(&doc),
-            format!("scene: param '{name}' in pass 'main': {kept}")
-        );
+        let code = WHITE.replace("vec4(c)", &format!("vec4(c * {name})"));
+        doc["passes"][0]["draws"][0]["code"] = json!(code);
+        let got = render(&mut r, &loaded(&doc));
+        assert_like_cover(&got, &want, &format!("a param named {name}"));
     }
+    // A draw's own names and the prefix are ghee's in any scene, with a draw
+    // or without one.
+    for (name, why) in [
+        (
+            "glyph_index",
+            "scene param 'glyph_index' and the draws both declare 'glyph_index'",
+        ),
+        (
+            "ghee_a1",
+            "scene param 'ghee_a1': a name that starts with ghee_ belongs to ghee",
+        ),
+    ] {
+        for doc in [
+            draw_scene(SANS, "ghee", Align::Left, fit),
+            label_scene(SANS, "ghee", Align::Left, fit),
+        ] {
+            let mut doc = doc;
+            doc["params"][name] = json!({"type": "float", "value": 1.0});
+            assert_eq!(scene_err(&doc), format!("scene: {why}"));
+        }
+    }
+    let mut doc = label_scene(SANS, "ghee", Align::Left, fit);
+    doc["passes"][0]["params"] = json!({"glyph_cover": {"type": "float", "value": 1.0}});
+    assert_eq!(
+        scene_err(&doc),
+        "scene: the draws and param 'glyph_cover' in pass 'main' both declare 'glyph_cover'"
+    );
 }
 
 #[test]
@@ -3058,7 +3030,7 @@ fn the_outline_fill_assembles_as_before_the_mtsdf_fill() {
         "    // author's code that never runs, in an if that the compiler cannot drop,",
         "    // keeps the shader on one thread whatever textures the author's code",
         "    // reads.",
-        "    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(t_tex, v_texCoord);",
+        "    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_t_tex, v_texCoord);",
     ];
     assert!(named.iter().all(|l| fs.lines().any(|f| f == *l)));
     let without: Vec<&str> = fs.lines().filter(|l| !named.contains(l)).collect();

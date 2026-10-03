@@ -111,10 +111,10 @@ bool ghee_mp_set_asset_rect(GheeScene *g, const char *name, int level,
 void ghee_mp_drop_asset(GheeScene *g, const char *name);
 // A layer: quads drawn by a pass into its own buffer after its full-screen
 // quad, with a vertex and a fragment shader of their own, in the order of the
-// ghee_mp_add_layer calls. A vertex holds 1 to 4 vec4 attributes, glyph_a0 to
-// glyph_a3. A quad's 4 vertices are its corners in triangle-strip order, drawn
+// ghee_mp_add_layer calls. A vertex holds 1 to 4 vec4 attributes, ghee_a0 to
+// ghee_a3. A quad's 4 vertices are its corners in triangle-strip order, drawn
 // as the triangles (0, 1, 2) and (2, 1, 3). A layer reads its pass's uniforms,
-// channels, arrays and assets under the same names, and `vflip` as the shared
+// channels, arrays and assets under the same names, and `ghee_vflip` as the shared
 // quad vertex shader does. Blending composes premultiplied colour: over is
 // src + dst * (1 - src.a), add is src + dst, replace is src. The alpha channel
 // blends the same way, and keep_alpha leaves the buffer's alpha as it was.

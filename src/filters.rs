@@ -146,7 +146,11 @@ pub fn apply_filters(
         scene.passes.push(p);
         merge_assets(scene, name, fd)?;
     }
-    Ok(())
+    // A scene param reaches the filter's pass too.
+    match scene.name_clash() {
+        Some(e) => bail!("{e}"),
+        None => Ok(()),
+    }
 }
 
 /// Build the filters of a posted scene. A filter pass the post carries is
@@ -198,7 +202,11 @@ pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>)
     if let Some(name) = missing.iter().find(|n| !reg.contains_key(*n)) {
         return Err(unknown(name));
     }
-    apply_filters(scene, &missing, Some(reg))
+    apply_filters(scene, &missing, Some(reg))?;
+    match scene.name_clash() {
+        Some(e) => bail!("{e}"),
+        None => Ok(()),
+    }
 }
 
 /// One filter pass named `own`, reading `prev`. The param values of `was`

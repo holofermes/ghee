@@ -343,7 +343,10 @@ pub struct Built {
     pub height: u32,
     /// RGBA8, row-major.
     pub texels: Vec<u8>,
-    /// Uniform suffixes after the text's name, each a float.
+    /// The block's width and height in em, `<name>_size`.
+    pub size: [f64; 2],
+    /// Float uniforms, each named by internal() from the text's name and its
+    /// suffix.
     pub uniforms: Vec<(&'static str, f64)>,
     /// One quad per glyph drawn from the font, for a draw of the outline
     /// fill. Its glyph data is this texture's.
@@ -375,7 +378,7 @@ pub struct Placement {
     pub span: [f64; 2],
 }
 
-/// The floats of one quad vertex: the attributes glyph_a0 to glyph_a3, a vec4
+/// The floats of one quad vertex: the attributes ghee_a0 to ghee_a3, a vec4
 /// each.
 pub const QUAD_FLOATS: usize = 16;
 
@@ -383,14 +386,14 @@ pub const QUAD_FLOATS: usize = 16;
 /// (0, 0), (1, 0), (0, 1), (1, 1) of the glyph's box from its top left, so the
 /// triangles 0 1 2 and 2 1 3 cover it. A vertex holds QUAD_FLOATS floats:
 ///
-/// - glyph_a0: the corner x and y, the character index, the word index
-/// - glyph_a1: the ink box in em from the block's top left, y down: x0, y0,
+/// - ghee_a0: the corner x and y, the character index, the word index
+/// - ghee_a1: the ink box in em from the block's top left, y down: x0, y0,
 ///   x1, y1
-/// - glyph_a2, outline fill: the texel of the glyph's band entries, its
+/// - ghee_a2, outline fill: the texel of the glyph's band entries, its
 ///   horizontal bands, its vertical bands, 0
-/// - glyph_a2, MTSDF fill and colour glyphs: the atlas texel coordinate at
+/// - ghee_a2, MTSDF fill and colour glyphs: the atlas texel coordinate at
 ///   (x0, y0), and the texels per em along x and along y
-/// - glyph_a3: the line index, the advance's start and end x in em, 0
+/// - ghee_a3: the line index, the advance's start and end x in em, 0
 ///
 /// Every index counts from 0.
 pub struct Quads {
@@ -1129,7 +1132,7 @@ fn finish(
 ) -> Layout {
     let built = match pack_fitting(placed, glyphs, height) {
         Ok(mut built) => {
-            built.uniforms.extend([("_w", width), ("_h", height)]);
+            built.size = [width, height];
             let placement = |p: &Placed, font: usize, gid: u16| Placement {
                 font,
                 gid,
@@ -1406,6 +1409,7 @@ fn pack(
         glyphs: Vec::new(),
         colour: Vec::new(),
         texels,
+        size: [0.0; 2],
         uniforms: vec![
             ("_tw", TEX_W as f64),
             ("_itw", 1.0 / TEX_W as f64),
@@ -1487,7 +1491,7 @@ pub fn reader_lines(name: &str) -> Vec<String> {
 /// The lines of a draw's vertex shader ahead of the author's
 /// `vec2 glyph_place(vec2 em)`: the quad attributes, the text's size, the
 /// varyings, and the glyph values read by glyph_place. The caller's preamble
-/// declares `resolution` and `vflip` at the fragment stage's precision.
+/// declares `resolution` and `ghee_vflip` at the fragment stage's precision.
 pub fn draw_vertex_head(name: &str) -> Vec<String> {
     lines(DRAW_VERTEX_HEAD, name)
 }
@@ -1547,42 +1551,77 @@ pub fn box_fragment() -> Vec<String> {
     lines(BOX_FRAGMENT, "")
 }
 
-/// The GLSL names made by text `name`: every NAME_ name in the templates of its
-/// readers and its draws, the MTSDF draw's too with `atlas`, the colour
-/// layer's with `colour`, and the `<sampler>_size` set by the engine beside
-/// each texture.
-pub fn names(name: &str, atlas: bool, colour: bool) -> Vec<String> {
-    let mut glsl = vec![
+/// The GLSL names that text `name` declares for an author to read: every
+/// NAME_ name in the templates of its readers and its draws. ghee's own names
+/// for the text start with ghee_, as internal() makes them.
+pub fn names(name: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in template_names(name) {
+        if !n.starts_with(crate::scene::PREFIX) && !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    out
+}
+
+/// The names that a draw's GLSL declares for its author: the function the
+/// author defines, and the values and functions the author reads.
+pub const DRAW_NAMES: [&str; 11] = [
+    "glyph_place",
+    "glyph_cover",
+    "glyph_dist",
+    "glyph_soft",
+    "glyph_em",
+    "glyph_index",
+    "glyph_word",
+    "glyph_line",
+    "glyph_span",
+    "glyph_box",
+    "glyph_ppem",
+];
+
+/// ghee's name for the engine asset or the uniform `suffix` of text `name`,
+/// such as its texture, `_tex`.
+pub fn internal(name: &str, suffix: &str) -> String {
+    format!("{}{name}{suffix}", crate::scene::PREFIX)
+}
+
+/// Every name made from NAME in the templates of the readers and the draws
+/// of text `name`, with the `<sampler>_size` set by the engine beside each
+/// texture.
+fn template_names(name: &str) -> Vec<String> {
+    let glsl = [
         GLSL,
         DRAW_VERTEX_HEAD,
         OUTLINE_FRAGMENT_HEAD,
         OUTLINE_FRAGMENT_TAIL,
+        MTSDF_VERTEX_MAIN,
+        MTSDF_FRAGMENT_HEAD,
+        MTSDF_FRAGMENT_TAIL,
+        crate::colour::VERTEX_MAIN,
+        crate::colour::FRAGMENT,
     ];
-    if atlas {
-        glsl.extend([MTSDF_VERTEX_MAIN, MTSDF_FRAGMENT_HEAD, MTSDF_FRAGMENT_TAIL]);
-    }
-    if colour {
-        glsl.extend([crate::colour::VERTEX_MAIN, crate::colour::FRAGMENT]);
-    }
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut out: Vec<String> = Vec::new();
     for t in glsl {
         for (i, _) in t.match_indices("NAME_") {
-            let head = &t[..i];
+            let (head, prefixed) = match t[..i].strip_suffix(crate::scene::PREFIX) {
+                Some(head) => (head, true),
+                None => (&t[..i], false),
+            };
             if head.ends_with(ident) {
                 continue;
             }
             let rest = &t[i + "NAME".len()..];
             let suffix = &rest[..rest.find(|c| !ident(c)).unwrap_or(rest.len())];
-            let mut found = vec![format!("{name}{suffix}")];
+            let made = match prefixed {
+                true => internal(name, suffix),
+                false => format!("{name}{suffix}"),
+            };
             if head.ends_with("uniform sampler2D ") {
-                found.push(format!("{name}{suffix}_size"));
+                out.push(format!("{made}_size"));
             }
-            for n in found {
-                if !out.contains(&n) {
-                    out.push(n);
-                }
-            }
+            out.push(made);
         }
     }
     out
@@ -1618,19 +1657,17 @@ fn lines(glsl: &str, name: &str) -> Vec<String> {
         .collect()
 }
 
-const DRAW_VERTEX_HEAD: &str = r#"attribute vec4 glyph_a0;
-attribute vec4 glyph_a1;
-attribute vec4 glyph_a2;
-attribute vec4 glyph_a3;
-uniform float NAME_w;
-uniform float NAME_h;
-#define NAME_size vec2(NAME_w, NAME_h)
+const DRAW_VERTEX_HEAD: &str = r#"attribute vec4 ghee_a0;
+attribute vec4 ghee_a1;
+attribute vec4 ghee_a2;
+attribute vec4 ghee_a3;
+uniform vec2 NAME_size;
 varying vec2 v_texCoord;
-varying vec4 glyph_v0;
-varying vec4 glyph_v1;
-varying vec4 glyph_v2;
-varying vec4 glyph_v3;
-varying vec4 glyph_v4;
+varying vec4 ghee_v0;
+varying vec4 ghee_v1;
+varying vec4 ghee_v2;
+varying vec4 ghee_v3;
+varying vec4 ghee_v4;
 float glyph_index;
 float glyph_word;
 float glyph_line;
@@ -1638,152 +1675,152 @@ vec2 glyph_span;
 vec4 glyph_box;"#;
 
 const OUTLINE_VERTEX_MAIN: &str = r#"void main() {
-    glyph_index = glyph_a0.z;
-    glyph_word = glyph_a0.w;
-    glyph_line = glyph_a3.x;
-    glyph_span = glyph_a3.yz;
-    glyph_box = glyph_a1;
-    vec2 glyph_corner = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
-    vec2 glyph_p = glyph_place(glyph_corner);
+    glyph_index = ghee_a0.z;
+    glyph_word = ghee_a0.w;
+    glyph_line = ghee_a3.x;
+    glyph_span = ghee_a3.yz;
+    glyph_box = ghee_a1;
+    vec2 ghee_corner = mix(ghee_a1.xy, ghee_a1.zw, ghee_a0.xy);
+    vec2 ghee_p = glyph_place(ghee_corner);
     // The pixels moved by glyph_place per em along each em axis, exact for an
     // affine glyph_place.
-    vec2 glyph_jx = (glyph_place(glyph_corner + vec2(0.0625, 0.0)) - glyph_p) * 16.0;
-    vec2 glyph_jy = (glyph_place(glyph_corner + vec2(0.0, 0.0625)) - glyph_p) * 16.0;
-    // glyph_det stays above 0, so a glyph scaled to nothing keeps every
+    vec2 ghee_jx = (glyph_place(ghee_corner + vec2(0.0625, 0.0)) - ghee_p) * 16.0;
+    vec2 ghee_jy = (glyph_place(ghee_corner + vec2(0.0, 0.0625)) - ghee_p) * 16.0;
+    // ghee_det stays above 0, so a glyph scaled to nothing keeps every
     // position finite.
-    float glyph_sdet = glyph_jx.x * glyph_jy.y - glyph_jx.y * glyph_jy.x;
-    float glyph_det = max(abs(glyph_sdet), 1.0 / 16384.0);
+    float ghee_sdet = ghee_jx.x * ghee_jy.y - ghee_jx.y * ghee_jy.x;
+    float ghee_det = max(abs(ghee_sdet), 1.0 / 16384.0);
     // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
     // up to 1/16 px off the position set by this shader.
-    vec2 glyph_grow = max(0.625 * vec2(length(glyph_jy), length(glyph_jx)) / glyph_det, vec2(PAD));
-    vec2 glyph_e = glyph_corner + (glyph_a0.xy * 2.0 - 1.0) * glyph_grow;
-    vec2 glyph_px = glyph_place(glyph_e);
+    vec2 ghee_grow = max(0.625 * vec2(length(ghee_jy), length(ghee_jx)) / ghee_det, vec2(PAD));
+    vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_grow;
+    vec2 ghee_px = glyph_place(ghee_e);
     // The em spanned by a screen pixel along each em axis, as fwidth gives it.
-    vec2 glyph_fw = vec2(abs(glyph_jy.x) + abs(glyph_jy.y),
-                         abs(glyph_jx.x) + abs(glyph_jx.y)) / glyph_det;
-    vec2 glyph_sz = glyph_a1.zw - glyph_a1.xy;
+    vec2 ghee_fw = vec2(abs(ghee_jy.x) + abs(ghee_jy.y),
+                        abs(ghee_jx.x) + abs(ghee_jx.y)) / ghee_det;
+    vec2 ghee_sz = ghee_a1.zw - ghee_a1.xy;
     // The sample on the glyph's lattice, y up, and the pixels spanned by a
     // lattice step.
-    glyph_v0 = vec4(vec2(glyph_e.x - glyph_a1.x, glyph_a1.w - glyph_e.y) / glyph_sz * LATTICE,
-                    glyph_sz / (glyph_fw * LATTICE));
+    ghee_v0 = vec4(vec2(ghee_e.x - ghee_a1.x, ghee_a1.w - ghee_e.y) / ghee_sz * LATTICE,
+                   ghee_sz / (ghee_fw * LATTICE));
     // glyph_ppem: the pixels per em of a placement that scales both axes
     // alike.
-    glyph_v1 = vec4(glyph_a2.xyz, sqrt(glyph_det));
-    glyph_v2 = vec4(glyph_e, glyph_a0.zw);
-    glyph_v3 = vec4(glyph_a3.xyz, 0.0);
+    ghee_v1 = vec4(ghee_a2.xyz, sqrt(ghee_det));
+    ghee_v2 = vec4(ghee_e, ghee_a0.zw);
+    ghee_v3 = vec4(ghee_a3.xyz, 0.0);
     // The lattice steps spanned by a pixel along x and along y of the pass.
-    vec2 glyph_k = LATTICE / glyph_sz;
-    glyph_v4 = vec4(glyph_k.x * glyph_jy.y, -glyph_k.x * glyph_jy.x,
-                    glyph_k.y * glyph_jx.y, -glyph_k.y * glyph_jx.x)
-             / (glyph_sdet < 0.0 ? -glyph_det : glyph_det);
-    v_texCoord = glyph_px / resolution;
-    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, vflip), 0.0, 1.0);
+    vec2 ghee_k = LATTICE / ghee_sz;
+    ghee_v4 = vec4(ghee_k.x * ghee_jy.y, -ghee_k.x * ghee_jy.x,
+                   ghee_k.y * ghee_jx.y, -ghee_k.y * ghee_jx.x)
+            / (ghee_sdet < 0.0 ? -ghee_det : ghee_det);
+    v_texCoord = ghee_px / resolution;
+    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
 }"#;
 
-const OUTLINE_FRAGMENT_HEAD: &str = r#"varying vec4 glyph_v0;
-varying vec4 glyph_v1;
-varying vec4 glyph_v2;
-varying vec4 glyph_v3;
-varying vec4 glyph_v4;
+const OUTLINE_FRAGMENT_HEAD: &str = r#"varying vec4 ghee_v0;
+varying vec4 ghee_v1;
+varying vec4 ghee_v2;
+varying vec4 ghee_v3;
+varying vec4 ghee_v4;
 // A varying that holds one value at every vertex may still interpolate a hair
 // off it, so an index rounds.
-#define glyph_em glyph_v2.xy
-#define glyph_index float(int(glyph_v2.z + 0.5))
-#define glyph_word float(int(glyph_v2.w + 0.5))
-#define glyph_line float(int(glyph_v3.x + 0.5))
-#define glyph_span glyph_v3.yz
-#define glyph_ppem glyph_v1.w
-float glyph_c = 0.0;
-float glyph_cover() { return glyph_c; }
+#define glyph_em ghee_v2.xy
+#define glyph_index float(int(ghee_v2.z + 0.5))
+#define glyph_word float(int(ghee_v2.w + 0.5))
+#define glyph_line float(int(ghee_v3.x + 0.5))
+#define glyph_span ghee_v3.yz
+#define glyph_ppem ghee_v1.w
+float ghee_c = 0.0;
+float glyph_cover() { return ghee_c; }
 // Distances come from the MTSDF fill's field, and a compile error names it.
 #define glyph_dist glyph_dist_needs_fill_mtsdf
 #define glyph_soft glyph_soft_needs_fill_mtsdf
-// The author's main runs as glyph_main, after the fill: the fill computes the
+// The author's main runs as ghee_main, after the fill: the fill computes the
 // coverage once a pixel, and glyph_cover() returns it at every call.
-#define main glyph_main"#;
+#define main ghee_main"#;
 
 const OUTLINE_FRAGMENT_TAIL: &str = r#"#undef main
 void main() {
     // VC4 lands a vertex up to 1/16 px off the position set by the vertex
     // shader, and the varyings follow the vertex, so the sample moves to the
     // pixel centre given by v_texCoord.
-    vec2 glyph_px = v_texCoord * resolution;
-    vec2 glyph_d = floor(glyph_px) + 0.5 - glyph_px;
-    vec2 glyph_u = glyph_v0.xy + vec2(dot(glyph_v4.xy, glyph_d), dot(glyph_v4.zw, glyph_d));
-    glyph_c = NAME_outline(float(int(glyph_v1.x + 0.5)), vec2(ivec2(glyph_v1.yz + 0.5)),
-                           glyph_u, glyph_v0.zw);
-    glyph_main();
+    vec2 ghee_px = v_texCoord * resolution;
+    vec2 ghee_d = floor(ghee_px) + 0.5 - ghee_px;
+    vec2 ghee_u = ghee_v0.xy + vec2(dot(ghee_v4.xy, ghee_d), dot(ghee_v4.zw, ghee_d));
+    ghee_c = ghee_NAME_outline(float(int(ghee_v1.x + 0.5)), vec2(ivec2(ghee_v1.yz + 0.5)),
+                               ghee_u, ghee_v0.zw);
+    ghee_main();
     // On VC4 a shader whose last texture read sits outside an if runs in two
     // threads, whose switch loses the condition flags. A read after the
     // author's code that never runs, in an if that the compiler cannot drop,
     // keeps the shader on one thread whatever textures the author's code
     // reads.
-    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(NAME_tex, v_texCoord);
+    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_tex, v_texCoord);
 }"#;
 
-const MTSDF_VERTEX_MAIN: &str = r#"uniform vec2 NAME_atlas_size;
+const MTSDF_VERTEX_MAIN: &str = r#"uniform vec2 ghee_NAME_atlas_size;
 void main() {
-    glyph_index = glyph_a0.z;
-    glyph_word = glyph_a0.w;
-    glyph_line = glyph_a3.x;
-    glyph_span = glyph_a3.yz;
-    glyph_box = glyph_a1;
-    vec2 glyph_corner = mix(glyph_a1.xy, glyph_a1.zw, glyph_a0.xy);
-    vec2 glyph_p = glyph_place(glyph_corner);
+    glyph_index = ghee_a0.z;
+    glyph_word = ghee_a0.w;
+    glyph_line = ghee_a3.x;
+    glyph_span = ghee_a3.yz;
+    glyph_box = ghee_a1;
+    vec2 ghee_corner = mix(ghee_a1.xy, ghee_a1.zw, ghee_a0.xy);
+    vec2 ghee_p = glyph_place(ghee_corner);
     // The pixels moved by glyph_place per em along each em axis, exact for an
     // affine glyph_place.
-    vec2 glyph_jx = (glyph_place(glyph_corner + vec2(0.0625, 0.0)) - glyph_p) * 16.0;
-    vec2 glyph_jy = (glyph_place(glyph_corner + vec2(0.0, 0.0625)) - glyph_p) * 16.0;
-    // glyph_det stays above 0, so a glyph scaled to nothing keeps every
+    vec2 ghee_jx = (glyph_place(ghee_corner + vec2(0.0625, 0.0)) - ghee_p) * 16.0;
+    vec2 ghee_jy = (glyph_place(ghee_corner + vec2(0.0, 0.0625)) - ghee_p) * 16.0;
+    // ghee_det stays above 0, so a glyph scaled to nothing keeps every
     // position finite.
-    float glyph_det = max(abs(glyph_jx.x * glyph_jy.y - glyph_jx.y * glyph_jy.x),
-                          1.0 / 16384.0);
+    float ghee_det = max(abs(ghee_jx.x * ghee_jy.y - ghee_jx.y * ghee_jy.x),
+                         1.0 / 16384.0);
     // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
     // up to 1/16 px off the position set by this shader. A read past the
     // reach would take a neighbouring cell's texels.
-    vec2 glyph_grow = min(max(0.625 * vec2(length(glyph_jy), length(glyph_jx)) / glyph_det,
-                              vec2(PAD)), vec2(REACH));
-    vec2 glyph_e = glyph_corner + (glyph_a0.xy * 2.0 - 1.0) * glyph_grow;
-    vec2 glyph_px = glyph_place(glyph_e);
+    vec2 ghee_grow = min(max(0.625 * vec2(length(ghee_jy), length(ghee_jx)) / ghee_det,
+                             vec2(PAD)), vec2(REACH));
+    vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_grow;
+    vec2 ghee_px = glyph_place(ghee_e);
     // The em spanned by a screen pixel along each em axis, as fwidth gives it.
-    vec2 glyph_fw = vec2(abs(glyph_jy.x) + abs(glyph_jy.y),
-                         abs(glyph_jx.x) + abs(glyph_jx.y)) / glyph_det;
-    vec2 glyph_tc = glyph_a2.xy + (glyph_e - glyph_a1.xy) * glyph_a2.zw;
+    vec2 ghee_fw = vec2(abs(ghee_jy.x) + abs(ghee_jy.y),
+                        abs(ghee_jx.x) + abs(ghee_jx.y)) / ghee_det;
+    vec2 ghee_tc = ghee_a2.xy + (ghee_e - ghee_a1.xy) * ghee_a2.zw;
     // The field's range in screen pixels. msdfgen holds it at 1 or more.
-    float glyph_range = max(RANGE_EM * 0.5 * (1.0 / glyph_fw.x + 1.0 / glyph_fw.y), 1.0);
+    float ghee_range = max(RANGE_EM * 0.5 * (1.0 / ghee_fw.x + 1.0 / ghee_fw.y), 1.0);
     // glyph_ppem: the pixels per em of a placement that scales both axes
     // alike.
-    glyph_v0 = vec4(glyph_tc / NAME_atlas_size, glyph_range, sqrt(glyph_det));
-    glyph_v2 = vec4(glyph_e, glyph_a0.zw);
-    glyph_v3 = vec4(glyph_a3.xyz, 0.0);
-    v_texCoord = glyph_px / resolution;
-    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, vflip), 0.0, 1.0);
+    ghee_v0 = vec4(ghee_tc / ghee_NAME_atlas_size, ghee_range, sqrt(ghee_det));
+    ghee_v2 = vec4(ghee_e, ghee_a0.zw);
+    ghee_v3 = vec4(ghee_a3.xyz, 0.0);
+    v_texCoord = ghee_px / resolution;
+    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
 }"#;
 
-const MTSDF_FRAGMENT_HEAD: &str = r#"uniform sampler2D NAME_atlas;
-varying vec4 glyph_v0;
-varying vec4 glyph_v2;
-varying vec4 glyph_v3;
+const MTSDF_FRAGMENT_HEAD: &str = r#"uniform sampler2D ghee_NAME_atlas;
+varying vec4 ghee_v0;
+varying vec4 ghee_v2;
+varying vec4 ghee_v3;
 // A varying that holds one value at every vertex may still interpolate a hair
 // off it, so an index rounds.
-#define glyph_em glyph_v2.xy
-#define glyph_index float(int(glyph_v2.z + 0.5))
-#define glyph_word float(int(glyph_v2.w + 0.5))
-#define glyph_line float(int(glyph_v3.x + 0.5))
-#define glyph_span glyph_v3.yz
-#define glyph_ppem glyph_v0.w
+#define glyph_em ghee_v2.xy
+#define glyph_index float(int(ghee_v2.z + 0.5))
+#define glyph_word float(int(ghee_v2.w + 0.5))
+#define glyph_line float(int(ghee_v3.x + 0.5))
+#define glyph_span ghee_v3.yz
+#define glyph_ppem ghee_v0.w
 // The glyph's field under this pixel: the median of red, green and blue is
 // the distance to the outline, alpha the true distance, each 0.5 on the
 // outline and growing inward over the range.
-vec4 glyph_t = vec4(0.0);
+vec4 ghee_t = vec4(0.0);
 float glyph_dist() {
-    return glyph_v0.z * (max(min(glyph_t.r, glyph_t.g), min(max(glyph_t.r, glyph_t.g), glyph_t.b))
-                         - 0.5);
+    return ghee_v0.z * (max(min(ghee_t.r, ghee_t.g), min(max(ghee_t.r, ghee_t.g), ghee_t.b))
+                        - 0.5);
 }
-float glyph_soft() { return glyph_v0.z * (glyph_t.a - 0.5); }
+float glyph_soft() { return ghee_v0.z * (ghee_t.a - 0.5); }
 float glyph_cover() { return clamp(glyph_dist() + 0.5, 0.0, 1.0); }
-// The author's main runs as glyph_main, after the read of the field.
-#define main glyph_main"#;
+// The author's main runs as ghee_main, after the read of the field.
+#define main ghee_main"#;
 
 const MTSDF_FRAGMENT_TAIL: &str = r#"#undef main
 void main() {
@@ -1792,22 +1829,22 @@ void main() {
     // field, and a read after the author's code that never runs, sit in ifs
     // that the compiler cannot drop, so the shader stays on one thread
     // whatever textures the author's code reads.
-    if (gl_FragCoord.x >= 0.0) glyph_t = texture2D(NAME_atlas, glyph_v0.xy);
-    glyph_main();
-    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(NAME_atlas, glyph_v0.xy);
+    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_atlas, ghee_v0.xy);
+    ghee_main();
+    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_atlas, ghee_v0.xy);
 }"#;
 
 const BOX_FRAGMENT: &str = r#"varying vec2 v_texCoord;
 uniform vec2 resolution;
-varying vec4 glyph_v0;
-varying vec4 glyph_v4;
+varying vec4 ghee_v0;
+varying vec4 ghee_v4;
 void main() {
     // The sample moves to the pixel centre, as the outline fill's does.
     vec2 px = v_texCoord * resolution;
     vec2 d = floor(px) + 0.5 - px;
-    vec2 u = glyph_v0.xy + vec2(dot(glyph_v4.xy, d), dot(glyph_v4.zw, d));
+    vec2 u = ghee_v0.xy + vec2(dot(ghee_v4.xy, d), dot(ghee_v4.zw, d));
     // The box's coverage, antialiased over a pixel at each edge.
-    vec2 edge = clamp(min(u, LATTICE - u) * glyph_v0.zw + 0.5, 0.0, 1.0);
+    vec2 edge = clamp(min(u, LATTICE - u) * ghee_v0.zw + 0.5, 0.0, 1.0);
     float a = edge.x * edge.y;
     // Yellow where (x - y) / the stripe width has an even floor, x and y in
     // em from the box's bottom left.
@@ -1816,51 +1853,49 @@ void main() {
     float s = (em.x - em.y) / STRIPE - 0.5;
     float t = abs(fract(s * 0.5) * 2.0 - 1.0) - 0.5;
     // The em spanned by a pixel along each axis of the box.
-    vec2 fw = box / (LATTICE * glyph_v0.zw);
+    vec2 fw = box / (LATTICE * ghee_v0.zw);
     float yellow = clamp(t * STRIPE / (fw.x + fw.y) + 0.5, 0.0, 1.0);
     gl_FragColor = vec4(vec3(1.0, 0.8, 0.0) * (yellow * a), a);
 }"#;
 
-const GLSL: &str = r#"uniform sampler2D NAME_tex;
-uniform float NAME_tw;
-uniform float NAME_itw;
-uniform float NAME_ith;
-uniform float NAME_w;
-uniform float NAME_h;
-uniform float NAME_gx;
-uniform float NAME_gy;
-uniform float NAME_cols;
-uniform float NAME_rows;
-uniform float NAME_cell;
-uniform float NAME_cells;
-uniform float NAME_nb;
-#define NAME_size vec2(NAME_w, NAME_h)
+const GLSL: &str = r#"uniform sampler2D ghee_NAME_tex;
+uniform float ghee_NAME_tw;
+uniform float ghee_NAME_itw;
+uniform float ghee_NAME_ith;
+uniform vec2 NAME_size;
+uniform float ghee_NAME_gx;
+uniform float ghee_NAME_gy;
+uniform float ghee_NAME_cols;
+uniform float ghee_NAME_rows;
+uniform float ghee_NAME_cell;
+uniform float ghee_NAME_cells;
+uniform float ghee_NAME_nb;
 // A texture read on the Pi 5 returns a byte too coarse to take bits from as it
 // is, so every byte goes through int() first: a read of byte b lies near
 // b / 255, and int(t * 255.5) floors to b. On VC4, float(int(x)) takes 2
 // instructions and floor(x) 4, and every floor here takes x >= 0.
-vec4 NAME_texel(float i) {
-    float row = float(int(i * NAME_itw));
-    vec2 at = vec2(i - row * NAME_tw + 0.5, row + 0.5);
-    return vec4(ivec4(texture2D(NAME_tex, at * vec2(NAME_itw, NAME_ith)) * 255.5));
+vec4 ghee_NAME_texel(float i) {
+    float row = float(int(i * ghee_NAME_itw));
+    vec2 at = vec2(i - row * ghee_NAME_tw + 0.5, row + 0.5);
+    return vec4(ivec4(texture2D(ghee_NAME_tex, at * vec2(ghee_NAME_itw, ghee_NAME_ith)) * 255.5));
 }
 // The texture coordinate of a band's list: the first list for the ray toward
 // +, the second for the ray toward -.
-vec2 NAME_list(vec4 band, float dir) {
+vec2 ghee_NAME_list(vec4 band, float dir) {
     float i = (band.r * 256.0 + band.g) * 256.0 + band.b + (dir < 0.0 ? band.a * 2.0 : 0.0);
-    float row = float(int(i * NAME_itw));
-    return vec2(i - row * NAME_tw + 0.5, row + 0.5) * vec2(NAME_itw, NAME_ith);
+    float row = float(int(i * ghee_NAME_itw));
+    return vec2(i - row * ghee_NAME_tw + 0.5, row + 0.5) * vec2(ghee_NAME_itw, ghee_NAME_ith);
 }
 // One texel of a curve: a lattice point, and the offset of p2 from p3 on one
 // axis.
-vec3 NAME_lattice(vec4 t) {
+vec3 ghee_NAME_lattice(vec4 t) {
     vec4 b = vec4(ivec4(t * 255.5));
     vec2 hi = vec2(ivec2(b.ba * (1.0 / 32.0)));
     return vec3(b.rg * 8.0 + hi, (b.b - hi.x * 32.0) * 32.0 + b.a - hi.y * 32.0 - OFFSET_BIAS);
 }
 // Where the curve crosses y = 0, as x. The roots of a t^2 - 2b t + c, each
 // from the form of the quadratic formula that subtracts no near-equal values.
-vec2 NAME_cross(vec2 p1, vec2 p2, vec2 p3) {
+vec2 ghee_NAME_cross(vec2 p1, vec2 p2, vec2 p3) {
     vec2 a = p1 - p2 * 2.0 + p3;
     vec2 b = p1 - p2;
     float disc = b.y * b.y - a.y * p1.y;
@@ -1881,24 +1916,24 @@ vec2 NAME_cross(vec2 p1, vec2 p2, vec2 p3) {
 // The coverage of a glyph at u on its lattice, y up, drawn at ppu pixels a
 // lattice step. Its band entries start at texel h: nb.x horizontal bands, then
 // nb.y vertical ones.
-float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
+float ghee_NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
     vec2 m = 0.5 / ppu;
     float cov = 0.0;
     if (u.x > -m.x && u.y > -m.y && u.x < LATTICE + m.x && u.y < LATTICE + m.y) {
         vec2 band = min(vec2(ivec2(max(u.yx, 0.0) * (nb / LATTICE))), nb - 1.0);
-        vec4 hb = NAME_texel(h + band.x);
+        vec4 hb = ghee_NAME_texel(h + band.x);
         // Each ray runs toward the nearer edge of the box. A ray toward -
         // reads its band mirrored, so its coverage flips sign.
         float dx = u.x < LATTICE_MID ? -1.0 : 1.0;
         vec2 uh = vec2(dx > 0.0 ? u.x : LATTICE - u.x, u.y);
         float xcov = 0.0;
         float xwgt = 0.0;
-        vec2 at = NAME_list(hb, dx);
+        vec2 at = ghee_NAME_list(hb, dx);
         for (int i = 0; i < BAND_CURVES; i++) {
             if (float(i) >= hb.a) break;
-            vec3 c1 = NAME_lattice(texture2D(NAME_tex, at));
-            vec3 c3 = NAME_lattice(texture2D(NAME_tex, at + vec2(NAME_itw, 0.0)));
-            at.x += NAME_itw * 2.0;
+            vec3 c1 = ghee_NAME_lattice(texture2D(ghee_NAME_tex, at));
+            vec3 c3 = ghee_NAME_lattice(texture2D(ghee_NAME_tex, at + vec2(ghee_NAME_itw, 0.0)));
+            at.x += ghee_NAME_itw * 2.0;
             vec2 p1 = c1.xy - uh;
             vec2 p3 = c3.xy - uh;
             vec2 p2 = p3 + vec2(c1.z, c3.z);
@@ -1913,7 +1948,7 @@ float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
             bool e1 = n3 ? !(n1 && n2) : n2 && !n1;
             bool e2 = n3 ? n1 && !n2 : n1 || n2;
             if (e1 || e2) {
-                vec2 r = NAME_cross(p1, p2, p3) * ppu.x;
+                vec2 r = ghee_NAME_cross(p1, p2, p3) * ppu.x;
                 xcov += e1 ? clamp(r.x + 0.5, 0.0, 1.0) : 0.0;
                 xwgt = max(xwgt, e1 ? clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0) : 0.0);
                 xcov -= e2 ? clamp(r.y + 0.5, 0.0, 1.0) : 0.0;
@@ -1921,17 +1956,17 @@ float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
             }
         }
         xcov *= dx;
-        vec4 vb = NAME_texel(h + nb.x + band.y);
+        vec4 vb = ghee_NAME_texel(h + nb.x + band.y);
         float dy = u.y < LATTICE_MID ? -1.0 : 1.0;
         vec2 uv = vec2(u.x, dy > 0.0 ? u.y : LATTICE - u.y);
         float ycov = 0.0;
         float ywgt = 0.0;
-        at = NAME_list(vb, dy);
+        at = ghee_NAME_list(vb, dy);
         for (int i = 0; i < BAND_CURVES; i++) {
             if (float(i) >= vb.a) break;
-            vec3 c1 = NAME_lattice(texture2D(NAME_tex, at));
-            vec3 c3 = NAME_lattice(texture2D(NAME_tex, at + vec2(NAME_itw, 0.0)));
-            at.x += NAME_itw * 2.0;
+            vec3 c1 = ghee_NAME_lattice(texture2D(ghee_NAME_tex, at));
+            vec3 c3 = ghee_NAME_lattice(texture2D(ghee_NAME_tex, at + vec2(ghee_NAME_itw, 0.0)));
+            at.x += ghee_NAME_itw * 2.0;
             vec2 p1 = (c1.xy - uv).yx;
             vec2 p3 = (c3.xy - uv).yx;
             vec2 p2 = p3 + vec2(c3.z, c1.z);
@@ -1944,7 +1979,7 @@ float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
             bool e1 = n3 ? !(n1 && n2) : n2 && !n1;
             bool e2 = n3 ? n1 && !n2 : n1 || n2;
             if (e1 || e2) {
-                vec2 r = NAME_cross(p1, p2, p3) * ppu.y;
+                vec2 r = ghee_NAME_cross(p1, p2, p3) * ppu.y;
                 ycov -= e1 ? clamp(r.x + 0.5, 0.0, 1.0) : 0.0;
                 ywgt = max(ywgt, e1 ? clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0) : 0.0);
                 ycov += e2 ? clamp(r.y + 0.5, 0.0, 1.0) : 0.0;
@@ -1959,33 +1994,33 @@ float NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
 }
 // The coverage of the glyph whose data starts at texel h, at q in em from its
 // box's corner. Its data holds its box size, then its band entries.
-float NAME_glyph(float h, vec2 q, vec2 sz, float ppem) {
-    return NAME_outline(h + 1.0, vec2(NAME_nb), q / sz * LATTICE, sz * (ppem / LATTICE));
+float ghee_NAME_glyph(float h, vec2 q, vec2 sz, float ppem) {
+    return ghee_NAME_outline(h + 1.0, vec2(ghee_NAME_nb), q / sz * LATTICE, sz * (ppem / LATTICE));
 }
 // The coverage of the words at p, in em from the top left of the block, y
 // down like v_texCoord, drawn at ppem pixels per em.
 float NAME_cover(vec2 p, float ppem) {
     float cov = 0.0;
-    vec2 at = vec2(p.x, NAME_h - p.y);
-    vec2 g = (at - vec2(NAME_gx, NAME_gy)) / NAME_cell;
-    if (g.x >= 0.0 && g.y >= 0.0 && g.x < NAME_cols && g.y < NAME_rows) {
+    vec2 at = vec2(p.x, NAME_size.y - p.y);
+    vec2 g = (at - vec2(ghee_NAME_gx, ghee_NAME_gy)) / ghee_NAME_cell;
+    if (g.x >= 0.0 && g.y >= 0.0 && g.x < ghee_NAME_cols && g.y < ghee_NAME_rows) {
         vec2 c = vec2(ivec2(g));
-        float cell = NAME_cells + (c.y * NAME_cols + c.x) * CELL_TEXELS;
-        float row = float(int(cell * NAME_itw));
-        vec2 slot = vec2(cell - row * NAME_tw + 0.5, row + 0.5) * vec2(NAME_itw, NAME_ith);
-        vec2 pc = at - vec2(NAME_gx, NAME_gy) - c * NAME_cell;
+        float cell = ghee_NAME_cells + (c.y * ghee_NAME_cols + c.x) * CELL_TEXELS;
+        float row = float(int(cell * ghee_NAME_itw));
+        vec2 slot = vec2(cell - row * ghee_NAME_tw + 0.5, row + 0.5) * vec2(ghee_NAME_itw, ghee_NAME_ith);
+        vec2 pc = at - vec2(ghee_NAME_gx, ghee_NAME_gy) - c * ghee_NAME_cell;
         // An empty slot, or the one marked last, ends the cell.
         for (int k = 0; k < CELL_K; k++) {
-            vec4 a = vec4(ivec4(texture2D(NAME_tex, slot) * 255.5));
+            vec4 a = vec4(ivec4(texture2D(ghee_NAME_tex, slot) * 255.5));
             if (a.r + a.g + a.b < 0.5) break;
-            vec4 b = vec4(ivec4(texture2D(NAME_tex, slot + vec2(NAME_itw, 0.0)) * 255.5));
-            slot.x += NAME_itw * SLOT;
+            vec4 b = vec4(ivec4(texture2D(ghee_NAME_tex, slot + vec2(ghee_NAME_itw, 0.0)) * 255.5));
+            slot.x += ghee_NAME_itw * SLOT;
             float last = a.r >= LAST_BIT ? 1.0 : 0.0;
             float h = ((a.r - last * LAST_BIT) * 256.0 + a.g) * 256.0 + a.b;
             vec2 lo = (b.rb * 256.0 + b.ga) * (1.0 / BOX_SCALE) - CORNER_OFFSET;
-            vec4 s = NAME_texel(h);
+            vec4 s = ghee_NAME_texel(h);
             vec2 sz = (s.rb * 256.0 + s.ga) * (1.0 / BOX_SCALE);
-            cov = max(cov, NAME_glyph(h, pc - lo, sz, ppem));
+            cov = max(cov, ghee_NAME_glyph(h, pc - lo, sz, ppem));
             if (last > 0.5) break;
         }
     }
@@ -1995,6 +2030,81 @@ float NAME_cover(vec2 p, float ppem) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The words of GLSL `t`, outside its comments.
+    fn words(t: &str) -> Vec<String> {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        t.lines()
+            .flat_map(|l| {
+                l.split("//")
+                    .next()
+                    .unwrap_or("")
+                    .split(|c: char| !ident(c))
+            })
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn a_draw_names_its_own_values_with_ghees_prefix() {
+        let draw = [
+            DRAW_VERTEX_HEAD,
+            OUTLINE_VERTEX_MAIN,
+            OUTLINE_FRAGMENT_HEAD,
+            OUTLINE_FRAGMENT_TAIL,
+            MTSDF_VERTEX_MAIN,
+            MTSDF_FRAGMENT_HEAD,
+            MTSDF_FRAGMENT_TAIL,
+            BOX_FRAGMENT,
+            crate::colour::VERTEX_MAIN,
+            crate::colour::FRAGMENT,
+        ];
+        let mut seen: Vec<String> = Vec::new();
+        for w in draw.iter().flat_map(|t| words(t)) {
+            if w.starts_with("glyph_") && !w.ends_with("_needs_fill_mtsdf") {
+                assert!(DRAW_NAMES.contains(&w.as_str()), "{w}");
+                seen.push(w);
+            }
+        }
+        assert!(DRAW_NAMES.iter().all(|n| seen.iter().any(|s| s == n)));
+        assert!(!draw.iter().flat_map(|t| words(t)).any(|w| w == "vflip"));
+    }
+
+    #[test]
+    fn a_text_makes_its_names_for_an_author_and_ghees_own() {
+        let made = template_names("label");
+        let mut author: Vec<&String> = made.iter().filter(|n| !n.starts_with("ghee_")).collect();
+        author.sort();
+        author.dedup();
+        assert_eq!(author, ["label_cover", "label_size"]);
+        for n in [
+            "ghee_label_tex",
+            "ghee_label_atlas",
+            "ghee_label_atlas_size",
+            "ghee_label_emoji",
+        ] {
+            assert!(made.iter().any(|m| m == n), "{n}");
+        }
+        // Two texts never meet in a name, whatever their names.
+        let texts = [
+            "a",
+            "a_tex",
+            "a_atlas",
+            "a_emoji",
+            "a_atlas_size",
+            "a_size",
+            "a_cover",
+            "ghee_a",
+        ];
+        for (i, x) in texts.iter().enumerate() {
+            for y in &texts[i + 1..] {
+                let (mx, my) = (template_names(x), template_names(y));
+                let met: Vec<&String> = mx.iter().filter(|n| my.contains(n)).collect();
+                assert!(met.is_empty(), "{x} and {y} meet in {met:?}");
+            }
+        }
+    }
 
     fn laid(words: &str, align: Align) -> (Vec<Placed>, f64) {
         let path = concat!(

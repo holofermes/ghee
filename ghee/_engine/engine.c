@@ -196,7 +196,7 @@ static double ms_between(struct timespec a, struct timespec b) {
     return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
 }
 
-// vflip = -1 renders geometry y-mirrored: used when a pass draws straight into
+// ghee_vflip = -1 renders geometry y-mirrored: used when a pass draws straight into
 // the window surface, which Mesa stores top row first. A lent scanout buffer is
 // an FBO and keeps GL's row order, the order the readback outputs carry, so a
 // pass draws into it unmirrored. The fragment's v_texCoord is untouched, so
@@ -205,10 +205,10 @@ static const char *vertex_shader_source =
     "#version 100\n"
     "attribute vec4 position;"
     "attribute vec2 texCoord;"
-    "uniform float vflip;"
+    "uniform float ghee_vflip;"
     "varying vec2 v_texCoord;"
     "void main() {"
-    "   gl_Position = vec4(position.x, position.y * vflip, position.z, position.w);"
+    "   gl_Position = vec4(position.x, position.y * ghee_vflip, position.z, position.w);"
     "   v_texCoord = texCoord;"
     "}";
 
@@ -311,7 +311,7 @@ static GLuint create_program(GheeScene *g, const char *vertex_source, const char
 
 static const char *const quad_attribs[] = { "position", "texCoord" };
 static const char *const layer_attribs[MP_LAYER_ATTRIBS] = {
-    "glyph_a0", "glyph_a1", "glyph_a2", "glyph_a3"
+    "ghee_a0", "ghee_a1", "ghee_a2", "ghee_a3"
 };
 
 // A program on the shared full-screen quad vertex shader.
@@ -1096,7 +1096,7 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
         loc->asset[a] = glGetUniformLocation(prog, g->mp_asset_name[a]);
         loc->assetSize[a] = glGetUniformLocation(prog, nm);
     }
-    loc->vflip = glGetUniformLocation(prog, "vflip");
+    loc->vflip = glGetUniformLocation(prog, "ghee_vflip");
     if (loc->vflip >= 0) glUniform1f(loc->vflip, 1.0f);
 }
 
@@ -1840,7 +1840,7 @@ static bool ensure_blit(GheeScene *g) {
     g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
     g->blit_opaque = glGetUniformLocation(g->blit_prog, "opaque");
     glUseProgram(g->blit_prog);   // shared VS: neutral vflip (blit flips in the fragment)
-    const GLint bvf = glGetUniformLocation(g->blit_prog, "vflip");
+    const GLint bvf = glGetUniformLocation(g->blit_prog, "ghee_vflip");
     if (bvf >= 0) glUniform1f(bvf, 1.0f);
     return true;
 }

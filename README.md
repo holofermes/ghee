@@ -262,6 +262,16 @@ that declare `width`, `height` and `format` (`u8` or little-endian
 `f32`), and `components` picks 1, 3 or 4 values per pixel, 1 by default.
 A `.ttf` or `.otf` file is a font for a [text](#text), and only the text reads it.
 
+Some names belong to ghee. `time`, `DT`, `frame`, `resolution`, `v_texCoord`
+and `iChannel0` and up are built in, and every name that ghee writes into a
+shader for itself starts with `ghee_`, so no param, array, asset or text takes
+one of them. Each declaration makes GLSL names in the passes that it reaches:
+a param its own name, an array `<name>_tex` and the readers in the preamble
+above, an asset `<name>` and `<name>_size`, a text `<name>_cover` and
+`<name>_size`, and draws the `glyph_` names listed under [Draws](#draws), in
+every pass of the scene. A scene where two declarations make one name in a
+pass fails to load, and the error names both.
+
 ## Text
 
 A scene draws text on the GPU from a font asset. It declares the text under

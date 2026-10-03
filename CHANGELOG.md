@@ -72,9 +72,15 @@
   and count `error_line` in that draw's GLSL.
 - Edit a free-text string param in the console over several lines.
 - Show in the console why the server refused a posted scene.
-- Refuse a scene where a param, an array, an image asset or another text
-  takes a GLSL name made by a text, such as `<name>_w` or `<name>_atlas`, and
-  name both in the error.
+- Refuse a scene where two declarations make one GLSL name in a pass, such
+  as a param `title_size` beside a text `title`, and name both in the error.
+- Refuse `time`, `DT`, `frame`, `resolution`, `v_texCoord` and `iChannel0`
+  and up as the name of a param, an array, an asset or a text, and any name
+  that starts with `ghee_`, which ghee takes for every name that it writes
+  into a shader for itself.
+- Rename an ISF input or pass target named like a built-in, such as `frame`,
+  or named with the `ghee_` prefix, and rename an input's param with it,
+  where an input named `time` kept the name on its param.
 - Declare a vec or color param as one `uniform vec2`, `vec3` or `vec4`, so a
   local of its name shadows it as it shadows any uniform, and `.bg` beside a
   color named `bg` selects the field. The param was a `#define` over one
@@ -93,8 +99,6 @@
   `false` on a draw, `emoji=` on `ghee.Draw`, to choose otherwise.
 - Draw a text from a list of fonts in Python,
   `ghee.Text("words", ["sans", "emoji"])`.
-- Refuse a text named `glyph` or named with the `glyph_` prefix, whose GLSL
-  names fall among ghee's `glyph_` names.
 - Encode a frame under 16384 pixels in hardware, scaled up by the smallest
   whole factor that reaches 16384 with each pixel a square block, where the
   encoder refused it. A 128x32 panel streams at 256x64.

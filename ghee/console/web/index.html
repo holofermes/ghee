@@ -954,7 +954,8 @@ function layerTab(p, i, k){
   const lbl = el("span", "lbl");
   lbl.appendChild(el("span", "tp", p.name + " ›"));
   lbl.appendChild(document.createTextNode(" " + layerLabels(p)[k]));
-  lbl.title = `a layer of text ${p.layers[k].text} in pass ${p.name}`;
+  lbl.title = `a layer of text ${p.layers[k].text} in pass ${p.name}, double-click to rename`;
+  lbl.addEventListener("dblclick", ()=> renameLayer(i, k, lbl));
   tab.appendChild(lbl);
   if (open && (hasCode(p) || p.layers.length > 1))   // a pass with no code keeps one layer
     tabActs(tab, [{cls: "x", icon: "×", title: "remove layer " + layerTabName(p, k), fn: ()=> delLayer(i, k)}]);
@@ -1140,6 +1141,25 @@ function renamePass(i, lbl){
   };
   inp.addEventListener("blur", commit);
   inp.addEventListener("keydown", e=>{ if(e.key==="Enter") inp.blur(); if(e.key==="Escape"){ inp.value=work.passes[i].name; inp.blur(); } });
+  lbl.replaceWith(inp); inp.focus(); inp.select();
+}
+
+// An empty name leaves the layer to go by its text. The server judges the
+// name, and its refusal shows under the editor.
+function renameLayer(i, k, lbl){
+  const p = work.passes[i], d = p.layers[k], inp = el("input");
+  inp.value = d.name || ""; inp.placeholder = layerLabels(p)[k];
+  inp.spellcheck = false; inp.autocomplete = "off"; inp.setAttribute("autocapitalize", "off");
+  const commit = ()=>{
+    const nn = inp.value.trim();
+    if (nn !== (d.name || "")){
+      if (nn) d.name = nn; else delete d.name;
+      p.layersEdited = true; markDirty(); postScene();
+    }
+    buildTabs(); buildLayerCtl();
+  };
+  inp.addEventListener("blur", commit);
+  inp.addEventListener("keydown", e=>{ if(e.key==="Enter") inp.blur(); if(e.key==="Escape"){ inp.value = d.name || ""; inp.blur(); } });
   lbl.replaceWith(inp); inp.focus(); inp.select();
 }
 

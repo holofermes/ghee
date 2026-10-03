@@ -229,6 +229,10 @@
 - Mark a compile error in a console editor on the line that the error
   names when longer lines above it wrap, where the mark counted one row a
   line and sat too high on a phone.
+- Name a layer in the console with a double-click on its tab, as a pass
+  takes its name, and clear the name to leave the layer to go by its text.
+  The server refuses a name that the scene JSON refuses, and the console
+  shows why.
 
 ## 0.4.0 - 2026-08-06
 

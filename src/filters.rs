@@ -507,12 +507,10 @@ mod tests {
         .unwrap();
         apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
         let mut doc = sc.to_dict();
-        assert_eq!(
-            doc["assets"]["frc256_bluenoise"]["from_filter"],
-            json!("frc256")
-        );
+        // A filter's asset stays out of the document, and comes back with its
+        // filter.
+        assert!(doc.get("assets").is_none(), "{doc}");
         doc["passes"][1]["code"] = json!("void main(){ gl_FragColor = vec4(0.0); }");
-        doc.as_object_mut().unwrap().remove("assets");
         let mut back = Scene::from_dict(&doc, None, None).unwrap();
         rebuild_filters(&mut back, None).unwrap();
         assert_eq!(back.passes[1].code, sc.passes[1].code);

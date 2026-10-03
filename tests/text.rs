@@ -821,7 +821,7 @@ fn a_text_declaration_names_what_it_lacks() {
 #[test]
 fn a_font_asset_takes_no_image_keys_and_no_pass_sees_it() {
     for (k, v) in [
-        ("filter", json!("linear")),
+        ("sampling", json!("linear")),
         ("width", json!(4)),
         ("components", json!(1)),
     ] {

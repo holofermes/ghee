@@ -258,7 +258,7 @@ variable, colon-separated directories.
 
 Every pass samples it as `uniform sampler2D noise` and reads a
 `uniform vec2 noise_size` of (width, height). Sampling is `nearest`
-unless the asset sets `"filter": "linear"`.
+unless the asset sets `"sampling": "linear"`.
 
 `.png` and `.jpg` files are supported, as well as `.raw`: bare pixels
 that declare `width`, `height` and `format` (`u8` or little-endian

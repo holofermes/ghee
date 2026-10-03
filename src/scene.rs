@@ -874,7 +874,7 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
 pub struct Asset {
     pub name: String,
     pub file: String,
-    /// GL_LINEAR when true. Nearest is the default.
+    /// The asset's `sampling`: GL_LINEAR when true, nearest by default.
     pub linear: bool,
     /// The declared layout of a .raw file. None for a decoded format.
     pub raw: Option<RawLayout>,
@@ -884,8 +884,8 @@ pub struct Asset {
     /// them.
     pub font: Option<crate::text::Font>,
     /// The filter that declared the asset, empty for the scene's own. The
-    /// filter loads it, its name carries the filter's as a prefix, and a save
-    /// leaves it out.
+    /// filter loads it, its name carries the filter's as a prefix, and the
+    /// scene's JSON leaves it out.
     pub from_filter: String,
 }
 
@@ -955,12 +955,18 @@ impl Asset {
             Some(Value::String(s)) => s.clone(),
             Some(v) => bail!("asset '{name}' 'file' needs a filename, got {}", py_repr(v)),
         };
-        let linear = match o.get("filter").filter(|v| !v.is_null()) {
+        if o.contains_key("filter") {
+            bail!("asset '{name}' takes 'nearest' or 'linear' in 'sampling', got 'filter'");
+        }
+        if o.contains_key("from_filter") {
+            bail!("asset '{name}' takes no 'from_filter': a filter declares its own assets");
+        }
+        let linear = match o.get("sampling").filter(|v| !v.is_null()) {
             None => false,
             Some(Value::String(s)) if s == "nearest" => false,
             Some(Value::String(s)) if s == "linear" => true,
             Some(v) => bail!(
-                "asset '{name}' filter needs 'nearest' or 'linear', got {}",
+                "asset '{name}' sampling needs 'nearest' or 'linear', got {}",
                 py_repr(v)
             ),
         };
@@ -1023,7 +1029,7 @@ impl Asset {
                 None
             }
             "ttf" | "otf" => {
-                for k in ["width", "height", "format", "components", "filter"] {
+                for k in ["width", "height", "format", "components", "sampling"] {
                     if o.contains_key(k) {
                         bail!("asset '{name}' takes no '{k}', a .{ext} file is a font");
                     }
@@ -1035,14 +1041,6 @@ impl Asset {
                 py_str_repr(&file)
             ),
         };
-        let from_filter = match o.get("from_filter").filter(|v| !v.is_null()) {
-            None => String::new(),
-            Some(Value::String(s)) => s.clone(),
-            Some(v) => bail!(
-                "asset '{name}' from_filter needs a filter name, got {}",
-                py_repr(v)
-            ),
-        };
         Ok(Asset {
             name: name.to_string(),
             file,
@@ -1050,7 +1048,7 @@ impl Asset {
             raw,
             image: None,
             font: None,
-            from_filter,
+            from_filter: String::new(),
         })
     }
 
@@ -1069,13 +1067,7 @@ impl Asset {
             }
         }
         if self.linear {
-            d.insert("filter".to_string(), Value::from("linear"));
-        }
-        if !self.from_filter.is_empty() {
-            d.insert(
-                "from_filter".to_string(),
-                Value::from(self.from_filter.clone()),
-            );
+            d.insert("sampling".to_string(), Value::from("linear"));
         }
         Value::Object(d)
     }
@@ -2159,10 +2151,16 @@ impl Scene {
             out.insert("params".to_string(), Value::Object(m));
         }
         // Only the file references. The console posts them back as they are,
-        // and the server resolves them against its store.
-        if !self.assets.is_empty() {
+        // and the server resolves them against its store. A filter's asset
+        // comes back with its filter.
+        let own: Vec<&Asset> = self
+            .assets
+            .iter()
+            .filter(|a| a.from_filter.is_empty())
+            .collect();
+        if !own.is_empty() {
             let mut m = Map::new();
-            for a in &self.assets {
+            for a in own {
                 m.insert(a.name.clone(), a.to_dict());
             }
             out.insert("assets".to_string(), Value::Object(m));
@@ -3412,7 +3410,7 @@ mod tests {
                 "stbn": {"file": "stbn.raw", "width": 64, "height": 32, "format": "f32"},
                 "mask": {"file": "mask.raw", "width": 8, "height": 8, "format": "u8",
                          "components": 4},
-                "logo": {"file": "logo.png", "filter": "linear"},
+                "logo": {"file": "logo.png", "sampling": "linear"},
                 "photo": {"file": "photo.jpg"},
             },
         });
@@ -3460,10 +3458,32 @@ mod tests {
     }
 
     #[test]
-    fn asset_filter_is_nearest_or_linear() {
-        let d = asset_scene(json!({"d": {"file": "logo.png", "filter": "cubic"}}));
+    fn asset_sampling_is_nearest_or_linear() {
+        let d = asset_scene(json!({"d": {"file": "logo.png", "sampling": "cubic"}}));
         let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(e.contains("'nearest' or 'linear'"), "{e}");
+        assert!(
+            e.ends_with("asset 'd' sampling needs 'nearest' or 'linear', got 'cubic'"),
+            "{e}"
+        );
+        for (a, want) in [
+            (
+                json!({"file": "logo.png", "filter": "linear"}),
+                "asset 'd' takes 'nearest' or 'linear' in 'sampling', got 'filter'",
+            ),
+            (
+                json!({"file": "logo.png", "from_filter": "frc256"}),
+                "asset 'd' takes no 'from_filter': a filter declares its own assets",
+            ),
+            (
+                json!({"file": "sans.ttf", "sampling": "linear"}),
+                "asset 'd' takes no 'sampling', a .ttf file is a font",
+            ),
+        ] {
+            let e = Scene::from_dict(&asset_scene(json!({ "d": a })), None, None)
+                .unwrap_err()
+                .to_string();
+            assert!(e.ends_with(want), "{e}");
+        }
     }
 
     #[test]

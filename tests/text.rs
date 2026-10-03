@@ -882,13 +882,11 @@ fn a_text_named_like_a_layer_helper_is_refused() {
         "scene: text 'glyph' and the layers both declare 'glyph_cover'"
     );
     // glyphs declares names of its own, beside ghee's.
-    for name in ["glyphs"] {
-        let mut doc = texts_scene(json!({name: {"font": "sans"}}));
-        doc["passes"][0]["layers"] = json!([{"text": name, "fragment": WHITE,
-            "vertex": "vec2 glyph_place(vec2 em) { return em * 40.0; }"}]);
-        let (_g, mut r) = gpu(W, H);
-        assert_eq!(r.setup(&loaded(&doc)).unwrap(), "", "{name}");
-    }
+    let mut doc = texts_scene(json!({"glyphs": {"font": "sans"}}));
+    doc["passes"][0]["layers"] = json!([{"text": "glyphs", "fragment": WHITE,
+        "vertex": "vec2 glyph_place(vec2 em) { return em * 40.0; }"}]);
+    let (_g, mut r) = gpu(W, H);
+    assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
 }
 
 #[test]

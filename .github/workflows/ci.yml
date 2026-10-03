@@ -24,3 +24,13 @@ jobs:
       - run: cargo test --release
         env:
           RUSTFLAGS: --cfg ghee_no_gpu
+      - name: uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - run: uvx ruff check python
+      # The shim tests drive the scene shim with no GL device, through the wheel
+      # that pip installs.
+      - run: cd python && uvx maturin build --release --compatibility linux
+      - run: >-
+          uv run --no-project --no-cache --with pytest
+          --with python/target/wheels/ghee_render-*.whl
+          pytest python/tests/test_shim.py

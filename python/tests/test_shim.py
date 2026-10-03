@@ -910,7 +910,6 @@ def test_open_without_the_native_module_names_it(monkeypatch):
         def find_spec(self, name, path=None, target=None):
             if name == "ghee._native":
                 raise ModuleNotFoundError(f"No module named {name!r}", name=name)
-            return None
 
     monkeypatch.delitem(sys.modules, "ghee._native", raising=False)
     monkeypatch.delattr(ghee, "_native", raising=False)

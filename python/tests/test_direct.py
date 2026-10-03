@@ -316,6 +316,7 @@ def test_a_scene_file_renders_itself(tmp_path):
             "0.5",
         ],
         capture_output=True,
+        check=False,
         text=True,
         timeout=120,
     )
@@ -381,6 +382,7 @@ def test_a_direct_run_finds_its_font_beside_its_script(tmp_path):
         ],
         cwd=tmp_path,
         capture_output=True,
+        check=False,
         text=True,
         timeout=120,
     )

@@ -20,3 +20,8 @@ Repository = "https://github.com/holofermes/ghee"
 module-name = "ghee._native"
 python-source = "."
 features = ["pyo3/extension-module"]
+
+[tool.ruff.lint]
+# A scene that the shim refuses raises ValueError whatever the type of the value
+# that it refused, as the native module does.
+ignore = ["TRY004"]

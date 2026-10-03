@@ -4,12 +4,11 @@ A scene, a GLSL or a param error is a ValueError. A driver, a system or a
 thread error is a RuntimeError.
 """
 
+import concurrent.futures
 import json
-import queue
 import shutil
 import subprocess
 import sys
-import threading
 
 import pytest
 from conftest import BROKEN, RED, REPO, scene_file
@@ -31,6 +30,7 @@ def test_bad_glsl_reads_the_same_as_the_command_line(tmp_path):
     ran = subprocess.run(
         [str(CLI), "render", path, "-o", str(tmp_path / "out.png"), "--size", "8x8"],
         capture_output=True,
+        check=False,
         text=True,
     )
     assert ran.returncode == 1
@@ -135,6 +135,7 @@ def test_words_past_the_texture_from_a_procedural_scene_end_no_run(tmp_path):
         [str(CLI), "render", str(path), "-o", str(tmp_path / "f.####.png")]
         + ["--size", "48x16", "--frames", "20", "--fps", "20", "--timestep", "0"],
         capture_output=True,
+        check=False,
         text=True,
         timeout=120,
     )
@@ -162,9 +163,8 @@ def test_a_feed_of_the_wrong_count():
 
 
 def test_a_feed_that_carries_no_numbers():
-    with ghee.open(RED, width=8, height=8) as h:
-        with pytest.raises(ValueError):
-            h.feed("level", "eight")
+    with ghee.open(RED, width=8, height=8) as h, pytest.raises(ValueError):
+        h.feed("level", "eight")
 
 
 def test_an_output_no_driver_answers_to():
@@ -190,30 +190,13 @@ def test_a_size_takes_both_sides():
 
 
 def test_a_call_from_another_thread():
-    answers = queue.Queue()
     with ghee.open(RED, width=8, height=8) as h:
-
-        def elsewhere():
-            for call in [
-                h.frame,
-                h.skip,
-                h.pixels,
-                h.close,
-                lambda: h.feed("level", [1.0] * 8),
-            ]:
-                try:
-                    call()
-                    answers.put(None)
-                except BaseException as e:
-                    answers.put(e)
-
-        worker = threading.Thread(target=elsewhere)
-        worker.start()
-        worker.join()
-        while not answers.empty():
-            raised = answers.get()
-            assert isinstance(raised, RuntimeError), raised
-            assert "thread-affine" in str(raised)
+        calls = [h.frame, h.skip, h.pixels, h.close, lambda: h.feed("level", [1.0] * 8)]
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            raised = [pool.submit(call).exception() for call in calls]
+        for e in raised:
+            assert isinstance(e, RuntimeError), e
+            assert "thread-affine" in str(e)
         # the handle still works on its own thread
         h.feed("level", [1.0] * 8)
         h.frame()

@@ -1,5 +1,6 @@
 """The console the host embeds: what it serves, and what a /set does."""
 
+import concurrent.futures
 import json
 import os
 import shutil
@@ -66,31 +67,24 @@ def messages(r, count):
     return out
 
 
-def watching(h, read, limit=30.0):
-    """Run `read` against the console while the host renders. The stream
-    advances with the host's frames, so something has to draw."""
-    box = {}
-    done = threading.Event()
+def watching(h, read, limit=30.0, step=None):
+    """Run `read` against the console while the host renders, and raise what
+    `read` raises. The stream advances with the host's frames, so something has
+    to draw: `step`, else a fed frame."""
 
-    def watcher():
-        try:
-            box["got"] = read()
-        except Exception as e:  # the reader's failure belongs to the test
-            box["error"] = e
-        finally:
-            done.set()
-
-    reader = threading.Thread(target=watcher)
-    reader.start()
-    end = time.monotonic() + limit
-    while not done.is_set() and time.monotonic() < end:
+    def frame():
         h.feed("level", LEVEL)
         h.frame()
-    reader.join(5)
-    if "error" in box:
-        raise box["error"]
-    assert "got" in box, f"the stream gave nothing in {limit}s"
-    return box["got"]
+
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        got = pool.submit(read)
+        end = time.monotonic() + limit
+        while not got.done() and time.monotonic() < end:
+            (step or frame)()
+        try:
+            return got.result(timeout=5)
+        except concurrent.futures.TimeoutError:
+            pytest.fail(f"the stream gave nothing in {limit}s")
 
 
 @pytest.fixture
@@ -364,29 +358,12 @@ def test_a_stream_with_no_encoder_answers_503_with_the_reason(monkeypatch):
 @needs_ffmpeg
 def test_h264_reaches_a_settled_host(served):
     h, port = served
-    box = {}
-    done = threading.Event()
 
-    def watcher():
-        try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/h264", timeout=20
-            ) as r:
-                box["got"] = messages(r, 2)
-        except Exception as e:
-            box["error"] = e
-        finally:
-            done.set()
+    def read():
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20) as r:
+            return messages(r, 2)
 
-    reader = threading.Thread(target=watcher)
-    reader.start()
-    end = time.monotonic() + 30.0
-    while not done.is_set() and time.monotonic() < end:
-        h.skip()
-    reader.join(5)
-    if "error" in box:
-        raise box["error"]
-    assert [t for t, _ in box["got"]] == [0, 1]
+    assert [t for t, _ in watching(h, read, step=h.skip)] == [0, 1]
 
 
 @needs_ffmpeg

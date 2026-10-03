@@ -852,20 +852,12 @@ fn size_value(size: ArraySize) -> Value {
 
 impl ArrayInput {
     pub fn new(name: &str, size: Value) -> Result<ArrayInput> {
-        ArrayInput::build(name, size, false)
-    }
-
-    /// `pair` marks a [w, h] that from_dict rebuilds. The size check reports it
-    /// as a tuple, `(w, h)`.
-    fn build(name: &str, size: Value, pair: bool) -> Result<ArrayInput> {
         let stored = if let Value::Array(s) = &size {
             if s.len() != 2 || !s.iter().all(is_dim) {
-                let got = if pair && s.len() == 2 {
-                    format!("({}, {})", py_repr(&s[0]), py_repr(&s[1]))
-                } else {
+                bail!(
+                    "array '{name}' size needs two ints in 1..{MAX_DIM} [w, h], got {}",
                     py_repr(&size)
-                };
-                bail!("array '{name}' size needs two ints in 1..{MAX_DIM} [w, h], got {got}");
+                );
             }
             let (w, h) = (s[0].as_i64().unwrap_or(0), s[1].as_i64().unwrap_or(0));
             if w * h > MAX_TEXELS {
@@ -913,11 +905,7 @@ impl ArrayInput {
                     py_repr(size)
                 );
             }
-            return ArrayInput::build(
-                &name,
-                Value::Array(vec![to_int(&a[0]), to_int(&a[1])]),
-                true,
-            );
+            return ArrayInput::new(&name, Value::Array(vec![to_int(&a[0]), to_int(&a[1])]));
         }
         ArrayInput::new(&name, to_int(size))
     }
@@ -1262,7 +1250,7 @@ impl Channel {
     pub fn from_dict(what: &str, d: &Value) -> Result<Channel> {
         let Value::Object(o) = d else {
             bail!(
-                "a channel needs an object like {{'buffer': 'pass'}}, got {}",
+                "a channel needs an object like {{\"buffer\": \"pass\"}}, got {}",
                 py_repr(d)
             );
         };

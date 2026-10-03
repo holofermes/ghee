@@ -171,8 +171,9 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
         },
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
         texts=[
-            ghee.Text("words", "sans", "hi", align="right", atlas={"px_per_em": 24}),
+            ghee.Text("words", "sans", "hi", align="right", atlas={"font_size": 24}),
             ghee.Text("title", "fonts/DejaVuSans-Latin.ttf", "ho", fill="slug"),
+            ghee.Text("plain", value="ok"),
         ],
         passes=[
             ghee.Pass(
@@ -182,9 +183,16 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
                 arrays=[ghee.ArrayInput("level", 4), ghee.ArrayInput("mask", (4, 2))],
                 layers=[
                     ghee.Layer(
-                        "words", INK, PLACE, blend="add", pad=0.0625, name="glow"
+                        "words",
+                        INK,
+                        PLACE,
+                        blend="add",
+                        pad=0.0625,
+                        fade=0.03125,
+                        name="glow",
                     ),
-                    ghee.Layer("title", px_per_em=24, blend="replace", emoji=False),
+                    ghee.Layer("title", font_size=24, blend="replace", emoji=False),
+                    ghee.Layer("plain", at=(2, 3)),
                 ],
             ),
             ghee.Pass(

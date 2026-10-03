@@ -40,10 +40,10 @@ import struct
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
     from typing import SupportsFloat
 
     from typing_extensions import Self
@@ -56,6 +56,13 @@ Align = Literal["left", "center", "right"]
 Fill = Literal["mtsdf", "slug"]
 Blend = Literal["over", "add", "replace"]
 ArgType = Literal["string", "int", "float", "size", "bool"]
+
+
+class Atlas(TypedDict):
+    """The MTSDF atlas of a Text: the texels per em of a glyph."""
+
+    font_size: int
+
 
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
 WIRE = "GHEE_WIRE"
@@ -182,11 +189,15 @@ class Layer:
     `vertex` defines vec2 glyph_place(vec2 em), which takes a point of the
     block, in em from its top left with y down, to the pass pixel where it
     lands.
-    `px_per_em` centres the block in the pass at that many pixels per em, in
-    place of `vertex`.
-    `blend` is over, add or replace.
+    `font_size` draws the block at that many pixels per em, and `at` puts its
+    top left at that pixel of the pass, [x, y] with y down. Without `at` the
+    block sits centred in the pass, and without `font_size` it takes the
+    largest size that fits. `vertex` takes the place of both.
     `pad` is how far past the letters the layer reaches, in em, for a glow or
-    an outline.
+    an outline. An MTSDF layer fades to zero at the edge of its pad, over the
+    last `fade` em: a quarter of `pad` by default, and 0 turns the fade off.
+    float glyph_fade holds the factor in the fragment GLSL.
+    `blend` is over, add or replace.
     `emoji` sets whether the layer paints the text's colour glyphs. None
     leaves them to the last layer of the text in its pass.
     `name` names the layer in errors and in the console: ASCII letters,
@@ -198,11 +209,13 @@ class Layer:
     text: str
     fragment: str | None = None
     vertex: str | None = None
-    px_per_em: float | None = None
+    font_size: float | None = None
+    at: Sequence[float] | None = None
+    fade: float | None = None
     blend: Blend = "over"
-    pad: float = 0.0
-    emoji: bool | None = None
+    pad: float | None = None
     name: str | None = None
+    emoji: bool | None = None
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
         # The keywords that the scene JSON renamed, which the dataclass would
@@ -224,14 +237,18 @@ class Layer:
         d["text"] = self.text
         if self.vertex is not None:
             d["vertex"] = self.vertex
-        if self.px_per_em is not None:
-            d["px_per_em"] = _floats(self.px_per_em)
+        if self.font_size is not None:
+            d["font_size"] = _floats(self.font_size)
+        if self.at is not None:
+            d["at"] = _floats(self.at)
         if self.fragment is not None:
             d["fragment"] = self.fragment
         if self.blend != "over":
             d["blend"] = self.blend
-        if self.pad != 0.0:
+        if self.pad is not None:
             d["pad"] = _floats(self.pad)
+        if self.fade is not None:
+            d["fade"] = _floats(self.fade)
         if self.emoji is not None:
             d["emoji"] = _plain(self.emoji)
         return d
@@ -312,31 +329,34 @@ class Text:
     `value` holds the words. ghee declares the scene string param of the
     text's name, and set_param on it changes the words, live.
     Every scene pass, filter passes excepted, reads them with
-    float <name>_cover(vec2 p, float ppem): p in em from the top left of
-    the block, y down like v_texCoord, and ppem the pixels per em.
+    float <name>_cover(vec2 p, float font_size): p in em from the top left of
+    the block, y down like v_texCoord, and font_size the pixels per em.
     vec2 <name>_size is the block, in em.
     `font` is a font file (.ttf or .otf), resolved as an Asset's file is, or
     the name of a font Asset of the scene, or a list that mixes both: each
-    character draws from the first font whose cmap holds it.
+    character draws from the first font whose cmap holds it. None draws from
+    the DejaVu Sans Latin that ghee carries.
     `align` lines up the lines of the block: left, center or right.
     `fill` is where a Layer of the text takes its coverage from: mtsdf reads
     an atlas of the glyphs' distance fields, fast and with glyph_dist and
-    glyph_soft, and slug computes Slug's exact coverage from the curves,
+    glyph_round_dist, and slug computes Slug's exact coverage from the curves,
     exact edges at any size.
     `atlas` sets the texels per em of a glyph in the MTSDF atlas,
-    {"px_per_em": 32} by default. The atlas's field reaches the largest pad
+    {"font_size": 32} by default. The atlas's field reaches the largest pad
     of the text's layers.
     """
 
     name: str
-    font: str | os.PathLike[str] | list[str | os.PathLike[str]]
+    font: str | os.PathLike[str] | list[str | os.PathLike[str]] | None = None
     value: str = ""
     align: Align = "left"
     fill: Fill = "mtsdf"
-    atlas: dict[str, int] | None = None
+    atlas: Atlas | None = None
 
     def to_dict(self) -> dict:
-        d: dict = {"value": self.value, "font": _plain(self.font)}
+        d: dict = {"value": self.value}
+        if self.font is not None:
+            d["font"] = _plain(self.font)
         if self.align != "left":
             d["align"] = self.align
         if self.fill != "mtsdf":

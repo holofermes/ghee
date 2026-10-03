@@ -355,23 +355,27 @@ def test_a_layer_and_its_text_take_the_scene_json_keys():
 def test_a_layer_and_a_text_leave_their_defaults_out():
     shim = load()
     layer = shim.Layer("words", INK, PLACE)
-    assert (layer.blend, layer.pad, layer.emoji) == ("over", 0.0, None)
+    assert (layer.blend, layer.pad, layer.emoji) == ("over", None, None)
+    assert (layer.font_size, layer.at, layer.fade) == (None, None, None)
     assert layer.to_dict() == {"text": "words", "vertex": PLACE, "fragment": INK}
+    assert shim.Layer("words").to_dict() == {"text": "words"}
     text = shim.Text("words", "sans")
     assert (text.value, text.fill, text.atlas) == ("", "mtsdf", None)
     assert text.to_dict() == {"value": "", "font": "sans"}
+    # a text with no font draws from the font that ghee carries
+    assert shim.Text("words", value="hi").to_dict() == {"value": "hi"}
     assert "layers" not in shim.Pass("main", "void main(){}").to_dict()
 
 
-def test_a_layer_with_no_vertex_sends_px_per_em_and_with_no_fragment_none():
+def test_a_layer_places_its_words_by_font_size_and_at_and_fades_its_pad():
     shim = load()
-    layer = shim.Layer("words", px_per_em=48)
-    assert layer.to_dict() == {"text": "words", "px_per_em": 48.0}
-    assert json.dumps(layer.to_dict()) == '{"text": "words", "px_per_em": 48.0}'
-    assert shim.Layer("words", vertex=PLACE).to_dict() == {
-        "text": "words",
-        "vertex": PLACE,
-    }
+    layer = shim.Layer("words", font_size=48, at=(4, 8), pad=1, fade=0.5)
+    assert json.dumps(layer.to_dict()) == (
+        '{"text": "words", "font_size": 48.0, "at": [4.0, 8.0], "pad": 1.0, '
+        '"fade": 0.5}'
+    )
+    text = shim.Text("words", atlas={"font_size": 24})
+    assert text.to_dict() == {"value": "", "atlas": {"font_size": 24}}
 
 
 def test_a_layer_sends_emoji_when_it_is_set():
@@ -411,7 +415,7 @@ def test_a_pass_of_layers_alone_has_no_code():
 def test_a_keyword_that_a_layer_renamed_names_the_new_one(keyword, error):
     shim = load()
     with pytest.raises(TypeError) as raised:
-        shim.Layer("words", px_per_em=32, **{keyword: INK})
+        shim.Layer("words", font_size=32, **{keyword: INK})
     assert str(raised.value) == error
 
 

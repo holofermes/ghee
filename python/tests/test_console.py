@@ -107,7 +107,9 @@ def test_the_console_lists_a_text_problem_apart_from_the_error(tmp_path):
     doc = {
         "version": 1,
         "texts": {"words": {"value": "hi", "font": "Missing.ttf"}},
-        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}],
+        "passes": [
+            {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}
+        ],
     }
     with ghee.open(doc, width=16, height=16, stats=port, base_dir=tmp_path) as h:
         h.frame()

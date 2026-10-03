@@ -2466,10 +2466,12 @@ fn layers_round_trip_and_over_and_no_pad_are_the_defaults() {
         {"text": "label", "at": [0.0, 16.0]},
         {"text": "label", "font_size": 12.0, "at": [2.0, -4.5]},
         {"text": "label"},
+        {"text": "label", "pad": 0.25, "fade": 0.0},
+        {"text": "label", "pad": 0.25, "fade": 0.125},
     ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let back = sc.to_dict();
-    for k in 4..8 {
+    for k in 4..10 {
         assert_eq!(
             back["passes"][0]["layers"][k],
             doc["passes"][0]["layers"][k]
@@ -2653,6 +2655,14 @@ fn a_layer_declaration_names_what_it_lacks() {
             "pass 'main' layer 'label' pad needs a number of em, 0 or more, got -1",
         ),
         (
+            one(json!({"text": "label", "vertex": place, "pad": 0.25, "fade": 0.5})),
+            "pass 'main' layer 'label' fade needs a number of em from 0 to its pad, 0.25, got 0.5",
+        ),
+        (
+            one(json!({"text": "label", "vertex": place, "fade": -0.1})),
+            "pass 'main' layer 'label' fade needs a number of em from 0 to its pad, 0.0, got -0.1",
+        ),
+        (
             one(json!({"text": "label", "fragment": WHITE, "vertex": place, "alpha": "keep"})),
             "pass 'main' layer 'label' takes no 'alpha': its alpha blends by 'blend', as its \
              colour does",
@@ -2678,6 +2688,13 @@ fn a_layer_declaration_names_what_it_lacks() {
     assert_eq!(
         scene_err(&doc),
         "scene: pass 'd' is filter 'dither', and a filter pass takes no layers"
+    );
+    // A slug layer has no distance to fade by.
+    let mut doc = texts_scene(json!({"label": {"font": "sans", "fill": "slug"}}));
+    doc["passes"][0]["layers"] = json!([{"text": "label", "pad": 0.25, "fade": 0.1}]);
+    assert_eq!(
+        scene_err(&doc),
+        "scene: pass 'main' layer 'label' fade needs \"fill\": \"mtsdf\" on text 'label'"
     );
 }
 
@@ -3009,12 +3026,13 @@ fn glyph_dist_and_glyph_round_dist_draw_an_outline_and_a_glow_by_the_distance() 
         );
         // Red is the fill, green a 3 px ring outside it in a quad padded 4 px,
         // and blue a glow that halves every 1.4 px, in a quad padded 8 px.
+        // Neither fades, so the glow holds its distance out to the pad.
         let mut doc = label_scene(SANS, words, Align::Left, fit);
         doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [
-            {"text": "label", "vertex": fit_place(fit), "blend": "add", "pad": 0.125,
+            {"text": "label", "vertex": fit_place(fit), "blend": "add", "pad": 0.125, "fade": 0,
              "fragment": "void main(){ float g = exp(-max(-glyph_round_dist(), 0.0) / 2.0); \
                       gl_FragColor = vec4(0.0, 0.0, g, 0.0); }"},
-            {"text": "label", "vertex": fit_place(fit), "blend": "add", "pad": 0.0625,
+            {"text": "label", "vertex": fit_place(fit), "blend": "add", "pad": 0.0625, "fade": 0,
              "fragment": "void main(){ float fill = clamp(glyph_dist() + 0.5, 0.0, 1.0); \
                       float ring = clamp(glyph_round_dist() + 3.5, 0.0, 1.0); \
                       gl_FragColor = vec4(fill, ring - fill, 0.0, 0.0); }"},
@@ -3095,10 +3113,11 @@ fn an_mtsdf_layer_pads_its_quads_by_its_pad() {
     let g = &laid.glyphs[0];
     let (_g, mut r) = gpu(w, h);
     // 0.25 em reaches past the field of the least range, 6 texels at 32 px/em.
+    // The layer does not fade, so it lights its quad out to the edge.
     for pad in [0.25, 0.05] {
         let mut doc = label_scene(SANS, "I", Align::Left, fit);
         doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [
-            {"text": "label", "vertex": fit_place(fit), "pad": pad,
+            {"text": "label", "vertex": fit_place(fit), "pad": pad, "fade": 0,
              "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]});
         let frame = render(&mut r, &loaded(&doc));
         // The pixels from the ink box along x, at the middle of the stem.
@@ -3110,6 +3129,84 @@ fn an_mtsdf_layer_pads_its_quads_by_its_pad() {
         );
         assert!(lit(edge.0 - 1.0) && !lit(edge.0 + 1.0), "pad {pad}: right");
         assert!(lit(edge.1 + 1.0) && !lit(edge.1 - 1.0), "pad {pad}: left");
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn an_mtsdf_layer_fades_to_nothing_at_its_pad_by_the_distance_from_the_letters() {
+    let fit = Fit {
+        x: 24.0,
+        y: 8.0,
+        ppem: 64.0,
+    };
+    let laid = lay(SANS, "A", Align::Left);
+    let (w, h) = (
+        (laid.width * fit.ppem + 48.0).ceil() as usize,
+        (laid.height * fit.ppem + 16.0).ceil() as usize,
+    );
+    let pad = 0.25;
+    // Red is the layer's own white, which ghee multiplies by the fade, and
+    // green glyph_fade, so green reads the fade squared.
+    let fragment = "void main(){ gl_FragColor = vec4(1.0, glyph_fade, 0.0, 1.0); }";
+    // A bilinear read of the field falls short of the distance on the ridge
+    // between two edges, by up to half a texel, a pixel here.
+    let px = 1.0 / fit.ppem;
+    let (_g, mut r) = gpu(w, h);
+    // A quarter of the pad by default, the layer's own, and none.
+    for (fade, band) in [(None, pad / 4.0), (Some(0.125), 0.125), (Some(0.0), 0.0)] {
+        let mut doc = label_scene(SANS, "A", Align::Left, fit);
+        let mut layer = json!({"text": "label", "vertex": fit_place(fit), "pad": pad,
+                               "fragment": fragment});
+        if let Some(f) = fade {
+            layer["fade"] = json!(f);
+        }
+        doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [layer]});
+        let frame = render(&mut r, &loaded(&doc));
+        // 1 up to pad - band em from the letters, a smoothstep down to 0 at
+        // pad.
+        let want = |d: f64| match band > 0.0 {
+            true => {
+                let t = ((d - (pad - band)) / band).clamp(0.0, 1.0);
+                255.0 * (1.0 - t * t * (3.0 - 2.0 * t))
+            }
+            false => 255.0,
+        };
+        let g = &laid.glyphs[0];
+        let (mut seen, mut off) = ([0usize; 3], Vec::new());
+        for y in 0..h {
+            for x in 0..w {
+                let p = fit.em(x, y);
+                let past = (0..2)
+                    .map(|a| (g.lo[a] - p[a]).max(p[a] - g.hi[a]))
+                    .fold(f64::MIN, f64::max);
+                let d = laid.distance(p);
+                // Outside the letters, inside the quad less a pixel.
+                if d < px || past > pad - px {
+                    continue;
+                }
+                let at = |c: usize| f64::from(frame[(y * w + x) * 4 + c]);
+                let (lo, hi) = (want(d + px), want(d - px));
+                seen[usize::from(lo < 255.0) + usize::from(hi == 0.0)] += 1;
+                if at(0) < lo - 2.0 || at(0) > hi + 2.0 {
+                    off.push((x, y, d, at(0), lo, hi));
+                }
+                if (at(1) - at(0) * at(0) / 255.0).abs() > 2.0 {
+                    off.push((x, y, d, at(1), at(0), at(0)));
+                }
+            }
+        }
+        let faded = if band > 0.0 { 100 } else { 0 };
+        assert!(
+            seen[0] > 100 && seen[1] >= faded && seen[2] >= faded,
+            "{fade:?}: {seen:?}"
+        );
+        assert!(
+            off.is_empty(),
+            "{fade:?}: {} pixels off, (x, y, d, got, least, most) {:?}",
+            off.len(),
+            &off[..off.len().min(8)]
+        );
     }
 }
 
@@ -3129,7 +3226,7 @@ fn an_mtsdf_field_reaches_the_largest_pad_of_its_texts_layers() {
     );
     // The fill pads nothing, and a glow in a second pass pads 0.5 em, 32 px,
     // which takes a range of 32 texels at 32 px/em. Blue holds the true
-    // distance outside the glyph, 255 at 32 px.
+    // distance outside the glyph, 255 at 32 px, with no fade.
     let pad = 0.5;
     let mut doc = label_scene(SANS, "I", Align::Left, fit);
     let glow =
@@ -3140,8 +3237,8 @@ fn an_mtsdf_field_reaches_the_largest_pad_of_its_texts_layers() {
             {"text": "label", "vertex": fit_place(fit), "fragment": fill}]},
         {"name": "main", "channels": [{"buffer": "fill"}],
          "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
-         "layers": [{"text": "label", "vertex": fit_place(fit), "pad": pad, "blend": "add",
-                    "fragment": glow}]},
+         "layers": [{"text": "label", "vertex": fit_place(fit), "pad": pad, "fade": 0,
+                    "blend": "add", "fragment": glow}]},
     ]);
     let sc = loaded(&doc);
     assert_eq!(sc.atlas_range("label"), 32);
@@ -3217,10 +3314,14 @@ fn the_slug_fill_names_the_mtsdf_fill_for_a_distance() {
         ppem: 30.0,
     };
     let (_g, mut r) = gpu(64, 48);
-    for read in ["glyph_dist", "glyph_round_dist"] {
+    for (read, call) in [
+        ("glyph_dist", "()"),
+        ("glyph_round_dist", "()"),
+        ("glyph_fade", ""),
+    ] {
         let mut doc = layer_scene(SANS, "I", Align::Left, fit);
         doc["passes"][0]["layers"][0]["fragment"] = json!(format!(
-            "void main(){{\n    float d = {read}();\n    gl_FragColor = vec4(d);\n}}"
+            "void main(){{\n    float d = {read}{call};\n    gl_FragColor = vec4(d);\n}}"
         ));
         let e = r.setup(&loaded(&doc)).unwrap();
         assert_eq!(
@@ -3359,7 +3460,9 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
                   "field": {"value": "A\u{1f600}", "font": ["sans", "emoji"], "fill": "mtsdf"}},
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(0.0); }",
                     "layers": [{"text": "curves", "font_size": 20, "fragment": reads},
-                               {"text": "field", "font_size": 20, "fragment": reads}]}]
+                               {"text": "field", "font_size": 20, "fragment": reads},
+                               {"text": "field", "font_size": 20, "pad": 0.25,
+                                "fragment": reads}]}]
     });
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let p = &sc.passes[0];

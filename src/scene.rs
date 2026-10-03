@@ -129,7 +129,7 @@ const PASS_KEYS: [&str; 10] = [
 ];
 
 /// The keys of a layer.
-pub(crate) const LAYER_KEYS: [&str; 9] = [
+pub(crate) const LAYER_KEYS: [&str; 10] = [
     "name",
     "text",
     "vertex",
@@ -138,6 +138,7 @@ pub(crate) const LAYER_KEYS: [&str; 9] = [
     "fragment",
     "blend",
     "pad",
+    "fade",
     "emoji",
 ];
 
@@ -1296,6 +1297,10 @@ pub struct Layer {
     /// How far the quads reach past the ink, in em, for an effect around the
     /// outline.
     pub pad: f64,
+    /// The layer's `fade`: the band in em inside the pad's edge over which
+    /// an MTSDF layer fades to 0, at most `pad`. None takes a quarter of
+    /// `pad`, as fade() gives it.
+    pub fade: Option<f64>,
     /// The layer paints the text's colour glyphs. None paints them from the
     /// last layer of the text in its pass alone, as Pass::paints_emoji says.
     pub emoji: Option<bool>,
@@ -1419,6 +1424,17 @@ impl Layer {
         self.fragment.as_deref().unwrap_or(WHITE)
     }
 
+    /// The band over which an MTSDF layer of the layer's text fades, None for
+    /// a layer with no pad or a fade of 0. GLSL leaves smoothstep undefined
+    /// over a band of 0.
+    pub fn fade(&self) -> Option<crate::text::Fade> {
+        let band = self.fade.unwrap_or(self.pad / 4.0);
+        (self.pad > 0.0 && band > 0.0).then(|| crate::text::Fade {
+            from: self.pad - band,
+            to: self.pad,
+        })
+    }
+
     /// `what` names the layer in an error, as "pass 'main' layer 'glow'".
     pub fn from_dict(what: &str, d: &Value) -> Result<Layer> {
         let Value::Object(o) = d else {
@@ -1517,6 +1533,17 @@ impl Layer {
                 ),
             },
         };
+        let fade = match given("fade") {
+            None => None,
+            Some(v) => match v.as_f64() {
+                Some(f) if f.is_finite() && (0.0..=pad).contains(&f) => Some(f),
+                _ => bail!(
+                    "{what} fade needs a number of em from 0 to its pad, {}, got {}",
+                    py_float(pad),
+                    py_repr(v)
+                ),
+            },
+        };
         let emoji = match o.get("emoji").filter(|v| !v.is_null()) {
             None => None,
             Some(Value::Bool(b)) => Some(*b),
@@ -1529,6 +1556,7 @@ impl Layer {
             fragment,
             blend,
             pad,
+            fade,
             emoji,
         })
     }
@@ -1567,6 +1595,9 @@ impl Layer {
         }
         if self.pad != 0.0 {
             d.insert("pad".to_string(), Value::from(self.pad));
+        }
+        if let Some(f) = self.fade {
+            d.insert("fade".to_string(), Value::from(f));
         }
         if let Some(e) = self.emoji.filter(|e| *e != last) {
             d.insert("emoji".to_string(), Value::from(e));
@@ -1915,10 +1946,15 @@ impl Pass {
             f.push(c.to_string());
             f.push(String::new());
         }
-        let (head, tail) = match text.map(|t| t.fill) {
-            Some(Fill::Mtsdf) => (
+        let (head, tail) = match text {
+            Some(t) if t.fill == Fill::Mtsdf => (
                 crate::text::mtsdf_fragment_head(&d.text),
-                crate::text::mtsdf_fragment_tail(&d.text),
+                crate::text::mtsdf_fragment_tail(
+                    &d.text,
+                    d.fade(),
+                    t.atlas_font_size,
+                    scene.atlas_range(&d.text),
+                ),
             ),
             _ => (
                 crate::text::slug_fragment_head(&d.text),
@@ -2349,6 +2385,22 @@ impl Scene {
         self.texts = texts;
         if let Some(e) = self.undeclared_layer() {
             bail!("{e}");
+        }
+        // A slug layer has no distance to fade by.
+        for p in &self.passes {
+            for (k, d) in p.layers.iter().enumerate() {
+                let slug = self
+                    .texts
+                    .iter()
+                    .any(|t| t.name == d.text && t.fill == Fill::Slug);
+                if slug && d.fade.is_some() {
+                    bail!(
+                        "{} fade needs \"fill\": \"mtsdf\" on text '{}'",
+                        p.layer_what(k),
+                        d.text
+                    );
+                }
+            }
         }
         for t in self.texts.iter().filter(|t| t.fill == Fill::Mtsdf) {
             let (pad, layer) = self.largest_pad(&t.name);
@@ -3338,7 +3390,7 @@ mod tests {
             (
                 layer(json!({"glow": 1})),
                 "scene: pass 'main' layer 't' takes no 'glow', only name, text, vertex, font_size, \
-                 at, fragment, blend, pad and emoji",
+                 at, fragment, blend, pad, fade and emoji",
             ),
             (
                 json!({"version": 1, "passes": [pass(json!({"channels": [{"bufer": "main"}]}))]}),

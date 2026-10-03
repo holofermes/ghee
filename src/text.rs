@@ -1696,9 +1696,38 @@ pub fn mtsdf_fragment_head(name: &str) -> Vec<String> {
     lines(MTSDF_FRAGMENT_HEAD, name)
 }
 
-/// The lines of an MTSDF layer's fragment shader after the author's code.
-pub fn mtsdf_fragment_tail(name: &str) -> Vec<String> {
-    lines(MTSDF_FRAGMENT_TAIL, name)
+/// How an MTSDF layer fades out toward the edge of its quads, by the true
+/// distance from the letters in em.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fade {
+    /// glyph_fade is 1 up to this distance.
+    pub from: f64,
+    /// glyph_fade is 0 from this distance out: the layer's pad.
+    pub to: f64,
+}
+
+/// The lines of an MTSDF layer's fragment shader after the author's code,
+/// for an atlas of `px_em` texels per em and a range of `range` texels. With
+/// `fade`, ghee sets glyph_fade before the author's main and multiplies the
+/// colour by it after.
+pub fn mtsdf_fragment_tail(name: &str, fade: Option<Fade>, px_em: u32, range: u32) -> Vec<String> {
+    let range_em = f64::from(range) / f64::from(px_em);
+    let mut out = Vec::new();
+    for l in lines(MTSDF_FRAGMENT_TAIL, name) {
+        let main = l.trim() == "ghee_main();";
+        if let (true, Some(f)) = (main, fade) {
+            out.extend(lines(MTSDF_FADE, name).into_iter().map(|l| {
+                l.replace("FADE_FROM", &format!("{:?}", f.from))
+                    .replace("FADE_TO", &format!("{:?}", f.to))
+                    .replace("RANGE_EM", &format!("{range_em:?}"))
+            }));
+        }
+        out.push(l);
+        if main && fade.is_some() {
+            out.push("    gl_FragColor *= ghee_f;".to_string());
+        }
+    }
+    out
 }
 
 /// The lines of a slug layer's fragment shader after the author's code.
@@ -1728,18 +1757,20 @@ pub fn names(name: &str) -> Vec<String> {
 
 /// The distances that a slug layer leaves undeclared, each with the name that
 /// it stands for there, so a compile error names it.
-pub const SLUG_UNDECLARED: [(&str, &str); 2] = [
+pub const SLUG_UNDECLARED: [(&str, &str); 3] = [
     ("glyph_dist", "glyph_dist_needs_fill_mtsdf"),
     ("glyph_round_dist", "glyph_round_dist_needs_fill_mtsdf"),
+    ("glyph_fade", "glyph_fade_needs_fill_mtsdf"),
 ];
 
 /// The names that a layer's GLSL declares for its author: the function the
 /// author defines, and the values and functions the author reads.
-pub const LAYER_NAMES: [&str; 11] = [
+pub const LAYER_NAMES: [&str; 12] = [
     "glyph_place",
     "glyph_cover",
     "glyph_dist",
     "glyph_round_dist",
+    "glyph_fade",
     "glyph_em",
     "glyph_index",
     "glyph_word",
@@ -1902,6 +1933,7 @@ float glyph_cover() { return ghee_c; }
 // Distances come from the MTSDF fill's field, and a compile error names it.
 #define glyph_dist glyph_dist_needs_fill_mtsdf
 #define glyph_round_dist glyph_round_dist_needs_fill_mtsdf
+#define glyph_fade glyph_fade_needs_fill_mtsdf
 // The author's main runs as ghee_main, after the fill: the fill computes the
 // coverage once a pixel, and glyph_cover() returns it at every call.
 #define main ghee_main"#;
@@ -1986,6 +2018,10 @@ float glyph_dist() {
 }
 float glyph_round_dist() { return ghee_v0.z * (ghee_t.a - 0.5); }
 float glyph_cover() { return clamp(glyph_dist() + 0.5, 0.0, 1.0); }
+// The factor that fades a padded layer to 0 at the edge of its quads, 1 in a
+// layer that does not fade.
+float ghee_f = 1.0;
+#define glyph_fade ghee_f
 // The author's main runs as ghee_main, after the read of the field.
 #define main ghee_main"#;
 
@@ -2000,6 +2036,12 @@ void main() {
     ghee_main();
     if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_atlas, ghee_v0.xy);
 }"#;
+
+/// The lines that set glyph_fade, ahead of the author's main in a layer that
+/// fades. The quad's edge lies the pad or more from the letters, so a factor
+/// that reaches 0 at the pad's distance is 0 along the whole edge.
+const MTSDF_FADE: &str = r#"    // The true distance outside the letters in em, from the field's alpha.
+    ghee_f = 1.0 - smoothstep(FADE_FROM, FADE_TO, (0.5 - ghee_t.a) * RANGE_EM);"#;
 
 const BOX_FRAGMENT: &str = r#"varying vec2 v_texCoord;
 uniform vec2 resolution;
@@ -2234,6 +2276,7 @@ mod tests {
             MTSDF_VERTEX_MAIN,
             MTSDF_FRAGMENT_HEAD,
             MTSDF_FRAGMENT_TAIL,
+            MTSDF_FADE,
             BOX_FRAGMENT,
             crate::colour::VERTEX_MAIN,
             crate::colour::FRAGMENT,

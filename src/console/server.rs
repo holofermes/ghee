@@ -1528,22 +1528,16 @@ fn set_pass_param(
         let pass = scene
             .passes
             .get_mut(usize::try_from(pi).unwrap_or(usize::MAX))
-            .ok_or_else(|| anyhow!("list index out of range"))?;
-        let ty = pass
-            .params
-            .get(name)
-            .ok_or_else(|| anyhow!("'{name}'"))?
-            .ty
-            .clone();
+            .ok_or_else(|| anyhow!("the scene has no pass {pi}"))?;
+        let missing = || anyhow!("pass '{}' has no param '{name}'", pass.name);
+        let ty = pass.params.get(name).ok_or_else(missing)?.ty.clone();
         let v = coerce(name, &ty, value)?;
         if ty != "string" {
             renderer.borrow().set_param(&pass.name, name, &ty, &v)?;
         }
         told(ctrl, name, &v);
-        pass.params
-            .get_mut(name)
-            .ok_or_else(|| anyhow!("'{name}'"))?
-            .value = v;
+        let gone = || anyhow!("pass '{}' has no param '{name}'", pass.name);
+        pass.params.get_mut(name).ok_or_else(gone)?.value = v;
         Ok(())
     }();
     match applied {
@@ -1578,21 +1572,13 @@ fn set_scene_param(
         return false;
     };
     let applied = || -> Result<()> {
-        let ty = scene
-            .params
-            .get(name)
-            .ok_or_else(|| anyhow!("'{name}'"))?
-            .ty
-            .clone();
+        let missing = || anyhow!("the scene has no param '{name}'");
+        let ty = scene.params.get(name).ok_or_else(missing)?.ty.clone();
         let v = coerce(name, &ty, value)?;
         // A string param of a text's name lays the text out again.
         renderer.borrow().set_scene_param(name, &ty, &v)?;
         told(ctrl, name, &v);
-        scene
-            .params
-            .get_mut(name)
-            .ok_or_else(|| anyhow!("'{name}'"))?
-            .value = v;
+        scene.params.get_mut(name).ok_or_else(missing)?.value = v;
         Ok(())
     }();
     match applied {

@@ -261,26 +261,16 @@ fn py_float(raw: &str) -> Result<f64, String> {
     } else {
         s
     };
-    text.parse::<f64>().map_err(|_| {
-        format!(
-            "could not convert string to float: {}",
-            py_repr(&Value::from(raw))
-        )
-    })
+    text.parse::<f64>()
+        .map_err(|_| format!("{} is not a number", py_repr(&Value::from(raw))))
 }
 
 /// Parse a decimal integer. Whitespace around it is fine.
-fn py_int(raw: &str) -> Result<i64, String> {
+fn py_int(raw: &str) -> Option<i64> {
     let s = raw.trim();
     let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
     let decimal = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
-    match s.parse::<i64>() {
-        Ok(v) if decimal => Ok(v),
-        _ => Err(format!(
-            "invalid literal for int() with base 10: {}",
-            py_repr(&Value::from(raw))
-        )),
-    }
+    s.parse::<i64>().ok().filter(|_| decimal)
 }
 
 /// The value set_param expects, from a /set raw query string.
@@ -338,7 +328,12 @@ pub fn parse_scope(raw: &str) -> Result<Scope, String> {
     if raw == "scene" {
         return Ok(Scope::Scene);
     }
-    Ok(Scope::Pass(py_int(raw)?))
+    py_int(raw).map(Scope::Pass).ok_or_else(|| {
+        format!(
+            "pass needs 'scene' or a pass index, got {}",
+            py_repr(&Value::from(raw))
+        )
+    })
 }
 
 /// The web asset named by a URL path, or None. The assets are compiled in, so a
@@ -663,9 +658,9 @@ fn parse_set(
     query: &Query,
 ) -> ConsoleResult<Result<(Scope, String, Value), String>> {
     let parts = || -> Result<(Scope, String, &String), String> {
-        let raw = query.get("value").ok_or("'value'")?;
-        let scope = parse_scope(query.get("pass").ok_or("'pass'")?)?;
-        let name = query.get("name").ok_or("'name'")?;
+        let raw = query.get("value").ok_or("the query has no 'value'")?;
+        let scope = parse_scope(query.get("pass").ok_or("the query has no 'pass'")?)?;
+        let name = query.get("name").ok_or("the query has no 'name'")?;
         Ok((scope, name.clone(), raw))
     };
     let (scope, name, raw) = match parts() {
@@ -1144,29 +1139,49 @@ mod tests {
 
     #[test]
     fn a_malformed_set_never_reaches_the_host() {
-        for q in [
-            vec![("pass", "0"), ("name", "k")],  // no value
-            vec![("pass", "0"), ("value", "1")], // no name
-            vec![("name", "k"), ("value", "1")], // no pass
-            vec![("pass", "nope"), ("name", "k"), ("value", "1")],
-            vec![
-                ("pass", "0"),
-                ("name", "k"),
-                ("type", "color"),
-                ("value", "1,0"),
-            ],
-            vec![
-                ("pass", "0"),
-                ("name", "k"),
-                ("type", "bool"),
-                ("value", "yes"),
-            ],
-            vec![("pass", "0"), ("name", "k"), ("value", "notanumber")],
+        for (q, why) in [
+            (
+                vec![("pass", "0"), ("name", "k")],
+                "the query has no 'value'",
+            ),
+            (
+                vec![("pass", "0"), ("value", "1")],
+                "the query has no 'name'",
+            ),
+            (
+                vec![("name", "k"), ("value", "1")],
+                "the query has no 'pass'",
+            ),
+            (
+                vec![("pass", "nope"), ("name", "k"), ("value", "1")],
+                "pass needs 'scene' or a pass index, got 'nope'",
+            ),
+            (
+                vec![
+                    ("pass", "0"),
+                    ("name", "k"),
+                    ("type", "color"),
+                    ("value", "1,0"),
+                ],
+                "color needs three comma-separated floats, got '1,0'",
+            ),
+            (
+                vec![
+                    ("pass", "0"),
+                    ("name", "k"),
+                    ("type", "bool"),
+                    ("value", "yes"),
+                ],
+                "bool needs true or false, got 'yes'",
+            ),
+            (
+                vec![("pass", "0"), ("name", "k"), ("value", "notanumber")],
+                "'notanumber' is not a number",
+            ),
         ] {
             let api = api();
             let r = post(&api, "/set", &q);
-            assert_eq!(r.status, 400, "{q:?}");
-            assert!(body(&r).contains("bad /set"), "{}", body(&r));
+            assert_eq!((r.status, body(&r)), (400, format!("bad /set: {why}")));
             assert!(!api
                 .host
                 .calls

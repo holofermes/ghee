@@ -2518,13 +2518,7 @@ impl Scene {
     /// Load a scene file whose files resolve in `dir`, else beside the file,
     /// as far as `reach` allows.
     pub fn load_in(path: &str, dir: Option<&str>, reach: Reach) -> Result<Scene> {
-        let text = fs::read_to_string(path).map_err(|e| {
-            anyhow!(
-                "[Errno {}] {}: '{path}'",
-                e.raw_os_error().unwrap_or(0),
-                strerror(&e)
-            )
-        })?;
+        let text = fs::read_to_string(path).map_err(|e| anyhow!("{path}: {}", strerror(&e)))?;
         let data: Value =
             serde_json::from_str(&text).map_err(|e| anyhow!("{path}: invalid JSON: {e}"))?;
         crate::sources::record(path);
@@ -4404,10 +4398,7 @@ mod tests {
     #[test]
     fn a_missing_scene_file_reports_the_os_error() {
         let e = Scene::load("/nope/x.scene.json").unwrap_err().to_string();
-        assert_eq!(
-            e,
-            "[Errno 2] No such file or directory: '/nope/x.scene.json'"
-        );
+        assert_eq!(e, "/nope/x.scene.json: No such file or directory");
     }
 
     #[test]

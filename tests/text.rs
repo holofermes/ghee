@@ -1009,21 +1009,9 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
             glsl.extend([v, f, bv, bf, cv, cf]);
         }
     }
-    // A vec param is a #define, which rewrites a field selection too: a vec
-    // param named x breaks every .x after the param lines, the author's own
-    // included.
-    let fields: Vec<&str> = glsl
-        .iter()
-        .flat_map(|g| g.split('.').skip(1))
-        .map(|f| {
-            f.split(|c: char| !c.is_ascii_alphanumeric())
-                .next()
-                .unwrap_or("")
-        })
-        .collect();
     let mut names: Vec<String> = Vec::new();
     for n in glsl.iter().flat_map(|g| locals(g)) {
-        if !names.contains(&n) && !fields.contains(&n.as_str()) {
+        if !names.contains(&n) {
             names.push(n);
         }
     }
@@ -1042,12 +1030,12 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
 }
 
 #[test]
-fn a_vec_or_color_param_named_like_a_swizzle_is_refused_where_its_glsl_selects_it() {
-    let bg = json!({"type": "color", "value": [0.0, 0.0, 0.0]});
-    let code = |field: &str| {
+fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
+    let red = json!({"type": "color", "value": [1.0, 0.0, 0.0]});
+    let code = |read: &str| {
         format!(
             "void main(){{\n    vec4 v = vec4(v_texCoord, 0.25, 1.0);\n    \
-             gl_FragColor = vec4(v.{field}, 0.0, 1.0);\n}}"
+             gl_FragColor = vec4({read}, 0.0, 1.0);\n}}"
         )
     };
     let place = "vec2 glyph_place(vec2 em) { return em * 24.0; }";
@@ -1060,52 +1048,32 @@ fn a_vec_or_color_param_named_like_a_swizzle_is_refused_where_its_glsl_selects_i
         doc["passes"][0]["code"] = json!(code);
         doc
     };
-    let why = "a color named like a swizzle rewrites the .bg";
-    // The pass code selects .bg on its third line.
-    assert_eq!(
-        scene_err(&scene(json!({"bg": bg}), &code("bg"))),
-        format!("scene: param 'bg': {why} on line 3 of pass 'main'")
-    );
-    // So does a draw's code, under a param of the draw's pass.
-    let mut drawn = scene(json!({}), &code("rg"));
-    drawn["passes"][0]["params"] = json!({"bg": bg});
-    drawn["passes"][0]["draws"] = json!([{"text": "label", "place": place,
-        "code": "void main(){\n    gl_FragColor = vec4(vec3(glyph_cover()).bg, 0.0, 1.0);\n}"}]);
-    assert_eq!(
-        scene_err(&drawn),
-        format!(
-            "scene: param 'bg' in pass 'main': {why} on line 2 of the code of pass 'main' draw 0"
-        )
-    );
-    // ghee's own GLSL of a draw selects .xy.
-    let mut doc = scene(
-        json!({"xy": {"type": "vec2", "value": [0.0, 0.0]}}),
-        &code("rg"),
-    );
-    doc["passes"][0]["draws"] = json!([{"text": "label", "place": place, "code": WHITE}]);
-    assert_eq!(
-        scene_err(&doc),
-        "scene: param 'xy': a vec2 named like a swizzle rewrites the .xy in ghee's GLSL of \
-         pass 'main' draw 0"
-    );
-    // A filter's code, appended after the load, selects .rgb.
-    let rgb = json!({"rgb": {"type": "color", "value": [0.0, 0.0, 0.0]}});
-    let mut sc = Scene::from_dict(&scene(rgb, &code("rg")), None, None).unwrap();
-    let e = apply_filters(&mut sc, &["dither".to_string()], None).unwrap_err();
-    assert!(
-        e.to_string()
-            .starts_with("param 'rgb': a color named like a swizzle rewrites the .rgb on line "),
-        "{e}"
-    );
-    // bg and the near misses beside it leave the frame as it was: .bga, .bg in
-    // comments, and a float named rg beside .rg, which declares a uniform in
-    // place of a #define.
-    let near = "void main(){\n    vec4 v = vec4(v_texCoord, 0.25, 1.0); // v.bg\n    \
-                /* v.bg\n    v.bg */ gl_FragColor = vec4(v.bga.xy, v.rg.x, 1.0);\n}";
-    let params = json!({"bg": bg, "rg": {"type": "float", "value": 0.0}});
     let Some((_g, mut r)) = gpu(W, H) else { return };
-    let plain = render(&mut r, &loaded(&scene(json!({}), near)));
-    assert!(render(&mut r, &loaded(&scene(params, near))) == plain);
+    // The pass selects .bg and reads the color bg, which multiplies by 1.
+    let plain = render(&mut r, &loaded(&scene(json!({}), &code("v.bg"))));
+    let bg = scene(json!({"bg": red}), &code("v.bg * bg.r"));
+    assert!(render(&mut r, &loaded(&bg)) == plain);
+    // A draw's code selects .bg under a pass param bg, and ghee's GLSL of
+    // the draw selects .xy beside a scene param xy.
+    let ink =
+        "void main(){\n    gl_FragColor = vec4(vec3(glyph_cover()).bgr, 1.0) * glyph_cover();\n}";
+    let mut drawn = scene(json!({}), &code("v.rg"));
+    drawn["passes"][0]["draws"] = json!([{"text": "label", "place": place, "code": ink}]);
+    let want = render(&mut r, &loaded(&drawn));
+    assert!(want.contains(&255), "the draw paints nothing");
+    let mut named = drawn.clone();
+    named["passes"][0]["params"] = json!({"bg": red});
+    named["params"]["xy"] = json!({"type": "vec2", "value": [0.0, 0.0]});
+    named["passes"][0]["draws"][0]["code"] =
+        json!(ink.replace("glyph_cover())", "glyph_cover() * bg.r)"));
+    assert!(render(&mut r, &loaded(&named)) == want);
+    // A filter's code selects .rgb beside a scene param rgb.
+    let rgb = json!({"rgb": red});
+    let mut sc = loaded(&scene(rgb, &code("v.rg")));
+    apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
+    let mut plain = loaded(&scene(json!({}), &code("v.rg")));
+    apply_filters(&mut plain, &["dither".to_string()], None).unwrap();
+    assert!(render(&mut r, &sc) == render(&mut r, &plain));
 }
 
 #[test]

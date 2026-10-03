@@ -6,7 +6,7 @@ import shutil
 import threading
 import time
 
-from conftest import RED, REPO, scene_file
+from conftest import RED, REPO, VECS, near, quarters, scene_file
 
 import ghee
 
@@ -69,6 +69,40 @@ def test_a_scene_param_reaches_every_pass():
         h.set_param("tint", [0.0, 1.0, 0.0])
         h.frame()
         assert pixel(h) == (0, 255, 0, 255)
+
+
+def test_vec_and_color_values_reach_the_shader():
+    built = ghee.Scene(
+        passes=[
+            ghee.Pass(
+                "main",
+                VECS["passes"][0]["code"],
+                params={
+                    "b": ghee.Param("b", "vec3", [0.75, 0.5, 0.25]),
+                    "c": ghee.Param("c", "vec4", [1.0, 0.5, 0.25, 0.5]),
+                },
+            )
+        ],
+        params={
+            "a": ghee.Param("a", "vec2", [0.25, 0.5]),
+            "tint": ghee.Param("tint", "color", [0.5, 0.25, 1.0]),
+        },
+    ).to_dict()
+    for doc in [VECS, built]:
+        with ghee.open(doc, width=8, height=1) as h:
+            h.frame()
+            got = quarters(h)
+            assert near(
+                got,
+                [[0.25, 0.5, 0], [0.75, 0.5, 0.25], [0.5, 0.25, 0.125], [0.5, 0.25, 1]],
+            ), got
+            h.set_param("a", [1.0, 0.0])
+            h.set_param("b", (0.0, 0.25, 1.0), pass_="main")
+            h.set_param("main.c", [0.5, 1.0, 0.0, 1.0])
+            h.set_param("tint", [0.0, 1.0, 0.5])
+            h.frame()
+            got = quarters(h)
+            assert near(got, [[1, 0, 0], [0, 0.25, 1], [0.5, 1, 0], [0, 1, 0.5]]), got
 
 
 def test_a_feed_takes_any_buffer_of_values():

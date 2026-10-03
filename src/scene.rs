@@ -16,10 +16,7 @@ use crate::text::{Fill, Text};
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
-// A vecK param has no engine type. The preamble decomposes it to K float
-// uniforms with these suffixes. It never reaches the C ABI as one value.
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
-const VEC_SUFFIXES: [&str; 4] = ["_x", "_y", "_z", "_w"];
 
 const PARAM_TYPES: [&str; 8] = [
     "float", "int", "bool", "color", "string", "vec2", "vec3", "vec4",
@@ -312,43 +309,17 @@ fn common_block(d: &Map<String, Value>, base_dir: Option<&str>) -> Result<Option
     }
 }
 
-/// The preamble uniform declarations for one param.
-///
-/// A color decomposes to three float uniforms plus a vec3 alias. A vecK
-/// decomposes to K float uniforms plus a vecK alias. The engine has no color
-/// type and no vec type, and it sets floats only. A scalar is one typed uniform.
-/// A string is host-side, and it declares no uniform.
+/// The preamble uniform declaration of one param. A color is a vec3. A
+/// string is host-side, and it declares no uniform.
 fn param_uniform_lines(p: &Param) -> Vec<String> {
-    let name = &p.name;
     if p.ty == "string" {
         return Vec::new();
     }
-    if p.ty == "color" {
-        return vec![
-            format!("uniform float {name}_r;"),
-            format!("uniform float {name}_g;"),
-            format!("uniform float {name}_b;"),
-            format!("#define {name} vec3({name}_r, {name}_g, {name}_b)"),
-        ];
-    }
-    if let Some(n) = vec_arity(&p.ty) {
-        let sfx = &VEC_SUFFIXES[..n];
-        let args = sfx
-            .iter()
-            .map(|s| format!("{name}{s}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut lines: Vec<String> = sfx
-            .iter()
-            .map(|s| format!("uniform float {name}{s};"))
-            .collect();
-        lines.push(format!("#define {name} {}({args})", p.ty));
-        return lines;
-    }
-    vec![format!(
-        "uniform {} {name};",
-        glsl_type_of(&p.ty).unwrap_or(p.ty.as_str())
-    )]
+    let ty = match p.glsl_type() {
+        Ok(t) => t,
+        Err(_) => p.ty.as_str(),
+    };
+    vec![format!("uniform {ty} {};", p.name)]
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -404,9 +375,7 @@ impl Param {
                 PARAM_TYPES.join(", ")
             );
         }
-        // A color is [r, g, b], each 0..1. It has no engine type. The preamble
-        // decomposes it to three float uniforms, so it never reaches glsl_type
-        // or the C ABI as one value.
+        // A color is [r, g, b], each 0..1.
         let stored = if ty == "color" {
             let Some(nums) = number_list(&value, 3) else {
                 bail!(
@@ -531,19 +500,16 @@ impl Param {
         Param::plain(name, "string", ParamValue::Str(value.to_string()))
     }
 
-    #[allow(dead_code)]
+    /// The GLSL type of the param's uniform. A color is a vec3.
     pub fn glsl_type(&self) -> Result<&'static str> {
         if self.ty == "string" {
             bail!("a string param is host-side, so it has no glsl_type");
         }
         if self.ty == "color" {
-            bail!("color decomposes to three float uniforms, so it has no glsl_type");
+            return Ok("vec3");
         }
-        if let Some(n) = vec_arity(&self.ty) {
-            bail!(
-                "{} decomposes to {n} float uniforms; it has no glsl_type",
-                self.ty
-            );
+        if let Some((ty, _)) = VEC_ARITY.iter().find(|(t, _)| *t == self.ty) {
+            return Ok(ty);
         }
         glsl_type_of(&self.ty).ok_or_else(|| anyhow!("unknown type {}", self.ty))
     }
@@ -801,46 +767,6 @@ fn declared_names(lines: &[String]) -> Vec<String> {
         }
     }
     out
-}
-
-/// The line, 1 on, where GLSL `src` first selects the field `name`: a `.`
-/// followed by `name` as a whole word, outside the comments.
-fn field_line(src: &str, name: &str) -> Option<usize> {
-    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    let mut comment = false;
-    for (i, line) in src.lines().enumerate() {
-        let mut code = String::new();
-        let mut rest = line;
-        while !rest.is_empty() {
-            if comment {
-                let Some(end) = rest.find("*/") else { break };
-                rest = &rest[end + 2..];
-                comment = false;
-                continue;
-            }
-            let (line_at, block_at) = (rest.find("//"), rest.find("/*"));
-            match block_at.filter(|b| line_at.is_none_or(|l| *b < l)) {
-                Some(b) => {
-                    code.push_str(&rest[..b]);
-                    code.push(' ');
-                    rest = &rest[b + 2..];
-                    comment = true;
-                }
-                None => {
-                    code.push_str(&rest[..line_at.unwrap_or(rest.len())]);
-                    break;
-                }
-            }
-        }
-        let selects = code.match_indices('.').any(|(at, _)| {
-            let after = &code[at + 1..];
-            after.starts_with(name) && !after[name.len()..].starts_with(ident)
-        });
-        if selects {
-            return Some(i + 1);
-        }
-    }
-    None
 }
 
 /// The preamble readers for one declared array, bound as a data texture.
@@ -1659,9 +1585,10 @@ impl Pass {
                 l.extend(crate::text::reader_lines(&t.name));
             }
         }
-        // A vec or color param is a #define, which rewrites every later use of
-        // its name, so the params follow every reader above. Every pass takes
-        // the same scene param lines, ahead of its own params.
+        // A uniform named after a GLSL built-in function, such as mix, hides
+        // the function from every line after it, so the params follow the
+        // readers above, which call such functions. Every pass takes the same
+        // scene param lines, ahead of its own params.
         for p in scene_params.iter().flat_map(|sp| sp.values()) {
             l.extend(param_uniform_lines(p));
         }
@@ -1820,7 +1747,7 @@ impl Scene {
                 }
             }
         }
-        let scene = Scene {
+        Ok(Scene {
             passes,
             version,
             filters,
@@ -1828,98 +1755,7 @@ impl Scene {
             common,
             assets,
             texts: Vec::new(),
-        };
-        if let Some(e) = scene.swizzle_use() {
-            bail!("{e}");
-        }
-        Ok(scene)
-    }
-
-    /// The error for a vec or color param named like a swizzle, such as `bg`,
-    /// whose #define reaches GLSL that selects that swizzle, `.bg`, which the
-    /// #define rewrites. A scene param reaches every pass, a pass param its
-    /// own pass, and either one reaches the pass's code, the common block,
-    /// the code and the place of the pass's draws, and ghee's GLSL of the
-    /// draws of a text that the scene holds.
-    pub(crate) fn swizzle_use(&self) -> Option<String> {
-        let swizzle = |p: &&Param| {
-            let n = &p.name;
-            (p.ty == "color" || vec_arity(&p.ty).is_some())
-                && (1..=4).contains(&n.len())
-                && ["xyzw", "rgba", "stpq"]
-                    .iter()
-                    .any(|set| n.chars().all(|c| set.contains(c)))
-        };
-        let scopes = std::iter::once((&self.params, None))
-            .chain(self.passes.iter().map(|p| (&p.params, Some(p))));
-        for (params, own) in scopes {
-            for p in params.values().filter(swizzle) {
-                let reached = own.map_or(self.passes.iter().collect(), |p| vec![p]);
-                let Some(at) = reached.iter().find_map(|pass| self.selects(pass, &p.name)) else {
-                    continue;
-                };
-                let whose = match own {
-                    Some(pass) => format!("param '{}' in pass '{}'", p.name, pass.name),
-                    None => format!("param '{}'", p.name),
-                };
-                return Some(format!(
-                    "{whose}: a {} named like a swizzle rewrites the .{} {at}",
-                    p.ty, p.name
-                ));
-            }
-        }
-        None
-    }
-
-    /// Where the GLSL of `pass`, as a param of its reaches it, first selects
-    /// the field `name`, as "on line 3 of pass 'main'".
-    fn selects(&self, pass: &Pass, name: &str) -> Option<String> {
-        let common = self.common.as_deref().filter(|_| pass.filter.is_empty());
-        let mut sources = vec![
-            (pass.code.clone(), format!("pass '{}'", pass.name)),
-            (
-                common.unwrap_or("").to_string(),
-                "the common block".to_string(),
-            ),
-        ];
-        for (k, d) in pass.draws.iter().enumerate() {
-            let draw = format!("pass '{}' draw {k}", pass.name);
-            sources.push((d.code.clone(), format!("the code of {draw}")));
-            sources.push((d.place.clone(), format!("the place of {draw}")));
-        }
-        for (src, what) in &sources {
-            if let Some(line) = field_line(src, name) {
-                return Some(format!("on line {line} of {what}"));
-            }
-        }
-        for (k, d) in pass.draws.iter().enumerate() {
-            let Some(t) = self.texts.iter().find(|t| t.name == d.text) else {
-                continue;
-            };
-            let mut ghee = crate::text::draw_vertex_head(&d.text);
-            ghee.extend(crate::text::outline_vertex_main(0.0));
-            if t.fill == Fill::Mtsdf {
-                ghee.extend(crate::text::mtsdf_vertex_main(
-                    &d.text,
-                    d.pad,
-                    t.px_per_em,
-                    t.range,
-                ));
-                ghee.extend(crate::text::mtsdf_fragment_head(&d.text));
-                ghee.extend(crate::text::mtsdf_fragment_tail(&d.text));
-            } else {
-                ghee.extend(crate::text::outline_vertex_main(d.pad));
-                ghee.extend(crate::text::outline_fragment_head(&d.text));
-                ghee.extend(crate::text::outline_fragment_tail(&d.text));
-            }
-            if pass.paints_emoji(k) {
-                ghee.extend(crate::colour::vertex_main(&d.text));
-            }
-            if field_line(&ghee.join("\n"), name).is_some() {
-                return Some(format!("in ghee's GLSL of pass '{}' draw {k}", pass.name));
-            }
-        }
-        None
+        })
     }
 
     /// The error for the engine textures of the image assets and of `texts`
@@ -2050,9 +1886,6 @@ impl Scene {
         }
         self.texts = texts;
         if let Some(e) = self.undeclared_draw() {
-            bail!("{e}");
-        }
-        if let Some(e) = self.swizzle_use() {
             bail!("{e}");
         }
         Ok(self)
@@ -2525,7 +2358,7 @@ mod tests {
     }
 
     #[test]
-    fn color_param_preamble_decomposes() {
+    fn color_param_is_a_vec3_uniform() {
         let mut params = ParamMap::new();
         params.insert(
             "tint".to_string(),
@@ -2542,21 +2375,10 @@ mod tests {
         )
         .unwrap()
         .glsl(None, None, &[], &[], false);
-        assert!(g.contains("uniform float tint_r;"));
-        assert!(g.contains("uniform float tint_g;"));
-        assert!(g.contains("uniform float tint_b;"));
-        assert!(g.contains("#define tint vec3(tint_r, tint_g, tint_b)"));
-        assert!(!g.contains("uniform color")); // 'color' is not a GLSL type.
-        assert!(!g.contains("uniform vec3 tint;"));
-    }
-
-    #[test]
-    fn color_param_glsl_type_raises() {
+        assert!(g.contains("uniform vec3 tint;"));
+        assert!(!g.contains("tint_r") && !g.contains("#define tint"));
         let p = param("tint", "color", json!([1.0, 0.0, 0.0])).unwrap();
-        assert_eq!(
-            p.glsl_type().unwrap_err().to_string(),
-            "color decomposes to three float uniforms, so it has no glsl_type"
-        );
+        assert_eq!(p.glsl_type().unwrap(), "vec3");
     }
 
     #[test]
@@ -2621,42 +2443,21 @@ mod tests {
     }
 
     #[test]
-    fn vec_param_preamble_decomposes() {
-        for (t, name, sfx) in [
-            ("vec2", "off", vec!["_x", "_y"]),
-            ("vec3", "dir", vec!["_x", "_y", "_z"]),
-            ("vec4", "q", vec!["_x", "_y", "_z", "_w"]),
-        ] {
+    fn vec_param_is_a_vector_uniform() {
+        for (t, name, n) in [("vec2", "off", 2), ("vec3", "dir", 3), ("vec4", "q", 4)] {
             let mut params = ParamMap::new();
             params.insert(
                 name.to_string(),
-                param(name, t, json!(vec![0.0; sfx.len()])).unwrap(),
+                param(name, t, json!(vec![0.0; n])).unwrap(),
             );
             let g = Pass::new("m", "void main(){}", vec![], vec![], params, "", None)
                 .unwrap()
                 .glsl(None, None, &[], &[], false);
-            for s in &sfx {
-                assert!(g.contains(&format!("uniform float {name}{s};")));
-            }
-            let args = sfx
-                .iter()
-                .map(|s| format!("{name}{s}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            assert!(g.contains(&format!("#define {name} {t}({args})")));
-            // A vec type never reaches the shader as a uniform.
-            assert!(!g.contains(&format!("uniform {t} {name};")));
-        }
-    }
-
-    #[test]
-    fn vec_param_glsl_type_raises() {
-        for (t, n) in [("vec2", 2), ("vec3", 3), ("vec4", 4)] {
-            let p = param("v", t, json!(vec![0.0; n])).unwrap();
-            assert_eq!(
-                p.glsl_type().unwrap_err().to_string(),
-                format!("{t} decomposes to {n} float uniforms; it has no glsl_type")
-            );
+            assert!(g.contains(&format!("uniform {t} {name};")), "{g}");
+            assert!(!g.contains(&format!("{name}_x")), "{g}");
+            assert!(!g.contains(&format!("#define {name}")), "{g}");
+            let p = param(name, t, json!(vec![0.0; n])).unwrap();
+            assert_eq!(p.glsl_type().unwrap(), t);
         }
     }
 
@@ -2754,16 +2555,9 @@ mod tests {
         .unwrap();
         for p in &sc.passes {
             let g = p.glsl(Some(&sc.params), None, &sc.assets, &[], false);
-            assert!(g.contains("uniform float gain;")); // A scalar is one uniform.
-                                                        // A color decomposes to three floats plus a vec3 alias, in every pass.
-            assert!(g.contains("uniform float tint_r;"));
-            assert!(g.contains("uniform float tint_g;"));
-            assert!(g.contains("uniform float tint_b;"));
-            assert!(g.contains("#define tint vec3(tint_r, tint_g, tint_b)"));
-            // A vec2 decomposes to two floats plus a vec2 alias, in every pass.
-            assert!(g.contains("uniform float off_x;"));
-            assert!(g.contains("uniform float off_y;"));
-            assert!(g.contains("#define off vec2(off_x, off_y)"));
+            assert!(g.contains("uniform float gain;"));
+            assert!(g.contains("uniform vec3 tint;"));
+            assert!(g.contains("uniform vec2 off;"));
         }
     }
 

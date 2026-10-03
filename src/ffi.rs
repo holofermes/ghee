@@ -18,6 +18,9 @@ pub struct GheeEncoder {
 
 pub const PARAM_TYPE_FLOAT: c_int = 0;
 pub const PARAM_TYPE_INT: c_int = 1;
+pub const PARAM_TYPE_VEC2: c_int = 2;
+pub const PARAM_TYPE_VEC3: c_int = 3;
+pub const PARAM_TYPE_VEC4: c_int = 4;
 
 pub const GHEE_BLEND_OVER: c_int = 0;
 pub const GHEE_BLEND_ADD: c_int = 1;
@@ -38,9 +41,15 @@ pub struct IntParam {
 }
 
 #[repr(C)]
+pub struct VecParam {
+    pub value: [f32; 4],
+}
+
+#[repr(C)]
 pub union ParamValue {
     pub float_param: *mut FloatParam,
     pub int_param: *mut IntParam,
+    pub vec_param: *mut VecParam,
 }
 
 #[repr(C)]

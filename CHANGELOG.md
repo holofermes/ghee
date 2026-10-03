@@ -75,9 +75,10 @@
 - Refuse a scene where a param, an array, an image asset or another text
   takes a GLSL name made by a text, such as `<name>_w` or `<name>_atlas`, and
   name both in the error.
-- Compile a pass whose vec or color param shares its name with a local of
-  ghee's array or text readers, such as `t` or `at`, where the param's
-  `#define` broke the reader.
+- Declare a vec or color param as one `uniform vec2`, `vec3` or `vec4`, so a
+  local of its name shadows it as it shadows any uniform, and `.bg` beside a
+  color named `bg` selects the field. The param was a `#define` over one
+  float uniform for each component, which broke both.
 - Ship NOTICE and the DejaVu font's license in the deb under
   `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
   LICENSE and NOTICE in the wheel.
@@ -92,9 +93,6 @@
   `false` on a draw, `emoji=` on `ghee.Draw`, to choose otherwise.
 - Draw a text from a list of fonts in Python,
   `ghee.Text("words", ["sans", "emoji"])`.
-- Refuse a scene where a vec or color param named like a swizzle, such as
-  `bg`, reaches GLSL that selects that swizzle, `.bg`, and name the line,
-  where the param's `#define` broke the shader.
 - Refuse a text named `glyph` or named with the `glyph_` prefix, whose GLSL
   names fall among ghee's `glyph_` names.
 - Encode a frame under 16384 pixels in hardware, scaled up by the smallest

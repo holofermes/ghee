@@ -4,15 +4,19 @@
 #include <stdbool.h>
 #include <GLES2/gl2.h>
 
-// set_param splits a vector into one float uniform per component, so every
-// type below is a scalar.
+// A VEC2 to VEC4 param sets a vec2 to vec4 uniform from the first 2 to 4
+// values of its vec_param.
 typedef enum {
     PARAM_TYPE_FLOAT,
-    PARAM_TYPE_INT
+    PARAM_TYPE_INT,
+    PARAM_TYPE_VEC2,
+    PARAM_TYPE_VEC3,
+    PARAM_TYPE_VEC4
 } param_type_t;
 
 typedef struct { float value; } float_param_t;
 typedef struct { int value; } int_param_t;
+typedef struct { float value[4]; } vec_param_t;
 
 typedef struct {
     char name[256];
@@ -20,6 +24,7 @@ typedef struct {
     union {
         float_param_t *float_param;
         int_param_t *int_param;
+        vec_param_t *vec_param;
     } value;
 } parameter_t;
 

@@ -146,10 +146,6 @@ pub fn apply_filters(
         scene.passes.push(p);
         merge_assets(scene, name, fd)?;
     }
-    // A scene param reaches the filter's code too.
-    if let Some(e) = scene.swizzle_use() {
-        bail!("{e}");
-    }
     Ok(())
 }
 
@@ -202,11 +198,7 @@ pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>)
     if let Some(name) = missing.iter().find(|n| !reg.contains_key(*n)) {
         return Err(unknown(name));
     }
-    apply_filters(scene, &missing, Some(reg))?;
-    match scene.swizzle_use() {
-        Some(e) => bail!("{e}"),
-        None => Ok(()),
-    }
+    apply_filters(scene, &missing, Some(reg))
 }
 
 /// One filter pass named `own`, reading `prev`. The param values of `was`

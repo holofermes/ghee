@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from conftest import RED, REPO
+from conftest import RED, REPO, VECS, near, quarters
 
 import ghee
 
@@ -188,6 +188,22 @@ def test_a_set_lands_on_the_next_frame(served):
     h.feed("level", LEVEL)
     h.frame()
     assert h.pixels()[1] > 0 and h.pixels()[0] == 0
+
+
+def test_a_set_reaches_a_vec_or_color_uniform():
+    port = free_port()
+    with ghee.open(VECS, width=8, height=1, stats=port) as h:
+        h.frame()
+        for q in [
+            "pass=scene&name=a&value=1,0",
+            "pass=0&name=b&value=0,0.25,1",
+            "pass=0&name=c&value=0.5,1,0,1",
+            "pass=scene&name=tint&value=0,1,0.5",
+        ]:
+            assert post(port, "/set?" + q)[0] == 200
+        h.frame()
+        got = quarters(h)
+        assert near(got, [[1, 0, 0], [0, 0.25, 1], [0.5, 1, 0], [0, 1, 0.5]]), got
 
 
 def test_a_set_the_scene_refuses(served):

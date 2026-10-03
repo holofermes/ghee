@@ -27,9 +27,6 @@ use crate::text::{self, Fault, Fill, Layout, Text};
 /// A pass error reports the pass index.
 pub const COMMON_PASS: &str = "common";
 
-/// A vecN param reaches the shader as float uniforms with these suffixes.
-const VEC_SUFFIXES: [&str; 4] = ["_x", "_y", "_z", "_w"];
-
 /// The shader holding a setup() compile error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorPass {
@@ -1397,10 +1394,8 @@ impl Renderer {
     /// Set one uniform on a pass live, with no recompile.
     ///
     /// Returns false when the pass or the uniform is absent.
-    /// A "color" param is [r, g, b]. It sets the float uniforms name_r, name_g
-    /// and name_b, because the engine has no color type.
-    /// A "vecK" param is K floats. It sets the float uniforms name_x, name_y,
-    /// name_z and name_w.
+    /// A "color" param is [r, g, b] and sets a vec3 uniform. A "vecK" param
+    /// is K floats and sets a vecK uniform.
     /// A "string" param is host-side. The scene's controller consumes it, so
     /// this call sets nothing.
     pub fn set_param(
@@ -1416,31 +1411,19 @@ impl Renderer {
         let Some(idx) = self.pass_index(pass_name) else {
             return Ok(false);
         };
-        if ptype == "color" {
-            let ParamValue::Color(rgb) = value else {
-                bail!("color param '{name}' needs three numbers [r, g, b]");
-            };
-            let oks = ["_r", "_g", "_b"]
-                .iter()
-                .zip(rgb)
-                .map(|(suffix, comp)| {
-                    self.set_uniform(idx, &format!("{name}{suffix}"), "float", Value::from(*comp))
-                })
-                .collect::<Result<Vec<bool>>>()?;
-            return Ok(oks.into_iter().all(|o| o));
-        }
-        if matches!(ptype, "vec2" | "vec3" | "vec4") {
-            let ParamValue::Vec(components) = value else {
-                bail!("{ptype} param '{name}' needs numbers");
-            };
-            let oks = VEC_SUFFIXES
-                .iter()
-                .zip(components)
-                .map(|(suffix, comp)| {
-                    self.set_uniform(idx, &format!("{name}{suffix}"), "float", Value::from(*comp))
-                })
-                .collect::<Result<Vec<bool>>>()?;
-            return Ok(oks.into_iter().all(|o| o));
+        let fits = match (ptype, value) {
+            ("color", v) => matches!(v, ParamValue::Color(_)),
+            ("vec2", ParamValue::Vec(v)) => v.len() == 2,
+            ("vec3", ParamValue::Vec(v)) => v.len() == 3,
+            ("vec4", ParamValue::Vec(v)) => v.len() == 4,
+            ("vec2" | "vec3" | "vec4", _) => false,
+            _ => true,
+        };
+        if !fits {
+            match ptype {
+                "color" => bail!("color param '{name}' needs three numbers [r, g, b]"),
+                _ => bail!("{ptype} param '{name}' needs {} numbers", &ptype[3..]),
+            }
         }
         self.set_uniform(idx, name, ptype, value.to_json())
     }
@@ -3406,11 +3389,9 @@ mod tests {
     }
 
     #[test]
-    fn a_param_reaches_the_shader_decomposed() {
-        // A color param sets name_r, name_g and name_b.
-        // A vecK param sets name_x, name_y, name_z and name_w.
-        // This shader reads tint.r, off.x and off.y, so GL drops tint_g and
-        // tint_b. The color set then reports false, and its red still lands.
+    fn a_vec_or_color_param_sets_one_vector_uniform() {
+        // This shader reads tint.r, off.x and off.y, so the whole of each
+        // vector uniform is live.
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{
             "name": "main",
@@ -3422,7 +3403,7 @@ mod tests {
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
         let color = ParamValue::Color([0.5, 0.1, 0.2]);
-        assert!(!r.set_param("main", "tint", "color", &color).unwrap());
+        assert!(r.set_param("main", "tint", "color", &color).unwrap());
         let off = ParamValue::Vec(vec![0.25, 0.75]);
         assert!(r.set_param("main", "off", "vec2", &off).unwrap());
         // A string param is host-side. It sets nothing, on any pass.
@@ -3436,8 +3417,13 @@ mod tests {
         assert!(!r
             .set_param("main", "ghost", "color", &ParamValue::Color([1.0; 3]))
             .unwrap());
-        // A type with more suffixes than components stops at the components.
-        assert!(r.set_param("main", "off", "vec4", &off).unwrap());
+        // A value of another length fails, naming the param.
+        assert_eq!(
+            r.set_param("main", "off", "vec4", &off)
+                .unwrap_err()
+                .to_string(),
+            "vec4 param 'off' needs 4 numbers"
+        );
         let f = r.render(None).unwrap();
         for (c, want) in [(0, 128.0), (1, 64.0), (2, 191.0), (3, 255.0)] {
             assert!(
@@ -3446,6 +3432,91 @@ mod tests {
                 f[c]
             );
         }
+    }
+
+    /// The colour in each quarter of a frame that splits at x = W/4, W/2 and
+    /// 3W/4, read at the quarter's centre, 0..1.
+    fn quarters(f: &[u8]) -> Vec<[f64; 4]> {
+        (0..4)
+            .map(|q| {
+                let x = W * (2 * q + 1) / 8;
+                [0, 1, 2, 3].map(|c| px(f, W, x, H / 2, c) / 255.0)
+            })
+            .collect()
+    }
+
+    fn near(got: &[[f64; 4]], want: &[[f64; 4]]) -> bool {
+        got.iter()
+            .flatten()
+            .zip(want.iter().flatten())
+            .all(|(g, w)| (g - w).abs() <= 1.5 / 255.0)
+    }
+
+    #[test]
+    fn vec_and_color_values_reach_glsl_from_the_scene_and_a_set() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let code = "void main(){ float x = v_texCoord.x; \
+                    gl_FragColor = x < 0.25 ? vec4(a, 0.0, 1.0) : x < 0.5 ? vec4(b, 1.0) \
+                    : x < 0.75 ? vec4(c.xyz * c.w, 1.0) : vec4(tint, 1.0); }";
+        let sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "params": {"a": {"type": "vec2", "value": [0.25, 0.5]},
+                           "tint": {"type": "color", "value": [0.5, 0.25, 1.0]}},
+                "passes": [{"name": "main", "code": code, "params": {
+                    "b": {"type": "vec3", "value": [0.75, 0.5, 0.25]},
+                    "c": {"type": "vec4", "value": [1.0, 0.5, 0.25, 0.5]}}}],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        let f = r.render(None).unwrap().to_vec();
+        let want = [
+            [0.25, 0.5, 0.0, 1.0],
+            [0.75, 0.5, 0.25, 1.0],
+            [0.5, 0.25, 0.125, 1.0],
+            [0.5, 0.25, 1.0, 1.0],
+        ];
+        assert!(near(&quarters(&f), &want), "{:?}", quarters(&f));
+        let v = |x: &[f64]| ParamValue::Vec(x.to_vec());
+        assert!(r.set_scene_param("a", "vec2", &v(&[1.0, 0.0])).unwrap());
+        assert!(r
+            .set_param("main", "b", "vec3", &v(&[0.0, 0.25, 1.0]))
+            .unwrap());
+        assert!(r
+            .set_param("main", "c", "vec4", &v(&[0.5, 1.0, 0.0, 1.0]))
+            .unwrap());
+        let tint = ParamValue::Color([0.0, 1.0, 0.5]);
+        assert!(r.set_scene_param("tint", "color", &tint).unwrap());
+        let f = r.render(None).unwrap().to_vec();
+        let want = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.25, 1.0, 1.0],
+            [0.5, 1.0, 0.0, 1.0],
+            [0.0, 1.0, 0.5, 1.0],
+        ];
+        assert!(near(&quarters(&f), &want), "{:?}", quarters(&f));
+    }
+
+    #[test]
+    fn a_local_shadows_a_vec_param_as_it_shadows_any_uniform() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let code = "vec3 lift(vec3 tint){ return tint + 0.25; }\n\
+                    void main(){ vec3 tint = vec3(0.0, 0.25, 0.0); \
+                    gl_FragColor = vec4(lift(tint), 1.0); }";
+        let sc = scene_of(json!([{"name": "main", "code": code,
+            "params": {"tint": {"type": "color", "value": [1.0, 1.0, 1.0]}}}]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        let f = r.render(None).unwrap().to_vec();
+        assert!(
+            near(&quarters(&f)[..1], &[[0.25, 0.5, 0.25, 1.0]]),
+            "{:?}",
+            quarters(&f)
+        );
     }
 
     #[test]

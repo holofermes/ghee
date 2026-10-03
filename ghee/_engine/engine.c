@@ -1247,6 +1247,9 @@ static bool program_uniform(GLuint program, const parameter_t *param) {
     switch (param->type) {
         case PARAM_TYPE_FLOAT: glUniform1f(loc, param->value.float_param->value); break;
         case PARAM_TYPE_INT:   glUniform1i(loc, param->value.int_param->value); break;
+        case PARAM_TYPE_VEC2: { const float *v = param->value.vec_param->value; glUniform2f(loc, v[0], v[1]); break; }
+        case PARAM_TYPE_VEC3: { const float *v = param->value.vec_param->value; glUniform3f(loc, v[0], v[1], v[2]); break; }
+        case PARAM_TYPE_VEC4: { const float *v = param->value.vec_param->value; glUniform4f(loc, v[0], v[1], v[2], v[3]); break; }
         default: return false;
     }
     return true;

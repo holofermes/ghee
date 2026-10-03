@@ -16,6 +16,9 @@ pub const NAME_MAX: usize = 255;
 pub enum CParameterType {
     Float = ffi::PARAM_TYPE_FLOAT,
     Int = ffi::PARAM_TYPE_INT,
+    Vec2 = ffi::PARAM_TYPE_VEC2,
+    Vec3 = ffi::PARAM_TYPE_VEC3,
+    Vec4 = ffi::PARAM_TYPE_VEC4,
 }
 
 /// The C view points at this per-type struct.
@@ -26,6 +29,7 @@ pub enum CParameterType {
 enum Owned {
     Float(*mut ffi::FloatParam),
     Int(*mut ffi::IntParam),
+    Vec(*mut ffi::VecParam),
 }
 
 pub struct CParameter {
@@ -40,6 +44,7 @@ impl Drop for CParameter {
             match self.owned {
                 Owned::Float(p) => drop(Box::from_raw(p)),
                 Owned::Int(p) => drop(Box::from_raw(p)),
+                Owned::Vec(p) => drop(Box::from_raw(p)),
             }
         }
     }
@@ -91,6 +96,20 @@ fn as_int(value: &Value) -> Result<c_int> {
     }
 }
 
+/// `n` numbers, each a float.
+fn as_floats(value: &Value, n: usize) -> Result<[f32; 4]> {
+    let mut out = [0.0f32; 4];
+    match value {
+        Value::Array(a) if a.len() == n => {
+            for (slot, v) in out.iter_mut().zip(a) {
+                *slot = as_float(v)? as f32;
+            }
+            Ok(out)
+        }
+        _ => bail!("parameter value is not {n} numbers"),
+    }
+}
+
 fn truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -135,6 +154,18 @@ pub fn create_c_parameter(param_type: &str, value: &Value) -> Result<CParameter>
                 ffi::ParamValue { int_param: p },
             )
         }
+        // A color is a vec3 uniform.
+        "vec2" | "vec3" | "vec4" | "color" => {
+            let (ty, n) = match param_type {
+                "vec2" => (CParameterType::Vec2, 2),
+                "vec4" => (CParameterType::Vec4, 4),
+                _ => (CParameterType::Vec3, 3),
+            };
+            let p = Box::into_raw(Box::new(ffi::VecParam {
+                value: as_floats(value, n)?,
+            }));
+            (ty, Owned::Vec(p), ffi::ParamValue { vec_param: p })
+        }
         _ => bail!("unknown parameter type: {param_type}"),
     };
     Ok(CParameter {
@@ -170,12 +201,26 @@ mod tests {
     }
 
     #[test]
-    fn vector_param_has_no_producer() {
-        // A color and a vecN reach the shader as decomposed float uniforms.
-        let e = create_c_parameter("vec3", &json!([0.0, 0.0, 0.0]))
+    fn a_vector_param_carries_its_components() {
+        for (ty, want, value) in [
+            ("vec2", CParameterType::Vec2, json!([0.5, -1.0])),
+            ("vec3", CParameterType::Vec3, json!([0.5, -1.0, 2.0])),
+            ("color", CParameterType::Vec3, json!([0.5, -1.0, 2.0])),
+            ("vec4", CParameterType::Vec4, json!([0.5, -1.0, 2.0, 0.25])),
+        ] {
+            let cp = create_c_parameter(ty, &value).unwrap();
+            assert_eq!(cp.param.ty, want as c_int, "{ty}");
+            let got = unsafe { (*cp.param.value.vec_param).value };
+            let n = value.as_array().unwrap().len();
+            for (g, v) in got.iter().zip(value.as_array().unwrap()) {
+                assert_eq!(f64::from(*g), v.as_f64().unwrap(), "{ty}");
+            }
+            assert!(got[n..].iter().all(|g| *g == 0.0), "{ty}");
+        }
+        let e = create_c_parameter("vec3", &json!([0.0, 0.0]))
             .err()
             .map(|e| e.to_string());
-        assert_eq!(e.as_deref(), Some("unknown parameter type: vec3"));
+        assert_eq!(e.as_deref(), Some("parameter value is not 3 numbers"));
     }
 
     #[test]

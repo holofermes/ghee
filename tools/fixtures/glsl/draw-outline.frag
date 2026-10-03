@@ -193,10 +193,7 @@ float t_cover(vec2 p, float ppem) {
 }
 uniform float sung;
 uniform int n;
-uniform float ink_r;
-uniform float ink_g;
-uniform float ink_b;
-#define ink vec3(ink_r, ink_g, ink_b)
+uniform vec3 ink;
 uniform float gain;
 
 float twice(float x) { return 2.0 * x; }

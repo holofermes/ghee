@@ -819,11 +819,6 @@ fn a_text_declaration_names_what_it_lacks() {
             "text 'label' atlas takes 'font_size', got 'px_em'",
         ),
         (
-            json!({"font": "sans", "atlas": {"range": 6}}),
-            "text 'label' atlas takes no 'range': the field reaches the largest 'pad' of \
-             the text's layers",
-        ),
-        (
             json!({"font": "sans", "atlas": {"font_size": 0}}),
             "text 'label' atlas font_size needs a whole number from 1 to 2048, got 0",
         ),

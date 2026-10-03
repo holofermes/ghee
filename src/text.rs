@@ -333,10 +333,6 @@ impl Text {
                 for (k, v) in a {
                     match k.as_str() {
                         "font_size" => {}
-                        "range" => bail!(
-                            "text '{name}' atlas takes no 'range': the field reaches the \
-                             largest 'pad' of the text's layers"
-                        ),
                         _ => bail!("text '{name}' atlas takes 'font_size', got '{k}'"),
                     }
                     atlas_font_size = match v.as_u64() {

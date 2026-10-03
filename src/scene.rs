@@ -1118,9 +1118,6 @@ impl Asset {
         if o.contains_key("filter") {
             bail!("asset '{name}' takes 'nearest' or 'linear' in 'sampling', got 'filter'");
         }
-        if o.contains_key("from_filter") {
-            bail!("asset '{name}' takes no 'from_filter': a filter declares its own assets");
-        }
         known_keys(o, &format!("asset '{name}'"), &ASSET_KEYS, &[])?;
         let file = match o.get("file") {
             None => bail!("asset '{name}' has no 'file'"),
@@ -3281,10 +3278,6 @@ mod tests {
             (
                 asset(json!({"file": "logo.png", "filter": "linear"})),
                 "asset 'd' takes 'nearest' or 'linear' in 'sampling', got 'filter'".to_string(),
-            ),
-            (
-                asset(json!({"file": "logo.png", "from_filter": "frc256"})),
-                "asset 'd' takes no 'from_filter': a filter declares its own assets".to_string(),
             ),
             (
                 asset(json!({"file": "sans.ttf", "sampling": "linear"})),

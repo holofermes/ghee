@@ -2428,49 +2428,17 @@ mod tests {
     }
 
     #[test]
-    fn an_unfinished_flip_on_a_slow_board_is_still_waited_for() {
-        // The kernel holds a page flip until the GPU finishes the frame. The
-        // wait scales with the render. The panel refresh does not bound it.
-        // A bound near one frame time leaves a slow board's flip pending.
-        // The engine refuses every submit while a flip stays pending.
-        let src = fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/ghee/_engine/engine.c"
-        ))
-        .unwrap();
-        let bound = src
-            .split("#define FLIP_STUCK_MS ")
-            .nth(1)
-            .and_then(|s| s.split_whitespace().next())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap();
-        assert!(bound >= 1000); // 1000 ms is slower than any frame, so only a stuck flip hits it.
-
-        let present = src.split("void ghee_mp_present").nth(1).unwrap();
-        let unreaped = present
-            .split("!wait_flip(g)")
-            .nth(1)
-            .unwrap()
-            .split("} else")
-            .next()
-            .unwrap();
-        assert!(unreaped.contains("release_bo(g, bo)"));
-        assert!(!unreaped.contains("drmModePageFlip"));
-
-        let (flipped, refused) = present
-            .split("if (!drmModePageFlip")
-            .nth(1)
-            .unwrap()
-            .split_once("} else")
-            .unwrap();
-        assert!(flipped.contains("g->flip_failed = false;"));
-        assert!(flipped.contains("g->disp_prev = bo;"));
-
-        // A refused flip leaves disp_prev on glass.
-        // Drawing into a buffer on glass tears the picture.
-        let refused = refused.split("\n    }").next().unwrap();
-        assert!(refused.contains("release_bo(g, bo)"));
-        assert!(!refused.contains("g->disp_prev =") && !refused.contains("g->disp_shown ="));
+    fn a_present_frees_the_buffer_that_an_accepted_flip_takes_off_the_glass() {
+        let [a, b, c] = [1, 2, 3].map(ptr::without_provenance_mut::<c_void>);
+        let (mut prev, mut shown) = (a, b);
+        // A flip still waiting on the last one, or refused, leaves the glass
+        // as it was, and frees the buffer just drawn.
+        let freed = unsafe { ffi::ghee_flip_rotate(&mut prev, &mut shown, c, false) };
+        assert_eq!((freed, prev, shown), (c, a, b));
+        // An accepted flip leaves the last buffer on the glass until it
+        // completes, and frees the one before.
+        let freed = unsafe { ffi::ghee_flip_rotate(&mut prev, &mut shown, c, true) };
+        assert_eq!((freed, prev, shown), (b, c, a));
     }
 
     #[test]

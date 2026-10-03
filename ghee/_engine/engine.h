@@ -162,6 +162,14 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 // Render the passes and scan the final buffer out to the display (display mode
 // only). buffer_rgb non-NULL also reads the frame back (for a console mirror).
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
+// The scanout buffers after a present of `bo`. `prev` holds the buffer of the
+// most recent flip, pending or on the glass, and `shown` the one before it,
+// on the glass until that flip completes. An accepted flip displaces `shown`.
+// A flip that never happened, still waiting on the last one or refused,
+// leaves both on the glass. Returns the buffer free to reuse.
+struct gbm_bo;
+struct gbm_bo *ghee_flip_rotate(struct gbm_bo **prev, struct gbm_bo **shown,
+                                struct gbm_bo *bo, bool flipped);
 void ghee_mp_reset(GheeScene *g);
 // Keep the final pass's alpha in 4-component readbacks, the full frame and the
 // downscaled one. Off by default. The scanout and the encoder input take alpha

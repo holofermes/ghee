@@ -1999,6 +1999,15 @@ static bool set_scaled_plane(GheeScene *g, uint32_t fb, int w, int h) {
     return true;
 }
 
+struct gbm_bo *ghee_flip_rotate(struct gbm_bo **prev, struct gbm_bo **shown,
+                                struct gbm_bo *bo, bool flipped) {
+    if (!flipped) return bo;
+    struct gbm_bo *freed = *shown;
+    *shown = *prev;
+    *prev = bo;
+    return freed;
+}
+
 static bool wait_flip(GheeScene *g) {
     if (!g->flip_pending) return true;
     drmEventContext ev = { .version = 2 };
@@ -2200,21 +2209,20 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));
         g->disp_first = false;
         g->disp_prev = bo;               // on the screen now (SetCrtc is immediate)
-    } else if (!wait_flip(g)) {
-        release_bo(g, bo);
-    } else if (!drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL)) {
-        release_bo(g, g->disp_shown);    // displaced by the previous flip
-        g->disp_shown = g->disp_prev;    // displaced once this flip completes
-        g->disp_prev = bo;
-        g->flip_pending = true;
-        g->flip_failed = false;
-    } else {                             // a refused flip leaves disp_prev on the screen
-        if (!g->flip_failed) {
+    } else {
+        const bool waited = wait_flip(g);
+        const bool flipped =
+            waited && !drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL);
+        const int err = errno;
+        release_bo(g, ghee_flip_rotate(&g->disp_prev, &g->disp_shown, bo, flipped));
+        if (flipped) {
+            g->flip_pending = true;
+            g->flip_failed = false;
+        } else if (waited && !g->flip_failed) {  // a refused flip leaves disp_prev on the screen
             g->flip_failed = true;
-            set_error(g, "drmModePageFlip failed: %s%s", strerror(errno),
-                      errno == EACCES ? ". DRM master went to another process" : "");
+            set_error(g, "drmModePageFlip failed: %s%s", strerror(err),
+                      err == EACCES ? ". DRM master went to another process" : "");
         }
-        release_bo(g, bo);
     }
     if (buffer_rgb && pw > 0 && ph > 0) read_preview(g, buffer_rgb, pw, ph);
     for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;

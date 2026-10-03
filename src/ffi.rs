@@ -157,6 +157,12 @@ extern "C" {
     ) -> bool;
     pub fn ghee_mp_render(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_present(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
+    pub fn ghee_flip_rotate(
+        prev: *mut *mut c_void,
+        shown: *mut *mut c_void,
+        bo: *mut c_void,
+        flipped: bool,
+    ) -> *mut c_void;
     pub fn ghee_mp_reset(g: *mut GheeScene);
     pub fn ghee_keep_alpha(g: *mut GheeScene, keep: c_int);
     pub fn ghee_max_texture_units(g: *mut GheeScene) -> c_int;

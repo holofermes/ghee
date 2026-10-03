@@ -290,8 +290,8 @@ file is a font for a [text](#text), and only the text reads it.
 ghee writes these names into every shader: `time`, `DT`, `frame`,
 `resolution`, `v_texCoord`, and `iChannel0` and up. Every other name that ghee
 writes for its own use starts with `ghee_`, and the names that a layer reads
-start with `glyph_`. A param, an array, an asset or a text takes none of the
-built-in names, and no name that starts with `ghee_` or `glyph_`.
+start with `glyph_`. A scene fails to load when a param, an array, an asset or
+a text takes a built-in name, or a name that starts with `ghee_` or `glyph_`.
 
 Each declaration adds names to the GLSL of the passes that it reaches:
 

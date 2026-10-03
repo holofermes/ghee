@@ -368,8 +368,9 @@ This draw puts `title` in amber at 48 pixels per em, centred in the pass:
 - `text` names a scene text.
 - `place` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
   block, in em from its top left with y down, to the pass pixel where it
-  lands. It runs at the corners of each glyph's quad, so a glyph moves
-  rigidly.
+  lands. It runs at the corners of each glyph's quad, so it can move, turn,
+  scale or shear a glyph, and a bend inside one glyph draws straight between
+  its corners.
 - `code` holds a `void main()` that writes colour premultiplied by alpha.
 - `blend` is `over` by default, `add` or `replace`.
 - `alpha` is `blend` by default, and `keep` leaves the pass's alpha as it was.
@@ -394,14 +395,17 @@ float glyph_ppem;      // pixels per em at this glyph
 ```
 
 `place` reads `glyph_index`, `glyph_word`, `glyph_line`, `glyph_span`,
-`glyph_box` (the ink box in em) and every uniform, and no texture. Draws
+`glyph_box` (the ink box in em), `resolution`, `time`, `DT`, `frame`, the
+params of the scene and of its pass, and its text's `<name>_size`. It reads
+no texture. Draws
 render in list order, so a first draw of the same text puts a glow or a
 shadow under the fill of every glyph. A pass with `draws` and no `code` starts
 each frame transparent and holds the words alone, a layer that later passes
 read through a channel and composite.
 
 The text's `fill` sets where the coverage comes from. `mtsdf`, the default,
-reads one texel a pixel from an atlas of the glyphs' MTSDFs: multi-channel
+takes one bilinear sample a pixel, with no mipmaps, from an atlas of the
+glyphs' MTSDFs: multi-channel
 signed distance fields, with the true distance in alpha. The first use of a
 font generates its ASCII and Latin-1 on every core, 0.6 s on a Pi Zero 2 W,
 and caches the atlas in `$XDG_CACHE_HOME/ghee/atlas`, else
@@ -499,7 +503,7 @@ ghee isf import shader.fs --size 640x480
 ghee refuses three kinds of ISF:
 
 - `FLOAT` pass buffers. ghee's pass buffers are 8-bit RGBA.
-- `IMPORTED` external images. ghee scenes have no image inputs.
+- `IMPORTED` external images. The import converts the shader file alone.
 - a vertex shader, or a body reading a varying. ghee's vertex shader is
   fixed.
 

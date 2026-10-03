@@ -137,8 +137,9 @@ pub enum Alpha {
     Keep,
 }
 
-/// A layer for ghee_mp_add_layer, as engine.h describes it. Each scene draw
-/// reaches the engine as one.
+/// A layer for ghee_mp_add_layer, as engine.h describes it, that a caller
+/// hands setup_layers(). A scene draw takes two or three engine layers of its
+/// own: the draw, its colour glyphs when it paints them, and its error boxes.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Layer {
     /// The name of the pass that the layer draws into.
@@ -1541,7 +1542,7 @@ impl Renderer {
         };
         // The quads of the text's fill, and under MTSDF an error box for each
         // glyph that the atlas holds no field for. An MTSDF text with no atlas
-        // has a font that failed to load, and draws error boxes alone.
+        // has no font with outlines left, and still draws its colour glyphs.
         let mut boxes = built.boxes.floats.clone();
         let quads = match text.fill {
             Fill::Outline => built.quads.floats.clone(),
@@ -3704,6 +3705,17 @@ mod tests {
                 assert!(near3(got, [255.0, 255.0, 0.0]), "({x}, {y}): {got:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_layer_past_the_engine_cap_names_the_layer_cap() {
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let layers: Vec<Layer> = (0..49)
+            .map(|_| layer("main", PLAIN_FS, Blend::Over))
+            .collect();
+        let e = r.setup_layers(&sc, &layers).unwrap();
+        assert!(e.ends_with("layer 48: over the cap of 48 layers"), "{e}");
     }
 
     #[test]

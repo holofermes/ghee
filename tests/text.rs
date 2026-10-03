@@ -2086,6 +2086,36 @@ fn draw_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     filled(doc, "outline")
 }
 
+#[test]
+fn a_place_reads_the_glyph_values_the_frame_uniforms_the_params_and_its_text_size() {
+    let fit = Fit {
+        x: 8.0,
+        y: 8.0,
+        ppem: 48.0,
+    };
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let reads = "glyph_index + glyph_word + glyph_line + glyph_span.x + glyph_box.x \
+                 + resolution.x + time + DT + frame + shift + k + label_size.x";
+    for fill in FILLS {
+        let mut doc = filled(draw_scene(SANS, "Ag", Align::Left, fit), fill);
+        doc["params"]["shift"] = json!({"type": "float", "value": 0.0});
+        doc["passes"][0]["params"] = json!({"k": {"type": "float", "value": 0.0}});
+        let place = |extra: &str| {
+            format!(
+                "vec2 glyph_place(vec2 em) {{ return vec2(8.0) + em * 48.0 + ({extra}) * 0.0; }}"
+            )
+        };
+        doc["passes"][0]["draws"][0]["place"] = json!(place(reads));
+        let sc = loaded(&doc);
+        assert_eq!(r.setup(&sc).unwrap(), "", "{fill}");
+        // No sampler reaches the vertex stage, the text's own data texture
+        // included.
+        doc["passes"][0]["draws"][0]["place"] = json!(place("texture2D(label_tex, em).x"));
+        let e = r.setup(&loaded(&doc)).unwrap();
+        assert!(e.contains("label_tex"), "{fill}: {e}");
+    }
+}
+
 /// `doc` with its text `label` in `fill`.
 fn filled(mut doc: Value, fill: &str) -> Value {
     doc["texts"]["label"]["fill"] = json!(fill);

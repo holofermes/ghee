@@ -25,7 +25,8 @@
 //! ghee refuses three things, by name and reason. A FLOAT (32-bit) pass buffer
 //! saturates silently in ghee's 8-bit buffers. A custom ISF vertex shader writes
 //! its own varyings, which ghee's fixed vertex shader does not emit. IMPORTED
-//! loads an external image.
+//! loads an external image file, and the import converts the shader file
+//! alone.
 
 use std::collections::HashMap;
 
@@ -543,8 +544,8 @@ fn refuse_unrunnable(meta: &Map<String, Value>, body: &str, vertex_shader: bool)
             v => py_str(v),
         };
         return Err(isf_error(format!(
-            "IMPORTED loads external image(s) ({which}); ghee scenes have no \
-             image inputs, only pass buffers and host-fed arrays"
+            "IMPORTED loads external image(s) ({which}), and the import \
+             converts the shader file alone"
         )));
     }
     let raw = match truthy(meta, "PASSES") {
@@ -1971,7 +1972,10 @@ void main() {
     #[test]
     fn imported_image_is_refused() {
         let src = isf(json!({"IMPORTED": {"noiseTex": {"PATH": "noise.png"}}}));
-        assert!(err(to_scene(&src, "i.fs", DEFAULT_SIZE, false)).contains("noiseTex"));
+        assert!(err(to_scene(&src, "i.fs", DEFAULT_SIZE, false)).contains(
+            "IMPORTED loads external image(s) (noiseTex), and the import converts \
+             the shader file alone"
+        ));
     }
 
     #[test]

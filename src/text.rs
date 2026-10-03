@@ -11,11 +11,11 @@
 //! pass's own quad, as one quad over each inked glyph. The draw's
 //! `glyph_place` maps a point of the block to a pixel of the pass, and its code
 //! colours the pixels of each quad from the glyph's coverage. The text's fill
-//! gives that coverage: the MTSDF fill reads one texel of the glyph's field in
-//! an atlas, which `crate::atlas` builds, and the outline fill computes it from
-//! the curves as `<name>_cover` does. A colour glyph, a bitmap with no
-//! outline, draws through the draw's colour layer, which `crate::colour`
-//! describes.
+//! gives that coverage: the MTSDF fill takes one bilinear sample of the
+//! glyph's field in an atlas, which `crate::atlas` builds, and the outline
+//! fill computes it from the curves as `<name>_cover` does. A colour glyph, a
+//! bitmap with no outline, draws through the draw's colour layer, which
+//! `crate::colour` describes.
 //!
 //! Coverage follows the Slug algorithm by Eric Lengyel
 //! (https://jcgt.org/published/0006/02/02/, https://github.com/EricLengyel/Slug).

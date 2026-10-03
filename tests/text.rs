@@ -2123,6 +2123,13 @@ fn a_vertex_reads_the_glyph_values_the_frame_uniforms_the_params_its_text_size_a
             "vec2 glyph_place(vec2 em) {{ return vec2(8.0) + em * 48.0 + ({reads}) * 0.0; }}"
         ));
         assert!(render(&mut r, &loaded(&doc)) == plain, "{fill}");
+        // The vertex GLSL reads the pass's text and arrays itself too.
+        doc["common"] = json!({"code": "float twice(float x) { return 2.0 * x; }"});
+        let own = format!("{reads} + label_cover(em, 48.0) + amps_at(0)");
+        doc["passes"][0]["draws"][0]["vertex"] = json!(format!(
+            "vec2 glyph_place(vec2 em) {{ return vec2(8.0) + em * 48.0 + ({own}) * 0.0; }}"
+        ));
+        assert!(render(&mut r, &loaded(&doc)) == plain, "{fill}");
     }
 }
 

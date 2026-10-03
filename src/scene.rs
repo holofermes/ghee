@@ -1598,9 +1598,22 @@ impl Pass {
     /// declares what the pass's preamble declares, at the same precision,
     /// since GLSL ES links a uniform declared by both stages only when the two
     /// declarations match, and the scene's common block follows, so the
-    /// common block compiles as it does in a pass.
+    /// common block compiles as it does in a pass. A text's coverage reader
+    /// is long to compile on VC4, so the stage holds it only for a text whose
+    /// `<name>_cover` the common block or the draw's vertex GLSL names.
     fn draw_vertex(&self, d: &Draw, scene: &Scene, hw_linear: bool, main: Vec<String>) -> String {
-        let mut v = self.preamble(Some(&scene.params), &scene.assets, &scene.texts, hw_linear);
+        let common = scene.common.as_deref().unwrap_or_default();
+        let vertex = d.vertex_glsl();
+        let mut v = self.preamble_reading(
+            Some(&scene.params),
+            &scene.assets,
+            &scene.texts,
+            hw_linear,
+            |t| {
+                let cover = format!("{}_cover", t.name);
+                common.contains(&cover) || vertex.contains(&cover)
+            },
+        );
         // The fragment stage's int defaults to mediump and the vertex stage's
         // to highp, so an int uniform declared in both needs this to link.
         v.insert(PRECISION.len(), "precision mediump int;".to_string());
@@ -1612,7 +1625,7 @@ impl Pass {
         }
         v.extend(crate::text::draw_vertex_head());
         v.push(String::new());
-        v.push(d.vertex_glsl());
+        v.push(vertex);
         v.push(String::new());
         v.extend(main);
         v.join("\n")
@@ -1624,6 +1637,19 @@ impl Pass {
         assets: &[Asset],
         texts: &[Text],
         hw_linear: bool,
+    ) -> Vec<String> {
+        self.preamble_reading(scene_params, assets, texts, hw_linear, |_| true)
+    }
+
+    /// The preamble, with the coverage reader of each text for which `reads`
+    /// holds, and that text's `<name>_size` alone for any other.
+    fn preamble_reading(
+        &self,
+        scene_params: Option<&ParamMap>,
+        assets: &[Asset],
+        texts: &[Text],
+        hw_linear: bool,
+        reads: impl Fn(&Text) -> bool,
     ) -> Vec<String> {
         let mut l: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         l.extend(
@@ -1661,7 +1687,10 @@ impl Pass {
         // A text belongs to the scene, so a filter pass never reads one.
         if self.filter.is_empty() {
             for t in texts {
-                l.extend(crate::text::reader_lines(&t.name));
+                match reads(t) {
+                    true => l.extend(crate::text::reader_lines(&t.name)),
+                    false => l.push(format!("uniform vec2 {}_size;", t.name)),
+                }
             }
         }
         // A uniform named after a GLSL built-in function, such as mix, hides

@@ -132,8 +132,9 @@ words again with no recompile, from `set_param` or the console.
 `font` names one font asset or a list of them. With
 `ghee.Text("words", ["sans", "emoji"])`, each character draws from the first
 font in the list whose cmap holds it, letters from `sans` and emoji from a
-colour emoji font such as Noto Color Emoji. Line height and baseline come
-from the first font.
+colour emoji font such as Noto Color Emoji. A character followed by U+FE0F
+draws from the first font with a colour glyph for it. Line height and
+baseline come from the first font.
 
 A text problem leaves the scene running, and `set_param` raises nothing for
 it: ghee logs it once on stderr, and the console shows it. A font that fails

@@ -30,6 +30,12 @@ const EMOJI: &str = "NotoColorEmoji-Smiles.ttf";
 /// table at 109 px/em, beside a strike at 20 px/em of flat green, and empty
 /// TrueType outlines.
 const EMOJI_SBIX: &str = "NotoColorEmoji-Smiles-sbix.ttf";
+/// DejaVu Sans cut by fontTools' subset to space, U+2764, U+FE0E and U+FE0F:
+/// an outline heart, and two selectors with no advance and no ink.
+const HEART: &str = "DejaVuSans-Heart.ttf";
+/// Noto Color Emoji cut by fontTools' subset to space and U+2764: a colour
+/// heart.
+const EMOJI_HEART: &str = "NotoColorEmoji-Heart.ttf";
 
 fn font(file: &str) -> Vec<u8> {
     fs::read(format!("{FONTS}/{file}")).unwrap()
@@ -3268,6 +3274,36 @@ fn a_text_takes_each_character_from_the_first_font_that_has_it() {
 }
 
 #[test]
+fn an_emoji_selector_takes_the_first_colour_glyph_and_a_text_selector_keeps_the_first_font() {
+    let hearts = |laid: &text::Layout| {
+        let built = laid.built.as_ref().unwrap();
+        let of = |ps: &[text::Placement]| -> Vec<(usize, usize)> {
+            ps.iter()
+                .filter(|p| p.ch == '\u{2764}')
+                .map(|p| (p.index, p.font))
+                .collect()
+        };
+        (of(&built.glyphs), of(&built.colour))
+    };
+    let words = "\u{2764}\u{fe0f}\u{2764}\u{fe0e}\u{2764}";
+    let laid = text::build(&listed(&[HEART, EMOJI_HEART]), words, Align::Left);
+    assert_eq!(laid.faults, []);
+    assert_eq!(hearts(&laid), (vec![(2, 0), (4, 0)], vec![(0, 1)]));
+    // A colour font ahead in the list draws every heart in colour.
+    let laid = text::build(&listed(&[EMOJI_HEART, HEART]), words, Align::Left);
+    assert_eq!(hearts(&laid), (vec![], vec![(0, 0), (2, 0), (4, 0)]));
+    // With no colour glyph for the character, U+FE0F leaves it to the first
+    // font that holds it.
+    let laid = text::build(&listed(&[HEART, EMOJI]), words, Align::Left);
+    assert_eq!(hearts(&laid), (vec![(0, 0), (2, 0), (4, 0)], vec![]));
+    // The heart after the selector starts where the colour heart ends.
+    let laid = text::build(&listed(&[HEART, EMOJI_HEART]), words, Align::Left);
+    let built = laid.built.as_ref().unwrap();
+    let after = built.glyphs.iter().find(|p| p.index == 2).unwrap();
+    assert_eq!(after.span[0], built.colour[0].span[1]);
+}
+
+#[test]
 fn glyphs_of_two_fonts_do_not_kern() {
     // A pair that the text font kerns, its second character taken from a
     // font ahead of it.
@@ -3370,6 +3406,23 @@ fn a_draw_paints_its_colour_glyphs_in_their_own_colours() {
             let px = &frame[((y as usize) * w + x as usize) * 4..][..3];
             assert_eq!(px, [255, 255, 255], "{what}");
         }
+    }
+}
+
+#[test]
+fn a_draw_paints_the_colour_glyph_that_an_emoji_selector_takes() {
+    let words = "\u{2764}\u{fe0f}";
+    let (w, h) = (220, 150);
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    let laid = text::build(&listed(&[HEART, EMOJI_HEART]), words, Align::Left);
+    let built = laid.built.as_ref().unwrap();
+    let b = bitmap(EMOJI_HEART, '\u{2764}');
+    let (fit, at) = bitmap_fit(built, 0, &b, 1.0, [8.0, 6.0]);
+    for fill in FILLS {
+        let doc = colour_scene(&[HEART, EMOJI_HEART], words, fill, &exact_place(fit));
+        let frame = render(&mut r, &loaded(&doc));
+        assert_bitmap(&frame, w, &b, at, 1, [0, 0, 0], fill);
+        assert_eq!(r.text_errors(), [] as [String; 0], "{fill}");
     }
 }
 

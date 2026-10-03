@@ -117,6 +117,9 @@
 - Return at once when a text's string param gets the words it holds, from
   `set_param`, the console, the wire or the Python host, where each set laid
   the words out and uploaded them again.
+- Draw a character followed by U+FE0F from the first font of its text with a
+  colour glyph for it, so ❤️ draws in colour when an earlier font holds a
+  plain heart.
 
 ## 0.4.0 - 2026-08-06
 

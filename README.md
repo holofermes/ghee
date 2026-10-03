@@ -302,8 +302,10 @@ with PNG bitmaps in a CBDT or sbix table, such as Noto Color Emoji. Texts that
 name the same font asset share it. `font` takes one asset or a list of them,
 `"font": ["sans", "emoji"]`, and each character draws from the first font in
 the list whose cmap holds it, while a character that no font has draws the
-first font's missing-glyph box. Line height and baseline come from the first
-font.
+first font's missing-glyph box. A character followed by U+FE0F, the emoji
+variation selector, draws from the first font with a colour glyph for it, so
+❤️ draws in colour even when an earlier font holds a plain heart. Line height
+and baseline come from the first font.
 
 Lines break at each newline, and `align` sets each line `left`, `center` or
 `right` within the block, `left` by default. Every character draws as one

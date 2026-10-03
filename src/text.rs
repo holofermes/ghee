@@ -611,6 +611,29 @@ fn pick<'f, 'a>(faces: &'f Faces<'a>, ch: char) -> Option<(usize, &'f Face<'a>, 
     first
 }
 
+/// U+FE0F, the emoji variation selector: the character before it asks for
+/// its emoji.
+const EMOJI_SELECTOR: char = '\u{fe0f}';
+
+/// The font of `faces` that draws `ch`, its index, and its glyph for `ch`,
+/// as pick() finds them. A character followed by U+FE0F takes the first font
+/// with a colour glyph for it instead, when one has.
+fn pick_before<'f, 'a>(
+    faces: &'f Faces<'a>,
+    ch: char,
+    next: Option<char>,
+) -> Option<(usize, &'f Face<'a>, Option<GlyphId>)> {
+    if next == Some(EMOJI_SELECTOR) {
+        for (i, face) in faces.iter().enumerate() {
+            let Some(face) = face else { continue };
+            if let Some(g) = face.glyph_index(ch).filter(|g| is_colour(face, *g)) {
+                return Some((i, face, Some(g)));
+            }
+        }
+    }
+    pick(faces, ch)
+}
+
 /// True when `face` holds outlines, TrueType or CFF.
 fn outlined(face: &Face) -> bool {
     let t = face.tables();
@@ -659,7 +682,9 @@ impl atlas::Font for AtlasFont {
         h.finalize().into()
     }
 
-    /// A colour glyph draws from the colour atlas, and takes no id here.
+    /// A colour glyph draws from the colour atlas, and takes no id here. A
+    /// character that U+FE0F turns to a colour glyph keeps the id of its
+    /// glyph alone, so the atlas may hold a field that no draw reads.
     fn glyph(&self, ch: char) -> Option<u32> {
         let ch = if ch == '\t' { ' ' } else { ch };
         if ch.is_control() {
@@ -876,7 +901,8 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
         let mut prev: Option<(usize, GlyphId)> = None;
         // A draw's glyph_index counts every character of the words, the
         // newline that ends a line too.
-        for (i, ch) in text.chars().enumerate() {
+        let chars: Vec<char> = text.chars().collect();
+        for (i, &ch) in chars.iter().enumerate() {
             let at = index + i;
             if ch.is_whitespace() {
                 in_word = false;
@@ -890,7 +916,7 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
             if ch.is_control() {
                 continue;
             }
-            let (ink, origin, advance) = match pick(faces, ch) {
+            let (ink, origin, advance) = match pick_before(faces, ch, chars.get(i + 1).copied()) {
                 // A default ignorable that no font has takes no room.
                 Some((_, _, None)) if ignorable(ch) => (None, x, 0.0),
                 Some((f, face, found)) => {
@@ -926,7 +952,7 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
             });
             x += advance;
         }
-        index += text.chars().count() + 1;
+        index += chars.len() + 1;
         in_word = false;
         widths.push((first, placed.len(), x));
     }

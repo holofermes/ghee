@@ -425,9 +425,8 @@ fn align_name(a: Align) -> &'static str {
 fn label_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     json!({
         "version": 1,
-        "params": {"label": {"type": "string", "value": words}},
         "assets": {"face": {"file": file}},
-        "texts": {"label": {"font": "face", "align": align_name(align)}},
+        "texts": {"label": {"value": words, "font": "face", "align": align_name(align)}},
         "passes": [{"name": "main", "code": format!(
             "void main(){{ float c = {}; gl_FragColor = vec4(c, c, c, 1.0); }}",
             fit.cover("label"))}],
@@ -603,18 +602,24 @@ fn font_assets() -> Value {
     json!({"sans": {"file": SANS}, "cff": {"file": CFF}})
 }
 
-/// A scene that declares `texts`, a string param for each, and the fixture
-/// fonts.
+/// A scene that declares `texts`, each with the words "I" ahead of its keys,
+/// and the fixture fonts.
 fn texts_scene(texts: Value) -> Value {
-    let mut params = Map::new();
-    for name in texts.as_object().unwrap().keys() {
-        params.insert(name.clone(), json!({"type": "string", "value": "I"}));
+    let mut words = Map::new();
+    for (name, t) in texts.as_object().unwrap() {
+        let Some(keys) = t.as_object() else {
+            words.insert(name.clone(), t.clone());
+            continue;
+        };
+        let mut d = Map::new();
+        d.insert("value".to_string(), json!("I"));
+        d.extend(keys.clone());
+        words.insert(name.clone(), Value::Object(d));
     }
     json!({
         "version": 1,
-        "params": params,
         "assets": font_assets(),
-        "texts": texts,
+        "texts": words,
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}],
     })
 }
@@ -644,7 +649,10 @@ fn texts_round_trip_and_left_is_the_default() {
         )
         .unwrap();
         assert_eq!(sc.texts[0].align, Align::Left);
-        assert_eq!(sc.to_dict()["texts"], json!({"label": {"font": "sans"}}));
+        assert_eq!(
+            sc.to_dict()["texts"],
+            json!({"label": {"value": "I", "font": "sans"}})
+        );
     }
     // MTSDF is the default fill, at 32 px/em and a range of 6 with no draw,
     // and a save leaves the defaults out.
@@ -665,9 +673,9 @@ fn texts_round_trip_and_left_is_the_default() {
     assert_eq!(
         sc.to_dict()["texts"],
         json!({
-            "label": {"font": "sans"},
-            "title": {"font": "sans", "fill": "slug"},
-            "tail": {"font": "sans", "atlas": {"px_per_em": 48}},
+            "label": {"value": "I", "font": "sans"},
+            "title": {"value": "I", "font": "sans", "fill": "slug"},
+            "tail": {"value": "I", "font": "sans", "atlas": {"px_per_em": 48}},
         })
     );
     assert_eq!(sc.texts[1].fill, Fill::Slug);
@@ -680,26 +688,57 @@ fn texts_round_trip_and_left_is_the_default() {
 }
 
 #[test]
-fn a_text_needs_a_scene_string_param_of_its_name() {
-    let want = "scene: text 'label' needs a scene string param 'label' that holds its words";
-    let text = json!({"label": {"font": "sans"}});
-    let none = json!({
-        "version": 1, "assets": font_assets(), "texts": text,
+fn a_text_declares_the_string_param_of_its_name_and_refuses_another() {
+    let doc = json!({
+        "version": 1, "assets": font_assets(),
+        "texts": {"label": {"value": "hi", "font": "sans"}, "title": {"font": "sans"}},
+        "params": {"gain": {"type": "float", "value": 1.0}},
         "passes": [{"name": "main", "code": "void main(){}"}],
     });
-    assert_eq!(scene_err(&none), want);
-    let float = json!({
-        "version": 1, "assets": font_assets(), "texts": text,
-        "params": {"label": {"type": "float", "value": 1.0}},
-        "passes": [{"name": "main", "code": "void main(){}"}],
-    });
-    assert_eq!(scene_err(&float), want);
-    let in_a_pass = json!({
-        "version": 1, "assets": font_assets(), "texts": text,
-        "passes": [{"name": "main", "code": "void main(){}",
-                    "params": {"label": {"type": "string", "value": "I"}}}],
-    });
-    assert_eq!(scene_err(&in_a_pass), want);
+    let sc = Scene::from_dict(&doc, None, None).unwrap();
+    let words = |sc: &Scene, n: &str| sc.params.get(n).map(|p| p.value.clone());
+    let str = |w: &str| Some(ParamValue::Str(w.to_string()));
+    assert_eq!(words(&sc, "label"), str("hi"));
+    assert_eq!(words(&sc, "title"), str(""));
+    // A save leaves the param out and writes the words as they stand into the
+    // text, and a scene built again keeps them.
+    let mut sc = Ok(sc).param(Param::float("k", 0.5)).unwrap();
+    sc.params.get_mut("label").unwrap().value = ParamValue::Str("ho".to_string());
+    let sc = Ok(sc).param(Param::float("j", 0.5)).unwrap();
+    let back = sc.to_dict();
+    assert_eq!(back["params"].as_object().unwrap().len(), 3);
+    assert_eq!(
+        back["texts"]["label"],
+        json!({"value": "ho", "font": "sans"})
+    );
+    assert_eq!(back["texts"]["title"], json!({"value": "", "font": "sans"}));
+    assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
+    let none = Scene::from_dict(&texts_scene(json!({"label": {"font": "sans"}})), None, None);
+    assert!(none.unwrap().to_dict().get("params").is_none());
+    // A param under the text's name is refused, of any type and in any pass.
+    let scene = "scene param 'label' has the name of text 'label', which holds its words in \
+                 its 'value'";
+    let pass = "param 'label' in pass 'main' has the name of text 'label', which holds its \
+                words in its 'value'";
+    for (at, ty, want) in [
+        ("scene", "string", scene),
+        ("scene", "float", scene),
+        ("pass", "string", pass),
+    ] {
+        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+        let p = json!({"label": {"type": ty, "value": if ty == "string" { json!("I") } else { json!(1.0) }}});
+        match at {
+            "scene" => doc["params"] = p,
+            _ => doc["passes"][0]["params"] = p,
+        }
+        assert_eq!(scene_err(&doc), format!("scene: {want}"), "{at} {ty}");
+    }
+    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+    doc["texts"]["label"]["value"] = json!(3);
+    assert_eq!(
+        scene_err(&doc),
+        "scene: text 'label' value needs words in a string, got 3"
+    );
 }
 
 #[test]
@@ -716,8 +755,8 @@ fn a_text_declaration_names_what_it_lacks() {
             "text 'label' 'font' needs the name of a font asset",
         ),
         (
-            json!({"font": SANS}),
-            "text 'label' font 'DejaVuSans-ASCII.ttf' is no asset of the scene",
+            json!({"font": "serif"}),
+            "text 'label' font 'serif' is no asset of the scene and no .ttf or .otf file",
         ),
         (
             json!({"font": "sans", "align": "middle"}),
@@ -890,7 +929,7 @@ fn a_name_beside_the_names_of_a_text_compiles() {
         "labels": {"font": "sans", "fill": "slug"},
     }));
     doc["assets"]["emoji"] = json!({"file": EMOJI});
-    doc["params"]["label"]["value"] = json!("I\u{1f600}");
+    doc["texts"]["label"]["value"] = json!("I\u{1f600}");
     doc["params"]["label_w"] = float.clone();
     doc["params"]["label_sizes"] = float.clone();
     doc["passes"][0]["name"] = json!("label_tex");
@@ -962,7 +1001,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
         "title": {"font": "sans", "fill": "slug"},
     }));
     doc["assets"]["emoji"] = json!({"file": EMOJI});
-    doc["params"]["label"]["value"] = json!("I\u{1f600}");
+    doc["texts"]["label"]["value"] = json!("I\u{1f600}");
     doc["passes"][0]["code"] = json!(
         "void main(){ gl_FragColor = vec4(vec3(title_cover(v_texCoord * title_size, 32.0)), 1.0); }"
     );
@@ -1016,10 +1055,7 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
     let place = "vec2 glyph_place(vec2 em) { return em * 24.0; }";
     let scene = |params: Value, code: &str| {
         let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
-        doc["params"]
-            .as_object_mut()
-            .unwrap()
-            .extend(params.as_object().unwrap().clone());
+        doc["params"] = params;
         doc["passes"][0]["code"] = json!(code);
         doc
     };
@@ -1083,10 +1119,8 @@ fn image_assets_texts_and_their_atlases_share_the_engine_cap() {
 fn every_scene_pass_reads_the_texts_and_a_filter_pass_none() {
     let doc = json!({
         "version": 1,
-        "params": {"label": {"type": "string", "value": "I"},
-                   "title": {"type": "string", "value": "O"}},
         "assets": font_assets(),
-        "texts": {"label": {"font": "sans"}, "title": {"font": "cff"}},
+        "texts": {"label": {"value": "I", "font": "sans"}, "title": {"value": "O", "font": "cff"}},
         "passes": [
             {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0); }"},
             {"name": "main", "channels": [{"buffer": "a"}],
@@ -1428,9 +1462,8 @@ fn size_reads_the_block_in_em() {
     let laid = lay(SANS, words, Align::Center);
     let doc = json!({
         "version": 1,
-        "params": {"label": {"type": "string", "value": words}},
         "assets": font_assets(),
-        "texts": {"label": {"font": "sans", "align": "center"}},
+        "texts": {"label": {"value": words, "font": "sans", "align": "center"}},
         "passes": [{"name": "main", "code": format!(
             "void main(){{ gl_FragColor = vec4(\
              abs(label_size.x - {:.6}) < 1e-4 ? 1.0 : 0.0, \
@@ -1491,9 +1524,8 @@ fn a_text_reaches_every_pass() {
     let fit = Fit::of(laid.width, laid.height, W, H);
     let doc = json!({
         "version": 1,
-        "params": {"label": {"type": "string", "value": "AV"}},
         "assets": font_assets(),
-        "texts": {"label": {"font": "sans"}},
+        "texts": {"label": {"value": "AV", "font": "sans"}},
         "passes": [
             {"name": "a", "code": format!(
                 "void main(){{ gl_FragColor = vec4({}, 0.0, 0.0, 1.0); }}", fit.cover("label"))},
@@ -1526,10 +1558,8 @@ fn two_texts_draw_their_own_words() {
     );
     let doc = json!({
         "version": 1,
-        "params": {"label": {"type": "string", "value": "AV"},
-                   "title": {"type": "string", "value": "O"}},
         "assets": font_assets(),
-        "texts": {"label": {"font": "sans"}, "title": {"font": "cff"}},
+        "texts": {"label": {"value": "AV", "font": "sans"}, "title": {"value": "O", "font": "cff"}},
         "passes": [{"name": "main", "code": format!(
             "void main(){{ gl_FragColor = vec4({}, {}, 0.0, 1.0); }}",
             fit.cover("label"), fit.cover("title"))}],
@@ -1558,9 +1588,8 @@ fn a_later_setup_draws_its_own_text() {
     // A scene whose text has another name.
     let title = json!({
         "version": 1,
-        "params": {"title": {"type": "string", "value": "I"}},
         "assets": font_assets(),
-        "texts": {"title": {"font": "sans"}},
+        "texts": {"title": {"value": "I", "font": "sans"}},
         "passes": [{"name": "main", "code": format!(
             "void main(){{ gl_FragColor = vec4(vec3({}), 1.0); }}", fit.cover("title"))}],
     });
@@ -1606,9 +1635,8 @@ fn a_setup_frees_the_asset_slots_of_old_texts() {
         let name = format!("t{i}");
         let doc = json!({
             "version": 1,
-            "params": {name.clone(): {"type": "string", "value": "I"}},
             "assets": font_assets(),
-            "texts": {name.clone(): {"font": "sans"}},
+            "texts": {name.clone(): {"value": "I", "font": "sans"}},
             "passes": [{"name": "main", "code": format!(
                 "void main(){{ float c = {}; gl_FragColor = vec4(c, c, c, 1.0); }}",
                 fit.cover(&name))}],
@@ -1772,6 +1800,42 @@ fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
         let one = r.render(None).unwrap().to_vec();
         assert_hazard(&one, W, fit, &rects[..1], &format!("{fill} one box"));
     }
+}
+
+#[test]
+fn a_font_names_an_asset_or_a_file_and_a_list_mixes_both() {
+    let words = "I\u{1f600}";
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 30.0,
+    };
+    let Some((_g, mut r)) = gpu(W, H) else { return };
+    let assets = colour_scene(&[SANS, EMOJI], words, "mtsdf", &fit_place(fit));
+    let want = render(&mut r, &loaded(&assets));
+    // The files themselves, and an asset beside a file.
+    for fonts in [json!([SANS, EMOJI]), json!(["f0", EMOJI])] {
+        let mut doc = assets.clone();
+        doc["texts"]["label"]["font"] = fonts.clone();
+        let sc = loaded(&doc);
+        assert_eq!(sc.to_dict()["texts"]["label"]["font"], fonts);
+        assert!(render(&mut r, &sc) == want, "{fonts}");
+        assert_eq!(r.text_errors(), [] as [String; 0], "{fonts}");
+    }
+    // A missing file leaves the text running with an error box, and names
+    // the file. A file outside the scene directory is refused.
+    let mut doc = assets.clone();
+    doc["texts"]["label"]["font"] = json!(["Missing.ttf", EMOJI]);
+    render(&mut r, &loaded(&doc));
+    let errors = r.text_errors();
+    let missing = format!("text 'label' font 'Missing.ttf' ({FONTS}/Missing.ttf): No such file");
+    assert!(errors.iter().any(|e| e.starts_with(&missing)), "{errors:?}");
+    doc["texts"]["label"]["font"] = json!(format!("../{SANS}"));
+    let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+    assert_eq!(
+        sc.load_assets(FONTS).unwrap_err().to_string(),
+        format!("text 'label' font '../{SANS}' is outside the scene directory")
+    );
 }
 
 #[test]
@@ -3151,13 +3215,12 @@ fn the_slug_fill_assembles_as_before_the_mtsdf_fill() {
     let doc = json!({
         "version": 1,
         "params": {
-            "t": {"type": "string", "value": "ghee"},
             "sung": {"type": "float", "value": 2.5},
             "n": {"type": "int", "value": 3},
             "ink": {"type": "color", "value": [0.9, 0.9, 1.0]},
         },
         "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-        "texts": {"t": {"font": "sans", "align": "center", "fill": "slug"}},
+        "texts": {"t": {"value": "ghee", "font": "sans", "align": "center", "fill": "slug"}},
         "common": {"code": "float twice(float x) { return 2.0 * x; }"},
         "passes": [{
             "name": "main",
@@ -3342,9 +3405,8 @@ fn colour_scene(files: &[&str], words: &str, fill: &str, place: &str) -> Value {
     let fonts: Vec<String> = (0..files.len()).map(|i| format!("f{i}")).collect();
     json!({
         "version": 1,
-        "params": {"label": {"type": "string", "value": words}},
         "assets": assets,
-        "texts": {"label": {"font": fonts, "fill": fill}},
+        "texts": {"label": {"value": words, "font": fonts, "fill": fill}},
         "passes": [{"name": "main", "code": BLACK,
             "draws": [{"text": "label", "fragment": WHITE, "vertex": place}]}],
     })
@@ -3491,20 +3553,25 @@ fn a_text_round_trips_its_fonts_and_names_a_bad_list() {
     // A list of one saves as the name.
     assert_eq!(
         sc.to_dict()["texts"],
-        json!({"label": {"font": ["sans", "cff"]}, "title": {"font": "cff"}})
+        json!({
+            "label": {"value": "I", "font": ["sans", "cff"]},
+            "title": {"value": "I", "font": "cff"},
+        })
     );
     for (font, want) in [
         (
             json!([]),
-            "text 'label' 'font' needs the name of a font asset or a list of them, got []",
+            "text 'label' 'font' needs the name of a font asset or a .ttf or .otf file, or a \
+             list of them, got []",
         ),
         (
             json!(["sans", 3]),
-            "text 'label' 'font' needs the name of a font asset or a list of them, got ['sans', 3]",
+            "text 'label' 'font' needs the name of a font asset or a .ttf or .otf file, or a \
+             list of them, got ['sans', 3]",
         ),
         (
             json!(["sans", "nope"]),
-            "text 'label' font 'nope' is no asset of the scene",
+            "text 'label' font 'nope' is no asset of the scene and no .ttf or .otf file",
         ),
     ] {
         let e = scene_err(&texts_scene(json!({"label": {"font": font}})));

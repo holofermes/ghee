@@ -58,8 +58,8 @@ After the handshake, stdout carries binary messages:
   bare name targets the scene param, or the first pass that declares it.
 - kind 2 means clean: this tick needs no render, and the display keeps the
   last frame. It's the single kind byte, no name, no values.
-- kind 3 sets the named string param. Same header as kind 0, the payload is
-  count bytes of UTF-8 text.
+- kind 3 sets the named string param, and the name of a text sets its
+  words. Same header as kind 0, the payload is count bytes of UTF-8 text.
 - kind 4 sets the named array from u8 values. Same header as kind 0, the
   payload is count u8 bytes, value = byte / 255. A big mask costs a quarter
   of the pipe.

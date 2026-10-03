@@ -2994,9 +2994,8 @@ mod tests {
     fn text_scene(words: &str) -> Scene {
         let doc = serde_json::json!({
             "version": 1,
-            "params": {"label": {"type": "string", "value": words}},
             "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-            "texts": {"label": {"font": "sans"}},
+            "texts": {"label": {"value": words, "font": "sans"}},
             "passes": [{"name": "main", "code": "void main(){ \
                 float c = label_cover(v_texCoord * label_size, resolution.y / label_size.y); \
                 gl_FragColor = vec4(c, c, c, 1.0); }"}],
@@ -3054,7 +3053,7 @@ mod tests {
         let o = frame();
         assert!(o != i, "the frame kept the old words");
         let running = lock(&console.running).clone().unwrap().1;
-        assert_eq!(running["params"]["label"]["value"], "O");
+        assert_eq!(running["texts"]["label"]["value"], "O");
         // the relayed words draw what a scene built on them draws
         assert_eq!(set(text_scene("O")), "");
         assert!(frame() == o, "the relayed words drew another frame");
@@ -3098,7 +3097,7 @@ mod tests {
         assert!(e.starts_with("text 'label': ") && e.contains("VC4"), "{e}");
         // The document holds the words posted.
         let running = lock(&console.running).clone().unwrap().1;
-        assert_eq!(running["params"]["label"]["value"], long.as_str());
+        assert_eq!(running["texts"]["label"]["value"], long.as_str());
         // A scene error outranks a text error.
         lock(&console.stat).error = "compile error".to_string();
         assert_eq!(error(), "compile error");

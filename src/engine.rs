@@ -4167,9 +4167,8 @@ mod tests {
             let mut sc = Scene::from_dict(
                 &json!({
                     "version": 1,
-                    "params": {"label": {"type": "string", "value": "AV"}},
                     "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-                    "texts": {"label": {"font": "sans", "fill": "slug"}},
+                    "texts": {"label": {"value": "AV", "font": "sans", "fill": "slug"}},
                     "passes": [{"name": "main", "draws": draws,
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }"}],
                 }),
@@ -4219,9 +4218,8 @@ mod tests {
         let mut sc = Scene::from_dict(
             &json!({
                 "version": 1,
-                "params": {"label": {"type": "string", "value": words}},
                 "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-                "texts": {"label": {"font": "sans", "align": align}},
+                "texts": {"label": {"value": words, "font": "sans", "align": align}},
                 "passes": [{"name": "main", "code": "void main(){ \
                     float c = label_cover(v_texCoord * label_size, resolution.y / label_size.y); \
                     gl_FragColor = vec4(c, c, c, 1.0); }"}],
@@ -4272,10 +4270,9 @@ mod tests {
             let mut sc = Scene::from_dict(
                 &json!({
                     "version": 1,
-                    "params": {"label": {"type": "string", "value": "AV"}},
                     "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},
                                "emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
-                    "texts": {"label": {"font": font}},
+                    "texts": {"label": {"value": "AV", "font": font}},
                     "passes": [{"name": "main",
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                         "draws": [{"text": "label",
@@ -4336,10 +4333,9 @@ mod tests {
         let mut sc = Scene::from_dict(
             &json!({
                 "version": 1,
-                "params": {"label": {"type": "string", "value": "A"}},
                 "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},
                            "emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
-                "texts": {"label": {"font": ["sans", "emoji"], "fill": "slug"}},
+                "texts": {"label": {"value": "A", "font": ["sans", "emoji"], "fill": "slug"}},
                 "passes": [{"name": "main",
                     "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                     "draws": draws}],
@@ -4468,9 +4464,8 @@ mod tests {
         let mut sc = Scene::from_dict(
             &json!({
                 "version": 1,
-                "params": {"label": {"type": "string", "value": words}},
                 "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-                "texts": {"label": {"font": "sans"}},
+                "texts": {"label": {"value": words, "font": "sans"}},
                 "passes": [{"name": "main",
                     "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                     "draws": [{"text": "label",

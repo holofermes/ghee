@@ -34,7 +34,7 @@ h = ghee.open(
 h.set_param("gain", 1.5)                 # a scene param
 h.set_param("snap", 1.0, pass_="hold")   # the param of one pass
 h.set_param("hold.snap", 1.0)            # the same param, dotted
-h.set_param("words", "hello")            # a string param, drawn by a text
+h.set_param("words", "hello")            # the words of a text
 
 h.feed("level", bars)      # bytes, bytearray, memoryview, array, numpy, numbers
 tick = h.frame()           # {"frame": 12, "time": 0.4, "dt": 0.0166}
@@ -49,8 +49,8 @@ h.close()       # also a context manager
 ## What each call does
 
 `set_param` sets a live uniform, no recompile. A bare name is the scene
-param, else the param of the first pass that declares it. A string param
-that a text draws lays out the new words, also with no recompile.
+param, else the param of the first pass that declares it. The name of a
+text sets its words, and ghee lays them out again, also with no recompile.
 
 A scene file finds its asset files beside itself, and so does a Python
 scene that ghee runs. A scene given as a dict or as JSON text finds them in
@@ -120,25 +120,26 @@ or more.
 
 ## Text
 
-`ghee.Text` draws the scene string param of its name on the GPU, from the
-outlines of a font, sharp at any size. Every pass except a filter pass reads
-the words with `float <name>_cover(vec2 p, float ppem)`: `p` in em from the
-top left of the block, y down like `v_texCoord`, and `ppem` the pixels per
-em.
-`<name>_size` is the block in em. A new value of the param lays out the
-words again with no recompile, from `set_param` or the console.
+`ghee.Text(name, font, value)` draws the words in `value` on the GPU, from
+the outlines of a font, sharp at any size. Every pass except a filter pass
+reads the words with `float <name>_cover(vec2 p, float ppem)`: `p` in em
+from the top left of the block, y down like `v_texCoord`, and `ppem` the
+pixels per em.
+`<name>_size` is the block in em. ghee declares the string param of the
+text's name, and new words from `set_param` or the console lay out again
+with no recompile. A scene that declares a param under a text's name raises
+ValueError.
 
     scene = ghee.Scene(
-        params={"words": ghee.Param("words", "string", "hello")},
-        assets=[ghee.Asset("sans", "DejaVuSans.ttf")],
-        texts=[ghee.Text("words", "sans", align="center")],
+        texts=[ghee.Text("words", "DejaVuSans.ttf", "hello", align="center")],
         passes=[ghee.Pass("main", CODE)],
     )
 
-`font` names one font asset or a list of them. With
-`ghee.Text("words", ["sans", "emoji"])`, each character draws from the first
-font in the list whose cmap holds it, letters from `sans` and emoji from a
-colour emoji font such as Noto Color Emoji. A character followed by U+FE0F
+`font` takes a `.ttf` or `.otf` file, which resolves as an asset file does,
+the name of a font `ghee.Asset`, or a list that mixes both. With
+`ghee.Text("words", ["sans", "NotoColorEmoji.ttf"])`, each character draws
+from the first font in the list whose cmap holds it, letters from `sans` and
+emoji from a colour emoji font such as Noto Color Emoji. A character followed by U+FE0F
 draws from the first font with a colour glyph for it. Line height and
 baseline come from the first font.
 
@@ -175,9 +176,7 @@ centred on black:
     BLACK = "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"
 
     scene = ghee.Scene(
-        params={"words": ghee.Param("words", "string", "hello")},
-        assets=[ghee.Asset("sans", "DejaVuSans.ttf")],
-        texts=[ghee.Text("words", "sans")],
+        texts=[ghee.Text("words", "DejaVuSans.ttf", "hello")],
         passes=[ghee.Pass("main", BLACK, draws=[ghee.Draw("words", AMBER, CENTRED)])],
     )
 

@@ -26,13 +26,15 @@
   Pi 5 it showed stale fragments of earlier frames.
 - Keep the picture on a KMS display whole when the display refuses a page
   flip, where the next frame drew into the buffer still on screen.
-- Draw text on the GPU from a font. A scene declares `texts`, each named
-  after the scene string param that holds its words and naming a `.ttf` or
-  `.otf` asset as its font, and every scene pass, filter passes excepted,
-  reads `<name>_cover(p, ppem)` and `<name>_size`. An edit to the param lays
-  the words out again, with no recompile.
-- Declare an asset from Python with `ghee.Asset` and a text with `ghee.Text`,
-  in `Scene(assets=[...], texts=[...])`.
+- Draw text on the GPU from a font. A scene declares `texts`, each with its
+  words in `value` and its font, a `.ttf` or `.otf` file or a font asset,
+  and every scene pass, filter passes excepted, reads `<name>_cover(p, ppem)`
+  and `<name>_size`. ghee declares the scene string param of each text's
+  name, which holds its words, and an edit to the param lays the words out
+  again, with no recompile. A param declared under a text's name refuses
+  the scene.
+- Declare an asset from Python with `ghee.Asset` and a text with
+  `ghee.Text(name, font, value)`, in `Scene(assets=[...], texts=[...])`.
 - Add `--demo lettering`, words drawn from a font.
 - Set a string param from a procedural scene with message kind 3, so its
   words reach a text over the wire.
@@ -105,8 +107,9 @@
 - Ship NOTICE and the DejaVu font's license in the deb under
   `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
   LICENSE and NOTICE in the wheel.
-- Take a list of fonts on a text, `"font": ["sans", "emoji"]`, and draw each
-  character from the first font whose cmap holds it.
+- Take a list of fonts on a text, assets and files mixed,
+  `"font": ["sans", "NotoColorEmoji.ttf"]`, and draw each character from the
+  first font whose cmap holds it.
 - Paint colour emoji in draws: a glyph with a PNG bitmap in a CBDT or sbix
   table and no outline shows its bitmap, mipmapped, placed by the draw's
   `vertex`. `<name>_cover` reads it as no ink, and a font of colour bitmaps

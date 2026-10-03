@@ -6,7 +6,6 @@
 //! names an array or a param, and the engine binds it by that name.
 
 use std::fs;
-use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
@@ -373,6 +372,10 @@ pub struct Param {
     /// A string param offers these choices. The console renders them as a
     /// dropdown. Without them it renders a text input.
     pub options: Option<Vec<String>>,
+    /// ghee declares this string param for the text of its name, and the
+    /// param holds the text's words. A save writes them into the text's
+    /// `value`.
+    pub(crate) of_text: bool,
 }
 
 impl Param {
@@ -467,6 +470,7 @@ impl Param {
             max: max.filter(|v| !v.is_null()),
             step: step.filter(|v| !v.is_null()),
             options,
+            of_text: false,
         })
     }
 
@@ -480,6 +484,7 @@ impl Param {
             max: None,
             step: None,
             options: None,
+            of_text: false,
         }
     }
 
@@ -515,6 +520,14 @@ impl Param {
     /// `options` for the choices in the console's dropdown.
     pub fn string(name: &str, value: &str) -> Param {
         Param::plain(name, "string", ParamValue::Str(value.to_string()))
+    }
+
+    /// The string param that ghee declares for a text, holding `words`.
+    fn words(name: &str, words: &str) -> Param {
+        Param {
+            of_text: true,
+            ..Param::string(name, words)
+        }
     }
 
     /// The GLSL type of the param's uniform. A color is a vec3.
@@ -623,6 +636,10 @@ impl ParamMap {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    fn retain(&mut self, keep: impl Fn(&Param) -> bool) {
+        self.0.retain(|(_, p)| keep(p));
     }
 }
 
@@ -897,8 +914,7 @@ impl Asset {
 
     /// A .ttf or .otf file.
     pub fn is_font(&self) -> bool {
-        let f = self.file.to_ascii_lowercase();
-        f.ends_with(".ttf") || f.ends_with(".otf")
+        crate::text::is_font_file(&self.file)
     }
 
     /// Decode `bytes` as this asset's declared format. `what` names the source
@@ -906,13 +922,10 @@ impl Asset {
     /// which draw error boxes.
     pub fn decode(&mut self, bytes: &[u8], what: &str) -> Result<()> {
         if self.is_font() {
-            self.font = Some(match ttf_parser::Face::parse(bytes, 0) {
-                Ok(_) => Ok(Arc::new(bytes.to_vec())),
-                Err(e) => Err(format!(
-                    "asset '{}' ({what}): unreadable font: {e}",
-                    self.name
-                )),
-            });
+            self.font = Some(
+                crate::text::font(bytes)
+                    .map_err(|e| format!("asset '{}' ({what}): unreadable font: {e}", self.name)),
+            );
             return Ok(());
         }
         let decoded = match &self.raw {
@@ -1703,7 +1716,8 @@ pub struct Scene {
     /// last one reaches the display. The filters module resolves a name.
     pub filters: Vec<String>,
     /// The scene params. Every pass preamble declares them, and one set reaches
-    /// every pass at once. They take the shape of a pass param.
+    /// every pass at once. They take the shape of a pass param. They hold the
+    /// string param of each text too, which ghee declares.
     pub params: ParamMap,
     /// The GLSL every scene pass shares, such as a function or a constant. It
     /// follows the preamble. None is no common block. A filter pass never sees
@@ -1713,7 +1727,8 @@ pub struct Scene {
     /// sampler uniform plus a `<name>_size` vec2.
     pub assets: Vec<Asset>,
     /// Texts the GPU draws from a font. Each draws the scene string param of
-    /// its name, and every scene pass reads it with `<name>_cover`.
+    /// its name, which ghee declares for it, and every scene pass reads it with
+    /// `<name>_cover`.
     pub texts: Vec<Text>,
 }
 
@@ -1795,7 +1810,7 @@ impl Scene {
         // Each declaration as its kind, its name, where it is declared, and
         // whether its name reaches GLSL as it is.
         let mut kinds: Vec<(&str, &str, String, bool)> = Vec::new();
-        for p in self.params.values() {
+        for p in self.params.values().filter(|p| !p.of_text) {
             kinds.push(("scene param", &p.name, String::new(), p.ty != "string"));
         }
         for a in &self.assets {
@@ -1908,7 +1923,7 @@ impl Scene {
     }
 
     /// The scene with `texts` in place of its own.
-    pub fn with_texts(mut self, texts: Vec<Text>) -> Result<Scene> {
+    pub fn with_texts(mut self, mut texts: Vec<Text>) -> Result<Scene> {
         if let Some(e) = self.over_texture_cap(&texts) {
             bail!("{e}");
         }
@@ -1924,7 +1939,7 @@ impl Scene {
                 bail!("text '{}' is declared twice", t.name);
             }
             seen.push(&t.name);
-            for font in &t.fonts {
+            for font in t.fonts.iter().filter(|f| !crate::text::is_font_file(f)) {
                 match self.assets.iter().find(|a| a.name == *font) {
                     Some(a) if a.is_font() => {}
                     Some(a) => bail!(
@@ -1932,16 +1947,46 @@ impl Scene {
                         t.name,
                         py_str_repr(&a.file)
                     ),
-                    None => bail!("text '{}' font '{font}' is no asset of the scene", t.name),
+                    None => bail!(
+                        "text '{}' font '{font}' is no asset of the scene and no .ttf or .otf file",
+                        t.name
+                    ),
                 }
             }
-            match self.params.get(&t.name) {
-                Some(p) if p.ty == "string" => {}
-                _ => bail!(
-                    "text '{}' needs a scene string param '{}' that holds its words",
-                    t.name,
-                    t.name
-                ),
+        }
+        // ghee declares the string param of each text, which holds its words,
+        // after the scene's own params, and refuses a param declared under the
+        // text's name. A param that ghee declared before keeps its words.
+        let held: Vec<Param> = self
+            .params
+            .values()
+            .filter(|p| p.of_text)
+            .cloned()
+            .collect();
+        self.params.retain(|p| !p.of_text);
+        for t in &mut texts {
+            let n = t.name.clone();
+            if self.params.contains_key(&n) {
+                bail!(
+                    "scene param '{n}' has the name of text '{n}', which holds its words in \
+                     its 'value'"
+                );
+            }
+            let words = match held.iter().find(|p| p.name == n) {
+                Some(Param {
+                    value: ParamValue::Str(w),
+                    ..
+                }) => w.clone(),
+                _ => t.value.clone(),
+            };
+            self.params.insert(n.clone(), Param::words(&n, &words));
+            t.value = words;
+            if let Some(p) = self.passes.iter().find(|p| p.params.contains_key(&n)) {
+                bail!(
+                    "param '{n}' in pass '{}' has the name of text '{n}', which holds its \
+                     words in its 'value'",
+                    p.name
+                );
             }
         }
         let draws = self.passes.iter().map(|p| p.draws.len()).sum::<usize>();
@@ -2105,10 +2150,11 @@ impl Scene {
         if !self.filters.is_empty() {
             out.insert("filters".to_string(), Value::from(self.filters.clone()));
         }
-        if !self.params.is_empty() {
+        let own: Vec<&Param> = self.params.values().filter(|p| !p.of_text).collect();
+        if !own.is_empty() {
             let mut m = Map::new();
-            for (n, p) in self.params.iter() {
-                m.insert(n.clone(), p.to_dict());
+            for p in own {
+                m.insert(p.name.clone(), p.to_dict());
             }
             out.insert("params".to_string(), Value::Object(m));
         }
@@ -2124,7 +2170,12 @@ impl Scene {
         if !self.texts.is_empty() {
             let mut m = Map::new();
             for t in &self.texts {
-                m.insert(t.name.clone(), t.to_dict());
+                let mut d = t.to_dict();
+                // The words as they stand, which an edit of the param changes.
+                if let Some(ParamValue::Str(w)) = self.params.get(&t.name).map(|p| &p.value) {
+                    d["value"] = Value::from(w.clone());
+                }
+                m.insert(t.name.clone(), d);
             }
             out.insert("texts".to_string(), Value::Object(m));
         }
@@ -2164,7 +2215,12 @@ impl Scene {
     /// order. The error names the first path and every other one tried. A
     /// filter's asset is the filter's to load.
     pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
-        if self.assets.is_empty() {
+        let font_files = self
+            .texts
+            .iter()
+            .flat_map(|t| &t.fonts)
+            .any(|f| crate::text::is_font_file(f));
+        if self.assets.is_empty() && !font_files {
             return Ok(());
         }
         let root = normpath(&abspath(base_dir));
@@ -2173,41 +2229,44 @@ impl Scene {
             roots.push(parent.to_string_lossy().into_owned());
         }
         roots.extend(asset_dirs());
+        let outside = |file: &str| !inside(&normpath(&join(&root, file)), &root);
+        // The bytes of `file` and the path that held them, or why no path did,
+        // with the file named as `what`.
+        let read = |file: &str, what: &str| match roots
+            .iter()
+            .map(|r| normpath(&join(r, file)))
+            .find(|p| std::path::Path::new(p).is_file())
+        {
+            None => {
+                let tried: Vec<String> = roots.iter().map(|r| normpath(&join(r, file))).collect();
+                // A font file that shows up later marks the scene stale.
+                crate::sources::record(&tried[0]);
+                Err(format!(
+                    "{what} ({}): No such file or directory (also tried: {})",
+                    tried[0],
+                    tried[1..].join(", ")
+                ))
+            }
+            Some(path) => {
+                crate::sources::record(&path);
+                match fs::read(&path) {
+                    Ok(bytes) => Ok((bytes, path)),
+                    Err(e) => Err(format!("{what} ({path}): {}", strerror(&e))),
+                }
+            }
+        };
         for a in &mut self.assets {
             if !a.from_filter.is_empty() {
                 continue; // the filter decoded it
             }
-            let full = normpath(&join(&root, &a.file));
-            if !inside(&full, &root) {
+            if outside(&a.file) {
                 bail!(
                     "asset '{}' file {} is outside the scene directory",
                     a.name,
                     py_str_repr(&a.file)
                 );
             }
-            let tried: Vec<String> = roots.iter().map(|r| normpath(&join(r, &a.file))).collect();
-            let read = match tried
-                .iter()
-                .find(|p| std::path::Path::new(p.as_str()).is_file())
-            {
-                None => {
-                    // A font file that shows up later marks the scene stale.
-                    crate::sources::record(&tried[0]);
-                    Err(format!(
-                        "asset '{}' ({}): No such file or directory (also tried: {})",
-                        a.name,
-                        tried[0],
-                        tried[1..].join(", ")
-                    ))
-                }
-                Some(path) => {
-                    crate::sources::record(path);
-                    fs::read(path)
-                        .map(|bytes| (bytes, path.clone()))
-                        .map_err(|e| format!("asset '{}' ({path}): {}", a.name, strerror(&e)))
-                }
-            };
-            match read {
+            match read(&a.file, &format!("asset '{}'", a.name)) {
                 Ok((bytes, path)) => a.decode(&bytes, &path)?,
                 // A font that fails to load leaves the scene running, and its
                 // texts draw error boxes.
@@ -2216,14 +2275,31 @@ impl Scene {
             }
         }
         for t in &mut self.texts {
-            t.data = t
-                .fonts
-                .iter()
-                .map(|f| {
-                    let a = self.assets.iter().find(|a| a.name == *f)?;
-                    a.font.clone()
-                })
-                .collect();
+            let mut data = Vec::new();
+            for f in &t.fonts {
+                if !crate::text::is_font_file(f) {
+                    data.push(
+                        self.assets
+                            .iter()
+                            .find(|a| a.name == *f)
+                            .and_then(|a| a.font.clone()),
+                    );
+                    continue;
+                }
+                if outside(f) {
+                    bail!(
+                        "text '{}' font {} is outside the scene directory",
+                        t.name,
+                        py_str_repr(f)
+                    );
+                }
+                let what = format!("text '{}' font {}", t.name, py_str_repr(f));
+                data.push(Some(read(f, &what).and_then(|(bytes, path)| {
+                    crate::text::font(&bytes)
+                        .map_err(|e| format!("{what} ({path}): unreadable font: {e}"))
+                })));
+            }
+            t.data = data.into_iter().collect();
         }
         // A text's colour atlas counts once its fonts are loaded.
         if let Some(e) = self.over_texture_cap(&self.texts) {
@@ -3458,9 +3534,8 @@ mod tests {
     fn named(extra: Value, pass: Value) -> Value {
         let mut d = json!({
             "version": 1,
-            "params": {"label": {"type": "string", "value": "hi"}},
             "assets": {"sans": {"file": "sans.ttf"}},
-            "texts": {"label": {"font": "sans"}},
+            "texts": {"label": {"value": "hi", "font": "sans"}},
             "passes": [{"name": "a", "code": GOOD}, {"name": "b", "code": GOOD}],
         });
         for (k, v) in extra.as_object().unwrap() {
@@ -3596,14 +3671,10 @@ mod tests {
             ] {
                 assert_eq!(named_err(extra, pass), format!("scene: {owner}: {why}"));
             }
-            let mut d = named(
-                json!({"params": {name: {"type": "string", "value": "w"}}}),
-                json!({}),
-            );
+            let mut d = named(json!({}), json!({}));
             d["texts"][name] = json!({"font": "sans"});
-            d["params"][name] = json!({"type": "string", "value": "w"});
             let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-            assert_eq!(e, format!("scene: scene param '{name}': {why}"));
+            assert_eq!(e, format!("scene: text '{name}': {why}"));
         }
     }
 
@@ -3633,10 +3704,9 @@ mod tests {
                 "asset 'ghee_k'",
             ),
             (
-                json!({"params": {"ghee_label": {"type": "string", "value": "w"}},
-                       "texts": {"ghee_label": {"font": "sans"}}}),
+                json!({"texts": {"ghee_label": {"value": "w", "font": "sans"}}}),
                 json!({}),
-                "scene param 'ghee_label'",
+                "text 'ghee_label'",
             ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {owner}: {why}"));

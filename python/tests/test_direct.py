@@ -273,9 +273,8 @@ def hook(t):
 ghee.run(
     ghee.Scene(
         passes=[ghee.Pass("main", CODE)],
-        params={"words": ghee.Param("words", "string", "ab")},
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=[ghee.Text("words", "sans")],
+        texts=[ghee.Text("words", "sans", "ab")],
     )
 )
 '''
@@ -344,12 +343,9 @@ ghee.run(
                 ],
             )
         ],
-        params={
-            "words": ghee.Param("words", "string", "ab"),
-            "spot": ghee.Param("spot", "vec2", [0.0, 0.0]),
-        },
+        params={"spot": ghee.Param("spot", "vec2", [0.0, 0.0])},
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=[ghee.Text("words", "sans")],
+        texts=[ghee.Text("words", "sans", "ab")],
     )
 )
 '''

@@ -37,9 +37,8 @@ fn gpu() -> Option<Renderer> {
 fn frame(r: &mut Renderer, code: &str, draws: serde_json::Value) -> Vec<u8> {
     let doc = json!({
         "version": 1,
-        "params": {"t": {"type": "string", "value": LYRICS}},
         "assets": {"font": {"file": SANS}},
-        "texts": {"t": {"font": "font", "align": "center"}},
+        "texts": {"t": {"value": LYRICS, "font": "font", "align": "center"}},
         "passes": [{"name": "main", "code": code, "draws": draws}],
     });
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();

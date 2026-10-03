@@ -188,25 +188,28 @@ def test_an_array_declares_its_size_and_its_count():
 def words_scene(shim, texts):
     return shim.Scene(
         passes=[shim.Pass("main", "void main(){}")],
-        params={"words": shim.Param("words", "string", "hi")},
         assets=[shim.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
         texts=texts,
     )
 
 
-def test_a_text_is_the_scene_string_param_of_its_name():
+def test_a_text_carries_its_words():
     shim = load()
-    built = words_scene(shim, [shim.Text("words", "sans", align="center")]).to_dict()
+    text = shim.Text("words", "sans", "hi", align="center")
+    built = words_scene(shim, [text]).to_dict()
     assert built == {
         "version": 1,
         "passes": [{"name": "main", "code": "void main(){}"}],
-        "params": {"words": {"type": "string", "value": "hi"}},
         "assets": {"sans": {"file": "fonts/DejaVuSans-Latin.ttf"}},
-        "texts": {"words": {"font": "sans", "align": "center"}},
+        "texts": {"words": {"value": "hi", "font": "sans", "align": "center"}},
     }
     # left is the default, and the document leaves it out
-    assert shim.Text("words", "sans").to_dict() == {"font": "sans"}
+    assert shim.Text("words", "sans").to_dict() == {"value": "", "font": "sans"}
     assert "texts" not in words_scene(shim, []).to_dict()
+    # a font file needs no asset, and a list mixes both
+    for font in ("DejaVuSans.ttf", ["sans", "Noto.OTF"]):
+        doc = words_scene(shim, [shim.Text("words", font)]).to_dict()
+        assert doc["texts"]["words"]["font"] == font
 
 
 def test_an_asset_is_its_file():
@@ -229,16 +232,38 @@ def test_a_text_says_what_it_needs():
         shim.Text("words", "sans", align="middle")
     with pytest.raises(ValueError, match="'font' needs the name of a font asset"):
         shim.Text("words", "")
-    with pytest.raises(ValueError, match="needs a scene string param 'title'"):
-        words_scene(shim, [shim.Text("title", "sans")])
-    with pytest.raises(ValueError, match="needs a scene string param 'gain'"):
+    with pytest.raises(ValueError, match="value needs words in a string, got 3"):
+        shim.Text("words", "sans", 3)
+    for ty, value in (("float", 1.0), ("string", "hi")):
+        with pytest.raises(
+            ValueError,
+            match="scene param 'gain' has the name of text 'gain', which holds its "
+            "words in its 'value'",
+        ):
+            shim.Scene(
+                params={"gain": shim.Param("gain", ty, value)},
+                texts=[shim.Text("gain", "sans.ttf")],
+            )
+    with pytest.raises(
+        ValueError,
+        match="param 'gain' in pass 'main' has the name of text 'gain', which holds",
+    ):
         shim.Scene(
-            params={"gain": shim.Param("gain", "float", 1.0)},
-            texts=[shim.Text("gain", "sans")],
+            passes=[
+                shim.Pass(
+                    "main",
+                    "void main(){}",
+                    params={"gain": shim.Param("gain", "float", 1.0)},
+                )
+            ],
+            texts=[shim.Text("gain", "sans.ttf")],
         )
     with pytest.raises(ValueError, match="text 'words' is declared twice"):
         words_scene(shim, [shim.Text("words", "sans"), shim.Text("words", "sans")])
-    with pytest.raises(ValueError, match="text 'words' font 'serif' is no asset"):
+    with pytest.raises(
+        ValueError,
+        match="text 'words' font 'serif' is no asset of the scene and no .ttf or .otf file",
+    ):
         words_scene(shim, [shim.Text("words", "serif")])
 
 
@@ -249,9 +274,8 @@ PLACE = "vec2 glyph_place(vec2 em) { return em * 24.0; }"
 def drawn_scene(shim, passes, text=None):
     return shim.Scene(
         passes=passes,
-        params={"words": shim.Param("words", "string", "hi")},
         assets=[shim.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=[text or shim.Text("words", "sans")],
+        texts=[text or shim.Text("words", "sans", "hi")],
     )
 
 
@@ -263,12 +287,10 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
             shim.Pass(
                 "main",
                 "void main(){}",
-                draws=[
-                    shim.Draw("words", INK, PLACE, blend="add", pad=0.25)
-                ],
+                draws=[shim.Draw("words", INK, PLACE, blend="add", pad=0.25)],
             )
         ],
-        shim.Text("words", "sans", fill="slug"),
+        shim.Text("words", "sans", "hi", fill="slug"),
     ).to_dict()
     recorded = {
         "version": 1,
@@ -287,11 +309,8 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
                 ],
             }
         ],
-        "params": {"words": {"type": "string", "value": "hi"}},
         "assets": {"sans": {"file": "fonts/DejaVuSans-Latin.ttf"}},
-        "texts": {
-            "words": {"font": "sans", "fill": "slug"}
-        },
+        "texts": {"words": {"value": "hi", "font": "sans", "fill": "slug"}},
     }
     assert built == recorded
     assert json.dumps(built) == json.dumps(recorded)  # key order too
@@ -303,8 +322,8 @@ def test_a_draw_and_a_text_leave_their_defaults_out():
     assert (draw.blend, draw.pad, draw.emoji) == ("over", 0.0, None)
     assert draw.to_dict() == {"text": "words", "vertex": PLACE, "fragment": INK}
     text = shim.Text("words", "sans")
-    assert (text.fill, text.atlas) == ("mtsdf", None)
-    assert text.to_dict() == {"font": "sans"}
+    assert (text.value, text.fill, text.atlas) == ("", "mtsdf", None)
+    assert text.to_dict() == {"value": "", "font": "sans"}
     assert "draws" not in shim.Pass("main", "void main(){}").to_dict()
 
 
@@ -368,7 +387,9 @@ def test_a_draw_says_what_it_needs():
     with pytest.raises(ValueError, match="takes 'vertex' or 'px_per_em', got both"):
         shim.Draw("words", INK, PLACE, px_per_em=32)
     for px in (0, -1.0, float("inf"), True, "32"):
-        with pytest.raises(ValueError, match="px_per_em needs a number of pixels above 0"):
+        with pytest.raises(
+            ValueError, match="px_per_em needs a number of pixels above 0"
+        ):
             shim.Draw("words", px_per_em=px)
     with pytest.raises(ValueError, match="'text' needs the name of a scene text"):
         shim.Draw("", INK, PLACE)
@@ -389,7 +410,8 @@ def test_a_text_fill_and_atlas_say_what_they_need():
         ):
             shim.Text("words", "sans", fill=fill)
     with pytest.raises(
-        ValueError, match="""takes no 'atlas' with "fill": "slug", which reads the curves"""
+        ValueError,
+        match="""takes no 'atlas' with "fill": "slug", which reads the curves""",
     ):
         shim.Text("words", "sans", fill="slug", atlas={"px_per_em": 32})
     with pytest.raises(ValueError, match="atlas takes 'px_per_em', got 'px'"):
@@ -411,11 +433,12 @@ def test_a_font_list_goes_out_as_given():
     shim = load()
     scene = shim.Scene(
         passes=[shim.Pass("main", "void main(){}")],
-        params={"words": shim.Param("words", "string", "hi")},
         assets=[shim.Asset("sans", "sans.ttf"), shim.Asset("emoji", "emoji.ttf")],
-        texts=[shim.Text("words", ("sans", "emoji"))],
+        texts=[shim.Text("words", ("sans", "emoji"), "hi")],
     )
-    assert scene.to_dict()["texts"] == {"words": {"font": ["sans", "emoji"]}}
+    assert scene.to_dict()["texts"] == {
+        "words": {"value": "hi", "font": ["sans", "emoji"]}
+    }
     with pytest.raises(ValueError, match="text 'words' font 'serif' is no asset"):
         drawn_scene(shim, [], shim.Text("words", ["sans", "serif"]))
     with pytest.raises(ValueError, match="'font' needs the name of a font asset"):
@@ -701,6 +724,21 @@ def test_a_filter_param_goes_out_unchecked(monkeypatch):
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     _, rest = drive(shim, scene, ticks, monkeypatch)
     assert messages(rest) == [(1, "dither.levels", [4.0]), (1, "levels", [2.0]), END]
+
+
+def test_a_text_takes_its_words_through_set_param(monkeypatch):
+    """ghee declares the string param of a text's name."""
+    shim = load()
+
+    @shim.tick
+    def hook(tick):
+        shim.set_param("title", "ho")
+
+    scene = scene_of(shim)
+    scene.texts = [shim.Text("title", "sans.ttf", "hi")]
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, scene, ticks, monkeypatch)
+    assert messages(rest) == [(3, "title", "ho"), END]
 
 
 # set_param's refusals, each the same under ghee and in direct mode

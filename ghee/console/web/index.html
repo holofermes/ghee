@@ -1262,12 +1262,17 @@ function buildParams(){
   const paramNames = obj => Object.keys(obj||{}).filter(n => ["float","int","bool","color","vec2","vec3","vec4","string"].includes(obj[n].type));
   const sceneParams = work.params || {};
   const sceneNames = paramNames(sceneParams);
+  // a text's words are the scene string param of its name, which ghee declares
+  const texts = work.texts || {};
+  const words = t => ({type: "string", get value(){ return t.value || ""; }, set value(v){ t.value = v; }});
+  const textNames = Object.keys(texts);
   // header the groups once there is more than one: the SCENE group plus any
   // pass that owns params
   const passGroups = work.passes.filter(p => !p.muted && paramNames(p.params).length).length;
-  const grouped = (sceneNames.length ? 1 : 0) + passGroups > 1;
-  if (sceneNames.length){
+  const grouped = (sceneNames.length || textNames.length ? 1 : 0) + passGroups > 1;
+  if (sceneNames.length || textNames.length){
     if (grouped){ const h=document.createElement("div"); h.className="pgroup"; h.textContent="scene"; box.appendChild(h); }
+    textNames.forEach(name=>{ buildParamRow(box, words(texts[name]), name, "scene"); any = true; });
     sceneNames.forEach(name=>{ buildParamRow(box, sceneParams[name], name, "scene"); any = true; });
   }
   work.passes.forEach((p,pi)=>{

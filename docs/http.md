@@ -29,8 +29,8 @@ loopback, or open it with `--host` only on a network you trust.
 ## Change
 
 - `POST /set?pass=&name=&value=`: a live uniform, no recompile.
-  `pass=scene` sets the scene param, and the string param of a text lays its
-  words out again. `value` reads as the param's declared type: a number,
+  `pass=scene` sets the scene param, and the name of a text sets its words,
+  which ghee lays out again. `value` reads as the param's declared type: a number,
   `true` or `false`, comma-separated floats for a color or a vec, or the
   words of a string.
 - `POST /switch?name=`: switch to a named scene. Switching to the active

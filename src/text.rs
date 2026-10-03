@@ -1,11 +1,11 @@
 //! Text drawn on the GPU from the outlines of a font.
 //!
-//! A scene declares a text under the name of one of its string params, and the
-//! font assets to draw it with, in order: each character draws from the first
-//! font whose cmap holds it. Every pass of the scene except a filter pass
-//! then reads the coverage of those words at any point with
-//! `<name>_cover(p, ppem)`. The words change with the param, live, with no
-//! recompile.
+//! A scene declares a text with its words and the fonts to draw it with, in
+//! order: each character draws from the first font whose cmap holds it. Every
+//! pass of the scene except a filter pass then reads the coverage of those
+//! words at any point with `<name>_cover(p, ppem)`. The scene declares the
+//! string param of the text's name, which holds the words, and they change
+//! with the param, live, with no recompile.
 //!
 //! A draw, declared on a pass, puts a text into that pass's buffer after the
 //! pass's own quad, as one quad over each inked glyph. The draw's
@@ -130,8 +130,23 @@ fn needs_ink(ch: char) -> bool {
     !(ch.is_whitespace() || ch.is_control() || ignorable(ch))
 }
 
-/// A font asset's bytes, or the reason they failed to load.
+/// A font file's bytes, or the reason they failed to load.
 pub type Font = std::result::Result<Arc<Vec<u8>>, String>;
+
+/// The bytes of a font file, or why ttf-parser reads no font in them.
+pub fn font(bytes: &[u8]) -> Font {
+    match Face::parse(bytes, 0) {
+        Ok(_) => Ok(Arc::new(bytes.to_vec())),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// True for the name of a .ttf or .otf file. A text's font that names no such
+/// file names a font asset.
+pub fn is_font_file(name: &str) -> bool {
+    let f = name.to_ascii_lowercase();
+    f.ends_with(".ttf") || f.ends_with(".otf")
+}
 
 /// A problem met by a layout. The text still draws.
 #[derive(Clone, Debug, PartialEq)]
@@ -197,12 +212,16 @@ pub fn atlas_range(px_per_em: u32, pad: f64) -> u64 {
 }
 
 /// A text a scene declares. Its words are the scene string param of the same
-/// name.
+/// name, which ghee declares for it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Text {
     pub name: String,
-    /// The names of the scene's font assets, in the order that a character
-    /// looks for its glyph. Line height and baseline come from the first.
+    /// The words that the text starts with. The scene's string param of the
+    /// text's name holds them from then on, live.
+    pub value: String,
+    /// The text's fonts, each a font asset of the scene or a .ttf or .otf file
+    /// resolved as an asset file is, in the order that a character looks for
+    /// its glyph. Line height and baseline come from the first.
     pub fonts: Vec<String>,
     pub align: Align,
     pub fill: Fill,
@@ -231,9 +250,18 @@ impl Text {
         };
         let Some(fonts) = fonts else {
             bail!(
-                "text '{name}' 'font' needs the name of a font asset or a list of them, got {}",
+                "text '{name}' 'font' needs the name of a font asset or a .ttf or .otf file, \
+                 or a list of them, got {}",
                 py_repr(&o["font"])
             );
+        };
+        let value = match o.get("value").filter(|v| !v.is_null()) {
+            None => String::new(),
+            Some(Value::String(s)) => s.clone(),
+            Some(v) => bail!(
+                "text '{name}' value needs words in a string, got {}",
+                py_repr(v)
+            ),
         };
         let align = match o.get("align").filter(|v| !v.is_null()) {
             None => Align::Left,
@@ -288,6 +316,7 @@ impl Text {
         }
         Ok(Text {
             name: name.to_string(),
+            value,
             fonts,
             align,
             fill,
@@ -298,6 +327,7 @@ impl Text {
 
     pub fn to_dict(&self) -> Value {
         let mut d = Map::new();
+        d.insert("value".to_string(), Value::from(self.value.clone()));
         let font = match &self.fonts[..] {
             [one] => Value::from(one.clone()),
             all => Value::from(all.to_vec()),

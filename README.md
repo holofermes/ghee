@@ -241,10 +241,10 @@ metadata:
 
 The preamble turns that into `uniform float gain;`, and the console renders
 every param as a live control. The types are `float`, `int`, `bool`,
-`color` (a `vec3` in the shader), `vec2/3/4`, and `string`. A string reaches
-the shader only through a [text](#text) of the same name, a procedural scene
-gets it on its ticks, and `options` turns its text box into a dropdown. A
-param declared on the scene is shared, every pass reads the one value.
+`color` (a `vec3` in the shader), `vec2/3/4`, and `string`. A string param
+never reaches the shader, a procedural scene gets it on its ticks, and
+`options` turns its text box into a dropdown. A param declared on the scene
+is shared, every pass reads the one value.
 
 A scene declares an asset by file name, and the host decodes it and feeds
 it to every pass at setup time:
@@ -277,15 +277,13 @@ pass fails to load, and the error names both.
 
 ## Text
 
-A scene draws text on the GPU from a font asset. It declares the text under
-the name of a scene string param, and that param holds the words:
+A scene draws text on the GPU from a font. A text holds its words in
+`value` and names its font:
 
 ```json
 {
   "version": 1,
-  "params": { "title": { "type": "string", "value": "hello" } },
-  "assets": { "sans": { "file": "DejaVuSans.ttf" } },
-  "texts": { "title": { "font": "sans", "align": "center" } },
+  "texts": { "title": { "value": "hello", "font": "DejaVuSans.ttf", "align": "center" } },
   "passes": [{ "name": "main", "shader": "title.glsl" }]
 }
 ```
@@ -307,14 +305,17 @@ Every pass of the scene, filter passes excepted, reads the words through
 `p`, in em from the block's top left, y down like `v_texCoord`, drawn at
 `ppem` pixels per em. `title_size` holds the block's width and height in em.
 
-The console shows the param as a text box, and an edit lays the words out
-again live, with no recompile.
+ghee declares a scene string param under the text's name, which holds the
+words: `set_param`, `/set`, the console's text box and a procedural scene
+change them live, and ghee lays them out again with no recompile. A scene
+that declares a param under a text's name fails to load.
 
 A font is a TrueType or OpenType font with outlines, or a colour emoji font
-with PNG bitmaps in a CBDT or sbix table, such as Noto Color Emoji. Texts that
-name the same font asset share it. `font` takes one asset or a list of them,
-`"font": ["sans", "emoji"]`, and each character draws from the first font in
-the list whose cmap holds it, while a character that no font has draws the
+with PNG bitmaps in a CBDT or sbix table, such as Noto Color Emoji. `font`
+takes a `.ttf` or `.otf` file, which resolves as an asset file does, or the
+name of a font asset, which texts share, or a list that mixes both,
+`"font": ["sans", "NotoColorEmoji.ttf"]`, and each character draws from the
+first font in the list whose cmap holds it, while a character that no font has draws the
 first font's missing-glyph box. A character followed by U+FE0F, the emoji
 variation selector, draws from the first font with a colour glyph for it, so
 ❤️ draws in colour even when an earlier font holds a plain heart. Line height

@@ -72,9 +72,8 @@ def test_a_font_that_is_nowhere_draws_error_boxes(tmp_path, monkeypatch, capfd):
     monkeypatch.chdir(tmp_path)
     doc = {
         "version": 1,
-        "params": {"words": {"type": "string", "value": "hi"}},
         "assets": {"sans": {"file": "fonts/Missing.ttf"}},
-        "texts": {"words": {"font": "sans"}},
+        "texts": {"words": {"value": "hi", "font": "sans"}},
         "passes": [
             {
                 "name": "main",
@@ -115,9 +114,8 @@ def hook(t):
 ghee.run(
     ghee.Scene(
         passes=[ghee.Pass("main", CODE)],
-        params={{"words": ghee.Param("words", "string", "ab")}},
         assets=[ghee.Asset("sans", "{font}")],
-        texts=[ghee.Text("words", "sans")],
+        texts=[ghee.Text("words", "sans", "ab")],
     )
 )
 """

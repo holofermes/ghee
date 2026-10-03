@@ -655,8 +655,11 @@ fn undeclared(scope: Scope, name: &str) -> String {
 }
 
 /// The type of a param in a scene document, or None when the scope holds no
-/// param of that name.
+/// param of that name. A text declares the scene string param of its name.
 pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
+    if scope == Scope::Scene && doc.get("texts").and_then(|t| t.get(name)).is_some() {
+        return Some("string".to_string());
+    }
     let params = match scope {
         Scope::Scene => doc.get("params"),
         Scope::Pass(i) => doc
@@ -707,6 +710,7 @@ mod tests {
     const SCENE: &str = r#"{"version": 1,
         "params": {"tint": {"type": "float", "value": 0.0},
                    "title": {"type": "string", "value": "hi"}},
+        "texts": {"words": {"value": "ho", "font": "sans.ttf"}},
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
                     "params": {"k": {"type": "float", "value": 0.0},
                                "on": {"type": "bool", "value": false}}}]}"#;
@@ -1014,6 +1018,8 @@ mod tests {
         for (pass, name, raw, want) in [
             ("scene", "title", "hello", Value::from("hello")),
             ("scene", "title", "1.5", Value::from("1.5")),
+            // a text's words
+            ("scene", "words", "2", Value::from("2")),
             ("0", "on", "true", Value::from(true)),
             ("0", "k", "2", Value::from(2.0)),
         ] {

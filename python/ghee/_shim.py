@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
+
+
 _PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC)
 _ALIGNS = ("left", "center", "right")
 _FILLS = ("mtsdf", "slug")
@@ -329,17 +331,23 @@ class Asset:
         return {"file": self.file}
 
 
+def _font_file(name: str) -> bool:
+    """A .ttf or .otf file. A text's font that names none is an Asset."""
+    return name.lower().endswith((".ttf", ".otf"))
+
+
 @dataclass
 class Text:
     """Words that the GPU draws from the outlines of a font.
 
-    The words are the scene string param of the same name, and they change
-    with it, live.
+    `value` holds the words. ghee declares the scene string param of the
+    text's name, and set_param on it changes the words, live.
     Every scene pass, filter passes excepted, reads them with
     float <name>_cover(vec2 p, float ppem): p in em from the top left of
     the block, y down like v_texCoord, and ppem the pixels per em.
     vec2 <name>_size is the block, in em.
-    `font` is the name of a font Asset of the scene, or a list of them: each
+    `font` is a font file (.ttf or .otf), resolved as an Asset's file is, or
+    the name of a font Asset of the scene, or a list that mixes both: each
     character draws from the first font whose cmap holds it.
     `align` lines up the lines of the block: left, center or right.
     `fill` is where a Draw of the text takes its coverage from: mtsdf reads
@@ -353,6 +361,7 @@ class Text:
 
     name: str
     font: str | list[str]
+    value: str = ""
     align: str = "left"
     fill: str = "mtsdf"
     atlas: dict[str, int] | None = None
@@ -364,7 +373,11 @@ class Text:
         if not fonts or not all(isinstance(f, str) and f for f in fonts):
             raise ValueError(
                 f"text '{self.name}' 'font' needs the name of a font asset or a "
-                f"list of them, got {self.font!r}"
+                f".ttf or .otf file, or a list of them, got {self.font!r}"
+            )
+        if not isinstance(self.value, str):
+            raise ValueError(
+                f"text '{self.name}' value needs words in a string, got {self.value!r}"
             )
         if self.align not in _ALIGNS:
             raise ValueError(
@@ -404,7 +417,7 @@ class Text:
                 )
 
     def to_dict(self) -> dict:
-        d: dict = {"font": self.font}
+        d: dict = {"value": self.value, "font": self.font}
         if self.align != "left":
             d["align"] = self.align
         if self.fill != "mtsdf":
@@ -423,8 +436,9 @@ class Scene:
     `filters` are named post-process passes that ghee appends after the
     scene's own.
     `assets` are the image and font files the scene names.
-    `texts` are words drawn from a font, each one the scene string param of
-    its name, and a Draw in a pass names one of them.
+    `texts` are words drawn from a font, and a Draw in a pass names one of
+    them. ghee declares the string param of each text's name, which holds its
+    words.
     """
 
     passes: list[Pass] = field(default_factory=list)
@@ -446,16 +460,23 @@ class Scene:
             if t.name in seen:
                 raise ValueError(f"text '{t.name}' is declared twice")
             seen.add(t.name)
-            p = self.params.get(t.name)
-            if p is None or p.type != "string":
+            n = t.name
+            if n in self.params:
                 raise ValueError(
-                    f"text '{t.name}' needs a scene string param '{t.name}' "
-                    "that holds its words"
+                    f"scene param '{n}' has the name of text '{n}', which holds its "
+                    "words in its 'value'"
                 )
-            for font in [t.font] if isinstance(t.font, str) else t.font:
-                if font not in names:
+            for p in self.passes:
+                if n in p.params:
                     raise ValueError(
-                        f"text '{t.name}' font '{font}' is no asset of the scene"
+                        f"param '{n}' in pass '{p.name}' has the name of text '{n}', "
+                        "which holds its words in its 'value'"
+                    )
+            for font in [t.font] if isinstance(t.font, str) else t.font:
+                if font not in names and not _font_file(font):
+                    raise ValueError(
+                        f"text '{t.name}' font '{font}' is no asset of the scene and "
+                        "no .ttf or .otf file"
                     )
         for p in self.passes:
             for k, d in enumerate(p.draws):
@@ -730,6 +751,8 @@ def _param_types(scene: Scene) -> dict:
     before it holds that name.
     """
     types = {n: p.type for n, p in scene.params.items()}
+    for t in scene.texts:
+        types[t.name] = "string"
     for ps in scene.passes:
         for n, p in ps.params.items():
             types[f"{ps.name}.{n}"] = p.type

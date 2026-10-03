@@ -133,14 +133,10 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
     same: every key under its own name, every default left out on both sides."""
     monkeypatch.chdir(REPO / "ghee" / "examples")
     scene = ghee.Scene(
-        params={
-            "words": ghee.Param("words", "string", "hi"),
-            "title": ghee.Param("title", "string", "ho"),
-        },
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
         texts=[
-            ghee.Text("words", "sans", align="right", atlas={"px_per_em": 24}),
-            ghee.Text("title", "sans", fill="slug"),
+            ghee.Text("words", "sans", "hi", align="right", atlas={"px_per_em": 24}),
+            ghee.Text("title", "fonts/DejaVuSans-Latin.ttf", "ho", fill="slug"),
         ],
         passes=[
             ghee.Pass(
@@ -148,9 +144,7 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
                 size=(64, 32),
                 mipmaps=True,
                 draws=[
-                    ghee.Draw(
-                        "words", INK, PLACE, blend="add", pad=0.0625
-                    ),
+                    ghee.Draw("words", INK, PLACE, blend="add", pad=0.0625),
                     ghee.Draw("title", px_per_em=24, blend="replace"),
                 ],
             ),

@@ -279,9 +279,8 @@ FONT = "fonts/DejaVuSans-Latin.ttf"
 # the words at 24 pixels per em, from the top left of the frame
 WORDS = {
     "version": 1,
-    "params": {"words": {"type": "string", "value": "ghee"}},
     "assets": {"sans": {"file": FONT}},
-    "texts": {"words": {"font": "sans"}},
+    "texts": {"words": {"value": "ghee", "font": "sans"}},
     "passes": [
         {
             "name": "main",
@@ -379,9 +378,8 @@ def test_a_pass_of_draws_alone_starts_transparent(monkeypatch):
     """A layer of white words alone, which the output pass lays over blue."""
     monkeypatch.chdir(REPO / "ghee" / "examples")
     scene = ghee.Scene(
-        params={"words": ghee.Param("words", "string", "ghee")},
         assets=[ghee.Asset("sans", FONT)],
-        texts=[ghee.Text("words", "sans")],
+        texts=[ghee.Text("words", "sans", "ghee")],
         passes=[
             ghee.Pass(
                 "ink",
@@ -419,12 +417,11 @@ def test_a_text_draws_a_letter_and_an_emoji_from_its_list_of_fonts(monkeypatch):
     own colours to the right of the I."""
     monkeypatch.chdir(REPO / "tools" / "fixtures" / "fonts")
     scene = ghee.Scene(
-        params={"words": ghee.Param("words", "string", "I\U0001f600")},
         assets=[
             ghee.Asset("sans", "DejaVuSans-ASCII.ttf"),
             ghee.Asset("emoji", "NotoColorEmoji-Smiles.ttf"),
         ],
-        texts=[ghee.Text("words", ["sans", "emoji"])],
+        texts=[ghee.Text("words", ["sans", "emoji"], "I\U0001f600")],
         passes=[
             ghee.Pass(
                 "main",

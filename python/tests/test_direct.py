@@ -258,6 +258,33 @@ def test_a_feed_the_scene_never_declared_stops_before_the_render(monkeypatch):
     assert not opened and not fake.calls
 
 
+@pytest.mark.parametrize(
+    "argv,drawn",
+    [
+        (["-o", "f.####.png"], 1),
+        (["-o", "-"], 1),
+        (["-o", "f.####.png", "--frames", "2"], 2),
+        (["-o", "f.####.png", "--frames", "-1"], 0),
+        (["-o", "f.####.png", "--frames", "0"], 4),
+        (["-o", "f.####.png", "--display", "st7789"], 4),
+        (["-o", "f.####.png", "--serve"], 4),
+        ([], 4),
+    ],
+)
+def test_a_run_takes_the_frame_count_of_ghee_render(argv, drawn, monkeypatch):
+    """One frame for an image or a pipe, and a display or the console runs
+    until a signal, here a SIGTERM at the fourth frame."""
+
+    def on_frame(n):
+        if n == 4:
+            signal.raise_signal(signal.SIGTERM)
+
+    shim, fake, _ = host(monkeypatch, argv, on_frame)
+    monkeypatch.setattr(sys, "stdout", Out())
+    shim.run(scene_of(shim))
+    assert fake.drawn == drawn
+
+
 def test_an_endless_run_ends_on_a_sigterm(monkeypatch):
     """--frames 0 runs until a signal. The handlers it replaced come back."""
 

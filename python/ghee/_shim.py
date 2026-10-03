@@ -609,9 +609,8 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--frames",
         type=int,
-        default=0,
         metavar="N",
-        help="frames to render; 0 runs until SIGINT or SIGTERM (default: 0)",
+        help="frame count (default 1 for images, loop for a display or the console)",
     )
     p.add_argument(
         "--timestep",
@@ -955,6 +954,15 @@ def _open(scene: Scene, a):
     )
 
 
+def _frames(a) -> int:
+    """--frames as given, else as `ghee render` counts them: one frame for an
+    image or a pipe, and 0, a run until SIGINT or SIGTERM, for a display or the
+    console."""
+    if a.frames is not None:
+        return a.frames
+    return int(_display(a) is None and not a.serve)
+
+
 def _destinations(a) -> str:
     """Where a direct run's frames go, as `ghee render --stats` names them."""
     out = []
@@ -988,7 +996,6 @@ def _direct(scene: Scene) -> None:
 
     The tick keeps its wire shape: `params` holds the string params that the
     console changed, and the first tick holds every string param.
-    A frame budget of 0 runs until SIGINT or SIGTERM.
     """
     global _CLEAN, _HANDLE
     a = _HOST if _HOST is not None else _host_args()
@@ -997,10 +1004,11 @@ def _direct(scene: Scene) -> None:
     del _STOPPED[:]
     caught = [(s, signal.signal(s, _stop)) for s in (signal.SIGINT, signal.SIGTERM)]
     _HANDLE = handle
+    frames = _frames(a)
     frame, started, last = 0, time.monotonic(), 0.0
     times: list = []
     try:
-        while not _STOPPED and (a.frames == 0 or frame < a.frames):
+        while not _STOPPED and (frames == 0 or frame < frames):
             now = (
                 frame * a.timestep
                 if a.timestep is not None

@@ -165,6 +165,9 @@
   them draws, and name the refused layer once, where the error named it
   twice. Give the import's own reason when it refuses an ISF shader with
   `IMPORTED` images.
+- Grow each GLSL editor of the console with its code, and scroll the
+  column or the page that holds it, where a long shader scrolled inside a
+  box of fixed height, and keep a compile error in sight under it.
 
 ## 0.4.0 - 2026-08-06
 

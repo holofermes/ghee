@@ -127,9 +127,8 @@
     font:12px ui-monospace,Menlo,monospace; padding:8px}
   .screen .popped[hidden]{display:none}
   .screen:fullscreen{padding:0; border-radius:0; background:#000; display:flex; align-items:center; justify-content:center}
-  .shadercard{display:flex; flex-direction:column; min-height:0}
-  .shadercard .editor{flex:1 1 auto; min-height:140px}
-  .shadercard .editor>textarea{height:100%; resize:none}
+  .shadercard{display:flex; flex-direction:column; min-height:0; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--scroll) transparent}
+  .shadercard .editor{flex:1 0 auto; min-height:140px}
   .shadercard .err{flex:0 0 auto}
   .errmark{position:absolute; left:0; right:0; background:rgba(192,57,43,.16); border-left:3px solid var(--hot); pointer-events:none; display:none; z-index:1}
   .screen{position:relative; background:var(--bezel); border-radius:12px; padding:12px; width:max-content; max-width:100%; margin:0 auto}
@@ -200,23 +199,24 @@
   input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
   input[type=color]::-webkit-color-swatch{border:none; border-radius:6px}
   input[type=color]::-moz-color-swatch{border:none; border-radius:6px}
+  /* an editor grows with its code: the highlighted copy sits in the flow
+     and sizes the box, the textarea covers the box and never scrolls */
   .editor{position:relative; border:1px solid var(--line); border-radius:9px; background:var(--code-bg); overflow:hidden}
   .editor>pre,.editor>textarea{margin:0; border:0; padding:11px; font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; tab-size:2; white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word}
-  .editor>pre{position:absolute; inset:0; overflow:auto; color:var(--code-ink); pointer-events:none}
-  .editor>textarea{position:relative; display:block; width:100%; height:460px; resize:vertical; background:transparent; color:transparent; caret-color:var(--ink); outline:none; overflow:auto}
-  .editor>textarea,.editor>pre{scrollbar-width:thin; scrollbar-color:var(--scroll) transparent}
+  .editor>pre{position:relative; color:var(--code-ink); pointer-events:none}
+  .editor>textarea{position:absolute; inset:0; display:block; width:100%; height:100%; resize:none; background:transparent; color:transparent; caret-color:var(--ink); outline:none; overflow:hidden}
   .leftcol{scrollbar-width:none}
   .leftcol::-webkit-scrollbar{display:none}
-  .editor>textarea::-webkit-scrollbar,.editor>pre::-webkit-scrollbar{width:10px; height:10px}
-  .editor>textarea::-webkit-scrollbar-track,.editor>pre::-webkit-scrollbar-track{background:transparent}
-  .editor>textarea::-webkit-scrollbar-thumb,.editor>pre::-webkit-scrollbar-thumb{background:var(--scroll); border-radius:8px; border:2px solid transparent; background-clip:padding-box}
-  .editor>textarea::-webkit-scrollbar-thumb:hover,.editor>pre::-webkit-scrollbar-thumb:hover{background:var(--muted); background-clip:padding-box}
-  .editor>textarea::-webkit-scrollbar-corner{background:transparent}
+  .shadercard::-webkit-scrollbar{width:10px}
+  .shadercard::-webkit-scrollbar-track{background:transparent}
+  .shadercard::-webkit-scrollbar-thumb{background:var(--scroll); border-radius:8px; border:2px solid transparent; background-clip:padding-box}
   .t-cm{color:var(--t-cm); font-style:italic} .t-pp{color:var(--t-pp)} .t-ty{color:var(--t-ty)}
   .t-kw{color:var(--t-kw)} .t-bi{color:var(--t-bi)} .t-nu{color:var(--t-nu)}
   .toolbar{display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap}
   .err{margin-top:10px; padding:10px 12px; border-radius:9px; background:var(--err-bg); border:1px solid var(--err-line); color:var(--hot); font:12px/1.45 ui-monospace,Menlo,monospace; white-space:pre-wrap; display:none}
   .err.show{display:block}
+  /* a long editor scrolls, and its error stays in sight at the bottom */
+  .shadercard .err{position:sticky; bottom:0; z-index:3; box-shadow:var(--shadow)}
   .addparam{display:none; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center}
   .addparam.show{display:flex}
   .addparam input{background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:6px 8px; width:78px}
@@ -271,7 +271,6 @@
   .edhead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:0 0 5px; flex:0 0 auto; cursor:help}
   .editor + .edhead{margin-top:12px}
   .shadercard .editor.vertex{flex:0 0 auto; min-height:0}
-  .shadercard .editor.vertex>textarea{height:150px; resize:vertical}
   .shadercard>[hidden]{display:none}
   @media (max-width:640px){
     html,body{height:auto}
@@ -282,9 +281,8 @@
     .leftcol{display:contents}
     .colgrip{display:none}
     .leftcol>.panel + .panel{margin-top:18px}
-    .shadercard{display:block; margin-top:18px}
+    .shadercard{display:block; margin-top:18px; overflow:visible}
     .shadercard .editor{flex:none}
-    .shadercard .editor>textarea{height:360px; resize:vertical}
   }
 </style>
 </head>

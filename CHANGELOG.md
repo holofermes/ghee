@@ -191,6 +191,8 @@
   in a pass, and cut an asset or array name past 63 bytes. Refuse a scene
   past 16 passes, filters included, with its own error, and state every cap
   and its error in the README.
+- Report the problems of a scene's texts in `/stats` as `text_errors`, a
+  line each, where they stood in `error` while no compile error did.
 
 ## 0.4.0 - 2026-08-06
 

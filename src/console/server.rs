@@ -240,9 +240,8 @@ struct Latest {
 struct Stat {
     frame_ms: f64,
     error: String,
-    /// The renderer's text_errors(), a line each. /stats reports them while
-    /// no other error stands.
-    texts: String,
+    /// The renderer's text_errors(), a line each.
+    texts: Vec<String>,
     active: Option<String>,
     display: Value,
     error_line: Option<i64>,
@@ -427,11 +426,8 @@ impl Console {
         {
             let stat = lock(&self.stat);
             d.insert("frame_ms".to_string(), Value::from(stat.frame_ms));
-            let error = match stat.error.is_empty() {
-                true => &stat.texts,
-                false => &stat.error,
-            };
-            d.insert("error".to_string(), Value::from(error.clone()));
+            d.insert("error".to_string(), Value::from(stat.error.clone()));
+            d.insert("text_errors".to_string(), Value::from(stat.texts.clone()));
             d.insert(
                 "active".to_string(),
                 stat.active.clone().map_or(Value::Null, Value::from),
@@ -1561,7 +1557,7 @@ fn publish_text_errors(console: &Console, renderer: &Renderer, seen: &Cell<u64>)
     let seq = renderer.text_errors_seq();
     if seq != seen.get() {
         seen.set(seq);
-        lock(&console.stat).texts = renderer.text_errors().join("\n");
+        lock(&console.stat).texts = renderer.text_errors();
     }
 }
 
@@ -2932,6 +2928,7 @@ mod tests {
             "error_line",
             "error_pass",
             "error_draw",
+            "text_errors",
             "active",
             "display",
             "stale",
@@ -3077,35 +3074,35 @@ mod tests {
             renderer.borrow().set_time(Some(0.0));
             renderer.borrow_mut().render(None).unwrap().to_vec()
         };
-        let error = || {
+        // /stats as (error, text_errors).
+        let errors = || {
             publish_text_errors(&console, &renderer.borrow(), &seen);
-            console.stats()["error"].as_str().unwrap().to_string()
+            let stats = console.stats();
+            (stats["error"].clone(), stats["text_errors"].clone())
         };
         assert_eq!(
             set_scene(&console, &renderer, &st, text_scene("O"), None, None),
             ""
         );
         let o = frame();
-        assert_eq!(error(), "");
+        assert_eq!(errors(), (Value::from(""), serde_json::json!([])));
         let host = RenderLoopHost::new(Arc::clone(&console));
         let long = "I".repeat(400_000);
         host.set_param(Scope::Scene, "label", Value::from(long.as_str()))
             .unwrap();
         assert!(drain(&console, &renderer, &st, &ctrl));
         assert!(frame() == o, "the last words went");
-        let e = error();
+        let (error, texts) = errors();
+        assert_eq!(error, "", "a text problem is no scene error");
+        let e = texts[0].as_str().unwrap();
         assert!(e.starts_with("text 'label': ") && e.contains("VC4"), "{e}");
         // The document holds the words posted.
         let running = lock(&console.running).clone().unwrap().1;
         assert_eq!(running["texts"]["label"]["value"], long.as_str());
-        // A scene error outranks a text error.
-        lock(&console.stat).error = "compile error".to_string();
-        assert_eq!(error(), "compile error");
-        lock(&console.stat).error = String::new();
         host.set_param(Scope::Scene, "label", Value::from("I"))
             .unwrap();
         assert!(drain(&console, &renderer, &st, &ctrl));
-        assert_eq!(error(), "");
+        assert_eq!(errors(), (Value::from(""), serde_json::json!([])));
     }
 
     // run()'s own loop

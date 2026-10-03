@@ -9,11 +9,13 @@ loopback, or open it with `--host` only on a network you trust.
 ## Read
 
 - `GET /stats`: `{fps, frame_ms, stream_fps, out, error, error_line,
-  error_pass, error_draw, active, display, stale}`. On a compile error,
-  `error_pass` is the index of the pass that holds it, or `"common"` for
-  the common block, and `error_draw` is `{index, part}` when one of that
-  pass's draws holds it, with `part` set to `"vertex"` or `"fragment"`.
-  `error_line` counts from the first line of the GLSL holding the error.
+  error_pass, error_draw, text_errors, active, display, stale}`. On a
+  compile error, `error_pass` is the index of the pass that holds it, or
+  `"common"` for the common block, and `error_draw` is `{index, part}` when
+  one of that pass's draws holds it, with `part` set to `"vertex"` or
+  `"fragment"`. `error_line` counts from the first line of the GLSL holding
+  the error. `text_errors` lists the problems of the scene's texts, a line
+  each, which leave the scene running.
 - `GET /scenes`: `{scenes: [name...], active}`
 - `GET /scene?name=`: the resolved scene JSON, shader files inlined and
   filters expanded. For the active scene ghee answers with the document it

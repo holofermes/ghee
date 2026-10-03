@@ -1688,7 +1688,8 @@ $("#pAdd").addEventListener("click", ()=>{
 // A refused post shows first, then the running scene's compile error. Its
 // line marks the editor that shows the GLSL holding it.
 function showErrors(){
-  const s = lastStats || {}, e = $("#err"), msg = postErr || s.error || "";
+  const s = lastStats || {}, e = $("#err");
+  const msg = postErr || s.error || (s.text_errors || []).join("\n");
   e.textContent = msg; e.classList.toggle("show", !!msg);
   const here = !postErr && s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass);
   const ed = s.error_draw, inDraw = here && ed && ed.index === curDraw;

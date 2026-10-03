@@ -102,6 +102,22 @@ def served():
         yield h, port
 
 
+def test_the_console_lists_a_text_problem_apart_from_the_error(tmp_path):
+    port = free_port()
+    doc = {
+        "version": 1,
+        "texts": {"words": {"value": "hi", "font": "Missing.ttf"}},
+        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}],
+    }
+    with ghee.open(doc, width=16, height=16, stats=port, base_dir=tmp_path) as h:
+        h.frame()
+        stats = json_of(port, "/stats")
+    assert stats["error"] == ""
+    assert [e.split(" (")[0] for e in stats["text_errors"]] == [
+        "text 'words' font 'Missing.ttf'"
+    ]
+
+
 def test_the_console_publishes_the_render(served):
     h, port = served
     stats = json_of(port, "/stats")

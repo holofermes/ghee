@@ -191,9 +191,6 @@ takes the colour of such a frame as premultiplied by that alpha, the way
 draws blend it. A raw frame on `-o -` keeps it premultiplied, and a PNG file
 holds it straight.
 
-A pass binds at most 16 textures: its channels, its arrays, and the assets,
-texts and text atlases that it samples.
-
 ghee compiles the GLSL of every pass behind a preamble like this one:
 
 ```glsl
@@ -349,12 +346,6 @@ On VC4 the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre,
 so a shader that needs exact centres, like the one above, samples at
 `floor(v_texCoord * resolution) + 0.5`.
 
-A scene holds at most 16 image assets, texts and text atlases together. A
-text drawn with the MTSDF fill takes an atlas, and a text with a colour font
-takes one more for its colour glyphs when a draw paints them. The words must
-fit a 1024x2048 data texture, at most 4 glyphs may overlap at one spot, and a
-glyph holds at most 64 curves in one band.
-
 A text problem leaves the scene running: ghee logs it once, and the console
 shows it. A font that fails to load drops out of its text's fonts, and a text
 with no font left draws every character as an error box, diagonal stripes of
@@ -467,9 +458,7 @@ of its pass, and `fragment` never runs for them. Each glyph shows its bitmap
 from the font's largest strike, through mipmaps that keep it smooth at text
 size, placed by `vertex` like any other glyph and blended by the draw's
 `blend`. A shadow draw with `"emoji": true` paints a copy of its own. The
-bitmaps decode into an RGBA atlas when the words first hold them. The atlas
-grows to 2048x2048 at most, room for 132 emoji of Noto Color Emoji, and an
-emoji past it draws an error box.
+bitmaps decode into an RGBA atlas when the words first hold them.
 
 On a Pi Zero 2 W, seven lines of 216 characters at 46 pixels per em, in a
 1280x800 frame, draw in 3.2 ms with `mtsdf` and in 22.7 ms with `slug`,
@@ -608,6 +597,47 @@ let frame = r.render(Some(&mut |_name, size| match size {
 
 `render` takes one closure, which answers with the data for a named array.
 The engine is thread-affine: build and use a Renderer on one thread.
+
+## Limits
+
+A scene holds any number of assets, texts and draws, and names of any
+length. A scene that passes one of these caps fails to load or to set up,
+and the error reads as shown:
+
+- 16 textures in one pass, fewer on a GPU with fewer texture units: the
+  pass's channels and arrays, each asset that its GLSL samples, and the
+  curves of each text whose `_cover` it reads. A draw counts the same, plus
+  the atlas of its text, or the curves under `"fill": "slug"`.
+  `pass 'main' needs 17 texture units, a pass binds at most 16`, or
+  `pass 'main' draw 'title' needs 17 texture units, a pass binds at most 16`.
+- 16 passes, filter passes included: `17 passes, over the cap of 16`.
+- 16384 on a side and 16777216 pixels for a sized pass, an array and a
+  `.raw` asset: `pass 'a' size needs two positive ints [w, h] up to 16384,
+  got [20000, 8]`, `pass 'a' is 8192x4096, over the 16777216 pixel cap`.
+  The GPU's own texture size binds tighter, 2048 on a VC4.
+- 2048 texels per em in a text's MTSDF atlas, and a field that reaches 2048
+  texels at most for the largest `pad` of its draws:
+  `text 't' atlas px_per_em needs a whole number from 1 to 2048, got 4096`,
+  `pass 'main' draw 't' pad 100.0 needs an atlas range of 6400 texels at the
+  32 px_per_em of text 't', over the cap of 2048`.
+
+A text past one of these keeps the scene running, logs the problem once,
+and the console shows it:
+
+- a 1024x2048 data texture for the curves of a text, and 4 glyphs over one
+  spot of it. Words past either leave the last words that fit, and a scene
+  whose first words do not fit draws none:
+  `text 't': the words need a 1024x8192 texture, and a VC4 holds 1024x2048
+  at most`, `text 't': more than 4 glyphs overlap at one spot`.
+- 64 curves in one band of a glyph. The glyph draws an error box:
+  `text 't': 'X' has more than 64 curves in one band`.
+- a 2048x2048 atlas for the MTSDF fields of a font, and one for the colour
+  glyphs of a text, room for 132 emoji of Noto Color Emoji. A glyph past
+  either draws an error box: `text 't': 'A' has no field in the atlas: the
+  2048x2048 atlas is full`.
+
+The wire of a [procedural scene](#procedural-scenes) names an array or a
+param in 255 bytes at most, and the Python shim raises ValueError past it.
 
 ## Known limitations
 

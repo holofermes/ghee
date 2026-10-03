@@ -23,6 +23,10 @@ use crate::ffi;
 use crate::scene::{ArraySize, Draw, ParamValue, Pass, Scene};
 use crate::text::{self, Fault, Fill, Layout, Text};
 
+/// The passes that the engine holds, its MP_MAX_PASSES, filter passes
+/// included.
+const MAX_PASSES: usize = 16;
+
 /// error_pass for a compile error in the scene's common block.
 /// A pass error reports the pass index.
 pub const COMMON_PASS: &str = "common";
@@ -709,6 +713,19 @@ impl Renderer {
         self.error_draw = None;
         if scene.passes.is_empty() {
             self.error = "scene has no passes".to_string();
+            return Ok(self.error.clone());
+        }
+        if scene.passes.len() > MAX_PASSES {
+            let filters = scene.passes.iter().filter(|p| !p.filter.is_empty()).count();
+            let of_them = match filters {
+                0 => String::new(),
+                1 => ", 1 of them a filter".to_string(),
+                n => format!(", {n} of them filters"),
+            };
+            self.error = format!(
+                "{} passes{of_them}, over the cap of {MAX_PASSES}",
+                scene.passes.len()
+            );
             return Ok(self.error.clone());
         }
         // An array name is one input, so it holds one size.
@@ -2840,6 +2857,99 @@ mod tests {
     }
 
     #[test]
+    fn a_pass_reads_a_channel_or_an_array_in_every_texture_unit() {
+        // main reads pass a through all but five of its units and five arrays
+        // through the rest, and pass a declares twelve arrays of its own, so
+        // the scene holds seventeen.
+        let Some((_g, mut r)) = gpu() else { return };
+        let units = r.max_texture_units() as usize;
+        let own: Vec<Value> = (0..12)
+            .map(|i| json!({"name": format!("a{i}"), "size": 4}))
+            .collect();
+        let arrays: Vec<Value> = (0..5)
+            .map(|i| json!({"name": format!("m{i}"), "size": 4}))
+            .collect();
+        let channels: Vec<Value> = (0..units - 5).map(|_| json!({"buffer": "a"})).collect();
+        let sc = scene_of(json!([
+            {"name": "a", "arrays": own,
+             "code": "void main(){ gl_FragColor = vec4(a11_at(0), 0.0, 0.0, 1.0); }"},
+            {"name": "main", "channels": channels, "arrays": arrays, "code": format!(
+                "void main(){{ gl_FragColor = vec4(texture2D(iChannel{}, v_texCoord).r, \
+                 m4_at(0), 0.0, 1.0); }}", units - 6)},
+        ]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        let mut feed = |name: &str, _size: ArraySize| match name {
+            "a11" => Feed::Data(vec![0.25; 4]),
+            "m4" => Feed::Data(vec![0.5; 4]),
+            _ => Feed::Data(vec![0.0; 4]),
+        };
+        let f = r.render(Some(&mut feed)).unwrap();
+        assert!(
+            near3([f[0], f[1], f[2]].map(f64::from), [64.0, 128.0, 0.0]),
+            "{:?}",
+            &f[..4]
+        );
+    }
+
+    #[test]
+    fn a_name_of_300_characters_reaches_its_uniform() {
+        // A param, an array and an asset, each named past any fixed buffer.
+        let Some((_g, mut r)) = gpu() else { return };
+        let (p, a, i) = ("p".repeat(300), "a".repeat(300), "i".repeat(300));
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1,
+                "params": {p.clone(): {"type": "float", "value": 0.25}},
+                "assets": {i.clone(): {"file": "i.png"}},
+                "passes": [{"name": "main", "arrays": [{"name": a.clone(), "size": 4}],
+                    "code": format!("void main(){{ gl_FragColor = vec4({p}, {a}_at(0), \
+                        texture2D({i}, vec2(0.5)).r, 1.0); }}")}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.assets[0].image = Some(crate::assets::Image {
+            width: 1,
+            height: 1,
+            components: 1,
+            pixels: Pixels::U8(vec![191]),
+        });
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        let mut feed = |_: &str, _: ArraySize| Feed::Data(vec![0.5; 4]);
+        let f = r.render(Some(&mut feed)).unwrap();
+        assert!(
+            near3([f[0], f[1], f[2]].map(f64::from), [64.0, 128.0, 191.0]),
+            "{:?}",
+            &f[..4]
+        );
+    }
+
+    #[test]
+    fn a_scene_past_16_passes_is_refused_counting_its_filters() {
+        // The filters come from the registry, which $GHEE_FILTERS extends.
+        let _f = crate::filters::env_guard();
+        let Some((_g, mut r)) = gpu() else { return };
+        let passes = |n: usize| -> Vec<Value> {
+            (0..n)
+                .map(|i| json!({"name": format!("p{i}"), "code": FLAT}))
+                .collect()
+        };
+        assert_eq!(r.setup(&scene_of(json!(passes(16)))).unwrap(), "");
+        assert_eq!(
+            r.setup(&scene_of(json!(passes(17)))).unwrap(),
+            "17 passes, over the cap of 16"
+        );
+        let mut filtered = scene_of(json!(passes(15)));
+        crate::filters::apply_filters(&mut filtered, &["dither".into(), "frc".into()], None)
+            .unwrap();
+        assert_eq!(
+            r.setup(&filtered).unwrap(),
+            "17 passes, 2 of them filters, over the cap of 16"
+        );
+    }
+
+    #[test]
     fn a_pass_binds_16_texture_units_at_most_on_any_gpu() {
         let Some((_g, r)) = gpu() else { return };
         let gl = unsafe { ffi::ghee_gl_texture_units(r.handle()) };
@@ -2848,14 +2958,19 @@ mod tests {
 
     #[test]
     fn the_assets_a_pass_samples_count_against_its_texture_units() {
-        // main samples an asset in every unit, and a channel takes one more.
+        // The scene holds four assets past the units of one pass. main
+        // samples an asset in every unit, pass a samples the other four, and
+        // a channel on main takes one unit more.
         let Some((_g, mut r)) = gpu() else { return };
         let units = r.max_texture_units() as usize;
-        let names: Vec<String> = (0..units).map(|i| format!("img{i}")).collect();
-        let sum: Vec<String> = names
-            .iter()
-            .map(|n| format!("texture2D({n}, vec2(0.5)).r"))
-            .collect();
+        let names: Vec<String> = (0..units + 4).map(|i| format!("img{i}")).collect();
+        let sum = |names: &[String]| -> String {
+            names
+                .iter()
+                .map(|n| format!("texture2D({n}, vec2(0.5)).r"))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
         let scene = |channels: Value| {
             let assets: serde_json::Map<String, Value> = names
                 .iter()
@@ -2863,25 +2978,41 @@ mod tests {
                 .collect();
             let mut sc = Scene::from_dict(
                 &json!({"version": 1, "assets": assets, "passes": [
-                    {"name": "a", "code": FLAT},
+                    {"name": "a", "code": format!(
+                        "void main(){{ gl_FragColor = vec4(0.0, {}, 0.0, 1.0); }}",
+                        sum(&names[units..]))},
                     {"name": "main", "channels": channels, "code": format!(
-                        "void main(){{ gl_FragColor = vec4({}); }}", sum.join(" + "))},
+                        "void main(){{ gl_FragColor = vec4({}, 0.0, 0.0, 1.0); }}",
+                        sum(&names[..units]))},
                 ]}),
                 None,
                 None,
             )
             .unwrap();
-            for a in &mut sc.assets {
+            for (i, a) in sc.assets.iter_mut().enumerate() {
                 a.image = Some(crate::assets::Image {
                     width: 1,
                     height: 1,
                     components: 1,
-                    pixels: Pixels::U8(vec![1]),
+                    pixels: Pixels::U8(vec![i as u8 + 1]),
                 });
             }
             sc
         };
-        assert_eq!(r.setup(&scene(json!([]))).unwrap(), "");
+        // main's red sums the values 1 to units, and pass a's green the next
+        // four, which a scene of pass a alone shows.
+        let two = scene(json!([]));
+        let mut only_a = two.clone();
+        only_a.passes.truncate(1);
+        for (sc, want) in [
+            (&two, [(1..=units).sum::<usize>(), 0]),
+            (&only_a, [0, (units + 1..=units + 4).sum::<usize>()]),
+        ] {
+            assert_eq!(r.setup(sc).unwrap(), "");
+            r.set_time(Some(0.0));
+            let f = r.render(None).unwrap();
+            assert_eq!([f[0] as usize, f[1] as usize], want);
+        }
         assert_eq!(
             r.setup(&scene(json!([{"buffer": "a"}]))).unwrap(),
             over_units(&r, "pass 'main'", units + 1)
@@ -3895,14 +4026,26 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_past_the_engine_cap_names_the_layer_cap() {
+    fn a_pass_draws_a_hundred_layers() {
+        // Each layer adds 1/255 of red over black.
         let Some((_g, mut r)) = gpu() else { return };
-        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
-        let layers: Vec<Layer> = (0..49)
-            .map(|_| layer("main", PLAIN_FS, Blend::Over))
+        let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
+        let sc = scene_of(json!([{"name": "main", "code": black}]));
+        let layers: Vec<Layer> = (0..100)
+            .map(|_| layer("main", PLAIN_FS, Blend::Add))
             .collect();
-        let e = r.setup_layers(&sc, &layers).unwrap();
-        assert_eq!(e, "layer 48: over the cap of 48 layers");
+        assert_eq!(r.setup_layers(&sc, &layers).unwrap(), "");
+        let red = quad(0.0, 0.0, W as f32, H as f32, [1.0 / 255.0, 0.0, 0.0, 0.0]);
+        for k in 0..layers.len() {
+            r.set_layer_quads(k, &red, 2).unwrap();
+        }
+        r.set_time(Some(0.0));
+        let f = r.render(None).unwrap().to_vec();
+        assert!(
+            near3(rgb_at(&f, W / 2, H / 2), [100.0, 0.0, 0.0]),
+            "{:?}",
+            rgb_at(&f, W / 2, H / 2)
+        );
     }
 
     #[test]

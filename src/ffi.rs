@@ -54,7 +54,7 @@ pub union ParamValue {
 
 #[repr(C)]
 pub struct Parameter {
-    pub name: [c_char; 256],
+    pub name: *const c_char,
     pub ty: c_int,
     pub value: ParamValue,
 }

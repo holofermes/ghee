@@ -57,8 +57,7 @@
 - Blend a draw's alpha the way its colour blends.
 - Let a pass with `draws` leave out `code`: it starts each frame transparent
   and holds its draws alone.
-- Bind at most 16 textures in a pass on every GPU, and raise the cap of
-  image assets and texts in a scene to 16.
+- Bind at most 16 textures in a pass on every GPU.
 - Fill a draw's glyphs from an MTSDF atlas by default, fast, and read the
   distance to the outline with `glyph_dist()` and `glyph_soft()` for
   outlines, glows and shadows. `"fill": "slug"` on a text computes Slug's
@@ -72,8 +71,8 @@
   the glyphs of the new ones are in. A setup and a render with `--timestep`
   wait for them.
 - Draw an error box for a glyph that the atlas cannot hold, and say why.
-- Count the atlas of a text drawn with the MTSDF fill against the 16 image
-  assets and texts of a scene, and against the 16 textures of a pass.
+- Count the atlas of a text drawn with the MTSDF fill against the 16
+  textures of a pass.
 - Draw a text into a pass from Python with
   `ghee.Draw(text, fragment, vertex)` in `Pass(draws=[...])`, and leave out
   the code of a pass of draws alone.
@@ -162,9 +161,8 @@
   ghee as in direct mode.
 - Name the param in the type error of `set_param` and of the console, where
   the error named a param 'v'.
-- Name the engine's cap of 48 layers in its error, where the error called
-  them draws, and name the refused layer once, where the error named it
-  twice. Give the import's own reason when it refuses an ISF shader with
+- Name a refused layer once in its error, where the error named it twice.
+  Give the import's own reason when it refuses an ISF shader with
   `IMPORTED` images.
 - Grow each GLSL editor of the console with its code, and scroll the
   column or the page that holds it, where a long shader scrolled inside a
@@ -187,6 +185,12 @@
   no directory holds.
 - Resolve the files of a copy that the console saved into `modified/`
   beside its original, where every scene looked one directory up.
+- Take any number of assets, texts and draws in a scene, a channel or an
+  array in every texture unit of a pass, and names of any length, where the
+  engine held 16 assets and 16 arrays in a scene, 8 channels and 4 arrays
+  in a pass, and cut an asset or array name past 63 bytes. Refuse a scene
+  past 16 passes, filters included, with its own error, and state every cap
+  and its error in the README.
 
 ## 0.4.0 - 2026-08-06
 

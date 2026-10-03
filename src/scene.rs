@@ -44,13 +44,6 @@ const PARAM_TYPES: [&str; 8] = [
 const MAX_DIM: i64 = 16384;
 const MAX_TEXELS: i64 = 1 << 24;
 
-// The engine's asset table holds MP_MAX_ASSETS entries.
-const MAX_ASSETS: usize = 16;
-
-// A draw takes three engine layers at most, its own, its colour glyphs' and
-// its error boxes', and the engine holds MP_MAX_LAYERS layers.
-const MAX_DRAWS: usize = 16;
-
 fn vec_arity(ty: &str) -> Option<usize> {
     VEC_ARITY.iter().find(|(t, _)| *t == ty).map(|(_, n)| *n)
 }
@@ -2081,10 +2074,6 @@ impl Scene {
         if let Some(e) = passes.iter().find_map(Pass::twin_draws) {
             bail!("{e}");
         }
-        let images = assets.iter().filter(|a| !a.is_font()).count();
-        if images > MAX_ASSETS {
-            bail!("{images} image assets, over the {MAX_ASSETS} asset cap");
-        }
         // An asset name lands in every pass preamble as a uniform, so it must
         // be a GLSL identifier.
         {
@@ -2221,32 +2210,8 @@ impl Scene {
         None
     }
 
-    /// The error for the engine textures of the image assets and of `texts`
-    /// past MAX_ASSETS. A text takes the texture of its curves, a text that a
-    /// draw names takes its MTSDF atlas under the MTSDF fill, and a text whose
-    /// colour glyphs a draw paints takes its colour atlas when its loaded
-    /// fonts hold colour bitmaps.
-    fn over_texture_cap(&self, texts: &[Text]) -> Option<String> {
-        let images = self.assets.iter().filter(|a| !a.is_font()).count();
-        let atlases = texts
-            .iter()
-            .filter(|t| t.fill == Fill::Mtsdf && self.draws_text(&t.name))
-            .count();
-        let colours = texts
-            .iter()
-            .filter(|t| self.paints_emoji(&t.name) && t.has_colour())
-            .count();
-        let n = images + texts.len() + atlases + colours;
-        (n > MAX_ASSETS).then(|| {
-            format!("{n} image assets, texts and text atlases, over the cap of {MAX_ASSETS}")
-        })
-    }
-
     /// The scene with `texts` in place of its own.
     pub fn with_texts(mut self, mut texts: Vec<Text>) -> Result<Scene> {
-        if let Some(e) = self.over_texture_cap(&texts) {
-            bail!("{e}");
-        }
         let mut seen: Vec<&str> = Vec::new();
         for t in &texts {
             if !is_ident(&t.name) {
@@ -2308,10 +2273,6 @@ impl Scene {
                     p.name
                 );
             }
-        }
-        let draws = self.passes.iter().map(|p| p.draws.len()).sum::<usize>();
-        if draws > MAX_DRAWS {
-            bail!("{draws} draws, over the cap of {MAX_DRAWS}");
         }
         self.texts = texts;
         if let Some(e) = self.undeclared_draw() {
@@ -2664,10 +2625,6 @@ impl Scene {
                 })));
             }
             t.data = data.into_iter().collect();
-        }
-        // A text's colour atlas counts once its fonts are loaded.
-        if let Some(e) = self.over_texture_cap(&self.texts) {
-            bail!("{e}");
         }
         Ok(())
     }
@@ -4252,22 +4209,6 @@ mod tests {
         let doc = named(json!({"params": {"bluenoise": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
         crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
-    }
-
-    #[test]
-    fn a_seventeenth_asset_hits_the_engine_cap() {
-        let assets = |n: usize| {
-            let mut m = Map::new();
-            for i in 0..n {
-                m.insert(format!("a{i}"), json!({"file": format!("a{i}.png")}));
-            }
-            asset_scene(Value::Object(m))
-        };
-        assert!(Scene::from_dict(&assets(16), None, None).is_ok());
-        let e = Scene::from_dict(&assets(17), None, None)
-            .unwrap_err()
-            .to_string();
-        assert!(e.ends_with("17 image assets, over the 16 asset cap"), "{e}");
     }
 
     #[test]

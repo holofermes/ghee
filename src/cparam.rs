@@ -1,15 +1,13 @@
 //! A scene param becomes a parameter_t view, and the C engine binds that view.
 //! Rust owns the storage behind it for as long as the engine reads it.
 
-use core::ffi::{c_char, c_int};
+use core::ffi::c_int;
+use std::ffi::CString;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 
 use crate::ffi;
-
-/// parameter_t.name is char[256]. The C side needs the terminator byte.
-pub const NAME_MAX: usize = 255;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -35,6 +33,9 @@ enum Owned {
 pub struct CParameter {
     param: ffi::Parameter,
     owned: Owned,
+    /// The bytes behind `param.name`. A move of the CString leaves its heap
+    /// buffer, and the pointer, where they are.
+    name: CString,
 }
 
 impl Drop for CParameter {
@@ -55,20 +56,11 @@ impl CParameter {
         &self.param
     }
 
-    /// Name the uniform for this param. A longer name fills the C field, and
-    /// glGetUniformLocation then reads past the terminator.
+    /// Name the uniform for this param.
     pub fn set_c_name(&mut self, name: &str) -> Result<()> {
-        let raw = name.as_bytes();
-        if raw.len() > NAME_MAX {
-            bail!(
-                "parameter name is {} bytes, the engine takes {NAME_MAX}: {name}",
-                raw.len()
-            );
-        }
-        self.param.name = [0; 256];
-        for (slot, b) in self.param.name.iter_mut().zip(raw) {
-            *slot = *b as c_char;
-        }
+        self.name =
+            CString::new(name).map_err(|_| anyhow!("parameter name {name:?} holds a NUL"))?;
+        self.param.name = self.name.as_ptr();
         Ok(())
     }
 }
@@ -168,13 +160,15 @@ pub fn create_c_parameter(param_type: &str, value: &Value) -> Result<CParameter>
         }
         _ => bail!("unknown parameter type: {param_type}"),
     };
+    let name = CString::default();
     Ok(CParameter {
         param: ffi::Parameter {
-            name: [0; 256],
+            name: name.as_ptr(),
             ty: ty as c_int,
             value: cvalue,
         },
         owned,
+        name,
     })
 }
 
@@ -182,23 +176,6 @@ pub fn create_c_parameter(param_type: &str, value: &Value) -> Result<CParameter>
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn param_name_must_leave_room_for_the_terminator() {
-        let mut cp = create_c_parameter("float", &json!(1.0)).unwrap();
-        let name = "k".repeat(NAME_MAX);
-        cp.set_c_name(&name).unwrap();
-        let mut want = [0 as c_char; 256];
-        for (slot, b) in want.iter_mut().zip(name.as_bytes()) {
-            *slot = *b as c_char;
-        }
-        assert_eq!(cp.param.name, want);
-        let long = "k".repeat(NAME_MAX + 1);
-        assert_eq!(
-            cp.set_c_name(&long).unwrap_err().to_string(),
-            format!("parameter name is 256 bytes, the engine takes 255: {long}")
-        );
-    }
 
     #[test]
     fn a_vector_param_carries_its_components() {
@@ -248,6 +225,7 @@ mod tests {
         cp.set_c_name("gain").unwrap();
         let moved = cp;
         assert_eq!(unsafe { (*moved.param.value.float_param).value }, 2.0);
-        assert_eq!(moved.param.name[0], b'g' as c_char);
+        let name = unsafe { std::ffi::CStr::from_ptr(moved.param.name) };
+        assert_eq!(name.to_str().unwrap(), "gain");
     }
 }

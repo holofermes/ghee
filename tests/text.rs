@@ -1088,34 +1088,6 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
 }
 
 #[test]
-fn image_assets_texts_and_their_atlases_share_the_engine_cap() {
-    // The two font assets beside them take no slot, and a text drawn by an
-    // MTSDF draw takes its atlas too.
-    let with_images = |n: usize, fill: Option<&str>| {
-        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
-        for i in 0..n {
-            doc["assets"][format!("a{i}")] = json!({"file": format!("a{i}.png")});
-        }
-        if let Some(fill) = fill {
-            doc["texts"]["label"]["fill"] = json!(fill);
-            doc["passes"][0]["draws"] = json!([{"text": "label", "fragment": WHITE,
-                "vertex": "vec2 glyph_place(vec2 em) { return em; }"}]);
-        }
-        doc
-    };
-    assert!(Scene::from_dict(&with_images(15, None), None, None).is_ok());
-    assert!(Scene::from_dict(&with_images(15, Some("slug")), None, None).is_ok());
-    assert!(Scene::from_dict(&with_images(14, Some("mtsdf")), None, None).is_ok());
-    for (n, fill) in [(16, None), (15, Some("mtsdf"))] {
-        let e = scene_err(&with_images(n, fill));
-        assert!(
-            e.ends_with("17 image assets, texts and text atlases, over the cap of 16"),
-            "{e}"
-        );
-    }
-}
-
-#[test]
 fn every_scene_pass_reads_the_texts_and_a_filter_pass_none() {
     let doc = json!({
         "version": 1,
@@ -2615,13 +2587,6 @@ fn a_draw_declaration_names_what_it_lacks() {
             one(json!({"text": "words", "fragment": WHITE, "vertex": place})),
             "pass 'main' draw 'words' names text 'words', which the scene does not declare",
         ),
-        (
-            with(Value::from(vec![
-                json!({"text": "label", "fragment": WHITE, "vertex": place});
-                17
-            ])),
-            "17 draws, over the cap of 16",
-        ),
     ];
     for (got, want) in cases {
         assert!(got.ends_with(want), "{got}\n  wants {want}");
@@ -3891,51 +3856,4 @@ fn a_shadow_and_a_glow_paint_no_emoji_unless_emoji_says_so() {
     assert_eq!(painted(&doc([None; 3])), [false, false, true]);
     assert_eq!(painted(&doc([Some(true), None, None])), [true, false, true]);
     assert_eq!(painted(&doc([None, None, Some(false)])), [false; 3]);
-}
-
-#[test]
-fn a_colour_atlas_counts_against_the_engine_cap() {
-    // A slug draw of a text with a colour font: its curves and its
-    // colour atlas, beside n image assets.
-    let dir = tmpdir("colour-cap");
-    for f in [SANS, EMOJI] {
-        fs::write(format!("{dir}/{f}"), font(f)).unwrap();
-    }
-    let mut png = Vec::new();
-    let mut enc = png::Encoder::new(&mut png, 1, 1);
-    enc.set_color(png::ColorType::Grayscale);
-    enc.write_header().unwrap().write_image_data(&[0]).unwrap();
-    let doc = |n: usize, files: &[&str]| {
-        let mut doc = colour_scene(
-            files,
-            "I",
-            "slug",
-            "vec2 glyph_place(vec2 em) { return em; }",
-        );
-        for i in 0..n {
-            fs::write(format!("{dir}/a{i}.png"), &png).unwrap();
-            doc["assets"][format!("a{i}")] = json!({"file": format!("a{i}.png")});
-        }
-        doc
-    };
-    let _g = lock();
-    let load = |doc: &Value| {
-        let mut sc = Scene::from_dict(doc, None, None)?;
-        with_assets_env("", || sc.load_assets(&dir))
-    };
-    assert!(load(&doc(15, &[SANS])).is_ok());
-    assert!(load(&doc(14, &[SANS, EMOJI])).is_ok());
-    // The colour atlas counts once the fonts load.
-    let over = doc(15, &[SANS, EMOJI]);
-    assert!(Scene::from_dict(&over, None, None).is_ok());
-    let e = load(&over).unwrap_err().to_string();
-    assert_eq!(
-        e,
-        "17 image assets, texts and text atlases, over the cap of 16"
-    );
-    // A text whose draws paint no emoji takes no colour atlas.
-    let mut unpainted = over.clone();
-    unpainted["passes"][0]["draws"][0]["emoji"] = json!(false);
-    assert!(load(&unpainted).is_ok());
-    fs::remove_dir_all(&dir).unwrap();
 }

@@ -281,92 +281,40 @@ pass fails to load, and the error names both.
 ## Text
 
 A scene draws text on the GPU from a font. A text holds its words in
-`value` and names its font:
+`value` and names its font, and a layer of a pass paints it. This scene draws
+`hello` white on black, centred in the frame at 48 pixels to the em:
 
 ```json
 {
   "version": 1,
   "texts": { "title": { "value": "hello", "font": "DejaVuSans.ttf", "align": "center" } },
-  "passes": [{ "name": "main", "shader": "title.glsl" }]
+  "passes": [{
+    "name": "main",
+    "code": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+    "layers": [{ "text": "title", "px_per_em": 48 }]
+  }]
 }
 ```
 
-and `title.glsl` draws the words white on black, centred in the frame at 48
-pixels to the em:
-
-```glsl
-void main() {
-  float ppem = 48.0;
-  vec2 px = floor(v_texCoord * resolution) + 0.5;
-  vec2 p = (px - 0.5 * (resolution - title_size * ppem)) / ppem;
-  gl_FragColor = vec4(vec3(title_cover(p, ppem)), 1.0);
-}
-```
-
-Every pass of the scene, filter passes excepted, reads the words through
-`float title_cover(vec2 p, float ppem)`: the coverage 0..1 of the words at
-`p`, in em from the block's top left, y down like `v_texCoord`, drawn at
-`ppem` pixels per em. `title_size` holds the block's width and height in em.
+A pass draws a text in one of two ways. A [layer](#layers) paints the words
+over the pass's buffer, one quad over each glyph, placed and coloured by
+GLSL of its own: take a layer for words placed on screen, still or moving
+glyph by glyph. [`<name>_cover`](#coverage-in-a-shader) hands the pass's own
+shader the coverage of the words at any point: take it when the words feed
+the shader's math, a warp or a mask. A layer works on the pixels of its
+glyphs alone, and `_cover` searches the font's curves at every pixel that
+calls it.
 
 ghee declares a scene string param under the text's name, which holds the
 words: `set_param`, `/set`, the console's texts panel and a procedural
 scene change them live, and ghee lays them out again with no recompile. A scene
 that declares a param under a text's name fails to load.
 
-A font is a TrueType or OpenType font with outlines, or a colour emoji font
-with PNG bitmaps in a CBDT or sbix table, such as Noto Color Emoji. `font`
-takes a `.ttf` or `.otf` file, which resolves as an asset file does, or the
-name of a font asset, which texts share, or a list that mixes both,
-`"font": ["sans", "NotoColorEmoji.ttf"]`, and each character draws from the
-first font in the list whose cmap holds it, while a character that no font has draws the
-first font's missing-glyph box. A character followed by U+FE0F, the emoji
-variation selector, draws from the first font with a colour glyph for it, so
-❤️ draws in colour even when an earlier font holds a plain heart. Line height
-and baseline come from the first font.
+### Layers
 
-Lines break at each newline, and `align` sets each line `left`, `center` or
-`right` within the block, `left` by default. Every character draws as one
-glyph, spaced by the advances and the pair kerning of its font's `kern`
-table, and two glyphs of two fonts take no kerning. Careful: a font that kerns
-through GPOS alone draws unkerned. Text that needs shaping goes in as a
-host-rasterized 2D input, the way the `marquee` demo draws its words. An emoji
-sequence draws one code point at a time: a flag shows its two
-regional-indicator letters, a sequence joined by U+200D shows each of its
-emoji, and variation selectors and the joiner take no room.
-
-A colour glyph, a bitmap with no outline, has no coverage in `title_cover`.
-Only a [layer](#layers) paints it.
-
-`title_cover` ports Eric Lengyel's [Slug](https://github.com/EricLengyel/Slug)
-algorithm and computes coverage from the font's own curves, so the edges stay
-sharp at any size. Each control point moves by at most 1/4094 of its glyph's
-size, 0.17 px for a 1 em glyph at 700 pixels per em.
-
-On VC4 the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre,
-so a shader that needs exact centres, like the one above, samples at
-`floor(v_texCoord * resolution) + 0.5`.
-
-A text problem leaves the scene running: ghee logs it once, and the console
-shows it. A font that fails to load drops out of its text's fonts, and a text
-with no font left draws every character as an error box, diagonal stripes of
-coverage in `title_cover`. A character whose glyph has neither an outline nor
-a colour bitmap, a glyph past the curve limit, and in a layer a glyph too large
-for its atlas each draw an error box in their place, and the rest of the words
-draw.
-Words that do not fit leave the last words that did, and a scene whose first
-words do not fit draws none.
-
-Render the bundled `lettering` example to a PNG:
-
-```
-ghee render --demo lettering -o lettering.png --frames 1
-```
-
-## Layers
-
-A pass's code fills its buffer, then its `layers` paint texts over it in
-order: one quad over each glyph, coloured by the layer's own fragment shader.
-This layer puts `title` in amber at 48 pixels per em, centred in the pass:
+A pass's shader fills its buffer, then its `layers` paint texts over it in
+order. This layer puts `title` in amber at 48 pixels per em, centred in the
+pass:
 
 ```json
 "layers": [{
@@ -376,22 +324,14 @@ This layer puts `title` in amber at 48 pixels per em, centred in the pass:
 }]
 ```
 
-and this one draws it white at the same size and place, with no GLSL:
-
-```json
-"layers": [{ "text": "title", "px_per_em": 48 }]
-```
-
 - `text` names a scene text.
 - `name` names the layer in errors and in the console: ASCII letters, digits,
   `_` and `-`, unique among the layers of its pass. A layer without one goes by
   its text's name, `title`, a second layer of that text without one by
   `title 2`, a third by `title 3`.
 - `vertex` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
-  block, in em from its top left with y down, to the pass pixel where it
-  lands. It runs at the corners of each glyph's quad, so it can move, turn,
-  scale or shear a glyph, and a bend inside one glyph draws straight between
-  its corners.
+  block, in em from its top left with y down, to the pixel of the pass where
+  it lands, y down like `v_texCoord * resolution`.
 - `px_per_em` takes the place of `vertex`: the block centred in the pass at
   that many pixels per em. A layer takes one of the two.
 - `fragment` holds a `void main()` that writes colour premultiplied by alpha.
@@ -419,21 +359,53 @@ float glyph_ppem;      // pixels per em at this glyph
 ```
 
 `vertex` reads `glyph_index`, `glyph_word`, `glyph_line`, `glyph_span` and
-`glyph_box` (the ink box in em), and it sees the pass's preamble and the
-scene's common block, as the pass's code does. Layers render in list order, so a first layer of the same text puts a glow or a
-shadow under the fill of every glyph. A pass with `layers` and no `code` starts
-each frame transparent and holds the words alone, for later passes to read
-through a channel and composite.
+`glyph_box`, the glyph's ink box in em as x0, y0, x1, y1, and it sees the
+pass's preamble and the scene's common block, as the pass's shader does.
 
-The text's `fill` sets where a layer takes the coverage from. `slug` draws
-exact edges at any size, and `mtsdf`, the default, draws fast and gives the
-distances that outlines, glows and shadows read.
+ghee draws each glyph as one quad over its ink box, and `glyph_place` runs in
+the vertex shader, four times at each corner of the quad. The first three
+calls, at the corner and a sixteenth of an em right of it and below it,
+measure how many pixels an em spans there along each axis. The last call
+places the corner pushed out past the ink by a little over half a pixel at
+that scale, or by `pad` when that is more. The GPU fills the quad flat between
+its four corners, so `glyph_place` can move, turn, scale or shear each glyph,
+and a bend inside one glyph draws straight. The pixels per em at the corners
+set `glyph_ppem` and the antialiasing, an edge one pixel soft.
 
-`mtsdf` takes one bilinear sample a pixel, with no mipmaps, from an atlas of
-the glyphs' MTSDFs: multi-channel signed distance fields, with the true
-distance in alpha. The first use of a
-font generates its ASCII and Latin-1 on every core, 0.6 s on a Pi Zero 2 W,
-and caches the atlas in `$XDG_CACHE_HOME/ghee/atlas`, else
+Each frame, a pass draws in one order. Its shader fills the buffer, or a pass
+with `layers` and no GLSL of its own clears it to transparent black. Each
+layer then paints its glyphs, in list order, then the colour glyphs of the
+layers that paint emoji, then every error box. A layer's colour, premultiplied
+by alpha, lands on what the buffer holds by its `blend`: `over` gives
+src + dst × (1 − src.a), `add` gives src + dst, and `replace` writes src.
+Alpha blends the same way. A first layer of a text thus puts a glow or a shadow
+under the fill of every glyph, and a later pass reads the whole buffer, its
+layers included, through a channel.
+
+A layer with `emoji` paints the text's colour glyphs itself, and `fragment`
+never runs for them. Each glyph shows its bitmap from the font's largest
+strike, through mipmaps that keep it smooth at text size, placed by `vertex`
+like any other glyph and blended by the layer's `blend`. A shadow layer with
+`"emoji": true` paints a copy of its own. The bitmaps decode into an RGBA atlas
+when the words first hold them.
+
+### Fills
+
+The text's `fill` sets how its layers find the coverage of each pixel,
+`mtsdf` by default or `slug`.
+
+`mtsdf` reads an atlas of the glyphs' MTSDFs, multi-channel signed distance
+fields. Each texel of a glyph's cell holds distances to the outline, 0.5 on
+it and rising inward: red, green and blue each hold the distance to some of
+the outline's edges, so their median keeps the corners sharp, and alpha holds
+the true distance, round at the corners. A layer takes one bilinear sample of
+the cell a pixel, with no mipmaps, and scales it to pixels by the pixels per
+em at the glyph. `glyph_dist()` is the median's distance and `glyph_soft()`
+the alpha's, both in pixels and above 0 inside, and `glyph_cover()` is
+`clamp(glyph_dist() + 0.5, 0.0, 1.0)`.
+
+The first use of a font generates its ASCII and Latin-1 on every core, 0.6 s
+on a Pi Zero 2 W, and caches the atlas in `$XDG_CACHE_HOME/ghee/atlas`, else
 `~/.cache/ghee/atlas`. Any other character follows when words first need it,
 and the text keeps its last words on screen until every glyph of the new
 ones is in. A setup waits for them, and so does a render with `--timestep`.
@@ -448,21 +420,99 @@ text's layers, so a glow fits with no tuning, and 3 texels at least, 0.094 em
 at 32 texels per em. Its 8 bits span that whole reach, so a large pad
 coarsens the edges of every layer of the text.
 
-`slug` computes the coverage in each glyph's quad from the font's curves,
-with Slug's exact method, as `title_cover` does. It reads no atlas, takes no
-`atlas` key, and leaves out `glyph_dist` and `glyph_soft`: a layer that reads
-one fails to compile, and the error names `"fill": "mtsdf"`.
+`slug` reads no atlas. Each pixel of a glyph's quad casts a ray along x and
+one along y through the glyph's curves, and the curves that the rays cross
+give its coverage, exact at any size and under any `glyph_place`: Eric
+Lengyel's [Slug](https://github.com/EricLengyel/Slug) method, the one that
+`_cover` runs. It takes no `atlas` key and gives no distances: a layer that
+reads `glyph_dist` or `glyph_soft` fails to compile, and the error names
+`"fill": "mtsdf"`.
 
-A layer with `emoji` paints the text's colour glyphs itself, after every layer
-of its pass, and `fragment` never runs for them. Each glyph shows its bitmap
-from the font's largest strike, through mipmaps that keep it smooth at text
-size, placed by `vertex` like any other glyph and blended by the layer's
-`blend`. A shadow layer with `"emoji": true` paints a copy of its own. The
-bitmaps decode into an RGBA atlas when the words first hold them.
+Take `mtsdf` for most words, and for any layer that reads a distance: it
+costs one texture read a pixel. Take `slug` when new words must show in the
+frame that they arrive, since the atlas generates a character past Latin-1
+at its first use and the words wait for it, and when the frame has time for a
+loop over the curves at every pixel of every glyph. On a Pi Zero 2 W, seven
+lines of 216 characters at 46 pixels per em, in a 1280x800 frame, draw in
+3.2 ms with `mtsdf` and in 22.7 ms with `slug`, 2.1 ms of each the background
+pass.
 
-On a Pi Zero 2 W, seven lines of 216 characters at 46 pixels per em, in a
-1280x800 frame, draw in 3.2 ms with `mtsdf` and in 22.7 ms with `slug`,
-2.1 ms of each the background pass.
+### Coverage in a shader
+
+Every pass of the scene, filter passes excepted, reads the words of a text
+through `float <name>_cover(vec2 p, float ppem)`: the coverage 0..1 of the
+words at `p`, in em from the block's top left, y down like `v_texCoord`.
+`<name>_size` holds the block's width and height in em. This shader draws
+`title` white on black, centred in the frame at 48 pixels to the em:
+
+```glsl
+void main() {
+  float ppem = 48.0;
+  vec2 px = floor(v_texCoord * resolution) + 0.5;
+  vec2 p = (px - 0.5 * (resolution - title_size * ppem)) / ppem;
+  gl_FragColor = vec4(vec3(title_cover(p, ppem)), 1.0);
+}
+```
+
+`p` sets where the words land and how large, and `ppem` sets the
+antialiasing alone: each edge ramps from 0 to 1 over 1/`ppem` em, one pixel
+when `ppem` holds the pixels that an em spans at `p`. A larger `ppem` draws
+harder edges that alias, and a smaller one blurs them. A shader that warps
+`p` passes the pixels per em after the warp, the smaller of the two where the
+warp stretches the axes unevenly, as the `lens` example does.
+
+`_cover` runs the slug fill's method, so its edges stay exact at any size.
+Each control point moves by at most 1/4094 of its glyph's size, 0.17 px for a
+1 em glyph at 700 pixels per em. A colour glyph, a bitmap with no outline,
+has no coverage in `_cover`, and only a layer paints it.
+
+On VC4 the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre,
+so a shader that needs exact centres, like the one above, samples at
+`floor(v_texCoord * resolution) + 0.5`.
+
+### Fonts and words
+
+A font is a TrueType or OpenType font with outlines, or a colour emoji font
+with PNG bitmaps in a CBDT or sbix table, such as Noto Color Emoji. `font`
+takes a `.ttf` or `.otf` file, which resolves as an asset file does, or the
+name of a font asset, which texts share, or a list that mixes both,
+`"font": ["sans", "NotoColorEmoji.ttf"]`, and each character draws from the
+first font in the list whose cmap holds it, while a character that no font has draws the
+first font's missing-glyph box. A character followed by U+FE0F, the emoji
+variation selector, draws from the first font with a colour glyph for it, so
+❤️ draws in colour even when an earlier font holds a plain heart. Line height
+and baseline come from the first font.
+
+Lines break at each newline, and `align` sets each line `left`, `center` or
+`right` within the block, `left` by default. Every character draws as one
+glyph, spaced by the advances and the pair kerning of its font's `kern`
+table, and two glyphs of two fonts take no kerning. Careful: a font that kerns
+through GPOS alone draws unkerned. Text that needs shaping goes in as a
+host-rasterized 2D input, the way the `marquee` demo draws its words. An emoji
+sequence draws one code point at a time: a flag shows its two
+regional-indicator letters, a sequence joined by U+200D shows each of its
+emoji, and variation selectors and the joiner take no room.
+
+A text problem leaves the scene running: ghee logs it once, and the console
+shows it. A font that fails to load drops out of its text's fonts, and a text
+with no font left draws every character as an error box, diagonal stripes of
+coverage in `_cover`. A character whose glyph has neither an outline nor
+a colour bitmap, a glyph past the curve limit, and in a layer a glyph too large
+for its atlas each draw an error box in their place, and the rest of the words
+draw.
+Words that do not fit leave the last words that did, and a scene whose first
+words do not fit draws none.
+
+Render the bundled text examples to PNGs: `lettering` reads its words
+through `_cover` on a ladder of sizes, `karaoke` sings a line in layers over a
+reflection, with its emoji from Noto Color Emoji when `$GHEE_ASSETS` holds it,
+and `lens` magnifies a page through `_cover`:
+
+```
+ghee render --demo lettering -o lettering.png --frames 1
+ghee render --demo karaoke -o karaoke.png --frames 1
+ghee render --demo lens -o lens.png --frames 1
+```
 
 ## Procedural scenes
 

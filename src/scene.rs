@@ -4391,54 +4391,6 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    // The assembled source, byte for byte against the recorded fixtures.
-
-    fn fixture_scene(name: &str) -> Scene {
-        let (base, filters) = match name.split_once('+') {
-            Some((b, f)) => (b, f.split('+').map(str::to_string).collect::<Vec<_>>()),
-            None => (name, Vec::new()),
-        };
-        let mut sc = Scene::load(&repo(&format!("ghee/examples/{base}.scene.json"))).unwrap();
-        crate::filters::apply_filters(&mut sc, &filters, None).unwrap();
-        sc
-    }
-
-    #[test]
-    fn assembled_glsl_is_byte_exact() {
-        let _g = crate::filters::env_guard(); // The fixtures build against the shipped dither.
-        let dir = repo("tools/fixtures/glsl");
-        let mut names: Vec<String> = fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.ends_with(".glsl"))
-            .collect();
-        names.sort();
-        assert_eq!(names.len(), 26);
-        for f in names {
-            let stem = f.strip_suffix(".glsl").unwrap();
-            let mut parts = stem.rsplitn(3, '-');
-            let tag = parts.next().unwrap();
-            let idx: usize = parts
-                .next()
-                .unwrap()
-                .strip_prefix('p')
-                .unwrap()
-                .parse()
-                .unwrap();
-            let scene = fixture_scene(parts.next().unwrap());
-            let want = fs::read_to_string(format!("{dir}/{f}")).unwrap();
-            let got = scene.passes[idx].glsl(
-                Some(&scene.params),
-                scene.common.as_deref(),
-                &scene.assets,
-                &scene.texts,
-                tag == "lin",
-            );
-            assert_eq!(got, want, "{f}");
-        }
-    }
-
     #[test]
     fn saved_scene_reloads_unchanged() {
         let dir = tmpdir("save");

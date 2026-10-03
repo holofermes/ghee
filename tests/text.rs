@@ -3289,62 +3289,75 @@ fn laid_baseline(laid: &text::Layout) -> f64 {
     g.origin[1]
 }
 
+/// The lines of ghee's own main in a fragment shader: its last `void main()`
+/// to the end.
+fn own_main(fs: &str) -> Vec<&str> {
+    let lines: Vec<&str> = fs.lines().collect();
+    let at = lines
+        .iter()
+        .rposition(|l| l.starts_with("void main()"))
+        .expect("a main");
+    lines[at..].to_vec()
+}
+
+/// A line that reads a texture in an if the compiler cannot drop.
+fn guarded(line: &str) -> bool {
+    let l = line.trim_start();
+    let read = l.contains("texture2D(");
+    read && (l.starts_with("if (gl_FragCoord.x < 0.0) ")
+        || l.starts_with("if (gl_FragCoord.x >= 0.0) "))
+}
+
 #[test]
-fn the_slug_fill_assembles_as_before_the_mtsdf_fill() {
-    // A layer of the slug fill against the shaders pinned in the fixtures,
-    // whose fragment shader leaves out the lines that name the MTSDF fill and
-    // the read that keeps VC4 on one thread.
+fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
+    // VC4 runs a short fragment shader whose last texture read sits outside
+    // an if in two threads, and the switch loses the condition flags. ghee's
+    // main reads every texture in such an if, and its last read follows the
+    // author's main, whatever textures the author's main reads.
+    let reads = "void main() { gl_FragColor = texture2D(logo, glyph_em) * glyph_cover(); }";
     let doc = json!({
         "version": 1,
-        "params": {
-            "sung": {"type": "float", "value": 2.5},
-            "n": {"type": "int", "value": 3},
-            "ink": {"type": "color", "value": [0.9, 0.9, 1.0]},
-        },
-        "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-        "texts": {"t": {"value": "ghee", "font": "sans", "align": "center", "fill": "slug"}},
-        "common": {"code": "float twice(float x) { return 2.0 * x; }"},
-        "passes": [{
-            "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-            "params": {"gain": {"type": "float", "value": 1.0}},
-            "arrays": [{"name": "times", "size": 64}],
-            "layers": [{
-                "text": "t",
-                "pad": 0.05,
-                "vertex": "vec2 glyph_place(vec2 em) {\n    vec2 off = (resolution - t_size * 46.0) * 0.5;\n    return off + em * 46.0;\n}",
-                "fragment": "void main() {\n    float c = glyph_cover() * gain;\n    float k = clamp(sung - glyph_index, 0.0, 1.0);\n    gl_FragColor = vec4(ink * c * twice(k), c);\n}"
-            }]
-        }]
+        "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},
+                   "emoji": {"file": "NotoColorEmoji-Smiles.ttf"},
+                   "logo": {"file": "logo.png"}},
+        "texts": {"curves": {"value": "A\u{1f600}", "font": ["sans", "emoji"], "fill": "slug"},
+                  "field": {"value": "A\u{1f600}", "font": ["sans", "emoji"], "fill": "mtsdf"}},
+        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(0.0); }",
+                    "layers": [{"text": "curves", "px_per_em": 20, "fragment": reads},
+                               {"text": "field", "px_per_em": 20, "fragment": reads}]}]
     });
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let p = &sc.passes[0];
-    let (vs, fs) = p.layer_glsl(0, &sc, false);
-    let (bvs, bfs) = p.layer_box_glsl(0, &sc, false);
-    let fixture = |f: &str| {
-        fs::read_to_string(format!(
-            "{}/tools/fixtures/glsl/{f}",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-        .unwrap()
-    };
-    let named = [
-        "// Distances come from the MTSDF fill's field, and a compile error names it.",
-        "#define glyph_dist glyph_dist_needs_fill_mtsdf",
-        "#define glyph_soft glyph_soft_needs_fill_mtsdf",
-        "    // On VC4 a shader whose last texture read sits outside an if runs in two",
-        "    // threads, whose switch loses the condition flags. A read after the",
-        "    // author's code that never runs, in an if that the compiler cannot drop,",
-        "    // keeps the shader on one thread whatever textures the author's code",
-        "    // reads.",
-        "    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_t_tex, v_texCoord);",
-    ];
-    assert!(named.iter().all(|l| fs.lines().any(|f| f == *l)));
-    let without: Vec<&str> = fs.lines().filter(|l| !named.contains(l)).collect();
-    assert_eq!(vs, fixture("layer-slug.vert"));
-    assert_eq!(without.join("\n"), fixture("layer-slug.frag"));
-    assert_eq!(bvs, fixture("layer-box.vert"));
-    assert_eq!(bfs, fixture("layer-box.frag"));
+    let mut shaders = Vec::new();
+    for k in 0..p.layers.len() {
+        let text = &p.layers[k].text;
+        shaders.push((format!("{text} fill"), p.layer_glsl(k, &sc, false).1));
+        shaders.push((
+            format!("{text} colour"),
+            p.layer_colour_glsl(k, &sc, false).1,
+        ));
+        shaders.push((
+            format!("{text} error boxes"),
+            p.layer_box_glsl(k, &sc, false).1,
+        ));
+    }
+    for (what, fs) in shaders {
+        let main = own_main(&fs);
+        let at: Vec<usize> = (0..main.len())
+            .filter(|i| main[*i].contains("texture2D("))
+            .collect();
+        assert!(at.iter().all(|i| guarded(main[*i])), "{what}: {main:#?}");
+        if !fs.contains("texture2D(") {
+            continue;
+        }
+        let last = *at
+            .last()
+            .unwrap_or_else(|| panic!("{what} reads outside its main"));
+        assert!(
+            !main[last..].iter().any(|l| l.contains("ghee_main()")),
+            "{what}: the author's main reads after the last guarded read"
+        );
+    }
 }
 
 // Colour glyphs

@@ -618,6 +618,10 @@ pub struct Renderer {
     atlas_font: AtlasFont,
     /// The atlas cache directory. None takes the generator's own.
     atlas_cache: Option<PathBuf>,
+    /// A test sets it to compile the array readers that interpolate in the
+    /// shader, on a GL that filters a float texture itself.
+    #[cfg(test)]
+    shader_lerp: bool,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
 }
@@ -664,6 +668,8 @@ impl Renderer {
             pinned: std::cell::Cell::new(false),
             atlas_font: Box::new(|fonts| Arc::new(text::AtlasFont(fonts.to_vec()))),
             atlas_cache: None,
+            #[cfg(test)]
+            shader_lerp: false,
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
             handle: ptr::null_mut(),
         };
@@ -860,6 +866,8 @@ impl Renderer {
         let mut batch_ix: Vec<c_int> = vec![-1; batches.len()];
         let mut layers: Vec<LayerBatches> = Vec::new();
         let hw_linear = self.data_texture_linear();
+        #[cfg(test)]
+        let hw_linear = hw_linear && !self.shader_lerp;
         let total = scene.passes.len();
         // Every pass buffer stores alpha but the output pass's, which stores
         // it only when the readback keeps it or a channel reads it. An RGB
@@ -3533,17 +3541,20 @@ mod tests {
             "vals",
             json!(vals.len()),
         );
-        assert_eq!(r.setup(&sc).unwrap(), "");
-        let fed = vals.clone();
-        let mut provider = |_: &str, _: ArraySize| Feed::Data(fed.clone());
-        let f = r.render(Some(&mut provider)).unwrap().to_vec();
-        for x in 0..W {
-            let got = px(&f, W, x, H / 2, 0) / 255.0;
-            let want = lerp1(&vals, (x as f64 + 0.5) / W as f64);
-            assert!(
-                (got - want).abs() < 4.0 / 255.0,
-                "column {x}: {got} vs {want}"
-            );
+        for shader_lerp in [false, true] {
+            r.shader_lerp = shader_lerp;
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            let fed = vals.clone();
+            let mut provider = |_: &str, _: ArraySize| Feed::Data(fed.clone());
+            let f = r.render(Some(&mut provider)).unwrap().to_vec();
+            for x in 0..W {
+                let got = px(&f, W, x, H / 2, 0) / 255.0;
+                let want = lerp1(&vals, (x as f64 + 0.5) / W as f64);
+                assert!(
+                    (got - want).abs() < 4.0 / 255.0,
+                    "shader_lerp {shader_lerp}, column {x}: {got} vs {want}"
+                );
+            }
         }
     }
 
@@ -3553,11 +3564,13 @@ mod tests {
         // _sample2 reads points mid-texel in one axis, in both, and in neither.
         let (_g, mut r) = gpu();
         let m: Vec<f32> = vec![0.0, 1.0, 0.5, 0.25]; // A 2x2 mask, indexed [y][x].
-        for (uv, want) in [
+        let reads = [
             ((0.5, 0.5), 0.4375),             // The centre reads all four texels.
             ((0.25, 0.5), (0.0 + 0.5) / 2.0), // Column 0, between the rows.
             ((0.5, 0.25), (0.0 + 1.0) / 2.0), // Row 0, between the columns.
-        ] {
+        ];
+        for ((uv, want), shader_lerp) in reads.iter().flat_map(|c| [(*c, false), (*c, true)]) {
+            r.shader_lerp = shader_lerp;
             let code = format!(
                 "void main(){{ gl_FragColor=vec4(vec3(mask_sample2(vec2({}, {}))),1.0); }}",
                 uv.0, uv.1
@@ -3569,12 +3582,40 @@ mod tests {
             let f = r.render(Some(&mut provider)).unwrap().to_vec();
             let got = channel(&f, 0);
             let scaled: Vec<f64> = got.iter().map(|v| v / 255.0).collect();
-            assert!((mean(&scaled) - want).abs() < 4.0 / 255.0, "{uv:?}");
+            assert!(
+                (mean(&scaled) - want).abs() < 4.0 / 255.0,
+                "{uv:?} shader_lerp {shader_lerp}"
+            );
             let (lo, hi) = (
                 got.iter().cloned().fold(f64::MAX, f64::min),
                 got.iter().cloned().fold(f64::MIN, f64::max),
             );
             assert_eq!(lo, hi); // One value covers the whole frame.
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn every_shipped_scene_compiles_and_draws_under_dither_with_either_array_reader() {
+        let _f = crate::filters::env_guard();
+        let (_g, mut r) = gpu();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ghee/examples");
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".scene.json"))
+            .collect();
+        names.sort();
+        assert!(!names.is_empty());
+        for n in names {
+            let mut sc = Scene::load(&format!("{dir}/{n}")).unwrap();
+            crate::filters::apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
+            for shader_lerp in [false, true] {
+                r.shader_lerp = shader_lerp;
+                assert_eq!(r.setup(&sc).unwrap(), "", "{n} shader_lerp {shader_lerp}");
+                r.render(None).unwrap();
+            }
         }
     }
 

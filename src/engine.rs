@@ -152,11 +152,10 @@ impl Blend {
     }
 }
 
-/// Quads that a pass draws after its own quad, with a vertex and a fragment
-/// shader of their own and a blend, for setup_batches() to hand the engine
-/// through ghee_mp_add_batch. A scene layer takes two or three such batches of
-/// its own: the layer, its colour glyphs when it paints them, and its error
-/// boxes.
+/// Quads that a test draws into a pass after the pass's layers, with a
+/// vertex and a fragment shader of their own and a blend, which
+/// setup_batches() hands the engine through ghee_mp_add_batch.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Batch {
     /// The name of the pass that the batch draws into.
@@ -587,7 +586,11 @@ pub struct Renderer {
     /// new scene does not declare, so their asset slots come back.
     scene_assets: std::cell::RefCell<Vec<String>>,
     /// The engine index of each batch passed to setup_batches(), in order.
+    #[cfg(test)]
     batches: Vec<c_int>,
+    /// The batches that setup_batches() hands to setup().
+    #[cfg(test)]
+    test_batches: Vec<Batch>,
     /// The scene's layers, in the order of their passes.
     layers: Vec<LayerBatches>,
     /// The text problem causes logged since the setup, so each logs once.
@@ -658,7 +661,10 @@ impl Renderer {
             mp: Vec::new(),
             feeds: Vec::new(),
             scene_assets: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
             batches: Vec::new(),
+            #[cfg(test)]
+            test_batches: Vec::new(),
             layers: Vec::new(),
             reported: std::cell::RefCell::new(HashSet::new()),
             text_errors: std::cell::RefCell::new(HashMap::new()),
@@ -744,13 +750,8 @@ impl Renderer {
     /// layer's own GLSL sets error_layer too, and error_line counts in that
     /// GLSL.
     pub fn setup(&mut self, scene: &Scene) -> Result<String> {
-        self.setup_batches(scene, &[])
-    }
-
-    /// setup() with batches. Each batch draws into its named pass, after that
-    /// pass's quad and the pass's layers, in the order given. A batch's compile
-    /// error reports its pass.
-    pub(crate) fn setup_batches(&mut self, scene: &Scene, batches: &[Batch]) -> Result<String> {
+        #[cfg(test)]
+        let batches = std::mem::take(&mut self.test_batches);
         self.error = String::new();
         self.error_line = None;
         self.error_pass = None;
@@ -830,6 +831,7 @@ impl Renderer {
                 }
             }
         }
+        #[cfg(test)]
         if let Some((k, l)) = batches
             .iter()
             .enumerate()
@@ -868,6 +870,7 @@ impl Renderer {
             return Ok(self.error.clone());
         }
         let mut mp: Vec<(String, c_int)> = Vec::new();
+        #[cfg(test)]
         let mut batch_ix: Vec<c_int> = vec![-1; batches.len()];
         let mut layers: Vec<LayerBatches> = Vec::new();
         let hw_linear = self.data_texture_linear();
@@ -970,6 +973,37 @@ impl Renderer {
                     name,
                 });
             }
+            // A test's batches draw after the layers of their pass.
+            #[cfg(test)]
+            for (k, l) in batches.iter().enumerate().filter(|(_, l)| l.pass == p.name) {
+                if idx < 0 {
+                    break;
+                }
+                let name = format!("batch {k}");
+                let (cname, vs, fs) = (
+                    self.staged_cstring(&name)?,
+                    self.staged_cstring(&l.vertex)?,
+                    self.staged_cstring(&l.fragment)?,
+                );
+                batch_ix[k] = unsafe {
+                    ffi::ghee_mp_add_batch(
+                        self.handle,
+                        idx,
+                        cname.as_ptr(),
+                        vs.as_ptr(),
+                        fs.as_ptr(),
+                        l.blend.engine(),
+                    )
+                };
+                if batch_ix[k] < 0 {
+                    let err = or_else(self.last_error(), "compile error");
+                    unsafe { ffi::ghee_mp_abort(self.handle) };
+                    self.error = format!("{name}: {err}");
+                    self.error_pass = Some(ErrorPass::Index(i));
+                    crate::report::progress_done();
+                    return Ok(self.error.clone());
+                }
+            }
             // The colour glyphs of each layer come after every layer of the
             // pass, and the error boxes after them, so none hides an error
             // box.
@@ -1036,35 +1070,6 @@ impl Renderer {
                     return Ok(self.error.clone());
                 }
             }
-            for (k, l) in batches.iter().enumerate().filter(|(_, l)| l.pass == p.name) {
-                if idx < 0 {
-                    break;
-                }
-                let name = format!("batch {k}");
-                let (cname, vs, fs) = (
-                    self.staged_cstring(&name)?,
-                    self.staged_cstring(&l.vertex)?,
-                    self.staged_cstring(&l.fragment)?,
-                );
-                batch_ix[k] = unsafe {
-                    ffi::ghee_mp_add_batch(
-                        self.handle,
-                        idx,
-                        cname.as_ptr(),
-                        vs.as_ptr(),
-                        fs.as_ptr(),
-                        l.blend.engine(),
-                    )
-                };
-                if batch_ix[k] < 0 {
-                    let err = or_else(self.last_error(), "compile error");
-                    unsafe { ffi::ghee_mp_abort(self.handle) };
-                    self.error = format!("{name}: {err}");
-                    self.error_pass = Some(ErrorPass::Index(i));
-                    crate::report::progress_done();
-                    return Ok(self.error.clone());
-                }
-            }
             if idx < 0 {
                 let err = or_else(self.last_error(), "compile error");
                 unsafe { ffi::ghee_mp_abort(self.handle) };
@@ -1094,7 +1099,10 @@ impl Renderer {
             return Ok(self.error.clone());
         }
         self.mp = mp;
-        self.batches = batch_ix;
+        #[cfg(test)]
+        {
+            self.batches = batch_ix;
+        }
         self.layers = layers;
         // A new scene logs its text problems afresh.
         self.reported.borrow_mut().clear();
@@ -1248,6 +1256,16 @@ impl Renderer {
         }
         self.feeds = feeds;
         Ok(String::new())
+    }
+
+    /// setup() with batches. Each batch draws into its named pass, after that
+    /// pass's quad and the pass's layers, and ahead of their colour glyphs
+    /// and error boxes, in the order given. A batch's compile error reports
+    /// its pass.
+    #[cfg(test)]
+    pub(crate) fn setup_batches(&mut self, scene: &Scene, batches: &[Batch]) -> Result<String> {
+        self.test_batches = batches.to_vec();
+        self.setup(scene)
     }
 
     /// The quads of batch `batch`, an index into the batches passed to
@@ -2240,7 +2258,10 @@ impl Renderer {
     pub fn reset(&mut self) {
         unsafe { ffi::ghee_mp_reset(self.handle) };
         self.mp = Vec::new();
-        self.batches = Vec::new();
+        #[cfg(test)]
+        {
+            self.batches = Vec::new();
+        }
         self.layers = Vec::new();
         self.feeds = Vec::new();
         self.held.borrow_mut().clear();

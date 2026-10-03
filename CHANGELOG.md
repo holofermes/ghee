@@ -219,6 +219,13 @@
 - Ship type stubs for `ghee.open` and `Handle`, mark the package typed, and
   type the closed string sets of the shim as `Literal`: a param's type, a
   text's align and fill, a layer's blend and an arg's type.
+- Take the scene that an edit is for in `scene=` on `/set`, in `name=` on
+  `POST /scene` and in the body of `/save`, and refuse with 409 an edit for
+  a scene other than the active one, the scene that the last switch asked
+  for, which `/scenes` and `/stats` name as `active`. The console names its
+  scene in every edit, and a page whose edit was refused shows the active
+  scene as it runs, where a page left open on one scene wrote its copy into
+  the scene that the console had switched to.
 
 ## 0.4.0 - 2026-08-06
 

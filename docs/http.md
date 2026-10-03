@@ -30,7 +30,13 @@ loopback, or open it with `--host` only on a network you trust.
 
 ## Change
 
-- `POST /set?pass=&name=&value=`: a live uniform, no recompile.
+The active scene is the one that the last switch asked for. `/set` takes
+the scene that it edits in `scene=`, `POST /scene` in `name=` and `/save` in
+its body, and each answers 409 and changes nothing when that scene is not the
+active one. The console names its scene in each request, so a page left open
+on one scene never writes into the scene that the console switched to.
+
+- `POST /set?scene=&pass=&name=&value=`: a live uniform, no recompile.
   `pass=scene` sets the scene param, and the name of a text sets its words,
   which ghee lays out again. `value` reads as the param's declared type: a number,
   `true` or `false`, comma-separated floats for a color or a vec, or the
@@ -38,8 +44,8 @@ loopback, or open it with `--host` only on a network you trust.
 - `POST /switch?name=`: switch to a named scene. Switching to the active
   name reloads it from disk.
 - `POST /next`, `POST /prev`: step through the scene list.
-- `POST /scene`: full scene JSON in the body, recompiles the active scene
-  as a working copy.
+- `POST /scene?name=`: full scene JSON in the body, recompiles the active
+  scene as a working copy.
 - `POST /save`: `{name, scene}` in the body, writes the scene into
   `<scenes>/modified/`. A JSON scene saves a copy that shadows the
   original and finds its files beside it, a procedural scene saves its

@@ -24,8 +24,8 @@ use serde_json::{Map, Value};
 use tiny_http::{Header, Request, Server, StatusCode};
 
 use crate::console::core::{
-    declared_type, parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers,
-    Query, Response, Scope,
+    declared_type, other_scene, parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult,
+    Headers, Query, Response, Scope,
 };
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
@@ -295,6 +295,10 @@ pub struct Console {
 
     // state
     stat: Mutex<Stat>,
+    /// The active scene: the one that the last switch asked for, which an edit
+    /// must name. A handler sets it and queues the switch under its lock, and
+    /// checks an edit and queues it under the same lock.
+    target: Mutex<Option<String>>,
     /// The document that renders now, under the name it loaded as.
     running: Mutex<Option<(Option<String>, Value)>>,
     /// The files the running scene was built from. Only a load off disk replaces
@@ -357,6 +361,7 @@ impl Console {
                 display: Value::Object(Map::new()),
                 ..Stat::default()
             }),
+            target: Mutex::new(None),
             running: Mutex::new(None),
             sources: Mutex::new(None),
             raw: Mutex::new(Raw::default()),
@@ -428,10 +433,6 @@ impl Console {
             d.insert("frame_ms".to_string(), Value::from(stat.frame_ms));
             d.insert("error".to_string(), Value::from(stat.error.clone()));
             d.insert("text_errors".to_string(), Value::from(stat.texts.clone()));
-            d.insert(
-                "active".to_string(),
-                stat.active.clone().map_or(Value::Null, Value::from),
-            );
             d.insert("display".to_string(), stat.display.clone());
             d.insert(
                 "error_line".to_string(),
@@ -446,6 +447,10 @@ impl Console {
                 stat.error_layer.map_or(Value::Null, ErrorLayer::to_json),
             );
         }
+        d.insert(
+            "active".to_string(),
+            lock(&self.target).clone().map_or(Value::Null, Value::from),
+        );
         let stale = lock(&self.sources).as_mut().is_some_and(Snapshot::stale);
         d.insert(
             "fps".to_string(),
@@ -1722,7 +1727,7 @@ impl ConsoleHost for RenderLoopHost {
     }
 
     fn active_name(&self) -> ConsoleResult<Option<String>> {
-        Ok(lock(&self.console.stat).active.clone())
+        Ok(lock(&self.console.target).clone())
     }
 
     fn scene_def(&self, name: Option<&str>) -> ConsoleResult<Value> {
@@ -1768,8 +1773,21 @@ impl ConsoleHost for RenderLoopHost {
         if !self.console.store.contains(name) {
             return Err(ConsoleError::not_found("no scene"));
         }
+        let mut target = lock(&self.console.target);
+        *target = Some(name.to_string());
         self.console.command(Command::Switch(name.to_string()));
         Ok(name.to_string())
+    }
+
+    /// The edit runs under the lock, so it never calls active_name().
+    fn edit_scene(
+        &self,
+        scene: &str,
+        edit: &mut dyn FnMut() -> ConsoleResult<()>,
+    ) -> ConsoleResult<()> {
+        let target = lock(&self.console.target);
+        other_scene(scene, target.as_deref())?;
+        edit()
     }
 
     fn apply_scene(&self, mut scene: Scene) -> ConsoleResult<()> {
@@ -2270,6 +2288,7 @@ pub fn run(opts: Options) -> Result<()> {
         stat.display =
             serde_json::json!({"w": size.0, "h": size.1, "format": format, "rotation": 0});
     }
+    *lock(&console.target) = Some(names[0].clone());
     let console = Arc::new(console);
     console.reset_stats();
     *lock(&CONSOLE) = Some(Arc::clone(&console));
@@ -2975,6 +2994,41 @@ mod tests {
             Some(Command::Switch(name)) => assert_eq!(name, "one"),
             _ => panic!("no switch was queued"),
         }
+    }
+
+    #[test]
+    fn an_edit_behind_a_switch_names_the_scene_that_the_switch_asked_for() {
+        let d = std::env::temp_dir().join(format!("ghee-console-{}-edit", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        for name in ["one", "two"] {
+            fs::write(d.join(format!("{name}.scene.json")), SCENE).unwrap();
+        }
+        let console = Arc::new(Console::new(SceneStore::new(
+            &d.to_string_lossy(),
+            true,
+            Vec::new(),
+        )));
+        let host = RenderLoopHost::new(Arc::clone(&console));
+        host.switch(Some("one")).unwrap();
+        host.switch(Some("two")).unwrap();
+        // No render thread drains the queue: the switch alone moves the scene
+        // that an edit must name.
+        assert_eq!(host.active_name(), Ok(Some("two".to_string())));
+        assert_eq!(console.stats()["active"], "two");
+        let mut ran = 0;
+        let refused = host.edit_scene("one", &mut || {
+            ran += 1;
+            Ok(())
+        });
+        assert_eq!(refused.map_err(|e| e.status), Err(409));
+        host.edit_scene("two", &mut || {
+            ran += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(ran, 1);
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

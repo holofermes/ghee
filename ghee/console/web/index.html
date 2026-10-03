@@ -66,6 +66,7 @@
     background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn); box-shadow:none}
   button.notice:hover{border-color:var(--warn)}
   .notice.bad{background:var(--err-bg); border-color:var(--err-line); color:var(--hot)}
+  #moved{white-space:normal; text-align:left}
   .nav{display:flex; align-items:center; gap:4px}
   .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
   .actions{display:flex; gap:7px; align-items:center; flex-wrap:wrap; justify-content:flex-end}
@@ -335,6 +336,7 @@
   <span class="spacer"></span>
   <div class="actions">
     <span class="notice bad" id="offline" hidden>server not responding</span>
+    <button class="notice" id="moved" hidden title="dismiss"></button>
     <button class="notice" id="stale" hidden title="the files this scene was built from changed on disk; reloading takes them and discards the edits made here">files changed · reload</button>
     <button class="primary" id="apply">apply</button>
     <button id="save">save</button>
@@ -830,10 +832,12 @@ function mergeNewParams(pristine, work){
     work.common = clone(pristine.common);
 }
 
-async function loadScene(name){
+// `local` takes this browser's working copy of the scene, and posts it.
+async function loadScene(name, local = true){
+  if (local) $("#moved").hidden = true;
   active = name;
   pristine = await jget("/scene?name=" + encodeURIComponent(name));
-  const saved = localStorage.getItem(KEY(name));
+  const saved = local ? localStorage.getItem(KEY(name)) : null;
   work = saved ? JSON.parse(saved) : clone(pristine);
   if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
@@ -1034,7 +1038,7 @@ function buildLayerCtl(){
 // param that ghee declares under the text's name, and its font and align
 // through the posted scene.
 function buildTexts(){
-  const texts = (work && work.texts) || {}, names = Object.keys(texts), box = $("#texts");
+  const texts = (work && work.texts) || {}, names = Object.keys(texts), box = $("#texts"), scene = active;
   $("#textsCard").hidden = !names.length;
   box.innerHTML = "";
   const fonts = $("#fontAssets"); fonts.innerHTML = "";
@@ -1056,7 +1060,7 @@ function buildTexts(){
     const send = () => {
       if (words.value === (t.value || "")) return;
       t.value = words.value;
-      fetch(`/set?pass=scene&name=${encodeURIComponent(name)}&value=${encodeURIComponent(t.value)}`, {method:"POST"});
+      setParam(scene, `pass=scene&name=${encodeURIComponent(name)}&value=${encodeURIComponent(t.value)}`);
       markDirty();
     };
     let timer = null;
@@ -1249,8 +1253,9 @@ function slider(mn, mx, step, value){
 // One control per param, for both scopes. `scope` is the /set pass= target: a
 // pass index for a pass-scoped param, "scene" for a scene-scoped one.
 function buildParamRow(box, pm, name, scope){
+  const scene = active;
   const send = value => {
-    fetch(`/set?pass=${scope}&name=${encodeURIComponent(name)}&value=${encodeURIComponent(value)}`, {method:"POST"});
+    setParam(scene, `pass=${scope}&name=${encodeURIComponent(name)}&value=${encodeURIComponent(value)}`);
     markDirty();
   };
   const row = el("div", "row");
@@ -1485,11 +1490,38 @@ function toggleMute(i){
 // and the refusal shows until a posted scene builds.
 let postErr = "";
 async function postScene(){
-  const r = await fetch("/scene", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(compiledScene())});
+  const name = active;
+  const r = await fetch("/scene?name=" + encodeURIComponent(name), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(compiledScene())});
+  if (r.status === 409){ await sceneMoved(name); return; }
   if (r.ok){ postErr = ""; adoptFilters(await r.json()); }
   else postErr = await r.text();
   showErrors();
 }
+// A live value for scene `scene`, the one this page showed when it built the
+// control.
+function setParam(scene, q){
+  fetch(`/set?scene=${encodeURIComponent(scene)}&${q}`, {method:"POST"})
+    .then(r => { if (r.status === 409) sceneMoved(scene); }).catch(()=>{});
+}
+// The server refuses an edit for scene `from` once the console is on another
+// scene. The page then shows that scene as it runs, and posts nothing, so it
+// overwrites no edit made elsewhere. Its own copy of `from` stays in this
+// browser.
+let moving = false;
+async function sceneMoved(from){
+  if (moving || from !== active) return;
+  moving = true;
+  try {
+    clearTimeout(compileTimer);
+    const s = await jget("/scenes");
+    await loadScene(s.active, false);
+    const n = $("#moved");
+    n.textContent = `the console switched to ${s.active}, so this edit to ${from} was not applied`;
+    n.hidden = false;
+  } finally { moving = false; }
+}
+$("#moved").addEventListener("click", ()=>{ $("#moved").hidden = true; });
+
 // A filter pass is the server's: take its code and channels as the server
 // built them, and any param it added. Values already here stay.
 function adoptFilters(doc){
@@ -1542,12 +1574,14 @@ $("#apply").addEventListener("click", async ()=>{
   }
 });
 $("#save").addEventListener("click", async ()=>{
-  localStorage.setItem(KEY(active), JSON.stringify(work));
+  const name = active;
+  localStorage.setItem(KEY(name), JSON.stringify(work));
   const b = $("#save");
   let label = "saved";
   try {
-    const r = await fetch("/save", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name: active, scene: sceneOnly(work)})});
-    if (!r.ok) { console.warn("/save:", await r.text()); label = "saved locally"; }
+    const r = await fetch("/save", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name, scene: sceneOnly(work)})});
+    if (r.status === 409) { label = "saved locally"; await sceneMoved(name); }
+    else if (!r.ok) { console.warn("/save:", await r.text()); label = "saved locally"; }
   } catch(e) { console.warn("/save unavailable:", e); label = "saved locally"; }
   b.textContent = label; setTimeout(()=>{ b.textContent = "save"; }, 1200); updateStatus();
 });

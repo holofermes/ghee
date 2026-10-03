@@ -18,7 +18,8 @@
 //!
 //! Every refusal lives here, so a new host inherits it. The refusals are the
 //! Origin check on a mutating request, the body cap, POST-only state changes,
-//! the JSON content type and the static root check.
+//! the JSON content type, an edit of a scene other than the active one and the
+//! static root check.
 //!
 //! An API holds no mutable state, so any number of threads may call it at once.
 //! A host states its own thread contract for set_param, switch and apply_scene.
@@ -129,6 +130,13 @@ impl ConsoleError {
     pub fn not_found(msg: impl Into<String>) -> ConsoleError {
         ConsoleError {
             status: 404,
+            message: msg.into(),
+        }
+    }
+
+    pub fn conflict(msg: impl Into<String>) -> ConsoleError {
+        ConsoleError {
+            status: 409,
             message: msg.into(),
         }
     }
@@ -440,6 +448,20 @@ pub trait ConsoleHost {
     /// Recompile the running renderer onto a validated Scene.
     fn apply_scene(&self, scene: Scene) -> ConsoleResult<()>;
 
+    /// Run `edit`, a change to scene `scene` or to its values, while `scene`
+    /// is the active scene, else refuse it as other_scene() does. A host whose
+    /// switch() queues the switch holds one lock over its switch and over this
+    /// check and the edit, so an edit queued behind a switch never lands on
+    /// the scene that the switch brought.
+    fn edit_scene(
+        &self,
+        scene: &str,
+        edit: &mut dyn FnMut() -> ConsoleResult<()>,
+    ) -> ConsoleResult<()> {
+        other_scene(scene, self.active_name()?.as_deref())?;
+        edit()
+    }
+
     fn save_scene(&self, _name: &str, _scene: Scene) -> ConsoleResult<()> {
         Err(ConsoleError::read_only(self.save_refused()))
     }
@@ -563,11 +585,15 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     ) -> ConsoleResult<Response> {
         let h = &self.host;
         if path == "/set" {
-            let (scope, name, value) = match parse_set(h, query)? {
-                Ok(parts) => parts,
-                Err(e) => return Ok(Response::text(400, &format!("bad /set: {e}"))),
+            let mut set = || {
+                let (scope, name, value) = parse_set(h, query)?
+                    .map_err(|e| ConsoleError::bad_request(format!("bad /set: {e}")))?;
+                h.set_param(scope, &name, value)
             };
-            h.set_param(scope, &name, value)?;
+            match query.get("scene") {
+                Some(scene) => h.edit_scene(scene, &mut set)?,
+                None => set()?,
+            }
             return Ok(Response::text(200, "ok"));
         }
         if path == "/next" || path == "/prev" {
@@ -578,13 +604,20 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             return Ok(Response::json(&active_json(active)));
         }
         if path == "/scene" {
-            let mut scene = scene_of(&json_body(headers, body, "/scene")?, "/scene")?;
-            rebuild_filters(&mut scene, None)
-                .map_err(|e| ConsoleError::bad_request(format!("bad /scene: {e}")))?;
-            // The scene as it will run, so the console shows each filter pass
-            // as the filter built it.
-            let doc = scene.to_dict();
-            h.apply_scene(scene)?;
+            let mut doc = Value::Null;
+            let mut apply = || {
+                let mut scene = scene_of(&json_body(headers, body, "/scene")?, "/scene")?;
+                rebuild_filters(&mut scene, None)
+                    .map_err(|e| ConsoleError::bad_request(format!("bad /scene: {e}")))?;
+                // The scene as it will run, so the console shows each filter
+                // pass as the filter built it.
+                doc = scene.to_dict();
+                h.apply_scene(scene)
+            };
+            match query.get("name") {
+                Some(name) => h.edit_scene(name, &mut apply)?,
+                None => apply()?,
+            }
             return Ok(Response::json(&doc));
         }
         if path == "/save" {
@@ -597,8 +630,10 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| ConsoleError::bad_request("bad /save: 'name'"))?
                 .to_string();
-            let scene = scene_of(d.get("scene").unwrap_or(&Value::Null), "/save")?;
-            h.save_scene(&name, scene)?;
+            let mut scene = Some(scene_of(d.get("scene").unwrap_or(&Value::Null), "/save")?);
+            h.edit_scene(&name, &mut || {
+                h.save_scene(&name, scene.take().expect("one save a request"))
+            })?;
             return Ok(Response::text(200, "ok"));
         }
         Ok(Response::text(404, "no"))
@@ -651,6 +686,20 @@ fn undeclared(scope: Scope, name: &str) -> String {
     match scope {
         Scope::Scene => format!("the scene has no param '{name}'"),
         Scope::Pass(i) => format!("pass {i} has no param '{name}'"),
+    }
+}
+
+/// The 409 for an edit of scene `scene` while `active` is the active scene,
+/// as a page left open on one scene meets after the console switched.
+pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
+    match active {
+        Some(a) if a == scene => Ok(()),
+        Some(a) => Err(ConsoleError::conflict(format!(
+            "the console is on scene '{a}', and this edit is for scene '{scene}'"
+        ))),
+        None => Err(ConsoleError::conflict(format!(
+            "the console is on no scene, and this edit is for scene '{scene}'"
+        ))),
     }
 }
 
@@ -1314,6 +1363,65 @@ mod tests {
                 .status,
             405
         );
+    }
+
+    /// Each request that edits a scene, naming scene `name`: a /set, a posted
+    /// scene and a save.
+    fn edits(api: &ConsoleAPI<FakeHost>, name: &str) -> [Response; 3] {
+        let save = serde_json::json!({"name": name, "scene": scene_json()}).to_string();
+        [
+            post(
+                api,
+                "/set",
+                &[
+                    ("scene", name),
+                    ("pass", "scene"),
+                    ("name", "tint"),
+                    ("value", "0.5"),
+                ],
+            ),
+            api.dispatch(
+                "POST",
+                "/scene",
+                &query(&[("name", name)]),
+                &json_ct(),
+                SCENE.as_bytes(),
+            ),
+            api.dispatch("POST", "/save", &Query::new(), &json_ct(), save.as_bytes()),
+        ]
+    }
+
+    #[test]
+    fn an_edit_for_a_scene_other_than_the_active_one_is_409_and_never_reaches_the_host() {
+        let mut api = api();
+        api.host.writable = true;
+        for r in edits(&api, "b") {
+            assert_eq!(
+                (r.status, body(&r).as_str()),
+                (
+                    409,
+                    "the console is on scene 'a', and this edit is for scene 'b'"
+                )
+            );
+        }
+        // A scene def is a read, and none of the three edits lands.
+        assert!(api
+            .host
+            .calls
+            .borrow()
+            .iter()
+            .all(|c| matches!(c, Call::SceneDef(_))));
+        for r in edits(&api, "a") {
+            assert_eq!(r.status, 200, "{}", body(&r));
+        }
+        let landed = api
+            .host
+            .calls
+            .borrow()
+            .iter()
+            .filter(|c| !matches!(c, Call::SceneDef(_)))
+            .count();
+        assert_eq!(landed, 3);
     }
 
     // refusals: precheck decides them, dispatch enforces them again

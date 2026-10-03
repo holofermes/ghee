@@ -1594,106 +1594,78 @@ mod tests {
     #[test]
     fn parse_scope_reads_a_pass_index() {
         assert_eq!(parse_scope("scene"), Ok(Scope::Scene));
-        assert_eq!(parse_scope("3"), Ok(Scope::Pass(3)));
-        assert!(parse_scope("notanint").is_err());
-    }
-
-    #[test]
-    fn bool_parses_both_spellings_and_refuses_anything_else() {
-        for raw in ["true", "TRUE", " true ", "1"] {
+        assert_eq!(parse_scope(" +3 "), Ok(Scope::Pass(3)));
+        for raw in ["notanint", "3.0", ""] {
             assert_eq!(
-                parse_param_value("bool", raw),
-                Ok(Value::from(true)),
-                "{raw}"
+                parse_scope(raw),
+                Err(format!("pass needs 'scene' or a pass index, got '{raw}'"))
             );
         }
-        for raw in ["false", "False", "0"] {
-            assert_eq!(
-                parse_param_value("bool", raw),
-                Ok(Value::from(false)),
-                "{raw}"
-            );
-        }
-        for raw in ["yes", "", "2", "0.0"] {
-            assert!(parse_param_value("bool", raw).is_err(), "{raw}");
-        }
-    }
-
-    // console request helpers
-
-    #[test]
-    fn parse_float() {
-        assert_eq!(parse_param_value("float", "0.5"), Ok(Value::from(0.5)));
-        assert_eq!(parse_param_value("float", "3"), Ok(Value::from(3.0)));
     }
 
     #[test]
-    fn parse_int_rides_the_float_path() {
-        // An int param parses as a float here. The render thread rounds it with
-        // the scene's own param type, so the wire value stays a plain number.
-        assert_eq!(parse_param_value("int", "5"), Ok(Value::from(5.0)));
-    }
-
-    #[test]
-    fn parse_color() {
-        assert_eq!(
-            parse_param_value("color", "1,0,0.5"),
-            Ok(serde_json::json!([1.0, 0.0, 0.5]))
-        );
-    }
-
-    #[test]
-    fn parse_color_wrong_length() {
-        assert!(parse_param_value("color", "1,0").is_err());
-        assert!(parse_param_value("color", "1,0,0,0").is_err());
-    }
-
-    #[test]
-    fn parse_rejects_non_numbers() {
-        assert!(parse_param_value("float", "notanumber").is_err());
-        assert!(parse_param_value("color", "1,x,0").is_err());
-    }
-
-    #[test]
-    fn parse_vec() {
-        assert_eq!(
-            parse_param_value("vec2", "0.1,0.2"),
-            Ok(serde_json::json!([0.1, 0.2]))
-        );
-        assert_eq!(
-            parse_param_value("vec3", "1,0,0.5"),
-            Ok(serde_json::json!([1.0, 0.0, 0.5]))
-        );
-        assert_eq!(
-            parse_param_value("vec4", "0,0.25,0.5,1"),
-            Ok(serde_json::json!([0.0, 0.25, 0.5, 1.0]))
-        );
-    }
-
-    #[test]
-    fn parse_vec_wrong_length() {
-        for (ty, raw) in [
-            ("vec2", "0.1"),
-            ("vec2", "0.1,0.2,0.3"),
-            ("vec3", "0.1,0.2"),
-            ("vec4", "0.1,0.2,0.3"),
+    fn a_set_value_parses_by_its_type() {
+        use serde_json::json;
+        // An int parses as a float here. The render thread rounds it with the
+        // scene's own param type, so the wire value stays a plain number.
+        for (ty, raw, want) in [
+            ("float", "0.5", Ok(json!(0.5))),
+            ("float", "3", Ok(json!(3.0))),
+            ("int", "5", Ok(json!(5.0))),
+            ("float", "notanumber", Err("'notanumber' is not a number")),
+            ("bool", "true", Ok(json!(true))),
+            ("bool", "TRUE", Ok(json!(true))),
+            ("bool", " true ", Ok(json!(true))),
+            ("bool", "1", Ok(json!(true))),
+            ("bool", "false", Ok(json!(false))),
+            ("bool", "False", Ok(json!(false))),
+            ("bool", "0", Ok(json!(false))),
+            ("bool", "yes", Err("bool needs true or false, got 'yes'")),
+            ("bool", "", Err("bool needs true or false, got ''")),
+            ("bool", "2", Err("bool needs true or false, got '2'")),
+            ("bool", "0.0", Err("bool needs true or false, got '0.0'")),
+            ("color", "1,0,0.5", Ok(json!([1.0, 0.0, 0.5]))),
+            (
+                "color",
+                "1,0",
+                Err("color needs three comma-separated floats, got '1,0'"),
+            ),
+            (
+                "color",
+                "1,0,0,0",
+                Err("color needs three comma-separated floats, got '1,0,0,0'"),
+            ),
+            ("color", "1,x,0", Err("'x' is not a number")),
+            ("vec2", "0.1,0.2", Ok(json!([0.1, 0.2]))),
+            ("vec3", "1,0,0.5", Ok(json!([1.0, 0.0, 0.5]))),
+            ("vec4", "0,0.25,0.5,1", Ok(json!([0.0, 0.25, 0.5, 1.0]))),
+            (
+                "vec2",
+                "0.1",
+                Err("vec2 needs 2 comma-separated floats, got '0.1'"),
+            ),
+            (
+                "vec2",
+                "0.1,0.2,0.3",
+                Err("vec2 needs 2 comma-separated floats, got '0.1,0.2,0.3'"),
+            ),
+            (
+                "vec3",
+                "0.1,0.2",
+                Err("vec3 needs 3 comma-separated floats, got '0.1,0.2'"),
+            ),
+            (
+                "vec4",
+                "0.1,0.2,0.3",
+                Err("vec4 needs 4 comma-separated floats, got '0.1,0.2,0.3'"),
+            ),
+            ("vec3", "0.1,x,0.3", Err("'x' is not a number")),
+            ("string", "GHEE", Ok(json!("GHEE"))),
+            ("string", "hello world", Ok(json!("hello world"))),
         ] {
-            assert!(parse_param_value(ty, raw).is_err(), "{ty} {raw}");
+            let got = parse_param_value(ty, raw);
+            assert_eq!(got, want.map_err(str::to_string), "{ty} {raw:?}");
         }
-    }
-
-    #[test]
-    fn parse_vec_rejects_non_numbers() {
-        assert!(parse_param_value("vec3", "0.1,x,0.3").is_err());
-    }
-
-    #[test]
-    fn parse_string() {
-        assert_eq!(parse_param_value("string", "GHEE"), Ok(Value::from("GHEE")));
-        assert_eq!(
-            parse_param_value("string", "hello world"),
-            Ok(Value::from("hello world"))
-        );
     }
 
     #[test]

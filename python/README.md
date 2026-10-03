@@ -132,20 +132,16 @@ or more.
 
 ## Text
 
-`ghee.Text(name, font, value)` draws the words in `value` on the GPU, from
-the outlines of a font, sharp at any size. Every pass except a filter pass
-reads the words with `float <name>_cover(vec2 p, float ppem)`: `p` in em
-from the top left of the block, y down like `v_texCoord`, and `ppem` the
-pixels per em.
-`<name>_size` is the block in em. ghee declares the string param of the
-text's name, and new words from `set_param` or the console lay out again
-with no recompile. A scene that declares a param under a text's name raises
-ValueError.
+`ghee.Text(name, font, value)` holds the words in `value` and the font to
+draw them from, and a pass draws it in one of two ways. A `ghee.Layer` on the
+pass paints the words over its buffer, one quad over each glyph, for words
+placed on screen. The pass's own shader reads `<name>_cover`, the coverage of
+the words at any point, when the words feed its math, a warp or a mask.
+[Text](https://github.com/holofermes/ghee#text) holds the GLSL of both.
 
-    scene = ghee.Scene(
-        texts=[ghee.Text("words", "DejaVuSans.ttf", "hello", align="center")],
-        passes=[ghee.Pass("main", CODE)],
-    )
+ghee declares the string param of the text's name, and new words from
+`set_param` or the console lay out again with no recompile. A scene that
+declares a param under a text's name raises ValueError.
 
 `font` takes a `.ttf` or `.otf` file, which resolves as an asset file does,
 the name of a font `ghee.Asset`, or a list that mixes both. With
@@ -163,9 +159,6 @@ A character whose glyph has neither an outline nor a colour bitmap draws an
 error box in its place, and the rest of the words draw. Words that do not fit
 leave the last words that did. An emoji of a colour font has no coverage, and
 only a layer paints it.
-
-`ghee render --demo lettering -o lettering.png --frames 1` shows the words
-at every size.
 
 ## Layers
 
@@ -227,7 +220,24 @@ wait for the glyphs that its atlas lacks, and the last words stay on screen
 meanwhile. With `timestep` set, `frame()` waits for them.
 
 [Layers](https://github.com/holofermes/ghee#layers) holds the GLSL that
-`fragment` and `vertex` read, and the cost of each fill.
+`fragment` and `vertex` read and how they run, and
+[Fills](https://github.com/holofermes/ghee#fills) what each fill costs.
+`ghee render --demo karaoke` sings a line in layers.
+
+## Coverage in a shader
+
+Every pass except a filter pass reads the words of a text with
+`float <name>_cover(vec2 p, float ppem)`: `p` in em from the top left of the
+block, y down like `v_texCoord`, and `ppem` the pixels per em there, which
+sets the antialiasing. `<name>_size` is the block in em.
+
+    scene = ghee.Scene(
+        texts=[ghee.Text("words", "DejaVuSans.ttf", "hello", align="center")],
+        passes=[ghee.Pass("main", CODE)],
+    )
+
+`ghee render --demo lettering -o lettering.png --frames 1` shows the words
+at every size, and `ghee render --demo lens` bends them under a lens.
 
 ## Direct mode
 

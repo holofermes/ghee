@@ -9,8 +9,9 @@
 //! A [`Generator`] fills the atlas of one font at one px/em and range, and
 //! starts nothing until the caller first requests characters. Its worker
 //! thread then loads the atlas from the disk cache, or generates the
-//! [`preload`] set on every core, and after that generates each other
-//! requested glyph, one at a time. [`Generator::request`] answers at once with
+//! requested glyphs and the [`preload`] set on every core, and packs the
+//! requested glyphs first and the preload into the room left. After that it
+//! generates each other requested glyph, one at a time. [`Generator::request`] answers at once with
 //! the characters still pending, so the caller can hold new words until their
 //! glyphs are ready, [`Generator::update`] hands over the texels that
 //! changed, for the upload, and [`Generator::failure`] says why a glyph took
@@ -206,6 +207,19 @@ struct Shelf {
     used: u32,
 }
 
+/// The error of an insert into an atlas with no room left at MAX_SIZE, which
+/// a caller tells from the others with `downcast_ref`.
+#[derive(Debug)]
+pub struct Full;
+
+impl Display for Full {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the {MAX_SIZE}x{MAX_SIZE} atlas is full")
+    }
+}
+
+impl std::error::Error for Full {}
+
 /// Glyph cells packed on shelves into one RGBA8 texture.
 #[derive(Debug)]
 pub struct Atlas {
@@ -259,7 +273,7 @@ pub struct Rows {
 
 impl Atlas {
     /// Put `field` in a free cell for glyph `gid`, growing the atlas when no
-    /// shelf has room.
+    /// shelf has room. The error is Full when no room is left.
     pub fn insert(&mut self, gid: u32, field: &Field) -> Result<Cell> {
         let (w, h) = (field.width, field.height);
         if w > MAX_SIZE || h > MAX_SIZE {
@@ -277,7 +291,7 @@ impl Atlas {
                 break at;
             }
             if !self.grow() {
-                bail!("the {MAX_SIZE}x{MAX_SIZE} atlas is full");
+                return Err(Full.into());
             }
         };
         let (aw, fw) = (self.width as usize, w as usize * 4);
@@ -604,16 +618,19 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
         } else {
             Vec::new()
         };
-        let mut jobs: Vec<u32> = Vec::new();
+        // The asked glyphs to make, then the preload's.
+        let (mut jobs, mut more): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
         {
             let mut st = lock(&shared.state);
             let mut seen = HashSet::new();
-            for g in asked.iter().map(|a| a.1).chain(extra).flatten() {
+            let own = asked.iter().map(|a| (a.1, true));
+            for (g, is_own) in own.chain(extra.into_iter().map(|g| (g, false))) {
+                let Some(g) = g else { continue };
                 let made = st.atlas.cells.contains_key(&g)
                     || blank.contains(&g)
                     || st.failed.contains_key(&g);
                 if !made && seen.insert(g) {
-                    jobs.push(g);
+                    if is_own { &mut jobs } else { &mut more }.push(g);
                 }
             }
             for &(c, g) in &asked {
@@ -624,22 +641,25 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
         }
         let mut added = false;
         if std::mem::take(&mut preloading) {
-            let mut made = make_all(font, &jobs, config, &shared.stop);
+            let all: Vec<u32> = jobs.iter().chain(&more).copied().collect();
+            let mut made = make_all(font, &all, config, &shared.stop);
             if shared.stop.load(Ordering::Relaxed) {
                 return;
             }
-            // Tallest first packs the shelves tightest.
+            // The asked glyphs take their cells first, so the preload never
+            // crowds them out. Tallest first packs the shelves tightest.
             made.sort_by_key(|(gid, f)| {
                 let h = f
                     .as_ref()
                     .ok()
                     .and_then(|f| f.as_ref())
                     .map_or(0, |f| f.height);
-                (std::cmp::Reverse(h), *gid)
+                (!jobs.contains(gid), std::cmp::Reverse(h), *gid)
             });
             let mut st = lock(&shared.state);
             for (gid, f) in made {
-                added |= settle(&mut st, &asked, gid, f, &mut blank);
+                let preloaded = !jobs.contains(&gid);
+                added |= settle(&mut st, &asked, gid, f, &mut blank, preloaded);
             }
         } else {
             for &gid in &jobs {
@@ -647,7 +667,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
                     return;
                 }
                 let f = make(font, gid, config);
-                added |= settle(&mut lock(&shared.state), &asked, gid, f, &mut blank);
+                added |= settle(&mut lock(&shared.state), &asked, gid, f, &mut blank, false);
             }
         }
         if let (true, Some(path)) = (added, &file) {
@@ -663,13 +683,15 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
 
 /// Put a made glyph in the atlas, its error in the state, or its id in
 /// `blank`, and mark the characters that asked for it ready. True when it
-/// took a cell.
+/// took a cell. A `preloaded` glyph takes only the room left: with none, it
+/// stays out, with no error, until a text asks for it.
 fn settle(
     st: &mut State,
     asked: &[(char, Option<u32>)],
     gid: u32,
     made: Result<Option<Field>>,
     blank: &mut HashSet<u32>,
+    preloaded: bool,
 ) -> bool {
     let took = match made.and_then(|f| f.map(|f| st.atlas.insert(gid, &f)).transpose()) {
         Ok(Some(_)) => true,
@@ -677,6 +699,7 @@ fn settle(
             blank.insert(gid);
             false
         }
+        Err(e) if preloaded && e.is::<Full>() => false,
         Err(e) => {
             st.failed.insert(gid, format!("{e:#}"));
             false
@@ -1467,6 +1490,35 @@ mod tests {
         .unwrap();
         drop(g);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_asked_glyphs_take_their_cells_first_and_the_preload_fills_the_room_left() {
+        let dir = crate::testing::TempDir::new("atlas-own");
+        // A 0.5 x 0.7 em box at 512 px/em takes a 264 x 367 cell, and the
+        // atlas holds 35 of them, far short of the preload.
+        let config = Config {
+            px_em: 512,
+            ..cached(&dir.join("atlas"))
+        };
+        let g = Generator::new(boxes(7), config).unwrap();
+        // Past the preload, and past every preload glyph in id order.
+        let own = "\u{3042}\u{3044}";
+        wait(&g, own);
+        let cells = g.with(|a| a.cells.clone()).unwrap();
+        for ch in own.chars() {
+            assert!(cells.contains_key(&u32::from(ch)), "{ch:?}");
+        }
+        assert!(cells.len() > 30, "{} cells", cells.len());
+        // A preload glyph left out fails once a text asks for it.
+        let left = preload()
+            .find(|c| !cells.contains_key(&u32::from(*c)))
+            .unwrap();
+        assert_eq!(g.failure(u32::from(left)), None);
+        wait(&g, &left.to_string());
+        assert!(g
+            .failure(u32::from(left))
+            .is_some_and(|e| e.ends_with("is full")));
     }
 
     #[test]

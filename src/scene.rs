@@ -1,9 +1,23 @@
-//! A Scene holds options and an ordered list of passes. The host fills each
-//! pass's arrays every frame.
+//! The scene model, and the GLSL that it compiles to.
 //!
-//! The names below are a contract with the ghee engine. ghee_mp_render binds
-//! `time`, `resolution` and `iChannel0..N` by these literal names. The author
-//! names an array or a param, and the engine binds it by that name.
+//! A [`Scene`] holds an ordered list of passes, and the params, assets and
+//! texts that the passes share. A [`Pass`] holds its GLSL, its channels,
+//! arrays and params, and its layers. [`Scene::load`] reads a scene JSON
+//! file: it refuses a key that it does not take, checks every name and size,
+//! and reads the files that the scene names, from the scene's directory or
+//! from `$GHEE_ASSETS`. A [`Reach`] sets whether a file may lie outside that
+//! directory. [`Scene::of`] and [`Pass::of`] build a scene in code.
+//!
+//! [`Pass::glsl`] writes the fragment shader of a pass in three parts: the
+//! preamble, the scene's common block, then the pass's own GLSL. The preamble
+//! declares the uniforms that every pass reads, `time`, `DT`, `frame` and
+//! `resolution`, and `iChannel0` and up, then one uniform for each param
+//! under the param's name, and the samplers and the reader functions of each
+//! array, asset and text. The C engine sets each uniform by looking up that
+//! same name in the compiled program, so a name that the preamble writes is
+//! the contract between the two. A layer's vertex and fragment shaders take
+//! the same preamble, with ghee's code for the text's fill around the
+//! layer's own GLSL.
 
 use std::fs;
 

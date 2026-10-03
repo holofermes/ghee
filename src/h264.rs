@@ -1,12 +1,22 @@
-//! H264 output. Two lanes sit behind one shape. Both emit Annex-B access
-//! units, so the CLI pipe, the serve /h264 endpoint and mpv see identical
-//! bytes.
+//! H264 output: the encoders for the frames that ghee renders, and the framing
+//! that carries their stream to a file, a pipe or the console's player.
 //!
-//! - HardwareH264: zero-copy GL -> linear dmabuf -> V4L2 M2M (bcm2835-codec,
-//!   /dev/video11, Pi 1 through Pi 4). The render lands in the encoder's own
-//!   buffer. Nothing calls glReadPixels.
-//! - SoftwareH264: an ffmpeg/libx264 subprocess takes the readback frames. A
-//!   Pi 5 has no hardware video encoder, and a desktop takes this lane too.
+//! [`make_encoder`] picks one of two encoders, and an [`Encoder`] holds
+//! either:
+//!
+//! - [`HardwareH264`] encodes on the video block of a Pi 1 through a Pi 4,
+//!   through the V4L2 memory-to-memory codec device (bcm2835-codec,
+//!   /dev/video11). The GPU copies the final pass into a buffer that the codec
+//!   reads straight from memory, so no frame passes through the CPU.
+//! - [`SoftwareH264`] pipes the frames read back from the GPU into an ffmpeg
+//!   process that encodes with libx264, on a Pi 5, which has no video encoder,
+//!   and on a desktop.
+//!
+//! Both write Annex-B access units, the NAL units of a frame each behind a
+//! start code, so `--h264`, the console's /h264 endpoint and mpv all take the
+//! same bytes. [`H264Stream`] writes them to a file or a pipe. The console
+//! sends them to a browser in [`wire_frame`]s, after the decoder config of
+//! [`build_config`].
 
 use std::ffi::CStr;
 use std::io::{self, Read, Write};

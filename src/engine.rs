@@ -1,6 +1,28 @@
-//! Renderer drives the C engine over the ghee_* ABI.
+//! The renderer: one GPU context, and the scene that it draws.
 //!
-//! $GHEE_DRI selects the DRI device.
+//! The C engine in ghee/_engine owns everything GL: the EGL context on a DRI
+//! device, each pass's program and its two buffers, the quads that a pass
+//! draws after its own, the textures, the readback and the scanout.
+//! ghee/_engine/engine.h lists its calls, and `crate::ffi` declares them. A
+//! [`Renderer`] holds one engine and drives it from a [`Scene`]:
+//!
+//! - [`Renderer::new`] opens the engine on the device named by `$GHEE_DRI`,
+//!   else on the first render node that works, or on a card for a KMS
+//!   display.
+//! - [`Renderer::setup`] writes each pass's GLSL, compiles the passes and
+//!   their layers beside the running scene, and swaps them in at once. A
+//!   compile error leaves the running scene drawing, and names the line of
+//!   the author's own GLSL, counted without the preamble ghee puts in front.
+//! - [`Renderer::render`] asks a [`Provider`] for the data of each declared
+//!   array, uploads it, draws every pass in order, and reads the frame back.
+//!   [`Renderer::present`] scans it out to the display.
+//!
+//! The Renderer draws the scene's texts too. [`Renderer::set_text`] lays the
+//! words out through `crate::text`, uploads the texture of curves that
+//! `_cover` and the slug fill read, and hands each layer one quad a glyph. A
+//! layer of the MTSDF fill reads its glyphs from an atlas that a
+//! `crate::atlas` generator fills on its own threads, and every render
+//! uploads the glyphs that the atlas gained since the last.
 
 use std::collections::{HashMap, HashSet};
 use std::env;

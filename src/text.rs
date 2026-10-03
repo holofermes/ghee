@@ -11,23 +11,43 @@
 //! pass's own quad, as one quad over each inked glyph. The layer's
 //! `glyph_place`, in its vertex GLSL, maps a point of the block to a pixel of
 //! the pass, and its fragment GLSL colours the pixels of each quad from the
-//! glyph's coverage. The text's fill
-//! gives that coverage: the MTSDF fill takes one bilinear sample of the
-//! glyph's field in an atlas, which `crate::atlas` builds, and the slug fill
-//! computes it from the curves as `<name>_cover` does. A colour glyph, a
-//! bitmap with no outline, draws through the layer's colour batch, which
-//! `crate::colour` describes.
+//! glyph's coverage. The text's fill gives that coverage: the MTSDF fill
+//! takes one bilinear sample of the glyph's field in an atlas, which
+//! `crate::atlas` builds, and the slug fill computes it from the curves as
+//! `<name>_cover` does. A colour glyph, a bitmap with no outline, draws
+//! through the layer's colour batch, which `crate::colour` describes.
 //!
 //! Coverage follows the Slug algorithm by Eric Lengyel
 //! (https://jcgt.org/published/0006/02/02/, https://github.com/EricLengyel/Slug).
-//! A glyph is a set of quadratic Bézier curves, sorted into horizontal and
-//! vertical bands. A pixel casts a ray along x and a ray along y through its
-//! band, and the curves the rays cross give its coverage, antialiased at any
-//! scale.
+//! A glyph is a set of quadratic Bézier curves. A pixel casts a ray along x
+//! and a ray along y, and the curves that a ray crosses count how often the
+//! outline winds around the pixel. A crossing within half a pixel of the
+//! ray's start counts in part, which antialiases the edge at any scale.
 //!
-//! The data rides in one RGBA8 texture read with NEAREST, so a GL without
-//! float or integer textures, the VC4, holds it. A 16-bit value spans two
-//! bytes of a texel, a 24-bit offset three, and a curve two texels.
+//! The curves of a text's words lie in one RGBA8 texture of the text's own,
+//! read with NEAREST, so a GL without float or integer textures, the VC4,
+//! holds them. A 16-bit value spans two bytes of a texel, a 24-bit texel
+//! index three, and a curve two texels. pack() writes three tables into it,
+//! and `<name>_cover(p, ppem)` walks them to find the curves near `p`:
+//!
+//! 1. The grid. Square cells cover the ink of the words, 0.5 em a side,
+//!    halved until no cell lists more than CELL_K glyphs. The cell under `p`
+//!    lists each glyph whose box, grown by INK_MARGIN, reaches into it: the
+//!    texel where the glyph's data starts, and the corner of its box.
+//! 2. The bands. A glyph's data holds its box size, then its bands: the box
+//!    cut into as many as BANDS horizontal strips and as many vertical ones,
+//!    each listing the curves that cross it. A glyph that the words use
+//!    twice stores its data once. The ray along x reads the horizontal band
+//!    that holds `p`, and the ray along y the vertical one.
+//! 3. The curves. A band holds two lists of its curves, the second mirrored,
+//!    one for a ray that runs up its axis and one for a ray that runs down
+//!    it, and a ray runs toward the nearer edge of the box. A list sorts its
+//!    curves by their far end, largest first, so the loop over it stops at
+//!    the first curve wholly behind `p`.
+//!
+//! The coverage at `p` is the largest among the glyphs of its cell. A layer of
+//! the slug fill skips the grid: each of its quads carries the texel where
+//! its glyph's data starts.
 //!
 //! A text problem leaves the scene running. A character whose glyph has no
 //! outline and no colour bitmap, or one past a limit, draws an error box:

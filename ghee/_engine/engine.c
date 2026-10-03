@@ -1,3 +1,19 @@
+// The engine behind engine.h. It opens a GL context on a DRM device through
+// GBM and EGL, and draws a scene of passes with it.
+//
+// Each pass owns a program and two buffers, and draws into one of them while
+// the other holds its frame before. A frame draws the passes in order, then
+// swaps the two buffers of every pass. A channel that reads an earlier pass
+// reads the buffer that it just drew, and a channel that reads the pass
+// itself or a later one reads the frame before. After its full-screen quad a
+// pass draws its batches, the quads of the scene's layers, blended onto its
+// buffer. The last pass holds the frame: ghee_mp_render reads it back, and in
+// display mode ghee_mp_present scans it out to a KMS connector.
+//
+// A scene builds in stages. The passes and the batches compile into a pending
+// scene beside the running one, and ghee_mp_commit swaps them in at once, so a
+// compile error leaves the running scene drawing.
+
 #define EGL_EGLEXT_PROTOTYPES
 #include <EGL/egl.h>
 #include <EGL/eglext.h>

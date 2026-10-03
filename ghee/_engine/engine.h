@@ -1,3 +1,17 @@
+// The C engine's interface: a GLES2 renderer of multipass scenes on a GPU
+// opened through DRM and GBM, with no window system.
+//
+// A GheeScene is one renderer: a GL context, the scene that it draws, and the
+// textures that the scene reads. ghee_create opens one that renders headless,
+// ghee_display_create one that scans its frames out to a KMS display. The
+// ghee_mp_* calls build and draw the scene, mp for multipass: add the passes
+// and their batches, which compile beside the running scene, commit them,
+// hand over the uniforms, arrays and assets, then render a frame at a time.
+// The ghee_encoder_* calls feed the frames to the hardware H264 codec.
+//
+// Every call makes its renderer's GL context current first, so several
+// renderers live in one process, each used from the thread that created it.
+
 #ifndef GHEE_ENGINE_H
 #define GHEE_ENGINE_H
 #include <stdint.h>

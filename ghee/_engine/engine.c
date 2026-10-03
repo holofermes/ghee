@@ -276,13 +276,26 @@ static uint32_t primary_plane(int fd, uint32_t crtc_id);
 static bool plane_scales(GheeScene *g, int width, int height);
 static bool ensure_blit(GheeScene *g);
 
+static void keep_error(GheeScene *g, const char *fmt, va_list ap) {
+    vsnprintf(g->last_error, ERROR_BUFFER_SIZE, fmt, ap);
+    g->last_error[ERROR_BUFFER_SIZE - 1] = '\0';
+}
+
 static void set_error(GheeScene *g, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(g->last_error, ERROR_BUFFER_SIZE, fmt, ap);
+    keep_error(g, fmt, ap);
     va_end(ap);
-    g->last_error[ERROR_BUFFER_SIZE - 1] = '\0';
     fprintf(stderr, "ghee: %s\n", g->last_error);
+}
+
+// A compile or link log goes to the caller unprinted: the caller names the
+// pass and the author's line in it, and reports it once.
+static void set_shader_error(GheeScene *g, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    keep_error(g, fmt, ap);
+    va_end(ap);
 }
 
 // Make this instance's GL context current. Required at the top of every public
@@ -313,7 +326,7 @@ static GLuint create_shader(GheeScene *g, GLenum type, const char *source) {
     if (!ok) {
         char info[ERROR_BUFFER_SIZE];
         glGetShaderInfoLog(shader, ERROR_BUFFER_SIZE, NULL, info);
-        set_error(g, "%s%s", type == GL_VERTEX_SHADER ? "vertex shader: " : "", info);
+        set_shader_error(g, "%s%s", type == GL_VERTEX_SHADER ? "vertex shader: " : "", info);
         glDeleteShader(shader);
         return 0;
     }
@@ -339,7 +352,7 @@ static GLuint create_program(GheeScene *g, const char *vertex_source, const char
     if (!ok) {
         char info[ERROR_BUFFER_SIZE];
         glGetProgramInfoLog(program, ERROR_BUFFER_SIZE, NULL, info);
-        set_error(g, "%s", info);
+        set_shader_error(g, "%s", info);
         glDeleteShader(vs);
         glDeleteShader(fs);
         glDeleteProgram(program);
@@ -2031,7 +2044,10 @@ static bool wait_flip(GheeScene *g) {
 static bool ensure_blit(GheeScene *g) {
     if (g->blit_prog) return true;
     g->blit_prog = create_shader_program(g, blit_fragment_source);
-    if (!g->blit_prog) return false;
+    if (!g->blit_prog) {
+        fprintf(stderr, "ghee: the blit program: %s\n", g->last_error);
+        return false;
+    }
     g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");
     g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
     g->blit_opaque = glGetUniformLocation(g->blit_prog, "opaque");

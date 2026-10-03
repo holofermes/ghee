@@ -1068,8 +1068,15 @@ impl Renderer {
             if idx < 0 {
                 let err = or_else(self.last_error(), "compile error");
                 unsafe { ffi::ghee_mp_abort(self.handle) };
-                self.error = err.clone();
                 let (line, in_common) = user_line(&err, &glsl, &p.code, scene.common.as_deref());
+                let pass = format!("pass '{}'", p.name);
+                self.error = match (line, in_common) {
+                    (Some(n), true) => format!("{pass}, line {n} of the common block: {err}"),
+                    (Some(n), false) => format!("{pass}, line {n} of its code: {err}"),
+                    // The engine's own errors about a pass open with its name.
+                    (None, _) if err.starts_with(&pass) => err,
+                    (None, _) => format!("{pass}: {err}"),
+                };
                 self.error_line = line;
                 self.error_pass = Some(if in_common {
                     ErrorPass::Common
@@ -1077,7 +1084,7 @@ impl Renderer {
                     ErrorPass::Index(i)
                 });
                 crate::report::progress_done();
-                return Ok(err);
+                return Ok(self.error.clone());
             }
             mp.push((p.name.clone(), idx));
         }
@@ -3347,7 +3354,12 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(!r.setup(&sc).unwrap().is_empty());
+        let e = r.setup(&sc).unwrap();
+        // The GL's own log follows, once.
+        let log = e
+            .strip_prefix("pass 'main', line 2 of the common block: ")
+            .unwrap_or_else(|| panic!("{e}"));
+        assert!(log.contains("nope") && !log.contains("pass '"), "{e}");
         assert_eq!(r.error_pass, Some(ErrorPass::Common));
         assert_eq!(r.error_line, Some(2)); // The author wrote nope() on line 2.
     }
@@ -3369,7 +3381,12 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(!r.setup(&sc).unwrap().is_empty());
+        let e = r.setup(&sc).unwrap();
+        // The GL's own log follows, once.
+        let log = e
+            .strip_prefix("pass 'b', line 3 of its code: ")
+            .unwrap_or_else(|| panic!("{e}"));
+        assert!(log.contains("nope") && !log.contains("pass '"), "{e}");
         assert_eq!(r.error_pass, Some(ErrorPass::Index(1)));
         assert_eq!(r.error_line, Some(3));
         // A good compile clears the attribution.

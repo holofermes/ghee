@@ -58,3 +58,19 @@ fn quiet_still_says_what_is_wrong_with_a_text() {
     assert!(err.contains("missing.ttf"), "{err}");
     assert!(dir.join("out.png").is_file());
 }
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_compile_error_prints_once_naming_the_pass_and_the_authors_line() {
+    let dir = Dir::new("compile");
+    let scene = r#"{"passes": [{"name": "main",
+        "code": "void main() {\n  float x = 1.0;\n  gl_FragColor = vec4(nope);\n}"}]}"#;
+    let out = render(&dir.0, scene, &[]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8(out.stderr).unwrap();
+    // Nothing ahead of it, and one copy of the GL's log.
+    let log = err
+        .strip_prefix("compile error: pass 'main', line 3 of its code: ")
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(!log.contains("compile error"), "{err}");
+}

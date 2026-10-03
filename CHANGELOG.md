@@ -9,11 +9,11 @@
   `format` and `components`. Every pass samples an asset as
   `uniform sampler2D <name>` with a `vec2 <name>_size`, nearest unless the
   asset sets `"sampling": "linear"`.
-- Resolve a file that a scene names, a `shader` file, an asset or a font, from
-  the directory of the scene file or of a procedural scene's executable, then
-  from each directory on `$GHEE_ASSETS`. A path may be absolute or leave that
-  directory, except under the console, and the error for a file that no
-  directory holds names `$GHEE_ASSETS`.
+- Resolve an asset or a font that a scene names from the directory of the
+  scene file or of a procedural scene's executable, then from each directory
+  on `$GHEE_ASSETS`. A path may be absolute or leave that directory, except
+  under the console, and the error for a file that no directory holds names
+  `$GHEE_ASSETS`.
 - Read `uniform float frame`, the count of frames rendered, in every pass.
 - Build the mip chain of a pass's buffer after each frame with
   `"mipmaps": true`, and sample it trilinearly through every channel that
@@ -33,75 +33,112 @@
   loaded and ignored it, and name the key, where it sits, and the closest key
   that ghee takes, or the object that takes it: `"fill"` on a layer names the
   layer's text.
-- Refuse `time`, `DT`, `frame`, `resolution`, `v_texCoord` and `iChannel0`
-  and up as the name of a param, an array, an asset or a text, and any name
-  that starts with `ghee_`, which ghee keeps for the names that it writes
-  into a shader. Refuse a scene where two declarations make one GLSL name in
-  a pass, such as a param `title_size` beside a text `title`, and name both.
+- Refuse `time`, `DT`, `frame`, `resolution`, `v_texCoord` and `iChannel0` and
+  up as the name of a param, an array, an asset or a text. Refuse any name
+  that starts with `ghee_`, which ghee keeps for the names that it writes into
+  a shader, or with `glyph_`, which ghee keeps for the names that layers read.
+  Refuse a scene where two declarations make one GLSL name in a pass, such as
+  a param `title_size` beside a text `title`, and name both.
 - Take 16 passes, filter passes included, where the engine took 8, and refuse
   a scene past them with an error of its own. Take any number of assets,
   texts and layers, a channel or an array in each of a pass's 16 texture
   units, and names of any length, where the engine took 16 arrays in a scene
   and 8 channels and 4 arrays in a pass, and cut a name past 63 bytes. The
   README states every cap and its error.
+- Name the pass and the line of the author's GLSL in a compile error, as
+  `pass 'main', line 2 of its code:` or `line 2 of the common block`, ahead of
+  the GL's own message, and print the error once, where it printed the GL's
+  log twice with a line number in the assembled shader.
 
 ### Text
 
 - Draw text on the GPU from a font. A scene declares `texts`, each with its
-  words in `value`, its `font` and its `align`. ghee declares a scene string
-  param under each text's name, which holds the words, and new words from
-  `set_param`, `/set`, the console or a procedural scene lay out again with
-  no recompile. A param declared under a text's name refuses the scene.
+  words in `value`, its `font` and its `align`. A text that names no font
+  draws from the built-in font, DejaVu Sans cut to ASCII, Latin-1 and the
+  common punctuation. ghee declares a scene string param under each text's
+  name, which holds the words, and new words from `set_param`, `/set`, the
+  console or a procedural scene lay out again with no recompile. A param
+  declared under a text's name refuses the scene.
 - Take as a text's `font` a `.ttf` or `.otf` file, the name of a font asset,
   or a list that mixes both, and draw each character from the first font in
   the list whose cmap holds it. A character followed by U+FE0F draws from the
   first font with a colour glyph for it.
-- Paint a text into a pass's buffer with the pass's `layers`, after the
-  pass's own shader and in list order, as one quad over each glyph. A layer's
+- Paint a text into a pass's buffer with the pass's `layers`, after the pass's
+  own shader and in list order, as one quad over each glyph. A layer's
   `vertex` GLSL defines `glyph_place`, which puts each glyph in the pass, and
   its `fragment` GLSL colours the glyph, and both see the pass's preamble and
-  the scene's common block. `font_size` in place of `vertex` centres the
-  words in the pass at that size, and a layer with no `fragment` draws them
-  white. `blend` sets `over`, `add` or `replace` for colour and alpha alike,
-  `pad` reaches past the letters for a glow or an outline, and `name` names
-  the layer in errors and in the console.
+  the scene's common block. A layer with no `fragment` draws the words white.
+  `blend` sets `over`, `add` or `replace` for colour and alpha alike, `pad`
+  reaches past the letters for a glow or an outline, and `name` names the
+  layer in errors and in the console.
+- Place a layer's words with no GLSL. `font_size` sets their pixels per em,
+  and `at` puts their top left at a pixel of the pass, `[x, y]` with y down.
+  A layer with neither fits the words inside the pass, less a margin of 5% of
+  its shorter side, and centres them. A layer with `at` alone fits them right
+  of and below that pixel. The fitted size follows the words, and two layers
+  of one text fit to one size. A layer with `vertex` takes neither key.
 - Let a pass with `layers` leave out its GLSL: it starts each frame
   transparent and holds its layers alone, for a later pass to read through a
   channel.
 - Fill a layer's glyphs from an MTSDF atlas by default, one texture read a
-  pixel, and read the distance to the outline with `glyph_dist()` and
-  `glyph_round_dist()` for outlines, glows and shadows. `"fill": "slug"` on a text
-  computes Slug's exact coverage from the font's curves instead, at any size
-  and with no atlas, and a slug layer that reads a distance fails with an
-  error that names `"fill": "mtsdf"`. `atlas` sets the MTSDF atlas's texels per em, and its
-  field reaches as far as the largest `pad` of the text's layers, so a glow
-  fits with no tuning.
-- Generate a font's atlas on every core at its first use, cache it in
-  `$XDG_CACHE_HOME/ghee/atlas`, and keep a text's last words on screen until
-  every glyph of the new ones is in. A setup and a render with `--timestep`
-  wait for them.
-- Read the coverage of a text's words at any point in any pass shader,
-  filter passes excepted, with `<name>_cover(p, font_size)`, and the block's size
-  in em with `<name>_size`.
+  pixel, read the distance to the outline with `glyph_dist()` and
+  `glyph_round_dist()` for outlines, glows and shadows, and the pixels per em
+  with `glyph_font_size`. `"fill": "slug"` on a text computes Slug's exact
+  coverage from the font's curves instead, at any size and with no atlas, and
+  a slug layer that reads a distance fails with an error that names
+  `"fill": "mtsdf"`. `atlas` sets the MTSDF atlas's texels per em in its
+  `font_size`, and the field reaches as far as the largest `pad` of the
+  text's layers, so a glow fits with no tuning.
+- Fade a padded MTSDF layer to 0 at the edge of its pad, by the distance from
+  the letters, so a glow ends along the letters' shape and never shows its
+  quads as boxes. `fade` on a layer sets the band in em, a quarter of `pad` by
+  default, and 0 turns the fade off. `glyph_fade` reads the factor in
+  `fragment`. A slug layer refuses `fade`, and one that reads `glyph_fade`
+  fails with an error that names `"fill": "mtsdf"`.
+- Generate a font's atlas on every core at its first use: the glyphs of the
+  words first, then a preload of ASCII, Latin-1 and the common punctuation in
+  the room left. Cache the atlas in `$XDG_CACHE_HOME/ghee/atlas`. New words
+  show in their first frame when the atlas holds their glyphs, and otherwise
+  the text keeps its last words on screen until every glyph of the new ones is
+  in. A setup and a render with `--timestep` wait for them. A full atlas
+  draws an error box with an error of its own.
+- Read the coverage of a text's words at any point in any pass shader, filter
+  passes excepted, with `<name>_cover(p, font_size)`, and the block's size in
+  em with `<name>_size`.
 - Paint colour emoji in layers: a glyph with a PNG bitmap in a CBDT or sbix
   table, such as those of Noto Color Emoji, shows its bitmap, mipmapped and
   placed by the layer's `vertex`, and `<name>_cover` reads it as no ink. The
   last layer of a text in its pass paints them, so a shadow or a glow under
   it paints no copy, and `"emoji"` on a layer chooses otherwise.
-- Keep the scene running through a text problem, log it once, and show it in
-  the console and in `/stats` as `text_errors`. A font that fails to load
-  drops out of its text's fonts, a glyph that ghee cannot draw shows an error
-  box in its place, and words that do not fit leave the last words that did.
+- Keep the scene running through a text problem, print it once as an error,
+  which `--quiet` keeps, and show it in the console and in `/stats` as
+  `text_errors`. A font that fails to load drops out of its text's fonts, a
+  glyph that ghee cannot draw shows an error box in its place, and words that
+  do not fit leave the last words that did.
 - Add `--demo lettering`, `--demo karaoke` and `--demo lens`, and rename
   `--demo text`, which rasterizes its words in Pillow, to `--demo marquee`.
+  Add `ghee/examples/nowplaying.py`, an artist and a scrolling title that fit
+  a 128x32 or a 256x64 panel.
 
 ### Python
 
 - Declare an asset with `ghee.Asset`, a text with
-  `ghee.Text(name, font, value)` and its `align`, `fill` and `atlas`, and a
-  layer with `ghee.Layer(text, fragment, vertex)` and its `font_size`,
-  `blend`, `pad`, `emoji` and `name`, in `Scene(assets=..., texts=...)` and
-  `Pass(layers=...)`. `mipmaps=True` on `ghee.Pass` builds its mip chain.
+  `ghee.Text(name, font, value, align, fill, atlas)`, and a layer with
+  `ghee.Layer(text, fragment, vertex, font_size, at, fade, blend, pad, name,
+  emoji)`, in `Scene(assets=..., texts=...)` and `Pass(layers=...)`. A text
+  with no `font` draws from the built-in font, and a keyword left at None
+  leaves its key to ghee's default, `pad` included. `mipmaps=True` on
+  `ghee.Pass` builds its mip chain.
+- Take a scene's and a pass's `params` as a list of `ghee.Param`. Raise
+  ValueError for a dict key that differs from its param's name, where the
+  param went out under the key.
+- Build the scene document in the shim and leave every scene rule to ghee, so
+  a mistake raises ValueError with ghee's own message in `ghee.open`, in a
+  direct run and under `ghee render` alike.
+- Take any buffer or iterable of numbers in `h.feed` and in a direct run's
+  feeds, such as a numpy float64 array, as under ghee: a uint8 buffer goes
+  out as byte / 255, and any other numbers as float32. `h.feed` took only
+  uint8 and float32 buffers.
 - Take a `ghee.Scene` in `ghee.open`, and an `os.PathLike` wherever the
   Python API takes a path.
 - Resolve the files of a Python scene in direct mode beside its script, as
@@ -115,7 +152,8 @@
   for image files or raw frames on stdout, `--display` and
   `--display-opts`, `--serve`, `--port` and `--host` for the console, and
   `--stats` for the timing summary, where `--output` named the display and
-  `--stats` the console's port.
+  `--stats` the console's port. With no `--frames`, `-o` renders one frame,
+  as `ghee render` does, and a display or the console runs until stopped.
 - Hand a direct run's `@ghee.tick` the string params that the console
   changed, as the wire does, through `h.changed_params()`, where the tick's
   `params` stayed empty.
@@ -165,8 +203,8 @@
   filter pass from its filter, keeping its place and param values, and
   appends a filter that the `filters` list names without a pass. An unknown
   filter is a 400, and the reply is the scene as it will run.
-- Parse a `/set` value by the param's declared type, so a string, a bool or
-  a color needs no `type=`, and name a param that the scene lacks.
+- Parse a `/set` value by the param's declared type alone, and ignore
+  `type=`, which overrode it. Name a param that the scene lacks.
 - Answer `/h264` with 503 and the reason when no encoder can start, and end
   a stream whose encoder fails with a type 3 frame that carries the reason.
   Show the preview in MJPEG when the H264 stream decodes no frame in 5 s.

@@ -53,7 +53,7 @@
 // Each pass declares MP_MAX_DATATEX array names at most.
 #define MP_MAX_ARRAYS (MP_MAX_PASSES * MP_MAX_DATATEX)
 #define FLIP_STUCK_MS 5000
-// One buffer on glass, one behind a pending flip, one to draw into.
+// One buffer on the screen, one waiting on a page flip, and one to draw into.
 #define LENT_BUFFERS 3
 #define MP_BATCH_ATTRIBS 4
 // GLES2 guarantees 16-bit indices alone, and a quad takes 4 vertices, so a
@@ -73,7 +73,7 @@ struct mp_use {
 // own cost otherwise.
 struct mp_locs {
     GLint time, dt, frame;
-    GLint vflip;                         // shared-VS y-flip (direct scanout draws)
+    GLint vflip;                         // ghee_vflip of vertex_shader_source, -1 to draw into the window surface
     GLint chan[MP_MAX_CHANNELS];
     GLint data[MP_MAX_DATATEX];
     struct mp_use *uses;                 // in asset order, which is the order of their units
@@ -91,7 +91,8 @@ struct mp_asset {
     bool mip;                            // every mip level, down to 1x1
 };
 
-// One batch of ghee_mp_add_batch, which engine.h describes.
+// One batch of ghee_mp_add_batch: quads that a pass draws into its buffer
+// after its full-screen quad, with a program of their own and a blend.
 struct mp_batch {
     int pass;
     char name[96];                       // the batch's name in an error
@@ -120,9 +121,11 @@ struct GheeScene {
     float dt;                            // how many seconds the last frame took, fed to every pass as DT
     float frame;                         // frames rendered, fed to every pass as `frame`, wrapped to stay float-exact
 
-    // multipass: each pass has its own program + ping-pong buffer, and channels route
-    // between passes (reading a pass's PREVIOUS-frame output). A pass whose channel
-    // points at itself = feedback. Last pass -> screen.
+    // The running scene's passes, in draw order. Each pass has a program and
+    // two buffers, and mp_write names the one that it draws into this frame. A
+    // channel reads the buffer drawn this frame from an earlier pass, and the
+    // other buffer, the frame before, from the pass itself or a later one. The
+    // last pass holds the frame that the readback and the scanout take.
     int mp_count;
     GLuint mp_program[MP_MAX_PASSES];    // 0 = a pass of batches alone, with no quad
     char mp_name[MP_MAX_PASSES][96];     // the pass's name in an error
@@ -156,10 +159,6 @@ struct GheeScene {
     struct mp_batch *mp_batch, *stage_batch;
     GLuint quad_ibo;                     // QUAD_CHUNK quads of indices, shared by every batch
 
-    // data textures: a float array bound as a count x rows sampler (<name>_tex) so a
-    // computed index samples it in one fetch, dodging the VC4 uniform-array unroll cap.
-    // One texture per array NAME, at scene scope: uploaded once a frame and bound
-    // into every pass that declared it.
     // GLES2 promises RGBA readback and nothing else. vc4 reads RGB too, v3d
     // hands back nothing for it, so a panel there would pack an all-black
     // frame. Where RGB is missing the readback takes RGBA into scratch and
@@ -169,6 +168,12 @@ struct GheeScene {
     size_t rgba_scratch_size;
     bool has_float_tex, has_float_linear;   // OES_texture_float[_linear] on this GL
     bool has_npot;                       // mipmaps a texture of any size: GLES 3 or OES_texture_npot
+    // The arrays: each is a texture of count x rows values, sampled as
+    // <name>_tex, which a shader reads at a computed index in one fetch. VC4
+    // caps the size of a uniform array that a shader indexes with a variable,
+    // and a texture has no such cap. The scene holds one texture per array
+    // name, uploaded at most once a frame and bound in every pass that
+    // declares the array.
     int mp_narray;
     GLuint mp_array_tex[MP_MAX_ARRAYS];
     char *mp_array_name[MP_MAX_ARRAYS];           // sampler uniform name
@@ -191,8 +196,8 @@ struct GheeScene {
     uint32_t disp_conn, disp_crtc;
     drmModeModeInfo disp_mode;
     drmModeCrtc *disp_saved;
-    struct gbm_bo *disp_prev;    // buffer of the most recent flip (pending or on glass)
-    struct gbm_bo *disp_shown;   // buffer of the flip before that (still on glass until
+    struct gbm_bo *disp_prev;    // buffer of the most recent flip (pending or on the screen)
+    struct gbm_bo *disp_shown;   // buffer of the flip before that (still on the screen until
                                  // the pending one completes, released after)
     bool disp_first;
     // A display driver that reads each frame with the CPU (ssd130x, gud, udl)
@@ -230,11 +235,12 @@ static double ms_between(struct timespec a, struct timespec b) {
     return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
 }
 
-// ghee_vflip = -1 renders geometry y-mirrored: used when a pass draws straight into
-// the window surface, which Mesa stores top row first. A lent scanout buffer is
-// an FBO and keeps GL's row order, the order the readback outputs carry, so a
-// pass draws into it unmirrored. The fragment's v_texCoord is untouched, so
-// user-shader semantics don't change.
+// The vertex shader of every pass's full-screen quad, and of the present
+// blit. ghee_vflip = -1 mirrors the quad in y, for a pass that draws straight
+// into the window surface, which Mesa stores top row first. A lent scanout
+// buffer is an FBO and keeps GL's row order, the order of the readback, so a
+// pass draws into it unmirrored. v_texCoord stays as it is either way, so a
+// pass's own GLSL reads the same coordinates.
 static const char *vertex_shader_source =
     "#version 100\n"
     "attribute vec4 position;"
@@ -264,7 +270,8 @@ static int say_level = 1;
 void ghee_set_verbosity(int level) { say_level = level; }
 #define SAY(at, ...) do { if (say_level >= (at)) fprintf(stderr, __VA_ARGS__); } while (0)
 
-static bool wait_flip(GheeScene *g);        // both defined with ghee_mp_present below
+// Defined further down, beside the present path that they serve.
+static bool wait_flip(GheeScene *g);
 static uint32_t primary_plane(int fd, uint32_t crtc_id);
 static bool plane_scales(GheeScene *g, int width, int height);
 static bool ensure_blit(GheeScene *g);
@@ -355,14 +362,12 @@ static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_so
 
 // ---- lifecycle ------------------------------------------------------------
 
-// Whether this card renders for itself. A card with no render node of its own
-// (a kernel-driven SPI panel) borrows a GPU through Mesa, and the two
-// then share one buffer: the GPU's own tiling means nothing to the panel's
-// driver, which reads the memory row by row.
-// Mesa's loader prints a burst of "failed to retrieve device information" while
-// it brings a borrowed GPU up, and there is nothing the reader can do about it.
-// ghee reads its own failures back through eglGetError, so the bring-up window
-// keeps stderr to itself. -1 means the window never closed on anything.
+// Send stderr to /dev/null while GBM and EGL come up, and return the saved
+// stderr for unhush_stderr, or -1 when the redirect failed and unhush_stderr
+// has nothing to restore. Mesa's loader prints a burst of "failed to retrieve
+// device information" while it brings up the GPU that a display-only card
+// borrows, which the reader can do nothing about, and ghee reads its own
+// failures back through eglGetError.
 static int hush_stderr(void) {
     const int null = open("/dev/null", O_WRONLY | O_CLOEXEC);
     if (null < 0) return -1;
@@ -729,6 +734,8 @@ static bool lend_buffers(GheeScene *g, char *eb, size_t n) {
         (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
     if (!create_image || !image_target) { snprintf(eb, n, "EGL on the GPU cannot import a dma-buf"); return false; }
     for (int i = 0; i < LENT_BUFFERS; i++) {
+        // The card's driver reads a buffer row by row and knows nothing of the
+        // GPU's tiling, so every lent buffer is linear.
         struct gbm_bo *bo = gbm_bo_create(g->gbm, g->width, g->height, GBM_FORMAT_XRGB8888,
                                           GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
         if (!bo) { snprintf(eb, n, "the GPU cannot allocate a linear %dx%d scanout buffer", g->width, g->height); return false; }
@@ -954,10 +961,8 @@ void ghee_destroy(GheeScene *g) {
 }
 
 // ---- multipass -------------------------------------------------------------
-// A scene as a list of passes. Each pass: own program + ping-pong buffer. Channels
-// route between passes: a forward ref (earlier pass) reads that pass's CURRENT
-// frame (same-frame chaining), a self-reference or later-pass ref reads the
-// PREVIOUS frame (= feedback). Last pass -> screen.
+// Build, commit and draw the passes of a scene, and their batches, arrays and
+// assets.
 
 static void mp_free_buffers(GLuint fbo[2], GLuint tex[2]) {
     glDeleteFramebuffers(2, fbo);
@@ -1086,10 +1091,6 @@ int ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, in
     return idx;
 }
 
-// Give a pending pass its own buffer size (default = renderer W,H). Call after
-// ghee_mp_add_pass, before ghee_mp_commit. The last (output) pass must keep the
-// renderer size (its buffer feeds readback/scanout), and Renderer::setup rejects a
-// sized output pass before it reaches here.
 // Whether pending pass `pass` can hold a mip chain at w x h, with the error
 // set when it cannot.
 static bool mips_fit(GheeScene *g, int pass, int w, int h) {
@@ -1099,6 +1100,10 @@ static bool mips_fit(GheeScene *g, int pass, int w, int h) {
     return false;
 }
 
+// Give a pending pass a buffer size of its own, in place of the renderer's.
+// Call it after ghee_mp_add_pass and before ghee_mp_commit. The last pass
+// keeps the renderer's size, since the readback and the scanout take its
+// buffer, and Renderer::setup refuses a sized last pass before it gets here.
 bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     if (pass < 0 || pass >= g->stage_count || w <= 0 || h <= 0) {
         set_error(g, "pass %d is not pending, or %dx%d is not a positive size", pass, w, h);
@@ -1409,7 +1414,9 @@ bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
     return any;
 }
 
-// Unused: superseded by ghee_mp_set_array.
+// Set the uniform float array `name` of a committed pass. A scene's arrays
+// are textures, filled by ghee_mp_set_array, since VC4 caps the size of a
+// uniform array that a shader indexes with a variable.
 void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count) {
     if (pass < 0 || pass >= g->mp_count || !g->mp_program[pass]) return;
     make_current(g);
@@ -1839,11 +1846,11 @@ static void mp_draw_batches(GheeScene *g, int p, float vflip, float elapsed) {
     }
 }
 
-// Render every pass into its FBO (shared by readback and display present).
-// direct_last: draw the FINAL pass straight into the current backbuffer
-// (display scanout) instead of its FBO texture, y-flipped via the shared VS.
-// Only valid when nothing samples the last pass's output (no channel routes to
-// it and no preview readback this frame) -- the caller guarantees that.
+// Render every pass into its buffer, for the readback and for the present.
+// direct_last draws the last pass straight into the buffer that scans out,
+// in place of its own buffer, mirrored by ghee_vflip when that buffer is the
+// window surface. The caller sets it only when nothing reads the last pass
+// this frame, neither a channel nor a preview.
 static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     // wrap frame at a power of two
     g->frame += 1.0f;
@@ -2019,7 +2026,7 @@ static bool ensure_blit(GheeScene *g) {
     g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");
     g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
     g->blit_opaque = glGetUniformLocation(g->blit_prog, "opaque");
-    glUseProgram(g->blit_prog);   // shared VS: neutral vflip (blit flips in the fragment)
+    glUseProgram(g->blit_prog);   // ghee_vflip stays 1: the blit mirrors with flipY in its fragment shader
     const GLint bvf = glGetUniformLocation(g->blit_prog, "ghee_vflip");
     if (bvf >= 0) glUniform1f(bvf, 1.0f);
     return true;
@@ -2084,15 +2091,6 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     read_pixels(g, pw, ph, g->components, buffer_rgb);
 }
 
-// Render + scan the final buffer straight out to the connector. If buffer_rgb
-// is non-NULL, also read the frame back (for a console MJPEG mirror).
-//
-// Two throughput choices matter on VC4-class memory:
-//  * direct scanout: when nothing samples the last pass (no channel routes to
-//    it, no preview this frame), it draws straight into the backbuffer,
-//    skipping a full-res texture store + blit (2/3 of the frame's traffic).
-//  * pipelined flip: the flip is submitted and reaped on the NEXT present, so
-//    feed/render overlap scanout instead of serializing with the vblank.
 // Blank the display, or light it again. Blanking stops the CRTC driving the
 // connector, which runs the kernel driver's own disable path: a panel turns
 // its display off and drops its backlight. After a relight, the next present
@@ -2123,6 +2121,17 @@ int ghee_display_blank(GheeScene *g, int blank) {
 
 int ghee_display_blanked(GheeScene *g) { return g && g->disp_blanked; }
 
+// Render the passes and scan the last one out to the connector. A non-NULL
+// buffer_rgb also reads the frame back at pw x ph, for the console's preview.
+//
+// Two choices keep the memory traffic down on a VC4:
+//  * When nothing reads the last pass this frame, neither a channel nor a
+//    preview, the last pass draws straight into the buffer that scans out.
+//    That skips storing a full-size texture and copying it over, two thirds
+//    of the frame's traffic.
+//  * The page flip goes in now, and the next present collects its
+//    completion, so the next frame draws while this one scans out, instead
+//    of waiting for the vertical blank.
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (!g->display_mode || g->disp_blanked) return;
     if (g->mp_count <= 0) { set_error(g, "present: the scene has no passes"); return; }
@@ -2190,7 +2199,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, fb, 0, 0, &g->disp_conn, 1, &g->disp_mode))
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));
         g->disp_first = false;
-        g->disp_prev = bo;               // on glass now (SetCrtc is immediate)
+        g->disp_prev = bo;               // on the screen now (SetCrtc is immediate)
     } else if (!wait_flip(g)) {
         release_bo(g, bo);
     } else if (!drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL)) {
@@ -2199,7 +2208,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         g->disp_prev = bo;
         g->flip_pending = true;
         g->flip_failed = false;
-    } else {                             // a refused flip leaves disp_prev on glass
+    } else {                             // a refused flip leaves disp_prev on the screen
         if (!g->flip_failed) {
             g->flip_failed = true;
             set_error(g, "drmModePageFlip failed: %s%s", strerror(errno),

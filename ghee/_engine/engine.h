@@ -87,13 +87,17 @@ int  ghee_mp_commit(GheeScene *g);   // -> pass count, -1 = nothing pending
 void ghee_mp_abort(GheeScene *g);
 bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);
 bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param);
-// Unused: superseded by ghee_mp_set_array (uniform arrays hit the VC4 size cap).
+// Set the uniform float array `name` of a committed pass. ghee binds no
+// uniform array of its own: VC4 caps the size of a uniform array that a
+// shader indexes with a variable, so a scene's arrays are textures, filled by
+// ghee_mp_set_array.
 void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count);
-// Data bound as a count x rows luminance texture sampler (<name>_tex): rows=1 is
-// the 1xN array case (computed-coord fetch, no VC4 uniform-array cap), rows>1 is
-// a 2D input sampled with normalized uv. One texture per NAME: declare it
-// on every pass that reads it, upload it once a frame.
-// -> array index, -1 = refused.
+// An array: a luminance texture of count x rows values, sampled as
+// <name>_tex. With rows = 1 a shader reads it at a computed index, and with
+// more rows it samples it as a 2D input at a normalized uv. The scene holds one
+// texture per name: declare it on every pass that reads it, and upload it at
+// most once a frame. Returns the array's index, or -1 with ghee_last_error set
+// on refusal.
 int  ghee_mp_declare_array(GheeScene *g, int pass, const char *name);
 void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int count, int rows);
 // The same upload from bytes, where the value is data[i] / 255. An 8-bit

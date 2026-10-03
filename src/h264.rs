@@ -56,9 +56,11 @@ pub struct ColorSpace {
     pub full_range: bool,
 }
 
-// The VPU converts with a fixed BT.601 full-range matrix and writes no VUI. An
-// unhinted browser then guesses BT.709 limited. x264 tags the software lane
-// BT.601 limited.
+// The colour space that the console names to the browser's decoder for each
+// encoder. The Pi's video block converts RGB to YUV with a fixed BT.601
+// full-range matrix and writes no colour description into the stream, and a
+// browser with no hint guesses BT.709 limited range. x264 tags its stream
+// BT.601 limited range.
 pub const HW_COLOR: ColorSpace = ColorSpace {
     primaries: "bt709",
     transfer: "iec61966-2-1",
@@ -80,9 +82,11 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .map(|i| i + from)
 }
 
-/// Split an Annex-B access unit into raw NAL units (no start codes). The
-/// leading 00 of a 4-byte start code lands on the previous NAL's tail. The
-/// zero strip drops it, the same as trailing_zero_8bits padding.
+/// Split an Annex-B access unit into raw NAL units, without their start
+/// codes. The split looks for the 3-byte start code 00 00 01, so the first 00
+/// of a 4-byte start code lands at the end of the NAL unit before it. Each
+/// NAL unit drops the zero bytes at its end, which removes that 00 and any
+/// trailing_zero_8bits padding alike.
 pub fn split_annexb(au: &[u8]) -> Vec<&[u8]> {
     let mut nals = Vec::new();
     let mut i = find(au, START_CODE, 0);
@@ -674,7 +678,7 @@ impl Output for H264Stream {
     }
 
     fn wants(&self, _frame: u64) -> bool {
-        !self.hw // hardware samples the GPU in mirror()
+        !self.hw // the hardware encoder takes no readback: mirror() encodes from the GPU
     }
 
     fn write(&mut self, frame: Frame<'_>) -> Result<()> {

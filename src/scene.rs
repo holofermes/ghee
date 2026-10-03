@@ -246,8 +246,9 @@ pub(crate) fn keys_on<'a>(takes: &[&str], of: &[&'a str], on: &str) -> Vec<(&'a 
         .collect()
 }
 
-/// The error strings quote a scene back in this form: `None`, `True`,
-/// `False`, a quoted string, a shortest round-trip float.
+/// A JSON value as Python's repr() writes it: `None`, `True`, `False`, a
+/// quoted string, a shortest round-trip float. The errors quote a scene's
+/// values back in this form.
 pub(crate) fn py_repr(v: &Value) -> String {
     match v {
         Value::Null => "None".to_string(),
@@ -270,7 +271,8 @@ pub(crate) fn py_repr(v: &Value) -> String {
     }
 }
 
-/// The same form. A plain string stays unquoted.
+/// A JSON value as Python's str() writes it: as py_repr() does, but a string
+/// stays unquoted.
 pub(crate) fn py_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -303,8 +305,9 @@ fn py_str_repr(s: &str) -> String {
     out
 }
 
-/// A float in that form: the shortest round-trip. A decimal exponent in -4..15
-/// prints fixed. Any other prints with an exponent of two digits or more.
+/// A float as Python's repr() writes it: the shortest round-trip. A decimal
+/// exponent in -4..15 prints fixed. Any other prints with an exponent of two
+/// digits or more.
 fn py_float(f: f64) -> String {
     if f.is_nan() {
         return "nan".to_string();

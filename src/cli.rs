@@ -718,11 +718,11 @@ fn sink_list<'a>(
 /// stale frame.
 static SIGNALLED: AtomicI32 = AtomicI32::new(0);
 
-// Linux signal numbers. The handler is a plain function pointer, so the
-// install needs neither SIG_DFL nor SIG_IGN.
 /// The render size with nothing to take one from: no display, no --size.
 const DEFAULT_SIZE: (i32, i32) = (320, 240);
 
+// Linux signal numbers. The handler is a plain function pointer, so the
+// install needs neither SIG_DFL nor SIG_IGN.
 const SIGINT: c_int = 2;
 const SIGTERM: c_int = 15;
 

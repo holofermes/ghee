@@ -267,9 +267,10 @@ pub trait Pacer {
 
 /// Hooks a scene into the render loop. Every method is optional.
 pub trait SceneController {
-    /// Once an iteration, before the skip decision and before update(). A
-    /// process reads its messages here and takes this tick. An error ends the
-    /// frame, so a dead process reports it here.
+    /// Once an iteration, before the skip decision and before update(). The
+    /// controller of a procedural scene reads the messages of the scene's
+    /// process here and sends it this tick. An error ends the frame, so a
+    /// process that died reports it here.
     fn tick(&mut self, _frame: u64, _t: f64, _dt: f64) -> Result<()> {
         Ok(())
     }

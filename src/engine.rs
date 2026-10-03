@@ -45,8 +45,8 @@ use crate::ffi;
 use crate::scene::{ArraySize, Layer, ParamValue, Pass, Scene};
 use crate::text::{self, Fault, Fill, Layout, Text};
 
-/// The passes that the engine holds, its MP_MAX_PASSES, filter passes
-/// included.
+/// The passes that the engine holds, filter passes included. engine.c holds
+/// the same number as MP_MAX_PASSES.
 const MAX_PASSES: usize = 16;
 
 /// error_pass for a compile error in the scene's common block.
@@ -110,8 +110,9 @@ impl ErrorLayer {
 /// that starts as bytes reaches the texture without a float detour.
 /// Unchanged states that the texture already holds this array. The engine then
 /// skips the upload. The engine never caches or compares data.
-/// setup() rebuilds a scene with empty textures. A controller pushes data again
-/// after every setup().
+/// setup() rebuilds a scene with empty textures, so a provider sends its data
+/// again at the first render after every setup(): Unchanged there leaves the
+/// texture empty.
 pub enum Feed {
     Data(Vec<f32>),
     DataU8(Vec<u8>),
@@ -151,9 +152,11 @@ impl Blend {
     }
 }
 
-/// A batch for ghee_mp_add_batch, as engine.h describes it, that a caller
-/// hands setup_batches(). A scene layer takes two or three engine batches of its
-/// own: the layer, its colour glyphs when it paints them, and its error boxes.
+/// Quads that a pass draws after its own quad, with a vertex and a fragment
+/// shader of their own and a blend, for setup_batches() to hand the engine
+/// through ghee_mp_add_batch. A scene layer takes two or three such batches of
+/// its own: the layer, its colour glyphs when it paints them, and its error
+/// boxes.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Batch {
     /// The name of the pass that the batch draws into.
@@ -222,8 +225,9 @@ struct TextErrors {
 
 /// The (width, rows) of one array upload, and its data.
 ///
-/// A short 1xN feed uploads the values it holds, and a longer one is cut. A
-/// short mask zero-pads to the full shape, because the rows must line up.
+/// A 1xN array uploads as many values as the feed holds, N at most. A 2D
+/// array whose feed falls short pads with zeros to w x h, so each row starts
+/// where the shader reads it.
 fn shape<T: Copy + Default>(size: ArraySize, data: Vec<T>) -> (c_int, c_int, Vec<T>) {
     match size {
         ArraySize::Linear(n) => (data.len().min(n as usize) as c_int, 1, data),
@@ -489,8 +493,10 @@ fn layer_error(
             "a void main()",
         ),
     };
-    // A slug layer declares no distances, and its compile error names the
-    // stand-in for the one that the fragment GLSL reads.
+    // A slug layer has no distances: its glyph_dist and glyph_soft #define
+    // to undeclared names, such as glyph_dist_needs_fill_mtsdf, so the GL's
+    // compile error names one of those. This error names the fill in its
+    // place.
     let slug = text::SLUG_UNDECLARED
         .iter()
         .find(|(_, s)| part == LayerPart::Fragment && log.contains(s));

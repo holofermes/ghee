@@ -88,6 +88,8 @@ fn render_size() -> Option<String> {
     RENDER_SIZE.read().unwrap().map(|(w, h)| format!("{w}x{h}"))
 }
 
+// The kind of a message from the scene process, its first byte, numbered as
+// docs/procedural.md lists them: kind 5 is END_TICK.
 const SET_ARRAY: u8 = 0;
 const SET_PARAM: u8 = 1;
 const CLEAN: u8 = 2;

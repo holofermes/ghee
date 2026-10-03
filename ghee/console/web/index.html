@@ -463,9 +463,17 @@ function highlight(src){
   return out + esc(src.slice(last)) + "\n";
 }
 // A GLSL editor: a transparent textarea over its highlighted copy, and a bar
-// that marks the error line.
+// that marks the error line. A long line wraps over several rows, so the bar
+// takes its place and its height from a hidden copy of the lines, laid out
+// at the editor's width.
 function editor(box){
   const ta = box.querySelector("textarea"), hl = box.querySelector("pre"), bar = box.querySelector(".errmark");
+  const rows = el("pre");
+  rows.setAttribute("aria-hidden", "true");
+  rows.style.cssText = "position:absolute; left:0; right:0; top:0; padding-top:0; padding-bottom:0; visibility:hidden";
+  box.appendChild(rows);
+  // the height of `text` in the editor, a last empty line included
+  const tall = text => { rows.textContent = text + "\u200b"; return rows.offsetHeight; };
   const ed = {
     box, ta, line: 0,
     sync(){ hl.innerHTML = highlight(ta.value); ed.scroll(); },
@@ -473,9 +481,10 @@ function editor(box){
     mark(line){
       ed.line = line;
       if (!line || line < 1){ bar.style.display = "none"; return; }
-      const cs = getComputedStyle(ta), lh = parseFloat(cs.lineHeight), pad = parseFloat(cs.paddingTop);
-      bar.style.height = lh + "px";
-      bar.style.top = (pad + (line - 1) * lh - ta.scrollTop) + "px";
+      const lines = ta.value.split("\n"), pad = parseFloat(getComputedStyle(ta).paddingTop);
+      const above = line > 1 ? tall(lines.slice(0, line - 1).join("\n")) : 0;
+      bar.style.height = tall(lines[line - 1] || "") + "px";
+      bar.style.top = (pad + above - ta.scrollTop) + "px";
       bar.style.display = "block";
     },
   };

@@ -226,6 +226,9 @@
   scene in every edit, and a page whose edit was refused shows the active
   scene as it runs, where a page left open on one scene wrote its copy into
   the scene that the console had switched to.
+- Mark a compile error in a console editor on the line that the error
+  names when longer lines above it wrap, where the mark counted one row a
+  line and sat too high on a phone.
 
 ## 0.4.0 - 2026-08-06
 

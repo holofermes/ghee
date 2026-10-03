@@ -42,6 +42,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from typing import SupportsFloat
+
     from typing_extensions import Self
 
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
@@ -670,7 +673,11 @@ def tick(fn):
     return fn
 
 
-def set_param(name: str, value, pass_: str | None = None) -> None:
+def set_param(
+    name: str,
+    value: SupportsFloat | str | Iterable[SupportsFloat],
+    pass_: str | None = None,
+) -> None:
     """Set a live param for this tick.
 
     A float takes one number, a color takes three, and a vecN takes N.

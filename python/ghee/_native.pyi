@@ -1,8 +1,8 @@
 """The renderer that ghee.open opens, the native half of ghee-render."""
 
 import os
-from collections.abc import Iterable, Sequence
-from typing import Any, Literal, TypeAlias, TypedDict
+from collections.abc import Iterable
+from typing import Any, Literal, SupportsFloat, TypeAlias, TypedDict
 
 from typing_extensions import Buffer, Self
 
@@ -30,7 +30,7 @@ class Handle:
     def set_param(
         self,
         name: str,
-        value: float | bool | str | Sequence[float],
+        value: SupportsFloat | str | Iterable[SupportsFloat],
         pass_: str | None = None,
     ) -> None: ...
     def feed(self, name: str, data: Buffer | Iterable[float]) -> None: ...

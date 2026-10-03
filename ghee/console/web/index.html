@@ -386,7 +386,7 @@
 
     <div class="panel card" id="textsCard" hidden>
       <h3>texts</h3>
-      <div class="muted lead">A scene declares each text under "texts": its words in "value", a "font" and an "align". A layer paints the words over a pass, and a pass's GLSL reads them through &lt;name&gt;_cover(p, ppem).</div>
+      <div class="muted lead">A scene declares each text under "texts": its words in "value", a "font" and an "align". A layer paints the words over a pass, and a pass's GLSL reads them through &lt;name&gt;_cover(p, font_size).</div>
       <div id="texts"></div>
       <datalist id="fontAssets"></datalist>
     </div>
@@ -995,7 +995,7 @@ function addLayer(i){
   const p = work.passes[i], t = Object.keys(work.texts)[0];
   (p.layers = p.layers || []).push({
     text: t,
-    vertex: `vec2 glyph_place(vec2 em) {\n  float ppem = 32.0;\n  return 0.5 * (resolution - ${t}_size * ppem) + em * ppem;\n}\n`,
+    vertex: `vec2 glyph_place(vec2 em) {\n  float font_size = 32.0;\n  return 0.5 * (resolution - ${t}_size * font_size) + em * font_size;\n}\n`,
     fragment: "void main() {\n  float c = glyph_cover();\n  gl_FragColor = vec4(vec3(c), c);\n}\n",
   });
   p.layersEdited = true;
@@ -1618,10 +1618,10 @@ function adoptFilters(doc){
 // shader
 function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
 // A layer with no fragment draws white letters. Vertex GLSL takes the place of
-// px_per_em, the size of the words centred in the pass.
+// font_size, the size of the words centred in the pass.
 function setFragment(d, code){ if (code.trim()) d.fragment = code; else delete d.fragment; }
 function setVertex(d, code){
-  if (code.trim()){ d.vertex = code; delete d.px_per_em; } else delete d.vertex;
+  if (code.trim()){ d.vertex = code; delete d.font_size; } else delete d.vertex;
 }
 // hand-edited code and layers: merge keeps them as they are
 CODE.ta.addEventListener("input", ()=>{

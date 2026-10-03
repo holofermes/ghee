@@ -493,9 +493,9 @@ fn layer_error(
             "a void main()",
         ),
     };
-    // A slug layer has no distances: its glyph_dist and glyph_soft #define
-    // to undeclared names, such as glyph_dist_needs_fill_mtsdf, so the GL's
-    // compile error names one of those. This error names the fill in its
+    // A slug layer has no distances: its glyph_dist and glyph_round_dist
+    // #define to undeclared names, such as glyph_dist_needs_fill_mtsdf, so the
+    // GL's compile error names one of those. This error names the fill in its
     // place.
     let slug = text::SLUG_UNDECLARED
         .iter()
@@ -1788,8 +1788,9 @@ impl Renderer {
                 continue;
             }
             let range = scene.atlas_range(&t.name);
-            let same =
-                |s: &AtlasSlot| s.px_em == t.px_per_em && s.range == range && s.fonts == *fonts;
+            let same = |s: &AtlasSlot| {
+                s.px_em == t.atlas_font_size && s.range == range && s.fonts == *fonts
+            };
             let i = match slots.iter().position(same) {
                 Some(i) => i,
                 None => {
@@ -1801,12 +1802,12 @@ impl Renderer {
                         }
                         None => AtlasSlot {
                             fonts: fonts.clone(),
-                            px_em: t.px_per_em,
+                            px_em: t.atlas_font_size,
                             range,
                             gen: atlas::Generator::new(
                                 (self.atlas_font)(fonts),
                                 atlas::Config {
-                                    px_em: t.px_per_em,
+                                    px_em: t.atlas_font_size,
                                     range,
                                     cache: self.atlas_cache.clone(),
                                 },
@@ -2830,7 +2831,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_text_lays_out_its_curves_only_for_a_program_that_reads_them() {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
-        let layer = |fill: &str, fragment: &str| json!({"fill": fill, "layers": [{"text": "t", "px_per_em": 20, "fragment": fragment}]});
+        let layer = |fill: &str, fragment: &str| json!({"fill": fill, "layers": [{"text": "t", "font_size": 20, "fragment": fragment}]});
         let white = "void main(){ gl_FragColor = vec4(glyph_cover()); }";
         let covered = "void main(){ gl_FragColor = vec4(t_cover(glyph_em, 20.0)); }";
         let pass_reads = "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }";

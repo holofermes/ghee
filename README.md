@@ -291,7 +291,7 @@ A scene draws text on the GPU from a font. A text holds its words in
   "passes": [{
     "name": "main",
     "code": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-    "layers": [{ "text": "title", "px_per_em": 48 }]
+    "layers": [{ "text": "title", "font_size": 48 }]
   }]
 }
 ```
@@ -332,14 +332,14 @@ pass:
 - `vertex` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
   block, in em from its top left with y down, to the pixel of the pass where
   it lands, y down like `v_texCoord * resolution`.
-- `px_per_em` takes the place of `vertex`: the block centred in the pass at
+- `font_size` takes the place of `vertex`: the block centred in the pass at
   that many pixels per em. A layer takes one of the two.
 - `fragment` holds a `void main()` that writes colour premultiplied by alpha.
   Without it, the letters draw white.
 - `blend` is `over` by default, `add` or `replace`.
 - `pad` is how far past the letters the layer reaches, in em, for a glow or an
   outline, 0 by default. Each quad grows that far past the ink, and
-  `glyph_dist` and `glyph_soft` reach at least that far.
+  `glyph_dist` and `glyph_round_dist` reach at least that far.
 - `emoji` sets whether the layer paints the text's colour glyphs. By default
   the last layer of the text in its pass paints them, and the layers under it,
   a glow or a shadow, paint none.
@@ -347,15 +347,15 @@ pass:
 `fragment` reads:
 
 ```glsl
-float glyph_cover();   // coverage 0..1
-float glyph_dist();    // signed distance to the outline in pixels, > 0 inside
-float glyph_soft();    // true signed distance in pixels, round at corners
-vec2  glyph_em;        // the point in em, as glyph_place takes it
-float glyph_index;     // the character's index in the words, newlines counted
-float glyph_word;      // the index of its word
-float glyph_line;      // the index of its line
-vec2  glyph_span;      // its advance, start and end x in em
-float glyph_ppem;      // pixels per em at this glyph
+float glyph_cover();       // coverage 0..1
+float glyph_dist();        // signed distance to the outline in pixels, > 0 inside
+float glyph_round_dist();  // true signed distance in pixels, round at corners
+vec2  glyph_em;            // the point in em, as glyph_place takes it
+float glyph_index;         // the character's index in the words, newlines counted
+float glyph_word;          // the index of its word
+float glyph_line;          // the index of its line
+vec2  glyph_span;          // its advance, start and end x in em
+float glyph_font_size;     // pixels per em at this glyph
 ```
 
 `vertex` reads `glyph_index`, `glyph_word`, `glyph_line`, `glyph_span` and
@@ -370,7 +370,7 @@ places the corner pushed out past the ink by a little over half a pixel at
 that scale, or by `pad` when that is more. The GPU fills the quad flat between
 its four corners, so `glyph_place` can move, turn, scale or shear each glyph,
 and a bend inside one glyph draws straight. The pixels per em at the corners
-set `glyph_ppem` and the antialiasing, an edge one pixel soft.
+set `glyph_font_size` and the antialiasing, an edge one pixel soft.
 
 Each frame, a pass draws in one order. Its shader fills the buffer, or a pass
 with `layers` and no GLSL of its own clears it to transparent black. Each
@@ -400,7 +400,7 @@ it and rising inward: red, green and blue each hold the distance to some of
 the outline's edges, so their median keeps the corners sharp, and alpha holds
 the true distance, round at the corners. A layer takes one bilinear sample of
 the cell a pixel, with no mipmaps, and scales it to pixels by the pixels per
-em at the glyph. `glyph_dist()` is the median's distance and `glyph_soft()`
+em at the glyph. `glyph_dist()` is the median's distance and `glyph_round_dist()`
 the alpha's, both in pixels and above 0 inside, and `glyph_cover()` is
 `clamp(glyph_dist() + 0.5, 0.0, 1.0)`.
 
@@ -412,7 +412,7 @@ ones is in. A setup waits for them, and so does a render with `--timestep`.
 `atlas` on the text sets the texels per em of a glyph, 32 by default:
 
 ```json
-"texts": { "title": { "font": "sans", "atlas": { "px_per_em": 48 } } }
+"texts": { "title": { "font": "sans", "atlas": { "font_size": 48 } } }
 ```
 
 The field reaches past the outline as far as the largest `pad` of the
@@ -425,7 +425,7 @@ one along y through the glyph's curves, and the curves that the rays cross
 give its coverage, exact at any size and under any `glyph_place`: Eric
 Lengyel's [Slug](https://github.com/EricLengyel/Slug) method, the one that
 `_cover` runs. It takes no `atlas` key and gives no distances: a layer that
-reads `glyph_dist` or `glyph_soft` fails to compile, and the error names
+reads `glyph_dist` or `glyph_round_dist` fails to compile, and the error names
 `"fill": "mtsdf"`.
 
 Take `mtsdf` for most words, and for any layer that reads a distance: it
@@ -440,23 +440,23 @@ pass.
 ### Coverage in a shader
 
 Every pass of the scene, filter passes excepted, reads the words of a text
-through `float <name>_cover(vec2 p, float ppem)`: the coverage 0..1 of the
+through `float <name>_cover(vec2 p, float font_size)`: the coverage 0..1 of the
 words at `p`, in em from the block's top left, y down like `v_texCoord`.
 `<name>_size` holds the block's width and height in em. This shader draws
 `title` white on black, centred in the frame at 48 pixels to the em:
 
 ```glsl
 void main() {
-  float ppem = 48.0;
+  float font_size = 48.0;
   vec2 px = floor(v_texCoord * resolution) + 0.5;
-  vec2 p = (px - 0.5 * (resolution - title_size * ppem)) / ppem;
-  gl_FragColor = vec4(vec3(title_cover(p, ppem)), 1.0);
+  vec2 p = (px - 0.5 * (resolution - title_size * font_size)) / font_size;
+  gl_FragColor = vec4(vec3(title_cover(p, font_size)), 1.0);
 }
 ```
 
-`p` sets where the words land and how large, and `ppem` sets the
-antialiasing alone: each edge ramps from 0 to 1 over 1/`ppem` em, one pixel
-when `ppem` holds the pixels that an em spans at `p`. A larger `ppem` draws
+`p` sets where the words land and how large, and `font_size` sets the
+antialiasing alone: each edge ramps from 0 to 1 over 1/`font_size` em, one
+pixel when `font_size` holds the pixels that an em spans at `p`. A larger `font_size` draws
 harder edges that alias, and a smaller one blurs them. A shader that warps
 `p` passes the pixels per em after the warp, the smaller of the two where the
 warp stretches the axes unevenly, as the `lens` example does.
@@ -667,9 +667,9 @@ and the error reads as shown:
   The GPU's own texture size binds tighter, 2048 on a VC4.
 - 2048 texels per em in a text's MTSDF atlas, and a field that reaches 2048
   texels at most for the largest `pad` of its layers:
-  `text 't' atlas px_per_em needs a whole number from 1 to 2048, got 4096`,
+  `text 't' atlas font_size needs a whole number from 1 to 2048, got 4096`,
   `pass 'main' layer 't' pad 100.0 needs an atlas range of 6400 texels at the
-  32 px_per_em of text 't', over the cap of 2048`.
+  atlas font_size 32 of text 't', over the cap of 2048`.
 
 A text past one of these keeps the scene running, logs the problem once,
 and the console shows it:

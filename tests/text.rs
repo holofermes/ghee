@@ -665,15 +665,15 @@ fn texts_round_trip_and_left_is_the_default() {
     assert_eq!(
         (
             sc.texts[0].fill,
-            sc.texts[0].px_per_em,
+            sc.texts[0].atlas_font_size,
             sc.atlas_range("label")
         ),
         (Fill::Mtsdf, 32, 6)
     );
     let doc = texts_scene(json!({
-        "label": {"font": "sans", "fill": "mtsdf", "atlas": {"px_per_em": 32}},
+        "label": {"font": "sans", "fill": "mtsdf", "atlas": {"font_size": 32}},
         "title": {"font": "sans", "fill": "slug"},
-        "tail": {"font": "sans", "atlas": {"px_per_em": 48}},
+        "tail": {"font": "sans", "atlas": {"font_size": 48}},
     }));
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     assert_eq!(
@@ -681,11 +681,11 @@ fn texts_round_trip_and_left_is_the_default() {
         json!({
             "label": {"value": "I", "font": "sans"},
             "title": {"value": "I", "font": "sans", "fill": "slug"},
-            "tail": {"value": "I", "font": "sans", "atlas": {"px_per_em": 48}},
+            "tail": {"value": "I", "font": "sans", "atlas": {"font_size": 48}},
         })
     );
     assert_eq!(sc.texts[1].fill, Fill::Slug);
-    assert_eq!(sc.texts[2].px_per_em, 48);
+    assert_eq!(sc.texts[2].atlas_font_size, 48);
     assert_eq!(
         Scene::from_dict(&sc.to_dict(), None, None).unwrap(),
         sc,
@@ -770,30 +770,30 @@ fn a_text_declaration_names_what_it_lacks() {
         ),
         (
             json!({"font": "sans", "fill": "msdf"}),
-            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, \
+            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_round_dist, \
              or 'slug', exact edges at any size, got 'msdf'",
         ),
         (
             json!({"font": "sans", "fill": 3}),
-            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, \
+            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_round_dist, \
              or 'slug', exact edges at any size, got 3",
         ),
         (
             json!({"font": "sans", "fill": "outline"}),
-            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, \
+            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_round_dist, \
              or 'slug', exact edges at any size, got 'outline'",
         ),
         (
-            json!({"font": "sans", "fill": "slug", "atlas": {"px_per_em": 32}}),
+            json!({"font": "sans", "fill": "slug", "atlas": {"font_size": 32}}),
             "text 'label' takes no 'atlas' with \"fill\": \"slug\", which reads the curves",
         ),
         (
             json!({"font": "sans", "atlas": 32}),
-            "text 'label' atlas needs an object with 'px_per_em', got 32",
+            "text 'label' atlas needs an object with 'font_size', got 32",
         ),
         (
             json!({"font": "sans", "atlas": {"px_em": 32}}),
-            "text 'label' atlas takes 'px_per_em', got 'px_em'",
+            "text 'label' atlas takes 'font_size', got 'px_em'",
         ),
         (
             json!({"font": "sans", "atlas": {"range": 6}}),
@@ -801,16 +801,16 @@ fn a_text_declaration_names_what_it_lacks() {
              the text's layers",
         ),
         (
-            json!({"font": "sans", "atlas": {"px_per_em": 0}}),
-            "text 'label' atlas px_per_em needs a whole number from 1 to 2048, got 0",
+            json!({"font": "sans", "atlas": {"font_size": 0}}),
+            "text 'label' atlas font_size needs a whole number from 1 to 2048, got 0",
         ),
         (
-            json!({"font": "sans", "atlas": {"px_per_em": 6.5}}),
-            "text 'label' atlas px_per_em needs a whole number from 1 to 2048, got 6.5",
+            json!({"font": "sans", "atlas": {"font_size": 6.5}}),
+            "text 'label' atlas font_size needs a whole number from 1 to 2048, got 6.5",
         ),
         (
-            json!({"font": "sans", "atlas": {"px_per_em": 4096}}),
-            "text 'label' atlas px_per_em needs a whole number from 1 to 2048, got 4096",
+            json!({"font": "sans", "atlas": {"font_size": 4096}}),
+            "text 'label' atlas font_size needs a whole number from 1 to 2048, got 4096",
         ),
     ] {
         let e = scene_err(&texts_scene(json!({ "label": td })));
@@ -2361,7 +2361,7 @@ fn a_layer_with_no_vertex_centres_its_words_and_with_no_fragment_draws_them_whit
             doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [layer]});
             loaded(&doc)
         };
-        let plain = render(&mut r, &scene(json!({"text": "label", "px_per_em": ppem})));
+        let plain = render(&mut r, &scene(json!({"text": "label", "font_size": ppem})));
         let centred = "vec2 glyph_place(vec2 em) { return (resolution - label_size * 32.0) \
                        * 0.5 + em * 32.0; }";
         let written = json!({"text": "label", "vertex": centred,
@@ -2389,7 +2389,7 @@ fn layers_round_trip_and_over_and_no_pad_are_the_defaults() {
          "blend": "over", "pad": 0},
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
          "blend": "replace"},
-        {"text": "label", "px_per_em": 48.0},
+        {"text": "label", "font_size": 48.0},
     ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let back = sc.to_dict();
@@ -2524,23 +2524,23 @@ fn a_layer_declaration_names_what_it_lacks() {
         ),
         (
             one(json!({"text": "label", "fragment": WHITE})),
-            "pass 'main' layer 'label' needs 'px_per_em', the pixels per em of the words centred \
+            "pass 'main' layer 'label' needs 'font_size', the pixels per em of the words centred \
              in the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)",
         ),
         (
-            one(json!({"text": "label", "vertex": place, "px_per_em": 32})),
-            "pass 'main' layer 'label' takes 'vertex' or 'px_per_em', got both",
+            one(json!({"text": "label", "vertex": place, "font_size": 32})),
+            "pass 'main' layer 'label' takes 'vertex' or 'font_size', got both",
         ),
         (
-            one(json!({"text": "label", "px_per_em": 0})),
-            "pass 'main' layer 'label' px_per_em needs a number of pixels above 0, got 0",
+            one(json!({"text": "label", "font_size": 0})),
+            "pass 'main' layer 'label' font_size needs a number of pixels above 0, got 0",
         ),
         (
-            one(json!({"text": "label", "px_per_em": "32"})),
-            "pass 'main' layer 'label' px_per_em needs a number of pixels above 0, got '32'",
+            one(json!({"text": "label", "font_size": "32"})),
+            "pass 'main' layer 'label' font_size needs a number of pixels above 0, got '32'",
         ),
         (
-            one(json!({"text": "label", "vertex": "", "px_per_em": null})),
+            one(json!({"text": "label", "vertex": "", "font_size": null})),
             "pass 'main' layer 'label' 'vertex' needs vertex GLSL that defines vec2 \
              glyph_place(vec2 em), got ''",
         ),
@@ -2906,7 +2906,7 @@ fn px_distance(laid: &Laid, fit: Fit, x: usize, y: usize) -> f64 {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
+fn glyph_dist_and_glyph_round_dist_draw_an_outline_and_a_glow_by_the_distance() {
     // One glyph a frame, so no quad overlaps another: a bowl, and corners.
     for words in ["e", "k"] {
         let laid = lay(SANS, words, Align::Left);
@@ -2925,11 +2925,11 @@ fn glyph_dist_and_glyph_soft_draw_an_outline_and_a_glow_by_the_distance() {
         let mut doc = label_scene(SANS, words, Align::Left, fit);
         doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [
             {"text": "label", "vertex": fit_place(fit), "blend": "add", "pad": 0.125,
-             "fragment": "void main(){ float g = exp(-max(-glyph_soft(), 0.0) / 2.0); \
+             "fragment": "void main(){ float g = exp(-max(-glyph_round_dist(), 0.0) / 2.0); \
                       gl_FragColor = vec4(0.0, 0.0, g, 0.0); }"},
             {"text": "label", "vertex": fit_place(fit), "blend": "add", "pad": 0.0625,
              "fragment": "void main(){ float fill = clamp(glyph_dist() + 0.5, 0.0, 1.0); \
-                      float ring = clamp(glyph_soft() + 3.5, 0.0, 1.0); \
+                      float ring = clamp(glyph_round_dist() + 3.5, 0.0, 1.0); \
                       gl_FragColor = vec4(fill, ring - fill, 0.0, 0.0); }"},
         ]});
         let (_g, mut r) = gpu(w, h);
@@ -3046,7 +3046,7 @@ fn an_mtsdf_field_reaches_the_largest_pad_of_its_texts_layers() {
     let pad = 0.5;
     let mut doc = label_scene(SANS, "I", Align::Left, fit);
     let glow =
-        "void main(){ gl_FragColor = vec4(0.0, 0.0, clamp(-glyph_soft() / 32.0, 0.0, 1.0), 0.0); }";
+        "void main(){ gl_FragColor = vec4(0.0, 0.0, clamp(-glyph_round_dist() / 32.0, 0.0, 1.0), 0.0); }";
     let fill = "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c, 0.0, 0.0, c); }";
     doc["passes"] = json!([
         {"name": "fill", "code": BLACK, "layers": [
@@ -3094,7 +3094,7 @@ fn an_mtsdf_atlas_takes_its_range_from_the_layers_of_its_text() {
     let layer = |pad: f64| json!({"text": "label", "vertex": place, "fragment": WHITE, "pad": pad});
     let mut doc = texts_scene(json!({
         "label": {"font": "sans"},
-        "title": {"font": "sans", "atlas": {"px_per_em": 48}},
+        "title": {"font": "sans", "atlas": {"font_size": 48}},
     }));
     doc["passes"] = json!([
         {"name": "a", "layers": [layer(0.1), layer(0.3)]},
@@ -3114,8 +3114,8 @@ fn an_mtsdf_atlas_takes_its_range_from_the_layers_of_its_text() {
     doc["passes"][1]["layers"] = json!([layer(33.0)]);
     assert_eq!(
         scene_err(&doc),
-        "scene: pass 'main' layer 'label' pad 33.0 needs an atlas range of 2112 texels at the 32 \
-         px_per_em of text 'label', over the cap of 2048"
+        "scene: pass 'main' layer 'label' pad 33.0 needs an atlas range of 2112 texels at the \
+         atlas font_size 32 of text 'label', over the cap of 2048"
     );
     doc["texts"]["label"]["fill"] = json!("slug");
     assert!(Scene::from_dict(&doc, None, None).is_ok());
@@ -3130,7 +3130,7 @@ fn the_slug_fill_names_the_mtsdf_fill_for_a_distance() {
         ppem: 30.0,
     };
     let (_g, mut r) = gpu(64, 48);
-    for read in ["glyph_dist", "glyph_soft"] {
+    for read in ["glyph_dist", "glyph_round_dist"] {
         let mut doc = layer_scene(SANS, "I", Align::Left, fit);
         doc["passes"][0]["layers"][0]["fragment"] = json!(format!(
             "void main(){{\n    float d = {read}();\n    gl_FragColor = vec4(d);\n}}"
@@ -3271,8 +3271,8 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
         "texts": {"curves": {"value": "A\u{1f600}", "font": ["sans", "emoji"], "fill": "slug"},
                   "field": {"value": "A\u{1f600}", "font": ["sans", "emoji"], "fill": "mtsdf"}},
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(0.0); }",
-                    "layers": [{"text": "curves", "px_per_em": 20, "fragment": reads},
-                               {"text": "field", "px_per_em": 20, "fragment": reads}]}]
+                    "layers": [{"text": "curves", "font_size": 20, "fragment": reads},
+                               {"text": "field", "font_size": 20, "fragment": reads}]}]
     });
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let p = &sc.passes[0];

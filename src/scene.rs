@@ -133,7 +133,7 @@ pub(crate) const LAYER_KEYS: [&str; 8] = [
     "name",
     "text",
     "vertex",
-    "px_per_em",
+    "font_size",
     "fragment",
     "blend",
     "pad",
@@ -1305,7 +1305,7 @@ pub struct Layer {
 pub enum Vertex {
     /// The layer's `vertex`: GLSL that defines `vec2 glyph_place(vec2 em)`.
     Glsl(String),
-    /// The layer's `px_per_em`: the block centred in the pass at this many
+    /// The layer's `font_size`: the block centred in the pass at this many
     /// pixels per em.
     Centred(f64),
 }
@@ -1421,8 +1421,8 @@ impl Layer {
             ),
         };
         let given = |key: &str| o.get(key).filter(|v| !v.is_null());
-        let vertex = match (given("vertex"), given("px_per_em")) {
-            (Some(_), Some(_)) => bail!("{what} takes 'vertex' or 'px_per_em', got both"),
+        let vertex = match (given("vertex"), given("font_size")) {
+            (Some(_), Some(_)) => bail!("{what} takes 'vertex' or 'font_size', got both"),
             (Some(_), None) => Vertex::Glsl(glsl(
                 "vertex",
                 "vertex GLSL that defines vec2 glyph_place(vec2 em)",
@@ -1430,12 +1430,12 @@ impl Layer {
             (None, Some(v)) => match v.as_f64() {
                 Some(f) if f.is_finite() && f > 0.0 => Vertex::Centred(f),
                 _ => bail!(
-                    "{what} px_per_em needs a number of pixels above 0, got {}",
+                    "{what} font_size needs a number of pixels above 0, got {}",
                     py_repr(v)
                 ),
             },
             (None, None) => bail!(
-                "{what} needs 'px_per_em', the pixels per em of the words centred in \
+                "{what} needs 'font_size', the pixels per em of the words centred in \
                  the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)"
             ),
         };
@@ -1489,7 +1489,7 @@ impl Layer {
         d.insert("text".to_string(), Value::from(self.text.clone()));
         match &self.vertex {
             Vertex::Glsl(v) => d.insert("vertex".to_string(), Value::from(v.clone())),
-            Vertex::Centred(px) => d.insert("px_per_em".to_string(), Value::from(*px)),
+            Vertex::Centred(px) => d.insert("font_size".to_string(), Value::from(*px)),
         };
         if let Some(f) = &self.fragment {
             d.insert("fragment".to_string(), Value::from(f.clone()));
@@ -1840,7 +1840,7 @@ impl Pass {
             Some(t) if t.fill == Fill::Mtsdf => crate::text::mtsdf_vertex_main(
                 &d.text,
                 d.pad,
-                t.px_per_em,
+                t.atlas_font_size,
                 scene.atlas_range(&d.text),
             ),
             _ => crate::text::slug_vertex_main(d.pad),
@@ -2289,13 +2289,13 @@ impl Scene {
         }
         for t in self.texts.iter().filter(|t| t.fill == Fill::Mtsdf) {
             let (pad, layer) = self.largest_pad(&t.name);
-            let range = crate::text::atlas_range(t.px_per_em, pad);
+            let range = crate::text::atlas_range(t.atlas_font_size, pad);
             if let (Some(layer), true) = (layer, range > crate::text::ATLAS_MAX) {
                 bail!(
-                    "{layer} pad {} needs an atlas range of {range} texels at the {} px_per_em \
-                     of text '{}', over the cap of {}",
+                    "{layer} pad {} needs an atlas range of {range} texels at the atlas \
+                     font_size {} of text '{}', over the cap of {}",
                     py_float(pad),
-                    t.px_per_em,
+                    t.atlas_font_size,
                     t.name,
                     crate::text::ATLAS_MAX
                 );
@@ -2309,14 +2309,14 @@ impl Scene {
 
     /// The distance range in texels of the MTSDF atlas of text `name`: the
     /// field reaches the largest `pad` of the text's layers, at the text's
-    /// px_per_em.
+    /// atlas font_size.
     pub fn atlas_range(&self, name: &str) -> u32 {
-        let px_per_em = self
+        let font_size = self
             .texts
             .iter()
             .find(|t| t.name == name)
-            .map_or(crate::atlas::PX_EM, |t| t.px_per_em);
-        let range = crate::text::atlas_range(px_per_em, self.largest_pad(name).0);
+            .map_or(crate::atlas::PX_EM, |t| t.atlas_font_size);
+        let range = crate::text::atlas_range(font_size, self.largest_pad(name).0);
         u32::try_from(range).unwrap_or(u32::MAX)
     }
 
@@ -2862,7 +2862,7 @@ mod tests {
             "uniform sampler2D logo;",
             "uniform vec2 logo_size;",
             "uniform vec2 label_size;",
-            "float label_cover(vec2 p, float ppem)",
+            "float label_cover(vec2 p, float font_size)",
         ];
         let own = [
             vec![
@@ -3209,7 +3209,7 @@ mod tests {
             p
         };
         let layer = |extra: Value| {
-            let mut d = json!({"text": "t", "px_per_em": 20});
+            let mut d = json!({"text": "t", "font_size": 20});
             d.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
@@ -3270,7 +3270,7 @@ mod tests {
             ),
             (
                 layer(json!({"glow": 1})),
-                "scene: pass 'main' layer 't' takes no 'glow', only name, text, vertex, px_per_em, \
+                "scene: pass 'main' layer 't' takes no 'glow', only name, text, vertex, font_size, \
                  fragment, blend, pad and emoji",
             ),
             (

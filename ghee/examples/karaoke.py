@@ -8,10 +8,10 @@
 The pass `lyrics` has layers and no code, so its buffer starts each frame
 transparent and holds the words alone. Two layers of the text `line` paint
 into it in order. `halo` reaches PAD em past the letters and turns
-`glyph_soft()`, the distance to the outline, into a glow. `fill` fills the
-letters amber up to the sung point and white past it, and as the last layer
-of the text it also paints the emoji from their bitmaps. Both layers place
-the glyphs with one `glyph_place`, which lifts the glyph under the sung
+`glyph_round_dist()`, the distance to the outline, into a glow. `fill` fills
+the letters amber up to the sung point and white past it, and as the last
+layer of the text it also paints the emoji from their bitmaps. Both layers
+place the glyphs with one `glyph_place`, which lifts the glyph under the sung
 point. The pass `main` paints the night and reads `lyrics` through
 iChannel0 twice: as it is, and flipped and rippled below the horizon.
 
@@ -52,14 +52,14 @@ vec2 glyph_place(vec2 em) {
 """
 
 # 1 left of the sung point and 0 right of it, ramped over one pixel.
-SUNG = "clamp((sung_at() - glyph_em.x) * glyph_ppem + 0.5, 0.0, 1.0)"
+SUNG = "clamp((sung_at() - glyph_em.x) * glyph_font_size + 0.5, 0.0, 1.0)"
 
 HALO = f"""
 void main() {{
-    // glyph_soft() is the distance to the outline in pixels, > 0 inside the
-    // letters, and the layer's pad lets it reach PAD em out. The glow fades
-    // with that distance in em.
-    float far = max(-glyph_soft(), 0.0) / glyph_ppem;
+    // glyph_round_dist() is the distance to the outline in pixels, > 0
+    // inside the letters, and the layer's pad lets it reach PAD em out. The
+    // glow fades with that distance in em.
+    float far = max(-glyph_round_dist(), 0.0) / glyph_font_size;
     float a = 0.7 * exp(-far * 12.0);
     vec3 c = mix(unsung, sung, {SUNG}) * a;
     gl_FragColor = vec4(c, a);

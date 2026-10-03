@@ -3,7 +3,7 @@
 //! A scene declares a text with its words and the fonts to draw it with, in
 //! order: each character draws from the first font whose cmap holds it. Every
 //! pass of the scene except a filter pass then reads the coverage of those
-//! words at any point with `<name>_cover(p, ppem)`. The scene declares the
+//! words at any point with `<name>_cover(p, font_size)`. The scene declares the
 //! string param of the text's name, which holds the words, and they change
 //! with the param, live, with no recompile.
 //!
@@ -28,7 +28,7 @@
 //! read with NEAREST, so a GL without float or integer textures, the VC4,
 //! holds them. A 16-bit value spans two bytes of a texel, a 24-bit texel
 //! index three, and a curve two texels. pack() writes three tables into it,
-//! and `<name>_cover(p, ppem)` walks them to find the curves near `p`:
+//! and `<name>_cover(p, font_size)` walks them to find the curves near `p`:
 //!
 //! 1. The grid. Square cells cover the ink of the words, 0.5 em a side,
 //!    halved until no cell lists more than CELL_K glyphs. The cell under `p`
@@ -224,11 +224,11 @@ pub enum Fill {
 /// The largest px/em and range of an atlas: the side of the atlas.
 pub const ATLAS_MAX: u64 = atlas::MAX_SIZE as u64;
 
-/// The distance range in texels of an MTSDF atlas at `px_per_em` whose field
-/// reaches `pad` em past the outline: half the range reaches each side, and
-/// the range is atlas::RANGE at least.
-pub fn atlas_range(px_per_em: u32, pad: f64) -> u64 {
-    ((2.0 * pad * f64::from(px_per_em)).ceil() as u64).max(u64::from(atlas::RANGE))
+/// The distance range in texels of an MTSDF atlas at `font_size` texels per
+/// em whose field reaches `pad` em past the outline: half the range reaches
+/// each side, and the range is atlas::RANGE at least.
+pub fn atlas_range(font_size: u32, pad: f64) -> u64 {
+    ((2.0 * pad * f64::from(font_size)).ceil() as u64).max(u64::from(atlas::RANGE))
 }
 
 /// A text a scene declares. Its words are the scene string param of the same
@@ -245,10 +245,10 @@ pub struct Text {
     pub fonts: Vec<String>,
     pub align: Align,
     pub fill: Fill,
-    /// The texels per em of a glyph's cell in the MTSDF atlas. The atlas's
-    /// distance range follows the layers of the text, as
-    /// Scene::atlas_range gives it.
-    pub px_per_em: u32,
+    /// The atlas's `font_size`: the texels per em of a glyph's cell in the
+    /// MTSDF atlas. The atlas's distance range follows the layers of the
+    /// text, as Scene::atlas_range gives it.
+    pub atlas_font_size: u32,
     /// Each font asset's bytes, or why they failed to load, in the order of
     /// `fonts`. load_assets fills them.
     pub data: Option<Vec<Font>>,
@@ -304,7 +304,7 @@ impl Text {
             Some(Value::String(s)) if s == "mtsdf" => Fill::Mtsdf,
             Some(Value::String(s)) if s == "slug" => Fill::Slug,
             Some(v) => bail!(
-                "text '{name}' fill needs 'mtsdf', fast and with glyph_dist and glyph_soft, \
+                "text '{name}' fill needs 'mtsdf', fast and with glyph_dist and glyph_round_dist, \
                  or 'slug', exact edges at any size, got {}",
                 py_repr(v)
             ),
@@ -312,20 +312,20 @@ impl Text {
         if fill == Fill::Slug && o.get("atlas").is_some_and(|v| !v.is_null()) {
             bail!("text '{name}' takes no 'atlas' with \"fill\": \"slug\", which reads the curves");
         }
-        let mut px_per_em = atlas::PX_EM;
+        let mut atlas_font_size = atlas::PX_EM;
         match o.get("atlas").filter(|v| !v.is_null()) {
             None => {}
             Some(Value::Object(a)) => {
                 for (k, v) in a {
                     match k.as_str() {
-                        "px_per_em" => {}
+                        "font_size" => {}
                         "range" => bail!(
                             "text '{name}' atlas takes no 'range': the field reaches the \
                              largest 'pad' of the text's layers"
                         ),
-                        _ => bail!("text '{name}' atlas takes 'px_per_em', got '{k}'"),
+                        _ => bail!("text '{name}' atlas takes 'font_size', got '{k}'"),
                     }
-                    px_per_em = match v.as_u64() {
+                    atlas_font_size = match v.as_u64() {
                         Some(n) if (1..=ATLAS_MAX).contains(&n) => n as u32,
                         _ => bail!(
                             "text '{name}' atlas {k} needs a whole number from 1 to {ATLAS_MAX}, \
@@ -336,7 +336,7 @@ impl Text {
                 }
             }
             Some(v) => bail!(
-                "text '{name}' atlas needs an object with 'px_per_em', got {}",
+                "text '{name}' atlas needs an object with 'font_size', got {}",
                 py_repr(v)
             ),
         }
@@ -346,7 +346,7 @@ impl Text {
             fonts,
             align,
             fill,
-            px_per_em,
+            atlas_font_size,
             data: None,
         })
     }
@@ -365,9 +365,9 @@ impl Text {
         if self.fill == Fill::Slug {
             d.insert("fill".to_string(), Value::from("slug"));
         }
-        if self.px_per_em != atlas::PX_EM {
+        if self.atlas_font_size != atlas::PX_EM {
             let mut a = Map::new();
-            a.insert("px_per_em".to_string(), Value::from(self.px_per_em));
+            a.insert("font_size".to_string(), Value::from(self.atlas_font_size));
             d.insert("atlas".to_string(), Value::Object(a));
         }
         Value::Object(d)
@@ -1703,7 +1703,7 @@ pub fn names(name: &str) -> Vec<String> {
 /// it stands for there, so a compile error names it.
 pub const SLUG_UNDECLARED: [(&str, &str); 2] = [
     ("glyph_dist", "glyph_dist_needs_fill_mtsdf"),
-    ("glyph_soft", "glyph_soft_needs_fill_mtsdf"),
+    ("glyph_round_dist", "glyph_round_dist_needs_fill_mtsdf"),
 ];
 
 /// The names that a layer's GLSL declares for its author: the function the
@@ -1712,14 +1712,14 @@ pub const LAYER_NAMES: [&str; 11] = [
     "glyph_place",
     "glyph_cover",
     "glyph_dist",
-    "glyph_soft",
+    "glyph_round_dist",
     "glyph_em",
     "glyph_index",
     "glyph_word",
     "glyph_line",
     "glyph_span",
     "glyph_box",
-    "glyph_ppem",
+    "glyph_font_size",
 ];
 
 /// ghee's name for the engine asset or the uniform `suffix` of text `name`,
@@ -1843,7 +1843,7 @@ const SLUG_VERTEX_MAIN: &str = r#"void main() {
     // lattice step.
     ghee_v0 = vec4(vec2(ghee_e.x - ghee_a1.x, ghee_a1.w - ghee_e.y) / ghee_sz * LATTICE,
                    ghee_sz / (ghee_fw * LATTICE));
-    // glyph_ppem: the pixels per em of a placement that scales both axes
+    // glyph_font_size: the pixels per em of a placement that scales both axes
     // alike.
     ghee_v1 = vec4(ghee_a2.xyz, sqrt(ghee_det));
     ghee_v2 = vec4(ghee_e, ghee_a0.zw);
@@ -1869,12 +1869,12 @@ varying vec4 ghee_v4;
 #define glyph_word float(int(ghee_v2.w + 0.5))
 #define glyph_line float(int(ghee_v3.x + 0.5))
 #define glyph_span ghee_v3.yz
-#define glyph_ppem ghee_v1.w
+#define glyph_font_size ghee_v1.w
 float ghee_c = 0.0;
 float glyph_cover() { return ghee_c; }
 // Distances come from the MTSDF fill's field, and a compile error names it.
 #define glyph_dist glyph_dist_needs_fill_mtsdf
-#define glyph_soft glyph_soft_needs_fill_mtsdf
+#define glyph_round_dist glyph_round_dist_needs_fill_mtsdf
 // The author's main runs as ghee_main, after the fill: the fill computes the
 // coverage once a pixel, and glyph_cover() returns it at every call.
 #define main ghee_main"#;
@@ -1928,7 +1928,7 @@ void main() {
     vec2 ghee_tc = ghee_a2.xy + (ghee_e - ghee_a1.xy) * ghee_a2.zw;
     // The field's range in screen pixels. msdfgen holds it at 1 or more.
     float ghee_range = max(RANGE_EM * 0.5 * (1.0 / ghee_fw.x + 1.0 / ghee_fw.y), 1.0);
-    // glyph_ppem: the pixels per em of a placement that scales both axes
+    // glyph_font_size: the pixels per em of a placement that scales both axes
     // alike.
     ghee_v0 = vec4(ghee_tc / ghee_NAME_atlas_size, ghee_range, sqrt(ghee_det));
     ghee_v2 = vec4(ghee_e, ghee_a0.zw);
@@ -1948,7 +1948,7 @@ varying vec4 ghee_v3;
 #define glyph_word float(int(ghee_v2.w + 0.5))
 #define glyph_line float(int(ghee_v3.x + 0.5))
 #define glyph_span ghee_v3.yz
-#define glyph_ppem ghee_v0.w
+#define glyph_font_size ghee_v0.w
 // The glyph's field under this pixel: the median of red, green and blue is
 // the distance to the outline, alpha the true distance, each 0.5 on the
 // outline and growing inward over the range.
@@ -1957,7 +1957,7 @@ float glyph_dist() {
     return ghee_v0.z * (max(min(ghee_t.r, ghee_t.g), min(max(ghee_t.r, ghee_t.g), ghee_t.b))
                         - 0.5);
 }
-float glyph_soft() { return ghee_v0.z * (ghee_t.a - 0.5); }
+float glyph_round_dist() { return ghee_v0.z * (ghee_t.a - 0.5); }
 float glyph_cover() { return clamp(glyph_dist() + 0.5, 0.0, 1.0); }
 // The author's main runs as ghee_main, after the read of the field.
 #define main ghee_main"#;
@@ -2134,12 +2134,12 @@ float ghee_NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
 }
 // The coverage of the glyph whose data starts at texel h, at q in em from its
 // box's corner. Its data holds its box size, then its band entries.
-float ghee_NAME_glyph(float h, vec2 q, vec2 sz, float ppem) {
-    return ghee_NAME_outline(h + 1.0, vec2(ghee_NAME_nb), q / sz * LATTICE, sz * (ppem / LATTICE));
+float ghee_NAME_glyph(float h, vec2 q, vec2 sz, float font_size) {
+    return ghee_NAME_outline(h + 1.0, vec2(ghee_NAME_nb), q / sz * LATTICE, sz * (font_size / LATTICE));
 }
 // The coverage of the words at p, in em from the top left of the block, y
-// down like v_texCoord, drawn at ppem pixels per em.
-float NAME_cover(vec2 p, float ppem) {
+// down like v_texCoord, drawn at font_size pixels per em.
+float NAME_cover(vec2 p, float font_size) {
     float cov = 0.0;
     vec2 at = vec2(p.x, NAME_size.y - p.y);
     vec2 g = (at - vec2(ghee_NAME_gx, ghee_NAME_gy)) / ghee_NAME_cell;
@@ -2160,7 +2160,7 @@ float NAME_cover(vec2 p, float ppem) {
             vec2 lo = (b.rb * 256.0 + b.ga) * (1.0 / BOX_SCALE) - CORNER_OFFSET;
             vec4 s = ghee_NAME_texel(h);
             vec2 sz = (s.rb * 256.0 + s.ga) * (1.0 / BOX_SCALE);
-            cov = max(cov, ghee_NAME_glyph(h, pc - lo, sz, ppem));
+            cov = max(cov, ghee_NAME_glyph(h, pc - lo, sz, font_size));
             if (last > 0.5) break;
         }
     }

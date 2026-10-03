@@ -60,7 +60,7 @@
   pass's own shader and in list order, as one quad over each glyph. A layer's
   `vertex` GLSL defines `glyph_place`, which puts each glyph in the pass, and
   its `fragment` GLSL colours the glyph, and both see the pass's preamble and
-  the scene's common block. `px_per_em` in place of `vertex` centres the
+  the scene's common block. `font_size` in place of `vertex` centres the
   words in the pass at that size, and a layer with no `fragment` draws them
   white. `blend` sets `over`, `add` or `replace` for colour and alpha alike,
   `pad` reaches past the letters for a glow or an outline, and `name` names
@@ -70,7 +70,7 @@
   channel.
 - Fill a layer's glyphs from an MTSDF atlas by default, one texture read a
   pixel, and read the distance to the outline with `glyph_dist()` and
-  `glyph_soft()` for outlines, glows and shadows. `"fill": "slug"` on a text
+  `glyph_round_dist()` for outlines, glows and shadows. `"fill": "slug"` on a text
   computes Slug's exact coverage from the font's curves instead, at any size
   and with no atlas, and a slug layer that reads a distance fails with an
   error that names `"fill": "mtsdf"`. `atlas` sets the MTSDF atlas's texels per em, and its
@@ -81,7 +81,7 @@
   every glyph of the new ones is in. A setup and a render with `--timestep`
   wait for them.
 - Read the coverage of a text's words at any point in any pass shader,
-  filter passes excepted, with `<name>_cover(p, ppem)`, and the block's size
+  filter passes excepted, with `<name>_cover(p, font_size)`, and the block's size
   in em with `<name>_size`.
 - Paint colour emoji in layers: a glyph with a PNG bitmap in a CBDT or sbix
   table, such as those of Noto Color Emoji, shows its bitmap, mipmapped and
@@ -99,7 +99,7 @@
 
 - Declare an asset with `ghee.Asset`, a text with
   `ghee.Text(name, font, value)` and its `align`, `fill` and `atlas`, and a
-  layer with `ghee.Layer(text, fragment, vertex)` and its `px_per_em`,
+  layer with `ghee.Layer(text, fragment, vertex)` and its `font_size`,
   `blend`, `pad`, `emoji` and `name`, in `Scene(assets=..., texts=...)` and
   `Pass(layers=...)`. `mipmaps=True` on `ghee.Pass` builds its mip chain.
 - Take a `ghee.Scene` in `ghee.open`, and an `os.PathLike` wherever the

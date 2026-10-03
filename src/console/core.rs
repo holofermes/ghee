@@ -651,8 +651,8 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
 }
 
 /// The (scope, name, value) of a /set, or the first thing wrong with it. The
-/// value parses by its type= field when the request has one, else by the type
-/// that the host reports for the param. The outer error is the host's own.
+/// value parses by the type that the host reports for the param. The outer
+/// error is the host's own.
 fn parse_set(
     host: &impl ConsoleHost,
     query: &Query,
@@ -667,12 +667,8 @@ fn parse_set(
         Ok(p) => p,
         Err(e) => return Ok(Err(e)),
     };
-    let ty = match query.get("type") {
-        Some(t) => t.clone(),
-        None => match host.param_type(scope, &name)? {
-            Some(t) => t,
-            None => return Ok(Err(undeclared(scope, &name))),
-        },
+    let Some(ty) = host.param_type(scope, &name)? else {
+        return Ok(Err(undeclared(scope, &name)));
     };
     Ok(parse_param_value(&ty, raw).map(|value| (scope, name, value)))
 }
@@ -757,7 +753,10 @@ mod tests {
         "texts": {"words": {"value": "ho", "font": "sans.ttf"}},
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
                     "params": {"k": {"type": "float", "value": 0.0},
-                               "on": {"type": "bool", "value": false}}}]}"#;
+                               "on": {"type": "bool", "value": false},
+                               "n": {"type": "int", "value": 0},
+                               "c": {"type": "color", "value": [0.0, 0.0, 0.0]},
+                               "v": {"type": "vec2", "value": [0.0, 0.0]}}}]}"#;
 
     fn scene_json() -> Value {
         serde_json::from_str(SCENE).unwrap()
@@ -1010,37 +1009,6 @@ mod tests {
     // writes
 
     #[test]
-    fn set_reaches_the_host_with_a_typed_value() {
-        for (ptype, raw, want) in [
-            ("float", "0.5", Value::from(0.5)),
-            ("int", "5", Value::from(5.0)),
-            ("color", "1,0,0.5", serde_json::json!([1.0, 0.0, 0.5])),
-            ("vec2", "0.1,0.2", serde_json::json!([0.1, 0.2])),
-            ("string", "GHEE", Value::from("GHEE")),
-            ("bool", "true", Value::from(true)),
-            ("bool", "false", Value::from(false)),
-        ] {
-            let api = api();
-            let r = post(
-                &api,
-                "/set",
-                &[
-                    ("pass", "0"),
-                    ("name", "k"),
-                    ("type", ptype),
-                    ("value", raw),
-                ],
-            );
-            assert_eq!((r.status, body(&r).as_str()), (200, "ok"), "{ptype}");
-            assert_eq!(
-                *api.host.calls.borrow(),
-                vec![Call::SetParam(Scope::Pass(0), "k".to_string(), want)],
-                "{ptype}"
-            );
-        }
-    }
-
-    #[test]
     fn set_routes_the_scene_scope() {
         let api = api();
         post(
@@ -1065,7 +1033,12 @@ mod tests {
             // a text's words
             ("scene", "words", "2", Value::from("2")),
             ("0", "on", "true", Value::from(true)),
+            ("0", "on", "false", Value::from(false)),
             ("0", "k", "2", Value::from(2.0)),
+            ("0", "k", "0.5", Value::from(0.5)),
+            ("0", "n", "5", Value::from(5.0)),
+            ("0", "c", "1,0,0.5", serde_json::json!([1.0, 0.0, 0.5])),
+            ("0", "v", "0.1,0.2", serde_json::json!([0.1, 0.2])),
         ] {
             let api = api();
             let r = post(
@@ -1081,29 +1054,6 @@ mod tests {
                 "{name}"
             );
         }
-    }
-
-    #[test]
-    fn a_set_type_overrides_the_declared_one() {
-        let api = api();
-        post(
-            &api,
-            "/set",
-            &[
-                ("pass", "scene"),
-                ("name", "title"),
-                ("type", "float"),
-                ("value", "2"),
-            ],
-        );
-        assert_eq!(
-            *api.host.calls.borrow(),
-            vec![Call::SetParam(
-                Scope::Scene,
-                "title".to_string(),
-                Value::from(2.0)
-            )]
-        );
     }
 
     #[test]
@@ -1157,21 +1107,11 @@ mod tests {
                 "pass needs 'scene' or a pass index, got 'nope'",
             ),
             (
-                vec![
-                    ("pass", "0"),
-                    ("name", "k"),
-                    ("type", "color"),
-                    ("value", "1,0"),
-                ],
+                vec![("pass", "0"), ("name", "c"), ("value", "1,0")],
                 "color needs three comma-separated floats, got '1,0'",
             ),
             (
-                vec![
-                    ("pass", "0"),
-                    ("name", "k"),
-                    ("type", "bool"),
-                    ("value", "yes"),
-                ],
+                vec![("pass", "0"), ("name", "on"), ("value", "yes")],
                 "bool needs true or false, got 'yes'",
             ),
             (

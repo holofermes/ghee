@@ -4,9 +4,12 @@ import array
 import json
 import pathlib
 import shutil
+import struct
 import threading
 import time
+import zlib
 
+import pytest
 from conftest import RED, REPO, VECS, near, quarters, scene_file
 
 import ghee
@@ -349,6 +352,51 @@ def test_a_dict_scene_finds_its_font_in_base_dir_else_the_working_directory(
         with ghee.open(WORDS, width=96, height=32, timestep=0, base_dir=base_dir) as h:
             h.frame()
             assert h.pixels() == want
+
+
+def png_pixels(data):
+    """(width, height, rows of RGBA bytes) of a PNG of filter type 0, read with
+    zlib alone."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    at, idat, head = 8, b"", None
+    while at < len(data):
+        (n,) = struct.unpack(">I", data[at : at + 4])
+        tag, body = data[at + 4 : at + 8], data[at + 8 : at + 8 + n]
+        if tag == b"IHDR":
+            head = struct.unpack(">IIBB", body[:10])
+        elif tag == b"IDAT":
+            idat += body
+        at += 12 + n
+    w, h, depth, color = head
+    assert (depth, color) == (8, 6)
+    raw = zlib.decompress(idat)
+    rows = [raw[y * (w * 4 + 1) : (y + 1) * (w * 4 + 1)] for y in range(h)]
+    assert all(r[0] == 0 for r in rows)
+    return w, h, b"".join(r[1:] for r in rows)
+
+
+def test_save_writes_the_last_frame_numbered_by_its_tick(tmp_path):
+    with ghee.open(VECS, width=8, height=1, timestep=0) as h:
+        with pytest.raises(RuntimeError, match="nothing is drawn yet"):
+            h.save(tmp_path / "early.png")
+        h.frame()
+        h.frame()
+        h.save(tmp_path / "frame.####.png")
+        h.save(str(tmp_path / "frame.jpg"))
+        with pytest.raises(ValueError) as raised:
+            h.save(tmp_path / "frame.bmp")
+        assert str(raised.value) == (
+            f"save writes a .png or a .jpg file, got {tmp_path}/frame.bmp"
+        )
+        assert png_pixels((tmp_path / "frame.0001.png").read_bytes()) == (
+            8,
+            1,
+            h.pixels(),
+        )
+    jpg = (tmp_path / "frame.jpg").read_bytes()
+    assert jpg[:2] == b"\xff\xd8"
+    sof = jpg.index(b"\xff\xc0")
+    assert struct.unpack(">HH", jpg[sof + 5 : sof + 9]) == (1, 8)
 
 
 def test_open_takes_a_ghee_scene_and_a_path_like(tmp_path):

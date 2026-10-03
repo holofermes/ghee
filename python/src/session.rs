@@ -16,8 +16,8 @@ use ghee::drivers::{available_drivers, driver_options, get_driver, DisplayDriver
 use ghee::engine::{probe_display, Feed, Renderer};
 use ghee::filters::{apply_filters, load_filters};
 use ghee::h264::{HardwareH264, HW_COLOR};
-use ghee::looper::{Pacer, RenderTarget, MAX_DT};
-use ghee::output::FixedPacer;
+use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
+use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
 use ghee::scene::{ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
@@ -30,6 +30,9 @@ pub const DEFAULT_SIZE: (i32, i32) = (320, 240);
 
 /// The KMS scanout, as `--display` names it.
 pub const KMS: &str = "kms";
+
+/// The quality of a saved JPEG, `ghee render`'s own.
+const JPEG_QUALITY: u8 = 75;
 
 /// A failure reported to a host. `scene` marks what the caller wrote: the
 /// scene, the GLSL, a param name, a feed. Anything else is the driver or the
@@ -260,6 +263,8 @@ pub struct Session {
     prev: Option<f64>,
     period: Option<f64>,
     frame: u64,
+    /// The tick of the frame drawn last, None before the first.
+    drawn: Option<u64>,
     lit: bool,
     /// The renderer's text_errors_seq() at the console's last look.
     text_errors: u64,
@@ -465,6 +470,7 @@ impl Session {
             prev: None,
             period: None,
             frame: 0,
+            drawn: None,
             lit: false,
             text_errors: u64::MAX,
         })
@@ -543,6 +549,7 @@ impl Session {
                 d.turn_on().map_err(system_fault)?;
             }
         }
+        self.drawn = Some(self.frame);
         self.frame += 1;
         let end = monotonic();
         if let Some(c) = self.console.as_ref() {
@@ -699,6 +706,46 @@ impl Session {
             return Err(Fault::system("nothing is drawn yet"));
         }
         Ok(&self.buf)
+    }
+
+    /// Write the last frame to an image file: a .png, or a .jpg, which holds
+    /// no alpha. A run of `#` or a printf field in `path` takes the tick of
+    /// that frame, as `ghee render -o` numbers its files.
+    pub fn save(&self, path: &str) -> Outcome<()> {
+        let data = self.pixels()?;
+        let index = self.drawn.unwrap_or_default() as i64;
+        let path = expand_pattern(path, index).map_err(scene_fault)?;
+        let (width, height) = self.size();
+        let components = self.renderer.components;
+        let lower = path.to_ascii_lowercase();
+        let bytes = if lower.ends_with(".png") {
+            encode_png(Frame {
+                data,
+                width,
+                height,
+                components,
+            })
+        } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+            let rgb: Vec<u8> = match components {
+                4 => data.chunks_exact(4).flat_map(|p| &p[..3]).copied().collect(),
+                _ => data.to_vec(),
+            };
+            encode_jpeg(
+                Frame {
+                    data: &rgb,
+                    width,
+                    height,
+                    components: 3,
+                },
+                JPEG_QUALITY,
+            )
+        } else {
+            return Err(Fault::scene(format!(
+                "save writes a .png or a .jpg file, got {path}"
+            )));
+        };
+        let bytes = bytes.map_err(system_fault)?;
+        std::fs::write(&path, bytes).map_err(|e| Fault::system(format!("{path}: {e}")))
     }
 
     /// Set one live param, with no recompile. A string param of a text's name

@@ -44,6 +44,7 @@ tick = h.skip()            # the same tick, with no draw
 h.size          # (width, height)
 h.components    # 3 for RGB, 4 for RGBA
 h.pixels()      # the last frame, row-major (height, width, components)
+h.save("frame.####.png")   # the last frame as a .png or a .jpg file
 h.close()       # also a context manager
 ```
 
@@ -72,6 +73,10 @@ pins both to `frame * S`.
 alpha that the output pass wrote, with the colour premultiplied by it.
 
 `skip` takes the tick and draws nothing, the panel keeps its last frame.
+
+`save` writes the last frame to a `.png` file, or to a `.jpg`, which holds
+no alpha. A run of `#` in the name takes the number of the frame's tick, as
+`ghee render -o` numbers its files.
 
 `stats` serves the console on `127.0.0.1`, and a `(host, port)` pair binds
 it elsewhere. Anyone who reaches the port can change params, so bind beyond

@@ -204,6 +204,9 @@
   text's fonts.
 - Name the new keyword in the TypeError of `ghee.Draw` given `code=`,
   `place=` or `alpha=`, as the scene JSON names the new key.
+- Write the last frame to a `.png` or a `.jpg` file with `h.save(path)`,
+  numbered by its tick through a run of `#` as `ghee render -o` numbers
+  its files.
 
 ## 0.4.0 - 2026-08-06
 

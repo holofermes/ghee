@@ -332,6 +332,14 @@ impl Handle {
         Ok(PyBytes::new(py, data))
     }
 
+    /// Write the last frame to an image file: a .png, or a .jpg, which holds
+    /// no alpha. A run of `#` or a printf field in `path` takes the number of
+    /// that frame's tick, as `ghee render -o` numbers its files.
+    fn save(&mut self, path: PathBuf) -> PyResult<()> {
+        let path = path.to_string_lossy().into_owned();
+        self.held.get()?.save(&path).map_err(fault)
+    }
+
     /// The components each pixel of pixels() carries: 3 for RGB, 4 for RGBA.
     #[getter]
     fn components(&mut self) -> PyResult<i32> {

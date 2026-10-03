@@ -113,6 +113,9 @@ bool ghee_mp_set_asset_rows(GheeScene *g, const char *name, const void *data, in
 bool ghee_mp_set_asset_rect(GheeScene *g, const char *name, int level,
                             int x, int y, int w, int h, const void *data);
 void ghee_mp_drop_asset(GheeScene *g, const char *name);
+// Whether a program of the committed scene, a pass's or a layer's, reads the
+// uniform `name`. The compiler drops a uniform that no code it keeps reads.
+bool ghee_mp_reads(GheeScene *g, const char *name);
 // A layer: quads drawn by a pass into its own buffer after its full-screen
 // quad, with a vertex and a fragment shader of their own, in the order of the
 // ghee_mp_add_layer calls. A vertex holds 1 to 4 vec4 attributes, ghee_a0 to

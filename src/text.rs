@@ -355,13 +355,23 @@ impl Text {
 
     /// Lay out `words` and pack them. Fails when the fonts were never loaded.
     pub fn build(&self, words: &str) -> Result<Layout> {
+        self.lay(words, true)
+    }
+
+    /// Lay out `words` with no texture of curves, as place() does. Fails when
+    /// the fonts were never loaded.
+    pub fn place(&self, words: &str) -> Result<Layout> {
+        self.lay(words, false)
+    }
+
+    fn lay(&self, words: &str, curves: bool) -> Result<Layout> {
         match &self.data {
             None => bail!(
                 "text '{}': font '{}' was never loaded, the scene was built without a directory",
                 self.name,
                 self.fonts[0]
             ),
-            Some(fonts) => Ok(build(fonts, words, self.align)),
+            Some(fonts) => Ok(lay(fonts, words, self.align, curves)),
         }
     }
 
@@ -1059,10 +1069,23 @@ type Packed = (usize, [f64; 2], [f64; 2]);
 /// Lay out `words` in `fonts`, in order, and pack glyphs and grid into
 /// texels. A font that failed to load or to parse drops out with a fault.
 pub fn build(fonts: &[Font], words: &str, align: Align) -> Layout {
+    lay(fonts, words, align, true)
+}
+
+/// Lay out `words` as build() does, with no texture of curves: the layout
+/// of a text that the MTSDF fill alone draws. Its Built holds no texels, no
+/// uniforms and no glyph quads.
+pub fn place(fonts: &[Font], words: &str, align: Align) -> Layout {
+    lay(fonts, words, align, false)
+}
+
+/// build() when `curves` holds, place() otherwise.
+fn lay(fonts: &[Font], words: &str, align: Align, curves: bool) -> Layout {
     let faces = faces(fonts);
     let (mut placed, width, height) = layout(&faces, words, align);
     let (glyphs, mut faults) = settle(
         &mut placed,
+        curves,
         |f, gid| {
             faces[f]
                 .as_ref()
@@ -1084,7 +1107,7 @@ pub fn build(fonts: &[Font], words: &str, align: Align) -> Layout {
         });
     let failed: Vec<Fault> = failed.map(Fault::Font).collect();
     faults.splice(0..0, failed);
-    finish(&placed, &glyphs, faults, width, height)
+    finish(&placed, &glyphs, faults, width, height, curves)
 }
 
 /// Settle what each placed character draws. `outline` reads the outline of
@@ -1092,9 +1115,11 @@ pub fn build(fonts: &[Font], words: &str, align: Align) -> Layout {
 /// given the index of the glyph's font and its glyph id. A glyph with no
 /// outline draws nothing for a character that needs no ink, its bitmap where
 /// it has one, and an error box otherwise. A glyph past a limit draws an
-/// error box. Returns the glyph of each ink, and the faults met.
+/// error box, and BAND_CURVES limits a glyph only when `curves` packs it into
+/// a texture of curves. Returns the glyph of each ink, and the faults met.
 fn settle(
     placed: &mut [Placed],
+    curves: bool,
     mut outline: impl FnMut(usize, u16) -> std::result::Result<Option<Glyph>, String>,
     mut bitmap: impl FnMut(usize, u16) -> bool,
 ) -> (HashMap<Ink, Glyph>, Vec<Fault>) {
@@ -1113,7 +1138,8 @@ fn settle(
             // glyph of no more curves fits any band.
             match &g {
                 Some(g)
-                    if g.curves.len() > BAND_CURVES
+                    if curves
+                        && g.curves.len() > BAND_CURVES
                         && (bands(&g.curves, 1, BANDS, BAND_EPS / g.size[1]).is_none()
                             || bands(&g.curves, 0, BANDS, BAND_EPS / g.size[0]).is_none()) =>
                 {
@@ -1168,15 +1194,21 @@ fn settle(
     (glyphs, faults)
 }
 
-/// Pack the placed glyphs into a layout of a block `width` x `height` em.
+/// Pack the placed glyphs into a layout of a block `width` x `height` em,
+/// with a texture of curves when `curves` holds.
 fn finish(
     placed: &[Placed],
     glyphs: &HashMap<Ink, Glyph>,
     mut faults: Vec<Fault>,
     width: f64,
     height: f64,
+    curves: bool,
 ) -> Layout {
-    let built = match pack_fitting(placed, glyphs, height) {
+    let packed = match curves {
+        true => pack_fitting(placed, glyphs, height),
+        false => Ok(boxes_alone(placed, glyphs, height)),
+    };
+    let built = match packed {
         Ok(mut built) => {
             built.size = [width, height];
             let placement = |p: &Placed, font: usize, gid: u16| Placement {
@@ -1204,6 +1236,83 @@ fn finish(
         }
     };
     Layout { built, faults }
+}
+
+/// The Built of a layout with no texture of curves: the error boxes alone.
+fn boxes_alone(placed: &[Placed], glyphs: &HashMap<Ink, Glyph>, height: f64) -> Built {
+    let inked = inked(placed, glyphs, |_| 0);
+    Built {
+        width: 0,
+        height: 0,
+        texels: Vec::new(),
+        size: [0.0; 2],
+        uniforms: Vec::new(),
+        quads: glyph_quads(&inked, false, 0, height),
+        boxes: glyph_quads(&inked, true, 0, height),
+        glyphs: Vec::new(),
+        colour: Vec::new(),
+    }
+}
+
+/// Each placed glyph drawn from the curves, with its box: where its data
+/// starts, as `start` gives it for its ink, and its corner on the lattices
+/// that the cells decode.
+fn inked<'a>(
+    placed: &'a [Placed],
+    glyphs: &HashMap<Ink, Glyph>,
+    start: impl Fn(Ink) -> usize,
+) -> Vec<(&'a Placed, Packed)> {
+    // Origins sit on the 1/ORIGIN_SCALE em lattice and box corners on the
+    // 1/BOX_SCALE em one, so a glyph that spans cells decodes to the same box
+    // in each of them.
+    let snap = |v: f64| (v * ORIGIN_SCALE).round() / ORIGIN_SCALE;
+    placed
+        .iter()
+        .filter_map(|p| {
+            let ink = p.ink.and_then(Ink::curves)?;
+            let g = &glyphs[&ink];
+            Some((
+                p,
+                (
+                    start(ink),
+                    [snap(p.x) + g.min[0], snap(p.y) + g.min[1]],
+                    g.size,
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// The quads over the glyphs of `inked`, the error boxes when `boxed`, the
+/// glyphs drawn from outlines otherwise, `nb` bands to an axis, laid over a
+/// block `height` em tall.
+fn glyph_quads(inked: &[(&Placed, Packed)], boxed: bool, nb: usize, height: f64) -> Quads {
+    let mut floats = Vec::new();
+    let mut count = 0;
+    for (p, (at, lo, size)) in inked {
+        if (p.ink == Some(Ink::Box)) != boxed {
+            continue;
+        }
+        // The box flips to y down, the way a draw's caller counts.
+        let a1 = [
+            lo[0],
+            height - lo[1] - size[1],
+            lo[0] + size[0],
+            height - lo[1],
+        ];
+        let a2 = [(at + 1) as f64, nb as f64, nb as f64, 0.0];
+        let a3 = [p.line as f64, p.span[0], p.span[1], 0.0];
+        for corner in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+            let a0 = [corner[0], corner[1], p.index as f64, p.word as f64];
+            floats.extend([a0, a1, a2, a3].iter().flatten().map(|v| *v as f32));
+        }
+        count += 1;
+    }
+    Quads {
+        floats,
+        per_vertex: QUAD_FLOATS,
+        count,
+    }
 }
 
 /// pack() at the most bands to an axis, up to BANDS, that fit the texture.
@@ -1315,22 +1424,9 @@ fn pack(
     }
 
     // A grid over the ink of every glyph. Each cell lists the glyphs whose box,
-    // grown by INK_MARGIN, reaches into it.
-    // Origins and the grid corner sit on the 1/ORIGIN_SCALE em lattice and box
-    // corners on the 1/BOX_SCALE em one, so a glyph that spans cells decodes to
-    // the same box in each of them.
-    let snap = |v: f64| (v * ORIGIN_SCALE).round() / ORIGIN_SCALE;
-    let inked: Vec<(&Placed, Packed)> = placed
-        .iter()
-        .filter_map(|p| {
-            let ink = p.ink.and_then(Ink::curves)?;
-            let (at, g) = (starts[&ink], &glyphs[&ink]);
-            Some((
-                p,
-                (at, [snap(p.x) + g.min[0], snap(p.y) + g.min[1]], g.size),
-            ))
-        })
-        .collect();
+    // grown by INK_MARGIN, reaches into it. The grid corner sits on the
+    // 1/ORIGIN_SCALE em lattice, as the origins do.
+    let inked = inked(placed, glyphs, |ink| starts[&ink]);
     let boxes: Vec<(Packed, [f64; 4])> = inked
         .iter()
         .map(|&(_, (at, lo, size))| {
@@ -1419,39 +1515,11 @@ fn pack(
     for (i, t) in tex.iter().enumerate() {
         texels[i * 4..i * 4 + 4].copy_from_slice(t);
     }
-    let quads = |boxed: bool| {
-        let mut floats = Vec::new();
-        let mut count = 0;
-        for (p, (at, lo, size)) in &inked {
-            if (p.ink == Some(Ink::Box)) != boxed {
-                continue;
-            }
-            // The box flips to y down, the way a draw's caller counts.
-            let a1 = [
-                lo[0],
-                height - lo[1] - size[1],
-                lo[0] + size[0],
-                height - lo[1],
-            ];
-            let a2 = [(at + 1) as f64, nb as f64, nb as f64, 0.0];
-            let a3 = [p.line as f64, p.span[0], p.span[1], 0.0];
-            for corner in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
-                let a0 = [corner[0], corner[1], p.index as f64, p.word as f64];
-                floats.extend([a0, a1, a2, a3].iter().flatten().map(|v| *v as f32));
-            }
-            count += 1;
-        }
-        Quads {
-            floats,
-            per_vertex: QUAD_FLOATS,
-            count,
-        }
-    };
     Ok(Built {
         width: TEX_W as u32,
         height: tex_h as u32,
-        quads: quads(false),
-        boxes: quads(true),
+        quads: glyph_quads(&inked, false, nb, height),
+        boxes: glyph_quads(&inked, true, nb, height),
         glyphs: Vec::new(),
         colour: Vec::new(),
         texels,
@@ -2230,6 +2298,7 @@ mod tests {
         placed[2].span = [1.0, 1.5];
         let (glyphs, faults) = settle(
             &mut placed,
+            true,
             |_, gid| {
                 Ok(Some(lines_glyph(if gid == 7 {
                     BAND_CURVES + 1
@@ -2269,7 +2338,7 @@ mod tests {
             '😀',
         ];
         let mut placed: Vec<Placed> = chars.iter().map(|c| at_origin(3, *c)).collect();
-        let (glyphs, faults) = settle(&mut placed, |_, _| Ok(None), |_, _| false);
+        let (glyphs, faults) = settle(&mut placed, true, |_, _| Ok(None), |_, _| false);
         let boxed: Vec<char> = placed
             .iter()
             .filter(|p| p.ink == Some(Ink::Box))

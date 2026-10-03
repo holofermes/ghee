@@ -624,12 +624,14 @@ and the error reads as shown:
 A text past one of these keeps the scene running, logs the problem once,
 and the console shows it:
 
-- a 1024x2048 data texture for the curves of a text, and 4 glyphs over one
-  spot of it. Words past either leave the last words that fit, and a scene
-  whose first words do not fit draws none:
+- a 1024x2048 data texture for the curves of a text that `_cover` or a draw
+  of the slug fill reads, and 4 glyphs over one spot of it. Words past
+  either leave the last words that fit, and a scene whose first words do
+  not fit draws none:
   `text 't': the words need a 1024x8192 texture, and a VC4 holds 1024x2048
   at most`, `text 't': more than 4 glyphs overlap at one spot`.
-- 64 curves in one band of a glyph. The glyph draws an error box:
+- 64 curves in one band of a glyph in that texture. The glyph draws an
+  error box:
   `text 't': 'X' has more than 64 curves in one band`.
 - a 2048x2048 atlas for the MTSDF fields of a font, and one for the colour
   glyphs of a text, room for 132 emoji of Noto Color Emoji. A glyph past

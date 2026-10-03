@@ -193,6 +193,10 @@
   and its error in the README.
 - Report the problems of a scene's texts in `/stats` as `text_errors`, a
   line each, where they stood in `error` while no compile error did.
+- Build the texture of a text's curves only when the scene reads it,
+  through `<name>_cover` or a draw of the slug fill, so words that the
+  MTSDF fill alone draws lay out with no curve data and meet neither the
+  1024x2048 texture nor the 64 curves of a band.
 
 ## 0.4.0 - 2026-08-06
 

@@ -1554,6 +1554,15 @@ static void mp_forget_everywhere(GheeScene *g, int a) {
     for (int l = 0; l < g->mp_nlayer; l++) mp_forget_asset(&g->mp_layer[l].loc, a);
 }
 
+bool ghee_mp_reads(GheeScene *g, const char *name) {
+    make_current(g);
+    for (int p = 0; p < g->mp_count; p++)
+        if (g->mp_program[p] && glGetUniformLocation(g->mp_program[p], name) >= 0) return true;
+    for (int l = 0; l < g->mp_nlayer; l++)
+        if (glGetUniformLocation(g->mp_layer[l].program, name) >= 0) return true;
+    return false;
+}
+
 // Upload one named image asset. Every pass whose program reads the name gets
 // it as a sampler uniform <name> and a vec2 <name>_size of (width, height),
 // bound after the channels and the arrays. An asset outlives the scene: a

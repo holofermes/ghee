@@ -1936,25 +1936,23 @@ fn words_that_fit_no_texture_at_setup_draw_nothing_and_the_scene_runs() {
 }
 
 #[test]
-fn a_draw_keeps_its_last_words_and_their_boxes_past_words_that_fit_no_texture() {
+fn a_slug_draw_keeps_its_last_words_and_their_boxes_past_words_that_fit_no_texture() {
     let fit = Fit {
         x: 8.0,
         y: 8.0,
         ppem: 48.0,
     };
     let Some((_g, mut r)) = gpu(W, H) else { return };
-    for fill in FILLS {
-        let doc = filled(hazard_scene("Missing.ttf", "x", fit), fill);
-        let before = render(&mut r, &loaded(&doc));
-        assert!(r.set_text("label", &"x".repeat(400_000)).unwrap());
-        r.set_time(Some(0.0));
-        assert!(r.render(None).unwrap() == before.as_slice(), "{fill}");
-        // The box stays, and so does the problem behind it.
-        let errors = r.text_errors();
-        assert_eq!(errors.len(), 2, "{fill}: {errors:?}");
-        assert!(errors[0].contains("Missing.ttf"), "{fill}: {errors:?}");
-        assert!(errors[1].contains("VC4"), "{fill}: {errors:?}");
-    }
+    let doc = filled(hazard_scene("Missing.ttf", "x", fit), "slug");
+    let before = render(&mut r, &loaded(&doc));
+    assert!(r.set_text("label", &"x".repeat(400_000)).unwrap());
+    r.set_time(Some(0.0));
+    assert!(r.render(None).unwrap() == before.as_slice());
+    // The box stays, and so does the problem behind it.
+    let errors = r.text_errors();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors[0].contains("Missing.ttf"), "{errors:?}");
+    assert!(errors[1].contains("VC4"), "{errors:?}");
 }
 
 // Draws

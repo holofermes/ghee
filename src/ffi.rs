@@ -138,6 +138,7 @@ extern "C" {
         data: *const c_void,
     ) -> bool;
     pub fn ghee_mp_drop_asset(g: *mut GheeScene, name: *const c_char);
+    pub fn ghee_mp_reads(g: *mut GheeScene, name: *const c_char) -> bool;
     pub fn ghee_mp_add_layer(
         g: *mut GheeScene,
         pass: c_int,

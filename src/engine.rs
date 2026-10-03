@@ -577,6 +577,10 @@ pub struct Renderer {
     /// The words that set_text last took for each text, shown or held, by
     /// the text's name. The same words again lay out nothing.
     words: std::cell::RefCell<HashMap<String, String>>,
+    /// The texts whose texture of curves a program of the scene reads: a
+    /// pass or a draw that calls `<name>_cover`, or a draw of the slug fill.
+    /// Any other text lays out with no such texture.
+    curves: HashSet<String>,
     /// The colour atlas of each drawn text whose words held colour glyphs,
     /// by the text's name.
     colours: std::cell::RefCell<HashMap<String, ColourAtlas>>,
@@ -627,6 +631,7 @@ impl Renderer {
             atlases: std::cell::RefCell::new(Vec::new()),
             held: std::cell::RefCell::new(HashMap::new()),
             words: std::cell::RefCell::new(HashMap::new()),
+            curves: HashSet::new(),
             colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(false),
             atlas_font: Box::new(|fonts| Arc::new(text::AtlasFont(fonts.to_vec()))),
@@ -1051,6 +1056,13 @@ impl Renderer {
         }
         self.held.borrow_mut().clear();
         self.words.borrow_mut().clear();
+        self.curves.clear();
+        for t in &scene.texts {
+            let tex = CString::new(text::internal(&t.name, "_tex"))?;
+            if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
+                self.curves.insert(t.name.clone());
+            }
+        }
         // A colour atlas starts again with the words that need it.
         self.colours.borrow_mut().clear();
         self.set_atlases(scene)?;
@@ -1504,7 +1516,10 @@ impl Renderer {
         if self.words.borrow().get(name).is_some_and(|w| w == words) {
             return Ok(true);
         }
-        let laid = text.build(words)?;
+        let laid = match self.curves.contains(name) {
+            true => text.build(words)?,
+            false => text.place(words)?,
+        };
         self.held.borrow_mut().remove(name);
         if laid.built.is_some() {
             if let Some(i) = self.atlas_of(name) {
@@ -1592,15 +1607,18 @@ impl Renderer {
         let colour = self.colour_quads(text, &built.colour, &mut faults)?;
         boxes.extend(&colour.1);
         self.text_faults(text, &faults, true);
-        self.set_asset(
-            &text::internal(name, "_tex"),
-            built.width,
-            built.height,
-            4,
-            false,
-            AssetData::U8(&built.texels),
-        )?;
-        self.scene_asset(&text::internal(name, "_tex"));
+        // A layout with no texture of curves leaves the texture alone.
+        if built.width > 0 {
+            self.set_asset(
+                &text::internal(name, "_tex"),
+                built.width,
+                built.height,
+                4,
+                false,
+                AssetData::U8(&built.texels),
+            )?;
+            self.scene_asset(&text::internal(name, "_tex"));
+        }
         for (suffix, v) in &built.uniforms {
             let uniform = text::internal(name, suffix);
             for (_, idx) in &self.mp {
@@ -2775,6 +2793,40 @@ mod tests {
         assert_eq!(calls, ["shared"]); // One upload feeds the three passes that read it.
         for c in 0..3 {
             assert!((mean(&channel(&f, c)) as i64 - 128).abs() <= 2);
+        }
+    }
+
+    #[test]
+    fn a_text_lays_out_its_curves_only_for_a_program_that_reads_them() {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let draw = |fill: &str, fragment: &str| json!({"fill": fill, "draws": [{"text": "t", "px_per_em": 20, "fragment": fragment}]});
+        let white = "void main(){ gl_FragColor = vec4(glyph_cover()); }";
+        let covered = "void main(){ gl_FragColor = vec4(t_cover(glyph_em, 20.0)); }";
+        let pass_reads = "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }";
+        let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
+        let Some((_g, mut r)) = gpu() else { return };
+        for (code, how, reads) in [
+            (black, draw("mtsdf", white), false),
+            (pass_reads, json!({}), true),
+            (black, draw("mtsdf", covered), true),
+            (black, draw("slug", white), true),
+        ] {
+            let mut pass = json!({"name": "main", "code": code});
+            let mut text = json!({"value": "AV", "font": "DejaVuSans-ASCII.ttf"});
+            if let Some(d) = how.get("draws") {
+                pass["draws"] = d.clone();
+                text["fill"] = how["fill"].clone();
+            }
+            let mut sc = Scene::from_dict(
+                &json!({"version": 1, "texts": {"t": text}, "passes": [pass]}),
+                None,
+                None,
+            )
+            .unwrap();
+            sc.load_assets(fonts).unwrap();
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            let held = r.scene_assets.borrow().iter().any(|n| n == "ghee_t_tex");
+            assert_eq!(held, reads, "{code} {how}");
         }
     }
 

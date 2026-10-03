@@ -1619,10 +1619,10 @@ function adoptFilters(doc){
 // shader
 function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
 // A layer with no fragment draws white letters. Vertex GLSL takes the place of
-// font_size, the size of the words centred in the pass.
+// font_size and at, which place the words with no GLSL.
 function setFragment(d, code){ if (code.trim()) d.fragment = code; else delete d.fragment; }
 function setVertex(d, code){
-  if (code.trim()){ d.vertex = code; delete d.font_size; } else delete d.vertex;
+  if (code.trim()){ d.vertex = code; delete d.font_size; delete d.at; } else delete d.vertex;
 }
 // hand-edited code and layers: merge keeps them as they are
 CODE.ta.addEventListener("input", ()=>{

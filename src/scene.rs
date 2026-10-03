@@ -129,11 +129,12 @@ const PASS_KEYS: [&str; 10] = [
 ];
 
 /// The keys of a layer.
-pub(crate) const LAYER_KEYS: [&str; 8] = [
+pub(crate) const LAYER_KEYS: [&str; 9] = [
     "name",
     "text",
     "vertex",
     "font_size",
+    "at",
     "fragment",
     "blend",
     "pad",
@@ -1305,10 +1306,18 @@ pub struct Layer {
 pub enum Vertex {
     /// The layer's `vertex`: GLSL that defines `vec2 glyph_place(vec2 em)`.
     Glsl(String),
-    /// The layer's `font_size`: the block centred in the pass at this many
-    /// pixels per em.
-    Centred(f64),
+    /// No `vertex`: ghee places the block. `font_size` holds its pixels per
+    /// em, None the largest size that fits the room, and `at` the pass pixel
+    /// of its top left, y down, None the block centred in the pass.
+    Placed {
+        font_size: Option<f64>,
+        at: Option<[f64; 2]>,
+    },
 }
+
+/// The margin on every edge of the room that fits a block with no
+/// `font_size`, as a fraction of the pass's shorter side.
+const FIT_MARGIN: f64 = 0.05;
 
 /// The fragment GLSL of a layer with none of its own.
 const WHITE: &str = "void main() { gl_FragColor = vec4(glyph_cover()); }";
@@ -1365,16 +1374,43 @@ fn layer_what(pass: &str, k: usize, label: Option<&str>) -> String {
 
 impl Layer {
     /// The GLSL that defines glyph_place for the layer.
+    ///
+    /// A block with no `font_size` takes the largest size at which it fits
+    /// its room: the pass less FIT_MARGIN on every edge, or with `at`, the
+    /// pass right of and below `at` less FIT_MARGIN on the right and bottom
+    /// edges. The size follows the words live, as `<name>_size` does.
     pub fn vertex_glsl(&self) -> String {
-        match &self.vertex {
-            Vertex::Glsl(v) => v.clone(),
-            Vertex::Centred(px) => {
-                let (name, px) = (&self.text, py_float(*px));
-                format!(
-                    "vec2 glyph_place(vec2 em) {{ return (resolution - {name}_size * {px}) * 0.5 \
-                     + em * {px}; }}"
-                )
+        let (font_size, at) = match &self.vertex {
+            Vertex::Glsl(v) => return v.clone(),
+            Vertex::Placed { font_size, at } => (*font_size, *at),
+        };
+        let size = format!("{}_size", self.text);
+        let at = at.map(|[x, y]| format!("vec2({}, {})", py_float(x), py_float(y)));
+        let fit = |room: &str| {
+            format!(
+                "    float ghee_m = {} * min(resolution.x, resolution.y);\n    \
+                 vec2 ghee_s = ({room}) / max({size}, vec2(1.0e-6));\n    \
+                 float ghee_fs = max(min(ghee_s.x, ghee_s.y), 0.0);\n",
+                py_float(FIT_MARGIN)
+            )
+        };
+        match (font_size.map(py_float), at) {
+            (Some(px), None) => format!(
+                "vec2 glyph_place(vec2 em) {{ return (resolution - {size} * {px}) * 0.5 \
+                 + em * {px}; }}"
+            ),
+            (Some(px), Some(at)) => {
+                format!("vec2 glyph_place(vec2 em) {{ return {at} + em * {px}; }}")
             }
+            (None, None) => format!(
+                "vec2 glyph_place(vec2 em) {{\n{}    \
+                 return (resolution - {size} * ghee_fs) * 0.5 + em * ghee_fs;\n}}",
+                fit("resolution - 2.0 * ghee_m")
+            ),
+            (None, Some(at)) => format!(
+                "vec2 glyph_place(vec2 em) {{\n{}    return {at} + em * ghee_fs;\n}}",
+                fit(&format!("resolution - ghee_m - {at}"))
+            ),
         }
     }
 
@@ -1421,23 +1457,41 @@ impl Layer {
             ),
         };
         let given = |key: &str| o.get(key).filter(|v| !v.is_null());
-        let vertex = match (given("vertex"), given("font_size")) {
-            (Some(_), Some(_)) => bail!("{what} takes 'vertex' or 'font_size', got both"),
-            (Some(_), None) => Vertex::Glsl(glsl(
+        // The vertex GLSL places every point of the block, so it takes neither
+        // a size nor a corner.
+        if given("vertex").is_some() {
+            if let Some(k) = ["font_size", "at"].into_iter().find(|k| given(k).is_some()) {
+                bail!("{what} takes 'vertex' or '{k}', got both");
+            }
+        }
+        let vertex = match given("vertex") {
+            Some(_) => Vertex::Glsl(glsl(
                 "vertex",
                 "vertex GLSL that defines vec2 glyph_place(vec2 em)",
             )?),
-            (None, Some(v)) => match v.as_f64() {
-                Some(f) if f.is_finite() && f > 0.0 => Vertex::Centred(f),
-                _ => bail!(
-                    "{what} font_size needs a number of pixels above 0, got {}",
-                    py_repr(v)
-                ),
+            None => Vertex::Placed {
+                font_size: match given("font_size") {
+                    None => None,
+                    Some(v) => match v.as_f64() {
+                        Some(f) if f.is_finite() && f > 0.0 => Some(f),
+                        _ => bail!(
+                            "{what} font_size needs a number of pixels above 0, got {}",
+                            py_repr(v)
+                        ),
+                    },
+                },
+                at: match given("at") {
+                    None => None,
+                    Some(v) => match number_list(v, 2).as_deref() {
+                        Some(&[x, y]) if x.is_finite() && y.is_finite() => Some([x, y]),
+                        _ => bail!(
+                            "{what} at needs [x, y], the pass pixel of the words' top left, \
+                             got {}",
+                            py_repr(v)
+                        ),
+                    },
+                },
             },
-            (None, None) => bail!(
-                "{what} needs 'font_size', the pixels per em of the words centred in \
-                 the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)"
-            ),
         };
         let fragment = match given("fragment") {
             None => None,
@@ -1488,9 +1542,18 @@ impl Layer {
         }
         d.insert("text".to_string(), Value::from(self.text.clone()));
         match &self.vertex {
-            Vertex::Glsl(v) => d.insert("vertex".to_string(), Value::from(v.clone())),
-            Vertex::Centred(px) => d.insert("font_size".to_string(), Value::from(*px)),
-        };
+            Vertex::Glsl(v) => {
+                d.insert("vertex".to_string(), Value::from(v.clone()));
+            }
+            Vertex::Placed { font_size, at } => {
+                if let Some(px) = font_size {
+                    d.insert("font_size".to_string(), Value::from(*px));
+                }
+                if let Some(at) = at {
+                    d.insert("at".to_string(), Value::from(at.to_vec()));
+                }
+            }
+        }
         if let Some(f) = &self.fragment {
             d.insert("fragment".to_string(), Value::from(f.clone()));
         }
@@ -3275,7 +3338,7 @@ mod tests {
             (
                 layer(json!({"glow": 1})),
                 "scene: pass 'main' layer 't' takes no 'glow', only name, text, vertex, font_size, \
-                 fragment, blend, pad and emoji",
+                 at, fragment, blend, pad and emoji",
             ),
             (
                 json!({"version": 1, "passes": [pass(json!({"channels": [{"bufer": "main"}]}))]}),

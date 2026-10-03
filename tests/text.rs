@@ -2402,6 +2402,56 @@ fn a_layer_with_no_vertex_centres_its_words_and_with_no_fragment_draws_them_whit
 }
 
 #[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_layer_with_no_vertex_fits_the_pass_or_takes_its_font_size_and_its_top_left() {
+    let (w, h) = (320, 150);
+    let words = "AV To\nghee";
+    let laid = lay(SANS, words, Align::Left);
+    let (fw, fh) = (w as f64, h as f64);
+    // A block with no font_size fits its room less a margin of 1/20 of the
+    // pass's shorter side.
+    let m = 0.05 * fw.min(fh);
+    let fits = |rw: f64, rh: f64| (rw / laid.width).min(rh / laid.height);
+    let centred = |ppem: f64| Fit {
+        x: (fw - laid.width * ppem) / 2.0,
+        y: (fh - laid.height * ppem) / 2.0,
+        ppem,
+    };
+    let cases = [
+        (json!({}), centred(fits(fw - 2.0 * m, fh - 2.0 * m))),
+        (json!({"font_size": 40}), centred(40.0)),
+        (
+            json!({"at": [14, 7.5]}),
+            Fit {
+                x: 14.0,
+                y: 7.5,
+                ppem: fits(fw - m - 14.0, fh - m - 7.5),
+            },
+        ),
+        (
+            json!({"font_size": 40, "at": [-6, 30]}),
+            Fit {
+                x: -6.0,
+                y: 30.0,
+                ppem: 40.0,
+            },
+        ),
+    ];
+    let (_g, mut r) = gpu(w, h);
+    for (keys, fit) in cases {
+        let mut doc = layer_scene(SANS, words, Align::Left, fit);
+        let mut layer = json!({"text": "label", "fragment": WHITE});
+        layer
+            .as_object_mut()
+            .unwrap()
+            .extend(keys.as_object().unwrap().clone());
+        doc["passes"][0]["layers"] = json!([layer]);
+        let frame = render(&mut r, &loaded(&doc));
+        assert_draws(&frame, w, 0, &laid, fit, &keys.to_string());
+    }
+}
+
+#[test]
 fn layers_round_trip_and_over_and_no_pad_are_the_defaults() {
     let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
     doc["passes"][0]["layers"] = json!([
@@ -2413,13 +2463,18 @@ fn layers_round_trip_and_over_and_no_pad_are_the_defaults() {
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
          "blend": "replace"},
         {"text": "label", "font_size": 48.0},
+        {"text": "label", "at": [0.0, 16.0]},
+        {"text": "label", "font_size": 12.0, "at": [2.0, -4.5]},
+        {"text": "label"},
     ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let back = sc.to_dict();
-    assert_eq!(
-        back["passes"][0]["layers"][4],
-        doc["passes"][0]["layers"][4]
-    );
+    for k in 4..8 {
+        assert_eq!(
+            back["passes"][0]["layers"][k],
+            doc["passes"][0]["layers"][k]
+        );
+    }
     assert_eq!(
         back["passes"][0]["layers"][0],
         doc["passes"][0]["layers"][0]
@@ -2546,13 +2601,22 @@ fn a_layer_declaration_names_what_it_lacks() {
             "the 1st layer of pass 'main' has no 'text', the name of a scene text",
         ),
         (
-            one(json!({"text": "label", "fragment": WHITE})),
-            "pass 'main' layer 'label' needs 'font_size', the pixels per em of the words centred \
-             in the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)",
-        ),
-        (
             one(json!({"text": "label", "vertex": place, "font_size": 32})),
             "pass 'main' layer 'label' takes 'vertex' or 'font_size', got both",
+        ),
+        (
+            one(json!({"text": "label", "vertex": place, "at": [0, 0]})),
+            "pass 'main' layer 'label' takes 'vertex' or 'at', got both",
+        ),
+        (
+            one(json!({"text": "label", "at": [4]})),
+            "pass 'main' layer 'label' at needs [x, y], the pass pixel of the words' top left, \
+             got [4]",
+        ),
+        (
+            one(json!({"text": "label", "at": "4, 8"})),
+            "pass 'main' layer 'label' at needs [x, y], the pass pixel of the words' top left, \
+             got '4, 8'",
         ),
         (
             one(json!({"text": "label", "font_size": 0})),

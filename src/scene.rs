@@ -1121,6 +1121,9 @@ impl Channel {
 /// its own `void main()`, premultiplied by alpha.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draw {
+    /// The draw's own name, unique among the draws of its pass, as
+    /// is_draw_name() takes it. None goes by its text, as draw_labels() says.
+    pub name: Option<String>,
     /// A name in the scene's texts.
     pub text: String,
     pub vertex: Vertex,
@@ -1148,6 +1151,56 @@ pub enum Vertex {
 /// The fragment GLSL of a draw with none of its own.
 const WHITE: &str = "void main() { gl_FragColor = vec4(glyph_cover()); }";
 
+/// A draw's `name`: ASCII letters, digits, '_' and '-'. A name holds no space,
+/// so it never reads as the label of a draw without one, such as "t 2".
+pub fn is_draw_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// What each draw of a pass goes by, from its name and its text, in order:
+/// its name, else its text, numbered from the text's second draw without a
+/// name, as "t", "t 2", "t 3". None for a draw with neither.
+pub fn draw_labels<'a>(
+    draws: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
+) -> Vec<Option<String>> {
+    let mut seen: Vec<&str> = Vec::new();
+    draws
+        .into_iter()
+        .map(|(name, text)| match (name, text) {
+            (Some(n), _) => Some(n.to_string()),
+            (None, Some(t)) => {
+                seen.push(t);
+                Some(match seen.iter().filter(|s| **s == t).count() {
+                    1 => t.to_string(),
+                    n => format!("{t} {n}"),
+                })
+            }
+            (None, None) => None,
+        })
+        .collect()
+}
+
+/// Draw `k` of pass `pass` in an error: "pass 'main' draw 'glow'" by its
+/// label, else by its place, "the 2nd draw of pass 'main'".
+fn draw_what(pass: &str, k: usize, label: Option<&str>) -> String {
+    match label {
+        Some(l) => format!("pass '{pass}' draw '{l}'"),
+        None => {
+            let n = k + 1;
+            let th = match (n % 10, n % 100) {
+                (_, 11..=13) => "th",
+                (1, _) => "st",
+                (2, _) => "nd",
+                (3, _) => "rd",
+                _ => "th",
+            };
+            format!("the {n}{th} draw of pass '{pass}'")
+        }
+    }
+}
+
 impl Draw {
     /// The GLSL that defines glyph_place for the draw.
     pub fn vertex_glsl(&self) -> String {
@@ -1168,7 +1221,7 @@ impl Draw {
         self.fragment.as_deref().unwrap_or(WHITE)
     }
 
-    /// `what` names the draw in an error, as "pass 'main' draw 0".
+    /// `what` names the draw in an error, as "pass 'main' draw 'glow'".
     pub fn from_dict(what: &str, d: &Value) -> Result<Draw> {
         let Value::Object(o) = d else {
             bail!("{what} needs an object, got {}", py_repr(d));
@@ -1187,6 +1240,14 @@ impl Draw {
             None => bail!("{what} has no '{key}', {holds}"),
         };
         let text = glsl("text", "the name of a scene text")?;
+        let name = match o.get("name").filter(|v| !v.is_null()) {
+            None => None,
+            Some(Value::String(n)) if is_draw_name(n) => Some(n.clone()),
+            Some(v) => bail!(
+                "{what} name needs one or more ASCII letters, digits, '_' or '-', got {}",
+                py_repr(v)
+            ),
+        };
         let given = |key: &str| o.get(key).filter(|v| !v.is_null());
         let vertex = match (given("vertex"), given("px_per_em")) {
             (Some(_), Some(_)) => bail!("{what} takes 'vertex' or 'px_per_em', got both"),
@@ -1236,6 +1297,7 @@ impl Draw {
             Some(v) => bail!("{what} emoji needs true or false, got {}", py_repr(v)),
         };
         Ok(Draw {
+            name,
             text,
             vertex,
             fragment,
@@ -1249,6 +1311,9 @@ impl Draw {
     /// the dict holds `emoji` only when the draw sets it otherwise.
     pub fn to_dict(&self, last: bool) -> Value {
         let mut d = Map::new();
+        if let Some(n) = &self.name {
+            d.insert("name".to_string(), Value::from(n.clone()));
+        }
         d.insert("text".to_string(), Value::from(self.text.clone()));
         match &self.vertex {
             Vertex::Glsl(v) => d.insert("vertex".to_string(), Value::from(v.clone())),
@@ -1422,11 +1487,21 @@ impl Pass {
                 py_repr(v)
             ),
         };
-        pass.draws = list_of(o, "draws")
-            .map_err(|e| anyhow!("pass '{name}': {e}"))?
+        let draws = list_of(o, "draws").map_err(|e| anyhow!("pass '{name}': {e}"))?;
+        // A draw goes by its name and its text in an error about any key,
+        // so each comes from the dict before the draw parses.
+        let labels = draw_labels(draws.iter().map(|dd| {
+            let key = |k: &str| dd.get(k).and_then(Value::as_str);
+            (
+                key("name").filter(|n| is_draw_name(n)),
+                key("text").filter(|t| !t.trim().is_empty()),
+            )
+        }));
+        pass.draws = draws
             .iter()
+            .zip(&labels)
             .enumerate()
-            .map(|(k, dd)| Draw::from_dict(&format!("pass '{name}' draw {k}"), dd))
+            .map(|(k, (dd, l))| Draw::from_dict(&draw_what(&name, k, l.as_deref()), dd))
             .collect::<Result<Vec<_>>>()?;
         // A filter is written apart from any scene, and a text belongs to one.
         if !pass.filter.is_empty() && !pass.draws.is_empty() {
@@ -1493,6 +1568,36 @@ impl Pass {
             out.insert("draws".to_string(), Value::from(draws));
         }
         Value::Object(out)
+    }
+
+    /// What each draw of the pass goes by, as draw_labels() gives it.
+    pub fn draw_labels(&self) -> Vec<String> {
+        draw_labels(
+            self.draws
+                .iter()
+                .map(|d| (d.name.as_deref(), Some(d.text.as_str()))),
+        )
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Draw `k` in an error, as "pass 'main' draw 'glow'".
+    pub fn draw_what(&self, k: usize) -> String {
+        draw_what(&self.name, k, self.draw_labels().get(k).map(String::as_str))
+    }
+
+    /// The error for two draws of the pass that go by one label.
+    fn twin_draws(&self) -> Option<String> {
+        let labels = self.draw_labels();
+        let (_, l) = labels
+            .iter()
+            .enumerate()
+            .find(|(k, l)| labels[..*k].contains(l))?;
+        Some(format!(
+            "pass '{}' has two draws that go by '{l}'",
+            self.name
+        ))
     }
 
     /// True when draw `k` is the last draw of its text in this pass.
@@ -1782,6 +1887,9 @@ impl Scene {
                 seen.push(&p.name);
             }
         }
+        if let Some(e) = passes.iter().find_map(Pass::twin_draws) {
+            bail!("{e}");
+        }
         let images = assets.iter().filter(|a| !a.is_font()).count();
         if images > MAX_ASSETS {
             bail!("{images} image assets, over the {MAX_ASSETS} asset cap");
@@ -2052,13 +2160,13 @@ impl Scene {
     }
 
     /// The largest `pad` of the draws of text `name`, and the draw that sets
-    /// it as "pass 'main' draw 0", None when no draw pads.
+    /// it as "pass 'main' draw 'glow'", None when no draw pads.
     fn largest_pad(&self, name: &str) -> (f64, Option<String>) {
         let mut most = (0.0, None);
         for p in &self.passes {
             for (k, d) in p.draws.iter().enumerate() {
                 if d.text == name && d.pad > most.0 {
-                    most = (d.pad, Some(format!("pass '{}' draw {k}", p.name)));
+                    most = (d.pad, Some(p.draw_what(k)));
                 }
             }
         }
@@ -2088,8 +2196,9 @@ impl Scene {
                 .enumerate()
                 .find(|(_, d)| !self.texts.iter().any(|t| t.name == d.text))?;
             Some(format!(
-                "pass '{}' draw {k} names text '{}', which the scene does not declare",
-                p.name, d.text
+                "{} names text '{}', which the scene does not declare",
+                p.draw_what(k),
+                d.text
             ))
         })
     }
@@ -2464,7 +2573,7 @@ mod tests {
     fn a_sized_pass_keeps_its_draws() {
         let mut p = Pass::of("a", GOOD).unwrap();
         p.draws = vec![Draw::from_dict(
-            "pass 'a' draw 0",
+            "pass 'a' draw 't'",
             &json!({"text": "t", "fragment": GOOD, "vertex": "vec2 glyph_place(vec2 em) { return em; }"}),
         )
         .unwrap()];

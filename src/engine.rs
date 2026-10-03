@@ -149,7 +149,7 @@ struct DrawLayer {
     boxes: c_int,
     /// The scene text of the draw.
     text: String,
-    /// The draw in an error, as "pass 'main' draw 0".
+    /// The draw in an error, as "pass 'main' draw 'glow'".
     name: String,
 }
 
@@ -791,7 +791,7 @@ impl Renderer {
             let mut over = self.units_error(&format!("pass '{}'", p.name), want);
             // A draw samples its text's texture on top of its pass's inputs.
             if over.is_none() && !p.draws.is_empty() {
-                over = self.units_error(&format!("pass '{}' draw 0", p.name), want + 1);
+                over = self.units_error(&p.draw_what(0), want + 1);
             }
             if let Some(e) = over {
                 self.error = e;
@@ -865,7 +865,7 @@ impl Renderer {
                     break;
                 }
                 let (vs, fs) = p.draw_glsl(k, scene, hw_linear);
-                let name = format!("pass '{}' draw {k}", p.name);
+                let name = p.draw_what(k);
                 let (cname, cvs, cfs) = (
                     self.staged_cstring(&name)?,
                     self.staged_cstring(&vs)?,

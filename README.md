@@ -386,6 +386,10 @@ and this one draws it white at the same size and place, with no GLSL:
 ```
 
 - `text` names a scene text.
+- `name` names the draw in errors and in the console: ASCII letters, digits,
+  `_` and `-`, unique among the draws of its pass. A draw without one goes by
+  its text's name, `title`, a second draw of that text without one by
+  `title 2`, a third by `title 3`.
 - `vertex` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
   block, in em from its top left with y down, to the pass pixel where it
   lands. It runs at the corners of each glyph's quad, so it can move, turn,

@@ -287,7 +287,9 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
             shim.Pass(
                 "main",
                 "void main(){}",
-                draws=[shim.Draw("words", INK, PLACE, blend="add", pad=0.25)],
+                draws=[
+                    shim.Draw("words", INK, PLACE, blend="add", pad=0.25, name="glow")
+                ],
             )
         ],
         shim.Text("words", "sans", "hi", fill="slug"),
@@ -300,6 +302,7 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
                 "code": "void main(){}",
                 "draws": [
                     {
+                        "name": "glow",
                         "text": "words",
                         "vertex": PLACE,
                         "fragment": INK,
@@ -395,9 +398,36 @@ def test_a_draw_says_what_it_needs():
         shim.Draw("", INK, PLACE)
     with pytest.raises(
         ValueError,
-        match="pass 'main' draw 0 names text 'title', which the scene does not declare",
+        match="pass 'main' draw 'title' names text 'title', which the scene does not "
+        "declare",
     ):
         drawn_scene(shim, [shim.Pass("main", draws=[shim.Draw("title", INK, PLACE)])])
+
+
+def test_a_draw_name_takes_letters_digits_and_dashes_unique_in_its_pass():
+    shim = load()
+
+    def err(make, *args, **kw):
+        with pytest.raises(ValueError) as e:
+            make(*args, **kw)
+        return str(e.value)
+
+    for bad in ("my glow", "", 3):
+        assert err(shim.Draw, "words", INK, PLACE, name=bad) == (
+            "draw of text 'words' name needs one or more ASCII letters, digits, "
+            f"'_' or '-', got {bad!r}"
+        )
+    assert err(shim.Draw, "words", INK, PLACE, blend="mix", name="glow") == (
+        "draw 'glow' blend needs 'over', 'add' or 'replace', got 'mix'"
+    )
+    glow = shim.Draw("words", INK, PLACE, name="glow-2_b")
+    words = shim.Draw("words", INK, PLACE)
+    named_words = shim.Draw("words", INK, PLACE, name="words")
+    for twins, label in (((glow, glow), "glow-2_b"), ((words, named_words), "words")):
+        assert err(shim.Pass, "main", draws=list(twins)) == (
+            f"pass 'main' has two draws that go by '{label}'"
+        )
+    shim.Pass("main", draws=[words, words, glow])
 
 
 def test_a_text_fill_and_atlas_say_what_they_need():

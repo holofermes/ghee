@@ -2329,9 +2329,10 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
     let mut bad = good.clone();
     bad["passes"][0]["draws"][0]["fragment"] =
         json!("void main(){\n    float c = glyph_cover();\n    nope(c);\n}");
+    bad["passes"][0]["draws"][0]["name"] = json!("ink");
     let e = r.setup(&loaded(&bad)).unwrap();
     assert!(
-        e.starts_with("pass 'main' draw 0, line 3 of its fragment: "),
+        e.starts_with("pass 'main' draw 'ink', line 3 of its fragment: "),
         "{e}"
     );
     let at = |index, part| Some(ErrorDraw { index, part });
@@ -2346,7 +2347,7 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
         json!("vec2 glyph_place(vec2 em) {\n    return nope;\n}");
     let e = r.setup(&loaded(&bad)).unwrap();
     assert!(
-        e.starts_with("pass 'main' draw 0, line 2 of its vertex: "),
+        e.starts_with("pass 'main' draw 'label', line 2 of its vertex: "),
         "{e}"
     );
     assert_eq!(r.error_draw, at(0, DrawPart::Vertex));
@@ -2358,7 +2359,10 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
     bad["passes"][0]["draws"][0]["fragment"] =
         json!("float shade(){\n    return glyph_cover();\n}\nfloat x = 0.0;");
     let e = r.setup(&loaded(&bad)).unwrap();
-    assert_eq!(e, "pass 'main' draw 0: its fragment needs a void main()");
+    assert_eq!(
+        e,
+        "pass 'main' draw 'label': its fragment needs a void main()"
+    );
     assert_eq!(r.error_draw, at(0, DrawPart::Fragment));
     assert_eq!(r.error_line, None);
     let mut bad = good.clone();
@@ -2366,7 +2370,7 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
     let e = r.setup(&loaded(&bad)).unwrap();
     assert_eq!(
         e,
-        "pass 'main' draw 0: its vertex needs vec2 glyph_place(vec2 em)"
+        "pass 'main' draw 'label': its vertex needs vec2 glyph_place(vec2 em)"
     );
     assert_eq!(r.error_draw, at(0, DrawPart::Vertex));
     // A line of the common block counts in the block, as a pass's would.
@@ -2375,7 +2379,7 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
     bad["common"] = json!({"code": "float twice(float x) {\n    return nope;\n}"});
     let e = r.setup(&loaded(&bad)).unwrap();
     assert!(
-        e.starts_with("pass 'main' draw 0, line 2 of the common block: "),
+        e.starts_with("pass 'main' draw 'label', line 2 of the common block: "),
         "{e}"
     );
     assert_eq!(r.error_pass, Some(ErrorPass::Common));
@@ -2425,8 +2429,8 @@ fn draws_round_trip_and_over_and_no_pad_are_the_defaults() {
     let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
     doc["passes"][0]["draws"] = json!([
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }"},
-        {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
-         "blend": "add", "pad": 0.125},
+        {"name": "glow", "text": "label", "fragment": WHITE,
+         "vertex": "vec2 glyph_place(vec2 em) { return em; }", "blend": "add", "pad": 0.125},
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
          "blend": "over", "pad": 0},
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
@@ -2473,6 +2477,67 @@ fn a_pass_of_draws_alone_round_trips_with_no_code_and_a_pass_of_neither_is_refus
 }
 
 #[test]
+fn a_draw_goes_by_its_name_else_by_its_text_counted_among_the_draws_with_no_name() {
+    let place = "vec2 glyph_place(vec2 em) { return em; }";
+    let err = |draws: Value| {
+        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+        doc["passes"][0]["draws"] = draws;
+        scene_err(&doc)
+    };
+    let d = |keys: Value| {
+        let mut d = json!({"text": "label", "vertex": place});
+        d.as_object_mut()
+            .unwrap()
+            .extend(keys.as_object().unwrap().clone());
+        d
+    };
+    let name = "name needs one or more ASCII letters, digits, '_' or '-'";
+    let cases = [
+        (
+            json!([
+                d(json!({})),
+                d(json!({"name": "glow"})),
+                d(json!({"pad": -1}))
+            ]),
+            "scene: pass 'main' draw 'label 2' pad needs a number of em, 0 or more, got -1"
+                .to_string(),
+        ),
+        (
+            json!([d(json!({"name": "glow", "blend": "max"}))]),
+            "scene: pass 'main' draw 'glow' blend needs 'over', 'add' or 'replace', got 'max'"
+                .to_string(),
+        ),
+        (
+            json!([d(json!({"name": "my glow"}))]),
+            format!("scene: pass 'main' draw 'label' {name}, got 'my glow'"),
+        ),
+        (
+            json!([d(json!({"name": ""}))]),
+            format!("scene: pass 'main' draw 'label' {name}, got ''"),
+        ),
+        (
+            json!([d(json!({"name": 3}))]),
+            format!("scene: pass 'main' draw 'label' {name}, got 3"),
+        ),
+        (
+            json!([d(json!({"name": "glow"})), d(json!({"name": "glow"}))]),
+            "scene: pass 'main' has two draws that go by 'glow'".to_string(),
+        ),
+        (
+            json!([d(json!({})), d(json!({"name": "label"}))]),
+            "scene: pass 'main' has two draws that go by 'label'".to_string(),
+        ),
+        (
+            json!([d(json!({})), json!(3)]),
+            "scene: the 2nd draw of pass 'main' needs an object, got 3".to_string(),
+        ),
+    ];
+    for (draws, want) in cases {
+        assert_eq!(err(draws), want);
+    }
+}
+
+#[test]
 fn a_draw_declaration_names_what_it_lacks() {
     let place = "vec2 glyph_place(vec2 em) { return em; }";
     let with = |draws: Value| {
@@ -2483,66 +2548,69 @@ fn a_draw_declaration_names_what_it_lacks() {
     let one = |d: Value| with(json!([d]));
     let cases = [
         (with(json!(3)), "pass 'main': 'draws' needs a list, got 3"),
-        (one(json!(3)), "pass 'main' draw 0 needs an object, got 3"),
+        (
+            one(json!(3)),
+            "the 1st draw of pass 'main' needs an object, got 3",
+        ),
         (
             one(json!({"fragment": WHITE, "vertex": place})),
-            "pass 'main' draw 0 has no 'text', the name of a scene text",
+            "the 1st draw of pass 'main' has no 'text', the name of a scene text",
         ),
         (
             one(json!({"text": "label", "fragment": WHITE})),
-            "pass 'main' draw 0 needs 'px_per_em', the pixels per em of the words centred \
+            "pass 'main' draw 'label' needs 'px_per_em', the pixels per em of the words centred \
              in the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)",
         ),
         (
             one(json!({"text": "label", "vertex": place, "px_per_em": 32})),
-            "pass 'main' draw 0 takes 'vertex' or 'px_per_em', got both",
+            "pass 'main' draw 'label' takes 'vertex' or 'px_per_em', got both",
         ),
         (
             one(json!({"text": "label", "px_per_em": 0})),
-            "pass 'main' draw 0 px_per_em needs a number of pixels above 0, got 0",
+            "pass 'main' draw 'label' px_per_em needs a number of pixels above 0, got 0",
         ),
         (
             one(json!({"text": "label", "px_per_em": "32"})),
-            "pass 'main' draw 0 px_per_em needs a number of pixels above 0, got '32'",
+            "pass 'main' draw 'label' px_per_em needs a number of pixels above 0, got '32'",
         ),
         (
             one(json!({"text": "label", "vertex": "", "px_per_em": null})),
-            "pass 'main' draw 0 'vertex' needs vertex GLSL that defines vec2 \
+            "pass 'main' draw 'label' 'vertex' needs vertex GLSL that defines vec2 \
              glyph_place(vec2 em), got ''",
         ),
         (
             one(json!({"text": "label", "fragment": " ", "vertex": place})),
-            "pass 'main' draw 0 'fragment' needs fragment GLSL with its own void main(), \
+            "pass 'main' draw 'label' 'fragment' needs fragment GLSL with its own void main(), \
              got ' '",
         ),
         (
             one(json!({"text": "label", "fragment": WHITE, "place": place})),
-            "pass 'main' draw 0 takes its vertex GLSL in 'vertex', got 'place'",
+            "pass 'main' draw 'label' takes its vertex GLSL in 'vertex', got 'place'",
         ),
         (
             one(json!({"text": "label", "code": WHITE, "vertex": place})),
-            "pass 'main' draw 0 takes its fragment GLSL in 'fragment', got 'code'",
+            "pass 'main' draw 'label' takes its fragment GLSL in 'fragment', got 'code'",
         ),
         (
             one(json!({"text": "label", "fragment": WHITE, "vertex": place, "blend": "max"})),
-            "pass 'main' draw 0 blend needs 'over', 'add' or 'replace', got 'max'",
+            "pass 'main' draw 'label' blend needs 'over', 'add' or 'replace', got 'max'",
         ),
         (
             one(json!({"text": "label", "fragment": WHITE, "vertex": place, "pad": -1})),
-            "pass 'main' draw 0 pad needs a number of em, 0 or more, got -1",
+            "pass 'main' draw 'label' pad needs a number of em, 0 or more, got -1",
         ),
         (
             one(json!({"text": "label", "fragment": WHITE, "vertex": place, "alpha": "keep"})),
-            "pass 'main' draw 0 takes no 'alpha': its alpha blends by 'blend', as its \
+            "pass 'main' draw 'label' takes no 'alpha': its alpha blends by 'blend', as its \
              colour does",
         ),
         (
             one(json!({"text": "label", "fragment": WHITE, "vertex": place, "emoji": "yes"})),
-            "pass 'main' draw 0 emoji needs true or false, got 'yes'",
+            "pass 'main' draw 'label' emoji needs true or false, got 'yes'",
         ),
         (
             one(json!({"text": "words", "fragment": WHITE, "vertex": place})),
-            "pass 'main' draw 0 names text 'words', which the scene does not declare",
+            "pass 'main' draw 'words' names text 'words', which the scene does not declare",
         ),
         (
             with(Value::from(vec![
@@ -2712,7 +2780,7 @@ fn a_draw_past_the_texture_units_fails_naming_the_draw() {
     assert_eq!(
         r.setup(&loaded(&doc)).unwrap(),
         format!(
-            "pass 'main' draw 0 needs {} texture units, {past} {units}",
+            "pass 'main' draw 'label' needs {} texture units, {past} {units}",
             units + 1
         )
     );
@@ -2766,7 +2834,7 @@ fn a_draw_that_samples_past_the_texture_units_fails_naming_the_draw() {
     assert_eq!(
         r.setup(&scene(&doc)).unwrap(),
         format!(
-            "pass 'main' draw 0 needs {} texture units, {past} {units}",
+            "pass 'main' draw 'label' needs {} texture units, {past} {units}",
             units + 1
         )
     );
@@ -3090,7 +3158,7 @@ fn an_mtsdf_atlas_takes_its_range_from_the_draws_of_its_text() {
     doc["passes"][1]["draws"] = json!([draw(33.0)]);
     assert_eq!(
         scene_err(&doc),
-        "scene: pass 'main' draw 0 pad 33.0 needs an atlas range of 2112 texels at the 32 \
+        "scene: pass 'main' draw 'label' pad 33.0 needs an atlas range of 2112 texels at the 32 \
          px_per_em of text 'label', over the cap of 2048"
     );
     doc["texts"]["label"]["fill"] = json!("slug");
@@ -3116,7 +3184,7 @@ fn the_slug_fill_names_the_mtsdf_fill_for_a_distance() {
         assert_eq!(
             e,
             format!(
-                "pass 'main' draw 0, line 2 of its fragment: {read} needs \"fill\": \"mtsdf\" on \
+                "pass 'main' draw 'label', line 2 of its fragment: {read} needs \"fill\": \"mtsdf\" on \
                  text 'label'"
             )
         );

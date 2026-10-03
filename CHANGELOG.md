@@ -81,6 +81,10 @@
 - Edit a pass's draws in the console. Each draw opens in a tab after its
   pass's tab, with its `vertex` and its `fragment` in editors and its text,
   blend and pad as controls, and `+` adds a draw to the open pass.
+- Name a draw with `name`, or `name=` on `ghee.Draw`, unique among the
+  draws of its pass, and call a draw in an error by its name, else by its
+  text's name, `title`, and `title 2` for a second draw of that text without
+  a name, where an error called it by its index.
 - Report the draw that holds a compile error in `/stats` as `error_draw`,
   with `part` set to `"vertex"` or `"fragment"`, and count `error_line` in
   that draw's GLSL.

@@ -181,7 +181,7 @@ centred on black:
     )
 
 `ghee.Draw(text, fragment=None, vertex=None, px_per_em=None, blend="over",
-pad=0.0, emoji=None)`:
+pad=0.0, emoji=None, name=None)`:
 
 - `text` names a `ghee.Text` of the scene.
 - `fragment` holds a `void main()` that writes colour premultiplied by
@@ -198,6 +198,9 @@ pad=0.0, emoji=None)`:
 - `emoji` sets whether the draw paints the text's colour glyphs. `None`
   leaves them to the last draw of the text in its pass, so a shadow drawn
   under the fill paints no copy.
+- `name` names the draw in errors and in the console: ASCII letters,
+  digits, `_` and `-`, unique among the draws of its pass. `None` goes by
+  the text's name.
 
 A pass of draws alone, `ghee.Pass("words", draws=[...])`, starts each frame
 transparent, a layer that a later pass reads through a channel.

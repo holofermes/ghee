@@ -155,6 +155,31 @@ class Channel:
         return {"buffer": self.buffer}
 
 
+def _is_draw_name(name: object) -> bool:
+    """ASCII letters, digits, '_' and '-'. A name holds no space, so it never
+    reads as the label of a draw without one, such as "t 2"."""
+    return (
+        isinstance(name, str)
+        and name != ""
+        and all(c.isascii() and (c.isalnum() or c in "_-") for c in name)
+    )
+
+
+def _draw_labels(draws: list[Draw]) -> list[str]:
+    """What each draw goes by: its name, else its text, numbered from the
+    text's second draw without a name, as "t", "t 2", "t 3"."""
+    seen: list[str] = []
+    out = []
+    for d in draws:
+        if d.name is not None:
+            out.append(d.name)
+            continue
+        seen.append(d.text)
+        n = seen.count(d.text)
+        out.append(d.text if n == 1 else f"{d.text} {n}")
+    return out
+
+
 @dataclass
 class Draw:
     """A text drawn into the buffer of its pass, one quad over each glyph.
@@ -172,6 +197,10 @@ class Draw:
     an outline.
     `emoji` sets whether the draw paints the text's colour glyphs. None
     leaves them to the last draw of the text in its pass.
+    `name` names the draw in errors and in the console: ASCII letters,
+    digits, '_' and '-', unique among the draws of its pass. A draw with no
+    name goes by its text, and the next draws of the text with no name by
+    "t 2", "t 3".
     """
 
     text: str
@@ -181,6 +210,7 @@ class Draw:
     blend: str = "over"
     pad: float = 0.0
     emoji: bool | None = None
+    name: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text:
@@ -188,6 +218,13 @@ class Draw:
                 f"a draw's 'text' needs the name of a scene text, got {self.text!r}"
             )
         what = f"draw of text '{self.text}'"
+        if self.name is not None:
+            if not _is_draw_name(self.name):
+                raise ValueError(
+                    f"{what} name needs one or more ASCII letters, digits, '_' or "
+                    f"'-', got {self.name!r}"
+                )
+            what = f"draw '{self.name}'"
         if self.vertex is not None and self.px_per_em is not None:
             raise ValueError(f"{what} takes 'vertex' or 'px_per_em', got both")
         if self.vertex is None and self.px_per_em is None:
@@ -233,7 +270,8 @@ class Draw:
             )
 
     def to_dict(self) -> dict:
-        d: dict = {"text": self.text}
+        d: dict = {} if self.name is None else {"name": self.name}
+        d["text"] = self.text
         if self.vertex is not None:
             d["vertex"] = self.vertex
         else:
@@ -283,6 +321,12 @@ class Pass:
                 f"pass '{self.name}' is filter '{self.filter}', and a filter pass "
                 "takes no draws"
             )
+        labels = _draw_labels(self.draws)
+        for k, label in enumerate(labels):
+            if label in labels[:k]:
+                raise ValueError(
+                    f"pass '{self.name}' has two draws that go by '{label}'"
+                )
         # A filter pass takes its code from its filter.
         if not self.filter and not self.code.strip() and not self.draws:
             raise ValueError(f"pass '{self.name}' has no code and no draws")
@@ -479,11 +523,11 @@ class Scene:
                         "no .ttf or .otf file"
                     )
         for p in self.passes:
-            for k, d in enumerate(p.draws):
+            for d, label in zip(p.draws, _draw_labels(p.draws)):
                 if d.text not in seen:
                     raise ValueError(
-                        f"pass '{p.name}' draw {k} names text '{d.text}', which "
-                        "the scene does not declare"
+                        f"pass '{p.name}' draw '{label}' names text '{d.text}', "
+                        "which the scene does not declare"
                     )
 
     def to_dict(self) -> dict:

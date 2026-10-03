@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
@@ -321,10 +321,11 @@ pub struct Console {
     stopping: Arc<AtomicBool>,
     /// A failure the console cannot render through. run() returns it.
     fatal: Mutex<String>,
-    /// Hardware encoding failed for this stream, so the software lane owns it.
-    /// The last viewer to leave clears it. A stall or a busy codec belongs to
-    /// the stream it happened in, and the software lane costs a readback.
-    h264_hw_dead: AtomicBool,
+    /// The stream whose hardware encoding failed, which the software lane
+    /// owns. A stall or a busy codec belongs to the stream it happened in, so
+    /// the next stream tries hardware again, and the software lane costs a
+    /// readback.
+    h264_hw_dead: Mutex<Option<u64>>,
     /// Why the hardware lane failed this stream.
     h264_hw_why: Mutex<String>,
     httpd: Mutex<Option<Arc<Server>>>,
@@ -377,7 +378,7 @@ impl Console {
             viewers: Heartbeat::new(VIEWER_DEADLINE),
             stopping,
             fatal: Mutex::new(String::new()),
-            h264_hw_dead: AtomicBool::new(false),
+            h264_hw_dead: Mutex::new(None),
             h264_hw_why: Mutex::new(String::new()),
             httpd: Mutex::new(None),
         }
@@ -504,7 +505,19 @@ impl Console {
     /// viewers count as readback consumers. Hardware samples the GPU texture
     /// instead.
     fn software_h264(&self) -> bool {
-        self.h264_hw_dead.load(Ordering::SeqCst) && self.fanout.nclients() > 0
+        self.software_stream().is_some()
+    }
+
+    /// The stream that the software lane owns, while a viewer watches it.
+    fn software_stream(&self) -> Option<u64> {
+        let stream = self.fanout.stream();
+        let dead = *lock(&self.h264_hw_dead) == Some(stream);
+        (dead && self.fanout.nclients() > 0).then_some(stream)
+    }
+
+    /// True when hardware encoding failed for the current stream.
+    fn hardware_dead(&self) -> bool {
+        *lock(&self.h264_hw_dead) == Some(self.fanout.stream())
     }
 
     /// The hardware lane failed. Before the stream's first access unit the
@@ -516,7 +529,7 @@ impl Console {
             return;
         }
         *lock(&self.h264_hw_why) = why.to_string();
-        self.h264_hw_dead.store(true, Ordering::SeqCst);
+        *lock(&self.h264_hw_dead) = Some(self.fanout.stream());
         eprintln!("h264: {why}, using software encoder");
     }
 
@@ -719,6 +732,10 @@ pub struct H264Fanout {
     failure: Mutex<Option<String>>,
     /// An access unit reached a viewer since the first one joined.
     began: AtomicBool,
+    /// The number of the current stream. The last viewer to leave ends a
+    /// stream, and the next viewer joins the next number. It changes under
+    /// the clients lock.
+    stream: AtomicU64,
     rate: Arc<Mutex<FrameRate>>,
 }
 
@@ -732,6 +749,7 @@ impl H264Fanout {
             want_key: AtomicBool::new(false),
             failure: Mutex::new(None),
             began: AtomicBool::new(false),
+            stream: AtomicU64::new(0),
             rate,
         }
     }
@@ -760,6 +778,11 @@ impl H264Fanout {
         lock(&self.clients).len()
     }
 
+    /// The number of the current stream.
+    pub fn stream(&self) -> u64 {
+        self.stream.load(Ordering::SeqCst)
+    }
+
     #[allow(dead_code)]
     pub fn stream_fps(&self) -> f64 {
         lock(&self.rate).value(None)
@@ -778,6 +801,7 @@ impl H264Fanout {
         if clients.is_empty() {
             *lock(&self.failure) = None;
             self.began.store(false, Ordering::SeqCst);
+            self.stream.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -795,6 +819,21 @@ impl H264Fanout {
     }
 
     pub fn push(&self, au: &[u8]) {
+        self.push_in(None, au);
+    }
+
+    /// push() from a lane that encodes for one stream. An access unit that
+    /// outlives `stream` reaches no viewer of the next one, and the result is
+    /// false.
+    pub fn push_to(&self, stream: u64, au: &[u8]) -> bool {
+        self.push_in(Some(stream), au)
+    }
+
+    fn push_in(&self, stream: Option<u64>, au: &[u8]) -> bool {
+        let clients = lock(&self.clients);
+        if stream.is_some_and(|s| s != self.stream()) {
+            return false;
+        }
         let nals = split_annexb(au);
         let sps = nals.iter().find(|x| x[0] & 0x1F == NAL_SPS);
         let pps = nals.iter().find(|x| x[0] & 0x1F == NAL_PPS);
@@ -810,7 +849,7 @@ impl H264Fanout {
             .collect();
         let chunk = avcc(&keep);
         if chunk.is_empty() {
-            return;
+            return true;
         }
         let is_key = nals.iter().any(|x| x[0] & 0x1F == NAL_IDR);
         let frame = Arc::new(wire_frame(u8::from(!is_key) + 1, &chunk));
@@ -818,7 +857,6 @@ impl H264Fanout {
             (true, Some(cfg)) => Some(Arc::new(wire_frame(0, cfg))),
             _ => None,
         };
-        let clients = lock(&self.clients);
         for c in clients.iter() {
             c.offer(&frame, config.as_ref());
         }
@@ -831,6 +869,7 @@ impl H264Fanout {
         if clients.iter().any(|c| !lock(&c.state).started) {
             self.want_key.store(true, Ordering::SeqCst);
         }
+        true
     }
 }
 
@@ -856,9 +895,14 @@ pub fn stream_bitrate(w: i32, h: i32, fps: i32, floor: i64) -> i64 {
 pub fn h264_sw_loop(console: &Console) {
     let mut enc: Option<SoftwareH264> = None;
     let mut size = (0, 0);
+    // the stream that the encoder encodes for
+    let mut owned = 0;
     let mut last_seq = u64::MAX;
     while !console.stopping() {
-        if !console.software_h264() || console.fanout.failure().is_some() {
+        let stream = console
+            .software_stream()
+            .filter(|_| console.fanout.failure().is_none());
+        let Some(stream) = stream else {
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -867,7 +911,7 @@ pub fn h264_sw_loop(console: &Console) {
                 .raw_ready
                 .wait_timeout(raw, Duration::from_millis(250));
             continue;
-        }
+        };
         let rgb = {
             let mut raw = lock(&console.raw);
             if raw.seq == last_seq {
@@ -887,7 +931,7 @@ pub fn h264_sw_loop(console: &Console) {
         };
         let Some(rgb) = rgb else { continue };
         let (w, h) = (rgb.width, rgb.height);
-        if enc.is_some() && size != (w, h) {
+        if enc.is_some() && (size != (w, h) || owned != stream) {
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -903,6 +947,7 @@ pub fn h264_sw_loop(console: &Console) {
                 Ok(e) => {
                     enc = Some(e);
                     size = (w, h);
+                    owned = stream;
                     console.fanout.opened(w, h, SW_COLOR);
                 }
                 Err(e) => {
@@ -924,7 +969,11 @@ pub fn h264_sw_loop(console: &Console) {
             continue;
         }
         if let (Some(au), _) = e.get_au(Duration::from_secs(1)) {
-            console.fanout.push(&au);
+            if !console.fanout.push_to(owned, &au) {
+                if let Some(mut e) = enc.take() {
+                    let _ = e.close(Duration::from_secs(1));
+                }
+            }
         }
     }
     if let Some(mut e) = enc.take() {
@@ -1172,7 +1221,6 @@ impl Output for ConsoleSink {
     fn mirror(&mut self, _renderer: &dyn RenderTarget) -> Result<()> {
         let console = Arc::clone(&self.console);
         if console.fanout.nclients() == 0 {
-            console.h264_hw_dead.store(false, Ordering::SeqCst); // the next stream tries hardware again
             if let Some(mut enc) = self.enc.take() {
                 enc.close(); // direct scanout returns while nobody watches
             }
@@ -1184,7 +1232,7 @@ impl Output for ConsoleSink {
             }
             return Ok(());
         }
-        if self.enc.is_none() && !console.h264_hw_dead.load(Ordering::SeqCst) {
+        if self.enc.is_none() && !console.hardware_dead() {
             let (w, h) = stream_size(console.w, console.h, console.stream_max);
             // The stream encodes at its own rate, not the display's. A panel
             // that asks for 63Hz asks the encoder for a rate it refuses at
@@ -2694,6 +2742,28 @@ mod tests {
         assert!(fanout.failure().is_some() && fanout.began());
         fanout.remove(&b);
         assert!(fanout.failure().is_none() && !fanout.began());
+    }
+
+    #[test]
+    fn a_late_unit_of_an_ended_stream_never_ends_the_next_one() {
+        let console = tmp_console("late-au");
+        let first = console.fanout.add();
+        console.hardware_failed("no hardware encoder");
+        let owned = console.software_stream().unwrap();
+        console.fanout.remove(&first);
+        let next = console.fanout.add();
+        // the software encoder of the first stream hands over one more unit
+        assert!(!console.fanout.push_to(owned, &key_au()));
+        assert!(next.get(Duration::ZERO).is_none());
+        assert!(!console.fanout.began());
+        // the next stream tries hardware first, and the software lane takes it
+        // when hardware fails
+        assert!(!console.software_h264());
+        console.hardware_failed("no hardware encoder");
+        assert_eq!(console.fanout.failure(), None);
+        assert_eq!(console.software_stream(), Some(console.fanout.stream()));
+        assert!(console.fanout.push_to(console.fanout.stream(), &key_au()));
+        assert!(next.get(Duration::ZERO).is_some());
     }
 
     /// One GET /h264 served by serve_h264, as the raw bytes on the socket.

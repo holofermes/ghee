@@ -102,10 +102,9 @@ pub struct Shared {
     /// The /h264 viewers that report in, so a page in a back/forward cache
     /// stops the encoder.
     watchers: Heartbeat,
-    /// Hardware encoding failed for this stream, so the software lane owns it.
-    /// The last viewer to leave clears it, and the next stream tries hardware
-    /// again.
-    hw_dead: AtomicBool,
+    /// The stream whose hardware encoding failed, which the software lane
+    /// owns. The next stream tries hardware again.
+    hw_dead: Mutex<Option<u64>>,
     /// Why the hardware lane failed this stream.
     hw_why: Mutex<String>,
     /// The h264 cap for the longest side. 0 streams the render size.
@@ -122,7 +121,14 @@ impl Shared {
     /// The software lane owns this stream, so it takes the published frames.
     /// Hardware samples the GPU on the host's thread instead.
     fn software_h264(&self) -> bool {
-        self.hw_dead.load(Ordering::SeqCst) && self.fanout.nclients() > 0
+        self.software_stream().is_some()
+    }
+
+    /// The stream that the software lane owns, while a viewer watches it.
+    fn software_stream(&self) -> Option<u64> {
+        let stream = self.fanout.stream();
+        let dead = *lock(&self.hw_dead) == Some(stream);
+        (dead && self.fanout.nclients() > 0).then_some(stream)
     }
 
     /// The latest frame new to the caller, once one lands.
@@ -286,7 +292,7 @@ impl Console {
             shots: AtomicI64::new(0),
             fanout: H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))),
             watchers: Heartbeat::new(VIEWER_DEADLINE),
-            hw_dead: AtomicBool::new(false),
+            hw_dead: Mutex::new(None),
             hw_why: Mutex::new(String::new()),
             stream_longest,
             verbose,
@@ -335,16 +341,13 @@ impl Console {
         self.wants_frame() || self.shared.fanout.nclients() > 0
     }
 
-    /// True while the hardware lane owns a /h264 stream. The last viewer to
-    /// leave clears the software fallback here, so the next stream tries
-    /// hardware again.
+    /// True while the hardware lane owns a /h264 stream.
     pub fn hardware_h264(&self) -> bool {
         let s = &self.shared;
         if s.fanout.nclients() == 0 {
-            s.hw_dead.store(false, Ordering::SeqCst);
             return false;
         }
-        !s.hw_dead.load(Ordering::SeqCst) && s.fanout.failure().is_none()
+        *lock(&s.hw_dead) != Some(s.fanout.stream()) && s.fanout.failure().is_none()
     }
 
     /// The hardware lane failed. Before the stream's first access unit the
@@ -359,7 +362,7 @@ impl Console {
             return;
         }
         *lock(&s.hw_why) = why.to_string();
-        s.hw_dead.store(true, Ordering::SeqCst);
+        *lock(&s.hw_dead) = Some(s.fanout.stream());
         if s.verbose {
             eprintln!("ghee console: h264: {why}, using software encoder");
         }
@@ -430,9 +433,14 @@ impl Console {
 fn h264_sw_loop(shared: &Arc<Shared>) {
     let mut enc: Option<SoftwareH264> = None;
     let mut size = (0, 0);
+    // the stream that the encoder encodes for
+    let mut owned = 0;
     let mut seen = 0;
     while !shared.stopping() {
-        if !shared.software_h264() || shared.fanout.failure().is_some() {
+        let stream = shared
+            .software_stream()
+            .filter(|_| shared.fanout.failure().is_none());
+        let Some(stream) = stream else {
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -441,7 +449,7 @@ fn h264_sw_loop(shared: &Arc<Shared>) {
                 .ready
                 .wait_timeout(latest, Duration::from_millis(250));
             continue;
-        }
+        };
         let Some((data, w, h, components, seq)) = shared.next_frame(seen, 0.25) else {
             continue;
         };
@@ -450,7 +458,7 @@ fn h264_sw_loop(shared: &Arc<Shared>) {
         if ew < 2 || eh < 2 {
             continue; // under 2 px a side there is nothing even to encode
         }
-        if enc.is_some() && size != (ew, eh) {
+        if enc.is_some() && (size != (ew, eh) || owned != stream) {
             if let Some(mut e) = enc.take() {
                 let _ = e.close(Duration::from_secs(1));
             }
@@ -466,6 +474,7 @@ fn h264_sw_loop(shared: &Arc<Shared>) {
                 Ok(e) => {
                     enc = Some(e);
                     size = (ew, eh);
+                    owned = stream;
                     shared.fanout.opened(ew, eh, SW_COLOR);
                 }
                 Err(e) => {
@@ -491,7 +500,11 @@ fn h264_sw_loop(shared: &Arc<Shared>) {
             continue;
         }
         if let (Some(au), _) = e.get_au(Duration::from_secs(1)) {
-            shared.fanout.push(&au);
+            if !shared.fanout.push_to(owned, &au) {
+                if let Some(mut e) = enc.take() {
+                    let _ = e.close(Duration::from_secs(1));
+                }
+            }
         }
     }
     if let Some(mut e) = enc.take() {

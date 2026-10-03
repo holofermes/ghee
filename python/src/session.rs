@@ -518,6 +518,11 @@ impl Session {
         self.renderer.components
     }
 
+    /// The GL that renders, GL_RENDERER and GL_VERSION in one string.
+    pub fn gl(&self) -> String {
+        self.renderer.renderer()
+    }
+
     /// This iteration's tick, drawn or skipped. DT is the pinned step, else the
     /// last measured period.
     fn tick(&self, t: f64) -> Tick {

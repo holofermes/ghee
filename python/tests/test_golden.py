@@ -2,7 +2,8 @@
 
 The provider and the manifest are ghee's own (src/golden.rs,
 tools/fixtures/golden/manifest.json). A hash that differs is a render that
-changed.
+changed. The hashes are exact, so they hold on the GL that pinned them alone,
+and the test skips on any other.
 """
 
 import array
@@ -56,6 +57,11 @@ def test_a_bundled_scene_renders_its_pinned_frames(name):
         height=MAN["height"],
         timestep=1.0 / MAN["fps"],
     ) as h:
+        if h._gl != MAN["renderer"]:
+            pytest.skip(
+                f"the frames are pinned on {MAN['renderer']}, and this host "
+                f"renders on {h._gl}"
+            )
         assert h.size == (MAN["width"], MAN["height"])
         assert h.components == MAN["components"]
         for frame in range(MAN["frames"]):

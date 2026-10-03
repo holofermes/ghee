@@ -358,6 +358,13 @@ impl Handle {
         Ok(self.held.get()?.components())
     }
 
+    /// The GL that renders, GL_RENDERER and GL_VERSION in one string. A frame
+    /// pinned by its sha holds on that GL alone.
+    #[getter]
+    fn _gl(&mut self) -> PyResult<String> {
+        Ok(self.held.get()?.gl())
+    }
+
     /// Blank the panel and drop everything the handle holds. A second call is
     /// no error.
     fn close(&mut self) -> PyResult<()> {

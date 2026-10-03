@@ -169,7 +169,10 @@ impl ConsoleHost for Host {
         }
         d.insert("out".to_string(), Value::from(out));
         d.insert("error".to_string(), Value::from(""));
-        d.insert("text_errors".to_string(), Value::from(lock(&s.texts).clone()));
+        d.insert(
+            "text_errors".to_string(),
+            Value::from(lock(&s.texts).clone()),
+        );
         d.insert("error_line".to_string(), Value::Null);
         d.insert("error_pass".to_string(), Value::Null);
         d.insert("error_draw".to_string(), Value::Null);

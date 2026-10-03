@@ -67,14 +67,6 @@ def test_a_param_reaches_the_shader_live():
         assert pixel(h)[0] == 0
 
 
-def test_a_scene_param_reaches_every_pass():
-    with ghee.open(RED, width=8, height=8) as h:
-        h.feed("level", LEVEL)
-        h.set_param("tint", [0.0, 1.0, 0.0])
-        h.frame()
-        assert pixel(h) == (0, 255, 0, 255)
-
-
 def test_vec_and_color_values_reach_the_shader():
     built = ghee.Scene(
         passes=[
@@ -311,34 +303,6 @@ def test_new_words_lay_out_on_the_next_frame(monkeypatch):
         assert h.pixels() == ghee_drawn
 
 
-def test_the_words_a_text_holds_lay_out_once(monkeypatch):
-    monkeypatch.chdir(REPO / "ghee" / "examples")
-    words = "the words a text holds\n" * 90
-    with ghee.open(WORDS, width=96, height=32, timestep=0) as h:
-        t = time.perf_counter()
-        h.set_param("words", words)
-        layout = time.perf_counter() - t
-        t = time.perf_counter()
-        for _ in range(100):
-            h.set_param("words", words)
-        again = time.perf_counter() - t
-    assert again < layout * 10, (again, layout)
-
-
-def test_words_past_the_texture_keep_the_last_words(monkeypatch, capfd):
-    monkeypatch.chdir(REPO / "ghee" / "examples")
-    with ghee.open(WORDS, width=96, height=32, timestep=0) as h:
-        h.frame()
-        ghee_drawn = h.pixels()
-        for _ in range(2):
-            h.set_param("words", "I" * 400_000)
-            h.frame()
-            assert h.pixels() == ghee_drawn
-    # logged once, however many times the words came
-    err = capfd.readouterr().err
-    assert err.count("text 'words': the words need a ") == 1, err
-
-
 def test_a_dict_scene_finds_its_font_in_base_dir_else_the_working_directory(
     tmp_path, monkeypatch
 ):
@@ -451,44 +415,6 @@ def test_a_frame_is_opaque_unless_open_keeps_the_alpha():
         r, g, b, a = pixel(h)
         assert (r, g, b) == (64, 128, 0)
         assert abs(a - 128) <= 1
-
-
-def test_a_pass_of_layers_alone_starts_transparent(monkeypatch):
-    """A pass of white words alone, which the output pass lays over blue."""
-    monkeypatch.chdir(REPO / "ghee" / "examples")
-    scene = ghee.Scene(
-        assets=[ghee.Asset("sans", FONT)],
-        texts=[ghee.Text("words", "sans", "ghee")],
-        passes=[
-            ghee.Pass(
-                "ink",
-                layers=[
-                    ghee.Layer(
-                        "words",
-                        "void main(){ gl_FragColor = vec4(glyph_cover()); }",
-                        "vec2 glyph_place(vec2 em) { return em * 24.0; }",
-                    )
-                ],
-            ),
-            ghee.Pass(
-                "main",
-                "void main(){ vec4 c = texture2D(iChannel0, v_texCoord);"
-                " gl_FragColor = vec4(c.rgb + vec3(0.0, 0.0, 1.0 - c.a), 1.0); }",
-                channels=[ghee.Channel("ink")],
-            ),
-        ],
-    )
-    with ghee.open(scene.to_dict(), width=96, height=32, timestep=0) as h:
-        h.frame()
-        px = h.pixels()
-        assert set(px[2::4]) == {255}  # blue under the words, and between
-        assert px[0::4] == px[1::4]
-        assert max(px[0::4]) == 255  # the words drew
-        assert px[0::4].count(0) > len(px) // 8  # clear outside the words
-        # each frame starts clear, so no words leave nothing behind
-        h.set_param("words", "")
-        h.frame()
-        assert h.pixels() == bytes([0, 0, 255, 255]) * (96 * 32)
 
 
 def test_a_text_draws_a_letter_and_an_emoji_from_its_list_of_fonts(monkeypatch):

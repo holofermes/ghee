@@ -58,8 +58,8 @@ text sets its words, and ghee lays them out again, also with no recompile.
 A scene file finds its files beside itself, and a Python scene beside its
 script, under ghee and in [direct mode](#direct-mode) alike. A scene given
 as a dict, as JSON text or as a `ghee.Scene` finds them in `base_dir`, the
-working directory by default. A file absent there resolves through `$GHEE_ASSETS`,
-colon-separated directories.
+working directory by default. A file absent there resolves through
+`$GHEE_ASSETS`, colon-separated directories.
 
 `feed` holds the data for one declared array, and the next frame consumes
 it once. A uint8 buffer reaches the texture as byte / 255, a float32

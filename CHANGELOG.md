@@ -179,7 +179,8 @@
   scene loaded and ignored the key.
 - Resolve a file of a Python scene in direct mode beside its script, as
   under ghee, where it resolved in the working directory, and take
-  `base_dir` on `ghee.open` for a scene given as a dict or as JSON text.
+  `base_dir` on `ghee.open` for a scene given as a dict, as JSON text or as
+  a `ghee.Scene`.
 - Read a file at an absolute path or outside the scene's directory, except
   under the console, and name `$GHEE_ASSETS` in the error for a file that
   no directory holds.

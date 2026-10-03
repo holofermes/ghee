@@ -279,8 +279,8 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
                 "draws": [
                     {
                         "text": "words",
-                        "code": INK,
-                        "place": PLACE,
+                        "vertex": PLACE,
+                        "fragment": INK,
                         "blend": "add",
                         "alpha": "keep",
                         "pad": 0.25,
@@ -307,7 +307,7 @@ def test_a_draw_and_a_text_leave_their_defaults_out():
         "blend",
         None,
     )
-    assert draw.to_dict() == {"text": "words", "code": INK, "place": PLACE}
+    assert draw.to_dict() == {"text": "words", "vertex": PLACE, "fragment": INK}
     text = shim.Text("words", "sans")
     assert (text.fill, text.atlas) == ("mtsdf", None)
     assert text.to_dict() == {"font": "sans"}
@@ -319,8 +319,8 @@ def test_a_draw_sends_emoji_when_it_is_set():
     for emoji in (True, False):
         assert shim.Draw("words", INK, PLACE, emoji=emoji).to_dict() == {
             "text": "words",
-            "code": INK,
-            "place": PLACE,
+            "vertex": PLACE,
+            "fragment": INK,
             "emoji": emoji,
         }
     with pytest.raises(ValueError, match="emoji needs True, False or None, got 1"):
@@ -332,7 +332,7 @@ def test_a_pass_of_draws_alone_has_no_code():
     layer = shim.Pass("ink", draws=[shim.Draw("words", INK, PLACE)])
     assert layer.to_dict() == {
         "name": "ink",
-        "draws": [{"text": "words", "code": INK, "place": PLACE}],
+        "draws": [{"text": "words", "vertex": PLACE, "fragment": INK}],
     }
     assert "code" not in drawn_scene(shim, [layer]).to_dict()["passes"][0]
     with pytest.raises(ValueError, match="pass 'main' has no code and no draws"):
@@ -352,9 +352,9 @@ def test_a_draw_says_what_it_needs():
     for pad in (-0.1, float("nan"), True, "0.1"):
         with pytest.raises(ValueError, match="pad needs a number of em, 0 or more"):
             shim.Draw("words", INK, PLACE, pad=pad)
-    with pytest.raises(ValueError, match="'code' needs fragment GLSL"):
+    with pytest.raises(ValueError, match="'fragment' needs fragment GLSL"):
         shim.Draw("words", "  ", PLACE)
-    with pytest.raises(ValueError, match="'place' needs vertex GLSL"):
+    with pytest.raises(ValueError, match="'vertex' needs vertex GLSL"):
         shim.Draw("words", INK, None)
     with pytest.raises(ValueError, match="'text' needs the name of a scene text"):
         shim.Draw("", INK, PLACE)

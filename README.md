@@ -373,18 +373,18 @@ This draw puts `title` in amber at 48 pixels per em, centred in the pass:
 ```json
 "draws": [{
   "text": "title",
-  "place": "vec2 glyph_place(vec2 em) { return (resolution - title_size * 48.0) * 0.5 + em * 48.0; }",
-  "code": "void main() { float c = glyph_cover(); gl_FragColor = vec4(vec3(1.0, 0.7, 0.2) * c, c); }"
+  "vertex": "vec2 glyph_place(vec2 em) { return (resolution - title_size * 48.0) * 0.5 + em * 48.0; }",
+  "fragment": "void main() { float c = glyph_cover(); gl_FragColor = vec4(vec3(1.0, 0.7, 0.2) * c, c); }"
 }]
 ```
 
 - `text` names a scene text.
-- `place` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
+- `vertex` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
   block, in em from its top left with y down, to the pass pixel where it
   lands. It runs at the corners of each glyph's quad, so it can move, turn,
   scale or shear a glyph, and a bend inside one glyph draws straight between
   its corners.
-- `code` holds a `void main()` that writes colour premultiplied by alpha.
+- `fragment` holds a `void main()` that writes colour premultiplied by alpha.
 - `blend` is `over` by default, `add` or `replace`.
 - `alpha` is `blend` by default, and `keep` leaves the pass's alpha as it was.
 - `pad` is how far past the letters the draw reaches, in em, for a glow or an
@@ -394,7 +394,7 @@ This draw puts `title` in amber at 48 pixels per em, centred in the pass:
   the last draw of the text in its pass paints them, and the draws under it,
   a glow or a shadow, paint none.
 
-`code` reads:
+`fragment` reads:
 
 ```glsl
 float glyph_cover();   // coverage 0..1
@@ -408,11 +408,9 @@ vec2  glyph_span;      // its advance, start and end x in em
 float glyph_ppem;      // pixels per em at this glyph
 ```
 
-`place` reads `glyph_index`, `glyph_word`, `glyph_line`, `glyph_span`,
-`glyph_box` (the ink box in em), `resolution`, `time`, `DT`, `frame`, the
-params of the scene and of its pass, and its text's `<name>_size`. It reads
-no texture. Draws
-render in list order, so a first draw of the same text puts a glow or a
+`vertex` reads `glyph_index`, `glyph_word`, `glyph_line`, `glyph_span` and
+`glyph_box` (the ink box in em), and it sees the pass's preamble and the
+scene's common block, as the pass's code does. Draws render in list order, so a first draw of the same text puts a glow or a
 shadow under the fill of every glyph. A pass with `draws` and no `code` starts
 each frame transparent and holds the words alone, a layer that later passes
 read through a channel and composite.
@@ -446,9 +444,9 @@ with Slug's exact method, as `title_cover` does. It reads no atlas, takes no
 one fails to compile, and the error names `"fill": "mtsdf"`.
 
 A draw with `emoji` paints the text's colour glyphs itself, after every draw
-of its pass, and `code` never runs for them. Each glyph shows its bitmap from
+of its pass, and `fragment` never runs for them. Each glyph shows its bitmap from
 the font's largest strike, through mipmaps that keep it smooth at text size,
-placed by `place` like any other glyph and blended by the draw's `blend` and
+placed by `vertex` like any other glyph and blended by the draw's `blend` and
 `alpha`. A shadow draw with `"emoji": true` paints a copy of its own. The
 bitmaps decode into an RGBA atlas when the words first hold them. The atlas
 grows to 2048x2048 at most, room for 132 emoji of Noto Color Emoji, and an

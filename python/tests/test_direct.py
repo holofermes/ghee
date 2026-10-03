@@ -364,7 +364,7 @@ def ink(frame, width):
 
 
 def test_a_scene_file_draws_its_words_where_its_draw_places_them(tmp_path):
-    """The words land at the spot that `place` reads, and move with it."""
+    """The words land at the spot that `vertex` reads, and move with it."""
     scene_dir = tmp_path / "scene"
     (scene_dir / "fonts").mkdir(parents=True)
     shutil.copy(REPO / "ghee/examples/fonts/DejaVuSans-Latin.ttf", scene_dir / "fonts")

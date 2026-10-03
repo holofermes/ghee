@@ -379,8 +379,8 @@ def words_over_half(alpha):
     """WORDS drawn white by a draw over a half-transparent pass."""
     draw = {
         "text": "words",
-        "code": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
-        "place": "vec2 glyph_place(vec2 em) { return em * 24.0; }",
+        "vertex": "vec2 glyph_place(vec2 em) { return em * 24.0; }",
+        "fragment": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
     }
     if alpha:
         draw["alpha"] = alpha

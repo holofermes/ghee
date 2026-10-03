@@ -1109,17 +1109,17 @@ impl Channel {
 /// A text drawn as one quad a glyph into its pass's buffer, after the pass's
 /// own quad.
 ///
-/// `place` defines `vec2 glyph_place(vec2 em)`. It takes a point of the block,
-/// in em from the block's top left with y down, and returns the pass pixel
-/// where that point lands, in the space of `v_texCoord * resolution`. `code`
-/// colours a glyph's pixels with its own `void main()`, premultiplied by
-/// alpha.
+/// `vertex` defines `vec2 glyph_place(vec2 em)`. It takes a point of the
+/// block, in em from the block's top left with y down, and returns the pass
+/// pixel where that point lands, in the space of `v_texCoord * resolution`.
+/// `fragment` colours a glyph's pixels with its own `void main()`,
+/// premultiplied by alpha.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draw {
     /// A name in the scene's texts.
     pub text: String,
-    pub code: String,
-    pub place: String,
+    pub vertex: String,
+    pub fragment: String,
     pub blend: Blend,
     pub alpha: Alpha,
     /// How far the quads reach past the ink, in em, for an effect around the
@@ -1136,17 +1136,22 @@ impl Draw {
         let Value::Object(o) = d else {
             bail!("{what} needs an object, got {}", py_repr(d));
         };
+        for (old, key) in [("place", "vertex"), ("code", "fragment")] {
+            if o.contains_key(old) {
+                bail!("{what} takes its {key} GLSL in '{key}', got '{old}'");
+            }
+        }
         let glsl = |key: &str, holds: &str| match o.get(key) {
             Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
             Some(v) => bail!("{what} '{key}' needs {holds}, got {}", py_repr(v)),
             None => bail!("{what} has no '{key}', {holds}"),
         };
         let text = glsl("text", "the name of a scene text")?;
-        let code = glsl("code", "fragment GLSL with its own void main()")?;
-        let place = glsl(
-            "place",
+        let vertex = glsl(
+            "vertex",
             "vertex GLSL that defines vec2 glyph_place(vec2 em)",
         )?;
+        let fragment = glsl("fragment", "fragment GLSL with its own void main()")?;
         let blend = match o.get("blend").filter(|v| !v.is_null()) {
             None => Blend::Over,
             Some(Value::String(b)) if b == "over" => Blend::Over,
@@ -1180,8 +1185,8 @@ impl Draw {
         };
         Ok(Draw {
             text,
-            code,
-            place,
+            vertex,
+            fragment,
             blend,
             alpha,
             pad,
@@ -1194,8 +1199,8 @@ impl Draw {
     pub fn to_dict(&self, last: bool) -> Value {
         let mut d = Map::new();
         d.insert("text".to_string(), Value::from(self.text.clone()));
-        d.insert("code".to_string(), Value::from(self.code.clone()));
-        d.insert("place".to_string(), Value::from(self.place.clone()));
+        d.insert("vertex".to_string(), Value::from(self.vertex.clone()));
+        d.insert("fragment".to_string(), Value::from(self.fragment.clone()));
         let blend = match self.blend {
             Blend::Over => None,
             Blend::Add => Some("add"),
@@ -1472,12 +1477,9 @@ impl Pass {
         format!("{}\n\n{body}", l.join("\n"))
     }
 
-    /// The vertex and the fragment shader of draw `k`. The fragment shader holds
-    /// the pass's preamble and the scene's common block, then the draw's code.
-    /// The vertex shader declares the same uniforms at the same precision,
-    /// since GLSL ES links a uniform declared by both stages only when the two
-    /// declarations match, and then the draw's place. It reads no texture:
-    /// GLES2 may offer a vertex shader no texture unit.
+    /// The vertex and the fragment shader of draw `k`. Each holds the pass's
+    /// preamble and the scene's common block, then the draw's GLSL for its
+    /// stage, as draw_vertex() and the fragment shader below lay them out.
     ///
     /// `scene` is the scene of the pass, and `hw_linear` as glsl() takes it.
     pub fn draw_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
@@ -1492,7 +1494,7 @@ impl Pass {
             ),
             _ => crate::text::slug_vertex_main(d.pad),
         };
-        let v = self.draw_vertex(d, Some(&scene.params), main);
+        let v = self.draw_vertex(d, scene, hw_linear, main);
         let mut f = self.preamble(Some(&scene.params), &scene.assets, &scene.texts, hw_linear);
         f.push(String::new());
         if let Some(c) = scene.common.as_deref().filter(|c| !c.is_empty()) {
@@ -1511,58 +1513,53 @@ impl Pass {
         };
         f.extend(head);
         f.push(String::new());
-        f.push(d.code.clone());
+        f.push(d.fragment.clone());
         f.push(String::new());
         f.extend(tail);
         (v, f.join("\n"))
     }
 
     /// The vertex and the fragment shader of the error boxes of draw `k`: the
-    /// draw's own place with the slug fill's vertex main and no pad, so each
-    /// box lands where a glyph would go, and ghee's hazard stripes.
-    pub fn draw_box_glsl(&self, k: usize, scene_params: Option<&ParamMap>) -> (String, String) {
+    /// draw's own vertex GLSL with the slug fill's vertex main and no pad, so
+    /// each box lands where a glyph would go, and ghee's hazard stripes.
+    pub fn draw_box_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
         let main = crate::text::slug_vertex_main(0.0);
-        let v = self.draw_vertex(&self.draws[k], scene_params, main);
+        let v = self.draw_vertex(&self.draws[k], scene, hw_linear, main);
         let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         f.extend(crate::text::box_fragment());
         (v, f.join("\n"))
     }
 
     /// The vertex and the fragment shader of the colour layer of draw `k`:
-    /// the draw's own place, and ghee's read of the text's colour atlas.
-    pub fn draw_colour_glsl(&self, k: usize, scene_params: Option<&ParamMap>) -> (String, String) {
+    /// the draw's own vertex GLSL, and ghee's read of the text's colour atlas.
+    pub fn draw_colour_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
         let d = &self.draws[k];
-        let v = self.draw_vertex(d, scene_params, crate::colour::vertex_main(&d.text));
+        let main = crate::colour::vertex_main(&d.text);
+        let v = self.draw_vertex(d, scene, hw_linear, main);
         let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         f.extend(crate::colour::fragment(&d.text));
         (v, f.join("\n"))
     }
 
-    /// The vertex shader of draw `d`, with `main` after its place.
-    fn draw_vertex(&self, d: &Draw, scene_params: Option<&ParamMap>, main: Vec<String>) -> String {
-        let mut v: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
+    /// The vertex shader of draw `d`, with `main` after its vertex GLSL. It
+    /// declares what the pass's preamble declares, at the same precision,
+    /// since GLSL ES links a uniform declared by both stages only when the two
+    /// declarations match, and the scene's common block follows, so the
+    /// common block compiles as it does in a pass.
+    fn draw_vertex(&self, d: &Draw, scene: &Scene, hw_linear: bool, main: Vec<String>) -> String {
+        let mut v = self.preamble(Some(&scene.params), &scene.assets, &scene.texts, hw_linear);
         // The fragment stage's int defaults to mediump and the vertex stage's
         // to highp, so an int uniform declared in both needs this to link.
-        v.push("precision mediump int;".to_string());
-        v.extend(
-            [
-                "uniform vec2 resolution;",
-                "uniform float time;",
-                "uniform float DT;",
-                "uniform float frame;",
-                "uniform float ghee_vflip;",
-            ]
-            .map(str::to_string),
-        );
-        for p in scene_params.iter().flat_map(|sp| sp.values()) {
-            v.extend(param_uniform_lines(p));
-        }
-        for p in self.params.values() {
-            v.extend(param_uniform_lines(p));
-        }
-        v.extend(crate::text::draw_vertex_head(&d.text));
+        v.insert(PRECISION.len(), "precision mediump int;".to_string());
+        v.push("uniform float ghee_vflip;".to_string());
         v.push(String::new());
-        v.push(d.place.clone());
+        if let Some(c) = scene.common.as_deref().filter(|c| !c.is_empty()) {
+            v.push(c.to_string());
+            v.push(String::new());
+        }
+        v.extend(crate::text::draw_vertex_head());
+        v.push(String::new());
+        v.push(d.vertex.clone());
         v.push(String::new());
         v.extend(main);
         v.join("\n")
@@ -2317,7 +2314,7 @@ mod tests {
         let mut p = Pass::of("a", GOOD).unwrap();
         p.draws = vec![Draw::from_dict(
             "pass 'a' draw 0",
-            &json!({"text": "t", "code": GOOD, "place": "vec2 glyph_place(vec2 em) { return em; }"}),
+            &json!({"text": "t", "fragment": GOOD, "vertex": "vec2 glyph_place(vec2 em) { return em; }"}),
         )
         .unwrap()];
         let sized = Ok::<Pass, anyhow::Error>(p.clone()).size(8, 4).unwrap();

@@ -45,19 +45,19 @@ impl ErrorPass {
     }
 }
 
-/// A draw's GLSL: `code` is its fragment shader, `place` its vertex shader.
+/// A draw's GLSL for one stage, under the draw's key of the same name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawPart {
-    Code,
-    Place,
+    Vertex,
+    Fragment,
 }
 
 impl DrawPart {
     /// The draw's key that holds this GLSL.
     pub fn key(self) -> &'static str {
         match self {
-            DrawPart::Code => "code",
-            DrawPart::Place => "place",
+            DrawPart::Vertex => "vertex",
+            DrawPart::Fragment => "fragment",
         }
     }
 }
@@ -72,7 +72,7 @@ pub struct ErrorDraw {
 }
 
 impl ErrorDraw {
-    /// The wire form, `{"index": 0, "part": "code"}`.
+    /// The wire form, `{"index": 0, "part": "fragment"}`.
     pub fn to_json(self) -> Value {
         serde_json::json!({"index": self.index, "part": self.part.key()})
     }
@@ -458,25 +458,25 @@ fn draw_error(
         Some(e) => (
             first(e),
             vs,
-            d.place.as_str(),
-            DrawPart::Place,
+            d.vertex.as_str(),
+            DrawPart::Vertex,
             "glyph_place(",
             "vec2 glyph_place(vec2 em)",
         ),
         None => (
             first(err),
             fs,
-            d.code.as_str(),
-            DrawPart::Code,
+            d.fragment.as_str(),
+            DrawPart::Fragment,
             "ghee_main();",
             "a void main()",
         ),
     };
     // A slug draw declares no distances, and its compile error names the
-    // stand-in for the one that the code reads.
+    // stand-in for the one that the fragment GLSL reads.
     let slug = text::SLUG_UNDECLARED
         .iter()
-        .find(|(_, s)| part == DrawPart::Code && log.contains(s));
+        .find(|(_, s)| part == DrawPart::Fragment && log.contains(s));
     let err = match slug {
         Some((read, _)) => format!("{read} needs \"fill\": \"mtsdf\" on text '{}'", d.text),
         None => err.to_string(),
@@ -501,11 +501,9 @@ fn draw_error(
         let message = format!("{draw}, line {n} of its {key}: {err}");
         return fault(message, Some(n), false);
     }
-    if part == DrawPart::Code {
-        if let (Some(n), true) = user_line(&log, glsl, own, common) {
-            let message = format!("{draw}, line {n} of the common block: {err}");
-            return fault(message, Some(n), true);
-        }
+    if let (Some(n), true) = user_line(&log, glsl, own, common) {
+        let message = format!("{draw}, line {n} of the common block: {err}");
+        return fault(message, Some(n), true);
     }
     // After the draw's own GLSL, ghee's main calls the function it defines.
     let src = usize::try_from(line - 1)
@@ -932,7 +930,7 @@ impl Renderer {
                 if !coloured {
                     continue;
                 }
-                let (vs, fs) = p.draw_colour_glsl(k, Some(&scene.params));
+                let (vs, fs) = p.draw_colour_glsl(k, scene, hw_linear);
                 let name = format!("{} colour glyphs", dl.name);
                 let (cname, cvs, cfs) = (
                     self.staged_cstring(&name)?,
@@ -960,7 +958,7 @@ impl Renderer {
                 }
             }
             for (k, dl) in draws[first..].iter_mut().enumerate() {
-                let (vs, fs) = p.draw_box_glsl(k, Some(&scene.params));
+                let (vs, fs) = p.draw_box_glsl(k, scene, hw_linear);
                 let name = format!("{} error boxes", dl.name);
                 let (cname, cvs, cfs) = (
                     self.staged_cstring(&name)?,
@@ -4198,7 +4196,7 @@ mod tests {
             sc.load_assets(fonts).unwrap();
             sc
         };
-        let with = load(json!([{"text": "label", "code": code, "place": place}]));
+        let with = load(json!([{"text": "label", "fragment": code, "vertex": place}]));
         let alone = load(json!([]));
         let Some((_g, mut r)) = gpu() else { return };
         let frame = |r: &mut Renderer| {
@@ -4298,8 +4296,8 @@ mod tests {
                     "passes": [{"name": "main",
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                         "draws": [{"text": "label",
-                            "code": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
-                            "place": "vec2 glyph_place(vec2 em) { return em * 20.0; }"}]}],
+                            "fragment": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
+                            "vertex": "vec2 glyph_place(vec2 em) { return em * 20.0; }"}]}],
                 }),
                 None,
                 None,
@@ -4347,8 +4345,8 @@ mod tests {
                 let s = 109.0 / f64::from(1 << k);
                 let at = [[4.0, 4.0], [4.0, 140.0], [150.0, 140.0], [230.0, 140.0], [280.0, 140.0]][k];
                 json!({"text": "label", "emoji": true,
-                    "code": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
-                    "place": format!("vec2 glyph_place(vec2 em) {{ return vec2({:?}, {:?}) + em * {s:?}; }}",
+                    "fragment": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
+                    "vertex": format!("vec2 glyph_place(vec2 em) {{ return vec2({:?}, {:?}) + em * {s:?}; }}",
                         at[0], at[1])})
             })
             .collect();
@@ -4493,8 +4491,8 @@ mod tests {
                 "passes": [{"name": "main",
                     "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                     "draws": [{"text": "label",
-                        "place": "vec2 glyph_place(vec2 em) { return vec2(2.0, 1.0) + em * 40.0; }",
-                        "code": "void main(){ gl_FragColor = vec4(glyph_cover()); }"}]}],
+                        "vertex": "vec2 glyph_place(vec2 em) { return vec2(2.0, 1.0) + em * 40.0; }",
+                        "fragment": "void main(){ gl_FragColor = vec4(glyph_cover()); }"}]}],
             }),
             None,
             None,

@@ -379,7 +379,7 @@ pub trait ConsoleHost {
     /// now (stats::DEST_*). error_pass is the pass index that holds a compile
     /// error, or "common" for the scene's common block. error_draw is the draw
     /// of that pass that holds it, {index, part}, where part names the draw's
-    /// "code" or its "place". error_line is the line inside the draw's part,
+    /// "vertex" or its "fragment". error_line is the line inside the draw's part,
     /// else inside the pass. stale is true when the files behind the active
     /// scene changed since the compile. A host whose scenes have no files
     /// answers false for stale.

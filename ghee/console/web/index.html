@@ -270,8 +270,8 @@
     color:inherit; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .edhead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:0 0 5px; flex:0 0 auto; cursor:help}
   .editor + .edhead{margin-top:12px}
-  .shadercard .editor.place{flex:0 0 auto; min-height:0}
-  .shadercard .editor.place>textarea{height:150px; resize:vertical}
+  .shadercard .editor.vertex{flex:0 0 auto; min-height:0}
+  .shadercard .editor.vertex>textarea{height:150px; resize:vertical}
   .shadercard>[hidden]{display:none}
   @media (max-width:640px){
     html,body{height:auto}
@@ -361,9 +361,9 @@
     <div class="channels" id="channels"></div>
     <div class="inputs" id="inputs"></div>
     <div class="channels drawctl" id="drawctl" hidden></div>
-    <div class="edhead" id="placeHead" title="vertex GLSL: vec2 glyph_place(vec2 em) returns the pass pixel where a point of the block lands" hidden>place · vertex</div>
-    <div class="editor place" id="placeEd" hidden><pre aria-hidden="true"></pre><textarea spellcheck="false" aria-label="place"></textarea><div class="errmark"></div></div>
-    <div class="edhead" id="codeHead" title="fragment GLSL: a void main() that writes colour premultiplied by alpha" hidden>code · fragment</div>
+    <div class="edhead" id="vertexHead" title="vertex GLSL: vec2 glyph_place(vec2 em) returns the pass pixel where a point of the block lands" hidden>vertex</div>
+    <div class="editor vertex" id="vertexEd" hidden><pre aria-hidden="true"></pre><textarea spellcheck="false" aria-label="vertex"></textarea><div class="errmark"></div></div>
+    <div class="edhead" id="fragmentHead" title="fragment GLSL: a void main() that writes colour premultiplied by alpha" hidden>fragment</div>
     <div class="editor" id="codeEd"><pre aria-hidden="true"></pre><textarea id="code" spellcheck="false"></textarea><div class="errmark"></div></div>
     <div class="err" id="err"></div>
   </div>
@@ -437,7 +437,7 @@ function editor(box){
   ta.addEventListener("scroll", ed.scroll);
   return ed;
 }
-const CODE = editor($("#codeEd")), PLACE = editor($("#placeEd"));
+const CODE = editor($("#codeEd")), VERTEX = editor($("#vertexEd"));
 
 const statNum = (v, d, unit) => (typeof v === "number" ? v.toFixed(d) + (unit || "") : "-");
 function refreshInfo(){
@@ -887,8 +887,8 @@ function addDraw(i){
   const p = work.passes[i], t = Object.keys(work.texts)[0];
   (p.draws = p.draws || []).push({
     text: t,
-    place: `vec2 glyph_place(vec2 em) {\n  float ppem = 32.0;\n  return 0.5 * (resolution - ${t}_size * ppem) + em * ppem;\n}\n`,
-    code: "void main() {\n  float c = glyph_cover();\n  gl_FragColor = vec4(vec3(c), c);\n}\n",
+    vertex: `vec2 glyph_place(vec2 em) {\n  float ppem = 32.0;\n  return 0.5 * (resolution - ${t}_size * ppem) + em * ppem;\n}\n`,
+    fragment: "void main() {\n  float c = glyph_cover();\n  gl_FragColor = vec4(vec3(c), c);\n}\n",
   });
   p.drawsEdited = true;
   curPass = i; curDraw = p.draws.length - 1; markDirty(); postScene();
@@ -946,9 +946,9 @@ function buildDrawCtl(){
   pill("pad", pad);
 }
 
-// the place editor and the draw's settings show while a draw is open
+// the vertex editor and the draw's settings show while a draw is open
 function showDraw(d){
-  for (const n of [$("#drawctl"), $("#placeHead"), PLACE.box, $("#codeHead")]) n.hidden = !d;
+  for (const n of [$("#drawctl"), $("#vertexHead"), VERTEX.box, $("#fragmentHead")]) n.hidden = !d;
 }
 
 async function addFilter(name){
@@ -1049,10 +1049,10 @@ function buildInputs(){
 }
 function loadCode(){
   const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass], d = openDraw();
-  ta.value = d ? d.code : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
+  ta.value = d ? d.fragment : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
   ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
   CODE.box.classList.toggle("readonly", !!(p && p.filter));
-  if (d){ PLACE.ta.value = d.place; PLACE.ta.scrollTop = 0; PLACE.sync(); }
+  if (d){ VERTEX.ta.value = d.vertex; VERTEX.ta.scrollTop = 0; VERTEX.sync(); }
   showDraw(d); buildDrawCtl(); CODE.sync(); showErrors(); syncAddRow();
 }
 
@@ -1354,23 +1354,23 @@ function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = 
 CODE.ta.addEventListener("input", ()=>{
   const d = openDraw();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (d){ d.code = CODE.ta.value; work.passes[curPass].drawsEdited = true; }
+  else if (d){ d.fragment = CODE.ta.value; work.passes[curPass].drawsEdited = true; }
   else {
     work.passes[curPass].code = CODE.ta.value;
     work.passes[curPass].codeEdited = true;
   }
   CODE.sync(); liveCompile();
 });
-PLACE.ta.addEventListener("input", ()=>{
-  openDraw().place = PLACE.ta.value; work.passes[curPass].drawsEdited = true;
-  PLACE.sync(); liveCompile();
+VERTEX.ta.addEventListener("input", ()=>{
+  openDraw().vertex = VERTEX.ta.value; work.passes[curPass].drawsEdited = true;
+  VERTEX.sync(); liveCompile();
 });
 
 // top-bar actions
 $("#apply").addEventListener("click", async ()=>{
   const d = openDraw();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (d){ d.code = CODE.ta.value; d.place = PLACE.ta.value; }
+  else if (d){ d.fragment = CODE.ta.value; d.vertex = VERTEX.ta.value; }
   else work.passes[curPass].code = CODE.ta.value;
   await postScene(); markDirty();
   if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files
@@ -1530,8 +1530,8 @@ function showErrors(){
   e.textContent = msg; e.classList.toggle("show", !!msg);
   const here = !postErr && s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass);
   const ed = s.error_draw, inDraw = here && ed && ed.index === curDraw;
-  CODE.mark(here && (ed ? inDraw && ed.part === "code" : curDraw == null) ? s.error_line : 0);
-  PLACE.mark(inDraw && ed.part === "place" ? s.error_line : 0);
+  CODE.mark(here && (ed ? inDraw && ed.part === "fragment" : curDraw == null) ? s.error_line : 0);
+  VERTEX.mark(inDraw && ed.part === "vertex" ? s.error_line : 0);
 }
 
 async function poll(){

@@ -71,10 +71,10 @@ fn the_mtsdf_fill_at_46_px_em_matches_exact_coverage() {
         "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
         json!([{
             "text": "t",
-            "place": "vec2 glyph_place(vec2 em) {\n\
+            "vertex": "vec2 glyph_place(vec2 em) {\n\
                       return (resolution - t_size * 46.0) * 0.5 + em * 46.0;\n\
                       }",
-            "code": "void main() { gl_FragColor = vec4(glyph_cover()); }",
+            "fragment": "void main() { gl_FragColor = vec4(glyph_cover()); }",
         }]),
     );
     let errs: Vec<f64> = cover

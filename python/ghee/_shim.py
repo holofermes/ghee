@@ -159,9 +159,9 @@ class Draw:
     """A text drawn into the buffer of its pass, one quad over each glyph.
 
     `text` names a Text of the scene.
-    `code` holds a void main() that colours a glyph's pixels, premultiplied
-    by alpha.
-    `place` defines vec2 glyph_place(vec2 em), which takes a point of the
+    `fragment` holds a void main() that colours a glyph's pixels,
+    premultiplied by alpha.
+    `vertex` defines vec2 glyph_place(vec2 em), which takes a point of the
     block, in em from its top left with y down, to the pass pixel where it
     lands.
     `blend` is over, add or replace.
@@ -174,8 +174,8 @@ class Draw:
     """
 
     text: str
-    code: str
-    place: str
+    fragment: str
+    vertex: str
     blend: str = "over"
     pad: float = 0.0
     alpha: str = "blend"
@@ -188,8 +188,8 @@ class Draw:
             )
         what = f"draw of text '{self.text}'"
         for key, holds in (
-            ("code", "fragment GLSL with its own void main()"),
-            ("place", "vertex GLSL that defines vec2 glyph_place(vec2 em)"),
+            ("vertex", "vertex GLSL that defines vec2 glyph_place(vec2 em)"),
+            ("fragment", "fragment GLSL with its own void main()"),
         ):
             v = getattr(self, key)
             if not isinstance(v, str) or not v.strip():
@@ -217,7 +217,7 @@ class Draw:
             )
 
     def to_dict(self) -> dict:
-        d: dict = {"text": self.text, "code": self.code, "place": self.place}
+        d: dict = {"text": self.text, "vertex": self.vertex, "fragment": self.fragment}
         if self.blend != "over":
             d["blend"] = self.blend
         if self.alpha != "blend":

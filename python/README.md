@@ -161,7 +161,7 @@ pass's own code: one quad over each glyph, coloured by the draw's own
 fragment shader. This scene draws `words` in amber at 48 pixels per em,
 centred on black:
 
-    PLACE = """
+    CENTRED = """
     vec2 glyph_place(vec2 em) {
       return (resolution - words_size * 48.0) * 0.5 + em * 48.0;
     }
@@ -178,14 +178,15 @@ centred on black:
         params={"words": ghee.Param("words", "string", "hello")},
         assets=[ghee.Asset("sans", "DejaVuSans.ttf")],
         texts=[ghee.Text("words", "sans")],
-        passes=[ghee.Pass("main", BLACK, draws=[ghee.Draw("words", AMBER, PLACE)])],
+        passes=[ghee.Pass("main", BLACK, draws=[ghee.Draw("words", AMBER, CENTRED)])],
     )
 
-`ghee.Draw(text, code, place, blend="over", pad=0.0, alpha="blend", emoji=None)`:
+`ghee.Draw(text, fragment, vertex, blend="over", pad=0.0, alpha="blend", emoji=None)`:
 
 - `text` names a `ghee.Text` of the scene.
-- `code` holds a `void main()` that writes colour premultiplied by alpha.
-- `place` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
+- `fragment` holds a `void main()` that writes colour premultiplied by
+  alpha.
+- `vertex` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
   block, in em from its top left with y down, to the pass pixel where it
   lands.
 - `blend` is `"over"`, `"add"` or `"replace"`.
@@ -209,7 +210,7 @@ wait for the glyphs that its atlas lacks, and the last words stay on screen
 meanwhile. With `timestep` set, `frame()` waits for them.
 
 [Draws](https://github.com/holofermes/ghee#draws) holds the GLSL that
-`code` and `place` read, and the cost of each fill.
+`fragment` and `vertex` read, and the cost of each fill.
 
 ## Direct mode
 

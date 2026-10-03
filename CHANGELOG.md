@@ -45,6 +45,10 @@
 - Store alpha in every pass buffer, so a channel reads the alpha that its
   pass wrote. Keep every frame opaque unless `ghee render --alpha` or
   `ghee.open(..., alpha=True)` keeps the output pass's alpha.
+- Draw a text straight into a pass's buffer with `draws`, one quad over each
+  glyph: a draw's `vertex` GLSL defines `glyph_place`, which puts the glyph
+  in the pass, and its `fragment` GLSL colours it. Each stage takes the
+  pass's preamble and the scene's common block, as the pass's code does.
 - Blend a draw's alpha the way its colour blends, and leave the pass's alpha
   as it was with `"alpha": "keep"`.
 - Let a pass with `draws` leave out `code`: it starts each frame transparent
@@ -66,14 +70,16 @@
 - Draw an error box for a glyph that the atlas cannot hold, and say why.
 - Count the atlas of a text drawn with the MTSDF fill against the 16 image
   assets and texts of a scene, and against the 16 textures of a pass.
-- Draw a text into a pass from Python with `ghee.Draw` in
-  `Pass(draws=[...])`, and leave out the code of a pass of draws alone.
+- Draw a text into a pass from Python with
+  `ghee.Draw(text, fragment, vertex)` in `Pass(draws=[...])`, and leave out
+  the code of a pass of draws alone.
 - Set a text's `fill` and `atlas` from Python on `ghee.Text`.
 - Edit a pass's draws in the console. Each draw opens in a tab after its
-  pass's tab, with its `place` and its `code` in editors and its text,
+  pass's tab, with its `vertex` and its `fragment` in editors and its text,
   blend, alpha and pad as controls, and `+` adds a draw to the open pass.
 - Report the draw that holds a compile error in `/stats` as `error_draw`,
-  and count `error_line` in that draw's GLSL.
+  with `part` set to `"vertex"` or `"fragment"`, and count `error_line` in
+  that draw's GLSL.
 - Edit a free-text string param in the console over several lines.
 - Show in the console why the server refused a posted scene.
 - Refuse a scene where two declarations make one GLSL name in a pass, such
@@ -101,7 +107,7 @@
   character from the first font whose cmap holds it.
 - Paint colour emoji in draws: a glyph with a PNG bitmap in a CBDT or sbix
   table and no outline shows its bitmap, mipmapped, placed by the draw's
-  `place`. `<name>_cover` reads it as no ink, and a font of colour bitmaps
+  `vertex`. `<name>_cover` reads it as no ink, and a font of colour bitmaps
   alone draws its emoji in draws in place of error boxes.
 - Paint a text's colour emoji from the last draw of the text in its pass
   alone, so a shadow or a glow paints no copy, and set `"emoji": true` or

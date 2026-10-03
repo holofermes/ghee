@@ -12,7 +12,7 @@ loopback, or open it with `--host` only on a network you trust.
   error_pass, error_draw, active, display, stale}`. On a compile error,
   `error_pass` is the index of the pass that holds it, or `"common"` for
   the common block, and `error_draw` is `{index, part}` when one of that
-  pass's draws holds it, with `part` set to `"code"` or `"place"`.
+  pass's draws holds it, with `part` set to `"vertex"` or `"fragment"`.
   `error_line` counts from the first line of the GLSL holding the error.
 - `GET /scenes`: `{scenes: [name...], active}`
 - `GET /scene?name=`: the resolved scene JSON, shader files inlined and

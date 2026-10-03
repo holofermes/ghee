@@ -9,8 +9,9 @@
 //!
 //! A draw, declared on a pass, puts a text into that pass's buffer after the
 //! pass's own quad, as one quad over each inked glyph. The draw's
-//! `glyph_place` maps a point of the block to a pixel of the pass, and its code
-//! colours the pixels of each quad from the glyph's coverage. The text's fill
+//! `glyph_place`, in its vertex GLSL, maps a point of the block to a pixel of
+//! the pass, and its fragment GLSL colours the pixels of each quad from the
+//! glyph's coverage. The text's fill
 //! gives that coverage: the MTSDF fill takes one bilinear sample of the
 //! glyph's field in an atlas, which `crate::atlas` builds, and the slug fill
 //! computes it from the curves as `<name>_cover` does. A colour glyph, a
@@ -1498,11 +1499,12 @@ pub fn reader_lines(name: &str) -> Vec<String> {
 }
 
 /// The lines of a draw's vertex shader ahead of the author's
-/// `vec2 glyph_place(vec2 em)`: the quad attributes, the text's size, the
-/// varyings, and the glyph values read by glyph_place. The caller's preamble
-/// declares `resolution` and `ghee_vflip` at the fragment stage's precision.
-pub fn draw_vertex_head(name: &str) -> Vec<String> {
-    lines(DRAW_VERTEX_HEAD, name)
+/// `vec2 glyph_place(vec2 em)`: the quad attributes, ghee's varyings, and the
+/// glyph values read by glyph_place. The caller's preamble declares
+/// `resolution`, `v_texCoord`, the text's size and `ghee_vflip` at the
+/// fragment stage's precision.
+pub fn draw_vertex_head() -> Vec<String> {
+    lines(DRAW_VERTEX_HEAD, "")
 }
 
 /// The vertex main of a slug draw, after glyph_place. Each box edge moves
@@ -1677,8 +1679,6 @@ const DRAW_VERTEX_HEAD: &str = r#"attribute vec4 ghee_a0;
 attribute vec4 ghee_a1;
 attribute vec4 ghee_a2;
 attribute vec4 ghee_a3;
-uniform vec2 NAME_size;
-varying vec2 v_texCoord;
 varying vec4 ghee_v0;
 varying vec4 ghee_v1;
 varying vec4 ghee_v2;

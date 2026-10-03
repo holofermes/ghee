@@ -47,7 +47,7 @@ use ttf_parser::{Face, GlyphId};
 
 use crate::atlas::{self, Cell};
 use crate::colour;
-use crate::scene::py_repr;
+use crate::scene::{self, py_repr};
 
 /// Texture width in texels. A power of two keeps every texel centre an exact
 /// binary fraction, so a NEAREST read lands on the texel named by the index.
@@ -239,6 +239,12 @@ impl Text {
         let Value::Object(o) = d else {
             bail!("text '{name}' needs an object, got {}", py_repr(d));
         };
+        let elsewhere = [
+            scene::keys_on(&scene::TEXT_KEYS, &scene::DRAW_KEYS, "a draw"),
+            scene::keys_on(&scene::TEXT_KEYS, &scene::ASSET_KEYS, "an asset"),
+        ]
+        .concat();
+        scene::known_keys(o, &format!("text '{name}'"), &scene::TEXT_KEYS, &elsewhere)?;
         let named = |v: &Value| match v {
             Value::String(s) if !s.is_empty() => Some(s.clone()),
             _ => None,

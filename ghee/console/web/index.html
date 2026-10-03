@@ -659,6 +659,14 @@ function norm(s){
   });
 }
 function dirty(){ return norm(work) !== norm(pristine); }
+// The scene without the editor's own flags, which the server refuses as keys
+// that a scene does not take.
+function sceneOnly(s){
+  const q = clone(s);
+  (q.passes || []).forEach(p => { delete p.muted; delete p.codeEdited; delete p.drawsEdited; });
+  if (q.common) delete q.common.commonEdited;
+  return q;
+}
 
 // Reset is enabled only when the working scene differs from the file on disk
 // (a local copy, possibly persisted in localStorage).
@@ -1538,7 +1546,7 @@ $("#save").addEventListener("click", async ()=>{
   const b = $("#save");
   let label = "saved";
   try {
-    const r = await fetch("/save", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name: active, scene: work})});
+    const r = await fetch("/save", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name: active, scene: sceneOnly(work)})});
     if (!r.ok) { console.warn("/save:", await r.text()); label = "saved locally"; }
   } catch(e) { console.warn("/save unavailable:", e); label = "saved locally"; }
   b.textContent = label; setTimeout(()=>{ b.textContent = "save"; }, 1200); updateStatus();

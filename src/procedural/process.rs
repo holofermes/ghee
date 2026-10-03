@@ -600,12 +600,14 @@ impl SceneProcess {
             }
         };
         crate::report::progress_done();
-        let doc: Value = serde_json::from_str(line.trim()).map_err(|e| {
+        let mut doc: Value = serde_json::from_str(line.trim()).map_err(|e| {
             anyhow!(process.epitaph(&format!("handshake line is not a scene object: {e}")))
         })?;
+        // "lockstep" belongs to the handshake, and the scene takes no such key.
+        let lockstep = doc.as_object_mut().and_then(|o| o.remove("lockstep"));
         let mut scene = Scene::from_dict(&doc, Some(&dir), Some(path))?;
         scene.load_assets(&dir)?;
-        process.lockstep = doc.get("lockstep") == Some(&Value::Bool(true));
+        process.lockstep = lockstep == Some(Value::Bool(true));
         process.writer = Some(write_ticks(stdin, Arc::clone(&process.outbox)));
         Ok((scene, process))
     }

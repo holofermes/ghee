@@ -162,6 +162,10 @@ A pass can also carry its GLSL inline in a `"code"` string, and a scene can
 also be a program that emits its own JSON and feeds it data, see
 [Procedural scenes](#procedural-scenes).
 
+A scene with a key that ghee does not take fails to load, and the error
+names the key, where it sits, and the closest key that ghee takes, or the
+object that takes it: `"fill"` on a draw names the draw's text.
+
 Your own scenes can be looked up through the `$GHEE_SCENES` env variable.
 Careful: procedural scenes are executables, and ghee runs them, only put
 directories you trust there.

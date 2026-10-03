@@ -111,6 +111,134 @@ fn obj_of<'a>(d: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Va
     }
 }
 
+/// The keys of the scene's top level.
+const SCENE_KEYS: [&str; 7] = [
+    "version", "passes", "filters", "params", "common", "assets", "texts",
+];
+
+/// The keys of a pass.
+const PASS_KEYS: [&str; 10] = [
+    "name", "code", "shader", "arrays", "channels", "params", "filter", "size", "mipmaps", "draws",
+];
+
+/// The keys of a draw.
+pub(crate) const DRAW_KEYS: [&str; 8] = [
+    "name",
+    "text",
+    "vertex",
+    "px_per_em",
+    "fragment",
+    "blend",
+    "pad",
+    "emoji",
+];
+
+/// The keys of an asset. Only a .raw file takes the four after `sampling`.
+pub(crate) const ASSET_KEYS: [&str; 6] = [
+    "file",
+    "sampling",
+    "width",
+    "height",
+    "format",
+    "components",
+];
+
+/// The keys of a text.
+pub(crate) const TEXT_KEYS: [&str; 5] = ["value", "font", "align", "fill", "atlas"];
+
+/// The keys of a param.
+const PARAM_KEYS: [&str; 6] = ["type", "value", "min", "max", "step", "options"];
+
+/// The keys of a channel, an array and the common block.
+const CHANNEL_KEYS: [&str; 1] = ["buffer"];
+const ARRAY_KEYS: [&str; 2] = ["name", "size"];
+const COMMON_KEYS: [&str; 2] = ["code", "shader"];
+
+/// The edits that turn `a` into `b`, one at a time: a character inserted,
+/// removed or replaced, or two neighbours swapped.
+fn edits(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    // d[i][j]: the edits from the first i characters of a to the first j of b.
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let replace = d[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            let mut best = replace.min(d[i - 1][j] + 1).min(d[i][j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(d[i - 2][j - 2] + 1);
+            }
+            d[i][j] = best;
+        }
+    }
+    d[a.len()][b.len()]
+}
+
+/// The edits from `typed` to `key` when `key` is a likely meaning of it: a
+/// third of the longer name or fewer, or the first four characters shared.
+fn near(typed: &str, key: &str) -> Option<usize> {
+    let d = edits(typed, key);
+    let longer = typed.chars().count().max(key.chars().count());
+    let shared = typed
+        .chars()
+        .zip(key.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    (d <= (longer / 3).max(1) || shared >= 4).then_some(d)
+}
+
+/// Refuse the first key of `o` that `what` does not take. The error names
+/// the key and the closest key that `what` takes, or every key that it takes
+/// when none comes close. `elsewhere` holds the keys of other objects, each
+/// with the object that takes it, and a key that sits there, or comes close
+/// to one, names that object.
+pub(crate) fn known_keys(
+    o: &Map<String, Value>,
+    what: &str,
+    takes: &[&str],
+    elsewhere: &[(&str, String)],
+) -> Result<()> {
+    let Some(key) = o.keys().find(|k| !takes.contains(&k.as_str())) else {
+        return Ok(());
+    };
+    if let Some((_, on)) = elsewhere.iter().find(|(k, _)| k == key) {
+        bail!("{what} takes no '{key}', which sits on {on}");
+    }
+    let own = takes.iter().map(|k| (*k, None));
+    let other = elsewhere.iter().map(|(k, on)| (*k, Some(on)));
+    let closest = own
+        .chain(other)
+        .filter_map(|(k, on)| near(key, k).map(|d| (d, k, on)))
+        .min_by_key(|(d, _, _)| *d);
+    match closest {
+        Some((_, k, None)) => bail!("{what} takes no '{key}', the closest key is '{k}'"),
+        Some((_, k, Some(on))) => {
+            bail!("{what} takes no '{key}', the closest key is '{k}', which sits on {on}")
+        }
+        None => {
+            let all = match takes.split_last() {
+                Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+                _ => takes.join(""),
+            };
+            bail!("{what} takes no '{key}', only {all}")
+        }
+    }
+}
+
+/// The keys in `of` that `takes` lacks, each with `on`, the object that
+/// takes it, for known_keys().
+pub(crate) fn keys_on<'a>(takes: &[&str], of: &[&'a str], on: &str) -> Vec<(&'a str, String)> {
+    of.iter()
+        .filter(|k| !takes.contains(k))
+        .map(|k| (*k, on.to_string()))
+        .collect()
+}
+
 /// The error strings quote a scene back in this form: `None`, `True`,
 /// `False`, a quoted string, a shortest round-trip float.
 pub(crate) fn py_repr(v: &Value) -> String {
@@ -307,6 +435,7 @@ fn common_block(d: &Map<String, Value>, base_dir: Option<&str>) -> Result<Option
             py_repr(c)
         );
     };
+    known_keys(c, "'common'", &COMMON_KEYS, &[])?;
     let code = c.get("code").filter(|v| !v.is_null());
     let shader = c.get("shader").filter(|v| !v.is_null());
     if code.is_none() == shader.is_none() {
@@ -548,6 +677,7 @@ impl Param {
         let Value::Object(o) = d else {
             bail!("param '{name}' needs an object, got {}", py_repr(d));
         };
+        known_keys(o, &format!("param '{name}'"), &PARAM_KEYS, &[])?;
         for k in ["type", "value"] {
             if !o.contains_key(k) {
                 bail!("param '{name}' has no '{k}'");
@@ -730,6 +860,11 @@ impl ArrayInput {
         let Value::Object(o) = d else {
             return Err(malformed());
         };
+        let what = match o.get("name") {
+            Some(n) => format!("array '{}'", py_str(n)),
+            None => "an array".to_string(),
+        };
+        known_keys(o, &what, &ARRAY_KEYS, &[])?;
         if !o.contains_key("name") || !o.contains_key("size") {
             return Err(malformed());
         }
@@ -950,17 +1085,18 @@ impl Asset {
         let Value::Object(o) = d else {
             bail!("asset '{name}' needs an object, got {}", py_repr(d));
         };
-        let file = match o.get("file") {
-            None => bail!("asset '{name}' has no 'file'"),
-            Some(Value::String(s)) => s.clone(),
-            Some(v) => bail!("asset '{name}' 'file' needs a filename, got {}", py_repr(v)),
-        };
         if o.contains_key("filter") {
             bail!("asset '{name}' takes 'nearest' or 'linear' in 'sampling', got 'filter'");
         }
         if o.contains_key("from_filter") {
             bail!("asset '{name}' takes no 'from_filter': a filter declares its own assets");
         }
+        known_keys(o, &format!("asset '{name}'"), &ASSET_KEYS, &[])?;
+        let file = match o.get("file") {
+            None => bail!("asset '{name}' has no 'file'"),
+            Some(Value::String(s)) => s.clone(),
+            Some(v) => bail!("asset '{name}' 'file' needs a filename, got {}", py_repr(v)),
+        };
         let linear = match o.get("sampling").filter(|v| !v.is_null()) {
             None => false,
             Some(Value::String(s)) if s == "nearest" => false,
@@ -1086,13 +1222,15 @@ impl Channel {
         }
     }
 
-    pub fn from_dict(d: &Value) -> Result<Channel> {
+    /// `what` names the channel in an error, as "channel 0".
+    pub fn from_dict(what: &str, d: &Value) -> Result<Channel> {
         let Value::Object(o) = d else {
             bail!(
                 "a channel needs an object like {{'buffer': 'pass'}}, got {}",
                 py_repr(d)
             );
         };
+        known_keys(o, what, &CHANNEL_KEYS, &[])?;
         Ok(Channel {
             buffer: o.get("buffer").filter(|v| !v.is_null()).map(py_str),
         })
@@ -1234,6 +1372,16 @@ impl Draw {
         if o.contains_key("alpha") {
             bail!("{what} takes no 'alpha': its alpha blends by 'blend', as its colour does");
         }
+        let text = match o.get("text") {
+            Some(Value::String(t)) if !t.trim().is_empty() => format!("text '{t}'"),
+            _ => "its text".to_string(),
+        };
+        let elsewhere = [
+            keys_on(&DRAW_KEYS, &TEXT_KEYS, &text),
+            keys_on(&DRAW_KEYS, &PASS_KEYS, "its pass"),
+        ]
+        .concat();
+        known_keys(o, what, &DRAW_KEYS, &elsewhere)?;
         let glsl = |key: &str, holds: &str| match o.get(key) {
             Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
             Some(v) => bail!("{what} '{key}' needs {holds}, got {}", py_repr(v)),
@@ -1446,6 +1594,16 @@ impl Pass {
             bail!("a pass needs a JSON object, got {}", py_repr(d));
         };
         let name = o.get("name").map_or("main".to_string(), py_str);
+        let elsewhere = [
+            keys_on(&PASS_KEYS, &DRAW_KEYS, "a draw"),
+            keys_on(&PASS_KEYS, &TEXT_KEYS, "a text"),
+            keys_on(&PASS_KEYS, &ASSET_KEYS, "an asset"),
+            keys_on(&PASS_KEYS, &CHANNEL_KEYS, "a channel"),
+            keys_on(&PASS_KEYS, &PARAM_KEYS, "a param"),
+            keys_on(&PASS_KEYS, &SCENE_KEYS, "the scene"),
+        ]
+        .concat();
+        known_keys(o, &format!("pass '{name}'"), &PASS_KEYS, &elsewhere)?;
         let code = match (o.get("code").filter(|v| !v.is_null()), o.get("shader")) {
             (Some(v), _) => py_str(v),
             (None, Some(s)) => read_shader(s, base_dir, &format!("pass '{name}'"))?,
@@ -1459,7 +1617,8 @@ impl Pass {
                     .collect::<Result<Vec<_>>>()?;
                 let channels = list_of(o, "channels")?
                     .iter()
-                    .map(Channel::from_dict)
+                    .enumerate()
+                    .map(|(i, c)| Channel::from_dict(&format!("channel {i}"), c))
                     .collect::<Result<Vec<_>>>()?;
                 let mut params = ParamMap::new();
                 for (n, pd) in obj_of(o, "params")? {
@@ -2226,6 +2385,14 @@ impl Scene {
             bail!("{src}: needs a JSON object, got {}", py_repr(d));
         };
         (|| -> Result<Scene> {
+            let elsewhere = [
+                keys_on(&SCENE_KEYS, &PASS_KEYS, "a pass"),
+                keys_on(&SCENE_KEYS, &TEXT_KEYS, "a text"),
+                keys_on(&SCENE_KEYS, &DRAW_KEYS, "a draw"),
+                keys_on(&SCENE_KEYS, &ASSET_KEYS, "an asset"),
+            ]
+            .concat();
+            known_keys(o, "the scene", &SCENE_KEYS, &elsewhere)?;
             let filters = list_of(o, "filters")?;
             if !filters.iter().all(Value::is_string) {
                 bail!(
@@ -3261,6 +3428,104 @@ mod tests {
     }
 
     // One error carries the scene, the pass and the field.
+
+    #[test]
+    fn a_key_that_ghee_does_not_take_is_refused_naming_the_closest_key() {
+        // Each row puts one key into a scene that loads without it.
+        let pass = |extra: Value| {
+            let mut p = json!({"name": "main", "code": GOOD});
+            p.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            p
+        };
+        let draw = |extra: Value| {
+            let mut d = json!({"text": "t", "px_per_em": 20});
+            d.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            json!({"version": 1, "texts": {"t": {"font": "a.ttf"}},
+                   "passes": [pass(json!({"draws": [d]}))]})
+        };
+        let rows = [
+            (
+                json!({"version": 1, "paramz": {}, "passes": [pass(json!({}))]}),
+                "scene: the scene takes no 'paramz', the closest key is 'params'",
+            ),
+            (
+                json!({"version": 1, "code": GOOD, "passes": [pass(json!({}))]}),
+                "scene: the scene takes no 'code', which sits on a pass",
+            ),
+            (
+                json!({"version": 1, "params": {"g": {"type": "float", "value": 1, "mni": 0}},
+                       "passes": [pass(json!({}))]}),
+                "scene: param 'g' takes no 'mni', the closest key is 'min'",
+            ),
+            (
+                json!({"version": 1, "passes": [pass(json!({"params": {"g": {
+                    "type": "float", "value": 1, "default": 0}}}))]}),
+                "scene: pass 'main': param 'g' takes no 'default', only type, value, min, max, \
+                 step and options",
+            ),
+            (
+                json!({"version": 1, "assets": {"a": {"file": "a.png", "sampler": "linear"}},
+                       "passes": [pass(json!({}))]}),
+                "scene: asset 'a' takes no 'sampler', the closest key is 'sampling'",
+            ),
+            (
+                json!({"version": 1, "texts": {"t": {"font": "a.ttf", "alig": "center"}},
+                       "passes": [pass(json!({}))]}),
+                "scene: text 't' takes no 'alig', the closest key is 'align'",
+            ),
+            (
+                json!({"version": 1, "texts": {"t": {"font": "a.ttf", "pad": 1}},
+                       "passes": [pass(json!({}))]}),
+                "scene: text 't' takes no 'pad', which sits on a draw",
+            ),
+            (
+                json!({"version": 1, "passes": [pass(json!({"chanels": []}))]}),
+                "scene: pass 'main' takes no 'chanels', the closest key is 'channels'",
+            ),
+            (
+                json!({"version": 1, "passes": [pass(json!({"font": "a.ttf"}))]}),
+                "scene: pass 'main' takes no 'font', which sits on a text",
+            ),
+            (
+                draw(json!({"fill": "slug"})),
+                "scene: pass 'main' draw 't' takes no 'fill', which sits on text 't'",
+            ),
+            (
+                draw(json!({"fil": "slug"})),
+                "scene: pass 'main' draw 't' takes no 'fil', the closest key is 'fill', which \
+                 sits on text 't'",
+            ),
+            (
+                draw(json!({"glow": 1})),
+                "scene: pass 'main' draw 't' takes no 'glow', only name, text, vertex, px_per_em, \
+                 fragment, blend, pad and emoji",
+            ),
+            (
+                json!({"version": 1, "passes": [pass(json!({"channels": [{"bufer": "main"}]}))]}),
+                "scene: pass 'main': channel 0 takes no 'bufer', the closest key is 'buffer'",
+            ),
+            (
+                json!({"version": 1, "passes": [pass(json!({"channels": [{"pass": "main"}]}))]}),
+                "scene: pass 'main': channel 0 takes no 'pass', only buffer",
+            ),
+            (
+                json!({"version": 1, "passes": [pass(json!({"arrays": [{"name": "v", "sise": 4}]}))]}),
+                "scene: pass 'main': array 'v' takes no 'sise', the closest key is 'size'",
+            ),
+            (
+                json!({"version": 1, "common": {"cod": COMMON}, "passes": [pass(json!({}))]}),
+                "scene: 'common' takes no 'cod', the closest key is 'code'",
+            ),
+        ];
+        for (d, want) in rows {
+            let got = Scene::from_dict(&d, None, None).map(|_| ()).unwrap_err();
+            assert_eq!(got.to_string(), want);
+        }
+    }
 
     #[test]
     fn malformed_scene_json_reports_context() {

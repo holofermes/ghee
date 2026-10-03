@@ -175,6 +175,10 @@
 - Show each text of a scene in the console's texts panel, with the draws
   and the passes that read it: its words, applied live, and its font and
   align, applied through the scene. The words leave the parameters.
+- Refuse a key that ghee does not take anywhere in a scene, and name the
+  key, where it sits, and the closest key that ghee takes, or the object
+  that takes it, as `"fill"` on a draw names the draw's text, where the
+  scene loaded and ignored the key.
 
 ## 0.4.0 - 2026-08-06
 

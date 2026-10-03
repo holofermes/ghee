@@ -174,8 +174,9 @@ pub struct Declared {
 
 /// What a process declares, read now.
 /// Only `-- --help` calls this. A render and a serve never probe.
-fn declarations(path: &str) -> Takes {
-    match probe(path) {
+/// `wait` is how long the probe waits for the line.
+fn declarations(path: &str, wait: Duration) -> Takes {
+    match probe(path, wait) {
         Answer::Line(line) => match parse_declarations(&line) {
             Some(args) => Takes::Args(args),
             None => Takes::PassThrough,
@@ -195,7 +196,7 @@ enum Answer {
 }
 
 /// Run `<process> --ghee-args` and read the one line it answers with.
-fn probe(path: &str) -> Answer {
+fn probe(path: &str, wait: Duration) -> Answer {
     let Ok((program, dir)) = where_to_run(path) else {
         return Answer::Silent;
     };
@@ -223,7 +224,7 @@ fn probe(path: &str) -> Answer {
             let _ = tx.send(String::from_utf8_lossy(&line).into_owned());
         }
     });
-    let answer = rx.recv_timeout(PROBE_WAIT).ok();
+    let answer = rx.recv_timeout(wait).ok();
     // Still running when the wait ran out is a scene still starting. Gone
     // already, with nothing on stdout, is a scene that takes no arguments
     // this way.
@@ -288,7 +289,7 @@ pub fn declare(scenes: &[(String, String)], ask: bool) -> Vec<Declared> {
                 name,
                 args: match exe {
                     Some(_) if !ask => Takes::Unasked,
-                    Some(exe) => declarations(&exe),
+                    Some(exe) => declarations(&exe, PROBE_WAIT),
                     None => Takes::Args(Vec::new()),
                 },
             }));
@@ -519,6 +520,9 @@ pub struct SceneProcess {
     /// The handshake said `"lockstep": true`: the process ends its answer to
     /// every tick with kind 5.
     lockstep: bool,
+    /// The stop sequence's waits, TERM_AFTER and KILL_AFTER.
+    term_after: Duration,
+    kill_after: Duration,
     /// The loop pins time to a fixed step, so a tick waits for the answer of
     /// a lockstep process.
     pinned: bool,
@@ -584,6 +588,8 @@ impl SceneProcess {
             clean: 0,
             dead: None,
             lockstep: false,
+            term_after: TERM_AFTER,
+            kill_after: KILL_AFTER,
             pinned: false,
             offered: 0,
             refused: HashSet::new(),
@@ -779,9 +785,9 @@ impl SceneProcess {
             wait_until(SETTLE, || w.is_finished());
             self.threads.push(w);
         }
-        if !self.reaped(TERM_AFTER) {
+        if !self.reaped(self.term_after) {
             unsafe { kill(self.child.id() as c_int, SIGTERM) };
-            if !self.reaped(KILL_AFTER) {
+            if !self.reaped(self.kill_after) {
                 let _ = self.child.kill();
                 let _ = self.child.wait();
             }
@@ -1213,9 +1219,21 @@ sleep 60
     }
 
     /// declarations(), spawn-locked like start_scene.
-    fn declared(path: &str) -> Takes {
+    fn declared(path: &str, wait: Duration) -> Takes {
         let _spawn = SCRIPTS.read().unwrap();
-        declarations(path)
+        declarations(path, wait)
+    }
+
+    /// A wait that a test runs out on purpose: the stop of a process that
+    /// never reads stdin, the probe of a scene still starting.
+    const SOON: Duration = Duration::from_millis(50);
+
+    /// start_scene() for a process that never reads stdin, so its stop goes
+    /// to the signals after SOON.
+    fn start_deaf(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
+        let (scene, mut f) = start_scene(path, args)?;
+        (f.term_after, f.kill_after) = (SOON, SOON);
+        Ok((scene, f))
     }
 
     /// The error of a call that must fail.
@@ -1324,7 +1342,7 @@ sleep 60
     fn the_help_probe_reads_the_declared_arguments() {
         let d = tmpdir("probe");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let Takes::Args(decls) = declared(&path) else {
+        let Takes::Args(decls) = declared(&path, PROBE_WAIT) else {
             panic!("the scene declared nothing");
         };
         assert_eq!(decls.len(), 2);
@@ -1338,7 +1356,7 @@ sleep 60
             "feed",
             "#!/bin/sh\necho '{\"args\": [{\"name\": \"gain\", \"type\": \"float\"}]}'\n",
         );
-        let Takes::Args(after) = declared(&path) else {
+        let Takes::Args(after) = declared(&path, PROBE_WAIT) else {
             panic!("the edited scene declared nothing");
         };
         assert_eq!(after.len(), 1);
@@ -1352,9 +1370,9 @@ sleep 60
         let d = tmpdir("slow");
         let path = script(&d, "slow", "#!/bin/sh\nsleep 30\n");
         let started = Instant::now();
-        assert!(matches!(declared(&path), Takes::Starting));
-        assert!(started.elapsed() >= PROBE_WAIT, "gave up before the wait");
-        assert!(started.elapsed() < PROBE_WAIT + Duration::from_secs(3));
+        assert!(matches!(declared(&path, SOON), Takes::Starting));
+        assert!(started.elapsed() >= SOON, "gave up before the wait");
+        assert!(started.elapsed() < SOON + Duration::from_secs(3));
     }
 
     /// A scene that runs and answers nothing takes its arguments its own way,
@@ -1363,7 +1381,7 @@ sleep 60
     fn a_scene_that_answers_nothing_is_pass_through() {
         let d = tmpdir("passthrough");
         let path = script(&d, "quiet", "#!/bin/sh\nexit 0\n");
-        assert!(matches!(declared(&path), Takes::PassThrough));
+        assert!(matches!(declared(&path, PROBE_WAIT), Takes::PassThrough));
     }
 
     /// --no-probe asks nothing at all, so a scene still starting costs no wait.
@@ -1417,8 +1435,9 @@ sleep 60
              printf '{{\"passes\":[{{\"name\":\"main\",\"code\":\"void main(){{}}\"}}]}}\\n'\n\
              sleep 5\n"
         );
-        let (_scene, f) =
+        let (_scene, mut f) =
             SceneProcess::start("/bin/sh", &args(&["-c", &body]), Reach::Any).unwrap();
+        (f.term_after, f.kill_after) = (SOON, SOON);
         assert!(wait_until(SETTLE, || fs::read_to_string(&mark).is_ok()));
         assert_eq!(fs::read_to_string(&mark).unwrap(), "1 1");
         drop(f);
@@ -1544,7 +1563,7 @@ sleep 60
     fn a_scene_that_ignores_stdin_runs_free() {
         let d = tmpdir("free");
         let path = script(&d, "free", FREE);
-        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.data.contains_key("level")));
         let Some(Feed::Data(values)) = f.provide("level", ArraySize::Linear(2), 0) else {
@@ -1557,7 +1576,7 @@ sleep 60
     fn a_kind_4_message_reaches_the_render_target_as_bytes() {
         let d = tmpdir("u8");
         let path = script(&d, "mask", U8_SCRIPT);
-        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.data.len() == 2));
         let mut stub = Stub {
@@ -1715,7 +1734,7 @@ done
     fn a_pinned_tick_never_waits_on_a_process_that_is_not_lockstep() {
         let d = tmpdir("free-pinned");
         let path = script(&d, "free", FREE);
-        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        let (scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         f.bind(&scene);
         f.pin();
         let t = Instant::now();
@@ -1767,21 +1786,22 @@ done
             "stdin never closed: {:?}",
             started.elapsed()
         );
+        // an ignored signal stays ignored across exec, and the exec leaves no
+        // child to hold the pipes past the kill
         let stubborn = script(
             &d,
             "stubborn",
             "#!/bin/sh\ntrap '' TERM\nprintf '{\"passes\":[{\"name\":\"main\",\
-             \"code\":\"void main(){}\"}]}\\n'\nsleep 10\n",
+             \"code\":\"void main(){}\"}]}\\n'\nexec sleep 10\n",
         );
-        let (_scene, f) = start_scene(&stubborn, &no_args()).unwrap();
+        let (_scene, mut f) = start_scene(&stubborn, &no_args()).unwrap();
+        let (term, kill) = (SOON * 4, SOON * 2);
+        (f.term_after, f.kill_after) = (term, kill);
         let started = Instant::now();
         drop(f);
         let took = started.elapsed();
-        assert!(took >= TERM_AFTER + KILL_AFTER, "killed early: {took:?}");
-        assert!(
-            took < TERM_AFTER + KILL_AFTER + Duration::from_secs(3),
-            "{took:?}"
-        );
+        assert!(took >= term + kill, "killed early: {took:?}");
+        assert!(took < term + kill + Duration::from_secs(3), "{took:?}");
     }
 
     // the arguments of a set of scenes
@@ -1904,7 +1924,7 @@ done
             "{e}"
         );
         // the scene's own token passes through the same way
-        start_scene(&path, &args(&["--emit"])).unwrap();
+        start_deaf(&path, &args(&["--emit"])).unwrap();
     }
 
     #[test]
@@ -1916,7 +1936,7 @@ done
             "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\n\
              printf '\\007'\nsleep 5\n",
         );
-        let (_scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        let (_scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         let mut last = Ok(());
         for frame in 0..100u64 {
             last = f.tick(frame, 0.0, 0.016);

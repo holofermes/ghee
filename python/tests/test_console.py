@@ -151,7 +151,7 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
                     ghee.Draw(
                         "words", INK, PLACE, blend="add", pad=0.0625, alpha="keep"
                     ),
-                    ghee.Draw("title", INK, PLACE, blend="replace"),
+                    ghee.Draw("title", px_per_em=24, blend="replace"),
                 ],
             ),
             ghee.Pass(

@@ -48,7 +48,9 @@
 - Draw a text straight into a pass's buffer with `draws`, one quad over each
   glyph: a draw's `vertex` GLSL defines `glyph_place`, which puts the glyph
   in the pass, and its `fragment` GLSL colours it. Each stage takes the
-  pass's preamble and the scene's common block, as the pass's code does.
+  pass's preamble and the scene's common block, as the pass's code does. A
+  draw with `px_per_em` in place of `vertex` centres the words in the pass
+  at that size, and a draw with no `fragment` draws them white.
 - Blend a draw's alpha the way its colour blends, and leave the pass's alpha
   as it was with `"alpha": "keep"`.
 - Let a pass with `draws` leave out `code`: it starts each frame transparent

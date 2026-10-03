@@ -378,13 +378,22 @@ This draw puts `title` in amber at 48 pixels per em, centred in the pass:
 }]
 ```
 
+and this one draws it white at the same size and place, with no GLSL:
+
+```json
+"draws": [{ "text": "title", "px_per_em": 48 }]
+```
+
 - `text` names a scene text.
 - `vertex` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
   block, in em from its top left with y down, to the pass pixel where it
   lands. It runs at the corners of each glyph's quad, so it can move, turn,
   scale or shear a glyph, and a bend inside one glyph draws straight between
   its corners.
+- `px_per_em` takes the place of `vertex`: the block centred in the pass at
+  that many pixels per em. A draw takes one of the two.
 - `fragment` holds a `void main()` that writes colour premultiplied by alpha.
+  Without it, the letters draw white.
 - `blend` is `over` by default, `add` or `replace`.
 - `alpha` is `blend` by default, and `keep` leaves the pass's alpha as it was.
 - `pad` is how far past the letters the draw reaches, in em, for a glow or an

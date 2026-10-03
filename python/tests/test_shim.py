@@ -314,6 +314,17 @@ def test_a_draw_and_a_text_leave_their_defaults_out():
     assert "draws" not in shim.Pass("main", "void main(){}").to_dict()
 
 
+def test_a_draw_with_no_vertex_sends_px_per_em_and_with_no_fragment_none():
+    shim = load()
+    draw = shim.Draw("words", px_per_em=48)
+    assert draw.to_dict() == {"text": "words", "px_per_em": 48.0}
+    assert json.dumps(draw.to_dict()) == '{"text": "words", "px_per_em": 48.0}'
+    assert shim.Draw("words", vertex=PLACE).to_dict() == {
+        "text": "words",
+        "vertex": PLACE,
+    }
+
+
 def test_a_draw_sends_emoji_when_it_is_set():
     shim = load()
     for emoji in (True, False):
@@ -355,7 +366,18 @@ def test_a_draw_says_what_it_needs():
     with pytest.raises(ValueError, match="'fragment' needs fragment GLSL"):
         shim.Draw("words", "  ", PLACE)
     with pytest.raises(ValueError, match="'vertex' needs vertex GLSL"):
-        shim.Draw("words", INK, None)
+        shim.Draw("words", INK, " ")
+    with pytest.raises(
+        ValueError,
+        match="needs 'px_per_em', the pixels per em of the words centred in the "
+        "pass, or 'vertex', GLSL that defines",
+    ):
+        shim.Draw("words", INK)
+    with pytest.raises(ValueError, match="takes 'vertex' or 'px_per_em', got both"):
+        shim.Draw("words", INK, PLACE, px_per_em=32)
+    for px in (0, -1.0, float("inf"), True, "32"):
+        with pytest.raises(ValueError, match="px_per_em needs a number of pixels above 0"):
+            shim.Draw("words", px_per_em=px)
     with pytest.raises(ValueError, match="'text' needs the name of a scene text"):
         shim.Draw("", INK, PLACE)
     with pytest.raises(

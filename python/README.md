@@ -181,14 +181,18 @@ centred on black:
         passes=[ghee.Pass("main", BLACK, draws=[ghee.Draw("words", AMBER, CENTRED)])],
     )
 
-`ghee.Draw(text, fragment, vertex, blend="over", pad=0.0, alpha="blend", emoji=None)`:
+`ghee.Draw(text, fragment=None, vertex=None, px_per_em=None, blend="over",
+pad=0.0, alpha="blend", emoji=None)`:
 
 - `text` names a `ghee.Text` of the scene.
 - `fragment` holds a `void main()` that writes colour premultiplied by
-  alpha.
+  alpha. None draws the letters white.
 - `vertex` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
   block, in em from its top left with y down, to the pass pixel where it
   lands.
+- `px_per_em` takes the place of `vertex`: the block centred in the pass at
+  that many pixels per em, so `ghee.Draw("words", px_per_em=48)` draws the
+  words white and centred with no GLSL.
 - `blend` is `"over"`, `"add"` or `"replace"`.
 - `pad` is how far past the letters the draw reaches, in em, for a glow or
   an outline.

@@ -1109,17 +1109,18 @@ impl Channel {
 /// A text drawn as one quad a glyph into its pass's buffer, after the pass's
 /// own quad.
 ///
-/// `vertex` defines `vec2 glyph_place(vec2 em)`. It takes a point of the
-/// block, in em from the block's top left with y down, and returns the pass
-/// pixel where that point lands, in the space of `v_texCoord * resolution`.
-/// `fragment` colours a glyph's pixels with its own `void main()`,
-/// premultiplied by alpha.
+/// The vertex GLSL defines `vec2 glyph_place(vec2 em)`. It takes a point of
+/// the block, in em from the block's top left with y down, and returns the
+/// pass pixel where that point lands, in the space of
+/// `v_texCoord * resolution`. The fragment GLSL colours a glyph's pixels with
+/// its own `void main()`, premultiplied by alpha.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draw {
     /// A name in the scene's texts.
     pub text: String,
-    pub vertex: String,
-    pub fragment: String,
+    pub vertex: Vertex,
+    /// None draws the letters white at full coverage, premultiplied.
+    pub fragment: Option<String>,
     pub blend: Blend,
     pub alpha: Alpha,
     /// How far the quads reach past the ink, in em, for an effect around the
@@ -1130,7 +1131,39 @@ pub struct Draw {
     pub emoji: Option<bool>,
 }
 
+/// Where a draw puts its glyphs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Vertex {
+    /// The draw's `vertex`: GLSL that defines `vec2 glyph_place(vec2 em)`.
+    Glsl(String),
+    /// The draw's `px_per_em`: the block centred in the pass at this many
+    /// pixels per em.
+    Centred(f64),
+}
+
+/// The fragment GLSL of a draw with none of its own.
+const WHITE: &str = "void main() { gl_FragColor = vec4(glyph_cover()); }";
+
 impl Draw {
+    /// The GLSL that defines glyph_place for the draw.
+    pub fn vertex_glsl(&self) -> String {
+        match &self.vertex {
+            Vertex::Glsl(v) => v.clone(),
+            Vertex::Centred(px) => {
+                let (name, px) = (&self.text, py_float(*px));
+                format!(
+                    "vec2 glyph_place(vec2 em) {{ return (resolution - {name}_size * {px}) * 0.5 \
+                     + em * {px}; }}"
+                )
+            }
+        }
+    }
+
+    /// The draw's fragment GLSL, its own or the white letters.
+    pub fn fragment_glsl(&self) -> &str {
+        self.fragment.as_deref().unwrap_or(WHITE)
+    }
+
     /// `what` names the draw in an error, as "pass 'main' draw 0".
     pub fn from_dict(what: &str, d: &Value) -> Result<Draw> {
         let Value::Object(o) = d else {
@@ -1147,11 +1180,29 @@ impl Draw {
             None => bail!("{what} has no '{key}', {holds}"),
         };
         let text = glsl("text", "the name of a scene text")?;
-        let vertex = glsl(
-            "vertex",
-            "vertex GLSL that defines vec2 glyph_place(vec2 em)",
-        )?;
-        let fragment = glsl("fragment", "fragment GLSL with its own void main()")?;
+        let given = |key: &str| o.get(key).filter(|v| !v.is_null());
+        let vertex = match (given("vertex"), given("px_per_em")) {
+            (Some(_), Some(_)) => bail!("{what} takes 'vertex' or 'px_per_em', got both"),
+            (Some(_), None) => Vertex::Glsl(glsl(
+                "vertex",
+                "vertex GLSL that defines vec2 glyph_place(vec2 em)",
+            )?),
+            (None, Some(v)) => match v.as_f64() {
+                Some(f) if f.is_finite() && f > 0.0 => Vertex::Centred(f),
+                _ => bail!(
+                    "{what} px_per_em needs a number of pixels above 0, got {}",
+                    py_repr(v)
+                ),
+            },
+            (None, None) => bail!(
+                "{what} needs 'px_per_em', the pixels per em of the words centred in \
+                 the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)"
+            ),
+        };
+        let fragment = match given("fragment") {
+            None => None,
+            Some(_) => Some(glsl("fragment", "fragment GLSL with its own void main()")?),
+        };
         let blend = match o.get("blend").filter(|v| !v.is_null()) {
             None => Blend::Over,
             Some(Value::String(b)) if b == "over" => Blend::Over,
@@ -1199,8 +1250,13 @@ impl Draw {
     pub fn to_dict(&self, last: bool) -> Value {
         let mut d = Map::new();
         d.insert("text".to_string(), Value::from(self.text.clone()));
-        d.insert("vertex".to_string(), Value::from(self.vertex.clone()));
-        d.insert("fragment".to_string(), Value::from(self.fragment.clone()));
+        match &self.vertex {
+            Vertex::Glsl(v) => d.insert("vertex".to_string(), Value::from(v.clone())),
+            Vertex::Centred(px) => d.insert("px_per_em".to_string(), Value::from(*px)),
+        };
+        if let Some(f) = &self.fragment {
+            d.insert("fragment".to_string(), Value::from(f.clone()));
+        }
         let blend = match self.blend {
             Blend::Over => None,
             Blend::Add => Some("add"),
@@ -1513,7 +1569,7 @@ impl Pass {
         };
         f.extend(head);
         f.push(String::new());
-        f.push(d.fragment.clone());
+        f.push(d.fragment_glsl().to_string());
         f.push(String::new());
         f.extend(tail);
         (v, f.join("\n"))
@@ -1559,7 +1615,7 @@ impl Pass {
         }
         v.extend(crate::text::draw_vertex_head());
         v.push(String::new());
-        v.push(d.vertex.clone());
+        v.push(d.vertex_glsl());
         v.push(String::new());
         v.extend(main);
         v.join("\n")

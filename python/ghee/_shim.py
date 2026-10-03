@@ -160,10 +160,12 @@ class Draw:
 
     `text` names a Text of the scene.
     `fragment` holds a void main() that colours a glyph's pixels,
-    premultiplied by alpha.
+    premultiplied by alpha. None draws the letters white.
     `vertex` defines vec2 glyph_place(vec2 em), which takes a point of the
     block, in em from its top left with y down, to the pass pixel where it
     lands.
+    `px_per_em` centres the block in the pass at that many pixels per em, in
+    place of `vertex`.
     `blend` is over, add or replace.
     `pad` is how far past the letters the draw reaches, in em, for a glow or
     an outline.
@@ -174,8 +176,9 @@ class Draw:
     """
 
     text: str
-    fragment: str
-    vertex: str
+    fragment: str | None = None
+    vertex: str | None = None
+    px_per_em: float | None = None
     blend: str = "over"
     pad: float = 0.0
     alpha: str = "blend"
@@ -187,13 +190,32 @@ class Draw:
                 f"a draw's 'text' needs the name of a scene text, got {self.text!r}"
             )
         what = f"draw of text '{self.text}'"
+        if self.vertex is not None and self.px_per_em is not None:
+            raise ValueError(f"{what} takes 'vertex' or 'px_per_em', got both")
+        if self.vertex is None and self.px_per_em is None:
+            raise ValueError(
+                f"{what} needs 'px_per_em', the pixels per em of the words centred "
+                "in the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)"
+            )
         for key, holds in (
             ("vertex", "vertex GLSL that defines vec2 glyph_place(vec2 em)"),
             ("fragment", "fragment GLSL with its own void main()"),
         ):
             v = getattr(self, key)
-            if not isinstance(v, str) or not v.strip():
+            if v is not None and (not isinstance(v, str) or not v.strip()):
                 raise ValueError(f"{what} '{key}' needs {holds}, got {v!r}")
+        px = self.px_per_em
+        if px is not None:
+            if (
+                isinstance(px, bool)
+                or not isinstance(px, (int, float))
+                or not math.isfinite(px)
+                or px <= 0
+            ):
+                raise ValueError(
+                    f"{what} px_per_em needs a number of pixels above 0, got {px!r}"
+                )
+            self.px_per_em = float(px)
         if self.blend not in _BLENDS:
             raise ValueError(
                 f"{what} blend needs 'over', 'add' or 'replace', got {self.blend!r}"
@@ -217,7 +239,13 @@ class Draw:
             )
 
     def to_dict(self) -> dict:
-        d: dict = {"text": self.text, "vertex": self.vertex, "fragment": self.fragment}
+        d: dict = {"text": self.text}
+        if self.vertex is not None:
+            d["vertex"] = self.vertex
+        else:
+            d["px_per_em"] = self.px_per_em
+        if self.fragment is not None:
+            d["fragment"] = self.fragment
         if self.blend != "over":
             d["blend"] = self.blend
         if self.alpha != "blend":

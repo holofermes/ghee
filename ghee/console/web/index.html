@@ -1049,10 +1049,10 @@ function buildInputs(){
 }
 function loadCode(){
   const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass], d = openDraw();
-  ta.value = d ? d.fragment : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
+  ta.value = d ? (d.fragment || "") : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
   ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
   CODE.box.classList.toggle("readonly", !!(p && p.filter));
-  if (d){ VERTEX.ta.value = d.vertex; VERTEX.ta.scrollTop = 0; VERTEX.sync(); }
+  if (d){ VERTEX.ta.value = d.vertex || ""; VERTEX.ta.scrollTop = 0; VERTEX.sync(); }
   showDraw(d); buildDrawCtl(); CODE.sync(); showErrors(); syncAddRow();
 }
 
@@ -1350,11 +1350,17 @@ function adoptFilters(doc){
 
 // shader
 function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
+// A draw with no fragment draws white letters. Vertex GLSL takes the place of
+// px_per_em, the size of the words centred in the pass.
+function setFragment(d, code){ if (code.trim()) d.fragment = code; else delete d.fragment; }
+function setVertex(d, code){
+  if (code.trim()){ d.vertex = code; delete d.px_per_em; } else delete d.vertex;
+}
 // hand-edited code and draws: merge keeps them as they are
 CODE.ta.addEventListener("input", ()=>{
   const d = openDraw();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (d){ d.fragment = CODE.ta.value; work.passes[curPass].drawsEdited = true; }
+  else if (d){ setFragment(d, CODE.ta.value); work.passes[curPass].drawsEdited = true; }
   else {
     work.passes[curPass].code = CODE.ta.value;
     work.passes[curPass].codeEdited = true;
@@ -1362,7 +1368,7 @@ CODE.ta.addEventListener("input", ()=>{
   CODE.sync(); liveCompile();
 });
 VERTEX.ta.addEventListener("input", ()=>{
-  openDraw().vertex = VERTEX.ta.value; work.passes[curPass].drawsEdited = true;
+  setVertex(openDraw(), VERTEX.ta.value); work.passes[curPass].drawsEdited = true;
   VERTEX.sync(); liveCompile();
 });
 
@@ -1370,7 +1376,7 @@ VERTEX.ta.addEventListener("input", ()=>{
 $("#apply").addEventListener("click", async ()=>{
   const d = openDraw();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (d){ d.fragment = CODE.ta.value; d.vertex = VERTEX.ta.value; }
+  else if (d){ setFragment(d, CODE.ta.value); setVertex(d, VERTEX.ta.value); }
   else work.passes[curPass].code = CODE.ta.value;
   await postScene(); markDirty();
   if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files

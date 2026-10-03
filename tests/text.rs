@@ -2316,6 +2316,40 @@ fn a_draw_compile_error_names_the_pass_the_draw_and_its_line() {
 }
 
 #[test]
+fn a_draw_with_no_vertex_centres_its_words_and_with_no_fragment_draws_them_white() {
+    let (w, h) = (160, 64);
+    let laid = lay(SANS, "ghee", Align::Left);
+    let ppem = 32.0;
+    let fit = Fit {
+        x: (w as f64 - laid.width * ppem) / 2.0,
+        y: (h as f64 - laid.height * ppem) / 2.0,
+        ppem,
+    };
+    let Some((_g, mut r)) = gpu(w, h) else { return };
+    for fill in FILLS {
+        let scene = |draw: Value| {
+            let mut doc = filled(label_scene(SANS, "ghee", Align::Left, fit), fill);
+            doc["passes"][0] = json!({"name": "main", "code": BLACK, "draws": [draw]});
+            loaded(&doc)
+        };
+        let plain = render(&mut r, &scene(json!({"text": "label", "px_per_em": ppem})));
+        let centred = "vec2 glyph_place(vec2 em) { return (resolution - label_size * 32.0) \
+                       * 0.5 + em * 32.0; }";
+        let written = json!({"text": "label", "vertex": centred,
+            "fragment": "void main() { gl_FragColor = vec4(glyph_cover()); }"});
+        assert!(render(&mut r, &scene(written)) == plain, "{fill}");
+        // The slug fill covers as the text does.
+        if fill == "slug" {
+            let cover = render(
+                &mut r,
+                &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
+            );
+            assert_like_cover(&plain, &cover, fill);
+        }
+    }
+}
+
+#[test]
 fn draws_round_trip_and_over_and_no_pad_are_the_defaults() {
     let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
     doc["passes"][0]["draws"] = json!([
@@ -2326,9 +2360,11 @@ fn draws_round_trip_and_over_and_no_pad_are_the_defaults() {
          "blend": "over", "pad": 0, "alpha": "blend"},
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
          "alpha": "keep"},
+        {"text": "label", "px_per_em": 48.0},
     ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let back = sc.to_dict();
+    assert_eq!(back["passes"][0]["draws"][4], doc["passes"][0]["draws"][4]);
     assert_eq!(back["passes"][0]["draws"][0], doc["passes"][0]["draws"][0]);
     assert_eq!(back["passes"][0]["draws"][1], doc["passes"][0]["draws"][1]);
     assert_eq!(
@@ -2382,13 +2418,26 @@ fn a_draw_declaration_names_what_it_lacks() {
             "pass 'main' draw 0 has no 'text', the name of a scene text",
         ),
         (
-            one(json!({"text": "label", "vertex": place})),
-            "pass 'main' draw 0 has no 'fragment', fragment GLSL with its own void main()",
+            one(json!({"text": "label", "fragment": WHITE})),
+            "pass 'main' draw 0 needs 'px_per_em', the pixels per em of the words centred \
+             in the pass, or 'vertex', GLSL that defines vec2 glyph_place(vec2 em)",
         ),
         (
-            one(json!({"text": "label", "fragment": WHITE})),
-            "pass 'main' draw 0 has no 'vertex', vertex GLSL that defines vec2 \
-             glyph_place(vec2 em)",
+            one(json!({"text": "label", "vertex": place, "px_per_em": 32})),
+            "pass 'main' draw 0 takes 'vertex' or 'px_per_em', got both",
+        ),
+        (
+            one(json!({"text": "label", "px_per_em": 0})),
+            "pass 'main' draw 0 px_per_em needs a number of pixels above 0, got 0",
+        ),
+        (
+            one(json!({"text": "label", "px_per_em": "32"})),
+            "pass 'main' draw 0 px_per_em needs a number of pixels above 0, got '32'",
+        ),
+        (
+            one(json!({"text": "label", "vertex": "", "px_per_em": null})),
+            "pass 'main' draw 0 'vertex' needs vertex GLSL that defines vec2 \
+             glyph_place(vec2 em), got ''",
         ),
         (
             one(json!({"text": "label", "fragment": " ", "vertex": place})),

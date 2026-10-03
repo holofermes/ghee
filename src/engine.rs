@@ -454,11 +454,12 @@ fn draw_error(
             .unwrap_or(log)
             .to_string()
     };
+    let vertex = d.vertex_glsl();
     let (log, glsl, own, part, call, needs) = match err.strip_prefix("vertex shader: ") {
         Some(e) => (
             first(e),
             vs,
-            d.vertex.as_str(),
+            vertex.as_str(),
             DrawPart::Vertex,
             "glyph_place(",
             "vec2 glyph_place(vec2 em)",
@@ -466,7 +467,7 @@ fn draw_error(
         None => (
             first(err),
             fs,
-            d.fragment.as_str(),
+            d.fragment_glsl(),
             DrawPart::Fragment,
             "ghee_main();",
             "a void main()",

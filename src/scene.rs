@@ -2747,10 +2747,6 @@ mod tests {
     const CODE: &str = "void main(){ gl_FragColor = vec4(sat(v_texCoord.x), 0.0, 0.0, 1.0); }";
     const FLAT: &str = "void main(){ gl_FragColor = vec4(vec3(0.5), 1.0); }";
 
-    fn param(name: &str, ty: &str, value: Value) -> Result<Param> {
-        Param::new(name, ty, value, None, None, None, None)
-    }
-
     fn tmpdir(tag: &str) -> crate::testing::TempDir {
         crate::testing::TempDir::new(&format!("scene-{tag}"))
     }
@@ -2759,695 +2755,448 @@ mod tests {
         format!("{}/{rel}", env!("CARGO_MANIFEST_DIR"))
     }
 
+    fn asset_scene(assets: Value) -> Value {
+        json!({"version": 1, "passes": [{"name": "m", "code": GOOD}], "assets": assets})
+    }
+
+    fn common_scene(common: Option<Value>, passes: Option<Vec<Value>>) -> Value {
+        let mut d = Map::new();
+        d.insert("version".to_string(), json!(1));
+        d.insert(
+            "passes".to_string(),
+            Value::from(passes.unwrap_or_else(|| vec![json!({"name": "main", "code": CODE})])),
+        );
+        if let Some(c) = common {
+            d.insert("common".to_string(), c);
+        }
+        Value::Object(d)
+    }
+
+    /// A scene of passes `a` and `b`, a text `label` and the font asset
+    /// `sans`, with `extra` merged in at the top and `pass` merged into `a`.
+    fn named(extra: Value, pass: Value) -> Value {
+        let mut d = json!({
+            "version": 1,
+            "assets": {"sans": {"file": "sans.ttf"}},
+            "texts": {"label": {"value": "hi", "font": "sans"}},
+            "passes": [{"name": "a", "code": GOOD}, {"name": "b", "code": GOOD}],
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            match d.get_mut(k).and_then(Value::as_object_mut) {
+                Some(o) => o.extend(v.as_object().unwrap().clone()),
+                None => d[k] = v.clone(),
+            }
+        }
+        for (k, v) in pass.as_object().unwrap() {
+            d["passes"][0][k] = v.clone();
+        }
+        d
+    }
+
+    fn named_err(extra: Value, pass: Value) -> String {
+        match Scene::from_dict(&named(extra, pass), None, None) {
+            Ok(_) => "loads".to_string(),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// The scene as to_dict serialises it, with no space after a separator.
+    fn canon(s: &Scene) -> String {
+        serde_json::to_string(&s.to_dict()).unwrap()
+    }
+
     #[test]
-    fn a_sized_pass_keeps_its_layers() {
+    fn a_sized_pass_keeps_its_layers_and_mipmaps() {
         let mut p = Pass::of("a", GOOD).unwrap();
         p.layers = vec![Layer::from_dict(
             "pass 'a' layer 't'",
             &json!({"text": "t", "fragment": GOOD, "vertex": "vec2 glyph_place(vec2 em) { return em; }"}),
         )
         .unwrap()];
+        p.mipmaps = true;
         let sized = Ok::<Pass, anyhow::Error>(p.clone()).size(8, 4).unwrap();
         assert_eq!(sized.size, Some((8, 4)));
         assert_eq!(sized.layers, p.layers);
+        assert!(sized.mipmaps);
     }
 
     #[test]
-    fn preamble_has_resolution_no_orientation() {
-        let g = Pass::of("main", "void main(){}")
-            .unwrap()
-            .glsl(None, None, &[], &[], false);
-        assert!(g.contains("uniform vec2 resolution;"));
-        assert!(g.contains("uniform float time;"));
-        assert!(!g.contains("VERTICAL") && !g.contains("HORIZONTAL"));
-    }
-
-    #[test]
-    fn preamble_declares_array_and_accessor() {
-        let p = Pass::from_dict(
-            &json!({"name": "m", "code": "x", "arrays": [{"name": "amps", "size": 8}]}),
+    fn every_scene_pass_declares_the_glsl_names_that_a_scene_reads() {
+        let f = |v: Value| json!({"type": "float", "value": v});
+        let sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "params": {"gain": f(json!(0.5)),
+                           "n": {"type": "int", "value": 2},
+                           "on": {"type": "bool", "value": true},
+                           "tint": {"type": "color", "value": [1, 0, 0]},
+                           "off": {"type": "vec2", "value": [0.1, 0.2]},
+                           "dir": {"type": "vec3", "value": [0, 0, 1]},
+                           "q": {"type": "vec4", "value": [0, 0, 0, 1]},
+                           "title": {"type": "string", "value": "GHEE"}},
+                "assets": {"logo": {"file": "logo.png"}, "sans": {"file": "sans.ttf"}},
+                "texts": {"label": {"value": "hi", "font": "sans"}},
+                "passes": [
+                    {"name": "a", "code": GOOD, "params": {"k": f(json!(1.0))},
+                     "arrays": [{"name": "amps", "size": 8}, {"name": "mask", "size": [4, 2]}]},
+                    {"name": "b", "code": GOOD, "channels": [{"buffer": "a"}, {"buffer": null}]},
+                ],
+            }),
+            None,
             None,
         )
         .unwrap();
-        let g = p.glsl(None, None, &[], &[], false);
-        assert!(g.contains("uniform sampler2D amps_tex;")); // An array is a 1xN data texture.
-        assert!(g.contains("const int amps_size = 8;"));
-        assert!(g.contains("amps_at"));
-        assert!(g.contains("amps_sample"));
-    }
-
-    #[test]
-    fn scene_roundtrip() {
-        let d = json!({
-            "version": 1,
-            "passes": [{
-                "name": "m",
-                "code": "void main(){}",
-                "arrays": [{"name": "a", "size": 4}],
-                "params": {"k": {"type": "float", "value": 0.5}},
-            }],
-        });
-        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
-    }
-
-    #[test]
-    fn pass_size_roundtrip() {
-        let d = json!({
-            "version": 1,
-            "passes": [
-                {"name": "pre", "code": "void main(){}", "size": [32, 18]},
-                {"name": "main", "code": "void main(){}"},
+        let every = [
+            "varying vec2 v_texCoord;",
+            "uniform vec2 resolution;",
+            "uniform float time;",
+            "uniform float DT;",
+            "uniform float frame;",
+            "uniform float gain;",
+            "uniform int n;",
+            "uniform bool on;",
+            "uniform vec3 tint;",
+            "uniform vec2 off;",
+            "uniform vec3 dir;",
+            "uniform vec4 q;",
+            "uniform sampler2D logo;",
+            "uniform vec2 logo_size;",
+            "uniform vec2 label_size;",
+            "float label_cover(vec2 p, float ppem)",
+        ];
+        let own = [
+            vec![
+                "uniform sampler2D amps_tex;",
+                "const int amps_size = 8;",
+                "float amps_at(int i0)",
+                "float amps_sample(float t)",
+                "uniform sampler2D mask_tex;",
+                "float mask_sample2(vec2 uv)",
+                "uniform float k;",
             ],
-        });
-        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
-    }
-
-    #[test]
-    fn pass_mipmaps_roundtrip() {
-        let d = json!({
-            "version": 1,
-            "passes": [
-                {"name": "pre", "code": "void main(){}", "size": [64, 32], "mipmaps": true},
-                {"name": "main", "code": "void main(){}"},
+            vec![
+                "uniform sampler2D iChannel0;",
+                "uniform sampler2D iChannel1;",
             ],
-        });
-        let sc = Scene::from_dict(&d, None, None).unwrap();
-        assert!(sc.passes[0].mipmaps && !sc.passes[1].mipmaps);
-        assert_eq!(sc.to_dict(), d);
-        let sized = Ok::<Pass, anyhow::Error>(sc.passes[0].clone())
-            .size(8, 4)
-            .unwrap();
-        assert!(sized.mipmaps);
-        // false is the default, and a save leaves it out.
-        let off = json!({"version": 1, "passes": [{"name": "m", "code": "x", "mipmaps": false}]});
-        assert_eq!(
-            Scene::from_dict(&off, None, None).unwrap().to_dict(),
-            json!({"version": 1, "passes": [{"name": "m", "code": "x"}]})
-        );
-        let bad = json!({"version": 1, "passes": [{"name": "m", "code": "x", "mipmaps": "yes"}]});
-        assert_eq!(
-            Scene::from_dict(&bad, None, None).unwrap_err().to_string(),
-            "scene: pass 'm' mipmaps needs true or false, got 'yes'"
-        );
-    }
-
-    #[test]
-    fn pass_size_validates() {
-        let sized =
-            |size: Value| Pass::new("ok", "x", vec![], vec![], ParamMap::new(), "", Some(size));
-        assert_eq!(sized(json!([8, 4])).unwrap().size, Some((8, 4)));
-        for bad in [
-            json!([0, 4]),
-            json!([4, 0]),
-            json!([-1, 4]),
-            json!([8]),
-            json!([8, 4, 2]),
-            json!("8x4"),
-            json!([8.5, 4]),
-            json!([8, true]),
-        ] {
-            assert!(sized(bad.clone()).is_err(), "{bad}");
+        ];
+        for hw_linear in [false, true] {
+            for (i, p) in sc.passes.iter().enumerate() {
+                let g = p.glsl(Some(&sc.params), None, &sc.assets, &sc.texts, hw_linear);
+                let has = |want: &str| g.lines().any(|l| l.starts_with(want));
+                for want in every.iter().chain(&own[i]) {
+                    assert!(has(want), "pass {} lacks {want}", p.name);
+                }
+                for other in &own[1 - i] {
+                    assert!(!has(other), "pass {} declares {other}", p.name);
+                }
+                // A string param stays on the host.
+                assert!(!g.contains("title"), "{g}");
+            }
         }
     }
 
     #[test]
-    fn color_param_roundtrip() {
-        let d = json!({
-            "version": 1,
-            "passes": [{
-                "name": "m",
-                "code": "void main(){}",
-                "params": {"tint": {"type": "color", "value": [1.0, 0.0, 0.5]}},
-            }],
-        });
-        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
-    }
-
-    #[test]
-    fn color_param_validates_length_and_type() {
-        param("ok", "color", json!([0.1, 0.2, 0.3])).unwrap();
-        for bad in [
-            json!([0.1, 0.2]),
-            json!([0.1, 0.2, 0.3, 0.4]),
-            json!("red"),
-            json!(0.5),
-            json!([0.1, 0.2, "x"]),
-        ] {
-            assert!(param("bad", "color", bad.clone()).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn color_param_is_a_vec3_uniform() {
-        let mut params = ParamMap::new();
-        params.insert(
-            "tint".to_string(),
-            param("tint", "color", json!([1.0, 0.0, 0.0])).unwrap(),
-        );
-        let g = Pass::new(
-            "m",
-            "void main(){ gl_FragColor = vec4(tint, 1.0); }",
-            vec![],
-            vec![],
-            params,
-            "",
+    fn the_common_block_sits_between_the_preamble_and_the_code_of_every_scene_pass() {
+        let sc = Scene::from_dict(
+            &common_scene(
+                Some(json!({"code": COMMON})),
+                Some(vec![
+                    json!({"name": "a", "code": CODE}),
+                    json!({"name": "b", "code": FLAT}),
+                ]),
+            ),
+            None,
             None,
         )
-        .unwrap()
-        .glsl(None, None, &[], &[], false);
-        assert!(g.contains("uniform vec3 tint;"));
-        assert!(!g.contains("tint_r") && !g.contains("#define tint"));
-        let p = param("tint", "color", json!([1.0, 0.0, 0.0])).unwrap();
-        assert_eq!(p.glsl_type().unwrap(), "vec3");
+        .unwrap();
+        for p in &sc.passes {
+            let g = p.glsl(
+                Some(&sc.params),
+                sc.common.as_deref(),
+                &sc.assets,
+                &[],
+                false,
+            );
+            let pre = g.find("uniform float frame;").unwrap();
+            let common_at = g.find(COMMON).unwrap();
+            let code_at = g.find(&p.code).unwrap();
+            assert!(pre < common_at && common_at < code_at, "{g}");
+        }
+        // An empty block adds nothing.
+        let p = Pass::of("m", CODE).unwrap();
+        assert_eq!(
+            p.glsl(None, Some(""), &[], &[], false),
+            p.glsl(None, None, &[], &[], false)
+        );
     }
 
     #[test]
-    fn vec_param_roundtrip() {
-        let d = json!({
-            "version": 1,
-            "passes": [{
-                "name": "m",
-                "code": "void main(){}",
-                "params": {
-                    "a": {"type": "vec2", "value": [0.1, 0.2]},
-                    "b": {"type": "vec3", "value": [0.1, 0.2, 0.3]},
-                    "c": {"type": "vec4", "value": [0.1, 0.2, 0.3, 0.4]},
-                },
-            }],
-        });
-        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
-    }
-
-    #[test]
-    fn vec_param_validates_length_and_type() {
-        param("ok2", "vec2", json!([0.1, 0.2])).unwrap();
-        param("ok3", "vec3", json!([0.1, 0.2, 0.3])).unwrap();
-        param("ok4", "vec4", json!([0.1, 0.2, 0.3, 0.4])).unwrap();
-        let bad_by_type = [
+    fn a_scene_that_ghee_refuses_names_what_is_wrong() {
+        let pass = |extra: Value| {
+            let mut p = json!({"name": "m", "code": GOOD});
+            p.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            json!({"version": 1, "passes": [p]})
+        };
+        let param = |ty: &str, v: Value| pass(json!({"params": {"g": {"type": ty, "value": v}}}));
+        let array = |size: Value| pass(json!({"arrays": [{"name": "a", "size": size}]}));
+        let asset = |a: Value| {
+            json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
+                                      "assets": {"d": a}})
+        };
+        let common = |c: Value| common_scene(Some(c), None);
+        let size = "size needs two positive ints [w, h] up to 16384";
+        let both = "needs an object with 'code' (inline GLSL) or 'shader' (a file next to \
+                    the scene)";
+        let rows = [
+            // a pass
             (
-                "vec2",
-                vec![
-                    json!([0.1]),
-                    json!([0.1, 0.2, 0.3]),
-                    json!("xy"),
-                    json!(0.5),
-                    json!([0.1, "x"]),
-                ],
+                pass(json!({"size": [0, 4]})),
+                format!("pass 'm' {size}, got [0, 4]"),
             ),
             (
-                "vec3",
-                vec![
-                    json!([0.1, 0.2]),
-                    json!([0.1, 0.2, 0.3, 0.4]),
-                    json!("rgb"),
-                    json!(1),
-                    json!([0.1, 0.2, "x"]),
-                ],
+                pass(json!({"size": [8]})),
+                format!("pass 'm' {size}, got [8]"),
             ),
             (
-                "vec4",
-                vec![
-                    json!([0.1, 0.2, 0.3]),
-                    json!([0.1, 0.1, 0.1, 0.1, 0.1]),
-                    json!("rgba"),
-                    json!(2),
-                    json!([0.1, 0.2, 0.3, "x"]),
-                ],
+                pass(json!({"size": "8x4"})),
+                format!("pass 'm' {size}, got '8x4'"),
+            ),
+            (
+                pass(json!({"size": [8.5, 4]})),
+                format!("pass 'm' {size}, got [8.5, 4]"),
+            ),
+            (
+                pass(json!({"size": [8, true]})),
+                format!("pass 'm' {size}, got [8, True]"),
+            ),
+            (
+                pass(json!({"size": [100000, 4]})),
+                format!("pass 'm' {size}, got [100000, 4]"),
+            ),
+            (
+                pass(json!({"size": [16384, 16384]})),
+                "pass 'm' is 16384x16384, over the 16777216 pixel cap".to_string(),
+            ),
+            (
+                pass(json!({"mipmaps": "yes"})),
+                "pass 'm' mipmaps needs true or false, got 'yes'".to_string(),
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "m"}]}),
+                "pass 'm' has no 'code' (inline GLSL), no 'shader' (a file next to the \
+                 scene) and no 'layers'"
+                    .to_string(),
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "a", "code": GOOD},
+                                                {"name": "a", "code": GOOD}]}),
+                "pass 'a' is declared twice; a pass name is the buffer name channels bind \
+                 to, so it must be unique"
+                    .to_string(),
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "main", "shader": "/etc/hostname"}]}),
+                "pass 'main' names a shader file ('/etc/hostname') but the scene has no \
+                 directory to resolve it against; inline the GLSL in 'code'"
+                    .to_string(),
+            ),
+            (
+                json!({"version": 1, "passes": "oops"}),
+                "'passes' needs a list, got 'oops'".to_string(),
+            ),
+            (
+                pass(json!({"channels": ["m"]})),
+                "pass 'm': a channel needs an object like {\"buffer\": \"pass\"}, got 'm'"
+                    .to_string(),
+            ),
+            // a param
+            (
+                param("color", json!([0.1, 0.2])),
+                "pass 'm': color param 'g' needs three numbers [r, g, b], got [0.1, 0.2]"
+                    .to_string(),
+            ),
+            (
+                param("color", json!("red")),
+                "pass 'm': color param 'g' needs three numbers [r, g, b], got 'red'".to_string(),
+            ),
+            (
+                param("color", json!([0.1, 0.2, "x"])),
+                "pass 'm': color param 'g' needs three numbers [r, g, b], got [0.1, 0.2, 'x']"
+                    .to_string(),
+            ),
+            (
+                param("vec2", json!([0.1, 0.2, 0.3])),
+                "pass 'm': vec2 param 'g' needs 2 numbers, got [0.1, 0.2, 0.3]".to_string(),
+            ),
+            (
+                param("vec3", json!("rgb")),
+                "pass 'm': vec3 param 'g' needs 3 numbers, got 'rgb'".to_string(),
+            ),
+            (
+                param("vec4", json!([0.1, 0.2, 0.3, "x"])),
+                "pass 'm': vec4 param 'g' needs 4 numbers, got [0.1, 0.2, 0.3, 'x']".to_string(),
+            ),
+            (
+                param("float", json!("<img src=x onerror=alert(1)>")),
+                "pass 'm': float param 'g' needs a number, got '<img src=x onerror=alert(1)>'"
+                    .to_string(),
+            ),
+            (
+                param("int", json!(true)),
+                "pass 'm': int param 'g' needs a number, got True".to_string(),
+            ),
+            (
+                param("float", json!(null)),
+                "pass 'm': float param 'g' needs a number, got None".to_string(),
+            ),
+            (
+                param("string", json!(1.0)),
+                "pass 'm': string param 'g' needs a string, got 1.0".to_string(),
+            ),
+            (
+                pass(json!({"params": {"g": {"type": "string", "value": "a",
+                                             "options": [1, 2]}}})),
+                "pass 'm': string param 'g' options need a list of strings".to_string(),
+            ),
+            (
+                pass(json!({"params": {"g": {"type": "float", "value": 0.5,
+                                             "options": ["a"]}}})),
+                "pass 'm': param 'g': options belong to string params only".to_string(),
+            ),
+            (
+                pass(json!({"params": {"g": {"type": "float", "value": 0.5, "step": "lo"}}})),
+                "pass 'm': param 'g' step needs a number, got 'lo'".to_string(),
+            ),
+            (
+                param("flaot", json!(0.5)),
+                "pass 'm': param 'g' has unknown type 'flaot'; known types: float, int, bool, \
+                 color, string, vec2, vec3, vec4"
+                    .to_string(),
+            ),
+            (
+                pass(json!({"params": {"g": {"value": 1}}})),
+                "pass 'm': param 'g' has no 'type'".to_string(),
+            ),
+            (
+                json!({"version": 1,
+                       "passes": [{"name": "p0", "code": GOOD,
+                                   "params": {"g": {"type": "float", "value": 0.1}}}],
+                       "params": {"g": {"type": "float", "value": 0.2}}}),
+                "scene param 'g' and param 'g' in pass 'p0' both declare 'g'".to_string(),
+            ),
+            // an array
+            (
+                array(json!(0)),
+                "pass 'm': array 'a' size needs an int in 1..16384, got 0".to_string(),
+            ),
+            (
+                array(json!(1e11)),
+                "pass 'm': array 'a' size needs an int in 1..16384, got 100000000000".to_string(),
+            ),
+            (
+                array(json!("16")),
+                "pass 'm': array 'a' size needs an int in 1..16384, got '16'".to_string(),
+            ),
+            (
+                array(json!(4.5)),
+                "pass 'm': array 'a' size needs an int in 1..16384, got 4.5".to_string(),
+            ),
+            (
+                array(json!([0, 4])),
+                "pass 'm': array 'a' size needs two ints in 1..16384 [w, h], got [0, 4]"
+                    .to_string(),
+            ),
+            (
+                array(json!([8, "4"])),
+                "pass 'm': array 'a' size needs two ints in 1..16384 [w, h], got [8, '4']"
+                    .to_string(),
+            ),
+            (
+                array(json!([8, 4, 2])),
+                "pass 'm': array 'a' size needs two ints [w, h], got [8, 4, 2]".to_string(),
+            ),
+            (
+                array(json!([8192, 4096])),
+                "pass 'm': array 'a' is 8192x4096, over the 16777216 element cap".to_string(),
+            ),
+            (
+                pass(json!({"arrays": "oops"})),
+                "pass 'm': 'arrays' needs a list, got 'oops'".to_string(),
+            ),
+            // an asset
+            (
+                asset(json!({"file": "d.raw", "width": 4, "height": 4})),
+                "raw asset 'd' has no 'format'".to_string(),
+            ),
+            (
+                asset(json!({"file": "logo.png", "components": 4})),
+                "asset 'd' takes no 'components', a .png file carries its own".to_string(),
+            ),
+            (
+                asset(json!({"file": "d.raw", "width": 4, "height": 4, "format": "u16"})),
+                "asset 'd' format needs 'u8' or 'f32', got 'u16'".to_string(),
+            ),
+            (
+                asset(
+                    json!({"file": "d.raw", "width": 4, "height": 4, "format": "u8",
+                             "components": 2}),
+                ),
+                "asset 'd' components needs 1, 3 or 4, got 2".to_string(),
+            ),
+            (
+                asset(json!({"file": "logo.png", "sampling": "cubic"})),
+                "asset 'd' sampling needs 'nearest' or 'linear', got 'cubic'".to_string(),
+            ),
+            (
+                asset(json!({"file": "logo.png", "filter": "linear"})),
+                "asset 'd' takes 'nearest' or 'linear' in 'sampling', got 'filter'".to_string(),
+            ),
+            (
+                asset(json!({"file": "logo.png", "from_filter": "frc256"})),
+                "asset 'd' takes no 'from_filter': a filter declares its own assets".to_string(),
+            ),
+            (
+                asset(json!({"file": "sans.ttf", "sampling": "linear"})),
+                "asset 'd' takes no 'sampling', a .ttf file is a font".to_string(),
+            ),
+            (
+                asset(json!({"file": "logo.bmp"})),
+                "asset 'd' file 'logo.bmp' needs a .raw, .png, .jpg, .jpeg, .ttf or .otf \
+                 extension"
+                    .to_string(),
+            ),
+            // the common block
+            (common(json!(["x"])), format!("'common' {both}, got ['x']")),
+            (
+                common(json!({})),
+                "'common' needs exactly one of 'code' (inline GLSL) or 'shader' (a file next \
+                 to the scene)"
+                    .to_string(),
+            ),
+            (
+                common(json!({"code": COMMON, "shader": "c.glsl"})),
+                "'common' needs exactly one of 'code' (inline GLSL) or 'shader' (a file next \
+                 to the scene)"
+                    .to_string(),
+            ),
+            (
+                common(json!({"code": ["x"]})),
+                "'common' needs GLSL text in 'code', got ['x']".to_string(),
+            ),
+            (
+                common(json!({"shader": "/etc/hostname"})),
+                "common names a shader file ('/etc/hostname') but the scene has no directory \
+                 to resolve it against; inline the GLSL in 'code'"
+                    .to_string(),
             ),
         ];
-        for (t, bads) in bad_by_type {
-            for bad in bads {
-                assert!(param("bad", t, bad.clone()).is_err(), "{t} {bad}");
-            }
+        for (d, want) in rows {
+            let got = Scene::from_dict(&d, None, None).map(|_| ()).unwrap_err();
+            assert_eq!(got.to_string(), format!("scene: {want}"), "{d}");
         }
     }
-
-    #[test]
-    fn vec_param_is_a_vector_uniform() {
-        for (t, name, n) in [("vec2", "off", 2), ("vec3", "dir", 3), ("vec4", "q", 4)] {
-            let mut params = ParamMap::new();
-            params.insert(
-                name.to_string(),
-                param(name, t, json!(vec![0.0; n])).unwrap(),
-            );
-            let g = Pass::new("m", "void main(){}", vec![], vec![], params, "", None)
-                .unwrap()
-                .glsl(None, None, &[], &[], false);
-            assert!(g.contains(&format!("uniform {t} {name};")), "{g}");
-            assert!(!g.contains(&format!("{name}_x")), "{g}");
-            assert!(!g.contains(&format!("#define {name}")), "{g}");
-            let p = param(name, t, json!(vec![0.0; n])).unwrap();
-            assert_eq!(p.glsl_type().unwrap(), t);
-        }
-    }
-
-    #[test]
-    fn scene_params_roundtrip() {
-        let d = json!({
-            "version": 1,
-            "passes": [{
-                "name": "m",
-                "code": "void main(){}",
-                "params": {"k": {"type": "float", "value": 0.5}},
-            }],
-            "params": {
-                "speed": {"type": "float", "value": 0.06, "min": -0.5, "max": 0.5, "step": 0.005},
-                "tint": {"type": "color", "value": [1.0, 0.0, 0.5]},
-                "off": {"type": "vec2", "value": [0.1, 0.2]},
-            },
-        });
-        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
-    }
-
-    #[test]
-    fn scene_pass_param_name_collision_raises() {
-        let mut pass_params = ParamMap::new();
-        pass_params.insert(
-            "speed".to_string(),
-            param("speed", "float", json!(0.1)).unwrap(),
-        );
-        let mut scene_params = ParamMap::new();
-        scene_params.insert(
-            "speed".to_string(),
-            param("speed", "float", json!(0.2)).unwrap(),
-        );
-        let p = Pass::new(
-            "main",
-            "void main(){}",
-            vec![],
-            vec![],
-            pass_params,
-            "",
-            None,
-        )
-        .unwrap();
-        let e = Scene::new(vec![p], json!(1), vec![], scene_params, None, vec![])
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("speed") && e.contains("main"), "{e}");
-    }
-
-    #[test]
-    fn scene_pass_param_collision_via_from_dict_raises() {
-        let d = json!({
-            "version": 1,
-            "passes": [{"name": "p0", "code": "x", "params": {"g": {"type": "float", "value": 0.1}}}],
-            "params": {"g": {"type": "float", "value": 0.2}},
-        });
-        assert!(Scene::from_dict(&d, None, None).is_err());
-    }
-
-    #[test]
-    fn scene_params_in_every_pass_preamble() {
-        let mut params = ParamMap::new();
-        params.insert(
-            "gain".to_string(),
-            param("gain", "float", json!(0.5)).unwrap(),
-        );
-        params.insert(
-            "tint".to_string(),
-            param("tint", "color", json!([1.0, 0.0, 0.0])).unwrap(),
-        );
-        params.insert(
-            "off".to_string(),
-            param("off", "vec2", json!([0.1, 0.2])).unwrap(),
-        );
-        let sc = Scene::new(
-            vec![
-                Pass::of("a", "void main(){}").unwrap(),
-                Pass::new(
-                    "b",
-                    "void main(){}",
-                    vec![],
-                    vec![Channel::new(Some("a"))],
-                    ParamMap::new(),
-                    "",
-                    None,
-                )
-                .unwrap(),
-            ],
-            json!(1),
-            vec![],
-            params,
-            None,
-            vec![],
-        )
-        .unwrap();
-        for p in &sc.passes {
-            let g = p.glsl(Some(&sc.params), None, &sc.assets, &[], false);
-            assert!(g.contains("uniform float gain;"));
-            assert!(g.contains("uniform vec3 tint;"));
-            assert!(g.contains("uniform vec2 off;"));
-        }
-    }
-
-    #[test]
-    fn no_scene_params_emits_nothing_extra() {
-        let mut params = ParamMap::new();
-        params.insert("k".to_string(), param("k", "float", json!(0.3)).unwrap());
-        let sc = Scene::of(vec![Pass::new(
-            "m",
-            "void main(){}",
-            vec![],
-            vec![],
-            params,
-            "",
-            None,
-        )
-        .unwrap()])
-        .unwrap();
-        // An empty scene param map adds nothing to the preamble.
-        for p in &sc.passes {
-            assert_eq!(
-                p.glsl(Some(&sc.params), None, &sc.assets, &[], false),
-                p.glsl(None, None, &[], &[], false)
-            );
-        }
-    }
-
-    #[test]
-    fn string_param_roundtrip_with_options() {
-        let d = json!({
-            "version": 1,
-            "passes": [{"name": "m", "code": "void main(){}"}],
-            "params": {
-                "text": {"type": "string", "value": "GHEE"},
-                "font": {"type": "string", "value": "Verdana", "options": ["Verdana", "Impact"]},
-            },
-        });
-        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
-    }
-
-    #[test]
-    fn string_param_validates() {
-        param("ok", "string", json!("hello")).unwrap();
-        Param::new(
-            "ok",
-            "string",
-            json!("a"),
-            None,
-            None,
-            None,
-            Some(json!(["a", "b"])),
-        )
-        .unwrap();
-        for bad in [json!(1.0), json!(["x"]), json!(null), json!(true)] {
-            assert!(param("bad", "string", bad.clone()).is_err(), "{bad}");
-        }
-        assert!(Param::new(
-            "bad",
-            "string",
-            json!("a"),
-            None,
-            None,
-            None,
-            Some(json!([1, 2]))
-        )
-        .is_err());
-        // Only a string param takes options.
-        assert!(Param::new(
-            "bad",
-            "float",
-            json!(0.5),
-            None,
-            None,
-            None,
-            Some(json!(["a"]))
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn string_param_emits_no_uniform() {
-        let mut params = ParamMap::new();
-        params.insert(
-            "text".to_string(),
-            param("text", "string", json!("GHEE")).unwrap(),
-        );
-        let g = Pass::new(
-            "m",
-            "void main(){ gl_FragColor = vec4(1.0); }",
-            vec![],
-            vec![],
-            params,
-            "",
-            None,
-        )
-        .unwrap()
-        .glsl(None, None, &[], &[], false);
-        assert!(!g.split("void main").next().unwrap().contains("text"));
-
-        let mut scene_params = ParamMap::new();
-        scene_params.insert(
-            "text".to_string(),
-            param("text", "string", json!("GHEE")).unwrap(),
-        );
-        let s = Scene::new(
-            vec![Pass::of("m", "void main(){}").unwrap()],
-            json!(1),
-            vec![],
-            scene_params,
-            None,
-            vec![],
-        )
-        .unwrap();
-        let g2 = s.passes[0].glsl(Some(&s.params), None, &s.assets, &[], false);
-        let head = g2.split("void main").next().unwrap().to_string();
-        let tail = head
-            .split("uniform float frame;")
-            .nth(1)
-            .unwrap()
-            .to_string();
-        assert!(!tail.contains("uniform"));
-    }
-
-    #[test]
-    fn string_param_glsl_type_raises() {
-        let p = param("text", "string", json!("GHEE")).unwrap();
-        assert_eq!(
-            p.glsl_type().unwrap_err().to_string(),
-            "a string param is host-side, so it has no glsl_type"
-        );
-    }
-
-    // A scene's file reference never escapes the scene directory.
-
-    #[test]
-    fn shader_key_without_base_dir_raises() {
-        let d = json!({"version": 1, "passes": [{"name": "main", "shader": "/etc/hostname"}]});
-        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert_eq!(
-            e,
-            "scene: pass 'main' names a shader file ('/etc/hostname') but the scene \
-             has no directory to resolve it against; inline the GLSL in 'code'"
-        );
-    }
-
-    #[test]
-    fn shader_outside_base_dir_raises() {
-        let root = tmpdir("outside");
-        let base = format!("{root}/scene");
-        fs::create_dir_all(&base).unwrap();
-        fs::write(format!("{base}/in.glsl"), GOOD).unwrap();
-        let secret = format!("{root}/secret.glsl");
-        fs::write(&secret, "stolen").unwrap();
-        for path in ["../secret.glsl", &secret, "sub/../../secret.glsl"] {
-            let d = json!({"version": 1, "passes": [{"name": "main", "shader": path}]});
-            let e = Scene::from_dict_in(&d, &base, Reach::Inside, None)
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("outside the scene directory"), "{path}: {e}");
-        }
-    }
-
-    #[test]
-    fn shader_inside_base_dir_still_loads() {
-        let base = tmpdir("inside");
-        fs::create_dir_all(format!("{base}/sub")).unwrap();
-        fs::write(format!("{base}/sub/in.glsl"), GOOD).unwrap();
-        let d = json!({"version": 1, "passes": [{"name": "main", "shader": "sub/in.glsl"}]});
-        let sc = Scene::from_dict(&d, Some(&base), None).unwrap();
-        assert_eq!(sc.passes[0].code, GOOD);
-    }
-
-    #[test]
-    fn serialized_scene_reloads_without_a_directory() {
-        let scene = Scene::load(&repo("ghee/examples/bars.scene.json")).unwrap();
-        let d = scene.to_dict();
-        // The console posts code back inline.
-        assert!(!d.to_string().contains("shader"));
-        assert_eq!(
-            Scene::from_dict(&d, None, None).unwrap().passes[0].code,
-            scene.passes[0].code
-        );
-    }
-
-    #[test]
-    fn missing_shader_file_names_scene_and_pass() {
-        let dir = tmpdir("missing-shader");
-        let p = format!("{dir}/x.scene.json");
-        fs::write(
-            &p,
-            json!({"version": 1, "passes": [{"name": "main", "shader": "gone.glsl"}]}).to_string(),
-        )
-        .unwrap();
-        let msg = Scene::load(&p).unwrap_err().to_string();
-        assert!(
-            msg.contains(&p) && msg.contains("main") && msg.contains("gone.glsl"),
-            "{msg}"
-        );
-        assert!(msg.contains("No such file or directory"), "{msg}");
-    }
-
-    // A param value is typed.
-
-    #[test]
-    fn float_and_int_params_need_numbers() {
-        for t in ["float", "int"] {
-            for bad in [
-                json!("<img src=x onerror=alert(1)>"),
-                json!(true),
-                json!(null),
-                json!([1, 2]),
-            ] {
-                let e = param("g", t, bad.clone()).unwrap_err().to_string();
-                assert!(e.contains("needs a number"), "{t} {bad}: {e}");
-            }
-        }
-        assert_eq!(
-            param("g", "float", json!(1)).unwrap().value,
-            ParamValue::Float(1.0)
-        );
-        assert_eq!(
-            param("g", "int", json!(3)).unwrap().value,
-            ParamValue::Int(3)
-        );
-    }
-
-    #[test]
-    fn param_range_metadata_needs_numbers() {
-        Param::new(
-            "g",
-            "float",
-            json!(0.5),
-            Some(json!(0)),
-            Some(json!(1)),
-            Some(json!(0.1)),
-            None,
-        )
-        .unwrap();
-        param("g", "float", json!(0.5)).unwrap(); // No min, max or step.
-        for k in ["min", "max", "step"] {
-            let (mut lo, mut hi, mut st) = (None, None, None);
-            match k {
-                "min" => lo = Some(json!("lo")),
-                "max" => hi = Some(json!("lo")),
-                _ => st = Some(json!("lo")),
-            }
-            let e = Param::new("g", "float", json!(0.5), lo, hi, st, None)
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains(k), "{k}: {e}");
-        }
-    }
-
-    #[test]
-    fn unknown_param_type_raises_at_parse_time() {
-        assert!(param("g", "flaot", json!(0.5))
-            .unwrap_err()
-            .to_string()
-            .contains("unknown type"));
-        let d = json!({
-            "version": 1,
-            "passes": [{"name": "m", "code": GOOD, "params": {"g": {"type": "x", "value": 1}}}],
-        });
-        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(e.contains("unknown type"), "{e}");
-    }
-
-    // An array size and a pass size are bounded.
-
-    #[test]
-    fn array_size_is_bounded() {
-        ArrayInput::new("a", json!(16)).unwrap();
-        ArrayInput::new("a", json!([96, 16])).unwrap();
-        for bad in [
-            json!(0),
-            json!(-4),
-            json!(1e11),
-            json!(100000),
-            json!("16"),
-            json!(4.5),
-            json!(null),
-        ] {
-            assert!(ArrayInput::new("a", bad.clone()).is_err(), "{bad}");
-        }
-        for bad in [
-            json!([0, 4]),
-            json!([4, 0]),
-            json!([100000, 3]),
-            json!([8, 4, 2]),
-            json!([8, "4"]),
-        ] {
-            assert!(ArrayInput::new("a", bad.clone()).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn huge_array_rejected_from_dict() {
-        let d = json!({
-            "version": 1,
-            "passes": [{"name": "m", "code": GOOD, "arrays": [{"name": "a", "size": 1e11}]}],
-        });
-        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(e.contains("size"), "{e}");
-        assert!(e.contains("100000000000"), "{e}"); // A whole float reports as an int.
-    }
-
-    #[test]
-    fn two_d_array_texel_cap() {
-        ArrayInput::new("a", json!([4096, 4096])).unwrap(); // Exactly the cap.
-        let e = ArrayInput::new("a", json!([8192, 4096]))
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("cap"), "{e}");
-    }
-
-    #[test]
-    fn pass_size_is_bounded() {
-        let sized =
-            |size: Value| Pass::new("p", GOOD, vec![], vec![], ParamMap::new(), "", Some(size));
-        sized(json!([32, 18])).unwrap();
-        assert!(sized(json!([100000, 100000]))
-            .unwrap_err()
-            .to_string()
-            .contains("16384"));
-        assert!(sized(json!([16384, 16384]))
-            .unwrap_err()
-            .to_string()
-            .contains("cap"));
-    }
-
-    // A pass name is a buffer name, so it is unique.
-
-    #[test]
-    fn duplicate_pass_names_rejected() {
-        let e = Scene::of(vec![
-            Pass::of("a", GOOD).unwrap(),
-            Pass::of("a", GOOD).unwrap(),
-        ])
-        .unwrap_err()
-        .to_string();
-        assert!(e.contains("twice"), "{e}");
-        let d = json!({
-            "version": 1,
-            "passes": [{"name": "a", "code": GOOD}, {"name": "a", "code": GOOD}],
-        });
-        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(e.contains("twice"), "{e}");
-    }
-
-    // One error carries the scene, the pass and the field.
 
     #[test]
     fn a_key_that_ghee_does_not_take_is_refused_naming_the_closest_key() {
@@ -3548,164 +3297,86 @@ mod tests {
     }
 
     #[test]
-    fn malformed_scene_json_reports_context() {
-        let dir = tmpdir("malformed");
-        let bad = [
-            (
-                "param 'g' has no 'type'",
-                json!({"version": 1, "passes": [{"name": "m", "code": GOOD, "params": {"g": {"value": 1}}}]}),
-            ),
-            (
-                "'passes' needs a list",
-                json!({"version": 1, "passes": "oops"}),
-            ),
-            (
-                "pass 'm' has no 'code'",
-                json!({"version": 1, "passes": [{"name": "m"}]}),
-            ),
-            (
-                "needs a list",
-                json!({"version": 1, "passes": [{"name": "m", "code": GOOD, "arrays": "oops"}]}),
-            ),
-            (
-                "a channel needs",
-                json!({"version": 1, "passes": [{"name": "m", "code": GOOD, "channels": ["m"]}]}),
-            ),
-        ];
-        for (fragment, d) in bad {
-            let p = format!("{dir}/x.scene.json");
-            fs::write(&p, d.to_string()).unwrap();
-            let msg = Scene::load(&p).unwrap_err().to_string();
-            assert!(msg.contains(fragment), "{msg}");
-            assert!(msg.contains(&p), "{msg}");
-        }
+    fn the_constructors_refuse_a_pass_or_an_asset_named_twice() {
+        let e = Scene::of(vec![
+            Pass::of("a", GOOD).unwrap(),
+            Pass::of("a", GOOD).unwrap(),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("twice"), "{e}");
+        // A JSON map holds a name once, so a duplicate needs the constructor.
+        let a = Asset::from_dict("logo", &json!({"file": "logo.png"})).unwrap();
+        let e = Scene::new(
+            vec![Pass::of("m", GOOD).unwrap()],
+            json!(1),
+            vec![],
+            ParamMap::new(),
+            None,
+            vec![a.clone(), a],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("twice"), "{e}");
     }
 
     #[test]
-    fn invalid_json_reports_the_path() {
-        let dir = tmpdir("invalid-json");
+    fn an_error_in_a_scene_file_names_the_file() {
+        let dir = tmpdir("file-error");
         let p = format!("{dir}/x.scene.json");
         fs::write(&p, "{oops").unwrap();
         let e = Scene::load(&p).unwrap_err().to_string();
-        assert!(e.contains("invalid JSON") && e.contains(&p), "{e}");
-    }
-
-    #[test]
-    fn valid_scenes_still_load() {
-        for name in ["bars", "trail", "twopass", "blur", "echo", "mix"] {
-            let sc = Scene::load(&repo(&format!("ghee/examples/{name}.scene.json"))).unwrap();
-            assert!(!sc.passes.is_empty());
-            assert!(sc.passes.iter().all(|p| !p.code.is_empty()));
-        }
-    }
-
-    // A scene's common block is one block of GLSL from one source.
-
-    fn common_scene(common: Option<Value>, passes: Option<Vec<Value>>) -> Value {
-        let mut d = Map::new();
-        d.insert("version".to_string(), json!(1));
-        d.insert(
-            "passes".to_string(),
-            Value::from(passes.unwrap_or_else(|| vec![json!({"name": "main", "code": CODE})])),
-        );
-        if let Some(c) = common {
-            d.insert("common".to_string(), c);
-        }
-        Value::Object(d)
-    }
-
-    #[test]
-    fn common_needs_an_object_with_code_or_shader() {
-        for bad in [json!(COMMON), json!(["x"]), json!(3), json!(true)] {
-            let e = Scene::from_dict(&common_scene(Some(bad.clone()), None), None, None)
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("'common' needs an object"), "{bad}: {e}");
-        }
-        let e = Scene::from_dict(&common_scene(Some(json!(["x"])), None), None, None)
-            .unwrap_err()
-            .to_string();
-        assert_eq!(
-            e,
-            "scene: 'common' needs an object with 'code' (inline GLSL) or 'shader' \
-             (a file next to the scene), got ['x']"
-        );
-    }
-
-    #[test]
-    fn common_takes_exactly_one_of_code_and_shader() {
-        for bad in [json!({}), json!({"code": COMMON, "shader": "c.glsl"})] {
-            let e = Scene::from_dict(&common_scene(Some(bad.clone()), None), None, None)
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("exactly one"), "{bad}: {e}");
-        }
-    }
-
-    #[test]
-    fn common_code_needs_text() {
-        let e = Scene::from_dict(
-            &common_scene(Some(json!({"code": ["x"]})), None),
-            None,
-            None,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(e.contains("'common' needs GLSL text in 'code'"), "{e}");
-    }
-
-    #[test]
-    fn common_shader_without_base_dir_raises() {
-        let e = Scene::from_dict(
-            &common_scene(Some(json!({"shader": "/etc/hostname"})), None),
-            None,
-            None,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(e.contains("common") && e.contains("shader"), "{e}");
-    }
-
-    #[test]
-    fn common_shader_never_escapes_the_scene_directory() {
-        let root = tmpdir("common-escape");
-        let base = format!("{root}/scene");
-        fs::create_dir_all(&base).unwrap();
-        let secret = format!("{root}/secret.glsl");
-        fs::write(&secret, "stolen").unwrap();
-        for path in ["../secret.glsl", &secret] {
-            let e = Scene::from_dict_in(
-                &common_scene(Some(json!({"shader": path})), None),
-                &base,
-                Reach::Inside,
-                None,
-            )
-            .unwrap_err()
-            .to_string();
-            assert!(e.contains("outside the scene directory"), "{path}: {e}");
-        }
-    }
-
-    #[test]
-    fn missing_common_file_names_the_scene_and_the_common() {
-        let dir = tmpdir("common-missing");
-        let p = format!("{dir}/x.scene.json");
+        assert!(e.starts_with(&format!("{p}: invalid JSON: ")), "{e}");
         fs::write(
             &p,
-            common_scene(Some(json!({"shader": "gone.glsl"})), None).to_string(),
+            json!({"version": 1, "passes": [{"name": "m"}]}).to_string(),
         )
         .unwrap();
-        let msg = Scene::load(&p).unwrap_err().to_string();
+        let e = Scene::load(&p).unwrap_err().to_string();
         assert!(
-            msg.contains(&p) && msg.contains("common") && msg.contains("gone.glsl"),
-            "{msg}"
+            e.starts_with(&format!("{p}: pass 'm' has no 'code'")),
+            "{e}"
         );
     }
 
     #[test]
-    fn inline_common_roundtrips() {
-        let d = common_scene(Some(json!({"code": COMMON})), None);
-        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
+    fn a_missing_file_names_its_path() {
+        let dir = tmpdir("missing");
+        let p = format!("{dir}/x.scene.json");
+        let gone = |what: &str| format!("{what}: No such file or directory");
+        assert_eq!(
+            Scene::load(&p).unwrap_err().to_string(),
+            gone(&p),
+            "the scene file"
+        );
+        for (d, want) in [
+            (
+                json!({"version": 1, "passes": [{"name": "main", "shader": "gone.glsl"}]}),
+                gone(&format!("{p}: pass 'main' shader 'gone.glsl'")),
+            ),
+            (
+                common_scene(Some(json!({"shader": "gone.glsl"})), None),
+                gone(&format!("{p}: common shader 'gone.glsl'")),
+            ),
+        ] {
+            fs::write(&p, d.to_string()).unwrap();
+            assert_eq!(Scene::load(&p).unwrap_err().to_string(), want);
+        }
+        let mut sc = Scene::from_dict(
+            &asset_scene(json!({"logo": {"file": "logo.png"}})),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            sc.load_assets_from(&dir, Reach::Any, &[])
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "{}, and $GHEE_ASSETS names no directory",
+                gone(&format!("asset 'logo' ({dir}/logo.png)"))
+            )
+        );
     }
 
     #[test]
@@ -3721,13 +3392,7 @@ mod tests {
         assert_eq!(sc.common.as_deref(), Some(COMMON));
         // The console posts code back inline, and a save writes the same form.
         assert_eq!(sc.to_dict()["common"], json!({"code": COMMON}));
-    }
-
-    #[test]
-    fn a_scene_file_loads_its_common_file() {
-        let dir = tmpdir("common-scene-file");
-        fs::write(format!("{dir}/shared.glsl"), COMMON).unwrap();
-        let p = format!("{dir}/x.scene.json");
+        let p = format!("{base}/x.scene.json");
         fs::write(
             &p,
             common_scene(Some(json!({"shader": "shared.glsl"})), None).to_string(),
@@ -3737,69 +3402,15 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_common_is_a_block_that_exists() {
-        // The console's "+ common" creates a block before anyone types into it.
-        let sc =
-            Scene::from_dict(&common_scene(Some(json!({"code": ""})), None), None, None).unwrap();
-        assert_eq!(sc.common.as_deref(), Some(""));
-        assert_eq!(sc.to_dict()["common"], json!({"code": ""}));
-    }
-
-    #[test]
-    fn a_scene_without_one_carries_no_common_key() {
-        let sc = Scene::from_dict(&common_scene(None, None), None, None).unwrap();
-        assert!(sc.to_dict().get("common").is_none());
-        assert!(sc.common.is_none());
-    }
-
-    #[test]
-    fn the_common_reaches_every_scene_pass() {
-        let sc = Scene::from_dict(
-            &common_scene(
-                Some(json!({"code": COMMON})),
-                Some(vec![
-                    json!({"name": "a", "code": CODE}),
-                    json!({"name": "b", "code": FLAT}),
-                ]),
-            ),
-            None,
-            None,
-        )
-        .unwrap();
-        for p in &sc.passes {
-            let g = p.glsl(
-                Some(&sc.params),
-                sc.common.as_deref(),
-                &sc.assets,
-                &[],
-                false,
-            );
-            assert!(g.contains(COMMON));
-            // The common block follows the preamble and precedes the pass code.
-            let pre = g.find("uniform float time;").unwrap();
-            let common_at = g.find(COMMON).unwrap();
-            let code_at = g.find(&p.code).unwrap();
-            assert!(pre < common_at && common_at < code_at);
-        }
-    }
-
-    #[test]
-    fn no_common_assembles_exactly_as_before() {
-        let p = Pass::of("m", CODE).unwrap();
+    fn serialized_scene_reloads_without_a_directory() {
+        let scene = Scene::load(&repo("ghee/examples/bars.scene.json")).unwrap();
+        let d = scene.to_dict();
+        // The console posts code back inline.
+        assert!(!d.to_string().contains("shader"));
         assert_eq!(
-            p.glsl(None, None, &[], &[], false),
-            p.glsl(None, None, &[], &[], false)
+            Scene::from_dict(&d, None, None).unwrap().passes[0].code,
+            scene.passes[0].code
         );
-        assert_eq!(
-            p.glsl(None, Some(""), &[], &[], false),
-            p.glsl(None, None, &[], &[], false)
-        );
-    }
-
-    // An asset is a named image file, decoded by the host and fed once.
-
-    fn asset_scene(assets: Value) -> Value {
-        json!({"version": 1, "passes": [{"name": "m", "code": GOOD}], "assets": assets})
     }
 
     #[test]
@@ -3833,179 +3444,184 @@ mod tests {
     }
 
     #[test]
-    fn asset_schema_roundtrips() {
-        let d = json!({
-            "version": 1,
-            "passes": [{"name": "m", "code": GOOD}],
-            "assets": {
-                "stbn": {"file": "stbn.raw", "width": 64, "height": 32, "format": "f32"},
-                "mask": {"file": "mask.raw", "width": 8, "height": 8, "format": "u8",
-                         "components": 4},
-                "logo": {"file": "logo.png", "sampling": "linear"},
-                "photo": {"file": "photo.jpg"},
-            },
-        });
-        assert_eq!(Scene::from_dict(&d, None, None).unwrap().to_dict(), d);
-    }
-
-    #[test]
-    fn raw_asset_needs_width_height_and_format() {
-        for k in ["width", "height", "format"] {
-            let mut a = json!({"file": "d.raw", "width": 4, "height": 4, "format": "u8"});
-            a.as_object_mut().unwrap().remove(k);
-            let e = Scene::from_dict(&asset_scene(json!({ "d": a })), None, None)
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains(&format!("'{k}'")), "{k}: {e}");
-        }
-    }
-
-    #[test]
-    fn a_decoded_asset_declares_no_layout() {
-        for k in ["width", "height", "format", "components"] {
-            let mut a = json!({"file": "logo.png"});
-            a.as_object_mut().unwrap().insert(k.to_string(), json!(4));
-            let e = Scene::from_dict(&asset_scene(json!({ "d": a })), None, None)
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains(&format!("'{k}'")), "{k}: {e}");
-        }
-    }
-
-    #[test]
-    fn raw_asset_format_is_u8_or_f32() {
-        let d = asset_scene(json!({"d": {"file": "d.raw", "width": 4, "height": 4,
-                                         "format": "u16"}}));
-        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(e.contains("'u8' or 'f32'") && e.contains("u16"), "{e}");
-    }
-
-    #[test]
-    fn raw_asset_components_are_1_3_or_4() {
-        let d = asset_scene(json!({"d": {"file": "d.raw", "width": 4, "height": 4,
-                                         "format": "u8", "components": 2}}));
-        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(e.contains("components") && e.contains("2"), "{e}");
-    }
-
-    #[test]
-    fn asset_sampling_is_nearest_or_linear() {
-        let d = asset_scene(json!({"d": {"file": "logo.png", "sampling": "cubic"}}));
-        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(
-            e.ends_with("asset 'd' sampling needs 'nearest' or 'linear', got 'cubic'"),
-            "{e}"
+    fn a_raw_length_mismatch_names_the_path_and_the_shape() {
+        let dir = tmpdir("asset-mismatch");
+        fs::write(format!("{dir}/d.raw"), [0u8; 5]).unwrap();
+        let p = format!("{dir}/x.scene.json");
+        fs::write(
+            &p,
+            asset_scene(json!({"d": {"file": "d.raw", "width": 2, "height": 2,
+                                     "format": "u8"}}))
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            Scene::load(&p).unwrap_err().to_string(),
+            format!("{p}: asset 'd' ({dir}/d.raw): 5 bytes, but 2x2x1 u8 needs 4")
         );
-        for (a, want) in [
+    }
+
+    #[test]
+    fn an_f32_raw_asset_reads_little_endian() {
+        let dir = tmpdir("asset-f32");
+        let vals = [0.0f32, 0.5, -1.0, 3.25];
+        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        fs::write(format!("{dir}/d.raw"), &bytes).unwrap();
+        let p = format!("{dir}/x.scene.json");
+        fs::write(
+            &p,
+            asset_scene(json!({"d": {"file": "d.raw", "width": 4, "height": 1,
+                                     "format": "f32"}}))
+            .to_string(),
+        )
+        .unwrap();
+        let sc = Scene::load(&p).unwrap();
+        let img = sc.assets[0].image.as_ref().unwrap();
+        assert_eq!((img.width, img.height, img.components), (4, 1, 1));
+        assert_eq!(img.pixels, crate::assets::Pixels::F32(vals.to_vec()));
+    }
+
+    #[test]
+    fn a_scene_that_its_user_runs_names_a_file_anywhere() {
+        // Each file sits outside the scene's directory: a relative path that
+        // leaves it, and absolute paths.
+        let root = tmpdir("anywhere");
+        let base = format!("{root}/scene");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(format!("{root}/d.raw"), [7u8; 4]).unwrap();
+        fs::write(format!("{root}/e.raw"), [9u8; 4]).unwrap();
+        fs::write(format!("{root}/in.glsl"), GOOD).unwrap();
+        let raw = |file: String| json!({"file": file, "width": 2, "height": 2, "format": "u8"});
+        let mut d = asset_scene(json!({"d": raw("../d.raw".to_string()),
+                                       "e": raw(format!("{root}/e.raw"))}));
+        d["passes"][0] = json!({"name": "main", "shader": format!("{root}/in.glsl")});
+        let p = format!("{base}/x.scene.json");
+        fs::write(&p, d.to_string()).unwrap();
+        let sc = Scene::load(&p).unwrap();
+        let px = |i: usize| sc.assets[i].image.as_ref().unwrap().pixels.clone();
+        assert_eq!(px(0), crate::assets::Pixels::U8(vec![7u8; 4]));
+        assert_eq!(px(1), crate::assets::Pixels::U8(vec![9u8; 4]));
+        assert_eq!(sc.passes[0].code, GOOD);
+    }
+
+    #[test]
+    fn the_root_directory_holds_assets_and_shaders() {
+        let dir = tmpdir("in-root");
+        fs::write(format!("{dir}/n.raw"), [1u8, 2, 3, 4]).unwrap();
+        fs::write(format!("{dir}/in.glsl"), GOOD).unwrap();
+        let rel = dir.trim_start_matches('/');
+        let mut scene = Scene::from_dict(
+            &asset_scene(json!({
+                "n": {"file": format!("{rel}/n.raw"), "width": 2, "height": 2, "format": "u8"}
+            })),
+            None,
+            None,
+        )
+        .unwrap();
+        scene.load_assets("/").unwrap();
+        let img = scene.assets[0].image.as_ref().unwrap();
+        assert_eq!(img.pixels, crate::assets::Pixels::U8(vec![1, 2, 3, 4]));
+        let d =
+            json!({"version": 1, "passes": [{"name": "main", "shader": format!("{rel}/in.glsl")}]});
+        let sc = Scene::from_dict(&d, Some("/"), None).unwrap();
+        assert_eq!(sc.passes[0].code, GOOD);
+        let mut missing = Scene::from_dict(
+            &asset_scene(json!({"m": {"file": "ghee-no-such.png"}})),
+            None,
+            None,
+        )
+        .unwrap();
+        let e = missing.load_assets("/").unwrap_err().to_string();
+        assert!(e.contains("(/ghee-no-such.png)"), "{e}");
+    }
+
+    #[test]
+    fn a_path_inside_a_directory_takes_whole_components() {
+        assert!(inside("/", "/"));
+        assert!(inside("/a.png", "/"));
+        assert!(inside("/a/b", "/a/b"));
+        assert!(inside("/a/b/c.png", "/a/b"));
+        assert!(!inside("/a/bc.png", "/a/b"));
+        assert!(!inside("/a", "/a/b"));
+    }
+
+    #[test]
+    fn a_scene_of_the_console_reads_no_file_outside_its_directory() {
+        let _g = crate::filters::env_guard();
+        let root = tmpdir("outside");
+        let base = format!("{root}/scene");
+        fs::create_dir_all(format!("{base}/sub")).unwrap();
+        fs::write(format!("{base}/sub/in.glsl"), GOOD).unwrap();
+        for f in ["secret.glsl", "secret.raw", "up.ttf", "scene/m.raw"] {
+            fs::write(format!("{root}/{f}"), [0u8; 4]).unwrap();
+        }
+        let shader =
+            |path: &str| json!({"version": 1, "passes": [{"name": "main", "shader": path}]});
+        let secret = format!("{root}/secret.glsl");
+        for (d, what) in [
             (
-                json!({"file": "logo.png", "filter": "linear"}),
-                "asset 'd' takes 'nearest' or 'linear' in 'sampling', got 'filter'",
+                shader("../secret.glsl"),
+                "pass 'main' shader '../secret.glsl'".to_string(),
+            ),
+            (shader(&secret), format!("pass 'main' shader '{secret}'")),
+            (
+                shader("sub/../../secret.glsl"),
+                "pass 'main' shader 'sub/../../secret.glsl'".to_string(),
             ),
             (
-                json!({"file": "logo.png", "from_filter": "frc256"}),
-                "asset 'd' takes no 'from_filter': a filter declares its own assets",
-            ),
-            (
-                json!({"file": "sans.ttf", "sampling": "linear"}),
-                "asset 'd' takes no 'sampling', a .ttf file is a font",
+                common_scene(Some(json!({"shader": "../secret.glsl"})), None),
+                "common shader '../secret.glsl'".to_string(),
             ),
         ] {
-            let e = Scene::from_dict(&asset_scene(json!({ "d": a })), None, None)
-                .unwrap_err()
-                .to_string();
-            assert!(e.ends_with(want), "{e}");
+            let e = Scene::from_dict_in(&d, &base, Reach::Inside, None).unwrap_err();
+            assert_eq!(
+                e.to_string(),
+                format!("scene: {what} is outside the scene directory")
+            );
         }
-    }
-
-    #[test]
-    fn asset_kind_comes_from_the_extension() {
-        let d = asset_scene(json!({"d": {"file": "logo.bmp"}}));
-        let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-        assert!(e.contains(".raw, .png, .jpg, .jpeg, .ttf or .otf"), "{e}");
-    }
-
-    #[test]
-    fn asset_name_is_a_glsl_identifier() {
-        for bad in ["2d", "no-dash", "sp ace", ""] {
-            let d = asset_scene(json!({bad: {"file": "logo.png"}}));
-            let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-            assert!(e.contains("identifier"), "{bad}: {e}");
+        let inside = Scene::from_dict_in(&shader("sub/in.glsl"), &base, Reach::Inside, None);
+        assert_eq!(inside.unwrap().passes[0].code, GOOD);
+        let raw = json!({"file": "../secret.raw", "width": 2, "height": 2, "format": "u8"});
+        for (d, what) in [
+            (
+                asset_scene(json!({"d": raw})),
+                "asset 'd' file '../secret.raw'",
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
+                       "assets": {"face": {"file": "../up.ttf"}},
+                       "texts": {"label": {"value": "hi", "font": "face"}}}),
+                "asset 'face' file '../up.ttf'",
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
+                       "texts": {"label": {"value": "hi", "font": "../up.ttf"}}}),
+                "text 'label' font '../up.ttf'",
+            ),
+        ] {
+            let mut sc = Scene::from_dict(&d, None, None).unwrap();
+            let e = sc.load_assets_from(&base, Reach::Inside, &[]).unwrap_err();
+            assert_eq!(
+                e.to_string(),
+                format!("{what} is outside the scene directory")
+            );
         }
-    }
-
-    #[test]
-    fn asset_names_collide_with_nothing() {
-        let err = |d: &Value| Scene::from_dict(d, None, None).unwrap_err().to_string();
-        let vs_array = json!({
-            "version": 1,
-            "passes": [{"name": "m", "code": GOOD, "arrays": [{"name": "amps", "size": 8}]}],
-            "assets": {"amps": {"file": "amps.png"}},
-        });
-        assert_eq!(
-            err(&vs_array),
-            "scene: asset 'amps' and array 'amps' in pass 'm' both declare 'amps_size'"
-        );
-        let vs_scene_param = json!({
-            "version": 1,
-            "passes": [{"name": "m", "code": GOOD}],
-            "params": {"gain": {"type": "float", "value": 1.0}},
-            "assets": {"gain": {"file": "gain.png"}},
-        });
-        assert_eq!(
-            err(&vs_scene_param),
-            "scene: scene param 'gain' and asset 'gain' both declare 'gain'"
-        );
-        let vs_pass_param = json!({
-            "version": 1,
-            "passes": [{"name": "m", "code": GOOD,
-                        "params": {"gain": {"type": "float", "value": 1.0}}}],
-            "assets": {"gain": {"file": "gain.png"}},
-        });
-        assert_eq!(
-            err(&vs_pass_param),
-            "scene: asset 'gain' and param 'gain' in pass 'm' both declare 'gain'"
-        );
-        // A JSON map holds a name once, so a duplicate needs the constructor.
-        let a = Asset::from_dict("logo", &json!({"file": "logo.png"})).unwrap();
-        let e = Scene::new(
-            vec![Pass::of("m", GOOD).unwrap()],
-            json!(1),
-            vec![],
-            ParamMap::new(),
-            None,
-            vec![a.clone(), a],
+        // A filter's asset stays inside the filter's directory.
+        let filters = format!("{base}/filters");
+        fs::create_dir_all(&filters).unwrap();
+        fs::write(
+            format!("{filters}/esc.filter.json"),
+            json!({"name": "esc", "code": GOOD,
+                   "assets": {"m": {"file": "../m.raw", "width": 2, "height": 2, "format": "u8"}}})
+            .to_string(),
         )
-        .unwrap_err()
-        .to_string();
-        assert!(e.contains("twice"), "{e}");
-    }
-
-    /// A scene of passes `a` and `b`, a text `label` and the font asset
-    /// `sans`, with `extra` merged in at the top and `pass` merged into `a`.
-    fn named(extra: Value, pass: Value) -> Value {
-        let mut d = json!({
-            "version": 1,
-            "assets": {"sans": {"file": "sans.ttf"}},
-            "texts": {"label": {"value": "hi", "font": "sans"}},
-            "passes": [{"name": "a", "code": GOOD}, {"name": "b", "code": GOOD}],
-        });
-        for (k, v) in extra.as_object().unwrap() {
-            match d.get_mut(k).and_then(Value::as_object_mut) {
-                Some(o) => o.extend(v.as_object().unwrap().clone()),
-                None => d[k] = v.clone(),
-            }
-        }
-        for (k, v) in pass.as_object().unwrap() {
-            d["passes"][0][k] = v.clone();
-        }
-        d
-    }
-
-    fn named_err(extra: Value, pass: Value) -> String {
-        match Scene::from_dict(&named(extra, pass), None, None) {
-            Ok(_) => "loads".to_string(),
-            Err(e) => e.to_string(),
-        }
+        .unwrap();
+        let reg = crate::filters::load_filters(&[&filters]);
+        let mut sc = Scene::of(vec![Pass::of("m", GOOD).unwrap()]).unwrap();
+        let e = crate::filters::apply_filters(&mut sc, &["esc".to_string()], Some(&reg))
+            .unwrap_err()
+            .to_string();
+        assert!(e.ends_with("is outside the filter directory"), "{e}");
     }
 
     #[test]
@@ -4049,6 +3665,21 @@ mod tests {
                 json!({}),
                 json!({"arrays": [{"name": "label", "size": 4}]}),
                 "text 'label' and array 'label' in pass 'a' both declare 'label_size'",
+            ),
+            (
+                json!({"assets": {"amps": {"file": "amps.png"}}}),
+                json!({"arrays": [{"name": "amps", "size": 8}]}),
+                "asset 'amps' and array 'amps' in pass 'a' both declare 'amps_size'",
+            ),
+            (
+                json!({"params": {"gain": f}, "assets": {"gain": {"file": "g.png"}}}),
+                json!({}),
+                "scene param 'gain' and asset 'gain' both declare 'gain'",
+            ),
+            (
+                json!({"assets": {"gain": {"file": "g.png"}}}),
+                json!({"params": {"gain": f}}),
+                "asset 'gain' and param 'gain' in pass 'a' both declare 'gain'",
             ),
             (
                 json!({"params": {"glyph_cover": f}}),
@@ -4165,7 +3796,7 @@ mod tests {
     }
 
     #[test]
-    fn a_param_or_an_array_name_is_a_glsl_identifier() {
+    fn a_param_an_array_or_an_asset_name_is_a_glsl_identifier() {
         let f = json!({"type": "float", "value": 1.0});
         for (extra, pass, want) in [
             (
@@ -4182,6 +3813,16 @@ mod tests {
                 json!({}),
                 json!({"arrays": [{"name": "a-b", "size": 4}]}),
                 "array name 'a-b' in pass 'a' is not a GLSL identifier",
+            ),
+            (
+                json!({"assets": {"sp ace": {"file": "l.png"}}}),
+                json!({}),
+                "asset name 'sp ace' is not a GLSL identifier",
+            ),
+            (
+                json!({"assets": {"": {"file": "l.png"}}}),
+                json!({}),
+                "asset name '' is not a GLSL identifier",
             ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));
@@ -4218,174 +3859,6 @@ mod tests {
         let doc = named(json!({"params": {"bluenoise": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
         crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
-    }
-
-    #[test]
-    fn preamble_declares_asset_sampler_and_size() {
-        let sc = Scene::from_dict(
-            &asset_scene(json!({"logo": {"file": "logo.png"}})),
-            None,
-            None,
-        )
-        .unwrap();
-        let g = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, &[], false);
-        assert!(g.contains("uniform sampler2D logo;"));
-        assert!(g.contains("uniform vec2 logo_size;"));
-    }
-
-    #[test]
-    fn a_raw_length_mismatch_names_the_path_and_the_shape() {
-        let dir = tmpdir("asset-mismatch");
-        fs::write(format!("{dir}/d.raw"), [0u8; 5]).unwrap();
-        let p = format!("{dir}/x.scene.json");
-        fs::write(
-            &p,
-            asset_scene(json!({"d": {"file": "d.raw", "width": 2, "height": 2,
-                                     "format": "u8"}}))
-            .to_string(),
-        )
-        .unwrap();
-        let e = Scene::load(&p).unwrap_err().to_string();
-        assert!(e.contains(&format!("{dir}/d.raw")), "{e}");
-        assert!(
-            e.contains("5 bytes") && e.contains("2x2x1") && e.contains("needs 4"),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn an_f32_raw_asset_round_trips_little_endian() {
-        let dir = tmpdir("asset-f32");
-        let vals = [0.0f32, 0.5, -1.0, 3.25];
-        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        fs::write(format!("{dir}/d.raw"), &bytes).unwrap();
-        let p = format!("{dir}/x.scene.json");
-        fs::write(
-            &p,
-            asset_scene(json!({"d": {"file": "d.raw", "width": 4, "height": 1,
-                                     "format": "f32"}}))
-            .to_string(),
-        )
-        .unwrap();
-        let sc = Scene::load(&p).unwrap();
-        let img = sc.assets[0].image.as_ref().unwrap();
-        assert_eq!((img.width, img.height, img.components), (4, 1, 1));
-        assert_eq!(img.pixels, crate::assets::Pixels::F32(vals.to_vec()));
-    }
-
-    #[test]
-    fn a_scene_that_its_user_runs_names_a_file_anywhere() {
-        // Each file sits outside the scene's directory: a relative path that
-        // leaves it, and absolute paths.
-        let root = tmpdir("anywhere");
-        let base = format!("{root}/scene");
-        fs::create_dir_all(&base).unwrap();
-        fs::write(format!("{root}/d.raw"), [7u8; 4]).unwrap();
-        fs::write(format!("{root}/e.raw"), [9u8; 4]).unwrap();
-        fs::write(format!("{root}/in.glsl"), GOOD).unwrap();
-        let raw = |file: String| json!({"file": file, "width": 2, "height": 2, "format": "u8"});
-        let mut d = asset_scene(json!({"d": raw("../d.raw".to_string()),
-                                       "e": raw(format!("{root}/e.raw"))}));
-        d["passes"][0] = json!({"name": "main", "shader": format!("{root}/in.glsl")});
-        let p = format!("{base}/x.scene.json");
-        fs::write(&p, d.to_string()).unwrap();
-        let sc = Scene::load(&p).unwrap();
-        let px = |i: usize| sc.assets[i].image.as_ref().unwrap().pixels.clone();
-        assert_eq!(px(0), crate::assets::Pixels::U8(vec![7u8; 4]));
-        assert_eq!(px(1), crate::assets::Pixels::U8(vec![9u8; 4]));
-        assert_eq!(sc.passes[0].code, GOOD);
-    }
-
-    #[test]
-    fn an_asset_never_escapes_the_scene_directory() {
-        let root = tmpdir("asset-escape");
-        let base = format!("{root}/scene");
-        fs::create_dir_all(&base).unwrap();
-        fs::write(format!("{root}/secret.raw"), [0u8; 4]).unwrap();
-        let p = format!("{base}/x.scene.json");
-        fs::write(
-            &p,
-            asset_scene(
-                json!({"d": {"file": "../secret.raw", "width": 2, "height": 2,
-                                     "format": "u8"}}),
-            )
-            .to_string(),
-        )
-        .unwrap();
-        let e = Scene::load_in(&p, None, Reach::Inside)
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("outside the scene directory"), "{e}");
-    }
-
-    #[test]
-    fn a_path_inside_a_directory_takes_whole_components() {
-        assert!(inside("/", "/"));
-        assert!(inside("/a.png", "/"));
-        assert!(inside("/a/b", "/a/b"));
-        assert!(inside("/a/b/c.png", "/a/b"));
-        assert!(!inside("/a/bc.png", "/a/b"));
-        assert!(!inside("/a", "/a/b"));
-    }
-
-    #[test]
-    fn the_root_directory_holds_assets_and_shaders() {
-        let dir = tmpdir("in-root");
-        fs::write(format!("{dir}/n.raw"), [1u8, 2, 3, 4]).unwrap();
-        fs::write(format!("{dir}/in.glsl"), GOOD).unwrap();
-        let rel = dir.trim_start_matches('/');
-        let mut scene = Scene::from_dict(
-            &asset_scene(json!({
-                "n": {"file": format!("{rel}/n.raw"), "width": 2, "height": 2, "format": "u8"}
-            })),
-            None,
-            None,
-        )
-        .unwrap();
-        scene.load_assets("/").unwrap();
-        let img = scene.assets[0].image.as_ref().unwrap();
-        assert_eq!(img.pixels, crate::assets::Pixels::U8(vec![1, 2, 3, 4]));
-        let d =
-            json!({"version": 1, "passes": [{"name": "main", "shader": format!("{rel}/in.glsl")}]});
-        let sc = Scene::from_dict(&d, Some("/"), None).unwrap();
-        assert_eq!(sc.passes[0].code, GOOD);
-        let mut missing = Scene::from_dict(
-            &asset_scene(json!({"m": {"file": "ghee-no-such.png"}})),
-            None,
-            None,
-        )
-        .unwrap();
-        let e = missing.load_assets("/").unwrap_err().to_string();
-        assert!(e.contains("(/ghee-no-such.png)"), "{e}");
-    }
-
-    #[test]
-    fn a_missing_asset_file_names_the_path() {
-        let dir = tmpdir("asset-missing");
-        let p = format!("{dir}/x.scene.json");
-        fs::write(
-            &p,
-            asset_scene(json!({"logo": {"file": "logo.png"}})).to_string(),
-        )
-        .unwrap();
-        let e = Scene::load(&p).unwrap_err().to_string();
-        assert!(e.contains(&format!("{dir}/logo.png")), "{e}");
-        assert!(e.contains("No such file or directory"), "{e}");
-    }
-
-    #[test]
-    fn saved_scene_reloads_unchanged() {
-        let dir = tmpdir("save");
-        let sc = Scene::load(&repo("ghee/examples/echo.scene.json")).unwrap();
-        let p = format!("{dir}/echo.scene.json");
-        sc.save(&p).unwrap();
-        assert_eq!(Scene::load(&p).unwrap().to_dict(), sc.to_dict());
-    }
-
-    #[test]
-    fn a_missing_scene_file_reports_the_os_error() {
-        let e = Scene::load("/nope/x.scene.json").unwrap_err().to_string();
-        assert_eq!(e, "/nope/x.scene.json: No such file or directory");
     }
 
     #[test]
@@ -4441,11 +3914,6 @@ mod tests {
         assert_eq!(py_float(96.0), "96.0");
     }
 
-    /// The scene as to_dict serialises it, with no space after a separator.
-    fn canon(s: &Scene) -> String {
-        serde_json::to_string(&s.to_dict()).unwrap()
-    }
-
     #[test]
     fn to_dict_matches_the_reference_json() {
         // What to_dict serialises for this input: key order, dropped keys,
@@ -4453,7 +3921,7 @@ mod tests {
         let d = json!({
             "version": 2,
             "passes": [
-                {"name": "a", "code": "x", "size": [8, 8]},
+                {"name": "a", "code": "x", "size": [8, 8], "mipmaps": true},
                 {"name": "b", "code": "y",
                  "arrays": [{"name": "v", "size": 4}, {"name": "m", "size": [3, 5]}],
                  "channels": [{"buffer": "a"}, {"buffer": null}],
@@ -4462,21 +3930,28 @@ mod tests {
                             "b": {"type": "bool", "value": true},
                             "c": {"type": "color", "value": [1, 0, 0.5]},
                             "v2": {"type": "vec2", "value": [1, 2]},
+                            "v3": {"type": "vec3", "value": [1, 2, 3]},
                             "v4": {"type": "vec4", "value": [1, 2, 3, 4]},
                             "s": {"type": "string", "value": "hi", "options": ["hi", "bye"]}},
                  "filter": "dither"}],
             "filters": ["dither", "dither"],
             "params": {"S": {"type": "float", "value": 0.5}},
             "common": {"code": "float f(){ return 1.0; }"},
+            "assets": {"stbn": {"file": "stbn.raw", "width": 64, "height": 32, "format": "f32"},
+                       "mask": {"file": "mask.raw", "width": 8, "height": 8, "format": "u8",
+                                "components": 4},
+                       "logo": {"file": "logo.png", "sampling": "linear"},
+                       "photo": {"file": "photo.jpg"}},
         });
         assert_eq!(
             canon(&Scene::from_dict(&d, None, None).unwrap()),
-            r#"{"version":2,"passes":[{"name":"a","code":"x","size":[8,8]},{"name":"b","code":"y","arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"b":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":{"code":"float f(){ return 1.0; }"},"filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}}}"#
+            r#"{"version":2,"passes":[{"name":"a","code":"x","size":[8,8],"mipmaps":true},{"name":"b","code":"y","arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"b":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v3":{"type":"vec3","value":[1.0,2.0,3.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":{"code":"float f(){ return 1.0; }"},"filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}},"assets":{"stbn":{"file":"stbn.raw","width":64,"height":32,"format":"f32"},"mask":{"file":"mask.raw","width":8,"height":8,"format":"u8","components":4},"logo":{"file":"logo.png","sampling":"linear"},"photo":{"file":"photo.jpg"}}}"#
         );
         // A null range or option list is no range or option list. to_dict drops
-        // an empty filter mark. An absent version takes the default.
+        // an empty filter mark and a false mipmaps. An absent version takes the
+        // default.
         let sparse = json!({
-            "passes": [{"name": "m", "code": "x", "filter": "",
+            "passes": [{"name": "m", "code": "x", "filter": "", "mipmaps": false,
                         "params": {"g": {"type": "int", "value": 2.0, "min": null,
                                          "max": null, "step": null, "options": null}}}],
         });
@@ -4500,9 +3975,11 @@ mod tests {
 
     #[test]
     fn to_dict_round_trips_the_shipped_scenes() {
-        // A scene reloaded from its own to_dict serialises to the same bytes.
-        // A second save never rewrites the file.
+        // A scene reloaded from its own to_dict, or from the file that save
+        // writes, serialises to the same bytes. A second save never rewrites
+        // the file.
         let dir = repo("ghee/examples");
+        let out = tmpdir("save");
         let mut names: Vec<String> = fs::read_dir(&dir)
             .unwrap()
             .flatten()
@@ -4512,12 +3989,21 @@ mod tests {
         names.sort();
         assert!(!names.is_empty());
         for n in names {
-            let one = canon(&Scene::load(&format!("{dir}/{n}")).unwrap());
+            let sc = Scene::load(&format!("{dir}/{n}")).unwrap();
+            let one = canon(&sc);
             let back: Value = serde_json::from_str(&one).unwrap();
             assert_eq!(
                 canon(&Scene::from_dict(&back, None, None).unwrap()),
                 one,
                 "{n}"
+            );
+            let saved = format!("{out}/{n}");
+            sc.save(&saved).unwrap();
+            let back: Value = serde_json::from_str(&fs::read_to_string(&saved).unwrap()).unwrap();
+            assert_eq!(
+                canon(&Scene::from_dict(&back, None, None).unwrap()),
+                one,
+                "{n} saved"
             );
         }
     }

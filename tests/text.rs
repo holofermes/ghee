@@ -12,7 +12,7 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
 use ghee::engine::{probe_dri_devices, ErrorLayer, ErrorPass, LayerPart, Renderer};
 use ghee::filters::apply_filters;
-use ghee::scene::{Param, ParamValue, Pass, Reach, Scene, SceneBuilder};
+use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
 use ghee::text::{self, Align, Fill, Text};
 
 const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
@@ -586,16 +586,19 @@ fn refused(words: &str) -> String {
 
 #[test]
 fn words_past_a_vc4_texture_lay_out_nothing_naming_the_limit() {
-    // One line of glyphs, far past what one texture holds.
-    let e = refused(&"I".repeat(400_000));
-    assert!(e.contains("VC4"), "{e}");
-}
-
-#[test]
-fn a_block_too_wide_and_too_tall_for_the_texture_lays_out_nothing_naming_the_limit() {
-    // Few glyphs over a vast block: its grid alone would take gigabytes.
-    let e = refused(&("I".repeat(30_000) + &"\n".repeat(30_000)));
-    assert!(e.contains("VC4"), "{e}");
+    for words in [
+        // One line of glyphs, far past what one texture holds.
+        "I".repeat(400_000),
+        // Few glyphs over a vast block: its grid alone would take gigabytes.
+        "I".repeat(30_000) + &"\n".repeat(30_000),
+    ] {
+        let e = refused(&words);
+        let rows = e
+            .strip_prefix("the words need a 1024x")
+            .and_then(|r| r.strip_suffix(" texture, and a VC4 holds 1024x2048 at most"))
+            .and_then(|r| r.parse::<usize>().ok());
+        assert!(rows.is_some_and(|r| r > 2048), "{e}");
+    }
 }
 
 // The scene model
@@ -1274,28 +1277,6 @@ fn a_missing_image_still_fails_the_load() {
 }
 
 #[test]
-fn the_console_refuses_a_font_outside_the_scene_directory() {
-    let _g = lock();
-    let root = tmpdir("outside");
-    let dir = format!("{root}/scene");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(format!("{root}/up.ttf"), font(SANS)).unwrap();
-    let mut sc = face_scene("../up.ttf");
-    with_assets_env("", || sc.load_assets(&dir)).unwrap();
-    assert_eq!(font_data(&sc, "label"), font(SANS));
-    let mut sc = face_scene("../up.ttf");
-    let e = with_assets_env("", || sc.load_assets_in(&dir, Reach::Inside))
-        .err()
-        .unwrap()
-        .to_string();
-    assert_eq!(
-        e,
-        "asset 'face' file '../up.ttf' is outside the scene directory"
-    );
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[test]
 fn a_font_file_that_is_no_font_loads_as_its_failure() {
     let _g = lock();
     let dir = tmpdir("nofont");
@@ -1486,16 +1467,6 @@ fn a_string_param_relays_the_text_live() {
     let f = r.render(None).unwrap().to_vec();
     assert_draws(&f, W, 0, &o, fit, "O");
     assert!(f.iter().skip(1).step_by(4).all(|g| *g == 255));
-    // Words the texture cannot hold leave the last words, and the error
-    // stands until words lay out again.
-    assert!(r.set_text("label", &"I".repeat(400_000)).unwrap());
-    let f = r.render(None).unwrap().to_vec();
-    assert_draws(&f, W, 0, &o, fit, "O kept");
-    let errors = r.text_errors();
-    assert!(
-        errors.len() == 1 && errors[0].starts_with("text 'label': ") && errors[0].contains("VC4"),
-        "{errors:?}"
-    );
     assert!(r.set_text("label", "").unwrap());
     assert!(blank(r.render(None).unwrap(), 0));
     assert_eq!(r.text_errors(), [] as [String; 0]);
@@ -1818,21 +1789,13 @@ fn a_font_names_an_asset_or_a_file_and_a_list_mixes_both() {
         assert_eq!(r.text_errors(), [] as [String; 0], "{fonts}");
     }
     // A missing file leaves the text running with an error box, and names
-    // the file. A file outside the scene directory is refused.
+    // the file.
     let mut doc = assets.clone();
     doc["texts"]["label"]["font"] = json!(["Missing.ttf", EMOJI]);
     render(&mut r, &loaded(&doc));
     let errors = r.text_errors();
     let missing = format!("text 'label' font 'Missing.ttf' ({FONTS}/Missing.ttf): No such file");
     assert!(errors.iter().any(|e| e.starts_with(&missing)), "{errors:?}");
-    doc["texts"]["label"]["font"] = json!(format!("../{SANS}"));
-    let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-    assert_eq!(
-        sc.load_assets_in(FONTS, Reach::Inside)
-            .unwrap_err()
-            .to_string(),
-        format!("text 'label' font '../{SANS}' is outside the scene directory")
-    );
 }
 
 #[test]
@@ -1938,51 +1901,37 @@ fn a_cff2_font_without_a_variation_store_draws_like_its_cff_source() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn words_that_fit_no_texture_at_setup_draw_nothing_and_the_scene_runs() {
+fn words_that_fit_no_texture_draw_nothing_at_setup_keep_the_last_words_later_and_say_why() {
     let fit = Fit {
         x: 8.0,
         y: 8.0,
         ppem: 64.0,
     };
-    let words = "I".repeat(400_000);
+    let past = "I".repeat(400_000);
     let (_g, mut r) = gpu(W, H);
-    for doc in [
-        label_scene(SANS, &words, Align::Left, fit),
-        layer_scene(SANS, &words, Align::Left, fit),
-    ] {
-        let f = render(&mut r, &loaded(&doc));
-        assert!(blank(&f, 0));
+    let why = |r: &Renderer| {
         let errors = r.text_errors();
         assert!(
             errors.len() == 1 && errors[0].starts_with("text 'label': the words need a "),
             "{errors:?}"
         );
+    };
+    for (doc, what) in [
+        (label_scene(SANS, &past, Align::Left, fit), "cover"),
+        (layer_scene(SANS, &past, Align::Left, fit), "slug"),
+    ] {
+        assert!(blank(&render(&mut r, &loaded(&doc)), 0), "{what}");
+        why(&r);
         assert!(r.set_text("label", "I").unwrap());
         r.set_time(Some(0.0));
-        assert!(!blank(r.render(None).unwrap(), 0));
-        assert_eq!(r.text_errors(), [] as [String; 0]);
+        let last = r.render(None).unwrap().to_vec();
+        assert!(!blank(&last, 0), "{what}");
+        assert_eq!(r.text_errors(), [] as [String; 0], "{what}");
+        assert!(r.set_text("label", &past).unwrap());
+        r.set_time(Some(0.0));
+        assert!(r.render(None).unwrap() == last.as_slice(), "{what}");
+        why(&r);
     }
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_slug_layer_keeps_its_last_words_and_their_boxes_past_words_that_fit_no_texture() {
-    let fit = Fit {
-        x: 8.0,
-        y: 8.0,
-        ppem: 48.0,
-    };
-    let (_g, mut r) = gpu(W, H);
-    let doc = filled(hazard_scene("Missing.ttf", "x", fit), "slug");
-    let before = render(&mut r, &loaded(&doc));
-    assert!(r.set_text("label", &"x".repeat(400_000)).unwrap());
-    r.set_time(Some(0.0));
-    assert!(r.render(None).unwrap() == before.as_slice());
-    // The box stays, and so does the problem behind it.
-    let errors = r.text_errors();
-    assert_eq!(errors.len(), 2, "{errors:?}");
-    assert!(errors[0].contains("Missing.ttf"), "{errors:?}");
-    assert!(errors[1].contains("VC4"), "{errors:?}");
 }
 
 // Layers

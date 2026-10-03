@@ -686,30 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn a_filter_asset_stays_inside_its_directory() {
-        let _g = env_guard();
-        let d = tmpdir("asset-escape");
-        std::fs::write(
-            format!("{d}/esc.filter.json"),
-            json!({"name": "esc", "code": GOOD,
-                   "assets": {"m": {"file": "../m.raw", "width": 2, "height": 2, "format": "u8"}}})
-            .to_string(),
-        )
-        .unwrap();
-        let reg = load_filters(&[&d]);
-        let mut sc = Scene::from_dict(
-            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
-            None,
-            None,
-        )
-        .unwrap();
-        let e = apply_filters(&mut sc, &["esc".to_string()], Some(&reg))
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("outside the filter directory"), "{e}");
-    }
-
-    #[test]
     fn a_skipped_file_leaves_the_shipped_filter_alone() {
         let _g = env_guard();
         let d = tmpdir("skipped-shadow");

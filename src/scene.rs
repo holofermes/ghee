@@ -36,6 +36,10 @@ const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 /// attributes, varyings and locals, and the vertex flip.
 pub const PREFIX: &str = "ghee_";
 
+/// The names that a layer's GLSL declares for its author start with this
+/// prefix, and no other declaration takes it.
+pub const LAYER_PREFIX: &str = "glyph_";
+
 /// The uniforms and the varying that ghee declares in every pass for its
 /// author to read, beside iChannel0 and up.
 const BUILT_INS: [&str; 5] = ["time", "DT", "frame", "resolution", "v_texCoord"];
@@ -2216,8 +2220,8 @@ impl Scene {
 
     /// The error for the first declared name that GLSL cannot take: a param
     /// or an array name that is no GLSL identifier, a name that ghee declares
-    /// itself, built in or with its prefix, or one GLSL name that two
-    /// declarations make in one pass.
+    /// itself, built in or with its prefix, a name with a layer's prefix, or
+    /// one GLSL name that two declarations make in one pass.
     ///
     /// A scene param reaches every pass, an image asset, a text and a layer's
     /// GLSL every pass of the scene's own, a filter's asset the passes of its
@@ -2261,6 +2265,12 @@ impl Scene {
             if name.starts_with(PREFIX) {
                 return Some(format!(
                     "{kind} '{name}'{at}: a name that starts with {PREFIX} belongs to ghee"
+                ));
+            }
+            if name.starts_with(LAYER_PREFIX) {
+                return Some(format!(
+                    "{kind} '{name}'{at}: a name that starts with {LAYER_PREFIX} is reserved \
+                     for layers"
                 ));
             }
         }
@@ -3803,16 +3813,6 @@ mod tests {
                 json!({"params": {"gain": f}}),
                 "asset 'gain' and param 'gain' in pass 'a' both declare 'gain'",
             ),
-            (
-                json!({"params": {"glyph_cover": f}}),
-                json!({}),
-                "scene param 'glyph_cover' and the layers both declare 'glyph_cover'",
-            ),
-            (
-                json!({}),
-                json!({"params": {"glyph_place": f}}),
-                "the layers and param 'glyph_place' in pass 'a' both declare 'glyph_place'",
-            ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));
         }
@@ -3825,7 +3825,7 @@ mod tests {
         // a 2D array beside a text, a param of each pass, a string param, and
         // a name that only looks like ghee's.
         let extra = json!({
-            "params": {"gains": f, "amps_ats": f, "label_covers": f, "glyph_size": f,
+            "params": {"gains": f, "amps_ats": f, "label_covers": f, "glyphs": f,
                        "glyph": f, "ghee": f, "gheex": f, "Ghee_x": f, "frames": f,
                        "DTs": f, "iChannel": f, "iChannelx": f, "times": f,
                        "words": {"type": "string", "value": "w"}},
@@ -3883,37 +3883,45 @@ mod tests {
     }
 
     #[test]
-    fn a_name_with_ghees_prefix_is_refused_as_any_declared_name() {
+    fn a_name_with_ghees_prefix_or_a_layers_is_refused_as_any_declared_name() {
         let f = json!({"type": "float", "value": 1.0});
-        let why = "a name that starts with ghee_ belongs to ghee";
-        for (extra, pass, owner) in [
+        for (pre, why) in [
+            ("ghee", "a name that starts with ghee_ belongs to ghee"),
             (
-                json!({"params": {"ghee_k": f}}),
-                json!({}),
-                "scene param 'ghee_k'",
-            ),
-            (
-                json!({}),
-                json!({"params": {"ghee_k": f}}),
-                "param 'ghee_k' in pass 'a'",
-            ),
-            (
-                json!({}),
-                json!({"arrays": [{"name": "ghee_k", "size": 4}]}),
-                "array 'ghee_k' in pass 'a'",
-            ),
-            (
-                json!({"assets": {"ghee_k": {"file": "x.png"}}}),
-                json!({}),
-                "asset 'ghee_k'",
-            ),
-            (
-                json!({"texts": {"ghee_label": {"value": "w", "font": "sans"}}}),
-                json!({}),
-                "text 'ghee_label'",
+                "glyph",
+                "a name that starts with glyph_ is reserved for layers",
             ),
         ] {
-            assert_eq!(named_err(extra, pass), format!("scene: {owner}: {why}"));
+            let k = format!("{pre}_k");
+            for (extra, pass, owner) in [
+                (
+                    json!({"params": {&k: f}}),
+                    json!({}),
+                    format!("scene param '{k}'"),
+                ),
+                (
+                    json!({}),
+                    json!({"params": {&k: f}}),
+                    format!("param '{k}' in pass 'a'"),
+                ),
+                (
+                    json!({}),
+                    json!({"arrays": [{"name": &k, "size": 4}]}),
+                    format!("array '{k}' in pass 'a'"),
+                ),
+                (
+                    json!({"assets": {&k: {"file": "x.png"}}}),
+                    json!({}),
+                    format!("asset '{k}'"),
+                ),
+                (
+                    json!({"texts": {&k: {"value": "w", "font": "sans"}}}),
+                    json!({}),
+                    format!("text '{k}'"),
+                ),
+            ] {
+                assert_eq!(named_err(extra, pass), format!("scene: {owner}: {why}"));
+            }
         }
     }
 

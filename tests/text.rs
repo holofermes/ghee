@@ -886,8 +886,8 @@ fn a_text_named_like_a_layer_helper_is_refused() {
         scene_err(&texts_scene(json!({"glyph": {"font": "sans"}}))),
         "scene: text 'glyph' and the layers both declare 'glyph_cover'"
     );
-    // glyph_label and glyphs declare names of their own, beside ghee's.
-    for name in ["glyph_label", "glyphs"] {
+    // glyphs declares names of its own, beside ghee's.
+    for name in ["glyphs"] {
         let mut doc = texts_scene(json!({name: {"font": "sans"}}));
         doc["passes"][0]["layers"] = json!([{"text": name, "fragment": WHITE,
             "vertex": "vec2 glyph_place(vec2 em) { return em * 40.0; }"}]);
@@ -2813,7 +2813,7 @@ fn a_param_takes_a_name_of_ghees_glsl_without_its_prefix() {
         &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
     );
     // ghee's attributes, its vertex flip and its locals take the ghee_ prefix.
-    for name in ["a1", "vflip", "glyph_a1", "glyph_corner", "glyph_main"] {
+    for name in ["a1", "vflip"] {
         let mut doc = layer_scene(SANS, "ghee", Align::Left, fit);
         doc["params"][name] = json!({"type": "float", "value": 1.0});
         let code = WHITE.replace("vec4(c)", &format!("vec4(c * {name})"));
@@ -2824,14 +2824,8 @@ fn a_param_takes_a_name_of_ghees_glsl_without_its_prefix() {
     // A layer's own names and the prefix are ghee's in any scene, with a layer
     // or without one.
     for (name, why) in [
-        (
-            "glyph_index",
-            "scene param 'glyph_index' and the layers both declare 'glyph_index'",
-        ),
-        (
-            "ghee_a1",
-            "scene param 'ghee_a1': a name that starts with ghee_ belongs to ghee",
-        ),
+        ("glyph_index", "reserved for layers"),
+        ("ghee_a1", "belongs to ghee"),
     ] {
         for doc in [
             layer_scene(SANS, "ghee", Align::Left, fit),
@@ -2839,15 +2833,10 @@ fn a_param_takes_a_name_of_ghees_glsl_without_its_prefix() {
         ] {
             let mut doc = doc;
             doc["params"][name] = json!({"type": "float", "value": 1.0});
-            assert_eq!(scene_err(&doc), format!("scene: {why}"));
+            let e = scene_err(&doc);
+            assert!(e.ends_with(why), "{name}: {e}");
         }
     }
-    let mut doc = label_scene(SANS, "ghee", Align::Left, fit);
-    doc["passes"][0]["params"] = json!({"glyph_cover": {"type": "float", "value": 1.0}});
-    assert_eq!(
-        scene_err(&doc),
-        "scene: the layers and param 'glyph_cover' in pass 'main' both declare 'glyph_cover'"
-    );
 }
 
 #[test]

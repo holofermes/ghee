@@ -836,8 +836,9 @@ fn cmd_render(a: &Ns) -> Result<()> {
             _ => Box::new(File::create(path).with_context(|| path.to_string())?),
         };
         let stream = H264Stream::new(stream, &r, w, h, fps, a.bitrate, components)?;
+        let (sw, sh) = stream.size;
         eprintln!(
-            "h264: {} {w}x{h}@{fps} {}bps -> {path}",
+            "h264: {} {sw}x{sh}@{fps} {}bps -> {path}",
             if stream.hw {
                 "hardware zero-copy"
             } else {

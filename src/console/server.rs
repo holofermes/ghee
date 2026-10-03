@@ -1057,7 +1057,7 @@ struct ConsoleSink {
     /// calls.
     enc: Option<HardwareH264>,
     /// Encodes since the last access unit. An encoder can open at a size it
-    /// never emits for (a 128x32 panel starves it), with no error to catch.
+    /// never emits for, with no error to catch.
     starved: u32,
     /// When the preview last refreshed.
     last: Cell<f64>,
@@ -1146,9 +1146,9 @@ impl Output for ConsoleSink {
             let bitrate = stream_bitrate(w, h, hz, console.bitrate) as i32;
             match HardwareH264::new(&self.renderer.borrow(), w, h, hz, bitrate) {
                 Ok(enc) => {
+                    console.fanout.opened(enc.w, enc.h, HW_COLOR);
                     self.enc = Some(enc);
                     self.starved = 0;
-                    console.fanout.opened(w, h, HW_COLOR);
                 }
                 Err(e) => {
                     // h264_sw_loop takes this stream over

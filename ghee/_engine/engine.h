@@ -123,8 +123,9 @@ int  ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *ver
 // which replace the last set. false with ghee_last_error set on refusal.
 bool ghee_mp_set_layer_quads(GheeScene *g, int layer, const float *data, int quads, int nattr);
 // Render the passes and swap. buffer_rgb NULL = no readback at all, pw/ph > 0 =
-// GPU-downscale the final pass to pw x ph and read back only that, otherwise the
-// full frame lands in buffer_rgb. A 4-component readback reads alpha 255 unless
+// GPU-scale the final pass to pw x ph and read back only that, otherwise the
+// full frame lands in buffer_rgb. A whole multiple of the frame size repeats
+// each pixel as a square block. A 4-component readback reads alpha 255 unless
 // ghee_keep_alpha is on.
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 // Render the passes and scan the final buffer out to the display (display mode

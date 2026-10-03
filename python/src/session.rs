@@ -641,7 +641,7 @@ impl Session {
             let fps = if *hz > 0 { *hz } else { H264_FPS };
             match HardwareH264::new(renderer, w, h, fps, encode_bitrate(w, h, fps)) {
                 Ok(enc) => {
-                    console.h264_opened(w, h, HW_COLOR);
+                    console.h264_opened(enc.w, enc.h, HW_COLOR);
                     *h264 = Some(enc);
                 }
                 Err(e) => return console.hardware_failed(&e.to_string()),

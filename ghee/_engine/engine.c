@@ -1842,8 +1842,19 @@ static bool ensure_blit(GheeScene *g) {
     return true;
 }
 
-// Downscale the final pass into a small FBO on the GPU. The FBO is kept until
-// the requested size changes.
+// Draw the bound blit quad into a w x h target. A target at a whole multiple of
+// the frame samples nearest, so each frame pixel lands as an exact square block.
+static void draw_blit(GheeScene *g, int w, int h) {
+    const bool blocks = g->width > 0 && g->height > 0 && w > g->width &&
+                        w % g->width == 0 && h % g->height == 0 &&
+                        w / g->width == h / g->height;
+    if (blocks) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (blocks) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+}
+
+// Scale the final pass into a small FBO on the GPU. The FBO is kept until the
+// requested size changes.
 static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (!ensure_blit(g)) return;
     const int last = g->mp_count - 1;
@@ -1886,7 +1897,7 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
     glEnableVertexAttribArray(1);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    draw_blit(g, pw, ph);
     read_pixels(g, pw, ph, g->components, buffer_rgb);
 }
 
@@ -2105,7 +2116,7 @@ void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
     glEnableVertexAttribArray(1);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    draw_blit(g, w, h);
 }
 
 void ghee_i_keep_last(GheeScene *g, int delta) {

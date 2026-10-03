@@ -165,9 +165,22 @@ pub fn wire_frame(t: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 // bcm2835-codec refuses an input buffer under 64KiB ("buffer size mismatch
-// sizeimage N < min size 65536" in dmesg). It reads 4 bytes a pixel. A frame
-// under this many pixels has no hardware lane at any bitrate.
+// sizeimage N < min size 65536" in dmesg). It reads 4 bytes a pixel.
 pub const HW_MIN_PIXELS: i32 = 65536 / 4;
+
+/// The size the hardware encoder takes a w x h frame at: the frame scaled up
+/// by the smallest whole factor that reaches HW_MIN_PIXELS. The blit into the
+/// encoder's buffer repeats each pixel as a square block.
+pub fn hw_size(w: i32, h: i32) -> (i32, i32) {
+    if w <= 0 || h <= 0 {
+        return (w, h);
+    }
+    let mut k = 1;
+    while i64::from(w * k) * i64::from(h * k) < i64::from(HW_MIN_PIXELS) {
+        k += 1;
+    }
+    (w * k, h * k)
+}
 
 /// An access unit and its keyframe flag. None while nothing is ready.
 pub type Au<'a> = (Option<&'a [u8]>, bool);
@@ -177,14 +190,14 @@ pub type Au<'a> = (Option<&'a [u8]>, bool);
 /// outlives its renderer.
 pub struct HardwareH264 {
     scene: *mut ffi::GheeScene,
-    #[allow(dead_code)]
+    /// The encoded size, hw_size() of the frame size.
     pub w: i32,
-    #[allow(dead_code)]
     pub h: i32,
     handle: *mut ffi::GheeEncoder,
 }
 
 impl HardwareH264 {
+    /// An encoder for w x h frames. It encodes at hw_size(w, h).
     pub fn new(
         renderer: &Renderer,
         w: i32,
@@ -192,12 +205,7 @@ impl HardwareH264 {
         fps: i32,
         bitrate: i32,
     ) -> Result<HardwareH264> {
-        if w * h < HW_MIN_PIXELS {
-            bail!(
-                "{w}x{h} is under the hardware encoder's {HW_MIN_PIXELS}-pixel \
-                 minimum (it refuses an input buffer under 64KiB)"
-            );
-        }
+        let (w, h) = hw_size(w, h);
         let mut err: *mut c_char = ptr::null_mut();
         let handle =
             unsafe { ffi::ghee_encoder_create(renderer.handle(), w, h, fps, bitrate, &mut err) };
@@ -342,9 +350,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// returns complete access units. x264 runs with aud=1, so an AU boundary is
 /// explicit.
 pub struct SoftwareH264 {
-    #[allow(dead_code)]
     pub w: i32,
-    #[allow(dead_code)]
     pub h: i32,
     proc: Child,
     stdin: Option<ChildStdin>,
@@ -606,6 +612,8 @@ pub struct H264Stream {
     stream: Box<dyn Write + Send>,
     enc: Encoder,
     pub hw: bool,
+    /// The encoded size.
+    pub size: (i32, i32),
     timeout: Duration,
 }
 
@@ -620,11 +628,15 @@ impl H264Stream {
         components: i32,
     ) -> Result<H264Stream> {
         let enc = make_encoder(renderer, w, h, fps, bitrate, components)?;
-        let hw = matches!(enc, Encoder::Hardware(_));
+        let (hw, size) = match &enc {
+            Encoder::Hardware(e) => (true, (e.w, e.h)),
+            Encoder::Software(e) => (false, (e.w, e.h)),
+        };
         Ok(H264Stream {
             stream,
             enc,
             hw,
+            size,
             timeout: Duration::from_secs(2), // the first AU waits out the pipeline priming
         })
     }
@@ -1052,18 +1064,53 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_under_the_codec_minimum_is_refused_by_name() {
-        // A panel under the codec minimum has to say so by name. V4L2 alone
-        // fails inside the queue setup. That failure reads as "this board has
-        // no hardware encoder" and sends every later stream to the software
-        // lane.
-        let Some((_g, r)) = gpu() else { return };
-        let msg = match HardwareH264::new(&r, 128, 32, 30, 4_000_000) {
-            Ok(_) => panic!("a 128x32 frame was accepted"),
-            Err(e) => e.to_string(),
-        };
-        assert!(msg.contains("128x32"), "{msg}");
-        assert!(msg.contains(&HW_MIN_PIXELS.to_string()), "{msg}");
+    fn a_frame_under_the_codec_minimum_encodes_at_a_whole_multiple() {
+        assert_eq!(hw_size(128, 32), (256, 64)); // exactly the minimum
+        assert_eq!(hw_size(100, 40), (300, 120)); // x2 is 16000 pixels, short of it
+        assert_eq!(hw_size(64, 48), (192, 144));
+        assert_eq!(hw_size(1, 1), (128, 128));
+        assert_eq!(hw_size(128, 128), (128, 128));
+        assert_eq!(hw_size(320, 240), (320, 240));
+        for (w, h) in [(128, 32), (100, 40), (7, 3), (2, 2000)] {
+            let (ew, eh) = hw_size(w, h);
+            let k = ew / w;
+            assert_eq!((ew, eh), (w * k, h * k));
+            assert!(ew * eh >= HW_MIN_PIXELS);
+            assert!(k == 1 || (w * (k - 1)) * (h * (k - 1)) < HW_MIN_PIXELS);
+        }
+    }
+
+    #[test]
+    fn a_tiny_frame_reaches_the_hardware_encoder_scaled_up() {
+        if !Path::new("/dev/video11").exists() {
+            return; // no hardware encoder on this board
+        }
+        let Some((_g, mut r)) = gpu() else { return };
+        let scene = crate::scene::Scene::from_dict(
+            &serde_json::json!({"version": 1, "passes": [{"name": "main",
+                "code": "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }"}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(r.setup(&scene).unwrap(), "");
+        let mut enc = HardwareH264::new(&r, 64, 48, 30, 1_000_000).unwrap();
+        assert_eq!((enc.w, enc.h), (192, 144));
+        let mut key = None;
+        for _ in 0..30 {
+            r.draw(None).unwrap();
+            if let (Some(au), true) = enc.encode_last().unwrap() {
+                key = Some(au.to_vec());
+                break;
+            }
+        }
+        let key = key.expect("no keyframe in 30 frames");
+        let types: Vec<u8> = split_annexb(&key).iter().map(|x| x[0] & 0x1F).collect();
+        assert!(
+            types.contains(&NAL_SPS) && types.contains(&NAL_IDR),
+            "{types:?}"
+        );
+        enc.close();
     }
 
     #[test]

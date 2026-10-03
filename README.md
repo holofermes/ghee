@@ -42,9 +42,11 @@ Or build everything from source: [Build](#build).
 | Desktop Linux (x86_64) | any current distro | Mesa | ffmpeg/libx264 |
 
 ghee runs on every Pi back to the Pi 1, and builds ship for all of them.
-Pi 1 through Pi 4 encode H264 on the Broadcom block. The Pi 5 has no
-encoder, so there and on desktop ghee encodes with ffmpeg/libx264,
-install it if needed:
+Pi 1 through Pi 4 encode H264 on the Broadcom block. The block takes
+16384 pixels or more, so ghee scales a smaller frame up by the smallest
+whole factor that gets there, nearest neighbour: a 128x32 panel streams at
+256x64. The Pi 5 has no encoder, so there and on desktop ghee encodes with
+ffmpeg/libx264, install it if needed:
 
 ```
 sudo apt install ffmpeg

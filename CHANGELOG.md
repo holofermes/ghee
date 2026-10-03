@@ -97,6 +97,11 @@
   where the param's `#define` broke the shader.
 - Refuse a text named `glyph` or named with the `glyph_` prefix, whose GLSL
   names fall among ghee's `glyph_` names.
+- Encode a frame under 16384 pixels in hardware, scaled up by the smallest
+  whole factor that reaches 16384 with each pixel a square block, where the
+  encoder refused it. A 128x32 panel streams at 256x64.
+- Read back a frame at a whole multiple of the render size with each pixel a
+  square block, in `Renderer::render_into` and `render_scaled`.
 
 ## 0.4.0 - 2026-08-06
 

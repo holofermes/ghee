@@ -1209,8 +1209,9 @@ impl Renderer {
     }
 
     /// render() into a host-held buffer.
-    /// out_size=(w, h) reads back a GPU-downscaled frame at that size.
-    /// None reads back the full frame. present() downscales the same way.
+    /// out_size=(w, h) reads back a GPU-scaled frame at that size, and a whole
+    /// multiple of the render size repeats each pixel as a square block.
+    /// None reads back the full frame. present() scales the same way.
     pub fn render_into(
         &mut self,
         provider: Option<Provider<'_>>,
@@ -1219,7 +1220,7 @@ impl Renderer {
     ) -> Result<()> {
         self.feed(provider)?;
         let (pw, ph) = out_size.unwrap_or((0, 0));
-        // The engine downscales only when both dimensions are positive.
+        // The engine scales only when both dimensions are positive.
         // Any other out_size falls through to the full-frame readback.
         let (w, h) = if pw > 0 && ph > 0 {
             (pw, ph)
@@ -1238,7 +1239,7 @@ impl Renderer {
         Ok(())
     }
 
-    /// render() reading back a GPU-downscaled frame into a fresh buffer.
+    /// render() reading back a GPU-scaled frame into a fresh buffer.
     #[allow(dead_code)]
     pub fn render_scaled(
         &mut self,
@@ -2600,6 +2601,60 @@ mod tests {
         let mut buf = vec![0u8; 6 * 8 * COMPONENTS];
         r.render_into(None, &mut buf, Some((8, 6))).unwrap();
         assert_eq!(buf, small);
+    }
+
+    /// A frame that differs at every pixel, so a blend or a shift shows.
+    const SPECKLE: &str = "void main(){ vec2 p = floor(gl_FragCoord.xy); \
+         gl_FragColor = vec4(fract(p.x * 0.137 + p.y * 0.311), fract(p.x * 0.071), \
+         fract(p.y * 0.093), 1.0); }";
+
+    #[test]
+    fn a_whole_multiple_readback_repeats_each_pixel() {
+        let Some((_g, mut r)) = gpu() else { return };
+        assert_eq!(
+            r.setup(&scene_of(json!([{"name": "main", "code": SPECKLE}])))
+                .unwrap(),
+            ""
+        );
+        r.set_time(Some(0.0));
+        let full = r.render(None).unwrap().to_vec();
+        for k in [2, 3] {
+            let (w, h) = (W * k, H * k);
+            let big = r.render_scaled(None, (w as i32, h as i32)).unwrap();
+            for y in 0..h {
+                for x in 0..w {
+                    let (at, from) = ((y * w + x) * COMPONENTS, ((y / k) * W + x / k) * COMPONENTS);
+                    assert_eq!(
+                        big[at..at + COMPONENTS],
+                        full[from..from + COMPONENTS],
+                        "x{k} at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_whole_multiple_readback_leaves_feedback_filtered() {
+        // Frame 1 draws one-pixel stripes, and each later frame reads the last
+        // one half a pixel over. A linear fetch there blends two stripes.
+        let Some((_g, mut r)) = gpu() else { return };
+        let sc = scene_of(json!([{
+            "name": "main",
+            "channels": [{"buffer": "main"}],
+            "code": "void main(){ float s = mod(floor(gl_FragCoord.x), 2.0); \
+                     vec4 last = texture2D(iChannel0, v_texCoord + vec2(0.5 / resolution.x, 0.0)); \
+                     gl_FragColor = frame < 1.5 ? vec4(vec3(s), 1.0) : last; }",
+        }]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        let stripes = r.render_scaled(None, (W as i32 * 2, H as i32 * 2)).unwrap();
+        assert_ne!(px(&stripes, W * 2, 0, 0, 0), px(&stripes, W * 2, 2, 0, 0));
+        let blended = r.render(None).unwrap().to_vec();
+        for x in 1..W - 1 {
+            let v = px(&blended, W, x, H / 2, 0);
+            assert!((v - 127.5).abs() <= 2.0, "x {x}: {v}");
+        }
     }
 
     #[test]

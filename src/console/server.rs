@@ -38,7 +38,7 @@ use crate::h264::{
 };
 use crate::looper::{ControllerSlot, Frame, Loop, Output, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
-use crate::scene::{ArraySize, Param, ParamValue, Scene};
+use crate::scene::{ArraySize, Param, ParamValue, Reach, Scene};
 use crate::sources::{collect, Snapshot};
 use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG, DEST_PANEL};
 
@@ -1780,7 +1780,7 @@ impl ConsoleHost for RenderLoopHost {
         // A posted scene names its asset files only. They resolve against the
         // store, where GET /scene took them from.
         scene
-            .load_assets(&self.console.store.dir)
+            .load_assets_in(&self.console.store.dir, Reach::Inside)
             .map_err(|e| ConsoleError::bad_request(e.to_string()))?;
         self.console.command(Command::SceneObj(Box::new(scene)));
         Ok(())

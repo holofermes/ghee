@@ -257,8 +257,10 @@ it to every pass at setup time:
 { "assets": { "noise": { "file": "noise.raw", "width": 32, "height": 32, "format": "u8" } } }
 ```
 
-The file resolves next to the scene, then through the `$GHEE_ASSETS` env
-variable, colon-separated directories.
+The file resolves beside the scene, or beside the executable of a
+procedural scene, then through the `$GHEE_ASSETS` env variable,
+colon-separated directories. A path may be absolute or leave the scene's
+directory, except under the console, which reads only the files inside it.
 
 Every pass samples it as `uniform sampler2D noise` and reads a
 `uniform vec2 noise_size` of (width, height). Sampling is `nearest`

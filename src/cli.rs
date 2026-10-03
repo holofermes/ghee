@@ -44,7 +44,7 @@ use crate::output::{expand_pattern, FixedPacer, ImageSequence, RawStream, Scanou
 use crate::procedural::process::{self, SceneProcess};
 use crate::procedural::{load_scene, scene_name};
 use crate::report;
-use crate::scene::Scene;
+use crate::scene::{Reach, Scene};
 use crate::stats::rate;
 
 /// main() prints this message as written, status 1. main() puts the command
@@ -255,7 +255,7 @@ fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
     report::detail("scene", &path);
     let (mut scene, mut process) = match process::executable(&path) {
         Some(exe) => {
-            let (scene, fed) = SceneProcess::start(&exe, &a.scene_args)?;
+            let (scene, fed) = SceneProcess::start(&exe, &a.scene_args, Reach::Any)?;
             (scene, Some(fed))
         }
         None => (load_scene(&path, &a.scene_args, true)?, None),

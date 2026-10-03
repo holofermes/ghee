@@ -17,9 +17,8 @@ use serde_json::{Map, Value};
 
 use crate::console::core::{ConsoleError, ConsoleResult};
 use crate::filters::apply_filters;
-use crate::procedural::load_scene;
 use crate::procedural::process::{self, SceneProcess};
-use crate::scene::{py_repr, Param, Scene};
+use crate::scene::{py_repr, Param, Reach, Scene};
 
 const SCENE_SUFFIX: &str = ".scene.json";
 
@@ -198,14 +197,17 @@ impl SceneStore {
     /// it.
     pub fn start(&self, name: &str) -> ConsoleResult<(Scene, Option<SceneProcess>)> {
         let path = self.path(name)?;
+        // Anyone who reaches the console posts and saves the scenes that it
+        // loads, so their files stay inside the store. A modified copy finds
+        // its files beside its original.
         let (mut scene, mut process) = match process::executable(&path) {
             // the console error state reaches a browser, so it carries the
             // stderr of a dead process
-            Some(exe) => SceneProcess::start(&exe, &self.args)
+            Some(exe) => SceneProcess::start(&exe, &self.args, Reach::Inside)
                 .map(|(scene, fed)| (scene, Some(fed)))
                 .map_err(|e| ConsoleError::server_error(process::with_stderr(&e)))?,
             None => (
-                load_scene(&path, &self.args, false)
+                Scene::load_in(&path, Some(&self.dir), Reach::Inside)
                     .map_err(|e| ConsoleError::server_error(e.to_string()))?,
                 None,
             ),
@@ -472,6 +474,38 @@ mod tests {
         assert!(store.resolve("one").unwrap().passes[0]
             .code
             .contains("discard"));
+    }
+
+    #[test]
+    fn a_modified_copy_finds_its_files_beside_its_original_and_none_outside_the_store() {
+        let root = tmpdir("files");
+        let d = format!("{root}/scenes");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(format!("{d}/d.raw"), [7u8; 4]).unwrap();
+        fs::write(format!("{root}/out.raw"), [9u8; 4]).unwrap();
+        let doc = |file: &str| {
+            let mut doc = scene_json();
+            doc["assets"] =
+                serde_json::json!({"d": {"file": file, "width": 2, "height": 2, "format": "u8"}});
+            doc.to_string()
+        };
+        write_text(&format!("{d}/one{SCENE_SUFFIX}"), &doc("d.raw"));
+        write_text(&format!("{d}/two{SCENE_SUFFIX}"), &doc("../out.raw"));
+        let store = SceneStore::new(&d, false, Vec::new());
+        let mut edited = store.resolve("one").unwrap();
+        edited.passes[0].code = "void main(){ discard; }".to_string();
+        store.save("one", edited).unwrap();
+        let copy = store.resolve("one").unwrap();
+        assert!(copy.passes[0].code.contains("discard"));
+        let img = copy.assets[0].image.as_ref().unwrap();
+        assert_eq!(img.pixels, crate::assets::Pixels::U8(vec![7u8; 4]));
+        let e = store.resolve("two").unwrap_err();
+        assert!(
+            e.message.contains("outside the scene directory"),
+            "{}",
+            e.message
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

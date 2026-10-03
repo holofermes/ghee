@@ -202,16 +202,22 @@ fn tick_dict(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyDict>> {
 }
 
 /// The scene named by a caller: a path, a JSON document, or the JSON text of
-/// one.
-fn source_of(scene: &Bound<'_, PyAny>) -> PyResult<Source> {
+/// one. A document's files resolve in `base_dir`, else in the working
+/// directory.
+fn source_of(scene: &Bound<'_, PyAny>, base_dir: Option<PathBuf>) -> PyResult<Source> {
+    let dir = base_dir.map_or(".".to_string(), |d| d.to_string_lossy().into_owned());
+    let doc = |doc: Value| Source::Doc {
+        doc,
+        dir: dir.clone(),
+    };
     if scene.cast::<PyDict>().is_ok() {
-        return Ok(Source::Doc(to_json(scene)?));
+        return Ok(doc(to_json(scene)?));
     }
     if let Ok(s) = scene.extract::<String>() {
         if s.trim_start().starts_with('{') {
-            let doc: Value = serde_json::from_str(&s)
+            let parsed: Value = serde_json::from_str(&s)
                 .map_err(|e| PyValueError::new_err(format!("scene: invalid JSON: {e}")))?;
-            return Ok(Source::Doc(doc));
+            return Ok(doc(parsed));
         }
         return Ok(Source::Path(s));
     }
@@ -372,6 +378,8 @@ impl Handle {
 /// `fps` caps the pace. None runs free.
 /// `timestep` pins time to frame*S, so a render repeats bit for bit.
 /// `alpha` keeps the output pass's alpha in pixels(), opaque without it.
+/// `base_dir` is where a scene given as a dict or as JSON text finds its
+/// files, the working directory when None.
 /// `stats` serves the ghee console on that port, on 127.0.0.1. A (host, port)
 /// pair binds it elsewhere. `stream_max` caps the console's h264 stream on
 /// its longest side: pixels, or a fraction of the render size.
@@ -388,6 +396,7 @@ impl Handle {
     verbose=false,
     timestep=None,
     alpha=false,
+    base_dir=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn open(
@@ -402,8 +411,9 @@ fn open(
     verbose: bool,
     timestep: Option<f64>,
     alpha: bool,
+    base_dir: Option<PathBuf>,
 ) -> PyResult<Handle> {
-    let source = source_of(scene)?;
+    let source = source_of(scene, base_dir)?;
     let stats = stats.map(bind_of).transpose()?;
     let stream_max = stream_max.map(stream_max_of).transpose()?;
     let opts = match opts {

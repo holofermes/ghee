@@ -386,26 +386,52 @@ pub(crate) fn inside(path: &str, root: &str) -> bool {
     std::path::Path::new(path).starts_with(root)
 }
 
+/// Which files a scene may name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// Any file: a path may be absolute or leave the scene's directory. A
+    /// scene that its user runs reads this way.
+    Any,
+    /// The files inside the scene's directory alone. The console reads every
+    /// scene this way, since anyone who reaches it posts and saves scenes.
+    Inside,
+}
+
+/// The directory where a scene's files resolve, and the files it may name.
+#[derive(Clone, Copy, Debug)]
+struct Files<'a> {
+    dir: &'a str,
+    reach: Reach,
+}
+
+/// `base_dir` with the reach of a scene that its user runs.
+fn any_file(base_dir: Option<&str>) -> Option<Files<'_>> {
+    base_dir.map(|dir| Files {
+        dir,
+        reach: Reach::Any,
+    })
+}
+
 /// Read a `shader` file from the scene's own directory.
 ///
 /// A scene with no directory names no file. A console post and an in-memory
-/// scene have no directory. A scene with a directory reads inside it only.
-/// Either rule stops a scene from reading any file on the host. `what` names the
-/// holder in an error: a pass, or the scene's common block.
-fn read_shader(path: &Value, base_dir: Option<&str>, what: &str) -> Result<String> {
+/// scene have no directory. A scene read with Reach::Inside reads inside its
+/// directory only. `what` names the holder in an error: a pass, or the
+/// scene's common block.
+fn read_shader(path: &Value, files: Option<Files>, what: &str) -> Result<String> {
     let Value::String(name) = path else {
         bail!("{what} shader needs a filename, got {}", py_repr(path));
     };
-    let Some(base) = base_dir.filter(|b| !b.is_empty()) else {
+    let Some(files) = files.filter(|f| !f.dir.is_empty()) else {
         bail!(
             "{what} names a shader file ({}) but the scene has no directory to \
              resolve it against; inline the GLSL in 'code'",
             py_repr(path)
         );
     };
-    let root = normpath(&abspath(base));
+    let root = normpath(&abspath(files.dir));
     let full = normpath(&join(&root, name));
-    if !inside(&full, &root) {
+    if files.reach == Reach::Inside && !inside(&full, &root) {
         bail!(
             "{what} shader {} is outside the scene directory",
             py_repr(path)
@@ -423,7 +449,7 @@ fn read_shader(path: &Value, base_dir: Option<&str>, what: &str) -> Result<Strin
 /// The scene's shared GLSL. It arrives as a pass's own GLSL does:
 /// 'code' inline, or a 'shader' file next to the scene. None is no common block.
 /// "" is an empty block the console creates.
-fn common_block(d: &Map<String, Value>, base_dir: Option<&str>) -> Result<Option<String>> {
+fn common_block(d: &Map<String, Value>, files: Option<Files>) -> Result<Option<String>> {
     let c = match d.get("common") {
         None | Some(Value::Null) => return Ok(None),
         Some(v) => v,
@@ -445,7 +471,7 @@ fn common_block(d: &Map<String, Value>, base_dir: Option<&str>) -> Result<Option
         );
     }
     if let Some(s) = shader {
-        return read_shader(s, base_dir, "common").map(Some);
+        return read_shader(s, files, "common").map(Some);
     }
     match code {
         Some(Value::String(s)) => Ok(Some(s.clone())),
@@ -1589,7 +1615,13 @@ impl Pass {
             .any(|c| c.buffer.as_deref() == Some(self.name.as_str()))
     }
 
+    /// A `shader` file resolves in `base_dir`, with the reach of a scene that
+    /// its user runs.
     pub fn from_dict(d: &Value, base_dir: Option<&str>) -> Result<Pass> {
+        Pass::parse(d, any_file(base_dir))
+    }
+
+    fn parse(d: &Value, files: Option<Files>) -> Result<Pass> {
         let Value::Object(o) = d else {
             bail!("a pass needs a JSON object, got {}", py_repr(d));
         };
@@ -1606,7 +1638,7 @@ impl Pass {
         known_keys(o, &format!("pass '{name}'"), &PASS_KEYS, &elsewhere)?;
         let code = match (o.get("code").filter(|v| !v.is_null()), o.get("shader")) {
             (Some(v), _) => py_str(v),
-            (None, Some(s)) => read_shader(s, base_dir, &format!("pass '{name}'"))?,
+            (None, Some(s)) => read_shader(s, files, &format!("pass '{name}'"))?,
             (None, None) => String::new(),
         };
         let (arrays, channels, params) =
@@ -2378,8 +2410,18 @@ impl Scene {
         &self.passes[self.passes.len() - 1]
     }
 
-    /// `path` names the scene in an error message.
+    /// `path` names the scene in an error message. A `shader` file resolves
+    /// in `base_dir`, with the reach of a scene that its user runs.
     pub fn from_dict(d: &Value, base_dir: Option<&str>, path: Option<&str>) -> Result<Scene> {
+        Scene::parse(d, any_file(base_dir), path)
+    }
+
+    /// from_dict() with a scene's files in `dir`, as far as `reach` allows.
+    pub fn from_dict_in(d: &Value, dir: &str, reach: Reach, path: Option<&str>) -> Result<Scene> {
+        Scene::parse(d, Some(Files { dir, reach }), path)
+    }
+
+    fn parse(d: &Value, files: Option<Files>, path: Option<&str>) -> Result<Scene> {
         let src = path.unwrap_or("scene");
         let Value::Object(o) = d else {
             bail!("{src}: needs a JSON object, got {}", py_repr(d));
@@ -2403,7 +2445,7 @@ impl Scene {
             let version = o.get("version").cloned().unwrap_or_else(|| Value::from(1));
             let passes = list_of(o, "passes")?
                 .iter()
-                .map(|pd| Pass::from_dict(pd, base_dir))
+                .map(|pd| Pass::parse(pd, files))
                 .collect::<Result<Vec<_>>>()?;
             let mut params = ParamMap::new();
             for (n, pd) in obj_of(o, "params")? {
@@ -2417,7 +2459,7 @@ impl Scene {
             for (n, td) in obj_of(o, "texts")? {
                 texts.push(Text::from_dict(n, td)?);
             }
-            let common = common_block(o, base_dir)?;
+            let common = common_block(o, files)?;
             Scene::new(
                 passes,
                 version,
@@ -2485,7 +2527,15 @@ impl Scene {
         Value::Object(out)
     }
 
+    /// Load a scene file. Its files resolve beside it, with the reach of a
+    /// scene that its user runs.
     pub fn load(path: &str) -> Result<Scene> {
+        Scene::load_in(path, None, Reach::Any)
+    }
+
+    /// Load a scene file whose files resolve in `dir`, else beside the file,
+    /// as far as `reach` allows.
+    pub fn load_in(path: &str, dir: Option<&str>, reach: Reach) -> Result<Scene> {
         let text = fs::read_to_string(path).map_err(|e| {
             anyhow!(
                 "[Errno {}] {}: '{path}'",
@@ -2497,27 +2547,33 @@ impl Scene {
             serde_json::from_str(&text).map_err(|e| anyhow!("{path}: invalid JSON: {e}"))?;
         crate::sources::record(path);
         let abs = abspath(path);
-        let base = match abs.rfind('/') {
-            Some(0) => "/".to_string(),
-            Some(i) => abs[..i].to_string(),
-            None => String::new(),
+        let base = match (dir, abs.rfind('/')) {
+            (Some(d), _) => d.to_string(),
+            (None, Some(0)) => "/".to_string(),
+            (None, Some(i)) => abs[..i].to_string(),
+            (None, None) => String::new(),
         };
-        let mut scene = Scene::from_dict(&data, Some(&base), Some(path))?;
+        let mut scene = Scene::from_dict_in(&data, &base, reach, Some(path))?;
         scene
-            .load_assets(&base)
+            .load_assets_in(&base, reach)
             .map_err(|e| anyhow!("{path}: {e}"))?;
         Ok(scene)
     }
 
+    /// Read and decode every declared asset file, and hand each text its font,
+    /// with the reach of a scene that its user runs, as load_assets_in() says.
+    pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
+        self.load_assets_in(base_dir, Reach::Any)
+    }
+
     /// Read and decode every declared asset file, and hand each text its font.
     ///
-    /// A file resolves inside `base_dir`, the scene's own directory, and never
-    /// outside it. A file absent there resolves one directory up: a copy saved
-    /// into modified/ keeps its assets beside the original scene. After that
-    /// it resolves through `$GHEE_ASSETS`, colon-separated directories, in
-    /// order. The error names the first path and every other one tried. A
+    /// An absolute path reads as it stands. Any other path resolves in
+    /// `base_dir`, then through `$GHEE_ASSETS`, colon-separated directories, in
+    /// order, and the error names the first path and the directories of
+    /// `$GHEE_ASSETS`. Reach::Inside refuses a path outside `base_dir`. A
     /// filter's asset is the filter's to load.
-    pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
+    pub fn load_assets_in(&mut self, base_dir: &str, reach: Reach) -> Result<()> {
         let font_files = self
             .texts
             .iter()
@@ -2527,34 +2583,39 @@ impl Scene {
             return Ok(());
         }
         let root = normpath(&abspath(base_dir));
-        let mut roots = vec![root.clone()];
-        if let Some(parent) = std::path::Path::new(&root).parent() {
-            roots.push(parent.to_string_lossy().into_owned());
-        }
-        roots.extend(asset_dirs());
-        let outside = |file: &str| !inside(&normpath(&join(&root, file)), &root);
+        let more = asset_dirs();
+        let outside =
+            |file: &str| reach == Reach::Inside && !inside(&normpath(&join(&root, file)), &root);
         // The bytes of `file` and the path that held them, or why no path did,
         // with the file named as `what`.
-        let read = |file: &str, what: &str| match roots
-            .iter()
-            .map(|r| normpath(&join(r, file)))
-            .find(|p| std::path::Path::new(p).is_file())
-        {
-            None => {
-                let tried: Vec<String> = roots.iter().map(|r| normpath(&join(r, file))).collect();
-                // A font file that shows up later marks the scene stale.
-                crate::sources::record(&tried[0]);
-                Err(format!(
-                    "{what} ({}): No such file or directory (also tried: {})",
-                    tried[0],
-                    tried[1..].join(", ")
-                ))
-            }
-            Some(path) => {
-                crate::sources::record(&path);
-                match fs::read(&path) {
-                    Ok(bytes) => Ok((bytes, path)),
-                    Err(e) => Err(format!("{what} ({path}): {}", strerror(&e))),
+        let read = |file: &str, what: &str| {
+            let roots = match file.starts_with('/') {
+                true => &[][..],
+                false => &more[..],
+            };
+            let first = normpath(&join(&root, file));
+            let found = std::iter::once(first.clone())
+                .chain(roots.iter().map(|r| normpath(&join(r, file))))
+                .find(|p| std::path::Path::new(p).is_file());
+            match found {
+                None => {
+                    // A font file that shows up later marks the scene stale.
+                    crate::sources::record(&first);
+                    let elsewhere = match (file.starts_with('/'), more.is_empty()) {
+                        (true, _) => String::new(),
+                        (false, true) => ", and $GHEE_ASSETS names no directory".to_string(),
+                        (false, false) => format!(", nor in $GHEE_ASSETS ({})", more.join(", ")),
+                    };
+                    Err(format!(
+                        "{what} ({first}): No such file or directory{elsewhere}"
+                    ))
+                }
+                Some(path) => {
+                    crate::sources::record(&path);
+                    match fs::read(&path) {
+                        Ok(bytes) => Ok((bytes, path)),
+                        Err(e) => Err(format!("{what} ({path}): {}", strerror(&e))),
+                    }
                 }
             }
         };
@@ -3230,7 +3291,7 @@ mod tests {
         fs::write(&secret, "stolen").unwrap();
         for path in ["../secret.glsl", &secret, "sub/../../secret.glsl"] {
             let d = json!({"version": 1, "passes": [{"name": "main", "shader": path}]});
-            let e = Scene::from_dict(&d, Some(&base), None)
+            let e = Scene::from_dict_in(&d, &base, Reach::Inside, None)
                 .unwrap_err()
                 .to_string();
             assert!(e.contains("outside the scene directory"), "{path}: {e}");
@@ -3656,9 +3717,10 @@ mod tests {
         let secret = format!("{root}/secret.glsl");
         fs::write(&secret, "stolen").unwrap();
         for path in ["../secret.glsl", &secret] {
-            let e = Scene::from_dict(
+            let e = Scene::from_dict_in(
                 &common_scene(Some(json!({"shader": path})), None),
-                Some(&base),
+                &base,
+                Reach::Inside,
                 None,
             )
             .unwrap_err()
@@ -4264,24 +4326,27 @@ mod tests {
     }
 
     #[test]
-    fn a_modified_copy_finds_assets_beside_the_original() {
-        // The store saves a scene into modified/ next to the original, and the
-        // saved copy keeps reading the original's asset files.
-        let dir = tmpdir("asset-fallback");
-        fs::create_dir_all(format!("{dir}/modified")).unwrap();
-        fs::write(format!("{dir}/d.raw"), [7u8; 4]).unwrap();
-        let p = format!("{dir}/modified/x.scene.json");
-        fs::write(
-            &p,
-            asset_scene(json!({"d": {"file": "d.raw", "width": 2, "height": 2,
-                                     "format": "u8"}}))
-            .to_string(),
-        )
-        .unwrap();
+    fn a_scene_that_its_user_runs_names_a_file_anywhere() {
+        // Each file sits outside the scene's directory: a relative path that
+        // leaves it, and absolute paths.
+        let root = tmpdir("anywhere");
+        let base = format!("{root}/scene");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(format!("{root}/d.raw"), [7u8; 4]).unwrap();
+        fs::write(format!("{root}/e.raw"), [9u8; 4]).unwrap();
+        fs::write(format!("{root}/in.glsl"), GOOD).unwrap();
+        let raw = |file: String| json!({"file": file, "width": 2, "height": 2, "format": "u8"});
+        let mut d = asset_scene(json!({"d": raw("../d.raw".to_string()),
+                                       "e": raw(format!("{root}/e.raw"))}));
+        d["passes"][0] = json!({"name": "main", "shader": format!("{root}/in.glsl")});
+        let p = format!("{base}/x.scene.json");
+        fs::write(&p, d.to_string()).unwrap();
         let sc = Scene::load(&p).unwrap();
-        let img = sc.assets[0].image.as_ref().unwrap();
-        assert_eq!(img.pixels, crate::assets::Pixels::U8(vec![7u8; 4]));
-        fs::remove_dir_all(&dir).unwrap();
+        let px = |i: usize| sc.assets[i].image.as_ref().unwrap().pixels.clone();
+        assert_eq!(px(0), crate::assets::Pixels::U8(vec![7u8; 4]));
+        assert_eq!(px(1), crate::assets::Pixels::U8(vec![9u8; 4]));
+        assert_eq!(sc.passes[0].code, GOOD);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -4300,7 +4365,9 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let e = Scene::load(&p).unwrap_err().to_string();
+        let e = Scene::load_in(&p, None, Reach::Inside)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("outside the scene directory"), "{e}");
         fs::remove_dir_all(&root).unwrap();
     }
@@ -4344,7 +4411,6 @@ mod tests {
         .unwrap();
         let e = missing.load_assets("/").unwrap_err().to_string();
         assert!(e.contains("(/ghee-no-such.png)"), "{e}");
-        assert!(!e.contains("also tried: /ghee-no-such.png"), "{e}");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -29,6 +29,7 @@ h = ghee.open(
     verbose=False,
     timestep=None,     # pin time to frame*S for a reproducible render
     alpha=False,       # keep the output pass's alpha in pixels()
+    base_dir=None,     # where a dict or JSON text scene finds its files
 )
 
 h.set_param("gain", 1.5)                 # a scene param
@@ -52,10 +53,11 @@ h.close()       # also a context manager
 param, else the param of the first pass that declares it. The name of a
 text sets its words, and ghee lays them out again, also with no recompile.
 
-A scene file finds its asset files beside itself, and so does a Python
-scene that ghee runs. A scene given as a dict or as JSON text finds them in
-the working directory, and so does a Python scene in
-[direct mode](#direct-mode).
+A scene file finds its files beside itself, and a Python scene beside its
+script, under ghee and in [direct mode](#direct-mode) alike. A scene given
+as a dict or as JSON text finds them in `base_dir`, the working directory
+by default. A file absent there resolves through `$GHEE_ASSETS`,
+colon-separated directories.
 
 `feed` holds the data for one declared array, and the next frame consumes
 it once. A uint8 buffer reaches the texture as byte / 255, a float32

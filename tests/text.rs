@@ -12,7 +12,7 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
 use ghee::engine::{probe_dri_devices, DrawPart, ErrorDraw, ErrorPass, Renderer};
 use ghee::filters::apply_filters;
-use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
+use ghee::scene::{Param, ParamValue, Pass, Reach, Scene, SceneBuilder};
 use ghee::text::{self, Align, Fill, Text};
 
 const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
@@ -1193,7 +1193,7 @@ fn face_scene(file: &str) -> Scene {
 }
 
 #[test]
-fn a_font_resolves_beside_the_scene_then_one_up_then_through_ghee_assets() {
+fn a_font_resolves_beside_the_scene_then_through_ghee_assets() {
     let _g = lock();
     let root = tmpdir("order");
     let (dir, store) = (format!("{root}/scene"), format!("{root}/store"));
@@ -1202,15 +1202,11 @@ fn a_font_resolves_beside_the_scene_then_one_up_then_through_ghee_assets() {
     }
     let (sans, cff) = (font(SANS), font(CFF));
     fs::write(format!("{dir}/here.ttf"), &sans).unwrap();
-    fs::write(format!("{root}/up.ttf"), &sans).unwrap();
     fs::write(format!("{store}/store.ttf"), &sans).unwrap();
-    // The scene directory wins over the one above it, and that one over the
-    // store.
+    // The scene directory wins over the store.
     fs::write(format!("{dir}/both.ttf"), &sans).unwrap();
-    fs::write(format!("{root}/both.ttf"), &cff).unwrap();
-    fs::write(format!("{root}/above.ttf"), &sans).unwrap();
-    fs::write(format!("{store}/above.ttf"), &cff).unwrap();
-    let names = ["here", "up", "store", "both", "above"];
+    fs::write(format!("{store}/both.ttf"), &cff).unwrap();
+    let names = ["here", "store", "both"];
     let mut doc = texts_scene(Value::Object(
         names
             .iter()
@@ -1256,7 +1252,7 @@ fn font_failure(sc: &Scene) -> String {
 }
 
 #[test]
-fn a_missing_font_names_the_first_path_and_every_other_one_tried() {
+fn a_missing_font_names_its_path_and_the_directories_of_ghee_assets() {
     let _g = lock();
     let root = tmpdir("missing");
     let (dir, store) = (format!("{root}/scene"), format!("{root}/store"));
@@ -1264,15 +1260,17 @@ fn a_missing_font_names_the_first_path_and_every_other_one_tried() {
         fs::create_dir_all(d).unwrap();
     }
     let file = format!("ghee-text-missing-{}.ttf", std::process::id());
-    let mut sc = face_scene(&file);
-    with_assets_env(&store, || sc.load_assets(&dir)).unwrap();
-    assert_eq!(
-        font_failure(&sc),
-        format!(
-            "asset 'face' ({dir}/{file}): No such file or directory \
-             (also tried: {root}/{file}, {store}/{file})"
-        )
-    );
+    for (assets, more) in [
+        (store.as_str(), format!(", nor in $GHEE_ASSETS ({store})")),
+        ("", ", and $GHEE_ASSETS names no directory".to_string()),
+    ] {
+        let mut sc = face_scene(&file);
+        with_assets_env(assets, || sc.load_assets(&dir)).unwrap();
+        assert_eq!(
+            font_failure(&sc),
+            format!("asset 'face' ({dir}/{file}): No such file or directory{more}")
+        );
+    }
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -1297,14 +1295,17 @@ fn a_missing_image_still_fails_the_load() {
 }
 
 #[test]
-fn a_font_outside_the_scene_directory_is_refused() {
+fn the_console_refuses_a_font_outside_the_scene_directory() {
     let _g = lock();
     let root = tmpdir("outside");
     let dir = format!("{root}/scene");
     fs::create_dir_all(&dir).unwrap();
     fs::write(format!("{root}/up.ttf"), font(SANS)).unwrap();
     let mut sc = face_scene("../up.ttf");
-    let e = with_assets_env("", || sc.load_assets(&dir))
+    with_assets_env("", || sc.load_assets(&dir)).unwrap();
+    assert_eq!(font_data(&sc, "label"), font(SANS));
+    let mut sc = face_scene("../up.ttf");
+    let e = with_assets_env("", || sc.load_assets_in(&dir, Reach::Inside))
         .err()
         .unwrap()
         .to_string();
@@ -1833,7 +1834,9 @@ fn a_font_names_an_asset_or_a_file_and_a_list_mixes_both() {
     doc["texts"]["label"]["font"] = json!(format!("../{SANS}"));
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     assert_eq!(
-        sc.load_assets(FONTS).unwrap_err().to_string(),
+        sc.load_assets_in(FONTS, Reach::Inside)
+            .unwrap_err()
+            .to_string(),
         format!("text 'label' font '../{SANS}' is outside the scene directory")
     );
 }

@@ -335,13 +335,19 @@ def test_words_past_the_texture_keep_the_last_words(monkeypatch, capfd):
     assert err.count("text 'words': the words need a ") == 1, err
 
 
-def test_a_dict_scene_resolves_its_font_in_the_working_directory(tmp_path, monkeypatch):
+def test_a_dict_scene_finds_its_font_in_base_dir_else_the_working_directory(
+    tmp_path, monkeypatch
+):
     (tmp_path / "fonts").mkdir()
     shutil.copy(REPO / "ghee" / "examples" / FONT, tmp_path / "fonts")
-    monkeypatch.chdir(tmp_path)
-    with ghee.open(WORDS, width=96, height=32) as h:
+    with ghee.open(scene_file(tmp_path, WORDS), width=96, height=32, timestep=0) as h:
         h.frame()
-        assert max(h.pixels()[0::4]) == 255
+        want = h.pixels()
+    for cwd, base_dir in ((REPO, tmp_path), (tmp_path, None)):
+        monkeypatch.chdir(cwd)
+        with ghee.open(WORDS, width=96, height=32, timestep=0, base_dir=base_dir) as h:
+            h.frame()
+            assert h.pixels() == want
 
 
 def test_a_scene_file_resolves_its_font_beside_itself(tmp_path):

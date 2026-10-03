@@ -358,8 +358,8 @@ class Asset:
 
     An image (.png, .jpg) is `uniform sampler2D <name>` in every pass, and
     `vec2 <name>_size` is its size in pixels. A font (.ttf, .otf) is for a
-    Text to name. `file` resolves beside the scene when ghee runs it, and in
-    the working directory in a direct run.
+    Text to name. `file` resolves beside the scene's script, then through
+    $GHEE_ASSETS.
     """
 
     name: str
@@ -1007,6 +1007,13 @@ def _host_args():
     return p.parse_args(sys.argv[1:])
 
 
+def _script_dir() -> str | None:
+    """The directory of the scene's script, where its files resolve, or None
+    when no script runs, as in a REPL."""
+    path = getattr(sys.modules.get("__main__"), "__file__", None)
+    return os.path.dirname(os.path.abspath(path)) if path else None
+
+
 def _open(scene: Scene, a):
     """Open the scene on the bindings. `--output none` renders headless."""
     from ghee import open as open_scene
@@ -1020,6 +1027,7 @@ def _open(scene: Scene, a):
         fps=a.fps,
         stats=a.stats,
         timestep=a.timestep,
+        base_dir=_script_dir(),
     )
 
 

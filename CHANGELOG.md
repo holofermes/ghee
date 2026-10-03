@@ -179,6 +179,14 @@
   key, where it sits, and the closest key that ghee takes, or the object
   that takes it, as `"fill"` on a draw names the draw's text, where the
   scene loaded and ignored the key.
+- Resolve a file of a Python scene in direct mode beside its script, as
+  under ghee, where it resolved in the working directory, and take
+  `base_dir` on `ghee.open` for a scene given as a dict or as JSON text.
+- Read a file at an absolute path or outside the scene's directory, except
+  under the console, and name `$GHEE_ASSETS` in the error for a file that
+  no directory holds.
+- Resolve the files of a copy that the console saved into `modified/`
+  beside its original, where every scene looked one directory up.
 
 ## 0.4.0 - 2026-08-06
 

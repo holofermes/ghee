@@ -280,9 +280,9 @@ ghee.run(
 '''
 
 
-def test_a_direct_run_finds_its_font_in_the_working_directory(tmp_path):
-    """Run from the scene's directory, the font beside it loads, and each
-    frame draws the words that the tick before it set."""
+def test_a_direct_run_finds_its_font_beside_its_script(tmp_path):
+    """Run from another directory, the font beside the script loads, and
+    each frame draws the words that the tick before it set."""
     scene_dir = tmp_path / "scene"
     (scene_dir / "fonts").mkdir(parents=True)
     shutil.copy(REPO / "ghee/examples/fonts/DejaVuSans-Latin.ttf", scene_dir / "fonts")
@@ -301,7 +301,7 @@ def test_a_direct_run_finds_its_font_in_the_working_directory(tmp_path):
             "--timestep",
             "0",
         ],
-        cwd=scene_dir,
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         timeout=120,

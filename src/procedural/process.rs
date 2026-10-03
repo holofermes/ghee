@@ -26,7 +26,7 @@ use serde_json::{Map, Value};
 use crate::engine::Feed;
 use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::resolve;
-use crate::scene::{ArraySize, ParamValue, Scene};
+use crate::scene::{ArraySize, ParamValue, Reach, Scene};
 
 /// `-- --help` waits this long for a scene's declarations line.
 /// Nothing else runs a scene with `--ghee-args`.
@@ -532,7 +532,9 @@ impl SceneProcess {
     /// The caller compiles the scene, then binds this process to it.
     /// `args` are the tokens after `--`, as they came. The process parses them,
     /// and a process that refuses one dies with its own message on stderr.
-    pub fn start(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
+    /// The scene's files resolve beside the executable, as far as `reach`
+    /// allows.
+    pub fn start(path: &str, args: &[String], reach: Reach) -> Result<(Scene, SceneProcess)> {
         let (program, dir) = where_to_run(path)?;
         let mut cmd = Command::new(program);
         if let Some(size) = render_size() {
@@ -605,8 +607,8 @@ impl SceneProcess {
         })?;
         // "lockstep" belongs to the handshake, and the scene takes no such key.
         let lockstep = doc.as_object_mut().and_then(|o| o.remove("lockstep"));
-        let mut scene = Scene::from_dict(&doc, Some(&dir), Some(path))?;
-        scene.load_assets(&dir)?;
+        let mut scene = Scene::from_dict_in(&doc, &dir, reach, Some(path))?;
+        scene.load_assets_in(&dir, reach)?;
         process.lockstep = lockstep == Some(Value::Bool(true));
         process.writer = Some(write_ticks(stdin, Arc::clone(&process.outbox)));
         Ok((scene, process))
@@ -1205,7 +1207,7 @@ sleep 60
 
     fn start_scene(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
         let _spawn = SCRIPTS.read().unwrap();
-        SceneProcess::start(path, args)
+        SceneProcess::start(path, args, Reach::Any)
     }
 
     /// declarations(), spawn-locked like start_scene.
@@ -1413,7 +1415,8 @@ sleep 60
              printf '{{\"passes\":[{{\"name\":\"main\",\"code\":\"void main(){{}}\"}}]}}\\n'\n\
              sleep 5\n"
         );
-        let (_scene, f) = SceneProcess::start("/bin/sh", &args(&["-c", &body])).unwrap();
+        let (_scene, f) =
+            SceneProcess::start("/bin/sh", &args(&["-c", &body]), Reach::Any).unwrap();
         assert!(wait_until(SETTLE, || fs::read_to_string(&mark).is_ok()));
         assert_eq!(fs::read_to_string(&mark).unwrap(), "1 1");
         drop(f);

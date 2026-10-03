@@ -40,8 +40,9 @@ loopback, or open it with `--host` only on a network you trust.
   as a working copy.
 - `POST /save`: `{name, scene}` in the body, writes the scene into
   `<scenes>/modified/`. A JSON scene saves a copy that shadows the
-  original, a procedural scene saves its params and filters as a
-  `.values.json` sidecar. A read-only host refuses the save.
+  original and finds its files beside it, a procedural scene saves its
+  params and filters as a `.values.json` sidecar. A read-only host refuses
+  the save.
 
 ## Streams
 

@@ -209,10 +209,10 @@ enum Sink {
 }
 
 /// The scene named by a host: a path, or a JSON document. A document's files
-/// resolve in the working directory.
+/// resolve in `dir`.
 pub enum Source {
     Path(String),
-    Doc(Value),
+    Doc { doc: Value, dir: String },
 }
 
 /// The host's own h264 stream cap.
@@ -278,9 +278,9 @@ fn load(source: Source) -> Outcome<(Scene, String)> {
             let scene = load_scene(&path, &[], true).map_err(scene_fault)?;
             (scene, scene_name(&path))
         }
-        Source::Doc(doc) => {
-            let mut scene = Scene::from_dict(&doc, Some("."), None).map_err(scene_fault)?;
-            scene.load_assets(".").map_err(scene_fault)?;
+        Source::Doc { doc, dir } => {
+            let mut scene = Scene::from_dict(&doc, Some(&dir), None).map_err(scene_fault)?;
+            scene.load_assets(&dir).map_err(scene_fault)?;
             (scene, "scene".to_string())
         }
     };

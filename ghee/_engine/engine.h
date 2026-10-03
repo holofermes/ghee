@@ -116,7 +116,8 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name);
 enum { GHEE_BLEND_OVER, GHEE_BLEND_ADD, GHEE_BLEND_REPLACE };
 // Staged like ghee_mp_add_pass: `pass` is a pending pass, the commit keeps the
 // returned index, and an abort drops the layer. `name` stands for the layer in
-// its errors. -1 = refused.
+// the errors of later calls. An error of this call leaves the name out, as a
+// compile error does, and its caller names the layer. -1 = refused.
 int  ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
                        const char *fragment_source, int blend, int keep_alpha);
 // The quads of a committed layer: quads * 4 vertices of nattr vec4s each,

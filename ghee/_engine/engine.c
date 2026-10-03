@@ -1040,9 +1040,9 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
 
 int ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
                       const char *fragment_source, int blend, int keep_alpha) {
-    if (pass < 0 || pass >= g->stage_count) { set_error(g, "%s: pass %d is not pending", name, pass); return -1; }
-    if (g->stage_nlayer >= MP_MAX_LAYERS) { set_error(g, "%s: over the cap of %d layers", name, MP_MAX_LAYERS); return -1; }
-    if (blend < GHEE_BLEND_OVER || blend > GHEE_BLEND_REPLACE) { set_error(g, "%s: no blend mode %d", name, blend); return -1; }
+    if (pass < 0 || pass >= g->stage_count) { set_error(g, "pass %d is not pending", pass); return -1; }
+    if (g->stage_nlayer >= MP_MAX_LAYERS) { set_error(g, "over the cap of %d layers", MP_MAX_LAYERS); return -1; }
+    if (blend < GHEE_BLEND_OVER || blend > GHEE_BLEND_REPLACE) { set_error(g, "no blend mode %d", blend); return -1; }
     make_current(g);
     const GLuint prog = create_program(g, vertex_source, fragment_source, layer_attribs, MP_LAYER_ATTRIBS);
     if (!prog) return -1;

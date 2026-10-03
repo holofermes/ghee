@@ -3715,7 +3715,7 @@ mod tests {
             .map(|_| layer("main", PLAIN_FS, Blend::Over))
             .collect();
         let e = r.setup_layers(&sc, &layers).unwrap();
-        assert!(e.ends_with("layer 48: over the cap of 48 layers"), "{e}");
+        assert_eq!(e, "layer 48: over the cap of 48 layers");
     }
 
     #[test]

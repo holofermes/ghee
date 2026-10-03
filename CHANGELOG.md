@@ -136,8 +136,9 @@
 - Name the param in the type error of `set_param` and of the console, where
   the error named a param 'v'.
 - Name the engine's cap of 48 layers in its error, where the error called
-  them draws, and give the import's own reason when it refuses an ISF
-  shader with `IMPORTED` images.
+  them draws, and name the refused layer once, where the error named it
+  twice. Give the import's own reason when it refuses an ISF shader with
+  `IMPORTED` images.
 
 ## 0.4.0 - 2026-08-06
 

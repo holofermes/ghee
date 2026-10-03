@@ -112,6 +112,12 @@ The shim gives:
   `ghee.skip()`
 - `ghee.run(scene)`: the handshake, then the tick loop
 
+`ghee.set_param` raises ValueError for a param that the scene does not
+declare, or for a value that does not fit its type. A param set in a hook
+lands in the frame of its tick in [direct mode](#direct-mode), and under
+ghee with `--timestep`. Under ghee without it, the param lands a frame later
+or more.
+
 ## Text
 
 `ghee.Text` draws the scene string param of its name on the GPU, from the

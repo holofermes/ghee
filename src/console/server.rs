@@ -90,12 +90,13 @@ pub fn set_item(scope: Scope, name: &str, value: Value) -> Command {
 
 /// The param's declared type wins over the wire type. An int rounds. A bool
 /// becomes a real bool. A color or a vec arrives as a list and passes through.
-pub fn coerce(ptype: &str, val: &Value) -> Result<ParamValue> {
+/// `name` names the param in an error.
+pub fn coerce(name: &str, ptype: &str, val: &Value) -> Result<ParamValue> {
     let built = if val.is_array() {
-        Param::new("v", ptype, val.clone(), None, None, None, None)
+        Param::new(name, ptype, val.clone(), None, None, None, None)
     } else if ptype == "int" {
         Param::new(
-            "v",
+            name,
             ptype,
             Value::from(round_half_even(as_f64(val)) as i64),
             None,
@@ -104,9 +105,17 @@ pub fn coerce(ptype: &str, val: &Value) -> Result<ParamValue> {
             None,
         )
     } else if ptype == "bool" {
-        Param::new("v", ptype, Value::from(truthy(val)), None, None, None, None)
+        Param::new(
+            name,
+            ptype,
+            Value::from(truthy(val)),
+            None,
+            None,
+            None,
+            None,
+        )
     } else {
-        Param::new("v", ptype, val.clone(), None, None, None, None)
+        Param::new(name, ptype, val.clone(), None, None, None, None)
     };
     Ok(built?.value)
 }
@@ -1398,9 +1407,12 @@ fn load(
     *ctrl.borrow_mut() = None;
     let (built, read) = collect(|| console.store.start(name));
     match built {
-        Ok((scene, process)) => {
+        Ok((scene, mut process)) => {
             let snap = console.snapshot(read);
             let err = set_scene(console, renderer, st, scene, Some(name), Some(snap));
+            if let (Some(f), Some(_)) = (process.as_mut(), console.timestep) {
+                f.pin();
+            }
             if err.is_empty() {
                 *ctrl.borrow_mut() = process.map(|f| Box::new(f) as Box<dyn SceneController>);
             }
@@ -1474,7 +1486,7 @@ fn set_pass_param(
             .ok_or_else(|| anyhow!("'{name}'"))?
             .ty
             .clone();
-        let v = coerce(&ty, value)?;
+        let v = coerce(name, &ty, value)?;
         if ty != "string" {
             renderer.borrow().set_param(&pass.name, name, &ty, &v)?;
         }
@@ -1523,7 +1535,7 @@ fn set_scene_param(
             .ok_or_else(|| anyhow!("'{name}'"))?
             .ty
             .clone();
-        let v = coerce(&ty, value)?;
+        let v = coerce(name, &ty, value)?;
         // A string param of a text's name lays the text out again.
         renderer.borrow().set_scene_param(name, &ty, &v)?;
         told(ctrl, name, &v);
@@ -2403,26 +2415,26 @@ mod tests {
     #[test]
     fn a_coerced_value_takes_the_declared_type() {
         assert_eq!(
-            coerce("int", &Value::from(2.6)).unwrap(),
+            coerce("k", "int", &Value::from(2.6)).unwrap(),
             ParamValue::Int(3)
         );
         assert_eq!(
-            coerce("int", &Value::from(2.5)).unwrap(),
+            coerce("k", "int", &Value::from(2.5)).unwrap(),
             ParamValue::Int(2)
         ); // half to even
         assert_eq!(
-            coerce("bool", &Value::from(1.0)).unwrap(),
+            coerce("k", "bool", &Value::from(1.0)).unwrap(),
             ParamValue::Bool(true)
         );
         assert_eq!(
-            coerce("float", &Value::from(0.5)).unwrap(),
+            coerce("k", "float", &Value::from(0.5)).unwrap(),
             ParamValue::Float(0.5)
         );
         assert_eq!(
-            coerce("color", &serde_json::json!([1.0, 0.0, 0.5])).unwrap(),
+            coerce("k", "color", &serde_json::json!([1.0, 0.0, 0.5])).unwrap(),
             ParamValue::Color([1.0, 0.0, 0.5])
         );
-        assert!(coerce("color", &serde_json::json!([1.0, 0.0])).is_err());
+        assert!(coerce("k", "color", &serde_json::json!([1.0, 0.0])).is_err());
     }
 
     // stream sizing

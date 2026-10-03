@@ -11,6 +11,7 @@ import importlib.util
 import io
 import itertools
 import json
+import re
 import struct
 import sys
 
@@ -53,17 +54,22 @@ def drive(shim, scene, ticks, monkeypatch):
     return json.loads(head), rest
 
 
+# kind 5, the end of one tick's answer
+END = (5, "", [])
+
+
 def messages(buf):
     """The wire back to (kind, name, values).
 
-    Kind 4 carries one byte for each value, and kind 3 carries text.
+    Kind 4 carries one byte for each value, and kind 3 carries text. Kinds 2
+    and 5 are the single byte.
     """
     out, i = [], 0
     while i < len(buf):
         kind = buf[i]
         i += 1
-        if kind == 2:
-            out.append((2, "", []))
+        if kind in (2, 5):
+            out.append((kind, "", []))
             continue
         nlen = buf[i]
         i += 1
@@ -461,7 +467,19 @@ def test_a_bad_size_is_rejected(monkeypatch):
 
 def scene_of(shim, size=4):
     return shim.Scene(
-        passes=[shim.Pass("main", "void main(){}", arrays=[shim.ArrayInput("v", size)])]
+        params={
+            "gain": shim.Param("gain", "float", 0.0),
+            "tint": shim.Param("tint", "color", [0.0, 0.0, 0.0]),
+            "words": shim.Param("words", "string", ""),
+        },
+        passes=[
+            shim.Pass(
+                "main",
+                "void main(){}",
+                arrays=[shim.ArrayInput("v", size)],
+                params={"on": shim.Param("on", "bool", False)},
+            )
+        ],
     )
 
 
@@ -477,10 +495,12 @@ def test_the_handshake_is_the_first_line_and_the_data_follows(monkeypatch):
         {"frame": 1, "time": 0.5, "dt": 0.5, "params": {}},
     ]
     head, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
-    assert head == scene_of(shim).to_dict()
+    assert head == {**scene_of(shim).to_dict(), "lockstep": True}
     assert messages(rest) == [
         (0, "v", [0.0, 0.0, 0.5, 1.0]),
+        END,
         (0, "v", [1.0, 0.5, 0.5, 0.0]),
+        END,
     ]
 
 
@@ -493,7 +513,8 @@ def test_a_feed_that_returns_none_sends_nothing(monkeypatch):
 
     ticks = [{"frame": n, "time": 0.0, "dt": 0.0, "params": {}} for n in range(3)]
     _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
-    assert messages(rest) == [(0, "v", [1.0, 2.0, 3.0, 4.0])]
+    # a tick with nothing to send still ends its answer
+    assert messages(rest) == [END, (0, "v", [1.0, 2.0, 3.0, 4.0]), END, END]
 
 
 def test_a_param_and_a_clean_tick(monkeypatch):
@@ -512,9 +533,11 @@ def test_a_param_and_a_clean_tick(monkeypatch):
     assert messages(rest) == [
         (1, "gain", [0.5]),
         (1, "tint", [1.0, 0.0, 0.25]),
+        END,
         (2, "", []),
+        END,
     ]
-    assert rest.endswith(b"\x02")
+    assert rest.endswith(b"\x02\x05")
 
 
 def test_a_string_param_goes_out_as_text(monkeypatch):
@@ -527,8 +550,8 @@ def test_a_string_param_goes_out_as_text(monkeypatch):
 
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
-    assert messages(rest) == [(3, "words", "café")]
-    assert rest == b"\x03\x05words\x05\x00\x00\x00caf\xc3\xa9"
+    assert messages(rest) == [(3, "words", "café"), END]
+    assert rest == b"\x03\x05words\x05\x00\x00\x00caf\xc3\xa9\x05"
 
 
 def test_a_feed_of_the_wrong_length_names_the_array(monkeypatch):
@@ -566,7 +589,7 @@ def test_a_float32_buffer_goes_out_as_it_lies(monkeypatch):
 
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
-    assert messages(rest) == [(0, "v", [0.25, 0.5, 0.75, 1.0])]
+    assert messages(rest) == [(0, "v", [0.25, 0.5, 0.75, 1.0]), END]
 
 
 def test_a_uint8_buffer_goes_out_as_bytes(monkeypatch):
@@ -580,8 +603,9 @@ def test_a_uint8_buffer_goes_out_as_bytes(monkeypatch):
 
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
-    assert messages(rest) == [(4, "v", [0, 64, 128, 255])]
-    assert len(rest) == 1 + 1 + 1 + 4 + 4  # kind, name_len, name, count, bytes
+    assert messages(rest) == [(4, "v", [0, 64, 128, 255]), END]
+    # kind, name_len, name, count, bytes, then the end of the answer
+    assert len(rest) == 1 + 1 + 1 + 4 + 4 + 1
 
 
 def test_bytes_go_out_as_bytes_and_floats_stay_floats(monkeypatch):
@@ -595,7 +619,9 @@ def test_bytes_go_out_as_bytes_and_floats_stay_floats(monkeypatch):
     _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
     assert messages(rest) == [
         (4, "v", [1, 2, 3, 4]),
+        END,
         (0, "v", [1.0, 2.0, 3.0, 4.0]),
+        END,
     ]
 
 
@@ -608,6 +634,53 @@ def test_a_short_byte_feed_names_the_array(monkeypatch):
 
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     with pytest.raises(ValueError, match="array 'v' takes 4 values, got 2"):
+        drive(shim, scene_of(shim), ticks, monkeypatch)
+
+
+def test_a_filter_param_goes_out_unchecked(monkeypatch):
+    """ghee appends a filter's pass and holds its params."""
+    shim = load()
+
+    @shim.tick
+    def hook(tick):
+        shim.set_param("levels", 4.0, pass_="dither")
+        shim.set_param("levels", 2.0)
+
+    scene = scene_of(shim)
+    scene.filters = ["dither"]
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, scene, ticks, monkeypatch)
+    assert messages(rest) == [(1, "dither.levels", [4.0]), (1, "levels", [2.0]), END]
+
+
+# set_param's refusals, each the same under ghee and in direct mode
+REFUSED = [
+    (
+        ("nope", 1.0),
+        (
+            "param 'nope' is not a param this scene declares "
+            "(gain, tint, words, main.on, on)"
+        ),
+    ),
+    (("on", 1.0, "other"), "param 'other.on' is not a param this scene declares"),
+    (("gain", "x"), "float param 'gain' needs a number, got 'x'"),
+    (("gain", True), "float param 'gain' needs a number, got True"),
+    (("tint", [1.0, 0.0]), "color param 'tint' needs three numbers [r, g, b]"),
+    (("words", 3), "string param 'words' needs a string, got 3"),
+    (("on", "yes", "main"), "bool param 'main.on' needs true or false, got 'yes'"),
+]
+
+
+@pytest.mark.parametrize("call,error", REFUSED)
+def test_a_param_the_scene_cannot_take_raises_on_the_wire(call, error, monkeypatch):
+    shim = load()
+
+    @shim.tick
+    def hook(tick):
+        shim.set_param(*call)
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    with pytest.raises(ValueError, match=re.escape(error)):
         drive(shim, scene_of(shim), ticks, monkeypatch)
 
 

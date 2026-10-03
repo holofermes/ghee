@@ -3,8 +3,8 @@
 The shim builds a scene, answers the probe, and feeds the data.
 A procedural scene is an executable: ghee starts the process when the scene
 becomes active, the process writes its scene as one JSON line, then binary
-messages, one batch for each tick. See docs/procedural.md for the wire
-contract.
+messages, one batch for each tick, ended by kind 5. See docs/procedural.md
+for the wire contract.
 
     #!/usr/bin/env python3
     import ghee
@@ -34,6 +34,7 @@ import argparse
 import array
 import json
 import math
+import numbers
 import os
 import signal
 import sys
@@ -626,6 +627,10 @@ _CLEAN = False
 _HOST = None
 _HANDLE = None
 _STOPPED: list = []
+# the scene of the run: the type of each param that set_param names, and the
+# filters that ghee appends
+_PARAMS: dict | None = None
+_FILTERS: list = []
 
 
 def feed(name: str):
@@ -656,17 +661,85 @@ def set_param(name: str, value, pass_: str | None = None) -> None:
     A string takes words, and the Text of its name lays them out again.
     `pass_` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
+
+    Raises ValueError for a param that the scene does not declare, or for a
+    value that does not fit the param's type, under ghee and in direct mode
+    alike. The params of a filter are ghee's to check: a name that reaches
+    a filter goes out unchecked.
     """
+    wire = f"{pass_}.{name}" if pass_ else name
+    _check(wire, value)
     if _HANDLE is not None:
         _HANDLE.set_param(name, value, pass_=pass_)
         return
-    wire = f"{pass_}.{name}" if pass_ else name
     if isinstance(value, str):
         text = value.encode("utf-8")
         _OUT.append(_message(3, wire, len(text), text))
         return
-    count, body = _f32((value,) if isinstance(value, (int, float)) else value)
+    count, body = _f32((value,) if isinstance(value, numbers.Real) else value)
     _OUT.append(_message(1, wire, count, body))
+
+
+def _param_types(scene: Scene) -> dict:
+    """The type of each param that set_param names in `scene`.
+
+    A pass param takes `pass.name`, and its bare name too when no param
+    before it holds that name.
+    """
+    types = {n: p.type for n, p in scene.params.items()}
+    for ps in scene.passes:
+        for n, p in ps.params.items():
+            types[f"{ps.name}.{n}"] = p.type
+            types.setdefault(n, p.type)
+    return types
+
+
+def _number(v) -> bool:
+    return isinstance(v, numbers.Real) and not isinstance(v, bool)
+
+
+def _numbers(v, n: int) -> bool:
+    if isinstance(v, (str, bytes)):
+        return False
+    try:
+        items = list(v)
+    except TypeError:
+        return False
+    return len(items) == n and all(_number(x) for x in items)
+
+
+def _check(wire: str, value) -> None:
+    """Raise ValueError unless the scene of the run declares param `wire`
+    and `value` fits its type. Outside run() nothing is checked.
+    """
+    if _PARAMS is None:
+        return
+    ty = _PARAMS.get(wire)
+    if ty is None:
+        owner = wire.rpartition(".")[0]
+        if owner in _FILTERS or (not owner and _FILTERS):
+            return  # a filter pass may hold it
+        raise ValueError(
+            f"param '{wire}' is not a param this scene declares "
+            f"({', '.join(_PARAMS) or 'none'})"
+        )
+    n = 3 if ty == "color" else _VEC.get(ty)
+    if ty == "string":
+        if not isinstance(value, str):
+            raise ValueError(f"string param '{wire}' needs a string, got {value!r}")
+    elif ty == "color":
+        if not _numbers(value, n):
+            raise ValueError(
+                f"color param '{wire}' needs three numbers [r, g, b], got {value!r}"
+            )
+    elif n is not None:
+        if not _numbers(value, n):
+            raise ValueError(f"{ty} param '{wire}' needs {n} numbers, got {value!r}")
+    elif ty == "bool":
+        if not isinstance(value, numbers.Real):
+            raise ValueError(f"bool param '{wire}' needs true or false, got {value!r}")
+    elif not _number(value):
+        raise ValueError(f"{ty} param '{wire}' needs a number, got {value!r}")
 
 
 def skip() -> None:
@@ -759,6 +832,8 @@ def run(scene: Scene) -> None:
     too and is already stopping. The scene ends where it stands, quietly: a
     traceback here would say a scene crashed, and it did what it was told.
     """
+    global _PARAMS, _FILTERS
+    _PARAMS, _FILTERS = _param_types(scene), list(scene.filters)
     try:
         if os.environ.get(WIRE):
             _wire(scene)
@@ -766,13 +841,20 @@ def run(scene: Scene) -> None:
             _direct(scene)
     except KeyboardInterrupt:
         pass
+    finally:
+        _PARAMS, _FILTERS = None, []
 
 
 def _wire(scene: Scene) -> None:
-    """Write the handshake, then answer ticks until ghee closes stdin."""
+    """Write the handshake, then answer ticks until ghee closes stdin.
+
+    Every answer ends with kind 5, as the handshake's `"lockstep": true`
+    promises.
+    """
     global _CLEAN
     out = sys.stdout.buffer
-    out.write(json.dumps(scene.to_dict()).encode("utf-8") + b"\n")
+    hello = {**scene.to_dict(), "lockstep": True}
+    out.write(json.dumps(hello).encode("utf-8") + b"\n")
     out.flush()
     counts = _counts(scene)
     for line in sys.stdin:
@@ -795,9 +877,9 @@ def _wire(scene: Scene) -> None:
             _OUT.append(msg)
         if _CLEAN:
             _OUT.append(b"\x02")
-        if _OUT:
-            out.write(b"".join(_OUT))
-            out.flush()
+        _OUT.append(b"\x05")
+        out.write(b"".join(_OUT))
+        out.flush()
 
 
 # --------------------------------------------------------------- direct mode

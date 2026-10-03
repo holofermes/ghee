@@ -218,8 +218,8 @@ impl ConsoleHost for Host {
             .index
             .param(pass, name)
             .map_err(|e| ConsoleError::bad_request(e.message))?;
-        let coerced = coerce(&p.ty, &value)
-            .map_err(|e| ConsoleError::bad_request(format!("param '{name}': {e}")))?;
+        let coerced =
+            coerce(&p.wire, &p.ty, &value).map_err(|e| ConsoleError::bad_request(e.to_string()))?;
         lock(&self.0.queue).push((p.pass.clone(), p.uniform.clone(), p.ty.clone(), coerced));
         Ok(())
     }

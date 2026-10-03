@@ -6,6 +6,7 @@ in sys.modules stands in for the renderer, bar the last test.
 """
 
 import io
+import re
 import shutil
 import signal
 import subprocess
@@ -14,7 +15,7 @@ import types
 
 import pytest
 from conftest import REPO
-from test_shim import load, scene_of
+from test_shim import REFUSED, load, scene_of
 
 
 class Fake:
@@ -96,6 +97,19 @@ def test_the_loop_runs_the_hooks_then_the_feeds_then_the_frame(monkeypatch):
         ("frame",),
         ("close",),
     ]
+
+
+@pytest.mark.parametrize("call,error", REFUSED)
+def test_a_param_the_scene_cannot_take_raises_as_on_the_wire(call, error, monkeypatch):
+    shim, fake, _ = host(monkeypatch, ["--output", "none", "--frames", "1"])
+
+    @shim.tick
+    def hook(t):
+        shim.set_param(*call)
+
+    with pytest.raises(ValueError, match=re.escape(error)):
+        shim.run(scene_of(shim))
+    assert not [c for c in fake.calls if c[0] == "set_param"]
 
 
 def test_the_host_flags_reach_the_bindings(monkeypatch):

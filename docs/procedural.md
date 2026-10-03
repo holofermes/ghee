@@ -39,7 +39,9 @@ working directory is the scene's own directory, and ghee sets
 
 Before any frame, the process writes one line to stdout: a scene JSON
 object. ghee waits 30 seconds for the scene, however if the process exits
-without the scene, that's an error and ghee shows its stderr.
+without the scene, that's an error and ghee shows its stderr. A process that
+ends its answer to every tick with kind 5 sets `"lockstep": true` in that
+object.
 
 ## Messages, scene to ghee
 
@@ -59,9 +61,13 @@ After the handshake, stdout carries binary messages:
 - kind 4 sets the named array from u8 values. Same header as kind 0, the
   payload is count u8 bytes, value = byte / 255. A big mask costs a quarter
   of the pipe.
+- kind 5 ends the messages that answer one tick. It's the single kind byte,
+  like kind 2.
 
 ghee reads without blocking and applies the newest data. Arrays and params
-keep their values until a message changes them.
+keep their values until a message changes them. A message that names a
+param the scene does not hold, or that does not fit the param's type,
+changes nothing, and ghee logs it once.
 
 ## Ticks, ghee to scene
 
@@ -75,6 +81,12 @@ them all.
 Reading stdin paces your process to the render, sleeping when it sleeps.
 Ignoring stdin lets it run free, but it then gets no ticks, no params, no
 skip. ghee never blocks on a full stdin pipe.
+
+A frame takes the messages that arrived before it starts, so the answer to a
+tick lands one frame later at the earliest, and later still when the process
+falls behind. With a fixed `--timestep`, ghee waits up to 30 seconds for a
+lockstep process to end its answer to each tick, and the answer lands in
+that tick's frame.
 
 ## Stop
 

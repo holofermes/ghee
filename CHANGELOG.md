@@ -120,6 +120,19 @@
 - Draw a character followed by U+FE0F from the first font of its text with a
   colour glyph for it, so ❤️ draws in colour when an earlier font holds a
   plain heart.
+- Wait under a fixed `--timestep` for a lockstep scene process to answer
+  each tick, so the params and arrays sent for a tick land in that tick's
+  frame, where they landed a frame later. Message kind 5 ends an answer, and
+  `"lockstep": true` in the handshake promises one for every tick. The
+  Python shim does both.
+- Log once a param message from a scene process that names no param of the
+  scene or does not fit the param's type, where it changed nothing in
+  silence.
+- Raise ValueError from `ghee.set_param` in a Python scene for a param that
+  the scene does not declare or a value that does not fit its type, under
+  ghee as in direct mode.
+- Name the param in the type error of `set_param` and of the console, where
+  the error named a param 'v'.
 
 ## 0.4.0 - 2026-08-06
 

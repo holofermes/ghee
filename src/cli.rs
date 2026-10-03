@@ -291,6 +291,9 @@ fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
     // the process addresses the params of the final scene, filters included
     if let Some(fed) = process.as_mut() {
         fed.bind(&scene);
+        if a.timestep.is_some() {
+            fed.pin();
+        }
     }
     Ok((scene, process))
 }

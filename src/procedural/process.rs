@@ -8,7 +8,7 @@
 //!
 //! The render thread never blocks on the process.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_int;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -34,6 +34,9 @@ const PROBE_WAIT: Duration = Duration::from_secs(2);
 
 /// The handshake waits this long for the scene line.
 const HANDSHAKE_WAIT: Duration = Duration::from_secs(30);
+
+/// A pinned tick waits this long for a lockstep process to end its answer.
+const ANSWER_WAIT: Duration = Duration::from_secs(30);
 
 /// The stop sequence: closed stdin, then SIGTERM, then SIGKILL.
 const TERM_AFTER: Duration = Duration::from_secs(2);
@@ -85,6 +88,7 @@ const SET_PARAM: u8 = 1;
 const CLEAN: u8 = 2;
 const SET_STRING: u8 = 3;
 const SET_ARRAY_U8: u8 = 4;
+const END_TICK: u8 = 5;
 
 const SIGTERM: c_int = 15;
 
@@ -389,6 +393,8 @@ struct Inbox {
     params: Vec<(String, ParamData)>,
     /// The process calls these ticks clean.
     clean: u32,
+    /// The answers that the process ended with kind 5, one a tick.
+    ended: u64,
     /// stdout ended, so the process is gone.
     done: bool,
     /// A message ghee cannot read. The stream never resynchronizes.
@@ -480,6 +486,8 @@ pub struct SceneProcess {
     pub name: String,
     child: Child,
     inbox: Arc<Mutex<Inbox>>,
+    /// Woken with the inbox when an answer ends or stdout ends.
+    answered: Arc<Condvar>,
     outbox: Arc<(Mutex<Outbox>, Condvar)>,
     stderr: Arc<Mutex<String>>,
     /// The stderr drain. SceneFailure waits for it before it reads the tail.
@@ -501,6 +509,16 @@ pub struct SceneProcess {
     clean: u32,
     /// The process died. The scene stays in this error state.
     dead: Option<SceneFailure>,
+    /// The handshake said `"lockstep": true`: the process ends its answer to
+    /// every tick with kind 5.
+    lockstep: bool,
+    /// The loop pins time to a fixed step, so a tick waits for the answer of
+    /// a lockstep process.
+    pinned: bool,
+    /// The ticks handed to the writer, each one written to the process.
+    offered: u64,
+    /// The params already logged as refused, so each logs once.
+    refused: HashSet<String>,
 }
 
 impl SceneProcess {
@@ -526,6 +544,7 @@ impl SceneProcess {
             .map_err(|e| anyhow!("{path}: {e}"))?;
         crate::sources::record(path);
         let inbox = Arc::new(Mutex::new(Inbox::default()));
+        let answered = Arc::new(Condvar::new());
         let stderr = Arc::new(Mutex::new(String::new()));
         let outbox = Arc::new((Mutex::new(Outbox::default()), Condvar::new()));
         let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
@@ -534,12 +553,14 @@ impl SceneProcess {
             take_stdout(&mut child)?,
             tx,
             Arc::clone(&inbox),
+            Arc::clone(&answered),
         )];
         let stdin = take_stdin(&mut child)?;
         let mut process = SceneProcess {
             name: path.to_string(),
             child,
             inbox,
+            answered,
             outbox,
             stderr,
             errors: Some(errors),
@@ -552,6 +573,10 @@ impl SceneProcess {
             sent: HashMap::new(),
             clean: 0,
             dead: None,
+            lockstep: false,
+            pinned: false,
+            offered: 0,
+            refused: HashSet::new(),
         };
         // The wait here is the long one: the process starts an interpreter,
         // imports what it needs and builds its scene before it answers. Seconds
@@ -574,8 +599,45 @@ impl SceneProcess {
         })?;
         let mut scene = Scene::from_dict(&doc, Some(&dir), Some(path))?;
         scene.load_assets(&dir)?;
+        process.lockstep = doc.get("lockstep") == Some(&Value::Bool(true));
         process.writer = Some(write_ticks(stdin, Arc::clone(&process.outbox)));
         Ok((scene, process))
+    }
+
+    /// The loop pins time to a fixed step. A lockstep process then answers
+    /// each tick before the tick's frame draws.
+    pub fn pin(&mut self) {
+        self.pinned = true;
+    }
+
+    /// Wait until the process ended its answer to every tick offered, or
+    /// until stdout ends.
+    fn await_answers(&mut self, frame: u64) -> Result<()> {
+        let deadline = Instant::now() + ANSWER_WAIT;
+        let mut held = lock(&self.inbox);
+        while held.ended < self.offered && !held.done && held.fault.is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(anyhow!(
+                    "{}: did not end its answer to tick {frame} within {} s",
+                    self.name,
+                    ANSWER_WAIT.as_secs()
+                ));
+            }
+            held = self
+                .answered
+                .wait_timeout(held, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        Ok(())
+    }
+
+    /// Log a param message that changes nothing, once for each name.
+    fn refuse(&mut self, name: &str, why: &str) {
+        if self.refused.insert(name.to_string()) {
+            crate::report::warn(format!("{}: {why}, so it changes nothing", self.name));
+        }
     }
 
     /// Index the params of the compiled scene.
@@ -673,10 +735,13 @@ impl SceneProcess {
         if out.closed {
             return;
         }
-        if let Some(old) = out.pending.take() {
-            for (name, value) in old.params {
-                params.entry(name).or_insert(value);
+        match out.pending.take() {
+            Some(old) => {
+                for (name, value) in old.params {
+                    params.entry(name).or_insert(value);
+                }
             }
+            None => self.offered += 1,
         }
         out.pending = Some(Tick {
             frame,
@@ -740,6 +805,13 @@ impl SceneController for SceneProcess {
             return Err(anyhow!(dead.clone()));
         }
         self.offer(frame, t, dt);
+        if self.lockstep && self.pinned {
+            self.await_answers(frame)?;
+            self.drain();
+            if let Some(dead) = &self.dead {
+                return Err(anyhow!(dead.clone()));
+            }
+        }
         Ok(())
     }
 
@@ -756,19 +828,38 @@ impl SceneController for SceneProcess {
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
         for (name, data) in std::mem::take(&mut self.incoming) {
-            let Some((pass, ty)) = self.params.get(&name) else {
-                continue; // a param this scene does not hold
+            let Some((pass, ty)) = self.params.get(&name).cloned() else {
+                let why = format!("param '{name}' is not a param this scene declares");
+                self.refuse(&name, &why);
+                continue;
             };
             let value = match data {
-                ParamData::F32(values) => as_param(ty, &values),
-                ParamData::Str(text) => (ty == "string").then_some(ParamValue::Str(text)),
+                ParamData::F32(values) => as_param(&ty, &values).ok_or_else(|| match ty.as_str() {
+                    "string" => format!("string param '{name}' takes text, got numbers"),
+                    _ => format!(
+                        "{ty} param '{name}' takes {}, got {}",
+                        match arity(&ty) {
+                            1 => "a number".to_string(),
+                            n => format!("{n} numbers"),
+                        },
+                        values.len()
+                    ),
+                }),
+                ParamData::Str(text) => match ty.as_str() {
+                    "string" => Ok(ParamValue::Str(text)),
+                    _ => Err(format!("{ty} param '{name}' takes numbers, got text")),
+                },
             };
-            let Some(value) = value else {
-                continue;
+            let value = match value {
+                Ok(v) => v,
+                Err(why) => {
+                    self.refuse(&name, &why);
+                    continue;
+                }
             };
             // a dotted name carries its pass, and the uniform is the tail
             let param = name.rsplit_once('.').map_or(name.as_str(), |(_, p)| p);
-            renderer.set_param(pass.as_deref(), param, ty, &value)?;
+            renderer.set_param(pass.as_deref(), param, &ty, &value)?;
             // The process wrote this text itself, so no tick carries it back.
             if let (ParamValue::Str(text), Some(held)) = (&value, self.strings.get_mut(&name)) {
                 held.clone_from(text);
@@ -792,6 +883,15 @@ impl SceneController for SceneProcess {
         if self.strings.contains_key(name) {
             self.strings.insert(name.to_string(), value.to_string());
         }
+    }
+}
+
+/// How many numbers a param of type `ty` takes.
+fn arity(ty: &str) -> usize {
+    match ty {
+        "color" => 3,
+        "vec2" | "vec3" | "vec4" => ty[3..].parse().unwrap_or(1),
+        _ => 1,
     }
 }
 
@@ -883,6 +983,7 @@ fn read_stream(
     out: ChildStdout,
     first: Sender<String>,
     inbox: Arc<Mutex<Inbox>>,
+    answered: Arc<Condvar>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut out = BufReader::new(out);
@@ -893,21 +994,27 @@ fn read_stream(
             }
             _ => {
                 lock(&inbox).done = true;
+                answered.notify_all();
                 return;
             }
         }
-        if let Err(why) = messages(&mut out, &inbox) {
+        if let Err(why) = messages(&mut out, &inbox, &answered) {
             lock(&inbox).fault = why;
         }
         lock(&inbox).done = true;
+        answered.notify_all();
     })
 }
 
 /// kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE.
 /// Kind 4 carries count u8 bytes instead, and the value is byte / 255.
 /// Kind 3 carries count bytes of UTF-8 text.
-/// Kind 2 (clean) is the single byte.
-fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> {
+/// Kind 2 (clean) and kind 5 (the end of a tick's answer) are the single byte.
+fn messages(
+    out: &mut impl BufRead,
+    inbox: &Mutex<Inbox>,
+    answered: &Condvar,
+) -> Result<(), String> {
     loop {
         let mut kind = [0u8; 1];
         if out.read_exact(&mut kind).is_err() {
@@ -918,9 +1025,14 @@ fn messages(out: &mut impl BufRead, inbox: &Mutex<Inbox>) -> Result<(), String> 
             held.clean = held.clean.saturating_add(1);
             continue;
         }
+        if kind[0] == END_TICK {
+            lock(inbox).ended += 1;
+            answered.notify_all();
+            continue;
+        }
         if !matches!(kind[0], SET_ARRAY | SET_PARAM | SET_STRING | SET_ARRAY_U8) {
             return Err(format!(
-                "wrote message kind {} (0, 1, 2, 3 or 4 only)",
+                "wrote message kind {} (0, 1, 2, 3, 4 or 5 only)",
                 kind[0]
             ));
         }
@@ -1500,6 +1612,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
             stub.set.borrow().as_slice(),
             [(None, "words".to_string(), ParamValue::Str("hi".to_string()))]
         );
+        assert_eq!(f.refused, HashSet::from(["gain".to_string()]));
         f.tick(1, 0.0, 1.0 / 60.0).unwrap();
         ticks(&d, 2);
         f.on_param("words", "GHEE");
@@ -1508,6 +1621,93 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
         assert_eq!(seen[0]["params"], serde_json::json!({"words": "GHEE"}));
         assert_eq!(seen[1]["params"], serde_json::json!({}));
         assert_eq!(seen[2]["params"], serde_json::json!({"words": "GHEE"}));
+    }
+
+    /// A process that sends a param that the scene lacks, text to a float
+    /// param, and one number to a color.
+    const REFUSED_SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "params": {"gain": {"type": "float", "value": 0.0}, "tint": {"type": "color", "value": [0, 0, 0]}}, "passes": [{"name": "main", "code": "void main(){}"}]}'
+# kind 1, nope, the float 1.0
+printf '\001\004nope\001\000\000\000\000\000\200\077'
+# kind 3, gain, the text "x"
+printf '\003\004gain\001\000\000\000x'
+# kind 1, tint, the float 1.0
+printf '\001\004tint\001\000\000\000\000\000\200\077'
+while IFS= read -r line; do :; done
+"#;
+
+    #[test]
+    fn a_param_message_that_fits_no_param_is_refused_and_logged_once() {
+        let d = tmpdir("refused");
+        let path = script(&d, "refused", REFUSED_SCRIPT);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            f.incoming.len() == 3
+        }));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert!(stub.set.borrow().is_empty());
+        let mut refused: Vec<&str> = f.refused.iter().map(String::as_str).collect();
+        refused.sort_unstable();
+        assert_eq!(refused, ["gain", "nope", "tint"]);
+    }
+
+    /// A lockstep process. It answers each tick 0.2 s late with the frame
+    /// number as the text of `word`, then kind 5.
+    const LOCKSTEP_SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "lockstep": true, "params": {"word": {"type": "string", "value": ""}}, "passes": [{"name": "main", "code": "void main(){}"}]}'
+while IFS= read -r line; do
+    n=${line#*\"frame\":}; n=${n%%,*}; n=${n%%\}*}
+    sleep 0.2
+    printf '\003\004word\001\000\000\000%s\005' "$n"
+done
+"#;
+
+    #[test]
+    fn a_pinned_tick_waits_for_a_lockstep_answer_and_an_unpinned_one_draws_what_arrived() {
+        let d = tmpdir("lockstep");
+        let path = script(&d, "lockstep", LOCKSTEP_SCRIPT);
+        let word = |stub: &Stub| match stub.set.borrow().last() {
+            Some((_, _, ParamValue::Str(w))) => Some(w.clone()),
+            _ => None,
+        };
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        f.pin();
+        let stub = &mut Stub::default();
+        for frame in 0..3u64 {
+            f.tick(frame, frame as f64 / 60.0, 1.0 / 60.0).unwrap();
+            f.update(stub, frame, 0.0).unwrap();
+            assert_eq!(word(stub), Some(frame.to_string()));
+        }
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        let stub = &mut Stub::default();
+        f.tick(0, 0.0, 1.0 / 60.0).unwrap();
+        f.update(stub, 0, 0.0).unwrap();
+        assert_eq!(word(stub), None);
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            !f.incoming.is_empty()
+        }));
+        f.update(stub, 1, 0.0).unwrap();
+        assert_eq!(word(stub), Some("0".to_string()));
+    }
+
+    #[test]
+    fn a_pinned_tick_never_waits_on_a_process_that_is_not_lockstep() {
+        let d = tmpdir("free-pinned");
+        let path = script(&d, "free", FREE);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        f.pin();
+        let t = Instant::now();
+        for frame in 0..3u64 {
+            f.tick(frame, 0.0, 1.0 / 60.0).unwrap();
+        }
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     }
 
     #[test]
@@ -1712,7 +1912,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
         }
         let e = last.unwrap_err().to_string();
         assert!(
-            e.contains("wrote message kind 7 (0, 1, 2, 3 or 4 only)"),
+            e.contains("wrote message kind 7 (0, 1, 2, 3, 4 or 5 only)"),
             "{e}"
         );
     }

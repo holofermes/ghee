@@ -564,6 +564,9 @@ pub struct Renderer {
     /// The new words of each MTSDF text still waiting for their glyphs, by
     /// the text's name. The text draws its last words meanwhile.
     held: std::cell::RefCell<HashMap<String, Held>>,
+    /// The words that set_text last took for each text, shown or held, by
+    /// the text's name. The same words again lay out nothing.
+    words: std::cell::RefCell<HashMap<String, String>>,
     /// The colour atlas of each drawn text whose words held colour glyphs,
     /// by the text's name.
     colours: std::cell::RefCell<HashMap<String, ColourAtlas>>,
@@ -613,6 +616,7 @@ impl Renderer {
             text_errors_seq: std::cell::Cell::new(0),
             atlases: std::cell::RefCell::new(Vec::new()),
             held: std::cell::RefCell::new(HashMap::new()),
+            words: std::cell::RefCell::new(HashMap::new()),
             colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(false),
             atlas_font: Box::new(|fonts| Arc::new(text::AtlasFont(fonts.to_vec()))),
@@ -1020,6 +1024,7 @@ impl Renderer {
             self.text_errors_seq.set(self.text_errors_seq.get() + 1);
         }
         self.held.borrow_mut().clear();
+        self.words.borrow_mut().clear();
         // A colour atlas starts again with the words that need it.
         self.colours.borrow_mut().clear();
         self.set_atlases(scene)?;
@@ -1465,6 +1470,7 @@ impl Renderer {
 
     /// Lay out new words for the scene text `name` and upload them, with no
     /// recompile. Returns false when the scene holds no text of that name.
+    /// The words that the text already holds return at once.
     ///
     /// A text problem fails nothing: the text draws an error box for each
     /// character that it cannot draw, and words that fit no texture leave
@@ -1483,6 +1489,9 @@ impl Renderer {
         else {
             return Ok(false);
         };
+        if self.words.borrow().get(name).is_some_and(|w| w == words) {
+            return Ok(true);
+        }
         let laid = text.build(words)?;
         self.held.borrow_mut().remove(name);
         if laid.built.is_some() {
@@ -1497,11 +1506,17 @@ impl Renderer {
                         laid,
                     };
                     self.held.borrow_mut().insert(name.to_string(), held);
+                    self.words
+                        .borrow_mut()
+                        .insert(name.to_string(), words.to_string());
                     return Ok(true);
                 }
             }
         }
         self.show(text, laid)?;
+        self.words
+            .borrow_mut()
+            .insert(name.to_string(), words.to_string());
         Ok(true)
     }
 
@@ -2135,6 +2150,7 @@ impl Renderer {
         self.draws = Vec::new();
         self.feeds = Vec::new();
         self.held.borrow_mut().clear();
+        self.words.borrow_mut().clear();
         self.atlases.borrow_mut().clear();
         self.colours.borrow_mut().clear();
     }
@@ -4006,6 +4022,58 @@ mod tests {
             frame(&mut r) == drawn,
             "the error-box layer changed the frame"
         );
+    }
+
+    /// A text read by `label_cover` across the frame, set `align`.
+    fn cover_scene(words: &str, align: &str) -> Scene {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let mut sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "params": {"label": {"type": "string", "value": words}},
+                "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+                "texts": {"label": {"font": "sans", "align": align}},
+                "passes": [{"name": "main", "code": "void main(){ \
+                    float c = label_cover(v_texCoord * label_size, resolution.y / label_size.y); \
+                    gl_FragColor = vec4(c, c, c, 1.0); }"}],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(fonts).unwrap();
+        sc
+    }
+
+    #[test]
+    fn the_words_a_text_holds_lay_out_once() {
+        let Some((_g, mut r)) = gpu() else {
+            return;
+        };
+        let words = "the words a text holds\n".repeat(90);
+        assert_eq!(r.setup(&cover_scene(&words, "left")).unwrap(), "");
+        r.set_time(Some(0.0));
+        let left = still(&mut r);
+        let t = std::time::Instant::now();
+        assert!(r.set_text("label", "other words").unwrap());
+        assert!(r.set_text("label", &words).unwrap());
+        let layout = t.elapsed() / 2;
+        assert!(still(&mut r) == left);
+        let t = std::time::Instant::now();
+        for _ in 0..100 {
+            assert!(r.set_text("label", &words).unwrap());
+        }
+        let again = t.elapsed();
+        assert!(
+            again < layout * 10,
+            "100 sets of the words held took {again:?}, one layout {layout:?}"
+        );
+        assert!(still(&mut r) == left);
+        // A new setup lays the same words out for its own text.
+        assert_eq!(r.setup(&cover_scene("I\nIIIIII", "left")).unwrap(), "");
+        let left = still(&mut r);
+        assert_eq!(r.setup(&cover_scene("I\nIIIIII", "right")).unwrap(), "");
+        assert!(still(&mut r) != left);
     }
 
     #[test]

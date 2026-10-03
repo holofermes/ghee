@@ -114,6 +114,9 @@
 - Load the assets and shader files of a scene whose directory is `/`, such
   as a dict scene opened with `/` as the working directory, where every file
   was refused as outside the directory.
+- Return at once when a text's string param gets the words it holds, from
+  `set_param`, the console, the wire or the Python host, where each set laid
+  the words out and uploaded them again.
 
 ## 0.4.0 - 2026-08-06
 

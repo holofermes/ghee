@@ -274,6 +274,20 @@ def test_new_words_lay_out_on_the_next_frame(monkeypatch):
         assert h.pixels() == ghee_drawn
 
 
+def test_the_words_a_text_holds_lay_out_once(monkeypatch):
+    monkeypatch.chdir(REPO / "ghee" / "examples")
+    words = "the words a text holds\n" * 90
+    with ghee.open(WORDS, width=96, height=32, timestep=0) as h:
+        t = time.perf_counter()
+        h.set_param("words", words)
+        layout = time.perf_counter() - t
+        t = time.perf_counter()
+        for _ in range(100):
+            h.set_param("words", words)
+        again = time.perf_counter() - t
+    assert again < layout * 10, (again, layout)
+
+
 def test_words_past_the_texture_keep_the_last_words(monkeypatch, capfd):
     monkeypatch.chdir(REPO / "ghee" / "examples")
     with ghee.open(WORDS, width=96, height=32, timestep=0) as h:

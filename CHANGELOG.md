@@ -215,6 +215,9 @@
 - Hand a direct run's `@ghee.tick` the string params that the console
   changed, as the wire does, through `h.changed_params()`, where the tick's
   `params` stayed empty.
+- Ship type stubs for `ghee.open` and `Handle`, mark the package typed, and
+  type the closed string sets of the shim as `Literal`: a param's type, a
+  text's align and fill, a draw's blend and an arg's type.
 
 ## 0.4.0 - 2026-08-06
 

@@ -8,6 +8,7 @@ which is Python alone. python/README.md and docs/procedural.md hold them.
 from __future__ import annotations
 
 import importlib
+from typing import TYPE_CHECKING
 
 from ._shim import (
     Arg,
@@ -27,6 +28,9 @@ from ._shim import (
     skip,
     tick,
 )
+
+if TYPE_CHECKING:
+    from ._native import Handle, open
 
 __all__ = [
     "Arg",

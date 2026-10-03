@@ -870,6 +870,38 @@ def test_the_package_is_the_shim_plus_the_native_half():
     assert ghee.__version__
 
 
+def test_the_stubs_name_what_the_native_module_takes():
+    """The wheel marks itself typed, and _native.pyi gives open and each
+    Handle method the parameters that the module itself takes."""
+    import ast
+    import inspect
+    import pathlib
+
+    import ghee._native as native
+
+    here = pathlib.Path(native.__file__).parent
+    assert (here / "py.typed").is_file()
+    stub = ast.parse((here / "_native.pyi").read_text())
+
+    def params(fn):
+        a = fn.args
+        return [p.arg for p in a.posonlyargs + a.args + a.kwonlyargs if p.arg != "self"]
+
+    def runtime(fn):
+        return [p for p in inspect.signature(fn).parameters if p != "self"]
+
+    funcs = {f.name: f for f in stub.body if isinstance(f, ast.FunctionDef)}
+    assert params(funcs["open"]) == runtime(native.open)
+    (handle,) = [
+        c for c in stub.body if isinstance(c, ast.ClassDef) and c.name == "Handle"
+    ]
+    methods = {f.name: f for f in handle.body if isinstance(f, ast.FunctionDef)}
+    public = {n for n in dir(native.Handle) if not n.startswith("_")}
+    assert {n for n in methods if not n.startswith("_")} == public
+    for name in public - {"size", "components"}:
+        assert params(methods[name]) == runtime(getattr(native.Handle, name)), name
+
+
 def test_open_without_the_native_module_names_it(monkeypatch):
     """A shim run needs no native module. open() is what needs it."""
     import ghee

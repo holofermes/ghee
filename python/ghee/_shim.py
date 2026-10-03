@@ -40,7 +40,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -48,10 +48,16 @@ if TYPE_CHECKING:
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 
 
-_PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC)
-_ALIGNS = ("left", "center", "right")
-_FILLS = ("mtsdf", "slug")
-_BLENDS = ("over", "add", "replace")
+ParamType = Literal["float", "int", "bool", "color", "string", "vec2", "vec3", "vec4"]
+Align = Literal["left", "center", "right"]
+Fill = Literal["mtsdf", "slug"]
+Blend = Literal["over", "add", "replace"]
+ArgType = Literal["string", "int", "float", "size", "bool"]
+
+_PARAM_TYPES = get_args(ParamType)
+_ALIGNS = get_args(Align)
+_FILLS = get_args(Fill)
+_BLENDS = get_args(Blend)
 
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
 WIRE = "GHEE_WIRE"
@@ -75,7 +81,7 @@ class Param:
     """
 
     name: str
-    type: str
+    type: ParamType
     value: Any
     min: float | None = None
     max: float | None = None
@@ -210,7 +216,7 @@ class Draw:
     fragment: str | None = None
     vertex: str | None = None
     px_per_em: float | None = None
-    blend: str = "over"
+    blend: Blend = "over"
     pad: float = 0.0
     emoji: bool | None = None
     name: str | None = None
@@ -424,8 +430,8 @@ class Text:
     name: str
     font: str | os.PathLike[str] | list[str | os.PathLike[str]]
     value: str = ""
-    align: str = "left"
-    fill: str = "mtsdf"
+    align: Align = "left"
+    fill: Fill = "mtsdf"
     atlas: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
@@ -645,7 +651,7 @@ class Arg:
     """
 
     name: str
-    type: str = "string"
+    type: ArgType = "string"
     default: Any = None
     help: str = ""
 
@@ -812,7 +818,7 @@ class Tick:
     frame: int
     time: float
     dt: float
-    params: dict
+    params: dict[str, str]
 
 
 _FEEDS: dict = {}

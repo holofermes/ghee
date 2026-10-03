@@ -36,6 +36,7 @@ import json
 import numbers
 import os
 import signal
+import struct
 import sys
 import time
 from dataclasses import dataclass, field
@@ -656,7 +657,8 @@ def feed(name: str):
 
     The function takes the tick and returns the values.
     It returns None to leave the array as it stands.
-    A uint8 buffer goes out as bytes, and anything else as floats.
+    A uint8 buffer goes out as bytes, and any other buffer or iterable of
+    numbers as float32.
     """
 
     def hold(fn):
@@ -698,7 +700,8 @@ def set_param(
         text = value.encode("utf-8")
         _OUT.append(_message(3, wire, len(text), text))
         return
-    count, body = _f32((value,) if isinstance(value, numbers.Real) else value)
+    values = (value,) if isinstance(value, numbers.Real) else value
+    count, body = _f32(values, f"param '{wire}'")
     _OUT.append(_message(1, wire, count, body))
 
 
@@ -787,20 +790,65 @@ def _view(values):
         return None
 
 
-def _f32(values) -> tuple[int, bytes]:
-    """(count, little-endian f32 bytes).
+# the struct codes of one number each
+_NUMBER_CODES = "?bBhHiIlLqQnNefd"
 
-    A float32 buffer, such as a numpy array, copies straight out.
-    Any other iterable of numbers converts first.
+
+def _unpacked(mv: memoryview, what: str) -> tuple:
+    """The numbers in a buffer, in C order whatever its shape."""
+    fmt = mv.format
+    code = fmt.lstrip("@=<>!")
+    order = fmt[: len(fmt) - len(code)]
+    if len(code) == 1 and code in _NUMBER_CODES:
+        try:
+            return struct.unpack(
+                f"{order}{mv.nbytes // mv.itemsize}{code}", mv.tobytes()
+            )
+        except struct.error:
+            pass
+    raise ValueError(f"{what} takes numbers, got a buffer of format {fmt!r}")
+
+
+def _f32(values, what: str) -> tuple[int, bytes]:
+    """(count, little-endian f32 bytes) of a buffer or an iterable of numbers.
+
+    A float32 buffer copies straight out. Any other buffer converts value by
+    value, in C order whatever its shape and its type, and so does any other
+    iterable. `what` names the values in an error.
     """
-    if sys.byteorder == "little":
-        mv = _view(values)
-        if mv is not None and mv.format == "f" and mv.c_contiguous:
+    mv = _view(values)
+    if mv is not None:
+        if mv.format == "f" and sys.byteorder == "little":
             return mv.nbytes // 4, mv.tobytes()
-    a = array.array("f", values)
+        values = _unpacked(mv, what)
+    try:
+        items = values if isinstance(values, (list, tuple)) else list(values)
+    except TypeError:
+        items = None
+    if items is None or isinstance(values, str):
+        raise ValueError(
+            f"{what} takes a buffer or an iterable of numbers, "
+            f"got {type(values).__name__}"
+        )
+    try:
+        a = array.array("f", items)
+    except TypeError:
+        bad = next(x for x in items if not _converts(x))
+        raise ValueError(
+            f"{what} takes numbers, got {type(values).__name__} holding "
+            f"{type(bad).__name__}"
+        ) from None
     if sys.byteorder != "little":
         a.byteswap()
     return len(a), a.tobytes()
+
+
+def _converts(x) -> bool:
+    try:
+        array.array("f", [x])
+    except TypeError:
+        return False
+    return True
 
 
 def _array_message(name: str, values) -> tuple[int, bytes]:
@@ -810,14 +858,14 @@ def _array_message(name: str, values) -> tuple[int, bytes]:
     engine reads as byte / 255. `bytes`, a `bytearray` and a numpy array of
     dtype uint8 are such buffers. A large mask then costs a quarter of the
     bytes, and the engine uploads it with no conversion.
-    Anything else goes out as kind 0 floats.
+    Any other buffer or iterable of numbers goes out as kind 0 floats.
     """
     mv = _view(values)
     if mv is not None and mv.format == "B":
         # the message copies the body once. A view spares a mask a second copy.
         body = mv if mv.c_contiguous else mv.tobytes()
         return mv.nbytes, _message(4, name, mv.nbytes, body)
-    count, body = _f32(values)
+    count, body = _f32(values, f"feed '{name}'")
     return count, _message(0, name, count, body)
 
 

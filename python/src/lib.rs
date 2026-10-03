@@ -144,53 +144,36 @@ fn to_json(v: &Bound<'_, PyAny>) -> PyResult<Value> {
     )))
 }
 
-/// The values in a feed. A uint8 buffer reaches the texture as byte / 255,
-/// and a float32 buffer passes through. Any other sequence of numbers converts
-/// to float32.
+/// The values in a feed. A uint8 buffer reaches the texture as byte / 255.
+/// Any other buffer or iterable of numbers converts to float32 in the shim's
+/// `_f32`, the conversion that the wire takes too.
 ///
 /// The buffer protocol is no part of the stable ABI, so `bytes` reads straight
 /// out and any other exporter goes through a memoryview.
-fn fed(data: &Bound<'_, PyAny>) -> PyResult<Fed> {
+fn fed(name: &str, data: &Bound<'_, PyAny>) -> PyResult<Fed> {
     if let Ok(b) = data.cast::<PyBytes>() {
         return Ok(Fed::U8(b.as_bytes().to_vec()));
     }
-    let view = data
-        .py()
-        .import("builtins")?
-        .getattr("memoryview")?
-        .call1((data,));
+    let py = data.py();
+    let view = py.import("builtins")?.getattr("memoryview")?.call1((data,));
     if let Ok(view) = view {
-        return from_view(&view);
+        if view.getattr("format")?.extract::<String>()? == "B" {
+            let raw = view.call_method0("tobytes")?;
+            return Ok(Fed::U8(raw.cast::<PyBytes>()?.as_bytes().to_vec()));
+        }
     }
-    match data.extract::<Vec<f32>>() {
-        Ok(values) => Ok(Fed::F32(values)),
-        Err(_) => Err(PyValueError::new_err(format!(
-            "a feed takes a buffer of uint8 or float32 values, or numbers; got {}",
-            data.get_type().name()?
-        ))),
-    }
-}
-
-fn from_view(view: &Bound<'_, PyAny>) -> PyResult<Fed> {
-    if !view.getattr("c_contiguous")?.extract::<bool>()? {
-        return Err(PyValueError::new_err("a feed takes a contiguous buffer"));
-    }
-    let format: String = view.getattr("format")?.extract()?;
-    let raw = view.call_method0("tobytes")?;
-    let bytes = raw.cast::<PyBytes>()?;
-    let bytes = bytes.as_bytes();
-    match format.as_str() {
-        "B" => Ok(Fed::U8(bytes.to_vec())),
-        "f" => Ok(Fed::F32(
-            bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-                .collect(),
-        )),
-        other => Err(PyValueError::new_err(format!(
-            "a feed takes a uint8 or float32 buffer; this one is '{other}'"
-        ))),
-    }
+    let converted = py
+        .import("ghee._shim")?
+        .getattr("_f32")?
+        .call1((data, format!("feed '{name}'")))?;
+    let raw = converted.get_item(1)?;
+    Ok(Fed::F32(
+        raw.cast::<PyBytes>()?
+            .as_bytes()
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+    ))
 }
 
 fn tick_dict(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyDict>> {
@@ -314,9 +297,10 @@ impl Handle {
 
     /// Hold data for one declared array. The next frame consumes it once.
     ///
-    /// An array with no feed keeps what its texture holds.
+    /// `data` is a uint8 buffer, read as byte / 255, or any other buffer or
+    /// iterable of numbers. An array with no feed keeps what its texture holds.
     fn feed(&mut self, name: &str, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        let data = fed(data)?;
+        let data = fed(name, data)?;
         self.held.get()?.feed(name, data).map_err(fault)
     }
 

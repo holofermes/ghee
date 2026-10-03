@@ -10,7 +10,7 @@ import time
 import zlib
 
 import pytest
-from conftest import RED, REPO, VECS, near, quarters, scene_file
+from conftest import RED, REPO, VECS, near, numpy, quarters, scene_file
 
 import ghee
 
@@ -101,18 +101,30 @@ def test_vec_and_color_values_reach_the_shader():
             assert near(got, [[1, 0, 0], [0, 0.25, 1], [0.5, 1, 0], [0, 1, 0.5]]), got
 
 
-def test_a_feed_takes_any_buffer_of_values():
-    half = bytes([128] * 8)
-    for values in [LEVEL, [1.0] * 8, memoryview(bytes([255] * 8))]:
-        with ghee.open(RED, width=8, height=8) as h:
-            h.feed("level", values)
-            h.frame()
-            assert pixel(h)[0] == 255
-    # a uint8 buffer reaches the texture as byte / 255
+# (what a feed takes, and the red that it draws). A uint8 buffer
+# reaches the texture as byte / 255, and any other numbers as they are.
+FEEDS = {
+    "float32 array": (lambda: LEVEL, 255),
+    "list": (lambda: [1.0] * 8, 255),
+    "memoryview": (lambda: memoryview(bytes([255] * 8)), 255),
+    "bytes": (lambda: bytes([128] * 8), 128),
+    "uint8 slice": (lambda: numpy().full(16, 128, "uint8")[::2], 128),
+    "float64": (lambda: numpy().full(8, 0.5), 128),
+    "int64 2D": (lambda: numpy().ones((2, 4), "int64"), 255),
+    "float16": (lambda: numpy().full(8, 0.5, "float16"), 128),
+    "bool": (lambda: numpy().ones(8, bool), 255),
+    "array d": (lambda: array.array("d", [0.5] * 8), 128),
+    "generator": (lambda: (0.5 for _ in range(8)), 128),
+}
+
+
+@pytest.mark.parametrize("kind", FEEDS)
+def test_a_feed_takes_any_buffer_or_iterable_of_numbers(kind):
+    make, red = FEEDS[kind]
     with ghee.open(RED, width=8, height=8) as h:
-        h.feed("level", half)
+        h.feed("level", make())
         h.frame()
-        assert abs(pixel(h)[0] - 128) <= 2
+        assert abs(pixel(h)[0] - red) <= 1
 
 
 def test_the_next_frame_consumes_the_feed_once():

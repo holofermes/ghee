@@ -225,8 +225,9 @@ def test_a_feed_of_the_wrong_count():
 
 
 def test_a_feed_that_carries_no_numbers():
-    with ghee.open(RED, width=8, height=8) as h, pytest.raises(ValueError):
+    with ghee.open(RED, width=8, height=8) as h, pytest.raises(ValueError) as raised:
         h.feed("level", "eight")
+    assert str(raised.value).startswith("feed 'level' takes")
 
 
 def test_an_output_no_driver_answers_to():

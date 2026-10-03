@@ -7,6 +7,7 @@ state.
     pytest python/tests/test_shim.py
 """
 
+import array
 import importlib.util
 import io
 import itertools
@@ -16,6 +17,7 @@ import struct
 import sys
 
 import pytest
+from conftest import numpy
 
 SHIM = importlib.util.find_spec("ghee._shim").origin
 _names = itertools.count()
@@ -651,6 +653,72 @@ def test_a_uint8_buffer_goes_out_as_bytes(monkeypatch):
     assert messages(rest) == [(4, "v", [0, 64, 128, 255]), END]
     # kind, name_len, name, count, bytes, then the end of the answer
     assert len(rest) == 1 + 1 + 1 + 4 + 4 + 1
+
+
+QUARTERS = [0.25, 0.5, 0.75, 1.0]
+
+# (what a feed returns, and the floats that go out)
+NUMBERS = {
+    "float64 2D": (lambda: numpy().array([[0.25, 0.5], [0.75, 1.0]]), QUARTERS),
+    "int64": (lambda: numpy().arange(4, dtype="int64"), [0.0, 1.0, 2.0, 3.0]),
+    "float16": (lambda: numpy().array(QUARTERS, "float16"), QUARTERS),
+    "bool": (lambda: numpy().array([True, False, True, True]), [1.0, 0.0, 1.0, 1.0]),
+    "float64 slice": (lambda: numpy().arange(8.0)[::2], [0.0, 2.0, 4.0, 6.0]),
+    "float32 slice": (lambda: numpy().arange(8, dtype="float32")[1::2], [1, 3, 5, 7]),
+    "array d": (lambda: array.array("d", QUARTERS), QUARTERS),
+    "list of ints": (lambda: [0, 1, 2, 3], [0.0, 1.0, 2.0, 3.0]),
+    "generator": (lambda: (n / 4 for n in range(1, 5)), QUARTERS),
+}
+
+
+@pytest.mark.parametrize("kind", NUMBERS)
+def test_a_feed_of_any_numbers_goes_out_as_float32(kind, monkeypatch):
+    shim = load()
+    make, want = NUMBERS[kind]
+
+    @shim.feed("v")
+    def v(tick):
+        return make()
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
+    assert messages(rest) == [(0, "v", want), END]
+
+
+# (what a feed returns, and the error that it raises)
+NOT_NUMBERS = {
+    "str": (
+        lambda: "four",
+        "feed 'v' takes a buffer or an iterable of numbers, got str",
+    ),
+    "float": (
+        lambda: 0.5,
+        "feed 'v' takes a buffer or an iterable of numbers, got float",
+    ),
+    "list holding str": (
+        lambda: [0.25, "half", 0.75, 1.0],
+        "feed 'v' takes numbers, got list holding str",
+    ),
+    "complex": (
+        lambda: numpy().zeros(4, "complex128"),
+        "feed 'v' takes numbers, got a buffer of format 'Zd'",
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", NOT_NUMBERS)
+def test_a_feed_of_anything_but_numbers_says_what_it_got(kind, monkeypatch):
+    shim = load()
+    make, error = NOT_NUMBERS[kind]
+
+    @shim.feed("v")
+    def v(tick):
+        return make()
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    with pytest.raises(ValueError) as raised:
+        drive(shim, scene_of(shim), ticks, monkeypatch)
+    assert str(raised.value) == error
 
 
 def test_bytes_go_out_as_bytes_and_floats_stay_floats(monkeypatch):

@@ -84,6 +84,11 @@ def scene_file(tmp_path, doc, name="s.scene.json"):
     return str(path)
 
 
+def numpy():
+    """numpy, or a skip of the test that asks for it."""
+    return pytest.importorskip("numpy")
+
+
 @pytest.fixture
 def red():
     return dict(RED)

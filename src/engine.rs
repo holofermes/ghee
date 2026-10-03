@@ -2009,7 +2009,7 @@ impl Renderer {
                 // shares.
                 Fault::Font(why) => {
                     if fresh(format!("font\0{why}")) {
-                        crate::report::warn(why);
+                        crate::report::error(why);
                     }
                     why.clone()
                 }
@@ -2021,7 +2021,7 @@ impl Renderer {
                         .filter(|c| fresh(format!("ink\0{name}\0{c}")))
                         .collect();
                     if !new.is_empty() {
-                        crate::report::warn(no_outline(*f, &new));
+                        crate::report::error(no_outline(*f, &new));
                     }
                     no_outline(*f, chars)
                 }
@@ -2029,7 +2029,7 @@ impl Renderer {
                 Fault::Layout(why) => format!("text '{name}': {why}"),
             };
             if !matches!(f, Fault::Font(_) | Fault::NoOutline(..)) && fresh(line.clone()) {
-                crate::report::warn(&line);
+                crate::report::error(&line);
             }
             match f {
                 Fault::Layout(_) => now.refused = Some(line),

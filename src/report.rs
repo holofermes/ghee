@@ -77,6 +77,12 @@ pub fn detail(label: &str, text: impl AsRef<str>) {
     }
 }
 
+/// Something is wrong, and the run carries on: a text that draws error
+/// boxes. Every level says it, `--quiet` too.
+pub fn error(text: impl AsRef<str>) {
+    say("error", text.as_ref());
+}
+
 /// The run carried on through this, and the reader would want to know.
 pub fn warn(text: impl AsRef<str>) {
     if level() >= NORMAL {

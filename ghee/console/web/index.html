@@ -21,6 +21,7 @@
     --err-bg:#fdf0ef; --err-line:#f3d4d0;
     --warn:#8a5a12; --warn-bg:#fbf1de; --warn-line:#ecd9ae;
     --shadow:0 1px 2px rgba(20,20,16,.05), 0 6px 20px rgba(20,20,16,.05);
+    --scrim:rgba(20,20,16,.32);
     --r:12px;
   }
   html[data-theme="dark"]{
@@ -32,6 +33,7 @@
     --err-bg:#2a1a18; --err-line:#5a322c;
     --warn:#e7c078; --warn-bg:#2b2214; --warn-line:#4e3d1e;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 22px rgba(0,0,0,.4);
+    --scrim:rgba(0,0,0,.55);
   }
   *{box-sizing:border-box}
   html,body{margin:0; height:100%; overscroll-behavior-x:none}
@@ -311,6 +313,16 @@
     .grow>pre, .grow>textarea{font-size:15px; padding:9px 10px}
     .field>.k{padding-top:10px}
   }
+  /* the question before a removal, over a scrim that cancels it */
+  .ask{position:fixed; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; padding:18px; background:var(--scrim)}
+  .ask[hidden]{display:none}
+  .ask .card{width:100%; max-width:340px}
+  .ask .q{margin:0 0 14px; font-size:14px; overflow-wrap:anywhere}
+  .ask .acts{display:flex; gap:8px; justify-content:flex-end}
+  @media (pointer:coarse){
+    .ask .q{font-size:15px}
+    .ask .acts button{min-height:44px; padding:0 18px; font-size:15px}
+  }
   @media (max-width:640px){
     html,body{height:auto}
     body{height:auto; overflow:auto; display:block; padding:12px}
@@ -411,6 +423,16 @@
     <div class="edhead" id="fragmentHead" title="fragment GLSL: a void main() that writes colour premultiplied by alpha" hidden>fragment</div>
     <div class="editor" id="codeEd"><pre aria-hidden="true"></pre><textarea id="code" spellcheck="false"></textarea><div class="errmark"></div></div>
     <div class="err" id="err"></div>
+  </div>
+</div>
+
+<div class="ask" id="ask" role="dialog" aria-modal="true" aria-labelledby="askText" hidden>
+  <div class="panel card">
+    <p class="q" id="askText"></p>
+    <div class="acts">
+      <button id="askNo">cancel</button>
+      <button class="primary" id="askYes">remove</button>
+    </div>
   </div>
 </div>
 
@@ -981,9 +1003,9 @@ function addLayer(i){
   buildTabs(); buildChannels(); loadCode();
 }
 
-function delLayer(i, k){
+async function delLayer(i, k){
   const p = work.passes[i];
-  if (!confirm(`Remove layer ${layerTabName(p, k)}?`)) return;
+  if (!await ask(`Remove layer ${layerTabName(p, k)}?`) || work.passes[i] !== p) return;
   p.layers.splice(k, 1);
   if (!p.layers.length) delete p.layers;
   p.layersEdited = true;
@@ -1144,6 +1166,34 @@ function renamePass(i, lbl){
   lbl.replaceWith(inp); inp.focus(); inp.select();
 }
 
+// A yes or no in the page's own dialog, resolved true on remove. Focus starts
+// on cancel, Escape and a tap on the scrim cancel, Enter removes, and Tab
+// stays between the two buttons.
+let answer = null, askedFrom = null;
+function ask(question){
+  $("#askText").textContent = question;
+  askedFrom = document.activeElement;
+  $("#ask").hidden = false;
+  $("#askNo").focus();
+  return new Promise(done => { answer = done; });
+}
+function answered(yes){
+  if (!answer) return;
+  const done = answer;
+  answer = null;
+  $("#ask").hidden = true;
+  if (askedFrom && askedFrom.isConnected) askedFrom.focus();
+  done(yes);
+}
+$("#askNo").addEventListener("click", ()=> answered(false));
+$("#askYes").addEventListener("click", ()=> answered(true));
+$("#ask").addEventListener("click", e=>{ if (e.target === $("#ask")) answered(false); });
+$("#ask").addEventListener("keydown", e=>{
+  if (e.key === "Escape"){ e.preventDefault(); answered(false); }
+  else if (e.key === "Enter"){ e.preventDefault(); answered(true); }
+  else if (e.key === "Tab"){ e.preventDefault(); (document.activeElement === $("#askNo") ? $("#askYes") : $("#askNo")).focus(); }
+});
+
 // An empty name leaves the layer to go by its text. The server judges the
 // name, and its refusal shows under the editor.
 function renameLayer(i, k, lbl){
@@ -1169,8 +1219,8 @@ function addCommon(){
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
-function delCommon(){
-  if (!confirm("Remove the common block?")) return;
+async function delCommon(){
+  if (!await ask("Remove the common block?") || !hasCommon()) return;
   delete work.common;
   if (onCommon()) curPass = 0;
   curLayer = null;
@@ -1185,10 +1235,10 @@ function addPass(){
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
-function delPass(i){
+async function delPass(i){
   if (work.passes.length <= 1) return;
-  const name = work.passes[i].name, filt = work.passes[i].filter, n = (work.passes[i].layers || []).length;
-  if (!confirm(`Remove pass ${name}${n > 1 ? ` and its ${n} layers` : n ? " and its layer" : ""}?`)) return;
+  const p = work.passes[i], name = p.name, filt = p.filter, n = (p.layers || []).length;
+  if (!await ask(`Remove pass ${name}${n > 1 ? ` and its ${n} layers` : n ? " and its layer" : ""}?`) || work.passes[i] !== p) return;
   work.passes.splice(i,1);
   if (filt && Array.isArray(work.filters)){
     const fi = work.filters.indexOf(filt);

@@ -169,7 +169,8 @@
   box of fixed height, and keep a compile error in sight under it.
 - Open a console tab with a tap anywhere on it, keep the mute and remove
   buttons on the open tab alone, apart from its label, and ask before a
-  pass, a layer or the common block goes.
+  pass, a layer or the common block goes, in a dialog of the console's own
+  where Escape cancels and Enter removes.
 - Show each text of a scene in the console's texts panel, with the layers
   and the passes that read it: its words, applied live, and its font and
   align, applied through the scene. The words leave the parameters.

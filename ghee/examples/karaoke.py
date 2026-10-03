@@ -81,7 +81,11 @@ void main() {
     vec2 mirror = vec2(uv.x + 0.004 * sin(depth * 90.0 - time * 3.0),
                        2.0 * horizon - uv.y);
     vec4 words = texture2D(iChannel0, uv);
-    vec4 shine = texture2D(iChannel0, mirror) * 0.45 * (1.0 - depth * 2.0);
+    // On VC4 a short pass that reads a texture, then selects on a compare,
+    // can draw wrong 4x4 blocks when it runs on two threads. Its last read
+    // inside an `if` keeps it on one.
+    vec4 shine = vec4(0.0);
+    if (gl_FragCoord.x >= 0.0) shine = texture2D(iChannel0, mirror) * 0.45 * (1.0 - depth * 2.0);
 
     vec3 night = mix(vec3(0.02, 0.02, 0.07), vec3(0.12, 0.06, 0.20), uv.y / horizon);
     vec3 water = vec3(0.01, 0.02, 0.06);

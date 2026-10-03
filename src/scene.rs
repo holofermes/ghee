@@ -3621,7 +3621,10 @@ mod tests {
         let e = crate::filters::apply_filters(&mut sc, &["esc".to_string()], Some(&reg))
             .unwrap_err()
             .to_string();
-        assert!(e.ends_with("is outside the filter directory"), "{e}");
+        assert_eq!(
+            e,
+            "filter 'esc' asset 'm' file '../m.raw' is outside the filter directory"
+        );
     }
 
     #[test]

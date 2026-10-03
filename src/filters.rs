@@ -300,11 +300,11 @@ fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
 /// filter came from, and never outside it.
 fn resolve_asset(asset: &mut Asset, fd: &Value) -> Result<()> {
     let filter = &asset.from_filter;
+    let name = asset.local_name().to_string();
     let Some(dir) = fd.get(DIR_KEY).and_then(Value::as_str) else {
         let Some((_, bytes)) = BUILTIN_ASSETS.iter().find(|(f, _)| *f == asset.file) else {
             bail!(
-                "filter '{filter}' asset '{}': {} is not a shipped file",
-                asset.name,
+                "filter '{filter}' asset '{name}': {} is not a shipped file",
                 asset.file
             );
         };
@@ -315,12 +315,11 @@ fn resolve_asset(asset: &mut Asset, fd: &Value) -> Result<()> {
     let path = normpath(&join(&root, &asset.file));
     if path == root || !inside(&path, &root) {
         bail!(
-            "filter '{filter}' asset '{}' file {} is outside the filter directory",
-            asset.name,
+            "filter '{filter}' asset '{name}' file '{}' is outside the filter directory",
             asset.file
         );
     }
-    let what = format!("filter '{filter}' asset '{}' ({path})", asset.name);
+    let what = format!("filter '{filter}' asset '{name}' ({path})");
     let io = |e: std::io::Error| anyhow::anyhow!("{what}: {}", strerror(&e));
     let meta = std::fs::metadata(&path).map_err(io)?;
     let stamp = (meta.modified().ok(), meta.len());

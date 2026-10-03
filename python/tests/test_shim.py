@@ -178,6 +178,39 @@ def test_the_scene_json_is_the_recorded_json():
     assert json.dumps(built) == json.dumps(RECORDED)  # key order too
 
 
+def test_params_take_a_list_or_a_dict_keyed_by_name():
+    shim = load()
+    gain, level = shim.Param("gain", "float", 1.0), shim.Param("level", "int", 2)
+    keyed = {"gain": gain.to_dict(), "level": level.to_dict()}
+    for params in ([gain, level], {"gain": gain, "level": level}):
+        doc = shim.Scene(
+            passes=[shim.Pass("main", "void main(){}", params=params)], params=params
+        ).to_dict()
+        assert doc["params"] == keyed
+        assert doc["passes"][0]["params"] == keyed
+
+
+@pytest.mark.parametrize(
+    "owner,params,error",
+    [
+        ("scene", "dict", "scene param 'level' sits under the key 'gain'"),
+        ("pass", "dict", "param 'level' in pass 'main' sits under the key 'gain'"),
+        ("scene", "list", "scene param 'level' is declared twice"),
+        ("pass", "list", "param 'level' in pass 'main' is declared twice"),
+    ],
+)
+def test_a_param_under_another_name_or_twice_is_refused(owner, params, error):
+    shim = load()
+    level = shim.Param("level", "float", 1.0)
+    given = {"gain": level} if params == "dict" else [level, level]
+    with pytest.raises(ValueError) as raised:
+        if owner == "scene":
+            shim.Scene(params=given)
+        else:
+            shim.Pass("main", "void main(){}", params=given)
+    assert str(raised.value) == error
+
+
 def test_an_array_declares_its_size_and_its_count():
     shim = load()
     flat, grid = shim.ArrayInput("bins", 16), shim.ArrayInput("mask", [8, 4])

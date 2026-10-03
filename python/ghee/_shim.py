@@ -117,6 +117,22 @@ class Param:
         return d
 
 
+def _keyed(params: dict[str, Param] | list[Param], what) -> dict[str, Param]:
+    """`params` keyed by name, as the document keys them. `what(name)` says
+    whose param that name is."""
+    if isinstance(params, dict):
+        for k, p in params.items():
+            if k != p.name:
+                raise ValueError(f"{what(p.name)} sits under the key '{k}'")
+        return params
+    keyed: dict[str, Param] = {}
+    for p in params:
+        if p.name in keyed:
+            raise ValueError(f"{what(p.name)} is declared twice")
+        keyed[p.name] = p
+    return keyed
+
+
 @dataclass
 class ArrayInput:
     """A named float input for the scene to fill.
@@ -227,17 +243,24 @@ class Pass:
     a pass that reads it far smaller than its size samples it smooth.
     `layers` draw texts into the pass's buffer after its code, in order.
     A pass with layers and no code starts each frame transparent.
+    `params` holds the Params of this pass alone, in a list or in a dict keyed
+    by their names.
     """
 
     name: str
     code: str = ""
     arrays: list[ArrayInput] = field(default_factory=list)
     channels: list[Channel] = field(default_factory=list)
-    params: dict[str, Param] = field(default_factory=dict)
+    params: dict[str, Param] | list[Param] = field(default_factory=dict)
     filter: str = ""
     size: tuple[int, int] | None = None
     layers: list[Layer] = field(default_factory=list)
     mipmaps: bool = False
+
+    def __post_init__(self) -> None:
+        self.params = _keyed(
+            self.params, lambda n: f"param '{n}' in pass '{self.name}'"
+        )
 
     def to_dict(self) -> dict:
         out: dict = {"name": self.name}
@@ -323,7 +346,8 @@ class Text:
 class Scene:
     """The passes in render order, plus what they share.
 
-    A scene param reaches every pass.
+    `params` holds the Params that reach every pass, in a list or in a dict
+    keyed by their names.
     `common` is GLSL that ghee puts in front of each pass.
     `filters` are named post-process passes that ghee appends after the
     scene's own.
@@ -337,12 +361,13 @@ class Scene:
     passes: list[Pass] = field(default_factory=list)
     version: int = 1
     filters: list[str] = field(default_factory=list)
-    params: dict[str, Param] = field(default_factory=dict)
+    params: dict[str, Param] | list[Param] = field(default_factory=dict)
     common: str | None = None
     assets: list[Asset] = field(default_factory=list)
     texts: list[Text] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        self.params = _keyed(self.params, lambda n: f"scene param '{n}'")
         for kind, named in (("asset", self.assets), ("text", self.texts)):
             names = [x.name for x in named]
             for n in names:

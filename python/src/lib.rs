@@ -201,9 +201,9 @@ fn tick_dict(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyDict>> {
     Ok(d)
 }
 
-/// The scene named by a caller: a path, a JSON document, or the JSON text of
-/// one. A document's files resolve in `base_dir`, else in the working
-/// directory.
+/// The scene named by a caller: a path, a JSON document, the JSON text of
+/// one, or a ghee.Scene. A document's files resolve in `base_dir`, else in
+/// the working directory.
 fn source_of(scene: &Bound<'_, PyAny>, base_dir: Option<PathBuf>) -> PyResult<Source> {
     let dir = base_dir.map_or(".".to_string(), |d| d.to_string_lossy().into_owned());
     let doc = |doc: Value| Source::Doc {
@@ -212,6 +212,10 @@ fn source_of(scene: &Bound<'_, PyAny>, base_dir: Option<PathBuf>) -> PyResult<So
     };
     if scene.cast::<PyDict>().is_ok() {
         return Ok(doc(to_json(scene)?));
+    }
+    let shim = scene.py().import("ghee._shim")?.getattr("Scene")?;
+    if scene.is_instance(&shim)? {
+        return Ok(doc(to_json(&scene.call_method0("to_dict")?)?));
     }
     if let Ok(s) = scene.extract::<String>() {
         if s.trim_start().starts_with('{') {
@@ -225,7 +229,7 @@ fn source_of(scene: &Bound<'_, PyAny>, base_dir: Option<PathBuf>) -> PyResult<So
         return Ok(Source::Path(p.to_string_lossy().into_owned()));
     }
     Err(PyValueError::new_err(format!(
-        "scene takes a path, a JSON string or a dict; got {}",
+        "scene takes a path, a JSON string, a dict or a ghee.Scene; got {}",
         scene.get_type().name()?
     )))
 }
@@ -368,7 +372,8 @@ impl Handle {
 
 /// Open a scene and render it.
 ///
-/// `scene` is a path to a .scene.json, the JSON text of a scene, or a dict.
+/// `scene` is a path to a .scene.json, the JSON text of a scene, a dict, or a
+/// ghee.Scene.
 /// `output` names a display driver as `ghee render --display` takes it, or
 /// "kms" for the connected display. None renders headless, and pixels() reads
 /// the frame back.
@@ -378,8 +383,8 @@ impl Handle {
 /// `fps` caps the pace. None runs free.
 /// `timestep` pins time to frame*S, so a render repeats bit for bit.
 /// `alpha` keeps the output pass's alpha in pixels(), opaque without it.
-/// `base_dir` is where a scene given as a dict or as JSON text finds its
-/// files, the working directory when None.
+/// `base_dir` is where a scene given as a dict, as JSON text or as a
+/// ghee.Scene finds its files, the working directory when None.
 /// `stats` serves the ghee console on that port, on 127.0.0.1. A (host, port)
 /// pair binds it elsewhere. `stream_max` caps the console's h264 stream on
 /// its longest side: pixels, or a fraction of the render size.

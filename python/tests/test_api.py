@@ -2,6 +2,7 @@
 
 import array
 import json
+import pathlib
 import shutil
 import threading
 import time
@@ -348,6 +349,30 @@ def test_a_dict_scene_finds_its_font_in_base_dir_else_the_working_directory(
         with ghee.open(WORDS, width=96, height=32, timestep=0, base_dir=base_dir) as h:
             h.frame()
             assert h.pixels() == want
+
+
+def test_open_takes_a_ghee_scene_and_a_path_like(tmp_path):
+    """A ghee.Scene renders as its dict does, and a pathlib path as its str."""
+    (tmp_path / "fonts").mkdir()
+    shutil.copy(REPO / "ghee" / "examples" / FONT, tmp_path / "fonts")
+    scene = ghee.Scene(
+        assets=[ghee.Asset("sans", pathlib.Path(FONT))],
+        texts=[ghee.Text("words", "sans", "ghee")],
+        passes=[ghee.Pass("main", WORDS["passes"][0]["code"])],
+    )
+    assert scene.to_dict()["assets"] == {"sans": {"file": FONT}}
+    frames = []
+    for source in (scene, scene.to_dict()):
+        with ghee.open(source, width=96, height=32, timestep=0, base_dir=tmp_path) as h:
+            h.frame()
+            frames.append(h.pixels())
+    with ghee.open(
+        pathlib.Path(scene_file(tmp_path, WORDS)), width=96, height=32, timestep=0
+    ) as h:
+        h.frame()
+        frames.append(h.pixels())
+    assert frames[0] == frames[1] == frames[2]
+    assert max(frames[0][0::4]) == 255
 
 
 def test_a_scene_file_resolves_its_font_beside_itself(tmp_path):

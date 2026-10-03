@@ -363,9 +363,11 @@ class Asset:
     """
 
     name: str
-    file: str
+    file: str | os.PathLike[str]
 
     def __post_init__(self) -> None:
+        if isinstance(self.file, os.PathLike):
+            self.file = os.fspath(self.file)
         if not isinstance(self.file, str) or not self.file:
             raise ValueError(
                 f"asset '{self.name}' 'file' needs a filename, got {self.file!r}"
@@ -404,15 +406,21 @@ class Text:
     """
 
     name: str
-    font: str | list[str]
+    font: str | os.PathLike[str] | list[str | os.PathLike[str]]
     value: str = ""
     align: str = "left"
     fill: str = "mtsdf"
     atlas: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.font, os.PathLike):
+            self.font = os.fspath(self.font)
         if isinstance(self.font, tuple):
             self.font = list(self.font)
+        if isinstance(self.font, list):
+            self.font = [
+                os.fspath(f) if isinstance(f, os.PathLike) else f for f in self.font
+            ]
         fonts = self.font if isinstance(self.font, list) else [self.font]
         if not fonts or not all(isinstance(f, str) and f for f in fonts):
             raise ValueError(

@@ -19,7 +19,7 @@ To use the `ghee` renderer:
 import ghee
 
 h = ghee.open(
-    "scene.json",      # a path, the JSON text of a scene, or a dict
+    "scene.json",      # a path, the JSON text of a scene, a dict, or a ghee.Scene
     output="st7789",   # a driver name, "kms", or None for headless
     opts={"width": 240, "height": 240, "backlight": 26},
     width=None, height=None,   # a headless size, a panel states its own
@@ -29,7 +29,7 @@ h = ghee.open(
     verbose=False,
     timestep=None,     # pin time to frame*S for a reproducible render
     alpha=False,       # keep the output pass's alpha in pixels()
-    base_dir=None,     # where a dict or JSON text scene finds its files
+    base_dir=None,     # where a scene given as no path finds its files
 )
 
 h.set_param("gain", 1.5)                 # a scene param
@@ -55,8 +55,8 @@ text sets its words, and ghee lays them out again, also with no recompile.
 
 A scene file finds its files beside itself, and a Python scene beside its
 script, under ghee and in [direct mode](#direct-mode) alike. A scene given
-as a dict or as JSON text finds them in `base_dir`, the working directory
-by default. A file absent there resolves through `$GHEE_ASSETS`,
+as a dict, as JSON text or as a `ghee.Scene` finds them in `base_dir`, the
+working directory by default. A file absent there resolves through `$GHEE_ASSETS`,
 colon-separated directories.
 
 `feed` holds the data for one declared array, and the next frame consumes

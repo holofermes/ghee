@@ -199,6 +199,9 @@
   1024x2048 texture nor the 64 curves of a band.
 - Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
   `feeds`, `isf`, `report` and `sources` modules inside the crate.
+- Take a `ghee.Scene` in `ghee.open`, and an `os.PathLike` wherever the
+  Python API takes a path: `ghee.open`, `base_dir`, an asset's file and a
+  text's fonts.
 
 ## 0.4.0 - 2026-08-06
 

@@ -5,8 +5,8 @@
 //! text that names no font draws from the built-in font, DejaVu Sans cut to
 //! Latin. Every pass of the scene except a filter pass then reads the
 //! coverage of those words at any point with `<name>_cover(p, font_size)`.
-//! The scene declares the string param of the text's name, which holds the
-//! words, and they change with the param, live, with no recompile.
+//! ghee declares a scene string param under the text's name, which holds
+//! the words. A set of that param changes the words live, with no recompile.
 //!
 //! A layer, declared on a pass, puts a text into that pass's buffer after the
 //! pass's own quad, as one quad over each inked glyph. The layer's

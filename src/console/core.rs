@@ -695,7 +695,8 @@ pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
 }
 
 /// The type of a param in a scene document, or None when the scope holds no
-/// param of that name. A text declares the scene string param of its name.
+/// param of that name. ghee declares a scene string param under each text's
+/// name.
 pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
     if scope == Scope::Scene && doc.get("texts").and_then(|t| t.get(name)).is_some() {
         return Some("string".to_string());

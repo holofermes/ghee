@@ -106,8 +106,9 @@ class Param:
     The scene, the console and the scene process name it the same way.
     A color is [r, g, b] in 0..1.
     A vecK is K numbers.
-    A string reaches the scene process in the tick line, and a Text of its
-    name draws it.
+    A string never reaches a shader: the scene process reads it in the tick
+    line. ghee declares the string param of each Text's name itself, and a
+    Param under that name fails the scene.
     """
 
     name: str

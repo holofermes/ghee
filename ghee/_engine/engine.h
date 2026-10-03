@@ -122,14 +122,14 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name);
 // channels, arrays and assets under the same names, and `ghee_vflip` as the shared
 // quad vertex shader does. Blending composes premultiplied colour: over is
 // src + dst * (1 - src.a), add is src + dst, replace is src. The alpha channel
-// blends the same way, and keep_alpha leaves the buffer's alpha as it was.
+// blends the same way.
 enum { GHEE_BLEND_OVER, GHEE_BLEND_ADD, GHEE_BLEND_REPLACE };
 // Staged like ghee_mp_add_pass: `pass` is a pending pass, the commit keeps the
 // returned index, and an abort drops the layer. `name` stands for the layer in
 // the errors of later calls. An error of this call leaves the name out, as a
 // compile error does, and its caller names the layer. -1 = refused.
 int  ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
-                       const char *fragment_source, int blend, int keep_alpha);
+                       const char *fragment_source, int blend);
 // The quads of a committed layer: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.
 bool ghee_mp_set_layer_quads(GheeScene *g, int layer, const float *data, int quads, int nattr);

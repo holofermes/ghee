@@ -182,7 +182,7 @@ centred on black:
     )
 
 `ghee.Draw(text, fragment=None, vertex=None, px_per_em=None, blend="over",
-pad=0.0, alpha="blend", emoji=None)`:
+pad=0.0, emoji=None)`:
 
 - `text` names a `ghee.Text` of the scene.
 - `fragment` holds a `void main()` that writes colour premultiplied by
@@ -196,7 +196,6 @@ pad=0.0, alpha="blend", emoji=None)`:
 - `blend` is `"over"`, `"add"` or `"replace"`.
 - `pad` is how far past the letters the draw reaches, in em, for a glow or
   an outline.
-- `alpha` is `"blend"`, and `"keep"` leaves the pass's alpha as it was.
 - `emoji` sets whether the draw paints the text's colour glyphs. `None`
   leaves them to the last draw of the text in its pass, so a shadow drawn
   under the fill paints no copy.

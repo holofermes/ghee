@@ -125,15 +125,6 @@ impl Blend {
     }
 }
 
-/// What a layer does to its pass's alpha.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Alpha {
-    /// The alpha blends the way the colour does.
-    Blend,
-    /// The pass's alpha stays as it was.
-    Keep,
-}
-
 /// A layer for ghee_mp_add_layer, as engine.h describes it, that a caller
 /// hands setup_layers(). A scene draw takes two or three engine layers of its
 /// own: the draw, its colour glyphs when it paints them, and its error boxes.
@@ -144,7 +135,6 @@ pub(crate) struct Layer {
     pub vertex: String,
     pub fragment: String,
     pub blend: Blend,
-    pub alpha: Alpha,
 }
 
 /// A scene draw that the engine holds as a layer, and the layers of its
@@ -889,7 +879,6 @@ impl Renderer {
                         cvs.as_ptr(),
                         cfs.as_ptr(),
                         d.blend.engine(),
-                        c_int::from(d.alpha == Alpha::Keep),
                     )
                 };
                 if li < 0 {
@@ -946,7 +935,6 @@ impl Renderer {
                         cvs.as_ptr(),
                         cfs.as_ptr(),
                         p.draws[k].blend.engine(),
-                        c_int::from(p.draws[k].alpha == Alpha::Keep),
                     )
                 };
                 if dl.colour < 0 {
@@ -974,7 +962,6 @@ impl Renderer {
                         cvs.as_ptr(),
                         cfs.as_ptr(),
                         Blend::Over.engine(),
-                        c_int::from(p.draws[k].alpha == Alpha::Keep),
                     )
                 };
                 if dl.boxes < 0 {
@@ -1004,7 +991,6 @@ impl Renderer {
                         vs.as_ptr(),
                         fs.as_ptr(),
                         l.blend.engine(),
-                        c_int::from(l.alpha == Alpha::Keep),
                     )
                 };
                 if layer_ix[k] < 0 {
@@ -3795,7 +3781,6 @@ mod tests {
             vertex: layer_vs(""),
             fragment: layer_fs(fs_body),
             blend,
-            alpha: Alpha::Blend,
         }
     }
 
@@ -3985,7 +3970,6 @@ mod tests {
                    texture2D(iChannel0, v_px / resolution).b * pad_size.x, 1.0); }",
             ),
             blend: Blend::Replace,
-            alpha: Alpha::Blend,
         };
         assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
         r.set_time(Some(0.0));
@@ -4147,7 +4131,6 @@ mod tests {
             vertex: vs,
             fragment: format!("{PRECISION}varying vec4 v_color;\n{PLAIN_FS}"),
             blend: Blend::Replace,
-            alpha: Alpha::Blend,
         };
         assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
         let data: Vec<f32> = [
@@ -4221,7 +4204,6 @@ mod tests {
             vertex: vs,
             fragment: fs,
             blend: Blend::Over,
-            alpha: Alpha::Blend,
         };
         assert_eq!(r.setup_layers(&alone, &[l]).unwrap(), "");
         r.set_layer_quads(0, &built.quads.floats, 4).unwrap();

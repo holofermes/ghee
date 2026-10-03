@@ -777,6 +777,12 @@ fn cmd_render(a: &Ns) -> Result<()> {
             a.cmd
         )));
     }
+    if a.alpha && a.components == 3 {
+        return Err(exit(format!(
+            "{}: --alpha with --components 3; an RGB frame holds no alpha",
+            a.cmd
+        )));
+    }
     report::apply(a);
     // the scene loads first: it owns the tokens after `--` and their --help. A
     // rejected scene fails before a panel opens. It builds its own buffers as
@@ -1985,6 +1991,15 @@ mod tests {
     fn two_sinks_cannot_both_claim_stdout() {
         let e = run(&["render", "s", "-o", "-", "--h264", "-"]).unwrap_err();
         assert_eq!(e.to_string(), "render: -o - and --h264 - both want stdout");
+    }
+
+    #[test]
+    fn alpha_is_refused_with_three_components() {
+        let e = run(&["render", "s", "-o", "-", "--alpha", "--components", "3"]).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "render: --alpha with --components 3; an RGB frame holds no alpha"
+        );
     }
 
     #[test]

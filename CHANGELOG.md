@@ -44,15 +44,15 @@
   place, and words that do not fit leave the last words that did.
 - Store alpha in every pass buffer, so a channel reads the alpha that its
   pass wrote. Keep every frame opaque unless `ghee render --alpha` or
-  `ghee.open(..., alpha=True)` keeps the output pass's alpha.
+  `ghee.open(..., alpha=True)` keeps the output pass's alpha, and refuse
+  `--alpha` with `--components 3`.
 - Draw a text straight into a pass's buffer with `draws`, one quad over each
   glyph: a draw's `vertex` GLSL defines `glyph_place`, which puts the glyph
   in the pass, and its `fragment` GLSL colours it. Each stage takes the
   pass's preamble and the scene's common block, as the pass's code does. A
   draw with `px_per_em` in place of `vertex` centres the words in the pass
   at that size, and a draw with no `fragment` draws them white.
-- Blend a draw's alpha the way its colour blends, and leave the pass's alpha
-  as it was with `"alpha": "keep"`.
+- Blend a draw's alpha the way its colour blends.
 - Let a pass with `draws` leave out `code`: it starts each frame transparent
   and holds its draws alone.
 - Bind at most 16 textures in a pass on every GPU, and raise the cap of
@@ -78,7 +78,7 @@
 - Set a text's `fill` and `atlas` from Python on `ghee.Text`.
 - Edit a pass's draws in the console. Each draw opens in a tab after its
   pass's tab, with its `vertex` and its `fragment` in editors and its text,
-  blend, alpha and pad as controls, and `+` adds a draw to the open pass.
+  blend and pad as controls, and `+` adds a draw to the open pass.
 - Report the draw that holds a compile error in `/stats` as `error_draw`,
   with `part` set to `"vertex"` or `"fragment"`, and count `error_line` in
   that draw's GLSL.

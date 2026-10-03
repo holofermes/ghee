@@ -264,7 +264,7 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
                 "main",
                 "void main(){}",
                 draws=[
-                    shim.Draw("words", INK, PLACE, blend="add", pad=0.25, alpha="keep")
+                    shim.Draw("words", INK, PLACE, blend="add", pad=0.25)
                 ],
             )
         ],
@@ -282,7 +282,6 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
                         "vertex": PLACE,
                         "fragment": INK,
                         "blend": "add",
-                        "alpha": "keep",
                         "pad": 0.25,
                     }
                 ],
@@ -301,12 +300,7 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
 def test_a_draw_and_a_text_leave_their_defaults_out():
     shim = load()
     draw = shim.Draw("words", INK, PLACE)
-    assert (draw.blend, draw.pad, draw.alpha, draw.emoji) == (
-        "over",
-        0.0,
-        "blend",
-        None,
-    )
+    assert (draw.blend, draw.pad, draw.emoji) == ("over", 0.0, None)
     assert draw.to_dict() == {"text": "words", "vertex": PLACE, "fragment": INK}
     text = shim.Text("words", "sans")
     assert (text.fill, text.atlas) == ("mtsdf", None)
@@ -358,8 +352,6 @@ def test_a_draw_says_what_it_needs():
     shim = load()
     with pytest.raises(ValueError, match="blend needs 'over', 'add' or 'replace'"):
         shim.Draw("words", INK, PLACE, blend="mix")
-    with pytest.raises(ValueError, match="alpha needs 'blend' or 'keep', got 'opaque'"):
-        shim.Draw("words", INK, PLACE, alpha="opaque")
     for pad in (-0.1, float("nan"), True, "0.1"):
         with pytest.raises(ValueError, match="pad needs a number of em, 0 or more"):
             shim.Draw("words", INK, PLACE, pad=pad)

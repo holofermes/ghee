@@ -47,7 +47,6 @@ _PARAM_TYPES = ("float", "int", "bool", "color", "string", *_VEC)
 _ALIGNS = ("left", "center", "right")
 _FILLS = ("mtsdf", "slug")
 _BLENDS = ("over", "add", "replace")
-_ALPHAS = ("blend", "keep")
 
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
 WIRE = "GHEE_WIRE"
@@ -169,8 +168,6 @@ class Draw:
     `blend` is over, add or replace.
     `pad` is how far past the letters the draw reaches, in em, for a glow or
     an outline.
-    `alpha` is blend, where the pass's alpha blends the way the colour does,
-    or keep, where it stays as it was.
     `emoji` sets whether the draw paints the text's colour glyphs. None
     leaves them to the last draw of the text in its pass.
     """
@@ -181,7 +178,6 @@ class Draw:
     px_per_em: float | None = None
     blend: str = "over"
     pad: float = 0.0
-    alpha: str = "blend"
     emoji: bool | None = None
 
     def __post_init__(self) -> None:
@@ -220,10 +216,6 @@ class Draw:
             raise ValueError(
                 f"{what} blend needs 'over', 'add' or 'replace', got {self.blend!r}"
             )
-        if self.alpha not in _ALPHAS:
-            raise ValueError(
-                f"{what} alpha needs 'blend' or 'keep', got {self.alpha!r}"
-            )
         pad = self.pad
         if (
             isinstance(pad, bool)
@@ -248,8 +240,6 @@ class Draw:
             d["fragment"] = self.fragment
         if self.blend != "over":
             d["blend"] = self.blend
-        if self.alpha != "blend":
-            d["alpha"] = self.alpha
         if self.pad:
             d["pad"] = self.pad
         if self.emoji is not None:

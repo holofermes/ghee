@@ -2357,9 +2357,9 @@ fn draws_round_trip_and_over_and_no_pad_are_the_defaults() {
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
          "blend": "add", "pad": 0.125},
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
-         "blend": "over", "pad": 0, "alpha": "blend"},
+         "blend": "over", "pad": 0},
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
-         "alpha": "keep"},
+         "blend": "replace"},
         {"text": "label", "px_per_em": 48.0},
     ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
@@ -2369,7 +2369,7 @@ fn draws_round_trip_and_over_and_no_pad_are_the_defaults() {
     assert_eq!(back["passes"][0]["draws"][1], doc["passes"][0]["draws"][1]);
     assert_eq!(
         back["passes"][0]["draws"][2], doc["passes"][0]["draws"][0],
-        "over, pad 0 and alpha blend are left out"
+        "over and pad 0 are left out"
     );
     assert_eq!(back["passes"][0]["draws"][3], doc["passes"][0]["draws"][3]);
     assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
@@ -2461,8 +2461,9 @@ fn a_draw_declaration_names_what_it_lacks() {
             "pass 'main' draw 0 pad needs a number of em, 0 or more, got -1",
         ),
         (
-            one(json!({"text": "label", "fragment": WHITE, "vertex": place, "alpha": "add"})),
-            "pass 'main' draw 0 alpha needs 'blend' or 'keep', got 'add'",
+            one(json!({"text": "label", "fragment": WHITE, "vertex": place, "alpha": "keep"})),
+            "pass 'main' draw 0 takes no 'alpha': its alpha blends by 'blend', as its \
+             colour does",
         ),
         (
             one(json!({"text": "label", "fragment": WHITE, "vertex": place, "emoji": "yes"})),
@@ -2771,28 +2772,20 @@ fn a_pass_of_draws_alone_starts_transparent_and_a_later_pass_composites_it() {
 }
 
 #[test]
-fn a_draw_that_keeps_alpha_leaves_the_pass_alpha() {
+fn a_draw_blends_the_pass_alpha_as_its_colour() {
     let Some((_g, mut r)) = gpu(64, 56) else {
         return;
     };
     r.set_alpha(true);
     for fill in FILLS {
-        let mut frames = Vec::new();
-        for alpha in ["blend", "keep"] {
-            let mut doc = filled(draw_scene(SANS, "I", Align::Left, I_FIT), fill);
-            doc["passes"][0]["code"] =
-                json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
-            doc["passes"][0]["draws"][0]["alpha"] = json!(alpha);
-            frames.push(render(&mut r, &loaded(&doc)));
-        }
-        let (blend, keep) = (&frames[0], &frames[1]);
-        for c in 0..3 {
-            assert_eq!(plane(blend, c), plane(keep, c), "{fill} channel {c}");
-        }
-        let half = alphas(keep)[0];
-        assert!(half.abs_diff(128) <= 1, "{fill}: {half}");
-        assert!(alphas(keep).iter().all(|a| *a == half), "{fill}");
-        assert!(alphas(blend).contains(&255), "{fill}");
+        let mut doc = filled(draw_scene(SANS, "I", Align::Left, I_FIT), fill);
+        doc["passes"][0]["code"] =
+            json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
+        let frame = render(&mut r, &loaded(&doc));
+        // White over the half-transparent pass: opaque in the stem, the pass's
+        // alpha beside it.
+        assert!(alphas(&frame).contains(&255), "{fill}");
+        assert!(alphas(&frame)[0].abs_diff(128) <= 1, "{fill}");
     }
 }
 
@@ -3652,7 +3645,7 @@ fn cover_reads_a_colour_glyph_as_no_ink_and_says_nothing() {
 }
 
 #[test]
-fn a_colour_glyph_keeps_the_pass_alpha_with_alpha_keep() {
+fn a_colour_glyph_blends_the_pass_alpha_as_its_colour() {
     let words = "\u{1f600}";
     let fit = Fit {
         x: 2.0,
@@ -3663,23 +3656,12 @@ fn a_colour_glyph_keeps_the_pass_alpha_with_alpha_keep() {
         return;
     };
     r.set_alpha(true);
-    let mut frames = Vec::new();
-    for alpha in ["blend", "keep"] {
-        let mut doc = colour_scene(&[SANS, EMOJI], words, "mtsdf", &fit_place(fit));
-        doc["passes"][0]["code"] =
-            json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
-        doc["passes"][0]["draws"][0]["alpha"] = json!(alpha);
-        frames.push(render(&mut r, &loaded(&doc)));
-    }
-    let (blend, keep) = (&frames[0], &frames[1]);
-    for c in 0..3 {
-        assert_eq!(plane(blend, c), plane(keep, c), "channel {c}");
-    }
-    assert!(plane(keep, 0).iter().any(|v| *v > 200), "no emoji drawn");
-    let half = alphas(keep)[0];
-    assert!(half.abs_diff(128) <= 1, "{half}");
-    assert!(alphas(keep).iter().all(|a| *a == half));
-    assert!(alphas(blend).contains(&255));
+    let mut doc = colour_scene(&[SANS, EMOJI], words, "mtsdf", &fit_place(fit));
+    doc["passes"][0]["code"] = json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
+    let frame = render(&mut r, &loaded(&doc));
+    assert!(plane(&frame, 0).iter().any(|v| *v > 200), "no emoji drawn");
+    assert!(alphas(&frame).contains(&255));
+    assert!(alphas(&frame)[0].abs_diff(128) <= 1);
 }
 
 #[test]

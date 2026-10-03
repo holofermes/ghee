@@ -60,7 +60,6 @@ struct mp_layer {
     char name[96];                       // the layer's name in an error
     GLuint program;
     int blend;                           // GHEE_BLEND_*
-    bool keep_alpha;                     // leaves the buffer's alpha as it was
     GLuint vbo, vao;
     int quads, nattr;                    // nattr vec4 attributes a vertex
     struct mp_locs loc;
@@ -1080,7 +1079,7 @@ bool ghee_mp_set_pass_mipmaps(GheeScene *g, int pass) {
 }
 
 int ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
-                      const char *fragment_source, int blend, int keep_alpha) {
+                      const char *fragment_source, int blend) {
     if (pass < 0 || pass >= g->stage_count) { set_error(g, "pass %d is not pending", pass); return -1; }
     if (g->stage_nlayer >= MP_MAX_LAYERS) { set_error(g, "over the cap of %d layers", MP_MAX_LAYERS); return -1; }
     if (blend < GHEE_BLEND_OVER || blend > GHEE_BLEND_REPLACE) { set_error(g, "no blend mode %d", blend); return -1; }
@@ -1093,7 +1092,6 @@ int ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vert
     snprintf(l->name, sizeof l->name, "%s", name);
     l->program = prog;
     l->blend = blend;
-    l->keep_alpha = keep_alpha;
     glGenBuffers(1, &l->vbo);
     glGenVertexArrays(1, &l->vao);
     return g->stage_nlayer++;
@@ -1677,14 +1675,11 @@ static void mp_draw_layers(GheeScene *g, int p, float vflip, float elapsed) {
         if (l->pass != p || l->quads <= 0) continue;
         glUseProgram(l->program);
         mp_bind(g, p, &l->loc, vflip, elapsed, false);
-        if (l->blend == GHEE_BLEND_REPLACE && !l->keep_alpha) {
+        if (l->blend == GHEE_BLEND_REPLACE) {
             glDisable(GL_BLEND);
         } else {
-            const GLenum dst = l->blend == GHEE_BLEND_OVER ? GL_ONE_MINUS_SRC_ALPHA
-                             : l->blend == GHEE_BLEND_ADD ? GL_ONE : GL_ZERO;
             glEnable(GL_BLEND);
-            if (l->keep_alpha) glBlendFuncSeparate(GL_ONE, dst, GL_ZERO, GL_ONE);
-            else glBlendFunc(GL_ONE, dst);
+            glBlendFunc(GL_ONE, l->blend == GHEE_BLEND_OVER ? GL_ONE_MINUS_SRC_ALPHA : GL_ONE);
         }
         glBindVertexArray(l->vao);
         glBindBuffer(GL_ARRAY_BUFFER, l->vbo);

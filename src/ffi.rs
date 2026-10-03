@@ -145,7 +145,6 @@ extern "C" {
         vertex_source: *const c_char,
         fragment_source: *const c_char,
         blend: c_int,
-        keep_alpha: c_int,
     ) -> c_int;
     pub fn ghee_mp_set_layer_quads(
         g: *mut GheeScene,

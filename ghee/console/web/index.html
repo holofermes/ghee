@@ -907,7 +907,7 @@ function delDraw(i, k){
 
 // A draw's own settings. A value at its default leaves the key out, as the
 // server writes the scene back.
-const DRAW_PICKS = {blend: ["over", "add", "replace"], alpha: ["blend", "keep"]};
+const DRAW_PICKS = {blend: ["over", "add", "replace"]};
 function buildDrawCtl(){
   const box = $("#drawctl"), d = openDraw();
   box.innerHTML = "";

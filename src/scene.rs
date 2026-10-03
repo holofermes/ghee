@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
-use crate::engine::{Alpha, Blend};
+use crate::engine::Blend;
 use crate::text::{Fill, Text};
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
@@ -1122,7 +1122,6 @@ pub struct Draw {
     /// None draws the letters white at full coverage, premultiplied.
     pub fragment: Option<String>,
     pub blend: Blend,
-    pub alpha: Alpha,
     /// How far the quads reach past the ink, in em, for an effect around the
     /// outline.
     pub pad: f64,
@@ -1174,6 +1173,9 @@ impl Draw {
                 bail!("{what} takes its {key} GLSL in '{key}', got '{old}'");
             }
         }
+        if o.contains_key("alpha") {
+            bail!("{what} takes no 'alpha': its alpha blends by 'blend', as its colour does");
+        }
         let glsl = |key: &str, holds: &str| match o.get(key) {
             Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
             Some(v) => bail!("{what} '{key}' needs {holds}, got {}", py_repr(v)),
@@ -1213,12 +1215,6 @@ impl Draw {
                 py_repr(v)
             ),
         };
-        let alpha = match o.get("alpha").filter(|v| !v.is_null()) {
-            None => Alpha::Blend,
-            Some(Value::String(a)) if a == "blend" => Alpha::Blend,
-            Some(Value::String(a)) if a == "keep" => Alpha::Keep,
-            Some(v) => bail!("{what} alpha needs 'blend' or 'keep', got {}", py_repr(v)),
-        };
         let pad = match o.get("pad").filter(|v| !v.is_null()) {
             None => 0.0,
             Some(v) => match v.as_f64() {
@@ -1239,7 +1235,6 @@ impl Draw {
             vertex,
             fragment,
             blend,
-            alpha,
             pad,
             emoji,
         })
@@ -1264,9 +1259,6 @@ impl Draw {
         };
         if let Some(b) = blend {
             d.insert("blend".to_string(), Value::from(b));
-        }
-        if self.alpha == Alpha::Keep {
-            d.insert("alpha".to_string(), Value::from("keep"));
         }
         if self.pad != 0.0 {
             d.insert("pad".to_string(), Value::from(self.pad));

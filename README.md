@@ -395,7 +395,6 @@ and this one draws it white at the same size and place, with no GLSL:
 - `fragment` holds a `void main()` that writes colour premultiplied by alpha.
   Without it, the letters draw white.
 - `blend` is `over` by default, `add` or `replace`.
-- `alpha` is `blend` by default, and `keep` leaves the pass's alpha as it was.
 - `pad` is how far past the letters the draw reaches, in em, for a glow or an
   outline, 0 by default. Each quad grows that far past the ink, and
   `glyph_dist` and `glyph_soft` reach at least that far.
@@ -453,10 +452,10 @@ with Slug's exact method, as `title_cover` does. It reads no atlas, takes no
 one fails to compile, and the error names `"fill": "mtsdf"`.
 
 A draw with `emoji` paints the text's colour glyphs itself, after every draw
-of its pass, and `fragment` never runs for them. Each glyph shows its bitmap from
-the font's largest strike, through mipmaps that keep it smooth at text size,
-placed by `vertex` like any other glyph and blended by the draw's `blend` and
-`alpha`. A shadow draw with `"emoji": true` paints a copy of its own. The
+of its pass, and `fragment` never runs for them. Each glyph shows its bitmap
+from the font's largest strike, through mipmaps that keep it smooth at text
+size, placed by `vertex` like any other glyph and blended by the draw's
+`blend`. A shadow draw with `"emoji": true` paints a copy of its own. The
 bitmaps decode into an RGBA atlas when the words first hold them. The atlas
 grows to 2048x2048 at most, room for 132 emoji of Noto Color Emoji, and an
 emoji past it draws an error box.

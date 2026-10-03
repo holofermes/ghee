@@ -254,7 +254,7 @@ pub trait Output {
     }
 }
 
-/// Paces a render loop: output::AdaptivePacer and output::FixedPacer.
+/// Paces a render loop, as output::FixedPacer does.
 pub trait Pacer {
     /// Seconds to sleep after a frame. write_s is this frame's sink write.
     /// frame_s is the whole frame so far (render + write).

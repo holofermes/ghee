@@ -162,57 +162,6 @@ impl Spec {
     }
 }
 
-/// Pace a render loop off the sink's own backpressure. The sink write time is
-/// the speed of the display bus. A frame period of factor * write time holds
-/// the bus at a 1/factor duty cycle. A slow bus gets few frames. A fast bus
-/// gets many. Nothing configures a rate. max_fps bounds the fast end: an image
-/// file writes in microseconds.
-pub struct AdaptivePacer {
-    pub factor: f64,
-    pub min_period: f64,
-    pub write_ema: Option<f64>,
-}
-
-impl AdaptivePacer {
-    /// The defaults: factor 2.0, max_fps 60.
-    pub fn new() -> AdaptivePacer {
-        AdaptivePacer::with_limits(2.0, 60.0)
-    }
-
-    pub fn with_limits(factor: f64, max_fps: f64) -> AdaptivePacer {
-        AdaptivePacer {
-            factor,
-            min_period: 1.0 / max_fps,
-            write_ema: None,
-        }
-    }
-}
-
-impl Default for AdaptivePacer {
-    fn default() -> AdaptivePacer {
-        AdaptivePacer::new()
-    }
-}
-
-impl Pacer for AdaptivePacer {
-    fn sleep_for(&mut self, write_s: f64, frame_s: f64) -> f64 {
-        let ema = match self.write_ema {
-            None => write_s,
-            Some(prev) => prev * 0.9 + write_s * 0.1,
-        };
-        self.write_ema = Some(ema);
-        let period = (ema * self.factor).max(self.min_period);
-        (period - frame_s).max(0.0)
-    }
-
-    fn idle_period(&self) -> f64 {
-        match self.write_ema {
-            None => self.min_period,
-            Some(ema) => (ema * self.factor).max(self.min_period),
-        }
-    }
-}
-
 /// Hold a display loop at an explicit frame rate.
 pub struct FixedPacer {
     pub period: f64,
@@ -741,21 +690,10 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_pacer_idle_period_tracks_writes() {
-        let mut p = AdaptivePacer::with_limits(2.0, 60.0);
-        assert_eq!(p.idle_period(), p.min_period); // no write measured yet
-        p.sleep_for(0.05, 0.06); // a 50ms sink write
-        assert_eq!(p.idle_period(), 0.05 * 2.0);
-    }
-
-    #[test]
     fn a_pacer_sleeps_out_the_rest_of_the_period() {
         let mut p = FixedPacer::new(50.0);
         assert!((p.sleep_for(0.001, 0.010) - 0.010).abs() < 1e-9);
         assert_eq!(p.sleep_for(0.001, 0.5), 0.0); // an overlong frame never sleeps
-        let mut p = AdaptivePacer::new();
-        assert_eq!(p.sleep_for(0.0, 1.0), 0.0);
-        assert_eq!(p.idle_period(), 1.0 / 60.0); // max_fps bounds the fast end
     }
 
     #[test]

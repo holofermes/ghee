@@ -1986,8 +1986,8 @@ impl Renderer {
         let no_outline = |f: usize, cs: &[char]| {
             let list: Vec<String> = cs.iter().map(|c| format!("{c:?}")).collect();
             format!(
-                "text '{name}': font '{}' has no outline for {}",
-                text.fonts[f],
+                "text '{name}': {} has no outline for {}",
+                text.font_name(f),
                 list.join(", ")
             )
         };

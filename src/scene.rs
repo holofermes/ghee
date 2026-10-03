@@ -2608,6 +2608,10 @@ impl Scene {
             }
         }
         for t in &mut self.texts {
+            if t.fonts.is_empty() {
+                t.data = Some(vec![crate::text::built_in_font()]);
+                continue;
+            }
             let mut data = Vec::new();
             for f in &t.fonts {
                 if !crate::text::is_font_file(f) {

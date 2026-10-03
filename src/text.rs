@@ -1,11 +1,12 @@
 //! Text drawn on the GPU from the outlines of a font.
 //!
 //! A scene declares a text with its words and the fonts to draw it with, in
-//! order: each character draws from the first font whose cmap holds it. Every
-//! pass of the scene except a filter pass then reads the coverage of those
-//! words at any point with `<name>_cover(p, font_size)`. The scene declares the
-//! string param of the text's name, which holds the words, and they change
-//! with the param, live, with no recompile.
+//! order: each character draws from the first font whose cmap holds it. A
+//! text that names no font draws from the built-in font, DejaVu Sans cut to
+//! Latin. Every pass of the scene except a filter pass then reads the
+//! coverage of those words at any point with `<name>_cover(p, font_size)`.
+//! The scene declares the string param of the text's name, which holds the
+//! words, and they change with the param, live, with no recompile.
 //!
 //! A layer, declared on a pass, puts a text into that pass's buffer after the
 //! pass's own quad, as one quad over each inked glyph. The layer's
@@ -153,6 +154,17 @@ fn needs_ink(ch: char) -> bool {
 /// A font file's bytes, or the reason they failed to load.
 pub type Font = std::result::Result<Arc<Vec<u8>>, String>;
 
+/// DejaVu Sans cut to Latin: the font of a text that names none.
+pub const BUILT_IN_FONT: &[u8] = include_bytes!("../ghee/examples/fonts/DejaVuSans-Latin.ttf");
+
+/// The built-in font's bytes, one copy for every text that takes it.
+pub fn built_in_font() -> Font {
+    static BYTES: std::sync::OnceLock<Arc<Vec<u8>>> = std::sync::OnceLock::new();
+    Ok(BYTES
+        .get_or_init(|| Arc::new(BUILT_IN_FONT.to_vec()))
+        .clone())
+}
+
 /// The bytes of a font file, or why ttf-parser reads no font in them.
 pub fn font(bytes: &[u8]) -> Font {
     match Face::parse(bytes, 0) {
@@ -241,7 +253,8 @@ pub struct Text {
     pub value: String,
     /// The text's fonts, each a font asset of the scene or a .ttf or .otf file
     /// resolved as an asset file is, in the order that a character looks for
-    /// its glyph. Line height and baseline come from the first.
+    /// its glyph. Line height and baseline come from the first. An empty list
+    /// takes the built-in font.
     pub fonts: Vec<String>,
     pub align: Align,
     pub fill: Fill,
@@ -250,7 +263,8 @@ pub struct Text {
     /// text, as Scene::atlas_range gives it.
     pub atlas_font_size: u32,
     /// Each font asset's bytes, or why they failed to load, in the order of
-    /// `fonts`. load_assets fills them.
+    /// `fonts`, or the built-in font's alone. load_assets fills them, and
+    /// from_dict for the built-in font.
     pub data: Option<Vec<Font>>,
 }
 
@@ -269,10 +283,10 @@ impl Text {
             Value::String(s) if !s.is_empty() => Some(s.clone()),
             _ => None,
         };
-        let fonts = match o.get("font") {
+        let fonts = match o.get("font").filter(|v| !v.is_null()) {
             Some(Value::Array(a)) if !a.is_empty() => a.iter().map(named).collect(),
             Some(v) => named(v).map(|s| vec![s]),
-            None => bail!("text '{name}' has no 'font'"),
+            None => Some(Vec::new()),
         };
         let Some(fonts) = fonts else {
             bail!(
@@ -343,22 +357,26 @@ impl Text {
         Ok(Text {
             name: name.to_string(),
             value,
+            data: fonts.is_empty().then(|| vec![built_in_font()]),
             fonts,
             align,
             fill,
             atlas_font_size,
-            data: None,
         })
     }
 
     pub fn to_dict(&self) -> Value {
         let mut d = Map::new();
         d.insert("value".to_string(), Value::from(self.value.clone()));
-        let font = match &self.fonts[..] {
-            [one] => Value::from(one.clone()),
-            all => Value::from(all.to_vec()),
-        };
-        d.insert("font".to_string(), font);
+        match &self.fonts[..] {
+            [] => {}
+            [one] => {
+                d.insert("font".to_string(), Value::from(one.clone()));
+            }
+            all => {
+                d.insert("font".to_string(), Value::from(all.to_vec()));
+            }
+        }
         if self.align != Align::Left {
             d.insert("align".to_string(), Value::from(self.align.as_str()));
         }
@@ -387,11 +405,20 @@ impl Text {
     fn lay(&self, words: &str, curves: bool) -> Result<Layout> {
         match &self.data {
             None => bail!(
-                "text '{}': font '{}' was never loaded, the scene was built without a directory",
+                "text '{}': {} was never loaded, the scene was built without a directory",
                 self.name,
-                self.fonts[0]
+                self.font_name(0)
             ),
             Some(fonts) => Ok(lay(fonts, words, self.align, curves)),
+        }
+    }
+
+    /// The font at index `i` of the text's fonts in an error: "font 'sans'",
+    /// or "the built-in font".
+    pub fn font_name(&self, i: usize) -> String {
+        match self.fonts.get(i) {
+            Some(f) => format!("font '{f}'"),
+            None => "the built-in font".to_string(),
         }
     }
 

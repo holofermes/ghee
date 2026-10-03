@@ -30,6 +30,9 @@ const EMOJI: &str = "NotoColorEmoji-Smiles.ttf";
 /// table at 109 px/em, beside a strike at 20 px/em of flat green, and empty
 /// TrueType outlines.
 const EMOJI_SBIX: &str = "NotoColorEmoji-Smiles-sbix.ttf";
+/// DejaVu Sans cut to Latin, the built-in font, as ghee/examples/fonts holds
+/// it.
+const LATIN: &str = "../../../ghee/examples/fonts/DejaVuSans-Latin.ttf";
 /// DejaVu Sans cut by fontTools' subset to space, U+2764, U+FE0E and U+FE0F:
 /// an outline heart, and two selectors with no advance and no ink.
 const HEART: &str = "DejaVuSans-Heart.ttf";
@@ -574,6 +577,27 @@ fn a_text_built_before_its_font_loads_names_the_font() {
     );
 }
 
+#[test]
+fn a_text_with_no_font_lays_out_in_the_built_in_dejavu_sans_latin() {
+    let doc = texts_scene(json!({"label": {}}));
+    // The built-in font needs no directory, and a scene's fonts read from
+    // one leave it in place.
+    let bare = Scene::from_dict(&doc, None, None).unwrap();
+    let _g = lock();
+    for sc in [bare, loaded(&doc)] {
+        // é and ß lie past ASCII, and AV kerns.
+        let words = "Hé ßAV\nI";
+        let laid = sc.texts[0].build(words).unwrap();
+        assert_eq!(laid.faults, []);
+        let want = lay(LATIN, words, Align::Left);
+        assert!(near(
+            block(laid.built.as_ref().unwrap()),
+            (want.width, want.height)
+        ));
+        assert_eq!(sc.to_dict()["texts"], json!({"label": {"value": "I"}}));
+    }
+}
+
 /// The one fault of words that fit no texture.
 fn refused(words: &str) -> String {
     let laid = text::build(&alone(&font(SANS)), words, Align::Left);
@@ -751,7 +775,6 @@ fn a_text_declares_the_string_param_of_its_name_and_refuses_another() {
 fn a_text_declaration_names_what_it_lacks() {
     for (td, want) in [
         (json!("x.ttf"), "text 'label' needs an object"),
-        (json!({}), "text 'label' has no 'font'"),
         (
             json!({"font": ""}),
             "text 'label' 'font' needs the name of a font asset",

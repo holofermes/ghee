@@ -1102,16 +1102,17 @@ function buildTexts(){
     const font = el("input"), named = () => [].concat(t.font || []).join(", ");
     font.setAttribute("list", "fontAssets"); font.spellcheck = false; font.autocomplete = "off";
     font.setAttribute("autocapitalize", "off");
+    font.placeholder = "built-in";
     font.value = named();
     const ferr = el("div", "ferr"); ferr.hidden = true;
     font.addEventListener("change", async ()=>{
       const list = font.value.split(",").map(f => f.trim()).filter(Boolean);
-      if (!list.length){ font.value = named(); return; }
-      t.font = list.length === 1 ? list[0] : list;
+      if (list.join(", ") === named()) return;
+      if (!list.length) delete t.font; else t.font = list.length === 1 ? list[0] : list;
       markDirty(); await postScene();
       ferr.textContent = postErr; ferr.hidden = !postErr;
     });
-    field(sec, "font", font, "a font asset or a .ttf or .otf file, then a comma before each fallback").appendChild(ferr);
+    field(sec, "font", font, "a font asset or a .ttf or .otf file, then a comma before each fallback, or empty for the built-in DejaVu Sans").appendChild(ferr);
     field(sec, "align", pick(["left", "center", "right"], t.align || "left", v => {
       if (v === "left") delete t.align; else t.align = v;
       markDirty(); postScene();

@@ -2193,6 +2193,41 @@ fn a_layer_follows_its_words_live() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn new_words_whose_glyphs_the_atlas_holds_draw_in_the_frame_they_arrive() {
+    let (w, h) = (256, 64);
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 40.0,
+    };
+    let (_g, mut r) = gpu(w, h);
+    let cache = tmpdir("held");
+    std::env::set_var("XDG_CACHE_HOME", &cache);
+    // The setup waits for "I", and for the preload, which holds every
+    // letter of "AV To", and its space draws nothing.
+    render(
+        &mut r,
+        &loaded(&filled(layer_scene(SANS, "I", Align::Left, fit), "mtsdf")),
+    );
+    // Time runs free, so the render waits for no glyph.
+    r.set_time(None);
+    assert!(r
+        .set_scene_param("label", "string", &ParamValue::Str("AV To".into()))
+        .unwrap());
+    let frame = r.render(None).unwrap().to_vec();
+    assert_draws(
+        &frame,
+        w,
+        0,
+        &lay(SANS, "AV To", Align::Left),
+        fit,
+        "the first frame of AV To",
+    );
+    fs::remove_dir_all(&cache).unwrap();
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_rotated_and_scaled_layer_lands_its_outline() {
     let (w, h) = (240, 160);
     let words = "ghee";

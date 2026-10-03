@@ -788,9 +788,11 @@ impl atlas::Font for AtlasFont {
         h.finalize().into()
     }
 
-    /// A colour glyph draws from the colour atlas, and takes no id here. A
-    /// character that U+FE0F turns to a colour glyph keeps the id of its
-    /// glyph alone, so the atlas may hold a field that no layer reads.
+    /// A colour glyph draws from the colour atlas, and takes no id here, nor
+    /// does a glyph with no outline for a character that needs no ink, such
+    /// as a space, which draws nothing. A character that U+FE0F turns to a
+    /// colour glyph keeps the id of its glyph alone, so the atlas may hold a
+    /// field that no layer reads.
     fn glyph(&self, ch: char) -> Option<u32> {
         let ch = if ch == '\t' { ' ' } else { ch };
         if ch.is_control() {
@@ -799,7 +801,8 @@ impl atlas::Font for AtlasFont {
         let faces = faces(&self.0);
         let (i, face, found) = pick(&faces, ch)?;
         let gid = ink_glyph(found, ch)?;
-        (!is_colour(face, GlyphId(gid))).then(|| atlas_id(i, gid))
+        let blank = !needs_ink(ch) && contours(face, GlyphId(gid)).is_empty();
+        (!blank && !is_colour(face, GlyphId(gid))).then(|| atlas_id(i, gid))
     }
 
     fn outline(&self, id: u32) -> Result<Vec<Vec<atlas::Curve>>> {

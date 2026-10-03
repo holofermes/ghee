@@ -7,15 +7,16 @@
 //! takes one cell of an RGBA8 atlas.
 //!
 //! A [`Generator`] fills the atlas of one font at one px/em and range, and
-//! starts nothing until the caller first requests characters. Its worker
-//! thread then loads the atlas from the disk cache, or generates the
-//! requested glyphs and the [`preload`] set on every core, and packs the
-//! requested glyphs first and the preload into the room left. After that it
-//! generates each other requested glyph, one at a time. [`Generator::request`] answers at once with
-//! the characters still pending, so the caller can hold new words until their
-//! glyphs are ready, [`Generator::update`] hands over the texels that
-//! changed, for the upload, and [`Generator::failure`] says why a glyph took
-//! no cell.
+//! starts nothing until the caller first requests characters. The first
+//! request loads the atlas from the disk cache and starts a worker thread.
+//! With no cache, the worker generates the requested glyphs and the
+//! [`preload`] set on every core, and packs the requested glyphs first and
+//! the preload into the room left. After that it generates each other
+//! requested glyph, one at a time. [`Generator::request`] answers at once
+//! with the characters whose glyphs the atlas does not hold yet, so the
+//! caller can hold new words until their glyphs are ready,
+//! [`Generator::update`] hands over the texels that changed, for the upload,
+//! and [`Generator::failure`] says why a glyph took no cell.
 //!
 //! The cache keeps one file per font key, px/em and range in
 //! `$XDG_CACHE_HOME/ghee/atlas/`, else `~/.cache/ghee/atlas/`.
@@ -471,6 +472,17 @@ struct State {
     queue: Vec<char>,
     /// Why each failed glyph took no cell, by glyph id.
     failed: HashMap<u32, String>,
+    /// The glyphs without ink.
+    blank: HashSet<u32>,
+}
+
+impl State {
+    /// True when glyph `gid` is in the atlas, failed, or draws nothing.
+    fn made(&self, gid: u32) -> bool {
+        self.atlas.cells.contains_key(&gid)
+            || self.blank.contains(&gid)
+            || self.failed.contains_key(&gid)
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -495,25 +507,43 @@ impl Generator {
     }
 
     /// Ask for the glyphs of `chars`, and get back at once the characters
-    /// still pending, none when every glyph is ready. The first request starts
-    /// the worker.
+    /// still pending, none when every glyph is ready. A glyph that the atlas
+    /// already holds, from the cache, the preload or another character, is
+    /// ready at the first request for it. The first request loads the cache
+    /// and starts the worker.
     pub fn request(&self, chars: impl IntoIterator<Item = char>) -> Vec<char> {
         let started = self.started.get_or_init(|| self.start());
+        let chars: Vec<char> = chars.into_iter().collect();
+        let mut new: Vec<char> = {
+            let st = lock(&started.shared.state);
+            chars
+                .iter()
+                .copied()
+                .filter(|c| !st.chars.contains_key(c))
+                .collect()
+        };
+        new.sort_unstable();
+        new.dedup();
+        // A cmap lookup can parse the font's tables, so it runs unlocked.
+        let found: Vec<(char, Option<u32>)> =
+            new.into_iter().map(|c| (c, self.font.glyph(c))).collect();
         let mut st = lock(&started.shared.state);
-        let mut pending = Vec::new();
         let mut queued = false;
-        for ch in chars {
-            match st.chars.get(&ch) {
-                Some(true) => {}
-                Some(false) => pending.push(ch),
-                None => {
-                    st.chars.insert(ch, false);
-                    st.queue.push(ch);
-                    pending.push(ch);
-                    queued = true;
-                }
+        for (ch, g) in found {
+            if st.chars.contains_key(&ch) {
+                continue;
+            }
+            let ready = g.is_none_or(|g| st.made(g));
+            st.chars.insert(ch, ready);
+            if !ready {
+                st.queue.push(ch);
+                queued = true;
             }
         }
+        let mut pending: Vec<char> = chars
+            .into_iter()
+            .filter(|c| st.chars.get(c) == Some(&false))
+            .collect();
         drop(st);
         if queued {
             started.shared.wake.notify_one();
@@ -542,13 +572,33 @@ impl Generator {
         lock(&self.started.get()?.shared.state).atlas.update()
     }
 
+    /// Load the atlas from the cache, so the first request finds the glyphs
+    /// that it holds, and start the worker.
     fn start(&self) -> Started {
+        let key = Key {
+            font: self.font.key(),
+            px_em: self.config.px_em,
+            range: self.config.range,
+        };
+        let file = match cache_dir(&self.config) {
+            Ok(dir) => Some(dir.join(key.file_name())),
+            Err(e) => {
+                warn_memory(e);
+                None
+            }
+        };
+        let cached = file
+            .as_deref()
+            .and_then(|f| fs::read(f).ok())
+            .and_then(|b| decode(&key, &b));
+        let preloading = cached.is_none();
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                atlas: Atlas::default(),
+                atlas: cached.unwrap_or_default(),
                 chars: HashMap::new(),
                 queue: Vec::new(),
                 failed: HashMap::new(),
+                blank: HashSet::new(),
             }),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
@@ -556,7 +606,7 @@ impl Generator {
         let (sh, font, config) = (shared.clone(), self.font.clone(), self.config.clone());
         let worker = thread::Builder::new()
             .name("ghee-atlas".into())
-            .spawn(move || work(&sh, &*font, &config))
+            .spawn(move || work(&sh, &*font, &config, key, file, preloading))
             .expect("spawn the atlas worker");
         Started { shared, worker }
     }
@@ -577,30 +627,17 @@ impl Drop for Generator {
     }
 }
 
-/// The worker: the cache or the preload first, then each request as it comes.
-fn work(shared: &Shared, font: &dyn Font, config: &Config) {
-    let key = Key {
-        font: font.key(),
-        px_em: config.px_em,
-        range: config.range,
-    };
-    let mut file = match cache_dir(config) {
-        Ok(dir) => Some(dir.join(key.file_name())),
-        Err(e) => {
-            warn_memory(e);
-            None
-        }
-    };
-    let cached = file
-        .as_deref()
-        .and_then(|f| fs::read(f).ok())
-        .and_then(|b| decode(&key, &b));
-    let mut preloading = cached.is_none();
-    if let Some(atlas) = cached {
-        lock(&shared.state).atlas = atlas;
-    }
-    // Glyphs without ink.
-    let mut blank: HashSet<u32> = HashSet::new();
+/// The worker: the preload with the first batch when the cache held no
+/// atlas, then each request as it comes. It saves the atlas to `file` after
+/// every batch that adds a glyph.
+fn work(
+    shared: &Shared,
+    font: &dyn Font,
+    config: &Config,
+    key: Key,
+    mut file: Option<PathBuf>,
+    mut preloading: bool,
+) {
     loop {
         let batch = {
             let mut st = lock(&shared.state);
@@ -626,10 +663,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
             let own = asked.iter().map(|a| (a.1, true));
             for (g, is_own) in own.chain(extra.into_iter().map(|g| (g, false))) {
                 let Some(g) = g else { continue };
-                let made = st.atlas.cells.contains_key(&g)
-                    || blank.contains(&g)
-                    || st.failed.contains_key(&g);
-                if !made && seen.insert(g) {
+                if !st.made(g) && seen.insert(g) {
                     if is_own { &mut jobs } else { &mut more }.push(g);
                 }
             }
@@ -659,7 +693,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
             let mut st = lock(&shared.state);
             for (gid, f) in made {
                 let preloaded = !jobs.contains(&gid);
-                added |= settle(&mut st, &asked, gid, f, &mut blank, preloaded);
+                added |= settle(&mut st, &asked, gid, f, preloaded);
             }
         } else {
             for &gid in &jobs {
@@ -667,7 +701,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
                     return;
                 }
                 let f = make(font, gid, config);
-                added |= settle(&mut lock(&shared.state), &asked, gid, f, &mut blank, false);
+                added |= settle(&mut lock(&shared.state), &asked, gid, f, false);
             }
         }
         if let (true, Some(path)) = (added, &file) {
@@ -681,22 +715,21 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
     }
 }
 
-/// Put a made glyph in the atlas, its error in the state, or its id in
-/// `blank`, and mark the characters that asked for it ready. True when it
-/// took a cell. A `preloaded` glyph takes only the room left: with none, it
-/// stays out, with no error, until a text asks for it.
+/// Put a made glyph in the atlas, its error or its blank in the state, and
+/// mark the characters that asked for it ready. True when it took a cell. A
+/// `preloaded` glyph takes only the room left: with none, it stays out, with
+/// no error, until a text asks for it.
 fn settle(
     st: &mut State,
     asked: &[(char, Option<u32>)],
     gid: u32,
     made: Result<Option<Field>>,
-    blank: &mut HashSet<u32>,
     preloaded: bool,
 ) -> bool {
     let took = match made.and_then(|f| f.map(|f| st.atlas.insert(gid, &f)).transpose()) {
         Ok(Some(_)) => true,
         Ok(None) => {
-            blank.insert(gid);
+            st.blank.insert(gid);
             false
         }
         Err(e) if preloaded && e.is::<Full>() => false,
@@ -1441,6 +1474,19 @@ mod tests {
         assert!(g.with(|a| (a.cells.clone(), a.texels.clone())).unwrap() == made);
         drop(g);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_glyphs_of_a_cache_file_are_ready_at_the_first_request() {
+        let dir = crate::testing::TempDir::new("atlas-first");
+        let config = cached(&dir.join("atlas"));
+        {
+            let g = Generator::new(Arc::new(Ttf::new()), config.clone()).unwrap();
+            wait(&g, "ghee");
+        }
+        // "ghee" was asked before, and the preload holds "xyz".
+        let g = Generator::new(Arc::new(Ttf::new()), config).unwrap();
+        assert_eq!(g.request("gheexyz".chars()), Vec::<char>::new());
     }
 
     #[test]

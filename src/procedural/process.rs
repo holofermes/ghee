@@ -1937,7 +1937,9 @@ printf '%s\n' '{"version": 1, "params": {}, "passes": [{"name": "draw", "code": 
 # kind 1: dither.color = 0.65, then color = 0.1
 printf '\001\014dither.color\001\000\000\000\146\146\046\077'
 printf '\001\005color\001\000\000\000\315\314\314\075'
-read -r line
+# the first tick can reach the process before ghee reads both messages, and an
+# exit then ends the run early, so the process waits for ghee to close stdin
+while IFS= read -r line; do :; done
 "#;
 
     #[test]

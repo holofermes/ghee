@@ -279,6 +279,20 @@
   .field input{width:100%; max-width:260px}
   .field input[type=number]{max-width:110px}
   .drawctl{margin:0 0 6px}
+  /* the words box grows with them: its hidden copy sizes it */
+  .grow{position:relative; min-width:0}
+  .grow>pre, .grow>textarea{margin:0; font:13px/1.4 ui-sans-serif,system-ui,sans-serif; padding:6px 8px; border:1px solid transparent; border-radius:6px;
+    white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word}
+  .grow>pre{visibility:hidden; min-height:3.2em}
+  .grow>textarea{position:absolute; inset:0; width:100%; height:100%; resize:none; overflow:hidden; background:var(--well); border-color:var(--line); color:var(--ink); outline:none}
+  .grow>textarea:focus{border-color:var(--muted)}
+  .ttext + .ttext{margin-top:14px; padding-top:12px; border-top:1px solid var(--line)}
+  .thead{display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px}
+  .tname{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--ink)}
+  .drawnby{font-size:12px; color:var(--muted)}
+  .lead{margin:-4px 0 10px; line-height:1.4}
+  .ferr{grid-column:2; font:12px/1.4 ui-monospace,Menlo,monospace; color:var(--hot)}
+  .ferr[hidden]{display:none}
   .edhead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:0 0 5px; flex:0 0 auto; cursor:help}
   .edhead .nm{text-transform:none; letter-spacing:0; color:var(--ink); font-size:12px; margin-left:6px}
   .editor + .edhead{margin-top:12px}
@@ -293,6 +307,7 @@
     .tacts{margin-left:8px; padding-left:4px; gap:4px}
     .field select, .field input{font-size:14px; padding:9px 10px; min-height:40px}
     .field select{padding-right:30px}
+    .grow>pre, .grow>textarea{font-size:15px; padding:9px 10px}
     .field>.k{padding-top:10px}
   }
   @media (max-width:640px){
@@ -353,6 +368,13 @@
         <div class="frame"><img id="stream" alt="render"><canvas id="streamcv" style="display:none"></canvas></div>
         <div class="popped" id="popped" hidden>preview popped out</div>
       </div>
+    </div>
+
+    <div class="panel card" id="textsCard" hidden>
+      <h3>texts</h3>
+      <div class="muted lead">A scene declares each text under "texts": its words in "value", a "font" and an "align". A draw puts the words on a pass, and a pass's GLSL reads them through &lt;name&gt;_cover(p, ppem).</div>
+      <div id="texts"></div>
+      <datalist id="fontAssets"></datalist>
     </div>
 
     <div class="panel card">
@@ -811,11 +833,12 @@ async function loadScene(name){
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
     $("#tabs").innerHTML = ""; $("#channels").innerHTML = ""; $("#inputs").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">no passes, not shader-editable</div>';
+    $("#textsCard").hidden = true;
     CODE.ta.value = ""; CODE.sync(); showDraw(null); showErrors(); refreshInfo(); updateStatus();
     return;
   }
   if (saved) { await postScene(); }     // re-apply working copy to the render
-  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
+  buildTexts(); buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 }
 
 // What each draw of pass p goes by, as ghee names it in an error: its name,
@@ -900,6 +923,7 @@ function buildTabs(){
     fnames.forEach(n => item("ƒ " + n, ()=>addFilter(n)));
   }
   wrap.appendChild(add); wrap.appendChild(menu); t.appendChild(wrap);
+  showDrawnBy();
 }
 
 const hasCode = p => !!(p.code || "").trim();
@@ -996,6 +1020,76 @@ function buildDrawCtl(){
   pad.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(setPad, 300); });
   pad.addEventListener("change", ()=>{ clearTimeout(t); setPad(); });
   field(box, "pad", pad, "how far past the letters the draw reaches, in em, room for a glow or a shadow");
+}
+
+// Each text of the scene. Its words go live through /set, as the string
+// param that ghee declares under the text's name, and its font and align
+// through the posted scene.
+function buildTexts(){
+  const texts = (work && work.texts) || {}, names = Object.keys(texts), box = $("#texts");
+  $("#textsCard").hidden = !names.length;
+  box.innerHTML = "";
+  const fonts = $("#fontAssets"); fonts.innerHTML = "";
+  Object.entries((work && work.assets) || {}).forEach(([n, a]) => {
+    if (/\.(ttf|otf)$/i.test(a.file || "")){ const o = el("option"); o.value = n; fonts.appendChild(o); }
+  });
+  names.forEach(name => {
+    const t = texts[name], sec = el("div", "ttext"), head = el("div", "thead");
+    head.appendChild(el("span", "tname", name));
+    const by = el("span", "drawnby"); by.dataset.text = name;
+    head.appendChild(by);
+    sec.appendChild(head);
+    const grow = el("div", "grow"), mirror = el("pre"), words = el("textarea");
+    mirror.setAttribute("aria-hidden", "true");
+    words.spellcheck = false;
+    grow.appendChild(mirror); grow.appendChild(words);
+    const fit = () => { mirror.textContent = words.value + "\n"; };
+    words.value = t.value || ""; fit();
+    const send = () => {
+      if (words.value === (t.value || "")) return;
+      t.value = words.value;
+      fetch(`/set?pass=scene&name=${encodeURIComponent(name)}&value=${encodeURIComponent(t.value)}`, {method:"POST"});
+      markDirty();
+    };
+    let timer = null;
+    words.addEventListener("input", ()=>{ fit(); clearTimeout(timer); timer = setTimeout(send, 300); });
+    words.addEventListener("change", ()=>{ clearTimeout(timer); send(); });
+    field(sec, "value", grow, "the words, live as you type, and a newline breaks the line");
+    const font = el("input"), named = () => [].concat(t.font || []).join(", ");
+    font.setAttribute("list", "fontAssets"); font.spellcheck = false; font.autocomplete = "off";
+    font.setAttribute("autocapitalize", "off");
+    font.value = named();
+    const ferr = el("div", "ferr"); ferr.hidden = true;
+    font.addEventListener("change", async ()=>{
+      const list = font.value.split(",").map(f => f.trim()).filter(Boolean);
+      if (!list.length){ font.value = named(); return; }
+      t.font = list.length === 1 ? list[0] : list;
+      markDirty(); await postScene();
+      ferr.textContent = postErr; ferr.hidden = !postErr;
+    });
+    field(sec, "font", font, "a font asset or a .ttf or .otf file, then a comma before each fallback").appendChild(ferr);
+    field(sec, "align", pick(["left", "center", "right"], t.align || "left", v => {
+      if (v === "left") delete t.align; else t.align = v;
+      markDirty(); postScene();
+    }), "where each line sits in the block");
+    box.appendChild(sec);
+  });
+  showDrawnBy();
+}
+// Under each text's name: the tabs of the draws that draw it, and the passes
+// whose GLSL reads its coverage.
+function showDrawnBy(){
+  document.querySelectorAll(".drawnby").forEach(by => {
+    const name = by.dataset.text, drawn = [], read = [];
+    (work.passes || []).forEach(p => {
+      drawLabels(p).forEach((l, k) => { if (p.draws[k].text === name) drawn.push(`${p.name} › ${l}`); });
+      if ((p.code || "").includes(name + "_cover")) read.push(p.name);
+    });
+    const say = [];
+    if (drawn.length) say.push("drawn by " + drawn.join(", "));
+    if (read.length) say.push(`read through ${name}_cover in ` + read.join(", "));
+    by.textContent = say.length ? say.join(" · ") : "unused";
+  });
 }
 
 // the vertex editor and the draw's settings show while a draw is open
@@ -1316,17 +1410,12 @@ function buildParams(){
   const paramNames = obj => Object.keys(obj||{}).filter(n => ["float","int","bool","color","vec2","vec3","vec4","string"].includes(obj[n].type));
   const sceneParams = work.params || {};
   const sceneNames = paramNames(sceneParams);
-  // a text's words are the scene string param of its name, which ghee declares
-  const texts = work.texts || {};
-  const words = t => ({type: "string", get value(){ return t.value || ""; }, set value(v){ t.value = v; }});
-  const textNames = Object.keys(texts);
   // header the groups once there is more than one: the SCENE group plus any
   // pass that owns params
   const passGroups = work.passes.filter(p => !p.muted && paramNames(p.params).length).length;
-  const grouped = (sceneNames.length || textNames.length ? 1 : 0) + passGroups > 1;
-  if (sceneNames.length || textNames.length){
+  const grouped = (sceneNames.length ? 1 : 0) + passGroups > 1;
+  if (sceneNames.length){
     if (grouped){ const h=document.createElement("div"); h.className="pgroup"; h.textContent="scene"; box.appendChild(h); }
-    textNames.forEach(name=>{ buildParamRow(box, words(texts[name]), name, "scene"); any = true; });
     sceneNames.forEach(name=>{ buildParamRow(box, sceneParams[name], name, "scene"); any = true; });
   }
   work.passes.forEach((p,pi)=>{
@@ -1457,7 +1546,7 @@ $("#save").addEventListener("click", async ()=>{
 $("#reset").addEventListener("click", async ()=>{
   localStorage.removeItem(KEY(active));
   work = clone(pristine); await postScene(); curPass = 0; curDraw = null;
-  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
+  buildTexts(); buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 });
 
 $("#stale").addEventListener("click", reloadScene);

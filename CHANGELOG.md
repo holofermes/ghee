@@ -172,6 +172,9 @@
 - Open a console tab with a tap anywhere on it, keep the mute and remove
   buttons on the open tab alone, apart from its label, and ask before a
   pass, a draw or the common block goes.
+- Show each text of a scene in the console's texts panel, with the draws
+  and the passes that read it: its words, applied live, and its font and
+  align, applied through the scene. The words leave the parameters.
 
 ## 0.4.0 - 2026-08-06
 

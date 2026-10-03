@@ -306,8 +306,8 @@ Every pass of the scene, filter passes excepted, reads the words through
 `ppem` pixels per em. `title_size` holds the block's width and height in em.
 
 ghee declares a scene string param under the text's name, which holds the
-words: `set_param`, `/set`, the console's text box and a procedural scene
-change them live, and ghee lays them out again with no recompile. A scene
+words: `set_param`, `/set`, the console's texts panel and a procedural
+scene change them live, and ghee lays them out again with no recompile. A scene
 that declares a param under a text's name fails to load.
 
 A font is a TrueType or OpenType font with outlines, or a colour emoji font
@@ -489,8 +489,9 @@ The python shim lets you also run the python file to render directly:
 
 `ghee serve <scenes_dir>` starts the console on `127.0.0.1:8090`: a
 hardware accelerated live preview of the running scene, the GLSL of each
-pass and each draw editable with compile errors inline, param sliders, pass
-muting and a filter picker, and edits hot-reload into the running renderer.
+pass and each draw editable with compile errors inline, each text's words,
+font and alignment, param sliders, pass muting and a filter picker, and
+edits hot-reload into the running renderer.
 See [docs/http.md](docs/http.md) for its API.
 
 ![the console editing a live scene](https://raw.githubusercontent.com/holofermes/ghee/main/media/console.png)

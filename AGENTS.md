@@ -91,6 +91,94 @@ A procedural scene you start yourself hosts itself on that same surface:
 Some shapes are load-bearing, and the tests pin them. A change to one of them is
 an API break.
 
+## Tests
+
+A test pins what a user, a scene or a board relies on, and it fails for a bug
+in that and for nothing else.
+
+What earns a test:
+
+- A contract: the scene JSON, the GLSL names that a scene reads, the CLI, the
+  HTTP API, the wire, the Python surface, an error that a user reads.
+- An invariant hidden in the code: packing, encoding, the texture-unit budget,
+  a GPU workaround, a lock between threads.
+- A fixed bug. Its test lands in the commit of the fix.
+
+What does not:
+
+- A value copied from ghee's own output. Such a test pins the bug along with
+  the code. Take the expected value from outside ghee: the font through
+  ttf-parser, the formula, the datasheet, a stream recorded from a working
+  panel.
+- A round trip through ghee's own encoder and decoder. The two halves agree
+  whatever the bytes mean. Decode with a third-party reader, or assert the
+  bytes.
+- A count or a constant that describes today: the size of a preload, the
+  number of fixtures, a quality setting.
+- The same behaviour again through another layer. A Python test checks that a
+  call reaches the engine and that the engine's error reaches Python. The Rust
+  tests own what the engine does.
+- A wall-clock ratio, or the text of a source file.
+- The absence of a removed feature.
+
+Make it fail first. Break the code that a new test guards and watch the test
+fail: revert the fix, delete the line, flip the condition. A test that passes
+anyway is rewritten or dropped before it lands.
+
+When a test breaks, assume the change is wrong. Edit a test's input or its
+expectation only when the contract that it pins changed on purpose, and say so
+in CHANGELOG.md.
+
+GPU output:
+
+- Assert pixels against a reference computed off the GPU: full coverage inside
+  the outline, none outside, the 1.5 px band along each edge left free, a
+  tolerance in levels. tests/text.rs holds the helpers.
+- When a change must leave every pixel alone, render before and after on the
+  same host and compare the bytes.
+- A pinned sha holds on the GL that pinned it. The golden manifest is checked
+  on its board before a release. Any test that reads it compares the renderer
+  first and skips with the reason on another GL.
+- A workaround for one GPU, like the VC4 one-thread guard, gets a test that
+  finds its line in every generated shader that needs it. The rest of the
+  generated GLSL is compiled and rendered, never compared as text.
+- A test that needs a GL device carries
+  `#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]` and fails where no
+  device opens. A host without one runs the tests with
+  `RUSTFLAGS="--cfg ghee_no_gpu"`, which reports them as ignored, never as
+  passed.
+
+Errors: an error that a user reads is pinned whole with assert_eq, once, in
+the test of the code that writes it. A contains or ends_with match lets a
+doubled name through. Every other test of the same failure matches a short
+key.
+
+Names: a test name is a sentence about what a user sees, and the assertions
+check that sentence. A name tells no history: no "as before", "still" or "old".
+
+Fixtures: a fixture is the smallest input that shows the case, with a doc
+comment that says where it came from and how it was cut. A recorded output
+stays only where ghee has no other way to check it, like the command stream
+that drove a real panel.
+
+Flaky tests: a test that fails once with no code change has found a race, in
+the test or in ghee. Find which before raising a timeout. Wait on a condition
+with a deadline. A test that sets an environment variable holds the lock that
+every reader of that variable holds. A test removes what it writes: a unit
+test takes its directory from `crate::testing::TempDir`, and the drop removes
+it.
+
+How many: a feature brings one test per contract that it adds, one per
+invariant that it hides, and one per error path that a user can reach. The
+variants of one rule are rows of one table test.
+
+When to delete:
+
+- The contract that it pins is gone or replaced.
+- Another test fails for every bug that it would catch.
+- Its expected values came from a reference that no longer exists.
+- It changed with every edit to its code and never failed for a bug.
+
 ## When this file is wrong
 
 The repo wins when a command or a claim here disagrees with it. Diagnose the

@@ -6,7 +6,7 @@ becomes active, the process writes its scene as one JSON line, then binary
 messages, one batch for each tick. See docs/procedural.md for the wire
 contract.
 
-    #!/usr/bin/env python3
+    #!/usr/bin/env -S uv run --script
     import ghee
 
     args = ghee.args([ghee.Arg("bins", "int", 64, "how many bars")])
@@ -649,6 +649,7 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
 class Tick:
     """One render tick.
 
+    `frame` counts the ticks, and `time` and `dt` are in seconds.
     `params` holds the string params that changed.
     The first tick holds every string param.
     """
@@ -690,7 +691,8 @@ def feed(name: str):
 
 
 def tick(fn):
-    """Decorate a per-tick hook. It runs before the feeds."""
+    """Decorate a per-tick hook. The hook takes the Tick, and it runs before
+    the feeds."""
     _HOOKS.append(fn)
     return fn
 

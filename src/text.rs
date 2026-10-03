@@ -15,7 +15,7 @@
 //! gives that coverage: the MTSDF fill takes one bilinear sample of the
 //! glyph's field in an atlas, which `crate::atlas` builds, and the slug fill
 //! computes it from the curves as `<name>_cover` does. A colour glyph, a
-//! bitmap with no outline, draws through the draw's colour layer, which
+//! bitmap with no outline, draws through the draw's colour batch, which
 //! `crate::colour` describes.
 //!
 //! Coverage follows the Slug algorithm by Eric Lengyel
@@ -32,7 +32,7 @@
 //! A text problem leaves the scene running. A character whose glyph has no
 //! outline and no colour bitmap, or one past a limit, draws an error box:
 //! hazard stripes, laid out as an outline, so `<name>_cover` reads them as
-//! coverage, and a draw's error-box layer paints them yellow and black. A
+//! coverage, and a draw's error-box batch paints them yellow and black. A
 //! font that failed to load drops out of its text's fonts, and when none is
 //! left, every character draws an error box. Words that fit no texture leave
 //! the last words that did.
@@ -407,12 +407,12 @@ pub struct Built {
     /// One quad per glyph drawn from the font, for a draw of the slug fill.
     /// Its glyph data is this texture's.
     pub quads: Quads,
-    /// One quad per error box, for a draw's error-box layer.
+    /// One quad per error box, for a draw's error-box batch.
     pub boxes: Quads,
     /// The glyphs drawn from the fonts' outlines, for the quads of the MTSDF
     /// fill.
     pub glyphs: Vec<Placement>,
-    /// The colour glyphs, for a draw's colour layer.
+    /// The colour glyphs, for a draw's colour batch.
     pub colour: Vec<Placement>,
 }
 
@@ -885,7 +885,7 @@ enum Ink {
     /// The outline of a glyph: the index of its font in the text's fonts,
     /// and its glyph id.
     Glyph(usize, u16),
-    /// The bitmap of a colour glyph, which only a draw's colour layer draws.
+    /// The bitmap of a colour glyph, which only a draw's colour batch draws.
     Colour(usize, u16),
     /// An error box.
     Box,

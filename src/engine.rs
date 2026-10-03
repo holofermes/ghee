@@ -107,7 +107,7 @@ pub enum AssetData<'a> {
     F32(&'a [f32]),
 }
 
-/// How a layer's colour lands on its pass's buffer. The colour is
+/// How a batch's colour lands on its pass's buffer. The colour is
 /// premultiplied by its alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blend {
@@ -129,27 +129,27 @@ impl Blend {
     }
 }
 
-/// A layer for ghee_mp_add_layer, as engine.h describes it, that a caller
-/// hands setup_layers(). A scene draw takes two or three engine layers of its
+/// A batch for ghee_mp_add_batch, as engine.h describes it, that a caller
+/// hands setup_batches(). A scene draw takes two or three engine batches of its
 /// own: the draw, its colour glyphs when it paints them, and its error boxes.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Layer {
-    /// The name of the pass that the layer draws into.
+pub(crate) struct Batch {
+    /// The name of the pass that the batch draws into.
     pub pass: String,
     pub vertex: String,
     pub fragment: String,
     pub blend: Blend,
 }
 
-/// A scene draw that the engine holds as a layer, and the layers of its
+/// A scene draw that the engine holds as a batch, and the batches of its
 /// colour glyphs and of its error boxes.
-struct DrawLayer {
-    /// The engine's index of the layer.
-    layer: c_int,
-    /// The engine's index of the colour layer, -1 for a draw that paints no
+struct DrawBatches {
+    /// The engine's index of the batch.
+    batch: c_int,
+    /// The engine's index of the colour batch, -1 for a draw that paints no
     /// colour glyphs or a text whose fonts hold no colour bitmaps.
     colour: c_int,
-    /// The engine's index of the error-box layer.
+    /// The engine's index of the error-box batch.
     boxes: c_int,
     /// The scene text of the draw.
     text: String,
@@ -558,10 +558,10 @@ pub struct Renderer {
     /// data texture `<name>_tex` of each text. A setup frees those that its
     /// new scene does not declare, so their asset slots come back.
     scene_assets: std::cell::RefCell<Vec<String>>,
-    /// The engine index of each layer passed to setup_layers(), in order.
-    layers: Vec<c_int>,
+    /// The engine index of each batch passed to setup_batches(), in order.
+    batches: Vec<c_int>,
     /// The scene's draws, in the order of their passes.
-    draws: Vec<DrawLayer>,
+    draws: Vec<DrawBatches>,
     /// The text problem causes logged since the setup, so each logs once.
     reported: std::cell::RefCell<HashSet<String>>,
     /// The problems of each scene text, by its name.
@@ -623,7 +623,7 @@ impl Renderer {
             mp: Vec::new(),
             feeds: Vec::new(),
             scene_assets: std::cell::RefCell::new(Vec::new()),
-            layers: Vec::new(),
+            batches: Vec::new(),
             draws: Vec::new(),
             reported: std::cell::RefCell::new(HashSet::new()),
             text_errors: std::cell::RefCell::new(HashMap::new()),
@@ -705,13 +705,13 @@ impl Renderer {
     /// draw's own GLSL sets error_draw too, and error_line counts in that
     /// GLSL.
     pub fn setup(&mut self, scene: &Scene) -> Result<String> {
-        self.setup_layers(scene, &[])
+        self.setup_batches(scene, &[])
     }
 
-    /// setup() with layers. Each layer draws into its named pass, after that
-    /// pass's quad and the pass's draws, in the order given. A layer's compile
+    /// setup() with batches. Each batch draws into its named pass, after that
+    /// pass's quad and the pass's draws, in the order given. A batch's compile
     /// error reports its pass.
-    pub(crate) fn setup_layers(&mut self, scene: &Scene, layers: &[Layer]) -> Result<String> {
+    pub(crate) fn setup_batches(&mut self, scene: &Scene, batches: &[Batch]) -> Result<String> {
         self.error = String::new();
         self.error_line = None;
         self.error_pass = None;
@@ -791,13 +791,13 @@ impl Renderer {
                 }
             }
         }
-        if let Some((k, l)) = layers
+        if let Some((k, l)) = batches
             .iter()
             .enumerate()
             .find(|(_, l)| !names.contains(&l.pass.as_str()))
         {
             self.error = format!(
-                "layer {k} draws into pass '{}', which is not a pass in this scene",
+                "batch {k} draws into pass '{}', which is not a pass in this scene",
                 l.pass
             );
             return Ok(self.error.clone());
@@ -829,8 +829,8 @@ impl Renderer {
             return Ok(self.error.clone());
         }
         let mut mp: Vec<(String, c_int)> = Vec::new();
-        let mut layer_ix: Vec<c_int> = vec![-1; layers.len()];
-        let mut draws: Vec<DrawLayer> = Vec::new();
+        let mut batch_ix: Vec<c_int> = vec![-1; batches.len()];
+        let mut draws: Vec<DrawBatches> = Vec::new();
         let hw_linear = self.data_texture_linear();
         let total = scene.passes.len();
         // Every pass buffer stores alpha but the output pass's, which stores
@@ -894,7 +894,7 @@ impl Renderer {
                     self.staged_cstring(&fs)?,
                 );
                 let li = unsafe {
-                    ffi::ghee_mp_add_layer(
+                    ffi::ghee_mp_add_batch(
                         self.handle,
                         idx,
                         cname.as_ptr(),
@@ -921,8 +921,8 @@ impl Renderer {
                     crate::report::progress_done();
                     return Ok(self.error.clone());
                 }
-                draws.push(DrawLayer {
-                    layer: li,
+                draws.push(DrawBatches {
+                    batch: li,
                     colour: -1,
                     boxes: -1,
                     text: d.text.clone(),
@@ -950,7 +950,7 @@ impl Renderer {
                     self.staged_cstring(&fs)?,
                 );
                 dl.colour = unsafe {
-                    ffi::ghee_mp_add_layer(
+                    ffi::ghee_mp_add_batch(
                         self.handle,
                         idx,
                         cname.as_ptr(),
@@ -977,7 +977,7 @@ impl Renderer {
                     self.staged_cstring(&fs)?,
                 );
                 dl.boxes = unsafe {
-                    ffi::ghee_mp_add_layer(
+                    ffi::ghee_mp_add_batch(
                         self.handle,
                         idx,
                         cname.as_ptr(),
@@ -995,18 +995,18 @@ impl Renderer {
                     return Ok(self.error.clone());
                 }
             }
-            for (k, l) in layers.iter().enumerate().filter(|(_, l)| l.pass == p.name) {
+            for (k, l) in batches.iter().enumerate().filter(|(_, l)| l.pass == p.name) {
                 if idx < 0 {
                     break;
                 }
-                let name = format!("layer {k}");
+                let name = format!("batch {k}");
                 let (cname, vs, fs) = (
                     self.staged_cstring(&name)?,
                     self.staged_cstring(&l.vertex)?,
                     self.staged_cstring(&l.fragment)?,
                 );
-                layer_ix[k] = unsafe {
-                    ffi::ghee_mp_add_layer(
+                batch_ix[k] = unsafe {
+                    ffi::ghee_mp_add_batch(
                         self.handle,
                         idx,
                         cname.as_ptr(),
@@ -1015,7 +1015,7 @@ impl Renderer {
                         l.blend.engine(),
                     )
                 };
-                if layer_ix[k] < 0 {
+                if batch_ix[k] < 0 {
                     let err = or_else(self.last_error(), "compile error");
                     unsafe { ffi::ghee_mp_abort(self.handle) };
                     self.error = format!("{name}: {err}");
@@ -1046,7 +1046,7 @@ impl Renderer {
             return Ok(self.error.clone());
         }
         self.mp = mp;
-        self.layers = layer_ix;
+        self.batches = batch_ix;
         self.draws = draws;
         // A new scene logs its text problems afresh.
         self.reported.borrow_mut().clear();
@@ -1202,40 +1202,40 @@ impl Renderer {
         Ok(String::new())
     }
 
-    /// The quads of layer `layer`, an index into the layers passed to
-    /// setup_layers(): 4 vertices a quad of `nattr` vec4s each, so 16 * nattr
+    /// The quads of batch `batch`, an index into the batches passed to
+    /// setup_batches(): 4 vertices a quad of `nattr` vec4s each, so 16 * nattr
     /// floats a quad. They replace the last set.
     #[cfg(test)]
-    pub(crate) fn set_layer_quads(&self, layer: usize, data: &[f32], nattr: usize) -> Result<()> {
-        let Some(&idx) = self.layers.get(layer) else {
-            let n = self.layers.len();
+    pub(crate) fn set_batch_quads(&self, batch: usize, data: &[f32], nattr: usize) -> Result<()> {
+        let Some(&idx) = self.batches.get(batch) else {
+            let n = self.batches.len();
             bail!(
-                "no layer {layer}: setup_layers() took {n} {}",
-                if n == 1 { "layer" } else { "layers" }
+                "no batch {batch}: setup_batches() took {n} {}",
+                if n == 1 { "batch" } else { "batches" }
             );
         };
-        self.layer_quads(idx, &format!("layer {layer}"), data, nattr)
+        self.batch_quads(idx, &format!("batch {batch}"), data, nattr)
     }
 
-    /// Hand the engine layer `idx` its quads. `layer` names it in an error.
-    fn layer_quads(&self, idx: c_int, layer: &str, data: &[f32], nattr: usize) -> Result<()> {
+    /// Hand the engine batch `idx` its quads. `batch` names it in an error.
+    fn batch_quads(&self, idx: c_int, batch: &str, data: &[f32], nattr: usize) -> Result<()> {
         if !(1..=4).contains(&nattr) {
-            bail!("{layer}: a vertex holds 1 to 4 attributes, got {nattr}");
+            bail!("{batch}: a vertex holds 1 to 4 attributes, got {nattr}");
         }
         let per_quad = 16 * nattr;
         if !data.len().is_multiple_of(per_quad) {
             bail!(
-                "{layer}: a quad takes {per_quad} floats, and {} is not a multiple of {per_quad}",
+                "{batch}: a quad takes {per_quad} floats, and {} is not a multiple of {per_quad}",
                 data.len()
             );
         }
         let quads = c_int::try_from(data.len() / per_quad)?;
         if !unsafe {
-            ffi::ghee_mp_set_layer_quads(self.handle, idx, data.as_ptr(), quads, nattr as c_int)
+            ffi::ghee_mp_set_batch_quads(self.handle, idx, data.as_ptr(), quads, nattr as c_int)
         } {
             bail!(
                 "{}",
-                or_else(self.last_error(), &format!("{layer} refused its quads"))
+                or_else(self.last_error(), &format!("{batch} refused its quads"))
             );
         }
         Ok(())
@@ -1630,13 +1630,13 @@ impl Renderer {
             self.set_uniform(*idx, &format!("{name}_size"), "vec2", size.clone())?;
         }
         for d in self.draws.iter().filter(|d| d.text == *name) {
-            for (layer, floats, what) in [
-                (d.layer, &quads, d.name.clone()),
+            for (batch, floats, what) in [
+                (d.batch, &quads, d.name.clone()),
                 (d.colour, &colour.0, format!("{} colour glyphs", d.name)),
                 (d.boxes, &boxes, format!("{} error boxes", d.name)),
             ] {
-                if layer >= 0 {
-                    self.layer_quads(layer, &what, floats, text::QUAD_FLOATS / 4)?;
+                if batch >= 0 {
+                    self.batch_quads(batch, &what, floats, text::QUAD_FLOATS / 4)?;
                 }
             }
         }
@@ -1644,7 +1644,7 @@ impl Renderer {
     }
 
     /// The quads of the colour glyphs `glyphs` of `text`, for its draws'
-    /// colour layers, and an error box for each glyph whose bitmap failed,
+    /// colour batches, and an error box for each glyph whose bitmap failed,
     /// with a fault in `faults`. The first colour glyph of the text makes its
     /// colour atlas, and every new one decodes into it and uploads.
     fn colour_quads(
@@ -2040,8 +2040,8 @@ impl Renderer {
         }
     }
 
-    /// `s` as a C string for a call that stages a pass or a layer. A NUL in
-    /// `s` drops the staged passes and layers first, so no later commit runs
+    /// `s` as a C string for a call that stages a pass or a batch. A NUL in
+    /// `s` drops the staged passes and batches first, so no later commit runs
     /// them.
     fn staged_cstring(&self, s: &str) -> Result<CString> {
         CString::new(s).map_err(|e| {
@@ -2189,7 +2189,7 @@ impl Renderer {
     pub fn reset(&mut self) {
         unsafe { ffi::ghee_mp_reset(self.handle) };
         self.mp = Vec::new();
-        self.layers = Vec::new();
+        self.batches = Vec::new();
         self.draws = Vec::new();
         self.feeds = Vec::new();
         self.held.borrow_mut().clear();
@@ -3798,17 +3798,18 @@ mod tests {
             .unwrap());
         let f = r.render(None).unwrap().to_vec();
         assert!(reds(&f).iter().all(|v| *v == 0.0), "{:?}", &reds(&f)[..8]);
-        // A layer that reads the pass through its channel samples the chain
+        // A batch that reads the pass through its channel samples the chain
         // too.
         let red = "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }";
         let fs = "uniform sampler2D iChannel0; uniform vec2 resolution;\n\
                   void main(){ gl_FragColor = texture2D(iChannel0, v_px / resolution + 0.5 / 256.0); }";
-        let layers = [layer("main", fs, Blend::Replace)];
+        let batches = [batch("main", fs, Blend::Replace)];
         assert_eq!(
-            r.setup_layers(&checker_scene(true, red), &layers).unwrap(),
+            r.setup_batches(&checker_scene(true, red), &batches)
+                .unwrap(),
             ""
         );
-        r.set_layer_quads(0, &quad(0.0, 0.0, 64.0, 64.0, [0.0; 4]), 2)
+        r.set_batch_quads(0, &quad(0.0, 0.0, 64.0, 64.0, [0.0; 4]), 2)
             .unwrap();
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
@@ -3930,7 +3931,7 @@ mod tests {
         }
     }
 
-    // Layers
+    // Batches
 
     /// The preamble's precision block. A uniform both stages declare must
     /// carry one precision in both.
@@ -3939,7 +3940,7 @@ mod tests {
 
     /// ghee_a0.xy is the vertex in pass pixels, y down like v_texCoord, and
     /// ghee_a1 the premultiplied colour.
-    fn layer_vs(extra: &str) -> String {
+    fn batch_vs(extra: &str) -> String {
         format!(
             "{PRECISION}attribute vec4 ghee_a0; attribute vec4 ghee_a1;\n\
              uniform vec2 resolution; uniform float ghee_vflip;\n\
@@ -3952,17 +3953,17 @@ mod tests {
         )
     }
 
-    fn layer_fs(body: &str) -> String {
+    fn batch_fs(body: &str) -> String {
         format!("{PRECISION}varying vec4 v_color; varying vec2 v_px;\n{body}")
     }
 
     const PLAIN_FS: &str = "void main(){ gl_FragColor = v_color; }";
 
-    fn layer(pass: &str, fs_body: &str, blend: Blend) -> Layer {
-        Layer {
+    fn batch(pass: &str, fs_body: &str, blend: Blend) -> Batch {
+        Batch {
             pass: pass.to_string(),
-            vertex: layer_vs(""),
-            fragment: layer_fs(fs_body),
+            vertex: batch_vs(""),
+            fragment: batch_fs(fs_body),
             blend,
         }
     }
@@ -3996,9 +3997,9 @@ mod tests {
             (Blend::Replace, [64.0, 0.0, 0.0]),
         ] {
             let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
-            let l = layer("main", PLAIN_FS, blend);
-            assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "", "{blend:?}");
-            r.set_layer_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, src), 2)
+            let l = batch("main", PLAIN_FS, blend);
+            assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "", "{blend:?}");
+            r.set_batch_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, src), 2)
                 .unwrap();
             let f = r.render(None).unwrap().to_vec();
             for (x, y) in [(0, 0), (W / 2 - 1, H - 1), (W / 4, H / 2)] {
@@ -4016,19 +4017,19 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_lands_with_rows_counted_like_v_tex_coord() {
-        // The pass paints the top rows, v_texCoord.y < 0.25, red. The layer
+    fn a_batch_lands_with_rows_counted_like_v_tex_coord() {
+        // The pass paints the top rows, v_texCoord.y < 0.25, red. The batch
         // covers the same rows by pixel and adds green.
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{"name": "main", "code":
             "void main(){ gl_FragColor = vec4(v_texCoord.y < 0.25 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
         assert_eq!(
-            r.setup_layers(&sc, &[layer("main", PLAIN_FS, Blend::Add)])
+            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
                 .unwrap(),
             ""
         );
         let rows = (H / 4) as f32;
-        r.set_layer_quads(0, &quad(0.0, 0.0, W as f32, rows, [0.0, 1.0, 0.0, 1.0]), 2)
+        r.set_batch_quads(0, &quad(0.0, 0.0, W as f32, rows, [0.0, 1.0, 0.0, 1.0]), 2)
             .unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert!(near3(rgb_at(&f, 5, 0), [255.0, 255.0, 0.0]));
@@ -4047,7 +4048,7 @@ mod tests {
         let sc = scene_of(json!([{"name": "main", "code":
             "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"}]));
         assert_eq!(
-            r.setup_layers(&sc, &[layer("main", PLAIN_FS, Blend::Add)])
+            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
                 .unwrap(),
             ""
         );
@@ -4067,7 +4068,7 @@ mod tests {
         }
         pixels([1.0, 0.0, 0.0, 1.0], &mut data);
         assert_eq!(data.len() / 32, 16383 + W * H);
-        r.set_layer_quads(0, &data, 2).unwrap();
+        r.set_batch_quads(0, &data, 2).unwrap();
         let f = r.render(None).unwrap().to_vec();
         for y in 0..H {
             for x in 0..W {
@@ -4078,18 +4079,18 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_draws_a_hundred_layers() {
-        // Each layer adds 1/255 of red over black.
+    fn a_pass_draws_a_hundred_batches() {
+        // Each batch adds 1/255 of red over black.
         let Some((_g, mut r)) = gpu() else { return };
         let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
         let sc = scene_of(json!([{"name": "main", "code": black}]));
-        let layers: Vec<Layer> = (0..100)
-            .map(|_| layer("main", PLAIN_FS, Blend::Add))
+        let batches: Vec<Batch> = (0..100)
+            .map(|_| batch("main", PLAIN_FS, Blend::Add))
             .collect();
-        assert_eq!(r.setup_layers(&sc, &layers).unwrap(), "");
+        assert_eq!(r.setup_batches(&sc, &batches).unwrap(), "");
         let red = quad(0.0, 0.0, W as f32, H as f32, [1.0 / 255.0, 0.0, 0.0, 0.0]);
-        for k in 0..layers.len() {
-            r.set_layer_quads(k, &red, 2).unwrap();
+        for k in 0..batches.len() {
+            r.set_batch_quads(k, &red, 2).unwrap();
         }
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
@@ -4101,24 +4102,24 @@ mod tests {
     }
 
     #[test]
-    fn layers_of_a_pass_draw_in_order_and_new_quads_replace_the_old() {
+    fn batches_of_a_pass_draw_in_order_and_new_quads_replace_the_old() {
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
-        let layers = [
-            layer("main", PLAIN_FS, Blend::Replace),
-            layer("main", PLAIN_FS, Blend::Replace),
+        let batches = [
+            batch("main", PLAIN_FS, Blend::Replace),
+            batch("main", PLAIN_FS, Blend::Replace),
         ];
-        assert_eq!(r.setup_layers(&sc, &layers).unwrap(), "");
+        assert_eq!(r.setup_batches(&sc, &batches).unwrap(), "");
         let all = |c| quad(0.0, 0.0, W as f32, H as f32, c);
-        r.set_layer_quads(0, &all([1.0, 0.0, 0.0, 1.0]), 2).unwrap();
-        r.set_layer_quads(1, &all([0.0, 0.0, 1.0, 1.0]), 2).unwrap();
+        r.set_batch_quads(0, &all([1.0, 0.0, 0.0, 1.0]), 2).unwrap();
+        r.set_batch_quads(1, &all([0.0, 0.0, 1.0, 1.0]), 2).unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert!(near3(rgb_at(&f, 3, 3), [0.0, 0.0, 255.0]));
-        // No quads draw nothing, and the first layer shows again.
-        r.set_layer_quads(1, &[], 2).unwrap();
+        // No quads draw nothing, and the first batch shows again.
+        r.set_batch_quads(1, &[], 2).unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert!(near3(rgb_at(&f, 3, 3), [255.0, 0.0, 0.0]));
-        r.set_layer_quads(0, &quad(0.0, 0.0, 1.0, 1.0, [0.0, 1.0, 0.0, 1.0]), 2)
+        r.set_batch_quads(0, &quad(0.0, 0.0, 1.0, 1.0, [0.0, 1.0, 0.0, 1.0]), 2)
             .unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert!(near3(rgb_at(&f, 0, 0), [0.0, 255.0, 0.0]));
@@ -4126,7 +4127,7 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_reads_scene_params_in_both_stages_and_its_pass_inputs() {
+    fn a_batch_reads_scene_params_in_both_stages_and_its_pass_inputs() {
         // The vertex stage shifts the quad by `shift` pixels once `level` is
         // set, and the fragment stage writes `level`, an array texel, an asset
         // texel and the channel. `level` and `resolution` sit in both stages.
@@ -4151,13 +4152,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let l = Layer {
+        let l = Batch {
             pass: "main".to_string(),
-            vertex: layer_vs("uniform float shift; uniform float level;").replace(
+            vertex: batch_vs("uniform float shift; uniform float level;").replace(
                 "v_px = ghee_a0.xy;",
                 "v_px = ghee_a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / resolution.x;",
             ),
-            fragment: layer_fs(
+            fragment: batch_fs(
                 "uniform float level; uniform sampler2D vals_tex; uniform sampler2D pad;\n\
                  uniform sampler2D iChannel0; uniform vec2 pad_size; uniform vec2 resolution;\n\
                  void main(){ gl_FragColor = vec4(level, \
@@ -4166,7 +4167,7 @@ mod tests {
             ),
             blend: Blend::Replace,
         };
-        assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
+        assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
         r.set_time(Some(0.0));
         assert!(r
             .set_scene_param("level", "float", &ParamValue::Float(0.5))
@@ -4174,7 +4175,7 @@ mod tests {
         assert!(r
             .set_scene_param("shift", "float", &ParamValue::Float(8.0))
             .unwrap());
-        r.set_layer_quads(0, &quad(0.0, 0.0, 8.0, H as f32, [0.0; 4]), 2)
+        r.set_batch_quads(0, &quad(0.0, 0.0, 8.0, H as f32, [0.0; 4]), 2)
             .unwrap();
         let f = {
             let mut provider = |_: &str, _: ArraySize| Feed::Data(vec![0.5; 4]);
@@ -4193,22 +4194,22 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_reads_an_asset_its_pass_never_samples_and_one_set_later() {
+    fn a_batch_reads_an_asset_its_pass_never_samples_and_one_set_later() {
         let Some((_g, mut r)) = gpu() else { return };
         r.set_asset("early", 1, 1, 1, false, AssetData::U8(&[64u8]))
             .unwrap();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
-        let l = layer(
+        let l = batch(
             "main",
             "uniform sampler2D early; uniform sampler2D late;\n\
              void main(){ gl_FragColor = vec4(texture2D(early, vec2(0.5)).r, \
                texture2D(late, vec2(0.5)).r, 0.0, 1.0); }",
             Blend::Replace,
         );
-        assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
+        assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
         r.set_asset("late", 1, 1, 1, false, AssetData::U8(&[191u8]))
             .unwrap();
-        r.set_layer_quads(0, &quad(0.0, 0.0, W as f32, H as f32, [0.0; 4]), 2)
+        r.set_batch_quads(0, &quad(0.0, 0.0, W as f32, H as f32, [0.0; 4]), 2)
             .unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert!(
@@ -4219,7 +4220,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_pass_samples_the_layer_drawn_into_an_earlier_one() {
+    fn a_later_pass_samples_the_batch_drawn_into_an_earlier_one() {
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([
             {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
@@ -4227,11 +4228,11 @@ mod tests {
              "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }"},
         ]));
         assert_eq!(
-            r.setup_layers(&sc, &[layer("a", PLAIN_FS, Blend::Over)])
+            r.setup_batches(&sc, &[batch("a", PLAIN_FS, Blend::Over)])
                 .unwrap(),
             ""
         );
-        r.set_layer_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, [1.0; 4]), 2)
+        r.set_batch_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, [1.0; 4]), 2)
             .unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert!(near3(rgb_at(&f, 2, 2), [255.0; 3]));
@@ -4239,79 +4240,79 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_layer_leaves_the_running_scene_and_names_its_stage() {
+    fn a_broken_batch_leaves_the_running_scene_and_names_its_stage() {
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         assert_eq!(
-            r.setup_layers(&sc, &[layer("main", PLAIN_FS, Blend::Replace)])
+            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Replace)])
                 .unwrap(),
             ""
         );
-        r.set_layer_quads(
+        r.set_batch_quads(
             0,
             &quad(0.0, 0.0, W as f32, H as f32, [1.0, 0.0, 0.0, 1.0]),
             2,
         )
         .unwrap();
         let before = r.render(None).unwrap().to_vec();
-        let mut bad = layer("main", PLAIN_FS, Blend::Over);
+        let mut bad = batch("main", PLAIN_FS, Blend::Over);
         bad.vertex = bad
             .vertex
             .replace("v_color = ghee_a1;", "v_color = no_such_symbol;");
-        let err = r.setup_layers(&flat_scene(), &[bad]).unwrap();
-        assert!(err.starts_with("layer 0: vertex shader:"), "{err}");
+        let err = r.setup_batches(&flat_scene(), &[bad]).unwrap();
+        assert!(err.starts_with("batch 0: vertex shader:"), "{err}");
         assert_eq!(r.error_pass, Some(ErrorPass::Index(0)));
-        let bad = layer(
+        let bad = batch(
             "main",
             "void main(){ gl_FragColor = no_such_symbol; }",
             Blend::Over,
         );
-        let err = r.setup_layers(&flat_scene(), &[bad]).unwrap();
+        let err = r.setup_batches(&flat_scene(), &[bad]).unwrap();
         assert!(
-            err.starts_with("layer 0: ") && !err.contains("vertex shader"),
+            err.starts_with("batch 0: ") && !err.contains("vertex shader"),
             "{err}"
         );
         assert_eq!(r.render(None).unwrap(), &before[..]);
-        // The old layer still takes quads.
-        r.set_layer_quads(0, &[], 2).unwrap();
+        // The old batch still takes quads.
+        r.set_batch_quads(0, &[], 2).unwrap();
         assert!(near3(rgb_at(r.render(None).unwrap(), 1, 1), [128.0; 3]));
     }
 
     #[test]
-    fn a_layer_and_its_quads_are_checked_before_the_engine_sees_them() {
+    fn a_batch_and_its_quads_are_checked_before_the_engine_sees_them() {
         let Some((_g, mut r)) = gpu() else { return };
         let err = r
-            .setup_layers(&flat_scene(), &[layer("typo", PLAIN_FS, Blend::Over)])
+            .setup_batches(&flat_scene(), &[batch("typo", PLAIN_FS, Blend::Over)])
             .unwrap();
         assert_eq!(
             err,
-            "layer 0 draws into pass 'typo', which is not a pass in this scene"
+            "batch 0 draws into pass 'typo', which is not a pass in this scene"
         );
         assert_eq!(
-            r.setup_layers(&flat_scene(), &[layer("main", PLAIN_FS, Blend::Over)])
+            r.setup_batches(&flat_scene(), &[batch("main", PLAIN_FS, Blend::Over)])
                 .unwrap(),
             ""
         );
         let one = quad(0.0, 0.0, 1.0, 1.0, [1.0; 4]);
         assert_eq!(
-            r.set_layer_quads(1, &one, 2).unwrap_err().to_string(),
-            "no layer 1: setup_layers() took 1 layer"
+            r.set_batch_quads(1, &one, 2).unwrap_err().to_string(),
+            "no batch 1: setup_batches() took 1 batch"
         );
         assert_eq!(
-            r.set_layer_quads(0, &one, 5).unwrap_err().to_string(),
-            "layer 0: a vertex holds 1 to 4 attributes, got 5"
+            r.set_batch_quads(0, &one, 5).unwrap_err().to_string(),
+            "batch 0: a vertex holds 1 to 4 attributes, got 5"
         );
         assert_eq!(
-            r.set_layer_quads(0, &one[1..], 2).unwrap_err().to_string(),
-            "layer 0: a quad takes 32 floats, and 31 is not a multiple of 32"
+            r.set_batch_quads(0, &one[1..], 2).unwrap_err().to_string(),
+            "batch 0: a quad takes 32 floats, and 31 is not a multiple of 32"
         );
-        // setup() drops the layers with the scene.
+        // setup() drops the batches with the scene.
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
-        assert!(r.set_layer_quads(0, &one, 2).is_err());
+        assert!(r.set_batch_quads(0, &one, 2).is_err());
     }
 
     #[test]
-    fn a_layer_with_four_attributes_reads_each_one() {
+    fn a_batch_with_four_attributes_reads_each_one() {
         let Some((_g, mut r)) = gpu() else { return };
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         let vs = format!(
@@ -4321,13 +4322,13 @@ mod tests {
                gl_Position = vec4(ndc.x, ndc.y * ghee_vflip, 0.0, 1.0);\n\
                v_color = vec4(ghee_a1.x, ghee_a2.y, ghee_a3.z, 1.0); }}"
         );
-        let l = Layer {
+        let l = Batch {
             pass: "main".to_string(),
             vertex: vs,
             fragment: format!("{PRECISION}varying vec4 v_color;\n{PLAIN_FS}"),
             blend: Blend::Replace,
         };
-        assert_eq!(r.setup_layers(&sc, &[l]).unwrap(), "");
+        assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
         let data: Vec<f32> = [
             (0.0, 0.0),
             (W as f32, 0.0),
@@ -4341,7 +4342,7 @@ mod tests {
             ]
         })
         .collect();
-        r.set_layer_quads(0, &data, 4).unwrap();
+        r.set_batch_quads(0, &data, 4).unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert!(
             near3(rgb_at(&f, 9, 9), [64.0, 128.0, 191.0]),
@@ -4352,8 +4353,8 @@ mod tests {
 
     #[test]
     fn a_draw_with_no_error_boxes_renders_as_the_draw_alone() {
-        // The scene `with` holds a draw, and so an error-box layer. `alone`
-        // holds the same draw as a plain layer, with none behind it.
+        // The scene `with` holds a draw, and so an error-box batch. `alone`
+        // holds the same draw as a plain batch, with none behind it.
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
         let place = "vec2 glyph_place(vec2 em) { return vec2(3.0, 2.0) + em * 30.0; }";
         let code = "void main(){ float c = glyph_cover(); \
@@ -4386,24 +4387,24 @@ mod tests {
         assert_eq!((built.quads.count, built.boxes.count), (2, 0));
         let drawn = frame(&mut r);
         assert!(r.text_errors().is_empty());
-        // The error-box layer is live: given the glyphs' quads, it covers
+        // The error-box batch is live: given the glyphs' quads, it covers
         // them.
         let boxes = r.draws[0].boxes;
-        r.layer_quads(boxes, "boxes", &built.quads.floats, 4)
+        r.batch_quads(boxes, "boxes", &built.quads.floats, 4)
             .unwrap();
-        assert!(frame(&mut r) != drawn, "the error-box layer drew nothing");
+        assert!(frame(&mut r) != drawn, "the error-box batch drew nothing");
         let (vs, fs) = with.passes[0].draw_glsl(0, &with, r.data_texture_linear());
-        let l = Layer {
+        let l = Batch {
             pass: "main".to_string(),
             vertex: vs,
             fragment: fs,
             blend: Blend::Over,
         };
-        assert_eq!(r.setup_layers(&alone, &[l]).unwrap(), "");
-        r.set_layer_quads(0, &built.quads.floats, 4).unwrap();
+        assert_eq!(r.setup_batches(&alone, &[l]).unwrap(), "");
+        r.set_batch_quads(0, &built.quads.floats, 4).unwrap();
         assert!(
             frame(&mut r) == drawn,
-            "the error-box layer changed the frame"
+            "the error-box batch changed the frame"
         );
     }
 
@@ -4490,11 +4491,11 @@ mod tests {
                 .any(|n| n == "ghee_label_emoji");
             (r.colours.borrow().len(), held)
         };
-        // A text whose fonts hold no colour bitmaps takes no colour layer.
+        // A text whose fonts hold no colour bitmaps takes no colour batch.
         assert_eq!(r.setup(&load(json!("sans"))).unwrap(), "");
-        assert_eq!((r.draws[0].colour, r.layers.len()), (-1, 0));
+        assert_eq!((r.draws[0].colour, r.batches.len()), (-1, 0));
         assert_eq!(emoji(&r), (0, false));
-        // A colour font gives the draw its colour layer, and the atlas waits
+        // A colour font gives the draw its colour batch, and the atlas waits
         // for a colour glyph in the words.
         assert_eq!(r.setup(&load(json!(["sans", "emoji"]))).unwrap(), "");
         assert!(r.draws[0].colour >= 0);

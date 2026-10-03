@@ -2,7 +2,7 @@
 //!
 //! A glyph with a PNG bitmap in its font's CBDT or sbix table, and no outline,
 //! is a colour glyph. A draw of a text puts the text's colour glyphs into its
-//! pass through a colour layer, after the draws of the pass. The layer places
+//! pass through a colour batch, after the draws of the pass. The batch places
 //! each glyph with the draw's `glyph_place`, and samples its bitmap from the
 //! text's colour atlas, an RGBA8 texture with mipmaps. The draw's own code
 //! never runs for a colour glyph, and `<name>_cover` reads one as no ink.
@@ -21,7 +21,7 @@ const STRIKE: u16 = u16::MAX;
 /// its sides are multiples of MIP_PAD, so every cell starts on a grid of
 /// MIP_PAD texels. Down to mip level MAX_LEVEL, log2(MIP_PAD), a texel then
 /// holds one cell alone, and a read up to REACH texels past a bitmap meets
-/// no other bitmap. The layer reads no level past MAX_LEVEL.
+/// no other bitmap. The batch reads no level past MAX_LEVEL.
 const MIP_PAD: u32 = 16;
 const MAX_LEVEL: f64 = 4.0;
 const REACH: f64 = 8.0;
@@ -233,7 +233,7 @@ pub fn crop(texels: &[u8], width: u32, rect: Rect) -> Vec<u8> {
     out
 }
 
-/// The vertex main of the colour layer of a draw of text `name`, after
+/// The vertex main of the colour batch of a draw of text `name`, after
 /// glyph_place. Each box edge moves out 5/8 of a screen pixel, and never
 /// past REACH texels of the bitmap.
 pub fn vertex_main(name: &str) -> Vec<String> {
@@ -247,7 +247,7 @@ pub fn vertex_main(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// The fragment shader of the colour layer of a draw of text `name`, after
+/// The fragment shader of the colour batch of a draw of text `name`, after
 /// its precision lines.
 pub fn fragment(name: &str) -> Vec<String> {
     FRAGMENT

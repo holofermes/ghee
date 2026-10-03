@@ -55,7 +55,7 @@ void ghee_destroy(GheeScene *g);
 // the PENDING passes, commit makes them the scene, abort drops them. The running
 // scene keeps rendering until the commit, so a compile error costs nothing.
 // `name` stands for the pass in its errors. A NULL glsl_source makes a pass
-// with no quad: each frame it clears to transparent black and draws its layers
+// with no quad: each frame it clears to transparent black and draws its batches
 // alone. `alpha` gives the buffer an alpha channel, else the buffer stores RGB
 // and every read of its alpha gives 1.
 int  ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, int alpha);
@@ -113,28 +113,28 @@ bool ghee_mp_set_asset_rows(GheeScene *g, const char *name, const void *data, in
 bool ghee_mp_set_asset_rect(GheeScene *g, const char *name, int level,
                             int x, int y, int w, int h, const void *data);
 void ghee_mp_drop_asset(GheeScene *g, const char *name);
-// Whether a program of the committed scene, a pass's or a layer's, reads the
+// Whether a program of the committed scene, a pass's or a batch's, reads the
 // uniform `name`. The compiler drops a uniform that no code it keeps reads.
 bool ghee_mp_reads(GheeScene *g, const char *name);
-// A layer: quads drawn by a pass into its own buffer after its full-screen
+// A batch: quads drawn by a pass into its own buffer after its full-screen
 // quad, with a vertex and a fragment shader of their own, in the order of the
-// ghee_mp_add_layer calls. A vertex holds 1 to 4 vec4 attributes, ghee_a0 to
+// ghee_mp_add_batch calls. A vertex holds 1 to 4 vec4 attributes, ghee_a0 to
 // ghee_a3. A quad's 4 vertices are its corners in triangle-strip order, drawn
-// as the triangles (0, 1, 2) and (2, 1, 3). A layer reads its pass's uniforms,
+// as the triangles (0, 1, 2) and (2, 1, 3). A batch reads its pass's uniforms,
 // channels, arrays and assets under the same names, and `ghee_vflip` as the shared
 // quad vertex shader does. Blending composes premultiplied colour: over is
 // src + dst * (1 - src.a), add is src + dst, replace is src. The alpha channel
 // blends the same way.
 enum { GHEE_BLEND_OVER, GHEE_BLEND_ADD, GHEE_BLEND_REPLACE };
 // Staged like ghee_mp_add_pass: `pass` is a pending pass, the commit keeps the
-// returned index, and an abort drops the layer. `name` stands for the layer in
+// returned index, and an abort drops the batch. `name` stands for the batch in
 // the errors of later calls. An error of this call leaves the name out, as a
-// compile error does, and its caller names the layer. -1 = refused.
-int  ghee_mp_add_layer(GheeScene *g, int pass, const char *name, const char *vertex_source,
+// compile error does, and its caller names the batch. -1 = refused.
+int  ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *vertex_source,
                        const char *fragment_source, int blend);
-// The quads of a committed layer: quads * 4 vertices of nattr vec4s each,
+// The quads of a committed batch: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.
-bool ghee_mp_set_layer_quads(GheeScene *g, int layer, const float *data, int quads, int nattr);
+bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int quads, int nattr);
 // Render the passes and swap. buffer_rgb NULL = no readback at all, pw/ph > 0 =
 // GPU-scale the final pass to pw x ph and read back only that, otherwise the
 // full frame lands in buffer_rgb. A whole multiple of the frame size repeats

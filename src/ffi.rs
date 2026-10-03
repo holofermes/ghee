@@ -139,7 +139,7 @@ extern "C" {
     ) -> bool;
     pub fn ghee_mp_drop_asset(g: *mut GheeScene, name: *const c_char);
     pub fn ghee_mp_reads(g: *mut GheeScene, name: *const c_char) -> bool;
-    pub fn ghee_mp_add_layer(
+    pub fn ghee_mp_add_batch(
         g: *mut GheeScene,
         pass: c_int,
         name: *const c_char,
@@ -147,9 +147,9 @@ extern "C" {
         fragment_source: *const c_char,
         blend: c_int,
     ) -> c_int;
-    pub fn ghee_mp_set_layer_quads(
+    pub fn ghee_mp_set_batch_quads(
         g: *mut GheeScene,
-        layer: c_int,
+        batch: c_int,
         data: *const f32,
         quads: c_int,
         nattr: c_int,

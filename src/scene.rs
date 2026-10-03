@@ -1872,7 +1872,7 @@ impl Pass {
         (v, f.join("\n"))
     }
 
-    /// The vertex and the fragment shader of the colour layer of draw `k`:
+    /// The vertex and the fragment shader of the colour batch of draw `k`:
     /// the draw's own vertex GLSL, and ghee's read of the text's colour atlas.
     pub fn draw_colour_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
         let d = &self.draws[k];

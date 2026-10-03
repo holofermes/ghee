@@ -104,6 +104,8 @@
   square block, in `Renderer::render_into` and `render_scaled`.
 - Answer `/h264` with 503 and the reason when no encoder can start, and end
   a stream whose encoder fails with a type 3 frame that carries the reason.
+- Show the console preview in MJPEG when the H264 stream decodes no frame in
+  5 s.
 
 ## 0.4.0 - 2026-08-06
 

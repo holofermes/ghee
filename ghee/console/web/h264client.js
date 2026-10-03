@@ -1,10 +1,12 @@
-// attachH264(canvas, url, {onconfig, onstats, onfail}) -> {stop}
+// attachH264(canvas, url, {onconfig, onstats, onfail, startMs}) -> {stop}
 // Reads the /h264 framed stream ([u8 type][u32 BE len][payload]; type 0 =
 // decoder config JSON, 1 = key AU, 2 = delta AU, AVCC payloads, 3 = the UTF-8
 // reason the stream ends), decodes with WebCodecs VideoDecoder, draws
-// VideoFrames to the canvas.
+// VideoFrames to the canvas. A stream with no decoded frame startMs after the
+// attach (default 5000) counts as failed.
 function attachH264(canvas, url, opts) {
   opts = opts || {};
+  const startMs = opts.startMs || 5000;
   const ctx = canvas.getContext('2d');
   const abort = new AbortController();
   let decoder = null, reader = null, lastFrame = null, decoded = 0, ts = 0, stopped = false;
@@ -12,12 +14,14 @@ function attachH264(canvas, url, opts) {
   // aborting the request is what drops this viewer server-side
   function teardown() {
     stopped = true;
+    clearTimeout(startTimer);
     abort.abort();
     if (reader) { reader.cancel().catch(() => {}); reader = null; }
     if (decoder) { if (decoder.state !== 'closed') decoder.close(); decoder = null; }
     if (lastFrame) { lastFrame.close(); lastFrame = null; }
   }
   const fail = e => { if (!stopped) { teardown(); opts.onfail && opts.onfail(String(e)); } };
+  const startTimer = setTimeout(() => fail('no frame in ' + startMs / 1000 + ' s'), startMs);
 
   function configure(cfg) {
     // a mid-stream config (a resync, a size change) replaces the decoder;
@@ -26,7 +30,11 @@ function attachH264(canvas, url, opts) {
     canvas.width = cfg.codedWidth; canvas.height = cfg.codedHeight;
     const desc = Uint8Array.from(atob(cfg.description), c => c.charCodeAt(0));
     decoder = new VideoDecoder({
-      output: f => { decoded++; if (lastFrame) lastFrame.close(); lastFrame = f; },
+      output: f => {
+        decoded++; clearTimeout(startTimer);
+        if (lastFrame) lastFrame.close();
+        lastFrame = f;
+      },
       error: e => fail('decoder error: ' + e.message),
     });
     const dc = {

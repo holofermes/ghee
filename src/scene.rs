@@ -1430,7 +1430,7 @@ impl Layer {
     /// over a band of 0.
     pub fn fade(&self) -> Option<crate::text::Fade> {
         let band = self.fade.unwrap_or(self.pad / 4.0);
-        (self.pad > 0.0 && band > 0.0).then(|| crate::text::Fade {
+        (self.pad > 0.0 && band > 0.0).then_some(crate::text::Fade {
             from: self.pad - band,
             to: self.pad,
         })

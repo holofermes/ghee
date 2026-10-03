@@ -89,6 +89,10 @@ pub const EXAMPLES: [(&str, &[u8]); 19] = [
         include_bytes!("../../ghee/examples/lib/look.py"),
     ),
     (
+        "marquee.py",
+        include_bytes!("../../ghee/examples/marquee.py"),
+    ),
+    (
         "mix.scene.json",
         include_bytes!("../../ghee/examples/mix.scene.json"),
     ),
@@ -105,7 +109,6 @@ pub const EXAMPLES: [(&str, &[u8]); 19] = [
         "stamp.scene.json",
         include_bytes!("../../ghee/examples/stamp.scene.json"),
     ),
-    ("text.py", include_bytes!("../../ghee/examples/text.py")),
     (
         "trail.scene.json",
         include_bytes!("../../ghee/examples/trail.scene.json"),

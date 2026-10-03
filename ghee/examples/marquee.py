@@ -12,9 +12,9 @@ thresholds it and tints it over a wave.
 crispness and color stay live. Line art needs no dither. The wave behind the
 text stays under the threshold of a 1-bit panel while `glow` stays under it.
 
-    ghee render --demo text -o out.####.png --frames 60
-    ghee render --demo text --display ssd1306       # to a panel, no dither
-    ghee render --demo text -- --text "hello there"
+    ghee render --demo marquee -o out.####.png --frames 60
+    ghee render --demo marquee --display ssd1306       # to a panel, no dither
+    ghee render --demo marquee -- --text "hello there"
 """
 
 import ghee

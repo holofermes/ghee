@@ -329,7 +329,7 @@ Lines break at each newline, and `align` sets each line `left`, `center` or
 glyph, spaced by the advances and the pair kerning of its font's `kern`
 table, and two glyphs of two fonts take no kerning. Careful: a font that kerns
 through GPOS alone draws unkerned. Text that needs shaping goes in as a
-host-rasterized 2D input, the way the `text` demo draws its words. An emoji
+host-rasterized 2D input, the way the `marquee` demo draws its words. An emoji
 sequence draws one code point at a time: a flag shows its two
 regional-indicator letters, a sequence joined by U+200D shows each of its
 emoji, and variation selectors and the joiner take no room.

@@ -122,9 +122,11 @@
   plain heart.
 - Wait under a fixed `--timestep` for a lockstep scene process to answer
   each tick, so the params and arrays sent for a tick land in that tick's
-  frame, where they landed a frame later. Message kind 5 ends an answer, and
-  `"lockstep": true` in the handshake promises one for every tick. The
-  Python shim does both.
+  frame, where they landed a frame later. Message kind 5 ends an answer,
+  `"lockstep": true` in the handshake promises one for every tick, and ghee
+  sets `GHEE_LOCKSTEP=1` in the scene process to say that it reads both.
+  The Python shim sends both when it finds `GHEE_LOCKSTEP`, and under an
+  older ghee it writes the wire as before.
 - Log once a param message from a scene process that names no param of the
   scene or does not fit the param's type, where it changed nothing in
   silence.

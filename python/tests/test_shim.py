@@ -39,14 +39,19 @@ class Out:
         self.buffer = io.BytesIO()
 
 
-def drive(shim, scene, ticks, monkeypatch):
+def drive(shim, scene, ticks, monkeypatch, lockstep=True):
     """Run the loop over `ticks` -> (handshake dict, message bytes).
 
     The mark is what puts run() on the wire. test_direct.py drives the rest.
+    `lockstep` False stands for a ghee that reads no kind 5.
     """
     lines = "".join(json.dumps(t) + "\n" for t in ticks)
     out = Out()
     monkeypatch.setenv(shim.WIRE, "1")
+    if lockstep:
+        monkeypatch.setenv(shim.LOCKSTEP, "1")
+    else:
+        monkeypatch.delenv(shim.LOCKSTEP, raising=False)
     monkeypatch.setattr(sys, "stdin", io.StringIO(lines))
     monkeypatch.setattr(sys, "stdout", out)
     shim.run(scene)
@@ -502,6 +507,26 @@ def test_the_handshake_is_the_first_line_and_the_data_follows(monkeypatch):
         (0, "v", [1.0, 0.5, 0.5, 0.0]),
         END,
     ]
+
+
+def test_under_a_ghee_that_reads_no_kind_5_the_wire_goes_on_without_it(monkeypatch):
+    """No "lockstep" in the handshake, no kind 5, and a tick with nothing to
+    send writes nothing."""
+    shim = load()
+
+    @shim.feed("v")
+    def v(tick):
+        return [1, 2, 3, 4] if tick.frame == 1 else None
+
+    @shim.tick
+    def hook(tick):
+        if tick.frame == 2:
+            shim.skip()
+
+    ticks = [{"frame": n, "time": 0.0, "dt": 0.0, "params": {}} for n in range(3)]
+    head, rest = drive(shim, scene_of(shim), ticks, monkeypatch, lockstep=False)
+    assert head == scene_of(shim).to_dict()
+    assert messages(rest) == [(0, "v", [1.0, 2.0, 3.0, 4.0]), (2, "", [])]
 
 
 def test_a_feed_that_returns_none_sends_nothing(monkeypatch):

@@ -33,7 +33,9 @@ otherwise the scene is shown as pass-through, either way, everything after
 ghee runs the scene with everything after `--` as its arguments, unchecked.
 If the scene rejects an argument and exits, ghee shows its stderr. The
 working directory is the scene's own directory, and ghee sets
-`GHEE_WIRE=1` in the process.
+`GHEE_WIRE=1` in the process. ghee also sets `GHEE_LOCKSTEP=1` to say that
+it reads kind 5 and the handshake's `"lockstep"`, and a process that finds
+no `GHEE_LOCKSTEP` sends neither.
 
 ## Handshake
 

@@ -3,8 +3,8 @@
 The shim builds a scene, answers the probe, and feeds the data.
 A procedural scene is an executable: ghee starts the process when the scene
 becomes active, the process writes its scene as one JSON line, then binary
-messages, one batch for each tick, ended by kind 5. See docs/procedural.md
-for the wire contract.
+messages, one batch for each tick. See docs/procedural.md for the wire
+contract.
 
     #!/usr/bin/env python3
     import ghee
@@ -52,6 +52,9 @@ _ALPHAS = ("blend", "keep")
 
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
 WIRE = "GHEE_WIRE"
+# ghee sets this when it reads kind 5 and the handshake's "lockstep". Without
+# it, the wire goes on with neither.
+LOCKSTEP = "GHEE_LOCKSTEP"
 
 
 # ---------------------------------------------------------------- scene model
@@ -848,12 +851,15 @@ def run(scene: Scene) -> None:
 def _wire(scene: Scene) -> None:
     """Write the handshake, then answer ticks until ghee closes stdin.
 
-    Every answer ends with kind 5, as the handshake's `"lockstep": true`
-    promises.
+    Under a ghee that sets $GHEE_LOCKSTEP, every answer ends with kind 5, as
+    the handshake's `"lockstep": true` promises.
     """
     global _CLEAN
     out = sys.stdout.buffer
-    hello = {**scene.to_dict(), "lockstep": True}
+    lockstep = bool(os.environ.get(LOCKSTEP))
+    hello = scene.to_dict()
+    if lockstep:
+        hello["lockstep"] = True
     out.write(json.dumps(hello).encode("utf-8") + b"\n")
     out.flush()
     counts = _counts(scene)
@@ -877,9 +883,11 @@ def _wire(scene: Scene) -> None:
             _OUT.append(msg)
         if _CLEAN:
             _OUT.append(b"\x02")
-        _OUT.append(b"\x05")
-        out.write(b"".join(_OUT))
-        out.flush()
+        if lockstep:
+            _OUT.append(b"\x05")
+        if _OUT:
+            out.write(b"".join(_OUT))
+            out.flush()
 
 
 # --------------------------------------------------------------- direct mode

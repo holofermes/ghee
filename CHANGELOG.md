@@ -111,6 +111,9 @@
 - Write straight colour into a PNG of an RGBA frame, from `--alpha` and the
   console's `/frame.png`, where it held the premultiplied colour and drew
   dark fringes. A raw frame and `pixels()` keep the colour premultiplied.
+- Load the assets and shader files of a scene whose directory is `/`, such
+  as a dict scene opened with `/` as the working directory, where every file
+  was refused as outside the directory.
 
 ## 0.4.0 - 2026-08-06
 

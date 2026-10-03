@@ -10,7 +10,7 @@
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
 
-use crate::scene::{join, normpath, strerror, Asset, Pass, RawLayout, Scene};
+use crate::scene::{inside, join, normpath, strerror, Asset, Pass, RawLayout, Scene};
 
 /// The shipped filters. A binary carries no package directory, so the build
 /// compiles them in.
@@ -313,7 +313,7 @@ fn resolve_asset(asset: &mut Asset, fd: &Value) -> Result<()> {
     };
     let root = normpath(dir);
     let path = normpath(&join(&root, &asset.file));
-    if !path.starts_with(&format!("{root}/")) {
+    if path == root || !inside(&path, &root) {
         bail!(
             "filter '{filter}' asset '{}' file {} is outside the filter directory",
             asset.name,

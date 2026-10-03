@@ -238,6 +238,13 @@ pub(crate) fn join(root: &str, path: &str) -> String {
     }
 }
 
+/// Whether a normalized path is the directory root or lies inside it. The
+/// comparison takes whole components, so "/" holds every absolute path, and
+/// "/a/b" holds no "/a/bc".
+pub(crate) fn inside(path: &str, root: &str) -> bool {
+    std::path::Path::new(path).starts_with(root)
+}
+
 /// Read a `shader` file from the scene's own directory.
 ///
 /// A scene with no directory names no file. A console post and an in-memory
@@ -257,7 +264,7 @@ fn read_shader(path: &Value, base_dir: Option<&str>, what: &str) -> Result<Strin
     };
     let root = normpath(&abspath(base));
     let full = normpath(&join(&root, name));
-    if full != root && !full.starts_with(&format!("{root}/")) {
+    if !inside(&full, &root) {
         bail!(
             "{what} shader {} is outside the scene directory",
             py_repr(path)
@@ -2221,12 +2228,8 @@ impl Scene {
         }
         let root = normpath(&abspath(base_dir));
         let mut roots = vec![root.clone()];
-        if let Some(i) = root.rfind('/') {
-            roots.push(if i == 0 {
-                "/".to_string()
-            } else {
-                root[..i].to_string()
-            });
+        if let Some(parent) = std::path::Path::new(&root).parent() {
+            roots.push(parent.to_string_lossy().into_owned());
         }
         roots.extend(asset_dirs());
         for a in &mut self.assets {
@@ -2234,7 +2237,7 @@ impl Scene {
                 continue; // the filter decoded it
             }
             let full = normpath(&join(&root, &a.file));
-            if full != root && !full.starts_with(&format!("{root}/")) {
+            if !inside(&full, &root) {
                 bail!(
                     "asset '{}' file {} is outside the scene directory",
                     a.name,
@@ -3625,6 +3628,49 @@ mod tests {
         let e = Scene::load(&p).unwrap_err().to_string();
         assert!(e.contains("outside the scene directory"), "{e}");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_path_inside_a_directory_takes_whole_components() {
+        assert!(inside("/", "/"));
+        assert!(inside("/a.png", "/"));
+        assert!(inside("/a/b", "/a/b"));
+        assert!(inside("/a/b/c.png", "/a/b"));
+        assert!(!inside("/a/bc.png", "/a/b"));
+        assert!(!inside("/a", "/a/b"));
+    }
+
+    #[test]
+    fn the_root_directory_holds_assets_and_shaders() {
+        let dir = tmpdir("in-root");
+        fs::write(format!("{dir}/n.raw"), [1u8, 2, 3, 4]).unwrap();
+        fs::write(format!("{dir}/in.glsl"), GOOD).unwrap();
+        let rel = dir.trim_start_matches('/');
+        let mut scene = Scene::from_dict(
+            &asset_scene(json!({
+                "n": {"file": format!("{rel}/n.raw"), "width": 2, "height": 2, "format": "u8"}
+            })),
+            None,
+            None,
+        )
+        .unwrap();
+        scene.load_assets("/").unwrap();
+        let img = scene.assets[0].image.as_ref().unwrap();
+        assert_eq!(img.pixels, crate::assets::Pixels::U8(vec![1, 2, 3, 4]));
+        let d =
+            json!({"version": 1, "passes": [{"name": "main", "shader": format!("{rel}/in.glsl")}]});
+        let sc = Scene::from_dict(&d, Some("/"), None).unwrap();
+        assert_eq!(sc.passes[0].code, GOOD);
+        let mut missing = Scene::from_dict(
+            &asset_scene(json!({"m": {"file": "ghee-no-such.png"}})),
+            None,
+            None,
+        )
+        .unwrap();
+        let e = missing.load_assets("/").unwrap_err().to_string();
+        assert!(e.contains("(/ghee-no-such.png)"), "{e}");
+        assert!(!e.contains("also tried: /ghee-no-such.png"), "{e}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

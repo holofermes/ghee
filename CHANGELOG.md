@@ -212,6 +212,9 @@
   `--display-opts`, `--serve`, `--port` and `--host` for the console, and
   `--stats` for the timing summary, where `--output` named the display and
   `--stats` the console's port.
+- Hand a direct run's `@ghee.tick` the string params that the console
+  changed, as the wire does, through `h.changed_params()`, where the tick's
+  `params` stayed empty.
 
 ## 0.4.0 - 2026-08-06
 

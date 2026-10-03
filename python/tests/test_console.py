@@ -120,6 +120,24 @@ def test_the_console_lists_a_text_problem_apart_from_the_error(tmp_path):
     ]
 
 
+def test_changed_params_hands_the_host_the_words_the_console_set():
+    port = free_port()
+    doc = {
+        "version": 1,
+        "params": {"mood": {"type": "string", "value": "calm"}},
+        "passes": [
+            {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}
+        ],
+    }
+    with ghee.open(doc, width=8, height=8, stats=port) as h:
+        assert h.changed_params() == {"mood": "calm"}
+        assert h.changed_params() == {}
+        post(port, "/set?pass=scene&name=mood&value=wild")
+        assert h.changed_params() == {"mood": "wild"}
+        h.set_param("mood", "own")
+        assert h.changed_params() == {}
+
+
 def test_the_console_publishes_the_render(served):
     h, port = served
     stats = json_of(port, "/stats")

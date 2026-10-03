@@ -19,9 +19,9 @@ use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{ArraySize, Scene};
+use ghee::scene::{ArraySize, ParamValue, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::serve::{encode_bitrate, encode_size, Console};
 
@@ -268,6 +268,37 @@ pub struct Session {
     lit: bool,
     /// The renderer's text_errors_seq() at the console's last look.
     text_errors: u64,
+    /// The words of each string param, by the bare name that the wire gives
+    /// it.
+    strings: Map<String, Value>,
+    /// The words of each string param at the last changed_params().
+    sent: Map<String, Value>,
+}
+
+/// The words of each string param of `scene`, by the bare name that `index`
+/// gives it.
+fn string_params(scene: &Scene, index: &Index) -> Map<String, Value> {
+    let mut out = Map::new();
+    for r in index
+        .params
+        .iter()
+        .filter(|r| r.ty == "string" && r.wire == r.uniform)
+    {
+        let params = match &r.pass {
+            None => Some(&scene.params),
+            Some(p) => scene
+                .passes
+                .iter()
+                .find(|x| x.name == *p)
+                .map(|x| &x.params),
+        };
+        if let Some(ParamValue::Str(words)) =
+            params.and_then(|ps| ps.get(&r.uniform)).map(|p| &p.value)
+        {
+            out.insert(r.wire.clone(), Value::from(words.clone()));
+        }
+    }
+    out
 }
 
 /// Load a scene as `ghee render` loads one, filters included.
@@ -404,6 +435,7 @@ impl Session {
             return Err(Fault::scene(format!("compile error: {}", err.trim_end())));
         }
         let index = Arc::new(Index::of(&scene));
+        let strings = string_params(&scene, &index);
         let out = match &sink {
             Sink::None => Vec::new(),
             Sink::Kms => vec![DEST_KMS.to_string()],
@@ -473,6 +505,8 @@ impl Session {
             drawn: None,
             lit: false,
             text_errors: u64::MAX,
+            strings,
+            sent: Map::new(),
         })
     }
 
@@ -727,7 +761,11 @@ impl Session {
             })
         } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
             let rgb: Vec<u8> = match components {
-                4 => data.chunks_exact(4).flat_map(|p| &p[..3]).copied().collect(),
+                4 => data
+                    .chunks_exact(4)
+                    .flat_map(|p| &p[..3])
+                    .copied()
+                    .collect(),
                 _ => data.to_vec(),
             };
             encode_jpeg(
@@ -761,7 +799,45 @@ impl Session {
         };
         RenderTarget::set_param(&self.renderer, p.pass.as_deref(), &p.uniform, &p.ty, &v)
             .map_err(fault)?;
+        // The host wrote these words itself, so changed_params() leaves them
+        // out.
+        if let ParamValue::Str(words) = &v {
+            let pass = p.pass.clone();
+            self.held_string(pass.as_deref(), &p.uniform.clone(), words, true);
+        }
         Ok(())
+    }
+
+    /// Hold `words` for the string param `name` of `pass`, under its bare
+    /// name when it has one, and as already handed out when `sent`.
+    fn held_string(&mut self, pass: Option<&str>, name: &str, words: &str, sent: bool) {
+        let bare = self
+            .index
+            .params
+            .iter()
+            .any(|r| r.wire == name && r.pass.as_deref() == pass);
+        if bare {
+            self.strings.insert(name.to_string(), Value::from(words));
+            if sent {
+                self.sent.insert(name.to_string(), Value::from(words));
+            }
+        }
+    }
+
+    /// The string params that changed since the last call, by their bare
+    /// names, with their words: the console's sets, which this applies first.
+    /// The first call holds every string param, as the first tick of the
+    /// wire does.
+    pub fn changed_params(&mut self) -> Outcome<Map<String, Value>> {
+        self.drain()?;
+        let mut out = Map::new();
+        for (k, v) in &self.strings {
+            if self.sent.get(k) != Some(v) {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        self.sent.clone_from(&self.strings);
+        Ok(out)
     }
 
     /// Hold data for the next frame. That frame consumes it once.
@@ -788,6 +864,9 @@ impl Session {
         for (pass, name, ty, value) in console.take_params() {
             RenderTarget::set_param(&self.renderer, pass.as_deref(), &name, &ty, &value)
                 .map_err(system_fault)?;
+            if let ParamValue::Str(words) = &value {
+                self.held_string(pass.as_deref(), &name, words, false);
+            }
         }
         Ok(())
     }

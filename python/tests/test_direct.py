@@ -25,6 +25,8 @@ class Fake:
         self.calls = []
         self.on_frame = on_frame
         self.drawn = 0
+        # what changed_params() returns, a call each, then {}
+        self.changes = [{"words": "hi"}, {}, {"words": "ho"}]
 
     def feed(self, name, values):
         self.calls.append(("feed", name, list(values)))
@@ -42,6 +44,9 @@ class Fake:
     def skip(self):
         self.calls.append(("skip",))
         return {"frame": self.drawn, "time": 0.0, "dt": 0.0}
+
+    def changed_params(self):
+        return self.changes.pop(0) if self.changes else {}
 
     def save(self, path):
         self.calls.append(("save", path))
@@ -89,8 +94,12 @@ def test_the_loop_runs_the_hooks_then_the_feeds_then_the_frame(monkeypatch):
         return None if t.frame == 2 else [float(t.frame)] * 4
 
     shim.run(scene_of(shim))
-    # the tick keeps its wire shape, and params stays empty here
-    assert seen == [(0, 0.0, 0.0, {}), (1, 0.5, 0.5, {}), (2, 1.0, 0.5, {})]
+    # the tick keeps its wire shape, with the string params that changed
+    assert seen == [
+        (0, 0.0, 0.0, {"words": "hi"}),
+        (1, 0.5, 0.5, {}),
+        (2, 1.0, 0.5, {"words": "ho"}),
+    ]
     gain = ("set_param", "gain", 0.5, None)
     assert fake.calls == [
         gain,

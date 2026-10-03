@@ -40,6 +40,7 @@ h.set_param("words", "hello")            # the words of a text
 h.feed("level", bars)      # bytes, bytearray, memoryview, array, numpy, numbers
 tick = h.frame()           # {"frame": 12, "time": 0.4, "dt": 0.0166}
 tick = h.skip()            # the same tick, with no draw
+h.changed_params()         # {"words": "hi"}: string params that the console set
 
 h.size          # (width, height)
 h.components    # 3 for RGB, 4 for RGBA
@@ -73,6 +74,10 @@ pins both to `frame * S`.
 alpha that the output pass wrote, with the colour premultiplied by it.
 
 `skip` takes the tick and draws nothing, the panel keeps its last frame.
+
+`changed_params` returns the string params that changed since its last
+call, with their words, and the first call returns every string param. It
+applies the console's sets at once. A set of the host's own stays out.
 
 `save` writes the last frame to a `.png` file, or to a `.jpg`, which holds
 no alpha. A run of `#` in the name takes the number of the frame's tick, as
@@ -251,8 +256,9 @@ The scene takes its own arguments first, then these flags of `ghee render`:
   until SIGINT or SIGTERM (default 0)
 
 The feeds, the hooks and `ghee.skip()` work the same. The tick keeps its
-wire shape, with `params` empty. If one of your own arguments collides with
-these names, argparse says so.
+wire shape: `params` holds the string params that the console changed, and
+the first tick holds every string param. If one of your own arguments
+collides with these names, argparse says so.
 
 ## What the wire carries
 

@@ -1159,8 +1159,8 @@ def _stop(sig, _frame) -> None:
 def _direct(scene: Scene) -> None:
     """Drive the scene from the wire's own hooks and feeds.
 
-    The tick keeps its wire shape. `params` stays empty, because no ghee holds
-    the string params here.
+    The tick keeps its wire shape: `params` holds the string params that the
+    console changed, and the first tick holds every string param.
     A frame budget of 0 runs until SIGINT or SIGTERM.
     """
     global _CLEAN, _HANDLE
@@ -1179,7 +1179,7 @@ def _direct(scene: Scene) -> None:
                 if a.timestep is not None
                 else time.monotonic() - started
             )
-            t = Tick(frame, now, now - last, {})
+            t = Tick(frame, now, now - last, handle.changed_params())
             last = now
             _CLEAN = False
             for hook in _HOOKS:

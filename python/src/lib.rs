@@ -300,6 +300,18 @@ impl Handle {
             .map_err(fault)
     }
 
+    /// The string params that changed since the last call, by name, with
+    /// their words: the sets of the console, which this applies at once. The
+    /// first call returns every string param.
+    fn changed_params<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let changed = self.held.get()?.changed_params().map_err(fault)?;
+        let d = PyDict::new(py);
+        for (k, v) in changed {
+            d.set_item(k, v.as_str().unwrap_or_default())?;
+        }
+        Ok(d)
+    }
+
     /// Hold data for one declared array. The next frame consumes it once.
     ///
     /// An array with no feed keeps what its texture holds.

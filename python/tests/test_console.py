@@ -186,18 +186,18 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
                 size=(64, 32),
                 mipmaps=True,
                 arrays=[ghee.ArrayInput("level", 4), ghee.ArrayInput("mask", (4, 2))],
-                draws=[
-                    ghee.Draw(
+                layers=[
+                    ghee.Layer(
                         "words", INK, PLACE, blend="add", pad=0.0625, name="glow"
                     ),
-                    ghee.Draw("title", px_per_em=24, blend="replace", emoji=False),
+                    ghee.Layer("title", px_per_em=24, blend="replace", emoji=False),
                 ],
             ),
             ghee.Pass(
                 "main",
                 "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
                 channels=[ghee.Channel("ink")],
-                draws=[ghee.Draw("words", INK, PLACE)],
+                layers=[ghee.Layer("words", INK, PLACE)],
             ),
         ],
     ).to_dict()

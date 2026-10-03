@@ -67,7 +67,7 @@ BROKEN = {
 
 @pytest.fixture(autouse=True, scope="session")
 def cache_home(tmp_path_factory):
-    """A draw's glyph atlas lands in a cache of the session's own, never in the
+    """A layer's glyph atlas lands in a cache of the session's own, never in the
     user's."""
     saved = os.environ.get("XDG_CACHE_HOME")
     os.environ["XDG_CACHE_HOME"] = str(tmp_path_factory.mktemp("cache"))

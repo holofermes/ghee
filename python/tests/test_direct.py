@@ -389,8 +389,8 @@ def test_a_direct_run_finds_its_font_beside_its_script(tmp_path):
     assert ab != cd and ab == ab_again
 
 
-DRAW_SCENE = '''#!/usr/bin/env python3
-"""A scene whose draw puts its words at a spot that each tick moves."""
+LAYER_SCENE = '''#!/usr/bin/env python3
+"""A scene whose layer puts its words at a spot that each tick moves."""
 
 import ghee
 from ghee import _shim
@@ -412,8 +412,8 @@ ghee.run(
             ghee.Pass(
                 "main",
                 "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-                draws=[
-                    ghee.Draw(
+                layers=[
+                    ghee.Layer(
                         "words",
                         "void main(){ gl_FragColor = vec4(glyph_cover()); }",
                         "vec2 glyph_place(vec2 em) { return spot + em * 16.0; }",
@@ -437,13 +437,13 @@ def ink(frame, width):
     }
 
 
-def test_a_scene_file_draws_its_words_where_its_draw_places_them(tmp_path):
+def test_a_scene_file_draws_its_words_where_its_layer_places_them(tmp_path):
     """The words land at the spot that `vertex` reads, and move with it."""
     scene_dir = tmp_path / "scene"
     (scene_dir / "fonts").mkdir(parents=True)
     shutil.copy(REPO / "ghee/examples/fonts/DejaVuSans-Latin.ttf", scene_dir / "fonts")
-    path = scene_dir / "draw.py"
-    path.write_text(DRAW_SCENE)
+    path = scene_dir / "layer.py"
+    path.write_text(LAYER_SCENE)
     ran = subprocess.run(
         [
             sys.executable,

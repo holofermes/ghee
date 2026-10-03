@@ -278,7 +278,7 @@
   .field select{padding-right:28px; justify-self:start; max-width:100%}
   .field input{width:100%; max-width:260px}
   .field input[type=number]{max-width:110px}
-  .drawctl{margin:0 0 6px}
+  .layerctl{margin:0 0 6px}
   /* the words box grows with them: its hidden copy sizes it */
   .grow{position:relative; min-width:0}
   .grow>pre, .grow>textarea{margin:0; font:13px/1.4 ui-sans-serif,system-ui,sans-serif; padding:6px 8px; border:1px solid transparent; border-radius:6px;
@@ -372,7 +372,7 @@
 
     <div class="panel card" id="textsCard" hidden>
       <h3>texts</h3>
-      <div class="muted lead">A scene declares each text under "texts": its words in "value", a "font" and an "align". A draw puts the words on a pass, and a pass's GLSL reads them through &lt;name&gt;_cover(p, ppem).</div>
+      <div class="muted lead">A scene declares each text under "texts": its words in "value", a "font" and an "align". A layer paints the words over a pass, and a pass's GLSL reads them through &lt;name&gt;_cover(p, ppem).</div>
       <div id="texts"></div>
       <datalist id="fontAssets"></datalist>
     </div>
@@ -403,7 +403,7 @@
     <div class="tabs" id="tabs"></div>
     <div class="channels" id="channels"></div>
     <div class="inputs" id="inputs"></div>
-    <div class="drawctl" id="drawctl" hidden></div>
+    <div class="layerctl" id="layerctl" hidden></div>
     <div class="edhead" id="vertexHead" title="vertex GLSL: vec2 glyph_place(vec2 em) returns the pass pixel where a point of the block lands" hidden>vertex</div>
     <div class="editor vertex" id="vertexEd" hidden><pre aria-hidden="true"></pre><textarea spellcheck="false" aria-label="vertex"></textarea><div class="errmark"></div></div>
     <div class="edhead" id="fragmentHead" title="fragment GLSL: a void main() that writes colour premultiplied by alpha" hidden>fragment</div>
@@ -433,10 +433,10 @@ const onCommon = () => curPass === COMMON;
 const hasCommon = () => !!(work && work.common && typeof work.common.code === "string");
 const commonCode = () => (hasCommon() ? work.common.code : "");
 function setCommon(code){ work.common = {code, commonEdited: true}; }
-// the draw of the open pass in the editors, or null for the pass's own code
-let curDraw = null;
-const onDraw = () => !onCommon() && curDraw != null;
-const openDraw = () => (onDraw() ? work.passes[curPass].draws[curDraw] : null);
+// the layer of the open pass in the editors, or null for the pass's own code
+let curLayer = null;
+const onLayer = () => !onCommon() && curLayer != null;
+const openLayer = () => (onLayer() ? work.passes[curPass].layers[curLayer] : null);
 let lastDisplay = null, lastStats = null, compileTimer = null;
 let devModel = "", devGpu = "";
 const FRAME = $(".frame"), SCREEN = FRAME.parentElement, IMG = $("#stream"), CV = $("#streamcv");
@@ -654,7 +654,7 @@ function norm(s){
   return JSON.stringify(s, (k,v) => {
     if ((k==="channels"||k==="arrays") && Array.isArray(v) && !v.length) return undefined;
     if (k==="params" && v && !Array.isArray(v) && typeof v==="object" && !Object.keys(v).length) return undefined;
-    if (k==="muted" || k==="codeEdited" || k==="commonEdited" || k==="drawsEdited") return undefined;   // editor state, not a scene edit
+    if (k==="muted" || k==="codeEdited" || k==="commonEdited" || k==="layersEdited") return undefined;   // editor state, not a scene edit
     return v;
   });
 }
@@ -663,7 +663,7 @@ function dirty(){ return norm(work) !== norm(pristine); }
 // that a scene does not take.
 function sceneOnly(s){
   const q = clone(s);
-  (q.passes || []).forEach(p => { delete p.muted; delete p.codeEdited; delete p.drawsEdited; });
+  (q.passes || []).forEach(p => { delete p.muted; delete p.codeEdited; delete p.layersEdited; });
   if (q.common) delete q.common.commonEdited;
   return q;
 }
@@ -821,8 +821,8 @@ function mergeNewParams(pristine, work){
     // current source, so new uniforms arrive with the code that reads them
     if (!wp.codeEdited && typeof p.code === "string" && wp.code !== p.code)
       wp.code = p.code;
-    // and so do its draws
-    if (!wp.drawsEdited){ if (p.draws) wp.draws = clone(p.draws); else delete wp.draws; }
+    // and so do its layers
+    if (!wp.layersEdited){ if (p.layers) wp.layers = clone(p.layers); else delete wp.layers; }
   });
   // same for the common block: one added to the file since this copy was saved
   // shows up, one edited here stays as the user left it
@@ -837,32 +837,32 @@ async function loadScene(name){
   work = saved ? JSON.parse(saved) : clone(pristine);
   if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
-  curPass = 0; curDraw = null; postErr = "";
+  curPass = 0; curLayer = null; postErr = "";
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
     $("#tabs").innerHTML = ""; $("#channels").innerHTML = ""; $("#inputs").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">no passes, not shader-editable</div>';
     $("#textsCard").hidden = true;
-    CODE.ta.value = ""; CODE.sync(); showDraw(null); showErrors(); refreshInfo(); updateStatus();
+    CODE.ta.value = ""; CODE.sync(); showLayer(null); showErrors(); refreshInfo(); updateStatus();
     return;
   }
   if (saved) { await postScene(); }     // re-apply working copy to the render
   buildTexts(); buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 }
 
-// What each draw of pass p goes by, as ghee names it in an error: its name,
-// else its text, numbered from the text's second draw without a name.
-function drawLabels(p){
+// What each layer of pass p goes by, as ghee names it in an error: its name,
+// else its text, numbered from the text's second layer without a name.
+function layerLabels(p){
   const seen = {};
-  return (p.draws || []).map(d => {
+  return (p.layers || []).map(d => {
     if (d.name) return d.name;
     const n = seen[d.text] = (seen[d.text] || 0) + 1;
     return n === 1 ? d.text : `${d.text} ${n}`;
   });
 }
-const drawTabName = (p, k) => `${p.name} › ${drawLabels(p)[k]}`;
+const layerTabName = (p, k) => `${p.name} › ${layerLabels(p)[k]}`;
 
-function setPass(i){ curPass = i; curDraw = null; buildTabs(); buildChannels(); loadCode(); }
-function setDraw(i, k){ curPass = i; curDraw = k; buildTabs(); buildChannels(); loadCode(); }
+function setPass(i){ curPass = i; curLayer = null; buildTabs(); buildChannels(); loadCode(); }
+function setLayer(i, k){ curPass = i; curLayer = k; buildTabs(); buildChannels(); loadCode(); }
 function uniqueName(base){ const names=new Set(work.passes.map(p=>p.name)); let n=base,k=1; while(names.has(n)){ n=base+k; k++; } return n; }
 
 // A tab opens on a tap anywhere on it. Only the open tab gets its actions.
@@ -897,7 +897,7 @@ function buildTabs(){
     t.appendChild(tab);
   }
   work.passes.forEach((p,i)=>{
-    const open = i===curPass && curDraw==null;
+    const open = i===curPass && curLayer==null;
     const tab = tabEl([p.muted ? "off" : "", p.filter ? "filt" : ""], open, ()=> setPass(i));
     const lbl = el("span", "lbl", (p.filter ? "ƒ " : "") + p.name);   // f = filter (read-only)
     lbl.title = p.filter ? `filter: ${p.filter} (read-only, tweak params)` : "double-click to rename";
@@ -908,7 +908,7 @@ function buildTabs(){
       {cls: "x", icon: "×", title: "remove pass " + p.name, fn: ()=> delPass(i)},
     ]);
     t.appendChild(tab);
-    (p.draws || []).forEach((d, k) => t.appendChild(drawTab(p, i, k)));
+    (p.layers || []).forEach((d, k) => t.appendChild(layerTab(p, i, k)));
   });
   // one "+" for both: an empty pass, or any known filter
   const wrap = document.createElement("span"); wrap.className="addwrap";
@@ -922,8 +922,8 @@ function buildTabs(){
     menu.appendChild(it);
   };
   item("empty pass", addPass);
-  const host = drawHost();
-  if (host != null) item("draw in " + work.passes[host].name, ()=>addDraw(host));
+  const host = layerHost();
+  if (host != null) item("layer in " + work.passes[host].name, ()=>addLayer(host));
   if (!hasCommon()) item("common", addCommon);   // one per scene
   const fnames = Object.keys(FILTERS);
   if (fnames.length){
@@ -935,45 +935,45 @@ function buildTabs(){
 }
 
 const hasCode = p => !!(p.code || "").trim();
-function drawTab(p, i, k){
-  const open = i===curPass && k===curDraw;
-  const tab = tabEl(["dr", p.muted ? "off" : ""], open, ()=> setDraw(i, k));
+function layerTab(p, i, k){
+  const open = i===curPass && k===curLayer;
+  const tab = tabEl(["ly", p.muted ? "off" : ""], open, ()=> setLayer(i, k));
   const lbl = el("span", "lbl");
   lbl.appendChild(el("span", "tp", p.name + " ›"));
-  lbl.appendChild(document.createTextNode(" " + drawLabels(p)[k]));
-  lbl.title = `a draw of text ${p.draws[k].text} in pass ${p.name}`;
+  lbl.appendChild(document.createTextNode(" " + layerLabels(p)[k]));
+  lbl.title = `a layer of text ${p.layers[k].text} in pass ${p.name}`;
   tab.appendChild(lbl);
-  if (open && (hasCode(p) || p.draws.length > 1))   // a pass with no code keeps one draw
-    tabActs(tab, [{cls: "x", icon: "×", title: "remove draw " + drawTabName(p, k), fn: ()=> delDraw(i, k)}]);
+  if (open && (hasCode(p) || p.layers.length > 1))   // a pass with no code keeps one layer
+    tabActs(tab, [{cls: "x", icon: "×", title: "remove layer " + layerTabName(p, k), fn: ()=> delLayer(i, k)}]);
   return tab;
 }
 
-// the pass that "+" adds a draw to: the open one, when the scene has a text to
+// the pass that "+" adds a layer to: the open one, when the scene has a text to
 // draw and the pass is not a filter
-function drawHost(){
+function layerHost(){
   if (onCommon() || !Object.keys(work.texts || {}).length) return null;
   return work.passes[curPass].filter ? null : curPass;
 }
 
-function addDraw(i){
+function addLayer(i){
   const p = work.passes[i], t = Object.keys(work.texts)[0];
-  (p.draws = p.draws || []).push({
+  (p.layers = p.layers || []).push({
     text: t,
     vertex: `vec2 glyph_place(vec2 em) {\n  float ppem = 32.0;\n  return 0.5 * (resolution - ${t}_size * ppem) + em * ppem;\n}\n`,
     fragment: "void main() {\n  float c = glyph_cover();\n  gl_FragColor = vec4(vec3(c), c);\n}\n",
   });
-  p.drawsEdited = true;
-  curPass = i; curDraw = p.draws.length - 1; markDirty(); postScene();
+  p.layersEdited = true;
+  curPass = i; curLayer = p.layers.length - 1; markDirty(); postScene();
   buildTabs(); buildChannels(); loadCode();
 }
 
-function delDraw(i, k){
+function delLayer(i, k){
   const p = work.passes[i];
-  if (!confirm(`Remove draw ${drawTabName(p, k)}?`)) return;
-  p.draws.splice(k, 1);
-  if (!p.draws.length) delete p.draws;
-  p.drawsEdited = true;
-  if (curPass === i && curDraw != null){ if (curDraw === k) curDraw = null; else if (curDraw > k) curDraw--; }
+  if (!confirm(`Remove layer ${layerTabName(p, k)}?`)) return;
+  p.layers.splice(k, 1);
+  if (!p.layers.length) delete p.layers;
+  p.layersEdited = true;
+  if (curPass === i && curLayer != null){ if (curLayer === k) curLayer = null; else if (curLayer > k) curLayer--; }
   markDirty(); postScene();
   buildTabs(); buildChannels(); loadCode();
 }
@@ -997,20 +997,20 @@ function pick(opts, value, set){
   return sel;
 }
 
-// A draw's own settings. A value at its default leaves the key out, as the
+// A layer's own settings. A value at its default leaves the key out, as the
 // server writes the scene back.
-function buildDrawCtl(){
-  const box = $("#drawctl"), d = openDraw();
+function buildLayerCtl(){
+  const box = $("#layerctl"), d = openLayer();
   box.innerHTML = "";
   if (!d) return;
   const p = work.passes[curPass];
-  const edit = () => { p.drawsEdited = true; markDirty(); postScene(); };
-  const head = el("div", "edhead", "draw");
-  head.appendChild(el("span", "nm", drawTabName(p, curDraw)));
+  const edit = () => { p.layersEdited = true; markDirty(); postScene(); };
+  const head = el("div", "edhead", "layer");
+  head.appendChild(el("span", "nm", layerTabName(p, curLayer)));
   box.appendChild(head);
   const texts = Object.keys(work.texts || {});
   field(box, "text", pick(texts.includes(d.text) ? texts : texts.concat([d.text]), d.text, v => {
-    d.text = v; edit(); buildTabs(); buildDrawCtl();
+    d.text = v; edit(); buildTabs(); buildLayerCtl();
   }), "the scene text that it draws");
   field(box, "blend", pick(["over", "add", "replace"], d.blend || "over", v => {
     if (v === "over") delete d.blend; else d.blend = v;
@@ -1027,7 +1027,7 @@ function buildDrawCtl(){
   let t = null;
   pad.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(setPad, 300); });
   pad.addEventListener("change", ()=>{ clearTimeout(t); setPad(); });
-  field(box, "pad", pad, "how far past the letters the draw reaches, in em, room for a glow or a shadow");
+  field(box, "pad", pad, "how far past the letters the layer reaches, in em, room for a glow or a shadow");
 }
 
 // Each text of the scene. Its words go live through /set, as the string
@@ -1084,13 +1084,13 @@ function buildTexts(){
   });
   showDrawnBy();
 }
-// Under each text's name: the tabs of the draws that draw it, and the passes
+// Under each text's name: the tabs of the layers that draw it, and the passes
 // whose GLSL reads its coverage.
 function showDrawnBy(){
   document.querySelectorAll(".drawnby").forEach(by => {
     const name = by.dataset.text, drawn = [], read = [];
     (work.passes || []).forEach(p => {
-      drawLabels(p).forEach((l, k) => { if (p.draws[k].text === name) drawn.push(`${p.name} › ${l}`); });
+      layerLabels(p).forEach((l, k) => { if (p.layers[k].text === name) drawn.push(`${p.name} › ${l}`); });
       if ((p.code || "").includes(name + "_cover")) read.push(p.name);
     });
     const say = [];
@@ -1100,9 +1100,9 @@ function showDrawnBy(){
   });
 }
 
-// the vertex editor and the draw's settings show while a draw is open
-function showDraw(d){
-  for (const n of [$("#drawctl"), $("#vertexHead"), VERTEX.box, $("#fragmentHead")]) n.hidden = !d;
+// the vertex editor and the layer's settings show while a layer is open
+function showLayer(d){
+  for (const n of [$("#layerctl"), $("#vertexHead"), VERTEX.box, $("#fragmentHead")]) n.hidden = !d;
 }
 
 async function addFilter(name){
@@ -1110,7 +1110,7 @@ async function addFilter(name){
   // name and place only: the server builds the pass from the filter
   work.passes.push({ name: uniqueName(name), code: "", channels: [], params: {}, filter: name });
   (work.filters = work.filters || []).push(name);  // save strips the pass, keeps this
-  curPass = work.passes.length - 1; curDraw = null; markDirty(); await postScene();
+  curPass = work.passes.length - 1; curLayer = null; markDirty(); await postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
@@ -1132,7 +1132,7 @@ function renamePass(i, lbl){
 
 function addCommon(){
   work.common = {code: ""};
-  curPass = COMMON; curDraw = null; markDirty(); postScene();
+  curPass = COMMON; curLayer = null; markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
@@ -1140,7 +1140,7 @@ function delCommon(){
   if (!confirm("Remove the common block?")) return;
   delete work.common;
   if (onCommon()) curPass = 0;
-  curDraw = null;
+  curLayer = null;
   markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
@@ -1148,14 +1148,14 @@ function delCommon(){
 function addPass(){
   const name = uniqueName("pass");
   work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
-  curPass = work.passes.length - 1; curDraw = null; markDirty(); postScene();
+  curPass = work.passes.length - 1; curLayer = null; markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
 
 function delPass(i){
   if (work.passes.length <= 1) return;
-  const name = work.passes[i].name, filt = work.passes[i].filter, n = (work.passes[i].draws || []).length;
-  if (!confirm(`Remove pass ${name}${n > 1 ? ` and its ${n} draws` : n ? " and its draw" : ""}?`)) return;
+  const name = work.passes[i].name, filt = work.passes[i].filter, n = (work.passes[i].layers || []).length;
+  if (!confirm(`Remove pass ${name}${n > 1 ? ` and its ${n} layers` : n ? " and its layer" : ""}?`)) return;
   work.passes.splice(i,1);
   if (filt && Array.isArray(work.filters)){
     const fi = work.filters.indexOf(filt);
@@ -1163,7 +1163,7 @@ function delPass(i){
   }
   work.passes.forEach(p => { p.channels = (p.channels||[]).filter(c => c.buffer !== name); });
   if (curPass >= work.passes.length) curPass = work.passes.length - 1;
-  curDraw = null;
+  curLayer = null;
   markDirty(); postScene();
   buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
 }
@@ -1204,12 +1204,12 @@ function buildInputs(){
   });
 }
 function loadCode(){
-  const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass], d = openDraw();
+  const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass], d = openLayer();
   ta.value = d ? (d.fragment || "") : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
   ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
   CODE.box.classList.toggle("readonly", !!(p && p.filter));
   if (d){ VERTEX.ta.value = d.vertex || ""; VERTEX.ta.scrollTop = 0; VERTEX.sync(); }
-  showDraw(d); buildDrawCtl(); CODE.sync(); showErrors(); syncAddRow();
+  showLayer(d); buildLayerCtl(); CODE.sync(); showErrors(); syncAddRow();
 }
 
 // the common block owns no params, so the add-param row can only target the scene
@@ -1452,10 +1452,10 @@ const EYE_OFF = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" str
 function compiledScene(){
   let last = -1; work.passes.forEach((p,i)=>{ if(!p.muted) last = i; });
   const passes = work.passes.slice(0, last+1).map((p,pi)=>{
-    const q = clone(p); delete q.muted; delete q.codeEdited; delete q.drawsEdited;
+    const q = clone(p); delete q.muted; delete q.codeEdited; delete q.layersEdited;
     if (p.muted){
       delete q.filter;   // a muted filter runs as a plain pass-through
-      delete q.shader; delete q.draws; q.arrays = []; q.params = {};
+      delete q.shader; delete q.layers; q.arrays = []; q.params = {};
       if (pi === 0){
         q.code = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
         q.channels = [];
@@ -1481,7 +1481,7 @@ function toggleMute(i){
   work.passes[i].muted = willMute;
   postScene(); buildTabs(); buildParams(); refreshInfo();
 }
-// The server refuses a scene it cannot build, a draw with blank GLSL for one,
+// The server refuses a scene it cannot build, a layer with blank GLSL for one,
 // and the refusal shows until a posted scene builds.
 let postErr = "";
 async function postScene(){
@@ -1506,17 +1506,17 @@ function adoptFilters(doc){
 
 // shader
 function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
-// A draw with no fragment draws white letters. Vertex GLSL takes the place of
+// A layer with no fragment draws white letters. Vertex GLSL takes the place of
 // px_per_em, the size of the words centred in the pass.
 function setFragment(d, code){ if (code.trim()) d.fragment = code; else delete d.fragment; }
 function setVertex(d, code){
   if (code.trim()){ d.vertex = code; delete d.px_per_em; } else delete d.vertex;
 }
-// hand-edited code and draws: merge keeps them as they are
+// hand-edited code and layers: merge keeps them as they are
 CODE.ta.addEventListener("input", ()=>{
-  const d = openDraw();
+  const d = openLayer();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (d){ setFragment(d, CODE.ta.value); work.passes[curPass].drawsEdited = true; }
+  else if (d){ setFragment(d, CODE.ta.value); work.passes[curPass].layersEdited = true; }
   else {
     work.passes[curPass].code = CODE.ta.value;
     work.passes[curPass].codeEdited = true;
@@ -1524,13 +1524,13 @@ CODE.ta.addEventListener("input", ()=>{
   CODE.sync(); liveCompile();
 });
 VERTEX.ta.addEventListener("input", ()=>{
-  setVertex(openDraw(), VERTEX.ta.value); work.passes[curPass].drawsEdited = true;
+  setVertex(openLayer(), VERTEX.ta.value); work.passes[curPass].layersEdited = true;
   VERTEX.sync(); liveCompile();
 });
 
 // top-bar actions
 $("#apply").addEventListener("click", async ()=>{
-  const d = openDraw();
+  const d = openLayer();
   if (onCommon()) setCommon(CODE.ta.value);
   else if (d){ setFragment(d, CODE.ta.value); setVertex(d, VERTEX.ta.value); }
   else work.passes[curPass].code = CODE.ta.value;
@@ -1553,7 +1553,7 @@ $("#save").addEventListener("click", async ()=>{
 });
 $("#reset").addEventListener("click", async ()=>{
   localStorage.removeItem(KEY(active));
-  work = clone(pristine); await postScene(); curPass = 0; curDraw = null;
+  work = clone(pristine); await postScene(); curPass = 0; curLayer = null;
   buildTexts(); buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
 });
 
@@ -1692,9 +1692,9 @@ function showErrors(){
   const msg = postErr || s.error || (s.text_errors || []).join("\n");
   e.textContent = msg; e.classList.toggle("show", !!msg);
   const here = !postErr && s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass);
-  const ed = s.error_draw, inDraw = here && ed && ed.index === curDraw;
-  CODE.mark(here && (ed ? inDraw && ed.part === "fragment" : curDraw == null) ? s.error_line : 0);
-  VERTEX.mark(inDraw && ed.part === "vertex" ? s.error_line : 0);
+  const ed = s.error_layer, inLayer = here && ed && ed.index === curLayer;
+  CODE.mark(here && (ed ? inLayer && ed.part === "fragment" : curLayer == null) ? s.error_line : 0);
+  VERTEX.mark(inLayer && ed.part === "vertex" ? s.error_line : 0);
 }
 
 async function poll(){

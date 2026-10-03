@@ -30,7 +30,7 @@ use crate::console::core::{
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
 use crate::console::store::SceneStore;
-use crate::engine::{ErrorDraw, ErrorPass, Feed, Provider, Renderer};
+use crate::engine::{ErrorLayer, ErrorPass, Feed, Provider, Renderer};
 use crate::feeds::demo_feed;
 use crate::h264::{
     avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
@@ -246,7 +246,7 @@ struct Stat {
     display: Value,
     error_line: Option<i64>,
     error_pass: Option<ErrorPass>,
-    error_draw: Option<ErrorDraw>,
+    error_layer: Option<ErrorLayer>,
 }
 
 /// A source for one declared array: the host's data for this frame.
@@ -442,8 +442,8 @@ impl Console {
                 stat.error_pass.map_or(Value::Null, ErrorPass::to_json),
             );
             d.insert(
-                "error_draw".to_string(),
-                stat.error_draw.map_or(Value::Null, ErrorDraw::to_json),
+                "error_layer".to_string(),
+                stat.error_layer.map_or(Value::Null, ErrorLayer::to_json),
             );
         }
         let stale = lock(&self.sources).as_mut().is_some_and(Snapshot::stale);
@@ -470,7 +470,7 @@ impl Console {
         stat.error = String::new();
         stat.error_line = None;
         stat.error_pass = None;
-        stat.error_draw = None;
+        stat.error_layer = None;
     }
 
     /// Republish the running document from the scene the loop holds. The render
@@ -1367,7 +1367,7 @@ fn set_scene(
             stat.error = err.clone();
             stat.error_line = renderer.borrow().error_line;
             stat.error_pass = renderer.borrow().error_pass;
-            stat.error_draw = renderer.borrow().error_draw;
+            stat.error_layer = renderer.borrow().error_layer;
         }
         if let Some(last) = st.borrow().scene.as_ref() {
             let _ = renderer.borrow_mut().setup(last); // keep the last good scene rendering
@@ -2927,7 +2927,7 @@ mod tests {
             "error",
             "error_line",
             "error_pass",
-            "error_draw",
+            "error_layer",
             "text_errors",
             "active",
             "display",

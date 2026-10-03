@@ -20,7 +20,7 @@ use crate::assets::Pixels;
 use crate::atlas;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
-use crate::scene::{ArraySize, Draw, ParamValue, Pass, Scene};
+use crate::scene::{ArraySize, Layer, ParamValue, Pass, Scene};
 use crate::text::{self, Fault, Fill, Layout, Text};
 
 /// The passes that the engine holds, its MP_MAX_PASSES, filter passes
@@ -49,33 +49,33 @@ impl ErrorPass {
     }
 }
 
-/// A draw's GLSL for one stage, under the draw's key of the same name.
+/// A layer's GLSL for one stage, under the layer's key of the same name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DrawPart {
+pub enum LayerPart {
     Vertex,
     Fragment,
 }
 
-impl DrawPart {
-    /// The draw's key that holds this GLSL.
+impl LayerPart {
+    /// The layer's key that holds this GLSL.
     pub fn key(self) -> &'static str {
         match self {
-            DrawPart::Vertex => "vertex",
-            DrawPart::Fragment => "fragment",
+            LayerPart::Vertex => "vertex",
+            LayerPart::Fragment => "fragment",
         }
     }
 }
 
-/// The draw holding a setup() compile error, in the pass of error_pass.
+/// The layer holding a setup() compile error, in the pass of error_pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ErrorDraw {
-    /// The draw's index in its pass's draws.
+pub struct ErrorLayer {
+    /// The layer's index in its pass's layers.
     pub index: usize,
     /// The GLSL holding the error. error_line counts from its first line.
-    pub part: DrawPart,
+    pub part: LayerPart,
 }
 
-impl ErrorDraw {
+impl ErrorLayer {
     /// The wire form, `{"index": 0, "part": "fragment"}`.
     pub fn to_json(self) -> Value {
         serde_json::json!({"index": self.index, "part": self.part.key()})
@@ -130,8 +130,8 @@ impl Blend {
 }
 
 /// A batch for ghee_mp_add_batch, as engine.h describes it, that a caller
-/// hands setup_batches(). A scene draw takes two or three engine batches of its
-/// own: the draw, its colour glyphs when it paints them, and its error boxes.
+/// hands setup_batches(). A scene layer takes two or three engine batches of its
+/// own: the layer, its colour glyphs when it paints them, and its error boxes.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Batch {
     /// The name of the pass that the batch draws into.
@@ -141,19 +141,19 @@ pub(crate) struct Batch {
     pub blend: Blend,
 }
 
-/// A scene draw that the engine holds as a batch, and the batches of its
+/// A scene layer that the engine holds as a batch, and the batches of its
 /// colour glyphs and of its error boxes.
-struct DrawBatches {
+struct LayerBatches {
     /// The engine's index of the batch.
     batch: c_int,
-    /// The engine's index of the colour batch, -1 for a draw that paints no
+    /// The engine's index of the colour batch, -1 for a layer that paints no
     /// colour glyphs or a text whose fonts hold no colour bitmaps.
     colour: c_int,
     /// The engine's index of the error-box batch.
     boxes: c_int,
-    /// The scene text of the draw.
+    /// The scene text of the layer.
     text: String,
-    /// The draw in an error, as "pass 'main' draw 'glow'".
+    /// The layer in an error, as "pass 'main' layer 'glow'".
     name: String,
 }
 
@@ -421,26 +421,26 @@ fn user_line(err: &str, glsl: &str, code: &str, common: Option<&str>) -> (Option
     (Some((line - at).max(1)), false)
 }
 
-/// A draw's compile error, and where it falls: `line` counts in the draw's
+/// A layer's compile error, and where it falls: `line` counts in the layer's
 /// `part`, or in the scene's common block when `common` is set. An error on
 /// another line carries none.
-struct DrawFault {
+struct LayerFault {
     message: String,
-    part: DrawPart,
+    part: LayerPart,
     line: Option<i64>,
     common: bool,
 }
 
-/// The compile error of the draw named `draw`, with the line where it falls in
-/// the draw's own GLSL or in the common block.
-fn draw_error(
-    draw: &str,
-    d: &Draw,
+/// The compile error of the layer named `layer`, with the line where it falls in
+/// the layer's own GLSL or in the common block.
+fn layer_error(
+    layer: &str,
+    d: &Layer,
     err: &str,
     vs: &str,
     fs: &str,
     common: Option<&str>,
-) -> DrawFault {
+) -> LayerFault {
     // A log may open with a warning, so the line comes from the first error.
     let first = |log: &'_ str| {
         log.lines()
@@ -454,7 +454,7 @@ fn draw_error(
             first(e),
             vs,
             vertex.as_str(),
-            DrawPart::Vertex,
+            LayerPart::Vertex,
             "glyph_place(",
             "vec2 glyph_place(vec2 em)",
         ),
@@ -462,30 +462,30 @@ fn draw_error(
             first(err),
             fs,
             d.fragment_glsl(),
-            DrawPart::Fragment,
+            LayerPart::Fragment,
             "ghee_main();",
             "a void main()",
         ),
     };
-    // A slug draw declares no distances, and its compile error names the
+    // A slug layer declares no distances, and its compile error names the
     // stand-in for the one that the fragment GLSL reads.
     let slug = text::SLUG_UNDECLARED
         .iter()
-        .find(|(_, s)| part == DrawPart::Fragment && log.contains(s));
+        .find(|(_, s)| part == LayerPart::Fragment && log.contains(s));
     let err = match slug {
         Some((read, _)) => format!("{read} needs \"fill\": \"mtsdf\" on text '{}'", d.text),
         None => err.to_string(),
     };
-    let fault = |message: String, line: Option<i64>, in_common: bool| DrawFault {
+    let fault = |message: String, line: Option<i64>, in_common: bool| LayerFault {
         message,
         part,
         line,
         common: in_common,
     };
     let Some(line) = error_line_number(&log) else {
-        return fault(format!("{draw}: {err}"), None, false);
+        return fault(format!("{layer}: {err}"), None, false);
     };
-    // The draw's own GLSL is the last match of it in the assembled source.
+    // The layer's own GLSL is the last match of it in the assembled source.
     let at = glsl
         .rfind(own)
         .map_or(0, |p| glsl[..p].matches('\n').count() as i64);
@@ -493,21 +493,21 @@ fn draw_error(
     let key = part.key();
     if line > at && line <= at + lines {
         let n = line - at;
-        let message = format!("{draw}, line {n} of its {key}: {err}");
+        let message = format!("{layer}, line {n} of its {key}: {err}");
         return fault(message, Some(n), false);
     }
     if let (Some(n), true) = user_line(&log, glsl, own, common) {
-        let message = format!("{draw}, line {n} of the common block: {err}");
+        let message = format!("{layer}, line {n} of the common block: {err}");
         return fault(message, Some(n), true);
     }
-    // After the draw's own GLSL, ghee's main calls the function it defines.
+    // After the layer's own GLSL, ghee's main calls the function it defines.
     let src = usize::try_from(line - 1)
         .ok()
         .and_then(|i| glsl.lines().nth(i));
     if line > at + lines && src.is_some_and(|l| l.contains(call)) {
-        return fault(format!("{draw}: its {key} needs {needs}"), None, false);
+        return fault(format!("{layer}: its {key} needs {needs}"), None, false);
     }
-    fault(format!("{draw}: {err}"), None, false)
+    fault(format!("{layer}: {err}"), None, false)
 }
 
 /// The refusal of pass `name` with mipmaps at `w` x `h`, on a GPU that
@@ -544,8 +544,8 @@ pub struct Renderer {
     pub error_line: Option<i64>,
     /// The pass holding the error. Common is the scene's common block.
     pub error_pass: Option<ErrorPass>,
-    /// The draw holding the error, in the pass of error_pass.
-    pub error_draw: Option<ErrorDraw>,
+    /// The layer holding the error, in the pass of error_pass.
+    pub error_layer: Option<ErrorLayer>,
     #[allow(dead_code)]
     pub display: bool,
     /// The readbacks keep the output pass's alpha. set_alpha() sets it.
@@ -560,15 +560,15 @@ pub struct Renderer {
     scene_assets: std::cell::RefCell<Vec<String>>,
     /// The engine index of each batch passed to setup_batches(), in order.
     batches: Vec<c_int>,
-    /// The scene's draws, in the order of their passes.
-    draws: Vec<DrawBatches>,
+    /// The scene's layers, in the order of their passes.
+    layers: Vec<LayerBatches>,
     /// The text problem causes logged since the setup, so each logs once.
     reported: std::cell::RefCell<HashSet<String>>,
     /// The problems of each scene text, by its name.
     text_errors: std::cell::RefCell<HashMap<String, TextErrors>>,
     /// Counts the changes to text_errors.
     text_errors_seq: std::cell::Cell<u64>,
-    /// One atlas per font, px/em and range among the texts that a draw fills
+    /// One atlas per font, px/em and range among the texts that a layer fills
     /// with MTSDF.
     atlases: std::cell::RefCell<Vec<AtlasSlot>>,
     /// The new words of each MTSDF text still waiting for their glyphs, by
@@ -578,7 +578,7 @@ pub struct Renderer {
     /// the text's name. The same words again lay out nothing.
     words: std::cell::RefCell<HashMap<String, String>>,
     /// The texts whose texture of curves a program of the scene reads: a
-    /// pass or a draw that calls `<name>_cover`, or a draw of the slug fill.
+    /// pass or a layer that calls `<name>_cover`, or a layer of the slug fill.
     /// Any other text lays out with no such texture.
     curves: HashSet<String>,
     /// The colour atlas of each drawn text whose words held colour glyphs,
@@ -617,14 +617,14 @@ impl Renderer {
             error: String::new(),
             error_line: None,
             error_pass: None,
-            error_draw: None,
+            error_layer: None,
             display,
             alpha: false,
             mp: Vec::new(),
             feeds: Vec::new(),
             scene_assets: std::cell::RefCell::new(Vec::new()),
             batches: Vec::new(),
-            draws: Vec::new(),
+            layers: Vec::new(),
             reported: std::cell::RefCell::new(HashSet::new()),
             text_errors: std::cell::RefCell::new(HashMap::new()),
             text_errors_seq: std::cell::Cell::new(0),
@@ -702,20 +702,20 @@ impl Renderer {
     /// A compile error sets error_line and error_pass to the user-code line.
     /// An error in the scene's common block sets error_pass to Common.
     /// error_line then counts from the start of that block. An error in a
-    /// draw's own GLSL sets error_draw too, and error_line counts in that
+    /// layer's own GLSL sets error_layer too, and error_line counts in that
     /// GLSL.
     pub fn setup(&mut self, scene: &Scene) -> Result<String> {
         self.setup_batches(scene, &[])
     }
 
     /// setup() with batches. Each batch draws into its named pass, after that
-    /// pass's quad and the pass's draws, in the order given. A batch's compile
+    /// pass's quad and the pass's layers, in the order given. A batch's compile
     /// error reports its pass.
     pub(crate) fn setup_batches(&mut self, scene: &Scene, batches: &[Batch]) -> Result<String> {
         self.error = String::new();
         self.error_line = None;
         self.error_pass = None;
-        self.error_draw = None;
+        self.error_layer = None;
         if scene.passes.is_empty() {
             self.error = "scene has no passes".to_string();
             return Ok(self.error.clone());
@@ -811,16 +811,16 @@ impl Renderer {
             used.dedup();
             let want = p.channels.len() + used.len();
             let mut over = self.units_error(&format!("pass '{}'", p.name), want);
-            // A draw samples its text's texture on top of its pass's inputs.
-            if over.is_none() && !p.draws.is_empty() {
-                over = self.units_error(&p.draw_what(0), want + 1);
+            // A layer samples its text's texture on top of its pass's inputs.
+            if over.is_none() && !p.layers.is_empty() {
+                over = self.units_error(&p.layer_what(0), want + 1);
             }
             if let Some(e) = over {
                 self.error = e;
                 return Ok(self.error.clone());
             }
         }
-        if let Some(e) = scene.undeclared_draw() {
+        if let Some(e) = scene.undeclared_layer() {
             self.error = e;
             return Ok(self.error.clone());
         }
@@ -830,7 +830,7 @@ impl Renderer {
         }
         let mut mp: Vec<(String, c_int)> = Vec::new();
         let mut batch_ix: Vec<c_int> = vec![-1; batches.len()];
-        let mut draws: Vec<DrawBatches> = Vec::new();
+        let mut layers: Vec<LayerBatches> = Vec::new();
         let hw_linear = self.data_texture_linear();
         let total = scene.passes.len();
         // Every pass buffer stores alpha but the output pass's, which stores
@@ -882,12 +882,12 @@ impl Renderer {
             {
                 idx = -1;
             }
-            for (k, d) in p.draws.iter().enumerate() {
+            for (k, d) in p.layers.iter().enumerate() {
                 if idx < 0 {
                     break;
                 }
-                let (vs, fs) = p.draw_glsl(k, scene, hw_linear);
-                let name = p.draw_what(k);
+                let (vs, fs) = p.layer_glsl(k, scene, hw_linear);
+                let name = p.layer_what(k);
                 let (cname, cvs, cfs) = (
                     self.staged_cstring(&name)?,
                     self.staged_cstring(&vs)?,
@@ -906,14 +906,14 @@ impl Renderer {
                 if li < 0 {
                     let err = or_else(self.last_error(), "compile error");
                     unsafe { ffi::ghee_mp_abort(self.handle) };
-                    let f = draw_error(&name, d, &err, &vs, &fs, scene.common.as_deref());
+                    let f = layer_error(&name, d, &err, &vs, &fs, scene.common.as_deref());
                     self.error = f.message;
                     self.error_line = f.line;
                     if f.common {
                         self.error_pass = Some(ErrorPass::Common);
                     } else {
                         self.error_pass = Some(ErrorPass::Index(i));
-                        self.error_draw = Some(ErrorDraw {
+                        self.error_layer = Some(ErrorLayer {
                             index: k,
                             part: f.part,
                         });
@@ -921,7 +921,7 @@ impl Renderer {
                     crate::report::progress_done();
                     return Ok(self.error.clone());
                 }
-                draws.push(DrawBatches {
+                layers.push(LayerBatches {
                     batch: li,
                     colour: -1,
                     boxes: -1,
@@ -929,11 +929,11 @@ impl Renderer {
                     name,
                 });
             }
-            // The colour glyphs of each draw come after every draw of the
+            // The colour glyphs of each layer come after every layer of the
             // pass, and the error boxes after them, so none hides an error
             // box.
-            let first = draws.len() - if idx < 0 { 0 } else { p.draws.len() };
-            for (k, dl) in draws[first..].iter_mut().enumerate() {
+            let first = layers.len() - if idx < 0 { 0 } else { p.layers.len() };
+            for (k, dl) in layers[first..].iter_mut().enumerate() {
                 let coloured = p.paints_emoji(k)
                     && scene
                         .texts
@@ -942,7 +942,7 @@ impl Renderer {
                 if !coloured {
                     continue;
                 }
-                let (vs, fs) = p.draw_colour_glsl(k, scene, hw_linear);
+                let (vs, fs) = p.layer_colour_glsl(k, scene, hw_linear);
                 let name = format!("{} colour glyphs", dl.name);
                 let (cname, cvs, cfs) = (
                     self.staged_cstring(&name)?,
@@ -956,7 +956,7 @@ impl Renderer {
                         cname.as_ptr(),
                         cvs.as_ptr(),
                         cfs.as_ptr(),
-                        p.draws[k].blend.engine(),
+                        p.layers[k].blend.engine(),
                     )
                 };
                 if dl.colour < 0 {
@@ -968,8 +968,8 @@ impl Renderer {
                     return Ok(self.error.clone());
                 }
             }
-            for (k, dl) in draws[first..].iter_mut().enumerate() {
-                let (vs, fs) = p.draw_box_glsl(k, scene, hw_linear);
+            for (k, dl) in layers[first..].iter_mut().enumerate() {
+                let (vs, fs) = p.layer_box_glsl(k, scene, hw_linear);
                 let name = format!("{} error boxes", dl.name);
                 let (cname, cvs, cfs) = (
                     self.staged_cstring(&name)?,
@@ -1047,7 +1047,7 @@ impl Renderer {
         }
         self.mp = mp;
         self.batches = batch_ix;
-        self.draws = draws;
+        self.layers = layers;
         // A new scene logs its text problems afresh.
         self.reported.borrow_mut().clear();
         if !self.text_errors.borrow().is_empty() {
@@ -1547,8 +1547,8 @@ impl Renderer {
         Ok(true)
     }
 
-    /// The index in `atlases` of the atlas that the draws of text `name`
-    /// read, None when no draw of it takes the MTSDF fill.
+    /// The index in `atlases` of the atlas that the layers of text `name`
+    /// read, None when no layer of it takes the MTSDF fill.
     fn atlas_of(&self, name: &str) -> Option<usize> {
         let tex = text::internal(name, "_atlas");
         self.atlases
@@ -1629,7 +1629,7 @@ impl Renderer {
         for (_, idx) in &self.mp {
             self.set_uniform(*idx, &format!("{name}_size"), "vec2", size.clone())?;
         }
-        for d in self.draws.iter().filter(|d| d.text == *name) {
+        for d in self.layers.iter().filter(|d| d.text == *name) {
             for (batch, floats, what) in [
                 (d.batch, &quads, d.name.clone()),
                 (d.colour, &colour.0, format!("{} colour glyphs", d.name)),
@@ -1643,7 +1643,7 @@ impl Renderer {
         Ok(())
     }
 
-    /// The quads of the colour glyphs `glyphs` of `text`, for its draws'
+    /// The quads of the colour glyphs `glyphs` of `text`, for its layers'
     /// colour batches, and an error box for each glyph whose bitmap failed,
     /// with a fault in `faults`. The first colour glyph of the text makes its
     /// colour atlas, and every new one decodes into it and uploads.
@@ -1654,7 +1654,7 @@ impl Renderer {
         faults: &mut Vec<Fault>,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
         let name = &text.name;
-        let drawn = self.draws.iter().any(|d| d.text == *name && d.colour >= 0);
+        let drawn = self.layers.iter().any(|d| d.text == *name && d.colour >= 0);
         if glyphs.is_empty() || !drawn {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -1734,14 +1734,14 @@ impl Renderer {
     }
 
     /// Set up the atlases of `scene`: one generator per font, px/em and range
-    /// among its texts that a draw fills with MTSDF. A generator that the last
+    /// among its texts that a layer fills with MTSDF. A generator that the last
     /// scene used carries on, and the others stop.
     fn set_atlases(&self, scene: &Scene) -> Result<()> {
         let mut old = std::mem::take(&mut *self.atlases.borrow_mut());
         let mut slots: Vec<AtlasSlot> = Vec::new();
         for t in &scene.texts {
             let Some(fonts) = &t.data else { continue };
-            if t.fill != Fill::Mtsdf || !scene.draws_text(&t.name) || !t.has_outlines() {
+            if t.fill != Fill::Mtsdf || !scene.has_layer_of(&t.name) || !t.has_outlines() {
                 continue;
             }
             let range = scene.atlas_range(&t.name);
@@ -2119,7 +2119,7 @@ impl Renderer {
         unsafe { ffi::ghee_max_texture_units(self.handle) }
     }
 
-    /// The error for `what`, a pass or a draw, when `want` texture units are
+    /// The error for `what`, a pass or a layer, when `want` texture units are
     /// past max_texture_units(). The engine words its own the same way.
     fn units_error(&self, what: &str, want: usize) -> Option<String> {
         let units = self.max_texture_units();
@@ -2190,7 +2190,7 @@ impl Renderer {
         unsafe { ffi::ghee_mp_reset(self.handle) };
         self.mp = Vec::new();
         self.batches = Vec::new();
-        self.draws = Vec::new();
+        self.layers = Vec::new();
         self.feeds = Vec::new();
         self.held.borrow_mut().clear();
         self.words.borrow_mut().clear();
@@ -2799,22 +2799,22 @@ mod tests {
     #[test]
     fn a_text_lays_out_its_curves_only_for_a_program_that_reads_them() {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
-        let draw = |fill: &str, fragment: &str| json!({"fill": fill, "draws": [{"text": "t", "px_per_em": 20, "fragment": fragment}]});
+        let layer = |fill: &str, fragment: &str| json!({"fill": fill, "layers": [{"text": "t", "px_per_em": 20, "fragment": fragment}]});
         let white = "void main(){ gl_FragColor = vec4(glyph_cover()); }";
         let covered = "void main(){ gl_FragColor = vec4(t_cover(glyph_em, 20.0)); }";
         let pass_reads = "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }";
         let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
         let Some((_g, mut r)) = gpu() else { return };
         for (code, how, reads) in [
-            (black, draw("mtsdf", white), false),
+            (black, layer("mtsdf", white), false),
             (pass_reads, json!({}), true),
-            (black, draw("mtsdf", covered), true),
-            (black, draw("slug", white), true),
+            (black, layer("mtsdf", covered), true),
+            (black, layer("slug", white), true),
         ] {
             let mut pass = json!({"name": "main", "code": code});
             let mut text = json!({"value": "AV", "font": "DejaVuSans-ASCII.ttf"});
-            if let Some(d) = how.get("draws") {
-                pass["draws"] = d.clone();
+            if let Some(d) = how.get("layers") {
+                pass["layers"] = d.clone();
                 text["fill"] = how["fill"].clone();
             }
             let mut sc = Scene::from_dict(
@@ -3149,14 +3149,14 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_with_no_code_and_no_draws_is_refused_naming_it() {
+    fn a_pass_with_no_code_and_no_layers_is_refused_naming_it() {
         let Some((_g, mut r)) = gpu() else { return };
         let mut sc = flat_scene();
         sc.passes[0].code = String::new();
         assert_eq!(
             r.setup(&sc).unwrap(),
             "pass 'main' has no 'code' (inline GLSL), no 'shader' (a file next to the scene) \
-             and no 'draws'"
+             and no 'layers'"
         );
     }
 
@@ -4352,20 +4352,20 @@ mod tests {
     }
 
     #[test]
-    fn a_draw_with_no_error_boxes_renders_as_the_draw_alone() {
-        // The scene `with` holds a draw, and so an error-box batch. `alone`
-        // holds the same draw as a plain batch, with none behind it.
+    fn a_layer_with_no_error_boxes_renders_as_the_layer_alone() {
+        // The scene `with` holds a layer, and so an error-box batch. `alone`
+        // holds the same layer as a plain batch, with none behind it.
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
         let place = "vec2 glyph_place(vec2 em) { return vec2(3.0, 2.0) + em * 30.0; }";
         let code = "void main(){ float c = glyph_cover(); \
                     gl_FragColor = vec4(c, c * 0.5, 0.0, c); }";
-        let load = |draws: Value| {
+        let load = |layers: Value| {
             let mut sc = Scene::from_dict(
                 &json!({
                     "version": 1,
                     "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
                     "texts": {"label": {"value": "AV", "font": "sans", "fill": "slug"}},
-                    "passes": [{"name": "main", "draws": draws,
+                    "passes": [{"name": "main", "layers": layers,
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }"}],
                 }),
                 None,
@@ -4389,11 +4389,11 @@ mod tests {
         assert!(r.text_errors().is_empty());
         // The error-box batch is live: given the glyphs' quads, it covers
         // them.
-        let boxes = r.draws[0].boxes;
+        let boxes = r.layers[0].boxes;
         r.batch_quads(boxes, "boxes", &built.quads.floats, 4)
             .unwrap();
         assert!(frame(&mut r) != drawn, "the error-box batch drew nothing");
-        let (vs, fs) = with.passes[0].draw_glsl(0, &with, r.data_texture_linear());
+        let (vs, fs) = with.passes[0].layer_glsl(0, &with, r.data_texture_linear());
         let l = Batch {
             pass: "main".to_string(),
             vertex: vs,
@@ -4471,7 +4471,7 @@ mod tests {
                     "texts": {"label": {"value": "AV", "font": font}},
                     "passes": [{"name": "main",
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-                        "draws": [{"text": "label",
+                        "layers": [{"text": "label",
                             "fragment": "void main(){ gl_FragColor = vec4(glyph_cover()); }",
                             "vertex": "vec2 glyph_place(vec2 em) { return em * 20.0; }"}]}],
                 }),
@@ -4493,12 +4493,12 @@ mod tests {
         };
         // A text whose fonts hold no colour bitmaps takes no colour batch.
         assert_eq!(r.setup(&load(json!("sans"))).unwrap(), "");
-        assert_eq!((r.draws[0].colour, r.batches.len()), (-1, 0));
+        assert_eq!((r.layers[0].colour, r.batches.len()), (-1, 0));
         assert_eq!(emoji(&r), (0, false));
-        // A colour font gives the draw its colour batch, and the atlas waits
+        // A colour font gives the layer its colour batch, and the atlas waits
         // for a colour glyph in the words.
         assert_eq!(r.setup(&load(json!(["sans", "emoji"]))).unwrap(), "");
-        assert!(r.draws[0].colour >= 0);
+        assert!(r.layers[0].colour >= 0);
         assert_eq!(emoji(&r), (0, false));
         assert!(r.set_text("label", "A\u{1f600}").unwrap());
         // A render with the time pinned waits for the held words.
@@ -4513,10 +4513,10 @@ mod tests {
 
     #[test]
     fn a_new_colour_glyph_uploads_its_cell_at_every_level_as_a_whole_atlas_does() {
-        // Five draws of the words, at 1, 1/2, 1/4, 1/8 and 1/16 of the
+        // Five layers of the words, at 1, 1/2, 1/4, 1/8 and 1/16 of the
         // bitmaps' 109 pixels per em, each read from its own mip level.
         let (w, h) = (400, 224);
-        let draws: Vec<Value> = (0..5)
+        let layers: Vec<Value> = (0..5)
             .map(|k| {
                 let s = 109.0 / f64::from(1 << k);
                 let at = [[4.0, 4.0], [4.0, 140.0], [150.0, 140.0], [230.0, 140.0], [280.0, 140.0]][k];
@@ -4534,7 +4534,7 @@ mod tests {
                 "texts": {"label": {"value": "A", "font": ["sans", "emoji"], "fill": "slug"}},
                 "passes": [{"name": "main",
                     "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-                    "draws": draws}],
+                    "layers": layers}],
             }),
             None,
             None,
@@ -4654,7 +4654,7 @@ mod tests {
         }
     }
 
-    /// A text drawn white over black by an MTSDF draw, at 40 px/em.
+    /// A text drawn white over black by an MTSDF layer, at 40 px/em.
     fn mtsdf_scene(words: &str) -> Scene {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
         let mut sc = Scene::from_dict(
@@ -4664,7 +4664,7 @@ mod tests {
                 "texts": {"label": {"value": words, "font": "sans"}},
                 "passes": [{"name": "main",
                     "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-                    "draws": [{"text": "label",
+                    "layers": [{"text": "label",
                         "vertex": "vec2 glyph_place(vec2 em) { return vec2(2.0, 1.0) + em * 40.0; }",
                         "fragment": "void main(){ gl_FragColor = vec4(glyph_cover()); }"}]}],
             }),
@@ -4842,15 +4842,15 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_of_slug_draws_starts_no_atlas() {
+    fn a_scene_of_slug_layers_starts_no_atlas() {
         let Some((_g, mut r)) = gpu() else { return };
         let mut sc = mtsdf_scene("AV");
         sc.texts[0].fill = Fill::Slug;
         assert_eq!(r.setup(&sc).unwrap(), "");
         assert!(r.atlases.borrow().is_empty());
-        // A text that no draw names takes no atlas either.
+        // A text that no layer names takes no atlas either.
         let mut sc = mtsdf_scene("AV");
-        sc.passes[0].draws.clear();
+        sc.passes[0].layers.clear();
         assert_eq!(r.setup(&sc).unwrap(), "");
         assert!(r.atlases.borrow().is_empty());
     }

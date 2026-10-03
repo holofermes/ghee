@@ -370,16 +370,16 @@ pub trait ConsoleHost {
     }
 
     /// {fps, frame_ms, stream_fps, out, error, error_line, error_pass,
-    /// error_draw, active, display, stale}.
+    /// error_layer, active, display, stale}.
     ///
     /// fps counts completed render-loop frames per elapsed second, over a
     /// trailing window (stats::FrameRate). frame_ms is one loop iteration, with
     /// no paced sleep in it. stream_fps counts the frames handed to viewers per
     /// elapsed second, every codec in one number. out names where the frames go
     /// now (stats::DEST_*). error_pass is the pass index that holds a compile
-    /// error, or "common" for the scene's common block. error_draw is the draw
-    /// of that pass that holds it, {index, part}, where part names the draw's
-    /// "vertex" or its "fragment". error_line is the line inside the draw's part,
+    /// error, or "common" for the scene's common block. error_layer is the layer
+    /// of that pass that holds it, {index, part}, where part names the layer's
+    /// "vertex" or its "fragment". error_line is the line inside the layer's part,
     /// else inside the pass. stale is true when the files behind the active
     /// scene changed since the compile. A host whose scenes have no files
     /// answers false for stale.

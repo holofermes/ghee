@@ -1,10 +1,10 @@
 //! Colour glyphs: the bitmaps of colour emoji.
 //!
 //! A glyph with a PNG bitmap in its font's CBDT or sbix table, and no outline,
-//! is a colour glyph. A draw of a text puts the text's colour glyphs into its
-//! pass through a colour batch, after the draws of the pass. The batch places
-//! each glyph with the draw's `glyph_place`, and samples its bitmap from the
-//! text's colour atlas, an RGBA8 texture with mipmaps. The draw's own code
+//! is a colour glyph. A layer of a text puts the text's colour glyphs into its
+//! pass through a colour batch, after the layers of the pass. The batch places
+//! each glyph with the layer's `glyph_place`, and samples its bitmap from the
+//! text's colour atlas, an RGBA8 texture with mipmaps. The layer's own code
 //! never runs for a colour glyph, and `<name>_cover` reads one as no ink.
 
 use anyhow::{bail, Result};
@@ -233,7 +233,7 @@ pub fn crop(texels: &[u8], width: u32, rect: Rect) -> Vec<u8> {
     out
 }
 
-/// The vertex main of the colour batch of a draw of text `name`, after
+/// The vertex main of the colour batch of a layer of text `name`, after
 /// glyph_place. Each box edge moves out 5/8 of a screen pixel, and never
 /// past REACH texels of the bitmap.
 pub fn vertex_main(name: &str) -> Vec<String> {
@@ -247,7 +247,7 @@ pub fn vertex_main(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// The fragment shader of the colour batch of a draw of text `name`, after
+/// The fragment shader of the colour batch of a layer of text `name`, after
 /// its precision lines.
 pub fn fragment(name: &str) -> Vec<String> {
     FRAGMENT

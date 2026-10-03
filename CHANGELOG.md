@@ -48,23 +48,23 @@
   pass wrote. Keep every frame opaque unless `ghee render --alpha` or
   `ghee.open(..., alpha=True)` keeps the output pass's alpha, and refuse
   `--alpha` with `--components 3`.
-- Draw a text straight into a pass's buffer with `draws`, one quad over each
-  glyph: a draw's `vertex` GLSL defines `glyph_place`, which puts the glyph
+- Draw a text straight into a pass's buffer with `layers`, one quad over each
+  glyph: a layer's `vertex` GLSL defines `glyph_place`, which puts the glyph
   in the pass, and its `fragment` GLSL colours it. Each stage takes the
   pass's preamble and the scene's common block, as the pass's code does. A
-  draw with `px_per_em` in place of `vertex` centres the words in the pass
-  at that size, and a draw with no `fragment` draws them white.
-- Blend a draw's alpha the way its colour blends.
-- Let a pass with `draws` leave out `code`: it starts each frame transparent
-  and holds its draws alone.
+  layer with `px_per_em` in place of `vertex` centres the words in the pass
+  at that size, and a layer with no `fragment` draws them white.
+- Blend a layer's alpha the way its colour blends.
+- Let a pass with `layers` leave out `code`: it starts each frame transparent
+  and holds its layers alone.
 - Bind at most 16 textures in a pass on every GPU.
-- Fill a draw's glyphs from an MTSDF atlas by default, fast, and read the
+- Fill a layer's glyphs from an MTSDF atlas by default, fast, and read the
   distance to the outline with `glyph_dist()` and `glyph_soft()` for
   outlines, glows and shadows. `"fill": "slug"` on a text computes Slug's
   exact coverage from the curves in each glyph's quad, exact edges at any
-  size, and names `"fill": "mtsdf"` in the error of a draw that reads a
+  size, and names `"fill": "mtsdf"` in the error of a layer that reads a
   distance. `atlas` sets the MTSDF atlas's `px_per_em`, and the atlas's
-  field reaches as far as the largest `pad` of the text's draws, so a glow
+  field reaches as far as the largest `pad` of the text's layers, so a glow
   fits with no tuning.
 - Generate a font's atlas on every core at its first use, cache it in
   `$XDG_CACHE_HOME/ghee/atlas`, and keep a text's last words on screen until
@@ -74,20 +74,20 @@
 - Count the atlas of a text drawn with the MTSDF fill against the 16
   textures of a pass.
 - Draw a text into a pass from Python with
-  `ghee.Draw(text, fragment, vertex)` in `Pass(draws=[...])`, and leave out
-  the code of a pass of draws alone.
+  `ghee.Layer(text, fragment, vertex)` in `Pass(layers=[...])`, and leave out
+  the code of a pass of layers alone.
 - Set a text's `fill` and `atlas` from Python on `ghee.Text`.
-- Edit a pass's draws in the console. Each draw opens in a tab after its
+- Edit a pass's layers in the console. Each layer opens in a tab after its
   pass's tab, named by its pass and the name that it goes by, `main › glow`,
   with its `vertex` and its `fragment` in editors and its text, blend and
-  pad as fields with a hint each, and `+` adds a draw to the open pass.
-- Name a draw with `name`, or `name=` on `ghee.Draw`, unique among the
-  draws of its pass, and call a draw in an error by its name, else by its
-  text's name, `title`, and `title 2` for a second draw of that text without
+  pad as fields with a hint each, and `+` adds a layer to the open pass.
+- Name a layer with `name`, or `name=` on `ghee.Layer`, unique among the
+  layers of its pass, and call a layer in an error by its name, else by its
+  text's name, `title`, and `title 2` for a second layer of that text without
   a name, where an error called it by its index.
-- Report the draw that holds a compile error in `/stats` as `error_draw`,
+- Report the layer that holds a compile error in `/stats` as `error_layer`,
   with `part` set to `"vertex"` or `"fragment"`, and count `error_line` in
-  that draw's GLSL.
+  that layer's GLSL.
 - Edit a free-text string param in the console over several lines.
 - Show in the console why the server refused a posted scene.
 - Refuse a scene where two declarations make one GLSL name in a pass, such
@@ -98,7 +98,7 @@
   into a shader for itself.
 - Build the mip chain of a pass's buffer after each frame with
   `"mipmaps": true`, or `mipmaps=True` on `ghee.Pass`, and sample it
-  trilinearly through every channel that reads it, so a layer read far away
+  trilinearly through every channel that reads it, so a buffer read far away
   and minified stays calm. On a GPU without OES_texture_npot, ghee refuses
   a pass size that is no power of two.
 - Rename an ISF input or pass target named like a built-in, such as `frame`,
@@ -114,13 +114,13 @@
 - Take a list of fonts on a text, assets and files mixed,
   `"font": ["sans", "NotoColorEmoji.ttf"]`, and draw each character from the
   first font whose cmap holds it.
-- Paint colour emoji in draws: a glyph with a PNG bitmap in a CBDT or sbix
-  table and no outline shows its bitmap, mipmapped, placed by the draw's
+- Paint colour emoji in layers: a glyph with a PNG bitmap in a CBDT or sbix
+  table and no outline shows its bitmap, mipmapped, placed by the layer's
   `vertex`. `<name>_cover` reads it as no ink, and a font of colour bitmaps
-  alone draws its emoji in draws in place of error boxes.
-- Paint a text's colour emoji from the last draw of the text in its pass
+  alone draws its emoji in layers in place of error boxes.
+- Paint a text's colour emoji from the last layer of the text in its pass
   alone, so a shadow or a glow paints no copy, and set `"emoji": true` or
-  `false` on a draw, `emoji=` on `ghee.Draw`, to choose otherwise.
+  `false` on a layer, `emoji=` on `ghee.Layer`, to choose otherwise.
 - Draw a text from a list of fonts in Python,
   `ghee.Text("words", ["sans", "emoji"])`.
 - Encode a frame under 16384 pixels in hardware, scaled up by the smallest
@@ -169,13 +169,13 @@
   box of fixed height, and keep a compile error in sight under it.
 - Open a console tab with a tap anywhere on it, keep the mute and remove
   buttons on the open tab alone, apart from its label, and ask before a
-  pass, a draw or the common block goes.
-- Show each text of a scene in the console's texts panel, with the draws
+  pass, a layer or the common block goes.
+- Show each text of a scene in the console's texts panel, with the layers
   and the passes that read it: its words, applied live, and its font and
   align, applied through the scene. The words leave the parameters.
 - Refuse a key that ghee does not take anywhere in a scene, and name the
   key, where it sits, and the closest key that ghee takes, or the object
-  that takes it, as `"fill"` on a draw names the draw's text, where the
+  that takes it, as `"fill"` on a layer names the layer's text, where the
   scene loaded and ignored the key.
 - Resolve a file of a Python scene in direct mode beside its script, as
   under ghee, where it resolved in the working directory, and take
@@ -186,7 +186,7 @@
   no directory holds.
 - Resolve the files of a copy that the console saved into `modified/`
   beside its original, where every scene looked one directory up.
-- Take any number of assets, texts and draws in a scene, a channel or an
+- Take any number of assets, texts and layers in a scene, a channel or an
   array in every texture unit of a pass, and names of any length, where the
   engine held 16 assets and 16 arrays in a scene, 8 channels and 4 arrays
   in a pass, and cut an asset or array name past 63 bytes. Refuse a scene
@@ -195,7 +195,7 @@
 - Report the problems of a scene's texts in `/stats` as `text_errors`, a
   line each, where they stood in `error` while no compile error did.
 - Build the texture of a text's curves only when the scene reads it,
-  through `<name>_cover` or a draw of the slug fill, so words that the
+  through `<name>_cover` or a layer of the slug fill, so words that the
   MTSDF fill alone draws lay out with no curve data and meet neither the
   1024x2048 texture nor the 64 curves of a band.
 - Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
@@ -203,7 +203,7 @@
 - Take a `ghee.Scene` in `ghee.open`, and an `os.PathLike` wherever the
   Python API takes a path: `ghee.open`, `base_dir`, an asset's file and a
   text's fonts.
-- Name the new keyword in the TypeError of `ghee.Draw` given `code=`,
+- Name the new keyword in the TypeError of `ghee.Layer` given `code=`,
   `place=` or `alpha=`, as the scene JSON names the new key.
 - Write the last frame to a `.png` or a `.jpg` file with `h.save(path)`,
   numbered by its tick through a run of `#` as `ghee render -o` numbers
@@ -218,7 +218,7 @@
   `params` stayed empty.
 - Ship type stubs for `ghee.open` and `Handle`, mark the package typed, and
   type the closed string sets of the shim as `Literal`: a param's type, a
-  text's align and fill, a draw's blend and an arg's type.
+  text's align and fill, a layer's blend and an arg's type.
 
 ## 0.4.0 - 2026-08-06
 

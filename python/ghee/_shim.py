@@ -164,9 +164,9 @@ class Channel:
         return {"buffer": self.buffer}
 
 
-def _is_draw_name(name: object) -> bool:
+def _is_layer_name(name: object) -> bool:
     """ASCII letters, digits, '_' and '-'. A name holds no space, so it never
-    reads as the label of a draw without one, such as "t 2"."""
+    reads as the label of a layer without one, such as "t 2"."""
     return (
         isinstance(name, str)
         and name != ""
@@ -174,12 +174,12 @@ def _is_draw_name(name: object) -> bool:
     )
 
 
-def _draw_labels(draws: list[Draw]) -> list[str]:
-    """What each draw goes by: its name, else its text, numbered from the
-    text's second draw without a name, as "t", "t 2", "t 3"."""
+def _layer_labels(layers: list[Layer]) -> list[str]:
+    """What each layer goes by: its name, else its text, numbered from the
+    text's second layer without a name, as "t", "t 2", "t 3"."""
     seen: list[str] = []
     out = []
-    for d in draws:
+    for d in layers:
         if d.name is not None:
             out.append(d.name)
             continue
@@ -190,7 +190,7 @@ def _draw_labels(draws: list[Draw]) -> list[str]:
 
 
 @dataclass
-class Draw:
+class Layer:
     """A text drawn into the buffer of its pass, one quad over each glyph.
 
     `text` names a Text of the scene.
@@ -202,13 +202,13 @@ class Draw:
     `px_per_em` centres the block in the pass at that many pixels per em, in
     place of `vertex`.
     `blend` is over, add or replace.
-    `pad` is how far past the letters the draw reaches, in em, for a glow or
+    `pad` is how far past the letters the layer reaches, in em, for a glow or
     an outline.
-    `emoji` sets whether the draw paints the text's colour glyphs. None
-    leaves them to the last draw of the text in its pass.
-    `name` names the draw in errors and in the console: ASCII letters,
-    digits, '_' and '-', unique among the draws of its pass. A draw with no
-    name goes by its text, and the next draws of the text with no name by
+    `emoji` sets whether the layer paints the text's colour glyphs. None
+    leaves them to the last layer of the text in its pass.
+    `name` names the layer in errors and in the console: ASCII letters,
+    digits, '_' and '-', unique among the layers of its pass. A layer with no
+    name goes by its text, and the next layers of the text with no name by
     "t 2", "t 3".
     """
 
@@ -226,10 +226,12 @@ class Draw:
         # refuse with no word of the new name.
         for old, new in (("code", "fragment"), ("place", "vertex")):
             if old in kwargs:
-                raise TypeError(f"ghee.Draw takes its {new} GLSL in {new}=, got {old}=")
+                raise TypeError(
+                    f"ghee.Layer takes its {new} GLSL in {new}=, got {old}="
+                )
         if "alpha" in kwargs:
             raise TypeError(
-                "ghee.Draw takes no alpha=: its alpha blends by blend=, as its "
+                "ghee.Layer takes no alpha=: its alpha blends by blend=, as its "
                 "colour does"
             )
         return super().__new__(cls)
@@ -237,16 +239,16 @@ class Draw:
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text:
             raise ValueError(
-                f"a draw's 'text' needs the name of a scene text, got {self.text!r}"
+                f"a layer's 'text' needs the name of a scene text, got {self.text!r}"
             )
-        what = f"draw of text '{self.text}'"
+        what = f"layer of text '{self.text}'"
         if self.name is not None:
-            if not _is_draw_name(self.name):
+            if not _is_layer_name(self.name):
                 raise ValueError(
                     f"{what} name needs one or more ASCII letters, digits, '_' or "
                     f"'-', got {self.name!r}"
                 )
-            what = f"draw '{self.name}'"
+            what = f"layer '{self.name}'"
         if self.vertex is not None and self.px_per_em is not None:
             raise ValueError(f"{what} takes 'vertex' or 'px_per_em', got both")
         if self.vertex is None and self.px_per_em is None:
@@ -317,8 +319,8 @@ class Pass:
     The last pass leaves `size` None, because it feeds the display.
     `mipmaps` builds the mip chain of the pass's buffer after each frame, so
     a pass that reads it far smaller than its size samples it smooth.
-    `draws` draw texts into the pass's buffer after its code, in order.
-    A pass with draws and no code starts each frame transparent.
+    `layers` draw texts into the pass's buffer after its code, in order.
+    A pass with layers and no code starts each frame transparent.
     """
 
     name: str
@@ -328,7 +330,7 @@ class Pass:
     params: dict[str, Param] = field(default_factory=dict)
     filter: str = ""
     size: tuple[int, int] | None = None
-    draws: list[Draw] = field(default_factory=list)
+    layers: list[Layer] = field(default_factory=list)
     mipmaps: bool = False
 
     def __post_init__(self) -> None:
@@ -338,24 +340,24 @@ class Pass:
             raise ValueError(
                 f"pass '{self.name}' mipmaps needs True or False, got {self.mipmaps!r}"
             )
-        if self.filter and self.draws:
+        if self.filter and self.layers:
             raise ValueError(
                 f"pass '{self.name}' is filter '{self.filter}', and a filter pass "
-                "takes no draws"
+                "takes no layers"
             )
-        labels = _draw_labels(self.draws)
+        labels = _layer_labels(self.layers)
         for k, label in enumerate(labels):
             if label in labels[:k]:
                 raise ValueError(
-                    f"pass '{self.name}' has two draws that go by '{label}'"
+                    f"pass '{self.name}' has two layers that go by '{label}'"
                 )
         # A filter pass takes its code from its filter.
-        if not self.filter and not self.code.strip() and not self.draws:
-            raise ValueError(f"pass '{self.name}' has no code and no draws")
+        if not self.filter and not self.code.strip() and not self.layers:
+            raise ValueError(f"pass '{self.name}' has no code and no layers")
 
     def to_dict(self) -> dict:
         out: dict = {"name": self.name}
-        if self.code.strip() or not self.draws:
+        if self.code.strip() or not self.layers:
             out["code"] = self.code
         if self.size is not None:
             out["size"] = list(self.size)
@@ -369,8 +371,8 @@ class Pass:
             out["params"] = {n: p.to_dict() for n, p in self.params.items()}
         if self.filter:
             out["filter"] = self.filter
-        if self.draws:
-            out["draws"] = [d.to_dict() for d in self.draws]
+        if self.layers:
+            out["layers"] = [d.to_dict() for d in self.layers]
         return out
 
 
@@ -418,13 +420,13 @@ class Text:
     the name of a font Asset of the scene, or a list that mixes both: each
     character draws from the first font whose cmap holds it.
     `align` lines up the lines of the block: left, center or right.
-    `fill` is where a Draw of the text takes its coverage from: mtsdf reads
+    `fill` is where a Layer of the text takes its coverage from: mtsdf reads
     an atlas of the glyphs' distance fields, fast and with glyph_dist and
     glyph_soft, and slug computes Slug's exact coverage from the curves,
     exact edges at any size.
     `atlas` sets the texels per em of a glyph in the MTSDF atlas,
     {"px_per_em": 32} by default. The atlas's field reaches the largest pad
-    of the text's draws.
+    of the text's layers.
     """
 
     name: str
@@ -478,7 +480,7 @@ class Text:
             if k == "range":
                 raise ValueError(
                     f"text '{self.name}' atlas takes no 'range': the field reaches "
-                    "the largest 'pad' of the text's draws"
+                    "the largest 'pad' of the text's layers"
                 )
             if k != "px_per_em":
                 raise ValueError(
@@ -510,7 +512,7 @@ class Scene:
     `filters` are named post-process passes that ghee appends after the
     scene's own.
     `assets` are the image and font files the scene names.
-    `texts` are words drawn from a font, and a Draw in a pass names one of
+    `texts` are words drawn from a font, and a Layer in a pass names one of
     them. ghee declares the string param of each text's name, which holds its
     words.
     """
@@ -553,10 +555,10 @@ class Scene:
                         "no .ttf or .otf file"
                     )
         for p in self.passes:
-            for d, label in zip(p.draws, _draw_labels(p.draws)):
+            for d, label in zip(p.layers, _layer_labels(p.layers)):
                 if d.text not in seen:
                     raise ValueError(
-                        f"pass '{p.name}' draw '{label}' names text '{d.text}', "
+                        f"pass '{p.name}' layer '{label}' names text '{d.text}', "
                         "which the scene does not declare"
                     )
 

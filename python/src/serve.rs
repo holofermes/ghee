@@ -175,7 +175,7 @@ impl ConsoleHost for Host {
         );
         d.insert("error_line".to_string(), Value::Null);
         d.insert("error_pass".to_string(), Value::Null);
-        d.insert("error_draw".to_string(), Value::Null);
+        d.insert("error_layer".to_string(), Value::Null);
         d.insert("active".to_string(), Value::from(s.name.clone()));
         d.insert("display".to_string(), s.display.clone());
         d.insert("stale".to_string(), Value::from(false));

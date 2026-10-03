@@ -1,4 +1,4 @@
-//! The MTSDF fill against exact coverage: the words drawn by a draw of the
+//! The MTSDF fill against exact coverage: the words drawn by a layer of the
 //! MTSDF fill, against what `<name>_cover` draws on this host's GPU.
 
 use serde_json::json;
@@ -33,13 +33,13 @@ fn gpu() -> Option<Renderer> {
     None
 }
 
-/// The lyrics centred at 46 px/em: in a pass of `code`, with `draws`.
-fn frame(r: &mut Renderer, code: &str, draws: serde_json::Value) -> Vec<u8> {
+/// The lyrics centred at 46 px/em: in a pass of `code`, with `layers`.
+fn frame(r: &mut Renderer, code: &str, layers: serde_json::Value) -> Vec<u8> {
     let doc = json!({
         "version": 1,
         "assets": {"font": {"file": SANS}},
         "texts": {"t": {"value": LYRICS, "font": "font", "align": "center"}},
-        "passes": [{"name": "main", "code": code, "draws": draws}],
+        "passes": [{"name": "main", "code": code, "layers": layers}],
     });
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     sc.load_assets(FONTS).unwrap();

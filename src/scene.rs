@@ -18,7 +18,7 @@ const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 
 /// Every name that ghee writes into GLSL and an author never writes starts
-/// with this prefix: a text's own uniforms, textures and functions, a draw's
+/// with this prefix: a text's own uniforms, textures and functions, a layer's
 /// attributes, varyings and locals, and the vertex flip.
 pub const PREFIX: &str = "ghee_";
 
@@ -111,11 +111,11 @@ const SCENE_KEYS: [&str; 7] = [
 
 /// The keys of a pass.
 const PASS_KEYS: [&str; 10] = [
-    "name", "code", "shader", "arrays", "channels", "params", "filter", "size", "mipmaps", "draws",
+    "name", "code", "shader", "arrays", "channels", "params", "filter", "size", "mipmaps", "layers",
 ];
 
-/// The keys of a draw.
-pub(crate) const DRAW_KEYS: [&str; 8] = [
+/// The keys of a layer.
+pub(crate) const LAYER_KEYS: [&str; 8] = [
     "name",
     "text",
     "vertex",
@@ -1277,9 +1277,9 @@ impl Channel {
 /// `v_texCoord * resolution`. The fragment GLSL colours a glyph's pixels with
 /// its own `void main()`, premultiplied by alpha.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Draw {
-    /// The draw's own name, unique among the draws of its pass, as
-    /// is_draw_name() takes it. None goes by its text, as draw_labels() says.
+pub struct Layer {
+    /// The layer's own name, unique among the layers of its pass, as
+    /// is_layer_name() takes it. None goes by its text, as layer_labels() says.
     pub name: Option<String>,
     /// A name in the scene's texts.
     pub text: String,
@@ -1290,40 +1290,40 @@ pub struct Draw {
     /// How far the quads reach past the ink, in em, for an effect around the
     /// outline.
     pub pad: f64,
-    /// The draw paints the text's colour glyphs. None paints them from the
-    /// last draw of the text in its pass alone, as Pass::paints_emoji says.
+    /// The layer paints the text's colour glyphs. None paints them from the
+    /// last layer of the text in its pass alone, as Pass::paints_emoji says.
     pub emoji: Option<bool>,
 }
 
-/// Where a draw puts its glyphs.
+/// Where a layer puts its glyphs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Vertex {
-    /// The draw's `vertex`: GLSL that defines `vec2 glyph_place(vec2 em)`.
+    /// The layer's `vertex`: GLSL that defines `vec2 glyph_place(vec2 em)`.
     Glsl(String),
-    /// The draw's `px_per_em`: the block centred in the pass at this many
+    /// The layer's `px_per_em`: the block centred in the pass at this many
     /// pixels per em.
     Centred(f64),
 }
 
-/// The fragment GLSL of a draw with none of its own.
+/// The fragment GLSL of a layer with none of its own.
 const WHITE: &str = "void main() { gl_FragColor = vec4(glyph_cover()); }";
 
-/// A draw's `name`: ASCII letters, digits, '_' and '-'. A name holds no space,
-/// so it never reads as the label of a draw without one, such as "t 2".
-pub fn is_draw_name(s: &str) -> bool {
+/// A layer's `name`: ASCII letters, digits, '_' and '-'. A name holds no space,
+/// so it never reads as the label of a layer without one, such as "t 2".
+pub fn is_layer_name(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// What each draw of a pass goes by, from its name and its text, in order:
-/// its name, else its text, numbered from the text's second draw without a
-/// name, as "t", "t 2", "t 3". None for a draw with neither.
-pub fn draw_labels<'a>(
-    draws: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
+/// What each layer of a pass goes by, from its name and its text, in order:
+/// its name, else its text, numbered from the text's second layer without a
+/// name, as "t", "t 2", "t 3". None for a layer with neither.
+pub fn layer_labels<'a>(
+    layers: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
 ) -> Vec<Option<String>> {
     let mut seen: Vec<&str> = Vec::new();
-    draws
+    layers
         .into_iter()
         .map(|(name, text)| match (name, text) {
             (Some(n), _) => Some(n.to_string()),
@@ -1339,11 +1339,11 @@ pub fn draw_labels<'a>(
         .collect()
 }
 
-/// Draw `k` of pass `pass` in an error: "pass 'main' draw 'glow'" by its
-/// label, else by its place, "the 2nd draw of pass 'main'".
-fn draw_what(pass: &str, k: usize, label: Option<&str>) -> String {
+/// Layer `k` of pass `pass` in an error: "pass 'main' layer 'glow'" by its
+/// label, else by its place, "the 2nd layer of pass 'main'".
+fn layer_what(pass: &str, k: usize, label: Option<&str>) -> String {
     match label {
-        Some(l) => format!("pass '{pass}' draw '{l}'"),
+        Some(l) => format!("pass '{pass}' layer '{l}'"),
         None => {
             let n = k + 1;
             let th = match (n % 10, n % 100) {
@@ -1353,13 +1353,13 @@ fn draw_what(pass: &str, k: usize, label: Option<&str>) -> String {
                 (3, _) => "rd",
                 _ => "th",
             };
-            format!("the {n}{th} draw of pass '{pass}'")
+            format!("the {n}{th} layer of pass '{pass}'")
         }
     }
 }
 
-impl Draw {
-    /// The GLSL that defines glyph_place for the draw.
+impl Layer {
+    /// The GLSL that defines glyph_place for the layer.
     pub fn vertex_glsl(&self) -> String {
         match &self.vertex {
             Vertex::Glsl(v) => v.clone(),
@@ -1373,13 +1373,13 @@ impl Draw {
         }
     }
 
-    /// The draw's fragment GLSL, its own or the white letters.
+    /// The layer's fragment GLSL, its own or the white letters.
     pub fn fragment_glsl(&self) -> &str {
         self.fragment.as_deref().unwrap_or(WHITE)
     }
 
-    /// `what` names the draw in an error, as "pass 'main' draw 'glow'".
-    pub fn from_dict(what: &str, d: &Value) -> Result<Draw> {
+    /// `what` names the layer in an error, as "pass 'main' layer 'glow'".
+    pub fn from_dict(what: &str, d: &Value) -> Result<Layer> {
         let Value::Object(o) = d else {
             bail!("{what} needs an object, got {}", py_repr(d));
         };
@@ -1396,11 +1396,11 @@ impl Draw {
             _ => "its text".to_string(),
         };
         let elsewhere = [
-            keys_on(&DRAW_KEYS, &TEXT_KEYS, &text),
-            keys_on(&DRAW_KEYS, &PASS_KEYS, "its pass"),
+            keys_on(&LAYER_KEYS, &TEXT_KEYS, &text),
+            keys_on(&LAYER_KEYS, &PASS_KEYS, "its pass"),
         ]
         .concat();
-        known_keys(o, what, &DRAW_KEYS, &elsewhere)?;
+        known_keys(o, what, &LAYER_KEYS, &elsewhere)?;
         let glsl = |key: &str, holds: &str| match o.get(key) {
             Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
             Some(v) => bail!("{what} '{key}' needs {holds}, got {}", py_repr(v)),
@@ -1409,7 +1409,7 @@ impl Draw {
         let text = glsl("text", "the name of a scene text")?;
         let name = match o.get("name").filter(|v| !v.is_null()) {
             None => None,
-            Some(Value::String(n)) if is_draw_name(n) => Some(n.clone()),
+            Some(Value::String(n)) if is_layer_name(n) => Some(n.clone()),
             Some(v) => bail!(
                 "{what} name needs one or more ASCII letters, digits, '_' or '-', got {}",
                 py_repr(v)
@@ -1463,7 +1463,7 @@ impl Draw {
             Some(Value::Bool(b)) => Some(*b),
             Some(v) => bail!("{what} emoji needs true or false, got {}", py_repr(v)),
         };
-        Ok(Draw {
+        Ok(Layer {
             name,
             text,
             vertex,
@@ -1474,8 +1474,8 @@ impl Draw {
         })
     }
 
-    /// `last` is the default of `emoji` at the draw's place in its pass, and
-    /// the dict holds `emoji` only when the draw sets it otherwise.
+    /// `last` is the default of `emoji` at the layer's place in its pass, and
+    /// the dict holds `emoji` only when the layer sets it otherwise.
     pub fn to_dict(&self, last: bool) -> Value {
         let mut d = Map::new();
         if let Some(n) = &self.name {
@@ -1510,8 +1510,8 @@ impl Draw {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pass {
     pub name: String,
-    /// The pass's fragment shader. A pass with draws may leave it empty: the
-    /// pass then starts each frame transparent and draws its draws alone.
+    /// The pass's fragment shader. A pass with layers may leave it empty: the
+    /// pass then starts each frame transparent and draws its layers alone.
     pub code: String,
     pub arrays: Vec<ArrayInput>,
     pub channels: Vec<Channel>,
@@ -1527,7 +1527,7 @@ pub struct Pass {
     /// frame, and every channel that reads it samples trilinearly.
     pub mipmaps: bool,
     /// Texts drawn into this pass's buffer after its quad, in order.
-    pub draws: Vec<Draw>,
+    pub layers: Vec<Layer>,
 }
 
 impl Pass {
@@ -1567,7 +1567,7 @@ impl Pass {
             filter: filter.to_string(),
             size,
             mipmaps: false,
-            draws: Vec::new(),
+            layers: Vec::new(),
         })
     }
 
@@ -1584,17 +1584,17 @@ impl Pass {
         )
     }
 
-    /// False for a pass of draws alone, with no quad of its own.
+    /// False for a pass of layers alone, with no quad of its own.
     pub fn has_code(&self) -> bool {
         !self.code.trim().is_empty()
     }
 
-    /// The error for a pass with no code and no draws, which draws nothing.
+    /// The error for a pass with no code and no layers, which draws nothing.
     pub(crate) fn empty(&self) -> Option<String> {
-        (!self.has_code() && self.draws.is_empty()).then(|| {
+        (!self.has_code() && self.layers.is_empty()).then(|| {
             format!(
                 "pass '{}' has no 'code' (inline GLSL), no 'shader' (a file next to \
-                 the scene) and no 'draws'",
+                 the scene) and no 'layers'",
                 self.name
             )
         })
@@ -1620,7 +1620,7 @@ impl Pass {
         };
         let name = o.get("name").map_or("main".to_string(), py_str);
         let elsewhere = [
-            keys_on(&PASS_KEYS, &DRAW_KEYS, "a draw"),
+            keys_on(&PASS_KEYS, &LAYER_KEYS, "a layer"),
             keys_on(&PASS_KEYS, &TEXT_KEYS, "a text"),
             keys_on(&PASS_KEYS, &ASSET_KEYS, "an asset"),
             keys_on(&PASS_KEYS, &CHANNEL_KEYS, "a channel"),
@@ -1671,26 +1671,26 @@ impl Pass {
                 py_repr(v)
             ),
         };
-        let draws = list_of(o, "draws").map_err(|e| anyhow!("pass '{name}': {e}"))?;
-        // A draw goes by its name and its text in an error about any key,
-        // so each comes from the dict before the draw parses.
-        let labels = draw_labels(draws.iter().map(|dd| {
+        let layers = list_of(o, "layers").map_err(|e| anyhow!("pass '{name}': {e}"))?;
+        // A layer goes by its name and its text in an error about any key,
+        // so each comes from the dict before the layer parses.
+        let labels = layer_labels(layers.iter().map(|dd| {
             let key = |k: &str| dd.get(k).and_then(Value::as_str);
             (
-                key("name").filter(|n| is_draw_name(n)),
+                key("name").filter(|n| is_layer_name(n)),
                 key("text").filter(|t| !t.trim().is_empty()),
             )
         }));
-        pass.draws = draws
+        pass.layers = layers
             .iter()
             .zip(&labels)
             .enumerate()
-            .map(|(k, (dd, l))| Draw::from_dict(&draw_what(&name, k, l.as_deref()), dd))
+            .map(|(k, (dd, l))| Layer::from_dict(&layer_what(&name, k, l.as_deref()), dd))
             .collect::<Result<Vec<_>>>()?;
         // A filter is written apart from any scene, and a text belongs to one.
-        if !pass.filter.is_empty() && !pass.draws.is_empty() {
+        if !pass.filter.is_empty() && !pass.layers.is_empty() {
             bail!(
-                "pass '{name}' is filter '{}', and a filter pass takes no draws",
+                "pass '{name}' is filter '{}', and a filter pass takes no layers",
                 pass.filter
             );
         }
@@ -1704,7 +1704,7 @@ impl Pass {
     pub fn to_dict(&self) -> Value {
         let mut out = Map::new();
         out.insert("name".to_string(), Value::from(self.name.clone()));
-        if self.has_code() || self.draws.is_empty() {
+        if self.has_code() || self.layers.is_empty() {
             out.insert("code".to_string(), Value::from(self.code.clone()));
         }
         if let Some((w, h)) = self.size {
@@ -1745,19 +1745,19 @@ impl Pass {
         if !self.filter.is_empty() {
             out.insert("filter".to_string(), Value::from(self.filter.clone()));
         }
-        if !self.draws.is_empty() {
-            let draws: Vec<Value> = (0..self.draws.len())
-                .map(|k| self.draws[k].to_dict(self.last_of_text(k)))
+        if !self.layers.is_empty() {
+            let layers: Vec<Value> = (0..self.layers.len())
+                .map(|k| self.layers[k].to_dict(self.last_of_text(k)))
                 .collect();
-            out.insert("draws".to_string(), Value::from(draws));
+            out.insert("layers".to_string(), Value::from(layers));
         }
         Value::Object(out)
     }
 
-    /// What each draw of the pass goes by, as draw_labels() gives it.
-    pub fn draw_labels(&self) -> Vec<String> {
-        draw_labels(
-            self.draws
+    /// What each layer of the pass goes by, as layer_labels() gives it.
+    pub fn layer_labels(&self) -> Vec<String> {
+        layer_labels(
+            self.layers
                 .iter()
                 .map(|d| (d.name.as_deref(), Some(d.text.as_str()))),
         )
@@ -1766,34 +1766,38 @@ impl Pass {
         .collect()
     }
 
-    /// Draw `k` in an error, as "pass 'main' draw 'glow'".
-    pub fn draw_what(&self, k: usize) -> String {
-        draw_what(&self.name, k, self.draw_labels().get(k).map(String::as_str))
+    /// Layer `k` in an error, as "pass 'main' layer 'glow'".
+    pub fn layer_what(&self, k: usize) -> String {
+        layer_what(
+            &self.name,
+            k,
+            self.layer_labels().get(k).map(String::as_str),
+        )
     }
 
-    /// The error for two draws of the pass that go by one label.
-    fn twin_draws(&self) -> Option<String> {
-        let labels = self.draw_labels();
+    /// The error for two layers of the pass that go by one label.
+    fn twin_layers(&self) -> Option<String> {
+        let labels = self.layer_labels();
         let (_, l) = labels
             .iter()
             .enumerate()
             .find(|(k, l)| labels[..*k].contains(l))?;
         Some(format!(
-            "pass '{}' has two draws that go by '{l}'",
+            "pass '{}' has two layers that go by '{l}'",
             self.name
         ))
     }
 
-    /// True when draw `k` is the last draw of its text in this pass.
+    /// True when layer `k` is the last layer of its text in this pass.
     fn last_of_text(&self, k: usize) -> bool {
-        let text = &self.draws[k].text;
-        !self.draws[k + 1..].iter().any(|d| d.text == *text)
+        let text = &self.layers[k].text;
+        !self.layers[k + 1..].iter().any(|d| d.text == *text)
     }
 
-    /// True when draw `k` paints its text's colour glyphs: its `emoji`, else
-    /// when it is the last draw of its text in this pass.
+    /// True when layer `k` paints its text's colour glyphs: its `emoji`, else
+    /// when it is the last layer of its text in this pass.
     pub fn paints_emoji(&self, k: usize) -> bool {
-        self.draws[k].emoji.unwrap_or_else(|| self.last_of_text(k))
+        self.layers[k].emoji.unwrap_or_else(|| self.last_of_text(k))
     }
 
     /// `hw_linear` is the target GPU's Renderer.data_texture_linear. False emits
@@ -1819,13 +1823,13 @@ impl Pass {
         format!("{}\n\n{body}", l.join("\n"))
     }
 
-    /// The vertex and the fragment shader of draw `k`. Each holds the pass's
-    /// preamble and the scene's common block, then the draw's GLSL for its
-    /// stage, as draw_vertex() and the fragment shader below lay them out.
+    /// The vertex and the fragment shader of layer `k`. Each holds the pass's
+    /// preamble and the scene's common block, then the layer's GLSL for its
+    /// stage, as layer_vertex() and the fragment shader below lay them out.
     ///
     /// `scene` is the scene of the pass, and `hw_linear` as glsl() takes it.
-    pub fn draw_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
-        let d = &self.draws[k];
+    pub fn layer_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
+        let d = &self.layers[k];
         let text = scene.texts.iter().find(|t| t.name == d.text);
         let main = match text {
             Some(t) if t.fill == Fill::Mtsdf => crate::text::mtsdf_vertex_main(
@@ -1836,7 +1840,7 @@ impl Pass {
             ),
             _ => crate::text::slug_vertex_main(d.pad),
         };
-        let v = self.draw_vertex(d, scene, hw_linear, main);
+        let v = self.layer_vertex(d, scene, hw_linear, main);
         let mut f = self.preamble(Some(&scene.params), &scene.assets, &scene.texts, hw_linear);
         f.push(String::new());
         if let Some(c) = scene.common.as_deref().filter(|c| !c.is_empty()) {
@@ -1861,36 +1865,36 @@ impl Pass {
         (v, f.join("\n"))
     }
 
-    /// The vertex and the fragment shader of the error boxes of draw `k`: the
-    /// draw's own vertex GLSL with the slug fill's vertex main and no pad, so
+    /// The vertex and the fragment shader of the error boxes of layer `k`: the
+    /// layer's own vertex GLSL with the slug fill's vertex main and no pad, so
     /// each box lands where a glyph would go, and ghee's hazard stripes.
-    pub fn draw_box_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
+    pub fn layer_box_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
         let main = crate::text::slug_vertex_main(0.0);
-        let v = self.draw_vertex(&self.draws[k], scene, hw_linear, main);
+        let v = self.layer_vertex(&self.layers[k], scene, hw_linear, main);
         let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         f.extend(crate::text::box_fragment());
         (v, f.join("\n"))
     }
 
-    /// The vertex and the fragment shader of the colour batch of draw `k`:
-    /// the draw's own vertex GLSL, and ghee's read of the text's colour atlas.
-    pub fn draw_colour_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
-        let d = &self.draws[k];
+    /// The vertex and the fragment shader of the colour batch of layer `k`:
+    /// the layer's own vertex GLSL, and ghee's read of the text's colour atlas.
+    pub fn layer_colour_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
+        let d = &self.layers[k];
         let main = crate::colour::vertex_main(&d.text);
-        let v = self.draw_vertex(d, scene, hw_linear, main);
+        let v = self.layer_vertex(d, scene, hw_linear, main);
         let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         f.extend(crate::colour::fragment(&d.text));
         (v, f.join("\n"))
     }
 
-    /// The vertex shader of draw `d`, with `main` after its vertex GLSL. It
+    /// The vertex shader of layer `d`, with `main` after its vertex GLSL. It
     /// declares what the pass's preamble declares, at the same precision,
     /// since GLSL ES links a uniform declared by both stages only when the two
     /// declarations match, and the scene's common block follows, so the
     /// common block compiles as it does in a pass. A text's coverage reader
     /// is long to compile on VC4, so the stage holds it only for a text whose
-    /// `<name>_cover` the common block or the draw's vertex GLSL names.
-    fn draw_vertex(&self, d: &Draw, scene: &Scene, hw_linear: bool, main: Vec<String>) -> String {
+    /// `<name>_cover` the common block or the layer's vertex GLSL names.
+    fn layer_vertex(&self, d: &Layer, scene: &Scene, hw_linear: bool, main: Vec<String>) -> String {
         let common = scene.common.as_deref().unwrap_or_default();
         let vertex = d.vertex_glsl();
         let mut v = self.preamble_reading(
@@ -1912,7 +1916,7 @@ impl Pass {
             v.push(c.to_string());
             v.push(String::new());
         }
-        v.extend(crate::text::draw_vertex_head());
+        v.extend(crate::text::layer_vertex_head());
         v.push(String::new());
         v.push(vertex);
         v.push(String::new());
@@ -2071,7 +2075,7 @@ impl Scene {
                 seen.push(&p.name);
             }
         }
-        if let Some(e) = passes.iter().find_map(Pass::twin_draws) {
+        if let Some(e) = passes.iter().find_map(Pass::twin_layers) {
             bail!("{e}");
         }
         // An asset name lands in every pass preamble as a uniform, so it must
@@ -2111,10 +2115,10 @@ impl Scene {
     /// itself, built in or with its prefix, or one GLSL name that two
     /// declarations make in one pass.
     ///
-    /// A scene param reaches every pass, an image asset, a text and a draw's
+    /// A scene param reaches every pass, an image asset, a text and a layer's
     /// GLSL every pass of the scene's own, a filter's asset the passes of its
-    /// filter, and a pass param or an array its own pass. A draw's GLSL takes
-    /// its names in every scene pass, whether or not the pass draws.
+    /// filter, and a pass param or an array its own pass. A layer's GLSL takes
+    /// its names in every scene pass, whether or not the pass has layers.
     pub(crate) fn name_clash(&self) -> Option<String> {
         // Each declaration as its kind, its name, where it is declared, and
         // whether its name reaches GLSL as it is.
@@ -2156,7 +2160,7 @@ impl Scene {
                 ));
             }
         }
-        let draws = "the draws".to_string();
+        let layers = "the layers".to_string();
         for pass in &self.passes {
             let own = pass.filter.is_empty();
             let mut names: Vec<(String, String)> = Vec::new();
@@ -2181,8 +2185,8 @@ impl Scene {
                         names.push((n, format!("text '{}'", t.name)));
                     }
                 }
-                for n in crate::text::DRAW_NAMES {
-                    names.push((n.to_string(), draws.clone()));
+                for n in crate::text::LAYER_NAMES {
+                    names.push((n.to_string(), layers.clone()));
                 }
             }
             for p in pass.params.values().filter(|p| p.ty != "string") {
@@ -2275,15 +2279,15 @@ impl Scene {
             }
         }
         self.texts = texts;
-        if let Some(e) = self.undeclared_draw() {
+        if let Some(e) = self.undeclared_layer() {
             bail!("{e}");
         }
         for t in self.texts.iter().filter(|t| t.fill == Fill::Mtsdf) {
-            let (pad, draw) = self.largest_pad(&t.name);
+            let (pad, layer) = self.largest_pad(&t.name);
             let range = crate::text::atlas_range(t.px_per_em, pad);
-            if let (Some(draw), true) = (draw, range > crate::text::ATLAS_MAX) {
+            if let (Some(layer), true) = (layer, range > crate::text::ATLAS_MAX) {
                 bail!(
-                    "{draw} pad {} needs an atlas range of {range} texels at the {} px_per_em \
+                    "{layer} pad {} needs an atlas range of {range} texels at the {} px_per_em \
                      of text '{}', over the cap of {}",
                     py_float(pad),
                     t.px_per_em,
@@ -2299,7 +2303,7 @@ impl Scene {
     }
 
     /// The distance range in texels of the MTSDF atlas of text `name`: the
-    /// field reaches the largest `pad` of the text's draws, at the text's
+    /// field reaches the largest `pad` of the text's layers, at the text's
     /// px_per_em.
     pub fn atlas_range(&self, name: &str) -> u32 {
         let px_per_em = self
@@ -2311,45 +2315,45 @@ impl Scene {
         u32::try_from(range).unwrap_or(u32::MAX)
     }
 
-    /// The largest `pad` of the draws of text `name`, and the draw that sets
-    /// it as "pass 'main' draw 'glow'", None when no draw pads.
+    /// The largest `pad` of the layers of text `name`, and the layer that sets
+    /// it as "pass 'main' layer 'glow'", None when no layer pads.
     fn largest_pad(&self, name: &str) -> (f64, Option<String>) {
         let mut most = (0.0, None);
         for p in &self.passes {
-            for (k, d) in p.draws.iter().enumerate() {
+            for (k, d) in p.layers.iter().enumerate() {
                 if d.text == name && d.pad > most.0 {
-                    most = (d.pad, Some(p.draw_what(k)));
+                    most = (d.pad, Some(p.layer_what(k)));
                 }
             }
         }
         most
     }
 
-    /// True when a draw of the scene names text `name`.
-    pub fn draws_text(&self, name: &str) -> bool {
+    /// True when a layer of the scene names text `name`.
+    pub fn has_layer_of(&self, name: &str) -> bool {
         self.passes
             .iter()
-            .any(|p| p.draws.iter().any(|d| d.text == name))
+            .any(|p| p.layers.iter().any(|d| d.text == name))
     }
 
-    /// True when a draw of the scene paints the colour glyphs of text `name`.
+    /// True when a layer of the scene paints the colour glyphs of text `name`.
     pub fn paints_emoji(&self, name: &str) -> bool {
         self.passes
             .iter()
-            .any(|p| (0..p.draws.len()).any(|k| p.draws[k].text == name && p.paints_emoji(k)))
+            .any(|p| (0..p.layers.len()).any(|k| p.layers[k].text == name && p.paints_emoji(k)))
     }
 
-    /// The error for the first draw whose text the scene does not declare.
-    pub(crate) fn undeclared_draw(&self) -> Option<String> {
+    /// The error for the first layer whose text the scene does not declare.
+    pub(crate) fn undeclared_layer(&self) -> Option<String> {
         self.passes.iter().find_map(|p| {
             let (k, d) = p
-                .draws
+                .layers
                 .iter()
                 .enumerate()
                 .find(|(_, d)| !self.texts.iter().any(|t| t.name == d.text))?;
             Some(format!(
                 "{} names text '{}', which the scene does not declare",
-                p.draw_what(k),
+                p.layer_what(k),
                 d.text
             ))
         })
@@ -2391,7 +2395,7 @@ impl Scene {
             let elsewhere = [
                 keys_on(&SCENE_KEYS, &PASS_KEYS, "a pass"),
                 keys_on(&SCENE_KEYS, &TEXT_KEYS, "a text"),
-                keys_on(&SCENE_KEYS, &DRAW_KEYS, "a draw"),
+                keys_on(&SCENE_KEYS, &LAYER_KEYS, "a layer"),
                 keys_on(&SCENE_KEYS, &ASSET_KEYS, "an asset"),
             ]
             .concat();
@@ -2698,7 +2702,7 @@ impl PassBuilder for Result<Pass> {
             Some(Value::from(vec![width, height])),
         )?;
         sized.mipmaps = p.mipmaps;
-        sized.draws = p.draws;
+        sized.layers = p.layers;
         Ok(sized)
     }
 }
@@ -2755,16 +2759,16 @@ mod tests {
     }
 
     #[test]
-    fn a_sized_pass_keeps_its_draws() {
+    fn a_sized_pass_keeps_its_layers() {
         let mut p = Pass::of("a", GOOD).unwrap();
-        p.draws = vec![Draw::from_dict(
-            "pass 'a' draw 't'",
+        p.layers = vec![Layer::from_dict(
+            "pass 'a' layer 't'",
             &json!({"text": "t", "fragment": GOOD, "vertex": "vec2 glyph_place(vec2 em) { return em; }"}),
         )
         .unwrap()];
         let sized = Ok::<Pass, anyhow::Error>(p.clone()).size(8, 4).unwrap();
         assert_eq!(sized.size, Some((8, 4)));
-        assert_eq!(sized.draws, p.draws);
+        assert_eq!(sized.layers, p.layers);
     }
 
     #[test]
@@ -3457,13 +3461,13 @@ mod tests {
                 .extend(extra.as_object().unwrap().clone());
             p
         };
-        let draw = |extra: Value| {
+        let layer = |extra: Value| {
             let mut d = json!({"text": "t", "px_per_em": 20});
             d.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
             json!({"version": 1, "texts": {"t": {"font": "a.ttf"}},
-                   "passes": [pass(json!({"draws": [d]}))]})
+                   "passes": [pass(json!({"layers": [d]}))]})
         };
         let rows = [
             (
@@ -3498,7 +3502,7 @@ mod tests {
             (
                 json!({"version": 1, "texts": {"t": {"font": "a.ttf", "pad": 1}},
                        "passes": [pass(json!({}))]}),
-                "scene: text 't' takes no 'pad', which sits on a draw",
+                "scene: text 't' takes no 'pad', which sits on a layer",
             ),
             (
                 json!({"version": 1, "passes": [pass(json!({"chanels": []}))]}),
@@ -3509,17 +3513,17 @@ mod tests {
                 "scene: pass 'main' takes no 'font', which sits on a text",
             ),
             (
-                draw(json!({"fill": "slug"})),
-                "scene: pass 'main' draw 't' takes no 'fill', which sits on text 't'",
+                layer(json!({"fill": "slug"})),
+                "scene: pass 'main' layer 't' takes no 'fill', which sits on text 't'",
             ),
             (
-                draw(json!({"fil": "slug"})),
-                "scene: pass 'main' draw 't' takes no 'fil', the closest key is 'fill', which \
+                layer(json!({"fil": "slug"})),
+                "scene: pass 'main' layer 't' takes no 'fil', the closest key is 'fill', which \
                  sits on text 't'",
             ),
             (
-                draw(json!({"glow": 1})),
-                "scene: pass 'main' draw 't' takes no 'glow', only name, text, vertex, px_per_em, \
+                layer(json!({"glow": 1})),
+                "scene: pass 'main' layer 't' takes no 'glow', only name, text, vertex, px_per_em, \
                  fragment, blend, pad and emoji",
             ),
             (
@@ -4044,12 +4048,12 @@ mod tests {
             (
                 json!({"params": {"glyph_cover": f}}),
                 json!({}),
-                "scene param 'glyph_cover' and the draws both declare 'glyph_cover'",
+                "scene param 'glyph_cover' and the layers both declare 'glyph_cover'",
             ),
             (
                 json!({}),
                 json!({"params": {"glyph_place": f}}),
-                "the draws and param 'glyph_place' in pass 'a' both declare 'glyph_place'",
+                "the layers and param 'glyph_place' in pass 'a' both declare 'glyph_place'",
             ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));
@@ -4205,7 +4209,7 @@ mod tests {
             "filter 'frc256': scene param 'frc256_bluenoise' and asset 'bluenoise' of filter \
              'frc256' both declare 'frc256_bluenoise'"
         );
-        // A text's names and a draw's stay out of a filter pass.
+        // A text's names and a layer's stay out of a filter pass.
         let doc = named(json!({"params": {"bluenoise": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
         crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();

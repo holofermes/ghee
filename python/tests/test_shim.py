@@ -279,7 +279,7 @@ def drawn_scene(shim, passes, text=None):
     )
 
 
-def test_a_draw_and_its_text_take_the_scene_json_keys():
+def test_a_layer_and_its_text_take_the_scene_json_keys():
     shim = load()
     built = drawn_scene(
         shim,
@@ -287,8 +287,8 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
             shim.Pass(
                 "main",
                 "void main(){}",
-                draws=[
-                    shim.Draw("words", INK, PLACE, blend="add", pad=0.25, name="glow")
+                layers=[
+                    shim.Layer("words", INK, PLACE, blend="add", pad=0.25, name="glow")
                 ],
             )
         ],
@@ -300,7 +300,7 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
             {
                 "name": "main",
                 "code": "void main(){}",
-                "draws": [
+                "layers": [
                     {
                         "name": "glow",
                         "text": "words",
@@ -319,110 +319,110 @@ def test_a_draw_and_its_text_take_the_scene_json_keys():
     assert json.dumps(built) == json.dumps(recorded)  # key order too
 
 
-def test_a_draw_and_a_text_leave_their_defaults_out():
+def test_a_layer_and_a_text_leave_their_defaults_out():
     shim = load()
-    draw = shim.Draw("words", INK, PLACE)
-    assert (draw.blend, draw.pad, draw.emoji) == ("over", 0.0, None)
-    assert draw.to_dict() == {"text": "words", "vertex": PLACE, "fragment": INK}
+    layer = shim.Layer("words", INK, PLACE)
+    assert (layer.blend, layer.pad, layer.emoji) == ("over", 0.0, None)
+    assert layer.to_dict() == {"text": "words", "vertex": PLACE, "fragment": INK}
     text = shim.Text("words", "sans")
     assert (text.value, text.fill, text.atlas) == ("", "mtsdf", None)
     assert text.to_dict() == {"value": "", "font": "sans"}
-    assert "draws" not in shim.Pass("main", "void main(){}").to_dict()
+    assert "layers" not in shim.Pass("main", "void main(){}").to_dict()
 
 
-def test_a_draw_with_no_vertex_sends_px_per_em_and_with_no_fragment_none():
+def test_a_layer_with_no_vertex_sends_px_per_em_and_with_no_fragment_none():
     shim = load()
-    draw = shim.Draw("words", px_per_em=48)
-    assert draw.to_dict() == {"text": "words", "px_per_em": 48.0}
-    assert json.dumps(draw.to_dict()) == '{"text": "words", "px_per_em": 48.0}'
-    assert shim.Draw("words", vertex=PLACE).to_dict() == {
+    layer = shim.Layer("words", px_per_em=48)
+    assert layer.to_dict() == {"text": "words", "px_per_em": 48.0}
+    assert json.dumps(layer.to_dict()) == '{"text": "words", "px_per_em": 48.0}'
+    assert shim.Layer("words", vertex=PLACE).to_dict() == {
         "text": "words",
         "vertex": PLACE,
     }
 
 
-def test_a_draw_sends_emoji_when_it_is_set():
+def test_a_layer_sends_emoji_when_it_is_set():
     shim = load()
     for emoji in (True, False):
-        assert shim.Draw("words", INK, PLACE, emoji=emoji).to_dict() == {
+        assert shim.Layer("words", INK, PLACE, emoji=emoji).to_dict() == {
             "text": "words",
             "vertex": PLACE,
             "fragment": INK,
             "emoji": emoji,
         }
     with pytest.raises(ValueError, match="emoji needs True, False or None, got 1"):
-        shim.Draw("words", INK, PLACE, emoji=1)
+        shim.Layer("words", INK, PLACE, emoji=1)
 
 
-def test_a_pass_of_draws_alone_has_no_code():
+def test_a_pass_of_layers_alone_has_no_code():
     shim = load()
-    layer = shim.Pass("ink", draws=[shim.Draw("words", INK, PLACE)])
-    assert layer.to_dict() == {
+    alone = shim.Pass("ink", layers=[shim.Layer("words", INK, PLACE)])
+    assert alone.to_dict() == {
         "name": "ink",
-        "draws": [{"text": "words", "vertex": PLACE, "fragment": INK}],
+        "layers": [{"text": "words", "vertex": PLACE, "fragment": INK}],
     }
-    assert "code" not in drawn_scene(shim, [layer]).to_dict()["passes"][0]
-    with pytest.raises(ValueError, match="pass 'main' has no code and no draws"):
+    assert "code" not in drawn_scene(shim, [alone]).to_dict()["passes"][0]
+    with pytest.raises(ValueError, match="pass 'main' has no code and no layers"):
         shim.Pass("main")
-    # a filter pass takes its code from its filter, and no draws
+    # a filter pass takes its code from its filter, and no layers
     assert shim.Pass("dither", filter="dither").to_dict()["code"] == ""
-    with pytest.raises(ValueError, match="a filter pass takes no draws"):
-        shim.Pass("dither", filter="dither", draws=[shim.Draw("words", INK, PLACE)])
+    with pytest.raises(ValueError, match="a filter pass takes no layers"):
+        shim.Pass("dither", filter="dither", layers=[shim.Layer("words", INK, PLACE)])
 
 
-def test_a_draw_says_what_it_needs():
+def test_a_layer_says_what_it_needs():
     shim = load()
     with pytest.raises(ValueError, match="blend needs 'over', 'add' or 'replace'"):
-        shim.Draw("words", INK, PLACE, blend="mix")
+        shim.Layer("words", INK, PLACE, blend="mix")
     for pad in (-0.1, float("nan"), True, "0.1"):
         with pytest.raises(ValueError, match="pad needs a number of em, 0 or more"):
-            shim.Draw("words", INK, PLACE, pad=pad)
+            shim.Layer("words", INK, PLACE, pad=pad)
     with pytest.raises(ValueError, match="'fragment' needs fragment GLSL"):
-        shim.Draw("words", "  ", PLACE)
+        shim.Layer("words", "  ", PLACE)
     with pytest.raises(ValueError, match="'vertex' needs vertex GLSL"):
-        shim.Draw("words", INK, " ")
+        shim.Layer("words", INK, " ")
     with pytest.raises(
         ValueError,
         match="needs 'px_per_em', the pixels per em of the words centred in the "
         "pass, or 'vertex', GLSL that defines",
     ):
-        shim.Draw("words", INK)
+        shim.Layer("words", INK)
     with pytest.raises(ValueError, match="takes 'vertex' or 'px_per_em', got both"):
-        shim.Draw("words", INK, PLACE, px_per_em=32)
+        shim.Layer("words", INK, PLACE, px_per_em=32)
     for px in (0, -1.0, float("inf"), True, "32"):
         with pytest.raises(
             ValueError, match="px_per_em needs a number of pixels above 0"
         ):
-            shim.Draw("words", px_per_em=px)
+            shim.Layer("words", px_per_em=px)
     with pytest.raises(ValueError, match="'text' needs the name of a scene text"):
-        shim.Draw("", INK, PLACE)
+        shim.Layer("", INK, PLACE)
     with pytest.raises(
         ValueError,
-        match="pass 'main' draw 'title' names text 'title', which the scene does not "
+        match="pass 'main' layer 'title' names text 'title', which the scene does not "
         "declare",
     ):
-        drawn_scene(shim, [shim.Pass("main", draws=[shim.Draw("title", INK, PLACE)])])
+        drawn_scene(shim, [shim.Pass("main", layers=[shim.Layer("title", INK, PLACE)])])
 
 
 @pytest.mark.parametrize(
     "keyword,error",
     [
-        ("code", "ghee.Draw takes its fragment GLSL in fragment=, got code="),
-        ("place", "ghee.Draw takes its vertex GLSL in vertex=, got place="),
+        ("code", "ghee.Layer takes its fragment GLSL in fragment=, got code="),
+        ("place", "ghee.Layer takes its vertex GLSL in vertex=, got place="),
         (
             "alpha",
-            "ghee.Draw takes no alpha=: its alpha blends by blend=, as its colour does",
+            "ghee.Layer takes no alpha=: its alpha blends by blend=, as its colour does",
         ),
     ],
 )
-def test_a_keyword_that_a_draw_renamed_names_the_new_one(keyword, error):
+def test_a_keyword_that_a_layer_renamed_names_the_new_one(keyword, error):
     shim = load()
     with pytest.raises(TypeError) as raised:
-        shim.Draw("words", px_per_em=32, **{keyword: INK})
+        shim.Layer("words", px_per_em=32, **{keyword: INK})
     assert str(raised.value) == error
 
 
-def test_a_draw_name_takes_letters_digits_and_dashes_unique_in_its_pass():
+def test_a_layer_name_takes_letters_digits_and_dashes_unique_in_its_pass():
     shim = load()
 
     def err(make, *args, **kw):
@@ -431,21 +431,21 @@ def test_a_draw_name_takes_letters_digits_and_dashes_unique_in_its_pass():
         return str(e.value)
 
     for bad in ("my glow", "", 3):
-        assert err(shim.Draw, "words", INK, PLACE, name=bad) == (
-            "draw of text 'words' name needs one or more ASCII letters, digits, "
+        assert err(shim.Layer, "words", INK, PLACE, name=bad) == (
+            "layer of text 'words' name needs one or more ASCII letters, digits, "
             f"'_' or '-', got {bad!r}"
         )
-    assert err(shim.Draw, "words", INK, PLACE, blend="mix", name="glow") == (
-        "draw 'glow' blend needs 'over', 'add' or 'replace', got 'mix'"
+    assert err(shim.Layer, "words", INK, PLACE, blend="mix", name="glow") == (
+        "layer 'glow' blend needs 'over', 'add' or 'replace', got 'mix'"
     )
-    glow = shim.Draw("words", INK, PLACE, name="glow-2_b")
-    words = shim.Draw("words", INK, PLACE)
-    named_words = shim.Draw("words", INK, PLACE, name="words")
+    glow = shim.Layer("words", INK, PLACE, name="glow-2_b")
+    words = shim.Layer("words", INK, PLACE)
+    named_words = shim.Layer("words", INK, PLACE, name="words")
     for twins, label in (((glow, glow), "glow-2_b"), ((words, named_words), "words")):
-        assert err(shim.Pass, "main", draws=list(twins)) == (
-            f"pass 'main' has two draws that go by '{label}'"
+        assert err(shim.Pass, "main", layers=list(twins)) == (
+            f"pass 'main' has two layers that go by '{label}'"
         )
-    shim.Pass("main", draws=[words, words, glow])
+    shim.Pass("main", layers=[words, words, glow])
 
 
 def test_a_text_fill_and_atlas_say_what_they_need():
@@ -467,7 +467,7 @@ def test_a_text_fill_and_atlas_say_what_they_need():
     with pytest.raises(
         ValueError,
         match="atlas takes no 'range': the field reaches the largest 'pad' of the "
-        "text's draws",
+        "text's layers",
     ):
         shim.Text("words", "sans", atlas={"px_per_em": 32, "range": 6})
     for n in (0, 1.5, True):
@@ -844,7 +844,7 @@ SURFACE = [
     "ArrayInput",
     "Asset",
     "Channel",
-    "Draw",
+    "Layer",
     "Param",
     "Pass",
     "Scene",

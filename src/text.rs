@@ -7,15 +7,15 @@
 //! string param of the text's name, which holds the words, and they change
 //! with the param, live, with no recompile.
 //!
-//! A draw, declared on a pass, puts a text into that pass's buffer after the
-//! pass's own quad, as one quad over each inked glyph. The draw's
+//! A layer, declared on a pass, puts a text into that pass's buffer after the
+//! pass's own quad, as one quad over each inked glyph. The layer's
 //! `glyph_place`, in its vertex GLSL, maps a point of the block to a pixel of
 //! the pass, and its fragment GLSL colours the pixels of each quad from the
 //! glyph's coverage. The text's fill
 //! gives that coverage: the MTSDF fill takes one bilinear sample of the
 //! glyph's field in an atlas, which `crate::atlas` builds, and the slug fill
 //! computes it from the curves as `<name>_cover` does. A colour glyph, a
-//! bitmap with no outline, draws through the draw's colour batch, which
+//! bitmap with no outline, draws through the layer's colour batch, which
 //! `crate::colour` describes.
 //!
 //! Coverage follows the Slug algorithm by Eric Lengyel
@@ -32,7 +32,7 @@
 //! A text problem leaves the scene running. A character whose glyph has no
 //! outline and no colour bitmap, or one past a limit, draws an error box:
 //! hazard stripes, laid out as an outline, so `<name>_cover` reads them as
-//! coverage, and a draw's error-box batch paints them yellow and black. A
+//! coverage, and a layer's error-box batch paints them yellow and black. A
 //! font that failed to load drops out of its text's fonts, and when none is
 //! left, every character draws an error box. Words that fit no texture leave
 //! the last words that did.
@@ -190,7 +190,7 @@ impl Align {
     }
 }
 
-/// Where a draw of the text takes each pixel's coverage from.
+/// Where a layer of the text takes each pixel's coverage from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fill {
     /// One read of the glyph's MTSDF in an atlas: fast, with the distance to
@@ -226,7 +226,7 @@ pub struct Text {
     pub align: Align,
     pub fill: Fill,
     /// The texels per em of a glyph's cell in the MTSDF atlas. The atlas's
-    /// distance range follows the draws of the text, as
+    /// distance range follows the layers of the text, as
     /// Scene::atlas_range gives it.
     pub px_per_em: u32,
     /// Each font asset's bytes, or why they failed to load, in the order of
@@ -240,7 +240,7 @@ impl Text {
             bail!("text '{name}' needs an object, got {}", py_repr(d));
         };
         let elsewhere = [
-            scene::keys_on(&scene::TEXT_KEYS, &scene::DRAW_KEYS, "a draw"),
+            scene::keys_on(&scene::TEXT_KEYS, &scene::LAYER_KEYS, "a layer"),
             scene::keys_on(&scene::TEXT_KEYS, &scene::ASSET_KEYS, "an asset"),
         ]
         .concat();
@@ -301,7 +301,7 @@ impl Text {
                         "px_per_em" => {}
                         "range" => bail!(
                             "text '{name}' atlas takes no 'range': the field reaches the \
-                             largest 'pad' of the text's draws"
+                             largest 'pad' of the text's layers"
                         ),
                         _ => bail!("text '{name}' atlas takes 'px_per_em', got '{k}'"),
                     }
@@ -404,15 +404,15 @@ pub struct Built {
     /// Float uniforms, each named by internal() from the text's name and its
     /// suffix.
     pub uniforms: Vec<(&'static str, f64)>,
-    /// One quad per glyph drawn from the font, for a draw of the slug fill.
+    /// One quad per glyph drawn from the font, for a layer of the slug fill.
     /// Its glyph data is this texture's.
     pub quads: Quads,
-    /// One quad per error box, for a draw's error-box batch.
+    /// One quad per error box, for a layer's error-box batch.
     pub boxes: Quads,
     /// The glyphs drawn from the fonts' outlines, for the quads of the MTSDF
     /// fill.
     pub glyphs: Vec<Placement>,
-    /// The colour glyphs, for a draw's colour batch.
+    /// The colour glyphs, for a layer's colour batch.
     pub colour: Vec<Placement>,
 }
 
@@ -743,7 +743,7 @@ impl atlas::Font for AtlasFont {
 
     /// A colour glyph draws from the colour atlas, and takes no id here. A
     /// character that U+FE0F turns to a colour glyph keeps the id of its
-    /// glyph alone, so the atlas may hold a field that no draw reads.
+    /// glyph alone, so the atlas may hold a field that no layer reads.
     fn glyph(&self, ch: char) -> Option<u32> {
         let ch = if ch == '\t' { ' ' } else { ch };
         if ch.is_control() {
@@ -885,7 +885,7 @@ enum Ink {
     /// The outline of a glyph: the index of its font in the text's fonts,
     /// and its glyph id.
     Glyph(usize, u16),
-    /// The bitmap of a colour glyph, which only a draw's colour batch draws.
+    /// The bitmap of a colour glyph, which only a layer's colour batch draws.
     Colour(usize, u16),
     /// An error box.
     Box,
@@ -958,7 +958,7 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
         let first = placed.len();
         let mut x = 0.0;
         let mut prev: Option<(usize, GlyphId)> = None;
-        // A draw's glyph_index counts every character of the words, the
+        // A layer's glyph_index counts every character of the words, the
         // newline that ends a line too.
         let chars: Vec<char> = text.chars().collect();
         for (i, &ch) in chars.iter().enumerate() {
@@ -1293,7 +1293,7 @@ fn glyph_quads(inked: &[(&Placed, Packed)], boxed: bool, nb: usize, height: f64)
         if (p.ink == Some(Ink::Box)) != boxed {
             continue;
         }
-        // The box flips to y down, the way a draw's caller counts.
+        // The box flips to y down, the way a layer's caller counts.
         let a1 = [
             lo[0],
             height - lo[1] - size[1],
@@ -1602,16 +1602,16 @@ pub fn reader_lines(name: &str) -> Vec<String> {
     lines(GLSL, name)
 }
 
-/// The lines of a draw's vertex shader ahead of the author's
+/// The lines of a layer's vertex shader ahead of the author's
 /// `vec2 glyph_place(vec2 em)`: the quad attributes, ghee's varyings, and the
 /// glyph values read by glyph_place. The caller's preamble declares
 /// `resolution`, `v_texCoord`, the text's size and `ghee_vflip` at the
 /// fragment stage's precision.
-pub fn draw_vertex_head() -> Vec<String> {
-    lines(DRAW_VERTEX_HEAD, "")
+pub fn layer_vertex_head() -> Vec<String> {
+    lines(LAYER_VERTEX_HEAD, "")
 }
 
-/// The vertex main of a slug draw, after glyph_place. Each box edge moves
+/// The vertex main of a slug layer, after glyph_place. Each box edge moves
 /// out 5/8 of a screen pixel, or `pad` em where that reaches further.
 pub fn slug_vertex_main(pad: f64) -> Vec<String> {
     lines(SLUG_VERTEX_MAIN, "")
@@ -1620,13 +1620,13 @@ pub fn slug_vertex_main(pad: f64) -> Vec<String> {
         .collect()
 }
 
-/// The lines of a slug draw's fragment shader between the text's reader
+/// The lines of a slug layer's fragment shader between the text's reader
 /// lines and the author's code.
 pub fn slug_fragment_head(name: &str) -> Vec<String> {
     lines(SLUG_FRAGMENT_HEAD, name)
 }
 
-/// The vertex main of an MTSDF draw of text `name`, after glyph_place, for an
+/// The vertex main of an MTSDF layer of text `name`, after glyph_place, for an
 /// atlas of `px_em` texels per em and a range of `range` texels. Each box edge
 /// moves out 5/8 of a screen pixel, or `pad` em where that reaches further,
 /// and never past the field's reach, half the range.
@@ -1643,23 +1643,23 @@ pub fn mtsdf_vertex_main(name: &str, pad: f64, px_em: u32, range: u32) -> Vec<St
         .collect()
 }
 
-/// The lines of an MTSDF draw's fragment shader between the preamble and the
+/// The lines of an MTSDF layer's fragment shader between the preamble and the
 /// author's code.
 pub fn mtsdf_fragment_head(name: &str) -> Vec<String> {
     lines(MTSDF_FRAGMENT_HEAD, name)
 }
 
-/// The lines of an MTSDF draw's fragment shader after the author's code.
+/// The lines of an MTSDF layer's fragment shader after the author's code.
 pub fn mtsdf_fragment_tail(name: &str) -> Vec<String> {
     lines(MTSDF_FRAGMENT_TAIL, name)
 }
 
-/// The lines of a slug draw's fragment shader after the author's code.
+/// The lines of a slug layer's fragment shader after the author's code.
 pub fn slug_fragment_tail(name: &str) -> Vec<String> {
     lines(SLUG_FRAGMENT_TAIL, name)
 }
 
-/// The fragment shader of a draw's error boxes after its precision lines:
+/// The fragment shader of a layer's error boxes after its precision lines:
 /// yellow and black hazard stripes over each box, opaque, as error_box()
 /// lays them out.
 pub fn box_fragment() -> Vec<String> {
@@ -1667,7 +1667,7 @@ pub fn box_fragment() -> Vec<String> {
 }
 
 /// The GLSL names that text `name` declares for an author to read: every
-/// NAME_ name in the templates of its readers and its draws. ghee's own names
+/// NAME_ name in the templates of its readers and its layers. ghee's own names
 /// for the text start with ghee_, as internal() makes them.
 pub fn names(name: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -1679,16 +1679,16 @@ pub fn names(name: &str) -> Vec<String> {
     out
 }
 
-/// The distances that a slug draw leaves undeclared, each with the name that
+/// The distances that a slug layer leaves undeclared, each with the name that
 /// it stands for there, so a compile error names it.
 pub const SLUG_UNDECLARED: [(&str, &str); 2] = [
     ("glyph_dist", "glyph_dist_needs_fill_mtsdf"),
     ("glyph_soft", "glyph_soft_needs_fill_mtsdf"),
 ];
 
-/// The names that a draw's GLSL declares for its author: the function the
+/// The names that a layer's GLSL declares for its author: the function the
 /// author defines, and the values and functions the author reads.
-pub const DRAW_NAMES: [&str; 11] = [
+pub const LAYER_NAMES: [&str; 11] = [
     "glyph_place",
     "glyph_cover",
     "glyph_dist",
@@ -1708,13 +1708,13 @@ pub fn internal(name: &str, suffix: &str) -> String {
     format!("{}{name}{suffix}", crate::scene::PREFIX)
 }
 
-/// Every name made from NAME in the templates of the readers and the draws
+/// Every name made from NAME in the templates of the readers and the layers
 /// of text `name`, with the `<sampler>_size` set by the engine beside each
 /// texture.
 fn template_names(name: &str) -> Vec<String> {
     let glsl = [
         GLSL,
-        DRAW_VERTEX_HEAD,
+        LAYER_VERTEX_HEAD,
         SLUG_FRAGMENT_HEAD,
         SLUG_FRAGMENT_TAIL,
         MTSDF_VERTEX_MAIN,
@@ -1779,7 +1779,7 @@ fn lines(glsl: &str, name: &str) -> Vec<String> {
         .collect()
 }
 
-const DRAW_VERTEX_HEAD: &str = r#"attribute vec4 ghee_a0;
+const LAYER_VERTEX_HEAD: &str = r#"attribute vec4 ghee_a0;
 attribute vec4 ghee_a1;
 attribute vec4 ghee_a2;
 attribute vec4 ghee_a3;
@@ -2167,7 +2167,7 @@ mod tests {
     }
 
     #[test]
-    fn a_slug_draw_stands_a_name_in_for_each_distance() {
+    fn a_slug_layer_stands_a_name_in_for_each_distance() {
         let head = lines(SLUG_FRAGMENT_HEAD, "t");
         for (read, stand_in) in SLUG_UNDECLARED {
             assert!(
@@ -2178,9 +2178,9 @@ mod tests {
     }
 
     #[test]
-    fn a_draw_names_its_own_values_with_ghees_prefix() {
-        let draw = [
-            DRAW_VERTEX_HEAD,
+    fn a_layer_names_its_own_values_with_ghees_prefix() {
+        let layer = [
+            LAYER_VERTEX_HEAD,
             SLUG_VERTEX_MAIN,
             SLUG_FRAGMENT_HEAD,
             SLUG_FRAGMENT_TAIL,
@@ -2192,14 +2192,14 @@ mod tests {
             crate::colour::FRAGMENT,
         ];
         let mut seen: Vec<String> = Vec::new();
-        for w in draw.iter().flat_map(|t| words(t)) {
+        for w in layer.iter().flat_map(|t| words(t)) {
             if w.starts_with("glyph_") && !w.ends_with("_needs_fill_mtsdf") {
-                assert!(DRAW_NAMES.contains(&w.as_str()), "{w}");
+                assert!(LAYER_NAMES.contains(&w.as_str()), "{w}");
                 seen.push(w);
             }
         }
-        assert!(DRAW_NAMES.iter().all(|n| seen.iter().any(|s| s == n)));
-        assert!(!draw.iter().flat_map(|t| words(t)).any(|w| w == "vflip"));
+        assert!(LAYER_NAMES.iter().all(|n| seen.iter().any(|s| s == n)));
+        assert!(!layer.iter().flat_map(|t| words(t)).any(|w| w == "vflip"));
     }
 
     #[test]

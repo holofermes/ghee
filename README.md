@@ -164,7 +164,7 @@ also be a program that emits its own JSON and feeds it data, see
 
 A scene with a key that ghee does not take fails to load, and the error
 names the key, where it sits, and the closest key that ghee takes, or the
-object that takes it: `"fill"` on a draw names the draw's text.
+object that takes it: `"fill"` on a layer names the layer's text.
 
 Your own scenes can be looked up through the `$GHEE_SCENES` env variable.
 Careful: procedural scenes are executables, and ghee runs them, only put
@@ -181,14 +181,14 @@ previous frame. ghee sends the last pass to the output.
 Each pass renders at its own resolution, and samples another pass through
 normalized coordinates. A pass with `"mipmaps": true` builds the mip chain of
 its buffer after each frame, and every channel that reads it samples it
-trilinearly, so a layer read far away and minified, such as words in
+trilinearly, so a buffer read far away and minified, such as words in
 perspective, stays calm.
 
 A pass buffer holds 8-bit RGBA, and a channel reads the alpha that its pass
 wrote. The output is opaque: a frame reads alpha 255, unless
 `ghee render --alpha` keeps the output pass's alpha in RGBA frames. ghee
 takes the colour of such a frame as premultiplied by that alpha, the way
-draws blend it. A raw frame on `-o -` keeps it premultiplied, and a PNG file
+layers blend it. A raw frame on `-o -` keeps it premultiplied, and a PNG file
 holds it straight.
 
 ghee compiles the GLSL of every pass behind a preamble like this one:
@@ -274,7 +274,7 @@ shader for itself starts with `ghee_`, so no param, array, asset or text takes
 one of them. Each declaration makes GLSL names in the passes that it reaches:
 a param its own name, an array `<name>_tex` and the readers in the preamble
 above, an asset `<name>` and `<name>_size`, a text `<name>_cover` and
-`<name>_size`, and draws the `glyph_` names listed under [Draws](#draws), in
+`<name>_size`, and layers the `glyph_` names listed under [Layers](#layers), in
 every pass of the scene. A scene where two declarations make one name in a
 pass fails to load, and the error names both.
 
@@ -335,7 +335,7 @@ regional-indicator letters, a sequence joined by U+200D shows each of its
 emoji, and variation selectors and the joiner take no room.
 
 A colour glyph, a bitmap with no outline, has no coverage in `title_cover`.
-Only a [draw](#draws) paints it.
+Only a [layer](#layers) paints it.
 
 `title_cover` ports Eric Lengyel's [Slug](https://github.com/EricLengyel/Slug)
 algorithm and computes coverage from the font's own curves, so the edges stay
@@ -350,7 +350,7 @@ A text problem leaves the scene running: ghee logs it once, and the console
 shows it. A font that fails to load drops out of its text's fonts, and a text
 with no font left draws every character as an error box, diagonal stripes of
 coverage in `title_cover`. A character whose glyph has neither an outline nor
-a colour bitmap, a glyph past the curve limit, and in a draw a glyph too large
+a colour bitmap, a glyph past the curve limit, and in a layer a glyph too large
 for its atlas each draw an error box in their place, and the rest of the words
 draw.
 Words that do not fit leave the last words that did, and a scene whose first
@@ -362,14 +362,14 @@ Render the bundled `lettering` example to a PNG:
 ghee render --demo lettering -o lettering.png --frames 1
 ```
 
-## Draws
+## Layers
 
-A pass draws a text straight into its buffer through `draws`, after its own
-quad: one quad over each glyph, coloured by the draw's own fragment shader.
-This draw puts `title` in amber at 48 pixels per em, centred in the pass:
+A pass's code fills its buffer, then its `layers` paint texts over it in
+order: one quad over each glyph, coloured by the layer's own fragment shader.
+This layer puts `title` in amber at 48 pixels per em, centred in the pass:
 
 ```json
-"draws": [{
+"layers": [{
   "text": "title",
   "vertex": "vec2 glyph_place(vec2 em) { return (resolution - title_size * 48.0) * 0.5 + em * 48.0; }",
   "fragment": "void main() { float c = glyph_cover(); gl_FragColor = vec4(vec3(1.0, 0.7, 0.2) * c, c); }"
@@ -379,13 +379,13 @@ This draw puts `title` in amber at 48 pixels per em, centred in the pass:
 and this one draws it white at the same size and place, with no GLSL:
 
 ```json
-"draws": [{ "text": "title", "px_per_em": 48 }]
+"layers": [{ "text": "title", "px_per_em": 48 }]
 ```
 
 - `text` names a scene text.
-- `name` names the draw in errors and in the console: ASCII letters, digits,
-  `_` and `-`, unique among the draws of its pass. A draw without one goes by
-  its text's name, `title`, a second draw of that text without one by
+- `name` names the layer in errors and in the console: ASCII letters, digits,
+  `_` and `-`, unique among the layers of its pass. A layer without one goes by
+  its text's name, `title`, a second layer of that text without one by
   `title 2`, a third by `title 3`.
 - `vertex` defines `vec2 glyph_place(vec2 em)`, which takes a point of the
   block, in em from its top left with y down, to the pass pixel where it
@@ -393,15 +393,15 @@ and this one draws it white at the same size and place, with no GLSL:
   scale or shear a glyph, and a bend inside one glyph draws straight between
   its corners.
 - `px_per_em` takes the place of `vertex`: the block centred in the pass at
-  that many pixels per em. A draw takes one of the two.
+  that many pixels per em. A layer takes one of the two.
 - `fragment` holds a `void main()` that writes colour premultiplied by alpha.
   Without it, the letters draw white.
 - `blend` is `over` by default, `add` or `replace`.
-- `pad` is how far past the letters the draw reaches, in em, for a glow or an
+- `pad` is how far past the letters the layer reaches, in em, for a glow or an
   outline, 0 by default. Each quad grows that far past the ink, and
   `glyph_dist` and `glyph_soft` reach at least that far.
-- `emoji` sets whether the draw paints the text's colour glyphs. By default
-  the last draw of the text in its pass paints them, and the draws under it,
+- `emoji` sets whether the layer paints the text's colour glyphs. By default
+  the last layer of the text in its pass paints them, and the layers under it,
   a glow or a shadow, paint none.
 
 `fragment` reads:
@@ -420,12 +420,12 @@ float glyph_ppem;      // pixels per em at this glyph
 
 `vertex` reads `glyph_index`, `glyph_word`, `glyph_line`, `glyph_span` and
 `glyph_box` (the ink box in em), and it sees the pass's preamble and the
-scene's common block, as the pass's code does. Draws render in list order, so a first draw of the same text puts a glow or a
-shadow under the fill of every glyph. A pass with `draws` and no `code` starts
-each frame transparent and holds the words alone, a layer that later passes
-read through a channel and composite.
+scene's common block, as the pass's code does. Layers render in list order, so a first layer of the same text puts a glow or a
+shadow under the fill of every glyph. A pass with `layers` and no `code` starts
+each frame transparent and holds the words alone, for later passes to read
+through a channel and composite.
 
-The text's `fill` sets where a draw takes the coverage from. `slug` draws
+The text's `fill` sets where a layer takes the coverage from. `slug` draws
 exact edges at any size, and `mtsdf`, the default, draws fast and gives the
 distances that outlines, glows and shadows read.
 
@@ -444,20 +444,20 @@ ones is in. A setup waits for them, and so does a render with `--timestep`.
 ```
 
 The field reaches past the outline as far as the largest `pad` of the
-text's draws, so a glow fits with no tuning, and 3 texels at least, 0.094 em
+text's layers, so a glow fits with no tuning, and 3 texels at least, 0.094 em
 at 32 texels per em. Its 8 bits span that whole reach, so a large pad
-coarsens the edges of every draw of the text.
+coarsens the edges of every layer of the text.
 
 `slug` computes the coverage in each glyph's quad from the font's curves,
 with Slug's exact method, as `title_cover` does. It reads no atlas, takes no
-`atlas` key, and leaves out `glyph_dist` and `glyph_soft`: a draw that reads
+`atlas` key, and leaves out `glyph_dist` and `glyph_soft`: a layer that reads
 one fails to compile, and the error names `"fill": "mtsdf"`.
 
-A draw with `emoji` paints the text's colour glyphs itself, after every draw
+A layer with `emoji` paints the text's colour glyphs itself, after every layer
 of its pass, and `fragment` never runs for them. Each glyph shows its bitmap
 from the font's largest strike, through mipmaps that keep it smooth at text
-size, placed by `vertex` like any other glyph and blended by the draw's
-`blend`. A shadow draw with `"emoji": true` paints a copy of its own. The
+size, placed by `vertex` like any other glyph and blended by the layer's
+`blend`. A shadow layer with `"emoji": true` paints a copy of its own. The
 bitmaps decode into an RGBA atlas when the words first hold them.
 
 On a Pi Zero 2 W, seven lines of 216 characters at 46 pixels per em, in a
@@ -484,7 +484,7 @@ The python shim lets you also run the python file to render directly:
 
 `ghee serve <scenes_dir>` starts the console on `127.0.0.1:8090`: a
 hardware accelerated live preview of the running scene, the GLSL of each
-pass and each draw editable with compile errors inline, each text's words,
+pass and each layer editable with compile errors inline, each text's words,
 font and alignment, param sliders, pass muting and a filter picker, and
 edits hot-reload into the running renderer.
 See [docs/http.md](docs/http.md) for its API.
@@ -600,31 +600,31 @@ The engine is thread-affine: build and use a Renderer on one thread.
 
 ## Limits
 
-A scene holds any number of assets, texts and draws, and names of any
+A scene holds any number of assets, texts and layers, and names of any
 length. A scene that passes one of these caps fails to load or to set up,
 and the error reads as shown:
 
 - 16 textures in one pass, fewer on a GPU with fewer texture units: the
   pass's channels and arrays, each asset that its GLSL samples, and the
-  curves of each text whose `_cover` it reads. A draw counts the same, plus
+  curves of each text whose `_cover` it reads. A layer counts the same, plus
   the atlas of its text, or the curves under `"fill": "slug"`.
   `pass 'main' needs 17 texture units, a pass binds at most 16`, or
-  `pass 'main' draw 'title' needs 17 texture units, a pass binds at most 16`.
+  `pass 'main' layer 'title' needs 17 texture units, a pass binds at most 16`.
 - 16 passes, filter passes included: `17 passes, over the cap of 16`.
 - 16384 on a side and 16777216 pixels for a sized pass, an array and a
   `.raw` asset: `pass 'a' size needs two positive ints [w, h] up to 16384,
   got [20000, 8]`, `pass 'a' is 8192x4096, over the 16777216 pixel cap`.
   The GPU's own texture size binds tighter, 2048 on a VC4.
 - 2048 texels per em in a text's MTSDF atlas, and a field that reaches 2048
-  texels at most for the largest `pad` of its draws:
+  texels at most for the largest `pad` of its layers:
   `text 't' atlas px_per_em needs a whole number from 1 to 2048, got 4096`,
-  `pass 'main' draw 't' pad 100.0 needs an atlas range of 6400 texels at the
+  `pass 'main' layer 't' pad 100.0 needs an atlas range of 6400 texels at the
   32 px_per_em of text 't', over the cap of 2048`.
 
 A text past one of these keeps the scene running, logs the problem once,
 and the console shows it:
 
-- a 1024x2048 data texture for the curves of a text that `_cover` or a draw
+- a 1024x2048 data texture for the curves of a text that `_cover` or a layer
   of the slug fill reads, and 4 glyphs over one spot of it. Words past
   either leave the last words that fit, and a scene whose first words do
   not fit draws none:

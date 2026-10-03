@@ -115,7 +115,7 @@ declare `ghee-render` inline:
 
 The shim gives:
 
-- `ghee.Scene / Pass / Param / ArrayInput / Channel / Asset / Text / Draw`:
+- `ghee.Scene / Pass / Param / ArrayInput / Channel / Asset / Text / Layer`:
   build the scene
 - `ghee.Arg`, `ghee.args([...])`: argument declarations, and the `-- --help` answer
 - `@ghee.feed("name")`: the values of a named array, each tick. A uint8
@@ -162,16 +162,16 @@ character as an error box, diagonal stripes of coverage.
 A character whose glyph has neither an outline nor a colour bitmap draws an
 error box in its place, and the rest of the words draw. Words that do not fit
 leave the last words that did. An emoji of a colour font has no coverage, and
-only a draw paints it.
+only a layer paints it.
 
 `ghee render --demo lettering -o lettering.png --frames 1` shows the words
 at every size.
 
-## Draws
+## Layers
 
-`ghee.Draw` draws a text straight into the buffer of its pass, after the
-pass's own code: one quad over each glyph, coloured by the draw's own
-fragment shader. This scene draws `words` in amber at 48 pixels per em,
+A pass's code fills its buffer, then each `ghee.Layer` in its `layers`
+paints a text over it in order: one quad over each glyph, coloured by the
+layer's own fragment shader. This scene draws `words` in amber at 48 pixels per em,
 centred on black:
 
     CENTRED = """
@@ -189,10 +189,10 @@ centred on black:
 
     scene = ghee.Scene(
         texts=[ghee.Text("words", "DejaVuSans.ttf", "hello")],
-        passes=[ghee.Pass("main", BLACK, draws=[ghee.Draw("words", AMBER, CENTRED)])],
+        passes=[ghee.Pass("main", BLACK, layers=[ghee.Layer("words", AMBER, CENTRED)])],
     )
 
-`ghee.Draw(text, fragment=None, vertex=None, px_per_em=None, blend="over",
+`ghee.Layer(text, fragment=None, vertex=None, px_per_em=None, blend="over",
 pad=0.0, emoji=None, name=None)`:
 
 - `text` names a `ghee.Text` of the scene.
@@ -202,31 +202,31 @@ pad=0.0, emoji=None, name=None)`:
   block, in em from its top left with y down, to the pass pixel where it
   lands.
 - `px_per_em` takes the place of `vertex`: the block centred in the pass at
-  that many pixels per em, so `ghee.Draw("words", px_per_em=48)` draws the
+  that many pixels per em, so `ghee.Layer("words", px_per_em=48)` draws the
   words white and centred with no GLSL.
 - `blend` is `"over"`, `"add"` or `"replace"`.
-- `pad` is how far past the letters the draw reaches, in em, for a glow or
+- `pad` is how far past the letters the layer reaches, in em, for a glow or
   an outline.
-- `emoji` sets whether the draw paints the text's colour glyphs. `None`
-  leaves them to the last draw of the text in its pass, so a shadow drawn
+- `emoji` sets whether the layer paints the text's colour glyphs. `None`
+  leaves them to the last layer of the text in its pass, so a shadow drawn
   under the fill paints no copy.
-- `name` names the draw in errors and in the console: ASCII letters,
-  digits, `_` and `-`, unique among the draws of its pass. `None` goes by
+- `name` names the layer in errors and in the console: ASCII letters,
+  digits, `_` and `-`, unique among the layers of its pass. `None` goes by
   the text's name.
 
-A pass of draws alone, `ghee.Pass("words", draws=[...])`, starts each frame
-transparent, a layer that a later pass reads through a channel.
+A pass of layers alone, `ghee.Pass("words", layers=[...])`, starts each frame
+transparent, for a later pass to read through a channel.
 
-`fill` on `ghee.Text` sets where a draw of the text takes its coverage
+`fill` on `ghee.Text` sets where a layer of the text takes its coverage
 from: `"slug"` computes it from the curves, exact edges at any size, and
 `"mtsdf"`, the default, reads an atlas of the glyphs' distance fields, fast
 and with `glyph_dist` and `glyph_soft`. `atlas={"px_per_em": 48}` sets the
 texels per em of the atlas, whose field reaches as far as the largest `pad`
-of the text's draws. New words of a text drawn with the MTSDF fill
+of the text's layers. New words of a text drawn with the MTSDF fill
 wait for the glyphs that its atlas lacks, and the last words stay on screen
 meanwhile. With `timestep` set, `frame()` waits for them.
 
-[Draws](https://github.com/holofermes/ghee#draws) holds the GLSL that
+[Layers](https://github.com/holofermes/ghee#layers) holds the GLSL that
 `fragment` and `vertex` read, and the cost of each fill.
 
 ## Direct mode

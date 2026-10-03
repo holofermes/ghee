@@ -453,8 +453,8 @@ def test_a_frame_is_opaque_unless_open_keeps_the_alpha():
         assert abs(a - 128) <= 1
 
 
-def test_a_pass_of_draws_alone_starts_transparent(monkeypatch):
-    """A layer of white words alone, which the output pass lays over blue."""
+def test_a_pass_of_layers_alone_starts_transparent(monkeypatch):
+    """A pass of white words alone, which the output pass lays over blue."""
     monkeypatch.chdir(REPO / "ghee" / "examples")
     scene = ghee.Scene(
         assets=[ghee.Asset("sans", FONT)],
@@ -462,8 +462,8 @@ def test_a_pass_of_draws_alone_starts_transparent(monkeypatch):
         passes=[
             ghee.Pass(
                 "ink",
-                draws=[
-                    ghee.Draw(
+                layers=[
+                    ghee.Layer(
                         "words",
                         "void main(){ gl_FragColor = vec4(glyph_cover()); }",
                         "vec2 glyph_place(vec2 em) { return em * 24.0; }",
@@ -505,8 +505,8 @@ def test_a_text_draws_a_letter_and_an_emoji_from_its_list_of_fonts(monkeypatch):
             ghee.Pass(
                 "main",
                 "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-                draws=[
-                    ghee.Draw(
+                layers=[
+                    ghee.Layer(
                         "words",
                         "void main(){ gl_FragColor = vec4(glyph_cover()); }",
                         "vec2 glyph_place(vec2 em) { return em * 24.0; }",

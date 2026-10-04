@@ -589,6 +589,12 @@ a glowing clock fitted to the panel ran 300 frames at these rates:
 
 These rates were measured on a Pi 5, and not on a Pi Zero 2 W.
 
+`frc` needs about 200 fps, and an SSD1306 on I2C reaches that only with the
+bus at 1 MHz (`dtparam=i2c_arm_baudrate=1000000` on a Raspberry Pi), where the
+clock above runs at 216 fps. The table's 86 fps is the bus at 400 kHz, where
+`frc` flickers, and a panel that stays under about 200 fps is better served by
+`dither`.
+
 ### Fills
 
 A text's `fill` sets how its layers find the coverage of each pixel: `mtsdf`,

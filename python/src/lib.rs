@@ -269,7 +269,8 @@ impl Handle {
     ///
     /// `pass_` addresses the param of one pass. A dotted `pass.name` does the
     /// same. A bare name is the scene param, else the param of the first pass
-    /// that declares it.
+    /// that declares it. The string param of a text layer's name holds the
+    /// layer's words.
     #[pyo3(signature = (name, value, pass_=None))]
     fn set_param(
         &mut self,

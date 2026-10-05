@@ -816,8 +816,8 @@ impl Session {
     pub fn set_param(&mut self, pass: Option<&str>, name: &str, value: &Value) -> Outcome<()> {
         let p = self.index.param(pass, name)?;
         let v = coerce(&p.wire, &p.ty, value).map_err(scene_fault)?;
-        // A string param fails on a text texture or quads that the engine
-        // refuses, and both report as scene faults.
+        // New words fail when the engine cannot lay them out, a fault of
+        // the scene's.
         let fault = match p.ty.as_str() {
             "string" => scene_fault,
             _ => system_fault,

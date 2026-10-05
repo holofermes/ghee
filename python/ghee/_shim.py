@@ -177,27 +177,41 @@ class Channel:
 
 @dataclass
 class Layer:
-    """A layer: words or a picture that ghee paints into the buffer of its
-    pass. `name` is required. A key left at None takes ghee's default.
+    """Words or a picture that ghee paints over the buffer of its pass.
 
-    `x` and `y` put the block's top left at that pass pixel, y down, and a
-    missing one centres the block on its axis.
+    `name` is required. A key left at None takes ghee's default.
+    `visible` False hides the layer. `x` and `y` put the block's top left at
+    that pass pixel, y down, and a missing one centres the block on its axis.
+    `color` is "#rrggbb" or [r, g, b] in 0..1, `opacity` is 0 to 1, and
+    `blend` paints the layer over the pass as "normal", "add", "multiply" or
+    "screen".
 
     A text layer draws `text`, and ghee declares the string param of its
     name, which holds the words, live. Every pass reads them with
     float <name>_cover(vec2 p, float font_size) and vec2 <name>_size.
     `font_size` is the pixels per em, and without it the block takes the
-    largest size that fits its room. `color` is "#rrggbb", [r, g, b] in 0..1,
-    or a gradient {"from": ..., "to": ..., "angle": degrees}. `font_family`
-    is a font file (.ttf or .otf) or the name of a font Asset, and None draws
-    from the DejaVu Sans Latin that ghee carries. Each effect, `text_shadow`,
-    `glow`, `text_stroke`, `karaoke`, `wave`, `scroll` and `blink`, is a dict
-    of its fields, {} for every default, and None leaves it off.
+    largest size that fits its room. Its `color` takes a gradient too,
+    {"from": ..., "to": ..., "angle": degrees}, with CSS's angle.
+    `font_family` is a font file (.ttf or .otf) or the name of a font Asset,
+    and None draws from the DejaVu Sans Latin that ghee carries.
+    `text_align` is "left", "center" or "right", and `render` is "mtsdf" or
+    "slug".
+
+    Each effect of a text layer is a dict of its fields, {} for every
+    default, and None leaves it off. Its sizes are in em, and `visible`
+    False bypasses it and keeps its values. `text_shadow` takes x, y, blur,
+    color and strength, `glow` takes blur, color and strength, `text_stroke`
+    takes width and color, `karaoke` takes sung and color, `wave` takes
+    height and speed, `scroll` takes speed, and `blink` takes rate. Under
+    `render` "slug", ghee skips text_shadow, glow and text_stroke.
 
     An image layer draws `image`, the name of an image Asset or a .png or
     .jpg file, over `width` by `height` pass pixels: one of them left out
-    keeps the image's aspect, and both left out take its own size. `color`
-    is "#rrggbb" or [r, g, b], a tint that multiplies the picture.
+    keeps the image's aspect, and both left out take its own size. Its
+    `color` is a tint that multiplies the picture.
+
+    `ghee.layers` and a handle's `layers` set a layer's live fields while
+    the scene runs.
     """
 
     name: str
@@ -263,13 +277,13 @@ _EFFECTS = ("text_shadow", "glow", "text_stroke", "karaoke", "wave", "scroll", "
 
 @dataclass
 class Pass:
-    """One fragment shader.
+    """One fragment shader, and the layers that paint over its buffer.
 
     `size` renders the pass at its own [w, h].
     The last pass leaves `size` None, because it feeds the display.
     `mipmaps` builds the mip chain of the pass's buffer after each frame, so
     a pass that reads it far smaller than its size samples it smooth.
-    `layers` draw Layers into the pass's buffer after its code, in order.
+    `layers` paint over the pass's buffer after its code, in list order.
     A pass with layers and no code starts each frame transparent.
     `params` holds the Params of this pass alone, in a list or in a dict keyed
     by their names.
@@ -384,14 +398,20 @@ class Scene:
 class Layers:
     """The live fields of a scene's layers, set by attribute or by key.
 
+    A set takes the fields and the values that Handle.set_layer takes, and
+    raises ValueError where set_layer raises. A handle's `layers` sets its
+    scene at once. `ghee.layers` sets the scene that run() runs, from a tick
+    or a feed, and under ghee each set goes out with the tick's answer.
+
+    Move the title, set its words, sing its first twelve characters by
+    attribute and again by key, and switch the icon to the image asset
+    wifi_off:
+
         layers.title.x = 10
-        layers.title.text = "hi"                 # the words
+        layers.title.text = "hi"
         layers.title.karaoke.sung = 12
         layers["title"]["karaoke"]["sung"] = 12
-        layers.icon.image = "wifi_off"           # an image asset of the scene
-
-    The fields are the live fields that Handle.set_layer takes, and each set
-    reaches the scene as set_layer's does.
+        layers.icon.image = "wifi_off"
     """
 
     __slots__ = ("_set",)
@@ -748,8 +768,8 @@ def set_param(
 
     A float takes one number, a color takes "#rrggbb" or three numbers, and a
     vecN takes N.
-    A string takes words, and the text layer of its name lays them out
-    again.
+    A string takes words, and the string param of a text layer's name holds
+    the layer's words.
     `pass_` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
 

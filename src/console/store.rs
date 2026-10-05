@@ -366,7 +366,13 @@ impl SceneStore {
             return write(&self.values_path(name), &Value::Object(vals));
         }
         // Store the scene unexpanded. A load rebuilds each filter pass from the
-        // filters list.
+        // filters list, and a hidden filter's entry keeps its eye.
+        scene.hidden_filters = scene
+            .passes
+            .iter()
+            .filter(|p| !p.filter.is_empty() && !p.visible)
+            .map(|p| p.filter.clone())
+            .collect();
         scene.passes.retain(|p| p.filter.is_empty());
         scene.assets.retain(|a| a.from_filter.is_empty());
         write(&self.modified_path(name), &scene.to_dict())
@@ -654,6 +660,28 @@ mod tests {
         let written = read_json(&format!("{d}/modified/f{SCENE_SUFFIX}"));
         assert_eq!(written["filters"], serde_json::json!(["dither"]));
         assert_eq!(written["passes"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_hidden_filter_keeps_its_eye_through_a_save() {
+        let d = tmpdir("filtereye");
+        let mut doc = scene_json();
+        doc["filters"] = serde_json::json!(["dither"]);
+        write_text(&format!("{d}/f{SCENE_SUFFIX}"), &doc.to_string());
+        let store = SceneStore::new(&d, false, Vec::new());
+        let mut scene = store.resolve("f").unwrap();
+        scene.passes[1].visible = false;
+        store.save("f", scene).unwrap();
+        let written = read_json(&format!("{d}/modified/f{SCENE_SUFFIX}"));
+        assert_eq!(
+            written["filters"],
+            serde_json::json!([{"name": "dither", "visible": false}])
+        );
+        let again = store.resolve("f").unwrap();
+        assert_eq!(
+            (again.passes[1].filter.as_str(), again.passes[1].visible),
+            ("dither", false)
+        );
     }
 
     #[test]

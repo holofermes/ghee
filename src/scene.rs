@@ -156,6 +156,22 @@ fn obj_of<'a>(d: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Va
     }
 }
 
+/// An entry of a scene's `filters`, as its name and its eye: a filter's
+/// name, or `{"name": <name>, "visible": <bool>}`.
+fn filter_entry(v: &Value) -> Option<(String, bool)> {
+    match v {
+        Value::String(n) => Some((n.clone(), true)),
+        Value::Object(o) if o.keys().all(|k| k == "name" || k == "visible") => {
+            let visible = match o.get("visible") {
+                None => true,
+                Some(v) => v.as_bool()?,
+            };
+            Some((o.get("name")?.as_str()?.to_string(), visible))
+        }
+        _ => None,
+    }
+}
+
 /// The keys of the scene's top level.
 const SCENE_KEYS: [&str; 6] = ["version", "passes", "filters", "params", "common", "assets"];
 
@@ -1746,6 +1762,10 @@ pub struct Scene {
     /// The named filters to append after the scene's own passes, in order. The
     /// last one reaches the display. The filters module resolves a name.
     pub filters: Vec<String>,
+    /// The names among `filters` whose pass starts hidden. A scene file marks
+    /// one as `{"name": <name>, "visible": false}` in `filters`. Appending the
+    /// filters puts the eye on each filter's pass and empties this list.
+    pub hidden_filters: Vec<String>,
     /// The scene params. Every pass preamble declares them, and one set reaches
     /// every pass at once. They take the shape of a pass param. They hold the
     /// string param of each text layer too, which ghee declares.
@@ -1827,6 +1847,7 @@ impl Scene {
             passes,
             version,
             filters,
+            hidden_filters: Vec::new(),
             params,
             common,
             assets,
@@ -2186,12 +2207,19 @@ impl Scene {
             ]
             .concat();
             known_keys(o, "the scene", &SCENE_KEYS, &elsewhere)?;
-            let filters = list_of(o, "filters")?;
-            if !filters.iter().all(Value::is_string) {
-                bail!(
-                    "'filters' needs a list of names, got {}",
-                    py_repr(&Value::Array(filters.clone()))
-                );
+            let mut filters = Vec::new();
+            let mut hidden_filters = Vec::new();
+            for f in list_of(o, "filters")? {
+                let Some((name, visible)) = filter_entry(f) else {
+                    bail!(
+                        "'filters' takes names and objects with a 'name' and a 'visible', got {}",
+                        py_repr(f)
+                    );
+                };
+                if !visible && !hidden_filters.contains(&name) {
+                    hidden_filters.push(name.clone());
+                }
+                filters.push(name);
             }
             let version = o.get("version").cloned().unwrap_or_else(|| Value::from(1));
             let passes = list_of(o, "passes")?
@@ -2207,14 +2235,9 @@ impl Scene {
                 assets.push(Asset::from_dict(n, ad)?);
             }
             let common = common_block(o, files)?;
-            Scene::new(
-                passes,
-                version,
-                filters.iter().map(py_str).collect(),
-                params,
-                common,
-                assets,
-            )
+            let mut scene = Scene::new(passes, version, filters, params, common, assets)?;
+            scene.hidden_filters = hidden_filters;
+            Ok(scene)
         })()
         .map_err(|e| anyhow!("{src}: {e}"))
     }
@@ -2241,7 +2264,19 @@ impl Scene {
             out.insert("common".to_string(), Value::Object(m));
         }
         if !self.filters.is_empty() {
-            out.insert("filters".to_string(), Value::from(self.filters.clone()));
+            let entry = |n: &String| match self.hidden_filters.contains(n) {
+                true => {
+                    let mut m = Map::new();
+                    m.insert("name".to_string(), Value::from(n.as_str()));
+                    m.insert("visible".to_string(), Value::from(false));
+                    Value::Object(m)
+                }
+                false => Value::from(n.as_str()),
+            };
+            out.insert(
+                "filters".to_string(),
+                self.filters.iter().map(entry).collect(),
+            );
         }
         let own: Vec<&Param> = self.params.values().filter(|p| !p.of_text).collect();
         if !own.is_empty() {
@@ -2542,7 +2577,9 @@ impl SceneBuilder for Result<Scene> {
     fn param(self, param: Param) -> Result<Scene> {
         let mut s = self?;
         s.params.insert(param.name.clone(), param);
-        Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)
+        let mut n = Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)?;
+        n.hidden_filters = s.hidden_filters;
+        Ok(n)
     }
 
     fn filters(self, names: &[&str]) -> Result<Scene> {
@@ -3989,6 +4026,50 @@ mod tests {
             ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));
+        }
+    }
+
+    #[test]
+    fn a_filters_entry_is_a_name_or_a_name_with_its_eye() {
+        // The entry as a file writes it, and as to_dict writes it back.
+        for (entry, back) in [
+            (json!("dither"), json!("dither")),
+            (json!({"name": "dither"}), json!("dither")),
+            (json!({"name": "dither", "visible": true}), json!("dither")),
+            (
+                json!({"name": "dither", "visible": false}),
+                json!({"name": "dither", "visible": false}),
+            ),
+        ] {
+            let d = json!({"passes": [{"name": "m", "code": "x"}], "filters": [entry]});
+            let sc = Scene::from_dict(&d, None, None).unwrap();
+            assert_eq!(sc.filters, ["dither"], "{entry}");
+            assert_eq!(sc.to_dict()["filters"], json!([back]), "{entry}");
+        }
+    }
+
+    #[test]
+    fn a_filters_entry_of_another_shape_is_refused() {
+        for (entry, got) in [
+            (json!(5), "5"),
+            (json!({"name": 1}), "{'name': 1}"),
+            (json!({"visible": false}), "{'visible': False}"),
+            (
+                json!({"name": "dither", "visible": "no"}),
+                "{'name': 'dither', 'visible': 'no'}",
+            ),
+            (
+                json!({"name": "dither", "visble": false}),
+                "{'name': 'dither', 'visble': False}",
+            ),
+        ] {
+            let d = json!({"passes": [{"name": "m", "code": "x"}], "filters": [entry]});
+            assert_eq!(
+                Scene::from_dict(&d, None, None).unwrap_err().to_string(),
+                format!(
+                    "scene: 'filters' takes names and objects with a 'name' and a 'visible', got {got}"
+                )
+            );
         }
     }
 

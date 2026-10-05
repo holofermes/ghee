@@ -112,11 +112,22 @@ pub fn filter_defs() -> Map<String, Value> {
 }
 
 /// Append each named filter as a pass, in order. Each one reads the pass before
-/// it, so the last filter reaches the display.
+/// it, so the last filter reaches the display. A filter among the scene's
+/// `hidden_filters` appends hidden.
 pub fn apply_filters(
     scene: &mut Scene,
     names: &[String],
     registry: Option<&Map<String, Value>>,
+) -> Result<()> {
+    let hidden = std::mem::take(&mut scene.hidden_filters);
+    append_filters(scene, names, registry, &hidden)
+}
+
+fn append_filters(
+    scene: &mut Scene,
+    names: &[String],
+    registry: Option<&Map<String, Value>>,
+    hidden: &[String],
 ) -> Result<()> {
     if names.is_empty() || scene.passes.is_empty() {
         return Ok(());
@@ -142,7 +153,8 @@ pub fn apply_filters(
         };
         let own = unique(scene, fname, fd);
         let prev = scene.passes[scene.passes.len() - 1].name.clone();
-        let p = filter_pass(name, fd, &own, &prev, None)?;
+        let mut p = filter_pass(name, fd, &own, &prev, None)?;
+        p.visible = !hidden.contains(name);
         scene.passes.push(p);
         merge_assets(scene, name, fd)?;
     }
@@ -160,6 +172,7 @@ pub fn apply_filters(
 /// load from disk does, so a scene file posted as it is gets its filters. An
 /// unknown filter fails.
 pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>) -> Result<()> {
+    let hidden = std::mem::take(&mut scene.hidden_filters);
     scene.assets.retain(|a| a.from_filter.is_empty());
     let mut missing = scene.filters.clone();
     for p in &scene.passes {
@@ -202,7 +215,7 @@ pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>)
     if let Some(name) = missing.iter().find(|n| !reg.contains_key(*n)) {
         return Err(unknown(name));
     }
-    apply_filters(scene, &missing, Some(reg))?;
+    append_filters(scene, &missing, Some(reg), &hidden)?;
     match scene.name_clash() {
         Some(e) => bail!("{e}"),
         None => Ok(()),
@@ -657,6 +670,41 @@ mod tests {
         rebuild_filters(&mut sc, None).unwrap();
         assert!(sc.passes[1].code.contains("main"));
         assert!(!sc.passes[1].visible);
+    }
+
+    #[test]
+    fn a_hidden_filters_entry_appends_its_pass_hidden() {
+        let _g = env_guard();
+        let hidden = json!({"name": "dither", "visible": false});
+        // frc256 brings an asset, and its pass rebuilds the scene before the
+        // hidden filter appends.
+        for (filters, eyes, back) in [
+            (
+                json!(["frc256", hidden]),
+                vec![("", true), ("frc256", true), ("dither", false)],
+                json!(["frc256", "dither"]),
+            ),
+            (
+                json!([hidden]),
+                vec![("", true), ("dither", false)],
+                json!(["dither"]),
+            ),
+        ] {
+            let passes = json!([{"name": "m", "code": GOOD}]);
+            let d = json!({"version": 1, "filters": filters, "passes": passes});
+            let mut sc = Scene::from_dict(&d, None, None).unwrap();
+            let names = sc.filters.clone();
+            apply_filters(&mut sc, &names, None).unwrap();
+            let got: Vec<_> = sc
+                .passes
+                .iter()
+                .map(|p| (p.filter.as_str(), p.visible))
+                .collect();
+            assert_eq!(got, eyes, "{filters}");
+            // Appended, a filter keeps its eye on its pass, and the list holds
+            // names.
+            assert_eq!(sc.to_dict()["filters"], back, "{filters}");
+        }
     }
 
     #[test]

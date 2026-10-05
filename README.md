@@ -772,6 +772,9 @@ scene's own passes. A scene declares its filters in `filters`:
 { "passes": [ ... ], "filters": ["dither"] }
 ```
 
+`{"name": "dither", "visible": false}` in place of a name lists the filter
+with its pass hidden.
+
 The command line adds filters in order, after the scene's own:
 
 ```

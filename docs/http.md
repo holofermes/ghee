@@ -50,14 +50,16 @@ later.
 - `POST /set?scene=&layer=&effect=&field=&value=`: sets a live field of a
   layer, with no rebuild, and `effect=` names one of the layer's effects for
   a field of that effect. The live fields are `x`, `y`, `color`, `opacity`
-  and `visible`, an image layer's `image`, and an effect's `visible`,
-  `color`, `strength`, `sung`, `speed` and `rate`. Any other field answers
-  400 and names the live fields, and so does an unknown layer, effect or
-  field. `value` reads as the field takes it: a number, `true` or `false`,
-  `#rrggbb` or comma-separated floats for a color, a JSON object
-  `{"from", "to", "angle"}` for a text layer's gradient, the name of an
-  image asset of the scene for `image`, or `none`, which centres the block
-  on `x` or `y` and takes `color` back to its default.
+  and `visible`, a text layer's `text`, an image layer's `image`, and an
+  effect's `visible`, `color`, `strength`, `sung`, `speed` and `rate`.
+  `text` sets the words, as the scene param of the layer's name does. Any
+  other field answers 400 and names the live fields, and so does an unknown
+  layer, effect or field. `value` reads as the field takes it: the words for
+  `text`, a number, `true` or `false`, `#rrggbb` or comma-separated floats
+  for a color, a JSON object `{"from", "to", "angle"}` for a text layer's
+  gradient, the name of an image asset of the scene for `image`, or `none`,
+  which centres the block on `x` or `y` and takes `color` back to its
+  default.
 - `POST /switch?name=`: switches to a named scene. Switching to the active
   name reloads it from disk.
 - `POST /next`, `POST /prev`: step through the scene list.

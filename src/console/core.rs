@@ -705,8 +705,9 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
 
 /// What a /set changes, or the first thing wrong with it. A query that names
 /// a `layer` sets one of its live fields, and its value parses by the field.
-/// Any other query sets a param, and its value parses by the type that the
-/// host reports for the param. The outer error is the host's own.
+/// The `text` of a text layer is its words, the scene param of the layer's
+/// name. Any other query sets a param, and its value parses by the type that
+/// the host reports for the param. The outer error is the host's own.
 fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set, String>> {
     if let Some(layer) = query.get("layer") {
         let parts = || -> Result<(&String, &String), String> {
@@ -724,7 +725,11 @@ fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set
             effect,
             field,
         };
-        return Ok(live_value(&host.live_doc()?, &at, raw).map(|value| {
+        let doc = host.live_doc()?;
+        if effect.is_none() && field == "text" && text_layer(&doc, layer) {
+            return param_set(host, Scope::Scene, layer.clone(), raw);
+        }
+        return Ok(live_value(&doc, &at, raw).map(|value| {
             Set::Layer(LayerSet {
                 layer: layer.clone(),
                 effect: effect.map(str::to_string),
@@ -743,10 +748,30 @@ fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set
         Ok(p) => p,
         Err(e) => return Ok(Err(e)),
     };
+    param_set(host, scope, name, raw)
+}
+
+/// The set of the param `name` of `scope` to `raw`, parsed by the type that
+/// the host reports for the param.
+fn param_set(
+    host: &impl ConsoleHost,
+    scope: Scope,
+    name: String,
+    raw: &str,
+) -> ConsoleResult<Result<Set, String>> {
     let Some(ty) = host.param_type(scope, &name)? else {
         return Ok(Err(undeclared(scope, &name)));
     };
     Ok(parse_param_value(&ty, raw).map(|value| Set::Param(scope, name, value)))
+}
+
+/// True when the scene document `doc` holds a text layer named `name`.
+fn text_layer(doc: &Value, name: &str) -> bool {
+    let named = Value::from(name);
+    doc_layers(doc).any(|l| {
+        l.get("name") == Some(&named)
+            && Layer::from_dict("a layer", l).is_ok_and(|l| l.as_text().is_some())
+    })
 }
 
 /// The value of `raw`, a /set value, for the live field `at` of the scene
@@ -1299,6 +1324,21 @@ mod tests {
             };
             assert_eq!(api.host.calls.borrow().last(), Some(&Call::SetLayer(set)));
         }
+    }
+
+    #[test]
+    fn a_text_layers_text_sets_the_words_param_of_its_name() {
+        let api = api();
+        let r = post(&api, "/set", &layer_query("words", None, "text", "la la"));
+        assert_eq!((r.status, body(&r).as_str()), (200, "ok"));
+        assert_eq!(
+            api.host.calls.borrow().last(),
+            Some(&Call::SetParam(
+                Scope::Scene,
+                "words".to_string(),
+                Value::from("la la")
+            ))
+        );
     }
 
     #[test]

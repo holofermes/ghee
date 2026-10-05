@@ -243,7 +243,8 @@
   `layer.field` and `layer.effect.field`, such as `title.x` and
   `title.karaoke.sung`, with one value, 0 or 1 for `visible`, three for a
   color, seven for a gradient or none for the default, and kind 3 takes
-  `icon.image` with the name of an image asset. A message whose first part
+  `title.text` with a text layer's words and `icon.image` with the name of
+  an image asset. A message whose first part
   names no layer sets a param, and a field that the scene refuses logs once.
 - Set a string param, and so a text layer's words, from a scene process with
   message kind 3.
@@ -271,9 +272,10 @@
   other field applies when the cursor leaves it.
 - Set a live field of a layer with `/set?layer=title&field=x&value=10`, and
   a field of one of its effects with `effect=` too, in `ghee serve`,
-  `--serve` and `ghee.open(stats=)`, with no rebuild. The value reads as the
-  field takes it, `none` included, and a field that changes with a rebuild
-  answers 400 with the live fields named.
+  `--serve` and `ghee.open(stats=)`, with no rebuild. `field=text` sets a
+  text layer's words, as the scene param of the layer's name does. The value
+  reads as the field takes it, `none` included, and a field that changes
+  with a rebuild answers 400 with the live fields named.
 - Rename a pass or a layer with its pencil, in the console's dialog, where a
   double-click on a pass's tab renamed it.
 - Hide a pass with its eye, which the scene keeps as the pass's `visible`,

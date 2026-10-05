@@ -73,9 +73,10 @@ After the handshake, stdout carries binary messages:
   default.
 - Kind 2 marks the tick clean: it needs no render, and the display keeps the
   last frame. The message is the kind byte alone, with no name and no values.
-- Kind 3 sets the named string param, and the name of a text layer sets its
-  words. A name of the form `layer.image`, such as `icon.image`, sets that
-  image layer's `image` to the image asset that the text names. The header
+- Kind 3 sets the named string param. The name of a text layer, or
+  `layer.text` such as `title.text`, sets its words, and a name of the form
+  `layer.image`, such as `icon.image`, sets that image layer's `image` to the
+  image asset that the text names. The header
   is the same as kind 0's, and the payload is count bytes of UTF-8 text.
 - Kind 4 sets the named array from u8 values. The header is the same as kind
   0's, and the payload is count u8 bytes, each value byte / 255. A big mask

@@ -511,8 +511,8 @@ pub struct SceneProcess {
     /// param name -> (the pass that holds it, its type). None is scene scope.
     params: HashMap<String, (Option<String>, String)>,
     /// The names of the scene's layers, which address their live fields as
-    /// `layer.field` and `layer.effect.field`.
-    layers: HashSet<String>,
+    /// `layer.field` and `layer.effect.field`, each true for a text layer.
+    layers: HashMap<String, bool>,
     /// The string params as they stand, and the last values read by the
     /// process.
     strings: HashMap<String, String>,
@@ -594,7 +594,7 @@ impl SceneProcess {
             data: HashMap::new(),
             incoming: Vec::new(),
             params: HashMap::new(),
-            layers: HashSet::new(),
+            layers: HashMap::new(),
             strings: HashMap::new(),
             sent: HashMap::new(),
             clean: 0,
@@ -685,7 +685,10 @@ impl SceneProcess {
     /// The first tick carries every string param.
     pub fn bind(&mut self, scene: &Scene) {
         self.params.clear();
-        self.layers = scene.layers().map(|l| l.name().to_string()).collect();
+        self.layers = scene
+            .layers()
+            .map(|l| (l.name().to_string(), l.as_text().is_some()))
+            .collect();
         self.strings.clear();
         self.sent.clear();
         let scoped: Vec<(Option<&str>, &crate::scene::ParamMap)> =
@@ -867,10 +870,17 @@ impl SceneController for SceneProcess {
     }
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
-        for (name, data) in std::mem::take(&mut self.incoming) {
+        for (mut name, data) in std::mem::take(&mut self.incoming) {
+            // The `text` of a text layer is its words, the scene param of the
+            // layer's name.
+            if let Some(layer) = name.strip_suffix(".text") {
+                if self.layers.get(layer) == Some(&true) {
+                    name = layer.to_string();
+                }
+            }
             // A first part that names a layer addresses a live field of it.
             // Names are unique across the scene, so no pass has that name.
-            let layer = Address::dotted(&name).filter(|at| self.layers.contains(at.layer));
+            let layer = Address::dotted(&name).filter(|at| self.layers.contains_key(at.layer));
             if let Some(at) = layer {
                 let given = match &data {
                     ParamData::F32(values) => Given::Numbers(values),
@@ -2102,5 +2112,38 @@ while IFS= read -r line; do :; done
             refused,
             ["nope.x", "title.font_size", "title.karaoke.sung.more"]
         );
+    }
+
+    #[test]
+    fn a_text_layers_text_sets_the_words_param_of_its_name() {
+        let d = tmpdir("words");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "draw", "code": "void main(){}",
+                        "layers": [{"name": "title", "text": "hi"}]}],
+        });
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            message(3, "title.text", 5, b"la la"),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "feed", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(pump(&mut f, |f| !f.incoming.is_empty()));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert!(stub.layers.borrow().is_empty());
+        assert_eq!(
+            *stub.set.borrow(),
+            [(
+                None,
+                "title".to_string(),
+                ParamValue::Str("la la".to_string())
+            )]
+        );
+        assert!(f.refused.is_empty());
     }
 }

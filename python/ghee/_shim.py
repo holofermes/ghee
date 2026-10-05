@@ -188,8 +188,10 @@ class Layer:
     `color` is "#rrggbb", [r, g, b] in 0..1, or a gradient
     {"from": ..., "to": ..., "angle": degrees}. `font_family` is a font file
     (.ttf or .otf) or the name of a font Asset, and None draws from the
-    DejaVu Sans Latin that ghee carries. A key left at None takes ghee's
-    default.
+    DejaVu Sans Latin that ghee carries. Each effect, `text_shadow`, `glow`,
+    `text_stroke`, `karaoke`, `wave`, `scroll` and `blink`, is a dict of its
+    fields, {} for every default, and None leaves it off. A key left at None
+    takes ghee's default.
     """
 
     name: str
@@ -204,6 +206,13 @@ class Layer:
     font_family: str | os.PathLike[str] | None = None
     text_align: TextAlign = "left"
     render: Render = "mtsdf"
+    text_shadow: dict | None = None
+    glow: dict | None = None
+    text_stroke: dict | None = None
+    karaoke: dict | None = None
+    wave: dict | None = None
+    scroll: dict | None = None
+    blink: dict | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"name": self.name}
@@ -228,7 +237,14 @@ class Layer:
             d["text_align"] = self.text_align
         if self.render != "mtsdf":
             d["render"] = self.render
+        for k in _EFFECTS:
+            if getattr(self, k) is not None:
+                d[k] = _floats(getattr(self, k))
         return d
+
+
+# The effects of a text layer, in the order that the document writes them.
+_EFFECTS = ("text_shadow", "glow", "text_stroke", "karaoke", "wave", "scroll", "blink")
 
 
 @dataclass

@@ -251,6 +251,25 @@ fn lay(file: &str, words: &str, align: Align) -> Laid {
 }
 
 impl Laid {
+    /// The distance from `p` to the outline in em, below 0 inside it.
+    fn distance(&self, p: [f64; 2]) -> f64 {
+        let mut d = f64::MAX;
+        for [a, b] in self.glyphs.iter().flat_map(|g| &g.segs) {
+            let v = [b[0] - a[0], b[1] - a[1]];
+            let len2 = v[0] * v[0] + v[1] * v[1];
+            let t = if len2 > 0.0 {
+                (((p[0] - a[0]) * v[0] + (p[1] - a[1]) * v[1]) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            d = d.min((p[0] - a[0] - t * v[0]).hypot(p[1] - a[1] - t * v[1]));
+        }
+        match self.inside(p, 0.0) {
+            Some(true) => -d,
+            _ => d,
+        }
+    }
+
     /// Whether `p` lies inside the outline, by nonzero winding, the fill rule
     /// of TrueType and CFF alike. None within `edge` em of an edge.
     fn inside(&self, p: [f64; 2], edge: f64) -> Option<bool> {
@@ -654,6 +673,15 @@ fn layers_round_trip_and_leave_their_defaults_out() {
         {"name": "d", "y": 7.0,
          "color": {"from": "#000000", "to": [0.0, 1.0, 0.0], "angle": 90.0}, "text": "I"},
         {"name": "e", "color": {"from": "#ffffff", "to": "#000000"}, "text": "I"},
+        {"name": "f", "text": "I", "text_shadow": {}, "glow": {}, "text_stroke": {},
+         "karaoke": {}, "wave": {}, "scroll": {}, "blink": {}},
+        {"name": "g", "text": "I",
+         "text_shadow": {"x": -0.1, "y": 0.0, "blur": 0.0, "color": [0.5, 0.5, 0.5],
+                         "strength": 1.0, "visible": false},
+         "glow": {"blur": 0.5, "color": "#00ff00", "strength": 0.25},
+         "text_stroke": {"width": 0.0, "color": "#ffffff", "visible": false},
+         "karaoke": {"sung": 2.5, "color": "#0000ff"}, "wave": {"height": -0.2, "speed": 1.5},
+         "scroll": {"speed": -1.0}, "blink": {"rate": 0.0, "visible": false}},
     ]));
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     assert_eq!(sc.to_dict(), doc);
@@ -666,13 +694,23 @@ fn layers_round_trip_and_leave_their_defaults_out() {
     }, {
         "name": "b", "color": {"from": [1, 0, 0], "to": [0, 0, 1], "angle": 180},
         "text": "I",
+    }, {
+        "name": "c", "text": "I",
+        "text_shadow": {"x": 0.06, "y": 0.08, "blur": 0.15, "color": "#000000",
+                        "strength": 0.7, "visible": true},
+        "glow": {"blur": 0.3, "color": "#ffa500", "strength": 0.8},
+        "text_stroke": {"width": 0.06, "color": [0, 0, 0]},
+        "karaoke": {"sung": 0, "color": "#ffad2e"}, "wave": {"height": 0.1, "speed": 0.6},
+        "scroll": {"speed": 2}, "blink": {"rate": 1, "visible": null},
     }]));
     let back = Scene::from_dict(&defaults, None, None).unwrap().to_dict();
     assert_eq!(
         back["passes"][0]["layers"],
         json!([{"name": "a", "text": "I"},
                {"name": "b", "color": {"from": [1.0, 0.0, 0.0], "to": [0.0, 0.0, 1.0]},
-                "text": "I"}])
+                "text": "I"},
+               {"name": "c", "text": "I", "text_shadow": {}, "glow": {}, "text_stroke": {},
+                "karaoke": {}, "wave": {}, "scroll": {}, "blink": {}}])
     );
 }
 
@@ -815,6 +853,59 @@ fn a_layer_declaration_names_what_it_lacks() {
         (
             t(json!({"render": "msdf"})),
             "layer 't' render needs 'mtsdf' or 'slug', got 'msdf'".to_string(),
+        ),
+        (
+            t(json!({"glow": true})),
+            "layer 't' glow needs an object, got True".to_string(),
+        ),
+        (
+            t(json!({"glow": {"radius": 1}})),
+            "layer 't' glow takes no 'radius', only blur, color, strength and visible".to_string(),
+        ),
+        (
+            t(json!({"text_stroke": {"visible": 1}})),
+            "layer 't' text_stroke visible needs true or false, got 1".to_string(),
+        ),
+        (
+            t(json!({"glow": {"blur": -1}})),
+            "layer 't' glow blur needs a number of em, 0 or more, got -1".to_string(),
+        ),
+        (
+            t(json!({"text_stroke": {"width": "1"}})),
+            "layer 't' text_stroke width needs a number of em, 0 or more, got '1'".to_string(),
+        ),
+        (
+            t(json!({"text_shadow": {"x": "left"}})),
+            "layer 't' text_shadow x needs a number of em, got 'left'".to_string(),
+        ),
+        (
+            t(json!({"text_shadow": {"color": "black"}})),
+            "layer 't' text_shadow color needs '#rrggbb' or three numbers [r, g, b], got 'black'"
+                .to_string(),
+        ),
+        (
+            t(json!({"glow": {"strength": 1.5}})),
+            "layer 't' glow strength needs a number from 0 to 1, got 1.5".to_string(),
+        ),
+        (
+            t(json!({"karaoke": {"sung": null, "color": 3}})),
+            "layer 't' karaoke color needs '#rrggbb' or three numbers [r, g, b], got 3".to_string(),
+        ),
+        (
+            t(json!({"karaoke": {"sung": "4"}})),
+            "layer 't' karaoke sung needs a number of characters, got '4'".to_string(),
+        ),
+        (
+            t(json!({"wave": {"speed": [1]}})),
+            "layer 't' wave speed needs a number of waves a second, got [1]".to_string(),
+        ),
+        (
+            t(json!({"scroll": {"speed": "fast"}})),
+            "layer 't' scroll speed needs a number of em a second, got 'fast'".to_string(),
+        ),
+        (
+            t(json!({"blink": {"rate": -1}})),
+            "layer 't' blink rate needs a number of blinks a second, 0 or more, got -1".to_string(),
         ),
     ];
     for (got, want) in cases {
@@ -2519,6 +2610,413 @@ fn a_text_set_after_a_reset_reaches_no_layer_of_the_dropped_scene() {
     assert!(r.set_text("label", "O").unwrap());
 }
 
+// Effects
+
+/// The frame of `doc` at time `t`.
+fn render_at(r: &mut Renderer, sc: &Scene, t: f64) -> Vec<u8> {
+    assert_eq!(r.setup(sc).unwrap(), "");
+    r.set_time(Some(t));
+    r.render(None).unwrap().to_vec()
+}
+
+/// A scene of layer `label`, in the fixture font SANS, its block where `fit`
+/// puts it, over a black pass, with `keys` merged in.
+fn effect_scene(words: &str, fit: Fit, keys: Value) -> Value {
+    let mut doc = layer_scene(SANS, words, Align::Left, fit);
+    let l = layer_of(&mut doc, "label");
+    l["render"] = json!("mtsdf");
+    l.as_object_mut()
+        .unwrap()
+        .extend(keys.as_object().unwrap().clone());
+    doc
+}
+
+/// `top` over `under`, each a colour and an alpha, as the premultiplied
+/// colour and the alpha of the two.
+fn over(top: ([f64; 3], f64), under: ([f64; 3], f64)) -> ([f64; 3], f64) {
+    let (c, a) = top;
+    let (u, b) = under;
+    (
+        [0, 1, 2].map(|k| c[k] * a + u[k] * (1.0 - a)),
+        a + b * (1.0 - a),
+    )
+}
+
+fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn the_effects_draw_by_the_distance_to_the_letters_in_their_order() {
+    // An I, one rectangle, at 64 px/em over black. Each row draws effects
+    // under red letters, and the reference composes them from the true
+    // distance to the outline, d, and to the outline moved by the shadow's
+    // offset, ds, both in em and below 0 inside: shadow, glow, stroke, then
+    // the letters, each over the last.
+    let words = "I";
+    let laid = lay(SANS, words, Align::Left);
+    let fit = Fit {
+        x: 48.0,
+        y: 16.0,
+        ppem: 64.0,
+    };
+    let (w, h) = (160, 128);
+    let px = 1.0 / fit.ppem;
+    let shadow = move |d: f64, blur: f64, rgb: [f64; 3], strength: f64| {
+        let b = blur.max(0.5 * px);
+        (rgb, smoothstep(-b, b, -d) * strength)
+    };
+    let glow = |d: f64, blur: f64, rgb: [f64; 3], strength: f64| {
+        let f = (1.0 - d.max(0.0) / blur).clamp(0.0, 1.0);
+        (rgb, f * f * strength)
+    };
+    let stroke =
+        move |d: f64, width: f64, rgb: [f64; 3]| (rgb, ((width - d) / px + 0.5).clamp(0.0, 1.0));
+    // Each row: the effects, the shadow's offset, the stroke's width, where
+    // the stroke's outer edge takes its antialiasing, and the reference.
+    type Want = Box<dyn Fn(f64, f64) -> [f64; 3]>;
+    let rows: Vec<(Value, [f64; 2], f64, Want)> = vec![
+        (
+            json!({"text_stroke": {"width": 0.1, "color": [0.0, 1.0, 0.0]}}),
+            [0.0, 0.0],
+            0.1,
+            Box::new(move |d, _| {
+                stroke(d, 0.1, [0.0, 1.0, 0.0])
+                    .0
+                    .map(|c| c * stroke(d, 0.1, [0.0; 3]).1)
+            }),
+        ),
+        (
+            json!({"glow": {"blur": 0.25, "color": [0.0, 1.0, 0.0], "strength": 1.0}}),
+            [0.0, 0.0],
+            0.0,
+            Box::new(move |d, _| {
+                let (c, a) = glow(d, 0.25, [0.0, 1.0, 0.0], 1.0);
+                c.map(|c| c * a)
+            }),
+        ),
+        (
+            json!({"text_shadow": {"x": 0.25, "y": 0.125, "blur": 0.0,
+                                   "color": [0.0, 0.0, 1.0], "strength": 1.0}}),
+            [0.25, 0.125],
+            0.0,
+            Box::new(move |_, ds| {
+                let (c, a) = shadow(ds, 0.0, [0.0, 0.0, 1.0], 1.0);
+                c.map(|c| c * a)
+            }),
+        ),
+        (
+            json!({"text_shadow": {"x": 0.2, "y": 0.0, "blur": 0.15,
+                                   "color": [0.0, 0.0, 1.0], "strength": 0.8},
+                   "glow": {"blur": 0.3, "color": [0.0, 1.0, 0.0], "strength": 0.5},
+                   "text_stroke": {"width": 0.05, "color": [1.0, 1.0, 1.0]}}),
+            [0.2, 0.0],
+            0.05,
+            Box::new(move |d, ds| {
+                // Each layer over the last, its colour premultiplied and so
+                // over black.
+                let s = over(shadow(ds, 0.15, [0.0, 0.0, 1.0], 0.8), ([0.0; 3], 0.0));
+                let g = over(glow(d, 0.3, [0.0, 1.0, 0.0], 0.5), s);
+                let k = over(stroke(d, 0.05, [1.0; 3]), g);
+                k.0
+            }),
+        ),
+    ];
+    let (_g, mut r) = gpu(w, h);
+    for (keys, off, width, want) in rows {
+        let mut keys = keys;
+        keys["color"] = json!([1.0, 0.0, 0.0]);
+        let frame = render(&mut r, &loaded(&effect_scene(words, fit, keys.clone())));
+        let (mut seen, mut off_px) = (0, Vec::new());
+        for y in 0..h {
+            for x in 0..w {
+                let p = fit.em(x, y);
+                let d = laid.distance(p);
+                let ds = laid.distance([p[0] - off[0], p[1] - off[1]]);
+                // The letters' own edge, and the edges of the effects, take a
+                // pixel and a half of antialiasing.
+                if d.abs() < EDGE * px
+                    || ds.abs() < EDGE * px
+                    || (width > 0.0 && (d - width).abs() < EDGE * px)
+                {
+                    continue;
+                }
+                // The field gives the distance within half a pixel, so each
+                // channel lies between the references half a pixel nearer and
+                // further.
+                let q = 0.5 * px;
+                let at = |e: f64| match d < 0.0 {
+                    true => [1.0, 0.0, 0.0],
+                    false => want(d + e, ds + e),
+                };
+                let (a, b) = (at(-q), at(q));
+                seen += 1;
+                for k in 0..3 {
+                    let got = f64::from(frame[(y * w + x) * 4 + k]);
+                    let (lo, hi) = (255.0 * a[k].min(b[k]), 255.0 * a[k].max(b[k]));
+                    if got < lo - 3.0 || got > hi + 3.0 {
+                        off_px.push((x, y, k, got, lo.round(), hi.round()));
+                    }
+                }
+            }
+        }
+        assert!(seen > 10_000, "{keys}: {seen}");
+        assert!(
+            off_px.is_empty(),
+            "{keys}: {} off, (x, y, channel, got, least, most) {:?}",
+            off_px.len(),
+            &off_px[..off_px.len().min(8)]
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn the_slug_render_draws_no_effect_that_reads_the_distance() {
+    let fit = Fit {
+        x: 8.0,
+        y: 8.0,
+        ppem: 48.0,
+    };
+    let (_g, mut r) = gpu(W, H);
+    let plain = render(&mut r, &loaded(&layer_scene(SANS, "Ag", Align::Left, fit)));
+    let mut doc = layer_scene(SANS, "Ag", Align::Left, fit);
+    let l = layer_of(&mut doc, "label");
+    for (k, v) in [
+        ("text_shadow", json!({"strength": 1.0})),
+        ("glow", json!({"strength": 1.0})),
+        ("text_stroke", json!({"color": [0.0, 1.0, 0.0]})),
+    ] {
+        l[k] = v;
+    }
+    let sc = loaded(&doc);
+    assert!(render(&mut r, &sc) == plain);
+    assert_eq!(r.text_errors(), [] as [String; 0]);
+    // The effects stay in the scene, and an MTSDF render draws them.
+    assert_eq!(
+        sc.to_dict()["passes"][0]["layers"][0]["glow"],
+        json!({"strength": 1.0})
+    );
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_bypassed_effect_draws_nothing_and_leaves_the_letters_alone() {
+    let fit = Fit {
+        x: 8.0,
+        y: 8.0,
+        ppem: 48.0,
+    };
+    let (_g, mut r) = gpu(W, H);
+    let frame = |r: &mut Renderer, keys: Value| {
+        let mut keys = keys;
+        keys["color"] = json!([1.0, 0.5, 0.25]);
+        render(r, &loaded(&effect_scene("Ag", fit, keys)))
+    };
+    // A bypassed glow or shadow, which keeps its reach, draws as one of no
+    // strength.
+    for k in ["glow", "text_shadow"] {
+        let bypassed = frame(
+            &mut r,
+            json!({k: {"visible": false, "color": [0.0, 1.0, 0.0]}}),
+        );
+        let none = frame(&mut r, json!({k: {"strength": 0.0}}));
+        assert!(bypassed == none, "{k}");
+    }
+    // A stroke within the least range draws the letters as no effect does:
+    // the effects' copy of each glyph leaves the letters' edge alone.
+    let plain = frame(&mut r, json!({}));
+    for keys in [
+        json!({"text_stroke": {"visible": false, "color": [0.0, 1.0, 0.0]}}),
+        json!({"text_stroke": {"width": 0.0}}),
+    ] {
+        let got = frame(&mut r, keys.clone());
+        let worst = got.iter().zip(&plain).map(|(a, b)| a.abs_diff(*b)).max();
+        assert!(worst <= Some(1), "{keys}: {worst:?}");
+    }
+}
+
+/// `laid` with each glyph's outline moved down by `dy(i)` em, glyph i
+/// counted over the inked glyphs.
+fn moved(laid: &Laid, dy: impl Fn(usize) -> f64) -> Laid {
+    Laid {
+        width: laid.width,
+        height: laid.height,
+        glyphs: laid
+            .glyphs
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let d = dy(i);
+                Outline {
+                    lo: [g.lo[0], g.lo[1] + d],
+                    hi: [g.hi[0], g.hi[1] + d],
+                    segs: g.segs.iter().map(|s| s.map(|p| [p[0], p[1] + d])).collect(),
+                }
+            })
+            .collect(),
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_wave_moves_each_letter_and_its_effects_a_tenth_of_a_wave_behind_the_one_before() {
+    // At a quarter of a wave, the first I sits a whole height down, and the
+    // second one height times the sine of 0.15 of a turn.
+    let words = "II";
+    let laid = lay(SANS, words, Align::Left);
+    let fit = Fit {
+        x: 16.0,
+        y: 24.0,
+        ppem: 64.0,
+    };
+    let (w, h) = (160, 128);
+    let height = 0.25;
+    let dy = |i: usize| height * (std::f64::consts::TAU * (0.25 - 0.1 * i as f64)).sin();
+    let want = moved(&laid, dy);
+    let keys = json!({"wave": {"height": height, "speed": 1.0},
+                      "text_stroke": {"width": 0.1, "color": [0.0, 1.0, 0.0]},
+                      "color": [1.0, 0.0, 0.0]});
+    let (_g, mut r) = gpu(w, h);
+    let frame = render_at(&mut r, &loaded(&effect_scene(words, fit, keys)), 0.25);
+    assert_draws(&frame, w, 0, &want, fit, "the letters");
+    // The stroke rings the moved letters.
+    let px = 1.0 / fit.ppem;
+    let (mut ring, mut off) = (0, Vec::new());
+    for y in 0..h {
+        for x in 0..w {
+            let d = want.distance(fit.em(x, y));
+            if d > EDGE * px && d < 0.1 - EDGE * px {
+                ring += 1;
+                let g = frame[(y * w + x) * 4 + 1];
+                if g < 255 - TOL {
+                    off.push((x, y, g));
+                }
+            }
+        }
+    }
+    assert!(
+        ring > 300 && off.is_empty(),
+        "{ring} {:?}",
+        &off[..off.len().min(8)]
+    );
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn karaoke_fills_the_letters_up_to_the_sung_point_and_lifts_the_letter_being_sung() {
+    // Half of the H is sung: it rises 0.15 em, and its fill reaches half its
+    // advance, between its stems. The I waits on the line, unsung.
+    let words = "HI";
+    let laid = lay(SANS, words, Align::Left);
+    let fit = Fit {
+        x: 16.0,
+        y: 24.0,
+        ppem: 64.0,
+    };
+    let (w, h) = (160, 128);
+    let built = drawn(SANS, words, Align::Left);
+    let span = built.glyphs[0].span;
+    let edge = span[0] + 0.5 * (span[1] - span[0]);
+    let want = moved(&laid, |i| if i == 0 { -0.15 } else { 0.0 });
+    for how in RENDERS {
+        let keys = json!({"render": how, "color": [0.0, 0.0, 1.0],
+                          "karaoke": {"sung": 0.5, "color": [1.0, 1.0, 1.0]}});
+        let (_g, mut r) = gpu(w, h);
+        let frame = render(&mut r, &loaded(&effect_scene(words, fit, keys)));
+        assert_draws(&frame, w, 2, &want, fit, &format!("{how}: the letters"));
+        let (mut seen, mut off) = ([0; 2], Vec::new());
+        for y in 0..h {
+            for x in 0..w {
+                let p = fit.em(x, y);
+                if want.inside(p, EDGE / fit.ppem) != Some(true)
+                    || (p[0] - edge).abs() < EDGE / fit.ppem
+                {
+                    continue;
+                }
+                let sung = p[0] < edge;
+                seen[usize::from(sung)] += 1;
+                let got = &frame[(y * w + x) * 4..][..3];
+                let rg = if sung { 255 } else { 0 };
+                if got[0].abs_diff(rg) > TOL || got[1].abs_diff(rg) > TOL {
+                    off.push((x, y, got.to_vec()));
+                }
+            }
+        }
+        assert!(seen.iter().all(|n| *n > 100), "{how}: {seen:?}");
+        assert!(off.is_empty(), "{how}: {:?}", &off[..off.len().min(8)]);
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_scroll_moves_the_block_right_to_left_by_whole_pixels_and_fits_it_on_y() {
+    // At each time, the scrolling block draws as a still one at the whole
+    // pixel that the scroll gives: right of the pass at the start, then
+    // speed em a second to the left, around again once it has left.
+    let words = "AV To ghee";
+    let laid = lay(SANS, words, Align::Left);
+    let (w, h) = (192, 64);
+    let (fw, fh) = (w as f64, h as f64);
+    let m = 0.05 * fw.min(fh);
+    let speed = 3.0;
+    let (_g, mut r) = gpu(w, h);
+    // A block with no font_size takes the height of the pass alone, less the
+    // margin, and sits centred on y.
+    let fitted = (fh - 2.0 * m) / laid.height;
+    for (keys, ppem, y) in [
+        (json!({"font_size": 40, "y": 8, "x": 50}), 40.0, 8.0),
+        (json!({}), fitted, (fh - laid.height * fitted) / 2.0),
+    ] {
+        for t in [0.0, 0.51, 2.03] {
+            let trip = fw + laid.width * ppem;
+            let x = (fw - (t * speed * ppem).rem_euclid(trip)).floor();
+            let fit = Fit { x, y, ppem };
+            let still = render(&mut r, &loaded(&layer_scene(SANS, words, Align::Left, fit)));
+            let mut keys = keys.clone();
+            keys["scroll"] = json!({"speed": speed});
+            keys["render"] = json!("slug");
+            let mut doc = layer_scene(SANS, words, Align::Left, fit);
+            let l = layer_of(&mut doc, "label");
+            for k in ["x", "y", "font_size"] {
+                l.as_object_mut().unwrap().remove(k);
+            }
+            l.as_object_mut()
+                .unwrap()
+                .extend(keys.as_object().unwrap().clone());
+            let frame = render_at(&mut r, &loaded(&doc), t);
+            let worst = frame.iter().zip(&still).map(|(a, b)| a.abs_diff(*b)).max();
+            assert!(worst <= Some(1), "{keys} at {t}: {worst:?}");
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_blink_shows_the_layer_for_the_first_half_of_each_blink() {
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 40.0,
+    };
+    let (_g, mut r) = gpu(W, H);
+    // The letters, and a colour glyph, which blinks with them.
+    for (font, words) in [(SANS, "Ag"), (EMOJI, "\u{1f600}")] {
+        let mut doc = layer_scene(font, words, Align::Left, fit);
+        let still = render(&mut r, &loaded(&doc));
+        let mut none = doc.clone();
+        none["passes"][0]["layers"] = json!([]);
+        let empty = render(&mut r, &loaded(&none));
+        layer_of(&mut doc, "label")["blink"] = json!({"rate": 2.0});
+        let sc = loaded(&doc);
+        assert!(render_at(&mut r, &sc, 0.1) == still, "{font} shown");
+        assert!(render_at(&mut r, &sc, 0.3) == empty, "{font} hidden");
+        assert!(render_at(&mut r, &sc, 0.6) == still, "{font} shown again");
+    }
+}
+
 // The MTSDF render
 
 /// The threads of this process named `name`.
@@ -2588,7 +3086,27 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
     // an if in two threads, and the switch loses the condition flags. Each
     // row is one layer, and every fragment shader of each of its batches that
     // reads a texture reads it last in such an if.
-    let rows = [json!({}), json!({"render": "slug"})];
+    let effects = [
+        json!({}),
+        json!({"text_shadow": {}}),
+        json!({"glow": {}}),
+        json!({"text_stroke": {}}),
+        json!({"karaoke": {}}),
+        json!({"wave": {}}),
+        json!({"scroll": {}}),
+        json!({"blink": {}}),
+        json!({"text_shadow": {}, "glow": {}, "text_stroke": {}}),
+        json!({"text_shadow": {}, "glow": {"visible": false}, "text_stroke": {},
+               "karaoke": {}, "wave": {}, "scroll": {}, "blink": {}}),
+    ];
+    let mut rows = Vec::new();
+    for e in effects {
+        for render in ["mtsdf", "slug"] {
+            let mut keys = e.clone();
+            keys["render"] = json!(render);
+            rows.push(keys);
+        }
+    }
     for keys in rows {
         let mut d = json!({"name": "t", "text": "A"});
         d.as_object_mut()

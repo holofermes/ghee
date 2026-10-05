@@ -1460,7 +1460,7 @@ impl Renderer {
         // its colour glyphs.
         let mut boxes = built.boxes.floats.clone();
         let quads = match layer.render {
-            Render::Slug => built.quads.floats.clone(),
+            Render::Slug => layer.copies(&built.quads.floats),
             Render::Mtsdf => {
                 let atlases = self.atlases.borrow();
                 let slot = self.atlas_of(name).map(|i| &atlases[i]);
@@ -1487,7 +1487,7 @@ impl Renderer {
                             };
                             faults.push(Fault::Glyph(p.ch, why));
                         }
-                        quads.floats
+                        layer.copies(&quads.floats)
                     }
                     _ => Vec::new(),
                 }
@@ -1624,11 +1624,8 @@ impl Renderer {
     }
 
     /// The atlas detail of `layer`.
-    fn detail(&self, _layer: &Layer) -> Detail {
-        Detail {
-            px_em: atlas::PX_EM,
-            range: atlas::RANGE,
-        }
+    fn detail(&self, layer: &Layer) -> Detail {
+        layer.detail(atlas::PX_EM)
     }
 
     /// Set up the atlases of the layers of `drawn`: one generator per font,

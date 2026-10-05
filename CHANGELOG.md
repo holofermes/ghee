@@ -94,6 +94,18 @@
 - Let a pass with `layers` leave out its GLSL: it starts each frame
   transparent and holds its layers alone, for a later pass to read through a
   channel.
+- Draw effects on a text layer, each an object of its fields, a field left
+  out at its default, sizes in em: `text_shadow` (`x`, `y`, `blur`, `color`,
+  `strength`), `glow` (`blur`, `color`, `strength`) and `text_stroke`
+  (`width`, `color`) under the letters in that order, from the distance to
+  them, `karaoke` (`sung`, `color`), which fills the letters up to the sung
+  point and lifts the letter being sung, and `wave` (`height`, `speed`),
+  `scroll` (`speed`) and `blink` (`rate`), which move the letters and their
+  effects together. Every glyph's effects draw before any letter, so a glow
+  never covers the next letter. `"visible": false` bypasses an effect and
+  keeps its values, the slug render skips the three that read the distance,
+  and ghee works out how far a layer's quads and its atlas's field reach
+  from its effects, and fades the effects out at the edge of their quads.
 - Draw a layer's glyphs from an MTSDF atlas by default, one texture read a
   pixel. `"render": "slug"` computes Slug's exact coverage from the font's
   curves instead, at any size and with no atlas.
@@ -127,8 +139,8 @@
 
 - Declare an asset with `ghee.Asset` and a text layer with
   `ghee.Layer(name, text, visible, x, y, color, opacity, blend, font_size,
-  font_family, text_align, render)`, in `Scene(assets=...)` and
-  `Pass(layers=...)`. A keyword left at None leaves its key to ghee's
+  font_family, text_align, render)` and a keyword for each effect, a dict of
+  its fields, in `Scene(assets=...)` and `Pass(layers=...)`. A keyword left at None leaves its key to ghee's
   default. `mipmaps=True` on `ghee.Pass` builds its mip chain, and
   `visible=False` hides the pass.
 - Take a scene's and a pass's `params` as a list of `ghee.Param`. Raise

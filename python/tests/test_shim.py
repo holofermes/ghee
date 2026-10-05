@@ -312,6 +312,13 @@ def test_a_layer_takes_the_scene_json_keys():
         font_family="sans",
         text_align="right",
         render="slug",
+        text_shadow={"x": 0, "y": 1},
+        glow={},
+        text_stroke={"visible": False},
+        karaoke={"sung": 3},
+        wave={},
+        scroll={"speed": 4},
+        blink={"rate": 2},
     )
     recorded = {
         "name": "title",
@@ -326,6 +333,13 @@ def test_a_layer_takes_the_scene_json_keys():
         "font_family": "sans",
         "text_align": "right",
         "render": "slug",
+        "text_shadow": {"x": 0.0, "y": 1.0},
+        "glow": {},
+        "text_stroke": {"visible": False},
+        "karaoke": {"sung": 3.0},
+        "wave": {},
+        "scroll": {"speed": 4.0},
+        "blink": {"rate": 2.0},
     }
     built = layer.to_dict()
     assert built == recorded

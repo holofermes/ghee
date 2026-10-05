@@ -3067,7 +3067,8 @@ mod tests {
             (
                 layer(json!({"vertex": GOOD})),
                 "scene: layer 't' takes no 'vertex', only name, visible, x, y, color, opacity, \
-                 blend, text, font_size, font_family, text_align and render",
+                 blend, text, font_size, font_family, text_align, render, text_shadow, glow, \
+                 text_stroke, karaoke, wave, scroll and blink",
             ),
             (
                 json!({"version": 1, "passes": [pass(json!({"channels": [{"bufer": "main"}]}))]}),

@@ -9,13 +9,12 @@ open it with `--host` only on a network you trust.
 ## Read
 
 - `GET /stats`: `{fps, frame_ms, stream_fps, out, error, error_line,
-  error_pass, error_layer, text_errors, active, display, stale}`. On a compile
-  error, `error_pass` is the index of the pass that holds the error, or
-  `"common"` for the common block. `error_layer` is `{index, part}` when one
-  of that pass's layers holds the error, with `part` set to `"vertex"` or
-  `"fragment"`. `error_line` counts from the first line of the GLSL that holds
-  the error. `text_errors` lists the problems of the scene's texts, one line
-  each. A text problem leaves the scene running.
+  error_pass, text_errors, active, display, stale}`. On a compile error,
+  `error_pass` is the index of the pass that holds the error, or `"common"`
+  for the common block, and `error_line` counts from the first line of that
+  GLSL. `text_errors` lists the problems of the scene's text layers, one line
+  each, such as `layer 'title': 'X' has more than 64 curves in one band`. A
+  text problem leaves the scene running.
 - `GET /scenes`: `{scenes: [name...], active, procedural: [name...]}`.
   `procedural` names the scenes that a program writes, and is an empty list
   when there are none.
@@ -40,13 +39,14 @@ active scene. The console names its scene in each request, so a page left
 open on one scene never writes into a scene that the console switched to
 later.
 
-- `POST /set?scene=&pass=&name=&value=`: sets a live uniform, with no
+- `POST /set?scene=&pass=&name=&value=`: sets a live param, with no
   recompile. `pass=scene` sets the scene param, and `pass=0` and up set the
-  param of that pass. The name of a text sets its words, and ghee lays them
-  out again. `value` reads as the param's declared type: a number, `true` or
-  `false`, `#rrggbb` or comma-separated floats for a color, comma-separated
-  floats for a vec, or the words of a string. A color keeps the form that
-  `/set` gives it in `GET /scene` and in a save.
+  param of that pass. A text layer's words are the scene param of its name:
+  `pass=scene&name=title` sets the words of the layer `title`, and ghee lays
+  them out again. `value` reads as the param's declared type: a number,
+  `true` or `false`, `#rrggbb` or comma-separated floats for a color,
+  comma-separated floats for a vec, or the words of a string. A color keeps
+  the form that `/set` gives it in `GET /scene` and in a save.
 - `POST /set?scene=&layer=&effect=&field=&value=`: sets a live field of a
   layer, with no rebuild, and `effect=` names one of the layer's effects for
   a field of that effect. The live fields are `x`, `y`, `color`, `opacity`
@@ -66,13 +66,14 @@ later.
 - `POST /save`: takes `{name, scene}` in the body, and writes the scene into
   `<scenes>/modified/`. A JSON scene saves a copy that shadows the original
   and finds its files beside the original. A procedural scene saves a
-  `.values.json` sidecar of its params, its filters, each pass's `visible`,
-  and the settings and effects of each layer under the layer's name. At its
-  next start the sidecar applies over the scene that the process writes: the
-  process keeps which layers exist and their order, a saved layer that it no
-  longer declares is skipped with a log line, and a value that the process
-  sets after the start wins over the saved one. A read-only host refuses the
-  save.
+  `.values.json` sidecar: `scene` and `passes` hold the param values, the
+  words of each text layer among them, `filters` the filter list, `visible`
+  each pass's eye by the pass's name, and `layers` the settings and effects
+  of each layer by the layer's name. At its next start the sidecar applies
+  over the scene that the process writes: the process keeps which layers
+  exist and their order, a saved layer that it no longer declares is skipped
+  with a log line, and a value that the process sets after the start wins
+  over the saved one. A read-only host refuses the save.
 
 ## Streams
 

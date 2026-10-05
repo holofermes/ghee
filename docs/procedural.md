@@ -47,6 +47,12 @@ ghee waits 30 seconds for the scene. If the process exits before it writes
 the scene, that is an error, and ghee shows its stderr. A process that ends
 its answer to every tick with kind 5 sets `"lockstep": true` in that object.
 
+The console saves its edits of a procedural scene in a sidecar beside the
+executable, `modified/<name>.values.json`, and lays the sidecar over the
+scene that the process writes at each start. The process keeps which passes
+and layers exist and their order. `/save` in [http.md](http.md) lists what
+the sidecar holds.
+
 ## Messages, scene to ghee
 
 After the handshake, stdout carries binary messages:
@@ -68,9 +74,9 @@ After the handshake, stdout carries binary messages:
 - Kind 2 marks the tick clean: it needs no render, and the display keeps the
   last frame. The message is the kind byte alone, with no name and no values.
 - Kind 3 sets the named string param, and the name of a text layer sets its
-  words. `layer.image` sets an image layer's `image` to the image asset of
-  the scene that the text names. The header is the same as kind 0's, and
-  the payload is count bytes of UTF-8 text.
+  words. A name of the form `layer.image`, such as `icon.image`, sets that
+  image layer's `image` to the image asset that the text names. The header
+  is the same as kind 0's, and the payload is count bytes of UTF-8 text.
 - Kind 4 sets the named array from u8 values. The header is the same as kind
   0's, and the payload is count u8 bytes, each value byte / 255. A big mask
   then costs a quarter of the bytes on the pipe.

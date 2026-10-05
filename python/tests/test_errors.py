@@ -6,6 +6,7 @@ thread error is a RuntimeError.
 
 import concurrent.futures
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -200,8 +201,16 @@ def test_a_scene_mistake_reads_as_ghee_wrote_it_in_open_a_direct_run_and_ghee_re
     path.write_text(MISTAKE_SCENE.format(python=sys.executable))
     path.chmod(0o755)
     out = ["-o", str(tmp_path / "f.png"), "--size", "8x8"]
+    # Python colours a traceback when one of these says so
+    colours = ("FORCE_COLOR", "PYTHON_COLORS", "NO_COLOR")
+    plain = {k: v for k, v in os.environ.items() if k not in colours}
     direct = subprocess.run(
-        [str(path), *out], capture_output=True, check=False, text=True, timeout=120
+        [str(path), *out],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=120,
+        env=plain,
     )
     assert direct.returncode == 1
     assert direct.stderr.splitlines()[-1] == f"ValueError: {message}"

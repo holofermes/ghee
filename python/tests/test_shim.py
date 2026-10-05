@@ -14,10 +14,12 @@ import itertools
 import json
 import re
 import struct
+import subprocess
 import sys
 
 import pytest
 from conftest import numpy
+from test_errors import CLI
 
 SHIM = importlib.util.find_spec("ghee._shim").origin
 _names = itertools.count()
@@ -801,6 +803,127 @@ def test_a_param_the_scene_cannot_take_raises_on_the_wire(call, error, monkeypat
         drive(shim, scene_of(shim), ticks, monkeypatch)
 
 
+def layered(shim):
+    """scene_of with a text layer `title` that sings, and an image layer
+    `icon` of the image asset a, beside the image asset b."""
+    scene = scene_of(shim)
+    scene.assets = [shim.Asset("a", "a.png"), shim.Asset("b", "b.png")]
+    scene.passes[0].layers = [
+        shim.Layer("title", "hi", karaoke={}),
+        shim.Layer("icon", image="a"),
+    ]
+    return scene
+
+
+def test_a_layer_set_goes_out_in_the_form_of_its_field(monkeypatch):
+    shim = load()
+
+    @shim.tick
+    def hook(tick):
+        shim.layers.title.x = 10
+        shim.layers.title.y = None
+        shim.layers["title"]["karaoke"]["sung"] = 2.5
+        shim.layers.title.karaoke.visible = False
+        shim.layers.title.color = "#ff0000"
+        shim.layers.title.color = {"from": [0, 0, 1], "to": "#00ff00"}
+        shim.layers.title.text = "ho"
+        shim.layers.icon.image = "b"
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, layered(shim), ticks, monkeypatch)
+    # a gradient with no angle takes CSS's, 180 degrees, top to bottom
+    assert messages(rest) == [
+        (1, "title.x", [10.0]),
+        (1, "title.y", []),
+        (1, "title.karaoke.sung", [2.5]),
+        (1, "title.karaoke.visible", [0.0]),
+        (1, "title.color", [1.0, 0.0, 0.0]),
+        (1, "title.color", [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 180.0]),
+        (3, "title", "ho"),
+        (3, "icon.image", "b"),
+        END,
+    ]
+
+
+# ghee.layers' refusals: (layer, field, value, effect), and the error's key
+LAYER_REFUSED = [
+    (("nope", "x", 1, None), "layer 'nope' is not a layer this scene declares"),
+    (("title", "sung", 1, "glow"), "layer 'title' has no effect 'glow'"),
+    (("title", "colour", "#ff0000", None), "layer 'title' has no field 'colour'"),
+    (
+        ("title", "font_size", 12, None),
+        "layer 'title' font_size changes with a rebuild",
+    ),
+    (("title", "x", "left", None), "layer 'title' x needs a number"),
+]
+
+
+@pytest.mark.parametrize("call,error", LAYER_REFUSED)
+def test_a_layer_set_the_scene_cannot_take_raises_on_the_wire(call, error, monkeypatch):
+    shim = load()
+    name, field, value, effect = call
+
+    @shim.tick
+    def hook(tick):
+        layer = shim.layers[name]
+        (layer[effect] if effect else layer)[field] = value
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    with pytest.raises(ValueError, match=re.escape(error)):
+        drive(shim, layered(shim), ticks, monkeypatch)
+
+
+def test_a_layer_set_outside_run_says_where_it_belongs():
+    shim = load()
+    with pytest.raises(RuntimeError) as raised:
+        shim.layers.title.x = 10
+    assert str(raised.value) == (
+        "ghee.layers sets a layer of the scene that run() runs: set it in a tick "
+        "or a feed"
+    )
+
+
+LANDS = """#!{python}
+import ghee
+
+
+@ghee.tick
+def hook(t):
+    ghee.layers.t.color = "#00ff00"
+
+
+ghee.run(
+    ghee.Scene(
+        passes=[
+            ghee.Pass(
+                "main",
+                "void main(){{ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }}",
+                layers=[ghee.Layer("t", "I", font_size=24, color="#ff0000")],
+            )
+        ]
+    )
+)
+"""
+
+
+def test_a_layer_set_of_a_scene_that_ghee_runs_lands_in_the_frame(tmp_path):
+    if not CLI.exists():
+        pytest.skip(f"no {CLI} to run the scene")
+    path = tmp_path / "lands.py"
+    path.write_text(LANDS.format(python=sys.executable))
+    path.chmod(0o755)
+    ran = subprocess.run(
+        [str(CLI), "render", str(path), "-o", "-", "--size", "32x32"]
+        + ["--frames", "1", "--timestep", "0"],
+        capture_output=True,
+        check=True,
+    )
+    px = ran.stdout
+    n = len(px) // (32 * 32)
+    # the words drawn green, where the scene drew them red
+    assert [max(px[c::n]) for c in range(3)] == [0, 255, 0]
+
+
 def test_the_tick_line_carries_the_string_params(monkeypatch):
     shim = load()
     seen = []
@@ -832,6 +955,7 @@ SURFACE = [
     "Tick",
     "args",
     "feed",
+    "layers",
     "run",
     "set_param",
     "skip",
@@ -883,7 +1007,8 @@ def test_the_stubs_name_what_the_native_module_takes():
 
 
 def test_open_without_the_native_module_names_it(monkeypatch):
-    """A shim run needs no native module. open() is what needs it."""
+    """A shim run under ghee needs no native module until it sets a layer.
+    open() needs it."""
     import ghee
 
     class Missing:

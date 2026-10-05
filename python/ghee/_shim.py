@@ -711,6 +711,9 @@ _STOPPED: list = []
 # filters that ghee appends
 _PARAMS: dict | None = None
 _FILTERS: list = []
+# the scene of the run, and under ghee the native check of its layer sets
+_SCENE: Scene | None = None
+_LIVE = None
 
 
 def feed(name: str):
@@ -771,6 +774,39 @@ def set_param(
     values = (value,) if isinstance(value, numbers.Real) else value
     count, body = _f32(values, f"param '{wire}'")
     _OUT.append(_message(1, wire, count, body))
+
+
+def _set_layer(name: str, field: str, value: Any, effect: str | None = None) -> None:
+    """Set a live field of a layer for this tick, the set of `layers`.
+
+    Under ghee, the native half of the wheel checks the set against the
+    scene, as Handle.set_layer does, and gives the message.
+    """
+    global _LIVE
+    if _HANDLE is not None:
+        _HANDLE.set_layer(name, field, value, effect)
+        return
+    if _SCENE is None:
+        raise RuntimeError(
+            "ghee.layers sets a layer of the scene that run() runs: set it in a "
+            "tick or a feed"
+        )
+    if _LIVE is None:
+        from ghee import _ext
+
+        _LIVE = _ext()._LayerWire(_SCENE.to_dict())
+    wire, body = _LIVE.message(name, field, value, effect)
+    if isinstance(body, str):
+        text = body.encode("utf-8")
+        _OUT.append(_message(3, wire, len(text), text))
+        return
+    count, data = _f32(body, f"layer '{name}'")
+    _OUT.append(_message(1, wire, count, data))
+
+
+# The live fields of the layers of the scene that run() runs, set from a tick
+# or a feed: ghee.layers.title.x = 10.
+layers = Layers(_set_layer)
 
 
 def _param_types(scene: Scene) -> dict:
@@ -985,8 +1021,9 @@ def run(scene: Scene) -> None:
     too and is already stopping. The scene ends where it stands, quietly: a
     traceback here would say a scene crashed, and it did what it was told.
     """
-    global _PARAMS, _FILTERS
+    global _PARAMS, _FILTERS, _SCENE, _LIVE
     _PARAMS, _FILTERS = _param_types(scene), list(scene.filters)
+    _SCENE = scene
     try:
         if os.environ.get(WIRE):
             _wire(scene)
@@ -995,7 +1032,7 @@ def run(scene: Scene) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        _PARAMS, _FILTERS = None, []
+        _PARAMS, _FILTERS, _SCENE, _LIVE = None, [], None, None
 
 
 def _wire(scene: Scene) -> None:

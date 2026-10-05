@@ -15,6 +15,7 @@
 
 mod serve;
 mod session;
+mod wire;
 
 use std::path::PathBuf;
 use std::thread::{self, ThreadId};
@@ -511,6 +512,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // what __all__ names
     m.add("__all__", vec!["Handle", "open", "__version__"])?;
     m.add_class::<Handle>()?;
+    // the shim's own, so out of __all__
+    m.setattr("_LayerWire", m.py().get_type::<wire::LayerWire>())?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
     Ok(())
 }

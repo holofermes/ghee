@@ -52,6 +52,19 @@ class Handle:
     def __enter__(self) -> Self: ...
     def __exit__(self, *_args: object) -> bool: ...
 
+class _LayerWire:
+    """A scene that a scene process runs under ghee, to check each live layer
+    set against and to give the set's message."""
+
+    def __init__(self, scene: dict[str, Any]) -> None: ...
+    def message(
+        self,
+        name: str,
+        field: str,
+        value: SupportsFloat | str | Iterable[SupportsFloat] | dict[str, Any] | None,
+        effect: str | None = None,
+    ) -> tuple[str, list[float] | str]: ...
+
 def open(
     scene: str | os.PathLike[str] | dict[str, Any] | Scene,
     output: _Output | None = None,

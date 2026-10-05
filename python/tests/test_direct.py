@@ -34,6 +34,9 @@ class Fake:
     def set_param(self, name, value, pass_=None):
         self.calls.append(("set_param", name, value, pass_))
 
+    def set_layer(self, name, field, value, effect=None):
+        self.calls.append(("set_layer", name, field, value, effect))
+
     def frame(self):
         self.calls.append(("frame",))
         self.drawn += 1
@@ -125,6 +128,21 @@ def test_a_param_the_scene_cannot_take_raises_as_on_the_wire(call, error, monkey
     with pytest.raises(ValueError, match=re.escape(error)):
         shim.run(scene_of(shim))
     assert not [c for c in fake.calls if c[0] == "set_param"]
+
+
+def test_a_layer_set_reaches_the_handle(monkeypatch):
+    shim, fake, _ = host(monkeypatch, ["--display", "st7789", "--frames", "1"])
+
+    @shim.tick
+    def hook(t):
+        shim.layers.title.x = 10
+        shim.layers["title"]["glow"]["color"] = "#ffffff"
+
+    shim.run(scene_of(shim))
+    assert fake.calls[:2] == [
+        ("set_layer", "title", "x", 10, None),
+        ("set_layer", "title", "color", "#ffffff", "glow"),
+    ]
 
 
 def test_the_host_flags_reach_the_bindings(monkeypatch):

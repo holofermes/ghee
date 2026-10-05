@@ -46,6 +46,10 @@
   1, in the scene, in `/set` and in `set_param`. A scene process sends a
   color as three floats in message kind 1, and the Python shim turns a
   `"#rrggbb"` into them.
+- Keep a color param in the form that it came in, `"#rrggbb"` or
+  `[r, g, b]`, through `GET /scene`, `/set`, a save and a procedural scene's
+  values sidecar. The console sends the colour picked in its swatch as
+  `#rrggbb`, so it saves as hex.
 - Refuse a key that ghee does not take anywhere in a scene, where the scene
   loaded and ignored it, and name the key, where it sits, and the closest key
   that ghee takes, or the object that takes it: `"code"` on a layer names its

@@ -275,10 +275,10 @@ fn py_int(raw: &str) -> Option<i64> {
 
 /// The value set_param expects, from a /set raw query string.
 ///
-/// A "color" is "#rrggbb" or "r,g,b", and gives three floats. A "vecK" is K
-/// comma-separated floats. A "bool" is true or false (1 or 0), and the scene
-/// model demands a real bool. Anything else is one float. Malformed input
-/// errs.
+/// A "color" is "#rrggbb", which stays as written, or "r,g,b", which gives
+/// three floats. A "vecK" is K comma-separated floats. A "bool" is true or
+/// false (1 or 0), and the scene model demands a real bool. Anything else is
+/// one float. Malformed input errs.
 pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
     if ptype == "bool" {
         let key = raw.trim().to_lowercase();
@@ -294,10 +294,11 @@ pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
             });
     }
     if ptype == "color" {
-        let rgb = match crate::scene::hex_colour(raw.trim()) {
-            Some(rgb) => Some(rgb.to_vec()),
-            None => floats(raw).ok().filter(|p| p.len() == 3),
-        };
+        let hex = raw.trim();
+        if crate::scene::hex_colour(hex).is_some() {
+            return Ok(Value::from(hex));
+        }
+        let rgb = floats(raw).ok().filter(|p| p.len() == 3);
         return rgb.map(Value::from).ok_or_else(|| {
             format!(
                 "color needs '#rrggbb' or three comma-separated floats, got {}",
@@ -1582,13 +1583,7 @@ mod tests {
             ("bool", "2", Err("bool needs true or false, got '2'")),
             ("bool", "0.0", Err("bool needs true or false, got '0.0'")),
             ("color", "1,0,0.5", Ok(json!([1.0, 0.0, 0.5]))),
-            // Each hex pair is a byte, and the channel is byte / 255.
-            ("color", "#ff8000", Ok(json!([1.0, 128.0 / 255.0, 0.0]))),
-            (
-                "color",
-                "#0A0b0C",
-                Ok(json!([10.0 / 255.0, 11.0 / 255.0, 12.0 / 255.0])),
-            ),
+            ("color", " #0A0b0C ", Ok(json!("#0A0b0C"))),
             (
                 "color",
                 "1,0",

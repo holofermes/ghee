@@ -1325,14 +1325,11 @@ function syncAddRow(){
 
 const VEC_ARITY = {vec2:2, vec3:3, vec4:4};
 const VEC_AXES = ["x","y","z","w"];
-// color params travel as [r,g,b] floats; the native input speaks #rrggbb
+// a color param holds "#rrggbb" or [r,g,b] floats; the native input speaks #rrggbb
 function rgbToHex(rgb){
+  if (typeof rgb === "string") return rgb.toLowerCase();
   const h = x => Math.max(0, Math.min(255, Math.round((+x)*255))).toString(16).padStart(2,"0");
   return "#" + h(rgb[0]) + h(rgb[1]) + h(rgb[2]);
-}
-function hexToRgb(hex){
-  const n = parseInt(hex.slice(1), 16);
-  return [((n>>16)&255)/255, ((n>>8)&255)/255, (n&255)/255];
 }
 // A param name is scene data: it only ever reaches the DOM as text or as an
 // input property, never as markup.
@@ -1404,9 +1401,8 @@ function buildParamRow(box, pm, name, scope){
     const inp = el("input");
     inp.type = "color"; inp.value = rgbToHex(pm.value);
     inp.addEventListener("input", ()=>{
-      const rgb = hexToRgb(inp.value);
-      pm.value = rgb; val.textContent = inp.value;
-      send(rgb.map(x=>x.toFixed(3)).join(","));
+      pm.value = inp.value; val.textContent = inp.value;
+      send(inp.value);
     });
     row.appendChild(inp);
     box.appendChild(row);

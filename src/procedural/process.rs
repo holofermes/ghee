@@ -24,6 +24,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
 use crate::engine::Feed;
+use crate::layer::Rgb;
 use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::resolve;
 use crate::scene::{ArraySize, ParamValue, Reach, Scene};
@@ -921,7 +922,10 @@ fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
         "float" => Some(ParamValue::Float(at(0)?)),
         "int" => Some(ParamValue::Int(at(0)?.round() as i64)),
         "bool" => Some(ParamValue::Bool(at(0)? != 0.0)),
-        "color" => Some(ParamValue::Color([at(0)?, at(1)?, at(2)?])),
+        "color" => Some(ParamValue::Color(Rgb {
+            rgb: [at(0)?, at(1)?, at(2)?],
+            hex: false,
+        })),
         "vec2" | "vec3" | "vec4" => {
             let n = ty[3..].parse::<usize>().ok()?;
             (values.len() >= n)

@@ -42,8 +42,9 @@ later.
   recompile. `pass=scene` sets the scene param, and `pass=0` and up set the
   param of that pass. The name of a text sets its words, and ghee lays them
   out again. `value` reads as the param's declared type: a number, `true` or
-  `false`, comma-separated floats for a color or a vec, or the words of a
-  string.
+  `false`, `#rrggbb` or comma-separated floats for a color, comma-separated
+  floats for a vec, or the words of a string. A color keeps the form that
+  `/set` gives it in `GET /scene` and in a save.
 - `POST /switch?name=`: switches to a named scene. Switching to the active
   name reloads it from disk.
 - `POST /next`, `POST /prev`: step through the scene list.

@@ -1436,7 +1436,11 @@ impl Renderer {
                 _ => bail!("{ptype} param '{name}' needs {} numbers", &ptype[3..]),
             }
         }
-        self.set_uniform(idx, name, ptype, value.to_json())
+        let value = match value {
+            ParamValue::Color(c) => Value::from(c.rgb.to_vec()),
+            v => v.to_json(),
+        };
+        self.set_uniform(idx, name, ptype, value)
     }
 
     fn set_uniform(&self, idx: c_int, name: &str, ptype: &str, value: Value) -> Result<bool> {
@@ -2326,6 +2330,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::layer::Rgb;
 
     const W: usize = 64;
     const H: usize = 48;
@@ -3853,7 +3858,8 @@ mod tests {
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
-        let color = ParamValue::Color([0.5, 0.1, 0.2]);
+        // A colour written as hex sets the same vec3 as one written as a list.
+        let color = ParamValue::Color(Rgb::from_json(&json!("#801a33")).unwrap());
         assert!(r.set_param("main", "tint", "color", &color).unwrap());
         let off = ParamValue::Vec(vec![0.25, 0.75]);
         assert!(r.set_param("main", "off", "vec2", &off).unwrap());
@@ -3866,7 +3872,7 @@ mod tests {
             .unwrap());
         // An undeclared name sets nothing.
         assert!(!r
-            .set_param("main", "ghost", "color", &ParamValue::Color([1.0; 3]))
+            .set_param("main", "ghost", "color", &ParamValue::Color(Rgb::WHITE))
             .unwrap());
         // A value of another length fails, naming the param.
         assert_eq!(
@@ -3941,7 +3947,10 @@ mod tests {
         assert!(r
             .set_param("main", "c", "vec4", &v(&[0.5, 1.0, 0.0, 1.0]))
             .unwrap());
-        let tint = ParamValue::Color([0.0, 1.0, 0.5]);
+        let tint = ParamValue::Color(Rgb {
+            rgb: [0.0, 1.0, 0.5],
+            hex: false,
+        });
         assert!(r.set_scene_param("tint", "color", &tint).unwrap());
         let f = r.render(None).unwrap().to_vec();
         let want = [

@@ -24,7 +24,7 @@ use std::fs;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
-use crate::layer::{is_image_file, Layer, TextLayer};
+use crate::layer::{is_image_file, Layer, Rgb, TextLayer};
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
@@ -546,7 +546,7 @@ pub enum ParamValue {
     Float(f64),
     Int(i64),
     Bool(bool),
-    Color([f64; 3]),
+    Color(Rgb),
     Vec(Vec<f64>),
     Str(String),
 }
@@ -557,7 +557,7 @@ impl ParamValue {
             ParamValue::Float(f) => Value::from(*f),
             ParamValue::Int(i) => Value::from(*i),
             ParamValue::Bool(b) => Value::from(*b),
-            ParamValue::Color(c) => Value::from(c.to_vec()),
+            ParamValue::Color(c) => c.to_json(),
             ParamValue::Vec(v) => Value::from(v.clone()),
             ParamValue::Str(s) => Value::from(s.clone()),
         }
@@ -600,11 +600,7 @@ impl Param {
         }
         // A color is "#rrggbb" or [r, g, b], each 0..1.
         let stored = if ty == "color" {
-            let rgb = match &value {
-                Value::String(s) => hex_colour(s),
-                v => number_list(v, 3).map(|n| [n[0], n[1], n[2]]),
-            };
-            let Some(rgb) = rgb else {
+            let Some(rgb) = Rgb::from_json(&value) else {
                 bail!(
                     "color param '{name}' needs '#rrggbb' or three numbers [r, g, b], got {}",
                     py_repr(&value)
@@ -709,7 +705,7 @@ impl Param {
 
     /// [r, g, b], each 0..1. It reaches a pass as a vec3.
     pub fn color(name: &str, rgb: [f64; 3]) -> Param {
-        Param::plain(name, "color", ParamValue::Color(rgb))
+        Param::plain(name, "color", ParamValue::Color(Rgb { rgb, hex: false }))
     }
 
     /// The value count sets the type. 2 numbers are a vec2, 3 a vec3, 4 a vec4.
@@ -2774,16 +2770,36 @@ mod tests {
     }
 
     #[test]
-    fn a_color_param_takes_hex_or_three_numbers() {
+    fn a_color_param_takes_hex_or_three_numbers_and_writes_back_the_form_it_came_in() {
         // Each hex pair is a byte, and the channel is byte / 255.
-        for (value, want) in [
-            (json!("#ff8000"), [1.0, 128.0 / 255.0, 0.0]),
-            (json!("#0A0b0C"), [10.0 / 255.0, 11.0 / 255.0, 12.0 / 255.0]),
-            (json!([1, 0.5, 0.25]), [1.0, 0.5, 0.25]),
+        for (value, want, written) in [
+            (
+                json!("#ff8000"),
+                [1.0, 128.0 / 255.0, 0.0],
+                json!("#ff8000"),
+            ),
+            (
+                json!("#0A0b0C"),
+                [10.0 / 255.0, 11.0 / 255.0, 12.0 / 255.0],
+                json!("#0a0b0c"),
+            ),
+            (
+                json!([1, 0.5, 0.25]),
+                [1.0, 0.5, 0.25],
+                json!([1.0, 0.5, 0.25]),
+            ),
         ] {
             let d = json!({"type": "color", "value": value});
             let p = Param::from_dict("tint", &d).unwrap();
-            assert_eq!(p.value, ParamValue::Color(want), "{value}");
+            let ParamValue::Color(c) = p.value else {
+                panic!("{value}: {:?}", p.value);
+            };
+            assert_eq!(c.rgb, want, "{value}");
+            assert_eq!(
+                p.to_dict(),
+                json!({"type": "color", "value": written}),
+                "{value}"
+            );
         }
     }
 

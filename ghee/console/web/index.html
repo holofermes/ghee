@@ -43,7 +43,7 @@
     -webkit-font-smoothing:antialiased; height:100vh; display:flex; flex-direction:column; overflow:hidden;
     padding:max(18px,env(safe-area-inset-top)) 18px 18px;
   }
-  header{display:flex; align-items:center; gap:12px; margin:0 2px 16px; flex-wrap:nowrap; flex:0 0 auto; white-space:nowrap}
+  header{display:flex; align-items:center; gap:10px 12px; margin:0 2px 16px; flex-wrap:wrap; flex:0 0 auto; white-space:nowrap}
   .brand{font-weight:650; letter-spacing:.2px; font-size:16px}
   .brand .dot{color:var(--muted); font-weight:400}
   .spacer{flex:1}
@@ -72,7 +72,7 @@
   .nav{display:flex; align-items:center; gap:4px}
   .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
   .actions{display:flex; gap:7px; align-items:center; flex-wrap:wrap; justify-content:flex-end}
-  .grid{display:grid; grid-template-columns:var(--leftw, minmax(300px,440px)) 6px 1fr; gap:6px; flex:1 1 auto; min-height:0}
+  .grid{display:grid; grid-template-columns:var(--leftw, minmax(260px,440px)) 6px minmax(320px,1fr); gap:6px; flex:1 1 auto; min-height:0}
   .colgrip{cursor:col-resize; border-radius:3px; align-self:stretch}
   .colgrip:hover,.colgrip.drag{background:var(--line)}
   .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow)}
@@ -130,8 +130,10 @@
     font:12px ui-monospace,Menlo,monospace; padding:8px}
   .screen .popped[hidden]{display:none}
   .screen:fullscreen{padding:0; border-radius:0; background:#000; display:flex; align-items:center; justify-content:center}
-  .shadercard{display:flex; flex-direction:column; min-height:0; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--scroll) transparent}
-  .shadercard .editor{flex:1 0 auto; min-height:140px}
+  .shadercard{display:flex; flex-direction:column; min-height:0; min-width:0; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--scroll) transparent}
+  .shadercard .editor{flex:0 0 auto; min-height:140px; margin-top:6px}
+  /* the common block and a filter show their shader alone, filling the card */
+  .shadercard.solo .editor{flex:1 0 auto; margin-top:0}
   .shadercard .err{flex:0 0 auto}
   .errmark{position:absolute; left:0; right:0; background:rgba(192,57,43,.16); border-left:3px solid var(--hot); pointer-events:none; display:none; z-index:1}
   .screen{position:relative; background:var(--bezel); border-radius:12px; padding:12px; width:max-content; max-width:100%; margin:0 auto}
@@ -225,93 +227,177 @@
   .addparam input{background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:6px 8px; width:78px}
   .addparam input.name{width:130px}
   .muted{color:var(--muted); font-size:12px}
-  /* passes read as real tabs: an underline parent over the channels/inputs/code below it */
-  /* a tap anywhere on a tab opens it. Only the open tab carries its mute and
-     remove buttons, apart from the label, so a tap that opens a tab never
-     removes one */
-  .tabs{display:flex; gap:4px 2px; align-items:flex-end; flex-wrap:wrap; border-bottom:1px solid var(--line); margin-bottom:14px; flex:0 0 auto}
-  .tab{display:inline-flex; align-items:center; gap:7px; min-height:36px; padding:0 12px; border:0; border-bottom:2px solid transparent; border-radius:7px 7px 0 0; background:transparent; cursor:pointer; font-size:13px; color:var(--muted); user-select:none; margin-bottom:-1px}
+  /* the tab row stays where it is while the card scrolls under it */
+  .passhead{position:sticky; top:-14px; z-index:4; margin:-14px -16px 0; padding:14px 16px 14px; background:var(--panel); border-radius:var(--r) var(--r) 0 0}
+  /* the line under the tabs is the row's own, so the strip that scrolls them
+     neither clips it nor fades it */
+  .tabs{display:flex; align-items:flex-end; box-shadow:inset 0 -1px 0 var(--line); flex:0 0 auto}
+  .tstrip{flex:0 1 auto; align-items:flex-end; gap:2px}
+  .tab{display:inline-flex; align-items:center; gap:7px; min-height:36px; padding:0 12px; border:0; border-bottom:2px solid transparent; border-radius:7px 7px 0 0; background:transparent; cursor:pointer; font-size:13px; color:var(--muted); user-select:none; white-space:nowrap}
   .tab:hover{color:var(--ink); background:var(--code-bg)}
   .tab.active{color:var(--ink); border-bottom-color:var(--accent); font-weight:600}
-  .tab .tp{color:var(--muted); font-weight:400}
-  .tacts{display:inline-flex; align-items:center; gap:2px; margin-left:6px; padding-left:6px; border-left:1px solid var(--line)}
+  /* a tab is as wide as its bold label, open or not, so a tap moves nothing */
+  .tab .lbl{display:inline-flex; flex-direction:column; align-items:center}
+  .tab .lbl::after{content:attr(data-t); font-weight:600; height:0; visibility:hidden; overflow:hidden; pointer-events:none}
+  .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:15px; min-width:36px; justify-content:center}
+  .tab.filt .lbl{color:var(--accent)}
+  .tab.cm{margin-right:5px; border-right:1px solid var(--line)}
+  .tab.cm .lbl{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* the open tab's actions, at the row's end */
+  .passacts{display:inline-flex; align-items:center; gap:2px; margin-left:auto; align-self:center; padding-left:8px; flex:none}
   .tbtn{display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0;
     border:0; border-radius:7px; background:transparent; box-shadow:none; color:var(--muted); font-size:16px; line-height:1}
   .tbtn:hover{color:var(--ink); background:var(--well)}
   .tbtn.x:hover{color:var(--hot)}
   .tbtn svg{width:14px; height:14px}
+  .tbtn:disabled{opacity:.35; background:transparent}
+  .tbtn.m.off{color:var(--ink)}
+  /* a hidden pass, a hidden layer and a bypassed effect dim the same way */
+  .tab.off .lbl, .lay.hid .lstrip, .lay.hid .lbody, .fxrow.off>.strip, .pgroup.off, .row.off{opacity:.4}
   .pgroup{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:14px 0 2px}
   .pgroup:first-child{margin-top:2px}
-  .tab.off{opacity:.4} .tab.off.active{opacity:.7}
-  .tab.off .lbl{text-decoration:line-through}
-  .tab input{background:transparent; border:0; outline:none; color:inherit; font:inherit; width:84px; padding:0}
-  .tab.add{color:var(--muted); border-bottom-color:transparent; font-size:15px; min-width:36px; justify-content:center}
-  .tab.filt .lbl{color:var(--accent)}
-  .tab.cm{margin-right:5px; border-right:1px solid var(--line)}
-  .tab.cm .lbl{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
-  .addwrap{position:relative; display:inline-flex}
-  .addmenu{position:absolute; top:calc(100% + 4px); left:0; min-width:130px; background:var(--panel);
+  .addwrap{display:inline-flex}
+  /* an open menu sits in the page's top layer, placed at its button, so a
+     strip that scrolls never clips it */
+  .addmenu{position:fixed; min-width:130px; background:var(--panel);
     border:1px solid var(--line); border-radius:11px; box-shadow:var(--shadow); padding:5px;
-    opacity:0; visibility:hidden; transform:translateY(-4px); transition:opacity .12s ease, transform .12s ease; z-index:6}
-  .addwrap.open .addmenu{opacity:1; visibility:visible; transform:none}
+    opacity:0; visibility:hidden; transform:translateY(-4px); transition:opacity .12s ease, transform .12s ease; z-index:40}
+  .addmenu.open{opacity:1; visibility:visible; transform:none}
   .addmenu .it{padding:7px 11px; border-radius:7px; font-size:13px; color:var(--ink); cursor:pointer; white-space:nowrap}
   .addmenu .it:hover{background:var(--code-bg)}
+  .addmenu .it.off{color:var(--muted); opacity:.5; cursor:default}
+  .addmenu .it.off:hover{background:none}
   .addmenu .sep{height:1px; background:var(--line); margin:5px 2px}
   .rotact{cursor:pointer}
   .rotact:hover{color:var(--ink)}
   .editor.readonly>pre{opacity:.5}
   .editor.readonly>textarea{cursor:default}
-  .editor.readonly::after{content:"filter - read-only, tweak its params below"; position:absolute; right:10px; bottom:6px; font:10px ui-monospace,monospace; color:var(--muted); opacity:.75; pointer-events:none; z-index:2}
-  .channels{display:flex; gap:7px; align-items:center; flex-wrap:wrap; margin-bottom:10px; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .chan{display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); border-radius:7px; padding:3px 5px 3px 8px}
   .chan select{padding:3px 16px 3px 5px; font-size:12px; background-position:calc(100% - 7px) 50%,calc(100% - 4px) 50%}
   .chan .x{opacity:.55; cursor:pointer}
   .chan .x:hover{opacity:1; color:var(--hot)}
   .addmini{cursor:pointer; color:var(--muted); border:1px dashed var(--line); border-radius:7px; padding:3px 8px; font-size:12px}
   .addmini:hover{color:var(--ink); border-color:var(--muted)}
-  .inputs{display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:12px; flex:0 0 auto; font-size:12px; color:var(--muted)}
+  .inputs{display:flex; gap:6px; align-items:center; margin:12px 0; flex:0 0 auto; font-size:12px; color:var(--muted)}
+  .inputs>.addmini{flex:none}
+  .istrip{flex:0 1 auto; gap:6px}
   .chip{border:1px solid var(--line); border-radius:7px; padding:3px 8px; color:var(--muted); cursor:help; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .chip.arr{color:var(--ink); border-color:var(--accent)}
-  /* a field: its label, its control, and a one-line hint under the control */
-  .field{display:grid; grid-template-columns:52px minmax(0,1fr); gap:4px 12px; align-items:center; margin:10px 0}
-  .field>.k{font-size:13px; color:var(--accent); align-self:start; padding-top:5px}
-  .field>.hint{grid-column:2; font-size:12px; line-height:1.35; color:var(--muted)}
-  .field select, .field input{min-width:0; background-color:var(--well); border:1px solid var(--line); border-radius:6px;
-    color:var(--ink); box-shadow:none; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; padding:5px 8px}
-  .field select{padding-right:28px; justify-self:start; max-width:100%}
-  .field input{width:100%; max-width:260px}
-  .field input[type=number]{max-width:110px}
-  .layerctl{margin:0 0 6px}
+  .shadercard>[hidden]{display:none}
+  .ctl{min-width:0; background-color:var(--well); border:1px solid var(--line); border-radius:6px; color:var(--ink);
+    box-shadow:none; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; padding:5px 8px; outline:none}
+  .ctl:focus{border-color:var(--muted)}
+  select.ctl{padding-right:28px}
+  /* a number field fits its value, with no spin buttons in any engine */
+  input.ctl.num{width:calc(var(--n, 3) * 1ch + 18px)}
+  input[type=number]{-moz-appearance:textfield; appearance:textfield}
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none; appearance:none; margin:0}
+  .layers{flex:0 0 auto}
+  .lyrow{display:flex; gap:7px; align-items:center; flex-wrap:wrap; margin-bottom:10px; font-size:12px; color:var(--muted)}
+  .lay{border:1px solid var(--line); border-radius:10px; padding:2px 10px 10px; container-type:inline-size}
+  .lay + .lay{margin-top:10px}
+  /* a layer's header is one row: a strip that scrolls sideways when it does not
+     fit, and the actions pinned at the right end, where nothing moves them */
+  .lhead{display:flex; align-items:center; gap:6px; min-height:36px}
+  /* a row that does not fit scrolls sideways, a swipe on touch and a drag
+     with the mouse, and fades out at a side where it goes on */
+  .strip{min-width:0; display:flex; align-items:center; overflow-x:auto; overflow-y:hidden;
+    scrollbar-width:none; overscroll-behavior-x:contain}
+  .strip::-webkit-scrollbar{display:none}
+  .strip>*{flex:none}
+  .strip.drag{cursor:grabbing; user-select:none}
+  .strip.mr{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent); mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent)}
+  .strip.ml{-webkit-mask-image:linear-gradient(to right,transparent,#000 36px); mask-image:linear-gradient(to right,transparent,#000 36px)}
+  .strip.ml.mr{-webkit-mask-image:linear-gradient(to right,transparent,#000 36px,#000 calc(100% - 36px),transparent); mask-image:linear-gradient(to right,transparent,#000 36px,#000 calc(100% - 36px),transparent)}
+  .lstrip{flex:1 1 auto; gap:12px}
+  .lstrip .lsp{flex:1 0 0}
+  .lhead .tog{display:flex; align-items:baseline; gap:8px; padding:6px 0; background:none; border:0; box-shadow:none; text-align:left; transition:none}
+  .lhead .tog:active{transform:none}
+  .lhead .tog .car{width:12px; flex:none; color:var(--muted); font-size:11px}
+  .lsels{display:inline-flex; align-items:center; gap:12px}
+  .lsels .hk{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted)}
+  .lmv{display:inline-flex; align-items:center; gap:2px}
+  .lhead>.lacts{padding-left:4px; border-left:1px solid var(--line)}
+  /* the collapsed words give way before the strip scrolls */
+  .lstrip>input.ctl.hword{flex:0 1 220px; min-width:110px}
+  .lname{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--ink); white-space:nowrap}
+  .lkind{font-size:12px; color:var(--muted); flex:none}
+  .lacts{display:inline-flex; align-items:center; gap:2px; flex:none}
+  .lbody{display:flex; flex-direction:column; gap:10px; padding:2px 0 0 20px}
+  /* one setting per line: its key, then its control */
+  .kvs{display:flex; flex-direction:column; align-items:stretch; gap:8px}
+  .kv{display:flex; align-items:flex-start; gap:8px; min-width:0}
+  .kvs>.kv>.k{width:88px; flex:none; padding-top:4px}
+  .kvs>.kv>.v{flex:1}
+  .kv>.v>.grow{flex:1}
+  .kv>.k, .fxname{font-size:13px; color:var(--accent)}
+  .kv>.v{display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; min-width:0}
+  .sub{display:inline-flex; align-items:center; gap:6px}
+  .sub>.k{font-size:12px; color:var(--muted)}
+  .kv>.v>.k2{font-size:13px; color:var(--accent); margin-left:10px}
+  .grad{display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px 10px}
+  .clr{display:inline-flex; align-items:center; gap:8px}
+  .clr input[type=color]{width:44px; flex:none}
+  .clr .tbtn{margin-left:-4px}
+  .clrnone{width:44px; height:22px; padding:0; border:1px dashed var(--scroll); border-radius:8px; background:transparent; box-shadow:none;
+    color:var(--muted); font:11px ui-monospace,Menlo,monospace; transition:none}
+  .clrnone:hover{border-color:var(--muted); color:var(--ink)}
+  .clrnone:active{transform:none}
+  .disc{align-self:flex-start; padding:4px 2px; background:none; border:0; box-shadow:none; color:var(--muted); font-size:13px; transition:none}
+  .disc:hover{color:var(--ink)}
+  .disc:active{transform:none}
+  .shtog{margin-top:14px}
+  .fx{display:flex; flex-direction:column; gap:4px; align-items:flex-start; border-top:1px solid var(--line); padding-top:10px}
+  .fx>.addwrap{margin-bottom:4px}
+  /* an effect: its name, its fields, and its eye and remove button at the row's end */
+  .fxrow{align-self:stretch; display:flex; align-items:center; gap:6px; min-height:32px}
+  .fstrip{flex:1 1 auto; gap:14px}
+  .fstrip>.fxname{width:104px}
+  .fxacts{display:inline-flex; align-items:center; gap:2px}
+  @container (max-width:520px){
+    .kvs>.kv>.k{width:80px}
+    .grad{column-gap:8px}
+    .lstrip>input.ctl.hword{flex-basis:150px; min-width:150px}
+    .fstrip>.fxname{width:auto}
+  }
   /* the words box grows with them: its hidden copy sizes it */
   .grow{position:relative; min-width:0}
   .grow>pre, .grow>textarea{margin:0; font:13px/1.4 ui-sans-serif,system-ui,sans-serif; padding:6px 8px; border:1px solid transparent; border-radius:6px;
     white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word}
   .grow>pre{visibility:hidden; min-height:3.2em}
   .grow>textarea{position:absolute; inset:0; width:100%; height:100%; resize:none; overflow:hidden; background:var(--well); border-color:var(--line); color:var(--ink); outline:none}
+  /* a layer's words box grows to eight lines, then scrolls inside */
+  .kv .grow>pre{max-height:calc(8 * 1.4em + 14px); overflow:hidden}
+  .kv .grow>textarea{overflow-y:auto}
   .grow>textarea:focus{border-color:var(--muted)}
-  .ttext + .ttext{margin-top:14px; padding-top:12px; border-top:1px solid var(--line)}
-  .thead{display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px}
-  .tname{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--ink)}
-  .drawnby{font-size:12px; color:var(--muted)}
-  .lead{margin:-4px 0 10px; line-height:1.4}
-  .ferr{grid-column:2; font:12px/1.4 ui-monospace,Menlo,monospace; color:var(--hot)}
+  .ferr{font:12px/1.4 ui-monospace,Menlo,monospace; color:var(--hot)}
   .ferr[hidden]{display:none}
-  .edhead{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:0 0 5px; flex:0 0 auto; cursor:help}
-  .edhead .nm{text-transform:none; letter-spacing:0; color:var(--ink); font-size:12px; margin-left:6px}
-  .editor + .edhead{margin-top:12px}
-  .shadercard .editor.vertex{flex:0 0 auto; min-height:0}
-  .shadercard>[hidden]{display:none}
   /* touch: tabs, their buttons and the fields take a fingertip */
   @media (pointer:coarse){
     .tab{min-height:44px; padding:0 14px; font-size:14px}
     .tab.add{min-width:48px; font-size:18px}
     .tbtn{width:40px; height:40px; font-size:20px; border-radius:10px}
     .tbtn svg{width:18px; height:18px}
-    .tacts{margin-left:8px; padding-left:4px; gap:4px}
-    .field select, .field input{font-size:14px; padding:9px 10px; min-height:40px}
-    .field select{padding-right:30px}
+    .passacts{gap:4px}
+    .ctl{font-size:14px; padding:9px 10px; min-height:40px}
+    select.ctl{padding-right:30px}
+    input.ctl.num{width:calc(var(--n, 3) * 1ch + 22px); min-width:44px}
+    .clr input[type=color], .clrnone{width:44px; height:38px; border-radius:10px}
+    .clr input[type=color]::-webkit-color-swatch{border-radius:8px}
+    .clr input[type=color]::-moz-color-swatch{border-radius:8px}
+    .addmini{padding:9px 13px; font-size:13px}
+    .chan{padding-right:0}
+    .chan .x{padding:8px 11px; font-size:16px}
+    .addmenu .it{padding:12px 16px; font-size:15px}
+    .lhead{min-height:48px}
+    .lname{font-size:14px}
+    .lbody{padding-left:4px}
+    .disc{min-height:40px; font-size:14px}
+    .fxrow{min-height:44px}
+    .fxname, .kv>.k, .kv>.v>.k2{font-size:14px}
     .grow>pre, .grow>textarea{font-size:15px; padding:9px 10px}
-    .field>.k{padding-top:10px}
+    .kv .grow>pre{max-height:calc(8 * 1.4em + 20px)}
+    .kvs>.kv>.k{padding-top:10px}
   }
   /* the question before a removal, over a scrim that cancels it */
   .ask{position:fixed; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; padding:18px; background:var(--scrim)}
@@ -319,6 +405,8 @@
   .ask .card{width:100%; max-width:340px}
   .ask .q{margin:0 0 14px; font-size:14px; overflow-wrap:anywhere}
   .ask .acts{display:flex; gap:8px; justify-content:flex-end}
+  .ask .renin{display:block; width:100%; margin:0 0 8px}
+  .ask .ferr{margin:0 0 10px}
   @media (pointer:coarse){
     .ask .q{font-size:15px}
     .ask .acts button{min-height:44px; padding:0 18px; font-size:15px}
@@ -334,6 +422,9 @@
     .leftcol>.panel + .panel{margin-top:18px}
     .shadercard{display:block; margin-top:18px; overflow:visible}
     .shadercard .editor{flex:none}
+    /* a pass with less in it never shortens the page under a tab that was just tapped */
+    .shadercard{min-height:100vh}
+    .passhead{position:static}
   }
 </style>
 </head>
@@ -384,13 +475,6 @@
       </div>
     </div>
 
-    <div class="panel card" id="textsCard" hidden>
-      <h3>texts</h3>
-      <div class="muted lead">A scene declares each text under "texts": its words in "value", a "font" and an "align". A layer paints the words over a pass, and a pass's GLSL reads them through &lt;name&gt;_cover(p, font_size).</div>
-      <div id="texts"></div>
-      <datalist id="fontAssets"></datalist>
-    </div>
-
     <div class="panel card">
       <h3>parameters</h3>
       <div id="params"></div>
@@ -405,7 +489,6 @@
         <input id="pMin" placeholder="min" value="0">
         <input id="pMax" placeholder="max" value="1">
         <button id="pAdd">add</button>
-        <span class="muted">apply to compile</span>
       </div>
     </div>
   </div>
@@ -413,15 +496,14 @@
   <div class="colgrip" id="colgrip" title="drag to resize"></div>
 
   <div class="panel card shadercard">
-    <h3>shader</h3>
-    <div class="tabs" id="tabs"></div>
-    <div class="channels" id="channels"></div>
+    <div class="passhead">
+      <h3>passes</h3>
+      <div class="tabs" id="tabs"></div>
+    </div>
     <div class="inputs" id="inputs"></div>
-    <div class="layerctl" id="layerctl" hidden></div>
-    <div class="edhead" id="vertexHead" title="vertex GLSL: vec2 glyph_place(vec2 em) returns the pass pixel where a point of the block lands" hidden>vertex</div>
-    <div class="editor vertex" id="vertexEd" hidden><pre aria-hidden="true"></pre><textarea spellcheck="false" aria-label="vertex"></textarea><div class="errmark"></div></div>
-    <div class="edhead" id="fragmentHead" title="fragment GLSL: a void main() that writes colour premultiplied by alpha" hidden>fragment</div>
-    <div class="editor" id="codeEd"><pre aria-hidden="true"></pre><textarea id="code" spellcheck="false"></textarea><div class="errmark"></div></div>
+    <div class="layers" id="layers"></div>
+    <button class="disc shtog" id="shTog" type="button" aria-expanded="false">▸ shader</button>
+    <div class="editor" id="codeEd" hidden><pre aria-hidden="true"></pre><textarea id="code" spellcheck="false" aria-label="shader"></textarea><div class="errmark"></div></div>
     <div class="err" id="err"></div>
   </div>
 </div>
@@ -432,6 +514,18 @@
     <div class="acts">
       <button id="askNo">cancel</button>
       <button class="primary" id="askYes">remove</button>
+    </div>
+  </div>
+</div>
+
+<div class="ask" id="ren" role="dialog" aria-modal="true" aria-labelledby="renText" hidden>
+  <div class="panel card">
+    <p class="q" id="renText"></p>
+    <input class="ctl renin" id="renIn" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="name">
+    <div class="ferr" id="renErr" hidden></div>
+    <div class="acts">
+      <button id="renNo">cancel</button>
+      <button class="primary" id="renYes">ok</button>
     </div>
   </div>
 </div>
@@ -457,10 +551,9 @@ const onCommon = () => curPass === COMMON;
 const hasCommon = () => !!(work && work.common && typeof work.common.code === "string");
 const commonCode = () => (hasCommon() ? work.common.code : "");
 function setCommon(code){ work.common = {code, commonEdited: true}; }
-// the layer of the open pass in the editors, or null for the pass's own code
-let curLayer = null;
-const onLayer = () => !onCommon() && curLayer != null;
-const openLayer = () => (onLayer() ? work.passes[curPass].layers[curLayer] : null);
+// the names of the scenes that a program writes, from /scenes
+let procedural = [];
+const isProcedural = () => procedural.includes(active);
 let lastDisplay = null, lastStats = null, compileTimer = null;
 let devModel = "", devGpu = "";
 const FRAME = $(".frame"), SCREEN = FRAME.parentElement, IMG = $("#stream"), CV = $("#streamcv");
@@ -513,7 +606,7 @@ function editor(box){
   ta.addEventListener("scroll", ed.scroll);
   return ed;
 }
-const CODE = editor($("#codeEd")), VERTEX = editor($("#vertexEd"));
+const CODE = editor($("#codeEd"));
 
 const statNum = (v, d, unit) => (typeof v === "number" ? v.toFixed(d) + (unit || "") : "-");
 function refreshInfo(){
@@ -522,7 +615,7 @@ function refreshInfo(){
   let params=0, arrays=0, feedback=false;
   ((work&&work.passes)||[]).forEach(p => { params += Object.keys(p.params||{}).length; arrays += (p.arrays||[]).length; (p.channels||[]).forEach(c => { if (c.buffer === p.name) feedback = true; }); });
   const np = (work&&work.passes&&work.passes.length) || 0;
-  const muted = ((work&&work.passes)||[]).filter(p=>p.muted).length;
+  const hidden = ((work&&work.passes)||[]).filter(p=>p.visible===false).length;
   pop.innerHTML = "";
   const sect = t => { const d = el("div","ipsect"); d.appendChild(el("div","iphead",t)); pop.appendChild(d); return d; };
   const row = (into,k,v,cls) => {
@@ -549,7 +642,7 @@ function refreshInfo(){
   act.dataset.act = "rotate";
   row(out, "rotation", "", "off").appendChild(act);
   const scene = sect("scene");
-  row(scene, "passes", muted ? `${np} (${muted} muted)` : np, "off");
+  row(scene, "passes", hidden ? `${np} (${hidden} hidden)` : np, "off");
   row(scene, "feedback", feedback ? "yes" : "no", "off");
   row(scene, "params", params, "off");
   row(scene, "arrays", arrays, "off");
@@ -681,13 +774,13 @@ async function loadHwinfo(){
 async function jget(u){ return (await fetch(u)).json(); }
 async function jpost(u){ return (await fetch(u, {method:"POST"})).json(); }
 function clone(o){ return JSON.parse(JSON.stringify(o)); }
-// Compare against disk ignoring empties the editor adds (e.g. buildChannels sets
+// Compare against disk ignoring empties the editor adds (e.g. buildInputs sets
 // channels:[]), so a freshly-loaded scene isn't reported as edited.
 function norm(s){
   return JSON.stringify(s, (k,v) => {
     if ((k==="channels"||k==="arrays") && Array.isArray(v) && !v.length) return undefined;
     if (k==="params" && v && !Array.isArray(v) && typeof v==="object" && !Object.keys(v).length) return undefined;
-    if (k==="muted" || k==="codeEdited" || k==="commonEdited" || k==="layersEdited") return undefined;   // editor state, not a scene edit
+    if (k==="codeEdited" || k==="commonEdited" || k==="layersEdited") return undefined;   // editor state, not a scene edit
     return v;
   });
 }
@@ -696,7 +789,7 @@ function dirty(){ return norm(work) !== norm(pristine); }
 // that a scene does not take.
 function sceneOnly(s){
   const q = clone(s);
-  (q.passes || []).forEach(p => { delete p.muted; delete p.codeEdited; delete p.layersEdited; });
+  (q.passes || []).forEach(p => { delete p.codeEdited; delete p.layersEdited; });
   if (q.common) delete q.common.commonEdited;
   return q;
 }
@@ -742,6 +835,7 @@ async function reloadScene(){
 let FILTERS = {};   // name -> filter def (code + params), from /filters
 async function boot(){
   const s = await jget("/scenes");
+  procedural = s.procedural || [];
   try { FILTERS = await jget("/filters"); } catch(e) { console.warn("/filters unavailable:", e); FILTERS = {}; }
   const sel = $("#scenes"); sel.innerHTML = "";
   s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
@@ -854,8 +948,12 @@ function mergeNewParams(pristine, work){
     // current source, so new uniforms arrive with the code that reads them
     if (!wp.codeEdited && typeof p.code === "string" && wp.code !== p.code)
       wp.code = p.code;
-    // and so do its layers
-    if (!wp.layersEdited){ if (p.layers) wp.layers = clone(p.layers); else delete wp.layers; }
+    // and so do its layers. A program keeps which layers its scene has and
+    // their order, and each keeps the settings edited here, by name.
+    if (isProcedural()){
+      const mine = new Map((wp.layers || []).map(d => [d.name, d]));
+      if (p.layers) wp.layers = p.layers.map(d => clone(mine.get(d.name) || d)); else delete wp.layers;
+    } else if (!wp.layersEdited){ if (p.layers) wp.layers = clone(p.layers); else delete wp.layers; }
   });
   // same for the common block: one added to the file since this copy was saved
   // shows up, one edited here stays as the user left it
@@ -872,319 +970,680 @@ async function loadScene(name, local = true){
   work = saved ? JSON.parse(saved) : clone(pristine);
   if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
-  curPass = 0; curLayer = null; postErr = "";
+  curPass = 0; postErr = ""; shaderOpen = false;
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
-    $("#tabs").innerHTML = ""; $("#channels").innerHTML = ""; $("#inputs").innerHTML = "";
-    $("#params").innerHTML = '<div class="muted">no passes, not shader-editable</div>';
-    $("#textsCard").hidden = true;
-    CODE.ta.value = ""; CODE.sync(); showLayer(null); showErrors(); refreshInfo(); updateStatus();
+    $("#tabs").innerHTML = ""; $("#inputs").innerHTML = ""; $("#layers").innerHTML = "";
+    $("#params").innerHTML = '<div class="muted">no parameters</div>';
+    $("#shTog").hidden = true; CODE.box.hidden = true;
+    CODE.ta.value = ""; CODE.sync(); showErrors(); refreshInfo(); updateStatus();
     return;
   }
   if (saved) { await postScene(); }     // re-apply working copy to the render
-  buildTexts(); buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
+  buildPass(); buildParams(); refreshInfo(); updateStatus();
 }
 
-// What each layer of pass p goes by, as ghee names it in an error: its name,
-// else its text, numbered from the text's second layer without a name.
-function layerLabels(p){
-  const seen = {};
-  return (p.layers || []).map(d => {
-    if (d.name) return d.name;
-    const n = seen[d.text] = (seen[d.text] || 0) + 1;
-    return n === 1 ? d.text : `${d.text} ${n}`;
-  });
-}
-const layerTabName = (p, k) => `${p.name} › ${layerLabels(p)[k]}`;
+// ---- the passes card: the tab row, a pass's inputs, its layers, its shader ----
 
-function setPass(i){ curPass = i; curLayer = null; buildTabs(); buildChannels(); loadCode(); }
-function setLayer(i, k){ curPass = i; curLayer = k; buildTabs(); buildChannels(); loadCode(); }
-function uniqueName(base){ const names=new Set(work.passes.map(p=>p.name)); let n=base,k=1; while(names.has(n)){ n=base+k; k++; } return n; }
-
-// A tab opens on a tap anywhere on it. Only the open tab gets its actions.
-function tabEl(classes, open, onOpen){
-  const tab = el("span", ["tab", ...classes, open ? "active" : ""].filter(Boolean).join(" "));
-  if (!open) tab.addEventListener("click", onOpen);
-  return tab;
-}
-// The open tab's buttons, after a rule that sets them apart from its label.
-// `icon` is the console's own markup, never scene data.
-function tabActs(tab, acts){
-  const box = el("span", "tacts");
-  acts.forEach(a => {
-    const b = el("button", "tbtn " + a.cls);
-    b.type = "button"; b.innerHTML = a.icon; b.title = a.title;
-    b.setAttribute("aria-label", a.title);
-    b.addEventListener("click", e => { e.stopPropagation(); a.fn(); });
-    box.appendChild(b);
-  });
-  tab.appendChild(box);
+function setPass(i){ curPass = i; buildPass(); }
+function buildPass(){
+  buildTabs(); buildInputs(); buildLayers(); loadCode(); paintShader(); showErrors(); syncAddRow();
 }
 
-function buildTabs(){
-  const t = $("#tabs"); t.innerHTML = "";
-  if (hasCommon()){
-    // pinned ahead of every pass, and never muted: it compiles into all of them
-    const tab = tabEl(["cm"], onCommon(), ()=> setPass(COMMON));
-    const lbl = el("span", "lbl", "common");
-    lbl.title = "GLSL prepended to every pass in this scene";
-    tab.appendChild(lbl);
-    if (onCommon()) tabActs(tab, [{cls: "x", icon: "×", title: "remove the common block", fn: delCommon}]);
-    t.appendChild(tab);
-  }
-  work.passes.forEach((p,i)=>{
-    const open = i===curPass && curLayer==null;
-    const tab = tabEl([p.muted ? "off" : "", p.filter ? "filt" : ""], open, ()=> setPass(i));
-    const lbl = el("span", "lbl", (p.filter ? "ƒ " : "") + p.name);   // f = filter (read-only)
-    lbl.title = p.filter ? `filter: ${p.filter} (read-only, tweak params)` : "double-click to rename";
-    if (!p.filter) lbl.addEventListener("dblclick", ()=> renamePass(i, lbl));
-    tab.appendChild(lbl);
-    if (open && work.passes.length > 1) tabActs(tab, [
-      {cls: "m", icon: p.muted ? EYE_OFF : EYE, title: p.muted ? "muted, show this pass" : "mute this pass", fn: ()=> toggleMute(i)},
-      {cls: "x", icon: "×", title: "remove pass " + p.name, fn: ()=> delPass(i)},
-    ]);
-    t.appendChild(tab);
-    (p.layers || []).forEach((d, k) => t.appendChild(layerTab(p, i, k)));
-  });
-  // one "+" for both: an empty pass, or any known filter
-  const wrap = document.createElement("span"); wrap.className="addwrap";
-  const add = document.createElement("span"); add.className="tab add"; add.textContent="+";
-  add.title = "add a pass or a filter";
-  add.addEventListener("click", e=>{ e.stopPropagation(); wrap.classList.toggle("open"); });
-  const menu = document.createElement("div"); menu.className="addmenu";
-  const item = (label, fn)=>{
-    const it = document.createElement("div"); it.className="it"; it.textContent=label;
-    it.addEventListener("click", e=>{ e.stopPropagation(); wrap.classList.remove("open"); fn(); });
-    menu.appendChild(it);
+const EYE = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.4 10.4 0 0 1 12 19c-6.5 0-10-7-10-7a19.4 19.4 0 0 1 5.06-5.94"/><path d="M9.9 4.24A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a19.4 19.4 0 0 1-3.22 4.2"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
+const PENCIL = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+// A small button. `icon` is the console's own markup, never scene data.
+function tbtn(icon, title, cls, fn){
+  const b = el("button", "tbtn " + cls);
+  b.type = "button"; b.innerHTML = icon; b.title = title;
+  b.setAttribute("aria-label", title);
+  b.addEventListener("click", e => { e.stopPropagation(); fn(); });
+  return b;
+}
+// The one dropdown: "+" for passes, "+ layer ▾" and "+ effect ▾". An item is
+// [text, fn, off, title], or null for a rule. An off item stays in the list,
+// greyed. An open menu lives in the body, under its button, or above it when
+// the screen has no room below.
+function closeMenus(){ document.querySelectorAll(".addmenu.open").forEach(m => { m.classList.remove("open"); m.remove(); }); }
+function addMenu(label, items, trigCls = "addmini", title = ""){
+  const wrap = el("span", "addwrap"), trig = el("span", trigCls, label), menu = el("div", "addmenu");
+  trig.setAttribute("role", "button"); trig.tabIndex = 0;
+  if (title) trig.title = title;
+  const toggle = e => {
+    e.stopPropagation();
+    const open = !menu.classList.contains("open");
+    closeMenus();
+    if (!open) return;
+    document.body.appendChild(menu);
+    const t = trig.getBoundingClientRect(), m = menu.getBoundingClientRect();
+    menu.style.left = Math.max(4, Math.min(t.left, innerWidth - m.width - 4)) + "px";
+    const below = t.bottom + 4 + m.height <= innerHeight || m.height + 8 > t.top;
+    menu.style.top = (below ? t.bottom + 4 : t.top - 4 - m.height) + "px";
+    menu.classList.add("open");
   };
-  item("empty pass", addPass);
-  const host = layerHost();
-  if (host != null) item("layer in " + work.passes[host].name, ()=>addLayer(host));
-  if (!hasCommon()) item("common", addCommon);   // one per scene
-  const fnames = Object.keys(FILTERS);
-  if (fnames.length){
-    const d = document.createElement("div"); d.className="sep"; menu.appendChild(d);
-    fnames.forEach(n => item("ƒ " + n, ()=>addFilter(n)));
-  }
-  wrap.appendChild(add); wrap.appendChild(menu); t.appendChild(wrap);
-  showDrawnBy();
-}
-
-const hasCode = p => !!(p.code || "").trim();
-function layerTab(p, i, k){
-  const open = i===curPass && k===curLayer;
-  const tab = tabEl(["ly", p.muted ? "off" : ""], open, ()=> setLayer(i, k));
-  const lbl = el("span", "lbl");
-  lbl.appendChild(el("span", "tp", p.name + " ›"));
-  lbl.appendChild(document.createTextNode(" " + layerLabels(p)[k]));
-  lbl.title = `layer ${layerLabels(p)[k]} in pass ${p.name}, double-click to rename`;
-  lbl.addEventListener("dblclick", ()=> renameLayer(i, k, lbl));
-  tab.appendChild(lbl);
-  if (open && (hasCode(p) || p.layers.length > 1))   // a pass with no code keeps one layer
-    tabActs(tab, [{cls: "x", icon: "×", title: "remove layer " + layerTabName(p, k), fn: ()=> delLayer(i, k)}]);
-  return tab;
-}
-
-// the pass that "+" adds a layer to: the open one, when the scene has a text to
-// draw and the pass is not a filter
-function layerHost(){
-  if (onCommon() || !Object.keys(work.texts || {}).length) return null;
-  return work.passes[curPass].filter ? null : curPass;
-}
-
-function addLayer(i){
-  const p = work.passes[i], t = Object.keys(work.texts)[0];
-  (p.layers = p.layers || []).push({
-    text: t,
-    vertex: `vec2 glyph_place(vec2 em) {\n  float font_size = 32.0;\n  return 0.5 * (resolution - ${t}_size * font_size) + em * font_size;\n}\n`,
-    fragment: "void main() {\n  float c = glyph_cover();\n  gl_FragColor = vec4(vec3(c), c);\n}\n",
+  trig.addEventListener("click", toggle);
+  trig.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); toggle(e); } });
+  items.forEach(item => {
+    if (!item){ menu.appendChild(el("div", "sep")); return; }
+    const [text, fn, off, why] = item, it = el("div", "it" + (off ? " off" : ""), text);
+    if (off){ it.title = why || ""; it.setAttribute("aria-disabled", "true"); }
+    it.addEventListener("click", e => { e.stopPropagation(); if (off) return; closeMenus(); fn(); });
+    menu.appendChild(it);
   });
-  p.layersEdited = true;
-  curPass = i; curLayer = p.layers.length - 1; markDirty(); postScene();
-  buildTabs(); buildChannels(); loadCode();
+  wrap.appendChild(trig);
+  return wrap;
+}
+// a menu stays at the place it opened, so a scroll closes it
+addEventListener("scroll", closeMenus, true);
+
+// Tabs never change width or place. The open tab's pencil, eye and × sit at
+// the row's end, greyed where the tab takes none.
+function buildTabs(){
+  const row = $("#tabs"), was = row.querySelector(".strip"), left = was ? was.scrollLeft : 0;
+  const t = strip("tstrip");
+  const tab = (label, classes, open, onOpen, title) => {
+    const e = el("span", ["tab", ...classes, open ? "active" : ""].filter(Boolean).join(" "));
+    if (!open) e.addEventListener("click", onOpen);
+    const l = el("span", "lbl", label);
+    l.dataset.t = label;
+    if (title) l.title = title;
+    e.appendChild(l);
+    t.appendChild(e);
+  };
+  // pinned ahead of every pass: it compiles into all of them
+  if (hasCommon()) tab("common", ["cm"], onCommon(), () => setPass(COMMON), "GLSL prepended to every pass in this scene");
+  work.passes.forEach((p, i) => tab((p.filter ? "ƒ " : "") + p.name,
+    [p.visible === false ? "off" : "", p.filter ? "filt" : ""], i === curPass, () => setPass(i),
+    p.filter ? `filter: ${p.filter} (read-only, tweak params)` : ""));
+  const items = [["empty pass", addPass]];
+  if (!hasCommon()) items.push(["common", addCommon]);   // one per scene
+  const fnames = Object.keys(FILTERS);
+  if (fnames.length) items.push(null, ...fnames.map(n => ["ƒ " + n, () => addFilter(n)]));
+  t.appendChild(addMenu("+", items, "tab add", "add a pass or a filter"));
+  row.innerHTML = "";
+  row.appendChild(t);
+  t.scrollLeft = left;
+  stripFade(t);
+  const acts = el("span", "passacts");
+  if (onCommon()){
+    const ren = tbtn(PENCIL, "rename", "", () => {}), eye = tbtn(EYE, "hide", "m", () => {});
+    ren.disabled = eye.disabled = true;
+    acts.append(ren, eye, tbtn("×", "remove the common block", "x", delCommon));
+  } else {
+    const i = curPass, p = work.passes[i], off = p.visible === false;
+    const shown = work.passes.filter(q => q.visible !== false).length;
+    const ren = tbtn(PENCIL, "rename", "", () => renamePass(i));
+    const eye = tbtn(off ? EYE_OFF : EYE, off ? `pass ${p.name} is hidden, show it` : `hide pass ${p.name}`,
+      "m" + (off ? " off" : ""), () => togglePass(i));
+    const del = tbtn("×", `remove pass ${p.name}`, "x", () => delPass(i));
+    ren.disabled = !!p.filter;
+    eye.disabled = !off && shown <= 1;   // one pass at least stays visible
+    del.disabled = work.passes.length <= 1;
+    acts.append(ren, eye, del);
+  }
+  row.appendChild(acts);
 }
 
-async function delLayer(i, k){
+// The pass eye is the pass's `visible`, and a change to it rebuilds.
+function togglePass(i){
   const p = work.passes[i];
-  if (!await ask(`Remove layer ${layerTabName(p, k)}?`) || work.passes[i] !== p) return;
+  if (p.visible !== false){
+    if (work.passes.filter(q => q.visible !== false).length <= 1) return;
+    p.visible = false;
+  } else delete p.visible;
+  markDirty(); postScene();
+  buildTabs(); buildParams(); refreshInfo();
+}
+
+// ---- names: one rule, and one set across the scene ----
+// Every name a pass or a layer may not take: the passes, the layers, the
+// assets and the scene params, and each pass's params and arrays.
+function takenNames(){
+  const s = new Set();
+  (work.passes || []).forEach(p => {
+    s.add(p.name);
+    (p.layers || []).forEach(d => s.add(d.name));
+    Object.keys(p.params || {}).forEach(n => s.add(n));
+    (p.arrays || []).forEach(a => s.add(a.name));
+  });
+  Object.keys(work.assets || {}).forEach(n => s.add(n));
+  Object.keys(work.params || {}).forEach(n => s.add(n));
+  return s;
+}
+function uniqueName(base){
+  const taken = takenNames();
+  if (!taken.has(base)) return base;
+  let k = 2;
+  while (taken.has(base + k)) k++;
+  return base + k;
+}
+function nameError(n, current){
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(n)) return "a name needs ASCII letters, digits and _, and a letter first";
+  if (n.endsWith("_")) return "a name needs a letter or a digit last";
+  if (n.includes("__")) return "GLSL reserves a name that holds __";
+  if (n.startsWith("gl_")) return "GLSL reserves a name that starts with gl_";
+  if (n.startsWith("ghee")) return "ghee reserves a name that starts with ghee";
+  if (n !== current && takenNames().has(n)) return n + " is taken";
+  return "";
+}
+
+// ---- the inputs a pass's shader reads ----
+const isGrad = c => !!c && typeof c === "object" && !Array.isArray(c);
+const isImage = d => d.image != null;
+const textLayers = () => (work.passes || []).flatMap(p => (p.layers || []).filter(d => !isImage(d)));
+// the scene's image assets: every asset but a font
+const imageAssets = () => Object.entries(work.assets || {})
+  .filter(([, a]) => a && typeof a.file === "string" && !/\.(ttf|otf)$/i.test(a.file)).map(([n]) => n);
+function buildInputs(){
+  const row = $("#inputs"), was = row.querySelector(".strip"), left = was ? was.scrollLeft : 0;
+  row.innerHTML = "";
+  row.hidden = onCommon();   // common has no channels of its own
+  if (onCommon()) return;
+  const p = work.passes[curPass], box = strip("istrip");
+  box.appendChild(el("span", null, "inputs"));
+  const chip = (label, title, cls) => { const s = el("span", "chip" + (cls ? " " + cls : ""), label); s.title = title; box.appendChild(s); };
+  chip("time", "uniform float time;  seconds since start");
+  chip("resolution", "uniform vec2 resolution;  render size in pixels");
+  if (!p.filter){
+    textLayers().forEach(d => chip(d.name + "_cover", `float ${d.name}_cover(vec2 p, float font_size);  layer ${d.name}'s words`));
+    imageAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s picture`));
+  }
+  (p.arrays || []).forEach(a => {
+    chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i) reads element i (loop-safe on VC4)\n${a.name}_size is ${a.size}`, "arr");
+  });
+  p.channels = p.channels || [];
+  p.channels.forEach((ch, ci) => {
+    const wrap = el("span", "chan"), sel = el("select");
+    work.passes.forEach(pp => { const o = el("option", null, pp.name + (pp.name === p.name ? " (self)" : "")); o.value = pp.name; sel.appendChild(o); });
+    sel.value = ch.buffer || work.passes[0].name;
+    sel.addEventListener("change", () => { ch.buffer = sel.value; markDirty(); postScene(); });
+    const x = el("span", "x", "×");
+    x.addEventListener("click", () => { p.channels.splice(ci, 1); markDirty(); postScene(); buildInputs(); });
+    wrap.append(el("span", null, "iChannel" + ci), sel, x);
+    box.appendChild(wrap);
+  });
+  const add = el("span", "addmini", "+ channel");
+  add.addEventListener("click", () => { p.channels.push({buffer: work.passes[0].name}); markDirty(); postScene(); buildInputs(); });
+  row.append(box, add);
+  box.scrollLeft = left;
+  stripFade(box);
+}
+
+// ---- the shader: closed under a line on a pass, open on common and a filter ----
+let shaderOpen = false;
+function paintShader(){
+  const p = onCommon() ? null : work.passes[curPass], solo = !p || !!p.filter;
+  $(".shadercard").classList.toggle("solo", solo);
+  $("#shTog").hidden = solo;
+  $("#shTog").textContent = (shaderOpen ? "▾" : "▸") + " shader";
+  $("#shTog").setAttribute("aria-expanded", String(shaderOpen));
+  CODE.box.hidden = !(solo || shaderOpen);
+  CODE.sync();
+}
+$("#shTog").addEventListener("click", () => { shaderOpen = !shaderOpen; paintShader(); showErrors(); });
+function loadCode(){
+  const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass];
+  ta.value = p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
+  ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
+  CODE.box.classList.toggle("readonly", !!(p && p.filter));
+  CODE.sync();
+}
+
+// the common block owns no params, so the add-param row can only target the scene
+function syncAddRow(){
+  const sel = $("#pPlace"), opt = sel && sel.querySelector('option[value="pass"]');
+  if (!opt) return;
+  opt.disabled = onCommon();
+  if (onCommon()) sel.value = "scene";
+}
+
+// ---- layers ----
+// The effects in draw order, each field with its default. A live field goes
+// to the render through /set, any other with a rebuild.
+const fxf = (key, def, live) => ({key, def, live: !!live});
+const FX = {
+  text_shadow: [fxf("x", 0.06), fxf("y", 0.08), fxf("blur", 0.15), fxf("color", "#000000", 1), fxf("strength", 0.7, 1)],
+  glow: [fxf("blur", 0.3), fxf("color", "#ffa500", 1), fxf("strength", 0.8, 1)],
+  text_stroke: [fxf("width", 0.06), fxf("color", "#000000", 1)],
+  karaoke: [fxf("sung", 0, 1), fxf("color", "#ffad2e", 1)],
+  wave: [fxf("height", 0.1), fxf("speed", 0.6, 1)],
+  scroll: [fxf("speed", 2, 1)],
+  blink: [fxf("rate", 1, 1)],
+};
+// slug draws no distance field, so these draw under mtsdf only
+const NEEDS_MTSDF = ["text_shadow", "glow", "text_stroke"];
+const BLENDS = ["normal", "add", "multiply", "screen"], RENDERS = ["mtsdf", "slug"], ALIGNS = ["left", "center", "right"];
+// a layer's own fields that change with no rebuild
+const LIVE = ["x", "y", "color", "opacity", "visible", "image"];
+
+// A layer's place in the page, open or closed, by its name: editor state.
+const layerUI = new Map();
+function ui(name){
+  let u = layerUI.get(name);
+  if (!u){ u = {open: true}; layerUI.set(name, u); }
+  return u;
+}
+
+// A live field of layer d, or of its effect, set with no rebuild. The running
+// scene refuses a field it has not built yet, an effect just added for one,
+// and the next post carries the value instead.
+function setLive(d, field, value, effect){
+  let q = `layer=${encodeURIComponent(d.name)}&field=${encodeURIComponent(field)}&value=${encodeURIComponent(value)}`;
+  if (effect) q += `&effect=${encodeURIComponent(effect)}`;
+  sendLive(q);
+}
+function sendLive(q, scene = active){
+  fetch(`/set?scene=${encodeURIComponent(scene)}&${q}`, {method:"POST"})
+    .then(r => { if (r.status === 409) sceneMoved(scene); else if (!r.ok && scene === active) rebuildSoon(); })
+    .catch(() => {});
+}
+function rebuildSoon(){ clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
+const liveColor = c => c == null ? "none" : isGrad(c) ? JSON.stringify(c) : Array.isArray(c) ? c.join(",") : c;
+const toHex = c => Array.isArray(c) ? rgbToHex(c) : c;
+
+function edited(p){ p.layersEdited = true; markDirty(); }
+// Layer d's own key. null leaves the key out, for ghee's default.
+function setKey(p, d, key, v){
+  if (v == null) delete d[key]; else d[key] = v;
+  edited(p);
+  if (!LIVE.includes(key)){ postScene(); return; }
+  const wire = key === "opacity" ? (v == null ? 1 : v) : key === "visible" ? (v !== false) : key === "color" ? liveColor(v) : (v == null ? "none" : v);
+  setLive(d, key, String(wire));
+}
+// The words, live through the string param of the layer's name.
+function wordsTo(p, d){
+  let timer = null;
+  return (text, now) => {
+    d.text = text; edited(p);
+    clearTimeout(timer);
+    const scene = active, q = `pass=scene&name=${encodeURIComponent(d.name)}&value=${encodeURIComponent(text)}`;
+    if (now) sendLive(q, scene); else timer = setTimeout(() => sendLive(q, scene), 300);
+  };
+}
+
+// ---- controls ----
+// A number field that fits its value, with no spin buttons. A live one sends
+// every keystroke. Any other applies when it is left or Enter is pressed. An
+// empty field is null: ghee's default, which the placeholder names.
+function num(value, ph, set, live, o = {}){
+  const i = el("input", "ctl num");
+  i.type = "number"; i.step = o.step || "any";
+  if (o.min != null) i.min = o.min;
+  if (o.max != null) i.max = o.max;
+  i.placeholder = ph || ""; i.value = value == null ? "" : value;
+  const fit = () => i.style.setProperty("--n", Math.max(i.value.length, (ph || "").length, 2));
+  fit();
+  const take = () => {
+    if (i.validity.badInput) return;   // half typed, as "-"
+    const t = i.value.trim();
+    if (t === "") set(null);
+    else { const n = parseFloat(t); if (isFinite(n)) set(n); }
+  };
+  i.addEventListener("input", () => { fit(); if (live) take(); });
+  if (!live) i.addEventListener("change", take);
+  return i;
+}
+function pick(opts, value, set, cls = "ctl"){
+  const s = el("select", cls);
+  const all = opts.includes(value) ? opts : opts.concat([value]);   // a value the list lacks stays
+  all.forEach(o => { const op = el("option", null, o); op.value = o; s.appendChild(op); });
+  s.value = value;
+  s.addEventListener("change", () => set(s.value));
+  return s;
+}
+// The console's colour control, the swatch alone. `empty` gives the colour a
+// "none" state and a button back to it.
+function colorCtl(get, set, def, empty){
+  const box = el("span", "clr");
+  const paint = () => {
+    box.innerHTML = "";
+    const v = get();
+    if (empty && v == null){
+      const b = el("button", "clrnone", "none");
+      b.type = "button"; b.title = "pick a tint";
+      b.addEventListener("click", () => {
+        set(def); paint();
+        const i = box.querySelector("input[type=color]");
+        try { i.showPicker(); } catch (e) {}
+      });
+      box.appendChild(b);
+      return;
+    }
+    const inp = el("input");
+    inp.type = "color"; inp.value = toHex(v == null ? def : v); inp.setAttribute("aria-label", box.dataset.k || "color");
+    inp.addEventListener("input", () => set(inp.value));
+    box.appendChild(inp);
+    if (empty) box.appendChild(tbtn("×", "no tint", "x", () => { set(null); paint(); }));
+  };
+  paint();
+  return box;
+}
+// The words box grows with them, up to eight lines.
+function words(get, set, label){
+  const grow = el("div", "grow"), mirror = el("pre"), ta = el("textarea");
+  mirror.setAttribute("aria-hidden", "true");
+  ta.spellcheck = false; ta.setAttribute("aria-label", label);
+  grow.append(mirror, ta);
+  const fit = () => { mirror.textContent = ta.value + "\n"; };
+  ta.value = get(); fit();
+  ta.addEventListener("input", () => { fit(); set(ta.value, false); });
+  ta.addEventListener("change", () => set(ta.value, true));
+  return grow;
+}
+function KV(key){
+  const kv = el("div", "kv"), v = el("div", "v");
+  kv.append(el("span", "k", key), v);
+  return {kv, v};
+}
+// ctl, or the field inside it, read out by its key
+function keyed(ctl, key){
+  ctl.dataset.k = key;
+  const f = ctl.matches("input, select") ? ctl : ctl.querySelector("input, select");
+  if (f) f.setAttribute("aria-label", key);
+  return ctl;
+}
+function sub(key, ctl){
+  const s = el("span", "sub");
+  s.append(el("span", "k", key), keyed(ctl, key));
+  return s;
+}
+
+// a text layer's colour: solid, white unless set, or a gradient from, to, angle
+function colorKV(p, d){
+  const {kv, v} = KV("color");
+  const grad = isGrad(d.color);
+  v.appendChild(keyed(pick(["solid", "gradient"], grad ? "gradient" : "solid", m => {
+    if (m === "gradient") setKey(p, d, "color", {from: toHex(d.color) || "#ffffff", to: "#000000", angle: 90});
+    else { const back = toHex(d.color.from); setKey(p, d, "color", back === "#ffffff" ? null : back); }
+    kv.replaceWith(colorKV(p, d));
+  }), "color"));
+  if (grad){
+    const g = d.color, send = () => setKey(p, d, "color", g);
+    const grp = el("span", "grad");
+    grp.append(sub("from", colorCtl(() => g.from, x => { g.from = x; send(); }, "#ffffff")),
+               sub("to", colorCtl(() => g.to, x => { g.to = x; send(); }, "#000000")),
+               sub("angle", num(g.angle, "", x => { if (x == null) delete g.angle; else g.angle = x; send(); }, true)));
+    v.appendChild(grp);
+  } else {
+    v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff"), "color"));
+  }
+  return kv;
+}
+// two numbers on one line, each under its own key, an empty one left out
+function pairKV(p, d, a, b, ph, live){
+  const {kv, v} = KV(a);
+  v.append(keyed(num(d[a], ph, x => setKey(p, d, a, x), live), a), el("span", "k2", b), keyed(num(d[b], ph, x => setKey(p, d, b, x), live), b));
+  return kv;
+}
+
+function buildLayers(){
+  const box = $("#layers"); box.innerHTML = "";
+  const p = onCommon() ? null : work.passes[curPass], proc = isProcedural();
+  box.hidden = !p || !!p.filter || (proc && !(p.layers || []).length);
+  if (box.hidden) return;
+  const row = el("div", "lyrow");
+  row.appendChild(el("span", null, "layers"));
+  // a program owns which layers its scene has, and their order
+  if (!proc) row.appendChild(addMenu("+ layer ▾", [
+    ["text", () => addLayer(p, "text")],
+    ["image", () => addLayer(p, "image"), !imageAssets().length, "the scene has no image asset"]]));
+  box.appendChild(row);
+  (p.layers || []).forEach(d => box.appendChild(layerCard(p, d)));
+}
+function addLayer(p, kind){
+  const list = p.layers = p.layers || [];
+  let d;
+  if (kind === "text") d = {name: uniqueName("text"), text: "text"};
+  else {
+    const imgs = imageAssets(), used = new Set(list.map(x => x.image));
+    d = {name: uniqueName("image"), image: imgs.find(n => !used.has(n)) || imgs[0]};
+  }
+  list.push(d);
+  ui(d.name).open = true;
+  edited(p); postScene();
+  buildLayers(); buildInputs();
+  const cards = document.querySelectorAll("#layers .lay");
+  cards[cards.length - 1].scrollIntoView({block: "nearest", behavior: "smooth"});
+}
+async function delLayer(p, d){
+  if (!await ask(`Remove layer ${p.name} › ${d.name}?`)) return;
+  const k = (p.layers || []).indexOf(d);
+  if (k < 0) return;
   p.layers.splice(k, 1);
   if (!p.layers.length) delete p.layers;
-  p.layersEdited = true;
-  if (curPass === i && curLayer != null){ if (curLayer === k) curLayer = null; else if (curLayer > k) curLayer--; }
-  markDirty(); postScene();
-  buildTabs(); buildChannels(); loadCode();
+  layerUI.delete(d.name);
+  edited(p); postScene();
+  buildLayers(); buildInputs();
+}
+// The list's order is the draw order. The moved layer's header stays under the
+// pointer: the page scrolls by as much as the layer moved.
+function moveLayer(p, d, by){
+  const list = p.layers, k = list.indexOf(d), j = k + by;
+  if (k < 0 || j < 0 || j >= list.length) return;
+  const was = document.querySelectorAll("#layers .lay")[k];
+  const before = was.getBoundingClientRect().top, sideways = was.querySelector(".lstrip").scrollLeft;
+  list.splice(k, 1); list.splice(j, 0, d);
+  edited(p); postScene();
+  buildInputs(); buildLayers();
+  const now = document.querySelectorAll("#layers .lay")[j];
+  now.querySelector(".lstrip").scrollLeft = sideways;
+  const after = now.getBoundingClientRect().top;
+  const card = $(".shadercard");
+  if (getComputedStyle(card).overflowY === "auto") card.scrollTop += after - before; else scrollBy(0, after - before);
+}
+async function renameLayer(p, d){
+  const old = d.name, n = await askName(`Rename layer ${p.name} › ${old}`, old);
+  if (n == null || n === old || !(p.layers || []).includes(d)) return;
+  d.name = n;
+  layerUI.set(n, ui(old)); layerUI.delete(old);
+  edited(p); postScene();
+  buildLayers(); buildInputs();
 }
 
-// A field: a label, a control, and a one-line hint under the control.
-let fieldSeq = 0;
-function field(box, key, ctl, hint){
-  const f = el("div", "field"), k = el("label", "k", key);
-  const target = ctl.matches("input, select, textarea") ? ctl : ctl.querySelector("textarea");
-  target.id = "f" + (++fieldSeq); k.htmlFor = target.id;
-  f.appendChild(k); f.appendChild(ctl);
-  if (hint) f.appendChild(el("div", "hint", hint));
-  box.appendChild(f);
-  return f;
-}
-function pick(opts, value, set){
-  const sel = el("select");
-  opts.forEach(o => { const op = el("option", null, o); op.value = o; sel.appendChild(op); });
-  sel.value = value;
-  sel.addEventListener("change", ()=> set(sel.value));
-  return sel;
-}
-
-// A layer's own settings. A value at its default leaves the key out, as the
-// server writes the scene back. The words go live through /set, as the string
-// param that ghee declares under the layer's name.
-function buildLayerCtl(){
-  const box = $("#layerctl"), d = openLayer(), scene = active;
-  box.innerHTML = "";
-  if (!d) return;
-  const p = work.passes[curPass];
-  const edit = () => { p.layersEdited = true; markDirty(); postScene(); };
-  const head = el("div", "edhead", "layer");
-  head.appendChild(el("span", "nm", layerTabName(p, curLayer)));
-  box.appendChild(head);
-  // An image layer has no words.
-  const image = d.image != null;
-  if (!image){
-    const grow = el("div", "grow"), mirror = el("pre"), words = el("textarea");
-    mirror.setAttribute("aria-hidden", "true");
-    words.spellcheck = false;
-    grow.appendChild(mirror); grow.appendChild(words);
-    const fit = () => { mirror.textContent = words.value + "\n"; };
-    words.value = d.text || ""; fit();
-    const send = () => {
-      if (words.value === (d.text || "")) return;
-      d.text = words.value; p.layersEdited = true;
-      setParam(scene, `pass=scene&name=${encodeURIComponent(d.name)}&value=${encodeURIComponent(d.text)}`);
-      markDirty();
+// An effect's `visible` is the user's own choice. Whether it draws also
+// depends on render: slug has no distance field for three of them.
+const slugLocked = (d, f) => d.render === "slug" && NEEDS_MTSDF.includes(f);
+function fxRow(p, d, f, redo){
+  const o = d[f], own = o.visible === false, locked = slugLocked(d, f), off = own || locked;
+  const row = el("div", "fxrow" + (off ? " off" : "")), v = strip("fstrip");
+  v.appendChild(el("span", "fxname", f));
+  FX[f].forEach(fd => {
+    const set = x => {
+      if (x == null) delete o[fd.key]; else o[fd.key] = x;
+      edited(p);
+      if (fd.live) setLive(d, fd.key, String(x == null ? fd.def : x), f); else postScene();
     };
-    let timer = null;
-    words.addEventListener("input", ()=>{ fit(); clearTimeout(timer); timer = setTimeout(send, 300); });
-    words.addEventListener("change", ()=>{ clearTimeout(timer); send(); });
-    field(box, "text", grow);
-  }
-  // A number, or empty for ghee's default.
-  const num = (key) => {
-    const inp = el("input");
-    inp.type = "number"; inp.step = "any"; inp.value = d[key] == null ? "" : d[key];
-    inp.addEventListener("change", ()=>{
-      const v = parseFloat(inp.value);
-      if (inp.value.trim() === "" || !isFinite(v)) delete d[key]; else d[key] = v;
-      edit();
+    v.appendChild(sub(fd.key, fd.key === "color"
+      ? colorCtl(() => o.color == null ? fd.def : o.color, set, fd.def)
+      : num(o[fd.key] == null ? fd.def : o[fd.key], "", set, fd.live)));
+  });
+  const acts = el("span", "fxacts");
+  const eye = tbtn(off ? EYE_OFF : EYE, locked ? `${f} is not drawn under render slug` : own ? `${f} is bypassed, draw it` : `bypass ${f}`,
+    "m" + (off ? " off" : ""), () => {
+      if (own) delete o.visible; else o.visible = false;
+      edited(p); setLive(d, "visible", String(own), f); redo();
     });
-    field(box, key, inp);
+  eye.disabled = locked;
+  acts.append(eye, tbtn("×", `remove ${f}`, "x", () => { delete d[f]; edited(p); postScene(); redo(); }));
+  row.append(v, acts);
+  return row;
+}
+function fxBlock(p, d){
+  const box = el("div", "fx");
+  const redo = () => box.replaceWith(fxBlock(p, d));
+  const list = Object.keys(FX), missing = list.filter(f => !d[f]);
+  if (missing.length) box.appendChild(addMenu("+ effect ▾", missing.map(f => [f, () => {
+    d[f] = {}; edited(p); postScene(); redo();
+  }, slugLocked(d, f), "needs render mtsdf"])));
+  list.filter(f => d[f]).forEach(f => box.appendChild(fxRow(p, d, f, redo)));
+  return box;
+}
+
+// A row that does not fit scrolls sideways: a swipe on touch, a drag with the
+// mouse. A drag that moved is not a click on what it started on.
+const stripFade = st => {
+  const max = st.scrollWidth - st.clientWidth;
+  st.classList.toggle("ml", st.scrollLeft > 1);
+  st.classList.toggle("mr", st.scrollLeft < max - 1);
+};
+// a strip taken out of the page shrinks to nothing, and is let go then
+const stripSeen = new ResizeObserver(es => es.forEach(e => {
+  if (e.target.isConnected) stripFade(e.target); else stripSeen.unobserve(e.target);
+}));
+function strip(cls){
+  const st = el("div", "strip " + cls);
+  let x0 = null, s0 = 0, moved = false;
+  st.addEventListener("scroll", () => stripFade(st));
+  st.addEventListener("pointerdown", e => {
+    if (e.pointerType !== "mouse" || e.button !== 0 || e.target.closest("input, select, textarea")) return;
+    x0 = e.clientX; s0 = st.scrollLeft; moved = false;
+  });
+  st.addEventListener("pointermove", e => {
+    if (x0 == null) return;
+    const dx = e.clientX - x0;
+    if (!moved && Math.abs(dx) > 4){ moved = true; st.setPointerCapture(e.pointerId); st.classList.add("drag"); }
+    if (moved) st.scrollLeft = s0 - dx;
+  });
+  const end = () => { x0 = null; st.classList.remove("drag"); };
+  st.addEventListener("pointerup", end);
+  st.addEventListener("pointercancel", end);
+  st.addEventListener("click", e => { if (moved){ e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+  stripSeen.observe(st);
+  return st;
+}
+// a closed text layer's words on one line: a newline shows as ↵
+const oneLine = t => t.split("\n").join("↵"), fromOneLine = t => t.split("↵").join("\n");
+
+function layerCard(p, d){
+  const u = ui(d.name), img = isImage(d), hidden = d.visible === false, proc = isProcedural();
+  const card = el("div", "lay" + (hidden ? " hid" : ""));
+  const redo = () => {
+    const was = card.querySelector(".lstrip").scrollLeft, next = layerCard(p, d);
+    card.replaceWith(next);
+    next.querySelector(".lstrip").scrollLeft = was;
   };
-  if (!image) num("font_size");
-  num("x"); num("y");
-  field(box, "blend", pick(["normal", "add", "multiply", "screen"], d.blend || "normal", v => {
-    if (v === "normal") delete d.blend; else d.blend = v;
-    edit();
+  const head = el("div", "lhead"), st = strip("lstrip"), tog = el("button", "tog");
+  tog.type = "button"; tog.setAttribute("aria-expanded", String(u.open));
+  tog.append(el("span", "car", u.open ? "▾" : "▸"), el("span", "lname", d.name), el("span", "lkind", img ? "image" : "text"));
+  tog.addEventListener("click", () => { u.open = !u.open; redo(); });
+  const sels = el("span", "lsels");
+  const hk = (key, ctl) => {
+    ctl.setAttribute("aria-label", key);
+    const l = el("label", "hk");
+    l.append(el("span", null, key), ctl);
+    sels.appendChild(l);
+  };
+  hk("blend", pick(BLENDS, d.blend || "normal", x => setKey(p, d, "blend", x === "normal" ? null : x)));
+  if (!img) hk("render", pick(RENDERS, d.render || "mtsdf", x => { setKey(p, d, "render", x === "mtsdf" ? null : x); redo(); }));
+  hk("opacity", num(d.opacity == null ? 1 : d.opacity, "", x => setKey(p, d, "opacity", x == null || x === 1 ? null : x), true, {min: 0, max: 1, step: 0.05}));
+  const acts = el("span", "lacts");
+  if (!proc) acts.appendChild(tbtn(PENCIL, "rename", "", () => renameLayer(p, d)));
+  acts.appendChild(tbtn(hidden ? EYE_OFF : EYE, hidden ? `layer ${d.name} is hidden, show it` : `hide layer ${d.name}`, "m" + (hidden ? " off" : ""), () => {
+    setKey(p, d, "visible", hidden ? null : false); redo();
   }));
+  if (!proc) acts.appendChild(tbtn("×", `remove layer ${p.name} › ${d.name}`, "x", () => delLayer(p, d)));
+  st.appendChild(tog);
+  const images = imageAssets();
+  if (!u.open){
+    if (img){
+      const s = pick(images, d.image, x => setKey(p, d, "image", x));
+      s.setAttribute("aria-label", "image");
+      st.appendChild(s);
+    } else {
+      const send = wordsTo(p, d), w = el("input", "ctl hword");
+      w.type = "text"; w.spellcheck = false; w.value = oneLine(d.text || ""); w.setAttribute("aria-label", "text");
+      w.addEventListener("input", () => send(fromOneLine(w.value), false));
+      w.addEventListener("change", () => send(fromOneLine(w.value), true));
+      // focus scrolls the strip to the field, and done editing, the name shows again
+      w.addEventListener("blur", () => st.scrollTo({left: 0, behavior: "smooth"}));
+      st.appendChild(w);
+    }
+  }
+  st.append(sels, el("span", "lsp"));
+  if (!proc){
+    const list = p.layers, k = list.indexOf(d), mv = el("span", "lmv");
+    const up = tbtn("↑", `move layer ${d.name} up`, "", () => moveLayer(p, d, -1));
+    const down = tbtn("↓", `move layer ${d.name} down`, "", () => moveLayer(p, d, 1));
+    up.disabled = k === 0; down.disabled = k === list.length - 1;
+    mv.append(up, down);
+    st.appendChild(mv);
+  }
+  head.append(st, acts); card.appendChild(head);
+  if (!u.open) return card;
+
+  const body = el("div", "lbody"), kvs = el("div", "kvs");
+  if (img){
+    const {kv, v} = KV("image");
+    v.appendChild(keyed(pick(images, d.image, x => setKey(p, d, "image", x)), "image"));
+    const tint = KV("color");
+    tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", true), "color"));
+    kvs.append(kv, pairKV(p, d, "x", "y", "centre", true), pairKV(p, d, "width", "height", "auto", false), tint.kv);
+  } else {
+    const {kv, v} = KV("text"), send = wordsTo(p, d);
+    v.appendChild(words(() => d.text || "", send, "text"));
+    const size = KV("font_size");
+    size.v.appendChild(keyed(num(d.font_size, "fit", x => setKey(p, d, "font_size", x), false), "font_size"));
+    const fam = KV("font_family");
+    fam.v.appendChild(keyed(pick(["built-in"], d.font_family || "built-in", x => setKey(p, d, "font_family", x === "built-in" ? null : x)), "font_family"));
+    const align = KV("text_align");
+    align.v.appendChild(keyed(pick(ALIGNS, d.text_align || "left", x => setKey(p, d, "text_align", x === "left" ? null : x)), "text_align"));
+    kvs.append(kv, colorKV(p, d), size.kv, pairKV(p, d, "x", "y", "centre", true), fam.kv, align.kv);
+  }
+  body.appendChild(kvs);
+  if (!img) body.appendChild(fxBlock(p, d));   // an image layer takes no effects
+  card.appendChild(body);
+  return card;
 }
 
-// Each text of the scene. Its words go live through /set, as the string
-// param that ghee declares under the text's name, and its font and align
-// through the posted scene.
-function buildTexts(){
-  const texts = (work && work.texts) || {}, names = Object.keys(texts), box = $("#texts"), scene = active;
-  $("#textsCard").hidden = !names.length;
-  box.innerHTML = "";
-  const fonts = $("#fontAssets"); fonts.innerHTML = "";
-  Object.entries((work && work.assets) || {}).forEach(([n, a]) => {
-    if (/\.(ttf|otf)$/i.test(a.file || "")){ const o = el("option"); o.value = n; fonts.appendChild(o); }
-  });
-  names.forEach(name => {
-    const t = texts[name], sec = el("div", "ttext"), head = el("div", "thead");
-    head.appendChild(el("span", "tname", name));
-    const by = el("span", "drawnby"); by.dataset.text = name;
-    head.appendChild(by);
-    sec.appendChild(head);
-    const grow = el("div", "grow"), mirror = el("pre"), words = el("textarea");
-    mirror.setAttribute("aria-hidden", "true");
-    words.spellcheck = false;
-    grow.appendChild(mirror); grow.appendChild(words);
-    const fit = () => { mirror.textContent = words.value + "\n"; };
-    words.value = t.value || ""; fit();
-    const send = () => {
-      if (words.value === (t.value || "")) return;
-      t.value = words.value;
-      setParam(scene, `pass=scene&name=${encodeURIComponent(name)}&value=${encodeURIComponent(t.value)}`);
-      markDirty();
-    };
-    let timer = null;
-    words.addEventListener("input", ()=>{ fit(); clearTimeout(timer); timer = setTimeout(send, 300); });
-    words.addEventListener("change", ()=>{ clearTimeout(timer); send(); });
-    field(sec, "value", grow, "the words, live as you type, and a newline breaks the line");
-    const font = el("input"), named = () => [].concat(t.font || []).join(", ");
-    font.setAttribute("list", "fontAssets"); font.spellcheck = false; font.autocomplete = "off";
-    font.setAttribute("autocapitalize", "off");
-    font.placeholder = "built-in";
-    font.value = named();
-    const ferr = el("div", "ferr"); ferr.hidden = true;
-    font.addEventListener("change", async ()=>{
-      const list = font.value.split(",").map(f => f.trim()).filter(Boolean);
-      if (list.join(", ") === named()) return;
-      if (!list.length) delete t.font; else t.font = list.length === 1 ? list[0] : list;
-      markDirty(); await postScene();
-      ferr.textContent = postErr; ferr.hidden = !postErr;
-    });
-    field(sec, "font", font, "a font asset or a .ttf or .otf file, then a comma before each fallback, or empty for the built-in DejaVu Sans").appendChild(ferr);
-    field(sec, "align", pick(["left", "center", "right"], t.align || "left", v => {
-      if (v === "left") delete t.align; else t.align = v;
-      markDirty(); postScene();
-    }), "where each line sits in the block");
-    box.appendChild(sec);
-  });
-  showDrawnBy();
-}
-// Under each text's name: the tabs of the layers that draw it, and the passes
-// whose GLSL reads its coverage.
-function showDrawnBy(){
-  document.querySelectorAll(".drawnby").forEach(by => {
-    const name = by.dataset.text, drawn = [], read = [];
-    (work.passes || []).forEach(p => {
-      layerLabels(p).forEach((l, k) => { if (p.layers[k].text === name) drawn.push(`${p.name} › ${l}`); });
-      if ((p.code || "").includes(name + "_cover")) read.push(p.name);
-    });
-    const say = [];
-    if (drawn.length) say.push("drawn by " + drawn.join(", "));
-    if (read.length) say.push(`read through ${name}_cover in ` + read.join(", "));
-    by.textContent = say.length ? say.join(" · ") : "unused";
-  });
-}
-
-// a layer's settings show in place of the code while a layer is open
-function showLayer(d){
-  $("#layerctl").hidden = !d;
-  CODE.box.hidden = !!d;
-  for (const n of [$("#vertexHead"), VERTEX.box, $("#fragmentHead")]) n.hidden = true;
-}
-
+// ---- passes and the common block ----
 async function addFilter(name){
   if (!FILTERS[name]) return;
   // name and place only: the server builds the pass from the filter
   work.passes.push({ name: uniqueName(name), code: "", channels: [], params: {}, filter: name });
   (work.filters = work.filters || []).push(name);  // save strips the pass, keeps this
-  curPass = work.passes.length - 1; curLayer = null; markDirty(); await postScene();
-  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
+  curPass = work.passes.length - 1; markDirty(); await postScene();
+  buildPass(); buildParams(); refreshInfo();
 }
-
-function renamePass(i, lbl){
-  const inp = document.createElement("input");
-  inp.value = work.passes[i].name;
-  const commit = ()=>{
-    const nn = inp.value.trim() || work.passes[i].name, old = work.passes[i].name;
-    if (nn !== old){
-      work.passes.forEach(p => (p.channels||[]).forEach(c => { if (c.buffer===old) c.buffer=nn; }));
-      work.passes[i].name = nn; markDirty(); postScene();
-    }
-    buildTabs(); buildChannels();
-  };
-  inp.addEventListener("blur", commit);
-  inp.addEventListener("keydown", e=>{ if(e.key==="Enter") inp.blur(); if(e.key==="Escape"){ inp.value=work.passes[i].name; inp.blur(); } });
-  lbl.replaceWith(inp); inp.focus(); inp.select();
+function addCommon(){
+  work.common = {code: ""};
+  curPass = COMMON; markDirty(); postScene();
+  buildPass(); buildParams(); refreshInfo();
+}
+async function delCommon(){
+  if (!await ask("Remove the common block?") || !hasCommon()) return;
+  delete work.common;
+  if (onCommon()) curPass = 0;
+  markDirty(); postScene();
+  buildPass(); buildParams(); refreshInfo();
+}
+function addPass(){
+  const name = uniqueName("pass");
+  work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
+  curPass = work.passes.length - 1; markDirty(); postScene();
+  buildPass(); buildParams(); refreshInfo();
+}
+async function delPass(i){
+  if (work.passes.length <= 1) return;
+  const p = work.passes[i], name = p.name, filt = p.filter, n = (p.layers || []).length;
+  if (!await ask(`Remove pass ${name}${n > 1 ? ` and its ${n} layers` : n ? " and its layer" : ""}?`) || work.passes[i] !== p) return;
+  work.passes.splice(i, 1);
+  if (filt && Array.isArray(work.filters)){
+    const fi = work.filters.indexOf(filt);
+    if (fi >= 0) work.filters.splice(fi, 1);
+  }
+  work.passes.forEach(q => { q.channels = (q.channels || []).filter(c => c.buffer !== name); });
+  // with every pass left hidden, the last shows again: one stays visible
+  if (work.passes.every(q => q.visible === false)) delete work.passes[work.passes.length - 1].visible;
+  if (curPass >= work.passes.length) curPass = work.passes.length - 1;
+  markDirty(); postScene();
+  buildPass(); buildParams(); refreshInfo();
+}
+async function renamePass(i){
+  const p = work.passes[i], old = p.name, n = await askName(`Rename pass ${old}`, old);
+  if (n == null || n === old || work.passes[i] !== p) return;
+  work.passes.forEach(q => (q.channels || []).forEach(c => { if (c.buffer === old) c.buffer = n; }));
+  p.name = n; markDirty(); postScene();
+  buildPass(); buildParams();
 }
 
 // A yes or no in the page's own dialog, resolved true on remove. Focus starts
@@ -1215,113 +1674,45 @@ $("#ask").addEventListener("keydown", e=>{
   else if (e.key === "Tab"){ e.preventDefault(); (document.activeElement === $("#askNo") ? $("#askYes") : $("#askNo")).focus(); }
 });
 
-// An empty name keeps the layer's name. The server judges the name, and its
-// refusal shows under the editor.
-function renameLayer(i, k, lbl){
-  const p = work.passes[i], d = p.layers[k], inp = el("input");
-  inp.value = d.name || ""; inp.placeholder = layerLabels(p)[k];
-  inp.spellcheck = false; inp.autocomplete = "off"; inp.setAttribute("autocapitalize", "off");
-  const commit = ()=>{
-    const nn = inp.value.trim();
-    if (nn && nn !== d.name){
-      d.name = nn;
-      p.layersEdited = true; markDirty(); postScene();
-    }
-    buildTabs(); buildLayerCtl();
-  };
-  inp.addEventListener("blur", commit);
-  inp.addEventListener("keydown", e=>{ if(e.key==="Enter") inp.blur(); if(e.key==="Escape"){ inp.value = d.name || ""; inp.blur(); } });
-  lbl.replaceWith(inp); inp.focus(); inp.select();
+// A new name in the same dialog, resolved null on cancel. Enter takes the name
+// once it keeps the rule, Escape and the scrim cancel, and Tab goes round the
+// field and the two buttons.
+let named = null, nameFrom = null, nameWas = "";
+function askName(question, current){
+  $("#renText").textContent = question;
+  $("#renIn").value = current; nameWas = current;
+  $("#renErr").hidden = true;
+  nameFrom = document.activeElement;
+  $("#ren").hidden = false;
+  $("#renIn").focus(); $("#renIn").select();
+  return new Promise(done => { named = done; });
 }
-
-function addCommon(){
-  work.common = {code: ""};
-  curPass = COMMON; curLayer = null; markDirty(); postScene();
-  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
+function nameDone(v){
+  if (!named) return;
+  const done = named;
+  named = null;
+  $("#ren").hidden = true;
+  if (nameFrom && nameFrom.isConnected) nameFrom.focus();
+  done(v);
 }
-
-async function delCommon(){
-  if (!await ask("Remove the common block?") || !hasCommon()) return;
-  delete work.common;
-  if (onCommon()) curPass = 0;
-  curLayer = null;
-  markDirty(); postScene();
-  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
+function nameOk(){
+  const n = $("#renIn").value.trim(), err = nameError(n, nameWas);
+  if (err){ $("#renErr").textContent = err; $("#renErr").hidden = false; return; }
+  nameDone(n);
 }
-
-function addPass(){
-  const name = uniqueName("pass");
-  work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
-  curPass = work.passes.length - 1; curLayer = null; markDirty(); postScene();
-  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
-}
-
-async function delPass(i){
-  if (work.passes.length <= 1) return;
-  const p = work.passes[i], name = p.name, filt = p.filter, n = (p.layers || []).length;
-  if (!await ask(`Remove pass ${name}${n > 1 ? ` and its ${n} layers` : n ? " and its layer" : ""}?`) || work.passes[i] !== p) return;
-  work.passes.splice(i,1);
-  if (filt && Array.isArray(work.filters)){
-    const fi = work.filters.indexOf(filt);
-    if (fi >= 0) work.filters.splice(fi, 1);
+$("#renNo").addEventListener("click", () => nameDone(null));
+$("#renYes").addEventListener("click", nameOk);
+$("#renIn").addEventListener("input", () => { $("#renErr").hidden = true; });
+$("#ren").addEventListener("click", e => { if (e.target === $("#ren")) nameDone(null); });
+$("#ren").addEventListener("keydown", e => {
+  if (e.key === "Escape"){ e.preventDefault(); nameDone(null); }
+  else if (e.key === "Enter"){ e.preventDefault(); if (document.activeElement === $("#renNo")) nameDone(null); else nameOk(); }
+  else if (e.key === "Tab"){
+    e.preventDefault();
+    const ring = [$("#renIn"), $("#renNo"), $("#renYes")], k = ring.indexOf(document.activeElement);
+    ring[(k + (e.shiftKey ? ring.length - 1 : 1)) % ring.length].focus();
   }
-  work.passes.forEach(p => { p.channels = (p.channels||[]).filter(c => c.buffer !== name); });
-  if (curPass >= work.passes.length) curPass = work.passes.length - 1;
-  curLayer = null;
-  markDirty(); postScene();
-  buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo();
-}
-
-function buildChannels(){
-  const box = $("#channels"); box.innerHTML = "";
-  if (onCommon()){ $("#inputs").innerHTML = ""; return; }   // common has no channels of its own
-  const p = work.passes[curPass]; p.channels = p.channels || [];
-  if (p.channels.length){ const l=document.createElement("span"); l.textContent="channels"; box.appendChild(l); }
-  p.channels.forEach((ch,ci)=>{
-    const wrap = document.createElement("span"); wrap.className="chan";
-    const nm = document.createElement("span"); nm.textContent = "iChannel"+ci;
-    const sel = document.createElement("select");
-    work.passes.forEach(pp=>{ const o=document.createElement("option"); o.value=pp.name; o.textContent = pp.name + (pp.name===p.name?" (self)":""); sel.appendChild(o); });
-    sel.value = ch.buffer || work.passes[0].name;
-    sel.addEventListener("change", ()=>{ ch.buffer = sel.value; markDirty(); postScene(); });
-    const x = document.createElement("span"); x.className="x"; x.textContent="×";
-    x.addEventListener("click", ()=>{ p.channels.splice(ci,1); markDirty(); postScene(); buildChannels(); });
-    wrap.appendChild(nm); wrap.appendChild(sel); wrap.appendChild(x);
-    box.appendChild(wrap);
-  });
-  const add = document.createElement("span"); add.className="addmini";
-  add.textContent = "+ channel";
-  add.addEventListener("click", ()=>{ p.channels.push({ buffer: work.passes[0].name }); markDirty(); postScene(); buildChannels(); });
-  box.appendChild(add);
-  buildInputs();
-}
-
-function buildInputs(){
-  const box = $("#inputs"); if (!box) return; box.innerHTML = "";
-  const p = work.passes[curPass];
-  const lab = document.createElement("span"); lab.textContent = "inputs"; box.appendChild(lab);
-  const chip = (label, title, cls)=>{ const s=document.createElement("span"); s.className="chip"+(cls?" "+cls:""); s.textContent=label; s.title=title; box.appendChild(s); };
-  chip("time", "uniform float time;  seconds since start");
-  chip("resolution", "uniform vec2 resolution;  render size in pixels");
-  (p.arrays||[]).forEach(a=>{
-    chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i) reads element i (loop-safe on VC4)\n${a.name}_size is ${a.size}`, "arr");
-  });
-}
-function loadCode(){
-  const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass], d = openLayer();
-  ta.value = d ? "" : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
-  ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
-  CODE.box.classList.toggle("readonly", !!(p && p.filter));
-  showLayer(d); buildLayerCtl(); CODE.sync(); showErrors(); syncAddRow();
-}
-
-// the common block owns no params, so the add-param row can only target the scene
-function syncAddRow(){
-  const sel = $("#pPlace"), opt = sel && sel.querySelector('option[value="pass"]');
-  if (!opt) return;
-  opt.disabled = onCommon();
-  if (onCommon()) sel.value = "scene";
-}
+});
 
 const VEC_ARITY = {vec2:2, vec3:3, vec4:4};
 const VEC_AXES = ["x","y","z","w"];
@@ -1397,11 +1788,12 @@ function buildParamRow(box, pm, name, scope){
     return;
   }
   if (pm.type === "color"){
-    const val = paramLabel(row, name, rgbToHex(pm.value));
+    paramLabel(row, name);
     const inp = el("input");
     inp.type = "color"; inp.value = rgbToHex(pm.value);
+    inp.setAttribute("aria-label", name);
     inp.addEventListener("input", ()=>{
-      pm.value = inp.value; val.textContent = inp.value;
+      pm.value = inp.value;
       send(inp.value);
     });
     row.appendChild(inp);
@@ -1517,76 +1909,35 @@ function buildParams(){
   let any = false;
   const paramNames = obj => Object.keys(obj||{}).filter(n => ["float","int","bool","color","vec2","vec3","vec4","string"].includes(obj[n].type));
   const sceneParams = work.params || {};
-  const sceneNames = paramNames(sceneParams);
+  // a text layer's words have their box on the layer
+  const words = new Set(textLayers().map(d => d.name));
+  const sceneNames = paramNames(sceneParams).filter(n => !words.has(n));
   // header the groups once there is more than one: the SCENE group plus any
   // pass that owns params
-  const passGroups = work.passes.filter(p => !p.muted && paramNames(p.params).length).length;
+  const passGroups = work.passes.filter(p => paramNames(p.params).length).length;
   const grouped = (sceneNames.length ? 1 : 0) + passGroups > 1;
   if (sceneNames.length){
-    if (grouped){ const h=document.createElement("div"); h.className="pgroup"; h.textContent="scene"; box.appendChild(h); }
+    if (grouped) box.appendChild(el("div", "pgroup", "scene"));
     sceneNames.forEach(name=>{ buildParamRow(box, sceneParams[name], name, "scene"); any = true; });
   }
   work.passes.forEach((p,pi)=>{
-    if (p.muted) return;                 // a muted pass contributes no params
     const names = paramNames(p.params);
     if (!names.length) return;
-    if (grouped){
-      const h = document.createElement("div"); h.className="pgroup";
-      h.textContent = (p.filter ? "ƒ " : "") + p.name;
-      box.appendChild(h);
-    }
+    const from = box.children.length;
+    if (grouped) box.appendChild(el("div", "pgroup", (p.filter ? "ƒ " : "") + p.name));
     names.forEach(name=>{ buildParamRow(box, p.params[name], name, pi); any = true; });
+    // a hidden pass keeps its params, dimmed as its tab is
+    if (p.visible === false) [...box.children].slice(from).forEach(c => c.classList.add("off"));
   });
   if (!any){ box.innerHTML = `<div class="muted">no parameters</div>`; }
 }
 
-const EYE = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
-const EYE_OFF = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.4 10.4 0 0 1 12 19c-6.5 0-10-7-10-7a19.4 19.4 0 0 1 5.06-5.94"/><path d="M9.9 4.24A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a19.4 19.4 0 0 1-3.22 4.2"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
-
-// Muted passes: a muted tail is dropped, so the output becomes the last live
-// pass (mute from the end to preview an intermediate buffer). A muted pass in
-// the middle becomes a passthrough of the pass before it, so the chain keeps
-// flowing around it (mute main under a filter and the filter shows the
-// previous buffer). A muted first pass has nothing to pass through: black.
-// Muted stubs hold their slot, so a pass index stays the compiled index.
-function compiledScene(){
-  let last = -1; work.passes.forEach((p,i)=>{ if(!p.muted) last = i; });
-  const passes = work.passes.slice(0, last+1).map((p,pi)=>{
-    const q = clone(p); delete q.muted; delete q.codeEdited; delete q.layersEdited;
-    if (p.muted){
-      delete q.filter;   // a muted filter runs as a plain pass-through
-      delete q.shader; delete q.layers; q.arrays = []; q.params = {};
-      if (pi === 0){
-        q.code = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
-        q.channels = [];
-      } else {
-        q.code = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
-        q.channels = [{ buffer: work.passes[pi-1].name }];
-      }
-    }
-    return q;
-  });
-  // the server appends a listed filter no pass carries: a muted one is a
-  // plain pass now, so its name stays out of the posted list
-  const filters = [...(work.filters || [])];
-  work.passes.forEach(p => {
-    if (p.filter && p.muted){ const i = filters.indexOf(p.filter); if (i >= 0) filters.splice(i, 1); }
-  });
-  // the editor's own commonEdited flag never goes on the wire
-  return { ...work, filters, common: hasCommon() ? {code: commonCode()} : undefined, passes };
-}
-function toggleMute(i){
-  const willMute = !work.passes[i].muted;
-  if (willMute && work.passes.filter(p=>!p.muted).length <= 1) return;  // keep one live pass
-  work.passes[i].muted = willMute;
-  postScene(); buildTabs(); buildParams(); refreshInfo();
-}
-// The server refuses a scene it cannot build, a layer with blank GLSL for one,
-// and the refusal shows until a posted scene builds.
+// The server refuses a scene it cannot build, and the refusal shows until a
+// posted scene builds.
 let postErr = "";
 async function postScene(){
   const name = active;
-  const r = await fetch("/scene?name=" + encodeURIComponent(name), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(compiledScene())});
+  const r = await fetch("/scene?name=" + encodeURIComponent(name), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(sceneOnly(work))});
   if (r.status === 409){ await sceneMoved(name); return; }
   if (r.ok){ postErr = ""; adoptFilters(await r.json()); }
   else postErr = await r.text();
@@ -1609,6 +1960,7 @@ async function sceneMoved(from){
   try {
     clearTimeout(compileTimer);
     const s = await jget("/scenes");
+    procedural = s.procedural || [];
     await loadScene(s.active, false);
     const n = $("#moved");
     n.textContent = `the console switched to ${s.active}, so this edit to ${from} was not applied`;
@@ -1635,9 +1987,7 @@ function adoptFilters(doc){
 function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
 // hand-edited code: merge keeps it as it is
 CODE.ta.addEventListener("input", ()=>{
-  const d = openLayer();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (d) return;
   else {
     work.passes[curPass].code = CODE.ta.value;
     work.passes[curPass].codeEdited = true;
@@ -1647,9 +1997,8 @@ CODE.ta.addEventListener("input", ()=>{
 
 // top-bar actions
 $("#apply").addEventListener("click", async ()=>{
-  const d = openLayer();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (!d) work.passes[curPass].code = CODE.ta.value;
+  else work.passes[curPass].code = CODE.ta.value;
   await postScene(); markDirty();
   if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files
     const b = $("#apply");
@@ -1671,8 +2020,8 @@ $("#save").addEventListener("click", async ()=>{
 });
 $("#reset").addEventListener("click", async ()=>{
   localStorage.removeItem(KEY(active));
-  work = clone(pristine); await postScene(); curPass = 0; curLayer = null;
-  buildTexts(); buildTabs(); buildChannels(); buildParams(); loadCode(); refreshInfo(); updateStatus();
+  work = clone(pristine); await postScene(); curPass = 0;
+  buildPass(); buildParams(); refreshInfo(); updateStatus();
 });
 
 $("#stale").addEventListener("click", reloadScene);
@@ -1686,7 +2035,9 @@ $("#scenes").addEventListener("change", async e=>{ const r=await jpost("/switch?
 (function(){
   const grip = $("#colgrip"), grid = document.querySelector(".grid");
   const saved = parseInt(localStorage.getItem("ghee:leftw"), 10);
-  if (saved) grid.style.setProperty("--leftw", saved + "px");
+  // the passes card keeps room for its own minimum beside the dragged width
+  const leftw = w => grid.style.setProperty("--leftw", `min(${w}px, calc(100% - 340px))`);
+  if (saved) leftw(saved);
   let dragging = false, w = saved || 0;
   grip.addEventListener("pointerdown", e=>{
     dragging = true; grip.classList.add("drag"); grip.setPointerCapture(e.pointerId); e.preventDefault();
@@ -1694,7 +2045,7 @@ $("#scenes").addEventListener("change", async e=>{ const r=await jpost("/switch?
   grip.addEventListener("pointermove", e=>{
     if (!dragging) return;
     w = Math.min(720, Math.max(320, Math.round(e.clientX - grid.getBoundingClientRect().left)));
-    grid.style.setProperty("--leftw", w + "px");
+    leftw(w);
   });
   grip.addEventListener("pointerup", e=>{
     dragging = false; grip.classList.remove("drag"); grip.releasePointerCapture(e.pointerId);
@@ -1775,7 +2126,7 @@ $("#infoPop").addEventListener("click", e=>{
 });
 document.addEventListener("click", ()=>{
   $("#infoBtn").closest(".infowrap").classList.remove("open");
-  document.querySelectorAll(".addwrap.open").forEach(w=>w.classList.remove("open"));
+  closeMenus();
 });
 
 // add parameter
@@ -1793,7 +2144,7 @@ $("#pAdd").addEventListener("click", ()=>{
   } else if (type === "bool"){
     into[name] = {type:"bool", value:false};
   } else if (type === "color"){
-    into[name] = {type:"color", value:[1.0, 1.0, 1.0]};
+    into[name] = {type:"color", value:"#ffffff"};
   } else if (VEC_ARITY[type]){
     into[name] = {type, value:Array(VEC_ARITY[type]).fill(0), min:parseFloat($("#pMin").value)||0, max:parseFloat($("#pMax").value)||1};
   } else {
@@ -1803,16 +2154,22 @@ $("#pAdd").addEventListener("click", ()=>{
   buildParams(); markDirty();
 });
 
-// A refused post shows first, then the running scene's compile error. Its
-// line marks the editor that shows the GLSL holding it.
+// A refused post shows first, then the running scene's compile error, then
+// the problems of its text layers. A compile error in the open pass opens its
+// shader once, and its line marks the editor.
+let errOpened = "";
 function showErrors(){
   const s = lastStats || {}, e = $("#err");
   const msg = postErr || s.error || (s.text_errors || []).join("\n");
   e.textContent = msg; e.classList.toggle("show", !!msg);
+  const inPass = !postErr && s.error && s.error_pass != null && s.error_pass === curPass;
+  if (!s.error) errOpened = "";
+  else if (inPass && errOpened !== s.error + "\n" + curPass){
+    errOpened = s.error + "\n" + curPass;
+    if (!shaderOpen){ shaderOpen = true; paintShader(); }
+  }
   const here = !postErr && s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass);
-  const ed = s.error_layer, inLayer = here && ed && ed.index === curLayer;
-  CODE.mark(here && (ed ? inLayer && ed.part === "fragment" : curLayer == null) ? s.error_line : 0);
-  VERTEX.mark(inLayer && ed.part === "vertex" ? s.error_line : 0);
+  CODE.mark(here ? s.error_line : 0);
 }
 
 async function poll(){

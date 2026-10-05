@@ -3378,3 +3378,183 @@ fn a_colour_glyph_blends_the_pass_alpha_as_its_colour() {
     assert!(alphas(&frame).contains(&255));
     assert!(alphas(&frame)[0].abs_diff(128) <= 1);
 }
+
+// The emoji fallback
+
+/// A directory that holds EMOJI under the file name of the emoji font, for
+/// the fallback to find through $GHEE_ASSETS. The drop removes it.
+struct EmojiDir(String);
+
+impl EmojiDir {
+    fn new(tag: &str) -> EmojiDir {
+        let d = tmpdir(tag);
+        fs::copy(
+            format!("{FONTS}/{EMOJI}"),
+            format!("{d}/{}", ghee::emoji::FILE),
+        )
+        .unwrap();
+        EmojiDir(d)
+    }
+
+    /// `doc` loaded as loaded() loads it, with its emoji font found here.
+    /// The caller holds LOCK.
+    fn load(&self, doc: &Value) -> Scene {
+        with_assets_env(&self.0, || loaded(doc))
+    }
+}
+
+impl Drop for EmojiDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A scene of one red text layer `label` in the built-in font, which lacks
+/// every emoji, of `words` placed by `fit` over a black pass, with `keys`
+/// merged in.
+fn fallback_scene(words: &str, fit: Fit, keys: Value) -> Value {
+    let mut l = json!({"name": "label", "text": words, "x": fit.x, "y": fit.y,
+                       "font_size": fit.ppem, "color": "#ff0000"});
+    l.as_object_mut()
+        .unwrap()
+        .extend(keys.as_object().unwrap().clone());
+    json!({"version": 1, "passes": [{"name": "main", "code": BLACK, "layers": [l]}]})
+}
+
+/// The layout of `words` in the built-in font, then EMOJI.
+fn fallen_back(words: &str) -> text::Built {
+    let fonts = vec![Ok(Arc::new(font(LATIN))), Ok(Arc::new(font(EMOJI)))];
+    text::build(&fonts, words, Align::Left).built.unwrap()
+}
+
+/// The largest difference of a channel between two frames.
+fn worst(a: &[u8], b: &[u8]) -> u8 {
+    a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap()
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn an_emoji_that_the_font_lacks_keeps_its_colours_and_moves_as_the_letters_do() {
+    let words = "\u{1f600}";
+    let b = bitmap(EMOJI, '\u{1f600}');
+    let built = fallen_back(words);
+    assert_eq!(built.colour[0].font, 1);
+    let (fit, at) = bitmap_fit(&built, 0, &b, 1.0, [40.0, 30.0]);
+    let (w, h) = (260, 200);
+    let emoji = EmojiDir::new("fallback-motion");
+    let (_g, mut r) = gpu(w, h);
+    let still = render(&mut r, &emoji.load(&fallback_scene(words, fit, json!({}))));
+    assert_bitmap(&still, w, &b, at, 1, [0, 0, 0], "the red layer's emoji");
+    let mut none = fallback_scene(words, fit, json!({}));
+    none["passes"][0]["layers"] = json!([]);
+    let empty = render(&mut r, &loaded(&none));
+    // Karaoke lifts the character being sung by 0.6 k (1 - k) em, k the part
+    // of it that is sung: 15 pixels here.
+    let k = (1.0 - (1.0 - 4.0 * 15.0 / (0.6 * fit.ppem)).sqrt()) / 2.0;
+    // A scroll puts the block's left edge on a whole pixel, speed em a second
+    // to the left of the pass's right edge.
+    let advance = built.size[0];
+    let (t, speed) = (1.5, 1.0);
+    let trip = w as f64 + advance * fit.ppem;
+    let scrolled = (w as f64 - (t * speed * fit.ppem).rem_euclid(trip)).floor();
+    // The keys, the time, and where the emoji sits then, as the pixels that
+    // its layer moved by, or nowhere.
+    let rows = [
+        (
+            json!({"x": fit.x + 12.0, "y": fit.y - 9.0}),
+            0.0,
+            Some([12.0, -9.0]),
+        ),
+        (
+            json!({"wave": {"height": 10.0 / fit.ppem, "speed": 1.0}}),
+            0.25,
+            Some([0.0, 10.0]),
+        ),
+        (json!({"karaoke": {"sung": k}}), 0.0, Some([0.0, -15.0])),
+        (
+            json!({"scroll": {"speed": speed}}),
+            t,
+            Some([scrolled - fit.x, 0.0]),
+        ),
+        (json!({"blink": {"rate": 2.0}}), 0.1, Some([0.0, 0.0])),
+        (json!({"blink": {"rate": 2.0}}), 0.3, None),
+        (json!({"visible": false}), 0.0, None),
+    ];
+    for (keys, t, moved) in rows {
+        let frame = render_at(
+            &mut r,
+            &emoji.load(&fallback_scene(words, fit, keys.clone())),
+            t,
+        );
+        let want = match moved {
+            None => empty.clone(),
+            Some([dx, dy]) => {
+                let there = Fit {
+                    x: fit.x + dx,
+                    y: fit.y + dy,
+                    ..fit
+                };
+                render(
+                    &mut r,
+                    &emoji.load(&fallback_scene(words, there, json!({}))),
+                )
+            }
+        };
+        assert!(
+            worst(&frame, &want) <= 1,
+            "{keys} at {t}: {}",
+            worst(&frame, &want)
+        );
+    }
+    let faded = render(
+        &mut r,
+        &emoji.load(&fallback_scene(words, fit, json!({"opacity": 0.5}))),
+    );
+    let half: Vec<u8> = still
+        .iter()
+        .map(|v| (f64::from(*v) / 2.0).round() as u8)
+        .collect();
+    let rgb = |f: &[u8]| -> Vec<u8> { f.chunks_exact(4).flat_map(|p| p[..3].to_vec()).collect() };
+    assert!(worst(&rgb(&faded), &rgb(&half)) <= 1);
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn an_emoji_takes_no_shadow_glow_or_stroke_beside_letters_that_do() {
+    // The emoji, then an I two spaces to its right, out of reach of the
+    // effects of the I.
+    let words = "\u{1f600}  I";
+    let b = bitmap(EMOJI, '\u{1f600}');
+    let (fit, at) = bitmap_fit(&fallen_back(words), 0, &b, 1.0, [8.0, 8.0]);
+    let (w, h) = (300, 150);
+    let emoji = EmojiDir::new("fallback-effects");
+    let (_g, mut r) = gpu(w, h);
+    let plain = render(&mut r, &emoji.load(&fallback_scene(words, fit, json!({}))));
+    let shadow = json!({"x": 0.05, "y": 0.05, "blur": 0.02, "color": "#00ff00"});
+    let glow = json!({"blur": 0.1, "color": "#00ff00"});
+    let stroke = json!({"width": 0.03, "color": "#00ff00"});
+    for keys in [
+        json!({"text_shadow": shadow}),
+        json!({"glow": glow}),
+        json!({"text_stroke": stroke}),
+        json!({"text_shadow": shadow, "glow": glow, "text_stroke": stroke}),
+    ] {
+        let frame = render(
+            &mut r,
+            &emoji.load(&fallback_scene(words, fit, keys.clone())),
+        );
+        assert_bitmap(&frame, w, &b, at, 1, [0, 0, 0], &keys.to_string());
+        assert!(
+            frame.chunks_exact(4).any(|p| p[1] > 100),
+            "{keys}: no effect drawn"
+        );
+        // Outside the I and its effects, the frame is the plain one.
+        let edge = (at[0] + b.w + 8) * 4;
+        let left = |f: &[u8]| -> Vec<u8> {
+            f.chunks_exact(w * 4)
+                .flat_map(|row| row[..edge].to_vec())
+                .collect()
+        };
+        assert!(worst(&left(&frame), &left(&plain)) <= 1, "{keys}");
+    }
+}

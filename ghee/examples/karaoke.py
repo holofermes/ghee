@@ -10,8 +10,10 @@ transparent and holds the words alone. The layer `line` fits the words to the
 pass. The pass `main` paints the night and reads `lyrics` through iChannel0
 twice: as it is, and flipped and rippled below the horizon.
 
-The letters come from DejaVu Sans in fonts/, and its missing-glyph box stands
-in for each emoji.
+The letters come from DejaVu Sans in fonts/, the emoji from Noto Color
+Emoji, which ghee finds beside the scene, through $GHEE_ASSETS, or in
+/usr/share/fonts/truetype/noto/. Without it, each emoji draws as the
+missing-glyph box of DejaVu Sans.
 
     ghee render --demo karaoke -o out.####.png --frames 40 --timestep 0.1
     ghee render --demo karaoke --display kms

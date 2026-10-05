@@ -525,6 +525,18 @@ fn pick_before<'f, 'a>(
     pick(faces, ch)
 }
 
+/// True when a font after `fonts` may draw a character of `words`: a
+/// character that needs ink and that no font of `fonts` holds, or one that
+/// U+FE0F follows.
+pub fn may_fall_back(fonts: &[Font], words: &str) -> bool {
+    let faces = faces(fonts);
+    let chars: Vec<char> = words.chars().collect();
+    chars.iter().enumerate().any(|(i, &ch)| {
+        chars.get(i + 1) == Some(&EMOJI_SELECTOR)
+            || (needs_ink(ch) && pick(&faces, ch).is_none_or(|(_, _, g)| g.is_none()))
+    })
+}
+
 /// True when `face` holds outlines, TrueType or CFF.
 fn outlined(face: &Face) -> bool {
     let t = face.tables();

@@ -44,6 +44,7 @@ pub(crate) mod colour;
 pub mod console;
 pub(crate) mod cparam;
 pub mod drivers;
+pub mod emoji;
 pub mod engine;
 pub(crate) mod feeds;
 pub mod ffi;

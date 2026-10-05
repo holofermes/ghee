@@ -1635,7 +1635,6 @@ impl Renderer {
         if !drawn.coloured.get() {
             self.build_colour(layer, drawn)?;
         }
-        let fonts = layer.data.as_deref().unwrap_or_default();
         let mut colours = self.colours.borrow_mut();
         let slot = colours.entry(name.clone()).or_default();
         let mut cells: Vec<crate::colour::Rect> = Vec::new();
@@ -1644,8 +1643,10 @@ impl Renderer {
             if slot.atlas.cells.contains_key(&id) || slot.failed.contains_key(&id) {
                 continue;
             }
-            let face = fonts.get(p.font).and_then(|f| f.as_ref().ok());
-            let face = face.and_then(|d| ttf_parser::Face::parse(d, 0).ok());
+            let font = layer.font(p.font);
+            let face = font
+                .as_deref()
+                .and_then(|d| ttf_parser::Face::parse(d, 0).ok());
             let made = match face {
                 Some(face) => crate::colour::field(&face, p.gid),
                 None => Err(anyhow!("its font is unreadable")),
@@ -4731,30 +4732,45 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_layer_builds_its_colour_drawing_at_the_first_words_that_hold_a_colour_glyph() {
-        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
-        let load = |words: &str| {
+        // The fixture beside the scene, as a colour font asset, and as the
+        // emoji font that the built-in font falls back to.
+        let dir = crate::testing::TempDir::new("engine-colour");
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tools/fixtures/fonts/NotoColorEmoji-Smiles.ttf"
+        );
+        std::fs::copy(fixture, dir.join("smiles.ttf")).unwrap();
+        std::fs::copy(fixture, dir.join(crate::emoji::FILE)).unwrap();
+        let load = |font: Option<&str>, words: &str| {
+            let mut layer = json!({"name": "label", "text": words, "x": 0, "y": 0,
+                                   "font_size": 20});
+            if let Some(f) = font {
+                layer["font_family"] = json!(f);
+            }
             let mut sc = Scene::from_dict(
                 &json!({
                     "version": 1,
-                    "assets": {"emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
+                    "assets": {"emoji": {"file": "smiles.ttf"}},
                     "passes": [{"name": "main",
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-                        "layers": [{"name": "label", "text": words, "font_family": "emoji",
-                                    "x": 0, "y": 0, "font_size": 20}]}],
+                        "layers": [layer]}],
                 }),
                 None,
                 None,
             )
             .unwrap();
-            sc.load_assets(fonts).unwrap();
+            sc.load_assets(&dir).unwrap();
             sc
         };
-        let cache = crate::testing::TempDir::new("engine-colour");
         let (_g, mut r) = gpu();
-        r.atlas_cache = Some(cache.join("atlas"));
+        r.atlas_cache = Some(dir.join("atlas"));
         // Whether a program reads the colour atlas, whether the atlas exists,
-        // and whether the frame shows colour.
+        // and whether the frame shows colour, once a frame with the time
+        // pinned waits for the words.
         let drawing = |r: &mut Renderer| {
+            r.set_time(Some(0.0));
+            let frame = r.render(None).unwrap();
+            let shown = frame.chunks_exact(4).any(|p| p[0] != p[2]);
             let size = CString::new("ghee_label_emoji_size").unwrap();
             let read = unsafe { ffi::ghee_mp_reads(r.handle, size.as_ptr()) };
             let held = r
@@ -4762,26 +4778,26 @@ mod tests {
                 .borrow()
                 .iter()
                 .any(|n| n == "ghee_label_emoji");
-            r.set_time(Some(0.0));
-            let frame = r.render(None).unwrap();
-            let shown = frame.chunks_exact(4).any(|p| p[0] != p[2]);
             (read, held, shown)
         };
-        // Words with no colour glyph build no colour drawing.
-        assert_eq!(r.setup(&load(" ")).unwrap(), "");
-        assert_eq!(drawing(&mut r), (false, false, false));
-        // Live words build it with no new setup.
-        assert!(r.set_text("label", "\u{1f600}").unwrap());
-        assert_eq!(drawing(&mut r), (true, true, true));
-        assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
-        // Words that drop the colour glyph keep the drawing and show none.
-        assert!(r.set_text("label", " ").unwrap());
-        assert_eq!(drawing(&mut r), (true, true, false));
-        // A new setup builds it again only for words that need it.
-        assert_eq!(r.setup(&load(" ")).unwrap(), "");
-        assert_eq!(drawing(&mut r), (false, false, false));
-        assert_eq!(r.setup(&load("\u{1f600}")).unwrap(), "");
-        assert_eq!(drawing(&mut r), (true, true, true));
+        // A layer in the colour font, and one in the built-in font.
+        for font in [Some("emoji"), None] {
+            // Words with no colour glyph build no colour drawing.
+            assert_eq!(r.setup(&load(font, " ")).unwrap(), "");
+            assert_eq!(drawing(&mut r), (false, false, false), "{font:?}");
+            // Live words build it with no new setup.
+            assert!(r.set_text("label", "\u{1f600}").unwrap());
+            assert_eq!(drawing(&mut r), (true, true, true), "{font:?}");
+            assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
+            // Words that drop the colour glyph keep the drawing and show none.
+            assert!(r.set_text("label", " ").unwrap());
+            assert_eq!(drawing(&mut r), (true, true, false), "{font:?}");
+            // A new setup builds it again only for words that need it.
+            assert_eq!(r.setup(&load(font, " ")).unwrap(), "");
+            assert_eq!(drawing(&mut r), (false, false, false), "{font:?}");
+            assert_eq!(r.setup(&load(font, "\u{1f600}")).unwrap(), "");
+            assert_eq!(drawing(&mut r), (true, true, true), "{font:?}");
+        }
     }
 
     #[test]

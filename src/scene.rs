@@ -439,8 +439,9 @@ pub enum Reach {
     /// Any file: a path may be absolute or leave the scene's directory. A
     /// scene that its user runs reads this way.
     Any,
-    /// The files inside the scene's directory alone. The console reads every
-    /// scene this way, since anyone who reaches it posts and saves scenes.
+    /// The files inside the scene's directory alone, and the emoji font
+    /// wherever crate::emoji finds it. The console reads every scene this
+    /// way, since anyone who reaches it posts and saves scenes.
     Inside,
 }
 
@@ -2271,20 +2272,38 @@ impl Scene {
     }
 
     /// Read and decode every declared asset file, hand each text layer its
-    /// font, and decode the file of each image layer that names one.
+    /// font and the emoji font, and decode the file of each image layer that
+    /// names one.
     ///
     /// An absolute path reads as it stands. Any other path resolves in
     /// `base_dir`, then through `$GHEE_ASSETS`, colon-separated directories, in
     /// order, and the error names the first path and the directories of
     /// `$GHEE_ASSETS`. Reach::Inside refuses a path outside `base_dir`. A
-    /// filter's asset is the filter's to load.
+    /// filter's asset is the filter's to load. The emoji font is the one that
+    /// crate::emoji finds from `base_dir`, under either reach.
     pub fn load_assets_in(&mut self, base_dir: &str, reach: Reach) -> Result<()> {
-        self.load_assets_from(base_dir, reach, &asset_dirs())
+        self.load_assets_from(base_dir, reach, &asset_dirs(), crate::emoji::SYSTEM_DIR)
     }
 
     /// load_assets_in() with `more` in place of the directories of
-    /// `$GHEE_ASSETS`.
-    fn load_assets_from(&mut self, base_dir: &str, reach: Reach, more: &[String]) -> Result<()> {
+    /// `$GHEE_ASSETS`, and `emoji_dir` in place of the system's directory of
+    /// the emoji font.
+    fn load_assets_from(
+        &mut self,
+        base_dir: &str,
+        reach: Reach,
+        more: &[String],
+        emoji_dir: &str,
+    ) -> Result<()> {
+        let root = normpath(&abspath(base_dir));
+        if self.text_layers().next().is_some() {
+            let emoji = crate::emoji::find(&root, more, emoji_dir);
+            for layer in self.passes.iter_mut().flat_map(|p| &mut p.layers) {
+                if let Layer::Text(l) = layer {
+                    l.emoji = emoji.clone();
+                }
+            }
+        }
         let font_files = self
             .text_layers()
             .filter_map(|l| l.font_family.as_deref())
@@ -2296,7 +2315,6 @@ impl Scene {
         if self.assets.is_empty() && !font_files && !image_files {
             return Ok(());
         }
-        let root = normpath(&abspath(base_dir));
         let outside =
             |file: &str| reach == Reach::Inside && !inside(&normpath(&join(&root, file)), &root);
         // The bytes of `file` and the path that held them, or why no path did,
@@ -3226,7 +3244,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            sc.load_assets_from(&dir, Reach::Any, &[])
+            sc.load_assets_from(&dir, Reach::Any, &[], &dir)
                 .unwrap_err()
                 .to_string(),
             format!(
@@ -3281,7 +3299,7 @@ mod tests {
         let doc = asset_scene(json!({"n": raw("n.raw"), "mask": raw("m.raw")}));
         let mut scene = Scene::from_dict(&doc, None, None).unwrap();
         let e = scene
-            .load_assets_from(&scene_dir, Reach::Any, &[])
+            .load_assets_from(&scene_dir, Reach::Any, &[], &scene_dir)
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -3292,7 +3310,7 @@ mod tests {
             )
         );
         scene
-            .load_assets_from(&scene_dir, Reach::Any, &[asset_dir.to_string()])
+            .load_assets_from(&scene_dir, Reach::Any, &[asset_dir.to_string()], &scene_dir)
             .unwrap();
         let px = |i: usize| scene.assets[i].image.as_ref().unwrap().pixels.clone();
         assert_eq!(px(0), crate::assets::Pixels::U8(vec![1, 2, 3, 4]));
@@ -3420,7 +3438,8 @@ mod tests {
             let doc = json!({"version": 1, "passes": [{"name": "m", "code": GOOD,
                 "layers": [{"name": "icon", "image": image}]}]});
             let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-            sc.load_assets_from(&dir, Reach::Any, &[]).map(|()| sc)
+            sc.load_assets_from(&dir, Reach::Any, &[], &dir)
+                .map(|()| sc)
         };
         let sc = load("pic.png").unwrap();
         let l = sc.layers().find_map(Layer::as_image).unwrap();
@@ -3516,7 +3535,9 @@ mod tests {
             ),
         ] {
             let mut sc = Scene::from_dict(&d, None, None).unwrap();
-            let e = sc.load_assets_from(&base, Reach::Inside, &[]).unwrap_err();
+            let e = sc
+                .load_assets_from(&base, Reach::Inside, &[], &base)
+                .unwrap_err();
             assert_eq!(
                 e.to_string(),
                 format!("{what} is outside the scene directory")
@@ -3541,6 +3562,130 @@ mod tests {
             e,
             "filter 'esc' asset 'm' file '../m.raw' is outside the filter directory"
         );
+    }
+
+    /// Noto Color Emoji cut to space, U+200D, U+1F600 and U+1F642, which
+    /// tests copy under the name of the emoji font's file.
+    const EMOJI: &str = "tools/fixtures/fonts/NotoColorEmoji-Smiles.ttf";
+
+    /// A scene of one pass, with a text layer of `words` for each name of
+    /// `names`.
+    fn words_scene(names: &[&str], words: &str) -> Value {
+        let layers: Vec<Value> = names
+            .iter()
+            .map(|n| json!({"name": n, "text": words}))
+            .collect();
+        json!({"version": 1, "passes": [{"name": "m", "code": GOOD, "layers": layers}]})
+    }
+
+    #[test]
+    fn a_scene_takes_the_emoji_font_beside_it_then_from_ghee_assets_then_from_the_system() {
+        let root = tmpdir("emoji-order");
+        // The scene's directory, two on $GHEE_ASSETS, and the system's.
+        let dirs = ["scene", "a", "b", "system"].map(|d| format!("{}/{d}", &*root));
+        let path = |k: usize| format!("{}/{}", dirs[k], crate::emoji::FILE);
+        for d in &dirs {
+            fs::create_dir_all(d).unwrap();
+        }
+        let doc = words_scene(&["label", "title"], "\u{1f600}");
+        let load = || {
+            let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+            let (done, read) = crate::sources::collect(|| {
+                sc.load_assets_from(&dirs[0], Reach::Any, &dirs[1..3], &dirs[3])
+            });
+            done.unwrap();
+            (sc, read)
+        };
+        // The directories that hold the font, and the one that the layers
+        // take it from. The scene depends on each path tried until then.
+        for (holding, takes) in [
+            (&[0, 1, 2, 3][..], Some(0)),
+            (&[1, 2, 3], Some(1)),
+            (&[2, 3], Some(2)),
+            (&[3], Some(3)),
+            (&[], None),
+        ] {
+            for k in 0..4 {
+                let _ = fs::remove_file(path(k));
+            }
+            for &k in holding {
+                fs::copy(repo(EMOJI), path(k)).unwrap();
+            }
+            let (sc, read) = load();
+            let got: Vec<Option<String>> = sc
+                .text_layers()
+                .map(|l| l.emoji.as_ref().map(|e| e.path().to_string()))
+                .collect();
+            assert_eq!(got, [takes.map(path), takes.map(path)], "{holding:?}");
+            let tried: std::collections::HashSet<std::path::PathBuf> =
+                (0..=takes.unwrap_or(3)).map(|k| path(k).into()).collect();
+            assert_eq!(read, tried, "{holding:?}");
+        }
+        // The font showing up where the scene looked marks the scene stale.
+        let (_, read) = load();
+        let mut snap = crate::sources::Snapshot::with(read, 0.0, Box::new(|| 0.0));
+        assert!(!snap.stale());
+        fs::copy(repo(EMOJI), path(3)).unwrap();
+        assert!(snap.stale());
+    }
+
+    #[test]
+    fn the_console_reads_the_emoji_font_outside_its_scenes_and_no_other_file_there() {
+        let root = tmpdir("emoji-outside");
+        let (base, system) = (format!("{}/scene", &*root), format!("{}/noto", &*root));
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&system).unwrap();
+        let font = format!("{system}/{}", crate::emoji::FILE);
+        fs::copy(repo(EMOJI), &font).unwrap();
+        let mut sc = Scene::from_dict(&words_scene(&["label"], "\u{1f600}"), None, None).unwrap();
+        sc.load_assets_from(&base, Reach::Inside, &[], &system)
+            .unwrap();
+        let l = sc.text_layer("label").unwrap();
+        assert_eq!(l.emoji.as_ref().map(|e| e.path()), Some(font.as_str()));
+        // The scene names the same file in vain.
+        let mut named = words_scene(&["label"], "\u{1f600}");
+        named["passes"][0]["layers"][0]["font_family"] = json!(font);
+        let mut asset = named.clone();
+        asset["passes"][0]["layers"][0]["font_family"] = json!("emoji");
+        asset["assets"] = json!({"emoji": {"file": font}});
+        for (doc, what) in [
+            (named, "layer 'label' font_family"),
+            (asset, "asset 'emoji' file"),
+        ] {
+            let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+            let e = sc
+                .load_assets_from(&base, Reach::Inside, &[], &system)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                e.starts_with(what) && e.ends_with("is outside the scene directory"),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_layer_of_every_load_shares_one_read_of_the_emoji_font() {
+        let root = tmpdir("emoji-shared");
+        let font = format!("{}/{}", &*root, crate::emoji::FILE);
+        fs::copy(repo(EMOJI), &font).unwrap();
+        let doc = words_scene(&["label", "title"], "\u{1f600}");
+        // The bytes of the emoji font, as each layer of a new load draws
+        // from them.
+        let load = || {
+            let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+            sc.load_assets_from(&root, Reach::Any, &[], &root).unwrap();
+            let bytes: Vec<std::sync::Arc<Vec<u8>>> =
+                sc.text_layers().map(|l| l.font(1).unwrap()).collect();
+            bytes
+        };
+        let all = [load(), load()].concat();
+        assert!(all.iter().all(|b| std::sync::Arc::ptr_eq(b, &all[0])));
+        // A changed file reads again.
+        let mut grown = fs::read(&font).unwrap();
+        grown.push(0);
+        fs::write(&font, &grown).unwrap();
+        assert_eq!(*load()[0], grown);
     }
 
     #[test]

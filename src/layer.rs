@@ -26,11 +26,15 @@
 //! given axis the pass past the given pixel less the margin at the far edge.
 //! The shaders work the size out from `<name>_size`, so it follows the words.
 
+use std::borrow::Cow;
+use std::sync::Arc;
+
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
 
 use crate::atlas;
 use crate::colour;
+use crate::emoji::{self, EmojiFont};
 use crate::engine::Blend;
 use crate::scene::{hex_colour, keys_on, known_keys, number_list, py_float, py_repr, PASS_KEYS};
 use crate::text::{self, Align, Font, Layout};
@@ -678,6 +682,10 @@ pub struct TextLayer {
     /// `font_family`, or the built-in font. load_assets fills them, and
     /// from_dict for the built-in font.
     pub data: Option<Vec<Font>>,
+    /// The font of the emoji that the layer's fonts lack, as load_assets
+    /// found it. Words with a character that the layer's fonts lack, or one
+    /// that U+FE0F follows, draw from it after the layer's fonts.
+    pub emoji: Option<Arc<EmojiFont>>,
 }
 
 /// The vertex and the fragment shader of one batch of a layer.
@@ -764,6 +772,7 @@ impl TextLayer {
             text,
             font_size,
             data: font_family.is_none().then(|| vec![text::built_in_font()]),
+            emoji: None,
             font_family,
             text_align,
             render,
@@ -819,25 +828,55 @@ impl TextLayer {
     }
 
     fn lay(&self, words: &str, curves: bool) -> Result<Layout> {
-        let Some(fonts) = &self.data else {
+        let Some(own) = &self.data else {
             bail!(
                 "layer '{}': {} was never loaded, the scene was built without a directory",
                 self.name,
                 self.font_name(0)
             );
         };
+        let fonts = self.fonts(own, words);
         Ok(match curves {
-            true => text::build(fonts, words, self.text_align),
-            false => text::place(fonts, words, self.text_align),
+            true => text::build(&fonts, words, self.text_align),
+            false => text::place(&fonts, words, self.text_align),
         })
     }
 
-    /// The font at index `i` of the layer's fonts in an error: "font
-    /// 'sans'", or "the built-in font".
+    /// The fonts that draw `words`: the layer's own fonts `own`, then the
+    /// emoji font for words with a character that `own` lacks or that U+FE0F
+    /// follows. The emoji font loads at the first such words. A layer whose
+    /// own fonts all failed to load takes no emoji font, and draws an error
+    /// box for each character.
+    fn fonts<'a>(&self, own: &'a [Font], words: &str) -> Cow<'a, [Font]> {
+        let loaded = own.iter().any(Result::is_ok);
+        match self.emoji.as_ref() {
+            Some(emoji) if loaded && text::may_fall_back(own, words) => {
+                Cow::Owned([own, &[emoji.font()]].concat())
+            }
+            _ => Cow::Borrowed(own),
+        }
+    }
+
+    /// The font at index `i` of the fonts that a layout of the layer draws
+    /// from: the layer's own, then the emoji font. None for a font that
+    /// failed to load.
+    pub fn font(&self, i: usize) -> Option<Arc<Vec<u8>>> {
+        let own = self.data.as_deref().unwrap_or_default();
+        match own.get(i) {
+            Some(f) => f.clone().ok(),
+            None if i == own.len() => self.emoji.as_ref()?.font().ok(),
+            None => None,
+        }
+    }
+
+    /// The font at index `i` of the fonts that a layout of the layer draws
+    /// from, in an error: "font 'sans'", "the built-in font", or "Noto Color
+    /// Emoji".
     pub fn font_name(&self, i: usize) -> String {
         match (i, &self.font_family) {
             (0, Some(f)) => format!("font '{f}'"),
-            _ => "the built-in font".to_string(),
+            (0, None) => "the built-in font".to_string(),
+            _ => emoji::NAME.to_string(),
         }
     }
 
@@ -1992,5 +2031,120 @@ mod tests {
             let last = text::QUAD_FLOATS - 1;
             assert_eq!((&v[..last], v[last]), (&w[..last], 1.0));
         }
+    }
+
+    /// A text layer of `words` in the fixture font `own`, the built-in font
+    /// for None, that falls back to the fixture `emoji` copied into its own
+    /// directory of `dir` as the emoji font's file.
+    fn falling_back(
+        dir: &crate::testing::TempDir,
+        own: Option<&str>,
+        emoji: Option<&str>,
+        words: &str,
+    ) -> TextLayer {
+        let fixture = |f: &str| format!("{}/tools/fixtures/fonts/{f}", env!("CARGO_MANIFEST_DIR"));
+        let mut l = TextLayer::from_dict("a layer", &json!({"name": "t", "text": words})).unwrap();
+        match own {
+            Some("no font") => l.data = Some(vec![text::font(b"no font")]),
+            Some(f) => l.data = Some(vec![text::font(&std::fs::read(fixture(f)).unwrap())]),
+            None => {}
+        }
+        l.emoji = emoji.map(|f| {
+            let at = dir.join(f);
+            std::fs::create_dir_all(&at).unwrap();
+            let path = at.join(emoji::FILE);
+            match f {
+                "no font" => std::fs::write(&path, b"no font").unwrap(),
+                _ => {
+                    std::fs::copy(fixture(f), &path).unwrap();
+                }
+            }
+            emoji::at(path.to_str().unwrap())
+        });
+        l
+    }
+
+    #[test]
+    fn a_character_that_the_font_lacks_draws_a_colour_glyph_of_the_emoji_font_or_the_box() {
+        // DejaVuSans-Heart holds an outline heart, U+2764, and the two
+        // selectors, NotoColorEmoji-Heart a colour heart, and
+        // NotoColorEmoji-Smiles U+1F600 and U+1F642 in colour. Each row is the
+        // layer's font, the emoji font, the words, and the characters drawn
+        // as glyphs and as colour glyphs, with the index of their font: the
+        // layer's own, then the emoji font.
+        let dir = crate::testing::TempDir::new("layer-emoji");
+        let smiles = Some("NotoColorEmoji-Smiles.ttf");
+        let heart = Some("DejaVuSans-Heart.ttf");
+        let colour_heart = Some("NotoColorEmoji-Heart.ttf");
+        type Row<'a> = (
+            Option<&'a str>,
+            Option<&'a str>,
+            &'a str,
+            &'a [(char, usize)],
+            &'a [(char, usize)],
+        );
+        let rows: [Row; 5] = [
+            (None, smiles, "A\u{1f600}", &[('A', 0)], &[('\u{1f600}', 1)]),
+            // With no emoji font, the emoji draws glyph 0 of the layer's
+            // font, its missing-glyph box.
+            (None, None, "A\u{1f600}", &[('A', 0), ('\u{1f600}', 0)], &[]),
+            // U+FE0F asks for the colour glyph of a character that the font
+            // holds, and the heart without it keeps its outline.
+            (
+                heart,
+                colour_heart,
+                "\u{2764}\u{fe0f}\u{2764}",
+                &[('\u{2764}', 0)],
+                &[('\u{2764}', 1)],
+            ),
+            (heart, smiles, "\u{2764}\u{fe0f}", &[('\u{2764}', 0)], &[]),
+            (None, smiles, "A", &[('A', 0)], &[]),
+        ];
+        for (own, emoji, words, glyphs, colour) in rows {
+            let l = falling_back(&dir, own, emoji, words);
+            let laid = l.build(words).unwrap();
+            assert_eq!(laid.faults, [], "{words:?}");
+            let built = laid.built.unwrap();
+            let of = |ps: &[text::Placement]| -> Vec<(char, usize)> {
+                ps.iter().map(|p| (p.ch, p.font)).collect()
+            };
+            assert_eq!(of(&built.glyphs), glyphs, "{words:?} with {emoji:?}");
+            assert_eq!(of(&built.colour), colour, "{words:?} with {emoji:?}");
+            if emoji.is_none() {
+                assert_eq!(built.glyphs[1].gid, 0);
+            }
+        }
+        // A layer whose font failed to load draws an error box for each
+        // character, its emoji too.
+        let words = "A\u{1f600}";
+        let laid = falling_back(&dir, Some("no font"), smiles, words)
+            .build(words)
+            .unwrap();
+        assert!(
+            matches!(laid.faults[..], [text::Fault::Font(_)]),
+            "{:?}",
+            laid.faults
+        );
+        let built = laid.built.unwrap();
+        assert!(built.glyphs.is_empty() && built.colour.is_empty());
+        assert_eq!(built.boxes.count, 2);
+    }
+
+    #[test]
+    fn an_emoji_font_that_does_not_load_names_itself_once_words_need_it() {
+        let dir = crate::testing::TempDir::new("layer-no-emoji");
+        let path = dir.join("no font").join(emoji::FILE);
+        let why = ttf_parser::Face::parse(b"no font", 0).unwrap_err();
+        let l = falling_back(&dir, None, Some("no font"), "A");
+        assert_eq!(l.build("A").unwrap().faults, []);
+        let laid = l.build("A\u{1f600}").unwrap();
+        assert_eq!(
+            laid.faults,
+            [text::Fault::Font(format!(
+                "Noto Color Emoji ({}): unreadable font: {why}",
+                path.display()
+            ))]
+        );
+        assert_eq!(laid.built.unwrap().glyphs[1].gid, 0);
     }
 }

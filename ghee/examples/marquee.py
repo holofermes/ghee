@@ -3,10 +3,11 @@
 # requires-python = ">=3.9"
 # dependencies = ["ghee-render", "pillow"]
 # ///
-"""Host-rasterized text through a 2D input.
+"""A word that Pillow draws, scrolled by the shader over a wave.
 
-Pillow draws the string once into a mask. The shader scrolls the mask, then
-thresholds it and tints it over a wave.
+Pillow draws the word once into a mask, and the scene sends the mask as the
+2D array `mask`. The shader scrolls the mask, then thresholds it and tints it
+over a wave.
 
 `--text` is build time, because the mask is a fixed-size array. Motion,
 crispness and color stay live. Line art needs no dither. The wave behind the
@@ -20,7 +21,7 @@ text stays under the threshold of a 1-bit panel while `glow` stays under it.
 import ghee
 
 args = ghee.args(
-    [ghee.Arg("text", "string", default="GHEE", help="the word to rasterize")]
+    [ghee.Arg("text", "string", default="GHEE", help="the word that Pillow draws")]
 )
 
 # Slow imports come after the parse: the probe must answer inside its window.
@@ -38,7 +39,7 @@ void main() {
     float across = max(1.0, aspect / mask_aspect);
     float down = max(1.0, mask_aspect / aspect);
     float v = (uv.y - 0.5) * down + 0.5;
-    float m = text_sample2(vec2(fract(uv.x * across - time * speed), v));
+    float m = mask_sample2(vec2(fract(uv.x * across - time * speed), v));
     m *= step(0.0, v) * step(v, 1.0);
     float g = smoothstep(threshold - 0.08, threshold + 0.08, m);
 
@@ -98,8 +99,8 @@ MASK, (W, H) = _bake(args.text)
 _sent = {"done": False}
 
 
-@ghee.feed("text")
-def text(tick):
+@ghee.feed("mask")
+def mask(tick):
     """The mask holds in the engine texture after one send."""
     if _sent["done"]:
         return None
@@ -114,7 +115,7 @@ def build():
             ghee.Pass(
                 name="main",
                 code=f"const float mask_aspect = {W / H:.6f};\n{SHADER}",
-                arrays=[ghee.ArrayInput("text", (W, H))],
+                arrays=[ghee.ArrayInput("mask", (W, H))],
                 params={
                     "speed": ghee.Param(
                         "speed", "float", 0.1, min=-0.6, max=0.6, step=0.01

@@ -104,7 +104,7 @@ class Param:
     """A live value.
 
     The scene, the console and the scene process name it the same way.
-    A color is [r, g, b] in 0..1.
+    A color is "#rrggbb" or [r, g, b] in 0..1.
     A vecK is K numbers.
     A string never reaches a shader: the scene process reads it in the tick
     line. ghee declares the string param of each Text's name itself, and a
@@ -704,7 +704,8 @@ def set_param(
 ) -> None:
     """Set a live param for this tick.
 
-    A float takes one number, a color takes three, and a vecN takes N.
+    A float takes one number, a color takes "#rrggbb" or three numbers, and a
+    vecN takes N.
     A string takes words, and the Text of its name lays them out again.
     `pass_` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
@@ -719,6 +720,10 @@ def set_param(
     if _HANDLE is not None:
         _HANDLE.set_param(name, value, pass_=pass_)
         return
+    # The wire carries a color as three floats.
+    rgb = None if _PARAMS and _PARAMS.get(wire) == "string" else _hex(value)
+    if rgb is not None:
+        value = rgb
     if isinstance(value, str):
         text = value.encode("utf-8")
         _OUT.append(_message(3, wire, len(text), text))
@@ -746,6 +751,17 @@ def _param_types(scene: Scene) -> dict:
 
 def _number(v) -> bool:
     return isinstance(v, numbers.Real) and not isinstance(v, bool)
+
+
+def _hex(v) -> list[float] | None:
+    """The [r, g, b] of a color written "#rrggbb", each channel 0..1, else
+    None."""
+    digits = "0123456789abcdefABCDEF"
+    if not isinstance(v, str) or len(v) != 7 or v[0] != "#":
+        return None
+    if not all(c in digits for c in v[1:]):
+        return None
+    return [int(v[i : i + 2], 16) / 255 for i in (1, 3, 5)]
 
 
 def _numbers(v, n: int) -> bool:
@@ -778,9 +794,10 @@ def _check(wire: str, value) -> None:
         if not isinstance(value, str):
             raise ValueError(f"string param '{wire}' needs a string, got {value!r}")
     elif ty == "color":
-        if not _numbers(value, n):
+        if _hex(value) is None and not _numbers(value, n):
             raise ValueError(
-                f"color param '{wire}' needs three numbers [r, g, b], got {value!r}"
+                f"color param '{wire}' needs '#rrggbb' or three numbers [r, g, b], "
+                f"got {value!r}"
             )
     elif n is not None:
         if not _numbers(value, n):

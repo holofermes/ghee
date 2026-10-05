@@ -566,15 +566,19 @@ impl Param {
                 PARAM_TYPES.join(", ")
             );
         }
-        // A color is [r, g, b], each 0..1.
+        // A color is "#rrggbb" or [r, g, b], each 0..1.
         let stored = if ty == "color" {
-            let Some(nums) = number_list(&value, 3) else {
+            let rgb = match &value {
+                Value::String(s) => hex_colour(s),
+                v => number_list(v, 3).map(|n| [n[0], n[1], n[2]]),
+            };
+            let Some(rgb) = rgb else {
                 bail!(
-                    "color param '{name}' needs three numbers [r, g, b], got {}",
+                    "color param '{name}' needs '#rrggbb' or three numbers [r, g, b], got {}",
                     py_repr(&value)
                 );
             };
-            ParamValue::Color([nums[0], nums[1], nums[2]])
+            ParamValue::Color(rgb)
         } else if let Some(n) = vec_arity(ty) {
             let Some(nums) = number_list(&value, n) else {
                 bail!(
@@ -750,6 +754,19 @@ impl Param {
         }
         Value::Object(d)
     }
+}
+
+/// The [r, g, b] of a colour written `#rrggbb`, each channel 0..1.
+pub(crate) fn hex_colour(s: &str) -> Option<[f64; 3]> {
+    let hex = s
+        .strip_prefix('#')
+        .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))?;
+    let channel = |i: usize| {
+        u8::from_str_radix(&hex[i..i + 2], 16)
+            .ok()
+            .map(|v| f64::from(v) / 255.0)
+    };
+    Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
 fn number_list(v: &Value, n: usize) -> Option<Vec<f64>> {
@@ -3052,6 +3069,20 @@ mod tests {
     }
 
     #[test]
+    fn a_color_param_takes_hex_or_three_numbers() {
+        // Each hex pair is a byte, and the channel is byte / 255.
+        for (value, want) in [
+            (json!("#ff8000"), [1.0, 128.0 / 255.0, 0.0]),
+            (json!("#0A0b0C"), [10.0 / 255.0, 11.0 / 255.0, 12.0 / 255.0]),
+            (json!([1, 0.5, 0.25]), [1.0, 0.5, 0.25]),
+        ] {
+            let d = json!({"type": "color", "value": value});
+            let p = Param::from_dict("tint", &d).unwrap();
+            assert_eq!(p.value, ParamValue::Color(want), "{value}");
+        }
+    }
+
+    #[test]
     fn a_scene_that_ghee_refuses_names_what_is_wrong() {
         let pass = |extra: Value| {
             let mut p = json!({"name": "m", "code": GOOD});
@@ -3135,16 +3166,31 @@ mod tests {
             // a param
             (
                 param("color", json!([0.1, 0.2])),
-                "pass 'm': color param 'g' needs three numbers [r, g, b], got [0.1, 0.2]"
+                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got \
+                 [0.1, 0.2]"
                     .to_string(),
             ),
             (
                 param("color", json!("red")),
-                "pass 'm': color param 'g' needs three numbers [r, g, b], got 'red'".to_string(),
+                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got 'red'"
+                    .to_string(),
             ),
             (
                 param("color", json!([0.1, 0.2, "x"])),
-                "pass 'm': color param 'g' needs three numbers [r, g, b], got [0.1, 0.2, 'x']"
+                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got \
+                 [0.1, 0.2, 'x']"
+                    .to_string(),
+            ),
+            (
+                param("color", json!("#ff80")),
+                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got \
+                 '#ff80'"
+                    .to_string(),
+            ),
+            (
+                param("color", json!("ff8000")),
+                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got \
+                 'ff8000'"
                     .to_string(),
             ),
             (

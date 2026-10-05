@@ -1553,7 +1553,7 @@ impl Renderer {
         };
         if !fits {
             match ptype {
-                "color" => bail!("color param '{name}' needs three numbers [r, g, b]"),
+                "color" => bail!("color param '{name}' needs '#rrggbb' or three numbers [r, g, b]"),
                 _ => bail!("{ptype} param '{name}' needs {} numbers", &ptype[3..]),
             }
         }

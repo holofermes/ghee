@@ -591,6 +591,20 @@ def test_a_param_and_a_clean_tick(monkeypatch):
     assert rest.endswith(b"\x02\x05")
 
 
+def test_a_color_written_hex_goes_out_as_three_floats(monkeypatch):
+    """kind 1: each hex pair is a byte, and the channel is byte / 255."""
+    shim = load()
+
+    @shim.tick
+    def hook(tick):
+        shim.set_param("tint", "#ff8000")
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
+    f32 = struct.unpack("<3f", struct.pack("<3f", 1.0, 128 / 255, 0.0))
+    assert messages(rest) == [(1, "tint", list(f32)), END]
+
+
 def test_a_string_param_goes_out_as_text(monkeypatch):
     """kind 3: the UTF-8 bytes, and the count is their length."""
     shim = load()
@@ -797,7 +811,14 @@ REFUSED = [
     (("on", 1.0, "other"), "param 'other.on' is not a param this scene declares"),
     (("gain", "x"), "float param 'gain' needs a number, got 'x'"),
     (("gain", True), "float param 'gain' needs a number, got True"),
-    (("tint", [1.0, 0.0]), "color param 'tint' needs three numbers [r, g, b]"),
+    (
+        ("tint", [1.0, 0.0]),
+        "color param 'tint' needs '#rrggbb' or three numbers [r, g, b], got [1.0, 0.0]",
+    ),
+    (
+        ("tint", "#ff80"),
+        "color param 'tint' needs '#rrggbb' or three numbers [r, g, b], got '#ff80'",
+    ),
     (("words", 3), "string param 'words' needs a string, got 3"),
     (("on", "yes", "main"), "bool param 'main.on' needs true or false, got 'yes'"),
 ]

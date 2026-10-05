@@ -275,9 +275,10 @@ fn py_int(raw: &str) -> Option<i64> {
 
 /// The value set_param expects, from a /set raw query string.
 ///
-/// A "color" is "r,g,b" and gives three floats. A "vecK" is K comma-separated
-/// floats. A "bool" is true or false (1 or 0), and the scene model demands a
-/// real bool. Anything else is one float. Malformed input errs.
+/// A "color" is "#rrggbb" or "r,g,b", and gives three floats. A "vecK" is K
+/// comma-separated floats. A "bool" is true or false (1 or 0), and the scene
+/// model demands a real bool. Anything else is one float. Malformed input
+/// errs.
 pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
     if ptype == "bool" {
         let key = raw.trim().to_lowercase();
@@ -293,14 +294,16 @@ pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
             });
     }
     if ptype == "color" {
-        let parts = floats(raw)?;
-        if parts.len() != 3 {
-            return Err(format!(
-                "color needs three comma-separated floats, got {}",
+        let rgb = match crate::scene::hex_colour(raw.trim()) {
+            Some(rgb) => Some(rgb.to_vec()),
+            None => floats(raw).ok().filter(|p| p.len() == 3),
+        };
+        return rgb.map(Value::from).ok_or_else(|| {
+            format!(
+                "color needs '#rrggbb' or three comma-separated floats, got {}",
                 py_repr(&Value::from(raw))
-            ));
-        }
-        return Ok(Value::from(parts));
+            )
+        });
     }
     if let Some((_, n)) = VEC_ARITY.iter().find(|(t, _)| *t == ptype) {
         let parts = floats(raw)?;
@@ -1109,7 +1112,7 @@ mod tests {
             ),
             (
                 vec![("pass", "0"), ("name", "c"), ("value", "1,0")],
-                "color needs three comma-separated floats, got '1,0'",
+                "color needs '#rrggbb' or three comma-separated floats, got '1,0'",
             ),
             (
                 vec![("pass", "0"), ("name", "on"), ("value", "yes")],
@@ -1566,17 +1569,38 @@ mod tests {
             ("bool", "2", Err("bool needs true or false, got '2'")),
             ("bool", "0.0", Err("bool needs true or false, got '0.0'")),
             ("color", "1,0,0.5", Ok(json!([1.0, 0.0, 0.5]))),
+            // Each hex pair is a byte, and the channel is byte / 255.
+            ("color", "#ff8000", Ok(json!([1.0, 128.0 / 255.0, 0.0]))),
+            (
+                "color",
+                "#0A0b0C",
+                Ok(json!([10.0 / 255.0, 11.0 / 255.0, 12.0 / 255.0])),
+            ),
             (
                 "color",
                 "1,0",
-                Err("color needs three comma-separated floats, got '1,0'"),
+                Err("color needs '#rrggbb' or three comma-separated floats, got '1,0'"),
             ),
             (
                 "color",
                 "1,0,0,0",
-                Err("color needs three comma-separated floats, got '1,0,0,0'"),
+                Err("color needs '#rrggbb' or three comma-separated floats, got '1,0,0,0'"),
             ),
-            ("color", "1,x,0", Err("'x' is not a number")),
+            (
+                "color",
+                "1,x,0",
+                Err("color needs '#rrggbb' or three comma-separated floats, got '1,x,0'"),
+            ),
+            (
+                "color",
+                "#ff80",
+                Err("color needs '#rrggbb' or three comma-separated floats, got '#ff80'"),
+            ),
+            (
+                "color",
+                "#ff800g",
+                Err("color needs '#rrggbb' or three comma-separated floats, got '#ff800g'"),
+            ),
             ("vec2", "0.1,0.2", Ok(json!([0.1, 0.2]))),
             ("vec3", "1,0,0.5", Ok(json!([1.0, 0.0, 0.5]))),
             ("vec4", "0,0.25,0.5,1", Ok(json!([0.0, 0.25, 0.5, 1.0]))),

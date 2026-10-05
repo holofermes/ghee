@@ -29,6 +29,10 @@
   it was a `#define` over one float uniform for each component, so a local of
   its name shadows it as it shadows any uniform, and `.bg` beside a color
   named `bg` selects the field.
+- Take a color param's value as `"#rrggbb"` or as `[r, g, b]` with each 0 to
+  1, in the scene, in `/set` and in `set_param`. A scene process sends a
+  color as three floats in message kind 1, and the Python shim turns a
+  `"#rrggbb"` into them.
 - Refuse a key that ghee does not take anywhere in a scene, where the scene
   loaded and ignored it, and name the key, where it sits, and the closest key
   that ghee takes, or the object that takes it: `"fill"` on a layer names the

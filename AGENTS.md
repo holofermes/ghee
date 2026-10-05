@@ -244,6 +244,56 @@ An error string is an interface. An error that names a wrong cause sends the
 reader down a dead end. Name the real condition, and nothing else.
 
 Do not commit or push unless asked. Do not add a dependency without a strong
-recorded reason. The console web UI is one static file with no build step. A
-change to it must work in the light theme and in the dark theme. It must work on
-mobile and on desktop, across all major browsers.
+recorded reason.
+
+## Console UI
+
+The console web UI is one static file with no build step. It works on a phone
+first and on a desktop too, in every major browser, in the light theme and in
+the dark theme. Check a change at phone width and in both themes before it
+lands.
+
+- A control on a touch screen is at least 40 px tall. The page scrolls, and
+  nothing is cut off at phone width.
+- A setting shows its key and its value, with no grey hint text and no
+  description under a field. An empty field's placeholder names ghee's
+  default in one word, such as `fit` or `auto`. A key that needs a sentence
+  to explain it needs a better name.
+- Nothing moves under the cursor. A tab keeps its width and its place, open
+  or closed. Actions sit at fixed spots at the end of their row, and a click
+  never shifts another control.
+- Reuse the console's components: the dropdown menu, the colour control, the
+  dialog and the eye. A new kind of control needs a reason that none of them
+  covers.
+- An eye hides a pass or a layer, or bypasses an effect. A hidden or bypassed
+  thing dims the same way everywhere and stays editable.
+- The most used things come first. A pass shows its layers before its shader,
+  and the shader sits closed under a line.
+- A number field has no spin buttons in any browser. A colour shows its
+  swatch alone, with no hex code beside it.
+- Rename is a pencil that opens the console's dialog. Remove asks first in the
+  same dialog.
+- An edit goes into the page's working copy, and Save writes the scene, as
+  every other edit does.
+
+## Names
+
+A scene key, a value, a GLSL name and a Python keyword are an interface. Pick
+each one for a reader who has never seen ghee.
+
+- Where CSS has a word for a setting, use it: `color`, `opacity`,
+  `font_size`, `font_family`, `text_align`, `text_shadow`, `text_stroke`,
+  `blend`. An underscore stands for CSS's hyphen, so Python takes the name as
+  a keyword.
+- Everywhere else, use a plain word. A name never asks a newcomer to decode
+  jargon such as pixels per em.
+- `vertex` and `fragment` name shader stages and nothing else.
+- A value is plain keys, never a small syntax inside a string: `x` and `y` as
+  two keys, a gradient as `{"from", "to", "angle"}`, an effect as an object
+  with named fields.
+- A user never has to invent a name. The console names a new layer from its
+  kind (`text`, `text2`, `image`), and renaming is a deliberate act.
+- A name that reaches GLSL is GLSL-safe: ASCII letters, digits and `_`, a
+  letter first, a letter or a digit last, no `__`, and no `gl_` or `ghee` at
+  the start. Every GLSL name that ghee derives from a user's name carries a
+  suffix, such as `_cover`, `_tex` or `_size`, and a new one does too.

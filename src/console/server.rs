@@ -1784,6 +1784,10 @@ impl ConsoleHost for RenderLoopHost {
         Ok(self.console.store.names())
     }
 
+    fn procedural_names(&self) -> ConsoleResult<Vec<String>> {
+        Ok(self.console.store.procedural_names())
+    }
+
     fn active_name(&self) -> ConsoleResult<Option<String>> {
         Ok(lock(&self.console.target).clone())
     }

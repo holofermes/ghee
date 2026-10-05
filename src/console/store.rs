@@ -194,6 +194,18 @@ impl SceneStore {
         self.scenes.iter().map(|(n, _)| n.clone()).collect()
     }
 
+    /// The names of the scenes that a program writes, as start() runs them.
+    pub fn procedural_names(&self) -> Vec<String> {
+        self.scenes
+            .iter()
+            .filter(|(n, _)| {
+                self.path(n)
+                    .is_ok_and(|p| process::executable(&p).is_some())
+            })
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.scenes.iter().any(|(n, _)| n == name)
     }
@@ -533,6 +545,16 @@ mod tests {
         let (_d, store) = scenes("scan");
         assert_eq!(store.names(), vec!["one".to_string(), "two".to_string()]);
         assert!(store.contains("one") && !store.contains("three"));
+    }
+
+    #[test]
+    fn the_store_names_the_scenes_that_a_program_writes() {
+        let (d, _) = scenes("procedural-names");
+        write_scene(&format!("{d}/proc.py"), "#!/bin/sh\nexit 0\n");
+        write_text(&format!("{d}/helper.py"), "");
+        let store = SceneStore::new(&d, false, Vec::new());
+        assert_eq!(store.names(), ["one", "two", "proc"]);
+        assert_eq!(store.procedural_names(), ["proc"]);
     }
 
     #[test]

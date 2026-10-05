@@ -422,6 +422,14 @@ pub trait ConsoleHost {
 
     fn scene_names(&self) -> ConsoleResult<Vec<String>>;
 
+    /// The names among scene_names() whose scene a program writes. The
+    /// program keeps which layers exist and their order, so the page adds,
+    /// moves and removes none of their layers. /scenes lists them under
+    /// "procedural" when there are any.
+    fn procedural_names(&self) -> ConsoleResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
     fn active_name(&self) -> ConsoleResult<Option<String>>;
 
     /// The resolved scene JSON for a name, or for the active scene when name is
@@ -600,6 +608,10 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                     "active".to_string(),
                     h.active_name()?.map_or(Value::Null, Value::from),
                 );
+                let procedural = h.procedural_names()?;
+                if !procedural.is_empty() {
+                    d.insert("procedural".to_string(), Value::from(procedural));
+                }
                 Ok(Response::json(&Value::Object(d)))
             }
             "/hwinfo" => Ok(Response::json(&h.hwinfo()?)),
@@ -977,6 +989,10 @@ mod tests {
             Ok(self.names.borrow().clone())
         }
 
+        fn procedural_names(&self) -> ConsoleResult<Vec<String>> {
+            Ok(vec!["c".to_string()])
+        }
+
         fn active_name(&self) -> ConsoleResult<Option<String>> {
             Ok(Some(self.active.borrow().clone()))
         }
@@ -1114,10 +1130,16 @@ mod tests {
     }
 
     #[test]
-    fn scenes_lists_names_and_active() {
+    fn scenes_lists_names_active_and_the_procedural_ones() {
         assert_eq!(
             as_json(&get(&api(), "/scenes", &[])),
-            serde_json::json!({"scenes": ["a", "b", "c"], "active": "a"})
+            serde_json::json!({"scenes": ["a", "b", "c"], "active": "a", "procedural": ["c"]})
+        );
+        let bare =
+            ConsoleAPI::new(Bare).dispatch("GET", "/scenes", &Query::new(), &Headers::new(), b"");
+        assert_eq!(
+            as_json(&bare),
+            serde_json::json!({"scenes": [], "active": null})
         );
     }
 

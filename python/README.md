@@ -15,10 +15,9 @@ maturin build --release --compatibility linux
 
 ## Text on your OLED
 
-This script shows a clock on a 128x32 SSD1306. The text `clock` names no
-font, so it draws in ghee's built-in DejaVu Sans. Its layer names no size, so
-the words fit the panel. Each turn of the loop sets the words and draws one
-frame:
+This script shows a clock on a 128x32 SSD1306. The text layer `clock` names
+no font, so it draws in ghee's built-in DejaVu Sans, and no size, so the words
+fit the panel. Each turn of the loop sets the words and draws one frame:
 
 ```python
 #!/usr/bin/env -S uv run --script
@@ -30,41 +29,33 @@ import time
 import ghee
 
 scene = ghee.Scene(
-    texts=[ghee.Text("clock")],
-    passes=[ghee.Pass("main", layers=[ghee.Layer("clock")])],
+    passes=[ghee.Pass("main", layers=[ghee.Layer("clock", text="00:00:00")])],
 )
 
 with ghee.open(scene, output="ssd1306", fps=4) as screen:
     while True:
-        screen.set_param("clock", time.strftime("%H:%M:%S"))
+        screen.layers.clock.text = time.strftime("%H:%M:%S")
         screen.frame()
 ```
 
 `output="kms"` takes a panel with a kernel driver in place of ghee's own
 `ssd1306` driver.
 
-The same clock with a glow under the digits takes a second layer. The glow
-layer reaches 0.2 em past the letters, and its `fragment` turns the distance
-from the letters into light. A 1-bit panel leaves every dim pixel dark, so
-the `dither` filter draws the glow as dots:
+The same clock with a glow around the digits takes the `glow` effect. A 1-bit
+panel leaves every dim pixel dark, so the `dither` filter draws the glow as
+dots:
 
 ```python
-GLOW = """
-void main() {
-    float far = max(-glyph_round_dist(), 0.0) / glyph_font_size;  // em outside the letters
-    float a = 0.4 * exp(-14.0 * far);
-    gl_FragColor = vec4(vec3(a), a);
-}
-"""
-
 scene = ghee.Scene(
-    texts=[ghee.Text("clock")],
     passes=[
         ghee.Pass(
             "main",
             layers=[
-                ghee.Layer("clock", GLOW, pad=0.2, name="glow"),
-                ghee.Layer("clock", name="digits"),
+                ghee.Layer(
+                    "clock",
+                    text="00:00:00",
+                    glow={"color": "#ffffff", "strength": 0.4},
+                )
             ],
         )
     ],
@@ -72,9 +63,9 @@ scene = ghee.Scene(
 )
 ```
 
-[Text](https://github.com/holofermes/ghee#text) holds more: `font_size`,
-`at` for a pixel position, the recipes for an outline, a shadow, a wave and a
-marquee, and what each filter does on a 1-bit panel.
+[Layers](https://github.com/holofermes/ghee#layers) holds more: `font_size`,
+`x` and `y`, every effect, image layers, and what each filter does on a 1-bit
+panel.
 
 ## ghee.open
 
@@ -98,12 +89,14 @@ h = ghee.open(
 h.set_param("gain", 1.5)                 # a scene param
 h.set_param("snap", 1.0, pass_="hold")   # the param of one pass
 h.set_param("hold.snap", 1.0)            # the same param, dotted
-h.set_param("words", "hello")            # the words of a text
+h.set_param("title", "hello")            # the words of the text layer title
+h.layers.title.x = 10                    # a live field of a layer
+h.layers.title.karaoke.sung = 12         # a live field of one of its effects
 
 h.feed("level", bars)      # bytes, bytearray, memoryview, array, numpy, numbers
 tick = h.frame()           # {"frame": 12, "time": 0.4, "dt": 0.0166}
 tick = h.skip()            # the same tick, with no draw
-h.changed_params()         # {"words": "hi"}: string params that the console set
+h.changed_params()         # {"title": "hi"}: string params that the console set
 
 h.size          # (width, height)
 h.components    # 3 for RGB, 4 for RGBA
@@ -114,9 +107,22 @@ h.close()       # also a context manager
 
 ## What each call does
 
-`set_param` sets a live uniform, with no recompile. A bare name sets the
-scene param, else the param of the first pass that declares it. The name of a
-text sets its words, and ghee lays them out again, also with no recompile.
+`set_param` sets a live param, with no recompile. A bare name sets the scene
+param, else the param of the first pass that declares it. A text layer's
+words are the string param of the layer's name, and ghee lays new words out
+again, also with no recompile.
+
+`layers` sets a live field of a layer, by attribute or by key:
+`h.layers.title.x = 10`, `h.layers["title"]["karaoke"]["sung"] = 12`.
+`set_layer(name, field, value, effect=None)` makes the same set as a call.
+The live fields are a layer's `x`, `y`, `color`, `opacity` and `visible`, a
+text layer's `text`, the words, an image layer's `image`, the name of an
+image asset of the scene, and an effect's `visible`, `color`, `strength`,
+`sung`, `speed` and `rate`. A value takes the form that the scene gives the
+field, and None takes `x` or `y` back to centring and `color` back to its
+default. A set raises ValueError at once for a layer, an effect or a field
+that the scene lacks, for a field that changes with a rebuild, and for a
+value that the field does not take. `layers` sets fields and reads none back.
 
 A scene file finds its files beside itself, and a Python scene beside its
 script, under ghee and in [direct mode](#direct-mode) alike. A scene given as
@@ -150,9 +156,10 @@ alpha. A run of `#` in the name takes the number of the frame's tick, as
 elsewhere. Anyone who reaches the port can change params, so bind beyond
 loopback only on a network you trust.
 [docs/http.md](https://github.com/holofermes/ghee/blob/main/docs/http.md)
-holds the API. This console shows the host's own scene. Param changes apply,
-and the console refuses scene switches and recompiles. The video stream
-advances with `frame()`: viewers see a new frame only when the host draws one.
+holds the API. This console shows the host's own scene. Params and the live
+fields of layers change from it, and it refuses scene switches, saves and
+every edit that rebuilds the scene. The video stream advances with
+`frame()`: viewers see a new frame only when the host draws one.
 
 ## Rules
 
@@ -176,8 +183,8 @@ inline:
 
 The shim gives:
 
-- `ghee.Scene / Pass / Param / ArrayInput / Channel / Asset / Text / Layer`
-  to build the scene.
+- `ghee.Scene / Pass / Param / ArrayInput / Channel / Asset / Layer` to build
+  the scene.
 - `ghee.Arg` and `ghee.args([...])` to declare the scene's arguments, and to
   answer `-- --help`.
 - `@ghee.feed("name")` to supply the values of a named array, each tick. The
@@ -186,8 +193,8 @@ The shim gives:
   and any other numbers go out as float32. None leaves the array as it
   stands.
 - `@ghee.tick` to run a hook on each tick, before the feeds. The hook
-  receives a `ghee.Tick` and calls `ghee.set_param(name, value)` and
-  `ghee.skip()`.
+  receives a `ghee.Tick` and calls `ghee.set_param(name, value)`,
+  `ghee.layers` and `ghee.skip()`.
 - `ghee.run(scene)` for the handshake, then the tick loop.
 
 A `ghee.Tick` holds `frame`, the tick's number, `time` and `dt` in seconds,
@@ -205,13 +212,12 @@ ghee.args()  # the probe, this scene takes no arguments
 
 @ghee.tick
 def clock(tick):
-    ghee.set_param("clock", time.strftime("%H:%M:%S"))
+    ghee.layers.clock.text = time.strftime("%H:%M:%S")
 
 
 ghee.run(
     ghee.Scene(
-        texts=[ghee.Text("clock")],
-        passes=[ghee.Pass("main", layers=[ghee.Layer("clock")])],
+        passes=[ghee.Pass("main", layers=[ghee.Layer("clock", text="00:00:00")])],
     )
 )
 ```
@@ -230,112 +236,65 @@ hook lands in the frame of its tick in [direct mode](#direct-mode), and under
 ghee with `--timestep`. Under ghee without it, the param lands a frame later
 or more.
 
-## Text
-
-`ghee.Text(name, font=None, value="", align="left", fill="mtsdf", atlas=None)`
-holds the words in `value` and the font to draw them from. A pass draws a
-text in one of two ways. A `ghee.Layer` on the pass paints the words over its
-buffer, one quad over each glyph, for words that sit on the screen. The
-pass's own shader reads `<name>_cover`, the coverage of the words at any
-point, when the words feed its math, such as a warp or a mask.
-[Text](https://github.com/holofermes/ghee#text) holds the GLSL of both.
-
-ghee declares the string param of the text's name, and new words from
-`set_param` or the console lay out again with no recompile. A scene that
-declares its own param under a text's name raises ValueError.
-
-`font` takes a `.ttf` or `.otf` file, which resolves as an asset file does,
-the name of a font `ghee.Asset`, or a list that mixes both. None draws from
-the built-in DejaVu Sans. With `ghee.Text("words", ["sans", "NotoColorEmoji.ttf"])`,
-each character draws from the first font in the list whose cmap holds it:
-letters from `sans`, and emoji from a colour emoji font such as Noto Color
-Emoji. A character followed by U+FE0F draws from the first font with a colour
-glyph for it. Line height and baseline come from the first font.
-
-A text problem leaves the scene running, and `set_param` raises nothing for
-it. ghee prints it once on stderr, and the console shows it. A font that fails
-to load drops out of the list, and a text with no font left draws every
-character as an error box, diagonal stripes of coverage. A character whose
-glyph has neither an outline nor a colour bitmap draws an error box in its
-place, and the rest of the words draw. Words that do not fit leave the last
-words that did. An emoji of a colour font has no coverage, and only a layer
-paints it.
+`ghee.layers` makes the sets of a handle's `layers` from a tick or a feed,
+and they land as a param does. Under ghee, each set goes out with the tick's
+answer, and the first one loads the native half of the package, which checks
+every set against the scene and raises ValueError where ghee would refuse
+it. In a direct run, each set goes to the handle. A set before `ghee.run`
+raises RuntimeError.
 
 ## Layers
 
-A pass's code fills its buffer, then each `ghee.Layer` in its `layers` paints
-a text over it, in order: one quad over each glyph, coloured by the layer's
-own fragment shader. This scene draws `words` in amber at 48 pixels per em,
-centred on black:
+`ghee.Layer(name, text=None, visible=True, x=None, y=None, color=None,
+opacity=None, blend="normal", font_size=None, font_family=None,
+text_align="left", render="mtsdf", text_shadow=None, glow=None,
+text_stroke=None, karaoke=None, wave=None, scroll=None, blink=None,
+image=None, width=None, height=None)` takes the keys of a layer as keywords,
+and [Layers](https://github.com/holofermes/ghee#layers) holds what each does.
+A text layer takes `text` and an image layer takes `image`. A keyword left
+at None leaves its key to ghee's default, and an effect takes a dict of its
+fields, `{}` for every default. This scene draws `hello` in a gradient with
+a soft shadow, and the image `stamp.png` in the top left corner:
 
-    AMBER = """
-    void main() {
-      float c = glyph_cover();
-      gl_FragColor = vec4(vec3(1.0, 0.7, 0.2) * c, c);
-    }
-    """
-    BLACK = "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"
-
-    scene = ghee.Scene(
-        texts=[ghee.Text("words", value="hello")],
-        passes=[ghee.Pass("main", BLACK, layers=[ghee.Layer("words", AMBER, font_size=48)])],
-    )
-
-`ghee.Layer(text, fragment=None, vertex=None, font_size=None, at=None,
-fade=None, blend="over", pad=None, name=None, emoji=None)`:
-
-- `text` names a `ghee.Text` of the scene.
-- `fragment` holds a `void main()` that writes the colour premultiplied by
-  alpha. None draws the letters white.
-- `vertex` defines `vec2 glyph_place(vec2 em)`. The function takes a point of
-  the block, in em from its top left with y down, and returns the pass pixel
-  where that point lands. A layer with `vertex` takes neither `font_size` nor
-  `at`.
-- `font_size` draws the block at that many pixels per em. `at` puts its top
-  left at a pixel of the pass, `(x, y)` with y down. Without `at` the block
-  sits centred in the pass, and without `font_size` it takes the largest
-  size that fits.
-- `fade` sets the band in em, at the outer edge of the pad, over which the
-  layer fades to 0: a quarter of `pad` for None, and 0 turns the fade off.
-- `blend` is `"over"`, `"add"` or `"replace"`.
-- `pad` is how far past the letters the layer reaches, in em, for a glow or
-  an outline: 0 for None.
-- `name` names the layer in errors and in the console: ASCII letters, digits,
-  `_` and `-`, unique among the layers of its pass. None goes by the text's
-  name.
-- `emoji` sets whether the layer paints the text's colour glyphs. None leaves
-  them to the last layer of the text in its pass, so a shadow drawn under the
-  fill paints no copy.
+```python
+scene = ghee.Scene(
+    assets=[ghee.Asset("stamp", "stamp.png")],
+    passes=[
+        ghee.Pass(
+            "main",
+            "void main() { gl_FragColor = vec4(0.1, 0.12, 0.2, 1.0); }",
+            layers=[
+                ghee.Layer(
+                    "title",
+                    text="hello",
+                    color={"from": "#ff0000", "to": "#ffff00", "angle": 90},
+                    text_shadow={},
+                ),
+                ghee.Layer("icon", image="stamp", x=4, y=4, width=16),
+            ],
+        )
+    ],
+)
+```
 
 A pass of layers alone, `ghee.Pass("words", layers=[...])`, starts each frame
 transparent, for a later pass to read through a channel.
 
-`fill` on `ghee.Text` sets where a layer of the text takes its coverage from.
-`"mtsdf"`, the default, reads an atlas of the glyphs' distance fields: it is
-fast, and it gives `glyph_dist`, `glyph_round_dist` and `glyph_fade`.
-`"slug"` computes the coverage from the curves, with exact edges at any size.
-`atlas={"font_size": 48}` sets the texels per em of the atlas, whose field
-reaches as far as the largest `pad` of the text's layers. New words of an
-MTSDF text wait for the glyphs that its atlas lacks, and the last words stay
-on screen meanwhile. With `timestep` set, `frame()` waits for them.
-
-[Layers](https://github.com/holofermes/ghee#layers) holds the GLSL that
-`fragment` and `vertex` read and how they run, and
-[Fills](https://github.com/holofermes/ghee#fills) what each fill costs.
-`ghee render --demo karaoke` sings a line in layers.
+A text problem leaves the scene running, and `set_param` raises nothing for
+it. ghee prints it once on stderr, and the console shows it.
 
 ## Coverage in a shader
 
-Every pass except a filter pass reads the words of a text with
+Every pass except a filter pass reads the words of a text layer with
 `float <name>_cover(vec2 p, float font_size)`: `p` in em from the top left of
 the block, y down like `v_texCoord`, and `font_size` the pixels per em there,
-which sets the antialiasing. `<name>_size` is the block in em. With `CODE`
-holding a shader such as the one in
+which sets the antialiasing. `<name>_size` is the block in em. A hidden layer
+gives a shader its words and draws none itself. With `CODE` holding a shader
+such as the one in
 [Coverage in a shader](https://github.com/holofermes/ghee#coverage-in-a-shader):
 
     scene = ghee.Scene(
-        texts=[ghee.Text("words", value="hello", align="center")],
-        passes=[ghee.Pass("main", CODE)],
+        passes=[ghee.Pass("main", CODE, layers=[ghee.Layer("title", text="hello", visible=False)])],
     )
 
 `ghee render --demo lettering -o lettering.png` shows the words at every
@@ -370,7 +329,7 @@ The scene takes its own arguments first, then these flags of `ghee render`:
   pipe, and to 0 for a display or the console, which runs until SIGINT or
   SIGTERM.
 
-The feeds, the hooks and `ghee.skip()` work the same. The tick keeps its wire
+The feeds, the hooks, `ghee.layers` and `ghee.skip()` work the same. The tick keeps its wire
 shape: `params` holds the string params that the console changed, and the
 first tick holds every string param. If one of your own arguments collides
 with these names, argparse says so.

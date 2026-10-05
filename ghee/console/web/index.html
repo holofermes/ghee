@@ -1037,7 +1037,9 @@ function addMenu(label, items, trigCls = "addmini", title = ""){
 addEventListener("scroll", closeMenus, true);
 
 // Tabs never change width or place. The open tab's pencil, eye and × sit at
-// the row's end, greyed where the tab takes none.
+// the row's end, greyed where the tab takes none. A script declares the
+// passes of its scene: + adds none there, and the pencil and × stay grey on
+// them.
 function buildTabs(){
   const row = $("#tabs"), was = row.querySelector(".strip"), left = was ? was.scrollLeft : 0;
   const t = strip("tstrip");
@@ -1055,11 +1057,12 @@ function buildTabs(){
   work.passes.forEach((p, i) => tab((p.filter ? "ƒ " : "") + p.name,
     [p.visible === false ? "off" : "", p.filter ? "filt" : ""], i === curPass, () => setPass(i),
     p.filter ? `filter: ${p.filter} (read-only, tweak params)` : ""));
-  const items = [["empty pass", addPass]];
+  const proc = isProcedural();
+  const items = proc ? [] : [["empty pass", addPass]];
   if (!hasCommon()) items.push(["common", addCommon]);   // one per scene
   const fnames = Object.keys(FILTERS);
-  if (fnames.length) items.push(null, ...fnames.map(n => ["ƒ " + n, () => addFilter(n)]));
-  t.appendChild(addMenu("+", items, "tab add", "add a pass or a filter"));
+  if (fnames.length) items.push(...(items.length ? [null] : []), ...fnames.map(n => ["ƒ " + n, () => addFilter(n)]));
+  t.appendChild(addMenu("+", items, "tab add", proc ? "add a filter" : "add a pass or a filter"));
   row.innerHTML = "";
   row.appendChild(t);
   t.scrollLeft = left;
@@ -1076,9 +1079,9 @@ function buildTabs(){
     const eye = tbtn(off ? EYE_OFF : EYE, off ? `pass ${p.name} is hidden, show it` : `hide pass ${p.name}`,
       "m" + (off ? " off" : ""), () => togglePass(i));
     const del = tbtn("×", `remove pass ${p.name}`, "x", () => delPass(i));
-    ren.disabled = !!p.filter;
+    ren.disabled = proc || !!p.filter;
     eye.disabled = !off && shown <= 1;   // one pass at least stays visible
-    del.disabled = work.passes.length <= 1;
+    del.disabled = work.passes.length <= 1 || (proc && !p.filter);
     acts.append(ren, eye, del);
   }
   row.appendChild(acts);

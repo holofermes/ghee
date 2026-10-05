@@ -210,7 +210,8 @@ pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>)
 }
 
 /// One filter pass named `own`, reading `prev`. The param values of `was`
-/// replace the defaults where the filter still declares that param.
+/// replace the defaults where the filter still declares that param, and the
+/// pass keeps the eye of `was`.
 fn filter_pass(name: &str, fd: &Value, own: &str, prev: &str, was: Option<&Pass>) -> Result<Pass> {
     let Some(code) = fd.get("code").and_then(Value::as_str) else {
         bail!("filter '{name}': needs a string 'name' and 'code'");
@@ -248,6 +249,7 @@ fn filter_pass(name: &str, fd: &Value, own: &str, prev: &str, was: Option<&Pass>
     d.insert("channels".to_string(), Value::Array(channels));
     let mut p = Pass::from_dict(&Value::Object(d), None)?;
     p.filter = name.to_string(); // The console renders a filter pass read-only.
+    p.visible = was.is_none_or(|w| w.visible);
     Ok(p)
 }
 
@@ -642,9 +644,25 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_filter_pass_stays_hidden_when_a_post_rebuilds_it() {
+        let _g = env_guard();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [
+                {"name": "m", "code": GOOD},
+                {"name": "dither", "code": "", "filter": "dither", "visible": false}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        rebuild_filters(&mut sc, None).unwrap();
+        assert!(sc.passes[1].code.contains("main"));
+        assert!(!sc.passes[1].visible);
+    }
+
+    #[test]
     fn a_listed_filter_the_post_leaves_out_stays_out() {
-        // The console mutes a filter by posting it as a plain pass and leaving
-        // its name out of the list.
+        // A plain pass that carries a filter's name stays plain when the
+        // post's list leaves that filter out.
         let _g = env_guard();
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "filters": [],

@@ -31,7 +31,8 @@ use serde_json::{Map, Value};
 
 use crate::console::{static_asset, WEB};
 use crate::filters::{filter_defs, rebuild_filters};
-use crate::scene::{py_repr, Scene};
+use crate::layer::{Address, Form, Layer, Live};
+use crate::scene::{hex_colour, not_an_image, py_repr, Scene};
 
 /// The console's cap on a request body. A POSTed scene is JSON text.
 pub const MAX_BODY: usize = 1 << 20;
@@ -165,6 +166,32 @@ impl fmt::Display for ConsoleError {
 impl std::error::Error for ConsoleError {}
 
 pub type ConsoleResult<T> = Result<T, ConsoleError>;
+
+/// A live field of a layer that a /set names, with its value as the scene
+/// format writes the field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerSet {
+    pub layer: String,
+    pub effect: Option<String>,
+    pub field: String,
+    pub value: Value,
+}
+
+impl LayerSet {
+    pub fn at(&self) -> Address<'_> {
+        Address {
+            layer: &self.layer,
+            effect: self.effect.as_deref(),
+            field: &self.field,
+        }
+    }
+}
+
+/// What a /set changes: a param, or a live field of a layer.
+enum Set {
+    Param(Scope, String, Value),
+    Layer(LayerSet),
+}
 
 /// A /set target. The literal "scene" names the scene's shared params. Anything
 /// else is a pass index.
@@ -414,6 +441,16 @@ pub trait ConsoleHost {
     /// for a scene-scoped param.
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()>;
 
+    /// Set a live field of a layer, with no rebuild, to a value that
+    /// live_value() checked against live_doc().
+    fn set_layer(&self, set: LayerSet) -> ConsoleResult<()>;
+
+    /// The scene document that a /set of a layer's field checks the field and
+    /// the value against: the scene that renders.
+    fn live_doc(&self) -> ConsoleResult<Value> {
+        self.scene_def(None)
+    }
+
     /// The type declared by the running scene for a param, or None when its
     /// scope holds no param of that name. A /set value parses by it.
     fn param_type(&self, scope: Scope, name: &str) -> ConsoleResult<Option<String>> {
@@ -584,9 +621,12 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
         let h = &self.host;
         if path == "/set" {
             let mut set = || {
-                let (scope, name, value) = parse_set(h, query)?
+                let set = parse_set(h, query)?
                     .map_err(|e| ConsoleError::bad_request(format!("bad /set: {e}")))?;
-                h.set_param(scope, &name, value)
+                match set {
+                    Set::Param(scope, name, value) => h.set_param(scope, &name, value),
+                    Set::Layer(set) => h.set_layer(set),
+                }
             };
             match query.get("scene") {
                 Some(scene) => h.edit_scene(scene, &mut set)?,
@@ -653,13 +693,36 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     }
 }
 
-/// The (scope, name, value) of a /set, or the first thing wrong with it. The
-/// value parses by the type that the host reports for the param. The outer
-/// error is the host's own.
-fn parse_set(
-    host: &impl ConsoleHost,
-    query: &Query,
-) -> ConsoleResult<Result<(Scope, String, Value), String>> {
+/// What a /set changes, or the first thing wrong with it. A query that names
+/// a `layer` sets one of its live fields, and its value parses by the field.
+/// Any other query sets a param, and its value parses by the type that the
+/// host reports for the param. The outer error is the host's own.
+fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set, String>> {
+    if let Some(layer) = query.get("layer") {
+        let parts = || -> Result<(&String, &String), String> {
+            let raw = query.get("value").ok_or("the query has no 'value'")?;
+            let field = query.get("field").ok_or("the query has no 'field'")?;
+            Ok((field, raw))
+        };
+        let (field, raw) = match parts() {
+            Ok(p) => p,
+            Err(e) => return Ok(Err(e)),
+        };
+        let effect = query.get("effect").map(String::as_str);
+        let at = Address {
+            layer,
+            effect,
+            field,
+        };
+        return Ok(live_value(&host.live_doc()?, &at, raw).map(|value| {
+            Set::Layer(LayerSet {
+                layer: layer.clone(),
+                effect: effect.map(str::to_string),
+                field: field.clone(),
+                value,
+            })
+        }));
+    }
     let parts = || -> Result<(Scope, String, &String), String> {
         let raw = query.get("value").ok_or("the query has no 'value'")?;
         let scope = parse_scope(query.get("pass").ok_or("the query has no 'pass'")?)?;
@@ -673,7 +736,90 @@ fn parse_set(
     let Some(ty) = host.param_type(scope, &name)? else {
         return Ok(Err(undeclared(scope, &name)));
     };
-    Ok(parse_param_value(&ty, raw).map(|value| (scope, name, value)))
+    Ok(parse_param_value(&ty, raw).map(|value| Set::Param(scope, name, value)))
+}
+
+/// The value of `raw`, a /set value, for the live field `at` of the scene
+/// document `doc`, checked as the scene checks a live value, or why the scene
+/// takes none.
+pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String> {
+    let named = Value::from(at.layer);
+    let Some(d) = doc_layers(doc).find(|l| l.get("name") == Some(&named)) else {
+        return Err(format!("the scene has no layer '{}'", at.layer));
+    };
+    let mut layer = Layer::from_dict("a layer", d).map_err(|e| e.to_string())?;
+    let live = layer.live(at.effect, at.field).map_err(|e| e.to_string())?;
+    let value = parse_live_value(&live, raw)?;
+    if live.form == Form::Image {
+        let file = doc
+            .get("assets")
+            .and_then(|a| a.get(raw))
+            .and_then(|a| a.get("file"))
+            .and_then(Value::as_str);
+        if file.is_none_or(crate::text::is_font_file) {
+            return Err(not_an_image(&live.what, &value));
+        }
+    }
+    layer
+        .set_live(at.effect, at.field, &value)
+        .map_err(|e| e.to_string())?;
+    Ok(value)
+}
+
+/// `raw`, a /set value, as the live field `live` takes it: a number, true or
+/// false, a colour as `#rrggbb`, three comma-separated floats or a gradient
+/// object in JSON, the name of an image asset, or `none` for the default of
+/// a field that takes none.
+fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
+    let what = &live.what;
+    let s = raw.trim();
+    let got = py_repr(&Value::from(raw));
+    let or_none = |none: bool| if none { " or none" } else { "" };
+    match live.form {
+        Form::Number { none: true } | Form::Colour { none: true, .. } if s == "none" => {
+            Ok(Value::Null)
+        }
+        Form::Number { none } => py_float(raw)
+            .map(Value::from)
+            .map_err(|_| format!("{what} needs a number{}, got {got}", or_none(none))),
+        Form::Flag => BOOLS
+            .iter()
+            .find(|(k, _)| *k == s.to_lowercase())
+            .map(|(_, v)| Value::from(*v))
+            .ok_or_else(|| format!("{what} needs true or false, got {got}")),
+        Form::Colour { gradient, none } => {
+            if hex_colour(s).is_some() {
+                return Ok(Value::from(s));
+            }
+            if gradient && s.starts_with('{') {
+                if let Ok(v @ Value::Object(_)) = serde_json::from_str::<Value>(s) {
+                    return Ok(v);
+                }
+            }
+            if let Some(rgb) = floats(raw).ok().filter(|p| p.len() == 3) {
+                return Ok(Value::from(rgb));
+            }
+            let forms = match (gradient, none) {
+                (true, true) => {
+                    "'#rrggbb', three comma-separated numbers, a gradient object or none"
+                }
+                (false, true) => "'#rrggbb', three comma-separated numbers or none",
+                _ => "'#rrggbb' or three comma-separated numbers",
+            };
+            Err(format!("{what} needs {forms}, got {got}"))
+        }
+        Form::Image => Ok(Value::from(raw)),
+    }
+}
+
+/// The layers of every pass of the scene document `doc`.
+fn doc_layers(doc: &Value) -> impl Iterator<Item = &Value> {
+    doc.get("passes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get("layers")?.as_array())
+        .flatten()
 }
 
 fn undeclared(scope: Scope, name: &str) -> String {
@@ -701,16 +847,8 @@ pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
 /// param of that name. ghee declares a scene string param under each text
 /// layer's name, and none for an image layer, which holds an `image`.
 pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
-    let layers = doc
-        .get("passes")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|p| p.get("layers")?.as_array())
-        .flatten();
     if scope == Scope::Scene
-        && layers
-            .into_iter()
+        && doc_layers(doc)
             .any(|l| l.get("name") == Some(&Value::from(name)) && l.get("image").is_none())
     {
         return Some("string".to_string());
@@ -765,8 +903,10 @@ mod tests {
     const SCENE: &str = r#"{"version": 1,
         "params": {"tint": {"type": "float", "value": 0.0},
                    "title": {"type": "string", "value": "hi"}},
+        "assets": {"pic": {"file": "pic.png"}, "sans": {"file": "sans.ttf"}},
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
-                    "layers": [{"name": "words", "text": "ho", "font_family": "sans.ttf"},
+                    "layers": [{"name": "words", "text": "ho", "font_family": "sans.ttf",
+                                "karaoke": {}},
                                {"name": "icon", "image": "icon.png"}],
                     "params": {"k": {"type": "float", "value": 0.0},
                                "on": {"type": "bool", "value": false},
@@ -787,6 +927,7 @@ mod tests {
     enum Call {
         SceneDef(Option<String>),
         SetParam(Scope, String, Value),
+        SetLayer(LayerSet),
         Switch(String),
         ApplyScene(Scene),
         SaveScene(String, Scene),
@@ -873,6 +1014,11 @@ mod tests {
             Ok(())
         }
 
+        fn set_layer(&self, set: LayerSet) -> ConsoleResult<()> {
+            self.calls.borrow_mut().push(Call::SetLayer(set));
+            Ok(())
+        }
+
         fn switch(&self, name: Option<&str>) -> ConsoleResult<String> {
             let name = name.unwrap_or("");
             if !self.names.borrow().iter().any(|x| x == name) {
@@ -914,6 +1060,9 @@ mod tests {
             Ok(Value::Null)
         }
         fn set_param(&self, _scope: Scope, _name: &str, _value: Value) -> ConsoleResult<()> {
+            Ok(())
+        }
+        fn set_layer(&self, _set: LayerSet) -> ConsoleResult<()> {
             Ok(())
         }
         fn switch(&self, _name: Option<&str>) -> ConsoleResult<String> {
@@ -1069,6 +1218,143 @@ mod tests {
                 Some(&Call::SetParam(scope, name.to_string(), want)),
                 "{name}"
             );
+        }
+    }
+
+    /// The /set of `field` of `layer`, or of its effect `effect`, to `value`.
+    fn layer_query<'a>(
+        layer: &'a str,
+        effect: Option<&'a str>,
+        field: &'a str,
+        value: &'a str,
+    ) -> Vec<(&'a str, &'a str)> {
+        let mut q = vec![("layer", layer), ("field", field), ("value", value)];
+        q.extend(effect.map(|e| ("effect", e)));
+        q
+    }
+
+    #[test]
+    fn a_layer_set_parses_its_value_by_the_field() {
+        let gradient = r##"{"from": "#ff0000", "to": "#0000ff", "angle": 90}"##;
+        for (layer, effect, field, raw, want) in [
+            ("words", None, "x", "10", serde_json::json!(10.0)),
+            ("words", None, "y", "none", Value::Null),
+            ("words", None, "opacity", "0.5", serde_json::json!(0.5)),
+            ("words", None, "visible", "false", Value::from(false)),
+            ("words", None, "color", " #FF0000 ", Value::from("#FF0000")),
+            (
+                "words",
+                None,
+                "color",
+                "1,0,0.5",
+                serde_json::json!([1.0, 0.0, 0.5]),
+            ),
+            (
+                "words",
+                None,
+                "color",
+                gradient,
+                serde_json::from_str(gradient).unwrap(),
+            ),
+            ("words", None, "color", "none", Value::Null),
+            (
+                "words",
+                Some("karaoke"),
+                "sung",
+                "2.5",
+                serde_json::json!(2.5),
+            ),
+            ("words", Some("karaoke"), "visible", "0", Value::from(false)),
+            ("icon", None, "color", "none", Value::Null),
+            ("icon", None, "image", "pic", Value::from("pic")),
+        ] {
+            let api = api();
+            let r = post(&api, "/set", &layer_query(layer, effect, field, raw));
+            assert_eq!((r.status, body(&r).as_str()), (200, "ok"), "{field} {raw}");
+            let set = LayerSet {
+                layer: layer.to_string(),
+                effect: effect.map(str::to_string),
+                field: field.to_string(),
+                value: want,
+            };
+            assert_eq!(api.host.calls.borrow().last(), Some(&Call::SetLayer(set)));
+        }
+    }
+
+    #[test]
+    fn a_malformed_layer_set_never_reaches_the_host() {
+        let q = |l, e, f, v| layer_query(l, e, f, v);
+        let some = Some("karaoke");
+        for (query, why) in [
+            (
+                vec![("layer", "words"), ("value", "1")],
+                "the query has no 'field'".to_string(),
+            ),
+            (
+                vec![("layer", "words"), ("field", "x")],
+                "the query has no 'value'".to_string(),
+            ),
+            (
+                q("nope", None, "x", "1"),
+                "the scene has no layer 'nope'".to_string(),
+            ),
+            (
+                q("words", None, "x", "left"),
+                "layer 'words' x needs a number or none, got 'left'".to_string(),
+            ),
+            (
+                q("words", None, "opacity", "none"),
+                "layer 'words' opacity needs a number, got 'none'".to_string(),
+            ),
+            (
+                q("words", None, "visible", "yes"),
+                "layer 'words' visible needs true or false, got 'yes'".to_string(),
+            ),
+            (
+                q("words", None, "color", "1,0"),
+                "layer 'words' color needs '#rrggbb', three comma-separated numbers, a \
+                 gradient object or none, got '1,0'"
+                    .to_string(),
+            ),
+            (
+                q("icon", None, "color", r#"{"from": [1, 0, 0]}"#),
+                "layer 'icon' color needs '#rrggbb', three comma-separated numbers or none, \
+                 got '{\"from\": [1, 0, 0]}'"
+                    .to_string(),
+            ),
+            (
+                q("words", some, "color", "none"),
+                "layer 'words' karaoke color needs '#rrggbb' or three comma-separated \
+                 numbers, got 'none'"
+                    .to_string(),
+            ),
+            (
+                q("icon", None, "image", "sans"),
+                "layer 'icon' image needs an image asset of the scene, got 'sans'".to_string(),
+            ),
+            (
+                q("words", None, "color", r##"{"from": "#ff0000"}"##),
+                "layer 'words' color has no 'to'".to_string(),
+            ),
+            (
+                q("words", None, "font_size", "20"),
+                "layer 'words' font_size changes with a rebuild".to_string(),
+            ),
+        ] {
+            let api = api();
+            let r = post(&api, "/set", &query);
+            assert_eq!(r.status, 400, "{query:?}");
+            // The errors of the scene's own checks hold more than the key.
+            match why.ends_with("rebuild") {
+                true => assert!(body(&r).starts_with(&format!("bad /set: {why}"))),
+                false => assert_eq!(body(&r), format!("bad /set: {why}")),
+            }
+            assert!(!api
+                .host
+                .calls
+                .borrow()
+                .iter()
+                .any(|c| matches!(c, Call::SetLayer(..))));
         }
     }
 

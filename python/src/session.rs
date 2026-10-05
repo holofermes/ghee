@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use ghee::console::server::{coerce, H264_FPS};
 use ghee::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
-use ghee::engine::{probe_display, Feed, Renderer};
+use ghee::engine::{probe_display, Feed, Given, Renderer};
 use ghee::filters::{apply_filters, load_filters};
 use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
@@ -866,12 +866,18 @@ impl Session {
         let Some(console) = self.console.as_ref() else {
             return Ok(());
         };
+        let layers = console.take_layers();
         for (pass, name, ty, value) in console.take_params() {
             RenderTarget::set_param(&self.renderer, pass.as_deref(), &name, &ty, &value)
                 .map_err(system_fault)?;
             if let ParamValue::Str(words) = &value {
                 self.held_string(pass.as_deref(), &name, words, false);
             }
+        }
+        for set in layers {
+            self.renderer
+                .set_layer(&set.at(), Given::Json(&set.value))
+                .map_err(system_fault)?;
         }
         Ok(())
     }

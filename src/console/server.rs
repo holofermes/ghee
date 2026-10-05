@@ -25,7 +25,7 @@ use tiny_http::{Header, Request, Server, StatusCode};
 
 use crate::console::core::{
     declared_type, other_scene, parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult,
-    Headers, Query, Response, Scope,
+    Headers, LayerSet, Query, Response, Scope,
 };
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
@@ -152,6 +152,7 @@ pub enum Command {
     Switch(String),
     Param(i64, String, Value),
     SceneParam(String, Value),
+    Layer(LayerSet),
     /// GET /frame.png: arm the still where this item lands in queue order.
     Shot,
     /// A working copy to compile onto the running renderer.
@@ -1493,6 +1494,11 @@ fn drain(
                     edited = true;
                 }
             }
+            Command::Layer(set) => {
+                if set_layer(renderer, st, &set) {
+                    edited = true;
+                }
+            }
             // in queue order, so the armed frame carries a /set ahead of it
             Command::Shot => console.shot.arm(),
             Command::SceneObj(scene) => {
@@ -1583,6 +1589,26 @@ fn set_scene_param(
         Ok(()) => true,
         Err(e) => {
             eprintln!("set scene param {name}: {e}");
+            false
+        }
+    }
+}
+
+/// Set a live field of a layer on the renderer and in the running document.
+fn set_layer(renderer: &RefCell<Renderer>, st: &RefCell<Running>, set: &LayerSet) -> bool {
+    let mut held = st.borrow_mut();
+    let Some(scene) = held.scene.as_mut() else {
+        return false;
+    };
+    let at = set.at();
+    let applied = renderer
+        .borrow()
+        .set_layer(&at, Given::Json(&set.value))
+        .and_then(|()| scene.set_layer(&at, &set.value));
+    match applied {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("set layer {}: {e}", set.layer);
             false
         }
     }
@@ -1788,6 +1814,19 @@ impl ConsoleHost for RenderLoopHost {
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()> {
         self.console.command(set_item(scope, name, value));
         Ok(())
+    }
+
+    fn set_layer(&self, set: LayerSet) -> ConsoleResult<()> {
+        self.console.command(Command::Layer(set));
+        Ok(())
+    }
+
+    /// The running document, as param_type() reads it.
+    fn live_doc(&self) -> ConsoleResult<Value> {
+        match lock(&self.console.running).as_ref() {
+            Some((_, doc)) => Ok(doc.clone()),
+            None => Err(ConsoleError::not_found("no scene")),
+        }
     }
 
     /// The /set lands on the scene that renders, so its type comes from the
@@ -3140,6 +3179,70 @@ mod tests {
         // the relayed words draw what a scene built on them draws
         assert_eq!(set(text_scene("O")), "");
         assert!(frame() == o, "the relayed words drew another frame");
+    }
+
+    /// A scene of the layer `label`, "I" in the fixture font, at x.
+    fn placed_scene(x: f64) -> Scene {
+        let mut doc = text_scene("I").to_dict();
+        let label = &mut doc["passes"][0]["layers"][0];
+        label["x"] = Value::from(x);
+        label["visible"] = Value::from(true);
+        let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+        sc.load_assets(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts"))
+            .unwrap();
+        sc
+    }
+
+    fn label_x(value: f64) -> LayerSet {
+        LayerSet {
+            layer: "label".to_string(),
+            effect: None,
+            field: "x".to_string(),
+            value: Value::from(value),
+        }
+    }
+
+    #[test]
+    fn a_layer_set_takes_its_field_from_the_running_scene() {
+        let (_d, console) = tmp_console("setlayer");
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
+        let r = set("layer=label&field=x&value=4");
+        assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
+        console.publish(&placed_scene(2.0));
+        assert_eq!(set("layer=label&field=x&value=4").status, 200);
+        match console.q.take() {
+            Some(Command::Layer(set)) => assert_eq!(set, label_x(4.0)),
+            _ => panic!("no layer field queued"),
+        }
+        assert_eq!(set("layer=nope&field=x&value=1").status, 400);
+        assert!(console.q.take().is_none());
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_posted_layer_field_reaches_the_renderer_and_the_running_scene() {
+        let renderer = RefCell::new(gpu(32, 24));
+        let (_d, console) = tmp_console("layer");
+        let st = RefCell::new(Running { scene: None });
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let frame = || {
+            renderer.borrow().set_time(Some(0.0));
+            renderer.borrow_mut().render(None).unwrap().to_vec()
+        };
+        let set = |sc| set_scene(&console, &renderer, &st, sc, None, None);
+        assert_eq!(set(placed_scene(2.0)), "");
+        let before = frame();
+        // what a POST /set queues
+        let host = RenderLoopHost::new(Arc::clone(&console));
+        host.set_layer(label_x(12.0)).unwrap();
+        assert!(drain(&console, &renderer, &st, &ctrl));
+        let live = frame();
+        assert!(live != before, "the frame kept the layer where it was");
+        let running = lock(&console.running).clone().unwrap().1;
+        assert_eq!(running["passes"][0]["layers"][0]["x"], 12.0);
+        assert_eq!(set(placed_scene(12.0)), "");
+        assert!(frame() == live, "the live field drew another frame");
     }
 
     #[test]

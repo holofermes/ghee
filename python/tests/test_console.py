@@ -253,6 +253,30 @@ def test_a_set_reaches_a_vec_or_color_uniform():
         assert near(got, [[1, 0, 0], [0, 0.25, 1], [0.5, 1, 0], [0, 1, 0.5]]), got
 
 
+def test_a_layer_set_lands_on_the_next_frame():
+    # The built-in font draws the layer's words, red over black.
+    words = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "layers": [{"name": "t", "text": "I", "font_size": 24, "color": "#ff0000"}],
+            }
+        ],
+    }
+    port = free_port()
+    with ghee.open(words, width=32, height=32, timestep=0, stats=port) as h:
+        h.frame()
+        assert max(h.pixels()[0::4]) == 255
+        assert post(port, "/set?layer=t&field=visible&value=false")[0] == 200
+        h.frame()
+        assert max(h.pixels()[0::4]) == 0
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            post(port, "/set?layer=t&field=font_size&value=12")
+        assert raised.value.code == 400
+
+
 def test_a_set_the_scene_refuses(served):
     _, port = served
     with pytest.raises(urllib.error.HTTPError) as raised:

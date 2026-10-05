@@ -242,6 +242,11 @@
   named by its pass and its name, `main › title`, with its words, applied
   live, and its font_size, x, y and blend as fields. A double-click on its
   tab renames it, as a pass takes its name.
+- Set a live field of a layer with `/set?layer=title&field=x&value=10`, and
+  a field of one of its effects with `effect=` too, in `ghee serve`,
+  `--serve` and `ghee.open(stats=)`, with no rebuild. The value reads as the
+  field takes it, `none` included, and a field that changes with a rebuild
+  answers 400 with the live fields named.
 - Take the scene that an edit is for in `scene=` on `/set`, in `name=` on
   `POST /scene` and in the body of `/save`, and refuse with 409 an edit for
   a scene other than the active one, which `/scenes` and `/stats` name as

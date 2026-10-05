@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use ghee::console::core::{
-    parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers, Query, Response,
-    Scope,
+    parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers, LayerSet, Query,
+    Response, Scope,
 };
 use ghee::console::server::{
     coerce, serve_h264, stream_bitrate, stream_size, H264Fanout, Heartbeat, Options, H264_FPS,
@@ -87,6 +87,8 @@ pub struct Shared {
     display: Value,
     out: Vec<String>,
     queue: Mutex<Vec<Queued>>,
+    /// The live fields of layers queued by requests for the next frame.
+    layers: Mutex<Vec<LayerSet>>,
     rate: Mutex<FrameRate>,
     frame_ms: Mutex<f64>,
     /// The renderer's text_errors(), a line each.
@@ -233,6 +235,11 @@ impl ConsoleHost for Host {
         Ok(())
     }
 
+    fn set_layer(&self, set: LayerSet) -> ConsoleResult<()> {
+        lock(&self.0.layers).push(set);
+        Ok(())
+    }
+
     fn switch(&self, _name: Option<&str>) -> ConsoleResult<String> {
         Err(ConsoleError::read_only(
             "this console renders one scene, its host's own",
@@ -280,6 +287,7 @@ impl Console {
             }),
             out,
             queue: Mutex::new(Vec::new()),
+            layers: Mutex::new(Vec::new()),
             rate: Mutex::new(FrameRate::new()),
             frame_ms: Mutex::new(0.0),
             texts: Mutex::new(Vec::new()),
@@ -412,6 +420,10 @@ impl Console {
 
     pub fn take_params(&self) -> Vec<Queued> {
         std::mem::take(&mut lock(&self.shared.queue))
+    }
+
+    pub fn take_layers(&self) -> Vec<LayerSet> {
+        std::mem::take(&mut lock(&self.shared.layers))
     }
 
     pub fn stop(mut self) {

@@ -45,6 +45,17 @@ later.
   `false`, `#rrggbb` or comma-separated floats for a color, comma-separated
   floats for a vec, or the words of a string. A color keeps the form that
   `/set` gives it in `GET /scene` and in a save.
+- `POST /set?scene=&layer=&effect=&field=&value=`: sets a live field of a
+  layer, with no rebuild, and `effect=` names one of the layer's effects for
+  a field of that effect. The live fields are `x`, `y`, `color`, `opacity`
+  and `visible`, an image layer's `image`, and an effect's `visible`,
+  `color`, `strength`, `sung`, `speed` and `rate`. Any other field answers
+  400 and names the live fields, and so does an unknown layer, effect or
+  field. `value` reads as the field takes it: a number, `true` or `false`,
+  `#rrggbb` or comma-separated floats for a color, a JSON object
+  `{"from", "to", "angle"}` for a text layer's gradient, the name of an
+  image asset of the scene for `image`, or `none`, which centres the block
+  on `x` or `y` and takes `color` back to its default.
 - `POST /switch?name=`: switches to a named scene. Switching to the active
   name reloads it from disk.
 - `POST /next`, `POST /prev`: step through the scene list.
@@ -68,10 +79,11 @@ later.
   stream with a type 3 frame.
 - `POST /ping?vid=`: a heartbeat for the streams opened under that vid.
 
-For example, set the scene param `gain` to `0.8` and read back the
-result:
+For example, set the scene param `gain` to `0.8`, sing the first 12
+characters of the layer `title`, and read back the result:
 
 ```
 curl -X POST 'http://127.0.0.1:8090/set?pass=scene&name=gain&value=0.8'
+curl -X POST 'http://127.0.0.1:8090/set?layer=title&effect=karaoke&field=sung&value=12'
 curl -o out.png http://127.0.0.1:8090/frame.png
 ```

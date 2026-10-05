@@ -1730,6 +1730,15 @@ pub(crate) const PRECISION: [&str; 6] = [
     "#endif",
 ];
 
+/// The error for `value`, which the live image `what` takes when it names an
+/// image asset of the scene's own.
+pub(crate) fn not_an_image(what: &str, value: &Value) -> String {
+    format!(
+        "{what} needs an image asset of the scene, got {}",
+        py_repr(value)
+    )
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene {
     pub passes: Vec<Pass>,
@@ -1897,11 +1906,7 @@ impl Scene {
                 a.from_filter.is_empty() && !a.is_font() && value.as_str() == Some(a.name.as_str())
             };
             if !self.assets.iter().any(image) {
-                bail!(
-                    "{} needs an image asset of the scene, got {}",
-                    live.what,
-                    py_repr(value)
-                );
+                bail!("{}", not_an_image(&live.what, value));
             }
         }
         self.passes

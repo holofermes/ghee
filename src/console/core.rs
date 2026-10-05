@@ -425,7 +425,7 @@ pub trait ConsoleHost {
     /// The names among scene_names() whose scene a program writes. The
     /// program keeps which layers exist and their order, so the page adds,
     /// moves and removes none of their layers. /scenes lists them under
-    /// "procedural" when there are any.
+    /// "procedural".
     fn procedural_names(&self) -> ConsoleResult<Vec<String>> {
         Ok(Vec::new())
     }
@@ -609,9 +609,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                     h.active_name()?.map_or(Value::Null, Value::from),
                 );
                 let procedural = h.procedural_names()?;
-                if !procedural.is_empty() {
-                    d.insert("procedural".to_string(), Value::from(procedural));
-                }
+                d.insert("procedural".to_string(), Value::from(procedural));
                 Ok(Response::json(&Value::Object(d)))
             }
             "/hwinfo" => Ok(Response::json(&h.hwinfo()?)),
@@ -1139,7 +1137,7 @@ mod tests {
             ConsoleAPI::new(Bare).dispatch("GET", "/scenes", &Query::new(), &Headers::new(), b"");
         assert_eq!(
             as_json(&bare),
-            serde_json::json!({"scenes": [], "active": null})
+            serde_json::json!({"scenes": [], "active": null, "procedural": []})
         );
     }
 

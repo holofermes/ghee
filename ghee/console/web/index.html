@@ -835,7 +835,7 @@ async function reloadScene(){
 let FILTERS = {};   // name -> filter def (code + params), from /filters
 async function boot(){
   const s = await jget("/scenes");
-  procedural = s.procedural || [];
+  procedural = s.procedural;
   try { FILTERS = await jget("/filters"); } catch(e) { console.warn("/filters unavailable:", e); FILTERS = {}; }
   const sel = $("#scenes"); sel.innerHTML = "";
   s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
@@ -1960,7 +1960,7 @@ async function sceneMoved(from){
   try {
     clearTimeout(compileTimer);
     const s = await jget("/scenes");
-    procedural = s.procedural || [];
+    procedural = s.procedural;
     await loadScene(s.active, false);
     const n = $("#moved");
     n.textContent = `the console switched to ${s.active}, so this edit to ${from} was not applied`;

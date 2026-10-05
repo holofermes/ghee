@@ -152,7 +152,11 @@ def test_the_console_publishes_the_render(served):
 
 def test_the_console_serves_the_scene_it_renders(served):
     _, port = served
-    assert json_of(port, "/scenes") == {"scenes": ["scene"], "active": "scene"}
+    assert json_of(port, "/scenes") == {
+        "scenes": ["scene"],
+        "active": "scene",
+        "procedural": [],
+    }
     scene = json_of(port, "/scene")
     assert [p["name"] for p in scene["passes"]] == ["main"]
     assert scene["params"]["tint"]["type"] == "color"

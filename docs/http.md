@@ -16,7 +16,9 @@ open it with `--host` only on a network you trust.
   `"fragment"`. `error_line` counts from the first line of the GLSL that holds
   the error. `text_errors` lists the problems of the scene's texts, one line
   each. A text problem leaves the scene running.
-- `GET /scenes`: `{scenes: [name...], active}`
+- `GET /scenes`: `{scenes: [name...], active, procedural: [name...]}`.
+  `procedural` names the scenes that a program writes, and is an empty list
+  when there are none.
 - `GET /scene?name=`: the resolved scene JSON, with shader files inlined and
   filters expanded. For the active scene, ghee answers with the document that
   it renders, applied edits and `/set` values included. For any other name,

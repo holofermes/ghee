@@ -68,7 +68,8 @@
   `vertex` GLSL defines `glyph_place`, which puts each glyph in the pass, and
   its `fragment` GLSL colours the glyph, and both see the pass's preamble and
   the scene's common block. A layer with no `fragment` draws the words white.
-  `blend` sets `over`, `add` or `replace` for colour and alpha alike, `pad`
+  `blend` sets `normal`, `add`, `multiply` or `screen` for colour and alpha
+  alike, where `multiply` and `screen` work over an opaque pass, `pad`
   reaches past the letters for a glow or an outline, and `name` names the
   layer in errors and in the console.
 - Place a layer's words with no GLSL. `font_size` sets their pixels per em,

@@ -2480,16 +2480,16 @@ fn a_layer_with_no_vertex_fits_the_pass_or_takes_its_font_size_and_its_top_left(
 }
 
 #[test]
-fn layers_round_trip_and_over_and_no_pad_are_the_defaults() {
+fn layers_round_trip_and_normal_and_no_pad_are_the_defaults() {
     let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
     doc["passes"][0]["layers"] = json!([
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }"},
         {"name": "glow", "text": "label", "fragment": WHITE,
          "vertex": "vec2 glyph_place(vec2 em) { return em; }", "blend": "add", "pad": 0.125},
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
-         "blend": "over", "pad": 0},
+         "blend": "normal", "pad": 0},
         {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
-         "blend": "replace"},
+         "blend": "multiply"},
         {"text": "label", "font_size": 48.0},
         {"text": "label", "at": [0.0, 16.0]},
         {"text": "label", "font_size": 12.0, "at": [2.0, -4.5]},
@@ -2515,7 +2515,7 @@ fn layers_round_trip_and_over_and_no_pad_are_the_defaults() {
     );
     assert_eq!(
         back["passes"][0]["layers"][2], doc["passes"][0]["layers"][0],
-        "over and pad 0 are left out"
+        "normal and pad 0 are left out"
     );
     assert_eq!(
         back["passes"][0]["layers"][3],
@@ -2578,7 +2578,8 @@ fn a_layer_goes_by_its_name_else_by_its_text_counted_among_the_layers_with_no_na
         ),
         (
             json!([d(json!({"name": "glow", "blend": "max"}))]),
-            "scene: pass 'main' layer 'glow' blend needs 'over', 'add' or 'replace', got 'max'"
+            "scene: pass 'main' layer 'glow' blend needs 'normal', 'add', 'multiply' or 'screen', \
+             got 'max'"
                 .to_string(),
         ),
         (
@@ -2676,7 +2677,7 @@ fn a_layer_declaration_names_what_it_lacks() {
         ),
         (
             one(json!({"text": "label", "fragment": WHITE, "vertex": place, "blend": "max"})),
-            "pass 'main' layer 'label' blend needs 'over', 'add' or 'replace', got 'max'",
+            "pass 'main' layer 'label' blend needs 'normal', 'add', 'multiply' or 'screen', got 'max'",
         ),
         (
             one(json!({"text": "label", "fragment": WHITE, "vertex": place, "pad": -1})),

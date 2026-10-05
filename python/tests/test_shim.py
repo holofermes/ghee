@@ -355,7 +355,7 @@ def test_a_layer_and_its_text_take_the_scene_json_keys():
 def test_a_layer_and_a_text_leave_their_defaults_out():
     shim = load()
     layer = shim.Layer("words", INK, PLACE)
-    assert (layer.blend, layer.pad, layer.emoji) == ("over", None, None)
+    assert (layer.blend, layer.pad, layer.emoji) == ("normal", None, None)
     assert (layer.font_size, layer.at, layer.fade) == (None, None, None)
     assert layer.to_dict() == {"text": "words", "vertex": PLACE, "fragment": INK}
     assert shim.Layer("words").to_dict() == {"text": "words"}

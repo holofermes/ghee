@@ -140,10 +140,13 @@ bool ghee_mp_reads(GheeScene *g, const char *name);
 // ghee_a3. A quad's 4 vertices are its corners in triangle-strip order, drawn
 // as the triangles (0, 1, 2) and (2, 1, 3). A batch reads its pass's uniforms,
 // channels, arrays and assets under the same names, and `ghee_vflip` as the shared
-// quad vertex shader does. Blending composes premultiplied colour: over is
-// src + dst * (1 - src.a), add is src + dst, replace is src. The alpha channel
-// blends the same way.
-enum { GHEE_BLEND_OVER, GHEE_BLEND_ADD, GHEE_BLEND_REPLACE };
+// quad vertex shader does. Blending composes premultiplied colour: normal is
+// src + dst * (1 - src.a), add is src + dst, multiply is
+// src * dst + dst * (1 - src.a), and screen is src + dst * (1 - src). The
+// alpha channel blends by the same factors. multiply and screen hold their
+// formulas over an opaque buffer, and over a transparent one multiply draws
+// nothing.
+enum { GHEE_BLEND_NORMAL, GHEE_BLEND_ADD, GHEE_BLEND_MULTIPLY, GHEE_BLEND_SCREEN };
 // Staged like ghee_mp_add_pass: `pass` is a pending pass, the commit keeps the
 // returned index, and an abort drops the batch. `name` stands for the batch in
 // the errors of later calls. An error of this call leaves the name out, as a

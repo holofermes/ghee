@@ -1515,14 +1515,14 @@ impl Layer {
             Some(_) => Some(glsl("fragment", "fragment GLSL with its own void main()")?),
         };
         let blend = match o.get("blend").filter(|v| !v.is_null()) {
-            None => Blend::Over,
-            Some(Value::String(b)) if b == "over" => Blend::Over,
-            Some(Value::String(b)) if b == "add" => Blend::Add,
-            Some(Value::String(b)) if b == "replace" => Blend::Replace,
-            Some(v) => bail!(
-                "{what} blend needs 'over', 'add' or 'replace', got {}",
-                py_repr(v)
-            ),
+            None => Blend::Normal,
+            Some(v) => match Blend::NAMES.iter().find(|(_, n)| v.as_str() == Some(n)) {
+                Some((b, _)) => *b,
+                None => bail!(
+                    "{what} blend needs 'normal', 'add', 'multiply' or 'screen', got {}",
+                    py_repr(v)
+                ),
+            },
         };
         let pad = match o.get("pad").filter(|v| !v.is_null()) {
             None => 0.0,
@@ -1586,13 +1586,8 @@ impl Layer {
         if let Some(f) = &self.fragment {
             d.insert("fragment".to_string(), Value::from(f.clone()));
         }
-        let blend = match self.blend {
-            Blend::Over => None,
-            Blend::Add => Some("add"),
-            Blend::Replace => Some("replace"),
-        };
-        if let Some(b) = blend {
-            d.insert("blend".to_string(), Value::from(b));
+        if self.blend != Blend::Normal {
+            d.insert("blend".to_string(), Value::from(self.blend.name()));
         }
         if self.pad != 0.0 {
             d.insert("pad".to_string(), Value::from(self.pad));

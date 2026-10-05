@@ -1048,10 +1048,10 @@ function buildLayerCtl(){
   field(box, "text", pick(texts.includes(d.text) ? texts : texts.concat([d.text]), d.text, v => {
     d.text = v; edit(); buildTabs(); buildLayerCtl();
   }), "the scene text that it draws");
-  field(box, "blend", pick(["over", "add", "replace"], d.blend || "over", v => {
-    if (v === "over") delete d.blend; else d.blend = v;
+  field(box, "blend", pick(["normal", "add", "multiply", "screen"], d.blend || "normal", v => {
+    if (v === "normal") delete d.blend; else d.blend = v;
     edit();
-  }), "over lays it on what the pass holds, add brightens it, replace overwrites it");
+  }), "normal lays it on what the pass holds, add and screen brighten it, multiply darkens it");
   const pad = el("input");
   pad.type = "number"; pad.min = "0"; pad.step = "0.01"; pad.value = d.pad || 0;
   const setPad = () => {

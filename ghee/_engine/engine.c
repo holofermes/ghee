@@ -1151,7 +1151,7 @@ bool ghee_mp_set_pass_mipmaps(GheeScene *g, int pass) {
 int ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *vertex_source,
                       const char *fragment_source, int blend) {
     if (pass < 0 || pass >= g->stage_count) { set_error(g, "pass %d is not pending", pass); return -1; }
-    if (blend < GHEE_BLEND_OVER || blend > GHEE_BLEND_REPLACE) { set_error(g, "no blend mode %d", blend); return -1; }
+    if (blend < GHEE_BLEND_NORMAL || blend > GHEE_BLEND_SCREEN) { set_error(g, "no blend mode %d", blend); return -1; }
     if (g->stage_nbatch == g->stage_batch_cap) {
         const int cap = g->stage_batch_cap ? 2 * g->stage_batch_cap : 16;
         struct mp_batch *grown = realloc(g->stage_batch, (size_t)cap * sizeof *grown);
@@ -1833,11 +1833,12 @@ static void mp_draw_batches(GheeScene *g, int p, float vflip, float elapsed) {
         if (l->pass != p || l->quads <= 0) continue;
         glUseProgram(l->program);
         mp_bind(g, p, &l->loc, vflip, elapsed, false);
-        if (l->blend == GHEE_BLEND_REPLACE) {
-            glDisable(GL_BLEND);
-        } else {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, l->blend == GHEE_BLEND_OVER ? GL_ONE_MINUS_SRC_ALPHA : GL_ONE);
+        glEnable(GL_BLEND);
+        switch (l->blend) {
+        case GHEE_BLEND_ADD: glBlendFunc(GL_ONE, GL_ONE); break;
+        case GHEE_BLEND_MULTIPLY: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
+        case GHEE_BLEND_SCREEN: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
+        default: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
         }
         glBindVertexArray(l->vao);
         glBindBuffer(GL_ARRAY_BUFFER, l->vbo);

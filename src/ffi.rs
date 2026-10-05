@@ -23,9 +23,10 @@ pub const PARAM_TYPE_VEC2: c_int = 2;
 pub const PARAM_TYPE_VEC3: c_int = 3;
 pub const PARAM_TYPE_VEC4: c_int = 4;
 
-pub const GHEE_BLEND_OVER: c_int = 0;
+pub const GHEE_BLEND_NORMAL: c_int = 0;
 pub const GHEE_BLEND_ADD: c_int = 1;
-pub const GHEE_BLEND_REPLACE: c_int = 2;
+pub const GHEE_BLEND_MULTIPLY: c_int = 2;
+pub const GHEE_BLEND_SCREEN: c_int = 3;
 
 pub const GHEE_FILTER_NEAREST: c_int = 0;
 pub const GHEE_FILTER_LINEAR: c_int = 1;

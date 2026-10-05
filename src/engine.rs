@@ -131,23 +131,43 @@ pub enum AssetData<'a> {
 }
 
 /// How a batch's colour lands on its pass's buffer. The colour is
-/// premultiplied by its alpha.
+/// premultiplied by its alpha. Multiply and Screen hold their formulas over
+/// an opaque buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blend {
     /// src + dst * (1 - src.a)
-    Over,
+    Normal,
     /// src + dst
     Add,
-    /// src
-    Replace,
+    /// src * dst + dst * (1 - src.a)
+    Multiply,
+    /// src + dst * (1 - src)
+    Screen,
 }
 
 impl Blend {
+    /// Each blend with its name in a scene.
+    pub const NAMES: [(Blend, &'static str); 4] = [
+        (Blend::Normal, "normal"),
+        (Blend::Add, "add"),
+        (Blend::Multiply, "multiply"),
+        (Blend::Screen, "screen"),
+    ];
+
+    /// The blend's name in a scene.
+    pub fn name(self) -> &'static str {
+        Blend::NAMES
+            .iter()
+            .find(|(b, _)| *b == self)
+            .map_or("normal", |(_, n)| n)
+    }
+
     fn engine(self) -> c_int {
         match self {
-            Blend::Over => ffi::GHEE_BLEND_OVER,
+            Blend::Normal => ffi::GHEE_BLEND_NORMAL,
             Blend::Add => ffi::GHEE_BLEND_ADD,
-            Blend::Replace => ffi::GHEE_BLEND_REPLACE,
+            Blend::Multiply => ffi::GHEE_BLEND_MULTIPLY,
+            Blend::Screen => ffi::GHEE_BLEND_SCREEN,
         }
     }
 }
@@ -1059,7 +1079,7 @@ impl Renderer {
                         cname.as_ptr(),
                         cvs.as_ptr(),
                         cfs.as_ptr(),
-                        Blend::Over.engine(),
+                        Blend::Normal.engine(),
                     )
                 };
                 if dl.boxes < 0 {
@@ -3939,7 +3959,7 @@ mod tests {
         let red = "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }";
         let fs = "uniform sampler2D iChannel0; uniform vec2 resolution;\n\
                   void main(){ gl_FragColor = texture2D(iChannel0, v_px / resolution + 0.5 / 256.0); }";
-        let batches = [batch("main", fs, Blend::Replace)];
+        let batches = [batch("main", fs, Blend::Normal)];
         assert_eq!(
             r.setup_batches(&checker_scene(true, red), &batches)
                 .unwrap(),
@@ -4129,12 +4149,18 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn each_blend_mode_composes_its_formula_over_the_pass() {
         let (_g, mut r) = gpu();
-        // src (0.25, 0, 0, 0.5) premultiplied, over a gray pass of 0.5.
+        // src (0.25, 0, 0, 0.5) premultiplied, over a gray pass of 0.5. Each
+        // row is its formula worked by hand, in levels of 255.
         let src = [0.25, 0.0, 0.0, 0.5];
         for (blend, want) in [
-            (Blend::Over, [128.0, 64.0, 64.0]),
+            // src + dst * (1 - src.a): (0.5, 0.25, 0.25)
+            (Blend::Normal, [128.0, 64.0, 64.0]),
+            // src + dst: (0.75, 0.5, 0.5)
             (Blend::Add, [191.0, 128.0, 128.0]),
-            (Blend::Replace, [64.0, 0.0, 0.0]),
+            // src * dst + dst * (1 - src.a): (0.375, 0.25, 0.25)
+            (Blend::Multiply, [96.0, 64.0, 64.0]),
+            // src + dst * (1 - src): (0.625, 0.5, 0.5)
+            (Blend::Screen, [159.0, 128.0, 128.0]),
         ] {
             let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
             let l = batch("main", PLAIN_FS, blend);
@@ -4250,8 +4276,8 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         let batches = [
-            batch("main", PLAIN_FS, Blend::Replace),
-            batch("main", PLAIN_FS, Blend::Replace),
+            batch("main", PLAIN_FS, Blend::Normal),
+            batch("main", PLAIN_FS, Blend::Normal),
         ];
         assert_eq!(r.setup_batches(&sc, &batches).unwrap(), "");
         let all = |c| quad(0.0, 0.0, W as f32, H as f32, c);
@@ -4310,7 +4336,7 @@ mod tests {
                    texture2D(vals_tex, vec2(0.125, 0.5)).r * 0.5 + texture2D(pad, vec2(0.5)).r, \
                    texture2D(iChannel0, v_px / resolution).b * pad_size.x, 1.0); }",
             ),
-            blend: Blend::Replace,
+            blend: Blend::Normal,
         };
         assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
         r.set_time(Some(0.0));
@@ -4350,7 +4376,7 @@ mod tests {
             "uniform sampler2D early; uniform sampler2D late;\n\
              void main(){ gl_FragColor = vec4(texture2D(early, vec2(0.5)).r, \
                texture2D(late, vec2(0.5)).r, 0.0, 1.0); }",
-            Blend::Replace,
+            Blend::Normal,
         );
         assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
         r.set_asset("late", 1, 1, 1, false, AssetData::U8(&[191u8]))
@@ -4375,7 +4401,7 @@ mod tests {
              "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }"},
         ]));
         assert_eq!(
-            r.setup_batches(&sc, &[batch("a", PLAIN_FS, Blend::Over)])
+            r.setup_batches(&sc, &[batch("a", PLAIN_FS, Blend::Normal)])
                 .unwrap(),
             ""
         );
@@ -4392,7 +4418,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         assert_eq!(
-            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Replace)])
+            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
                 .unwrap(),
             ""
         );
@@ -4403,7 +4429,7 @@ mod tests {
         )
         .unwrap();
         let before = r.render(None).unwrap().to_vec();
-        let mut bad = batch("main", PLAIN_FS, Blend::Over);
+        let mut bad = batch("main", PLAIN_FS, Blend::Normal);
         bad.vertex = bad
             .vertex
             .replace("v_color = ghee_a1;", "v_color = no_such_symbol;");
@@ -4413,7 +4439,7 @@ mod tests {
         let bad = batch(
             "main",
             "void main(){ gl_FragColor = no_such_symbol; }",
-            Blend::Over,
+            Blend::Normal,
         );
         let err = r.setup_batches(&flat_scene(), &[bad]).unwrap();
         assert!(
@@ -4431,14 +4457,14 @@ mod tests {
     fn a_batch_and_its_quads_are_checked_before_the_engine_sees_them() {
         let (_g, mut r) = gpu();
         let err = r
-            .setup_batches(&flat_scene(), &[batch("typo", PLAIN_FS, Blend::Over)])
+            .setup_batches(&flat_scene(), &[batch("typo", PLAIN_FS, Blend::Normal)])
             .unwrap();
         assert_eq!(
             err,
             "batch 0 draws into pass 'typo', which is not a pass in this scene"
         );
         assert_eq!(
-            r.setup_batches(&flat_scene(), &[batch("main", PLAIN_FS, Blend::Over)])
+            r.setup_batches(&flat_scene(), &[batch("main", PLAIN_FS, Blend::Normal)])
                 .unwrap(),
             ""
         );
@@ -4476,7 +4502,7 @@ mod tests {
             pass: "main".to_string(),
             vertex: vs,
             fragment: format!("{PRECISION}varying vec4 v_color;\n{PLAIN_FS}"),
-            blend: Blend::Replace,
+            blend: Blend::Normal,
         };
         assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
         let data: Vec<f32> = [
@@ -4549,7 +4575,7 @@ mod tests {
             pass: "main".to_string(),
             vertex: vs,
             fragment: fs,
-            blend: Blend::Over,
+            blend: Blend::Normal,
         };
         assert_eq!(r.setup_batches(&alone, &[l]).unwrap(), "");
         r.set_batch_quads(0, &built.quads.floats, 4).unwrap();

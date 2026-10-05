@@ -54,7 +54,7 @@ _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 ParamType = Literal["float", "int", "bool", "color", "string", "vec2", "vec3", "vec4"]
 Align = Literal["left", "center", "right"]
 Fill = Literal["mtsdf", "slug"]
-Blend = Literal["over", "add", "replace"]
+Blend = Literal["normal", "add", "multiply", "screen"]
 ArgType = Literal["string", "int", "float", "size", "bool"]
 
 
@@ -198,7 +198,7 @@ class Layer:
     an outline. An MTSDF layer fades to zero at the edge of its pad, over the
     last `fade` em: a quarter of `pad` by default, and 0 turns the fade off.
     float glyph_fade holds the factor in the fragment GLSL.
-    `blend` is over, add or replace.
+    `blend` is normal, add, multiply or screen.
     `emoji` sets whether the layer paints the text's colour glyphs. None
     leaves them to the last layer of the text in its pass.
     `name` names the layer in errors and in the console: ASCII letters,
@@ -213,7 +213,7 @@ class Layer:
     font_size: float | None = None
     at: Sequence[float] | None = None
     fade: float | None = None
-    blend: Blend = "over"
+    blend: Blend = "normal"
     pad: float | None = None
     name: str | None = None
     emoji: bool | None = None
@@ -244,7 +244,7 @@ class Layer:
             d["at"] = _floats(self.at)
         if self.fragment is not None:
             d["fragment"] = self.fragment
-        if self.blend != "over":
+        if self.blend != "normal":
             d["blend"] = self.blend
         if self.pad is not None:
             d["pad"] = _floats(self.pad)

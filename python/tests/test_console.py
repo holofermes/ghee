@@ -191,7 +191,7 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
                         fade=0.03125,
                         name="glow",
                     ),
-                    ghee.Layer("title", font_size=24, blend="replace", emoji=False),
+                    ghee.Layer("title", font_size=24, blend="screen", emoji=False),
                     ghee.Layer("plain", at=(2, 3)),
                 ],
             ),

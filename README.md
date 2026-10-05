@@ -566,8 +566,8 @@ Take `mtsdf` for most words, and for the shadow, the glow and the stroke. It
 costs one texture read a pixel. Take `slug` when new words must show in their
 first frame, whatever characters they hold, and when the frame has time for a
 loop over the curves at every pixel of every glyph. On a Pi Zero 2 W, seven
-lines of 216 characters at 46 pixels per em, in a 1280x800 frame, draw in 3.2
-ms with `mtsdf` and in 22.7 ms with `slug`. The background pass takes 2.1 ms
+lines of 216 characters at 46 pixels per em, in a 1280x800 frame, draw in 3.3
+ms with `mtsdf` and in 22.0 ms with `slug`. The background pass takes 2.1 ms
 of each.
 
 ### Coverage in a shader

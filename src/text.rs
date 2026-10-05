@@ -1780,14 +1780,14 @@ pub const LAYER_NAMES: [&str; 12] = [
 ];
 
 /// ghee's name for the engine asset or the uniform `suffix` of text `name`,
-/// such as its texture, `_tex`.
+/// such as its texture of curves, `_curves`.
 pub fn internal(name: &str, suffix: &str) -> String {
     format!("{}{name}{suffix}", crate::scene::PREFIX)
 }
 
 /// Every name made from NAME in the templates of the readers and the layers
-/// of text `name`, with the `<sampler>_size` set by the engine beside each
-/// texture.
+/// of text `name`, with the `<asset>_size` set by the engine beside each
+/// sampler `<asset>_tex`.
 fn template_names(name: &str) -> Vec<String> {
     let glsl = [
         GLSL,
@@ -1817,8 +1817,11 @@ fn template_names(name: &str) -> Vec<String> {
                 true => internal(name, suffix),
                 false => format!("{name}{suffix}"),
             };
-            if head.ends_with("uniform sampler2D ") {
-                out.push(format!("{made}_size"));
+            if let Some(asset) = made
+                .strip_suffix("_tex")
+                .filter(|_| head.ends_with("uniform sampler2D "))
+            {
+                out.push(format!("{asset}_size"));
             }
             out.push(made);
         }
@@ -1953,7 +1956,7 @@ void main() {
     // author's code that never runs, in an if that the compiler cannot drop,
     // keeps the shader on one thread whatever textures the author's code
     // reads.
-    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_tex, v_texCoord);
+    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_curves_tex, v_texCoord);
 }"#;
 
 const MTSDF_VERTEX_MAIN: &str = r#"uniform vec2 ghee_NAME_atlas_size;
@@ -1995,7 +1998,7 @@ void main() {
     gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
 }"#;
 
-const MTSDF_FRAGMENT_HEAD: &str = r#"uniform sampler2D ghee_NAME_atlas;
+const MTSDF_FRAGMENT_HEAD: &str = r#"uniform sampler2D ghee_NAME_atlas_tex;
 varying vec4 ghee_v0;
 varying vec4 ghee_v2;
 varying vec4 ghee_v3;
@@ -2031,9 +2034,9 @@ void main() {
     // field, and a read after the author's code that never runs, sit in ifs
     // that the compiler cannot drop, so the shader stays on one thread
     // whatever textures the author's code reads.
-    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_atlas, ghee_v0.xy);
+    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_atlas_tex, ghee_v0.xy);
     ghee_main();
-    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_atlas, ghee_v0.xy);
+    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_atlas_tex, ghee_v0.xy);
 }"#;
 
 /// The lines that set glyph_fade, ahead of the author's main in a layer that
@@ -2066,7 +2069,7 @@ void main() {
     gl_FragColor = vec4(vec3(1.0, 0.8, 0.0) * (yellow * a), a);
 }"#;
 
-const GLSL: &str = r#"uniform sampler2D ghee_NAME_tex;
+const GLSL: &str = r#"uniform sampler2D ghee_NAME_curves_tex;
 uniform float ghee_NAME_tw;
 uniform float ghee_NAME_itw;
 uniform float ghee_NAME_ith;
@@ -2085,7 +2088,7 @@ uniform float ghee_NAME_nb;
 vec4 ghee_NAME_texel(float i) {
     float row = float(int(i * ghee_NAME_itw));
     vec2 at = vec2(i - row * ghee_NAME_tw + 0.5, row + 0.5);
-    return vec4(ivec4(texture2D(ghee_NAME_tex, at * vec2(ghee_NAME_itw, ghee_NAME_ith)) * 255.5));
+    return vec4(ivec4(texture2D(ghee_NAME_curves_tex, at * vec2(ghee_NAME_itw, ghee_NAME_ith)) * 255.5));
 }
 // The texture coordinate of a band's list: the first list for the ray toward
 // +, the second for the ray toward -.
@@ -2139,8 +2142,8 @@ float ghee_NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
         vec2 at = ghee_NAME_list(hb, dx);
         for (int i = 0; i < BAND_CURVES; i++) {
             if (float(i) >= hb.a) break;
-            vec3 c1 = ghee_NAME_lattice(texture2D(ghee_NAME_tex, at));
-            vec3 c3 = ghee_NAME_lattice(texture2D(ghee_NAME_tex, at + vec2(ghee_NAME_itw, 0.0)));
+            vec3 c1 = ghee_NAME_lattice(texture2D(ghee_NAME_curves_tex, at));
+            vec3 c3 = ghee_NAME_lattice(texture2D(ghee_NAME_curves_tex, at + vec2(ghee_NAME_itw, 0.0)));
             at.x += ghee_NAME_itw * 2.0;
             vec2 p1 = c1.xy - uh;
             vec2 p3 = c3.xy - uh;
@@ -2172,8 +2175,8 @@ float ghee_NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
         at = ghee_NAME_list(vb, dy);
         for (int i = 0; i < BAND_CURVES; i++) {
             if (float(i) >= vb.a) break;
-            vec3 c1 = ghee_NAME_lattice(texture2D(ghee_NAME_tex, at));
-            vec3 c3 = ghee_NAME_lattice(texture2D(ghee_NAME_tex, at + vec2(ghee_NAME_itw, 0.0)));
+            vec3 c1 = ghee_NAME_lattice(texture2D(ghee_NAME_curves_tex, at));
+            vec3 c3 = ghee_NAME_lattice(texture2D(ghee_NAME_curves_tex, at + vec2(ghee_NAME_itw, 0.0)));
             at.x += ghee_NAME_itw * 2.0;
             vec2 p1 = (c1.xy - uv).yx;
             vec2 p3 = (c3.xy - uv).yx;
@@ -2219,9 +2222,9 @@ float NAME_cover(vec2 p, float font_size) {
         vec2 pc = at - vec2(ghee_NAME_gx, ghee_NAME_gy) - c * ghee_NAME_cell;
         // An empty slot, or the one marked last, ends the cell.
         for (int k = 0; k < CELL_K; k++) {
-            vec4 a = vec4(ivec4(texture2D(ghee_NAME_tex, slot) * 255.5));
+            vec4 a = vec4(ivec4(texture2D(ghee_NAME_curves_tex, slot) * 255.5));
             if (a.r + a.g + a.b < 0.5) break;
-            vec4 b = vec4(ivec4(texture2D(ghee_NAME_tex, slot + vec2(ghee_NAME_itw, 0.0)) * 255.5));
+            vec4 b = vec4(ivec4(texture2D(ghee_NAME_curves_tex, slot + vec2(ghee_NAME_itw, 0.0)) * 255.5));
             slot.x += ghee_NAME_itw * SLOT;
             float last = a.r >= LAST_BIT ? 1.0 : 0.0;
             float h = ((a.r - last * LAST_BIT) * 256.0 + a.g) * 256.0 + a.b;
@@ -2299,10 +2302,12 @@ mod tests {
         author.dedup();
         assert_eq!(author, ["label_cover", "label_size"]);
         for n in [
-            "ghee_label_tex",
-            "ghee_label_atlas",
+            "ghee_label_curves_tex",
+            "ghee_label_curves_size",
+            "ghee_label_atlas_tex",
             "ghee_label_atlas_size",
-            "ghee_label_emoji",
+            "ghee_label_emoji_tex",
+            "ghee_label_emoji_size",
         ] {
             assert!(made.iter().any(|m| m == n), "{n}");
         }
@@ -2310,8 +2315,12 @@ mod tests {
         let texts = [
             "a",
             "a_tex",
+            "a_curves",
+            "a_curves_tex",
             "a_atlas",
+            "a_atlas_tex",
             "a_emoji",
+            "a_emoji_tex",
             "a_atlas_size",
             "a_size",
             "a_cover",

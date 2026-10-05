@@ -516,8 +516,8 @@ mod tests {
 
     #[test]
     fn a_filter_asset_never_meets_a_scene_name() {
-        // The scene has its own bluenoise and a param of that name. The filter
-        // still samples its own mask under the name it wrote.
+        // The scene has its own bluenoise and a param named like its size. The
+        // filter still samples its own mask under the names it wrote.
         let _g = env_guard();
         let d = tmpdir("clash");
         std::fs::write(format!("{d}/bluenoise.raw"), [1u8, 2, 3, 4]).unwrap();
@@ -535,16 +535,17 @@ mod tests {
         let names: Vec<&str> = sc.assets.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["bluenoise", "frc256_bluenoise"]);
         let main = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, &[], false);
-        assert!(main.contains("uniform sampler2D bluenoise;"));
+        assert!(main.contains("uniform sampler2D bluenoise_tex;"));
         assert!(!main.contains("frc256_bluenoise"));
         let filt = sc.passes[1].glsl(Some(&sc.params), None, &sc.assets, &[], false);
-        assert!(filt.contains("uniform sampler2D frc256_bluenoise;"));
-        assert!(filt.contains("#define bluenoise frc256_bluenoise"));
-        assert!(!filt.contains("uniform sampler2D bluenoise;"));
+        assert!(filt.contains("uniform sampler2D frc256_bluenoise_tex;"));
+        assert!(filt.contains("#define bluenoise_tex frc256_bluenoise_tex"));
+        assert!(filt.contains("#define bluenoise_size frc256_bluenoise_size"));
+        assert!(!filt.contains("uniform sampler2D bluenoise_tex;"));
 
         let mut sp = Scene::from_dict(
             &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
-                    "params": {"bluenoise": {"type": "float", "value": 0.5}}}),
+                    "params": {"bluenoise_size": {"type": "float", "value": 0.5}}}),
             None,
             None,
         )
@@ -552,8 +553,8 @@ mod tests {
         apply_filters(&mut sp, &["frc256".to_string()], None).unwrap();
         let filt = sp.passes[1].glsl(Some(&sp.params), None, &sp.assets, &[], false);
         let (decl, def) = (
-            filt.find("uniform float bluenoise;").unwrap(),
-            filt.find("#define bluenoise ").unwrap(),
+            filt.find("uniform float bluenoise_size;").unwrap(),
+            filt.find("#define bluenoise_size ").unwrap(),
         );
         assert!(decl < def, "the define must follow every declaration");
     }

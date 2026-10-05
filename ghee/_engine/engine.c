@@ -81,11 +81,10 @@ struct mp_locs {
 };
 
 // One image asset: the host hands the pixels over once, they bind as a
-// sampler uniform named for the asset, with <name>_size a vec2 of (width,
-// height).
+// sampler uniform <name>_tex, with <name>_size a vec2 of (width, height).
 struct mp_asset {
     GLuint tex;
-    char *name;                          // the sampler uniform's name
+    char *name;                          // the asset's name, before the suffixes
     int w, h;
     GLenum fmt, type;
     bool mip;                            // every mip level, down to 1x1
@@ -1198,10 +1197,16 @@ static char *suffixed(GheeScene *g, const char *name, const char *suffix) {
 // sampler or its size. false with the error set when memory runs out.
 static bool mp_use_asset(GheeScene *g, GLuint prog, int a, struct mp_locs *loc) {
     if (!prog) return true;
+    char *tex_name = suffixed(g, g->mp_asset[a].name, "_tex");
     char *size_name = suffixed(g, g->mp_asset[a].name, "_size");
-    if (!size_name) return false;
-    const GLint at = glGetUniformLocation(prog, g->mp_asset[a].name);
+    if (!tex_name || !size_name) {
+        free(tex_name);
+        free(size_name);
+        return false;
+    }
+    const GLint at = glGetUniformLocation(prog, tex_name);
     const GLint size = glGetUniformLocation(prog, size_name);
+    free(tex_name);
     free(size_name);
     if (at < 0 && size < 0) return true;
     if (loc->nuses == loc->uses_cap) {
@@ -1576,7 +1581,7 @@ void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, i
     g->mp_array_size[idx] = count * rows;
 }
 
-// Find a set asset by its sampler uniform name. -1 = not set.
+// Find a set asset by its name. -1 = not set.
 static int mp_asset_index(GheeScene *g, const char *name) {
     for (int i = 0; i < g->mp_nasset; i++)
         if (strcmp(g->mp_asset[i].name, name) == 0) return i;
@@ -1599,8 +1604,8 @@ bool ghee_mp_reads(GheeScene *g, const char *name) {
     return false;
 }
 
-// Upload one named image asset. Every pass whose program reads the name gets
-// it as a sampler uniform <name> and a vec2 <name>_size of (width, height),
+// Upload one named image asset. Every pass whose program reads it gets it as
+// a sampler uniform <name>_tex and a vec2 <name>_size of (width, height),
 // bound after the channels and the arrays. An asset outlives the scene: a
 // commit rebinds it, the same name again replaces it, ghee_mp_drop_asset or
 // ghee_destroy frees it.

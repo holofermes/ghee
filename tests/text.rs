@@ -920,8 +920,6 @@ fn a_name_declared_by_a_text_collides_with_nothing() {
     scene_param["params"]["label_size"] = float.clone();
     let mut pass_param = label();
     pass_param["passes"][0]["params"] = json!({"label_cover": float});
-    let mut asset = label();
-    asset["assets"]["label_cover"] = json!({"file": "label.png"});
     for (doc, want) in [
         (
             scene_param,
@@ -930,10 +928,6 @@ fn a_name_declared_by_a_text_collides_with_nothing() {
         (
             pass_param,
             "text 'label' and param 'label_cover' in pass 'main' both declare 'label_cover'",
-        ),
-        (
-            asset,
-            "asset 'label_cover' and text 'label' both declare 'label_cover'",
         ),
     ] {
         assert_eq!(scene_err(&doc), format!("scene: {want}"));
@@ -2891,7 +2885,7 @@ fn a_layer_that_samples_past_the_texture_units_fails_naming_the_layer() {
     }
     let sum: Vec<String> = names
         .iter()
-        .map(|n| format!("texture2D({n}, vec2(0.5)).r"))
+        .map(|n| format!("texture2D({n}_tex, vec2(0.5)).r"))
         .collect();
     doc["passes"][0]["layers"][0]["fragment"] = json!(format!(
         "void main(){{ gl_FragColor = vec4(glyph_cover() * ({})); }}",
@@ -3468,7 +3462,7 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
     // an if in two threads, and the switch loses the condition flags. ghee's
     // main reads every texture in such an if, and its last read follows the
     // author's main, whatever textures the author's main reads.
-    let reads = "void main() { gl_FragColor = texture2D(logo, glyph_em) * glyph_cover(); }";
+    let reads = "void main() { gl_FragColor = texture2D(logo_tex, glyph_em) * glyph_cover(); }";
     let doc = json!({
         "version": 1,
         "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},

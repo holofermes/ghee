@@ -293,14 +293,14 @@ void main() {
     gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
 }"#;
 
-pub(crate) const FRAGMENT: &str = r#"uniform sampler2D ghee_NAME_emoji;
+pub(crate) const FRAGMENT: &str = r#"uniform sampler2D ghee_NAME_emoji_tex;
 varying vec4 ghee_v0;
 void main() {
     // On VC4 a short shader whose texture read sits outside an if runs in two
     // threads, whose switch loses the condition flags. The read sits in an if
     // that the compiler cannot drop, so the shader stays on one thread.
     vec4 c = vec4(0.0);
-    if (gl_FragCoord.x >= 0.0) c = texture2D(ghee_NAME_emoji, ghee_v0.xy, ghee_v0.z);
+    if (gl_FragCoord.x >= 0.0) c = texture2D(ghee_NAME_emoji_tex, ghee_v0.xy, ghee_v0.z);
     gl_FragColor = c;
 }"#;
 

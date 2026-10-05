@@ -310,8 +310,8 @@ class Pass:
 class Asset:
     """A named file a scene declares once.
 
-    An image (.png, .jpg) is `uniform sampler2D <name>` in every pass, and
-    `vec2 <name>_size` is its size in pixels. A font (.ttf, .otf) is for a
+    An image (.png, .jpg) is `uniform sampler2D <name>_tex` in every pass,
+    and `vec2 <name>_size` is its size in pixels. A font (.ttf, .otf) is for a
     Text to name. `file` resolves beside the scene's script, then through
     $GHEE_ASSETS.
     """

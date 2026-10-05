@@ -105,7 +105,7 @@ void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int co
 // conversion at all.
 void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, int count, int rows);
 // An image asset: width x height pixels the host hands over once, bound as a
-// sampler uniform <name> on every pass whose program reads it, with a vec2
+// sampler uniform <name>_tex on every pass whose program reads it, with a vec2
 // <name>_size of (width, height). components 1, 3 or 4 = LUMINANCE, RGB,
 // RGBA. is_f32 uploads floats and needs a GL with float textures. filter
 // GHEE_FILTER_LINEAR samples with GL_LINEAR, f32 pixels fall back to nearest

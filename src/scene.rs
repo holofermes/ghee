@@ -937,7 +937,7 @@ fn array_lines(a: &ArrayInput) -> Vec<String> {
 /// The preamble declarations of one image asset: its sampler and its size.
 fn asset_lines(a: &Asset) -> Vec<String> {
     vec![
-        format!("uniform sampler2D {};", a.name),
+        format!("uniform sampler2D {}_tex;", a.name),
         format!("uniform vec2 {}_size;", a.name),
     ]
 }
@@ -1030,7 +1030,7 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
 }
 
 /// A named image or font file. Every pass samples an image as
-/// `uniform sampler2D <name>` and reads a `vec2 <name>_size` of (width,
+/// `uniform sampler2D <name>_tex` and reads a `vec2 <name>_size` of (width,
 /// height). A text names a font, and only the text reads it.
 ///
 /// A .raw file is bare pixels and declares its layout. A .png or .jpg file
@@ -2102,7 +2102,7 @@ impl Pass {
         for a in &own {
             let local = a.local_name();
             if local != a.name {
-                l.push(format!("#define {local} {}", a.name));
+                l.push(format!("#define {local}_tex {}_tex", a.name));
                 l.push(format!("#define {local}_size {}_size", a.name));
             }
         }
@@ -2138,7 +2138,7 @@ pub struct Scene {
     /// it.
     pub common: Option<String>,
     /// Image assets: set up once by the host, available to every pass as a
-    /// sampler uniform plus a `<name>_size` vec2.
+    /// sampler uniform `<name>_tex` plus a `<name>_size` vec2.
     pub assets: Vec<Asset>,
     /// Texts the GPU draws from a font. Each draws the scene string param of
     /// its name, which ghee declares for it, and every scene pass reads it with
@@ -2980,7 +2980,7 @@ mod tests {
             "uniform vec2 off;",
             "uniform vec3 dir;",
             "uniform vec4 q;",
-            "uniform sampler2D logo;",
+            "uniform sampler2D logo_tex;",
             "uniform vec2 logo_size;",
             "uniform vec2 label_size;",
             "float label_cover(vec2 p, float font_size)",
@@ -3772,11 +3772,6 @@ mod tests {
                 "array 'amps' in pass 'a' is declared twice",
             ),
             (
-                json!({"assets": {"logo_size": {"file": "l.png"}, "logo": {"file": "l.png"}}}),
-                json!({}),
-                "asset 'logo_size' and asset 'logo' both declare 'logo_size'",
-            ),
-            (
                 json!({"params": {"label_cover": c}}),
                 json!({}),
                 "scene param 'label_cover' and text 'label' both declare 'label_cover'",
@@ -3789,17 +3784,17 @@ mod tests {
             (
                 json!({"assets": {"amps": {"file": "amps.png"}}}),
                 json!({"arrays": [{"name": "amps", "size": 8}]}),
-                "asset 'amps' and array 'amps' in pass 'a' both declare 'amps_size'",
+                "asset 'amps' and array 'amps' in pass 'a' both declare 'amps_tex'",
             ),
             (
-                json!({"params": {"gain": f}, "assets": {"gain": {"file": "g.png"}}}),
+                json!({"params": {"gain_tex": f}, "assets": {"gain": {"file": "g.png"}}}),
                 json!({}),
-                "scene param 'gain' and asset 'gain' both declare 'gain'",
+                "scene param 'gain_tex' and asset 'gain' both declare 'gain_tex'",
             ),
             (
                 json!({"assets": {"gain": {"file": "g.png"}}}),
-                json!({"params": {"gain": f}}),
-                "asset 'gain' and param 'gain' in pass 'a' both declare 'gain'",
+                json!({"params": {"gain_tex": f}}),
+                "asset 'gain' and param 'gain_tex' in pass 'a' both declare 'gain_tex'",
             ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));
@@ -3965,13 +3960,13 @@ mod tests {
             e.to_string(),
             "scene param 'amount' and param 'amount' in pass 'dither' both declare 'amount'"
         );
-        let doc = named(json!({"params": {"frc256_bluenoise": f}}), json!({}));
+        let doc = named(json!({"params": {"frc256_bluenoise_tex": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
         let e = crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap_err();
         assert_eq!(
             e.to_string(),
-            "filter 'frc256': scene param 'frc256_bluenoise' and asset 'bluenoise' of filter \
-             'frc256' both declare 'frc256_bluenoise'"
+            "filter 'frc256': scene param 'frc256_bluenoise_tex' and asset 'bluenoise' of filter \
+             'frc256' both declare 'frc256_bluenoise_tex'"
         );
         // A text's names and a layer's stay out of a filter pass.
         let doc = named(json!({"params": {"bluenoise": f}}), json!({}));

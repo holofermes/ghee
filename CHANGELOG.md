@@ -7,8 +7,8 @@
 - Declare image files in `assets`: a `.png`, a `.jpg`, or a `.raw` file of
   bare `u8` or little-endian `f32` pixels that states its `width`, `height`,
   `format` and `components`. Every pass samples an asset as
-  `uniform sampler2D <name>` with a `vec2 <name>_size`, nearest unless the
-  asset sets `"sampling": "linear"`.
+  `uniform sampler2D <name>_tex` with a `vec2 <name>_size`, nearest unless
+  the asset sets `"sampling": "linear"`.
 - Resolve an asset or a font that a scene names from the directory of the
   scene file or of a procedural scene's executable, then from each directory
   on `$GHEE_ASSETS`. A path may be absolute or leave that directory, except

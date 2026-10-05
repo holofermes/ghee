@@ -603,7 +603,7 @@ pub struct Renderer {
     /// array name -> size, in declaration order.
     feeds: Vec<(String, ArraySize)>,
     /// The engine assets uploaded for the scene: its image assets, and the
-    /// data texture `ghee_<name>_tex` of each text. A setup frees those that
+    /// data texture `ghee_<name>_curves` of each text. A setup frees those that
     /// its new scene does not declare, so their asset slots come back.
     scene_assets: std::cell::RefCell<Vec<String>>,
     /// The engine index of each batch passed to setup_batches(), in order.
@@ -1135,7 +1135,7 @@ impl Renderer {
         self.words.borrow_mut().clear();
         self.curves.clear();
         for t in &scene.texts {
-            let tex = CString::new(text::internal(&t.name, "_tex"))?;
+            let tex = CString::new(text::internal(&t.name, "_curves_tex"))?;
             if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
                 self.curves.insert(t.name.clone());
             }
@@ -1156,7 +1156,12 @@ impl Renderer {
             .iter()
             .filter(|a| !a.is_font())
             .map(|a| a.name.clone())
-            .chain(scene.texts.iter().map(|t| text::internal(&t.name, "_tex")))
+            .chain(
+                scene
+                    .texts
+                    .iter()
+                    .map(|t| text::internal(&t.name, "_curves")),
+            )
             .chain(atlases)
             .collect();
         let stale: Vec<String> = self
@@ -1425,8 +1430,8 @@ impl Renderer {
 
     /// Hand one named image asset to the engine.
     ///
-    /// Every pass that reads the name gets it as a sampler uniform `name`,
-    /// plus a vec2 `name_size` of (width, height). An asset outlives the
+    /// Every pass that reads it gets it as a sampler uniform `<name>_tex`,
+    /// plus a vec2 `<name>_size` of (width, height). An asset outlives the
     /// scene: setup() keeps it, and the same name again replaces its pixels.
     /// `linear` samples with GL_LINEAR, f32 pixels fall back to nearest
     /// without data_texture_linear().
@@ -1699,14 +1704,14 @@ impl Renderer {
         // A layout with no texture of curves leaves the texture alone.
         if built.width > 0 {
             self.set_asset(
-                &text::internal(name, "_tex"),
+                &text::internal(name, "_curves"),
                 built.width,
                 built.height,
                 4,
                 false,
                 AssetData::U8(&built.texels),
             )?;
-            self.scene_asset(&text::internal(name, "_tex"));
+            self.scene_asset(&text::internal(name, "_curves"));
         }
         for (suffix, v) in &built.uniforms {
             let uniform = text::internal(name, suffix);
@@ -2908,7 +2913,7 @@ mod tests {
             .unwrap();
             sc.load_assets(fonts).unwrap();
             assert_eq!(r.setup(&sc).unwrap(), "");
-            let held = r.scene_assets.borrow().iter().any(|n| n == "ghee_t_tex");
+            let held = r.scene_assets.borrow().iter().any(|n| n == "ghee_t_curves");
             assert_eq!(held, reads, "{code} {how}");
         }
     }
@@ -2925,9 +2930,9 @@ mod tests {
         for i in 0..20u8 {
             let name = format!("img{i}");
             let code = format!(
-                "uniform sampler2D host; void main(){{ \
-                 gl_FragColor = vec4(texture2D({name}, vec2(0.5)).r, \
-                 texture2D(host, vec2(0.5)).r, 0.0, 1.0); }}"
+                "uniform sampler2D host_tex; void main(){{ \
+                 gl_FragColor = vec4(texture2D({name}_tex, vec2(0.5)).r, \
+                 texture2D(host_tex, vec2(0.5)).r, 0.0, 1.0); }}"
             );
             let mut sc = Scene::from_dict(
                 &json!({"version": 1, "assets": {name.clone(): {"file": format!("{name}.png")}},
@@ -3043,7 +3048,7 @@ mod tests {
                 "assets": {i.clone(): {"file": "i.png"}},
                 "passes": [{"name": "main", "arrays": [{"name": a.clone(), "size": 4}],
                     "code": format!("void main(){{ gl_FragColor = vec4({p}, {a}_at(0), \
-                        texture2D({i}, vec2(0.5)).r, 1.0); }}")}]}),
+                        texture2D({i}_tex, vec2(0.5)).r, 1.0); }}")}]}),
             None,
             None,
         )
@@ -3110,7 +3115,7 @@ mod tests {
         let sum = |names: &[String]| -> String {
             names
                 .iter()
-                .map(|n| format!("texture2D({n}, vec2(0.5)).r"))
+                .map(|n| format!("texture2D({n}_tex, vec2(0.5)).r"))
                 .collect::<Vec<_>>()
                 .join(" + ")
         };
@@ -3526,15 +3531,15 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn an_asset_binds_by_name_and_carries_its_size() {
+    fn an_asset_binds_as_its_name_with_tex_and_carries_its_size() {
         let (_g, mut r) = gpu();
         // logo lands before setup, so the commit resolves it.
         // late lands on the running scene.
-        let code = "uniform sampler2D logo; uniform vec2 logo_size; \
-                    uniform sampler2D late; \
+        let code = "uniform sampler2D logo_tex; uniform vec2 logo_size; \
+                    uniform sampler2D late_tex; \
                     void main(){ gl_FragColor = vec4(\
-                    texture2D(logo, v_texCoord).r, \
-                    texture2D(late, v_texCoord).r, \
+                    texture2D(logo_tex, v_texCoord).r, \
+                    texture2D(late_tex, v_texCoord).r, \
                     logo_size.x / 8.0, 1.0); }";
         r.set_asset("logo", 2, 2, 4, false, AssetData::U8(&[128u8; 16]))
             .unwrap();
@@ -4330,10 +4335,10 @@ mod tests {
                 "v_px = ghee_a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / resolution.x;",
             ),
             fragment: batch_fs(
-                "uniform float level; uniform sampler2D vals_tex; uniform sampler2D pad;\n\
+                "uniform float level; uniform sampler2D vals_tex; uniform sampler2D pad_tex;\n\
                  uniform sampler2D iChannel0; uniform vec2 pad_size; uniform vec2 resolution;\n\
                  void main(){ gl_FragColor = vec4(level, \
-                   texture2D(vals_tex, vec2(0.125, 0.5)).r * 0.5 + texture2D(pad, vec2(0.5)).r, \
+                   texture2D(vals_tex, vec2(0.125, 0.5)).r * 0.5 + texture2D(pad_tex, vec2(0.5)).r, \
                    texture2D(iChannel0, v_px / resolution).b * pad_size.x, 1.0); }",
             ),
             blend: Blend::Normal,
@@ -4373,9 +4378,9 @@ mod tests {
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
         let l = batch(
             "main",
-            "uniform sampler2D early; uniform sampler2D late;\n\
-             void main(){ gl_FragColor = vec4(texture2D(early, vec2(0.5)).r, \
-               texture2D(late, vec2(0.5)).r, 0.0, 1.0); }",
+            "uniform sampler2D early_tex; uniform sampler2D late_tex;\n\
+             void main(){ gl_FragColor = vec4(texture2D(early_tex, vec2(0.5)).r, \
+               texture2D(late_tex, vec2(0.5)).r, 0.0, 1.0); }",
             Blend::Normal,
         );
         assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");

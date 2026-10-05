@@ -7,7 +7,7 @@ void main() {
                      0.5 - bob * 0.04 * sin(time * 1.6 * speed));
   vec2 q = (uv - center) / span + 0.5;
 
-  vec4 s = texture2D(stamp, q);
+  vec4 s = texture2D(stamp_tex, q);
   s.a *= step(abs(q.x - 0.5), 0.5) * step(abs(q.y - 0.5), 0.5);
   gl_FragColor = vec4(mix(col, s.rgb, s.a), 1.0);
 }

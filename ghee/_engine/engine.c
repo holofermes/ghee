@@ -1159,8 +1159,11 @@ int ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *vert
         g->stage_batch_cap = cap;
     }
     make_current(g);
-    const GLuint prog = create_program(g, vertex_source, fragment_source, batch_attribs, MP_BATCH_ATTRIBS);
-    if (!prog) return -1;
+    GLuint prog = 0;
+    if (vertex_source || fragment_source) {
+        prog = create_program(g, vertex_source, fragment_source, batch_attribs, MP_BATCH_ATTRIBS);
+        if (!prog) return -1;
+    }
     struct mp_batch *l = &g->stage_batch[g->stage_nbatch];
     memset(l, 0, sizeof *l);
     l->pass = pass;
@@ -1509,7 +1512,7 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
             glGetUniformLocation(g->mp_program[pass], g->mp_array_name[idx]);
     }
     for (int l = 0; l < g->mp_nbatch; l++)
-        if (g->mp_batch[l].pass == pass)
+        if (g->mp_batch[l].pass == pass && g->mp_batch[l].program)
             g->mp_batch[l].loc.data[g->mp_ndatatex[pass]] =
                 glGetUniformLocation(g->mp_batch[l].program, g->mp_array_name[idx]);
     g->mp_datatex[pass][g->mp_ndatatex[pass]++] = idx;
@@ -1606,7 +1609,8 @@ bool ghee_mp_reads(GheeScene *g, const char *name) {
     for (int p = 0; p < g->mp_count; p++)
         if (g->mp_program[p] && glGetUniformLocation(g->mp_program[p], name) >= 0) return true;
     for (int l = 0; l < g->mp_nbatch; l++)
-        if (glGetUniformLocation(g->mp_batch[l].program, name) >= 0) return true;
+        if (g->mp_batch[l].program && glGetUniformLocation(g->mp_batch[l].program, name) >= 0)
+            return true;
     return false;
 }
 
@@ -1615,6 +1619,7 @@ bool ghee_mp_reads(GheeScene *g, const char *name) {
 bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *asset) {
     if (batch < 0 || batch >= g->mp_nbatch) { set_error(g, "no batch %d in the scene", batch); return false; }
     struct mp_batch *l = &g->mp_batch[batch];
+    if (!l->program) { set_error(g, "%s has no program", l->name); return false; }
     const int a = mp_asset_index(g, asset);
     if (a < 0) { set_error(g, "%s: asset '%s' is not set", l->name, asset); return false; }
     make_current(g);
@@ -1639,6 +1644,32 @@ bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *a
         }
     }
     return mp_add_use(g, loc, (struct mp_use){ a, at, size });
+}
+
+bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_source,
+                               const char *fragment_source) {
+    if (batch < 0 || batch >= g->mp_nbatch) { set_error(g, "no batch %d in the scene", batch); return false; }
+    struct mp_batch *l = &g->mp_batch[batch];
+    const int p = l->pass;
+    make_current(g);
+    const GLuint prog = create_program(g, vertex_source, fragment_source, batch_attribs, MP_BATCH_ATTRIBS);
+    if (!prog) return false;
+    const GLuint was = l->program;
+    struct mp_locs old = l->loc;
+    l->program = prog;
+    mp_resolve(g, prog, g->mp_w[p], g->mp_h[p], &l->loc);
+    for (int i = 0; i < g->mp_ndatatex[p]; i++)
+        l->loc.data[i] = glGetUniformLocation(prog, g->mp_array_name[g->mp_datatex[p][i]]);
+    if (!mp_pass_fits(g, p, g->mp_nchan[p], g->mp_ndatatex[p])) {
+        mp_free_uses(&l->loc);
+        glDeleteProgram(prog);
+        l->program = was;
+        l->loc = old;
+        return false;
+    }
+    mp_free_uses(&old);
+    if (was) glDeleteProgram(was);
+    return true;
 }
 
 // Upload one named image asset. Every pass whose program reads it gets it as
@@ -1872,7 +1903,7 @@ static void mp_draw_batches(GheeScene *g, int p, float vflip, float elapsed) {
     bool drew = false;
     for (int i = 0; i < g->mp_nbatch; i++) {
         const struct mp_batch *l = &g->mp_batch[i];
-        if (l->pass != p || l->quads <= 0) continue;
+        if (l->pass != p || l->quads <= 0 || !l->program) continue;
         glUseProgram(l->program);
         mp_bind(g, p, &l->loc, vflip, elapsed, false);
         glEnable(GL_BLEND);

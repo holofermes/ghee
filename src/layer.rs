@@ -841,11 +841,6 @@ impl TextLayer {
         }
     }
 
-    /// True when a font of the layer that loaded holds colour bitmaps.
-    pub fn has_colour(&self) -> bool {
-        self.data.as_deref().is_some_and(text::any_colour)
-    }
-
     /// True when a font of the layer that loaded holds outlines.
     pub fn has_outlines(&self) -> bool {
         self.data.as_deref().is_some_and(text::any_outlines)

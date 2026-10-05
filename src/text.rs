@@ -217,14 +217,6 @@ impl Align {
     }
 }
 
-/// True when a font of `fonts` that loaded holds colour bitmaps, a CBDT or
-/// an sbix table.
-pub fn any_colour(fonts: &[Font]) -> bool {
-    fonts.iter().flatten().any(|d| {
-        Face::parse(d, 0).is_ok_and(|f| f.tables().cbdt.is_some() || f.tables().sbix.is_some())
-    })
-}
-
 /// True when a font of `fonts` that loaded holds outlines.
 pub fn any_outlines(fonts: &[Font]) -> bool {
     fonts

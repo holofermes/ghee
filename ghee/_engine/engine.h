@@ -150,9 +150,20 @@ enum { GHEE_BLEND_NORMAL, GHEE_BLEND_ADD, GHEE_BLEND_MULTIPLY, GHEE_BLEND_SCREEN
 // Staged like ghee_mp_add_pass: `pass` is a pending pass, the commit keeps the
 // returned index, and an abort drops the batch. `name` stands for the batch in
 // the errors of later calls. An error of this call leaves the name out, as a
-// compile error does, and its caller names the batch. -1 = refused.
+// compile error does, and its caller names the batch. NULL for both sources
+// adds a batch with no program, which draws nothing until
+// ghee_mp_set_batch_program gives it one. -1 = refused.
 int  ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *vertex_source,
                        const char *fragment_source, int blend);
+// Compile a program for committed batch `batch` and draw the batch with it in
+// place of its last one, keeping its place among the batches, its blend and
+// its quads. The program reads the scene's assets under their own names and
+// takes no binding of ghee_mp_bind_asset, and each uniform that
+// ghee_mp_set_uniform sets starts at 0 until the next set. false with
+// ghee_last_error set on a compile error or when the pass would run out of
+// texture units, and the batch keeps its last program.
+bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_source,
+                               const char *fragment_source);
 // The quads of a committed batch: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.
 bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int quads, int nattr);
@@ -160,7 +171,8 @@ bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int qua
 // batch's program samples it as <name>_tex and reads its size as <name>_size,
 // in place of the asset bound there before, and pays a texture unit for it as
 // for an asset sampled under its own name. A drop of the asset unbinds it.
-// false with ghee_last_error set for a batch or an asset that is not set.
+// false with ghee_last_error set for a batch or an asset that is not set, or
+// a batch with no program.
 bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *asset);
 // Render the passes and swap. buffer_rgb NULL = no readback at all, pw/ph > 0 =
 // GPU-scale the final pass to pw x ph and read back only that, otherwise the

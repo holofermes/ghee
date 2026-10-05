@@ -160,9 +160,12 @@ pub(crate) struct Batch {
 struct LayerBatches {
     /// The engine's index of the batch.
     batch: c_int,
-    /// The engine's index of the colour batch, -1 for an image layer or a
-    /// layer whose fonts hold no colour bitmaps.
+    /// The engine's index of the colour batch, -1 for an image layer. The
+    /// batch has no program until the layer's words first hold a colour
+    /// glyph.
     colour: c_int,
+    /// True once the colour batch has its program.
+    coloured: std::cell::Cell<bool>,
     /// The engine's index of the error-box batch, -1 for an image layer.
     boxes: c_int,
     /// The layer's name.
@@ -865,6 +868,7 @@ impl Renderer {
                 layers.push(LayerBatches {
                     batch: li,
                     colour: -1,
+                    coloured: std::cell::Cell::new(false),
                     boxes: -1,
                     name: l.name().to_string(),
                     pass: idx,
@@ -903,17 +907,14 @@ impl Renderer {
             }
             // The colour glyphs of each layer come after every layer of the
             // pass, and the error boxes after them, so none hides an error
-            // box.
+            // box. A colour batch compiles at the layer's first colour glyph.
             let first = layers.len() - if idx < 0 { 0 } else { p.layers.len() };
-            for ((dl, l), sh) in layers[first..].iter_mut().zip(&p.layers).zip(&shaders) {
-                let (Some(l), Some(sh)) = (l.as_text(), sh) else {
+            for (dl, l) in layers[first..].iter_mut().zip(&p.layers) {
+                let Some(l) = l.as_text() else {
                     continue;
                 };
-                if !l.has_colour() {
-                    continue;
-                }
                 let name = format!("layer '{}' colour glyphs", l.name);
-                dl.colour = self.add_batch(idx, &name, &sh.colour, l.blend)?;
+                dl.colour = self.add_batch_unbuilt(idx, &name, l.blend)?;
                 if dl.colour < 0 {
                     return self.batch_refused(&name, i);
                 }
@@ -1624,9 +1625,15 @@ impl Renderer {
         faults: &mut Vec<Fault>,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
         let name = &layer.name;
-        let drawn = self.layers.iter().any(|d| d.name == *name && d.colour >= 0);
-        if glyphs.is_empty() || !drawn {
+        let drawn = self
+            .layers
+            .iter()
+            .find(|d| d.name == *name && d.colour >= 0);
+        let Some(drawn) = drawn.filter(|_| !glyphs.is_empty()) else {
             return Ok((Vec::new(), Vec::new()));
+        };
+        if !drawn.coloured.get() {
+            self.build_colour(layer, drawn)?;
         }
         let fonts = layer.data.as_deref().unwrap_or_default();
         let mut colours = self.colours.borrow_mut();
@@ -1701,6 +1708,24 @@ impl Renderer {
             }
         }
         Ok((quads.floats, boxes.floats))
+    }
+
+    /// Compile the program of the colour batch of `layer`, drawn as `dl`,
+    /// and hand it the layer's uniforms.
+    fn build_colour(&self, layer: &TextLayer, dl: &LayerBatches) -> Result<()> {
+        let (vs, fs) = layer.shaders(self.detail(layer)).colour;
+        let (cvs, cfs) = (CString::new(vs)?, CString::new(fs)?);
+        if !unsafe {
+            ffi::ghee_mp_set_batch_program(self.handle, dl.colour, cvs.as_ptr(), cfs.as_ptr())
+        } {
+            let err = or_else(self.last_error(), "compile error");
+            bail!("layer '{}' colour glyphs: {err}", layer.name);
+        }
+        dl.coloured.set(true);
+        for (name, ty, value) in layer.uniforms() {
+            self.set_uniform(dl.pass, &name, ty, value)?;
+        }
+        Ok(())
     }
 
     /// The atlas detail of `layer`, as setup() worked it out.
@@ -2081,6 +2106,23 @@ impl Renderer {
                 cname.as_ptr(),
                 cvs.as_ptr(),
                 cfs.as_ptr(),
+                blend.engine(),
+            )
+        })
+    }
+
+    /// Stage batch `name` into pending pass `pass` with no program yet,
+    /// blended by `blend`. Returns the engine's index of the batch, -1 when
+    /// the engine refuses it.
+    fn add_batch_unbuilt(&self, pass: c_int, name: &str, blend: Blend) -> Result<c_int> {
+        let cname = self.staged_cstring(name)?;
+        Ok(unsafe {
+            ffi::ghee_mp_add_batch(
+                self.handle,
+                pass,
+                cname.as_ptr(),
+                ptr::null(),
+                ptr::null(),
                 blend.engine(),
             )
         })
@@ -4688,17 +4730,16 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_colour_atlas_exists_once_the_words_hold_a_colour_glyph() {
+    fn a_layer_builds_its_colour_drawing_at_the_first_words_that_hold_a_colour_glyph() {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
-        let load = |font: &str| {
+        let load = |words: &str| {
             let mut sc = Scene::from_dict(
                 &json!({
                     "version": 1,
-                    "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},
-                               "emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
+                    "assets": {"emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
                     "passes": [{"name": "main",
                         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-                        "layers": [{"name": "label", "text": " ", "font_family": font,
+                        "layers": [{"name": "label", "text": words, "font_family": "emoji",
                                     "x": 0, "y": 0, "font_size": 20}]}],
                 }),
                 None,
@@ -4711,32 +4752,36 @@ mod tests {
         let cache = crate::testing::TempDir::new("engine-colour");
         let (_g, mut r) = gpu();
         r.atlas_cache = Some(cache.join("atlas"));
-        let emoji = |r: &Renderer| {
+        // Whether a program reads the colour atlas, whether the atlas exists,
+        // and whether the frame shows colour.
+        let drawing = |r: &mut Renderer| {
+            let size = CString::new("ghee_label_emoji_size").unwrap();
+            let read = unsafe { ffi::ghee_mp_reads(r.handle, size.as_ptr()) };
             let held = r
                 .scene_assets
                 .borrow()
                 .iter()
                 .any(|n| n == "ghee_label_emoji");
-            (r.colours.borrow().len(), held)
+            r.set_time(Some(0.0));
+            let frame = r.render(None).unwrap();
+            let shown = frame.chunks_exact(4).any(|p| p[0] != p[2]);
+            (read, held, shown)
         };
-        // A layer whose fonts hold no colour bitmaps takes no colour batch.
-        assert_eq!(r.setup(&load("sans")).unwrap(), "");
-        assert_eq!((r.layers[0].colour, r.batches.len()), (-1, 0));
-        assert_eq!(emoji(&r), (0, false));
-        // A colour font gives the layer its colour batch, and the atlas waits
-        // for a colour glyph in the words.
-        assert_eq!(r.setup(&load("emoji")).unwrap(), "");
-        assert!(r.layers[0].colour >= 0);
-        assert_eq!(emoji(&r), (0, false));
+        // Words with no colour glyph build no colour drawing.
+        assert_eq!(r.setup(&load(" ")).unwrap(), "");
+        assert_eq!(drawing(&mut r), (false, false, false));
+        // Live words build it with no new setup.
         assert!(r.set_text("label", "\u{1f600}").unwrap());
-        // A render with the time pinned waits for the held words.
-        r.set_time(Some(0.0));
-        r.render(None).unwrap();
-        assert_eq!(emoji(&r), (1, true));
+        assert_eq!(drawing(&mut r), (true, true, true));
         assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
-        // A new setup frees the atlas until its words need it again.
-        assert_eq!(r.setup(&load("emoji")).unwrap(), "");
-        assert_eq!(emoji(&r), (0, false));
+        // Words that drop the colour glyph keep the drawing and show none.
+        assert!(r.set_text("label", " ").unwrap());
+        assert_eq!(drawing(&mut r), (true, true, false));
+        // A new setup builds it again only for words that need it.
+        assert_eq!(r.setup(&load(" ")).unwrap(), "");
+        assert_eq!(drawing(&mut r), (false, false, false));
+        assert_eq!(r.setup(&load("\u{1f600}")).unwrap(), "");
+        assert_eq!(drawing(&mut r), (true, true, true));
     }
 
     #[test]

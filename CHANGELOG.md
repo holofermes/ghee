@@ -136,7 +136,9 @@
 - Paint colour emoji in layers: a glyph of the layer's font with a PNG bitmap
   in a CBDT or sbix table, such as those of Noto Color Emoji, shows its
   bitmap, mipmapped and placed as the layer places its letters, and
-  `<name>_cover` reads it as no ink.
+  `<name>_cover` reads it as no ink. A layer compiles the shader of its
+  emoji at the first words that hold one, live words too, with no new
+  setup.
 - Keep the scene running through a text problem, print it once as an error,
   which `--quiet` keeps, and show it in the console and in `/stats` as
   `text_errors`. A font that fails to load draws an error box for each

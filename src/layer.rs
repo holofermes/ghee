@@ -1,12 +1,17 @@
-//! Text layers: words that a pass paints over its buffer after its own
-//! shader, in the order of its `layers`.
+//! Layers: words or a picture that a pass paints over its buffer after its
+//! own shader, in the order of its `layers`.
 //!
 //! A text layer owns its words, its font and its look. ghee declares a scene
 //! string param under the layer's name, which holds the words, live, and
 //! every pass of the scene except a filter pass reads them with
 //! `<name>_cover` and `<name>_size`, whether the layer shows or not. The
 //! layer draws one quad over each inked glyph through shaders that ghee
-//! writes from its settings, [`Layer::shaders`].
+//! writes from its settings, [`TextLayer::shaders`].
+//!
+//! An image layer draws an image asset of the scene, or an image file of its
+//! own, as one quad through [`ImageLayer::shaders`]. Its shader samples the
+//! image under a name of the layer's own, `ghee_<name>_image_tex`, which
+//! the engine binds to the image, so the layer gives the passes no name.
 //!
 //! A setting that changes with no rebuild reaches those shaders as a uniform
 //! of the layer's own, `ghee_<name>_<token>`, whose token holds no `_`, as
@@ -14,12 +19,12 @@
 //! name is all that comes before the last `_`, and two layers never share a
 //! uniform.
 //!
-//! The block of the words sits at `x`, `y`, the pass pixel of its top left, y
-//! down, and a missing axis centres the block on it. With no `font_size`, the
-//! block takes the largest size at which it fits its room: the pass less
-//! FIT_MARGIN of its shorter side on each edge, and on a given axis the pass
-//! past the given pixel less the margin at the far edge. The shaders work the
-//! size out from `<name>_size`, so it follows the words.
+//! The block of the words or the picture sits at `x`, `y`, the pass pixel of
+//! its top left, y down, and a missing axis centres the block on it. With no
+//! `font_size`, a text block takes the largest size at which it fits its
+//! room: the pass less FIT_MARGIN of its shorter side on each edge, and on a
+//! given axis the pass past the given pixel less the margin at the far edge.
+//! The shaders work the size out from `<name>_size`, so it follows the words.
 
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
@@ -30,15 +35,11 @@ use crate::engine::Blend;
 use crate::scene::{hex_colour, keys_on, known_keys, number_list, py_float, py_repr, PASS_KEYS};
 use crate::text::{self, Align, Font, Layout};
 
-/// The keys of a layer.
-pub(crate) const LAYER_KEYS: [&str; 19] = [
-    "name",
-    "visible",
-    "x",
-    "y",
-    "color",
-    "opacity",
-    "blend",
+/// The keys that every layer takes.
+const EVERY_KEYS: [&str; 7] = ["name", "visible", "x", "y", "color", "opacity", "blend"];
+
+/// The keys of a text layer past EVERY_KEYS.
+const TEXT_KEYS: [&str; 12] = [
     "text",
     "font_size",
     "font_family",
@@ -52,6 +53,14 @@ pub(crate) const LAYER_KEYS: [&str; 19] = [
     "scroll",
     "blink",
 ];
+
+/// The keys of an image layer past EVERY_KEYS.
+const IMAGE_KEYS: [&str; 3] = ["image", "width", "height"];
+
+/// Every key that a layer takes, of either kind.
+pub(crate) fn layer_keys() -> Vec<&'static str> {
+    [&EVERY_KEYS[..], &TEXT_KEYS, &IMAGE_KEYS].concat()
+}
 
 /// The keys of a gradient.
 const GRADIENT_KEYS: [&str; 3] = ["from", "to", "angle"];
@@ -475,9 +484,175 @@ impl Effect {
     }
 }
 
+/// The settings that every layer takes, and `what`, the layer in an error.
+struct Every {
+    name: String,
+    what: String,
+    visible: bool,
+    x: Option<f64>,
+    y: Option<f64>,
+    opacity: f64,
+    blend: Blend,
+}
+
+impl Every {
+    /// Check the keys of layer `o`, which takes EVERY_KEYS and `own`, and
+    /// read the settings of every layer. `at` names the layer by its place
+    /// in an error until its name is known, and `other` names the kind of
+    /// layer that takes `others`.
+    fn from_dict(
+        at: &str,
+        o: &Map<String, Value>,
+        own: &[&str],
+        others: &[&str],
+        other: &str,
+    ) -> Result<Every> {
+        let what = match o.get("name") {
+            Some(Value::String(n)) => format!("layer '{n}'"),
+            _ => at.to_string(),
+        };
+        let takes = [&EVERY_KEYS[..], own].concat();
+        let elsewhere = [
+            keys_on(&takes, others, other),
+            keys_on(&takes, &PASS_KEYS, "its pass"),
+        ]
+        .concat();
+        known_keys(o, &what, &takes, &elsewhere)?;
+        let name = match given(o, "name") {
+            None => bail!("{at} has no 'name'"),
+            Some(Value::String(n)) => n.clone(),
+            Some(v) => bail!("{at} name needs a string, got {}", py_repr(v)),
+        };
+        let visible = match given(o, "visible") {
+            None => true,
+            Some(Value::Bool(b)) => *b,
+            Some(v) => bail!("{what} visible needs true or false, got {}", py_repr(v)),
+        };
+        let x = number(o, &what, "x", |_| true, "a number of pixels")?;
+        let y = number(o, &what, "y", |_| true, "a number of pixels")?;
+        let opacity = number(
+            o,
+            &what,
+            "opacity",
+            |f| (0.0..=1.0).contains(&f),
+            "a number from 0 to 1",
+        )?
+        .unwrap_or(1.0);
+        let blend = match given(o, "blend") {
+            None => Blend::Normal,
+            Some(v) => match Blend::NAMES.iter().find(|(_, n)| v.as_str() == Some(n)) {
+                Some((b, _)) => *b,
+                None => bail!(
+                    "{what} blend needs 'normal', 'add', 'multiply' or 'screen', got {}",
+                    py_repr(v)
+                ),
+            },
+        };
+        Ok(Every {
+            name,
+            what,
+            visible,
+            x,
+            y,
+            opacity,
+            blend,
+        })
+    }
+}
+
+/// The keys of every layer that leave their default, as a scene holds them,
+/// `name` first, then `color` when it is Some.
+fn every_dict(
+    name: &str,
+    visible: bool,
+    x: Option<f64>,
+    y: Option<f64>,
+    color: Option<Value>,
+    opacity: f64,
+    blend: Blend,
+) -> Map<String, Value> {
+    let mut d = Map::new();
+    d.insert("name".to_string(), Value::from(name));
+    if !visible {
+        d.insert("visible".to_string(), Value::from(false));
+    }
+    for (k, v) in [("x", x), ("y", y)] {
+        if let Some(v) = v {
+            d.insert(k.to_string(), Value::from(v));
+        }
+    }
+    if let Some(c) = color {
+        d.insert("color".to_string(), c);
+    }
+    if opacity != 1.0 {
+        d.insert("opacity".to_string(), Value::from(opacity));
+    }
+    if blend != Blend::Normal {
+        d.insert("blend".to_string(), Value::from(blend.name()));
+    }
+    d
+}
+
+/// Layer `d` as an object. `at` names it in the error.
+fn object<'a>(at: &str, d: &'a Value) -> Result<&'a Map<String, Value>> {
+    match d {
+        Value::Object(o) => Ok(o),
+        _ => bail!("{at} needs an object, got {}", py_repr(d)),
+    }
+}
+
+/// Key `k` of `o`, None when it is missing or null.
+fn given<'a>(o: &'a Map<String, Value>, k: &str) -> Option<&'a Value> {
+    o.get(k).filter(|v| !v.is_null())
+}
+
+/// Key `k` of layer `o`, a finite number that `ok` takes, or None when it
+/// is missing. `needs` says what it takes in the error.
+fn number(
+    o: &Map<String, Value>,
+    what: &str,
+    k: &str,
+    ok: fn(f64) -> bool,
+    needs: &str,
+) -> Result<Option<f64>> {
+    match given(o, k) {
+        None => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(f) if f.is_finite() && ok(f) => Ok(Some(f)),
+            _ => bail!("{what} {k} needs {needs}, got {}", py_repr(v)),
+        },
+    }
+}
+
+/// 1 for true and 0 for false, as a uniform takes a flag.
+fn flag(b: bool) -> Value {
+    Value::from(if b { 1.0 } else { 0.0 })
+}
+
+/// The uniforms that place layer `name` and show it, at their values.
+fn placing(
+    name: &str,
+    x: Option<f64>,
+    y: Option<f64>,
+    visible: bool,
+    opacity: f64,
+) -> Vec<(String, &'static str, Value)> {
+    vec![
+        (uniform(name, "x"), "float", Value::from(x.unwrap_or(0.0))),
+        (uniform(name, "y"), "float", Value::from(y.unwrap_or(0.0))),
+        (
+            uniform(name, "centre"),
+            "vec2",
+            Value::from(vec![flag(x.is_none()), flag(y.is_none())]),
+        ),
+        (uniform(name, "visible"), "float", flag(visible)),
+        (uniform(name, "opacity"), "float", Value::from(opacity)),
+    ]
+}
+
 /// A text layer of a pass.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Layer {
+pub struct TextLayer {
     pub name: String,
     /// False hides the layer. Its words still read through `<name>_cover`.
     pub visible: bool,
@@ -519,61 +694,24 @@ pub struct Shaders {
     pub colour: Program,
 }
 
-impl Layer {
+impl TextLayer {
     /// `at` names the layer by its place in an error, as "the 2nd layer of
     /// pass 'main'", until its name is known.
-    pub fn from_dict(at: &str, d: &Value) -> Result<Layer> {
-        let Value::Object(o) = d else {
-            bail!("{at} needs an object, got {}", py_repr(d));
-        };
-        let what = match o.get("name") {
-            Some(Value::String(n)) => format!("layer '{n}'"),
-            _ => at.to_string(),
-        };
-        let elsewhere = keys_on(&LAYER_KEYS, &PASS_KEYS, "its pass");
-        known_keys(o, &what, &LAYER_KEYS, &elsewhere)?;
-        let name = match o.get("name").filter(|v| !v.is_null()) {
-            None => bail!("{at} has no 'name'"),
-            Some(Value::String(n)) => n.clone(),
-            Some(v) => bail!("{at} name needs a string, got {}", py_repr(v)),
-        };
-        let given = |k: &str| o.get(k).filter(|v| !v.is_null());
-        let number = |k: &str, ok: fn(f64) -> bool, needs: &str| match given(k) {
-            None => Ok(None),
-            Some(v) => match v.as_f64() {
-                Some(f) if f.is_finite() && ok(f) => Ok(Some(f)),
-                _ => bail!("{what} {k} needs {needs}, got {}", py_repr(v)),
-            },
-        };
-        let visible = match given("visible") {
-            None => true,
-            Some(Value::Bool(b)) => *b,
-            Some(v) => bail!("{what} visible needs true or false, got {}", py_repr(v)),
-        };
-        let x = number("x", |_| true, "a number of pixels")?;
-        let y = number("y", |_| true, "a number of pixels")?;
+    pub fn from_dict(at: &str, d: &Value) -> Result<TextLayer> {
+        let o = object(at, d)?;
+        let e = Every::from_dict(at, o, &TEXT_KEYS, &IMAGE_KEYS, "an image layer")?;
+        let what = e.what.as_str();
+        let given = |k: &str| given(o, k);
+        let number = |k: &str, ok: fn(f64) -> bool, needs: &str| number(o, what, k, ok, needs);
         let color = match given("color") {
             None => Color::Solid(Rgb::WHITE),
-            Some(v) => Color::from_json(&what, v)?,
-        };
-        let opacity = number(
-            "opacity",
-            |f| (0.0..=1.0).contains(&f),
-            "a number from 0 to 1",
-        )?
-        .unwrap_or(1.0);
-        let blend = match given("blend") {
-            None => Blend::Normal,
-            Some(v) => match Blend::NAMES.iter().find(|(_, n)| v.as_str() == Some(n)) {
-                Some((b, _)) => *b,
-                None => bail!(
-                    "{what} blend needs 'normal', 'add', 'multiply' or 'screen', got {}",
-                    py_repr(v)
-                ),
-            },
+            Some(v) => Color::from_json(what, v)?,
         };
         let text = match given("text") {
-            None => bail!("{what} has no 'text', the words it draws"),
+            None => bail!(
+                "{what} has no 'text' (the words that it draws) and no 'image' (an image asset \
+                 or a file)"
+            ),
             Some(Value::String(s)) => s.clone(),
             Some(v) => bail!("{what} text needs words in a string, got {}", py_repr(v)),
         };
@@ -615,14 +753,14 @@ impl Layer {
                 )?);
             }
         }
-        Ok(Layer {
-            name,
-            visible,
-            x,
-            y,
+        Ok(TextLayer {
+            name: e.name,
+            visible: e.visible,
+            x: e.x,
+            y: e.y,
             color,
-            opacity,
-            blend,
+            opacity: e.opacity,
+            blend: e.blend,
             text,
             font_size,
             data: font_family.is_none().then(|| vec![text::built_in_font()]),
@@ -636,25 +774,16 @@ impl Layer {
     /// The layer as a scene holds it, a key at its default left out, with
     /// `words` in `text`.
     pub fn to_dict(&self, words: &str) -> Value {
-        let mut d = Map::new();
-        d.insert("name".to_string(), Value::from(self.name.clone()));
-        if !self.visible {
-            d.insert("visible".to_string(), Value::from(false));
-        }
-        for (k, v) in [("x", self.x), ("y", self.y)] {
-            if let Some(v) = v {
-                d.insert(k.to_string(), Value::from(v));
-            }
-        }
-        if !matches!(self.color, Color::Solid(c) if c.same(Rgb::WHITE)) {
-            d.insert("color".to_string(), self.color.to_json());
-        }
-        if self.opacity != 1.0 {
-            d.insert("opacity".to_string(), Value::from(self.opacity));
-        }
-        if self.blend != Blend::Normal {
-            d.insert("blend".to_string(), Value::from(self.blend.name()));
-        }
+        let white = matches!(self.color, Color::Solid(c) if c.same(Rgb::WHITE));
+        let mut d = every_dict(
+            &self.name,
+            self.visible,
+            self.x,
+            self.y,
+            (!white).then(|| self.color.to_json()),
+            self.opacity,
+            self.blend,
+        );
         d.insert("text".to_string(), Value::from(words));
         if let Some(px) = self.font_size {
             d.insert("font_size".to_string(), Value::from(px));
@@ -848,25 +977,8 @@ impl Layer {
     /// name, its type as a param takes it, and its value.
     pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
         let (from, to, angle) = self.color.ends();
-        let flag = |b: bool| Value::from(if b { 1.0 } else { 0.0 });
-        let mut out = vec![
-            (
-                self.uniform("x"),
-                "float",
-                Value::from(self.x.unwrap_or(0.0)),
-            ),
-            (
-                self.uniform("y"),
-                "float",
-                Value::from(self.y.unwrap_or(0.0)),
-            ),
-            (
-                self.uniform("centre"),
-                "vec2",
-                Value::from(vec![flag(self.x.is_none()), flag(self.y.is_none())]),
-            ),
-            (self.uniform("visible"), "float", flag(self.visible)),
-            (self.uniform("opacity"), "float", Value::from(self.opacity)),
+        let mut out = placing(&self.name, self.x, self.y, self.visible, self.opacity);
+        out.extend([
             (
                 self.uniform("color"),
                 "vec3",
@@ -878,7 +990,7 @@ impl Layer {
                 Value::from(to.rgb.to_vec()),
             ),
             (self.uniform("angle"), "float", Value::from(angle)),
-        ];
+        ]);
         for e in self.drawn() {
             let token = e.kind.token();
             out.push((
@@ -1242,6 +1354,202 @@ impl Layer {
     }
 }
 
+/// An image layer of a pass.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageLayer {
+    pub name: String,
+    /// False hides the layer.
+    pub visible: bool,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    /// The tint that multiplies the picture. None leaves it as it is.
+    pub color: Option<Rgb>,
+    pub opacity: f64,
+    pub blend: Blend,
+    /// An image asset of the scene, or a .png or .jpg file resolved as an
+    /// asset's file is.
+    pub image: String,
+    /// The pass pixels that the picture spans. One of them missing keeps the
+    /// image's aspect, and both missing take its own size.
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    /// The pixels of a file `image`. load_assets fills them.
+    pub data: Option<crate::assets::Image>,
+}
+
+impl ImageLayer {
+    /// `at` names the layer by its place in an error, as "the 2nd layer of
+    /// pass 'main'", until its name is known.
+    pub fn from_dict(at: &str, d: &Value) -> Result<ImageLayer> {
+        let o = object(at, d)?;
+        let e = Every::from_dict(at, o, &IMAGE_KEYS, &TEXT_KEYS, "a text layer")?;
+        let what = e.what.as_str();
+        let color = match given(o, "color") {
+            None => None,
+            Some(v) => match Rgb::from_json(v) {
+                Some(c) => Some(c),
+                None if v.is_object() => bail!(
+                    "{what} color takes no gradient on an image layer, only '#rrggbb' or [r, g, b]"
+                ),
+                None => bail!(
+                    "{what} color needs '#rrggbb' or [r, g, b], got {}",
+                    py_repr(v)
+                ),
+            },
+        };
+        let image = match given(o, "image") {
+            Some(Value::String(s)) if !s.is_empty() => s.clone(),
+            v => bail!(
+                "{what} image needs the name of an image asset or a .png or .jpg file, got {}",
+                py_repr(v.unwrap_or(&Value::Null))
+            ),
+        };
+        let px = |k: &str| number(o, what, k, |f| f > 0.0, "a number of pixels above 0");
+        Ok(ImageLayer {
+            name: e.name,
+            visible: e.visible,
+            x: e.x,
+            y: e.y,
+            color,
+            opacity: e.opacity,
+            blend: e.blend,
+            image,
+            width: px("width")?,
+            height: px("height")?,
+            data: None,
+        })
+    }
+
+    /// The layer as a scene holds it, a key at its default left out.
+    pub fn to_dict(&self) -> Value {
+        let mut d = every_dict(
+            &self.name,
+            self.visible,
+            self.x,
+            self.y,
+            self.color.map(Rgb::to_json),
+            self.opacity,
+            self.blend,
+        );
+        d.insert("image".to_string(), Value::from(self.image.clone()));
+        for (k, v) in [("width", self.width), ("height", self.height)] {
+            if let Some(v) = v {
+                d.insert(k.to_string(), Value::from(v));
+            }
+        }
+        Value::Object(d)
+    }
+
+    /// True when `image` names a file of the layer's own, not an asset.
+    pub fn is_file(&self) -> bool {
+        is_image_file(&self.image)
+    }
+
+    /// Each uniform of the layer's own at its value from the scene, as
+    /// TextLayer::uniforms() lists them. No tint is white.
+    pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
+        let tint = self.color.map_or([1.0; 3], |c| c.rgb);
+        let mut out = placing(&self.name, self.x, self.y, self.visible, self.opacity);
+        out.push((
+            uniform(&self.name, "color"),
+            "vec3",
+            Value::from(tint.to_vec()),
+        ));
+        out
+    }
+
+    /// The vertex and the fragment shader of the layer's quad.
+    pub fn shaders(&self) -> Program {
+        let size = match (self.width, self.height) {
+            (Some(w), Some(h)) => format!("vec2({w:?}, {h:?})"),
+            (Some(w), None) => format!(
+                "vec2({w:?}, {w:?} * ghee_NAME_image_size.y / max(ghee_NAME_image_size.x, 1.0))"
+            ),
+            (None, Some(h)) => format!(
+                "vec2({h:?} * ghee_NAME_image_size.x / max(ghee_NAME_image_size.y, 1.0), {h:?})"
+            ),
+            (None, None) => "ghee_NAME_image_size".to_string(),
+        };
+        let vertex = IMAGE_VERTEX.replace("SIZE", &size);
+        let fragment = IMAGE_FRAGMENT.replace("GUARD", GUARD);
+        (
+            vertex.replace("NAME", &self.name),
+            fragment.replace("NAME", &self.name),
+        )
+    }
+}
+
+/// True when `image` names a .png or a .jpg file, where an asset's name
+/// holds no `.`.
+pub fn is_image_file(image: &str) -> bool {
+    let f = image.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg"].iter().any(|e| f.ends_with(e))
+}
+
+/// A layer of a pass, which paints its words or its picture over the pass's
+/// buffer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Layer {
+    Text(TextLayer),
+    Image(ImageLayer),
+}
+
+impl Layer {
+    /// An image layer when `d` holds an `image`, else a text layer. `at`
+    /// names the layer by its place in an error, as "the 2nd layer of pass
+    /// 'main'", until its name is known.
+    pub fn from_dict(at: &str, d: &Value) -> Result<Layer> {
+        match given(object(at, d)?, "image") {
+            Some(_) => ImageLayer::from_dict(at, d).map(Layer::Image),
+            None => TextLayer::from_dict(at, d).map(Layer::Text),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Layer::Text(l) => &l.name,
+            Layer::Image(l) => &l.name,
+        }
+    }
+
+    pub fn blend(&self) -> Blend {
+        match self {
+            Layer::Text(l) => l.blend,
+            Layer::Image(l) => l.blend,
+        }
+    }
+
+    /// Each uniform of the layer's own at its value from the scene, as its
+    /// name, its type as a param takes it, and its value.
+    pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
+        match self {
+            Layer::Text(l) => l.uniforms(),
+            Layer::Image(l) => l.uniforms(),
+        }
+    }
+
+    pub fn as_text(&self) -> Option<&TextLayer> {
+        match self {
+            Layer::Text(l) => Some(l),
+            Layer::Image(_) => None,
+        }
+    }
+
+    pub fn as_text_mut(&mut self) -> Option<&mut TextLayer> {
+        match self {
+            Layer::Text(l) => Some(l),
+            Layer::Image(_) => None,
+        }
+    }
+
+    pub fn as_image(&self) -> Option<&ImageLayer> {
+        match self {
+            Layer::Image(l) => Some(l),
+            Layer::Text(_) => None,
+        }
+    }
+}
+
 /// ghee's name for the uniform `token` of layer `layer`.
 pub fn uniform(layer: &str, token: &str) -> String {
     format!("{}{layer}_{token}", crate::scene::PREFIX)
@@ -1331,6 +1639,61 @@ const GUARD: &str = r#"    // On VC4 a short shader whose last texture read sits
     // in an if that the compiler cannot drop, so the shader stays on one
     // thread.
 "#;
+
+/// The vertex shader of an image layer. SIZE is the pass pixels that the
+/// picture spans.
+const IMAGE_VERTEX: &str = r#"#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+attribute vec4 ghee_a0;
+uniform vec2 resolution;
+uniform float ghee_vflip;
+uniform vec2 ghee_NAME_image_size;
+uniform float ghee_NAME_x;
+uniform float ghee_NAME_y;
+uniform vec2 ghee_NAME_centre;
+uniform float ghee_NAME_visible;
+varying vec2 v_texCoord;
+varying vec4 ghee_v0;
+void main() {
+    vec2 ghee_wh = SIZE;
+    vec2 ghee_org = mix(vec2(ghee_NAME_x, ghee_NAME_y), (resolution - ghee_wh) * 0.5,
+                        ghee_NAME_centre);
+    v_texCoord = (ghee_org + ghee_a0.xy * ghee_wh) / resolution;
+    // The point on the image, and its step per pass pixel.
+    ghee_v0 = vec4(ghee_a0.xy, 1.0 / max(ghee_wh, vec2(1.0e-6)));
+    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
+    // A hidden layer's quad lies outside the pass.
+    if (ghee_NAME_visible < 0.5) gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);
+}"#;
+
+/// The fragment shader of an image layer. The image holds straight alpha,
+/// and the blend takes premultiplied colour.
+const IMAGE_FRAGMENT: &str = r#"#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform vec2 resolution;
+uniform sampler2D ghee_NAME_image_tex;
+uniform vec3 ghee_NAME_color;
+uniform float ghee_NAME_opacity;
+varying vec2 v_texCoord;
+varying vec4 ghee_v0;
+void main() {
+    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
+    // shader, and the varyings follow the vertex, so the sample moves to the
+    // pixel centre given by v_texCoord.
+    vec2 ghee_px = v_texCoord * resolution;
+    vec2 ghee_uv = ghee_v0.xy + (floor(ghee_px) + 0.5 - ghee_px) * ghee_v0.zw;
+    vec4 ghee_t = vec4(0.0);
+GUARD    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_image_tex, ghee_uv);
+    gl_FragColor = vec4(ghee_t.rgb * ghee_NAME_color * ghee_t.a, ghee_t.a) * ghee_NAME_opacity;
+}"#;
 
 /// A read of the layer's atlas at UV.
 const GUARDED_READ: &str =
@@ -1425,7 +1788,8 @@ mod tests {
     }
 
     /// Every name with ghee's prefix in the shaders and the uniforms of a
-    /// layer `name` in either render, and in the readers of its words.
+    /// layer `name`, a text layer in either render or an image layer, in the
+    /// readers of its words, and in the engine's names for its image file.
     fn written(name: &str) -> Vec<String> {
         let mut out: Vec<String> = text::template_names(name);
         for render in ["mtsdf", "slug"] {
@@ -1433,7 +1797,7 @@ mod tests {
             for kind in Kind::ALL {
                 d[kind.key()] = json!({});
             }
-            let l = Layer::from_dict("a layer", &d).unwrap();
+            let l = TextLayer::from_dict("a layer", &d).unwrap();
             let sh = l.shaders(Detail {
                 px_em: 32,
                 range: 6,
@@ -1446,6 +1810,14 @@ mod tests {
             }
             out.extend(l.uniforms().into_iter().map(|u| u.0));
         }
+        let l = ImageLayer::from_dict("a layer", &json!({"name": name, "image": "pic"})).unwrap();
+        let (v, f) = l.shaders();
+        out.extend(words(&v));
+        out.extend(words(&f));
+        out.extend(l.uniforms().into_iter().map(|u| u.0));
+        // The engine binds an asset as its name with _tex and _size.
+        let file = text::internal(name, "_file");
+        out.extend([format!("{file}_tex"), format!("{file}_size"), file]);
         out.retain(|w| w.starts_with(crate::scene::PREFIX));
         out.sort();
         out.dedup();
@@ -1473,6 +1845,8 @@ mod tests {
             "a_atlas",
             "a_atlas_size",
             "a_emoji",
+            "a_image",
+            "a_file",
             "a_cover",
             "a_outline",
             "a_tw",
@@ -1502,12 +1876,12 @@ mod tests {
         }
     }
 
-    fn layer(keys: serde_json::Value) -> Layer {
+    fn layer(keys: serde_json::Value) -> TextLayer {
         let mut d = json!({"name": "t", "text": "I"});
         d.as_object_mut()
             .unwrap()
             .extend(keys.as_object().unwrap().clone());
-        Layer::from_dict("a layer", &d).unwrap()
+        TextLayer::from_dict("a layer", &d).unwrap()
     }
 
     #[test]
@@ -1594,17 +1968,17 @@ mod tests {
 
     #[test]
     fn a_layer_takes_the_first_atlas_step_at_or_above_its_size_and_the_last_at_most() {
-        assert_eq!(Layer::atlas_px_em(0.0), ATLAS_STEPS[0]);
+        assert_eq!(TextLayer::atlas_px_em(0.0), ATLAS_STEPS[0]);
         let mut below = 0.0;
         for step in ATLAS_STEPS {
             let at = f64::from(step);
             for px in [below + 0.01, (below + at) / 2.0, at] {
-                assert_eq!(Layer::atlas_px_em(px), step, "{px} px/em");
+                assert_eq!(TextLayer::atlas_px_em(px), step, "{px} px/em");
             }
             below = at;
         }
         for px in [below + 0.01, 4.0 * below] {
-            assert_eq!(Layer::atlas_px_em(px), below as u32, "{px} px/em");
+            assert_eq!(TextLayer::atlas_px_em(px), below as u32, "{px} px/em");
         }
     }
 

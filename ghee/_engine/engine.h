@@ -156,6 +156,12 @@ int  ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *ver
 // The quads of a committed batch: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.
 bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int quads, int nattr);
+// Bind the set asset `asset` to committed batch `batch` under `name`: the
+// batch's program samples it as <name>_tex and reads its size as <name>_size,
+// in place of the asset bound there before, and pays a texture unit for it as
+// for an asset sampled under its own name. A drop of the asset unbinds it.
+// false with ghee_last_error set for a batch or an asset that is not set.
+bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *asset);
 // Render the passes and swap. buffer_rgb NULL = no readback at all, pw/ph > 0 =
 // GPU-scale the final pass to pw x ph and read back only that, otherwise the
 // full frame lands in buffer_rgb. A whole multiple of the frame size repeats

@@ -346,6 +346,37 @@ def test_a_layer_takes_the_scene_json_keys():
     assert json.dumps(built) == json.dumps(recorded)  # key order too
 
 
+def test_an_image_layer_takes_the_scene_json_keys():
+    shim = load()
+    layer = shim.Layer(
+        name="icon",
+        image="wifi.png",
+        visible=False,
+        x=110,
+        y=0,
+        color="#ff8000",
+        opacity=0.5,
+        blend="screen",
+        width=16,
+        height=8,
+    )
+    recorded = {
+        "name": "icon",
+        "visible": False,
+        "x": 110.0,
+        "y": 0.0,
+        "color": "#ff8000",
+        "opacity": 0.5,
+        "blend": "screen",
+        "image": "wifi.png",
+        "width": 16.0,
+        "height": 8.0,
+    }
+    built = layer.to_dict()
+    assert built == recorded
+    assert json.dumps(built) == json.dumps(recorded)  # key order too
+
+
 def test_a_layer_leaves_its_defaults_out():
     shim = load()
     assert shim.Layer(name="words").to_dict() == {"name": "words"}

@@ -1193,6 +1193,20 @@ static char *suffixed(GheeScene *g, const char *name, const char *suffix) {
     return out;
 }
 
+// Append `use` to the uses of a program. false with the error set when memory
+// runs out.
+static bool mp_add_use(GheeScene *g, struct mp_locs *loc, struct mp_use use) {
+    if (loc->nuses == loc->uses_cap) {
+        const int cap = loc->uses_cap ? 2 * loc->uses_cap : 4;
+        struct mp_use *grown = realloc(loc->uses, (size_t)cap * sizeof *grown);
+        if (!grown) { set_error(g, "no memory for the assets of a program"); return false; }
+        loc->uses = grown;
+        loc->uses_cap = cap;
+    }
+    loc->uses[loc->nuses++] = use;
+    return true;
+}
+
 // Add asset `a` to the uses of program `prog` when the program reads its
 // sampler or its size. false with the error set when memory runs out.
 static bool mp_use_asset(GheeScene *g, GLuint prog, int a, struct mp_locs *loc) {
@@ -1209,15 +1223,7 @@ static bool mp_use_asset(GheeScene *g, GLuint prog, int a, struct mp_locs *loc) 
     free(tex_name);
     free(size_name);
     if (at < 0 && size < 0) return true;
-    if (loc->nuses == loc->uses_cap) {
-        const int cap = loc->uses_cap ? 2 * loc->uses_cap : 4;
-        struct mp_use *grown = realloc(loc->uses, (size_t)cap * sizeof *grown);
-        if (!grown) { set_error(g, "no memory for the assets of a program"); return false; }
-        loc->uses = grown;
-        loc->uses_cap = cap;
-    }
-    loc->uses[loc->nuses++] = (struct mp_use){ a, at, size };
-    return true;
+    return mp_add_use(g, loc, (struct mp_use){ a, at, size });
 }
 
 // Drop asset `a` from the uses of a program, and renumber the assets after
@@ -1602,6 +1608,37 @@ bool ghee_mp_reads(GheeScene *g, const char *name) {
     for (int l = 0; l < g->mp_nbatch; l++)
         if (glGetUniformLocation(g->mp_batch[l].program, name) >= 0) return true;
     return false;
+}
+
+// Bind a set asset to a committed batch under `name`, in place of the asset
+// bound there before.
+bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *asset) {
+    if (batch < 0 || batch >= g->mp_nbatch) { set_error(g, "no batch %d in the scene", batch); return false; }
+    struct mp_batch *l = &g->mp_batch[batch];
+    const int a = mp_asset_index(g, asset);
+    if (a < 0) { set_error(g, "%s: asset '%s' is not set", l->name, asset); return false; }
+    make_current(g);
+    char *tex_name = suffixed(g, name, "_tex");
+    char *size_name = suffixed(g, name, "_size");
+    if (!tex_name || !size_name) {
+        free(tex_name);
+        free(size_name);
+        return false;
+    }
+    const GLint at = glGetUniformLocation(l->program, tex_name);
+    const GLint size = glGetUniformLocation(l->program, size_name);
+    free(tex_name);
+    free(size_name);
+    if (at < 0 && size < 0) return true;
+    struct mp_locs *loc = &l->loc;
+    for (int i = 0; i < loc->nuses; i++) {
+        struct mp_use *u = &loc->uses[i];
+        if ((at >= 0 && u->loc == at) || (size >= 0 && u->size == size)) {
+            *u = (struct mp_use){ a, at, size };
+            return true;
+        }
+    }
+    return mp_add_use(g, loc, (struct mp_use){ a, at, size });
 }
 
 // Upload one named image asset. Every pass whose program reads it gets it as

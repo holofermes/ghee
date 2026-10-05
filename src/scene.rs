@@ -2,7 +2,7 @@
 //!
 //! A [`Scene`] holds an ordered list of passes, and the params and assets
 //! that the passes share. A [`Pass`] holds its GLSL, its channels, arrays and
-//! params, and its text layers, which `crate::layer` describes.
+//! params, and its layers, which `crate::layer` describes.
 //! [`Scene::load`] reads a scene JSON file: it refuses a key that it does not
 //! take, checks every name and size, and reads the files that the scene
 //! names, from the scene's directory or from `$GHEE_ASSETS`. A [`Reach`] sets
@@ -24,7 +24,7 @@ use std::fs;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
-use crate::layer::Layer;
+use crate::layer::{is_image_file, Layer, TextLayer};
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
@@ -1357,7 +1357,7 @@ pub struct Pass {
     /// The pass's buffer holds a mip chain, built after the pass renders each
     /// frame, and every channel that reads it samples trilinearly.
     pub mipmaps: bool,
-    /// Text layers drawn into this pass's buffer after its quad, in order.
+    /// Layers drawn into this pass's buffer after its quad, in order.
     pub layers: Vec<Layer>,
     /// False hides the pass: it draws a copy of the pass before it, or black
     /// as the first pass, and its layers draw nothing. It keeps its params,
@@ -1456,7 +1456,7 @@ impl Pass {
         };
         let name = o.get("name").map_or("main".to_string(), py_str);
         let elsewhere = [
-            keys_on(&PASS_KEYS, &crate::layer::LAYER_KEYS, "a layer"),
+            keys_on(&PASS_KEYS, &crate::layer::layer_keys(), "a layer"),
             keys_on(&PASS_KEYS, &ASSET_KEYS, "an asset"),
             keys_on(&PASS_KEYS, &CHANNEL_KEYS, "a channel"),
             keys_on(&PASS_KEYS, &PARAM_KEYS, "a param"),
@@ -1538,9 +1538,9 @@ impl Pass {
         self.dict(&|l| l.text.clone())
     }
 
-    /// The pass as a scene holds it, with `words` of each layer in its
+    /// The pass as a scene holds it, with `words` of each text layer in its
     /// `text`.
-    fn dict(&self, words: &dyn Fn(&Layer) -> String) -> Value {
+    fn dict(&self, words: &dyn Fn(&TextLayer) -> String) -> Value {
         let mut out = Map::new();
         out.insert("name".to_string(), Value::from(self.name.clone()));
         if !self.visible {
@@ -1588,7 +1588,14 @@ impl Pass {
             out.insert("filter".to_string(), Value::from(self.filter.clone()));
         }
         if !self.layers.is_empty() {
-            let layers: Vec<Value> = self.layers.iter().map(|l| l.to_dict(&words(l))).collect();
+            let layers: Vec<Value> = self
+                .layers
+                .iter()
+                .map(|l| match l {
+                    Layer::Text(t) => t.to_dict(&words(t)),
+                    Layer::Image(i) => i.to_dict(),
+                })
+                .collect();
             out.insert("layers".to_string(), Value::from(layers));
         }
         Value::Object(out)
@@ -1795,7 +1802,11 @@ impl Scene {
         // layer's name stays for name_clash() to refuse.
         let held: Vec<Param> = params.values().filter(|p| p.of_text).cloned().collect();
         params.retain(|p| !p.of_text);
-        for l in passes.iter_mut().flat_map(|p| &mut p.layers) {
+        for l in passes
+            .iter_mut()
+            .flat_map(|p| &mut p.layers)
+            .filter_map(Layer::as_text_mut)
+        {
             if params.contains_key(&l.name) {
                 continue;
             }
@@ -1819,7 +1830,7 @@ impl Scene {
         if let Some(e) = scene.name_clash() {
             bail!("{e}");
         }
-        for l in scene.layers() {
+        for l in scene.text_layers() {
             let Some(font) = l.font_family.as_deref() else {
                 continue;
             };
@@ -1841,22 +1852,46 @@ impl Scene {
                 ),
             }
         }
+        for l in scene.layers().filter_map(Layer::as_image) {
+            let image = l.image.as_str();
+            if is_image_file(image) {
+                continue;
+            }
+            let own = |a: &&Asset| a.name == image && a.from_filter.is_empty();
+            match scene.assets.iter().find(own) {
+                Some(a) if a.is_font() => bail!(
+                    "layer '{}' image '{image}' is the font {}, an image is a .png or .jpg file",
+                    l.name,
+                    py_str_repr(&a.file)
+                ),
+                Some(_) => {}
+                None => bail!(
+                    "layer '{}' image '{image}' is no asset of the scene and no .png or .jpg file",
+                    l.name
+                ),
+            }
+        }
         Ok(scene)
     }
 
-    /// Every text layer of the scene, in the order of its passes.
+    /// Every layer of the scene, in the order of its passes.
     pub fn layers(&self) -> impl Iterator<Item = &Layer> {
         self.passes.iter().flat_map(|p| &p.layers)
     }
 
+    /// Every text layer of the scene, in the order of its passes.
+    pub fn text_layers(&self) -> impl Iterator<Item = &TextLayer> {
+        self.layers().filter_map(Layer::as_text)
+    }
+
     /// The text layer named `name`.
-    pub fn layer(&self, name: &str) -> Option<&Layer> {
-        self.layers().find(|l| l.name == name)
+    pub fn text_layer(&self, name: &str) -> Option<&TextLayer> {
+        self.text_layers().find(|l| l.name == name)
     }
 
     /// The names of the scene's text layers, as Pass::glsl() takes them.
     pub fn text_names(&self) -> Vec<&str> {
-        self.layers().map(|l| l.name.as_str()).collect()
+        self.text_layers().map(|l| l.name.as_str()).collect()
     }
 
     /// The words of text layer `name` as they stand: its string param's.
@@ -1872,8 +1907,8 @@ impl Scene {
     /// declarations share, or one GLSL name that two declarations make in one
     /// pass.
     ///
-    /// The passes, the text layers, the scene's assets and the scene params
-    /// share one set of names. A pass param or an array takes a name unique in
+    /// The passes, the layers, the scene's assets and the scene params share
+    /// one set of names. A pass param or an array takes a name unique in
     /// its pass and outside that set, so two passes may each declare a `gain`.
     ///
     /// A scene param reaches every pass, an image asset and a text layer every
@@ -1889,7 +1924,7 @@ impl Scene {
             kinds.push(("pass", &p.name, String::new(), false));
         }
         for l in self.layers() {
-            kinds.push(("layer", &l.name, String::new(), false));
+            kinds.push(("layer", l.name(), String::new(), false));
         }
         for p in self.params.values().filter(|p| !p.of_text) {
             kinds.push(("scene param", &p.name, String::new(), true));
@@ -1939,7 +1974,7 @@ impl Scene {
                 }
             }
             if own {
-                for l in self.layers() {
+                for l in self.text_layers() {
                     for n in crate::text::names(&l.name) {
                         names.push((n, format!("layer '{}'", l.name)));
                     }
@@ -1970,15 +2005,15 @@ impl Scene {
         None
     }
 
-    /// The names that the passes, the text layers, the scene's assets and the
-    /// scene params share, each with its declaration, as "pass 'main'".
+    /// The names that the passes, the layers, the scene's assets and the scene
+    /// params share, each with its declaration, as "pass 'main'".
     fn scene_wide_names(&self) -> Vec<(&str, String)> {
         let mut wide: Vec<(&str, String)> = Vec::new();
         for p in &self.passes {
             wide.push((&p.name, format!("pass '{}'", p.name)));
         }
         for l in self.layers() {
-            wide.push((&l.name, format!("layer '{}'", l.name)));
+            wide.push((l.name(), format!("layer '{}'", l.name())));
         }
         for a in self.assets.iter().filter(|a| a.from_filter.is_empty()) {
             wide.push((&a.name, format!("asset '{}'", a.name)));
@@ -2113,7 +2148,7 @@ impl Scene {
         (|| -> Result<Scene> {
             let elsewhere = [
                 keys_on(&SCENE_KEYS, &PASS_KEYS, "a pass"),
-                keys_on(&SCENE_KEYS, &crate::layer::LAYER_KEYS, "a layer"),
+                keys_on(&SCENE_KEYS, &crate::layer::layer_keys(), "a layer"),
                 keys_on(&SCENE_KEYS, &ASSET_KEYS, "an asset"),
             ]
             .concat();
@@ -2156,7 +2191,7 @@ impl Scene {
         out.insert("version".to_string(), self.version.clone());
         // Each layer holds its words as they stand, which an edit of its
         // param changes.
-        let words = |l: &Layer| self.words(&l.name).unwrap_or(&l.text).to_string();
+        let words = |l: &TextLayer| self.words(&l.name).unwrap_or(&l.text).to_string();
         out.insert(
             "passes".to_string(),
             Value::from(
@@ -2228,15 +2263,15 @@ impl Scene {
         Ok(scene)
     }
 
-    /// Read and decode every declared asset file, and hand each text layer its
-    /// font, with the reach of a scene that its user runs, as load_assets_in()
-    /// says.
+    /// Read and decode every declared asset file, and hand each layer its
+    /// font or its image file, with the reach of a scene that its user runs,
+    /// as load_assets_in() says.
     pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
         self.load_assets_in(base_dir, Reach::Any)
     }
 
-    /// Read and decode every declared asset file, and hand each text layer its
-    /// font.
+    /// Read and decode every declared asset file, hand each text layer its
+    /// font, and decode the file of each image layer that names one.
     ///
     /// An absolute path reads as it stands. Any other path resolves in
     /// `base_dir`, then through `$GHEE_ASSETS`, colon-separated directories, in
@@ -2251,10 +2286,14 @@ impl Scene {
     /// `$GHEE_ASSETS`.
     fn load_assets_from(&mut self, base_dir: &str, reach: Reach, more: &[String]) -> Result<()> {
         let font_files = self
-            .layers()
+            .text_layers()
             .filter_map(|l| l.font_family.as_deref())
             .any(crate::text::is_font_file);
-        if self.assets.is_empty() && !font_files {
+        let image_files = self
+            .layers()
+            .filter_map(Layer::as_image)
+            .any(|l| l.is_file());
+        if self.assets.is_empty() && !font_files && !image_files {
             return Ok(());
         }
         let root = normpath(&abspath(base_dir));
@@ -2313,7 +2352,28 @@ impl Scene {
             }
         }
         let assets = &self.assets;
-        for l in self.passes.iter_mut().flat_map(|p| &mut p.layers) {
+        for layer in self.passes.iter_mut().flat_map(|p| &mut p.layers) {
+            let l = match layer {
+                Layer::Text(l) => l,
+                Layer::Image(l) if l.is_file() => {
+                    if outside(&l.image) {
+                        bail!(
+                            "layer '{}' image {} is outside the scene directory",
+                            l.name,
+                            py_str_repr(&l.image)
+                        );
+                    }
+                    let what = format!("layer '{}' image {}", l.name, py_str_repr(&l.image));
+                    let (bytes, path) = read(&l.image, &what).map_err(|e| anyhow!("{e}"))?;
+                    let decoded = match l.image.to_ascii_lowercase().ends_with(".png") {
+                        true => crate::assets::decode_png(&bytes),
+                        false => crate::assets::decode_jpeg(&bytes),
+                    };
+                    l.data = Some(decoded.map_err(|e| anyhow!("{what} ({path}): {e}"))?);
+                    continue;
+                }
+                Layer::Image(_) => continue,
+            };
             let Some(f) = l.font_family.clone() else {
                 l.data = Some(vec![crate::text::built_in_font()]);
                 continue;
@@ -3343,13 +3403,67 @@ mod tests {
     }
 
     #[test]
+    fn an_image_layer_decodes_its_file_and_names_it_in_a_failure() {
+        let dir = tmpdir("layerfile");
+        let mut png = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png, 2, 1);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(&[255, 0, 0, 255, 0, 0, 255, 128])
+                .unwrap();
+        }
+        fs::write(dir.join("pic.png"), &png).unwrap();
+        fs::write(dir.join("bad.png"), b"not a png").unwrap();
+        let load = |image: &str| {
+            let doc = json!({"version": 1, "passes": [{"name": "m", "code": GOOD,
+                "layers": [{"name": "icon", "image": image}]}]});
+            let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+            sc.load_assets_from(&dir, Reach::Any, &[]).map(|()| sc)
+        };
+        let sc = load("pic.png").unwrap();
+        let l = sc.layers().find_map(Layer::as_image).unwrap();
+        assert_eq!(
+            l.data,
+            Some(crate::assets::Image {
+                width: 2,
+                height: 1,
+                components: 4,
+                pixels: crate::assets::Pixels::U8(vec![255, 0, 0, 255, 0, 0, 255, 128]),
+            })
+        );
+        let gone = load("gone.png").unwrap_err().to_string();
+        assert_eq!(
+            gone,
+            format!(
+                "layer 'icon' image 'gone.png' ({}): No such file or directory, and \
+                 $GHEE_ASSETS names no directory",
+                dir.join("gone.png").display()
+            )
+        );
+        let bad = load("bad.png").unwrap_err().to_string();
+        let key = format!(
+            "layer 'icon' image 'bad.png' ({}): ",
+            dir.join("bad.png").display()
+        );
+        assert!(bad.starts_with(&key) && bad.len() > key.len(), "{bad}");
+    }
+
+    #[test]
     fn a_scene_of_the_console_reads_no_file_outside_its_directory() {
         let _g = crate::filters::env_guard();
         let root = tmpdir("outside");
         let base = format!("{root}/scene");
         fs::create_dir_all(format!("{base}/sub")).unwrap();
         fs::write(format!("{base}/sub/in.glsl"), GOOD).unwrap();
-        for f in ["secret.glsl", "secret.raw", "up.ttf", "scene/m.raw"] {
+        for f in [
+            "secret.glsl",
+            "secret.raw",
+            "up.ttf",
+            "up.png",
+            "scene/m.raw",
+        ] {
             fs::write(format!("{root}/{f}"), [0u8; 4]).unwrap();
         }
         let shader =
@@ -3394,6 +3508,11 @@ mod tests {
                 json!({"version": 1, "passes": [{"name": "m", "code": GOOD,
                     "layers": [{"name": "label", "text": "hi", "font_family": "../up.ttf"}]}]}),
                 "layer 'label' font_family '../up.ttf'",
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "m", "code": GOOD,
+                    "layers": [{"name": "icon", "image": "../up.png"}]}]}),
+                "layer 'icon' image '../up.png'",
             ),
         ] {
             let mut sc = Scene::from_dict(&d, None, None).unwrap();

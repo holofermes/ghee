@@ -9,6 +9,14 @@
   `format` and `components`. Every pass samples an asset as
   `uniform sampler2D <name>_tex` with a `vec2 <name>_size`, nearest unless
   the asset sets `"sampling": "linear"`.
+- Paint a picture over a pass with an image layer, which holds `image`, the
+  name of an image asset or a `.png` or `.jpg` file, in place of `text`.
+  `width` and `height` scale it in pass pixels, one of them left out keeps
+  the image's aspect, and both left out take its own size. It takes `x`,
+  `y`, `opacity`, `blend` and `visible` as a text layer does, and `color`,
+  `"#rrggbb"` or `[r, g, b]`, tints the picture. An image layer takes no
+  effects and gives a pass no GLSL name of its own, so a pass reads the
+  image as the asset's `<name>_tex`.
 - Resolve an asset or a font that a scene names from the directory of the
   scene file or of a procedural scene's executable, then from each directory
   on `$GHEE_ASSETS`. A path may be absolute or leave that directory, except
@@ -144,7 +152,8 @@
 - Declare an asset with `ghee.Asset` and a text layer with
   `ghee.Layer(name, text, visible, x, y, color, opacity, blend, font_size,
   font_family, text_align, render)` and a keyword for each effect, a dict of
-  its fields, in `Scene(assets=...)` and `Pass(layers=...)`. A keyword left at None leaves its key to ghee's
+  its fields, or an image layer with `image`, `width` and `height`, in
+  `Scene(assets=...)` and `Pass(layers=...)`. A keyword left at None leaves its key to ghee's
   default. `mipmaps=True` on `ghee.Pass` builds its mip chain, and
   `visible=False` hides the pass.
 - Take a scene's and a pass's `params` as a list of `ghee.Param`. Raise

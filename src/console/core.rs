@@ -698,7 +698,7 @@ pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
 
 /// The type of a param in a scene document, or None when the scope holds no
 /// param of that name. ghee declares a scene string param under each text
-/// layer's name.
+/// layer's name, and none for an image layer, which holds an `image`.
 pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
     let layers = doc
         .get("passes")
@@ -710,7 +710,7 @@ pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
     if scope == Scope::Scene
         && layers
             .into_iter()
-            .any(|l| l.get("name") == Some(&Value::from(name)))
+            .any(|l| l.get("name") == Some(&Value::from(name)) && l.get("image").is_none())
     {
         return Some("string".to_string());
     }
@@ -765,7 +765,8 @@ mod tests {
         "params": {"tint": {"type": "float", "value": 0.0},
                    "title": {"type": "string", "value": "hi"}},
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
-                    "layers": [{"name": "words", "text": "ho", "font_family": "sans.ttf"}],
+                    "layers": [{"name": "words", "text": "ho", "font_family": "sans.ttf"},
+                               {"name": "icon", "image": "icon.png"}],
                     "params": {"k": {"type": "float", "value": 0.0},
                                "on": {"type": "bool", "value": false},
                                "n": {"type": "int", "value": 0},
@@ -1072,16 +1073,18 @@ mod tests {
 
     #[test]
     fn a_set_of_an_undeclared_param_names_it() {
-        for (pass, want) in [
-            ("scene", "bad /set: the scene has no param 'nope'"),
-            ("0", "bad /set: pass 0 has no param 'nope'"),
-            ("3", "bad /set: pass 3 has no param 'nope'"),
+        for (pass, name, want) in [
+            ("scene", "nope", "bad /set: the scene has no param 'nope'"),
+            ("0", "nope", "bad /set: pass 0 has no param 'nope'"),
+            ("3", "nope", "bad /set: pass 3 has no param 'nope'"),
+            // an image layer has no words
+            ("scene", "icon", "bad /set: the scene has no param 'icon'"),
         ] {
             let api = api();
             let r = post(
                 &api,
                 "/set",
-                &[("pass", pass), ("name", "nope"), ("value", "1")],
+                &[("pass", pass), ("name", name), ("value", "1")],
             );
             assert_eq!((r.status, body(&r).as_str()), (400, want));
             assert_eq!(*api.host.calls.borrow(), vec![Call::SceneDef(None)]);

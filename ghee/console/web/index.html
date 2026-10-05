@@ -1045,22 +1045,26 @@ function buildLayerCtl(){
   const head = el("div", "edhead", "layer");
   head.appendChild(el("span", "nm", layerTabName(p, curLayer)));
   box.appendChild(head);
-  const grow = el("div", "grow"), mirror = el("pre"), words = el("textarea");
-  mirror.setAttribute("aria-hidden", "true");
-  words.spellcheck = false;
-  grow.appendChild(mirror); grow.appendChild(words);
-  const fit = () => { mirror.textContent = words.value + "\n"; };
-  words.value = d.text || ""; fit();
-  const send = () => {
-    if (words.value === (d.text || "")) return;
-    d.text = words.value; p.layersEdited = true;
-    setParam(scene, `pass=scene&name=${encodeURIComponent(d.name)}&value=${encodeURIComponent(d.text)}`);
-    markDirty();
-  };
-  let timer = null;
-  words.addEventListener("input", ()=>{ fit(); clearTimeout(timer); timer = setTimeout(send, 300); });
-  words.addEventListener("change", ()=>{ clearTimeout(timer); send(); });
-  field(box, "text", grow);
+  // An image layer has no words.
+  const image = d.image != null;
+  if (!image){
+    const grow = el("div", "grow"), mirror = el("pre"), words = el("textarea");
+    mirror.setAttribute("aria-hidden", "true");
+    words.spellcheck = false;
+    grow.appendChild(mirror); grow.appendChild(words);
+    const fit = () => { mirror.textContent = words.value + "\n"; };
+    words.value = d.text || ""; fit();
+    const send = () => {
+      if (words.value === (d.text || "")) return;
+      d.text = words.value; p.layersEdited = true;
+      setParam(scene, `pass=scene&name=${encodeURIComponent(d.name)}&value=${encodeURIComponent(d.text)}`);
+      markDirty();
+    };
+    let timer = null;
+    words.addEventListener("input", ()=>{ fit(); clearTimeout(timer); timer = setTimeout(send, 300); });
+    words.addEventListener("change", ()=>{ clearTimeout(timer); send(); });
+    field(box, "text", grow);
+  }
   // A number, or empty for ghee's default.
   const num = (key) => {
     const inp = el("input");
@@ -1072,7 +1076,8 @@ function buildLayerCtl(){
     });
     field(box, key, inp);
   };
-  num("font_size"); num("x"); num("y");
+  if (!image) num("font_size");
+  num("x"); num("y");
   field(box, "blend", pick(["normal", "add", "multiply", "screen"], d.blend || "normal", v => {
     if (v === "normal") delete d.blend; else d.blend = v;
     edit();

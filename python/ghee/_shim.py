@@ -177,21 +177,27 @@ class Channel:
 
 @dataclass
 class Layer:
-    """A text layer: words that ghee paints into the buffer of its pass.
+    """A layer: words or a picture that ghee paints into the buffer of its
+    pass. `name` is required. A key left at None takes ghee's default.
 
-    `name` is required, and ghee declares the string param of that name,
-    which holds the words, live. Every pass reads them with
-    float <name>_cover(vec2 p, float font_size) and vec2 <name>_size.
     `x` and `y` put the block's top left at that pass pixel, y down, and a
-    missing one centres the block on its axis. `font_size` is the pixels per
-    em, and without it the block takes the largest size that fits its room.
-    `color` is "#rrggbb", [r, g, b] in 0..1, or a gradient
-    {"from": ..., "to": ..., "angle": degrees}. `font_family` is a font file
-    (.ttf or .otf) or the name of a font Asset, and None draws from the
-    DejaVu Sans Latin that ghee carries. Each effect, `text_shadow`, `glow`,
-    `text_stroke`, `karaoke`, `wave`, `scroll` and `blink`, is a dict of its
-    fields, {} for every default, and None leaves it off. A key left at None
-    takes ghee's default.
+    missing one centres the block on its axis.
+
+    A text layer draws `text`, and ghee declares the string param of its
+    name, which holds the words, live. Every pass reads them with
+    float <name>_cover(vec2 p, float font_size) and vec2 <name>_size.
+    `font_size` is the pixels per em, and without it the block takes the
+    largest size that fits its room. `color` is "#rrggbb", [r, g, b] in 0..1,
+    or a gradient {"from": ..., "to": ..., "angle": degrees}. `font_family`
+    is a font file (.ttf or .otf) or the name of a font Asset, and None draws
+    from the DejaVu Sans Latin that ghee carries. Each effect, `text_shadow`,
+    `glow`, `text_stroke`, `karaoke`, `wave`, `scroll` and `blink`, is a dict
+    of its fields, {} for every default, and None leaves it off.
+
+    An image layer draws `image`, the name of an image Asset or a .png or
+    .jpg file, over `width` by `height` pass pixels: one of them left out
+    keeps the image's aspect, and both left out take its own size. `color`
+    is "#rrggbb" or [r, g, b], a tint that multiplies the picture.
     """
 
     name: str
@@ -213,6 +219,9 @@ class Layer:
     wave: dict | None = None
     scroll: dict | None = None
     blink: dict | None = None
+    image: str | os.PathLike[str] | None = None
+    width: float | None = None
+    height: float | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"name": self.name}
@@ -229,6 +238,11 @@ class Layer:
             d["blend"] = self.blend
         if self.text is not None:
             d["text"] = self.text
+        if self.image is not None:
+            d["image"] = _plain(self.image)
+        for k in ("width", "height"):
+            if getattr(self, k) is not None:
+                d[k] = _floats(getattr(self, k))
         if self.font_size is not None:
             d["font_size"] = _floats(self.font_size)
         if self.font_family is not None:
@@ -255,8 +269,7 @@ class Pass:
     The last pass leaves `size` None, because it feeds the display.
     `mipmaps` builds the mip chain of the pass's buffer after each frame, so
     a pass that reads it far smaller than its size samples it smooth.
-    `layers` draw text layers into the pass's buffer after its code, in
-    order.
+    `layers` draw Layers into the pass's buffer after its code, in order.
     A pass with layers and no code starts each frame transparent.
     `params` holds the Params of this pass alone, in a list or in a dict keyed
     by their names.

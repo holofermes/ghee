@@ -156,6 +156,12 @@ extern "C" {
         quads: c_int,
         nattr: c_int,
     ) -> bool;
+    pub fn ghee_mp_bind_asset(
+        g: *mut GheeScene,
+        batch: c_int,
+        name: *const c_char,
+        asset: *const c_char,
+    ) -> bool;
     pub fn ghee_mp_render(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_present(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_flip_rotate(

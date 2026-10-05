@@ -17,7 +17,8 @@
 //!   array, uploads it, draws every pass in order, and reads the frame back.
 //!   [`Renderer::present`] scans it out to the display.
 //!
-//! The Renderer draws the scene's text layers too. [`Renderer::set_text`]
+//! The Renderer draws the scene's layers too. An image layer draws one quad
+//! that samples the image bound to it. [`Renderer::set_text`]
 //! lays a layer's words out through `crate::text`, uploads the texture of
 //! curves that `_cover` and the slug render read, and hands the layer one
 //! quad a glyph. An MTSDF layer reads its glyphs from an atlas that a
@@ -42,7 +43,7 @@ use crate::assets::Pixels;
 use crate::atlas;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
-use crate::layer::{Detail, Layer, Render};
+use crate::layer::{Detail, ImageLayer, Layer, Render, TextLayer};
 use crate::scene::{ArraySize, ParamValue, Pass, Scene};
 use crate::text::{self, Fault, Layout};
 
@@ -153,15 +154,16 @@ pub(crate) struct Batch {
     pub blend: Blend,
 }
 
-/// A text layer that the engine draws: the batch of its glyphs, and the
-/// batches of its colour glyphs and of its error boxes.
+/// A layer that the engine draws: the batch of a text layer's glyphs or of an
+/// image layer's quad, and the batches of a text layer's colour glyphs and
+/// of its error boxes.
 struct LayerBatches {
     /// The engine's index of the batch.
     batch: c_int,
-    /// The engine's index of the colour batch, -1 for a layer whose fonts
-    /// hold no colour bitmaps.
+    /// The engine's index of the colour batch, -1 for an image layer or a
+    /// layer whose fonts hold no colour bitmaps.
     colour: c_int,
-    /// The engine's index of the error-box batch.
+    /// The engine's index of the error-box batch, -1 for an image layer.
     boxes: c_int,
     /// The layer's name.
     name: String,
@@ -209,6 +211,21 @@ struct TextErrors {
     drawn: Vec<String>,
     /// Why the last words failed to lay out, when they did.
     refused: Option<String>,
+}
+
+/// The quad of an image layer, one vec4 a vertex: its corner of the picture,
+/// x right and y down from the top left.
+const IMAGE_QUAD: [f32; 16] = [
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0,
+];
+
+/// The image layers of `drawn` that draw a file of their own.
+fn drawn_files(drawn: &[Pass]) -> impl Iterator<Item = &ImageLayer> {
+    drawn
+        .iter()
+        .flat_map(|p| &p.layers)
+        .filter_map(Layer::as_image)
+        .filter(|l| l.is_file())
 }
 
 /// The (width, rows) of one array upload, and its data.
@@ -477,10 +494,11 @@ pub struct Renderer {
     mp: Vec<(String, c_int)>,
     /// array name -> size, in declaration order.
     feeds: Vec<(String, ArraySize)>,
-    /// The engine assets uploaded for the scene: its image assets, and the
-    /// data texture `ghee_<name>_curves` of each text layer. A setup frees
-    /// those that its new scene does not declare, so their asset slots come
-    /// back.
+    /// The engine assets uploaded for the scene: its image assets, the data
+    /// texture `ghee_<name>_curves` of each text layer, and the picture
+    /// `ghee_<name>_file` of each image layer that draws a file. A setup
+    /// frees those that its new scene does not declare, so their asset slots
+    /// come back.
     scene_assets: std::cell::RefCell<Vec<String>>,
     /// The engine index of each batch passed to setup_batches(), in order.
     #[cfg(test)]
@@ -750,10 +768,10 @@ impl Renderer {
             used.dedup();
             let want = p.channels.len() + used.len();
             let mut over = self.units_error(&format!("pass '{}'", p.name), want);
-            // A layer samples its own texture on top of its pass's channels
-            // and arrays, which stay bound for it.
+            // A layer samples its own texture, its words' or its image, on
+            // top of its pass's channels and arrays, which stay bound for it.
             if let (None, Some(l)) = (&over, p.layers.first()) {
-                over = self.units_error(&format!("layer '{}'", l.name), want + 1);
+                over = self.units_error(&format!("layer '{}'", l.name()), want + 1);
             }
             if let Some(e) = over {
                 self.error = e;
@@ -822,17 +840,25 @@ impl Renderer {
             {
                 idx = -1;
             }
-            let shaders: Vec<crate::layer::Shaders> = p
+            let shaders: Vec<Option<crate::layer::Shaders>> = p
                 .layers
                 .iter()
-                .map(|l| l.shaders(l.detail(sizes.get(&l.name).copied().unwrap_or(atlas::PX_EM))))
+                .map(|l| {
+                    let l = l.as_text()?;
+                    let px_em = sizes.get(&l.name).copied().unwrap_or(atlas::PX_EM);
+                    Some(l.shaders(l.detail(px_em)))
+                })
                 .collect();
             for (l, sh) in p.layers.iter().zip(&shaders) {
                 if idx < 0 {
                     break;
                 }
-                let name = format!("layer '{}'", l.name);
-                let li = self.add_batch(idx, &name, &sh.glyphs, l.blend)?;
+                let name = format!("layer '{}'", l.name());
+                let li = match (l, sh) {
+                    (Layer::Image(l), _) => self.add_batch(idx, &name, &l.shaders(), l.blend)?,
+                    (_, Some(sh)) => self.add_batch(idx, &name, &sh.glyphs, l.blend())?,
+                    (_, None) => unreachable!("a text layer has shaders"),
+                };
                 if li < 0 {
                     return self.batch_refused(&name, i);
                 }
@@ -840,7 +866,7 @@ impl Renderer {
                     batch: li,
                     colour: -1,
                     boxes: -1,
-                    name: l.name.clone(),
+                    name: l.name().to_string(),
                     pass: idx,
                 });
             }
@@ -880,6 +906,9 @@ impl Renderer {
             // box.
             let first = layers.len() - if idx < 0 { 0 } else { p.layers.len() };
             for ((dl, l), sh) in layers[first..].iter_mut().zip(&p.layers).zip(&shaders) {
+                let (Some(l), Some(sh)) = (l.as_text(), sh) else {
+                    continue;
+                };
                 if !l.has_colour() {
                     continue;
                 }
@@ -890,6 +919,9 @@ impl Renderer {
                 }
             }
             for ((dl, l), sh) in layers[first..].iter_mut().zip(&p.layers).zip(&shaders) {
+                let (Some(l), Some(sh)) = (l.as_text(), sh) else {
+                    continue;
+                };
                 let name = format!("layer '{}' error boxes", l.name);
                 dl.boxes = self.add_batch(idx, &name, &sh.boxes, Blend::Normal)?;
                 if dl.boxes < 0 {
@@ -940,7 +972,7 @@ impl Renderer {
         self.held.borrow_mut().clear();
         self.words.borrow_mut().clear();
         self.curves.clear();
-        for l in scene.layers() {
+        for l in scene.text_layers() {
             let tex = CString::new(text::internal(&l.name, "_curves_tex"))?;
             if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
                 self.curves.insert(l.name.clone());
@@ -962,8 +994,13 @@ impl Renderer {
             .iter()
             .filter(|a| !a.is_font())
             .map(|a| a.name.clone())
-            .chain(scene.layers().map(|l| text::internal(&l.name, "_curves")))
+            .chain(
+                scene
+                    .text_layers()
+                    .map(|l| text::internal(&l.name, "_curves")),
+            )
             .chain(atlases)
+            .chain(drawn_files(&drawn).map(|l| text::internal(&l.name, "_file")))
             .collect();
         let stale: Vec<String> = self
             .scene_assets
@@ -1015,12 +1052,47 @@ impl Renderer {
             }
             self.scene_asset(&a.name);
         }
+        // An image layer's file goes in as an engine asset of the layer's
+        // own.
+        for l in drawn_files(&drawn) {
+            let Some(img) = &l.data else {
+                self.error = format!(
+                    "layer '{}': '{}' was never loaded, the scene was built without a directory",
+                    l.name, l.image
+                );
+                return Ok(self.error.clone());
+            };
+            let name = text::internal(&l.name, "_file");
+            let data = match &img.pixels {
+                Pixels::U8(d) => AssetData::U8(d),
+                Pixels::F32(d) => AssetData::F32(d),
+            };
+            if let Err(e) =
+                self.set_asset(&name, img.width, img.height, img.components, false, data)
+            {
+                self.error = e.to_string();
+                return Ok(self.error.clone());
+            }
+            self.scene_asset(&name);
+        }
         // A layer builds from the scene's string param of its name, through
         // set_text below, and it looks itself up in self.scene.
         self.scene = Some(scene.clone());
         for (dl, l) in self.layers.iter().zip(drawn.iter().flat_map(|p| &p.layers)) {
             for (name, ty, value) in l.uniforms() {
                 self.set_uniform(dl.pass, &name, ty, value)?;
+            }
+            let Layer::Image(l) = l else { continue };
+            let image = match l.is_file() {
+                true => text::internal(&l.name, "_file"),
+                false => l.image.clone(),
+            };
+            let shown = self.bind_image(dl.batch, &l.name, &image).and_then(|()| {
+                self.batch_quads(dl.batch, &format!("layer '{}'", l.name), &IMAGE_QUAD, 1)
+            });
+            if let Err(e) = shown {
+                self.error = e.to_string();
+                return Ok(self.error.clone());
             }
         }
         for (i, p) in drawn.iter().enumerate() {
@@ -1404,7 +1476,7 @@ impl Renderer {
     /// wait for them, and the layer draws its last words meanwhile. A render
     /// with the time pinned by set_time() waits for them, and so does a setup.
     pub fn set_text(&self, name: &str, words: &str) -> Result<bool> {
-        let Some(layer) = self.scene.as_ref().and_then(|s| s.layer(name)) else {
+        let Some(layer) = self.scene.as_ref().and_then(|s| s.text_layer(name)) else {
             return Ok(false);
         };
         if self.words.borrow().get(name).is_some_and(|w| w == words) {
@@ -1455,7 +1527,7 @@ impl Renderer {
 
     /// Draw `laid`, new words of `layer`, from now on, and log their problems.
     /// Words that did not lay out leave the last words drawn.
-    fn show(&self, layer: &Layer, laid: Layout) -> Result<()> {
+    fn show(&self, layer: &TextLayer, laid: Layout) -> Result<()> {
         let name = &layer.name;
         let Layout { built, mut faults } = laid;
         let Some(built) = built else {
@@ -1547,7 +1619,7 @@ impl Renderer {
     /// atlas, and every new one decodes into it and uploads.
     fn colour_quads(
         &self,
-        layer: &Layer,
+        layer: &TextLayer,
         glyphs: &[text::Placement],
         faults: &mut Vec<Fault>,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
@@ -1632,7 +1704,7 @@ impl Renderer {
     }
 
     /// The atlas detail of `layer`, as setup() worked it out.
-    fn detail(&self, layer: &Layer) -> Detail {
+    fn detail(&self, layer: &TextLayer) -> Detail {
         let px_em = self.px_em.get(&layer.name).copied();
         layer.detail(px_em.unwrap_or(atlas::PX_EM))
     }
@@ -1647,12 +1719,12 @@ impl Renderer {
             let (w, h) = p
                 .size
                 .unwrap_or((i64::from(self.width), i64::from(self.height)));
-            for l in &p.layers {
+            for l in p.layers.iter().filter_map(Layer::as_text) {
                 let words = scene.words(&l.name).unwrap_or(&l.text);
                 let block = l.place(words).ok().and_then(|laid| laid.built);
                 let Some(b) = block else { continue };
                 let px = l.font_px([w as f64, h as f64], b.size);
-                out.insert(l.name.clone(), Layer::atlas_px_em(px));
+                out.insert(l.name.clone(), TextLayer::atlas_px_em(px));
             }
         }
         out
@@ -1665,7 +1737,11 @@ impl Renderer {
     fn set_atlases(&self, drawn: &[Pass]) -> Result<()> {
         let mut old = std::mem::take(&mut *self.atlases.borrow_mut());
         let mut slots: Vec<AtlasSlot> = Vec::new();
-        for l in drawn.iter().flat_map(|p| &p.layers) {
+        for l in drawn
+            .iter()
+            .flat_map(|p| &p.layers)
+            .filter_map(Layer::as_text)
+        {
             let Some(fonts) = &l.data else { continue };
             if l.render != Render::Mtsdf || !l.visible || !l.has_outlines() {
                 continue;
@@ -1742,7 +1818,7 @@ impl Renderer {
             let Some(h) = self.held.borrow_mut().remove(&name) else {
                 continue;
             };
-            if let Some(layer) = self.scene.as_ref().and_then(|s| s.layer(&name)) {
+            if let Some(layer) = self.scene.as_ref().and_then(|s| s.text_layer(&name)) {
                 self.show(layer, h.laid)?;
             }
         }
@@ -1858,7 +1934,7 @@ impl Renderer {
     /// Log each new cause among the `faults` of a layout of `layer`, and hold
     /// them for text_errors(). Words that did not lay out, `drawn` false,
     /// leave the problems of the words still on screen.
-    fn text_faults(&self, layer: &Layer, faults: &[Fault], drawn: bool) {
+    fn text_faults(&self, layer: &TextLayer, faults: &[Fault], drawn: bool) {
         let name = &layer.name;
         let mut reported = self.reported.borrow_mut();
         // True the first time since the setup that a cause comes up.
@@ -1939,7 +2015,7 @@ impl Renderer {
             return Vec::new();
         };
         let mut out: Vec<String> = Vec::new();
-        for l in scene.layers() {
+        for l in scene.text_layers() {
             if let Some(e) = all.get(&l.name) {
                 for line in e.drawn.iter().chain(&e.refused) {
                     // Layers in one font share its failure.
@@ -1955,6 +2031,24 @@ impl Renderer {
     /// A count that changes whenever text_errors() does.
     pub fn text_errors_seq(&self) -> u64 {
         self.text_errors_seq.get()
+    }
+
+    /// Bind engine asset `asset` to the batch `batch` of image layer `layer`,
+    /// which samples it as its image.
+    fn bind_image(&self, batch: c_int, layer: &str, asset: &str) -> Result<()> {
+        let sampler = CString::new(text::internal(layer, "_image"))?;
+        let image = CString::new(asset)?;
+        if !unsafe { ffi::ghee_mp_bind_asset(self.handle, batch, sampler.as_ptr(), image.as_ptr()) }
+        {
+            bail!(
+                "{}",
+                or_else(
+                    self.last_error(),
+                    &format!("layer '{layer}' refused its image")
+                )
+            );
+        }
+        Ok(())
     }
 
     /// Record `name` among the engine assets uploaded for the scene.
@@ -4499,7 +4593,7 @@ mod tests {
             r.render(None).unwrap().to_vec()
         };
         assert_eq!(r.setup(&with).unwrap(), "");
-        let layer = &with.passes[0].layers[0];
+        let layer = with.passes[0].layers[0].as_text().unwrap();
         let built = layer.build("AV").unwrap().built.unwrap();
         assert_eq!((built.quads.count, built.boxes.count), (2, 0));
         let drawn = frame(&mut r);
@@ -4971,12 +5065,12 @@ mod tests {
     fn a_scene_of_slug_layers_starts_no_atlas() {
         let (_g, mut r) = gpu();
         let mut sc = mtsdf_scene("AV");
-        sc.passes[0].layers[0].render = Render::Slug;
+        sc.passes[0].layers[0].as_text_mut().unwrap().render = Render::Slug;
         assert_eq!(r.setup(&sc).unwrap(), "");
         assert!(r.atlases.borrow().is_empty());
         // A hidden layer takes no atlas either.
         let mut sc = mtsdf_scene("AV");
-        sc.passes[0].layers[0].visible = false;
+        sc.passes[0].layers[0].as_text_mut().unwrap().visible = false;
         assert_eq!(r.setup(&sc).unwrap(), "");
         assert!(r.atlases.borrow().is_empty());
     }
@@ -4985,9 +5079,9 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn layers_of_near_sizes_share_an_atlas_and_a_far_size_takes_its_own() {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
-        let near = Layer::atlas_px_em(40.0);
-        let far = Layer::atlas_px_em(100.0);
-        assert_eq!(Layer::atlas_px_em(44.0), near);
+        let near = TextLayer::atlas_px_em(40.0);
+        let far = TextLayer::atlas_px_em(100.0);
+        assert_eq!(TextLayer::atlas_px_em(44.0), near);
         assert_ne!(far, near);
         let layer = |name: &str, px: f64, visible: bool| {
             json!({"name": name, "text": "AV", "font_family": "sans", "y": 1,

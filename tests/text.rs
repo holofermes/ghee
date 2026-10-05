@@ -12,7 +12,7 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
 use ghee::engine::{probe_dri_devices, Renderer};
 use ghee::filters::apply_filters;
-use ghee::layer::{Detail, Layer};
+use ghee::layer::{Detail, Layer, TextLayer};
 use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
 use ghee::text::{self, Align};
 
@@ -576,9 +576,9 @@ fn bytes_that_are_no_font_draw_a_box_a_character() {
 
 /// A layer `label` whose font_family names the font asset `face`, before any
 /// font loads.
-fn face_layer() -> Layer {
+fn face_layer() -> TextLayer {
     let d = json!({"name": "label", "text": "", "font_family": "face"});
-    Layer::from_dict("a layer", &d).unwrap()
+    TextLayer::from_dict("a layer", &d).unwrap()
 }
 
 #[test]
@@ -600,7 +600,11 @@ fn a_layer_with_no_font_family_lays_out_in_the_built_in_dejavu_sans_latin() {
     for sc in [bare, loaded(&doc)] {
         // é and ß lie past ASCII, and AV kerns.
         let words = "Hé ßAV\nI";
-        let laid = sc.passes[0].layers[0].build(words).unwrap();
+        let laid = sc.passes[0].layers[0]
+            .as_text()
+            .unwrap()
+            .build(words)
+            .unwrap();
         assert_eq!(laid.faults, []);
         let want = lay(LATIN, words, Align::Left);
         assert!(near(
@@ -774,7 +778,9 @@ fn a_layer_declaration_names_what_it_lacks() {
         ),
         (
             one(json!({"name": "t"})),
-            "layer 't' has no 'text', the words it draws".to_string(),
+            "layer 't' has no 'text' (the words that it draws) and no 'image' (an image asset \
+             or a file)"
+                .to_string(),
         ),
         (
             t(json!({"text": 3})),
@@ -1061,7 +1067,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
             hw_linear,
         ));
     }
-    for l in &p.layers {
+    for l in p.layers.iter().filter_map(Layer::as_text) {
         let sh = l.shaders(DETAIL);
         for (v, f) in [sh.glyphs, sh.boxes, sh.colour] {
             glsl.extend([v, f]);
@@ -1156,7 +1162,7 @@ fn layers_survive_a_filter_asset_and_a_built_param() {
     let doc = layers_scene(json!([{"name": "label", "text": "I", "font_family": "sans",
                                    "text_align": "right"}]));
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-    sc.passes[0].layers[0].data = Some(alone(&font(SANS)));
+    sc.passes[0].layers[0].as_text_mut().unwrap().data = Some(alone(&font(SANS)));
     let layers = sc.passes[0].layers.clone();
     apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
     assert!(sc.assets.iter().any(|a| a.name == "frc256_bluenoise"));
@@ -1182,7 +1188,7 @@ fn with_assets_env<T>(assets: &str, f: impl FnOnce() -> T) -> T {
 }
 
 fn font_data(sc: &Scene, name: &str) -> Vec<u8> {
-    let l = sc.layer(name).unwrap();
+    let l = sc.text_layer(name).unwrap();
     l.data.clone().unwrap()[0].clone().unwrap().to_vec()
 }
 
@@ -1243,7 +1249,7 @@ fn layers_in_one_font_share_its_bytes() {
     .unwrap();
     sc.load_assets(FONTS).unwrap();
     let data = |n: &str| {
-        sc.layer(n).unwrap().data.clone().unwrap()[0]
+        sc.text_layer(n).unwrap().data.clone().unwrap()[0]
             .clone()
             .unwrap()
     };
@@ -1252,7 +1258,7 @@ fn layers_in_one_font_share_its_bytes() {
 
 /// Why the font of `sc`'s layer `label` failed to load.
 fn font_failure(sc: &Scene) -> String {
-    let l = sc.layer("label").unwrap();
+    let l = sc.text_layer("label").unwrap();
     l.data.clone().unwrap()[0].clone().err().unwrap()
 }
 
@@ -2828,7 +2834,7 @@ fn a_bypassed_effect_draws_nothing_and_leaves_the_letters_alone() {
     // A stroke within the least range draws the letters as no effect does:
     // the effects' copy of each glyph leaves the letters' edge alone. The
     // least range, 6 texels, holds a stroke of 2 texels of the layer's atlas.
-    let width = 1.5 / f64::from(Layer::atlas_px_em(fit.ppem));
+    let width = 1.5 / f64::from(TextLayer::atlas_px_em(fit.ppem));
     let plain = frame(&mut r, json!({}));
     for keys in [
         json!({"text_stroke": {"visible": false, "width": width, "color": [0.0, 1.0, 0.0]}}),
@@ -3104,23 +3110,31 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
     let mut rows = Vec::new();
     for e in effects {
         for render in ["mtsdf", "slug"] {
-            let mut keys = e.clone();
-            keys["render"] = json!(render);
+            let mut keys = json!({"name": "t", "text": "A", "render": render});
+            keys.as_object_mut()
+                .unwrap()
+                .extend(e.as_object().unwrap().clone());
             rows.push(keys);
         }
     }
+    rows.extend([
+        json!({"name": "i", "image": "pic"}),
+        json!({"name": "i", "image": "pic.png", "color": "#ff8000", "width": 8}),
+        json!({"name": "i", "image": "pic", "height": 8, "visible": false}),
+    ]);
     for keys in rows {
-        let mut d = json!({"name": "t", "text": "A"});
-        d.as_object_mut()
-            .unwrap()
-            .extend(keys.as_object().unwrap().clone());
-        let l = Layer::from_dict("a layer", &d).unwrap();
-        let sh = l.shaders(DETAIL);
-        for (what, fs) in [
-            ("glyphs", sh.glyphs.1),
-            ("colour glyphs", sh.colour.1),
-            ("error boxes", sh.boxes.1),
-        ] {
+        let programs = match Layer::from_dict("a layer", &keys).unwrap() {
+            Layer::Text(l) => {
+                let sh = l.shaders(DETAIL);
+                vec![
+                    ("glyphs", sh.glyphs.1),
+                    ("colour glyphs", sh.colour.1),
+                    ("error boxes", sh.boxes.1),
+                ]
+            }
+            Layer::Image(l) => vec![("image", l.shaders().1)],
+        };
+        for (what, fs) in programs {
             let main = own_main(&fs);
             let reads: Vec<usize> = (0..main.len())
                 .filter(|i| main[*i].contains("texture2D("))

@@ -349,10 +349,14 @@
   .shtog{margin-top:14px}
   .fx{display:flex; flex-direction:column; gap:4px; align-items:flex-start; border-top:1px solid var(--line); padding-top:10px}
   .fx>.addwrap{margin-bottom:4px}
-  /* an effect: its name, its fields, and its eye and remove button at the row's end */
-  .fxrow{align-self:stretch; display:flex; align-items:center; gap:6px; min-height:32px}
-  .fstrip{flex:1 1 auto; gap:14px}
+  /* an effect: its name, its fields, and its eye and remove button at the row's end.
+     The fields wrap beside the name, and on a phone the row scrolls instead */
+  .fxrow{align-self:stretch; display:flex; align-items:flex-start; gap:6px}
+  .fstrip{flex:1 1 auto; align-items:baseline; gap:14px}
   .fstrip>.fxname{width:104px}
+  .fstrip>.fxf{flex:1 1 0; min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:4px 14px}
+  .fxf>*{flex:none}
+  .fxf>.sub, .fxacts{min-height:32px}
   .fxacts{display:inline-flex; align-items:center; gap:2px}
   @container (max-width:520px){
     .kvs>.kv>.k{width:80px}
@@ -393,7 +397,7 @@
     .lname{font-size:14px}
     .lbody{padding-left:4px}
     .disc{min-height:40px; font-size:14px}
-    .fxrow{min-height:44px}
+    .fxf>.sub, .fxacts{min-height:44px}
     .fxname, .kv>.k, .kv>.v>.k2{font-size:14px}
     .grow>pre, .grow>textarea{font-size:15px; padding:9px 10px}
     .kv .grow>pre{max-height:calc(8 * 1.4em + 20px)}
@@ -419,6 +423,7 @@
     /* dissolve the column so the sticky stage sticks against the whole page */
     .leftcol{display:contents}
     .colgrip{display:none}
+    .fstrip>.fxf{display:contents}
     .leftcol>.panel + .panel{margin-top:18px}
     .shadercard{display:block; margin-top:18px; overflow:visible}
     .shadercard .editor{flex:none}
@@ -1452,15 +1457,15 @@ async function renameLayer(p, d){
 const slugLocked = (d, f) => d.render === "slug" && NEEDS_MTSDF.includes(f);
 function fxRow(p, d, f, redo){
   const o = d[f], own = o.visible === false, locked = slugLocked(d, f), off = own || locked;
-  const row = el("div", "fxrow" + (off ? " off" : "")), v = strip("fstrip");
-  v.appendChild(el("span", "fxname", f));
+  const row = el("div", "fxrow" + (off ? " off" : "")), v = strip("fstrip"), fields = el("span", "fxf");
+  v.append(el("span", "fxname", f), fields);
   FX[f].forEach(fd => {
     const set = x => {
       if (x == null) delete o[fd.key]; else o[fd.key] = x;
       edited(p);
       if (fd.live) setLive(d, fd.key, String(x == null ? fd.def : x), f); else postScene();
     };
-    v.appendChild(sub(fd.key, fd.key === "color"
+    fields.appendChild(sub(fd.key, fd.key === "color"
       ? colorCtl(() => o.color == null ? fd.def : o.color, set, fd.def)
       : num(o[fd.key] == null ? fd.def : o[fd.key], "", set, fd.live)));
   });

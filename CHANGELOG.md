@@ -46,6 +46,10 @@
   1, in the scene, in `/set` and in `set_param`. A scene process sends a
   color as three floats in message kind 1, and the Python shim turns a
   `"#rrggbb"` into them.
+- Render an output pass that sets a `size` at the screen size, with one
+  warning at load, where ghee refused the scene. Its size applies again once
+  a filter or a pass follows it, and a pass that hidden passes leave last
+  renders at the screen size.
 - Keep a color param in the form that it came in, `"#rrggbb"` or
   `[r, g, b]`, through `GET /scene`, `/set`, a save and a procedural scene's
   values sidecar. The console sends the colour picked in its swatch as

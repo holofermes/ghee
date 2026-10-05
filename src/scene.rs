@@ -1349,7 +1349,8 @@ pub struct Pass {
     pub filter: String,
     /// The [w, h] of this pass's render. None is the renderer's size. A
     /// consumer samples a sized pass through normalized UVs, so it ignores
-    /// the size. The output pass leaves this None.
+    /// the size. The output pass renders at the renderer's size whatever
+    /// this holds.
     pub size: Option<(i64, i64)>,
     /// The pass's buffer holds a mip chain, built after the pass renders each
     /// frame, and every channel that reads it samples trilinearly.
@@ -2450,7 +2451,7 @@ pub trait PassBuilder {
     fn channel<'a, B: Into<Option<&'a str>>>(self, buffer: B) -> Result<Pass>;
 
     /// Render this pass at [width, height] instead of the renderer's size. The
-    /// output pass has no size of its own.
+    /// output pass renders at the renderer's size whatever this sets.
     fn size(self, width: i64, height: i64) -> Result<Pass>;
 }
 

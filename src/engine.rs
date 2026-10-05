@@ -711,20 +711,24 @@ impl Renderer {
         }
         // The engine draws the hidden passes as copies, and the passes after
         // the last visible one not at all.
-        let drawn = scene.drawn_passes();
+        let mut drawn = scene.drawn_passes();
         // The output pass renders at the renderer size. Its buffer feeds the
-        // readback, the display and the encoder.
-        // The check reads the resolved pass list, so a filter pass appended
-        // after a sized pass keeps the scene valid.
-        let last = &drawn[drawn.len() - 1];
-        if last.size.is_some() {
-            self.error = format!(
-                "output pass '{}' must not set a size; it renders at the renderer \
-                 size ({}x{})",
-                last.name, self.width, self.height
-            );
-            return Ok(self.error.clone());
+        // readback, the display and the encoder. The check reads the drawn
+        // passes, so a filter pass appended after a sized pass keeps its
+        // size, and a sized pass that hidden passes leave last loses it.
+        let n = drawn.len();
+        if let Some((w, h)) = drawn[n - 1].size {
+            crate::report::warn(format!(
+                "output pass '{}' sets a size ({w}x{h}) and renders at the screen size \
+                 ({}x{}); to keep its size, add a filter or a pass after it that reads it \
+                 through a channel",
+                drawn[n - 1].name,
+                self.width,
+                self.height
+            ));
+            drawn.to_mut()[n - 1].size = None;
         }
+        let last = &drawn[n - 1];
         let npot = self.mipmaps_npot();
         for p in drawn.iter().filter(|p| p.mipmaps) {
             let (w, h) = p
@@ -2581,11 +2585,6 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn setup_rejects_a_scene_in_a_fixed_order() {
         let (_g, mut r) = gpu();
-        let sized = json!([{"name": "a", "code": FLAT, "size": [8, 8]}]);
-        assert_eq!(
-            r.setup(&scene_of(sized)).unwrap(),
-            "output pass 'a' must not set a size; it renders at the renderer size (64x48)"
-        );
         let clash = json!([
             {"name": "a", "code": FLAT, "arrays": [{"name": "v", "size": 4}]},
             {"name": "b", "code": FLAT, "arrays": [{"name": "v", "size": [2, 2]}]},
@@ -2594,22 +2593,41 @@ mod tests {
             r.setup(&scene_of(clash)).unwrap(),
             "array 'v' declared at conflicting sizes (4 and (2, 2))"
         );
-        // The size clash outranks the sized output pass below it.
+        // The size clash outranks the bad channel below it.
         let both = json!([
             {"name": "a", "code": FLAT, "arrays": [{"name": "v", "size": 4}]},
-            {"name": "b", "code": FLAT, "size": [8, 8],
+            {"name": "b", "code": FLAT, "channels": [{"buffer": "typo"}],
              "arrays": [{"name": "v", "size": [2, 2]}]},
         ]);
         assert!(r.setup(&scene_of(both)).unwrap().starts_with("array 'v'"));
-        // The sized output pass outranks the bad channel below it.
-        let sized_and_bad = json!([
-            {"name": "a", "code": FLAT},
-            {"name": "b", "code": FLAT, "size": [8, 8], "channels": [{"buffer": "typo"}]},
-        ]);
-        assert!(r
-            .setup(&scene_of(sized_and_bad))
-            .unwrap()
-            .starts_with("output pass 'b'"));
+    }
+
+    /// Pass `a` is 8x8 and paints red right of x = 4. Read at x = 16, it is
+    /// black when `a` keeps its size and a later pass stretches it over the
+    /// frame, and red when `a` renders at the screen size.
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_sized_output_pass_renders_at_the_screen_size_and_keeps_its_size_under_a_later_pass() {
+        let (_g, mut r) = gpu();
+        let a = json!({"name": "a", "size": [8, 8], "code":
+            "void main(){ gl_FragColor = vec4(gl_FragCoord.x > 4.0 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"});
+        let through = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+        let b = |visible: bool| {
+            json!({"name": "b", "code": through, "channels": [{"buffer": "a"}],
+                   "visible": visible})
+        };
+        for (passes, red) in [
+            (json!([a]), 255.0),
+            (json!([a, b(true)]), 0.0),
+            (json!([a, b(false)]), 255.0),
+        ] {
+            assert_eq!(r.setup(&scene_of(passes.clone())).unwrap(), "", "{passes}");
+            r.set_time(Some(0.0));
+            let f = r.render(None).unwrap().to_vec();
+            assert_eq!(px(&f, W, 16, H / 2, 0), red, "{passes}");
+            assert_eq!(px(&f, W, 2, H / 2, 0), 0.0, "{passes}");
+            assert_eq!(px(&f, W, W - 1, H / 2, 0), 255.0, "{passes}");
+        }
     }
 
     #[test]

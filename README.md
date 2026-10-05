@@ -189,7 +189,7 @@ a fragment shader that draws into its own buffer. A pass reads another pass
 through a numbered channel sampler. A channel that reads an earlier pass sees
 that pass's buffer from this frame. A channel that reads the pass itself, or a
 later pass, sees the buffer from the previous frame. ghee sends the last pass
-to the output.
+to the output, at the output's size.
 
 Each pass renders at its own resolution, and it samples other passes in
 normalized coordinates. A pass with `"mipmaps": true` builds the mip chain of

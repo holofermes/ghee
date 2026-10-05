@@ -74,3 +74,27 @@ fn a_compile_error_prints_once_naming_the_pass_and_the_authors_line() {
         .unwrap_or_else(|| panic!("{err}"));
     assert!(!log.contains("compile error"), "{err}");
 }
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_sized_output_pass_says_once_that_it_renders_at_the_screen_size_and_quiet_says_nothing() {
+    let dir = Dir::new("sized");
+    let scene = r#"{"passes": [{"name": "main", "size": [1024, 256],
+        "code": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
+    let out = render(&dir.0, scene, &["--size", "256x64"]);
+    assert!(out.status.success(), "{out:?}");
+    let err = String::from_utf8(out.stderr).unwrap();
+    let said: Vec<&str> = err.lines().filter(|l| l.contains("output pass")).collect();
+    assert_eq!(
+        said,
+        [
+            "  careful  output pass 'main' sets a size (1024x256) and renders at the screen size \
+          (256x64); to keep its size, add a filter or a pass after it that reads it through a \
+          channel"
+        ],
+        "{err}"
+    );
+    let out = render(&dir.0, scene, &["--size", "256x64", "-q"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8(out.stderr).unwrap(), "");
+}

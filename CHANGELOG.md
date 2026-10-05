@@ -37,12 +37,21 @@
   loaded and ignored it, and name the key, where it sits, and the closest key
   that ghee takes, or the object that takes it: `"fill"` on a layer names the
   layer's text.
+- Take as the name of a pass, a param, an array or an asset ASCII letters,
+  digits and `_`, with a letter first and a letter or a digit last, where a
+  pass took any name, and refuse a name that holds `__` or starts with
+  `gl_`, which GLSL reserves, or starts with `ghee`, which ghee keeps for the
+  names that it writes into a shader. The passes, the assets and the scene
+  params share one set of names, and a pass's params and arrays take names
+  unique in the pass and outside that set, so two passes may each declare a
+  param `gain`. A filter's pass takes a name that nothing in the scene
+  holds, as `dither1` beside a pass `dither`.
 - Refuse `time`, `DT`, `frame`, `resolution`, `v_texCoord` and `iChannel0` and
-  up as the name of a param, an array, an asset or a text. Refuse any name
-  that starts with `ghee_`, which ghee keeps for the names that it writes into
-  a shader, or with `glyph_`, which ghee keeps for the names that layers read.
-  Refuse a scene where two declarations make one GLSL name in a pass, such as
-  a param `title_size` beside a text `title`, and name both.
+  up as the name of a param, an array, an asset or a text, a name that starts
+  with `glyph_`, which ghee keeps for the names that layers read, and a text
+  name that starts with `ghee_`. Refuse a scene where two declarations make
+  one GLSL name in a pass, such as a param `title_size` beside a text
+  `title`, and name both.
 - Take 16 passes, filter passes included, where the engine took 8, and refuse
   a scene past them with an error of its own. Take any number of assets,
   texts and layers, a channel or an array in each of a pass's 16 texture

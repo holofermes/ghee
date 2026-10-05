@@ -140,7 +140,7 @@ pub fn apply_filters(
         let Some(fname) = fd.get("name").and_then(Value::as_str) else {
             bail!("filter '{name}': needs a string 'name' and 'code'");
         };
-        let own = unique(scene, fname);
+        let own = unique(scene, fname, fd);
         let prev = scene.passes[scene.passes.len() - 1].name.clone();
         let p = filter_pass(name, fd, &own, &prev, None)?;
         scene.passes.push(p);
@@ -369,8 +369,13 @@ fn decode_once(
     Ok(())
 }
 
-fn unique(scene: &Scene, base: &str) -> String {
-    let taken: Vec<&str> = scene.passes.iter().map(|p| p.name.as_str()).collect();
+/// `base`, or `base` numbered from 1, so that the pass of filter `fd` takes
+/// a name that neither the scene nor the filter's own params hold.
+fn unique(scene: &Scene, base: &str, fd: &Value) -> String {
+    let mut taken = scene.taken_names();
+    if let Some(Value::Object(params)) = fd.get("params") {
+        taken.extend(params.keys().map(String::as_str));
+    }
     let mut name = base.to_string();
     let mut k = 1;
     while taken.contains(&name.as_str()) {
@@ -765,12 +770,28 @@ mod tests {
     }
 
     #[test]
-    fn filter_pass_never_collides_with_a_scene_pass() {
+    fn a_filter_pass_takes_a_name_that_no_declaration_of_the_scene_holds() {
         let _g = env_guard();
-        let mut sc = Scene::of(vec![Pass::of("dither", GOOD).unwrap()]).unwrap();
-        apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
-        assert_eq!(names(&sc), ["dither", "dither1"]);
-        Scene::of(sc.passes.clone()).unwrap();
+        let f = json!({"type": "float", "value": 1.0});
+        for doc in [
+            json!({"passes": [{"name": "dither", "code": GOOD}]}),
+            json!({"passes": [{"name": "main", "code": GOOD}],
+                   "assets": {"dither": {"file": "d.png"}}}),
+            json!({"passes": [{"name": "main", "code": GOOD}], "params": {"dither": f}}),
+            json!({"passes": [{"name": "main", "code": GOOD, "params": {"dither": f}}]}),
+            json!({"passes": [{"name": "main", "code": GOOD,
+                               "arrays": [{"name": "dither", "size": 4}]}]}),
+        ] {
+            let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+            apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
+            assert_eq!(names(&sc)[1], "dither1", "{doc}");
+        }
+        // A filter's pass takes no name of the filter's own params.
+        let reg = json!({"amount": {"name": "amount", "code": GOOD,
+                                    "params": {"amount": f}}});
+        let mut sc = Scene::of(vec![Pass::of("main", GOOD).unwrap()]).unwrap();
+        apply_filters(&mut sc, &["amount".to_string()], reg.as_object()).unwrap();
+        assert_eq!(names(&sc), ["main", "amount1"]);
     }
 
     #[test]

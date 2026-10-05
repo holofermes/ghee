@@ -150,7 +150,7 @@ fn a_scene_param_cannot_shadow_a_pass_param() {
         .unwrap_err();
     assert_eq!(
         e.to_string(),
-        "scene param 'gain' and param 'gain' in pass 'main' both declare 'gain'"
+        "scene param 'gain' and param 'gain' in pass 'main' share a name"
     );
 }
 

@@ -938,8 +938,8 @@ fn a_name_declared_by_a_text_collides_with_nothing() {
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_name_beside_the_names_of_a_text_compiles() {
     // ghee's own names for a text start with ghee_, so label_w, label_atlas,
-    // label_tex and label_emoji are free, and two texts never meet in them.
-    // A pass name never reaches GLSL.
+    // label_tex, label_curves and label_emoji are free, and two texts never
+    // meet in them. A pass name never reaches GLSL.
     let float = json!({"type": "float", "value": 1.0});
     let mut doc = texts_scene(json!({
         "label": {"font": ["sans", "emoji"]},
@@ -960,7 +960,7 @@ fn a_name_beside_the_names_of_a_text_compiles() {
          "vertex": "vec2 glyph_place(vec2 em) { return vec2(0.0, 40.0) + em * 24.0; }"},
     ]);
     let mut image = doc.clone();
-    image["assets"]["label_tex"] = json!({"file": "label.png"});
+    image["assets"]["label_curves"] = json!({"file": "label.png"});
     assert!(Scene::from_dict(&image, None, None).is_ok());
     let (_g, mut r) = gpu(W, H);
     assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
@@ -2813,7 +2813,7 @@ fn a_param_takes_a_name_of_ghees_glsl_without_its_prefix() {
     // or without one.
     for (name, why) in [
         ("glyph_index", "reserved for layers"),
-        ("ghee_a1", "belongs to ghee"),
+        ("ghee_a1", "which ghee reserves"),
     ] {
         for doc in [
             layer_scene(SANS, "ghee", Align::Left, fit),

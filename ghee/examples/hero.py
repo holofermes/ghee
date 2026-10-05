@@ -304,7 +304,7 @@ void main() {
     float v = (uv.y - text_y + text_height * 0.5) / text_height;
     float u = fract(uv.x * aspect / (text_height * TEXT_ASPECT) - time * text_speed);
     float glow = texture2D(iChannel0, uv).r;
-    float m = text_sample2(vec2(u, v)) * step(0.0, v) * step(v, 1.0);
+    float m = canvas_sample2(vec2(u, v)) * step(0.0, v) * step(v, 1.0);
     m = smoothstep(0.35, 0.55, m);
 
     float wet = step(waterline(uv.x), uv.y);
@@ -435,7 +435,7 @@ def build(a):
             ghee.Pass(
                 name="main",
                 code=SHADER_MAIN,
-                arrays=[ghee.ArrayInput("text", CANVAS)],
+                arrays=[ghee.ArrayInput("canvas", CANVAS)],
                 channels=[ghee.Channel(buffer="glow")],
                 params={
                     "text": ghee.Param("text", "string", "GHEE"),
@@ -478,8 +478,8 @@ def start(tick):
             ghee.set_param(name, value, pass_="dither")
 
 
-@ghee.feed("text")
-def text(tick):
+@ghee.feed("canvas")
+def canvas(tick):
     """The word holds in the engine texture.
 
     This feed sends the word once, and again on each change of the text param.

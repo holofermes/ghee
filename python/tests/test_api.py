@@ -425,15 +425,19 @@ HALF = {
 }
 
 
+def reads_back(px, want):
+    """Each component of `px` is its value in `want` times 255, rounded either
+    way."""
+    return len(px) == len(want) and all(abs(p - v * 255) < 1 for p, v in zip(px, want))
+
+
 def test_a_frame_is_opaque_unless_open_keeps_the_alpha():
     with ghee.open(HALF, width=8, height=8) as h:
         h.frame()
-        assert pixel(h) == (64, 128, 0, 255)
+        assert reads_back(pixel(h), (0.25, 0.5, 0.0, 1.0))
     with ghee.open(HALF, width=8, height=8, alpha=True) as h:
         h.frame()
-        r, g, b, a = pixel(h)
-        assert (r, g, b) == (64, 128, 0)
-        assert abs(a - 128) <= 1
+        assert reads_back(pixel(h), (0.25, 0.5, 0.0, 0.5))
 
 
 def test_a_layer_draws_its_words_in_its_color(monkeypatch):

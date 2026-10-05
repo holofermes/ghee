@@ -3504,7 +3504,10 @@ mod tests {
             r3.set_time(Some(0.0));
             rgb.push(r3.render(None).unwrap().to_vec());
         }
-        assert_eq!(rgb[0][..3], [64, 128, 0]);
+        // A GL reads a value v back as v * 255, rounded either way.
+        for (got, v) in rgb[0][..3].iter().zip([0.25, 0.5, 0.0]) {
+            assert!((f64::from(*got) - v * 255.0).abs() < 1.0, "{:?}", &rgb[0]);
+        }
         assert_eq!(rgb[0], rgb[1]);
     }
 

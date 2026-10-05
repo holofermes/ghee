@@ -3,23 +3,37 @@
 # requires-python = ">=3.9"
 # dependencies = ["ghee-render"]
 # ///
-"""Now playing on a small panel: the artist on top, the title below it.
+"""Now playing on a small panel: the artist on top, the title scrolling below.
 
-The text layer `now` holds both lines and fits them to the pass, so the same
-scene fills a 128x32 SSD1306 and a 256x64 SSD1322.
+The artist takes the top ARTIST of the panel and the title the rest, so the
+same scene fills a 128x32 SSD1306 and a 256x64 SSD1322. The pass `top` is as
+wide as the panel and as tall as the artist's share, and its text layer
+`artist` fits the words to it, so a long name shrinks to the panel's width.
+The pass `main` copies `top` into its top rows. Its text layer `title` fits
+the rows below them, and the scroll effect moves it right to left by whole
+pixels, so on a 1-bit panel its letters keep their pixels.
 
 The tick hook stands in for a music player. It steps through PLAYLIST and
-sets the words of `now`, and ghee lays them out again with no recompile. Put
-a player's own track change in now_playing().
+sets the words of both layers through `ghee.layers`, and ghee lays them out
+again with no recompile. Put a player's own track change in now_playing().
 
-    ./nowplaying.py --display ssd1306        # the 128x32 I2C OLED
-    ./nowplaying.py --display kms            # a panel with a kernel driver
+    ghee render --demo nowplaying --display ssd1306    # the 128x32 I2C OLED
+    ghee render --demo nowplaying --display kms        # a panel with a kernel driver
     ./nowplaying.py -o np.####.png --size 256x64 --frames 300 --timestep 0.05
 """
 
 import ghee
 
-ghee.args()  # the probe, this scene takes no arguments
+args = ghee.args(
+    [
+        ghee.Arg(
+            "panel",
+            "size",
+            default="full",
+            help="the size that the artist and the title share",
+        )
+    ]
+)
 
 PLAYLIST = [
     ("Zoë Quartet", "Slow Rivers"),
@@ -27,6 +41,23 @@ PLAYLIST = [
     ("Mira & the Late Hours", "Café at Six"),
 ]
 TRACK_SECONDS = 12.0  # how long each entry of PLAYLIST plays
+ARTIST = 0.4  # the artist's share of the panel height, from the top
+
+# A 1-bit panel lights a pixel above half grey, and a stroke thinner than a
+# pixel, such as the bar of a small e, can fall under it. A white text_stroke
+# grows the letters by a hundredth of an em to keep such strokes.
+INK = {"width": 0.01, "color": "#ffffff"}
+
+# The pass `top` fills the first ROWS rows of the frame, pixel for pixel.
+MAIN = """
+void main() {
+    // VC4 interpolates v_texCoord up to 0.04 px off the pixel centre.
+    vec2 px = floor(v_texCoord * resolution) + 0.5;
+    vec4 c = vec4(0.0);
+    if (px.y < ROWS) c = texture2D(iChannel0, vec2(px.x / resolution.x, px.y / ROWS));
+    gl_FragColor = vec4(c.rgb, 1.0);
+}
+"""
 
 _now = {"track": -1}
 
@@ -43,14 +74,28 @@ def track(tick):
     if playing == _now["track"]:
         return
     _now["track"] = playing
-    ghee.set_param("now", "\n".join(playing))
+    artist, title = playing
+    ghee.layers.artist.text = artist
+    ghee.layers.title.text = title
 
 
 def build():
-    words = "\n".join(PLAYLIST[0])
+    width, height = args.panel
+    rows = round(ARTIST * height)
+    artist, title = PLAYLIST[0]
     return ghee.Scene(
         passes=[
-            ghee.Pass("main", layers=[ghee.Layer("now", words, text_align="center")])
+            ghee.Pass(
+                "top",
+                size=(width, rows),
+                layers=[ghee.Layer("artist", artist, text_stroke=INK)],
+            ),
+            ghee.Pass(
+                "main",
+                f"const float ROWS = {rows:.1f};\n{MAIN}",
+                channels=[ghee.Channel("top")],
+                layers=[ghee.Layer("title", title, y=rows, scroll={}, text_stroke=INK)],
+            ),
         ],
     )
 

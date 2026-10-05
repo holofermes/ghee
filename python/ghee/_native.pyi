@@ -6,7 +6,7 @@ from typing import Any, Literal, SupportsFloat, TypeAlias, TypedDict
 
 from typing_extensions import Buffer, Self
 
-from ._shim import Scene
+from ._shim import Layers, Scene
 
 __version__: str
 
@@ -27,6 +27,8 @@ class Handle:
     def size(self) -> tuple[int, int]: ...
     @property
     def components(self) -> Literal[3, 4]: ...
+    @property
+    def layers(self) -> Layers: ...
     def set_param(
         self,
         name: str,

@@ -493,3 +493,42 @@ def test_a_layer_field_reaches_the_engine_live():
         assert max(h.pixels()[0::4]) == 0 and max(h.pixels()[1::4]) == 255
         with pytest.raises(ValueError, match="font_size changes with a rebuild"):
             h.set_layer("t", "font_size", 12)
+
+
+def test_a_handle_sets_a_layer_field_by_attribute_or_by_key():
+    # The built-in font draws the layer's words, red over black, with an
+    # orange glow.
+    words = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "layers": [
+                    {
+                        "name": "t",
+                        "text": "I",
+                        "font_size": 24,
+                        "color": "#ff0000",
+                        "glow": {},
+                    }
+                ],
+            }
+        ],
+    }
+
+    def peaks(h):
+        h.frame()
+        px = h.pixels()
+        return [max(px[c::4]) for c in range(3)]
+
+    with ghee.open(words, width=32, height=32, timestep=0) as h:
+        h.layers.t.color = "#00ff00"
+        h.layers["t"]["glow"]["visible"] = False
+        assert peaks(h) == [0, 255, 0]
+        h.layers["t"]["color"] = "#0000ff"
+        h.layers.t.glow.visible = True
+        red, _, blue = peaks(h)
+        assert red > 0 and blue == 255
+        h.layers.t.text = ""
+        assert peaks(h) == [0, 0, 0]

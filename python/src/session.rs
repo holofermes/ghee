@@ -112,8 +112,8 @@ pub struct ParamRef {
     pub ty: String,
 }
 
-/// What the scene declares. A host feeds the arrays and sets the params, and a
-/// console addresses the passes by index.
+/// What the scene declares. A host feeds the arrays, sets the params and the
+/// live fields of the layers, and a console addresses the passes by index.
 ///
 /// A param answers to `pass.name` and to `name`. A bare name is the scene
 /// param, else the param of the first pass that declares it. This is the
@@ -122,6 +122,8 @@ pub struct Index {
     pub arrays: Vec<(String, ArraySize)>,
     pub params: Vec<ParamRef>,
     pub passes: Vec<String>,
+    /// Each layer's name, and true for a text layer.
+    pub layers: Vec<(String, bool)>,
 }
 
 impl Index {
@@ -167,6 +169,23 @@ impl Index {
             arrays,
             params,
             passes: scene.passes.iter().map(|p| p.name.clone()).collect(),
+            layers: scene
+                .layers()
+                .map(|l| (l.name().to_string(), l.as_text().is_some()))
+                .collect(),
+        }
+    }
+
+    /// True when a host's live set of `field` on layer `layer` sets the words
+    /// of a text layer, which its string param holds. A layer that the scene
+    /// lacks is a fault of the caller's.
+    pub fn words(&self, layer: &str, effect: Option<&str>, field: &str) -> Outcome<bool> {
+        match self.layers.iter().find(|(n, _)| n == layer) {
+            Some((_, text)) => Ok(*text && effect.is_none() && field == "text"),
+            None => Err(Fault::scene(format!(
+                "layer '{layer}' is not a layer this scene declares ({})",
+                names(self.layers.iter().map(|(n, _)| n.as_str()))
+            ))),
         }
     }
 
@@ -815,8 +834,9 @@ impl Session {
     }
 
     /// Set the live field `field` of layer `layer`, or of its effect
-    /// `effect`, with no rebuild. A layer, a field or a value that the scene
-    /// refuses is a fault of the caller's.
+    /// `effect`, with no rebuild. The field `text` of a text layer sets its
+    /// words through its string param. A layer, a field or a value that the
+    /// scene refuses is a fault of the caller's.
     pub fn set_layer(
         &mut self,
         layer: &str,
@@ -824,6 +844,9 @@ impl Session {
         field: &str,
         value: &Value,
     ) -> Outcome<()> {
+        if self.index.words(layer, effect, field)? {
+            return self.set_param(None, layer, value);
+        }
         let at = Address {
             layer,
             effect,

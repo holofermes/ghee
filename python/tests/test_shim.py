@@ -878,7 +878,7 @@ def test_the_stubs_name_what_the_native_module_takes():
     methods = {f.name: f for f in handle.body if isinstance(f, ast.FunctionDef)}
     public = {n for n in dir(native.Handle) if not n.startswith("_")}
     assert {n for n in methods if not n.startswith("_")} == public
-    for name in public - {"size", "components"}:
+    for name in public - {"size", "components", "layers"}:
         assert params(methods[name]) == runtime(getattr(native.Handle, name)), name
 
 

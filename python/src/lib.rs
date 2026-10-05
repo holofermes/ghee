@@ -284,11 +284,16 @@ impl Handle {
     }
 
     /// Set a live field of the layer `name`, or of its effect `effect`, with
-    /// no rebuild: `x`, `y`, `color`, `opacity` and `visible`, an image
-    /// layer's `image`, and an effect's `visible`, `color`, `strength`,
-    /// `sung`, `speed` and `rate`. `value` takes the form that the scene
-    /// format gives the field, and None takes `x`, `y` or `color` back to its
-    /// default. A field that changes with a rebuild raises ValueError.
+    /// no rebuild: `x`, `y`, `color`, `opacity` and `visible`, a text
+    /// layer's `text`, the words, an image layer's `image`, the name of an
+    /// image asset of the scene, and an effect's `visible`, `color`,
+    /// `strength`, `sung`, `speed` and `rate`. `value` takes the form that
+    /// the scene format gives the field, and None takes `x`, `y` or `color`
+    /// back to its default.
+    ///
+    /// Raises ValueError for a layer, an effect or a field that the scene
+    /// lacks, for a field that changes with a rebuild, and for a value that
+    /// the field does not take.
     #[pyo3(signature = (name, field, value, effect=None))]
     fn set_layer(
         &mut self,
@@ -302,6 +307,17 @@ impl Handle {
             .get()?
             .set_layer(name, effect, field, &value)
             .map_err(fault)
+    }
+
+    /// The scene's layers, to set their live fields as set_layer() does, by
+    /// attribute or by key: `h.layers.title.x = 10`,
+    /// `h.layers["title"]["karaoke"]["sung"] = 12`.
+    #[getter]
+    fn layers<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        slf.py()
+            .import("ghee._shim")?
+            .getattr("Layers")?
+            .call1((slf.getattr("set_layer")?,))
     }
 
     /// The string params that changed since the last call, by name, with

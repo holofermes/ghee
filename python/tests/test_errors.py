@@ -69,6 +69,16 @@ def test_a_param_the_scene_does_not_declare():
             h.set_param("gain", 1.0, pass_="nosuchpass")
 
 
+def test_a_layer_the_scene_does_not_declare():
+    scene = {
+        "version": 1,
+        "passes": [{"name": "main", "layers": [{"name": "t", "text": "I"}]}],
+    }
+    with ghee.open(scene, width=8, height=8) as h, pytest.raises(ValueError) as raised:
+        h.layers.nope.x = 1
+    assert str(raised.value) == "layer 'nope' is not a layer this scene declares (t)"
+
+
 def test_a_font_that_is_nowhere_draws_error_boxes(tmp_path, monkeypatch, capfd):
     monkeypatch.chdir(tmp_path)
     doc = {

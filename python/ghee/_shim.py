@@ -378,6 +378,84 @@ class Scene:
         return out
 
 
+# --------------------------------------------------------------- live layers
+
+
+class Layers:
+    """The live fields of a scene's layers, set by attribute or by key.
+
+        layers.title.x = 10
+        layers.title.text = "hi"                 # the words
+        layers.title.karaoke.sung = 12
+        layers["title"]["karaoke"]["sung"] = 12
+        layers.icon.image = "wifi_off"           # an image asset of the scene
+
+    The fields are the live fields that Handle.set_layer takes, and each set
+    reaches the scene as set_layer's does.
+    """
+
+    __slots__ = ("_set",)
+
+    def __init__(self, set_layer) -> None:
+        object.__setattr__(self, "_set", set_layer)
+
+    def __getattr__(self, name: str) -> _LiveLayer:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return _LiveLayer(self._set, name)
+
+    def __getitem__(self, name: str) -> _LiveLayer:
+        return _LiveLayer(self._set, name)
+
+
+class _LiveLayer:
+    """One layer of Layers: a set of a field sets it, and an effect's name
+    gives the fields of that effect."""
+
+    __slots__ = ("_name", "_set")
+
+    def __init__(self, set_layer, name: str) -> None:
+        object.__setattr__(self, "_set", set_layer)
+        object.__setattr__(self, "_name", name)
+
+    def __getattr__(self, effect: str) -> _LiveEffect:
+        if effect.startswith("_"):
+            raise AttributeError(effect)
+        return _LiveEffect(self._set, self._name, effect)
+
+    def __getitem__(self, effect: str) -> _LiveEffect:
+        return _LiveEffect(self._set, self._name, effect)
+
+    def __setattr__(self, field: str, value: Any) -> None:
+        self._set(self._name, field, value)
+
+    def __setitem__(self, field: str, value: Any) -> None:
+        self._set(self._name, field, value)
+
+    def __repr__(self) -> str:
+        return f"<layer '{self._name}'>"
+
+
+class _LiveEffect:
+    """One effect of a layer of Layers: a set of a field sets it."""
+
+    __slots__ = ("_layer", "_name", "_set")
+
+    def __init__(self, set_layer, layer: str, name: str) -> None:
+        object.__setattr__(self, "_set", set_layer)
+        object.__setattr__(self, "_layer", layer)
+        object.__setattr__(self, "_name", name)
+
+    def __setattr__(self, field: str, value: Any) -> None:
+        self._set(self._layer, field, value, self._name)
+
+    def __setitem__(self, field: str, value: Any) -> None:
+        self._set(self._layer, field, value, self._name)
+
+    def __repr__(self) -> str:
+        return f"<layer '{self._layer}' {self._name}>"
+
+
 # ---------------------------------------------------------------------- args
 
 

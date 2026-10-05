@@ -100,9 +100,14 @@ def test_the_console_lists_a_text_problem_apart_from_the_error(tmp_path):
     port = free_port()
     doc = {
         "version": 1,
-        "texts": {"words": {"value": "hi", "font": "Missing.ttf"}},
         "passes": [
-            {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}
+            {
+                "name": "main",
+                "code": "void main(){ gl_FragColor = vec4(1.0); }",
+                "layers": [
+                    {"name": "words", "text": "hi", "font_family": "Missing.ttf"}
+                ],
+            }
         ],
     }
     with ghee.open(doc, width=16, height=16, stats=port, base_dir=tmp_path) as h:
@@ -110,7 +115,7 @@ def test_the_console_lists_a_text_problem_apart_from_the_error(tmp_path):
         stats = json_of(port, "/stats")
     assert stats["error"] == ""
     assert [e.split(" (")[0] for e in stats["text_errors"]] == [
-        "text 'words' font 'Missing.ttf'"
+        "layer 'words' font_family 'Missing.ttf'"
     ]
 
 
@@ -154,10 +159,6 @@ def test_the_console_serves_the_scene_it_renders(served):
     assert "dither" in json_of(port, "/filters")
 
 
-INK = "void main(){ gl_FragColor = vec4(glyph_cover()); }"
-PLACE = "vec2 glyph_place(vec2 em) { return em * 24.0; }"
-
-
 def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
     """The renderer reads the shim's scene, which it would refuse for a key
     that it does not take, and writes it back the same: every key under its
@@ -170,11 +171,6 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
             "mood": ghee.Param("mood", "string", "calm", options=["calm", "wild"]),
         },
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=[
-            ghee.Text("words", "sans", "hi", align="right", atlas={"font_size": 24}),
-            ghee.Text("title", "fonts/DejaVuSans-Latin.ttf", "ho", fill="slug"),
-            ghee.Text("plain", value="ok"),
-        ],
         passes=[
             ghee.Pass(
                 "ink",
@@ -184,22 +180,32 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
                 layers=[
                     ghee.Layer(
                         "words",
-                        INK,
-                        PLACE,
+                        "hi",
+                        x=2,
+                        color=[1.0, 0.5, 0.0],
+                        opacity=0.5,
                         blend="add",
-                        pad=0.0625,
-                        fade=0.03125,
-                        name="glow",
+                        font_family="sans",
+                        text_align="right",
                     ),
-                    ghee.Layer("title", font_size=24, blend="screen", emoji=False),
-                    ghee.Layer("plain", at=(2, 3)),
+                    ghee.Layer(
+                        "title",
+                        "ho",
+                        font_size=24,
+                        blend="screen",
+                        font_family="fonts/DejaVuSans-Latin.ttf",
+                        render="slug",
+                    ),
+                    ghee.Layer("plain", "ok", visible=False, y=3),
                 ],
             ),
             ghee.Pass(
                 "main",
                 "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
                 channels=[ghee.Channel("ink")],
-                layers=[ghee.Layer("words", INK, PLACE)],
+                layers=[
+                    ghee.Layer("glow", "hi", color={"from": "#ff0000", "to": "#0000ff"})
+                ],
             ),
         ],
     ).to_dict()

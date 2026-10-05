@@ -1,23 +1,22 @@
 //! The scene model, and the GLSL that it compiles to.
 //!
-//! A [`Scene`] holds an ordered list of passes, and the params, assets and
-//! texts that the passes share. A [`Pass`] holds its GLSL, its channels,
-//! arrays and params, and its layers. [`Scene::load`] reads a scene JSON
-//! file: it refuses a key that it does not take, checks every name and size,
-//! and reads the files that the scene names, from the scene's directory or
-//! from `$GHEE_ASSETS`. A [`Reach`] sets whether a file may lie outside that
-//! directory. [`Scene::of`] and [`Pass::of`] build a scene in code.
+//! A [`Scene`] holds an ordered list of passes, and the params and assets
+//! that the passes share. A [`Pass`] holds its GLSL, its channels, arrays and
+//! params, and its text layers, which `crate::layer` describes.
+//! [`Scene::load`] reads a scene JSON file: it refuses a key that it does not
+//! take, checks every name and size, and reads the files that the scene
+//! names, from the scene's directory or from `$GHEE_ASSETS`. A [`Reach`] sets
+//! whether a file may lie outside that directory. [`Scene::of`] and
+//! [`Pass::of`] build a scene in code.
 //!
 //! [`Pass::glsl`] writes the fragment shader of a pass in three parts: the
 //! preamble, the scene's common block, then the pass's own GLSL. The preamble
 //! declares the uniforms that every pass reads, `time`, `DT`, `frame` and
 //! `resolution`, and `iChannel0` and up, then one uniform for each param
 //! under the param's name, and the samplers and the reader functions of each
-//! array, asset and text. The C engine sets each uniform by looking up that
-//! same name in the compiled program, so a name that the preamble writes is
-//! the contract between the two. A layer's vertex and fragment shaders take
-//! the same preamble, with ghee's code for the text's fill around the
-//! layer's own GLSL.
+//! array, asset and text layer. The C engine sets each uniform by looking up
+//! that same name in the compiled program, so a name that the preamble writes
+//! is the contract between the two.
 
 use std::borrow::Cow;
 use std::fs;
@@ -25,21 +24,16 @@ use std::fs;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
-use crate::engine::Blend;
-use crate::text::{Fill, Text};
+use crate::layer::Layer;
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 
 /// Every name that ghee writes into GLSL and an author never writes starts
-/// with this prefix: a text's own uniforms, textures and functions, a layer's
-/// attributes, varyings and locals, and the vertex flip.
+/// with this prefix: a layer's own uniforms, textures and functions, and the
+/// vertex flip.
 pub const PREFIX: &str = "ghee_";
-
-/// The names that a layer's GLSL declares for its author start with this
-/// prefix, and no other declaration takes it.
-pub const LAYER_PREFIX: &str = "glyph_";
 
 /// The uniforms and the varying that ghee declares in every pass for its
 /// author to read, beside iChannel0 and up.
@@ -163,28 +157,12 @@ fn obj_of<'a>(d: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Va
 }
 
 /// The keys of the scene's top level.
-const SCENE_KEYS: [&str; 7] = [
-    "version", "passes", "filters", "params", "common", "assets", "texts",
-];
+const SCENE_KEYS: [&str; 6] = ["version", "passes", "filters", "params", "common", "assets"];
 
 /// The keys of a pass.
-const PASS_KEYS: [&str; 11] = [
+pub(crate) const PASS_KEYS: [&str; 11] = [
     "name", "code", "shader", "arrays", "channels", "params", "filter", "size", "mipmaps",
     "layers", "visible",
-];
-
-/// The keys of a layer.
-pub(crate) const LAYER_KEYS: [&str; 10] = [
-    "name",
-    "text",
-    "vertex",
-    "font_size",
-    "at",
-    "fragment",
-    "blend",
-    "pad",
-    "fade",
-    "emoji",
 ];
 
 /// The keys of an asset. Only a .raw file takes the four after `sampling`.
@@ -196,9 +174,6 @@ pub(crate) const ASSET_KEYS: [&str; 6] = [
     "format",
     "components",
 ];
-
-/// The keys of a text.
-pub(crate) const TEXT_KEYS: [&str; 5] = ["value", "font", "align", "fill", "atlas"];
 
 /// The keys of a param.
 const PARAM_KEYS: [&str; 6] = ["type", "value", "min", "max", "step", "options"];
@@ -233,6 +208,10 @@ fn edits(a: &str, b: &str) -> usize {
     d[a.len()][b.len()]
 }
 
+/// A key that several keys start with, and the one of them that it most
+/// likely means.
+const MEANS: [(&str, &str); 1] = [("font", "font_family")];
+
 /// The edits from `typed` to `key` when `key` is a likely meaning of it: a
 /// third of the longer name or fewer, or the first four characters shared.
 fn near(typed: &str, key: &str) -> Option<usize> {
@@ -265,10 +244,21 @@ pub(crate) fn known_keys(
     }
     let own = takes.iter().map(|k| (*k, None));
     let other = elsewhere.iter().map(|(k, on)| (*k, Some(on)));
-    let closest = own
-        .chain(other)
-        .filter_map(|(k, on)| near(key, k).map(|d| (d, k, on)))
-        .min_by_key(|(d, _, _)| *d);
+    let meant = MEANS
+        .iter()
+        .find(|(typed, _)| typed == key)
+        .and_then(|(_, k)| match takes.contains(k) {
+            true => Some((0, *k, None)),
+            false => elsewhere
+                .iter()
+                .find(|(e, _)| e == k)
+                .map(|(e, on)| (0, *e, Some(on))),
+        });
+    let closest = meant.or_else(|| {
+        own.chain(other)
+            .filter_map(|(k, on)| near(key, k).map(|d| (d, k, on)))
+            .min_by_key(|(d, _, _)| *d)
+    });
     match closest {
         Some((_, k, None)) => bail!("{what} takes no '{key}', the closest key is '{k}'"),
         Some((_, k, Some(on))) => {
@@ -355,7 +345,7 @@ fn py_str_repr(s: &str) -> String {
 /// A float as Python's repr() writes it: the shortest round-trip. A decimal
 /// exponent in -4..15 prints fixed. Any other prints with an exponent of two
 /// digits or more.
-fn py_float(f: f64) -> String {
+pub(crate) fn py_float(f: f64) -> String {
     if f.is_nan() {
         return "nan".to_string();
     }
@@ -584,9 +574,9 @@ pub struct Param {
     /// A string param offers these choices. The console renders them as a
     /// dropdown. Without them it renders a text input.
     pub options: Option<Vec<String>>,
-    /// ghee declares this string param for the text of its name, and the
-    /// param holds the text's words. A save writes them into the text's
-    /// `value`.
+    /// ghee declares this string param for the text layer of its name, and
+    /// the param holds the layer's words. A save writes them into the layer's
+    /// `text`.
     pub(crate) of_text: bool,
 }
 
@@ -738,7 +728,8 @@ impl Param {
         Param::plain(name, "string", ParamValue::Str(value.to_string()))
     }
 
-    /// The string param that ghee declares for a text, holding `words`.
+    /// The string param that ghee declares for a text layer, holding
+    /// `words`.
     fn words(name: &str, words: &str) -> Param {
         Param {
             of_text: true,
@@ -810,7 +801,7 @@ pub(crate) fn hex_colour(s: &str) -> Option<[f64; 3]> {
     Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
-fn number_list(v: &Value, n: usize) -> Option<Vec<f64>> {
+pub(crate) fn number_list(v: &Value, n: usize) -> Option<Vec<f64>> {
     let Value::Array(a) = v else { return None };
     if a.len() != n || !a.iter().all(is_num) {
         return None;
@@ -1334,330 +1325,17 @@ impl Channel {
     }
 }
 
-/// A text drawn as one quad a glyph into its pass's buffer, after the pass's
-/// own quad.
-///
-/// The vertex GLSL defines `vec2 glyph_place(vec2 em)`. It takes a point of
-/// the block, in em from the block's top left with y down, and returns the
-/// pass pixel where that point lands, in the space of
-/// `v_texCoord * resolution`. The fragment GLSL colours a glyph's pixels with
-/// its own `void main()`, premultiplied by alpha.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Layer {
-    /// The layer's own name, unique among the layers of its pass, as
-    /// is_layer_name() takes it. None goes by its text, as layer_labels() says.
-    pub name: Option<String>,
-    /// A name in the scene's texts.
-    pub text: String,
-    pub vertex: Vertex,
-    /// None draws the letters white at full coverage, premultiplied.
-    pub fragment: Option<String>,
-    pub blend: Blend,
-    /// How far the quads reach past the ink, in em, for an effect around the
-    /// outline.
-    pub pad: f64,
-    /// The layer's `fade`: the band in em inside the pad's edge over which
-    /// an MTSDF layer fades to 0, at most `pad`. None takes a quarter of
-    /// `pad`, as fade() gives it.
-    pub fade: Option<f64>,
-    /// The layer paints the text's colour glyphs. None paints them from the
-    /// last layer of the text in its pass alone, as Pass::paints_emoji says.
-    pub emoji: Option<bool>,
-}
-
-/// Where a layer puts its glyphs.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Vertex {
-    /// The layer's `vertex`: GLSL that defines `vec2 glyph_place(vec2 em)`.
-    Glsl(String),
-    /// No `vertex`: ghee places the block. `font_size` holds its pixels per
-    /// em, None the largest size that fits the room, and `at` the pass pixel
-    /// of its top left, y down, None the block centred in the pass.
-    Placed {
-        font_size: Option<f64>,
-        at: Option<[f64; 2]>,
-    },
-}
-
-/// The margin on every edge of the room that fits a block with no
-/// `font_size`, as a fraction of the pass's shorter side.
-const FIT_MARGIN: f64 = 0.05;
-
-/// The fragment GLSL of a layer with none of its own.
-const WHITE: &str = "void main() { gl_FragColor = vec4(glyph_cover()); }";
-
-/// A layer's `name`: ASCII letters, digits, '_' and '-'. A name holds no space,
-/// so it never reads as the label of a layer without one, such as "t 2".
-pub fn is_layer_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-/// What each layer of a pass goes by, from its name and its text, in order:
-/// its name, else its text, numbered from the text's second layer without a
-/// name, as "t", "t 2", "t 3". None for a layer with neither.
-pub fn layer_labels<'a>(
-    layers: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
-) -> Vec<Option<String>> {
-    let mut seen: Vec<&str> = Vec::new();
-    layers
-        .into_iter()
-        .map(|(name, text)| match (name, text) {
-            (Some(n), _) => Some(n.to_string()),
-            (None, Some(t)) => {
-                seen.push(t);
-                Some(match seen.iter().filter(|s| **s == t).count() {
-                    1 => t.to_string(),
-                    n => format!("{t} {n}"),
-                })
-            }
-            (None, None) => None,
-        })
-        .collect()
-}
-
-/// Layer `k` of pass `pass` in an error: "pass 'main' layer 'glow'" by its
-/// label, else by its place, "the 2nd layer of pass 'main'".
-fn layer_what(pass: &str, k: usize, label: Option<&str>) -> String {
-    match label {
-        Some(l) => format!("pass '{pass}' layer '{l}'"),
-        None => {
-            let n = k + 1;
-            let th = match (n % 10, n % 100) {
-                (_, 11..=13) => "th",
-                (1, _) => "st",
-                (2, _) => "nd",
-                (3, _) => "rd",
-                _ => "th",
-            };
-            format!("the {n}{th} layer of pass '{pass}'")
-        }
-    }
-}
-
-impl Layer {
-    /// The GLSL that defines glyph_place for the layer.
-    ///
-    /// A block with no `font_size` takes the largest size at which it fits
-    /// its room: the pass less FIT_MARGIN on every edge, or with `at`, the
-    /// pass right of and below `at` less FIT_MARGIN on the right and bottom
-    /// edges. The size follows the words live, as `<name>_size` does.
-    pub fn vertex_glsl(&self) -> String {
-        let (font_size, at) = match &self.vertex {
-            Vertex::Glsl(v) => return v.clone(),
-            Vertex::Placed { font_size, at } => (*font_size, *at),
-        };
-        let size = format!("{}_size", self.text);
-        let at = at.map(|[x, y]| format!("vec2({}, {})", py_float(x), py_float(y)));
-        let fit = |room: &str| {
-            format!(
-                "    float ghee_m = {} * min(resolution.x, resolution.y);\n    \
-                 vec2 ghee_s = ({room}) / max({size}, vec2(1.0e-6));\n    \
-                 float ghee_fs = max(min(ghee_s.x, ghee_s.y), 0.0);\n",
-                py_float(FIT_MARGIN)
-            )
-        };
-        match (font_size.map(py_float), at) {
-            (Some(px), None) => format!(
-                "vec2 glyph_place(vec2 em) {{ return (resolution - {size} * {px}) * 0.5 \
-                 + em * {px}; }}"
-            ),
-            (Some(px), Some(at)) => {
-                format!("vec2 glyph_place(vec2 em) {{ return {at} + em * {px}; }}")
-            }
-            (None, None) => format!(
-                "vec2 glyph_place(vec2 em) {{\n{}    \
-                 return (resolution - {size} * ghee_fs) * 0.5 + em * ghee_fs;\n}}",
-                fit("resolution - 2.0 * ghee_m")
-            ),
-            (None, Some(at)) => format!(
-                "vec2 glyph_place(vec2 em) {{\n{}    return {at} + em * ghee_fs;\n}}",
-                fit(&format!("resolution - ghee_m - {at}"))
-            ),
-        }
-    }
-
-    /// The layer's fragment GLSL, its own or the white letters.
-    pub fn fragment_glsl(&self) -> &str {
-        self.fragment.as_deref().unwrap_or(WHITE)
-    }
-
-    /// The band over which an MTSDF layer of the layer's text fades, None for
-    /// a layer with no pad or a fade of 0. GLSL leaves smoothstep undefined
-    /// over a band of 0.
-    pub fn fade(&self) -> Option<crate::text::Fade> {
-        let band = self.fade.unwrap_or(self.pad / 4.0);
-        (self.pad > 0.0 && band > 0.0).then_some(crate::text::Fade {
-            from: self.pad - band,
-            to: self.pad,
-        })
-    }
-
-    /// `what` names the layer in an error, as "pass 'main' layer 'glow'".
-    pub fn from_dict(what: &str, d: &Value) -> Result<Layer> {
-        let Value::Object(o) = d else {
-            bail!("{what} needs an object, got {}", py_repr(d));
-        };
-        for (old, key) in [("place", "vertex"), ("code", "fragment")] {
-            if o.contains_key(old) {
-                bail!("{what} takes its {key} GLSL in '{key}', got '{old}'");
-            }
-        }
-        if o.contains_key("alpha") {
-            bail!("{what} takes no 'alpha': its alpha blends by 'blend', as its colour does");
-        }
-        let text = match o.get("text") {
-            Some(Value::String(t)) if !t.trim().is_empty() => format!("text '{t}'"),
-            _ => "its text".to_string(),
-        };
-        let elsewhere = [
-            keys_on(&LAYER_KEYS, &TEXT_KEYS, &text),
-            keys_on(&LAYER_KEYS, &PASS_KEYS, "its pass"),
-        ]
-        .concat();
-        known_keys(o, what, &LAYER_KEYS, &elsewhere)?;
-        let glsl = |key: &str, holds: &str| match o.get(key) {
-            Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
-            Some(v) => bail!("{what} '{key}' needs {holds}, got {}", py_repr(v)),
-            None => bail!("{what} has no '{key}', {holds}"),
-        };
-        let text = glsl("text", "the name of a scene text")?;
-        let name = match o.get("name").filter(|v| !v.is_null()) {
-            None => None,
-            Some(Value::String(n)) if is_layer_name(n) => Some(n.clone()),
-            Some(v) => bail!(
-                "{what} name needs one or more ASCII letters, digits, '_' or '-', got {}",
-                py_repr(v)
-            ),
-        };
-        let given = |key: &str| o.get(key).filter(|v| !v.is_null());
-        // The vertex GLSL places every point of the block, so it takes neither
-        // a size nor a corner.
-        if given("vertex").is_some() {
-            if let Some(k) = ["font_size", "at"].into_iter().find(|k| given(k).is_some()) {
-                bail!("{what} takes 'vertex' or '{k}', got both");
-            }
-        }
-        let vertex = match given("vertex") {
-            Some(_) => Vertex::Glsl(glsl(
-                "vertex",
-                "vertex GLSL that defines vec2 glyph_place(vec2 em)",
-            )?),
-            None => Vertex::Placed {
-                font_size: match given("font_size") {
-                    None => None,
-                    Some(v) => match v.as_f64() {
-                        Some(f) if f.is_finite() && f > 0.0 => Some(f),
-                        _ => bail!(
-                            "{what} font_size needs a number of pixels above 0, got {}",
-                            py_repr(v)
-                        ),
-                    },
-                },
-                at: match given("at") {
-                    None => None,
-                    Some(v) => match number_list(v, 2).as_deref() {
-                        Some(&[x, y]) if x.is_finite() && y.is_finite() => Some([x, y]),
-                        _ => bail!(
-                            "{what} at needs [x, y], the pass pixel of the words' top left, \
-                             got {}",
-                            py_repr(v)
-                        ),
-                    },
-                },
-            },
-        };
-        let fragment = match given("fragment") {
-            None => None,
-            Some(_) => Some(glsl("fragment", "fragment GLSL with its own void main()")?),
-        };
-        let blend = match o.get("blend").filter(|v| !v.is_null()) {
-            None => Blend::Normal,
-            Some(v) => match Blend::NAMES.iter().find(|(_, n)| v.as_str() == Some(n)) {
-                Some((b, _)) => *b,
-                None => bail!(
-                    "{what} blend needs 'normal', 'add', 'multiply' or 'screen', got {}",
-                    py_repr(v)
-                ),
-            },
-        };
-        let pad = match o.get("pad").filter(|v| !v.is_null()) {
-            None => 0.0,
-            Some(v) => match v.as_f64() {
-                Some(f) if f.is_finite() && f >= 0.0 => f,
-                _ => bail!(
-                    "{what} pad needs a number of em, 0 or more, got {}",
-                    py_repr(v)
-                ),
-            },
-        };
-        let fade = match given("fade") {
-            None => None,
-            Some(v) => match v.as_f64() {
-                Some(f) if f.is_finite() && (0.0..=pad).contains(&f) => Some(f),
-                _ => bail!(
-                    "{what} fade needs a number of em from 0 to its pad, {}, got {}",
-                    py_float(pad),
-                    py_repr(v)
-                ),
-            },
-        };
-        let emoji = match o.get("emoji").filter(|v| !v.is_null()) {
-            None => None,
-            Some(Value::Bool(b)) => Some(*b),
-            Some(v) => bail!("{what} emoji needs true or false, got {}", py_repr(v)),
-        };
-        Ok(Layer {
-            name,
-            text,
-            vertex,
-            fragment,
-            blend,
-            pad,
-            fade,
-            emoji,
-        })
-    }
-
-    /// `last` is the default of `emoji` at the layer's place in its pass, and
-    /// the dict holds `emoji` only when the layer sets it otherwise.
-    pub fn to_dict(&self, last: bool) -> Value {
-        let mut d = Map::new();
-        if let Some(n) = &self.name {
-            d.insert("name".to_string(), Value::from(n.clone()));
-        }
-        d.insert("text".to_string(), Value::from(self.text.clone()));
-        match &self.vertex {
-            Vertex::Glsl(v) => {
-                d.insert("vertex".to_string(), Value::from(v.clone()));
-            }
-            Vertex::Placed { font_size, at } => {
-                if let Some(px) = font_size {
-                    d.insert("font_size".to_string(), Value::from(*px));
-                }
-                if let Some(at) = at {
-                    d.insert("at".to_string(), Value::from(at.to_vec()));
-                }
-            }
-        }
-        if let Some(f) = &self.fragment {
-            d.insert("fragment".to_string(), Value::from(f.clone()));
-        }
-        if self.blend != Blend::Normal {
-            d.insert("blend".to_string(), Value::from(self.blend.name()));
-        }
-        if self.pad != 0.0 {
-            d.insert("pad".to_string(), Value::from(self.pad));
-        }
-        if let Some(f) = self.fade {
-            d.insert("fade".to_string(), Value::from(f));
-        }
-        if let Some(e) = self.emoji.filter(|e| *e != last) {
-            d.insert("emoji".to_string(), Value::from(e));
-        }
-        Value::Object(d)
-    }
+/// Layer `k` of pass `pass` by its place, as "the 2nd layer of pass 'main'".
+fn layer_at(pass: &str, k: usize) -> String {
+    let n = k + 1;
+    let th = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("the {n}{th} layer of pass '{pass}'")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1679,7 +1357,7 @@ pub struct Pass {
     /// The pass's buffer holds a mip chain, built after the pass renders each
     /// frame, and every channel that reads it samples trilinearly.
     pub mipmaps: bool,
-    /// Texts drawn into this pass's buffer after its quad, in order.
+    /// Text layers drawn into this pass's buffer after its quad, in order.
     pub layers: Vec<Layer>,
     /// False hides the pass: it draws a copy of the pass before it, or black
     /// as the first pass, and its layers draw nothing. It keeps its params,
@@ -1778,8 +1456,7 @@ impl Pass {
         };
         let name = o.get("name").map_or("main".to_string(), py_str);
         let elsewhere = [
-            keys_on(&PASS_KEYS, &LAYER_KEYS, "a layer"),
-            keys_on(&PASS_KEYS, &TEXT_KEYS, "a text"),
+            keys_on(&PASS_KEYS, &crate::layer::LAYER_KEYS, "a layer"),
             keys_on(&PASS_KEYS, &ASSET_KEYS, "an asset"),
             keys_on(&PASS_KEYS, &CHANNEL_KEYS, "a channel"),
             keys_on(&PASS_KEYS, &PARAM_KEYS, "a param"),
@@ -1838,22 +1515,12 @@ impl Pass {
             ),
         };
         let layers = list_of(o, "layers").map_err(|e| anyhow!("pass '{name}': {e}"))?;
-        // A layer goes by its name and its text in an error about any key,
-        // so each comes from the dict before the layer parses.
-        let labels = layer_labels(layers.iter().map(|dd| {
-            let key = |k: &str| dd.get(k).and_then(Value::as_str);
-            (
-                key("name").filter(|n| is_layer_name(n)),
-                key("text").filter(|t| !t.trim().is_empty()),
-            )
-        }));
         pass.layers = layers
             .iter()
-            .zip(&labels)
             .enumerate()
-            .map(|(k, (dd, l))| Layer::from_dict(&layer_what(&name, k, l.as_deref()), dd))
+            .map(|(k, dd)| Layer::from_dict(&layer_at(&name, k), dd))
             .collect::<Result<Vec<_>>>()?;
-        // A filter is written apart from any scene, and a text belongs to one.
+        // A filter is written apart from any scene, and a layer belongs to one.
         if !pass.filter.is_empty() && !pass.layers.is_empty() {
             bail!(
                 "pass '{name}' is filter '{}', and a filter pass takes no layers",
@@ -1868,6 +1535,12 @@ impl Pass {
     }
 
     pub fn to_dict(&self) -> Value {
+        self.dict(&|l| l.text.clone())
+    }
+
+    /// The pass as a scene holds it, with `words` of each layer in its
+    /// `text`.
+    fn dict(&self, words: &dyn Fn(&Layer) -> String) -> Value {
         let mut out = Map::new();
         out.insert("name".to_string(), Value::from(self.name.clone()));
         if !self.visible {
@@ -1915,70 +1588,23 @@ impl Pass {
             out.insert("filter".to_string(), Value::from(self.filter.clone()));
         }
         if !self.layers.is_empty() {
-            let layers: Vec<Value> = (0..self.layers.len())
-                .map(|k| self.layers[k].to_dict(self.last_of_text(k)))
-                .collect();
+            let layers: Vec<Value> = self.layers.iter().map(|l| l.to_dict(&words(l))).collect();
             out.insert("layers".to_string(), Value::from(layers));
         }
         Value::Object(out)
-    }
-
-    /// What each layer of the pass goes by, as layer_labels() gives it.
-    pub fn layer_labels(&self) -> Vec<String> {
-        layer_labels(
-            self.layers
-                .iter()
-                .map(|d| (d.name.as_deref(), Some(d.text.as_str()))),
-        )
-        .into_iter()
-        .flatten()
-        .collect()
-    }
-
-    /// Layer `k` in an error, as "pass 'main' layer 'glow'".
-    pub fn layer_what(&self, k: usize) -> String {
-        layer_what(
-            &self.name,
-            k,
-            self.layer_labels().get(k).map(String::as_str),
-        )
-    }
-
-    /// The error for two layers of the pass that go by one label.
-    fn twin_layers(&self) -> Option<String> {
-        let labels = self.layer_labels();
-        let (_, l) = labels
-            .iter()
-            .enumerate()
-            .find(|(k, l)| labels[..*k].contains(l))?;
-        Some(format!(
-            "pass '{}' has two layers that go by '{l}'",
-            self.name
-        ))
-    }
-
-    /// True when layer `k` is the last layer of its text in this pass.
-    fn last_of_text(&self, k: usize) -> bool {
-        let text = &self.layers[k].text;
-        !self.layers[k + 1..].iter().any(|d| d.text == *text)
-    }
-
-    /// True when layer `k` paints its text's colour glyphs: its `emoji`, else
-    /// when it is the last layer of its text in this pass.
-    pub fn paints_emoji(&self, k: usize) -> bool {
-        self.layers[k].emoji.unwrap_or_else(|| self.last_of_text(k))
     }
 
     /// `hw_linear` is the target GPU's Renderer.data_texture_linear. False emits
     /// the array readers that hold on any GPU. `assets` are the scene's assets.
     /// A pass of the scene's own declares the scene's assets. A filter pass
     /// declares only its filter's, each under the name the filter wrote.
+    /// `texts` names the scene's text layers.
     pub fn glsl(
         &self,
         scene_params: Option<&ParamMap>,
         common: Option<&str>,
         assets: &[Asset],
-        texts: &[Text],
+        texts: &[&str],
         hw_linear: bool,
     ) -> String {
         // A hidden pass, as Scene::drawn_passes() leaves it, runs ghee's copy
@@ -1989,7 +1615,7 @@ impl Pass {
         }
         let common_code = common.unwrap_or_default();
         let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |t| {
-            calls_cover(common_code, &t.name) || calls_cover(&self.code, &t.name)
+            calls_cover(common_code, t) || calls_cover(&self.code, t)
         });
         // An author writes a filter on its own, and ghee appends it to any
         // scene. The scene's common block never reaches it, so a filter name
@@ -2001,130 +1627,15 @@ impl Pass {
         format!("{}\n\n{body}", l.join("\n"))
     }
 
-    /// The vertex and the fragment shader of layer `k`. Each holds the pass's
-    /// preamble and the scene's common block, then the layer's GLSL for its
-    /// stage, as layer_vertex() and the fragment shader below lay them out.
-    ///
-    /// `scene` is the scene of the pass, and `hw_linear` as glsl() takes it.
-    pub fn layer_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
-        let d = &self.layers[k];
-        let text = scene.texts.iter().find(|t| t.name == d.text);
-        let main = match text {
-            Some(t) if t.fill == Fill::Mtsdf => crate::text::mtsdf_vertex_main(
-                &d.text,
-                d.pad,
-                t.atlas_font_size,
-                scene.atlas_range(&d.text),
-            ),
-            _ => crate::text::slug_vertex_main(d.pad),
-        };
-        let v = self.layer_vertex(d, scene, hw_linear, main);
-        // A slug layer reads its own text's curves, and any layer the texts
-        // whose coverage its fragment GLSL or the common block calls.
-        let common = scene.common.as_deref().unwrap_or_default();
-        let slug = text.is_none_or(|t| t.fill == Fill::Slug);
-        let mut f = self.preamble_reading(
-            Some(&scene.params),
-            &scene.assets,
-            &scene.texts,
-            hw_linear,
-            |t| {
-                (slug && t.name == d.text)
-                    || calls_cover(common, &t.name)
-                    || calls_cover(d.fragment_glsl(), &t.name)
-            },
-        );
-        f.push(String::new());
-        if let Some(c) = scene.common.as_deref().filter(|c| !c.is_empty()) {
-            f.push(c.to_string());
-            f.push(String::new());
-        }
-        let (head, tail) = match text {
-            Some(t) if t.fill == Fill::Mtsdf => (
-                crate::text::mtsdf_fragment_head(&d.text),
-                crate::text::mtsdf_fragment_tail(
-                    &d.text,
-                    d.fade(),
-                    t.atlas_font_size,
-                    scene.atlas_range(&d.text),
-                ),
-            ),
-            _ => (
-                crate::text::slug_fragment_head(&d.text),
-                crate::text::slug_fragment_tail(&d.text),
-            ),
-        };
-        f.extend(head);
-        f.push(String::new());
-        f.push(d.fragment_glsl().to_string());
-        f.push(String::new());
-        f.extend(tail);
-        (v, f.join("\n"))
-    }
-
-    /// The vertex and the fragment shader of the error boxes of layer `k`: the
-    /// layer's own vertex GLSL with the slug fill's vertex main and no pad, so
-    /// each box lands where a glyph would go, and ghee's hazard stripes.
-    pub fn layer_box_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
-        let main = crate::text::slug_vertex_main(0.0);
-        let v = self.layer_vertex(&self.layers[k], scene, hw_linear, main);
-        let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
-        f.extend(crate::text::box_fragment());
-        (v, f.join("\n"))
-    }
-
-    /// The vertex and the fragment shader of the colour batch of layer `k`:
-    /// the layer's own vertex GLSL, and ghee's read of the text's colour atlas.
-    pub fn layer_colour_glsl(&self, k: usize, scene: &Scene, hw_linear: bool) -> (String, String) {
-        let d = &self.layers[k];
-        let main = crate::colour::vertex_main(&d.text);
-        let v = self.layer_vertex(d, scene, hw_linear, main);
-        let mut f: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
-        f.extend(crate::colour::fragment(&d.text));
-        (v, f.join("\n"))
-    }
-
-    /// The vertex shader of layer `d`, with `main` after its vertex GLSL. It
-    /// declares what the pass's preamble declares, at the same precision,
-    /// since GLSL ES links a uniform declared by both stages only when the two
-    /// declarations match, and the scene's common block follows, so the
-    /// common block compiles as it does in a pass.
-    fn layer_vertex(&self, d: &Layer, scene: &Scene, hw_linear: bool, main: Vec<String>) -> String {
-        let common = scene.common.as_deref().unwrap_or_default();
-        let vertex = d.vertex_glsl();
-        let mut v = self.preamble_reading(
-            Some(&scene.params),
-            &scene.assets,
-            &scene.texts,
-            hw_linear,
-            |t| calls_cover(common, &t.name) || calls_cover(&vertex, &t.name),
-        );
-        // The fragment stage's int defaults to mediump and the vertex stage's
-        // to highp, so an int uniform declared in both needs this to link.
-        v.insert(PRECISION.len(), "precision mediump int;".to_string());
-        v.push("uniform float ghee_vflip;".to_string());
-        v.push(String::new());
-        if let Some(c) = scene.common.as_deref().filter(|c| !c.is_empty()) {
-            v.push(c.to_string());
-            v.push(String::new());
-        }
-        v.extend(crate::text::layer_vertex_head());
-        v.push(String::new());
-        v.push(vertex);
-        v.push(String::new());
-        v.extend(main);
-        v.join("\n")
-    }
-
-    /// The preamble, with the coverage reader of each text for which `reads`
-    /// holds, and that text's `<name>_size` alone for any other.
+    /// The preamble, with the `<name>_size` of each text layer of `texts`,
+    /// and the coverage reader of each for which `reads` holds.
     fn preamble_reading(
         &self,
         scene_params: Option<&ParamMap>,
         assets: &[Asset],
-        texts: &[Text],
+        texts: &[&str],
         hw_linear: bool,
-        reads: impl Fn(&Text) -> bool,
+        reads: impl Fn(&str) -> bool,
     ) -> Vec<String> {
         let mut l: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         l.extend(
@@ -2159,12 +1670,12 @@ impl Pass {
         for a in &self.arrays {
             l.extend(array_reader_lines(a, hw_linear));
         }
-        // A text belongs to the scene, so a filter pass never reads one.
+        // A layer belongs to the scene, so a filter pass never reads one.
         if self.filter.is_empty() {
             for t in texts {
-                match reads(t) {
-                    true => l.extend(crate::text::reader_lines(&t.name)),
-                    false => l.push(format!("uniform vec2 {}_size;", t.name)),
+                l.push(format!("uniform vec2 {t}_size;"));
+                if reads(t) {
+                    l.extend(crate::text::reader_lines(t));
                 }
             }
         }
@@ -2192,8 +1703,8 @@ impl Pass {
     }
 }
 
-/// True when `glsl` names the coverage reader of text `name`. A reader is
-/// long to compile on VC4, so a shader holds the reader of such a text
+/// True when `glsl` names the coverage reader of text layer `name`. A reader
+/// is long to compile on VC4, so a shader holds the reader of such a layer
 /// alone.
 fn calls_cover(glsl: &str, name: &str) -> bool {
     glsl.contains(&format!("{name}_cover"))
@@ -2208,7 +1719,7 @@ const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
 // mediump cannot hold a texel coord like (col+0.5)/w. A feedback pass that
 // resamples its own output then drifts a fraction of a pixel per frame. highp
 // keeps a ping-pong buffer stable, and VC4 supports it.
-const PRECISION: [&str; 6] = [
+pub(crate) const PRECISION: [&str; 6] = [
     "#version 100",
     "#ifdef GL_FRAGMENT_PRECISION_HIGH",
     "precision highp float;",
@@ -2226,7 +1737,7 @@ pub struct Scene {
     pub filters: Vec<String>,
     /// The scene params. Every pass preamble declares them, and one set reaches
     /// every pass at once. They take the shape of a pass param. They hold the
-    /// string param of each text too, which ghee declares.
+    /// string param of each text layer too, which ghee declares.
     pub params: ParamMap,
     /// The GLSL every scene pass shares, such as a function or a constant. It
     /// follows the preamble. None is no common block. A filter pass never sees
@@ -2235,18 +1746,14 @@ pub struct Scene {
     /// Image assets: set up once by the host, available to every pass as a
     /// sampler uniform `<name>_tex` plus a `<name>_size` vec2.
     pub assets: Vec<Asset>,
-    /// Texts the GPU draws from a font. Each draws the scene string param of
-    /// its name, which ghee declares for it, and every scene pass reads it with
-    /// `<name>_cover`.
-    pub texts: Vec<Text>,
 }
 
 impl Scene {
     pub fn new(
-        passes: Vec<Pass>,
+        mut passes: Vec<Pass>,
         version: Value,
         filters: Vec<String>,
-        params: ParamMap,
+        mut params: ParamMap,
         common: Option<String>,
         assets: Vec<Asset>,
     ) -> Result<Scene> {
@@ -2270,9 +1777,6 @@ impl Scene {
                 seen.push(&p.name);
             }
         }
-        if let Some(e) = passes.iter().find_map(Pass::twin_layers) {
-            bail!("{e}");
-        }
         if !passes.is_empty() && passes.iter().all(|p| !p.visible) {
             bail!("every pass is hidden, and a scene shows one pass at least");
         }
@@ -2285,6 +1789,25 @@ impl Scene {
                 seen.push(&a.name);
             }
         }
+        // ghee declares the string param of each text layer, which holds its
+        // words, after the scene's own params. A param that ghee declared
+        // before keeps its words, and a param of the scene's own under a
+        // layer's name stays for name_clash() to refuse.
+        let held: Vec<Param> = params.values().filter(|p| p.of_text).cloned().collect();
+        params.retain(|p| !p.of_text);
+        for l in passes.iter_mut().flat_map(|p| &mut p.layers) {
+            if params.contains_key(&l.name) {
+                continue;
+            }
+            if let Some(Param {
+                value: ParamValue::Str(w),
+                ..
+            }) = held.iter().find(|p| p.name == l.name)
+            {
+                l.text = w.clone();
+            }
+            params.insert(l.name.clone(), Param::words(&l.name, &l.text));
+        }
         let scene = Scene {
             passes,
             version,
@@ -2292,34 +1815,81 @@ impl Scene {
             params,
             common,
             assets,
-            texts: Vec::new(),
         };
         if let Some(e) = scene.name_clash() {
             bail!("{e}");
         }
+        for l in scene.layers() {
+            let Some(font) = l.font_family.as_deref() else {
+                continue;
+            };
+            if crate::text::is_font_file(font) {
+                continue;
+            }
+            match scene.assets.iter().find(|a| a.name == font) {
+                Some(a) if a.is_font() => {}
+                Some(a) => bail!(
+                    "layer '{}' font_family '{font}' is the image {}, a font is a .ttf or .otf \
+                     file",
+                    l.name,
+                    py_str_repr(&a.file)
+                ),
+                None => bail!(
+                    "layer '{}' font_family '{font}' is no asset of the scene and no .ttf or \
+                     .otf file",
+                    l.name
+                ),
+            }
+        }
         Ok(scene)
     }
 
+    /// Every text layer of the scene, in the order of its passes.
+    pub fn layers(&self) -> impl Iterator<Item = &Layer> {
+        self.passes.iter().flat_map(|p| &p.layers)
+    }
+
+    /// The text layer named `name`.
+    pub fn layer(&self, name: &str) -> Option<&Layer> {
+        self.layers().find(|l| l.name == name)
+    }
+
+    /// The names of the scene's text layers, as Pass::glsl() takes them.
+    pub fn text_names(&self) -> Vec<&str> {
+        self.layers().map(|l| l.name.as_str()).collect()
+    }
+
+    /// The words of text layer `name` as they stand: its string param's.
+    pub fn words(&self, name: &str) -> Option<&str> {
+        match self.params.get(name).map(|p| &p.value) {
+            Some(ParamValue::Str(w)) => Some(w),
+            _ => None,
+        }
+    }
+
     /// The error for the first declared name that the scene cannot take: a
-    /// name that breaks the name rule, a built-in name or one with a layer's
-    /// prefix, a name that two declarations share, or one GLSL name that two
-    /// declarations make in one pass.
+    /// name that breaks the name rule, a built-in name, a name that two
+    /// declarations share, or one GLSL name that two declarations make in one
+    /// pass.
     ///
-    /// The passes, the scene's assets and the scene params share one set of
-    /// names. A pass param or an array takes a name unique in its pass and
-    /// outside that set, so two passes may each declare a `gain`.
+    /// The passes, the text layers, the scene's assets and the scene params
+    /// share one set of names. A pass param or an array takes a name unique in
+    /// its pass and outside that set, so two passes may each declare a `gain`.
     ///
-    /// A scene param reaches every pass, an image asset, a text and a layer's
-    /// GLSL every pass of the scene's own, a filter's asset the passes of its
-    /// filter, and a pass param or an array its own pass. A layer's GLSL takes
-    /// its names in every scene pass, whether or not the pass has layers.
+    /// A scene param reaches every pass, an image asset and a text layer every
+    /// pass of the scene's own, a filter's asset the passes of its filter, and
+    /// a pass param or an array its own pass.
     pub(crate) fn name_clash(&self) -> Option<String> {
         // Each declaration as its kind, its name, where it is declared, and
-        // whether the built-in names and the layers' prefix are closed to
-        // it. A pass name never reaches GLSL, so both are open to a pass.
+        // whether the built-in names are closed to it. A pass name never
+        // reaches GLSL, and a layer's reaches it with a suffix, so both may
+        // take a built-in name.
         let mut kinds: Vec<(&str, &str, String, bool)> = Vec::new();
         for p in &self.passes {
             kinds.push(("pass", &p.name, String::new(), false));
+        }
+        for l in self.layers() {
+            kinds.push(("layer", &l.name, String::new(), false));
         }
         for p in self.params.values().filter(|p| !p.of_text) {
             kinds.push(("scene param", &p.name, String::new(), true));
@@ -2346,33 +1916,10 @@ impl Scene {
             if *closed && built_in(name) {
                 return Some(format!("{kind} '{name}'{at}: '{name}' is built in"));
             }
-            if *closed && name.starts_with(LAYER_PREFIX) {
-                return Some(format!(
-                    "{kind} '{name}'{at}: a name that starts with {LAYER_PREFIX} is reserved \
-                     for layers"
-                ));
-            }
-        }
-        for t in &self.texts {
-            let name = &t.name;
-            if built_in(name) {
-                return Some(format!("text '{name}': '{name}' is built in"));
-            }
-            for (pre, whose) in [
-                (PREFIX, "belongs to ghee"),
-                (LAYER_PREFIX, "is reserved for layers"),
-            ] {
-                if name.starts_with(pre) {
-                    return Some(format!(
-                        "text '{name}': a name that starts with {pre} {whose}"
-                    ));
-                }
-            }
         }
         if let Some(e) = self.shared_name() {
             return Some(e);
         }
-        let layers = "the layers".to_string();
         for pass in &self.passes {
             let own = pass.filter.is_empty();
             let mut names: Vec<(String, String)> = Vec::new();
@@ -2392,13 +1939,10 @@ impl Scene {
                 }
             }
             if own {
-                for t in &self.texts {
-                    for n in crate::text::names(&t.name) {
-                        names.push((n, format!("text '{}'", t.name)));
+                for l in self.layers() {
+                    for n in crate::text::names(&l.name) {
+                        names.push((n, format!("layer '{}'", l.name)));
                     }
-                }
-                for n in crate::text::LAYER_NAMES {
-                    names.push((n.to_string(), layers.clone()));
                 }
             }
             for p in pass.params.values().filter(|p| p.ty != "string") {
@@ -2426,12 +1970,15 @@ impl Scene {
         None
     }
 
-    /// The names that the passes, the scene's assets and the scene params
-    /// share, each with its declaration, as "pass 'main'".
+    /// The names that the passes, the text layers, the scene's assets and the
+    /// scene params share, each with its declaration, as "pass 'main'".
     fn scene_wide_names(&self) -> Vec<(&str, String)> {
         let mut wide: Vec<(&str, String)> = Vec::new();
         for p in &self.passes {
             wide.push((&p.name, format!("pass '{}'", p.name)));
+        }
+        for l in self.layers() {
+            wide.push((&l.name, format!("layer '{}'", l.name)));
         }
         for a in self.assets.iter().filter(|a| a.from_filter.is_empty()) {
             wide.push((&a.name, format!("asset '{}'", a.name)));
@@ -2484,167 +2031,6 @@ impl Scene {
             }
         }
         None
-    }
-
-    /// The scene with `texts` in place of its own.
-    pub fn with_texts(mut self, mut texts: Vec<Text>) -> Result<Scene> {
-        let mut seen: Vec<&str> = Vec::new();
-        for t in &texts {
-            if !is_ident(&t.name) {
-                bail!(
-                    "text name {} is not a GLSL identifier",
-                    py_str_repr(&t.name)
-                );
-            }
-            if seen.contains(&t.name.as_str()) {
-                bail!("text '{}' is declared twice", t.name);
-            }
-            seen.push(&t.name);
-            for font in t.fonts.iter().filter(|f| !crate::text::is_font_file(f)) {
-                match self.assets.iter().find(|a| a.name == *font) {
-                    Some(a) if a.is_font() => {}
-                    Some(a) => bail!(
-                        "text '{}' font '{font}' is the image {}, a font is a .ttf or .otf file",
-                        t.name,
-                        py_str_repr(&a.file)
-                    ),
-                    None => bail!(
-                        "text '{}' font '{font}' is no asset of the scene and no .ttf or .otf file",
-                        t.name
-                    ),
-                }
-            }
-        }
-        // ghee declares the string param of each text, which holds its words,
-        // after the scene's own params, and refuses a param declared under the
-        // text's name. A param that ghee declared before keeps its words.
-        let held: Vec<Param> = self
-            .params
-            .values()
-            .filter(|p| p.of_text)
-            .cloned()
-            .collect();
-        self.params.retain(|p| !p.of_text);
-        for t in &mut texts {
-            let n = t.name.clone();
-            if self.params.contains_key(&n) {
-                bail!(
-                    "scene param '{n}' has the name of text '{n}', which holds its words in \
-                     its 'value'"
-                );
-            }
-            let words = match held.iter().find(|p| p.name == n) {
-                Some(Param {
-                    value: ParamValue::Str(w),
-                    ..
-                }) => w.clone(),
-                _ => t.value.clone(),
-            };
-            self.params.insert(n.clone(), Param::words(&n, &words));
-            t.value = words;
-            if let Some(p) = self.passes.iter().find(|p| p.params.contains_key(&n)) {
-                bail!(
-                    "param '{n}' in pass '{}' has the name of text '{n}', which holds its \
-                     words in its 'value'",
-                    p.name
-                );
-            }
-        }
-        self.texts = texts;
-        if let Some(e) = self.undeclared_layer() {
-            bail!("{e}");
-        }
-        // A slug layer has no distance to fade by.
-        for p in &self.passes {
-            for (k, d) in p.layers.iter().enumerate() {
-                let slug = self
-                    .texts
-                    .iter()
-                    .any(|t| t.name == d.text && t.fill == Fill::Slug);
-                if slug && d.fade.is_some() {
-                    bail!(
-                        "{} fade needs \"fill\": \"mtsdf\" on text '{}'",
-                        p.layer_what(k),
-                        d.text
-                    );
-                }
-            }
-        }
-        for t in self.texts.iter().filter(|t| t.fill == Fill::Mtsdf) {
-            let (pad, layer) = self.largest_pad(&t.name);
-            let range = crate::text::atlas_range(t.atlas_font_size, pad);
-            if let (Some(layer), true) = (layer, range > crate::text::ATLAS_MAX) {
-                bail!(
-                    "{layer} pad {} needs an atlas range of {range} texels at the atlas \
-                     font_size {} of text '{}', over the cap of {}",
-                    py_float(pad),
-                    t.atlas_font_size,
-                    t.name,
-                    crate::text::ATLAS_MAX
-                );
-            }
-        }
-        if let Some(e) = self.name_clash() {
-            bail!("{e}");
-        }
-        Ok(self)
-    }
-
-    /// The distance range in texels of the MTSDF atlas of text `name`: the
-    /// field reaches the largest `pad` of the text's layers, at the text's
-    /// atlas font_size.
-    pub fn atlas_range(&self, name: &str) -> u32 {
-        let font_size = self
-            .texts
-            .iter()
-            .find(|t| t.name == name)
-            .map_or(crate::atlas::PX_EM, |t| t.atlas_font_size);
-        let range = crate::text::atlas_range(font_size, self.largest_pad(name).0);
-        u32::try_from(range).unwrap_or(u32::MAX)
-    }
-
-    /// The largest `pad` of the layers of text `name`, and the layer that sets
-    /// it as "pass 'main' layer 'glow'", None when no layer pads.
-    fn largest_pad(&self, name: &str) -> (f64, Option<String>) {
-        let mut most = (0.0, None);
-        for p in &self.passes {
-            for (k, d) in p.layers.iter().enumerate() {
-                if d.text == name && d.pad > most.0 {
-                    most = (d.pad, Some(p.layer_what(k)));
-                }
-            }
-        }
-        most
-    }
-
-    /// True when a layer of the scene names text `name`.
-    pub fn has_layer_of(&self, name: &str) -> bool {
-        self.passes
-            .iter()
-            .any(|p| p.layers.iter().any(|d| d.text == name))
-    }
-
-    /// True when a layer of the scene paints the colour glyphs of text `name`.
-    pub fn paints_emoji(&self, name: &str) -> bool {
-        self.passes
-            .iter()
-            .any(|p| (0..p.layers.len()).any(|k| p.layers[k].text == name && p.paints_emoji(k)))
-    }
-
-    /// The error for the first layer whose text the scene does not declare.
-    pub(crate) fn undeclared_layer(&self) -> Option<String> {
-        self.passes.iter().find_map(|p| {
-            let (k, d) = p
-                .layers
-                .iter()
-                .enumerate()
-                .find(|(_, d)| !self.texts.iter().any(|t| t.name == d.text))?;
-            Some(format!(
-                "{} names text '{}', which the scene does not declare",
-                p.layer_what(k),
-                d.text
-            ))
-        })
     }
 
     /// A scene with passes only. Every other field takes its default.
@@ -2727,8 +2113,7 @@ impl Scene {
         (|| -> Result<Scene> {
             let elsewhere = [
                 keys_on(&SCENE_KEYS, &PASS_KEYS, "a pass"),
-                keys_on(&SCENE_KEYS, &TEXT_KEYS, "a text"),
-                keys_on(&SCENE_KEYS, &LAYER_KEYS, "a layer"),
+                keys_on(&SCENE_KEYS, &crate::layer::LAYER_KEYS, "a layer"),
                 keys_on(&SCENE_KEYS, &ASSET_KEYS, "an asset"),
             ]
             .concat();
@@ -2753,10 +2138,6 @@ impl Scene {
             for (n, ad) in obj_of(o, "assets")? {
                 assets.push(Asset::from_dict(n, ad)?);
             }
-            let mut texts = Vec::new();
-            for (n, td) in obj_of(o, "texts")? {
-                texts.push(Text::from_dict(n, td)?);
-            }
             let common = common_block(o, files)?;
             Scene::new(
                 passes,
@@ -2765,8 +2146,7 @@ impl Scene {
                 params,
                 common,
                 assets,
-            )?
-            .with_texts(texts)
+            )
         })()
         .map_err(|e| anyhow!("{src}: {e}"))
     }
@@ -2774,9 +2154,17 @@ impl Scene {
     pub fn to_dict(&self) -> Value {
         let mut out = Map::new();
         out.insert("version".to_string(), self.version.clone());
+        // Each layer holds its words as they stand, which an edit of its
+        // param changes.
+        let words = |l: &Layer| self.words(&l.name).unwrap_or(&l.text).to_string();
         out.insert(
             "passes".to_string(),
-            Value::from(self.passes.iter().map(Pass::to_dict).collect::<Vec<_>>()),
+            Value::from(
+                self.passes
+                    .iter()
+                    .map(|p| p.dict(&words))
+                    .collect::<Vec<_>>(),
+            ),
         );
         // "" is a common block the console can fill.
         if let Some(c) = &self.common {
@@ -2810,18 +2198,6 @@ impl Scene {
             }
             out.insert("assets".to_string(), Value::Object(m));
         }
-        if !self.texts.is_empty() {
-            let mut m = Map::new();
-            for t in &self.texts {
-                let mut d = t.to_dict();
-                // The words as they stand, which an edit of the param changes.
-                if let Some(ParamValue::Str(w)) = self.params.get(&t.name).map(|p| &p.value) {
-                    d["value"] = Value::from(w.clone());
-                }
-                m.insert(t.name.clone(), d);
-            }
-            out.insert("texts".to_string(), Value::Object(m));
-        }
         Value::Object(out)
     }
 
@@ -2852,13 +2228,15 @@ impl Scene {
         Ok(scene)
     }
 
-    /// Read and decode every declared asset file, and hand each text its font,
-    /// with the reach of a scene that its user runs, as load_assets_in() says.
+    /// Read and decode every declared asset file, and hand each text layer its
+    /// font, with the reach of a scene that its user runs, as load_assets_in()
+    /// says.
     pub fn load_assets(&mut self, base_dir: &str) -> Result<()> {
         self.load_assets_in(base_dir, Reach::Any)
     }
 
-    /// Read and decode every declared asset file, and hand each text its font.
+    /// Read and decode every declared asset file, and hand each text layer its
+    /// font.
     ///
     /// An absolute path reads as it stands. Any other path resolves in
     /// `base_dir`, then through `$GHEE_ASSETS`, colon-separated directories, in
@@ -2873,10 +2251,9 @@ impl Scene {
     /// `$GHEE_ASSETS`.
     fn load_assets_from(&mut self, base_dir: &str, reach: Reach, more: &[String]) -> Result<()> {
         let font_files = self
-            .texts
-            .iter()
-            .flat_map(|t| &t.fonts)
-            .any(|f| crate::text::is_font_file(f));
+            .layers()
+            .filter_map(|l| l.font_family.as_deref())
+            .any(crate::text::is_font_file);
         if self.assets.is_empty() && !font_files {
             return Ok(());
         }
@@ -2930,41 +2307,38 @@ impl Scene {
             match read(&a.file, &format!("asset '{}'", a.name)) {
                 Ok((bytes, path)) => a.decode(&bytes, &path)?,
                 // A font that fails to load leaves the scene running, and its
-                // texts draw error boxes.
+                // layers draw error boxes.
                 Err(why) if a.is_font() => a.font = Some(Err(why)),
                 Err(why) => bail!("{why}"),
             }
         }
-        for t in &mut self.texts {
-            if t.fonts.is_empty() {
-                t.data = Some(vec![crate::text::built_in_font()]);
+        let assets = &self.assets;
+        for l in self.passes.iter_mut().flat_map(|p| &mut p.layers) {
+            let Some(f) = l.font_family.clone() else {
+                l.data = Some(vec![crate::text::built_in_font()]);
+                continue;
+            };
+            if !crate::text::is_font_file(&f) {
+                let font = assets
+                    .iter()
+                    .find(|a| a.name == f)
+                    .and_then(|a| a.font.clone());
+                l.data = font.map(|f| vec![f]);
                 continue;
             }
-            let mut data = Vec::new();
-            for f in &t.fonts {
-                if !crate::text::is_font_file(f) {
-                    data.push(
-                        self.assets
-                            .iter()
-                            .find(|a| a.name == *f)
-                            .and_then(|a| a.font.clone()),
-                    );
-                    continue;
-                }
-                if outside(f) {
-                    bail!(
-                        "text '{}' font {} is outside the scene directory",
-                        t.name,
-                        py_str_repr(f)
-                    );
-                }
-                let what = format!("text '{}' font {}", t.name, py_str_repr(f));
-                data.push(Some(read(f, &what).and_then(|(bytes, path)| {
-                    crate::text::font(&bytes)
-                        .map_err(|e| format!("{what} ({path}): unreadable font: {e}"))
-                })));
+            if outside(&f) {
+                bail!(
+                    "layer '{}' font_family {} is outside the scene directory",
+                    l.name,
+                    py_str_repr(&f)
+                );
             }
-            t.data = data.into_iter().collect();
+            let what = format!("layer '{}' font_family {}", l.name, py_str_repr(&f));
+            let font = read(&f, &what).and_then(|(bytes, path)| {
+                crate::text::font(&bytes)
+                    .map_err(|e| format!("{what} ({path}): unreadable font: {e}"))
+            });
+            l.data = Some(vec![font]);
         }
         Ok(())
     }
@@ -3058,8 +2432,7 @@ impl SceneBuilder for Result<Scene> {
     fn param(self, param: Param) -> Result<Scene> {
         let mut s = self?;
         s.params.insert(param.name.clone(), param);
-        Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)?
-            .with_texts(s.texts)
+        Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)
     }
 
     fn filters(self, names: &[&str]) -> Result<Scene> {
@@ -3104,14 +2477,15 @@ mod tests {
         Value::Object(d)
     }
 
-    /// A scene of passes `a` and `b`, a text `label` and the font asset
-    /// `sans`, with `extra` merged in at the top and `pass` merged into `a`.
+    /// A scene of passes `a` and `b`, a text layer `label` in `b` and the font
+    /// asset `sans`, with `extra` merged in at the top and `pass` merged into
+    /// `a`.
     fn named(extra: Value, pass: Value) -> Value {
         let mut d = json!({
             "version": 1,
             "assets": {"sans": {"file": "sans.ttf"}},
-            "texts": {"label": {"value": "hi", "font": "sans"}},
-            "passes": [{"name": "a", "code": GOOD}, {"name": "b", "code": GOOD}],
+            "passes": [{"name": "a", "code": GOOD}, {"name": "b", "code": GOOD,
+                "layers": [{"name": "label", "text": "hi", "font_family": "sans"}]}],
         });
         for (k, v) in extra.as_object().unwrap() {
             match d.get_mut(k).and_then(Value::as_object_mut) {
@@ -3140,11 +2514,8 @@ mod tests {
     #[test]
     fn a_sized_pass_keeps_its_layers_and_mipmaps() {
         let mut p = Pass::of("a", GOOD).unwrap();
-        p.layers = vec![Layer::from_dict(
-            "pass 'a' layer 't'",
-            &json!({"text": "t", "fragment": GOOD, "vertex": "vec2 glyph_place(vec2 em) { return em; }"}),
-        )
-        .unwrap()];
+        p.layers =
+            vec![Layer::from_dict("a layer", &json!({"name": "t", "text": "words"})).unwrap()];
         p.mipmaps = true;
         let sized = Ok::<Pass, anyhow::Error>(p.clone()).size(8, 4).unwrap();
         assert_eq!(sized.size, Some((8, 4)));
@@ -3167,10 +2538,10 @@ mod tests {
                            "q": {"type": "vec4", "value": [0, 0, 0, 1]},
                            "title": {"type": "string", "value": "GHEE"}},
                 "assets": {"logo": {"file": "logo.png"}, "sans": {"file": "sans.ttf"}},
-                "texts": {"label": {"value": "hi", "font": "sans"}},
                 "passes": [
                     {"name": "a", "code": GOOD, "params": {"k": f(json!(1.0))},
-                     "arrays": [{"name": "amps", "size": 8}, {"name": "mask", "size": [4, 2]}]},
+                     "arrays": [{"name": "amps", "size": 8}, {"name": "mask", "size": [4, 2]}],
+                     "layers": [{"name": "label", "text": "hi", "font_family": "sans"}]},
                     {"name": "b", "code": GOOD, "channels": [{"buffer": "a"}, {"buffer": null}]},
                 ],
             }),
@@ -3212,7 +2583,13 @@ mod tests {
         ];
         for hw_linear in [false, true] {
             for (i, p) in sc.passes.iter().enumerate() {
-                let g = p.glsl(Some(&sc.params), None, &sc.assets, &sc.texts, hw_linear);
+                let g = p.glsl(
+                    Some(&sc.params),
+                    None,
+                    &sc.assets,
+                    &sc.text_names(),
+                    hw_linear,
+                );
                 let has = |want: &str| g.lines().any(|l| l.starts_with(want));
                 for want in every.iter().chain(&own[i]) {
                     assert!(has(want), "pass {} lacks {want}", p.name);
@@ -3234,12 +2611,12 @@ mod tests {
             &json!({
                 "version": 1,
                 "assets": {"sans": {"file": "sans.ttf"}},
-                "texts": {"label": {"value": "hi", "font": "sans"},
-                          "title": {"value": "ho", "font": "sans"}},
                 "common": {"code": "float t(vec2 p){ return title_cover(p, 8.0); }"},
                 "passes": [
                     {"name": "a", "code": "void main(){ gl_FragColor = \
-                        vec4(label_cover(v_texCoord, 8.0) + t(v_texCoord)); }"},
+                        vec4(label_cover(v_texCoord, 8.0) + t(v_texCoord)); }",
+                     "layers": [{"name": "label", "text": "hi", "font_family": "sans"},
+                                {"name": "title", "text": "ho", "font_family": "sans"}]},
                     {"name": "b", "code": "void main(){ gl_FragColor = vec4(t(v_texCoord)); }"},
                 ],
             }),
@@ -3253,7 +2630,7 @@ mod tests {
                 Some(&sc.params),
                 sc.common.as_deref(),
                 &sc.assets,
-                &sc.texts,
+                &sc.text_names(),
                 false,
             );
             let has = |want: &str| g.lines().any(|l| l.starts_with(want));
@@ -3630,12 +3007,11 @@ mod tests {
             p
         };
         let layer = |extra: Value| {
-            let mut d = json!({"text": "t", "font_size": 20});
+            let mut d = json!({"name": "t", "text": "words"});
             d.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
-            json!({"version": 1, "texts": {"t": {"font": "a.ttf"}},
-                   "passes": [pass(json!({"layers": [d]}))]})
+            json!({"version": 1, "passes": [pass(json!({"layers": [d]}))]})
         };
         let rows = [
             (
@@ -3663,14 +3039,9 @@ mod tests {
                 "scene: asset 'a' takes no 'sampler', the closest key is 'sampling'",
             ),
             (
-                json!({"version": 1, "texts": {"t": {"font": "a.ttf", "alig": "center"}},
-                       "passes": [pass(json!({}))]}),
-                "scene: text 't' takes no 'alig', the closest key is 'align'",
-            ),
-            (
-                json!({"version": 1, "texts": {"t": {"font": "a.ttf", "pad": 1}},
-                       "passes": [pass(json!({}))]}),
-                "scene: text 't' takes no 'pad', which sits on a layer",
+                json!({"version": 1, "texts": {}, "passes": [pass(json!({}))]}),
+                "scene: the scene takes no 'texts', the closest key is 'text', which sits on a \
+                 layer",
             ),
             (
                 json!({"version": 1, "passes": [pass(json!({"chanels": []}))]}),
@@ -3678,21 +3049,25 @@ mod tests {
             ),
             (
                 json!({"version": 1, "passes": [pass(json!({"font": "a.ttf"}))]}),
-                "scene: pass 'main' takes no 'font', which sits on a text",
+                "scene: pass 'main' takes no 'font', the closest key is 'font_family', which sits \
+                 on a layer",
             ),
             (
-                layer(json!({"fill": "slug"})),
-                "scene: pass 'main' layer 't' takes no 'fill', which sits on text 't'",
+                layer(json!({"font": "a.ttf"})),
+                "scene: layer 't' takes no 'font', the closest key is 'font_family'",
             ),
             (
-                layer(json!({"fil": "slug"})),
-                "scene: pass 'main' layer 't' takes no 'fil', the closest key is 'fill', which \
-                 sits on text 't'",
+                layer(json!({"text_alig": "center"})),
+                "scene: layer 't' takes no 'text_alig', the closest key is 'text_align'",
             ),
             (
-                layer(json!({"glow": 1})),
-                "scene: pass 'main' layer 't' takes no 'glow', only name, text, vertex, font_size, \
-                 at, fragment, blend, pad, fade and emoji",
+                layer(json!({"code": GOOD})),
+                "scene: layer 't' takes no 'code', which sits on its pass",
+            ),
+            (
+                layer(json!({"vertex": GOOD})),
+                "scene: layer 't' takes no 'vertex', only name, visible, x, y, color, opacity, \
+                 blend, text, font_size, font_family, text_align and render",
             ),
             (
                 json!({"version": 1, "passes": [pass(json!({"channels": [{"bufer": "main"}]}))]}),
@@ -4009,15 +3384,15 @@ mod tests {
                 "asset 'd' file '../secret.raw'",
             ),
             (
-                json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
-                       "assets": {"face": {"file": "../up.ttf"}},
-                       "texts": {"label": {"value": "hi", "font": "face"}}}),
+                json!({"version": 1, "assets": {"face": {"file": "../up.ttf"}},
+                       "passes": [{"name": "m", "code": GOOD,
+                           "layers": [{"name": "label", "text": "hi", "font_family": "face"}]}]}),
                 "asset 'face' file '../up.ttf'",
             ),
             (
-                json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
-                       "texts": {"label": {"value": "hi", "font": "../up.ttf"}}}),
-                "text 'label' font '../up.ttf'",
+                json!({"version": 1, "passes": [{"name": "m", "code": GOOD,
+                    "layers": [{"name": "label", "text": "hi", "font_family": "../up.ttf"}]}]}),
+                "layer 'label' font_family '../up.ttf'",
             ),
         ] {
             let mut sc = Scene::from_dict(&d, None, None).unwrap();
@@ -4073,12 +3448,12 @@ mod tests {
             (
                 json!({"params": {"label_cover": c}}),
                 json!({}),
-                "scene param 'label_cover' and text 'label' both declare 'label_cover'",
+                "scene param 'label_cover' and layer 'label' both declare 'label_cover'",
             ),
             (
                 json!({}),
-                json!({"arrays": [{"name": "label", "size": 4}]}),
-                "text 'label' and array 'label' in pass 'a' both declare 'label_size'",
+                json!({"params": {"label_size": f}}),
+                "layer 'label' and param 'label_size' in pass 'a' both declare 'label_size'",
             ),
             (
                 json!({"params": {"gain_tex": f}, "assets": {"gain": {"file": "g.png"}}}),
@@ -4109,7 +3484,7 @@ mod tests {
             "assets": {"logo": {"file": "l.png"}, "logos": {"file": "l.png"}},
         });
         let pass = json!({"params": {"gain": f, "word": f, "logo_sizes": f},
-                          "arrays": [{"name": "label", "size": [4, 4]},
+                          "arrays": [{"name": "labels", "size": [4, 4]},
                                      {"name": "state", "size": 4}]});
         let mut d = named(extra, pass);
         // Two passes may each declare one param name and one array name.
@@ -4155,52 +3530,12 @@ mod tests {
             ] {
                 assert_eq!(named_err(extra, pass), format!("scene: {owner}: {why}"));
             }
+            // A layer gives GLSL its name with a suffix, so it takes a built-in
+            // name.
             let mut d = named(json!({}), json!({}));
-            d["texts"][name] = json!({"font": "sans"});
-            let e = Scene::from_dict(&d, None, None).unwrap_err().to_string();
-            assert_eq!(e, format!("scene: text '{name}': {why}"));
+            d["passes"][1]["layers"][0]["name"] = json!(name);
+            assert!(Scene::from_dict(&d, None, None).is_ok(), "layer {name}");
         }
-    }
-
-    #[test]
-    fn a_name_with_a_layers_prefix_is_refused_as_any_declared_name() {
-        let f = json!({"type": "float", "value": 1.0});
-        let why = "a name that starts with glyph_ is reserved for layers";
-        let k = "glyph_k";
-        for (extra, pass, owner) in [
-            (
-                json!({"params": {k: f}}),
-                json!({}),
-                format!("scene param '{k}'"),
-            ),
-            (
-                json!({}),
-                json!({"params": {k: f}}),
-                format!("param '{k}' in pass 'a'"),
-            ),
-            (
-                json!({}),
-                json!({"arrays": [{"name": k, "size": 4}]}),
-                format!("array '{k}' in pass 'a'"),
-            ),
-            (
-                json!({"assets": {k: {"file": "x.png"}}}),
-                json!({}),
-                format!("asset '{k}'"),
-            ),
-            (
-                json!({"texts": {k: {"value": "w", "font": "sans"}}}),
-                json!({}),
-                format!("text '{k}'"),
-            ),
-        ] {
-            assert_eq!(named_err(extra, pass), format!("scene: {owner}: {why}"));
-        }
-        let text = json!({"texts": {"ghee_k": {"value": "w", "font": "sans"}}});
-        assert_eq!(
-            named_err(text, json!({})),
-            "scene: text 'ghee_k': a name that starts with ghee_ belongs to ghee"
-        );
     }
 
     #[test]
@@ -4238,6 +3573,11 @@ mod tests {
                 json!({}),
                 json!({"arrays": [{"name": "a-b", "size": 4}]}),
                 format!("array name 'a-b' in pass 'a' {chars}"),
+            ),
+            (
+                json!({}),
+                json!({"layers": [{"name": "my glow", "text": "w"}]}),
+                format!("layer name 'my glow' {chars}"),
             ),
             (
                 json!({"assets": {"": {"file": "l.png"}}}),
@@ -4309,6 +3649,31 @@ mod tests {
                 json!({"params": {"amps": f}, "arrays": [{"name": "amps", "size": 8}]}),
                 "param 'amps' and array 'amps' in pass 'a' share a name",
             ),
+            (
+                json!({}),
+                json!({"layers": [{"name": "b", "text": "w"}]}),
+                "pass 'b' and layer 'b' share a name",
+            ),
+            (
+                json!({}),
+                json!({"layers": [{"name": "label", "text": "w"}]}),
+                "layer 'label' is declared twice",
+            ),
+            (
+                json!({"params": {"label": words}}),
+                json!({}),
+                "layer 'label' and scene param 'label' share a name",
+            ),
+            (
+                json!({"assets": {"label": {"file": "l.png"}}}),
+                json!({}),
+                "layer 'label' and asset 'label' share a name",
+            ),
+            (
+                json!({}),
+                json!({"params": {"label": words}}),
+                "layer 'label' and param 'label' in pass 'a' share a name",
+            ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));
         }
@@ -4337,7 +3702,7 @@ mod tests {
             "filter 'frc256': scene param 'frc256_bluenoise_tex' and asset 'bluenoise' of filter \
              'frc256' both declare 'frc256_bluenoise_tex'"
         );
-        // A text's names and a layer's stay out of a filter pass.
+        // A layer's names stay out of a filter pass.
         let doc = named(json!({"params": {"bluenoise": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
         crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();

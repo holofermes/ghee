@@ -10,9 +10,10 @@ the ladder slides down: a row grows as it falls and scrolls sideways, and a
 new one enters at the top. The shader reads the words with `words_cover` at
 the pixels per em of the row, so an edge stays one pixel wide at any size.
 
-The text `words` takes its words live, through the string param of its
-name. The scene steps them through WORDS, and ghee lays out each new entry
-with no recompile. Words set in the console end the steps. fonts/ holds DejaVu Sans cut to Latin, with its license.
+The hidden text layer `words` takes its words live, through the string param
+of its name. The scene steps them through WORDS, and ghee lays out each new
+entry with no recompile. Words set in the console end the steps. fonts/ holds
+DejaVu Sans cut to Latin, with its license.
 
     ghee render --demo lettering -o out.####.png --frames 60 --timestep 0.1
     ghee render --demo lettering --display st7789
@@ -63,7 +64,21 @@ void main() {
 
 def build():
     return ghee.Scene(
-        passes=[ghee.Pass(name="main", code=SHADER)],
+        passes=[
+            ghee.Pass(
+                name="main",
+                code=SHADER,
+                layers=[
+                    ghee.Layer(
+                        "words",
+                        WORDS[0],
+                        visible=False,
+                        font_family="sans",
+                        text_align="center",
+                    )
+                ],
+            )
+        ],
         params={
             "zoom": ghee.Param("zoom", "float", 0.25, min=-1.0, max=1.0, step=0.01),
             "scroll": ghee.Param("scroll", "float", 0.4, min=-2.0, max=2.0, step=0.01),
@@ -72,7 +87,6 @@ def build():
             "paper": ghee.Param("paper", "color", [0.04, 0.05, 0.09]),
         },
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=[ghee.Text("words", "sans", WORDS[0], align="center")],
     )
 
 

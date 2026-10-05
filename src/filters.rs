@@ -280,7 +280,6 @@ fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
     }
     if added {
         use std::mem::take;
-        let texts = take(&mut scene.texts);
         *scene = Scene::new(
             take(&mut scene.passes),
             take(&mut scene.version),
@@ -289,7 +288,6 @@ fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
             take(&mut scene.common),
             take(&mut scene.assets),
         )
-        .and_then(|s| s.with_texts(texts))
         .map_err(|e| anyhow::anyhow!("filter '{filter}': {e}"))?;
     }
     Ok(())

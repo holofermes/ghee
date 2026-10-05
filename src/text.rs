@@ -1,22 +1,17 @@
 //! Text drawn on the GPU from the outlines of a font.
 //!
-//! A scene declares a text with its words and the fonts to draw it with, in
-//! order: each character draws from the first font whose cmap holds it. A
-//! text that names no font draws from the built-in font, DejaVu Sans cut to
-//! Latin. Every pass of the scene except a filter pass then reads the
-//! coverage of those words at any point with `<name>_cover(p, font_size)`.
-//! ghee declares a scene string param under the text's name, which holds
-//! the words. A set of that param changes the words live, with no recompile.
+//! A text layer, `crate::layer`, holds words and the fonts to draw them
+//! with, in order: each character draws from the first font whose cmap holds
+//! it. This module lays the words out into a block and packs what the GPU
+//! reads. Every pass of the scene except a filter pass reads the coverage of
+//! a layer's words at any point with `<name>_cover(p, font_size)`.
 //!
-//! A layer, declared on a pass, puts a text into that pass's buffer after the
-//! pass's own quad, as one quad over each inked glyph. The layer's
-//! `glyph_place`, in its vertex GLSL, maps a point of the block to a pixel of
-//! the pass, and its fragment GLSL colours the pixels of each quad from the
-//! glyph's coverage. The text's fill gives that coverage: the MTSDF fill
-//! takes one bilinear sample of the glyph's field in an atlas, which
-//! `crate::atlas` builds, and the slug fill computes it from the curves as
-//! `<name>_cover` does. A colour glyph, a bitmap with no outline, draws
-//! through the layer's colour batch, which `crate::colour` describes.
+//! A layer draws its words as one quad over each inked glyph. Under the MTSDF
+//! render, a quad takes one bilinear sample of the glyph's field in an atlas,
+//! which `crate::atlas` builds, and under the slug render, it computes the
+//! coverage from the curves as `<name>_cover` does. A colour glyph, a bitmap
+//! with no outline, draws through the layer's colour batch, which
+//! `crate::colour` describes.
 //!
 //! Coverage follows the Slug algorithm by Eric Lengyel
 //! (https://jcgt.org/published/0006/02/02/, https://github.com/EricLengyel/Slug).
@@ -25,7 +20,7 @@
 //! outline winds around the pixel. A crossing within half a pixel of the
 //! ray's start counts in part, which antialiases the edge at any scale.
 //!
-//! The curves of a text's words lie in one RGBA8 texture of the text's own,
+//! The curves of a layer's words lie in one RGBA8 texture of the layer's own,
 //! read with NEAREST, so a GL without float or integer textures, the VC4,
 //! holds them. A 16-bit value spans two bytes of a texel, a 24-bit texel
 //! index three, and a curve two texels. pack() writes three tables into it,
@@ -46,15 +41,15 @@
 //!    curves by their far end, largest first, so the loop over it stops at
 //!    the first curve wholly behind `p`.
 //!
-//! The coverage at `p` is the largest among the glyphs of its cell. A layer of
-//! the slug fill skips the grid: each of its quads carries the texel where
-//! its glyph's data starts.
+//! The coverage at `p` is the largest among the glyphs of its cell. A slug
+//! layer skips the grid: each of its quads carries the texel where its
+//! glyph's data starts.
 //!
 //! A text problem leaves the scene running. A character whose glyph has no
 //! outline and no colour bitmap, or one past a limit, draws an error box:
 //! hazard stripes, laid out as an outline, so `<name>_cover` reads them as
 //! coverage, and a layer's error-box batch paints them yellow and black. A
-//! font that failed to load drops out of its text's fonts, and when none is
+//! font that failed to load drops out of the layer's fonts, and when none is
 //! left, every character draws an error box. Words that fit no texture leave
 //! the last words that did.
 
@@ -62,13 +57,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use ttf_parser::{Face, GlyphId};
 
 use crate::atlas::{self, Cell};
 use crate::colour;
-use crate::scene::{self, py_repr};
 
 /// Texture width in texels. A power of two keeps every texel centre an exact
 /// binary fraction, so a NEAREST read lands on the texel named by the index.
@@ -96,7 +89,7 @@ const CUBIC_TOL: f64 = 1.0 / 4096.0;
 /// Control points sit on a lattice of this many steps across the glyph's box,
 /// 11 bits a coordinate. A point lands within half a step of the outline on each
 /// axis, 1/4094 of the box: 0.17 px for a 1 em box at 700 px per em.
-const LATTICE: f64 = 2047.0;
+pub(crate) const LATTICE: f64 = 2047.0;
 /// A curve stores p2 as its offset from p3, in 10 bits. A curve whose p2 lies
 /// more than this many lattice steps from p3 on an axis splits in two.
 const OFFSET_MAX: i32 = 511;
@@ -213,7 +206,9 @@ pub enum Align {
 }
 
 impl Align {
-    fn as_str(self) -> &'static str {
+    pub const ALL: [Align; 3] = [Align::Left, Align::Center, Align::Right];
+
+    pub fn as_str(self) -> &'static str {
         match self {
             Align::Left => "left",
             Align::Center => "center",
@@ -222,218 +217,20 @@ impl Align {
     }
 }
 
-/// Where a layer of the text takes each pixel's coverage from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Fill {
-    /// One read of the glyph's MTSDF in an atlas: fast, with the distance to
-    /// the outline for effects.
-    Mtsdf,
-    /// Slug's exact coverage from the glyph's curves, as `<name>_cover` reads
-    /// it, sharp at any size.
-    Slug,
+/// True when a font of `fonts` that loaded holds colour bitmaps, a CBDT or
+/// an sbix table.
+pub fn any_colour(fonts: &[Font]) -> bool {
+    fonts.iter().flatten().any(|d| {
+        Face::parse(d, 0).is_ok_and(|f| f.tables().cbdt.is_some() || f.tables().sbix.is_some())
+    })
 }
 
-/// The largest px/em and range of an atlas: the side of the atlas.
-pub const ATLAS_MAX: u64 = atlas::MAX_SIZE as u64;
-
-/// The distance range in texels of an MTSDF atlas at `font_size` texels per
-/// em whose field reaches `pad` em past the outline: half the range reaches
-/// each side, and the range is atlas::RANGE at least.
-pub fn atlas_range(font_size: u32, pad: f64) -> u64 {
-    ((2.0 * pad * f64::from(font_size)).ceil() as u64).max(u64::from(atlas::RANGE))
-}
-
-/// A text a scene declares. Its words are the scene string param of the same
-/// name, which ghee declares for it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Text {
-    pub name: String,
-    /// The words that the text starts with. The scene's string param of the
-    /// text's name holds them from then on, live.
-    pub value: String,
-    /// The text's fonts, each a font asset of the scene or a .ttf or .otf file
-    /// resolved as an asset file is, in the order that a character looks for
-    /// its glyph. Line height and baseline come from the first. An empty list
-    /// takes the built-in font.
-    pub fonts: Vec<String>,
-    pub align: Align,
-    pub fill: Fill,
-    /// The atlas's `font_size`: the texels per em of a glyph's cell in the
-    /// MTSDF atlas. The atlas's distance range follows the layers of the
-    /// text, as Scene::atlas_range gives it.
-    pub atlas_font_size: u32,
-    /// Each font asset's bytes, or why they failed to load, in the order of
-    /// `fonts`, or the built-in font's alone. load_assets fills them, and
-    /// from_dict for the built-in font.
-    pub data: Option<Vec<Font>>,
-}
-
-impl Text {
-    pub fn from_dict(name: &str, d: &Value) -> Result<Text> {
-        let Value::Object(o) = d else {
-            bail!("text '{name}' needs an object, got {}", py_repr(d));
-        };
-        let elsewhere = [
-            scene::keys_on(&scene::TEXT_KEYS, &scene::LAYER_KEYS, "a layer"),
-            scene::keys_on(&scene::TEXT_KEYS, &scene::ASSET_KEYS, "an asset"),
-        ]
-        .concat();
-        scene::known_keys(o, &format!("text '{name}'"), &scene::TEXT_KEYS, &elsewhere)?;
-        let named = |v: &Value| match v {
-            Value::String(s) if !s.is_empty() => Some(s.clone()),
-            _ => None,
-        };
-        let fonts = match o.get("font").filter(|v| !v.is_null()) {
-            Some(Value::Array(a)) if !a.is_empty() => a.iter().map(named).collect(),
-            Some(v) => named(v).map(|s| vec![s]),
-            None => Some(Vec::new()),
-        };
-        let Some(fonts) = fonts else {
-            bail!(
-                "text '{name}' 'font' needs the name of a font asset or a .ttf or .otf file, \
-                 or a list of them, got {}",
-                py_repr(&o["font"])
-            );
-        };
-        let value = match o.get("value").filter(|v| !v.is_null()) {
-            None => String::new(),
-            Some(Value::String(s)) => s.clone(),
-            Some(v) => bail!(
-                "text '{name}' value needs words in a string, got {}",
-                py_repr(v)
-            ),
-        };
-        let align = match o.get("align").filter(|v| !v.is_null()) {
-            None => Align::Left,
-            Some(Value::String(s)) if s == "left" => Align::Left,
-            Some(Value::String(s)) if s == "center" => Align::Center,
-            Some(Value::String(s)) if s == "right" => Align::Right,
-            Some(v) => bail!(
-                "text '{name}' align needs 'left', 'center' or 'right', got {}",
-                py_repr(v)
-            ),
-        };
-        let fill = match o.get("fill").filter(|v| !v.is_null()) {
-            None => Fill::Mtsdf,
-            Some(Value::String(s)) if s == "mtsdf" => Fill::Mtsdf,
-            Some(Value::String(s)) if s == "slug" => Fill::Slug,
-            Some(v) => bail!(
-                "text '{name}' fill needs 'mtsdf', fast and with glyph_dist and glyph_round_dist, \
-                 or 'slug', exact edges at any size, got {}",
-                py_repr(v)
-            ),
-        };
-        if fill == Fill::Slug && o.get("atlas").is_some_and(|v| !v.is_null()) {
-            bail!("text '{name}' takes no 'atlas' with \"fill\": \"slug\", which reads the curves");
-        }
-        let mut atlas_font_size = atlas::PX_EM;
-        match o.get("atlas").filter(|v| !v.is_null()) {
-            None => {}
-            Some(Value::Object(a)) => {
-                for (k, v) in a {
-                    match k.as_str() {
-                        "font_size" => {}
-                        _ => bail!("text '{name}' atlas takes 'font_size', got '{k}'"),
-                    }
-                    atlas_font_size = match v.as_u64() {
-                        Some(n) if (1..=ATLAS_MAX).contains(&n) => n as u32,
-                        _ => bail!(
-                            "text '{name}' atlas {k} needs a whole number from 1 to {ATLAS_MAX}, \
-                             got {}",
-                            py_repr(v)
-                        ),
-                    };
-                }
-            }
-            Some(v) => bail!(
-                "text '{name}' atlas needs an object with 'font_size', got {}",
-                py_repr(v)
-            ),
-        }
-        Ok(Text {
-            name: name.to_string(),
-            value,
-            data: fonts.is_empty().then(|| vec![built_in_font()]),
-            fonts,
-            align,
-            fill,
-            atlas_font_size,
-        })
-    }
-
-    pub fn to_dict(&self) -> Value {
-        let mut d = Map::new();
-        d.insert("value".to_string(), Value::from(self.value.clone()));
-        match &self.fonts[..] {
-            [] => {}
-            [one] => {
-                d.insert("font".to_string(), Value::from(one.clone()));
-            }
-            all => {
-                d.insert("font".to_string(), Value::from(all.to_vec()));
-            }
-        }
-        if self.align != Align::Left {
-            d.insert("align".to_string(), Value::from(self.align.as_str()));
-        }
-        if self.fill == Fill::Slug {
-            d.insert("fill".to_string(), Value::from("slug"));
-        }
-        if self.atlas_font_size != atlas::PX_EM {
-            let mut a = Map::new();
-            a.insert("font_size".to_string(), Value::from(self.atlas_font_size));
-            d.insert("atlas".to_string(), Value::Object(a));
-        }
-        Value::Object(d)
-    }
-
-    /// Lay out `words` and pack them. Fails when the fonts were never loaded.
-    pub fn build(&self, words: &str) -> Result<Layout> {
-        self.lay(words, true)
-    }
-
-    /// Lay out `words` with no texture of curves, as place() does. Fails when
-    /// the fonts were never loaded.
-    pub fn place(&self, words: &str) -> Result<Layout> {
-        self.lay(words, false)
-    }
-
-    fn lay(&self, words: &str, curves: bool) -> Result<Layout> {
-        match &self.data {
-            None => bail!(
-                "text '{}': {} was never loaded, the scene was built without a directory",
-                self.name,
-                self.font_name(0)
-            ),
-            Some(fonts) => Ok(lay(fonts, words, self.align, curves)),
-        }
-    }
-
-    /// The font at index `i` of the text's fonts in an error: "font 'sans'",
-    /// or "the built-in font".
-    pub fn font_name(&self, i: usize) -> String {
-        match self.fonts.get(i) {
-            Some(f) => format!("font '{f}'"),
-            None => "the built-in font".to_string(),
-        }
-    }
-
-    /// True when a font of the text that loaded holds colour bitmaps, a CBDT
-    /// or an sbix table.
-    pub fn has_colour(&self) -> bool {
-        self.data.iter().flatten().flatten().any(|d| {
-            Face::parse(d, 0).is_ok_and(|f| f.tables().cbdt.is_some() || f.tables().sbix.is_some())
-        })
-    }
-
-    /// True when a font of the text that loaded holds outlines.
-    pub fn has_outlines(&self) -> bool {
-        self.data
-            .iter()
-            .flatten()
-            .flatten()
-            .any(|d| Face::parse(d, 0).is_ok_and(|f| outlined(&f)))
-    }
+/// True when a font of `fonts` that loaded holds outlines.
+pub fn any_outlines(fonts: &[Font]) -> bool {
+    fonts
+        .iter()
+        .flatten()
+        .any(|d| Face::parse(d, 0).is_ok_and(|f| outlined(&f)))
 }
 
 /// The texture and the uniforms of one laid-out text.
@@ -1636,7 +1433,9 @@ pub fn atlas_quads(
     (quads(drawn), quads(boxes), missing)
 }
 
-/// The preamble lines of one text: its uniforms, its sampler, and the readers.
+/// The lines of the coverage reader of layer `name`, `<name>_cover`, with
+/// the uniforms that it reads. A pass's preamble declares `<name>_size`
+/// apart.
 ///
 /// The coverage math ports SlugPixelShader.hlsl, Copyright 2017 Eric Lengyel,
 /// MIT License (https://github.com/EricLengyel/Slug). GLSL ES 1.00 has no
@@ -1645,93 +1444,16 @@ pub fn atlas_quads(
 /// per em from its caller. The roots come from the stable form of the
 /// quadratic formula, which also covers a curve that is a line.
 pub fn reader_lines(name: &str) -> Vec<String> {
-    lines(GLSL, name)
+    let mut l = lines(CURVES, name);
+    l.extend(lines(COVER, name));
+    l
 }
 
-/// The lines of a layer's vertex shader ahead of the author's
-/// `vec2 glyph_place(vec2 em)`: the quad attributes, ghee's varyings, and the
-/// glyph values read by glyph_place. The caller's preamble declares
-/// `resolution`, `v_texCoord`, the text's size and `ghee_vflip` at the
-/// fragment stage's precision.
-pub fn layer_vertex_head() -> Vec<String> {
-    lines(LAYER_VERTEX_HEAD, "")
-}
-
-/// The vertex main of a slug layer, after glyph_place. Each box edge moves
-/// out 5/8 of a screen pixel, or `pad` em where that reaches further.
-pub fn slug_vertex_main(pad: f64) -> Vec<String> {
-    lines(SLUG_VERTEX_MAIN, "")
-        .into_iter()
-        .map(|l| l.replace("PAD", &format!("{pad:?}")))
-        .collect()
-}
-
-/// The lines of a slug layer's fragment shader between the text's reader
-/// lines and the author's code.
-pub fn slug_fragment_head(name: &str) -> Vec<String> {
-    lines(SLUG_FRAGMENT_HEAD, name)
-}
-
-/// The vertex main of an MTSDF layer of text `name`, after glyph_place, for an
-/// atlas of `px_em` texels per em and a range of `range` texels. Each box edge
-/// moves out 5/8 of a screen pixel, or `pad` em where that reaches further,
-/// and never past the field's reach, half the range.
-pub fn mtsdf_vertex_main(name: &str, pad: f64, px_em: u32, range: u32) -> Vec<String> {
-    let range_em = f64::from(range) / f64::from(px_em);
-    let reach = range_em / 2.0;
-    lines(MTSDF_VERTEX_MAIN, name)
-        .into_iter()
-        .map(|l| {
-            l.replace("PAD", &format!("{:?}", pad.min(reach)))
-                .replace("REACH", &format!("{reach:?}"))
-                .replace("RANGE_EM", &format!("{range_em:?}"))
-        })
-        .collect()
-}
-
-/// The lines of an MTSDF layer's fragment shader between the preamble and the
-/// author's code.
-pub fn mtsdf_fragment_head(name: &str) -> Vec<String> {
-    lines(MTSDF_FRAGMENT_HEAD, name)
-}
-
-/// How an MTSDF layer fades out toward the edge of its quads, by the true
-/// distance from the letters in em.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Fade {
-    /// glyph_fade is 1 up to this distance.
-    pub from: f64,
-    /// glyph_fade is 0 from this distance out: the layer's pad.
-    pub to: f64,
-}
-
-/// The lines of an MTSDF layer's fragment shader after the author's code,
-/// for an atlas of `px_em` texels per em and a range of `range` texels. With
-/// `fade`, ghee sets glyph_fade before the author's main and multiplies the
-/// colour by it after.
-pub fn mtsdf_fragment_tail(name: &str, fade: Option<Fade>, px_em: u32, range: u32) -> Vec<String> {
-    let range_em = f64::from(range) / f64::from(px_em);
-    let mut out = Vec::new();
-    for l in lines(MTSDF_FRAGMENT_TAIL, name) {
-        let main = l.trim() == "ghee_main();";
-        if let (true, Some(f)) = (main, fade) {
-            out.extend(lines(MTSDF_FADE, name).into_iter().map(|l| {
-                l.replace("FADE_FROM", &format!("{:?}", f.from))
-                    .replace("FADE_TO", &format!("{:?}", f.to))
-                    .replace("RANGE_EM", &format!("{range_em:?}"))
-            }));
-        }
-        out.push(l);
-        if main && fade.is_some() {
-            out.push("    gl_FragColor *= ghee_f;".to_string());
-        }
-    }
-    out
-}
-
-/// The lines of a slug layer's fragment shader after the author's code.
-pub fn slug_fragment_tail(name: &str) -> Vec<String> {
-    lines(SLUG_FRAGMENT_TAIL, name)
+/// The lines of the reader of one glyph's curves, `ghee_<name>_outline`, with
+/// the texture and the uniforms that it reads: what a slug layer's shader
+/// takes of reader_lines().
+pub fn curve_reader_lines(name: &str) -> Vec<String> {
+    lines(CURVES, name)
 }
 
 /// The fragment shader of a layer's error boxes after its precision lines:
@@ -1741,11 +1463,11 @@ pub fn box_fragment() -> Vec<String> {
     lines(BOX_FRAGMENT, "")
 }
 
-/// The GLSL names that text `name` declares for an author to read: every
-/// NAME_ name in the templates of its readers and its layers. ghee's own names
-/// for the text start with ghee_, as internal() makes them.
+/// The GLSL names that layer `name` declares in every scene pass for an
+/// author to read, `<name>_cover` and `<name>_size`. ghee's own names for the
+/// layer start with ghee_, as internal() makes them.
 pub fn names(name: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    let mut out = vec![format!("{name}_size")];
     for n in template_names(name) {
         if !n.starts_with(crate::scene::PREFIX) && !out.contains(&n) {
             out.push(n);
@@ -1754,55 +1476,19 @@ pub fn names(name: &str) -> Vec<String> {
     out
 }
 
-/// The distances that a slug layer leaves undeclared, each with the name that
-/// it stands for there, so a compile error names it.
-pub const SLUG_UNDECLARED: [(&str, &str); 3] = [
-    ("glyph_dist", "glyph_dist_needs_fill_mtsdf"),
-    ("glyph_round_dist", "glyph_round_dist_needs_fill_mtsdf"),
-    ("glyph_fade", "glyph_fade_needs_fill_mtsdf"),
-];
-
-/// The names that a layer's GLSL declares for its author: the function the
-/// author defines, and the values and functions the author reads.
-pub const LAYER_NAMES: [&str; 12] = [
-    "glyph_place",
-    "glyph_cover",
-    "glyph_dist",
-    "glyph_round_dist",
-    "glyph_fade",
-    "glyph_em",
-    "glyph_index",
-    "glyph_word",
-    "glyph_line",
-    "glyph_span",
-    "glyph_box",
-    "glyph_font_size",
-];
-
-/// ghee's name for the engine asset or the uniform `suffix` of text `name`,
+/// ghee's name for the engine asset or the uniform `suffix` of layer `name`,
 /// such as its texture of curves, `_curves`.
 pub fn internal(name: &str, suffix: &str) -> String {
     format!("{}{name}{suffix}", crate::scene::PREFIX)
 }
 
-/// Every name made from NAME in the templates of the readers and the layers
-/// of text `name`, with the `<asset>_size` set by the engine beside each
-/// sampler `<asset>_tex`.
-fn template_names(name: &str) -> Vec<String> {
-    let glsl = [
-        GLSL,
-        LAYER_VERTEX_HEAD,
-        SLUG_FRAGMENT_HEAD,
-        SLUG_FRAGMENT_TAIL,
-        MTSDF_VERTEX_MAIN,
-        MTSDF_FRAGMENT_HEAD,
-        MTSDF_FRAGMENT_TAIL,
-        crate::colour::VERTEX_MAIN,
-        crate::colour::FRAGMENT,
-    ];
+/// Every name made from NAME in the templates of the readers of layer
+/// `name`, with the `<asset>_size` set by the engine beside each sampler
+/// `<asset>_tex`.
+pub(crate) fn template_names(name: &str) -> Vec<String> {
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut out: Vec<String> = Vec::new();
-    for t in glsl {
+    for t in [CURVES, COVER] {
         for (i, _) in t.match_indices("NAME_") {
             let (head, prefixed) = match t[..i].strip_suffix(crate::scene::PREFIX) {
                 Some(head) => (head, true),
@@ -1859,192 +1545,6 @@ fn lines(glsl: &str, name: &str) -> Vec<String> {
         .collect()
 }
 
-const LAYER_VERTEX_HEAD: &str = r#"attribute vec4 ghee_a0;
-attribute vec4 ghee_a1;
-attribute vec4 ghee_a2;
-attribute vec4 ghee_a3;
-varying vec4 ghee_v0;
-varying vec4 ghee_v1;
-varying vec4 ghee_v2;
-varying vec4 ghee_v3;
-varying vec4 ghee_v4;
-float glyph_index;
-float glyph_word;
-float glyph_line;
-vec2 glyph_span;
-vec4 glyph_box;"#;
-
-const SLUG_VERTEX_MAIN: &str = r#"void main() {
-    glyph_index = ghee_a0.z;
-    glyph_word = ghee_a0.w;
-    glyph_line = ghee_a3.x;
-    glyph_span = ghee_a3.yz;
-    glyph_box = ghee_a1;
-    vec2 ghee_corner = mix(ghee_a1.xy, ghee_a1.zw, ghee_a0.xy);
-    vec2 ghee_p = glyph_place(ghee_corner);
-    // The pixels moved by glyph_place per em along each em axis, exact for an
-    // affine glyph_place.
-    vec2 ghee_jx = (glyph_place(ghee_corner + vec2(0.0625, 0.0)) - ghee_p) * 16.0;
-    vec2 ghee_jy = (glyph_place(ghee_corner + vec2(0.0, 0.0625)) - ghee_p) * 16.0;
-    // ghee_det stays above 0, so a glyph scaled to nothing keeps every
-    // position finite.
-    float ghee_sdet = ghee_jx.x * ghee_jy.y - ghee_jx.y * ghee_jy.x;
-    float ghee_det = max(abs(ghee_sdet), 1.0 / 16384.0);
-    // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
-    // up to 1/16 px off the position set by this shader.
-    vec2 ghee_grow = max(0.625 * vec2(length(ghee_jy), length(ghee_jx)) / ghee_det, vec2(PAD));
-    vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_grow;
-    vec2 ghee_px = glyph_place(ghee_e);
-    // The em spanned by a screen pixel along each em axis, as fwidth gives it.
-    vec2 ghee_fw = vec2(abs(ghee_jy.x) + abs(ghee_jy.y),
-                        abs(ghee_jx.x) + abs(ghee_jx.y)) / ghee_det;
-    vec2 ghee_sz = ghee_a1.zw - ghee_a1.xy;
-    // The sample on the glyph's lattice, y up, and the pixels spanned by a
-    // lattice step.
-    ghee_v0 = vec4(vec2(ghee_e.x - ghee_a1.x, ghee_a1.w - ghee_e.y) / ghee_sz * LATTICE,
-                   ghee_sz / (ghee_fw * LATTICE));
-    // glyph_font_size: the pixels per em of a placement that scales both axes
-    // alike.
-    ghee_v1 = vec4(ghee_a2.xyz, sqrt(ghee_det));
-    ghee_v2 = vec4(ghee_e, ghee_a0.zw);
-    ghee_v3 = vec4(ghee_a3.xyz, 0.0);
-    // The lattice steps spanned by a pixel along x and along y of the pass.
-    vec2 ghee_k = LATTICE / ghee_sz;
-    ghee_v4 = vec4(ghee_k.x * ghee_jy.y, -ghee_k.x * ghee_jy.x,
-                   ghee_k.y * ghee_jx.y, -ghee_k.y * ghee_jx.x)
-            / (ghee_sdet < 0.0 ? -ghee_det : ghee_det);
-    v_texCoord = ghee_px / resolution;
-    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
-}"#;
-
-const SLUG_FRAGMENT_HEAD: &str = r#"varying vec4 ghee_v0;
-varying vec4 ghee_v1;
-varying vec4 ghee_v2;
-varying vec4 ghee_v3;
-varying vec4 ghee_v4;
-// A varying that holds one value at every vertex may still interpolate a hair
-// off it, so an index rounds.
-#define glyph_em ghee_v2.xy
-#define glyph_index float(int(ghee_v2.z + 0.5))
-#define glyph_word float(int(ghee_v2.w + 0.5))
-#define glyph_line float(int(ghee_v3.x + 0.5))
-#define glyph_span ghee_v3.yz
-#define glyph_font_size ghee_v1.w
-float ghee_c = 0.0;
-float glyph_cover() { return ghee_c; }
-// Distances come from the MTSDF fill's field, and a compile error names it.
-#define glyph_dist glyph_dist_needs_fill_mtsdf
-#define glyph_round_dist glyph_round_dist_needs_fill_mtsdf
-#define glyph_fade glyph_fade_needs_fill_mtsdf
-// The author's main runs as ghee_main, after the fill: the fill computes the
-// coverage once a pixel, and glyph_cover() returns it at every call.
-#define main ghee_main"#;
-
-const SLUG_FRAGMENT_TAIL: &str = r#"#undef main
-void main() {
-    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
-    // shader, and the varyings follow the vertex, so the sample moves to the
-    // pixel centre given by v_texCoord.
-    vec2 ghee_px = v_texCoord * resolution;
-    vec2 ghee_d = floor(ghee_px) + 0.5 - ghee_px;
-    vec2 ghee_u = ghee_v0.xy + vec2(dot(ghee_v4.xy, ghee_d), dot(ghee_v4.zw, ghee_d));
-    ghee_c = ghee_NAME_outline(float(int(ghee_v1.x + 0.5)), vec2(ivec2(ghee_v1.yz + 0.5)),
-                               ghee_u, ghee_v0.zw);
-    ghee_main();
-    // On VC4 a shader whose last texture read sits outside an if runs in two
-    // threads, whose switch loses the condition flags. A read after the
-    // author's code that never runs, in an if that the compiler cannot drop,
-    // keeps the shader on one thread whatever textures the author's code
-    // reads.
-    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_curves_tex, v_texCoord);
-}"#;
-
-const MTSDF_VERTEX_MAIN: &str = r#"uniform vec2 ghee_NAME_atlas_size;
-void main() {
-    glyph_index = ghee_a0.z;
-    glyph_word = ghee_a0.w;
-    glyph_line = ghee_a3.x;
-    glyph_span = ghee_a3.yz;
-    glyph_box = ghee_a1;
-    vec2 ghee_corner = mix(ghee_a1.xy, ghee_a1.zw, ghee_a0.xy);
-    vec2 ghee_p = glyph_place(ghee_corner);
-    // The pixels moved by glyph_place per em along each em axis, exact for an
-    // affine glyph_place.
-    vec2 ghee_jx = (glyph_place(ghee_corner + vec2(0.0625, 0.0)) - ghee_p) * 16.0;
-    vec2 ghee_jy = (glyph_place(ghee_corner + vec2(0.0, 0.0625)) - ghee_p) * 16.0;
-    // ghee_det stays above 0, so a glyph scaled to nothing keeps every
-    // position finite.
-    float ghee_det = max(abs(ghee_jx.x * ghee_jy.y - ghee_jx.y * ghee_jy.x),
-                         1.0 / 16384.0);
-    // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
-    // up to 1/16 px off the position set by this shader. A read past the
-    // reach would take a neighbouring cell's texels.
-    vec2 ghee_grow = min(max(0.625 * vec2(length(ghee_jy), length(ghee_jx)) / ghee_det,
-                             vec2(PAD)), vec2(REACH));
-    vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_grow;
-    vec2 ghee_px = glyph_place(ghee_e);
-    // The em spanned by a screen pixel along each em axis, as fwidth gives it.
-    vec2 ghee_fw = vec2(abs(ghee_jy.x) + abs(ghee_jy.y),
-                        abs(ghee_jx.x) + abs(ghee_jx.y)) / ghee_det;
-    vec2 ghee_tc = ghee_a2.xy + (ghee_e - ghee_a1.xy) * ghee_a2.zw;
-    // The field's range in screen pixels. msdfgen holds it at 1 or more.
-    float ghee_range = max(RANGE_EM * 0.5 * (1.0 / ghee_fw.x + 1.0 / ghee_fw.y), 1.0);
-    // glyph_font_size: the pixels per em of a placement that scales both axes
-    // alike.
-    ghee_v0 = vec4(ghee_tc / ghee_NAME_atlas_size, ghee_range, sqrt(ghee_det));
-    ghee_v2 = vec4(ghee_e, ghee_a0.zw);
-    ghee_v3 = vec4(ghee_a3.xyz, 0.0);
-    v_texCoord = ghee_px / resolution;
-    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
-}"#;
-
-const MTSDF_FRAGMENT_HEAD: &str = r#"uniform sampler2D ghee_NAME_atlas_tex;
-varying vec4 ghee_v0;
-varying vec4 ghee_v2;
-varying vec4 ghee_v3;
-// A varying that holds one value at every vertex may still interpolate a hair
-// off it, so an index rounds.
-#define glyph_em ghee_v2.xy
-#define glyph_index float(int(ghee_v2.z + 0.5))
-#define glyph_word float(int(ghee_v2.w + 0.5))
-#define glyph_line float(int(ghee_v3.x + 0.5))
-#define glyph_span ghee_v3.yz
-#define glyph_font_size ghee_v0.w
-// The glyph's field under this pixel: the median of red, green and blue is
-// the distance to the outline, alpha the true distance, each 0.5 on the
-// outline and growing inward over the range.
-vec4 ghee_t = vec4(0.0);
-float glyph_dist() {
-    return ghee_v0.z * (max(min(ghee_t.r, ghee_t.g), min(max(ghee_t.r, ghee_t.g), ghee_t.b))
-                        - 0.5);
-}
-float glyph_round_dist() { return ghee_v0.z * (ghee_t.a - 0.5); }
-float glyph_cover() { return clamp(glyph_dist() + 0.5, 0.0, 1.0); }
-// The factor that fades a padded layer to 0 at the edge of its quads, 1 in a
-// layer that does not fade.
-float ghee_f = 1.0;
-#define glyph_fade ghee_f
-// The author's main runs as ghee_main, after the read of the field.
-#define main ghee_main"#;
-
-const MTSDF_FRAGMENT_TAIL: &str = r#"#undef main
-void main() {
-    // On VC4 a short shader whose last texture read sits outside an if runs
-    // in two threads, whose switch loses the condition flags. The read of the
-    // field, and a read after the author's code that never runs, sit in ifs
-    // that the compiler cannot drop, so the shader stays on one thread
-    // whatever textures the author's code reads.
-    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_atlas_tex, ghee_v0.xy);
-    ghee_main();
-    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_atlas_tex, ghee_v0.xy);
-}"#;
-
-/// The lines that set glyph_fade, ahead of the author's main in a layer that
-/// fades. The quad's edge lies the pad or more from the letters, so a factor
-/// that reaches 0 at the pad's distance is 0 along the whole edge.
-const MTSDF_FADE: &str = r#"    // The true distance outside the letters in em, from the field's alpha.
-    ghee_f = 1.0 - smoothstep(FADE_FROM, FADE_TO, (0.5 - ghee_t.a) * RANGE_EM);"#;
-
 const BOX_FRAGMENT: &str = r#"varying vec2 v_texCoord;
 uniform vec2 resolution;
 varying vec4 ghee_v0;
@@ -2069,18 +1569,11 @@ void main() {
     gl_FragColor = vec4(vec3(1.0, 0.8, 0.0) * (yellow * a), a);
 }"#;
 
-const GLSL: &str = r#"uniform sampler2D ghee_NAME_curves_tex;
+/// The reader of one glyph's curves.
+const CURVES: &str = r#"uniform sampler2D ghee_NAME_curves_tex;
 uniform float ghee_NAME_tw;
 uniform float ghee_NAME_itw;
 uniform float ghee_NAME_ith;
-uniform vec2 NAME_size;
-uniform float ghee_NAME_gx;
-uniform float ghee_NAME_gy;
-uniform float ghee_NAME_cols;
-uniform float ghee_NAME_rows;
-uniform float ghee_NAME_cell;
-uniform float ghee_NAME_cells;
-uniform float ghee_NAME_nb;
 // A texture read on the Pi 5 returns a byte too coarse to take bits from as it
 // is, so every byte goes through int() first: a read of byte b lies near
 // b / 255, and int(t * 255.5) floors to b. On VC4, float(int(x)) takes 2
@@ -2202,7 +1695,17 @@ float ghee_NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
                         min(abs(xcov), abs(ycov))), 0.0, 1.0);
     }
     return cov;
-}
+}"#;
+
+/// The reader of the words' coverage at any point, through the grid, after
+/// CURVES.
+const COVER: &str = r#"uniform float ghee_NAME_gx;
+uniform float ghee_NAME_gy;
+uniform float ghee_NAME_cols;
+uniform float ghee_NAME_rows;
+uniform float ghee_NAME_cell;
+uniform float ghee_NAME_cells;
+uniform float ghee_NAME_nb;
 // The coverage of the glyph whose data starts at texel h, at q in em from its
 // box's corner. Its data holds its box size, then its band entries.
 float ghee_NAME_glyph(float h, vec2 q, vec2 sz, float font_size) {
@@ -2241,99 +1744,6 @@ float NAME_cover(vec2 p, float font_size) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The words of GLSL `t`, outside its comments.
-    fn words(t: &str) -> Vec<String> {
-        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-        t.lines()
-            .flat_map(|l| {
-                l.split("//")
-                    .next()
-                    .unwrap_or("")
-                    .split(|c: char| !ident(c))
-            })
-            .filter(|w| !w.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-
-    #[test]
-    fn a_slug_layer_stands_a_name_in_for_each_distance() {
-        let head = lines(SLUG_FRAGMENT_HEAD, "t");
-        for (read, stand_in) in SLUG_UNDECLARED {
-            assert!(
-                head.contains(&format!("#define {read} {stand_in}")),
-                "{read}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_layer_names_its_own_values_with_ghees_prefix() {
-        let layer = [
-            LAYER_VERTEX_HEAD,
-            SLUG_VERTEX_MAIN,
-            SLUG_FRAGMENT_HEAD,
-            SLUG_FRAGMENT_TAIL,
-            MTSDF_VERTEX_MAIN,
-            MTSDF_FRAGMENT_HEAD,
-            MTSDF_FRAGMENT_TAIL,
-            MTSDF_FADE,
-            BOX_FRAGMENT,
-            crate::colour::VERTEX_MAIN,
-            crate::colour::FRAGMENT,
-        ];
-        let mut seen: Vec<String> = Vec::new();
-        for w in layer.iter().flat_map(|t| words(t)) {
-            if w.starts_with("glyph_") && !w.ends_with("_needs_fill_mtsdf") {
-                assert!(LAYER_NAMES.contains(&w.as_str()), "{w}");
-                seen.push(w);
-            }
-        }
-        assert!(LAYER_NAMES.iter().all(|n| seen.iter().any(|s| s == n)));
-        assert!(!layer.iter().flat_map(|t| words(t)).any(|w| w == "vflip"));
-    }
-
-    #[test]
-    fn a_text_makes_its_names_for_an_author_and_ghees_own() {
-        let made = template_names("label");
-        let mut author: Vec<&String> = made.iter().filter(|n| !n.starts_with("ghee_")).collect();
-        author.sort();
-        author.dedup();
-        assert_eq!(author, ["label_cover", "label_size"]);
-        for n in [
-            "ghee_label_curves_tex",
-            "ghee_label_curves_size",
-            "ghee_label_atlas_tex",
-            "ghee_label_atlas_size",
-            "ghee_label_emoji_tex",
-            "ghee_label_emoji_size",
-        ] {
-            assert!(made.iter().any(|m| m == n), "{n}");
-        }
-        // Two texts never meet in a name, whatever their names.
-        let texts = [
-            "a",
-            "a_tex",
-            "a_curves",
-            "a_curves_tex",
-            "a_atlas",
-            "a_atlas_tex",
-            "a_emoji",
-            "a_emoji_tex",
-            "a_atlas_size",
-            "a_size",
-            "a_cover",
-            "ghee_a",
-        ];
-        for (i, x) in texts.iter().enumerate() {
-            for y in &texts[i + 1..] {
-                let (mx, my) = (template_names(x), template_names(y));
-                let met: Vec<&String> = mx.iter().filter(|n| my.contains(n)).collect();
-                assert!(met.is_empty(), "{x} and {y} meet in {met:?}");
-            }
-        }
-    }
 
     fn laid(words: &str, align: Align) -> (Vec<Placed>, f64) {
         let path = concat!(

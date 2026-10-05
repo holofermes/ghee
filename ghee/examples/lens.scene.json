@@ -1,11 +1,5 @@
 {
   "version": 1,
-  "texts": {
-    "page": {
-      "value": "A lens drifts over the page.\nUnder it the words grow,\nand every edge stays sharp:\nthe shader reads the words\nfrom the curves of the font\nat the size where they land.",
-      "font": "fonts/DejaVuSans-Latin.ttf"
-    }
-  },
   "passes": [
     {
       "name": "main",
@@ -30,7 +24,15 @@
           "type": "color",
           "value": [0.98, 0.96, 0.9]
         }
-      }
+      },
+      "layers": [
+        {
+          "name": "page",
+          "visible": false,
+          "text": "A lens drifts over the page.\nUnder it the words grow,\nand every edge stays sharp:\nthe shader reads the words\nfrom the curves of the font\nat the size where they land.",
+          "font_family": "fonts/DejaVuSans-Latin.ttf"
+        }
+      ]
     }
   ]
 }

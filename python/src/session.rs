@@ -791,8 +791,8 @@ impl Session {
         std::fs::write(&path, bytes).map_err(|e| Fault::system(format!("{path}: {e}")))
     }
 
-    /// Set one live param, with no recompile. A string param of a text's name
-    /// lays the text out again.
+    /// Set one live param, with no recompile. A string param of a text
+    /// layer's name lays the layer's words out again.
     pub fn set_param(&mut self, pass: Option<&str>, name: &str, value: &Value) -> Outcome<()> {
         let p = self.index.param(pass, name)?;
         let v = coerce(&p.wire, &p.ty, value).map_err(scene_fault)?;

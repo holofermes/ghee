@@ -1,5 +1,5 @@
-//! The MTSDF fill against exact coverage: the words drawn by a layer of the
-//! MTSDF fill, against what `<name>_cover` draws on this host's GPU.
+//! The MTSDF render against exact coverage: the words drawn by an MTSDF layer,
+//! against what `<name>_cover` draws on this host's GPU.
 
 use serde_json::json;
 
@@ -35,13 +35,16 @@ fn gpu() -> Renderer {
     );
 }
 
-/// The lyrics centred at 46 px/em: in a pass of `code`, with `layers`.
-fn frame(r: &mut Renderer, code: &str, layers: serde_json::Value) -> Vec<u8> {
+/// The lyrics centred at 46 px/em in layer `t`, shown or hidden, in a pass
+/// of `code`.
+fn frame(r: &mut Renderer, code: &str, visible: bool) -> Vec<u8> {
     let doc = json!({
         "version": 1,
         "assets": {"font": {"file": SANS}},
-        "texts": {"t": {"value": LYRICS, "font": "font", "align": "center"}},
-        "passes": [{"name": "main", "code": code, "layers": layers}],
+        "passes": [{"name": "main", "code": code,
+                    "layers": [{"name": "t", "visible": visible, "text": LYRICS,
+                                "font_size": 46, "font_family": "font",
+                                "text_align": "center"}]}],
     });
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     sc.load_assets(FONTS).unwrap();
@@ -66,18 +69,12 @@ fn the_mtsdf_fill_at_46_px_em_matches_exact_coverage() {
          float c = t_cover((px - off) / 46.0, 46.0);\n\
          gl_FragColor = vec4(vec3(c), 1.0);\n\
          }",
-        json!([]),
+        false,
     );
     let fill = frame(
         &mut r,
         "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-        json!([{
-            "text": "t",
-            "vertex": "vec2 glyph_place(vec2 em) {\n\
-                      return (resolution - t_size * 46.0) * 0.5 + em * 46.0;\n\
-                      }",
-            "fragment": "void main() { gl_FragColor = vec4(glyph_cover()); }",
-        }]),
+        true,
     );
     let errs: Vec<f64> = cover
         .iter()
@@ -89,7 +86,7 @@ fn the_mtsdf_fill_at_46_px_em_matches_exact_coverage() {
     let mean = errs.iter().sum::<f64>() / errs.len() as f64;
     let max = errs.iter().copied().fold(0.0, f64::max);
     eprintln!(
-        "MTSDF fill against t_cover at 46 px/em: {} px, mean {mean:.2}/255, max {max:.0}/255",
+        "MTSDF render against t_cover at 46 px/em: {} px, mean {mean:.2}/255, max {max:.0}/255",
         errs.len()
     );
     assert!(errs.len() > 50_000, "{} pixels compared", errs.len());

@@ -376,19 +376,18 @@ pub trait ConsoleHost {
     }
 
     /// {fps, frame_ms, stream_fps, out, error, error_line, error_pass,
-    /// error_layer, active, display, stale}.
+    /// text_errors, active, display, stale}.
     ///
     /// fps counts completed render-loop frames per elapsed second, over a
     /// trailing window (stats::FrameRate). frame_ms is one loop iteration, with
     /// no paced sleep in it. stream_fps counts the frames handed to viewers per
     /// elapsed second, every codec in one number. out names where the frames go
     /// now (stats::DEST_*). error_pass is the pass index that holds a compile
-    /// error, or "common" for the scene's common block. error_layer is the layer
-    /// of that pass that holds it, {index, part}, where part names the layer's
-    /// "vertex" or its "fragment". error_line is the line inside the layer's part,
-    /// else inside the pass. stale is true when the files behind the active
-    /// scene changed since the compile. A host whose scenes have no files
-    /// answers false for stale.
+    /// error, or "common" for the scene's common block, and error_line the line
+    /// inside the pass or the block. text_errors holds the problems of the
+    /// scene's text layers, a line each. stale is true when the files behind
+    /// the active scene changed since the compile. A host whose scenes have no
+    /// files answers false for stale.
     ///
     /// A poll loop in the browser reads this, so it must not block.
     fn stats(&self) -> ConsoleResult<Value>;
@@ -698,10 +697,21 @@ pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
 }
 
 /// The type of a param in a scene document, or None when the scope holds no
-/// param of that name. ghee declares a scene string param under each text's
-/// name.
+/// param of that name. ghee declares a scene string param under each text
+/// layer's name.
 pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
-    if scope == Scope::Scene && doc.get("texts").and_then(|t| t.get(name)).is_some() {
+    let layers = doc
+        .get("passes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get("layers")?.as_array())
+        .flatten();
+    if scope == Scope::Scene
+        && layers
+            .into_iter()
+            .any(|l| l.get("name") == Some(&Value::from(name)))
+    {
         return Some("string".to_string());
     }
     let params = match scope {
@@ -754,8 +764,8 @@ mod tests {
     const SCENE: &str = r#"{"version": 1,
         "params": {"tint": {"type": "float", "value": 0.0},
                    "title": {"type": "string", "value": "hi"}},
-        "texts": {"words": {"value": "ho", "font": "sans.ttf"}},
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
+                    "layers": [{"name": "words", "text": "ho", "font_family": "sans.ttf"}],
                     "params": {"k": {"type": "float", "value": 0.0},
                                "on": {"type": "bool", "value": false},
                                "n": {"type": "int", "value": 0},

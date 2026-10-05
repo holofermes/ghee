@@ -1,11 +1,11 @@
 //! Colour glyphs: the bitmaps of colour emoji.
 //!
 //! A glyph with a PNG bitmap in its font's CBDT or sbix table, and no outline,
-//! is a colour glyph. A layer of a text puts the text's colour glyphs into its
-//! pass through a colour batch, after the layers of the pass. The batch places
-//! each glyph with the layer's `glyph_place`, and samples its bitmap from the
-//! text's colour atlas, an RGBA8 texture with mipmaps. The layer's own code
-//! never runs for a colour glyph, and `<name>_cover` reads one as no ink.
+//! is a colour glyph. A text layer puts its colour glyphs into its pass
+//! through a colour batch, after the layers of the pass. The batch places
+//! each glyph as the layer places its letters, and samples its bitmap from
+//! the layer's colour atlas, an RGBA8 texture with mipmaps. `<name>_cover`
+//! reads a colour glyph as no ink.
 
 use anyhow::{bail, Result};
 use ttf_parser::{Face, GlyphId, RasterGlyphImage, RasterImageFormat};
@@ -23,8 +23,8 @@ const STRIKE: u16 = u16::MAX;
 /// holds one cell alone, and a read up to REACH texels past a bitmap meets
 /// no other bitmap. The batch reads no level past MAX_LEVEL.
 const MIP_PAD: u32 = 16;
-const MAX_LEVEL: f64 = 4.0;
-const REACH: f64 = 8.0;
+pub(crate) const MAX_LEVEL: f64 = 4.0;
+pub(crate) const REACH: f64 = 8.0;
 
 /// The colour bitmap of glyph `gid` of `face`, from the font's largest
 /// strike. None when the glyph has no PNG bitmap there.
@@ -233,67 +233,15 @@ pub fn crop(texels: &[u8], width: u32, rect: Rect) -> Vec<u8> {
     out
 }
 
-/// The vertex main of the colour batch of a layer of text `name`, after
-/// glyph_place. Each box edge moves out 5/8 of a screen pixel, and never
-/// past REACH texels of the bitmap.
-pub fn vertex_main(name: &str) -> Vec<String> {
-    let f = |v: f64| format!("{v:?}");
-    VERTEX_MAIN
-        .replace("NAME", name)
-        .replace("MAX_LEVEL", &f(MAX_LEVEL))
-        .replace("REACH", &f(REACH))
-        .lines()
-        .map(str::to_string)
-        .collect()
-}
-
-/// The fragment shader of the colour batch of a layer of text `name`, after
-/// its precision lines.
-pub fn fragment(name: &str) -> Vec<String> {
-    FRAGMENT
-        .replace("NAME", name)
-        .lines()
-        .map(str::to_string)
-        .collect()
-}
-
-pub(crate) const VERTEX_MAIN: &str = r#"uniform vec2 ghee_NAME_emoji_size;
-void main() {
-    glyph_index = ghee_a0.z;
-    glyph_word = ghee_a0.w;
-    glyph_line = ghee_a3.x;
-    glyph_span = ghee_a3.yz;
-    glyph_box = ghee_a1;
-    vec2 ghee_corner = mix(ghee_a1.xy, ghee_a1.zw, ghee_a0.xy);
-    vec2 ghee_p = glyph_place(ghee_corner);
-    // The pixels moved by glyph_place per em along each em axis, exact for an
-    // affine glyph_place.
-    vec2 ghee_jx = (glyph_place(ghee_corner + vec2(0.0625, 0.0)) - ghee_p) * 16.0;
-    vec2 ghee_jy = (glyph_place(ghee_corner + vec2(0.0, 0.0625)) - ghee_p) * 16.0;
-    // ghee_det stays above 0, so a glyph scaled to nothing keeps every
-    // position finite.
-    float ghee_det = max(abs(ghee_jx.x * ghee_jy.y - ghee_jx.y * ghee_jy.x),
-                         1.0 / 16384.0);
-    // Half a pixel of antialiasing, and 1/8 px more, since VC4 lands a vertex
-    // up to 1/16 px off the position set by this shader. A read further than
-    // REACH texels past the bitmap could take a neighbouring cell's.
-    vec2 ghee_grow = min(0.625 * vec2(length(ghee_jy), length(ghee_jx)) / ghee_det,
-                         vec2(REACH / ghee_a2.z));
-    vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_grow;
-    vec2 ghee_px = glyph_place(ghee_e);
-    vec2 ghee_tc = ghee_a2.xy + (ghee_e - ghee_a1.xy) * ghee_a2.zw;
-    // GL picks the mip level from the atlas texels spanned by a pixel along x
-    // or along y of the pass, whichever is more. A bias in the read holds the
-    // level at MAX_LEVEL at most.
-    float ghee_rho = ghee_a2.z * max(length(vec2(ghee_jy.y, ghee_jx.y)),
-                                      length(vec2(ghee_jy.x, ghee_jx.x))) / ghee_det;
-    float ghee_lod = log2(max(ghee_rho, 1.0 / 65536.0));
-    ghee_v0 = vec4(ghee_tc / ghee_NAME_emoji_size, min(ghee_lod, MAX_LEVEL) - ghee_lod, 0.0);
-    v_texCoord = ghee_px / resolution;
-    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
-}"#;
-
-pub(crate) const FRAGMENT: &str = r#"uniform sampler2D ghee_NAME_emoji_tex;
+/// The fragment shader of a layer's colour batch.
+pub(crate) const FRAGMENT: &str = r#"#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform sampler2D ghee_NAME_emoji_tex;
+uniform float ghee_NAME_opacity;
 varying vec4 ghee_v0;
 void main() {
     // On VC4 a short shader whose texture read sits outside an if runs in two
@@ -301,7 +249,7 @@ void main() {
     // that the compiler cannot drop, so the shader stays on one thread.
     vec4 c = vec4(0.0);
     if (gl_FragCoord.x >= 0.0) c = texture2D(ghee_NAME_emoji_tex, ghee_v0.xy, ghee_v0.z);
-    gl_FragColor = c;
+    gl_FragColor = c * ghee_NAME_opacity;
 }"#;
 
 #[cfg(test)]

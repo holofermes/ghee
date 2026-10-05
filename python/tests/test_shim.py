@@ -222,31 +222,31 @@ def test_an_array_declares_its_size_and_its_count():
     assert grid.to_dict() == {"name": "mask", "size": [8, 4]} and grid.count == 32
 
 
-def words_scene(shim, texts):
-    return shim.Scene(
-        passes=[shim.Pass("main", "void main(){}")],
-        assets=[shim.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=texts,
-    )
-
-
-def test_a_text_carries_its_words():
+def test_a_layer_carries_its_words():
     shim = load()
-    text = shim.Text("words", "sans", "hi", align="center")
-    built = words_scene(shim, [text]).to_dict()
+    layer = shim.Layer(name="words", text="hi", font_family="sans", text_align="center")
+    built = shim.Scene(
+        passes=[shim.Pass("main", "void main(){}", layers=[layer])],
+        assets=[shim.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
+    ).to_dict()
     assert built == {
         "version": 1,
-        "passes": [{"name": "main", "code": "void main(){}"}],
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){}",
+                "layers": [
+                    {
+                        "name": "words",
+                        "text": "hi",
+                        "font_family": "sans",
+                        "text_align": "center",
+                    }
+                ],
+            }
+        ],
         "assets": {"sans": {"file": "fonts/DejaVuSans-Latin.ttf"}},
-        "texts": {"words": {"value": "hi", "font": "sans", "align": "center"}},
     }
-    # left is the default, and the document leaves it out
-    assert shim.Text("words", "sans").to_dict() == {"value": "", "font": "sans"}
-    assert "texts" not in words_scene(shim, []).to_dict()
-    # a font file needs no asset, and a list mixes both
-    for font in ("DejaVuSans.ttf", ["sans", "Noto.OTF"]):
-        doc = words_scene(shim, [shim.Text("words", font)]).to_dict()
-        assert doc["texts"]["words"]["font"] == font
 
 
 def test_an_asset_is_its_file():
@@ -259,17 +259,12 @@ def test_an_asset_is_its_file():
     assert "assets" not in shim.Scene(passes=[]).to_dict()
 
 
-@pytest.mark.parametrize("kind", ["asset", "text"])
-def test_two_assets_or_two_texts_of_one_name_are_refused(kind):
+def test_two_assets_of_one_name_are_refused():
     """The document keys them by name, where the second would hide the first."""
     shim = load()
-    twins = {
-        "asset": {"assets": [shim.Asset("logo", "a.png"), shim.Asset("logo", "b.png")]},
-        "text": {"texts": [shim.Text("logo", "sans"), shim.Text("logo", "serif")]},
-    }
     with pytest.raises(ValueError) as raised:
-        shim.Scene(**twins[kind])
-    assert str(raised.value) == f"{kind} 'logo' is declared twice"
+        shim.Scene(assets=[shim.Asset("logo", "a.png"), shim.Asset("logo", "b.png")])
+    assert str(raised.value) == "asset 'logo' is declared twice"
 
 
 def test_numpy_numbers_build_a_document_that_json_takes():
@@ -302,135 +297,57 @@ def test_numpy_numbers_build_a_document_that_json_takes():
     }
 
 
-INK = "void main(){ gl_FragColor = vec4(glyph_cover()); }"
-PLACE = "vec2 glyph_place(vec2 em) { return em * 24.0; }"
-
-
-def drawn_scene(shim, passes, text=None):
-    return shim.Scene(
-        passes=passes,
-        assets=[shim.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=[text or shim.Text("words", "sans", "hi")],
-    )
-
-
-def test_a_layer_and_its_text_take_the_scene_json_keys():
+def test_a_layer_takes_the_scene_json_keys():
     shim = load()
-    built = drawn_scene(
-        shim,
-        [
-            shim.Pass(
-                "main",
-                "void main(){}",
-                layers=[
-                    shim.Layer("words", INK, PLACE, blend="add", pad=0.25, name="glow")
-                ],
-            )
-        ],
-        shim.Text("words", "sans", "hi", fill="slug"),
-    ).to_dict()
+    layer = shim.Layer(
+        name="title",
+        text="hi",
+        visible=False,
+        x=4,
+        y=8,
+        color={"from": "#ff0000", "to": [1, 1, 0], "angle": 90},
+        opacity=0.5,
+        blend="add",
+        font_size=48,
+        font_family="sans",
+        text_align="right",
+        render="slug",
+    )
     recorded = {
-        "version": 1,
-        "passes": [
-            {
-                "name": "main",
-                "code": "void main(){}",
-                "layers": [
-                    {
-                        "name": "glow",
-                        "text": "words",
-                        "vertex": PLACE,
-                        "fragment": INK,
-                        "blend": "add",
-                        "pad": 0.25,
-                    }
-                ],
-            }
-        ],
-        "assets": {"sans": {"file": "fonts/DejaVuSans-Latin.ttf"}},
-        "texts": {"words": {"value": "hi", "font": "sans", "fill": "slug"}},
+        "name": "title",
+        "visible": False,
+        "x": 4.0,
+        "y": 8.0,
+        "color": {"from": "#ff0000", "to": [1.0, 1.0, 0.0], "angle": 90.0},
+        "opacity": 0.5,
+        "blend": "add",
+        "text": "hi",
+        "font_size": 48.0,
+        "font_family": "sans",
+        "text_align": "right",
+        "render": "slug",
     }
+    built = layer.to_dict()
     assert built == recorded
     assert json.dumps(built) == json.dumps(recorded)  # key order too
 
 
-def test_a_layer_and_a_text_leave_their_defaults_out():
+def test_a_layer_leaves_its_defaults_out():
     shim = load()
-    layer = shim.Layer("words", INK, PLACE)
-    assert (layer.blend, layer.pad, layer.emoji) == ("normal", None, None)
-    assert (layer.font_size, layer.at, layer.fade) == (None, None, None)
-    assert layer.to_dict() == {"text": "words", "vertex": PLACE, "fragment": INK}
-    assert shim.Layer("words").to_dict() == {"text": "words"}
-    text = shim.Text("words", "sans")
-    assert (text.value, text.fill, text.atlas) == ("", "mtsdf", None)
-    assert text.to_dict() == {"value": "", "font": "sans"}
-    # a text with no font draws from the font that ghee carries
-    assert shim.Text("words", value="hi").to_dict() == {"value": "hi"}
+    assert shim.Layer(name="words").to_dict() == {"name": "words"}
+    assert shim.Layer("words", "hi").to_dict() == {"name": "words", "text": "hi"}
     assert "layers" not in shim.Pass("main", "void main(){}").to_dict()
-
-
-def test_a_layer_places_its_words_by_font_size_and_at_and_fades_its_pad():
-    shim = load()
-    layer = shim.Layer("words", font_size=48, at=(4, 8), pad=1, fade=0.5)
-    assert json.dumps(layer.to_dict()) == (
-        '{"text": "words", "font_size": 48.0, "at": [4.0, 8.0], "pad": 1.0, '
-        '"fade": 0.5}'
-    )
-    text = shim.Text("words", atlas={"font_size": 24})
-    assert text.to_dict() == {"value": "", "atlas": {"font_size": 24}}
-
-
-def test_a_layer_sends_emoji_when_it_is_set():
-    shim = load()
-    for emoji in (True, False):
-        assert shim.Layer("words", INK, PLACE, emoji=emoji).to_dict() == {
-            "text": "words",
-            "vertex": PLACE,
-            "fragment": INK,
-            "emoji": emoji,
-        }
 
 
 def test_a_pass_of_layers_alone_has_no_code():
     shim = load()
-    alone = shim.Pass("ink", layers=[shim.Layer("words", INK, PLACE)])
+    alone = shim.Pass("ink", layers=[shim.Layer("words", "hi")])
     assert alone.to_dict() == {
         "name": "ink",
-        "layers": [{"text": "words", "vertex": PLACE, "fragment": INK}],
+        "layers": [{"name": "words", "text": "hi"}],
     }
-    assert "code" not in drawn_scene(shim, [alone]).to_dict()["passes"][0]
     # a filter pass takes its code from its filter
     assert shim.Pass("dither", filter="dither").to_dict()["code"] == ""
-
-
-@pytest.mark.parametrize(
-    "keyword,error",
-    [
-        ("code", "ghee.Layer takes its fragment GLSL in fragment=, got code="),
-        ("place", "ghee.Layer takes its vertex GLSL in vertex=, got place="),
-        (
-            "alpha",
-            "ghee.Layer takes no alpha=: its alpha blends by blend=, as its colour does",
-        ),
-    ],
-)
-def test_a_keyword_that_a_layer_renamed_names_the_new_one(keyword, error):
-    shim = load()
-    with pytest.raises(TypeError) as raised:
-        shim.Layer("words", font_size=32, **{keyword: INK})
-    assert str(raised.value) == error
-
-
-def test_a_font_list_goes_out_as_given():
-    shim = load()
-    scene = shim.Scene(
-        passes=[shim.Pass("main", "void main(){}")],
-        assets=[shim.Asset("sans", "sans.ttf"), shim.Asset("emoji", "emoji.ttf")],
-        texts=[shim.Text("words", ("sans", "emoji"), "hi")],
-    )
-    assert scene.to_dict()["texts"] == {
-        "words": {"value": "hi", "font": ["sans", "emoji"]}
-    }
 
 
 # ---------------------------------------------------------------------- args
@@ -786,8 +703,8 @@ def test_a_filter_param_goes_out_unchecked(monkeypatch):
     assert messages(rest) == [(1, "dither.levels", [4.0]), (1, "levels", [2.0]), END]
 
 
-def test_a_text_takes_its_words_through_set_param(monkeypatch):
-    """ghee declares the string param of a text's name."""
+def test_a_layer_takes_its_words_through_set_param(monkeypatch):
+    """ghee declares the string param of a text layer's name."""
     shim = load()
 
     @shim.tick
@@ -795,7 +712,7 @@ def test_a_text_takes_its_words_through_set_param(monkeypatch):
         shim.set_param("title", "ho")
 
     scene = scene_of(shim)
-    scene.texts = [shim.Text("title", "sans.ttf", "hi")]
+    scene.passes[0].layers = [shim.Layer("title", "hi", font_family="sans.ttf")]
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     _, rest = drive(shim, scene, ticks, monkeypatch)
     assert messages(rest) == [(3, "title", "ho"), END]
@@ -867,7 +784,6 @@ SURFACE = [
     "Param",
     "Pass",
     "Scene",
-    "Text",
     "Tick",
     "args",
     "feed",

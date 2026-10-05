@@ -976,7 +976,7 @@ function layerTab(p, i, k){
   const lbl = el("span", "lbl");
   lbl.appendChild(el("span", "tp", p.name + " ›"));
   lbl.appendChild(document.createTextNode(" " + layerLabels(p)[k]));
-  lbl.title = `a layer of text ${p.layers[k].text} in pass ${p.name}, double-click to rename`;
+  lbl.title = `layer ${layerLabels(p)[k]} in pass ${p.name}, double-click to rename`;
   lbl.addEventListener("dblclick", ()=> renameLayer(i, k, lbl));
   tab.appendChild(lbl);
   if (open && (hasCode(p) || p.layers.length > 1))   // a pass with no code keeps one layer
@@ -1034,9 +1034,10 @@ function pick(opts, value, set){
 }
 
 // A layer's own settings. A value at its default leaves the key out, as the
-// server writes the scene back.
+// server writes the scene back. The words go live through /set, as the string
+// param that ghee declares under the layer's name.
 function buildLayerCtl(){
-  const box = $("#layerctl"), d = openLayer();
+  const box = $("#layerctl"), d = openLayer(), scene = active;
   box.innerHTML = "";
   if (!d) return;
   const p = work.passes[curPass];
@@ -1044,26 +1045,38 @@ function buildLayerCtl(){
   const head = el("div", "edhead", "layer");
   head.appendChild(el("span", "nm", layerTabName(p, curLayer)));
   box.appendChild(head);
-  const texts = Object.keys(work.texts || {});
-  field(box, "text", pick(texts.includes(d.text) ? texts : texts.concat([d.text]), d.text, v => {
-    d.text = v; edit(); buildTabs(); buildLayerCtl();
-  }), "the scene text that it draws");
+  const grow = el("div", "grow"), mirror = el("pre"), words = el("textarea");
+  mirror.setAttribute("aria-hidden", "true");
+  words.spellcheck = false;
+  grow.appendChild(mirror); grow.appendChild(words);
+  const fit = () => { mirror.textContent = words.value + "\n"; };
+  words.value = d.text || ""; fit();
+  const send = () => {
+    if (words.value === (d.text || "")) return;
+    d.text = words.value; p.layersEdited = true;
+    setParam(scene, `pass=scene&name=${encodeURIComponent(d.name)}&value=${encodeURIComponent(d.text)}`);
+    markDirty();
+  };
+  let timer = null;
+  words.addEventListener("input", ()=>{ fit(); clearTimeout(timer); timer = setTimeout(send, 300); });
+  words.addEventListener("change", ()=>{ clearTimeout(timer); send(); });
+  field(box, "text", grow);
+  // A number, or empty for ghee's default.
+  const num = (key) => {
+    const inp = el("input");
+    inp.type = "number"; inp.step = "any"; inp.value = d[key] == null ? "" : d[key];
+    inp.addEventListener("change", ()=>{
+      const v = parseFloat(inp.value);
+      if (inp.value.trim() === "" || !isFinite(v)) delete d[key]; else d[key] = v;
+      edit();
+    });
+    field(box, key, inp);
+  };
+  num("font_size"); num("x"); num("y");
   field(box, "blend", pick(["normal", "add", "multiply", "screen"], d.blend || "normal", v => {
     if (v === "normal") delete d.blend; else d.blend = v;
     edit();
-  }), "normal lays it on what the pass holds, add and screen brighten it, multiply darkens it");
-  const pad = el("input");
-  pad.type = "number"; pad.min = "0"; pad.step = "0.01"; pad.value = d.pad || 0;
-  const setPad = () => {
-    const v = parseFloat(pad.value);
-    if (!(v >= 0) || v === (d.pad || 0)) return;
-    if (v) d.pad = v; else delete d.pad;
-    edit();
-  };
-  let t = null;
-  pad.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(setPad, 300); });
-  pad.addEventListener("change", ()=>{ clearTimeout(t); setPad(); });
-  field(box, "pad", pad, "how far past the letters the layer reaches, in em, room for a glow or a shadow");
+  }));
 }
 
 // Each text of the scene. Its words go live through /set, as the string
@@ -1137,9 +1150,11 @@ function showDrawnBy(){
   });
 }
 
-// the vertex editor and the layer's settings show while a layer is open
+// a layer's settings show in place of the code while a layer is open
 function showLayer(d){
-  for (const n of [$("#layerctl"), $("#vertexHead"), VERTEX.box, $("#fragmentHead")]) n.hidden = !d;
+  $("#layerctl").hidden = !d;
+  CODE.box.hidden = !!d;
+  for (const n of [$("#vertexHead"), VERTEX.box, $("#fragmentHead")]) n.hidden = true;
 }
 
 async function addFilter(name){
@@ -1195,16 +1210,16 @@ $("#ask").addEventListener("keydown", e=>{
   else if (e.key === "Tab"){ e.preventDefault(); (document.activeElement === $("#askNo") ? $("#askYes") : $("#askNo")).focus(); }
 });
 
-// An empty name leaves the layer to go by its text. The server judges the
-// name, and its refusal shows under the editor.
+// An empty name keeps the layer's name. The server judges the name, and its
+// refusal shows under the editor.
 function renameLayer(i, k, lbl){
   const p = work.passes[i], d = p.layers[k], inp = el("input");
   inp.value = d.name || ""; inp.placeholder = layerLabels(p)[k];
   inp.spellcheck = false; inp.autocomplete = "off"; inp.setAttribute("autocapitalize", "off");
   const commit = ()=>{
     const nn = inp.value.trim();
-    if (nn !== (d.name || "")){
-      if (nn) d.name = nn; else delete d.name;
+    if (nn && nn !== d.name){
+      d.name = nn;
       p.layersEdited = true; markDirty(); postScene();
     }
     buildTabs(); buildLayerCtl();
@@ -1289,10 +1304,9 @@ function buildInputs(){
 }
 function loadCode(){
   const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass], d = openLayer();
-  ta.value = d ? (d.fragment || "") : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
+  ta.value = d ? "" : p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
   ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
   CODE.box.classList.toggle("readonly", !!(p && p.filter));
-  if (d){ VERTEX.ta.value = d.vertex || ""; VERTEX.ta.scrollTop = 0; VERTEX.sync(); }
   showLayer(d); buildLayerCtl(); CODE.sync(); showErrors(); syncAddRow();
 }
 
@@ -1618,34 +1632,23 @@ function adoptFilters(doc){
 
 // shader
 function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
-// A layer with no fragment draws white letters. Vertex GLSL takes the place of
-// font_size and at, which place the words with no GLSL.
-function setFragment(d, code){ if (code.trim()) d.fragment = code; else delete d.fragment; }
-function setVertex(d, code){
-  if (code.trim()){ d.vertex = code; delete d.font_size; delete d.at; } else delete d.vertex;
-}
-// hand-edited code and layers: merge keeps them as they are
+// hand-edited code: merge keeps it as it is
 CODE.ta.addEventListener("input", ()=>{
   const d = openLayer();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (d){ setFragment(d, CODE.ta.value); work.passes[curPass].layersEdited = true; }
+  else if (d) return;
   else {
     work.passes[curPass].code = CODE.ta.value;
     work.passes[curPass].codeEdited = true;
   }
   CODE.sync(); liveCompile();
 });
-VERTEX.ta.addEventListener("input", ()=>{
-  setVertex(openLayer(), VERTEX.ta.value); work.passes[curPass].layersEdited = true;
-  VERTEX.sync(); liveCompile();
-});
 
 // top-bar actions
 $("#apply").addEventListener("click", async ()=>{
   const d = openLayer();
   if (onCommon()) setCommon(CODE.ta.value);
-  else if (d){ setFragment(d, CODE.ta.value); setVertex(d, VERTEX.ta.value); }
-  else work.passes[curPass].code = CODE.ta.value;
+  else if (!d) work.passes[curPass].code = CODE.ta.value;
   await postScene(); markDirty();
   if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files
     const b = $("#apply");

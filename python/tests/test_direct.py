@@ -376,11 +376,11 @@ def hook(t):
     ghee.set_param("words", ("ab", "cd")[t.frame % 2])
 
 
+LAYER = ghee.Layer("words", "ab", visible=False, font_family="sans")
 ghee.run(
     ghee.Scene(
-        passes=[ghee.Pass("main", CODE)],
+        passes=[ghee.Pass("main", CODE, layers=[LAYER])],
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=[ghee.Text("words", "sans", "ab")],
     )
 )
 '''
@@ -419,20 +419,16 @@ def test_a_direct_run_finds_its_font_beside_its_script(tmp_path):
 
 
 LAYER_SCENE = '''#!/usr/bin/env python3
-"""A scene whose layer puts its words at a spot that each tick moves."""
+"""A scene whose layer puts its words at 4, 4."""
 
 import ghee
 from ghee import _shim
-
-SPOTS = [[4.0, 4.0], [36.0, 12.0]]
 
 
 @ghee.tick
 def hook(t):
     if t.frame:
         print(_shim._HANDLE.pixels().hex())
-    if t.frame < len(SPOTS):
-        ghee.set_param("spot", SPOTS[t.frame])
 
 
 ghee.run(
@@ -442,17 +438,11 @@ ghee.run(
                 "main",
                 "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                 layers=[
-                    ghee.Layer(
-                        "words",
-                        "void main(){ gl_FragColor = vec4(glyph_cover()); }",
-                        "vec2 glyph_place(vec2 em) { return spot + em * 16.0; }",
-                    )
+                    ghee.Layer("words", "ab", x=4, y=4, font_size=16, font_family="sans")
                 ],
             )
         ],
-        params={"spot": ghee.Param("spot", "vec2", [0.0, 0.0])},
         assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
-        texts=[ghee.Text("words", "sans", "ab")],
     )
 )
 '''
@@ -467,7 +457,7 @@ def ink(frame, width):
 
 
 def test_a_scene_file_draws_its_words_where_its_layer_places_them(tmp_path):
-    """The words land at the spot that `vertex` reads, and move with it."""
+    """The words land right of and below the layer's x and y."""
     scene_dir = tmp_path / "scene"
     (scene_dir / "fonts").mkdir(parents=True)
     shutil.copy(REPO / "ghee/examples/fonts/DejaVuSans-Latin.ttf", scene_dir / "fonts")
@@ -482,7 +472,7 @@ def test_a_scene_file_draws_its_words_where_its_layer_places_them(tmp_path):
             "--size",
             "64x32",
             "--frames",
-            "3",
+            "2",
             "--timestep",
             "0",
         ],
@@ -493,7 +483,6 @@ def test_a_scene_file_draws_its_words_where_its_layer_places_them(tmp_path):
         check=False,
     )
     assert ran.returncode == 0, ran.stderr
-    first, moved = (ink(f, 64) for f in ran.stdout.split())
+    (first,) = (ink(f, 64) for f in ran.stdout.split())
     assert max(first.values()) == 255
     assert min(x for x, _ in first) >= 4 and min(y for _, y in first) >= 4
-    assert moved == {(x + 32, y + 8): v for (x, y), v in first.items()}

@@ -40,28 +40,21 @@ import struct
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from typing import SupportsFloat
 
-    from typing_extensions import Self
 
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 
 
 ParamType = Literal["float", "int", "bool", "color", "string", "vec2", "vec3", "vec4"]
-Align = Literal["left", "center", "right"]
-Fill = Literal["mtsdf", "slug"]
+TextAlign = Literal["left", "center", "right"]
+Render = Literal["mtsdf", "slug"]
 Blend = Literal["normal", "add", "multiply", "screen"]
 ArgType = Literal["string", "int", "float", "size", "bool"]
-
-
-class Atlas(TypedDict):
-    """The MTSDF atlas of a Text: the texels per em of a glyph."""
-
-    font_size: int
 
 
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
@@ -94,6 +87,8 @@ def _floats(v: Any) -> Any:
     v = _plain(v)
     if isinstance(v, list):
         return [_floats(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _floats(x) for k, x in v.items()}
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         return float(v)
     return v
@@ -107,8 +102,8 @@ class Param:
     A color is "#rrggbb" or [r, g, b] in 0..1.
     A vecK is K numbers.
     A string never reaches a shader: the scene process reads it in the tick
-    line. ghee declares the string param of each Text's name itself, and a
-    Param under that name fails the scene.
+    line. ghee declares the string param of each text layer's name itself,
+    and a Param under that name fails the scene.
     """
 
     name: str
@@ -182,76 +177,57 @@ class Channel:
 
 @dataclass
 class Layer:
-    """A text drawn into the buffer of its pass, one quad over each glyph.
+    """A text layer: words that ghee paints into the buffer of its pass.
 
-    `text` names a Text of the scene.
-    `fragment` holds a void main() that colours a glyph's pixels,
-    premultiplied by alpha. None draws the letters white.
-    `vertex` defines vec2 glyph_place(vec2 em), which takes a point of the
-    block, in em from its top left with y down, to the pass pixel where it
-    lands.
-    `font_size` draws the block at that many pixels per em, and `at` puts its
-    top left at that pixel of the pass, [x, y] with y down. Without `at` the
-    block sits centred in the pass, and without `font_size` it takes the
-    largest size that fits. `vertex` takes the place of both.
-    `pad` is how far past the letters the layer reaches, in em, for a glow or
-    an outline. An MTSDF layer fades to zero at the edge of its pad, over the
-    last `fade` em: a quarter of `pad` by default, and 0 turns the fade off.
-    float glyph_fade holds the factor in the fragment GLSL.
-    `blend` is normal, add, multiply or screen.
-    `emoji` sets whether the layer paints the text's colour glyphs. None
-    leaves them to the last layer of the text in its pass.
-    `name` names the layer in errors and in the console: ASCII letters,
-    digits, '_' and '-', unique among the layers of its pass. A layer with no
-    name goes by its text, and the next layers of the text with no name by
-    "t 2", "t 3".
+    `name` is required, and ghee declares the string param of that name,
+    which holds the words, live. Every pass reads them with
+    float <name>_cover(vec2 p, float font_size) and vec2 <name>_size.
+    `x` and `y` put the block's top left at that pass pixel, y down, and a
+    missing one centres the block on its axis. `font_size` is the pixels per
+    em, and without it the block takes the largest size that fits its room.
+    `color` is "#rrggbb", [r, g, b] in 0..1, or a gradient
+    {"from": ..., "to": ..., "angle": degrees}. `font_family` is a font file
+    (.ttf or .otf) or the name of a font Asset, and None draws from the
+    DejaVu Sans Latin that ghee carries. A key left at None takes ghee's
+    default.
     """
 
-    text: str
-    fragment: str | None = None
-    vertex: str | None = None
-    font_size: float | None = None
-    at: Sequence[float] | None = None
-    fade: float | None = None
+    name: str
+    text: str | None = None
+    visible: bool = True
+    x: float | None = None
+    y: float | None = None
+    color: str | Sequence[float] | dict | None = None
+    opacity: float | None = None
     blend: Blend = "normal"
-    pad: float | None = None
-    name: str | None = None
-    emoji: bool | None = None
-
-    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        # The keywords that the scene JSON renamed, which the dataclass would
-        # refuse with no word of the new name.
-        for old, new in (("code", "fragment"), ("place", "vertex")):
-            if old in kwargs:
-                raise TypeError(
-                    f"ghee.Layer takes its {new} GLSL in {new}=, got {old}="
-                )
-        if "alpha" in kwargs:
-            raise TypeError(
-                "ghee.Layer takes no alpha=: its alpha blends by blend=, as its "
-                "colour does"
-            )
-        return super().__new__(cls)
+    font_size: float | None = None
+    font_family: str | os.PathLike[str] | None = None
+    text_align: TextAlign = "left"
+    render: Render = "mtsdf"
 
     def to_dict(self) -> dict:
-        d: dict = {} if self.name is None else {"name": self.name}
-        d["text"] = self.text
-        if self.vertex is not None:
-            d["vertex"] = self.vertex
-        if self.font_size is not None:
-            d["font_size"] = _floats(self.font_size)
-        if self.at is not None:
-            d["at"] = _floats(self.at)
-        if self.fragment is not None:
-            d["fragment"] = self.fragment
+        d: dict = {"name": self.name}
+        if self.visible is not True:
+            d["visible"] = _plain(self.visible)
+        for k in ("x", "y"):
+            if getattr(self, k) is not None:
+                d[k] = _floats(getattr(self, k))
+        if self.color is not None:
+            d["color"] = _floats(self.color)
+        if self.opacity is not None:
+            d["opacity"] = _floats(self.opacity)
         if self.blend != "normal":
             d["blend"] = self.blend
-        if self.pad is not None:
-            d["pad"] = _floats(self.pad)
-        if self.fade is not None:
-            d["fade"] = _floats(self.fade)
-        if self.emoji is not None:
-            d["emoji"] = _plain(self.emoji)
+        if self.text is not None:
+            d["text"] = self.text
+        if self.font_size is not None:
+            d["font_size"] = _floats(self.font_size)
+        if self.font_family is not None:
+            d["font_family"] = _plain(self.font_family)
+        if self.text_align != "left":
+            d["text_align"] = self.text_align
+        if self.render != "mtsdf":
+            d["render"] = self.render
         return d
 
 
@@ -263,7 +239,8 @@ class Pass:
     The last pass leaves `size` None, because it feeds the display.
     `mipmaps` builds the mip chain of the pass's buffer after each frame, so
     a pass that reads it far smaller than its size samples it smooth.
-    `layers` draw texts into the pass's buffer after its code, in order.
+    `layers` draw text layers into the pass's buffer after its code, in
+    order.
     A pass with layers and no code starts each frame transparent.
     `params` holds the Params of this pass alone, in a list or in a dict keyed
     by their names.
@@ -318,8 +295,8 @@ class Asset:
 
     An image (.png, .jpg) is `uniform sampler2D <name>_tex` in every pass,
     and `vec2 <name>_size` is its size in pixels. A font (.ttf, .otf) is for a
-    Text to name. `file` resolves beside the scene's script, then through
-    $GHEE_ASSETS.
+    Layer's font_family to name. `file` resolves beside the scene's script,
+    then through $GHEE_ASSETS.
     """
 
     name: str
@@ -327,50 +304,6 @@ class Asset:
 
     def to_dict(self) -> dict:
         return {"file": _plain(self.file)}
-
-
-@dataclass
-class Text:
-    """Words that the GPU draws from the outlines of a font.
-
-    `value` holds the words. ghee declares the scene string param of the
-    text's name, and set_param on it changes the words, live.
-    Every scene pass, filter passes excepted, reads them with
-    float <name>_cover(vec2 p, float font_size): p in em from the top left of
-    the block, y down like v_texCoord, and font_size the pixels per em.
-    vec2 <name>_size is the block, in em.
-    `font` is a font file (.ttf or .otf), resolved as an Asset's file is, or
-    the name of a font Asset of the scene, or a list that mixes both: each
-    character draws from the first font whose cmap holds it. None draws from
-    the DejaVu Sans Latin that ghee carries.
-    `align` lines up the lines of the block: left, center or right.
-    `fill` is where a Layer of the text takes its coverage from: mtsdf reads
-    an atlas of the glyphs' distance fields, fast and with glyph_dist and
-    glyph_round_dist, and slug computes Slug's exact coverage from the curves,
-    exact edges at any size.
-    `atlas` sets the texels per em of a glyph in the MTSDF atlas,
-    {"font_size": 32} by default. The atlas's field reaches the largest pad
-    of the text's layers.
-    """
-
-    name: str
-    font: str | os.PathLike[str] | list[str | os.PathLike[str]] | None = None
-    value: str = ""
-    align: Align = "left"
-    fill: Fill = "mtsdf"
-    atlas: Atlas | None = None
-
-    def to_dict(self) -> dict:
-        d: dict = {"value": self.value}
-        if self.font is not None:
-            d["font"] = _plain(self.font)
-        if self.align != "left":
-            d["align"] = self.align
-        if self.fill != "mtsdf":
-            d["fill"] = self.fill
-        if self.atlas is not None:
-            d["atlas"] = _plain(self.atlas)
-        return d
 
 
 @dataclass
@@ -383,10 +316,7 @@ class Scene:
     `filters` are named post-process passes that ghee appends after the
     scene's own.
     `assets` are the image and font files the scene names.
-    `texts` are words drawn from a font, and a Layer in a pass names one of
-    them. ghee declares the string param of each text's name, which holds its
-    words.
-    Two assets, or two texts, of one name raise ValueError.
+    Two assets of one name raise ValueError.
     """
 
     passes: list[Pass] = field(default_factory=list)
@@ -395,15 +325,13 @@ class Scene:
     params: dict[str, Param] | list[Param] = field(default_factory=dict)
     common: str | None = None
     assets: list[Asset] = field(default_factory=list)
-    texts: list[Text] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.params = _keyed(self.params, lambda n: f"scene param '{n}'")
-        for kind, named in (("asset", self.assets), ("text", self.texts)):
-            names = [x.name for x in named]
-            for n in names:
-                if names.count(n) > 1:
-                    raise ValueError(f"{kind} '{n}' is declared twice")
+        names = [a.name for a in self.assets]
+        for n in names:
+            if names.count(n) > 1:
+                raise ValueError(f"asset '{n}' is declared twice")
 
     def to_dict(self) -> dict:
         out: dict = {
@@ -418,8 +346,6 @@ class Scene:
             out["params"] = {n: p.to_dict() for n, p in self.params.items()}
         if self.assets:
             out["assets"] = {a.name: a.to_dict() for a in self.assets}
-        if self.texts:
-            out["texts"] = {t.name: t.to_dict() for t in self.texts}
         return out
 
 
@@ -712,7 +638,8 @@ def set_param(
 
     A float takes one number, a color takes "#rrggbb" or three numbers, and a
     vecN takes N.
-    A string takes words, and the Text of its name lays them out again.
+    A string takes words, and the text layer of its name lays them out
+    again.
     `pass_` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
 
@@ -746,8 +673,9 @@ def _param_types(scene: Scene) -> dict:
     before it holds that name.
     """
     types = {n: p.type for n, p in scene.params.items()}
-    for t in scene.texts:
-        types[t.name] = "string"
+    for ps in scene.passes:
+        for layer in ps.layers:
+            types[layer.name] = "string"
     for ps in scene.passes:
         for n, p in ps.params.items():
             types[f"{ps.name}.{n}"] = p.type

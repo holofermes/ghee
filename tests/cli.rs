@@ -45,11 +45,11 @@ fn render(dir: &Path, scene: &str, args: &[&str]) -> Output {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn quiet_still_says_what_is_wrong_with_a_text() {
+fn quiet_still_says_what_is_wrong_with_a_text_layer() {
     let dir = Dir::new("quiet");
-    let scene = r#"{"texts": {"t": {"value": "hi", "font": "missing.ttf"}},
-        "passes": [{"name": "main",
-                    "code": "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }"}]}"#;
+    let scene = r#"{"passes": [{"name": "main",
+        "code": "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }",
+        "layers": [{"name": "t", "text": "hi", "font_family": "missing.ttf", "visible": false}]}]}"#;
     let out = render(&dir.0, scene, &["-q"]);
     assert!(out.status.success(), "{out:?}");
     let err = String::from_utf8(out.stderr).unwrap();

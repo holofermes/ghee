@@ -30,7 +30,7 @@ use crate::console::core::{
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
 use crate::console::store::SceneStore;
-use crate::engine::{ErrorLayer, ErrorPass, Feed, Provider, Renderer};
+use crate::engine::{ErrorPass, Feed, Provider, Renderer};
 use crate::feeds::demo_feed;
 use crate::h264::{
     avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
@@ -246,7 +246,6 @@ struct Stat {
     display: Value,
     error_line: Option<i64>,
     error_pass: Option<ErrorPass>,
-    error_layer: Option<ErrorLayer>,
 }
 
 /// A source for one declared array: the host's data for this frame.
@@ -443,10 +442,6 @@ impl Console {
                 "error_pass".to_string(),
                 stat.error_pass.map_or(Value::Null, ErrorPass::to_json),
             );
-            d.insert(
-                "error_layer".to_string(),
-                stat.error_layer.map_or(Value::Null, ErrorLayer::to_json),
-            );
         }
         d.insert(
             "active".to_string(),
@@ -476,7 +471,6 @@ impl Console {
         stat.error = String::new();
         stat.error_line = None;
         stat.error_pass = None;
-        stat.error_layer = None;
     }
 
     /// Republish the running document from the scene the loop holds. The render
@@ -1420,7 +1414,6 @@ fn set_scene(
             stat.error = err.clone();
             stat.error_line = renderer.borrow().error_line;
             stat.error_pass = renderer.borrow().error_pass;
-            stat.error_layer = renderer.borrow().error_layer;
         }
         if let Some(last) = st.borrow().scene.as_ref() {
             let _ = renderer.borrow_mut().setup(last); // keep the last good scene rendering
@@ -2990,7 +2983,6 @@ mod tests {
             "error",
             "error_line",
             "error_pass",
-            "error_layer",
             "text_errors",
             "active",
             "display",
@@ -3083,10 +3075,11 @@ mod tests {
         let doc = serde_json::json!({
             "version": 1,
             "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-            "texts": {"label": {"value": words, "font": "sans"}},
             "passes": [{"name": "main", "code": "void main(){ \
                 float c = label_cover(v_texCoord * label_size, resolution.y / label_size.y); \
-                gl_FragColor = vec4(c, c, c, 1.0); }"}],
+                gl_FragColor = vec4(c, c, c, 1.0); }",
+                "layers": [{"name": "label", "text": words, "font_family": "sans",
+                            "visible": false}]}],
         });
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
         sc.load_assets(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts"))
@@ -3135,7 +3128,7 @@ mod tests {
         let o = frame();
         assert!(o != i, "the frame kept the old words");
         let running = lock(&console.running).clone().unwrap().1;
-        assert_eq!(running["texts"]["label"]["value"], "O");
+        assert_eq!(running["passes"][0]["layers"][0]["text"], "O");
         // the relayed words draw what a scene built on them draws
         assert_eq!(set(text_scene("O")), "");
         assert!(frame() == o, "the relayed words drew another frame");
@@ -3174,10 +3167,10 @@ mod tests {
         let (error, texts) = errors();
         assert_eq!(error, "", "a text problem is no scene error");
         let e = texts[0].as_str().unwrap();
-        assert!(e.starts_with("text 'label': ") && e.contains("VC4"), "{e}");
+        assert!(e.starts_with("layer 'label': ") && e.contains("VC4"), "{e}");
         // The document holds the words posted.
         let running = lock(&console.running).clone().unwrap().1;
-        assert_eq!(running["texts"]["label"]["value"], long.as_str());
+        assert_eq!(running["passes"][0]["layers"][0]["text"], long.as_str());
         host.set_param(Scope::Scene, "label", Value::from("I"))
             .unwrap();
         assert!(drain(&console, &renderer, &st, &ctrl));

@@ -73,7 +73,6 @@ def test_a_font_that_is_nowhere_draws_error_boxes(tmp_path, monkeypatch, capfd):
     doc = {
         "version": 1,
         "assets": {"sans": {"file": "fonts/Missing.ttf"}},
-        "texts": {"words": {"value": "hi", "font": "sans"}},
         "passes": [
             {
                 "name": "main",
@@ -81,6 +80,14 @@ def test_a_font_that_is_nowhere_draws_error_boxes(tmp_path, monkeypatch, capfd):
                     "void main(){ vec2 px = floor(v_texCoord * resolution) + 0.5;"
                     " gl_FragColor = vec4(vec3(words_cover(px / 16.0, 16.0)), 1.0); }"
                 ),
+                "layers": [
+                    {
+                        "name": "words",
+                        "text": "hi",
+                        "font_family": "sans",
+                        "visible": False,
+                    }
+                ],
             }
         ],
     }
@@ -111,11 +118,11 @@ def hook(t):
         ghee.set_param("words", "I" * 400_000)
 
 
+LAYER = ghee.Layer("words", "ab", visible=False, font_family="sans")
 ghee.run(
     ghee.Scene(
-        passes=[ghee.Pass("main", CODE)],
+        passes=[ghee.Pass("main", CODE, layers=[LAYER])],
         assets=[ghee.Asset("sans", "{font}")],
-        texts=[ghee.Text("words", "sans", "ab")],
     )
 )
 """
@@ -140,13 +147,11 @@ def test_words_past_the_texture_from_a_procedural_scene_end_no_run(tmp_path):
         timeout=120,
     )
     assert ran.returncode == 0, ran.stderr
-    assert ran.stderr.count("text 'words': the words need a ") == 1, ran.stderr
+    assert ran.stderr.count("layer 'words': the words need a ") == 1, ran.stderr
     # words that do not fit leave the last words
     frames = {(tmp_path / f"f.{i:04d}.png").read_bytes() for i in range(20)}
     assert len(frames) == 1
 
-
-PLACE = "vec2 glyph_place(vec2 em) { return em * 12.0; }"
 
 # a layer whose blend ghee does not know
 MISTAKE = {
@@ -155,10 +160,16 @@ MISTAKE = {
         {
             "name": "main",
             "code": "void main(){ gl_FragColor = vec4(1.0); }",
-            "layers": [{"text": "words", "vertex": PLACE, "blend": "mix"}],
+            "layers": [
+                {
+                    "name": "words",
+                    "text": "hi",
+                    "font_family": "sans.ttf",
+                    "blend": "mix",
+                }
+            ],
         }
     ],
-    "texts": {"words": {"value": "hi", "font": "sans.ttf"}},
 }
 
 MISTAKE_SCENE = """#!{python}
@@ -170,10 +181,9 @@ ghee.run(
             ghee.Pass(
                 "main",
                 "void main(){{ gl_FragColor = vec4(1.0); }}",
-                layers=[ghee.Layer("words", vertex={place!r}, blend="mix")],
+                layers=[ghee.Layer("words", "hi", font_family="sans.ttf", blend="mix")],
             )
         ],
-        texts=[ghee.Text("words", "sans.ttf", "hi")],
     )
 )
 """
@@ -187,7 +197,7 @@ def test_a_scene_mistake_reads_as_ghee_wrote_it_in_open_a_direct_run_and_ghee_re
     message = str(raised.value)
     assert "blend" in message
     path = tmp_path / "mistake.py"
-    path.write_text(MISTAKE_SCENE.format(python=sys.executable, place=PLACE))
+    path.write_text(MISTAKE_SCENE.format(python=sys.executable))
     path.chmod(0o755)
     out = ["-o", str(tmp_path / "f.png"), "--size", "8x8"]
     direct = subprocess.run(

@@ -288,7 +288,6 @@ FONT = "fonts/DejaVuSans-Latin.ttf"
 WORDS = {
     "version": 1,
     "assets": {"sans": {"file": FONT}},
-    "texts": {"words": {"value": "ghee", "font": "sans"}},
     "passes": [
         {
             "name": "main",
@@ -296,6 +295,14 @@ WORDS = {
                 "void main(){ vec2 px = floor(v_texCoord * resolution) + 0.5;"
                 " gl_FragColor = vec4(vec3(words_cover(px / 24.0, 24.0)), 1.0); }"
             ),
+            "layers": [
+                {
+                    "name": "words",
+                    "text": "ghee",
+                    "font_family": "sans",
+                    "visible": False,
+                }
+            ],
         }
     ],
 }
@@ -379,10 +386,10 @@ def test_open_takes_a_ghee_scene_and_a_path_like(tmp_path):
     """A ghee.Scene renders as its dict does, and a pathlib path as its str."""
     (tmp_path / "fonts").mkdir()
     shutil.copy(REPO / "ghee" / "examples" / FONT, tmp_path / "fonts")
+    layer = ghee.Layer("words", "ghee", visible=False, font_family="sans")
     scene = ghee.Scene(
         assets=[ghee.Asset("sans", pathlib.Path(FONT))],
-        texts=[ghee.Text("words", "sans", "ghee")],
-        passes=[ghee.Pass("main", WORDS["passes"][0]["code"])],
+        passes=[ghee.Pass("main", WORDS["passes"][0]["code"], layers=[layer])],
     )
     assert scene.to_dict()["assets"] == {"sans": {"file": FONT}}
     frames = []
@@ -429,16 +436,10 @@ def test_a_frame_is_opaque_unless_open_keeps_the_alpha():
         assert abs(a - 128) <= 1
 
 
-def test_a_text_draws_a_letter_and_an_emoji_from_its_list_of_fonts(monkeypatch):
-    """The I comes from sans, white, and the emoji from the emoji font, in its
-    own colours to the right of the I."""
+def test_a_layer_draws_its_words_in_its_color(monkeypatch):
     monkeypatch.chdir(REPO / "tools" / "fixtures" / "fonts")
     scene = ghee.Scene(
-        assets=[
-            ghee.Asset("sans", "DejaVuSans-ASCII.ttf"),
-            ghee.Asset("emoji", "NotoColorEmoji-Smiles.ttf"),
-        ],
-        texts=[ghee.Text("words", ["sans", "emoji"], "I\U0001f600")],
+        assets=[ghee.Asset("sans", "DejaVuSans-ASCII.ttf")],
         passes=[
             ghee.Pass(
                 "main",
@@ -446,18 +447,18 @@ def test_a_text_draws_a_letter_and_an_emoji_from_its_list_of_fonts(monkeypatch):
                 layers=[
                     ghee.Layer(
                         "words",
-                        "void main(){ gl_FragColor = vec4(glyph_cover()); }",
-                        "vec2 glyph_place(vec2 em) { return em * 24.0; }",
+                        "I",
+                        x=4,
+                        y=0,
+                        font_size=24,
+                        color="#ff0000",
+                        font_family="sans",
                     )
                 ],
             )
         ],
     )
-    with ghee.open(scene.to_dict(), width=48, height=32, timestep=0) as h:
+    with ghee.open(scene, width=48, height=32, timestep=0) as h:
         h.frame()
         px = h.pixels()
-    at = [(i // 4 % 48, px[i : i + 3]) for i in range(0, len(px), 4)]
-    letter = [x for x, (r, g, b) in at if r == g == b and r > 200]
-    emoji = [x for x, (r, g, b) in at if r - b > 100]
-    assert emoji
-    assert any(x < min(emoji) for x in letter)
+    assert (255, 0, 0) in {tuple(px[i : i + 3]) for i in range(0, len(px), 4)}

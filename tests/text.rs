@@ -1,4 +1,4 @@
-//! Scene texts: the layout, the scene model, the font assets, and the
+//! Text layers: the layout, the scene model, the font assets, and the
 //! coverage that passes and layers render on this host's GPU.
 //!
 //! The reference below rebuilds the promised layout and outline from the font
@@ -7,13 +7,14 @@
 use std::fs;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
-use ghee::engine::{probe_dri_devices, ErrorLayer, ErrorPass, LayerPart, Renderer};
+use ghee::engine::{probe_dri_devices, Renderer};
 use ghee::filters::apply_filters;
+use ghee::layer::{Detail, Layer};
 use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
-use ghee::text::{self, Align, Fill, Text};
+use ghee::text::{self, Align};
 
 const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
 /// DejaVu Sans cut to printable ASCII, TrueType outlines, a kern table.
@@ -33,12 +34,6 @@ const EMOJI_SBIX: &str = "NotoColorEmoji-Smiles-sbix.ttf";
 /// DejaVu Sans cut to Latin, the built-in font, as ghee/examples/fonts holds
 /// it.
 const LATIN: &str = "../../../ghee/examples/fonts/DejaVuSans-Latin.ttf";
-/// DejaVu Sans cut by fontTools' subset to space, U+2764, U+FE0E and U+FE0F:
-/// an outline heart, and two selectors with no advance and no ink.
-const HEART: &str = "DejaVuSans-Heart.ttf";
-/// Noto Color Emoji cut by fontTools' subset to space and U+2764: a colour
-/// heart.
-const EMOJI_HEART: &str = "NotoColorEmoji-Heart.ttf";
 
 fn font(file: &str) -> Vec<u8> {
     fs::read(format!("{FONTS}/{file}")).unwrap()
@@ -256,25 +251,6 @@ fn lay(file: &str, words: &str, align: Align) -> Laid {
 }
 
 impl Laid {
-    /// The distance from `p` to the outline in em, below 0 inside it.
-    fn distance(&self, p: [f64; 2]) -> f64 {
-        let mut d = f64::MAX;
-        for [a, b] in self.glyphs.iter().flat_map(|g| &g.segs) {
-            let v = [b[0] - a[0], b[1] - a[1]];
-            let len2 = v[0] * v[0] + v[1] * v[1];
-            let t = if len2 > 0.0 {
-                (((p[0] - a[0]) * v[0] + (p[1] - a[1]) * v[1]) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            d = d.min((p[0] - a[0] - t * v[0]).hypot(p[1] - a[1] - t * v[1]));
-        }
-        match self.inside(p, 0.0) {
-            Some(true) => -d,
-            _ => d,
-        }
-    }
-
     /// Whether `p` lies inside the outline, by nonzero winding, the fill rule
     /// of TrueType and CFF alike. None within `edge` em of an edge.
     fn inside(&self, p: [f64; 2], edge: f64) -> Option<bool> {
@@ -426,17 +402,29 @@ fn align_name(a: Align) -> &'static str {
     }
 }
 
-/// One pass that draws the coverage of text `label` in the font asset `face`,
-/// the fixture `file`, to red, green and blue.
+/// One pass that draws the coverage of the hidden text layer `label`, in the
+/// font asset `face`, the fixture `file`, to red, green and blue.
 fn label_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     json!({
         "version": 1,
         "assets": {"face": {"file": file}},
-        "texts": {"label": {"value": words, "font": "face", "align": align_name(align)}},
         "passes": [{"name": "main", "code": format!(
             "void main(){{ float c = {}; gl_FragColor = vec4(c, c, c, 1.0); }}",
-            fit.cover("label"))}],
+            fit.cover("label")),
+            "layers": [{"name": "label", "text": words, "font_family": "face",
+                        "text_align": align_name(align), "visible": false}]}],
     })
+}
+
+/// The layer of `doc` named `name`.
+fn layer_of<'a>(doc: &'a mut Value, name: &str) -> &'a mut Value {
+    doc["passes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .flat_map(|p| p["layers"].as_array_mut().into_iter().flatten())
+        .find(|l| l["name"] == name)
+        .unwrap()
 }
 
 /// The scene with its fonts read from the fixtures. The caller holds LOCK.
@@ -555,9 +543,9 @@ fn bytes_that_are_no_font_draw_a_box_a_character() {
     );
     let built = laid.built.unwrap();
     assert_eq!((built.quads.count, built.boxes.count), (0, 2));
-    let mut t = Text::from_dict("label", &json!({"font": "face"})).unwrap();
-    t.data = Some(vec![Err("asset 'face' (face.ttf): gone".to_string())]);
-    let laid = t.build("I O").unwrap();
+    let mut l = face_layer();
+    l.data = Some(vec![Err("asset 'face' (face.ttf): gone".to_string())]);
+    let laid = l.build("I O").unwrap();
     assert_eq!(
         laid.faults,
         [text::Fault::Font(
@@ -567,19 +555,25 @@ fn bytes_that_are_no_font_draw_a_box_a_character() {
     assert_eq!(laid.built.unwrap().boxes.count, 2);
 }
 
+/// A layer `label` whose font_family names the font asset `face`, before any
+/// font loads.
+fn face_layer() -> Layer {
+    let d = json!({"name": "label", "text": "", "font_family": "face"});
+    Layer::from_dict("a layer", &d).unwrap()
+}
+
 #[test]
-fn a_text_built_before_its_font_loads_names_the_font() {
-    let t = Text::from_dict("label", &json!({"font": "face"})).unwrap();
-    let e = t.build("I").err().unwrap().to_string();
+fn a_layer_built_before_its_font_loads_names_the_font() {
+    let e = face_layer().build("I").err().unwrap().to_string();
     assert_eq!(
         e,
-        "text 'label': font 'face' was never loaded, the scene was built without a directory"
+        "layer 'label': font 'face' was never loaded, the scene was built without a directory"
     );
 }
 
 #[test]
-fn a_text_with_no_font_lays_out_in_the_built_in_dejavu_sans_latin() {
-    let doc = texts_scene(json!({"label": {}}));
+fn a_layer_with_no_font_family_lays_out_in_the_built_in_dejavu_sans_latin() {
+    let doc = layers_scene(json!([{"name": "label", "text": "I"}]));
     // The built-in font needs no directory, and a scene's fonts read from
     // one leave it in place.
     let bare = Scene::from_dict(&doc, None, None).unwrap();
@@ -587,14 +581,17 @@ fn a_text_with_no_font_lays_out_in_the_built_in_dejavu_sans_latin() {
     for sc in [bare, loaded(&doc)] {
         // é and ß lie past ASCII, and AV kerns.
         let words = "Hé ßAV\nI";
-        let laid = sc.texts[0].build(words).unwrap();
+        let laid = sc.passes[0].layers[0].build(words).unwrap();
         assert_eq!(laid.faults, []);
         let want = lay(LATIN, words, Align::Left);
         assert!(near(
             block(laid.built.as_ref().unwrap()),
             (want.width, want.height)
         ));
-        assert_eq!(sc.to_dict()["texts"], json!({"label": {"value": "I"}}));
+        assert_eq!(
+            sc.to_dict()["passes"][0]["layers"],
+            json!([{"name": "label", "text": "I"}])
+        );
     }
 }
 
@@ -632,25 +629,13 @@ fn font_assets() -> Value {
     json!({"sans": {"file": SANS}, "cff": {"file": CFF}})
 }
 
-/// A scene that declares `texts`, each with the words "I" ahead of its keys,
-/// and the fixture fonts.
-fn texts_scene(texts: Value) -> Value {
-    let mut words = Map::new();
-    for (name, t) in texts.as_object().unwrap() {
-        let Some(keys) = t.as_object() else {
-            words.insert(name.clone(), t.clone());
-            continue;
-        };
-        let mut d = Map::new();
-        d.insert("value".to_string(), json!("I"));
-        d.extend(keys.clone());
-        words.insert(name.clone(), Value::Object(d));
-    }
+/// A scene of the fixture fonts and one pass, `main`, white, with `layers`.
+fn layers_scene(layers: Value) -> Value {
     json!({
         "version": 1,
         "assets": font_assets(),
-        "texts": words,
-        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}],
+        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
+                    "layers": layers}],
     })
 }
 
@@ -659,318 +644,260 @@ fn scene_err(doc: &Value) -> String {
 }
 
 #[test]
-fn texts_round_trip_and_left_is_the_default() {
-    let doc = texts_scene(json!({
-        "label": {"font": "sans", "align": "center"},
-        "title": {"font": "cff"},
-        "tail": {"font": "sans", "align": "right"},
-    }));
+fn layers_round_trip_and_leave_their_defaults_out() {
+    let doc = layers_scene(json!([
+        {"name": "a", "text": "I"},
+        {"name": "b", "visible": false, "x": 4.0, "y": -2.5, "color": "#ff8000",
+         "opacity": 0.5, "blend": "add", "text": "AV\nI", "font_size": 48.0,
+         "font_family": "sans", "text_align": "center", "render": "slug"},
+        {"name": "c", "x": 3.0, "color": [1.0, 0.0, 0.25], "text": ""},
+        {"name": "d", "y": 7.0,
+         "color": {"from": "#000000", "to": [0.0, 1.0, 0.0], "angle": 90.0}, "text": "I"},
+        {"name": "e", "color": {"from": "#ffffff", "to": "#000000"}, "text": "I"},
+    ]));
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     assert_eq!(sc.to_dict(), doc);
-    let names: Vec<&str> = sc.texts.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names, ["label", "title", "tail"]);
-    assert_eq!(sc.texts[0].align, Align::Center);
-    assert_eq!(sc.texts[1].align, Align::Left);
-    for left in [json!("left"), Value::Null] {
-        let sc = Scene::from_dict(
-            &texts_scene(json!({"label": {"font": "sans", "align": left}})),
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(sc.texts[0].align, Align::Left);
-        assert_eq!(
-            sc.to_dict()["texts"],
-            json!({"label": {"value": "I", "font": "sans"}})
-        );
-    }
-    // MTSDF is the default fill, at 32 px/em and a range of 6 with no layer,
-    // and a save leaves the defaults out.
+    assert_eq!(Scene::from_dict(&sc.to_dict(), None, None).unwrap(), sc);
+    // Each key at its default.
+    let defaults = layers_scene(json!([{
+        "name": "a", "visible": true, "x": null, "y": null, "color": "#ffffff",
+        "opacity": 1, "blend": "normal", "text": "I", "font_size": null,
+        "font_family": null, "text_align": "left", "render": "mtsdf",
+    }, {
+        "name": "b", "color": {"from": [1, 0, 0], "to": [0, 0, 1], "angle": 180},
+        "text": "I",
+    }]));
+    let back = Scene::from_dict(&defaults, None, None).unwrap().to_dict();
     assert_eq!(
-        (
-            sc.texts[0].fill,
-            sc.texts[0].atlas_font_size,
-            sc.atlas_range("label")
-        ),
-        (Fill::Mtsdf, 32, 6)
-    );
-    let doc = texts_scene(json!({
-        "label": {"font": "sans", "fill": "mtsdf", "atlas": {"font_size": 32}},
-        "title": {"font": "sans", "fill": "slug"},
-        "tail": {"font": "sans", "atlas": {"font_size": 48}},
-    }));
-    let sc = Scene::from_dict(&doc, None, None).unwrap();
-    assert_eq!(
-        sc.to_dict()["texts"],
-        json!({
-            "label": {"value": "I", "font": "sans"},
-            "title": {"value": "I", "font": "sans", "fill": "slug"},
-            "tail": {"value": "I", "font": "sans", "atlas": {"font_size": 48}},
-        })
-    );
-    assert_eq!(sc.texts[1].fill, Fill::Slug);
-    assert_eq!(sc.texts[2].atlas_font_size, 48);
-    assert_eq!(
-        Scene::from_dict(&sc.to_dict(), None, None).unwrap(),
-        sc,
-        "a save reloads the same texts"
+        back["passes"][0]["layers"],
+        json!([{"name": "a", "text": "I"},
+               {"name": "b", "color": {"from": [1.0, 0.0, 0.0], "to": [0.0, 0.0, 1.0]},
+                "text": "I"}])
     );
 }
 
 #[test]
-fn a_text_declares_the_string_param_of_its_name_and_refuses_another() {
-    let doc = json!({
-        "version": 1, "assets": font_assets(),
-        "texts": {"label": {"value": "hi", "font": "sans"}, "title": {"font": "sans"}},
-        "params": {"gain": {"type": "float", "value": 1.0}},
-        "passes": [{"name": "main", "code": "void main(){}"}],
-    });
+fn a_layer_declares_the_string_param_of_its_name_which_holds_its_words() {
+    let mut doc = layers_scene(json!([
+        {"name": "label", "text": "hi", "font_family": "sans"},
+        {"name": "title", "text": "", "font_family": "sans"},
+    ]));
+    doc["params"] = json!({"gain": {"type": "float", "value": 1.0}});
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let words = |sc: &Scene, n: &str| sc.params.get(n).map(|p| p.value.clone());
     let str = |w: &str| Some(ParamValue::Str(w.to_string()));
     assert_eq!(words(&sc, "label"), str("hi"));
     assert_eq!(words(&sc, "title"), str(""));
     // A save leaves the param out and writes the words as they stand into the
-    // text, and a scene built again keeps them.
+    // layer, and a scene built again keeps them.
     let mut sc = Ok(sc).param(Param::float("k", 0.5)).unwrap();
     sc.params.get_mut("label").unwrap().value = ParamValue::Str("ho".to_string());
     let sc = Ok(sc).param(Param::float("j", 0.5)).unwrap();
     let back = sc.to_dict();
     assert_eq!(back["params"].as_object().unwrap().len(), 3);
+    let layers = &back["passes"][0]["layers"];
     assert_eq!(
-        back["texts"]["label"],
-        json!({"value": "ho", "font": "sans"})
+        (&layers[0]["text"], &layers[1]["text"]),
+        (&json!("ho"), &json!(""))
     );
-    assert_eq!(back["texts"]["title"], json!({"value": "", "font": "sans"}));
     assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
-    let none = Scene::from_dict(&texts_scene(json!({"label": {"font": "sans"}})), None, None);
+    let none = Scene::from_dict(&layers_scene(json!([])), None, None);
     assert!(none.unwrap().to_dict().get("params").is_none());
-    // A param under the text's name is refused, of any type and in any pass.
-    let scene = "scene param 'label' has the name of text 'label', which holds its words in \
-                 its 'value'";
-    let pass = "param 'label' in pass 'main' has the name of text 'label', which holds its \
-                words in its 'value'";
-    for (at, ty, want) in [
-        ("scene", "string", scene),
-        ("scene", "float", scene),
-        ("pass", "string", pass),
-    ] {
-        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
-        let p = json!({"label": {"type": ty, "value": if ty == "string" { json!("I") } else { json!(1.0) }}});
-        match at {
-            "scene" => doc["params"] = p,
-            _ => doc["passes"][0]["params"] = p,
-        }
-        assert_eq!(scene_err(&doc), format!("scene: {want}"), "{at} {ty}");
-    }
-    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
-    doc["texts"]["label"]["value"] = json!(3);
-    assert_eq!(
-        scene_err(&doc),
-        "scene: text 'label' value needs words in a string, got 3"
-    );
 }
 
 #[test]
-fn a_text_declaration_names_what_it_lacks() {
-    for (td, want) in [
-        (json!("x.ttf"), "text 'label' needs an object"),
+fn a_layer_declaration_names_what_it_lacks() {
+    let one = |d: Value| scene_err(&layers_scene(json!([d])));
+    let t = |keys: Value| {
+        let mut d = json!({"name": "t", "text": "I"});
+        d.as_object_mut()
+            .unwrap()
+            .extend(keys.as_object().unwrap().clone());
+        one(d)
+    };
+    let colour = "needs '#rrggbb', [r, g, b] or a gradient {\"from\", \"to\", \"angle\"}";
+    let family = "font_family needs the name of a font asset or a .ttf or .otf file";
+    let cases = [
         (
-            json!({"font": ""}),
-            "text 'label' 'font' needs the name of a font asset",
+            scene_err(&layers_scene(json!(3))),
+            "pass 'main': 'layers' needs a list, got 3".to_string(),
         ),
         (
-            json!({"font": 3}),
-            "text 'label' 'font' needs the name of a font asset",
+            one(json!(3)),
+            "the 1st layer of pass 'main' needs an object, got 3".to_string(),
         ),
         (
-            json!({"font": "serif"}),
-            "text 'label' font 'serif' is no asset of the scene and no .ttf or .otf file",
+            one(json!({"text": "I"})),
+            "the 1st layer of pass 'main' has no 'name'".to_string(),
         ),
         (
-            json!({"font": "sans", "align": "middle"}),
-            "text 'label' align needs 'left', 'center' or 'right', got 'middle'",
+            one(json!({"name": 3, "text": "I"})),
+            "the 1st layer of pass 'main' name needs a string, got 3".to_string(),
         ),
         (
-            json!({"font": "sans", "fill": "msdf"}),
-            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_round_dist, \
-             or 'slug', exact edges at any size, got 'msdf'",
+            one(json!({"name": "t"})),
+            "layer 't' has no 'text', the words it draws".to_string(),
         ),
         (
-            json!({"font": "sans", "fill": 3}),
-            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_round_dist, \
-             or 'slug', exact edges at any size, got 3",
+            t(json!({"text": 3})),
+            "layer 't' text needs words in a string, got 3".to_string(),
         ),
         (
-            json!({"font": "sans", "fill": "outline"}),
-            "text 'label' fill needs 'mtsdf', fast and with glyph_dist and glyph_round_dist, \
-             or 'slug', exact edges at any size, got 'outline'",
+            t(json!({"visible": "no"})),
+            "layer 't' visible needs true or false, got 'no'".to_string(),
         ),
         (
-            json!({"font": "sans", "fill": "slug", "atlas": {"font_size": 32}}),
-            "text 'label' takes no 'atlas' with \"fill\": \"slug\", which reads the curves",
+            t(json!({"x": "4"})),
+            "layer 't' x needs a number of pixels, got '4'".to_string(),
         ),
         (
-            json!({"font": "sans", "atlas": 32}),
-            "text 'label' atlas needs an object with 'font_size', got 32",
+            t(json!({"y": true})),
+            "layer 't' y needs a number of pixels, got True".to_string(),
         ),
         (
-            json!({"font": "sans", "atlas": {"px_em": 32}}),
-            "text 'label' atlas takes 'font_size', got 'px_em'",
+            t(json!({"color": "red"})),
+            format!("layer 't' color {colour}, got 'red'"),
         ),
         (
-            json!({"font": "sans", "atlas": {"font_size": 0}}),
-            "text 'label' atlas font_size needs a whole number from 1 to 2048, got 0",
+            t(json!({"color": [1, 0]})),
+            format!("layer 't' color {colour}, got [1, 0]"),
         ),
         (
-            json!({"font": "sans", "atlas": {"font_size": 6.5}}),
-            "text 'label' atlas font_size needs a whole number from 1 to 2048, got 6.5",
+            t(json!({"color": {"from": "#000000"}})),
+            "layer 't' color has no 'to'".to_string(),
         ),
         (
-            json!({"font": "sans", "atlas": {"font_size": 4096}}),
-            "text 'label' atlas font_size needs a whole number from 1 to 2048, got 4096",
+            t(json!({"color": {"from": "#00", "to": "#000000"}})),
+            "layer 't' color from needs '#rrggbb' or three numbers [r, g, b], got '#00'"
+                .to_string(),
         ),
-    ] {
-        let e = scene_err(&texts_scene(json!({ "label": td })));
-        assert!(e.starts_with(&format!("scene: {want}")), "{td}: {e}");
+        (
+            t(json!({"color": {"from": "#000000", "to": "#000000", "angle": "up"}})),
+            "layer 't' color angle needs a number of degrees, got 'up'".to_string(),
+        ),
+        (
+            t(json!({"color": {"from": "#000000", "to": "#000000", "turn": 1}})),
+            "layer 't' color takes no 'turn', only from, to and angle".to_string(),
+        ),
+        (
+            t(json!({"opacity": 2})),
+            "layer 't' opacity needs a number from 0 to 1, got 2".to_string(),
+        ),
+        (
+            t(json!({"blend": "max"})),
+            "layer 't' blend needs 'normal', 'add', 'multiply' or 'screen', got 'max'".to_string(),
+        ),
+        (
+            t(json!({"font_size": 0})),
+            "layer 't' font_size needs a number of pixels above 0, got 0".to_string(),
+        ),
+        (
+            t(json!({"font_size": "32"})),
+            "layer 't' font_size needs a number of pixels above 0, got '32'".to_string(),
+        ),
+        (
+            t(json!({"font_family": 3})),
+            format!("layer 't' {family}, got 3"),
+        ),
+        (
+            t(json!({"font_family": ""})),
+            format!("layer 't' {family}, got ''"),
+        ),
+        (
+            t(json!({"font_family": "serif"})),
+            "layer 't' font_family 'serif' is no asset of the scene and no .ttf or .otf file"
+                .to_string(),
+        ),
+        (
+            t(json!({"text_align": "middle"})),
+            "layer 't' text_align needs 'left', 'center' or 'right', got 'middle'".to_string(),
+        ),
+        (
+            t(json!({"render": "msdf"})),
+            "layer 't' render needs 'mtsdf' or 'slug', got 'msdf'".to_string(),
+        ),
+    ];
+    for (got, want) in cases {
+        assert_eq!(got, format!("scene: {want}"));
     }
-    let mut image = texts_scene(json!({"label": {"font": "logo"}}));
+    let mut image = layers_scene(json!([{"name": "t", "text": "I", "font_family": "logo"}]));
     image["assets"]["logo"] = json!({"file": "logo.png"});
     assert_eq!(
         scene_err(&image),
-        "scene: text 'label' font 'logo' is the image 'logo.png', a font is a .ttf or .otf file"
+        "scene: layer 't' font_family 'logo' is the image 'logo.png', a font is a .ttf or .otf \
+         file"
+    );
+    let mut doc = layers_scene(json!([]));
+    doc["passes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "d", "code": BLACK, "filter": "dither",
+            "layers": [{"name": "t", "text": "I"}]}));
+    assert_eq!(
+        scene_err(&doc),
+        "scene: pass 'd' is filter 'dither', and a filter pass takes no layers"
     );
 }
 
 #[test]
 fn a_font_asset_takes_no_image_keys_and_no_pass_sees_it() {
+    let label = || layers_scene(json!([{"name": "label", "text": "I", "font_family": "sans"}]));
     for (k, v) in [
         ("sampling", json!("linear")),
         ("width", json!(4)),
         ("components", json!(1)),
     ] {
-        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+        let mut doc = label();
         doc["assets"]["sans"][k] = v;
         assert_eq!(
             scene_err(&doc),
             format!("scene: asset 'sans' takes no '{k}', a .ttf file is a font")
         );
     }
-    let sc =
-        Scene::from_dict(&texts_scene(json!({"label": {"font": "sans"}})), None, None).unwrap();
-    let g = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, &sc.texts, false);
+    let sc = Scene::from_dict(&label(), None, None).unwrap();
+    let g = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, &sc.text_names(), false);
     assert!(!g.contains("sans") && !g.contains("cff"), "{g}");
 }
 
 #[test]
-fn a_text_name_is_a_glsl_identifier_declared_once() {
-    let e = scene_err(&texts_scene(json!({"2d": {"font": "sans"}})));
-    assert!(e.contains("identifier"), "{e}");
-    let sc =
-        Scene::from_dict(&texts_scene(json!({"label": {"font": "sans"}})), None, None).unwrap();
-    let t = sc.texts[0].clone();
-    let e = sc.with_texts(vec![t.clone(), t]).err().unwrap().to_string();
-    assert_eq!(e, "text 'label' is declared twice");
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_text_named_like_a_layer_helper_is_refused() {
-    // A text named glyph declares glyph_cover, which a layer declares too.
-    assert_eq!(
-        scene_err(&texts_scene(json!({"glyph": {"font": "sans"}}))),
-        "scene: text 'glyph' and the layers both declare 'glyph_cover'"
-    );
-    // glyphs declares names of its own, beside ghee's.
-    let mut doc = texts_scene(json!({"glyphs": {"font": "sans"}}));
-    doc["passes"][0]["layers"] = json!([{"text": "glyphs", "fragment": WHITE,
-        "vertex": "vec2 glyph_place(vec2 em) { return em * 40.0; }"}]);
-    let (_g, mut r) = gpu(W, H);
-    assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
-}
-
-#[test]
-fn a_text_name_collides_with_nothing() {
-    let mut vs_array = texts_scene(json!({"label": {"font": "sans"}}));
-    vs_array["passes"][0]["arrays"] = json!([{"name": "label", "size": 4}]);
-    assert_eq!(
-        scene_err(&vs_array),
-        "scene: text 'label' and array 'label' in pass 'main' both declare 'label_size'"
-    );
-    let mut vs_asset = texts_scene(json!({"label": {"font": "sans"}}));
-    vs_asset["assets"]["label"] = json!({"file": "label.png"});
-    assert_eq!(
-        scene_err(&vs_asset),
-        "scene: asset 'label' and text 'label' both declare 'label_size'"
-    );
-}
-
-#[test]
-fn a_text_declares_its_cover_and_its_size_for_an_author() {
+fn a_layer_declares_its_cover_and_its_size_for_an_author() {
     let mut names = text::names("label");
     names.sort();
     assert_eq!(names, ["label_cover", "label_size"]);
 }
 
 #[test]
-fn a_name_declared_by_a_text_collides_with_nothing() {
-    let float = json!({"type": "float", "value": 1.0});
-    let label = || texts_scene(json!({"label": {"font": "sans"}}));
-    let mut scene_param = label();
-    scene_param["params"]["label_size"] = float.clone();
-    let mut pass_param = label();
-    pass_param["passes"][0]["params"] = json!({"label_cover": float});
-    for (doc, want) in [
-        (
-            scene_param,
-            "scene param 'label_size' and text 'label' both declare 'label_size'",
-        ),
-        (
-            pass_param,
-            "text 'label' and param 'label_cover' in pass 'main' both declare 'label_cover'",
-        ),
-    ] {
-        assert_eq!(scene_err(&doc), format!("scene: {want}"));
-    }
-}
-
-#[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_name_beside_the_names_of_a_text_compiles() {
-    // ghee's own names for a text start with ghee_, so label_w, label_atlas,
-    // label_tex, label_curves and label_emoji are free, and two texts never
+fn a_name_beside_the_names_of_a_layer_compiles() {
+    // ghee's own names for a layer start with ghee_, so label_w, label_atlas,
+    // label_tex, label_curves and label_emoji are free, and two layers never
     // meet in them. A pass name never reaches GLSL.
     let float = json!({"type": "float", "value": 1.0});
-    let mut doc = texts_scene(json!({
-        "label": {"font": ["sans", "emoji"]},
-        "label_atlas": {"font": "sans"},
-        "labels": {"font": "sans", "fill": "slug"},
-    }));
+    let mut doc = layers_scene(json!([
+        {"name": "label", "text": "\u{1f600}", "font_family": "emoji",
+         "x": 0, "y": 0, "font_size": 24},
+        {"name": "label_atlas", "text": "I", "font_family": "sans",
+         "x": 0, "y": 40, "font_size": 24},
+        {"name": "labels", "text": "I", "font_family": "sans", "render": "slug"},
+    ]));
     doc["assets"]["emoji"] = json!({"file": EMOJI});
-    doc["texts"]["label"]["value"] = json!("I\u{1f600}");
-    doc["params"]["label_w"] = float.clone();
-    doc["params"]["label_sizes"] = float.clone();
+    doc["params"] = json!({"label_w": float, "label_sizes": float});
     doc["passes"][0]["name"] = json!("label_tex");
+    doc["passes"][0]["code"] = json!(BLACK);
     doc["passes"][0]["params"] =
         json!({"label_emoji_size": float, "label_emoji": float, "label_covers": float});
     doc["passes"][0]["arrays"] = json!([{"name": "label_texels", "size": 4}]);
-    doc["passes"][0]["layers"] = json!([
-        {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em * 24.0; }"},
-        {"text": "label_atlas", "fragment": WHITE,
-         "vertex": "vec2 glyph_place(vec2 em) { return vec2(0.0, 40.0) + em * 24.0; }"},
-    ]);
     let mut image = doc.clone();
     image["assets"]["label_curves"] = json!({"file": "label.png"});
     assert!(Scene::from_dict(&image, None, None).is_ok());
     let (_g, mut r) = gpu(W, H);
-    assert_eq!(r.setup(&loaded(&doc)).unwrap(), "");
     let f = render(&mut r, &loaded(&doc));
     assert!(f.contains(&255), "the layers paint nothing");
 }
 
 /// The names declared after a type in GLSL `src`, the locals and the function
 /// parameters, outside the comments and the file-scope declarations, and
-/// except ghee's own names and the glyph_ names of a layer.
+/// except ghee's own names.
 fn locals(src: &str) -> Vec<String> {
     let types = [
         "bool", "int", "float", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
@@ -1001,8 +928,7 @@ fn locals(src: &str) -> Vec<String> {
                 && !gap.is_empty()
                 && gap.trim().is_empty()
                 && !after.trim_start().starts_with('(');
-            let ghees = name.starts_with("glyph_") || name.starts_with("ghee_");
-            if declared && !ghees && !out.iter().any(|o| o == name) {
+            if declared && !name.starts_with("ghee_") && !out.iter().any(|o| o == name) {
                 out.push(name.to_string());
             }
         }
@@ -1010,36 +936,44 @@ fn locals(src: &str) -> Vec<String> {
     out
 }
 
+/// The atlas detail of a test that writes a layer's shaders itself.
+const DETAIL: Detail = Detail {
+    px_em: 32,
+    range: 6,
+};
+
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
-    let place = "vec2 glyph_place(vec2 glyph_q) { return glyph_q * 48.0 + 8.0; }";
-    let ink = "void main(){ gl_FragColor = vec4(vec3(glyph_cover()), 1.0); }";
-    let mut doc = texts_scene(json!({
-        "label": {"font": ["sans", "emoji"]},
-        "title": {"font": "sans", "fill": "slug"},
-    }));
+    let mut doc = layers_scene(json!([
+        {"name": "label", "text": "\u{1f600}", "font_family": "emoji",
+         "x": 8, "y": 8, "font_size": 48},
+        {"name": "glyphs", "text": "I", "font_family": "sans", "x": 8, "y": 8, "font_size": 48},
+        {"name": "title", "text": "I", "font_family": "sans", "render": "slug",
+         "x": 60, "y": 8, "font_size": 48},
+    ]));
     doc["assets"]["emoji"] = json!({"file": EMOJI});
-    doc["texts"]["label"]["value"] = json!("I\u{1f600}");
     doc["passes"][0]["code"] = json!(
         "void main(){ gl_FragColor = vec4(vec3(title_cover(v_texCoord * title_size, 32.0)), 1.0); }"
     );
     doc["passes"][0]["arrays"] =
         json!([{"name": "amps", "size": 4}, {"name": "mask", "size": [4, 4]}]);
-    doc["passes"][0]["layers"] = json!([
-        {"text": "label", "fragment": ink, "vertex": place},
-        {"text": "title", "fragment": ink, "vertex": place},
-    ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let p = &sc.passes[0];
     let mut glsl: Vec<String> = Vec::new();
     for hw_linear in [false, true] {
-        glsl.push(p.glsl(Some(&sc.params), None, &sc.assets, &sc.texts, hw_linear));
-        for k in 0..p.layers.len() {
-            let (v, f) = p.layer_glsl(k, &sc, hw_linear);
-            let (bv, bf) = p.layer_box_glsl(k, &sc, hw_linear);
-            let (cv, cf) = p.layer_colour_glsl(k, &sc, hw_linear);
-            glsl.extend([v, f, bv, bf, cv, cf]);
+        glsl.push(p.glsl(
+            Some(&sc.params),
+            None,
+            &sc.assets,
+            &sc.text_names(),
+            hw_linear,
+        ));
+    }
+    for l in &p.layers {
+        let sh = l.shaders(DETAIL);
+        for (v, f) in [sh.glyphs, sh.boxes, sh.colour] {
+            glsl.extend([v, f]);
         }
     }
     let mut names: Vec<String> = Vec::new();
@@ -1056,7 +990,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     let (_g, mut r) = gpu(W, H);
     let plain = render(&mut r, &loaded(&doc));
     assert!(plain.contains(&255), "the scene draws nothing");
-    // The passes and the layers paint grey, and the emoji paints colour.
+    // The pass and the layers paint grey, and the emoji paints colour.
     let coloured = |f: &[u8]| f.chunks_exact(4).any(|p| p[0] != p[2]);
     assert!(coloured(&plain), "the scene draws no emoji");
     assert!(render(&mut r, &loaded(&named)) == plain, "{names:?}");
@@ -1072,9 +1006,8 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
              gl_FragColor = vec4({read}, 0.0, 1.0);\n}}"
         )
     };
-    let place = "vec2 glyph_place(vec2 em) { return em * 24.0; }";
     let scene = |params: Value, code: &str| {
-        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+        let mut doc = layers_scene(json!([]));
         doc["params"] = params;
         doc["passes"][0]["code"] = json!(code);
         doc
@@ -1084,20 +1017,6 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
     let plain = render(&mut r, &loaded(&scene(json!({}), &code("v.bg"))));
     let bg = scene(json!({"bg": red}), &code("v.bg * bg.r"));
     assert!(render(&mut r, &loaded(&bg)) == plain);
-    // A layer's code selects .bg under a pass param bg, and ghee's GLSL of
-    // the layer selects .xy beside a scene param xy.
-    let ink =
-        "void main(){\n    gl_FragColor = vec4(vec3(glyph_cover()).bgr, 1.0) * glyph_cover();\n}";
-    let mut drawn = scene(json!({}), &code("v.rg"));
-    drawn["passes"][0]["layers"] = json!([{"text": "label", "vertex": place, "fragment": ink}]);
-    let want = render(&mut r, &loaded(&drawn));
-    assert!(want.contains(&255), "the layer paints nothing");
-    let mut named = drawn.clone();
-    named["passes"][0]["params"] = json!({"bg": red});
-    named["params"]["xy"] = json!({"type": "vec2", "value": [0.0, 0.0]});
-    named["passes"][0]["layers"][0]["fragment"] =
-        json!(ink.replace("glyph_cover())", "glyph_cover() * bg.r)"));
-    assert!(render(&mut r, &loaded(&named)) == want);
     // A filter's code selects .rgb beside a scene param rgb.
     let rgb = json!({"rgb": red});
     let mut sc = loaded(&scene(rgb, &code("v.rg")));
@@ -1108,14 +1027,15 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
 }
 
 #[test]
-fn every_scene_pass_reads_the_texts_and_a_filter_pass_none() {
+fn every_scene_pass_reads_the_layers_and_a_filter_pass_none() {
     let reads = "float c = label_cover(v_texCoord, 8.0) + title_cover(v_texCoord, 8.0);";
     let doc = json!({
         "version": 1,
         "assets": font_assets(),
-        "texts": {"label": {"value": "I", "font": "sans"}, "title": {"value": "O", "font": "cff"}},
         "passes": [
-            {"name": "a", "code": format!("void main(){{ {reads} gl_FragColor = vec4(c); }}")},
+            {"name": "a", "code": format!("void main(){{ {reads} gl_FragColor = vec4(c); }}"),
+             "layers": [{"name": "label", "text": "I", "font_family": "sans"},
+                        {"name": "title", "text": "O", "font_family": "cff"}]},
             {"name": "main", "channels": [{"buffer": "a"}],
              "code": format!("void main(){{ {reads} \
                  gl_FragColor = texture2D(iChannel0, v_texCoord) * c; }}")},
@@ -1124,7 +1044,7 @@ fn every_scene_pass_reads_the_texts_and_a_filter_pass_none() {
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
     assert_eq!(sc.passes.len(), 3);
-    let glsl = |p: &Pass| p.glsl(Some(&sc.params), None, &sc.assets, &sc.texts, false);
+    let glsl = |p: &Pass| p.glsl(Some(&sc.params), None, &sc.assets, &sc.text_names(), false);
     for p in &sc.passes[..2] {
         let g = glsl(p);
         for name in ["label", "title"] {
@@ -1141,22 +1061,19 @@ fn every_scene_pass_reads_the_texts_and_a_filter_pass_none() {
 }
 
 #[test]
-fn texts_survive_a_filter_asset_and_a_built_param() {
-    let mut sc = Scene::from_dict(
-        &texts_scene(json!({"label": {"font": "sans", "align": "right"}})),
-        None,
-        None,
-    )
-    .unwrap();
-    sc.texts[0].data = Some(alone(&font(SANS)));
-    let texts = sc.texts.clone();
+fn layers_survive_a_filter_asset_and_a_built_param() {
+    let doc = layers_scene(json!([{"name": "label", "text": "I", "font_family": "sans",
+                                   "text_align": "right"}]));
+    let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+    sc.passes[0].layers[0].data = Some(alone(&font(SANS)));
+    let layers = sc.passes[0].layers.clone();
     apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
     assert!(sc.assets.iter().any(|a| a.name == "frc256_bluenoise"));
-    assert_eq!(sc.texts, texts);
+    assert_eq!(sc.passes[0].layers, layers);
     let sc = Ok::<_, anyhow::Error>(sc)
         .param(Param::float("gain", 1.0))
         .unwrap();
-    assert_eq!(sc.texts, texts);
+    assert_eq!(sc.passes[0].layers, layers);
 }
 
 // Font assets
@@ -1174,14 +1091,14 @@ fn with_assets_env<T>(assets: &str, f: impl FnOnce() -> T) -> T {
 }
 
 fn font_data(sc: &Scene, name: &str) -> Vec<u8> {
-    let t = sc.texts.iter().find(|t| t.name == name).unwrap();
-    t.data.clone().unwrap()[0].clone().unwrap().to_vec()
+    let l = sc.layer(name).unwrap();
+    l.data.clone().unwrap()[0].clone().unwrap().to_vec()
 }
 
-/// A scene whose text `label` draws in the font asset `face`, the file
+/// A scene whose layer `label` draws in the font asset `face`, the file
 /// `file`.
 fn face_scene(file: &str) -> Scene {
-    let mut doc = texts_scene(json!({"label": {"font": "face"}}));
+    let mut doc = layers_scene(json!([{"name": "label", "text": "I", "font_family": "face"}]));
     doc["assets"] = json!({"face": {"file": file}});
     Scene::from_dict(&doc, None, None).unwrap()
 }
@@ -1201,10 +1118,10 @@ fn a_font_resolves_beside_the_scene_then_through_ghee_assets() {
     fs::write(format!("{dir}/both.ttf"), &sans).unwrap();
     fs::write(format!("{store}/both.ttf"), &cff).unwrap();
     let names = ["here", "store", "both"];
-    let mut doc = texts_scene(Value::Object(
+    let mut doc = layers_scene(Value::Array(
         names
             .iter()
-            .map(|n| (n.to_string(), json!({"font": format!("{n}_font")})))
+            .map(|n| json!({"name": n, "text": "I", "font_family": format!("{n}_font")}))
             .collect(),
     ));
     doc["assets"] = Value::Object(
@@ -1222,27 +1139,30 @@ fn a_font_resolves_beside_the_scene_then_through_ghee_assets() {
 }
 
 #[test]
-fn texts_in_one_font_share_its_bytes() {
+fn layers_in_one_font_share_its_bytes() {
     let _g = lock();
     let mut sc = Scene::from_dict(
-        &texts_scene(json!({"label": {"font": "sans"}, "title": {"font": "sans"}})),
+        &layers_scene(
+            json!([{"name": "label", "text": "I", "font_family": "sans"},
+                             {"name": "title", "text": "I", "font_family": "sans"}]),
+        ),
         None,
         None,
     )
     .unwrap();
     sc.load_assets(FONTS).unwrap();
-    let (a, b) = (sc.texts[0].data.as_ref(), sc.texts[1].data.as_ref());
-    let (a, b) = (
-        a.unwrap()[0].as_ref().unwrap(),
-        b.unwrap()[0].as_ref().unwrap(),
-    );
-    assert!(Arc::ptr_eq(a, b));
+    let data = |n: &str| {
+        sc.layer(n).unwrap().data.clone().unwrap()[0]
+            .clone()
+            .unwrap()
+    };
+    assert!(Arc::ptr_eq(&data("label"), &data("title")));
 }
 
-/// Why the font of `sc`'s text `label` failed to load.
+/// Why the font of `sc`'s layer `label` failed to load.
 fn font_failure(sc: &Scene) -> String {
-    let t = sc.texts.iter().find(|t| t.name == "label").unwrap();
-    t.data.clone().unwrap()[0].clone().err().unwrap()
+    let l = sc.layer("label").unwrap();
+    l.data.clone().unwrap()[0].clone().err().unwrap()
 }
 
 #[test]
@@ -1272,7 +1192,7 @@ fn a_missing_font_names_its_path_and_the_directories_of_ghee_assets() {
 fn a_missing_image_fails_the_load() {
     let _g = lock();
     let dir = tmpdir("noimage");
-    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+    let mut doc = layers_scene(json!([{"name": "label", "text": "I", "font_family": "sans"}]));
     doc["assets"]["logo"] = json!({"file": "logo.png"});
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     fs::write(format!("{dir}/{SANS}"), font(SANS)).unwrap();
@@ -1310,11 +1230,8 @@ fn a_scene_file_loads_its_fonts() {
     fs::write(format!("{dir}/{SANS}"), font(SANS)).unwrap();
     fs::write(format!("{dir}/{CFF}"), font(CFF)).unwrap();
     let path = format!("{dir}/x.scene.json");
-    fs::write(
-        &path,
-        texts_scene(json!({"label": {"font": "sans"}})).to_string(),
-    )
-    .unwrap();
+    let doc = layers_scene(json!([{"name": "label", "text": "I", "font_family": "sans"}]));
+    fs::write(&path, doc.to_string()).unwrap();
     let sc = Scene::load(&path).unwrap();
     assert_eq!(font_data(&sc, "label"), font(SANS));
     fs::remove_dir_all(&dir).unwrap();
@@ -1442,12 +1359,13 @@ fn size_reads_the_block_in_em() {
     let doc = json!({
         "version": 1,
         "assets": font_assets(),
-        "texts": {"label": {"value": words, "font": "sans", "align": "center"}},
         "passes": [{"name": "main", "code": format!(
             "void main(){{ gl_FragColor = vec4(\
              abs(label_size.x - {:.6}) < 1e-4 ? 1.0 : 0.0, \
              abs(label_size.y - {:.6}) < 1e-4 ? 1.0 : 0.0, 0.0, 1.0); }}",
-            laid.width, laid.height)}],
+            laid.width, laid.height),
+            "layers": [{"name": "label", "text": words, "font_family": "sans",
+                        "text_align": "center", "visible": false}]}],
     });
     let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&doc));
@@ -1482,7 +1400,7 @@ fn a_string_param_relays_the_text_live() {
     assert!(r.set_text("label", "").unwrap());
     assert!(blank(r.render(None).unwrap(), 0));
     assert_eq!(r.text_errors(), [] as [String; 0]);
-    // A string param of no text's name draws nothing.
+    // A string param of no layer's name draws nothing.
     assert!(!r
         .set_scene_param("ghost", "string", &ParamValue::Str("O".to_string()))
         .unwrap());
@@ -1496,10 +1414,10 @@ fn a_text_reaches_every_pass() {
     let doc = json!({
         "version": 1,
         "assets": font_assets(),
-        "texts": {"label": {"value": "AV", "font": "sans"}},
         "passes": [
             {"name": "a", "code": format!(
-                "void main(){{ gl_FragColor = vec4({}, 0.0, 0.0, 1.0); }}", fit.cover("label"))},
+                "void main(){{ gl_FragColor = vec4({}, 0.0, 0.0, 1.0); }}", fit.cover("label")),
+             "layers": [{"name": "label", "text": "AV", "font_family": "sans", "visible": false}]},
             {"name": "main", "channels": [{"buffer": "a"}], "code": format!(
                 "void main(){{ gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).r, {}, \
                  0.0, 1.0); }}", fit.cover("label"))},
@@ -1520,7 +1438,7 @@ fn a_text_reaches_every_pass() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn two_texts_draw_their_own_words() {
+fn two_layers_draw_their_own_words() {
     let (label, title) = (lay(SANS, "AV", Align::Left), lay(CFF, "O", Align::Left));
     let fit = Fit::of(
         label.width.max(title.width),
@@ -1531,10 +1449,11 @@ fn two_texts_draw_their_own_words() {
     let doc = json!({
         "version": 1,
         "assets": font_assets(),
-        "texts": {"label": {"value": "AV", "font": "sans"}, "title": {"value": "O", "font": "cff"}},
         "passes": [{"name": "main", "code": format!(
             "void main(){{ gl_FragColor = vec4({}, {}, 0.0, 1.0); }}",
-            fit.cover("label"), fit.cover("title"))}],
+            fit.cover("label"), fit.cover("title")),
+            "layers": [{"name": "label", "text": "AV", "font_family": "sans", "visible": false},
+                       {"name": "title", "text": "O", "font_family": "cff", "visible": false}]}],
     });
     let (_g, mut r) = gpu(W, H);
     let f = render(&mut r, &loaded(&doc));
@@ -1558,18 +1477,18 @@ fn a_later_setup_draws_its_own_text() {
         let f = render(&mut r, &loaded(&label_scene(SANS, w, Align::Left, fit)));
         assert_draws(&f, W, 0, l, fit, w);
     }
-    // A scene whose text has another name.
+    // A scene whose layer has another name.
     let title = json!({
         "version": 1,
         "assets": font_assets(),
-        "texts": {"title": {"value": "I", "font": "sans"}},
         "passes": [{"name": "main", "code": format!(
-            "void main(){{ gl_FragColor = vec4(vec3({}), 1.0); }}", fit.cover("title"))}],
+            "void main(){{ gl_FragColor = vec4(vec3({}), 1.0); }}", fit.cover("title")),
+            "layers": [{"name": "title", "text": "I", "font_family": "sans", "visible": false}]}],
     });
     let f = render(&mut r, &loaded(&title));
     assert_draws(&f, W, 0, &laid[0], fit, "title");
     assert!(!r.set_text("label", "O").unwrap());
-    // A scene with no text, then a text again.
+    // A scene with no layer, then a layer again.
     let flat = Scene::of(vec![Pass::of(
         "main",
         "void main(){ gl_FragColor = vec4(0.5, 0.0, 0.0, 1.0); }",
@@ -1594,15 +1513,15 @@ fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
     let (_g, mut r) = gpu(W, H);
     assert_eq!(
         r.setup(&sc).unwrap(),
-        "text 'label': font 'face' was never loaded, the scene was built without a directory"
+        "layer 'label': font 'face' was never loaded, the scene was built without a directory"
     );
 }
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_setup_frees_the_asset_slots_of_the_last_scenes_texts() {
+fn a_setup_frees_the_asset_slots_of_the_last_scenes_layers() {
     // The engine binds 16 assets at a time, so each setup has to hand back
-    // the slots of the texts that its scene no longer declares.
+    // the slots of the layers that its scene no longer declares.
     let laid = lay(SANS, "I", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
     let (_g, mut r) = gpu(W, H);
@@ -1611,10 +1530,11 @@ fn a_setup_frees_the_asset_slots_of_the_last_scenes_texts() {
         let doc = json!({
             "version": 1,
             "assets": font_assets(),
-            "texts": {name.clone(): {"value": "I", "font": "sans"}},
             "passes": [{"name": "main", "code": format!(
                 "void main(){{ float c = {}; gl_FragColor = vec4(c, c, c, 1.0); }}",
-                fit.cover(&name))}],
+                fit.cover(&name)),
+                "layers": [{"name": name, "text": "I", "font_family": "sans",
+                            "visible": false}]}],
         });
         let frame = render(&mut r, &loaded(&doc));
         assert_draws(&frame, W, 0, &laid, fit, &name);
@@ -1623,7 +1543,7 @@ fn a_setup_frees_the_asset_slots_of_the_last_scenes_texts() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_filter_after_a_text_compiles() {
+fn a_filter_after_a_layer_compiles() {
     let laid = lay(SANS, "I", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);
     let (_g, mut r) = gpu(W, H);
@@ -1716,7 +1636,7 @@ fn hazard_scene(file: &str, words: &str, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, Align::Left, fit);
     doc["passes"][0] = json!({"name": "main",
         "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }",
-        "layers": [{"text": "label", "fragment": WHITE, "vertex": fit_place(fit)}]});
+        "layers": [placed(words, fit)]});
     doc
 }
 
@@ -1748,9 +1668,9 @@ fn assert_hazard(frame: &[u8], w: usize, fit: Fit, rects: &[[f64; 4]], what: &st
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
     let words = "Ag j\nI";
-    let mut t = Text::from_dict("label", &json!({"font": "face"})).unwrap();
-    t.data = Some(vec![Err("gone".to_string())]);
-    let laid = t.build(words).unwrap();
+    let mut l = face_layer();
+    l.data = Some(vec![Err("gone".to_string())]);
+    let laid = l.build(words).unwrap();
     let rects = box_rects(&laid);
     assert_eq!(rects.len(), 4);
     let (bw, bh) = block(laid.built.as_ref().unwrap());
@@ -1767,46 +1687,43 @@ fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
         errors.len() == 1 && errors[0].starts_with(&want),
         "{errors:?}"
     );
-    for fill in FILLS {
-        let doc = filled(hazard_scene("Missing.ttf", words, fit), fill);
+    for how in RENDERS {
+        let doc = rendered(hazard_scene("Missing.ttf", words, fit), how);
         let layered = render(&mut r, &loaded(&doc));
-        assert_hazard(&layered, W, fit, &rects, &format!("{fill} layer"));
+        assert_hazard(&layered, W, fit, &rects, &format!("{how} layer"));
         // New words lay out in boxes too.
         assert!(r.set_text("label", "I").unwrap());
         r.set_time(Some(0.0));
         let one = r.render(None).unwrap().to_vec();
-        assert_hazard(&one, W, fit, &rects[..1], &format!("{fill} one box"));
+        assert_hazard(&one, W, fit, &rects[..1], &format!("{how} one box"));
     }
 }
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_font_names_an_asset_or_a_file_and_a_list_mixes_both() {
-    let words = "I\u{1f600}";
+fn a_font_family_names_a_font_asset_or_a_file() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
         ppem: 30.0,
     };
     let (_g, mut r) = gpu(W, H);
-    let assets = colour_scene(&[SANS, EMOJI], words, "mtsdf", &fit_place(fit));
-    let want = render(&mut r, &loaded(&assets));
-    // The files themselves, and an asset beside a file.
-    for fonts in [json!([SANS, EMOJI]), json!(["f0", EMOJI])] {
-        let mut doc = assets.clone();
-        doc["texts"]["label"]["font"] = fonts.clone();
-        let sc = loaded(&doc);
-        assert_eq!(sc.to_dict()["texts"]["label"]["font"], fonts);
-        assert!(render(&mut r, &sc) == want, "{fonts}");
-        assert_eq!(r.text_errors(), [] as [String; 0], "{fonts}");
-    }
-    // A missing file leaves the text running with an error box, and names
+    let asset = hazard_scene(SANS, "Ag", fit);
+    let want = render(&mut r, &loaded(&asset));
+    // The file itself.
+    let mut doc = asset.clone();
+    layer_of(&mut doc, "label")["font_family"] = json!(SANS);
+    let sc = loaded(&doc);
+    assert_eq!(sc.to_dict()["passes"][0]["layers"][0]["font_family"], SANS);
+    assert!(render(&mut r, &sc) == want);
+    assert_eq!(r.text_errors(), [] as [String; 0]);
+    // A missing file leaves the layer running with error boxes, and names
     // the file.
-    let mut doc = assets.clone();
-    doc["texts"]["label"]["font"] = json!(["Missing.ttf", EMOJI]);
+    layer_of(&mut doc, "label")["font_family"] = json!("Missing.ttf");
     render(&mut r, &loaded(&doc));
     let errors = r.text_errors();
-    let missing = format!("text 'label' font 'Missing.ttf' ({FONTS}/Missing.ttf): No such file");
+    let missing =
+        format!("layer 'label' font_family 'Missing.ttf' ({FONTS}/Missing.ttf): No such file");
     assert!(errors.iter().any(|e| e.starts_with(&missing)), "{errors:?}");
 }
 
@@ -1867,11 +1784,10 @@ fn a_colour_font_alone_draws_its_emoji_in_layers_and_nothing_through_cover() {
         );
         assert!(blank(&cover, 0), "_cover drew a colour glyph");
         assert_eq!(r.text_errors(), [] as [String; 0]);
-        for fill in FILLS {
-            let mut doc = filled(hazard_scene(EMOJI, words, fit), fill);
-            doc["passes"][0]["layers"][0]["vertex"] = json!(exact_place(fit));
+        for how in RENDERS {
+            let doc = rendered(hazard_scene(EMOJI, words, fit), how);
             let layered = render(&mut r, &loaded(&doc));
-            assert_bitmap(&layered, w, &b, at, 1, [0, 0, 128], &format!("{fill} {ch}"));
+            assert_bitmap(&layered, w, &b, at, 1, [0, 0, 128], &format!("{how} {ch}"));
             assert_eq!(r.text_errors(), [] as [String; 0]);
         }
     }
@@ -1924,7 +1840,7 @@ fn words_that_fit_no_texture_draw_nothing_at_setup_keep_the_last_words_later_and
     let why = |r: &Renderer| {
         let errors = r.text_errors();
         assert!(
-            errors.len() == 1 && errors[0].starts_with("text 'label': the words need a "),
+            errors.len() == 1 && errors[0].starts_with("layer 'label': the words need a "),
             "{errors:?}"
         );
     };
@@ -2034,28 +1950,32 @@ fn a_quad_spans_each_inked_glyph_with_its_indices() {
     }
 }
 
-// Layers
-
-/// A layer's place that puts the block where `fit` does.
-fn fit_place(fit: Fit) -> String {
-    format!(
-        "vec2 glyph_place(vec2 em) {{ return vec2({:.4}, {:.4}) + em * {:.4}; }}",
-        fit.x, fit.y, fit.ppem
-    )
+/// The layer `label` in the font asset `face`, its block where `fit` puts it.
+fn placed(words: &str, fit: Fit) -> Value {
+    json!({"name": "label", "text": words, "font_family": "face",
+           "x": fit.x, "y": fit.y, "font_size": fit.ppem})
 }
 
 const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
-/// White coverage, premultiplied.
-const WHITE: &str = "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c); }";
 
-/// label_scene with the words drawn by one layer over a black pass, in the
-/// slug fill.
+/// label_scene with the words drawn white by layer `label` over a black
+/// pass, in the slug render.
 fn layer_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, align, fit);
-    doc["passes"][0] = json!({"name": "main", "code": BLACK,
-        "layers": [{"text": "label", "fragment": WHITE, "vertex": fit_place(fit)}]});
-    filled(doc, "slug")
+    let mut l = placed(words, fit);
+    l["text_align"] = json!(align_name(align));
+    l["render"] = json!("slug");
+    doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [l]});
+    doc
 }
+
+/// `doc` with its layer `label` in `render`.
+fn rendered(mut doc: Value, render: &str) -> Value {
+    layer_of(&mut doc, "label")["render"] = json!(render);
+    doc
+}
+
+const RENDERS: [&str; 2] = ["mtsdf", "slug"];
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
@@ -2086,55 +2006,6 @@ fn a_hidden_pass_draws_none_of_its_layers() {
         "a hidden pass's layer drew"
     );
 }
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_vertex_reads_the_glyph_values_the_frame_uniforms_the_params_its_text_size_and_the_common_block(
-) {
-    let fit = Fit {
-        x: 8.0,
-        y: 8.0,
-        ppem: 48.0,
-    };
-    let (_g, mut r) = gpu(W, H);
-    let reads = "glyph_index + glyph_word + glyph_line + glyph_span.x + glyph_box.x \
-                 + resolution.x + time + DT + frame + shift + k + label_size.x + twice(1.0)";
-    for fill in FILLS {
-        let plain = render(
-            &mut r,
-            &loaded(&filled(layer_scene(SANS, "Ag", Align::Left, fit), fill)),
-        );
-        let mut doc = filled(layer_scene(SANS, "Ag", Align::Left, fit), fill);
-        doc["params"]["shift"] = json!({"type": "float", "value": 0.0});
-        doc["passes"][0]["params"] = json!({"k": {"type": "float", "value": 0.0}});
-        // The common block compiles in the vertex stage as it does in a pass,
-        // where it reads the pass's arrays, channels and texts.
-        doc["passes"][0]["arrays"] = json!([{"name": "amps", "size": 4}]);
-        doc["passes"][0]["channels"] = json!([{"buffer": "main"}]);
-        doc["common"] = json!({"code": "float twice(float x) { return 2.0 * x; }\n\
-            float shade(vec2 p) {\n    return label_cover(p, 48.0) + amps_at(0) \
-            + texture2D(iChannel0, p).r;\n}"});
-        doc["passes"][0]["layers"][0]["vertex"] = json!(format!(
-            "vec2 glyph_place(vec2 em) {{ return vec2(8.0) + em * 48.0 + ({reads}) * 0.0; }}"
-        ));
-        assert!(render(&mut r, &loaded(&doc)) == plain, "{fill}");
-        // The vertex GLSL reads the pass's text and arrays itself too.
-        doc["common"] = json!({"code": "float twice(float x) { return 2.0 * x; }"});
-        let own = format!("{reads} + label_cover(em, 48.0) + amps_at(0)");
-        doc["passes"][0]["layers"][0]["vertex"] = json!(format!(
-            "vec2 glyph_place(vec2 em) {{ return vec2(8.0) + em * 48.0 + ({own}) * 0.0; }}"
-        ));
-        assert!(render(&mut r, &loaded(&doc)) == plain, "{fill}");
-    }
-}
-
-/// `doc` with its text `label` in `fill`.
-fn filled(mut doc: Value, fill: &str) -> Value {
-    doc["texts"]["label"]["fill"] = json!(fill);
-    doc
-}
-
-const FILLS: [&str; 2] = ["mtsdf", "slug"];
 
 /// The red channels of two RGBA frames: the pixels more than 1 level apart,
 /// and the largest difference.
@@ -2226,7 +2097,7 @@ fn new_words_whose_glyphs_the_atlas_holds_draw_in_the_frame_they_arrive() {
     // letter of "AV To", and its space draws nothing.
     render(
         &mut r,
-        &loaded(&filled(layer_scene(SANS, "I", Align::Left, fit), "mtsdf")),
+        &loaded(&rendered(layer_scene(SANS, "I", Align::Left, fit), "mtsdf")),
     );
     // Time runs free, so the render waits for no glyph.
     r.set_time(None);
@@ -2247,254 +2118,190 @@ fn new_words_whose_glyphs_the_atlas_holds_draw_in_the_frame_they_arrive() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_rotated_and_scaled_layer_lands_its_outline() {
-    let (w, h) = (240, 160);
-    let words = "ghee";
-    let laid = lay(SANS, words, Align::Left);
-    let (a, s): (f64, f64) = (0.4, 52.0);
-    let (cx, cy) = (120.0, 80.0);
-    let place = format!(
-        "vec2 glyph_place(vec2 em) {{
-    vec2 d = (em - 0.5 * label_size) * {s:.4};
-    return vec2({cx:.4}, {cy:.4}) + mat2({c:.6}, {sn:.6}, {nsn:.6}, {c:.6}) * d;
-}}",
-        c = a.cos(),
-        sn = a.sin(),
-        nsn = -a.sin()
-    );
-    let mut doc = label_scene(SANS, words, Align::Left, Fit::of(1.0, 1.0, w, h));
-    doc["passes"][0] = json!({"name": "main", "code": BLACK,
-        "layers": [{"text": "label", "fragment": WHITE, "vertex": place}]});
-    let (_g, mut r) = gpu(w, h);
-    let frame = render(&mut r, &loaded(&doc));
-    // The pixel centre back through the rotation into the block.
-    let em = |x: usize, y: usize| {
-        let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
-        let (u, v) = (a.cos() * dx + a.sin() * dy, -a.sin() * dx + a.cos() * dy);
-        [u / s + 0.5 * laid.width, v / s + 0.5 * laid.height]
-    };
-    assert_draws_at(&frame, w, 0, &laid, em, EDGE / s, "rotated ghee");
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn layers_land_in_their_order_and_pad_past_the_ink() {
+fn layers_land_in_their_order() {
     let (w, h) = (96, 96);
     let fit = Fit {
         x: 32.0,
         y: 8.0,
         ppem: 64.0,
     };
-    // The slug fill takes any pad.
-    let mut doc = filled(label_scene(SANS, "I", Align::Left, fit), "slug");
-    let place = fit_place(fit);
-    doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [
-        {"text": "label", "vertex": place, "pad": 0.25, "blend": "add",
-         "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 0.5); }"},
-        {"text": "label", "vertex": place,
-         "fragment": "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c, 0.0, 0.0, c); }"},
-    ]});
     let laid = lay(SANS, "I", Align::Left);
     let g = &laid.glyphs[0];
-    let px = |em: [f64; 2]| {
-        let (x, y) = (fit.x + em[0] * fit.ppem, fit.y + em[1] * fit.ppem);
-        (x as usize, y as usize)
-    };
-    let mid = (g.lo[1] + g.hi[1]) / 2.0;
+    let stem = (
+        (fit.x + (g.lo[0] + g.hi[0]) / 2.0 * fit.ppem) as usize,
+        (fit.y + (g.lo[1] + g.hi[1]) / 2.0 * fit.ppem) as usize,
+    );
     let (_g, mut r) = gpu(w, h);
-    let frame = render(&mut r, &loaded(&doc));
-    let at = |(x, y): (usize, usize)| &frame[(y * w + x) * 4..(y * w + x) * 4 + 3];
-    // The red fill lands over the pad: a pad added after it would leave blue
-    // on the stem.
-    assert_eq!(at(px([(g.lo[0] + g.hi[0]) / 2.0, mid])), [255, 0, 0]);
-    // The pad reaches 1/4 em past the ink box.
-    assert_eq!(at(px([g.lo[0] - 0.15, mid])), [0, 0, 128]);
-    assert_eq!(at(px([g.hi[0] + 0.15, mid])), [0, 0, 128]);
-    assert_eq!(at(px([g.hi[0] + 0.4, mid])), [0, 0, 0]);
+    for (first, last) in [
+        ([0.0, 1.0, 0.0], [255, 0, 0]),
+        ([1.0, 0.0, 0.0], [0, 255, 0]),
+    ] {
+        let mut under = placed("I", fit);
+        under["name"] = json!("under");
+        under["color"] = json!(first);
+        let mut over = placed("I", fit);
+        over["color"] = json!(last.map(|c| f64::from(c) / 255.0));
+        let mut doc = label_scene(SANS, "I", Align::Left, fit);
+        doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [under, over]});
+        let frame = render(&mut r, &loaded(&doc));
+        let at = (stem.1 * w + stem.0) * 4;
+        assert_eq!(frame[at..at + 3], last, "{first:?} under");
+    }
 }
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_layer_reads_int_params_in_both_stages() {
+fn a_layer_paints_its_color_at_its_opacity_by_its_blend() {
+    // A stem pixel of the I takes the layer's colour at full coverage, over
+    // a pass of grey.
+    let (w, h) = (96, 96);
     let fit = Fit {
-        x: 4.0,
-        y: 4.0,
-        ppem: 30.0,
+        x: 32.0,
+        y: 8.0,
+        ppem: 64.0,
     };
-    // The place moves the block n pixels right and m down, and the code scales
-    // the coverage by n - m, so the layer matches the text 3 right and 2 down
-    // only when both stages read both params.
-    let mut doc = layer_scene(SANS, "ghee", Align::Left, fit);
-    doc["params"]["n"] = json!({"type": "int", "value": 3});
-    doc["passes"][0]["params"] = json!({"m": {"type": "int", "value": 2}});
-    doc["passes"][0]["layers"][0]["vertex"] =
-        json!(fit_place(fit).replace("return ", "return vec2(float(n), float(m)) + "));
-    doc["passes"][0]["layers"][0]["fragment"] =
-        json!(WHITE.replace("vec4(c)", "vec4(c * float(n - m))"));
-    let (_g, mut r) = gpu(160, 48);
-    let moved = Fit {
-        x: fit.x + 3.0,
-        y: fit.y + 2.0,
-        ppem: fit.ppem,
+    let laid = lay(SANS, "I", Align::Left);
+    let g = &laid.glyphs[0];
+    let at = {
+        let (x, y) = (
+            (fit.x + (g.lo[0] + g.hi[0]) / 2.0 * fit.ppem) as usize,
+            (fit.y + (g.lo[1] + g.hi[1]) / 2.0 * fit.ppem) as usize,
+        );
+        (y * w + x) * 4
     };
-    let want = render(
-        &mut r,
-        &loaded(&label_scene(SANS, "ghee", Align::Left, moved)),
-    );
-    let got = render(&mut r, &loaded(&doc));
-    assert_like_cover(&got, &want, "int params");
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_layer_compile_error_names_the_pass_the_layer_and_its_line() {
-    let fit = Fit {
-        x: 4.0,
-        y: 4.0,
-        ppem: 30.0,
-    };
-    let good = layer_scene(SANS, "I", Align::Left, fit);
-    let (_g, mut r) = gpu(64, 48);
-    let first = render(&mut r, &loaded(&good));
-    let mut bad = good.clone();
-    bad["passes"][0]["layers"][0]["fragment"] =
-        json!("void main(){\n    float c = glyph_cover();\n    nope(c);\n}");
-    bad["passes"][0]["layers"][0]["name"] = json!("ink");
-    let e = r.setup(&loaded(&bad)).unwrap();
-    assert!(
-        e.starts_with("pass 'main' layer 'ink', line 3 of its fragment: "),
-        "{e}"
-    );
-    let at = |index, part| Some(ErrorLayer { index, part });
-    assert_eq!(r.error_pass, Some(ErrorPass::Index(0)));
-    assert_eq!(r.error_layer, at(0, LayerPart::Fragment));
-    // /stats names the layer's key that holds the error.
-    let part = |r: &Renderer| r.error_layer.map(ErrorLayer::to_json);
-    assert_eq!(part(&r), Some(json!({"index": 0, "part": "fragment"})));
-    assert_eq!(r.error_line, Some(3));
-    let mut bad = good.clone();
-    bad["passes"][0]["layers"][0]["vertex"] =
-        json!("vec2 glyph_place(vec2 em) {\n    return nope;\n}");
-    let e = r.setup(&loaded(&bad)).unwrap();
-    assert!(
-        e.starts_with("pass 'main' layer 'label', line 2 of its vertex: "),
-        "{e}"
-    );
-    assert_eq!(r.error_layer, at(0, LayerPart::Vertex));
-    assert_eq!(part(&r), Some(json!({"index": 0, "part": "vertex"})));
-    assert_eq!(r.error_line, Some(2));
-    // An error on ghee's own lines carries no line, and a missing function
-    // is named.
-    let mut bad = good.clone();
-    bad["passes"][0]["layers"][0]["fragment"] =
-        json!("float shade(){\n    return glyph_cover();\n}\nfloat x = 0.0;");
-    let e = r.setup(&loaded(&bad)).unwrap();
-    assert_eq!(
-        e,
-        "pass 'main' layer 'label': its fragment needs a void main()"
-    );
-    assert_eq!(r.error_layer, at(0, LayerPart::Fragment));
-    assert_eq!(r.error_line, None);
-    let mut bad = good.clone();
-    bad["passes"][0]["layers"][0]["vertex"] = json!("vec2 place(vec2 em) {\n    return em;\n}");
-    let e = r.setup(&loaded(&bad)).unwrap();
-    assert_eq!(
-        e,
-        "pass 'main' layer 'label': its vertex needs vec2 glyph_place(vec2 em)"
-    );
-    assert_eq!(r.error_layer, at(0, LayerPart::Vertex));
-    // A line of the common block counts in the block, as a pass's would.
-    let mut bad = good.clone();
-    bad["passes"][0] = json!({"name": "main", "layers": bad["passes"][0]["layers"]});
-    bad["common"] = json!({"code": "float twice(float x) {\n    return nope;\n}"});
-    let e = r.setup(&loaded(&bad)).unwrap();
-    assert!(
-        e.starts_with("pass 'main' layer 'label', line 2 of the common block: "),
-        "{e}"
-    );
-    assert_eq!(r.error_pass, Some(ErrorPass::Common));
-    assert_eq!(r.error_layer, None);
-    assert_eq!(r.error_line, Some(2));
-    // The running scene stays.
-    r.set_time(Some(0.0));
-    assert!(r.render(None).unwrap() == first.as_slice());
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_layer_with_no_vertex_centres_its_words_and_with_no_fragment_draws_them_white() {
-    let (w, h) = (160, 64);
-    let laid = lay(SANS, "ghee", Align::Left);
-    let ppem = 32.0;
-    let fit = Fit {
-        x: (w as f64 - laid.width * ppem) / 2.0,
-        y: (h as f64 - laid.height * ppem) / 2.0,
-        ppem,
-    };
+    let grey: f64 = 0.25;
+    let c: [f64; 3] = [1.0, 0.5, 0.25];
     let (_g, mut r) = gpu(w, h);
-    for fill in FILLS {
-        let scene = |layer: Value| {
-            let mut doc = filled(label_scene(SANS, "ghee", Align::Left, fit), fill);
-            doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [layer]});
-            loaded(&doc)
-        };
-        let plain = render(&mut r, &scene(json!({"text": "label", "font_size": ppem})));
-        let centred = "vec2 glyph_place(vec2 em) { return (resolution - label_size * 32.0) \
-                       * 0.5 + em * 32.0; }";
-        let written = json!({"text": "label", "vertex": centred,
-            "fragment": "void main() { gl_FragColor = vec4(glyph_cover()); }"});
-        assert!(render(&mut r, &scene(written)) == plain, "{fill}");
-        // The slug fill covers as the text does.
-        if fill == "slug" {
-            let cover = render(
-                &mut r,
-                &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
+    for (how, opacity, blend) in [
+        ("slug", 1.0, "normal"),
+        ("mtsdf", 0.5, "normal"),
+        ("slug", 0.5, "add"),
+        ("mtsdf", 1.0, "multiply"),
+        ("slug", 1.0, "screen"),
+    ] {
+        let mut l = placed("I", fit);
+        l["render"] = json!(how);
+        l["color"] = json!(c);
+        l["opacity"] = json!(opacity);
+        l["blend"] = json!(blend);
+        let mut doc = label_scene(SANS, "I", Align::Left, fit);
+        doc["passes"][0] = json!({"name": "main", "layers": [l],
+            "code": "void main(){ gl_FragColor = vec4(vec3(0.25), 1.0); }"});
+        let frame = render(&mut r, &loaded(&doc));
+        for (k, c) in c.iter().enumerate() {
+            let s = c * opacity;
+            let want = match blend {
+                "normal" => s + grey * (1.0 - opacity),
+                "add" => s + grey,
+                "multiply" => s * grey + grey * (1.0 - opacity),
+                _ => s + grey * (1.0 - s),
+            };
+            let got = f64::from(frame[at + k]);
+            assert!(
+                (got - 255.0 * want.min(1.0)).abs() <= 1.5,
+                "{how} {opacity} {blend}: channel {k} {got}, want {}",
+                255.0 * want
             );
-            assert_like_cover(&plain, &cover, fill);
         }
     }
 }
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_layer_with_no_vertex_fits_the_pass_or_takes_its_font_size_and_its_top_left() {
+fn a_gradient_spans_the_block_along_its_angle_as_css_does() {
+    // CSS's gradient line runs through the block's centre at the angle, 0
+    // up and 90 right, and reaches the block's far corners at its ends.
+    let words = "IIII\nIIII";
+    let laid = lay(SANS, words, Align::Left);
+    let (w, h) = (320, 240);
+    let fit = Fit::of(laid.width, laid.height, w, h);
+    let (from, to) = ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+    let (_g, mut r) = gpu(w, h);
+    for angle in [90.0, 180.0, 30.0] {
+        let mut l = placed(words, fit);
+        l["color"] = json!({"from": "#ff0000", "to": [0.0, 0.0, 1.0], "angle": angle});
+        let mut doc = label_scene(SANS, words, Align::Left, fit);
+        doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [l]});
+        let frame = render(&mut r, &loaded(&doc));
+        let a = f64::to_radians(angle);
+        let dir = [a.sin(), -a.cos()];
+        let len = (laid.width * dir[0]).abs() + (laid.height * dir[1]).abs();
+        let (mut seen, mut off) = (0, Vec::new());
+        for y in 0..h {
+            for x in 0..w {
+                let p = fit.em(x, y);
+                if laid.inside(p, EDGE / fit.ppem) != Some(true) {
+                    continue;
+                }
+                let d = [p[0] - laid.width / 2.0, p[1] - laid.height / 2.0];
+                let t = ((d[0] * dir[0] + d[1] * dir[1]) / len + 0.5).clamp(0.0, 1.0);
+                seen += 1;
+                for k in 0..3 {
+                    let want = 255.0 * (from[k] + (to[k] - from[k]) * t);
+                    let got = f64::from(frame[(y * w + x) * 4 + k]);
+                    if (got - want).abs() > 2.0 {
+                        off.push((x, y, k, got, want));
+                    }
+                }
+            }
+        }
+        assert!(seen > 500, "{angle}: {seen}");
+        assert!(off.is_empty(), "{angle}: {:?}", &off[..off.len().min(8)]);
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_layer_fits_its_room_and_centres_on_each_axis_left_out() {
     let (w, h) = (320, 150);
     let words = "AV To\nghee";
     let laid = lay(SANS, words, Align::Left);
     let (fw, fh) = (w as f64, h as f64);
     // A block with no font_size fits its room less a margin of 1/20 of the
-    // pass's shorter side.
+    // pass's shorter side: the whole pass on an axis left out, else the pass
+    // past the given pixel.
     let m = 0.05 * fw.min(fh);
     let fits = |rw: f64, rh: f64| (rw / laid.width).min(rh / laid.height);
-    let centred = |ppem: f64| Fit {
-        x: (fw - laid.width * ppem) / 2.0,
-        y: (fh - laid.height * ppem) / 2.0,
+    let centre = |ppem: f64| {
+        (
+            (fw - laid.width * ppem) / 2.0,
+            (fh - laid.height * ppem) / 2.0,
+        )
+    };
+    let at = |x: Option<f64>, y: Option<f64>, ppem: f64| Fit {
+        x: x.unwrap_or(centre(ppem).0),
+        y: y.unwrap_or(centre(ppem).1),
         ppem,
     };
     let cases = [
-        (json!({}), centred(fits(fw - 2.0 * m, fh - 2.0 * m))),
-        (json!({"font_size": 40}), centred(40.0)),
+        (json!({}), at(None, None, fits(fw - 2.0 * m, fh - 2.0 * m))),
+        (json!({"font_size": 40}), at(None, None, 40.0)),
         (
-            json!({"at": [14, 7.5]}),
-            Fit {
-                x: 14.0,
-                y: 7.5,
-                ppem: fits(fw - m - 14.0, fh - m - 7.5),
-            },
+            json!({"x": 14, "y": 7.5}),
+            at(Some(14.0), Some(7.5), fits(fw - m - 14.0, fh - m - 7.5)),
         ),
         (
-            json!({"font_size": 40, "at": [-6, 30]}),
-            Fit {
-                x: -6.0,
-                y: 30.0,
-                ppem: 40.0,
-            },
+            json!({"font_size": 40, "x": -6, "y": 30}),
+            at(Some(-6.0), Some(30.0), 40.0),
+        ),
+        (
+            json!({"x": 14}),
+            at(Some(14.0), None, fits(fw - m - 14.0, fh - 2.0 * m)),
+        ),
+        (
+            json!({"y": 50}),
+            at(None, Some(50.0), fits(fw - 2.0 * m, fh - m - 50.0)),
+        ),
+        (
+            json!({"font_size": 40, "x": 10}),
+            at(Some(10.0), None, 40.0),
         ),
     ];
     let (_g, mut r) = gpu(w, h);
     for (keys, fit) in cases {
         let mut doc = layer_scene(SANS, words, Align::Left, fit);
-        let mut layer = json!({"text": "label", "fragment": WHITE});
+        let mut layer = json!({"name": "label", "text": words, "font_family": "face",
+                               "render": "slug"});
         layer
             .as_object_mut()
             .unwrap()
@@ -2506,56 +2313,34 @@ fn a_layer_with_no_vertex_fits_the_pass_or_takes_its_font_size_and_its_top_left(
 }
 
 #[test]
-fn layers_round_trip_and_normal_and_no_pad_are_the_defaults() {
-    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
-    doc["passes"][0]["layers"] = json!([
-        {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }"},
-        {"name": "glow", "text": "label", "fragment": WHITE,
-         "vertex": "vec2 glyph_place(vec2 em) { return em; }", "blend": "add", "pad": 0.125},
-        {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
-         "blend": "normal", "pad": 0},
-        {"text": "label", "fragment": WHITE, "vertex": "vec2 glyph_place(vec2 em) { return em; }",
-         "blend": "multiply"},
-        {"text": "label", "font_size": 48.0},
-        {"text": "label", "at": [0.0, 16.0]},
-        {"text": "label", "font_size": 12.0, "at": [2.0, -4.5]},
-        {"text": "label"},
-        {"text": "label", "pad": 0.25, "fade": 0.0},
-        {"text": "label", "pad": 0.25, "fade": 0.125},
-    ]);
-    let sc = Scene::from_dict(&doc, None, None).unwrap();
-    let back = sc.to_dict();
-    for k in 4..10 {
-        assert_eq!(
-            back["passes"][0]["layers"][k],
-            doc["passes"][0]["layers"][k]
-        );
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_hidden_layer_draws_nothing_and_its_words_read_through_cover() {
+    let fit = Fit {
+        x: 4.0,
+        y: 4.0,
+        ppem: 64.0,
+    };
+    let (_g, mut r) = gpu(W, H);
+    for how in RENDERS {
+        let shown = rendered(layer_scene(SANS, "Ag", Align::Left, fit), how);
+        let mut hidden = shown.clone();
+        layer_of(&mut hidden, "label")["visible"] = json!(false);
+        let mut none = shown.clone();
+        none["passes"][0]["layers"] = json!([]);
+        assert!(render(&mut r, &loaded(&shown)).contains(&255), "{how}");
+        let want = render(&mut r, &loaded(&none));
+        assert!(render(&mut r, &loaded(&hidden)) == want, "{how}");
     }
-    assert_eq!(
-        back["passes"][0]["layers"][0],
-        doc["passes"][0]["layers"][0]
-    );
-    assert_eq!(
-        back["passes"][0]["layers"][1],
-        doc["passes"][0]["layers"][1]
-    );
-    assert_eq!(
-        back["passes"][0]["layers"][2], doc["passes"][0]["layers"][0],
-        "normal and pad 0 are left out"
-    );
-    assert_eq!(
-        back["passes"][0]["layers"][3],
-        doc["passes"][0]["layers"][3]
-    );
-    assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
+    let laid = lay(SANS, "Ag", Align::Left);
+    let f = render(&mut r, &loaded(&label_scene(SANS, "Ag", Align::Left, fit)));
+    assert_draws(&f, W, 0, &laid, fit, "a hidden layer's words");
 }
 
 #[test]
 fn a_pass_of_layers_alone_round_trips_with_no_code_and_a_pass_of_neither_is_refused() {
-    let place = "vec2 glyph_place(vec2 em) { return em; }";
-    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
+    let mut doc = layers_scene(json!([]));
     doc["passes"] = json!([
-        {"name": "words", "layers": [{"text": "label", "fragment": WHITE, "vertex": place}]},
+        {"name": "words", "layers": [{"name": "label", "text": "I", "font_family": "sans"}]},
         {"name": "main", "code": BLACK},
     ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
@@ -2577,183 +2362,6 @@ fn a_pass_of_layers_alone_round_trips_with_no_code_and_a_pass_of_neither_is_refu
 }
 
 #[test]
-fn a_layer_goes_by_its_name_else_by_its_text_counted_among_the_layers_with_no_name() {
-    let place = "vec2 glyph_place(vec2 em) { return em; }";
-    let err = |layers: Value| {
-        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
-        doc["passes"][0]["layers"] = layers;
-        scene_err(&doc)
-    };
-    let d = |keys: Value| {
-        let mut d = json!({"text": "label", "vertex": place});
-        d.as_object_mut()
-            .unwrap()
-            .extend(keys.as_object().unwrap().clone());
-        d
-    };
-    let name = "name needs one or more ASCII letters, digits, '_' or '-'";
-    let cases = [
-        (
-            json!([
-                d(json!({})),
-                d(json!({"name": "glow"})),
-                d(json!({"pad": -1}))
-            ]),
-            "scene: pass 'main' layer 'label 2' pad needs a number of em, 0 or more, got -1"
-                .to_string(),
-        ),
-        (
-            json!([d(json!({"name": "glow", "blend": "max"}))]),
-            "scene: pass 'main' layer 'glow' blend needs 'normal', 'add', 'multiply' or 'screen', \
-             got 'max'"
-                .to_string(),
-        ),
-        (
-            json!([d(json!({"name": "my glow"}))]),
-            format!("scene: pass 'main' layer 'label' {name}, got 'my glow'"),
-        ),
-        (
-            json!([d(json!({"name": ""}))]),
-            format!("scene: pass 'main' layer 'label' {name}, got ''"),
-        ),
-        (
-            json!([d(json!({"name": 3}))]),
-            format!("scene: pass 'main' layer 'label' {name}, got 3"),
-        ),
-        (
-            json!([d(json!({"name": "glow"})), d(json!({"name": "glow"}))]),
-            "scene: pass 'main' has two layers that go by 'glow'".to_string(),
-        ),
-        (
-            json!([d(json!({})), d(json!({"name": "label"}))]),
-            "scene: pass 'main' has two layers that go by 'label'".to_string(),
-        ),
-        (
-            json!([d(json!({})), json!(3)]),
-            "scene: the 2nd layer of pass 'main' needs an object, got 3".to_string(),
-        ),
-    ];
-    for (layers, want) in cases {
-        assert_eq!(err(layers), want);
-    }
-}
-
-#[test]
-fn a_layer_declaration_names_what_it_lacks() {
-    let place = "vec2 glyph_place(vec2 em) { return em; }";
-    let with = |layers: Value| {
-        let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
-        doc["passes"][0]["layers"] = layers;
-        scene_err(&doc)
-    };
-    let one = |d: Value| with(json!([d]));
-    let cases = [
-        (with(json!(3)), "pass 'main': 'layers' needs a list, got 3"),
-        (
-            one(json!(3)),
-            "the 1st layer of pass 'main' needs an object, got 3",
-        ),
-        (
-            one(json!({"fragment": WHITE, "vertex": place})),
-            "the 1st layer of pass 'main' has no 'text', the name of a scene text",
-        ),
-        (
-            one(json!({"text": "label", "vertex": place, "font_size": 32})),
-            "pass 'main' layer 'label' takes 'vertex' or 'font_size', got both",
-        ),
-        (
-            one(json!({"text": "label", "vertex": place, "at": [0, 0]})),
-            "pass 'main' layer 'label' takes 'vertex' or 'at', got both",
-        ),
-        (
-            one(json!({"text": "label", "at": [4]})),
-            "pass 'main' layer 'label' at needs [x, y], the pass pixel of the words' top left, \
-             got [4]",
-        ),
-        (
-            one(json!({"text": "label", "at": "4, 8"})),
-            "pass 'main' layer 'label' at needs [x, y], the pass pixel of the words' top left, \
-             got '4, 8'",
-        ),
-        (
-            one(json!({"text": "label", "font_size": 0})),
-            "pass 'main' layer 'label' font_size needs a number of pixels above 0, got 0",
-        ),
-        (
-            one(json!({"text": "label", "font_size": "32"})),
-            "pass 'main' layer 'label' font_size needs a number of pixels above 0, got '32'",
-        ),
-        (
-            one(json!({"text": "label", "vertex": "", "font_size": null})),
-            "pass 'main' layer 'label' 'vertex' needs vertex GLSL that defines vec2 \
-             glyph_place(vec2 em), got ''",
-        ),
-        (
-            one(json!({"text": "label", "fragment": " ", "vertex": place})),
-            "pass 'main' layer 'label' 'fragment' needs fragment GLSL with its own void main(), \
-             got ' '",
-        ),
-        (
-            one(json!({"text": "label", "fragment": WHITE, "place": place})),
-            "pass 'main' layer 'label' takes its vertex GLSL in 'vertex', got 'place'",
-        ),
-        (
-            one(json!({"text": "label", "code": WHITE, "vertex": place})),
-            "pass 'main' layer 'label' takes its fragment GLSL in 'fragment', got 'code'",
-        ),
-        (
-            one(json!({"text": "label", "fragment": WHITE, "vertex": place, "blend": "max"})),
-            "pass 'main' layer 'label' blend needs 'normal', 'add', 'multiply' or 'screen', got 'max'",
-        ),
-        (
-            one(json!({"text": "label", "fragment": WHITE, "vertex": place, "pad": -1})),
-            "pass 'main' layer 'label' pad needs a number of em, 0 or more, got -1",
-        ),
-        (
-            one(json!({"text": "label", "vertex": place, "pad": 0.25, "fade": 0.5})),
-            "pass 'main' layer 'label' fade needs a number of em from 0 to its pad, 0.25, got 0.5",
-        ),
-        (
-            one(json!({"text": "label", "vertex": place, "fade": -0.1})),
-            "pass 'main' layer 'label' fade needs a number of em from 0 to its pad, 0.0, got -0.1",
-        ),
-        (
-            one(json!({"text": "label", "fragment": WHITE, "vertex": place, "alpha": "keep"})),
-            "pass 'main' layer 'label' takes no 'alpha': its alpha blends by 'blend', as its \
-             colour does",
-        ),
-        (
-            one(json!({"text": "label", "fragment": WHITE, "vertex": place, "emoji": "yes"})),
-            "pass 'main' layer 'label' emoji needs true or false, got 'yes'",
-        ),
-        (
-            one(json!({"text": "words", "fragment": WHITE, "vertex": place})),
-            "pass 'main' layer 'words' names text 'words', which the scene does not declare",
-        ),
-    ];
-    for (got, want) in cases {
-        assert_eq!(got, format!("scene: {want}"));
-    }
-    let mut doc = texts_scene(json!({"label": {"font": "sans"}}));
-    doc["passes"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"name": "d", "code": BLACK, "filter": "dither",
-            "layers": [{"text": "label", "fragment": WHITE, "vertex": place}]}));
-    assert_eq!(
-        scene_err(&doc),
-        "scene: pass 'd' is filter 'dither', and a filter pass takes no layers"
-    );
-    // A slug layer has no distance to fade by.
-    let mut doc = texts_scene(json!({"label": {"font": "sans", "fill": "slug"}}));
-    doc["passes"][0]["layers"] = json!([{"text": "label", "pad": 0.25, "fade": 0.1}]);
-    assert_eq!(
-        scene_err(&doc),
-        "scene: pass 'main' layer 'label' fade needs \"fill\": \"mtsdf\" on text 'label'"
-    );
-}
-
-#[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_on_a_sized_pass_covers_as_the_text_does_there() {
     // Pass a renders at half the frame on each axis, and main shows it.
@@ -2763,7 +2371,7 @@ fn a_layer_on_a_sized_pass_covers_as_the_text_does_there() {
     let fit = Fit::of(laid.width, laid.height, w / 2, h / 2);
     let show = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
     let sized = |pass: Value| {
-        let mut doc = filled(label_scene(SANS, words, Align::Left, fit), "slug");
+        let mut doc = label_scene(SANS, words, Align::Left, fit);
         let mut a = pass;
         a["name"] = json!("a");
         a["size"] = json!([w / 2, h / 2]);
@@ -2776,87 +2384,6 @@ fn a_layer_on_a_sized_pass_covers_as_the_text_does_there() {
     let want = render(&mut r, &cover);
     let got = render(&mut r, &layered);
     assert_like_cover(&got, &want, "a layer on a 160x60 pass");
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn one_text_drawn_by_two_passes_follows_its_words_in_both() {
-    // Pass a draws the words in red. main shows a and adds them in green.
-    let (w, h) = (256, 64);
-    let fit = Fit {
-        x: 4.0,
-        y: 4.0,
-        ppem: 40.0,
-    };
-    let place = fit_place(fit);
-    let mut doc = filled(label_scene(SANS, "AV", Align::Left, fit), "slug");
-    doc["passes"] = json!([
-        {"name": "a", "code": BLACK, "layers": [{"text": "label", "vertex": place,
-            "fragment": "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c, 0.0, 0.0, c); }"}]},
-        {"name": "main", "channels": [{"buffer": "a"}],
-         "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
-         "layers": [{"text": "label", "vertex": place, "blend": "add",
-            "fragment": "void main(){ float c = glyph_cover(); gl_FragColor = vec4(0.0, c, 0.0, c); }"}]},
-    ]);
-    let (_g, mut r) = gpu(w, h);
-    let words = ["AV", "ghee"];
-    let wants: Vec<Vec<u8>> = words
-        .iter()
-        .map(|w| render(&mut r, &loaded(&label_scene(SANS, w, Align::Left, fit))))
-        .collect();
-    for (words, want) in words.iter().zip(&wants) {
-        let got = if *words == "AV" {
-            render(&mut r, &loaded(&doc))
-        } else {
-            assert!(r
-                .set_scene_param("label", "string", &ParamValue::Str(words.to_string()))
-                .unwrap());
-            r.render(None).unwrap().to_vec()
-        };
-        assert_like_cover(&got, want, &format!("{words} in red"));
-        assert_like_cover(&got[1..], &want[1..], &format!("{words} in green"));
-        assert!(blank(&got, 2), "{words}: blue");
-    }
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_param_takes_a_name_of_ghees_glsl_without_its_prefix() {
-    let fit = Fit {
-        x: 4.0,
-        y: 4.0,
-        ppem: 30.0,
-    };
-    let (_g, mut r) = gpu(160, 48);
-    let want = render(
-        &mut r,
-        &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
-    );
-    // ghee's attributes, its vertex flip and its locals take the ghee_ prefix.
-    for name in ["a1", "vflip"] {
-        let mut doc = layer_scene(SANS, "ghee", Align::Left, fit);
-        doc["params"][name] = json!({"type": "float", "value": 1.0});
-        let code = WHITE.replace("vec4(c)", &format!("vec4(c * {name})"));
-        doc["passes"][0]["layers"][0]["fragment"] = json!(code);
-        let got = render(&mut r, &loaded(&doc));
-        assert_like_cover(&got, &want, &format!("a param named {name}"));
-    }
-    // A layer's own names and the prefix are ghee's in any scene, with a layer
-    // or without one.
-    for (name, why) in [
-        ("glyph_index", "reserved for layers"),
-        ("ghee_a1", "which ghee reserves"),
-    ] {
-        for doc in [
-            layer_scene(SANS, "ghee", Align::Left, fit),
-            label_scene(SANS, "ghee", Align::Left, fit),
-        ] {
-            let mut doc = doc;
-            doc["params"][name] = json!({"type": "float", "value": 1.0});
-            let e = scene_err(&doc);
-            assert!(e.ends_with(why), "{name}: {e}");
-        }
-    }
 }
 
 #[test]
@@ -2886,64 +2413,12 @@ fn a_layer_past_the_texture_units_fails_naming_the_layer() {
     assert_eq!(
         r.setup(&loaded(&doc)).unwrap(),
         format!(
-            "pass 'main' layer 'label' needs {} texture units, {past} {units}",
+            "layer 'label' needs {} texture units, {past} {units}",
             units + 1
         )
     );
     r.set_time(Some(0.0));
     assert!(r.render(None).unwrap() == before.as_slice());
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_layer_that_samples_past_the_texture_units_fails_naming_the_layer() {
-    // main reads one channel, and its layer samples the label's texture and an
-    // image in every other unit.
-    let (_g, mut r) = gpu(64, 48);
-    let units = r.max_texture_units() as usize;
-    let dir = tmpdir("units");
-    fs::copy(format!("{FONTS}/{SANS}"), format!("{dir}/{SANS}")).unwrap();
-    let names: Vec<String> = (0..units - 1).map(|i| format!("img{i}")).collect();
-    let fit = Fit {
-        x: 4.0,
-        y: 4.0,
-        ppem: 30.0,
-    };
-    let mut doc = layer_scene(SANS, "I", Align::Left, fit);
-    for n in &names {
-        fs::write(format!("{dir}/{n}.raw"), [128u8]).unwrap();
-        doc["assets"][n] =
-            json!({"file": format!("{n}.raw"), "width": 1, "height": 1, "format": "u8"});
-    }
-    let sum: Vec<String> = names
-        .iter()
-        .map(|n| format!("texture2D({n}_tex, vec2(0.5)).r"))
-        .collect();
-    doc["passes"][0]["layers"][0]["fragment"] = json!(format!(
-        "void main(){{ gl_FragColor = vec4(glyph_cover() * ({})); }}",
-        sum.join(" + ")
-    ));
-    let scene = |doc: &Value| {
-        let mut sc = Scene::from_dict(doc, None, None).unwrap();
-        sc.load_assets(&dir).unwrap();
-        sc
-    };
-    assert_eq!(r.setup(&scene(&doc)).unwrap(), "");
-    let main = doc["passes"][0].clone();
-    doc["passes"] = json!([{"name": "a", "code": BLACK}, main]);
-    doc["passes"][1]["channels"] = json!([{"buffer": "a"}]);
-    let past = match unsafe { ghee::ffi::ghee_gl_texture_units(r.handle()) } > 16 {
-        true => "a pass binds at most",
-        false => "this GPU has",
-    };
-    assert_eq!(
-        r.setup(&scene(&doc)).unwrap(),
-        format!(
-            "pass 'main' layer 'label' needs {} texture units, {past} {units}",
-            units + 1
-        )
-    );
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 /// The alpha channel of an RGBA frame.
@@ -3018,15 +2493,15 @@ fn a_pass_of_layers_alone_starts_transparent_and_a_later_pass_composites_it() {
 fn a_layer_blends_the_pass_alpha_as_its_colour() {
     let (_g, mut r) = gpu(64, 56);
     r.set_alpha(true);
-    for fill in FILLS {
-        let mut doc = filled(layer_scene(SANS, "I", Align::Left, I_FIT), fill);
+    for how in RENDERS {
+        let mut doc = rendered(layer_scene(SANS, "I", Align::Left, I_FIT), how);
         doc["passes"][0]["code"] =
             json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
         let frame = render(&mut r, &loaded(&doc));
         // White over the half-transparent pass: opaque in the stem, the pass's
         // alpha beside it.
-        assert!(alphas(&frame).contains(&255), "{fill}");
-        assert!(alphas(&frame)[0].abs_diff(128) <= 1, "{fill}");
+        assert!(alphas(&frame).contains(&255), "{how}");
+        assert!(alphas(&frame)[0].abs_diff(128) <= 1, "{how}");
     }
 }
 
@@ -3044,341 +2519,7 @@ fn a_text_set_after_a_reset_reaches_no_layer_of_the_dropped_scene() {
     assert!(r.set_text("label", "O").unwrap());
 }
 
-// The MTSDF fill
-
-/// The signed distance in pixels from the centre of pixel (x, y) to the
-/// outline of `laid` placed by `fit`, below 0 inside.
-fn px_distance(laid: &Laid, fit: Fit, x: usize, y: usize) -> f64 {
-    laid.distance(fit.em(x, y)) * fit.ppem
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn glyph_dist_and_glyph_round_dist_draw_an_outline_and_a_glow_by_the_distance() {
-    // One glyph a frame, so no quad overlaps another: a bowl, and corners.
-    for words in ["e", "k"] {
-        let laid = lay(SANS, words, Align::Left);
-        let g = &laid.glyphs[0];
-        let fit = Fit {
-            x: 16.0,
-            y: 8.0,
-            ppem: 64.0,
-        };
-        let (w, h) = (
-            (laid.width * fit.ppem + 32.0).ceil() as usize,
-            (laid.height * fit.ppem + 16.0).ceil() as usize,
-        );
-        // Red is the fill, green a 3 px ring outside it in a quad padded 4 px,
-        // and blue a glow that halves every 1.4 px, in a quad padded 8 px.
-        // Neither fades, so the glow holds its distance out to the pad.
-        let mut doc = label_scene(SANS, words, Align::Left, fit);
-        doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [
-            {"text": "label", "vertex": fit_place(fit), "blend": "add", "pad": 0.125, "fade": 0,
-             "fragment": "void main(){ float g = exp(-max(-glyph_round_dist(), 0.0) / 2.0); \
-                      gl_FragColor = vec4(0.0, 0.0, g, 0.0); }"},
-            {"text": "label", "vertex": fit_place(fit), "blend": "add", "pad": 0.0625, "fade": 0,
-             "fragment": "void main(){ float fill = clamp(glyph_dist() + 0.5, 0.0, 1.0); \
-                      float ring = clamp(glyph_round_dist() + 3.5, 0.0, 1.0); \
-                      gl_FragColor = vec4(fill, ring - fill, 0.0, 0.0); }"},
-        ]});
-        let (_g, mut r) = gpu(w, h);
-        let frame = render(&mut r, &loaded(&doc));
-        let at = |x: usize, y: usize, c: usize| frame[(y * w + x) * 4 + c];
-        // The field holds the true distance up to its reach, the glow's pad,
-        // and the glow's quad spans the ink box grown by that much.
-        let reach = 0.125 * fit.ppem;
-        let (mut seen, mut off) = ([0usize; 6], Vec::new());
-        for y in 0..h {
-            for x in 0..w {
-                let d = px_distance(&laid, fit, x, y);
-                let p = fit.em(x, y);
-                let past = (0..2)
-                    .map(|a| (g.lo[a] - p[a]).max(p[a] - g.hi[a]) * fit.ppem)
-                    .fold(f64::MIN, f64::max);
-                let mut check = |k: usize, c: usize, want: f64, tol: f64| {
-                    seen[k] += 1;
-                    let got = f64::from(at(x, y, c));
-                    if (got - want).abs() > tol {
-                        off.push((x, y, d, c, got, want));
-                    }
-                };
-                if d < -1.5 {
-                    check(0, 0, 255.0, 4.0);
-                    check(0, 1, 0.0, 4.0);
-                    check(0, 2, 255.0, 4.0);
-                }
-                if (1.5..2.25).contains(&d) {
-                    check(1, 0, 0.0, 4.0);
-                    check(1, 1, 255.0, 4.0);
-                }
-                if d > 4.5 {
-                    check(2, 0, 0.0, 4.0);
-                    check(2, 1, 0.0, 4.0);
-                }
-                if d > reach + 1.0 && past < reach - 1.0 {
-                    check(4, 2, 255.0 * (-reach / 2.0).exp(), 4.0);
-                }
-                if past > reach + 1.0 {
-                    check(5, 2, 0.0, 0.0);
-                }
-                // The glow read back as a distance, within 1/2 px of the
-                // outline's. Inside the box, a counter's walls face each other,
-                // and a bilinear read across the ridge between them falls
-                // short.
-                if (0.75..4.5).contains(&d) && (0.5..reach - 1.0).contains(&past) {
-                    seen[3] += 1;
-                    let got = -2.0 * (f64::from(at(x, y, 2)) / 255.0).ln();
-                    if (got - d).abs() > 0.5 {
-                        off.push((x, y, d, 2, got, d));
-                    }
-                }
-            }
-        }
-        assert!(seen.iter().all(|n| *n > 50), "{words}: {seen:?}");
-        assert!(
-            off.is_empty(),
-            "{words}: {} pixels off, (x, y, d, channel, got, want) {:?}",
-            off.len(),
-            &off[..off.len().min(8)]
-        );
-    }
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn an_mtsdf_layer_pads_its_quads_by_its_pad() {
-    let fit = Fit {
-        x: 24.0,
-        y: 8.0,
-        ppem: 64.0,
-    };
-    let (w, h) = (96, 96);
-    let laid = lay(SANS, "I", Align::Left);
-    let g = &laid.glyphs[0];
-    let (_g, mut r) = gpu(w, h);
-    // 0.25 em reaches past the field of the least range, 6 texels at 32 px/em.
-    // The layer does not fade, so it lights its quad out to the edge.
-    for pad in [0.25, 0.05] {
-        let mut doc = label_scene(SANS, "I", Align::Left, fit);
-        doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [
-            {"text": "label", "vertex": fit_place(fit), "pad": pad, "fade": 0,
-             "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]});
-        let frame = render(&mut r, &loaded(&doc));
-        // The pixels from the ink box along x, at the middle of the stem.
-        let y = (fit.y + (g.lo[1] + g.hi[1]) / 2.0 * fit.ppem) as usize;
-        let lit = |x: f64| frame[(y * w + x as usize) * 4] == 255;
-        let edge = (
-            fit.x + (g.hi[0] + pad) * fit.ppem,
-            fit.x + (g.lo[0] - pad) * fit.ppem,
-        );
-        assert!(lit(edge.0 - 1.0) && !lit(edge.0 + 1.0), "pad {pad}: right");
-        assert!(lit(edge.1 + 1.0) && !lit(edge.1 - 1.0), "pad {pad}: left");
-    }
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn an_mtsdf_layer_fades_to_nothing_at_its_pad_by_the_distance_from_the_letters() {
-    let fit = Fit {
-        x: 24.0,
-        y: 8.0,
-        ppem: 64.0,
-    };
-    let laid = lay(SANS, "A", Align::Left);
-    let (w, h) = (
-        (laid.width * fit.ppem + 48.0).ceil() as usize,
-        (laid.height * fit.ppem + 16.0).ceil() as usize,
-    );
-    let pad = 0.25;
-    // Red is the layer's own white, which ghee multiplies by the fade, and
-    // green glyph_fade, so green reads the fade squared.
-    let fragment = "void main(){ gl_FragColor = vec4(1.0, glyph_fade, 0.0, 1.0); }";
-    // A bilinear read of the field falls short of the distance on the ridge
-    // between two edges, by up to half a texel, a pixel here.
-    let px = 1.0 / fit.ppem;
-    let (_g, mut r) = gpu(w, h);
-    // A quarter of the pad by default, the layer's own, and none.
-    for (fade, band) in [(None, pad / 4.0), (Some(0.125), 0.125), (Some(0.0), 0.0)] {
-        let mut doc = label_scene(SANS, "A", Align::Left, fit);
-        let mut layer = json!({"text": "label", "vertex": fit_place(fit), "pad": pad,
-                               "fragment": fragment});
-        if let Some(f) = fade {
-            layer["fade"] = json!(f);
-        }
-        doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [layer]});
-        let frame = render(&mut r, &loaded(&doc));
-        // 1 up to pad - band em from the letters, a smoothstep down to 0 at
-        // pad.
-        let want = |d: f64| match band > 0.0 {
-            true => {
-                let t = ((d - (pad - band)) / band).clamp(0.0, 1.0);
-                255.0 * (1.0 - t * t * (3.0 - 2.0 * t))
-            }
-            false => 255.0,
-        };
-        let g = &laid.glyphs[0];
-        let (mut seen, mut off) = ([0usize; 3], Vec::new());
-        for y in 0..h {
-            for x in 0..w {
-                let p = fit.em(x, y);
-                let past = (0..2)
-                    .map(|a| (g.lo[a] - p[a]).max(p[a] - g.hi[a]))
-                    .fold(f64::MIN, f64::max);
-                let d = laid.distance(p);
-                // Outside the letters, inside the quad less a pixel.
-                if d < px || past > pad - px {
-                    continue;
-                }
-                let at = |c: usize| f64::from(frame[(y * w + x) * 4 + c]);
-                let (lo, hi) = (want(d + px), want(d - px));
-                seen[usize::from(lo < 255.0) + usize::from(hi == 0.0)] += 1;
-                if at(0) < lo - 2.0 || at(0) > hi + 2.0 {
-                    off.push((x, y, d, at(0), lo, hi));
-                }
-                if (at(1) - at(0) * at(0) / 255.0).abs() > 2.0 {
-                    off.push((x, y, d, at(1), at(0), at(0)));
-                }
-            }
-        }
-        let faded = if band > 0.0 { 100 } else { 0 };
-        assert!(
-            seen[0] > 100 && seen[1] >= faded && seen[2] >= faded,
-            "{fade:?}: {seen:?}"
-        );
-        assert!(
-            off.is_empty(),
-            "{fade:?}: {} pixels off, (x, y, d, got, least, most) {:?}",
-            off.len(),
-            &off[..off.len().min(8)]
-        );
-    }
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn an_mtsdf_field_reaches_the_largest_pad_of_its_texts_layers() {
-    let laid = lay(SANS, "I", Align::Left);
-    let g = &laid.glyphs[0];
-    let fit = Fit {
-        x: 40.0,
-        y: 40.0,
-        ppem: 64.0,
-    };
-    let (w, h) = (
-        (laid.width * fit.ppem + 80.0).ceil() as usize,
-        (laid.height * fit.ppem + 80.0).ceil() as usize,
-    );
-    // The fill pads nothing, and a glow in a second pass pads 0.5 em, 32 px,
-    // which takes a range of 32 texels at 32 px/em. Blue holds the true
-    // distance outside the glyph, 255 at 32 px, with no fade.
-    let pad = 0.5;
-    let mut doc = label_scene(SANS, "I", Align::Left, fit);
-    let glow =
-        "void main(){ gl_FragColor = vec4(0.0, 0.0, clamp(-glyph_round_dist() / 32.0, 0.0, 1.0), 0.0); }";
-    let fill = "void main(){ float c = glyph_cover(); gl_FragColor = vec4(c, 0.0, 0.0, c); }";
-    doc["passes"] = json!([
-        {"name": "fill", "code": BLACK, "layers": [
-            {"text": "label", "vertex": fit_place(fit), "fragment": fill}]},
-        {"name": "main", "channels": [{"buffer": "fill"}],
-         "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
-         "layers": [{"text": "label", "vertex": fit_place(fit), "pad": pad, "fade": 0,
-                    "blend": "add", "fragment": glow}]},
-    ]);
-    let sc = loaded(&doc);
-    assert_eq!(sc.atlas_range("label"), 32);
-    let (_g, mut r) = gpu(w, h);
-    let frame = render(&mut r, &sc);
-    let (mut seen, mut off) = (0, Vec::new());
-    for y in 0..h {
-        for x in 0..w {
-            let d = px_distance(&laid, fit, x, y);
-            let p = fit.em(x, y);
-            let past = (0..2)
-                .map(|a| (g.lo[a] - p[a]).max(p[a] - g.hi[a]) * fit.ppem)
-                .fold(f64::MIN, f64::max);
-            // Inside the quad, out to 1 px short of the pad, where the least
-            // range reaches 3 px.
-            if (1.0..pad * fit.ppem - 1.0).contains(&d) && past < pad * fit.ppem - 1.0 {
-                seen += usize::from(d > 8.0);
-                let got = f64::from(frame[(y * w + x) * 4 + 2]) / 255.0 * 32.0;
-                if (got - d).abs() > 1.0 {
-                    off.push((x, y, d, got));
-                }
-            }
-        }
-    }
-    assert!(seen > 500, "{seen}");
-    assert!(
-        off.is_empty(),
-        "{} pixels off, (x, y, d, got) {:?}",
-        off.len(),
-        &off[..off.len().min(8)]
-    );
-}
-
-#[test]
-fn an_mtsdf_atlas_takes_its_range_from_the_layers_of_its_text() {
-    let place = "vec2 glyph_place(vec2 em) { return em; }";
-    let layer = |pad: f64| json!({"text": "label", "vertex": place, "fragment": WHITE, "pad": pad});
-    let mut doc = texts_scene(json!({
-        "label": {"font": "sans"},
-        "title": {"font": "sans", "atlas": {"font_size": 48}},
-    }));
-    doc["passes"] = json!([
-        {"name": "a", "layers": [layer(0.1), layer(0.3)]},
-        {"name": "main", "code": BLACK, "layers": [layer(0.2),
-            {"text": "title", "vertex": place, "fragment": WHITE, "pad": 0.25}]},
-    ]);
-    let sc = Scene::from_dict(&doc, None, None).unwrap();
-    // ceil(2 * 0.3 * 32) and 2 * 0.25 * 48
-    assert_eq!((sc.atlas_range("label"), sc.atlas_range("title")), (20, 24));
-    // A small pad takes the least range.
-    doc["passes"][0]["layers"] = json!([layer(0.05)]);
-    doc["passes"][1]["layers"] = json!([layer(0.0)]);
-    let sc = Scene::from_dict(&doc, None, None).unwrap();
-    assert_eq!(sc.atlas_range("label"), 6);
-    // A pad past the side of an atlas refuses the scene, and the slug fill
-    // takes any pad.
-    doc["passes"][1]["layers"] = json!([layer(33.0)]);
-    assert_eq!(
-        scene_err(&doc),
-        "scene: pass 'main' layer 'label' pad 33.0 needs an atlas range of 2112 texels at the \
-         atlas font_size 32 of text 'label', over the cap of 2048"
-    );
-    doc["texts"]["label"]["fill"] = json!("slug");
-    assert!(Scene::from_dict(&doc, None, None).is_ok());
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn the_slug_fill_names_the_mtsdf_fill_for_a_distance() {
-    let fit = Fit {
-        x: 4.0,
-        y: 4.0,
-        ppem: 30.0,
-    };
-    let (_g, mut r) = gpu(64, 48);
-    for (read, call) in [
-        ("glyph_dist", "()"),
-        ("glyph_round_dist", "()"),
-        ("glyph_fade", ""),
-    ] {
-        let mut doc = layer_scene(SANS, "I", Align::Left, fit);
-        doc["passes"][0]["layers"][0]["fragment"] = json!(format!(
-            "void main(){{\n    float d = {read}{call};\n    gl_FragColor = vec4(d);\n}}"
-        ));
-        let e = r.setup(&loaded(&doc)).unwrap();
-        assert_eq!(
-            e,
-            format!(
-                "pass 'main' layer 'label', line 2 of its fragment: {read} needs \"fill\": \"mtsdf\" on \
-                 text 'label'"
-            )
-        );
-        assert_eq!(r.error_line, Some(2));
-        assert_eq!(r.setup(&loaded(&filled(doc, "mtsdf"))).unwrap(), "");
-    }
-}
+// The MTSDF render
 
 /// The threads of this process named `name`.
 fn threads_named(name: &str) -> usize {
@@ -3391,7 +2532,7 @@ fn threads_named(name: &str) -> usize {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn only_an_mtsdf_layer_starts_an_atlas() {
+fn only_an_mtsdf_layer_that_shows_starts_an_atlas() {
     let fit = Fit {
         x: 4.0,
         y: 4.0,
@@ -3400,15 +2541,15 @@ fn only_an_mtsdf_layer_starts_an_atlas() {
     let (_g, mut r) = gpu(64, 48);
     let cache = tmpdir("no-atlas");
     std::env::set_var("XDG_CACHE_HOME", &cache);
-    // A slug layer, and an MTSDF text that no layer names.
+    // A slug layer, and a hidden MTSDF layer read through _cover.
     let slug = layer_scene(SANS, "I", Align::Left, fit);
-    let undrawn = label_scene(SANS, "I", Align::Left, fit);
-    for doc in [&slug, &undrawn] {
+    let hidden = label_scene(SANS, "I", Align::Left, fit);
+    for doc in [&slug, &hidden] {
         render(&mut r, &loaded(doc));
         assert_eq!(threads_named("ghee-atlas"), 0);
         assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
     }
-    render(&mut r, &loaded(&filled(slug, "mtsdf")));
+    render(&mut r, &loaded(&rendered(slug, "mtsdf")));
     assert_eq!(threads_named("ghee-atlas"), 1);
     // The worker writes the cache after the glyphs are in.
     let file = std::path::Path::new(&cache).join("ghee/atlas");
@@ -3422,55 +2563,8 @@ fn only_an_mtsdf_layer_starts_an_atlas() {
     fs::remove_dir_all(&cache).unwrap();
 }
 
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_glyph_the_atlas_cannot_hold_draws_an_error_box_and_says_why() {
-    // A pad of 32 em takes a range of 2048 texels, which pads every cell past
-    // the atlas. The advances of m and w are wider than a box.
-    let words = "mw";
-    let laid = text::build(&alone(&font(SANS)), words, Align::Left);
-    let built = laid.built.as_ref().unwrap();
-    let (bw, bh) = block(built);
-    let fit = Fit::of(bw, bh, W, H);
-    let mut doc = hazard_scene(SANS, words, fit);
-    doc["passes"][0]["layers"][0]["pad"] = json!(32.0);
-    let (_g, mut r) = gpu(W, H);
-    let frame = render(&mut r, &loaded(&doc));
-    // Each box stands centred in its character's advance, on the baseline.
-    let q = &built.quads;
-    let rects: Vec<[f64; 4]> = (0..q.count)
-        .map(|i| {
-            let v = vertex(q, i, 0);
-            let mid = f64::from(v[3][1] + v[3][2]) / 2.0;
-            let base = laid_baseline(&laid);
-            [
-                mid - text::ERROR_BOX[0] / 2.0,
-                base - text::ERROR_BOX[1],
-                mid + text::ERROR_BOX[0] / 2.0,
-                base,
-            ]
-        })
-        .collect();
-    assert_hazard(&frame, W, fit, &rects, "atlas boxes");
-    let errors = r.text_errors();
-    assert_eq!(errors.len(), 2, "{errors:?}");
-    for (e, ch) in errors.iter().zip(['m', 'w']) {
-        let want = format!("text 'label': '{ch}' has no field in the atlas: its ");
-        assert!(
-            e.starts_with(&want) && e.ends_with("cell is larger than the 2048x2048 atlas"),
-            "{e}"
-        );
-    }
-}
-
-/// The baseline of a one-line layout, in em from the block's top.
-fn laid_baseline(laid: &text::Layout) -> f64 {
-    let g = &laid.built.as_ref().unwrap().glyphs[0];
-    g.origin[1]
-}
-
-/// The lines of ghee's own main in a fragment shader: its last `void main()`
-/// to the end.
+/// The lines of the main of a fragment shader: its last `void main()` to the
+/// end.
 fn own_main(fs: &str) -> Vec<&str> {
     let lines: Vec<&str> = fs.lines().collect();
     let at = lines
@@ -3491,63 +2585,43 @@ fn guarded(line: &str) -> bool {
 #[test]
 fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
     // VC4 runs a short fragment shader whose last texture read sits outside
-    // an if in two threads, and the switch loses the condition flags. ghee's
-    // main reads every texture in such an if, and its last read follows the
-    // author's main, whatever textures the author's main reads.
-    let reads = "void main() { gl_FragColor = texture2D(logo_tex, glyph_em) * glyph_cover(); }";
-    let doc = json!({
-        "version": 1,
-        "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"},
-                   "emoji": {"file": "NotoColorEmoji-Smiles.ttf"},
-                   "logo": {"file": "logo.png"}},
-        "texts": {"curves": {"value": "A\u{1f600}", "font": ["sans", "emoji"], "fill": "slug"},
-                  "field": {"value": "A\u{1f600}", "font": ["sans", "emoji"], "fill": "mtsdf"}},
-        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(0.0); }",
-                    "layers": [{"text": "curves", "font_size": 20, "fragment": reads},
-                               {"text": "field", "font_size": 20, "fragment": reads},
-                               {"text": "field", "font_size": 20, "pad": 0.25,
-                                "fragment": reads}]}]
-    });
-    let sc = Scene::from_dict(&doc, None, None).unwrap();
-    let p = &sc.passes[0];
-    let mut shaders = Vec::new();
-    for k in 0..p.layers.len() {
-        let text = &p.layers[k].text;
-        shaders.push((format!("{text} fill"), p.layer_glsl(k, &sc, false).1));
-        shaders.push((
-            format!("{text} colour"),
-            p.layer_colour_glsl(k, &sc, false).1,
-        ));
-        shaders.push((
-            format!("{text} error boxes"),
-            p.layer_box_glsl(k, &sc, false).1,
-        ));
-    }
-    for (what, fs) in shaders {
-        let main = own_main(&fs);
-        let at: Vec<usize> = (0..main.len())
-            .filter(|i| main[*i].contains("texture2D("))
-            .collect();
-        assert!(at.iter().all(|i| guarded(main[*i])), "{what}: {main:#?}");
-        if !fs.contains("texture2D(") {
-            continue;
+    // an if in two threads, and the switch loses the condition flags. Each
+    // row is one layer, and every fragment shader of each of its batches that
+    // reads a texture reads it last in such an if.
+    let rows = [json!({}), json!({"render": "slug"})];
+    for keys in rows {
+        let mut d = json!({"name": "t", "text": "A"});
+        d.as_object_mut()
+            .unwrap()
+            .extend(keys.as_object().unwrap().clone());
+        let l = Layer::from_dict("a layer", &d).unwrap();
+        let sh = l.shaders(DETAIL);
+        for (what, fs) in [
+            ("glyphs", sh.glyphs.1),
+            ("colour glyphs", sh.colour.1),
+            ("error boxes", sh.boxes.1),
+        ] {
+            let main = own_main(&fs);
+            let reads: Vec<usize> = (0..main.len())
+                .filter(|i| main[*i].contains("texture2D("))
+                .collect();
+            assert!(
+                reads.iter().all(|i| guarded(main[*i])),
+                "{keys} {what}: {main:#?}"
+            );
+            if fs.contains("texture2D(") {
+                let lines: Vec<&str> = fs.lines().collect();
+                let last = lines
+                    .iter()
+                    .rposition(|l| l.contains("texture2D("))
+                    .unwrap();
+                assert!(guarded(lines[last]), "{keys} {what}");
+            }
         }
-        let last = *at
-            .last()
-            .unwrap_or_else(|| panic!("{what} reads outside its main"));
-        assert!(
-            !main[last..].iter().any(|l| l.contains("ghee_main()")),
-            "{what}: the author's main reads after the last guarded read"
-        );
     }
 }
 
 // Colour glyphs
-
-/// The fonts of a text, in order, from the fixtures.
-fn listed(files: &[&str]) -> Vec<text::Font> {
-    files.iter().map(|f| Ok(Arc::new(font(f)))).collect()
-}
 
 /// A colour bitmap of a fixture font, at its largest strike.
 struct Bitmap {
@@ -3617,14 +2691,6 @@ fn bitmap_fit(
     (fit, corner.map(|v| v as usize))
 }
 
-/// The layer's place for `fit`, at full precision.
-fn exact_place(fit: Fit) -> String {
-    format!(
-        "vec2 glyph_place(vec2 em) {{ return vec2({:?}, {:?}) + em * {:?}; }}",
-        fit.x, fit.y, fit.ppem
-    )
-}
-
 /// The RGBA `frame`, w pixels wide, shows bitmap `b` with its top left at
 /// pixel `at`, shrunk by `shrink` as each `shrink` x `shrink` block of its
 /// pixels averaged, over the opaque colour `under`.
@@ -3671,236 +2737,35 @@ fn assert_bitmap(
     );
 }
 
-/// A scene of text `label` in the fonts `files`, assets `f0`, `f1` and on,
-/// drawn white over a black pass by a layer of `fill` placed by `place`.
-fn colour_scene(files: &[&str], words: &str, fill: &str, place: &str) -> Value {
-    let assets: Map<String, Value> = files
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (format!("f{i}"), json!({"file": f})))
-        .collect();
-    let fonts: Vec<String> = (0..files.len()).map(|i| format!("f{i}")).collect();
-    json!({
-        "version": 1,
-        "assets": assets,
-        "texts": {"label": {"value": words, "font": fonts, "fill": fill}},
-        "passes": [{"name": "main", "code": BLACK,
-            "layers": [{"text": "label", "fragment": WHITE, "vertex": place}]}],
-    })
-}
-
-#[test]
-fn a_text_takes_each_character_from_the_first_font_that_has_it() {
-    let em = |file: &str, ch: char| {
-        let data = font(file);
-        let face = Face::parse(&data, 0).unwrap();
-        let g = face.glyph_index(ch).unwrap_or(GlyphId(0));
-        f64::from(face.glyph_hor_advance(g).unwrap()) / f64::from(face.units_per_em())
-    };
-    let line = |file: &str| {
-        let data = font(file);
-        let f = Face::parse(&data, 0).unwrap();
-        f64::from(f.ascender() - f.descender() + f.line_gap()) / f64::from(f.units_per_em())
-    };
-    // Letters from the text font, emoji from the emoji font, and a character
-    // that neither has from glyph 0 of the first, the missing-glyph box.
-    let words = "A\u{1f600}b\u{3042}";
-    let laid = text::build(&listed(&[SANS, EMOJI]), words, Align::Left);
-    assert_eq!(laid.faults, []);
-    let built = laid.built.as_ref().unwrap();
-    let glyphs: Vec<(char, usize)> = built.glyphs.iter().map(|p| (p.ch, p.font)).collect();
-    assert_eq!(glyphs, [('A', 0), ('b', 0), ('\u{3042}', 0)]);
-    assert_eq!(built.glyphs[2].gid, 0);
-    let colour: Vec<(char, usize)> = built.colour.iter().map(|p| (p.ch, p.font)).collect();
-    assert_eq!(colour, [('\u{1f600}', 1)]);
-    // Each glyph advances by its own font's advance, and the line height
-    // and the baseline are the first font's.
-    let spans: Vec<f64> = built
-        .glyphs
-        .iter()
-        .chain(&built.colour)
-        .map(|p| p.span[1] - p.span[0])
-        .collect();
-    let want = [
-        em(SANS, 'A'),
-        em(SANS, 'b'),
-        em(SANS, '\u{3042}'),
-        em(EMOJI, '\u{1f600}'),
-    ];
-    for (got, want) in spans.iter().zip(want) {
-        assert!((got - want).abs() < 1e-12, "{spans:?}");
-    }
-    assert_eq!(built.colour[0].span[0], built.glyphs[0].span[1]);
-    assert_eq!(block(built).1, line(SANS));
-    // The other way round, the letters fall through to the text font, and
-    // the emoji font's glyph 0 has no ink.
-    let laid = text::build(&listed(&[EMOJI, SANS]), words, Align::Left);
-    assert_eq!(laid.faults, [text::Fault::NoOutline(0, vec!['\u{3042}'])]);
-    let built = laid.built.as_ref().unwrap();
-    let glyphs: Vec<(char, usize)> = built.glyphs.iter().map(|p| (p.ch, p.font)).collect();
-    assert_eq!(glyphs, [('A', 1), ('b', 1)]);
-    assert_eq!(built.colour[0].font, 0);
-    assert_eq!(built.boxes.count, 1);
-    assert_eq!(block(built).1, line(EMOJI));
-}
-
-#[test]
-fn an_emoji_selector_takes_the_first_colour_glyph_and_a_text_selector_keeps_the_first_font() {
-    let hearts = |laid: &text::Layout| {
-        let built = laid.built.as_ref().unwrap();
-        let of = |ps: &[text::Placement]| -> Vec<(usize, usize)> {
-            ps.iter()
-                .filter(|p| p.ch == '\u{2764}')
-                .map(|p| (p.index, p.font))
-                .collect()
-        };
-        (of(&built.glyphs), of(&built.colour))
-    };
-    let words = "\u{2764}\u{fe0f}\u{2764}\u{fe0e}\u{2764}";
-    let laid = text::build(&listed(&[HEART, EMOJI_HEART]), words, Align::Left);
-    assert_eq!(laid.faults, []);
-    assert_eq!(hearts(&laid), (vec![(2, 0), (4, 0)], vec![(0, 1)]));
-    // A colour font ahead in the list draws every heart in colour.
-    let laid = text::build(&listed(&[EMOJI_HEART, HEART]), words, Align::Left);
-    assert_eq!(hearts(&laid), (vec![], vec![(0, 0), (2, 0), (4, 0)]));
-    // With no colour glyph for the character, U+FE0F leaves it to the first
-    // font that holds it.
-    let laid = text::build(&listed(&[HEART, EMOJI]), words, Align::Left);
-    assert_eq!(hearts(&laid), (vec![(0, 0), (2, 0), (4, 0)], vec![]));
-    // The heart after the selector starts where the colour heart ends.
-    let laid = text::build(&listed(&[HEART, EMOJI_HEART]), words, Align::Left);
-    let built = laid.built.as_ref().unwrap();
-    let after = built.glyphs.iter().find(|p| p.index == 2).unwrap();
-    assert_eq!(after.span[0], built.colour[0].span[1]);
-}
-
-#[test]
-fn glyphs_of_two_fonts_do_not_kern() {
-    // A pair that the text font kerns, its second character taken from a
-    // font ahead of it.
-    let data = font(SANS);
-    let face = Face::parse(&data, 0).unwrap();
-    let o = face.glyph_index('O').unwrap();
-    let kern = |l: GlyphId| {
-        let t = face.tables().kern.unwrap();
-        t.subtables
-            .into_iter()
-            .filter_map(|s| s.glyphs_kerning(l, o))
-            .sum::<i16>()
-    };
-    let l = ('!'..='~')
-        .find(|c| kern(face.glyph_index(*c).unwrap()) != 0)
-        .unwrap();
-    let words = format!("{l}O");
-    let alone = text::build(&listed(&[SANS]), &words, Align::Left);
-    let g = &alone.built.as_ref().unwrap().glyphs;
-    assert!(g[1].span[0] != g[0].span[1], "{l}O kerns in {SANS}");
-    let laid = text::build(&listed(&[CFF, SANS]), &words, Align::Left);
-    let g = &laid.built.as_ref().unwrap().glyphs;
-    assert_eq!((g[0].font, g[1].font), (1, 0));
-    assert_eq!(g[1].span[0], g[0].span[1]);
-}
-
-#[test]
-fn default_ignorables_take_no_room_between_colour_glyphs() {
-    // Neither font maps U+FE0F, and the emoji font maps U+200D with no
-    // advance. A sequence draws its parts one by one.
-    let laid = text::build(
-        &listed(&[SANS, EMOJI]),
-        "\u{1f600}\u{fe0f}\u{200d}\u{1f642}\u{fe0f}",
-        Align::Left,
-    );
-    assert_eq!(laid.faults, []);
-    let built = laid.built.as_ref().unwrap();
-    let c = &built.colour;
-    assert_eq!(c.len(), 2);
-    assert_eq!(c[1].span[0], c[0].span[1]);
-    assert_eq!(c[1].index, 3);
-    assert!((block(built).0 - c[1].span[1]).abs() < 1e-12);
-}
-
-#[test]
-fn a_text_round_trips_its_fonts_and_names_a_bad_list() {
-    let doc = texts_scene(json!({
-        "label": {"font": ["sans", "cff"]},
-        "title": {"font": ["cff"]},
-    }));
-    let sc = Scene::from_dict(&doc, None, None).unwrap();
-    assert_eq!(sc.texts[0].fonts, ["sans", "cff"]);
-    // A list of one saves as the name.
-    assert_eq!(
-        sc.to_dict()["texts"],
-        json!({
-            "label": {"value": "I", "font": ["sans", "cff"]},
-            "title": {"value": "I", "font": "cff"},
-        })
-    );
-    for (font, want) in [
-        (
-            json!([]),
-            "text 'label' 'font' needs the name of a font asset or a .ttf or .otf file, or a \
-             list of them, got []",
-        ),
-        (
-            json!(["sans", 3]),
-            "text 'label' 'font' needs the name of a font asset or a .ttf or .otf file, or a \
-             list of them, got ['sans', 3]",
-        ),
-        (
-            json!(["sans", "nope"]),
-            "text 'label' font 'nope' is no asset of the scene and no .ttf or .otf file",
-        ),
-    ] {
-        let e = scene_err(&texts_scene(json!({"label": {"font": font}})));
-        assert_eq!(e, format!("scene: {want}"));
-    }
+/// A scene of layer `label` in the colour font `file`, the asset `face`,
+/// placed by `fit` over a black pass.
+fn colour_scene(file: &str, words: &str, fit: Fit) -> Value {
+    let mut doc = label_scene(file, words, Align::Left, fit);
+    doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [placed(words, fit)]});
+    doc
 }
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_layer_paints_its_colour_glyphs_in_their_own_colours() {
-    let words = "\u{1f600}I";
+    let words = "\u{1f600}";
     let (w, h) = (220, 150);
     let (_g, mut r) = gpu(w, h);
     // The sbix font carries a strike of flat green beside the bitmaps, and
     // the largest strike draws.
     for file in [EMOJI, EMOJI_SBIX] {
-        let laid = text::build(&listed(&[SANS, file]), words, Align::Left);
+        let laid = text::build(&alone(&font(file)), words, Align::Left);
         let built = laid.built.as_ref().unwrap();
         let b = bitmap(file, '\u{1f600}');
         assert_eq!(b.ppem, 109.0);
         let (fit, at) = bitmap_fit(built, 0, &b, 1.0, [8.0, 6.0]);
-        for fill in FILLS {
-            let what = format!("{file} {fill}");
-            let doc = colour_scene(&[SANS, file], words, fill, &exact_place(fit));
+        for how in RENDERS {
+            let what = format!("{file} {how}");
+            let doc = rendered(colour_scene(file, words, fit), how);
             let frame = render(&mut r, &loaded(&doc));
             assert_bitmap(&frame, w, &b, at, 1, [0, 0, 0], &what);
             assert_eq!(r.text_errors(), [] as [String; 0], "{what}");
-            // The layer's own code paints the I white.
-            let i = &built.glyphs[0];
-            let x = fit.x + (i.span[0] + i.span[1]) / 2.0 * fit.ppem;
-            let y = fit.y + (i.origin[1] - 0.3) * fit.ppem;
-            let px = &frame[((y as usize) * w + x as usize) * 4..][..3];
-            assert_eq!(px, [255, 255, 255], "{what}");
         }
-    }
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_layer_paints_the_colour_glyph_that_an_emoji_selector_takes() {
-    let words = "\u{2764}\u{fe0f}";
-    let (w, h) = (220, 150);
-    let (_g, mut r) = gpu(w, h);
-    let laid = text::build(&listed(&[HEART, EMOJI_HEART]), words, Align::Left);
-    let built = laid.built.as_ref().unwrap();
-    let b = bitmap(EMOJI_HEART, '\u{2764}');
-    let (fit, at) = bitmap_fit(built, 0, &b, 1.0, [8.0, 6.0]);
-    for fill in FILLS {
-        let doc = colour_scene(&[HEART, EMOJI_HEART], words, fill, &exact_place(fit));
-        let frame = render(&mut r, &loaded(&doc));
-        assert_bitmap(&frame, w, &b, at, 1, [0, 0, 0], fill);
-        assert_eq!(r.text_errors(), [] as [String; 0], "{fill}");
     }
 }
 
@@ -3910,19 +2775,18 @@ fn a_colour_glyph_shrinks_through_its_mipmaps() {
     // At a quarter of its strike, each pixel of the bitmap's box shows the
     // average of a 4 x 4 block of the bitmap: mip level 2.
     let words = "\u{1f600}";
-    let laid = text::build(&listed(&[SANS, EMOJI]), words, Align::Left);
+    let laid = text::build(&alone(&font(EMOJI)), words, Align::Left);
     let b = bitmap(EMOJI, '\u{1f600}');
     let (fit, at) = bitmap_fit(laid.built.as_ref().unwrap(), 0, &b, 4.0, [5.0, 3.0]);
     let (_g, mut r) = gpu(48, 40);
-    let doc = colour_scene(&[SANS, EMOJI], words, "mtsdf", &exact_place(fit));
-    let frame = render(&mut r, &loaded(&doc));
+    let frame = render(&mut r, &loaded(&colour_scene(EMOJI, words, fit)));
     assert_bitmap(&frame, 48, &b, at, 4, [0, 0, 0], "a quarter");
 }
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_colour_glyph_moves_with_its_letter() {
-    let words = "I\u{1f600}";
+fn a_colour_glyph_takes_its_layers_place_and_opacity() {
+    let words = "\u{1f600}";
     let fit = Fit {
         x: 4.0,
         y: 2.0,
@@ -3930,63 +2794,36 @@ fn a_colour_glyph_moves_with_its_letter() {
     };
     let (w, h) = (128, 56);
     let (_g, mut r) = gpu(w, h);
-    let still = render(
-        &mut r,
-        &loaded(&colour_scene(
-            &[SANS, EMOJI],
-            words,
-            "mtsdf",
-            &fit_place(fit),
-        )),
-    );
-    // glyph_place moves the emoji alone, 32 pixels to the right.
-    let moving = format!(
-        "vec2 glyph_place(vec2 em) {{ return vec2({:?}, {:?}) + em * {:?} \
-         + vec2(glyph_index > 0.5 ? 32.0 : 0.0, 0.0); }}",
-        fit.x, fit.y, fit.ppem
-    );
-    let moved = render(
-        &mut r,
-        &loaded(&colour_scene(&[SANS, EMOJI], words, "mtsdf", &moving)),
-    );
-    // The emoji is the only colour in either frame.
-    let coloured = |f: &[u8], x: usize, y: usize| {
-        let p = &f[(y * w + x) * 4..][..3];
-        p[0] != p[2]
+    let still = render(&mut r, &loaded(&colour_scene(EMOJI, words, fit)));
+    let moved = Fit {
+        x: fit.x + 32.0,
+        ..fit
+    };
+    let mut doc = colour_scene(EMOJI, words, moved);
+    let moved = render(&mut r, &loaded(&doc));
+    layer_of(&mut doc, "label")["opacity"] = json!(0.5);
+    let faded = render(&mut r, &loaded(&doc));
+    let px = |f: &[u8], x: usize, y: usize| -> [u8; 3] {
+        let at = (y * w + x) * 4;
+        [f[at], f[at + 1], f[at + 2]]
     };
     let (mut n, mut off) = (0, 0);
     for y in 0..h {
         for x in 0..w - 32 {
-            if coloured(&still, x, y) {
-                n += 1;
-                let (a, b) = (
-                    &still[(y * w + x) * 4..][..3],
-                    &moved[(y * w + x + 32) * 4..][..3],
-                );
-                off += usize::from(a != b);
+            let a = px(&still, x, y);
+            assert!(px(&moved, x, y) == [0; 3] || x >= 32, "({x}, {y})");
+            if a == [0; 3] {
+                continue;
             }
-            assert!(!coloured(&moved, x, y) || x >= 32 && coloured(&still, x - 32, y));
+            n += 1;
+            off += usize::from(px(&moved, x + 32, y) != a);
+            let half = px(&faded, x + 32, y);
+            for k in 0..3 {
+                off += usize::from((f64::from(half[k]) - f64::from(a[k]) / 2.0).abs() > 1.0);
+            }
         }
     }
     assert!(n > 500 && off == 0, "{n} coloured pixels, {off} off");
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn cover_reads_a_colour_glyph_as_no_ink_and_says_nothing() {
-    let fit = Fit {
-        x: 4.0,
-        y: 4.0,
-        ppem: 40.0,
-    };
-    let (_g, mut r) = gpu(128, 56);
-    let want = render(&mut r, &loaded(&label_scene(SANS, "I", Align::Left, fit)));
-    let mut doc = label_scene(SANS, "I\u{1f600}", Align::Left, fit);
-    doc["assets"]["emoji"] = json!({"file": EMOJI});
-    doc["texts"]["label"]["font"] = json!(["face", "emoji"]);
-    let got = render(&mut r, &loaded(&doc));
-    assert!(got == want, "the emoji changed the coverage");
-    assert_eq!(r.text_errors(), [] as [String; 0]);
 }
 
 #[test]
@@ -4000,95 +2837,10 @@ fn a_colour_glyph_blends_the_pass_alpha_as_its_colour() {
     };
     let (_g, mut r) = gpu(56, 56);
     r.set_alpha(true);
-    let mut doc = colour_scene(&[SANS, EMOJI], words, "mtsdf", &fit_place(fit));
+    let mut doc = colour_scene(EMOJI, words, fit);
     doc["passes"][0]["code"] = json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
     let frame = render(&mut r, &loaded(&doc));
     assert!(plane(&frame, 0).iter().any(|v| *v > 200), "no emoji drawn");
     assert!(alphas(&frame).contains(&255));
     assert!(alphas(&frame)[0].abs_diff(128) <= 1);
-}
-
-#[test]
-fn the_last_layer_of_a_text_in_a_pass_paints_its_emoji_and_emoji_says_otherwise() {
-    let place = "vec2 glyph_place(vec2 em) { return em; }";
-    let layer = |text: &str, emoji: Option<bool>| {
-        let mut d = json!({"text": text, "fragment": WHITE, "vertex": place});
-        if let Some(e) = emoji {
-            d["emoji"] = json!(e);
-        }
-        d
-    };
-    let mut doc = texts_scene(json!({"label": {"font": "sans"}, "title": {"font": "sans"}}));
-    doc["passes"][0]["layers"] = json!([
-        layer("label", Some(false)),
-        layer("label", Some(true)),
-        layer("title", None),
-        layer("label", Some(true)),
-    ]);
-    doc["passes"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"name": "top", "code": BLACK, "layers": [layer("label", Some(false))]}));
-    let sc = Scene::from_dict(&doc, None, None).unwrap();
-    let paints = |sc: &Scene| -> Vec<Vec<bool>> {
-        sc.passes
-            .iter()
-            .map(|p| (0..p.layers.len()).map(|k| p.paints_emoji(k)).collect())
-            .collect()
-    };
-    let want = vec![vec![false, true, true, true], vec![false]];
-    assert_eq!(paints(&sc), want);
-    // The dict holds emoji where it differs from the default of its place.
-    let back = sc.to_dict();
-    let layers = &back["passes"][0]["layers"];
-    assert_eq!(layers[0], layer("label", None));
-    assert_eq!(layers[1], layer("label", Some(true)));
-    assert_eq!(layers[2], layer("title", None));
-    assert_eq!(layers[3], layer("label", None));
-    assert_eq!(back["passes"][1]["layers"][0], layer("label", Some(false)));
-    assert_eq!(paints(&Scene::from_dict(&back, None, None).unwrap()), want);
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_shadow_and_a_glow_paint_no_emoji_unless_emoji_says_so() {
-    // Three layers of one text, a shadow, a glow and the fill, each 40 pixels
-    // right of the one before.
-    let (w, h) = (128, 40);
-    let place = |k: usize| {
-        format!(
-            "vec2 glyph_place(vec2 em) {{ return vec2({:?}, 4.0) + em * 24.0; }}",
-            4.0 + 40.0 * k as f64
-        )
-    };
-    let doc = |emoji: [Option<bool>; 3]| {
-        let mut doc = colour_scene(&[SANS, EMOJI], "\u{1f600}", "mtsdf", &place(0));
-        let layers: Vec<Value> = (0..3)
-            .map(|k| {
-                let mut d = json!({"text": "label", "fragment": WHITE, "vertex": place(k)});
-                if let Some(e) = emoji[k] {
-                    d["emoji"] = json!(e);
-                }
-                d
-            })
-            .collect();
-        doc["passes"][0]["layers"] = json!(layers);
-        doc
-    };
-    let (_g, mut r) = gpu(w, h);
-    // The layers whose 40 pixels hold an emoji, over the black pass.
-    let mut painted = |doc: &Value| -> Vec<bool> {
-        let frame = render(&mut r, &loaded(doc));
-        assert_eq!(r.text_errors(), [] as [String; 0]);
-        (0..3)
-            .map(|k| {
-                (0..h).any(|y| {
-                    (k * 40..k * 40 + 40).any(|x| frame[(y * w + x) * 4..][..3] != [0, 0, 0])
-                })
-            })
-            .collect()
-    };
-    assert_eq!(painted(&doc([None; 3])), [false, false, true]);
-    assert_eq!(painted(&doc([Some(true), None, None])), [true, false, true]);
-    assert_eq!(painted(&doc([None, None, Some(false)])), [false; 3]);
 }

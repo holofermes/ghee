@@ -80,8 +80,9 @@
   README states every cap and its error.
 - Name the pass and the line of the author's GLSL in a compile error, as
   `pass 'main', line 2 of its code:` or `line 2 of the common block`, ahead of
-  the GL's own message, and print the error once, where it printed the GL's
-  log twice with a line number in the assembled shader.
+  the GL's own message, on Mesa's GL and on NVIDIA's alike, and print the
+  error once, where it printed the GL's log twice with a line number in the
+  assembled shader.
 
 ### Text
 
@@ -128,7 +129,9 @@
   size, and an effect's `visible`, `color`, `strength`, `sung`, `speed` and
   `rate`. None takes `x` and `y` back to centring and `color` back to its
   default. Every other field changes with a rebuild, so a live set of one is
-  refused with the live fields named.
+  refused with the live fields named, and a set that names an effect or a
+  field that the layer lacks is refused with the layer's effects or its live
+  fields named.
 - Move `wave`, `scroll` and `blink` by a phase that ghee keeps for each
   layer and advances each frame by the effect's `speed` or `rate` times the
   frame's time step, so a new speed carries the motion on from where it is.
@@ -168,9 +171,10 @@
   the first words that hold one, live words too, with no new setup.
 - Keep the scene running through a text problem, print it once as an error,
   which `--quiet` keeps, and show it in the console and in `/stats` as
-  `text_errors`. A font that fails to load draws an error box for each
-  character, a glyph that ghee cannot draw shows an error box in its place,
-  and words that do not fit leave the last words that did.
+  `text_errors`, a line for each problem that names its layer or its font.
+  A font that fails to load draws an error box for each character, a glyph
+  that ghee cannot draw shows an error box in its place, and words that do
+  not fit leave the last words that did.
 - Add `--demo lettering`, `--demo karaoke` and `--demo lens`, and rename
   `--demo text`, which rasterizes its words in Pillow, to `--demo marquee`.
   Add `ghee/examples/nowplaying.py`, an artist and a title that fit a 128x32
@@ -178,10 +182,18 @@
 
 ### Python
 
-- Set a live field of a layer on a `ghee.open` handle with
-  `h.set_layer(name, field, value, effect=None)`, with no rebuild. A field
-  that changes with a rebuild, an unknown layer, effect or field, and a
-  value that the field does not take raise ValueError.
+- Set a layer's live fields on a `ghee.open` handle with no rebuild, through
+  `h.layers` by attribute or by key, `h.layers.title.x = 10` or
+  `h.layers["title"]["karaoke"]["sung"] = 12`, or through
+  `h.set_layer(name, field, value, effect=None)`. `text` sets a text layer's
+  words and `image` an image layer's image, and None takes `x`, `y` or
+  `color` back to its default. A field that changes with a rebuild, an
+  unknown layer, effect or field, and a value that the field does not take
+  raise ValueError, and an unknown layer's error names the scene's layers.
+- Set the layers of a scene script from a tick or a feed with
+  `ghee.layers`, as on a handle. Under ghee, each set goes out with the
+  tick's answer, checked against the scene first, so a set that ghee would
+  refuse raises ValueError. In a direct run, each set goes to the handle.
 - Declare an asset with `ghee.Asset` and a text layer with
   `ghee.Layer(name, text, visible, x, y, color, opacity, blend, font_size,
   font_family, text_align, render)` and a keyword for each effect, a dict of
@@ -248,15 +260,31 @@
 
 ### Console
 
-- Edit a pass's text layers. Each layer opens in a tab after its pass's tab,
-  named by its pass and its name, `main › title`, with its words, applied
-  live, and its font_size, x, y and blend as fields. A double-click on its
-  tab renames it, as a pass takes its name.
+- Edit each pass's layers. A pass shows its tab row, with the open pass's
+  rename, eye and remove at its end, then its inputs, with a chip for each
+  text layer's `_cover`, each image asset's `_tex` and each array, and its
+  channels, then its layers, and its shader closed under a line. `+ layer`
+  adds a text or an image layer. A layer shows a one-row header with its
+  blend, render, opacity, move, rename, eye and remove, then its settings,
+  and a text layer adds `+ effect` and one row for each of its effects.
+- Set a live field from the console with no rebuild, as it changes. Every
+  other field applies when the cursor leaves it.
 - Set a live field of a layer with `/set?layer=title&field=x&value=10`, and
   a field of one of its effects with `effect=` too, in `ghee serve`,
   `--serve` and `ghee.open(stats=)`, with no rebuild. The value reads as the
   field takes it, `none` included, and a field that changes with a rebuild
   answers 400 with the live fields named.
+- Rename a pass or a layer with its pencil, in the console's dialog, where a
+  double-click on a pass's tab renamed it.
+- Hide a pass with its eye, which the scene keeps as the pass's `visible`,
+  where the eye muted the pass in the page alone. A hidden pass, a hidden
+  layer and a bypassed effect dim the same way and stay editable.
+- Show a colour as its swatch alone, in the Parameters panel too, and a
+  number field with no spin buttons.
+- Open the shader of the pass that holds a compile error.
+- Show a procedural scene's passes and layers with no add, move, rename or
+  remove, since its process declares them.
+- Keep a hidden filter's pass hidden when the console posts the scene.
 - Save each pass's `visible` and the settings and effects of each layer of a
   procedural scene in its `.values.json` sidecar, beside its params and
   filters, and apply them over the scene that the process writes at its next
@@ -269,6 +297,8 @@
   `active`. A page whose edit was refused shows the active scene as it runs,
   where a page left open on one scene wrote its copy into the scene that the
   console had switched to.
+- List in `procedural` on `GET /scenes` the scenes that a program writes,
+  an empty list when there are none.
 - Build a posted scene's filters on the server: `POST /scene` rebuilds a
   filter pass from its filter, keeping its place and param values, and
   appends a filter that the `filters` list names without a pass. An unknown
@@ -284,10 +314,9 @@
   when longer lines above it wrap.
 - Edit a free-text string param over several lines, and show why the server
   refused a posted scene.
-- Open a tab with a tap anywhere on it, keep the mute and remove buttons on
-  the open tab alone, apart from its label, and ask before a pass, a layer or
-  the common block goes, in a dialog of the console's own where Escape
-  cancels and Enter removes.
+- Open a tab with a tap anywhere on it, keep each tab's width and place, and
+  ask before a pass, a layer or the common block goes, in the console's
+  dialog, where Escape cancels and Enter removes.
 - Resolve the files of a copy that the console saved into `modified/`
   beside its original, where every scene looked one directory up.
 
@@ -311,6 +340,9 @@
 
 - Declare `channels` in a filter, and read the filter's own previous frame
   through `self`.
+- List a hidden filter in a scene's `filters` as
+  `{"name": "dither", "visible": false}`, which a save of the console
+  writes for a filter whose pass is hidden.
 - Declare `assets` in a filter the way a scene does. A shipped filter's file
   is compiled in, a scanned filter's resolves beside it. Only the filter's
   own pass sees them, so they never clash with a scene's names.
@@ -324,6 +356,8 @@
 
 - Read back a frame at a whole multiple of the render size with each pixel a
   square block, in `Renderer::render_into` and `render_scaled`.
+- Take either rounding of v × 255 for a channel value v read back in the
+  tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
 - Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
   `feeds`, `isf`, `report` and `sources` modules inside the crate.
 - Ship NOTICE and the DejaVu font's license in the deb under

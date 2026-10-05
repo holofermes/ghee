@@ -43,13 +43,16 @@ use crate::assets::Pixels;
 use crate::atlas;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
-use crate::layer::{Detail, ImageLayer, Layer, Render, TextLayer};
+use crate::layer::{Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer};
 use crate::scene::{ArraySize, ParamValue, Pass, Scene};
 use crate::text::{self, Fault, Layout};
 
 /// The passes that the engine holds, filter passes included. engine.c holds
 /// the same number as MP_MAX_PASSES.
 const MAX_PASSES: usize = 16;
+
+/// The engine's time step until set_dt() sets one.
+const DT: f64 = 1.0 / 60.0;
 
 /// error_pass for a compile error in the scene's common block.
 /// A pass error reports the pass index.
@@ -172,6 +175,9 @@ struct LayerBatches {
     name: String,
     /// The engine's index of the layer's pass.
     pass: c_int,
+    /// The phase of each of the layer's effects that moves by one, as the
+    /// frames advanced it.
+    phases: std::cell::RefCell<Vec<(Kind, f64)>>,
 }
 
 /// One atlas generator, and the engine textures that hold its atlas.
@@ -221,6 +227,31 @@ struct TextErrors {
 const IMAGE_QUAD: [f32; 16] = [
     0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0,
 ];
+
+/// A value for a live field of a layer, as a caller holds it.
+#[derive(Clone, Copy, Debug)]
+pub enum Given<'a> {
+    /// Written as the scene format writes the key.
+    Json(&'a Value),
+    /// The numbers of a wire message.
+    Numbers(&'a [f32]),
+    /// The text of a wire message.
+    Text(&'a str),
+}
+
+/// Why the scene took no live value: an unknown layer, effect or field, a
+/// field that changes with a rebuild, or a value that the field does not
+/// take.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// The image layers of `drawn` that draw a file of their own.
 fn drawn_files(drawn: &[Pass]) -> impl Iterator<Item = &ImageLayer> {
@@ -482,7 +513,8 @@ pub struct Renderer {
     pub width: i32,
     pub height: i32,
     pub components: i32,
-    pub scene: Option<Scene>,
+    /// The scene of the last setup, with the live values set since.
+    scene: std::cell::RefCell<Option<Scene>>,
     /// The last setup() compile error text. "" means the setup succeeded.
     pub error: String,
     /// The user-code line of the last setup() compile error.
@@ -532,8 +564,14 @@ pub struct Renderer {
     /// The colour atlas of each drawn layer whose words held colour glyphs,
     /// by the layer's name.
     colours: std::cell::RefCell<HashMap<String, ColourAtlas>>,
-    /// set_time() pinned the time, so a render waits for held words.
-    pinned: std::cell::Cell<bool>,
+    /// The time that set_time() pinned. A render then waits for held words.
+    pinned: std::cell::Cell<Option<f64>>,
+    /// The pinned time of the last render since the setup, 0 before the
+    /// first.
+    drawn_at: std::cell::Cell<f64>,
+    /// The time step that set_dt() set, which advances the phases while the
+    /// time runs free.
+    dt: std::cell::Cell<f64>,
     /// The texels per em of each drawn layer's atlas, by the layer's name.
     px_em: HashMap<String, u32>,
     /// The font of an atlas generator.
@@ -570,7 +608,7 @@ impl Renderer {
             width,
             height,
             components,
-            scene: None,
+            scene: std::cell::RefCell::new(None),
             error: String::new(),
             error_line: None,
             error_pass: None,
@@ -592,7 +630,9 @@ impl Renderer {
             words: std::cell::RefCell::new(HashMap::new()),
             curves: HashSet::new(),
             colours: std::cell::RefCell::new(HashMap::new()),
-            pinned: std::cell::Cell::new(false),
+            pinned: std::cell::Cell::new(None),
+            drawn_at: std::cell::Cell::new(0.0),
+            dt: std::cell::Cell::new(DT),
             px_em: HashMap::new(),
             atlas_font: Box::new(|fonts| Arc::new(text::AtlasFont(fonts.to_vec()))),
             atlas_cache: None,
@@ -876,6 +916,7 @@ impl Renderer {
                     boxes: -1,
                     name: l.name().to_string(),
                     pass: idx,
+                    phases: std::cell::RefCell::new(Vec::new()),
                 });
             }
             // A test's batches draw after the layers of their pass.
@@ -967,6 +1008,7 @@ impl Renderer {
             self.batches = batch_ix;
         }
         self.layers = layers;
+        self.drawn_at.set(0.0);
         self.px_em = sizes;
         // A new scene logs its text problems afresh.
         self.reported.borrow_mut().clear();
@@ -1082,7 +1124,7 @@ impl Renderer {
         }
         // A layer builds from the scene's string param of its name, through
         // set_text below, and it looks itself up in self.scene.
-        self.scene = Some(scene.clone());
+        *self.scene.borrow_mut() = Some(scene.clone());
         for (dl, l) in self.layers.iter().zip(drawn.iter().flat_map(|p| &p.layers)) {
             for (name, ty, value) in l.uniforms() {
                 self.set_uniform(dl.pass, &name, ty, value)?;
@@ -1286,6 +1328,7 @@ impl Renderer {
     /// The engine never caches or compares data.
     fn feed(&self, provider: Option<Provider<'_>>) -> Result<()> {
         self.tick_texts(false)?;
+        self.advance()?;
         let Some(provider) = provider else {
             return Ok(());
         };
@@ -1485,7 +1528,8 @@ impl Renderer {
     /// wait for them, and the layer draws its last words meanwhile. A render
     /// with the time pinned by set_time() waits for them, and so does a setup.
     pub fn set_text(&self, name: &str, words: &str) -> Result<bool> {
-        let Some(layer) = self.scene.as_ref().and_then(|s| s.text_layer(name)) else {
+        let scene = self.scene.borrow();
+        let Some(layer) = scene.as_ref().and_then(|s| s.text_layer(name)) else {
             return Ok(false);
         };
         if self.words.borrow().get(name).is_some_and(|w| w == words) {
@@ -1522,6 +1566,86 @@ impl Renderer {
             .borrow_mut()
             .insert(name.to_string(), words.to_string());
         Ok(true)
+    }
+
+    /// Set the live field at `at` to `given`, with no rebuild. The layer's
+    /// uniforms that change take their new values, a new image binds in
+    /// place of the last, and a text layer that shows for the first time
+    /// since the setup builds its atlas and lays its words out on it. A
+    /// layer of a hidden pass takes the value and draws nothing.
+    ///
+    /// The scene's checks of the field and the value fail with a Refused
+    /// error, and change nothing.
+    pub fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
+        let refused = |e: anyhow::Error| anyhow::Error::new(Refused(e.to_string()));
+        let (before, shown, image, value) = {
+            let scene = self.scene.borrow();
+            let Some(layer) = scene.as_ref().and_then(|s| s.layer(at.layer)) else {
+                return Err(Refused(format!("the scene has no layer '{}'", at.layer)).into());
+            };
+            let live = layer.live(at.effect, at.field).map_err(refused)?;
+            let value = match given {
+                Given::Json(v) => v.clone(),
+                Given::Numbers(v) => live.of_numbers(v).map_err(refused)?,
+                Given::Text(t) => live.of_text(t).map_err(refused)?,
+            };
+            let shown = layer.as_text().is_some_and(|l| l.visible);
+            let image = layer.as_image().map(|l| l.image.clone());
+            (layer.uniforms(), shown, image, value)
+        };
+        if let Some(scene) = self.scene.borrow_mut().as_mut() {
+            scene.set_layer(at, &value).map_err(refused)?;
+        }
+        let Some(dl) = self.layers.iter().find(|d| d.name == at.layer) else {
+            return Ok(());
+        };
+        let now_shown = {
+            let scene = self.scene.borrow();
+            let Some(layer) = scene.as_ref().and_then(|s| s.layer(at.layer)) else {
+                return Ok(());
+            };
+            for (name, ty, value) in layer.uniforms() {
+                if !before.iter().any(|(n, _, v)| *n == name && *v == value) {
+                    self.set_uniform(dl.pass, &name, ty, value)?;
+                }
+            }
+            if let Layer::Image(l) = layer {
+                if image.as_ref() != Some(&l.image) {
+                    self.bind_image(dl.batch, &l.name, &l.image)?;
+                }
+            }
+            layer.as_text().is_some_and(|l| l.visible)
+        };
+        if now_shown && !shown {
+            self.first_shown(at.layer)?;
+        }
+        Ok(())
+    }
+
+    /// Build the atlas of the text layer `name`, which shows for the first
+    /// time since the setup, and lay its words out again on it. A layer
+    /// that holds an atlas, or that draws none, keeps what it has.
+    fn first_shown(&self, name: &str) -> Result<()> {
+        if self.atlas_of(name).is_some() {
+            return Ok(());
+        }
+        let words = {
+            let scene = self.scene.borrow();
+            let Some(scene) = scene.as_ref() else {
+                return Ok(());
+            };
+            let Some(layer) = scene.text_layer(name) else {
+                return Ok(());
+            };
+            self.add_atlas(&mut self.atlases.borrow_mut(), &mut Vec::new(), layer)?;
+            scene.words(name).unwrap_or(&layer.text).to_string()
+        };
+        if self.atlas_of(name).is_none() {
+            return Ok(());
+        }
+        self.words.borrow_mut().remove(name);
+        self.set_text(name, &words)?;
+        Ok(())
     }
 
     /// The index in `atlases` of the atlas that layer `name` reads, None for a
@@ -1776,46 +1900,99 @@ impl Renderer {
             .flat_map(|p| &p.layers)
             .filter_map(Layer::as_text)
         {
-            let Some(fonts) = &l.data else { continue };
-            if l.render != Render::Mtsdf || !l.visible || !l.has_outlines() {
-                continue;
-            }
-            let Detail { px_em, range } = self.detail(l);
-            let same = |s: &AtlasSlot| s.px_em == px_em && s.range == range && s.fonts == *fonts;
-            let i = match slots.iter().position(same) {
-                Some(i) => i,
-                None => {
-                    let slot = match old.iter().position(same) {
-                        Some(j) => {
-                            let mut s = old.swap_remove(j);
-                            s.textures.clear();
-                            s
-                        }
-                        None => AtlasSlot {
-                            fonts: fonts.clone(),
-                            px_em,
-                            range,
-                            gen: atlas::Generator::new(
-                                (self.atlas_font)(fonts),
-                                atlas::Config {
-                                    px_em,
-                                    range,
-                                    cache: self.atlas_cache.clone(),
-                                },
-                            )?,
-                            textures: Vec::new(),
-                        },
-                    };
-                    slots.push(slot);
-                    slots.len() - 1
-                }
-            };
-            slots[i]
-                .textures
-                .push((text::internal(&l.name, "_atlas"), true));
+            self.add_atlas(&mut slots, &mut old, l)?;
         }
         drop(old);
         *self.atlases.borrow_mut() = slots;
+        Ok(())
+    }
+
+    /// Hand `layer` its atlas in `slots`, when it is an MTSDF layer that
+    /// shows and has a font with outlines: the slot of its font, px/em and
+    /// range, else the generator of `old` that matches, else a new one.
+    fn add_atlas(
+        &self,
+        slots: &mut Vec<AtlasSlot>,
+        old: &mut Vec<AtlasSlot>,
+        l: &TextLayer,
+    ) -> Result<()> {
+        let Some(fonts) = &l.data else {
+            return Ok(());
+        };
+        if l.render != Render::Mtsdf || !l.visible || !l.has_outlines() {
+            return Ok(());
+        }
+        let Detail { px_em, range } = self.detail(l);
+        let same = |s: &AtlasSlot| s.px_em == px_em && s.range == range && s.fonts == *fonts;
+        let i = match slots.iter().position(same) {
+            Some(i) => i,
+            None => {
+                let slot = match old.iter().position(same) {
+                    Some(j) => {
+                        let mut s = old.swap_remove(j);
+                        s.textures.clear();
+                        s
+                    }
+                    None => AtlasSlot {
+                        fonts: fonts.clone(),
+                        px_em,
+                        range,
+                        gen: atlas::Generator::new(
+                            (self.atlas_font)(fonts),
+                            atlas::Config {
+                                px_em,
+                                range,
+                                cache: self.atlas_cache.clone(),
+                            },
+                        )?,
+                        textures: Vec::new(),
+                    },
+                };
+                slots.push(slot);
+                slots.len() - 1
+            }
+        };
+        slots[i]
+            .textures
+            .push((text::internal(&l.name, "_atlas"), true));
+        Ok(())
+    }
+
+    /// Advance the phase of every effect that moves by one by its pace times
+    /// the time since the last render: the step of the pinned time, from 0
+    /// at the setup, else the time step of set_dt().
+    fn advance(&self) -> Result<()> {
+        let step = match self.pinned.get() {
+            Some(t) => t - self.drawn_at.replace(t),
+            None => self.dt.get(),
+        };
+        let scene = self.scene.borrow();
+        let Some(scene) = scene.as_ref() else {
+            return Ok(());
+        };
+        for dl in &self.layers {
+            let Some(layer) = scene.text_layer(&dl.name) else {
+                continue;
+            };
+            let mut phases = dl.phases.borrow_mut();
+            for (kind, uniform, pace) in layer.paces() {
+                let i = match phases.iter().position(|(k, _)| *k == kind) {
+                    Some(i) => i,
+                    None => {
+                        phases.push((kind, 0.0));
+                        phases.len() - 1
+                    }
+                };
+                let mut phase = phases[i].1 + pace * step;
+                // A phase that cycles stays under 1, so its float uniform
+                // keeps its precision however long the scene runs.
+                if kind.cycles() {
+                    phase = phase.rem_euclid(1.0);
+                }
+                phases[i].1 = phase;
+                self.set_uniform(dl.pass, &uniform, "float", Value::from(phase))?;
+            }
+        }
         Ok(())
     }
 
@@ -1826,7 +2003,7 @@ impl Renderer {
         if self.atlases.borrow().is_empty() {
             return Ok(());
         }
-        let wait = wait || self.pinned.get();
+        let wait = wait || self.pinned.get().is_some();
         let mut ready: Vec<String> = Vec::new();
         for (name, h) in self.held.borrow().iter() {
             let Some(i) = self.atlas_of(name) else {
@@ -1852,7 +2029,8 @@ impl Renderer {
             let Some(h) = self.held.borrow_mut().remove(&name) else {
                 continue;
             };
-            if let Some(layer) = self.scene.as_ref().and_then(|s| s.text_layer(&name)) {
+            let scene = self.scene.borrow();
+            if let Some(layer) = scene.as_ref().and_then(|s| s.text_layer(&name)) {
                 self.show(layer, h.laid)?;
             }
         }
@@ -2045,7 +2223,8 @@ impl Renderer {
     /// fit.
     pub fn text_errors(&self) -> Vec<String> {
         let all = self.text_errors.borrow();
-        let Some(scene) = self.scene.as_ref() else {
+        let scene = self.scene.borrow();
+        let Some(scene) = scene.as_ref() else {
             return Vec::new();
         };
         let mut out: Vec<String> = Vec::new();
@@ -2206,7 +2385,7 @@ impl Renderer {
     /// The default is the monotonic clock since the engine start.
     /// None returns the uniform to that clock.
     pub fn set_time(&self, t: Option<f64>) {
-        self.pinned.set(t.is_some());
+        self.pinned.set(t);
         match t {
             None => unsafe { ffi::ghee_clear_time(self.handle) },
             Some(t) => unsafe { ffi::ghee_set_time(self.handle, t as f32) },
@@ -2217,6 +2396,7 @@ impl Renderer {
     /// DT rides the draw like `time`: one store here, one upload per pass.
     /// The default is 1/60 until a caller feeds a measured period.
     pub fn set_dt(&self, value: f64) {
+        self.dt.set(value);
         unsafe { ffi::ghee_set_dt(self.handle, value as f32) };
     }
 

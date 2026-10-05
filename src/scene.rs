@@ -24,7 +24,7 @@ use std::fs;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
-use crate::layer::{is_image_file, Layer, Rgb, TextLayer};
+use crate::layer::{is_image_file, Address, Form, Layer, Rgb, TextLayer};
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
@@ -1877,6 +1877,39 @@ impl Scene {
     /// Every text layer of the scene, in the order of its passes.
     pub fn text_layers(&self) -> impl Iterator<Item = &TextLayer> {
         self.layers().filter_map(Layer::as_text)
+    }
+
+    /// The layer named `name`.
+    pub fn layer(&self, name: &str) -> Option<&Layer> {
+        self.layers().find(|l| l.name() == name)
+    }
+
+    /// Set the live field at `at` to `value`, written as the scene format
+    /// writes the key, as Layer::set_live() does. A live image is an image
+    /// asset of the scene's own.
+    pub fn set_layer(&mut self, at: &Address, value: &Value) -> Result<()> {
+        let Some(layer) = self.layer(at.layer) else {
+            bail!("the scene has no layer '{}'", at.layer);
+        };
+        let live = layer.live(at.effect, at.field)?;
+        if live.form == Form::Image {
+            let image = |a: &Asset| {
+                a.from_filter.is_empty() && !a.is_font() && value.as_str() == Some(a.name.as_str())
+            };
+            if !self.assets.iter().any(image) {
+                bail!(
+                    "{} needs an image asset of the scene, got {}",
+                    live.what,
+                    py_repr(value)
+                );
+            }
+        }
+        self.passes
+            .iter_mut()
+            .flat_map(|p| &mut p.layers)
+            .find(|l| l.name() == at.layer)
+            .expect("the layer was just found")
+            .set_live(at.effect, at.field, value)
     }
 
     /// The text layer named `name`.
@@ -4128,5 +4161,41 @@ mod tests {
                 "{n} saved"
             );
         }
+    }
+
+    #[test]
+    fn a_live_image_is_an_image_asset_of_the_scenes_own() {
+        let doc = json!({
+            "assets": {"pic": {"file": "pic.png"}, "pic2": {"file": "pic2.png"},
+                       "sans": {"file": "sans.ttf"}},
+            "passes": [{"name": "main", "code": GOOD,
+                        "layers": [{"name": "i", "image": "pic"}]}],
+        });
+        let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+        crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+        let filter = sc.assets.iter().find(|a| !a.from_filter.is_empty());
+        let filter = filter.unwrap().name.clone();
+        let image = Address {
+            layer: "i",
+            effect: None,
+            field: "image",
+        };
+        sc.set_layer(&image, &json!("pic2")).unwrap();
+        assert_eq!(sc.layer("i").unwrap().as_image().unwrap().image, "pic2");
+        let mut refused = |value: Value| sc.set_layer(&image, &value).unwrap_err().to_string();
+        for value in ["pic.png", "sans", "nope", &filter] {
+            assert_eq!(
+                refused(json!(value)),
+                format!("layer 'i' image needs an image asset of the scene, got '{value}'")
+            );
+        }
+        let nope = Address {
+            layer: "nope",
+            ..image
+        };
+        assert_eq!(
+            sc.set_layer(&nope, &json!(1)).unwrap_err().to_string(),
+            "the scene has no layer 'nope'"
+        );
     }
 }

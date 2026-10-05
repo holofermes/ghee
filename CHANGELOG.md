@@ -122,6 +122,17 @@
   keeps its values, the slug render skips the three that read the distance,
   and ghee works out how far a layer's quads and its atlas's field reach
   from its effects, and fades the effects out at the edge of their quads.
+- Set a layer's live fields with no rebuild, `Renderer::set_layer` in the
+  library: `x`, `y`, `color`, `opacity` and `visible`, an image layer's
+  `image`, which takes another image asset of the scene at that image's
+  size, and an effect's `visible`, `color`, `strength`, `sung`, `speed` and
+  `rate`. None takes `x` and `y` back to centring and `color` back to its
+  default. Every other field changes with a rebuild, so a live set of one is
+  refused with the live fields named.
+- Move `wave`, `scroll` and `blink` by a phase that ghee keeps for each
+  layer and advances each frame by the effect's `speed` or `rate` times the
+  frame's time step, so a new speed carries the motion on from where it is.
+  Under `--timestep` the phase runs from 0 at the scene's start.
 - Draw a layer's glyphs from an MTSDF atlas by default, one texture read a
   pixel. `"render": "slug"` computes Slug's exact coverage from the font's
   curves instead, at any size and with no atlas.
@@ -131,8 +142,8 @@
   show in their first frame when the atlas holds their glyphs, and otherwise
   the layer keeps its last words on screen until every glyph of the new ones
   is in. A setup and a render with `--timestep` wait for them. A full atlas
-  draws an error box with an error of its own. A hidden layer builds no
-  atlas.
+  draws an error box with an error of its own. A hidden layer builds its
+  atlas when it first shows.
 - Generate a layer's atlas at the detail of its size, its `font_size` or the
   size that fits its words at setup, rounded up to 32, 48, 64, 96 or 128
   texels per em, and 128 for larger text, so layers of near sizes share one

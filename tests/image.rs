@@ -10,7 +10,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde_json::{json, Value};
 
-use ghee::engine::{probe_dri_devices, Renderer};
+use ghee::engine::{probe_dri_devices, Given, Renderer};
+use ghee::layer::Address;
 use ghee::scene::Scene;
 
 /// A Renderer opens a GL device, and load_assets reads $GHEE_ASSETS. A test
@@ -329,19 +330,85 @@ fn an_image_layer_paints_its_picture_where_its_keys_place_it() {
             .extend(keys.as_object().unwrap().clone());
         let doc = image_scene(json!([layer]));
         let got = render(&mut r, &loaded(&doc, dir.path()));
-        let want = painted(w, h, rect, tint, opacity);
-        for (i, px) in want.iter().enumerate() {
-            for c in 0..3 {
-                let level = f64::from(got[i * 4 + c]);
-                assert!(
-                    (level - px[c] * 255.0).abs() <= 2.0,
-                    "{keys}: pixel ({}, {}) channel {c} is {level}, the reference {:.1}",
-                    i % w,
-                    i / w,
-                    px[c] * 255.0
-                );
-            }
+        assert_painted(&got, &painted(w, h, rect, tint, opacity), w, &keys);
+    }
+}
+
+/// Assert that `got`, an RGBA frame w pixels wide, holds `want` within 2
+/// levels. `what` names the case.
+fn assert_painted(got: &[u8], want: &[[f64; 3]], w: usize, what: &Value) {
+    for (i, px) in want.iter().enumerate() {
+        for c in 0..3 {
+            let level = f64::from(got[i * 4 + c]);
+            assert!(
+                (level - px[c] * 255.0).abs() <= 2.0,
+                "{what}: pixel ({}, {}) channel {c} is {level}, the reference {:.1}",
+                i % w,
+                i / w,
+                px[c] * 255.0
+            );
         }
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn an_image_layer_takes_another_image_asset_live_at_that_images_size() {
+    // big.png is PICTURE at twice its size, each texel 2x2, so it paints
+    // what PICTURE paints over a rect twice the size.
+    let (w, h) = (24, 16);
+    let dir = Dir::new("live");
+    write_picture(dir.path());
+    let big: Vec<[u8; 4]> = (0..16)
+        .map(|i| PICTURE[(i / 8) * 2 + (i % 4) / 2])
+        .collect();
+    let file = fs::File::create(dir.path().join("big.png")).unwrap();
+    let mut enc = png::Encoder::new(file, 4, 4);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut out = enc.write_header().unwrap();
+    out.write_image_data(big.as_flattened()).unwrap();
+    out.finish().unwrap();
+    let orange = [1.0, 128.0 / 255.0, 0.0];
+    let rows = [
+        (
+            json!({"image": "pic", "x": 2, "y": 3, "color": "#ff8000", "opacity": 0.5}),
+            [2.0, 3.0, 4.0, 4.0],
+            orange,
+            0.5,
+        ),
+        (
+            json!({"image": "pic.png", "x": 2, "y": 3}),
+            [2.0, 3.0, 4.0, 4.0],
+            [1.0; 3],
+            1.0,
+        ),
+        (
+            json!({"image": "pic", "x": 1, "y": 1, "width": 6}),
+            [1.0, 1.0, 6.0, 6.0],
+            [1.0; 3],
+            1.0,
+        ),
+    ];
+    let (_g, mut r) = gpu(w, h);
+    let at = Address {
+        layer: "icon",
+        effect: None,
+        field: "image",
+    };
+    for (keys, rect, tint, opacity) in rows {
+        let mut layer = json!({"name": "icon"});
+        layer
+            .as_object_mut()
+            .unwrap()
+            .extend(keys.as_object().unwrap().clone());
+        let mut doc = image_scene(json!([layer]));
+        doc["assets"]["big"] = json!({"file": "big.png"});
+        render(&mut r, &loaded(&doc, dir.path()));
+        r.set_layer(&at, Given::Json(&json!("big"))).unwrap();
+        r.set_time(Some(0.0));
+        let got = r.render(None).unwrap().to_vec();
+        assert_painted(&got, &painted(w, h, Some(rect), tint, opacity), w, &keys);
     }
 }
 

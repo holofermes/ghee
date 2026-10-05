@@ -30,12 +30,13 @@ use crate::console::core::{
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
 use crate::console::store::SceneStore;
-use crate::engine::{ErrorPass, Feed, Provider, Renderer};
+use crate::engine::{ErrorPass, Feed, Given, Provider, Renderer};
 use crate::feeds::demo_feed;
 use crate::h264::{
     avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
     SoftwareH264, HW_COLOR, NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, SW_COLOR, WIRE_ERROR,
 };
+use crate::layer::Address;
 use crate::looper::{ControllerSlot, Frame, Loop, Output, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
 use crate::scene::{ArraySize, Param, ParamValue, Reach, Scene};
@@ -1314,6 +1315,10 @@ impl RenderTarget for SharedRenderer {
         value: &ParamValue,
     ) -> Result<bool> {
         RenderTarget::set_param(&*self.0.borrow(), pass, name, ty, value)
+    }
+
+    fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
+        self.0.borrow().set_layer(at, given)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {

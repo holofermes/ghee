@@ -19,7 +19,8 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 
-use crate::engine::{Feed, Provider, Renderer};
+use crate::engine::{Feed, Given, Provider, Refused, Renderer};
+use crate::layer::Address;
 use crate::scene::{ArraySize, ParamValue};
 use crate::stats::{monotonic, FrameRate};
 
@@ -45,6 +46,12 @@ pub trait RenderTarget {
         ty: &str,
         value: &ParamValue,
     ) -> Result<bool>;
+
+    /// Set one live field of a layer, as Renderer::set_layer() does. A
+    /// target that draws no layers refuses every field.
+    fn set_layer(&self, at: &Address, _given: Given) -> Result<()> {
+        Err(Refused(format!("this renderer draws no layer '{}'", at.layer)).into())
+    }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()>;
     fn render_into(
@@ -98,6 +105,10 @@ impl RenderTarget for Renderer {
             Some(pass) => Renderer::set_param(self, pass, name, ty, value),
             None => Renderer::set_scene_param(self, name, ty, value),
         }
+    }
+
+    fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
+        Renderer::set_layer(self, at, given)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {

@@ -17,7 +17,10 @@
 //! of the layer's own, `ghee_<name>_<token>`, whose token holds no `_`, as
 //! [`Layer::uniforms`] lists them. A layer name never ends in `_`, so the
 //! name is all that comes before the last `_`, and two layers never share a
-//! uniform.
+//! uniform. A wave, a scroll and a blink move by a phase, a uniform of the
+//! layer's own too, which the engine advances each frame by the effect's
+//! speed or rate times the frame's time step, [`TextLayer::paces`], so a new
+//! speed carries the motion on from where it is.
 //!
 //! The block of the words or the picture sits at `x`, `y`, the pass pixel of
 //! its top left, y down, and a missing axis centres the block on it. With no
@@ -65,6 +68,9 @@ const IMAGE_KEYS: [&str; 3] = ["image", "width", "height"];
 pub(crate) fn layer_keys() -> Vec<&'static str> {
     [&EVERY_KEYS[..], &TEXT_KEYS, &IMAGE_KEYS].concat()
 }
+
+/// The keys of every layer that change with no rebuild, as live fields.
+const LIVE_KEYS: [&str; 5] = ["x", "y", "color", "opacity", "visible"];
 
 /// The keys of a gradient.
 const GRADIENT_KEYS: [&str; 3] = ["from", "to", "angle"];
@@ -242,13 +248,25 @@ enum Takes {
     Colour,
 }
 
-/// A field of an effect: its key, its default, what it takes, and whether a
-/// change to it reaches the layer's shaders with no rebuild.
+/// How a change to an effect field reaches the layer's drawing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Change {
+    /// The layer builds again.
+    Rebuild,
+    /// A uniform of the layer's own takes the value.
+    Uniform,
+    /// The field is the pace of the effect's phase, which ghee advances by
+    /// the pace times each frame's time step.
+    Phase,
+}
+
+/// A field of an effect: its key, its default, what it takes, and how a
+/// change to it reaches the layer's drawing.
 struct Field {
     name: &'static str,
     default: FieldValue,
     takes: Takes,
-    live: bool,
+    change: Change,
 }
 
 /// The value of an effect field.
@@ -258,16 +276,16 @@ pub enum FieldValue {
     Rgb(Rgb),
 }
 
-const fn num(name: &'static str, default: f64, takes: Takes, live: bool) -> Field {
+const fn num(name: &'static str, default: f64, takes: Takes, change: Change) -> Field {
     Field {
         name,
         default: FieldValue::Num(default),
         takes,
-        live,
+        change,
     }
 }
 
-/// A colour field, live, its default `"#rrggbb"` written as its bytes.
+/// A colour field, a uniform, its default `"#rrggbb"` written as its bytes.
 const fn colour(default: [u8; 3]) -> Field {
     let [r, g, b] = default;
     Field {
@@ -277,45 +295,53 @@ const fn colour(default: [u8; 3]) -> Field {
             hex: true,
         }),
         takes: Takes::Colour,
-        live: true,
+        change: Change::Uniform,
     }
 }
 
 const EM: &str = "a number of em";
 
 const SHADOW: [Field; 5] = [
-    num("x", 0.06, Takes::Number(EM), false),
-    num("y", 0.08, Takes::Number(EM), false),
-    num("blur", 0.15, Takes::Em, false),
+    num("x", 0.06, Takes::Number(EM), Change::Rebuild),
+    num("y", 0.08, Takes::Number(EM), Change::Rebuild),
+    num("blur", 0.15, Takes::Em, Change::Rebuild),
     colour([0, 0, 0]),
-    num("strength", 0.7, Takes::Unit, true),
+    num("strength", 0.7, Takes::Unit, Change::Uniform),
 ];
 const GLOW: [Field; 3] = [
-    num("blur", 0.3, Takes::Em, false),
+    num("blur", 0.3, Takes::Em, Change::Rebuild),
     colour([0xff, 0xa5, 0x00]),
-    num("strength", 0.8, Takes::Unit, true),
+    num("strength", 0.8, Takes::Unit, Change::Uniform),
 ];
-const STROKE: [Field; 2] = [num("width", 0.06, Takes::Em, false), colour([0, 0, 0])];
+const STROKE: [Field; 2] = [
+    num("width", 0.06, Takes::Em, Change::Rebuild),
+    colour([0, 0, 0]),
+];
 const KARAOKE: [Field; 2] = [
-    num("sung", 0.0, Takes::Number("a number of characters"), true),
+    num(
+        "sung",
+        0.0,
+        Takes::Number("a number of characters"),
+        Change::Uniform,
+    ),
     colour([0xff, 0xad, 0x2e]),
 ];
 const WAVE: [Field; 2] = [
-    num("height", 0.1, Takes::Number(EM), false),
+    num("height", 0.1, Takes::Number(EM), Change::Rebuild),
     num(
         "speed",
         0.6,
         Takes::Number("a number of waves a second"),
-        true,
+        Change::Phase,
     ),
 ];
 const SCROLL: [Field; 1] = [num(
     "speed",
     2.0,
     Takes::Number("a number of em a second"),
-    true,
+    Change::Phase,
 )];
-const BLINK: [Field; 1] = [num("rate", 1.0, Takes::Rate("blinks"), true)];
+const BLINK: [Field; 1] = [num("rate", 1.0, Takes::Rate("blinks"), Change::Phase)];
 
 /// An effect that ghee draws on a text layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -380,6 +406,21 @@ impl Kind {
     /// MTSDF atlas holds and the slug render lacks.
     pub fn reads_distance(self) -> bool {
         matches!(self, Kind::TextShadow | Kind::Glow | Kind::TextStroke)
+    }
+
+    /// The field that paces the effect's phase, for an effect that moves by
+    /// one: wave, scroll and blink.
+    fn pace(self) -> Option<&'static str> {
+        self.fields()
+            .iter()
+            .find(|f| f.change == Change::Phase)
+            .map(|f| f.name)
+    }
+
+    /// True for an effect that draws the same at a phase and at the phase
+    /// one higher: a wave and a blink.
+    pub fn cycles(self) -> bool {
+        matches!(self, Kind::Wave | Kind::Blink)
     }
 }
 
@@ -1034,16 +1075,30 @@ impl TextLayer {
             ));
             for (f, v) in e.kind.fields().iter().zip(&e.values) {
                 let name = self.uniform(&format!("{token}{}", f.name));
-                match (f.live, v) {
-                    (false, _) => {}
-                    (true, FieldValue::Num(n)) => out.push((name, "float", Value::from(*n))),
-                    (true, FieldValue::Rgb(c)) => {
+                match (f.change, v) {
+                    (Change::Rebuild | Change::Phase, _) => {}
+                    (Change::Uniform, FieldValue::Num(n)) => {
+                        out.push((name, "float", Value::from(*n)));
+                    }
+                    (Change::Uniform, FieldValue::Rgb(c)) => {
                         out.push((name, "vec3", Value::from(c.rgb.to_vec())));
                     }
                 }
             }
         }
         out
+    }
+
+    /// Each effect that the layer draws and that moves by a phase, with the
+    /// phase's uniform and its pace, what the phase gains a second.
+    pub fn paces(&self) -> Vec<(Kind, String, f64)> {
+        self.drawn()
+            .filter_map(|e| {
+                let pace = e.num(e.kind.pace()?);
+                let token = format!("{}phase", e.kind.token());
+                Some((e.kind, self.uniform(&token), pace))
+            })
+            .collect()
     }
 
     /// The shaders of the layer's batches, for an MTSDF layer at `detail`.
@@ -1075,17 +1130,20 @@ impl TextLayer {
         let scroll = self.draws(Kind::Scroll);
         let blink = self.draws(Kind::Blink);
         let karaoke = self.draws(Kind::Karaoke);
-        if wave.is_some() || scroll.is_some() || blink.is_some() {
-            decls.push("uniform float time;".to_string());
-        }
-        // The motion effects' numbers reach the vertex stage, and every
-        // colour the fragment stage.
+        // The motion effects' numbers and phases reach the vertex stage, and
+        // every colour the fragment stage.
         for e in self.drawn().filter(|e| !e.kind.reads_distance()) {
             let token = e.kind.token();
             decls.push(format!("uniform float ghee_NAME_{token}visible;"));
-            for f in e.kind.fields().iter().filter(|f| f.live) {
-                if !matches!(f.takes, Takes::Colour) {
-                    decls.push(format!("uniform float ghee_NAME_{token}{};", f.name));
+            for f in e.kind.fields() {
+                match (f.change, f.takes) {
+                    (Change::Uniform, Takes::Colour) | (Change::Rebuild, _) => {}
+                    (Change::Uniform, _) => {
+                        decls.push(format!("uniform float ghee_NAME_{token}{};", f.name));
+                    }
+                    (Change::Phase, _) => {
+                        decls.push(format!("uniform float ghee_NAME_{token}phase;"));
+                    }
                 }
             }
         }
@@ -1132,7 +1190,7 @@ impl TextLayer {
         if let Some(w) = wave {
             main.push(format!(
                 "    // Each letter trails the one before it by a tenth of a wave.\n    \
-                 ghee_mv.y += {:?} * sin(6.2831853 * (time * ghee_NAME_wavespeed - 0.1 * ghee_a0.z))\n    \
+                 ghee_mv.y += {:?} * sin(6.2831853 * (ghee_NAME_wavephase - 0.1 * ghee_a0.z))\n    \
                  \x20         * ghee_NAME_wavevisible;",
                 w.num("height")
             ));
@@ -1151,7 +1209,7 @@ impl TextLayer {
         let mut hide = "ghee_NAME_visible < 0.5".to_string();
         if blink.is_some() {
             hide.push_str(
-                " || (ghee_NAME_blinkvisible > 0.5 && fract(time * ghee_NAME_blinkrate) >= 0.5)",
+                " || (ghee_NAME_blinkvisible > 0.5 && fract(ghee_NAME_blinkphase) >= 0.5)",
             );
         }
         main.push(format!(
@@ -1584,6 +1642,243 @@ impl Layer {
     }
 }
 
+/// The address of a live field: the layer's name, the effect for a field of
+/// one of its effects, and the field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Address<'a> {
+    pub layer: &'a str,
+    pub effect: Option<&'a str>,
+    pub field: &'a str,
+}
+
+impl<'a> Address<'a> {
+    /// `layer.field` or `layer.effect.field`, as the wire names a live field,
+    /// or None for a name of another shape.
+    pub fn dotted(name: &'a str) -> Option<Address<'a>> {
+        let parts: Vec<&str> = name.split('.').collect();
+        match parts[..] {
+            [layer, field] => Some(Address {
+                layer,
+                effect: None,
+                field,
+            }),
+            [layer, effect, field] => Some(Address {
+                layer,
+                effect: Some(effect),
+                field,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The form of the value that a live field takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    /// A number. With `none`, none takes the field back to its default.
+    Number { none: bool },
+    /// true or false.
+    Flag,
+    /// A colour, `"#rrggbb"` or `[r, g, b]`, a gradient object too with
+    /// `gradient`. With `none`, none takes the field back to its default.
+    Colour { gradient: bool, none: bool },
+    /// The name of an image asset of the scene.
+    Image,
+}
+
+impl Form {
+    /// True for a field that none takes back to its default.
+    fn takes_none(self) -> bool {
+        matches!(
+            self,
+            Form::Number { none: true } | Form::Colour { none: true, .. }
+        )
+    }
+
+    /// What a value of the form is, as an error says it.
+    fn needs(self) -> &'static str {
+        match self {
+            Form::Number { .. } => "a number",
+            Form::Flag => "true or false",
+            Form::Colour { .. } => "'#rrggbb' or [r, g, b]",
+            Form::Image => "the name of an image asset",
+        }
+    }
+}
+
+/// A live field of a layer: `what` names it in an error, as "layer 't'
+/// karaoke sung", and `form` is the form of its value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Live {
+    pub what: String,
+    pub form: Form,
+}
+
+impl Live {
+    /// The value of the numbers `values` that the wire gives the field: one
+    /// for a number, 0 or 1 for a flag, three for a colour, seven for a
+    /// gradient, from, to and angle, and none for none.
+    pub fn of_numbers(&self, values: &[f32]) -> Result<Value> {
+        let n: Vec<f64> = values.iter().map(|v| f64::from(*v)).collect();
+        let what = &self.what;
+        Ok(match (self.form, &n[..]) {
+            (Form::Number { none: true } | Form::Colour { none: true, .. }, []) => Value::Null,
+            (Form::Number { .. }, [v]) => Value::from(*v),
+            (Form::Flag, [v]) => Value::from(*v != 0.0),
+            (Form::Colour { .. }, [r, g, b]) => Value::from(vec![*r, *g, *b]),
+            (Form::Colour { gradient: true, .. }, [r, g, b, r2, g2, b2, angle]) => {
+                let mut d = Map::new();
+                d.insert("from".to_string(), Value::from(vec![*r, *g, *b]));
+                d.insert("to".to_string(), Value::from(vec![*r2, *g2, *b2]));
+                d.insert("angle".to_string(), Value::from(*angle));
+                Value::Object(d)
+            }
+            (Form::Image, _) => bail!("{what} takes the name of an image asset, got numbers"),
+            (Form::Number { none }, _) => {
+                let or = if none { " or 0 for its default" } else { "" };
+                bail!("{what} takes 1 number{or}, got {}", n.len())
+            }
+            (Form::Flag, _) => bail!("{what} takes 1 number, 0 or 1, got {}", n.len()),
+            (Form::Colour { gradient, none }, _) => {
+                let more = match (gradient, none) {
+                    (true, true) => ", 7 for a gradient or 0 for its default",
+                    (true, false) => " or 7 for a gradient",
+                    (false, true) => " or 0 for its default",
+                    (false, false) => "",
+                };
+                bail!("{what} takes 3 numbers{more}, got {}", n.len())
+            }
+        })
+    }
+
+    /// The value of the text `text` that the wire gives the field: the name
+    /// of an image asset.
+    pub fn of_text(&self, text: &str) -> Result<Value> {
+        match self.form {
+            Form::Image => Ok(Value::from(text)),
+            _ => bail!("{} takes numbers, got text", self.what),
+        }
+    }
+}
+
+/// `items` as a sentence names them: "a, b and c".
+fn spoken(items: &[&str]) -> String {
+    match items.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => items.join(""),
+    }
+}
+
+impl Layer {
+    /// The live field `field` of the layer, or of its effect `effect`, or
+    /// why the layer takes no live set there: it has no such effect or
+    /// field, or the field changes with a rebuild.
+    pub fn live(&self, effect: Option<&str>, field: &str) -> Result<Live> {
+        let (name, kind, own) = match self {
+            Layer::Text(l) => (&l.name, "a text layer", &TEXT_KEYS[..]),
+            Layer::Image(l) => (&l.name, "an image layer", &IMAGE_KEYS[..]),
+        };
+        let layer = format!("layer '{name}'");
+        if let Some(key) = effect {
+            let e = self
+                .as_text()
+                .and_then(|l| l.effects.iter().find(|e| e.kind.key() == key));
+            let Some(e) = e else {
+                bail!("{layer} has no effect '{key}'");
+            };
+            let fields = e.kind.fields();
+            let live: Vec<&str> = fields
+                .iter()
+                .filter(|f| f.change != Change::Rebuild)
+                .map(|f| f.name)
+                .chain(["visible"])
+                .collect();
+            let form = match fields.iter().find(|f| f.name == field) {
+                _ if field == "visible" => Form::Flag,
+                None => bail!("{layer} {key} has no field '{field}'"),
+                Some(f) if f.change == Change::Rebuild => bail!(
+                    "{layer} {key} {field} changes with a rebuild, and the live fields of {key} \
+                     are {}",
+                    spoken(&live)
+                ),
+                Some(f) => match f.takes {
+                    Takes::Colour => Form::Colour {
+                        gradient: false,
+                        none: false,
+                    },
+                    _ => Form::Number { none: false },
+                },
+            };
+            return Ok(Live {
+                what: format!("{layer} {key} {field}"),
+                form,
+            });
+        }
+        let image = self.as_image().is_some();
+        let mut live = LIVE_KEYS.to_vec();
+        if image {
+            live.push("image");
+        }
+        let form = match field {
+            "x" | "y" => Form::Number { none: true },
+            "opacity" => Form::Number { none: false },
+            "visible" => Form::Flag,
+            "color" => Form::Colour {
+                gradient: !image,
+                none: true,
+            },
+            "image" if image => Form::Image,
+            "text" if !image => bail!("{layer} holds its words in the scene param '{name}'"),
+            _ if EVERY_KEYS.contains(&field) || own.contains(&field) => bail!(
+                "{layer} {field} changes with a rebuild, and the live fields of {kind} are {}",
+                spoken(&live)
+            ),
+            _ => bail!("{layer} has no field '{field}'"),
+        };
+        Ok(Live {
+            what: format!("{layer} {field}"),
+            form,
+        })
+    }
+
+    /// Set the live field `field` of the layer, or of its effect `effect`,
+    /// to `value`, written as the scene format writes the key. Null takes
+    /// the key back to its default. The value goes through the checks of a
+    /// layer that a scene declares, and the layer keeps its fonts, and the
+    /// pixels of its file while its image stays.
+    pub fn set_live(&mut self, effect: Option<&str>, field: &str, value: &Value) -> Result<()> {
+        let live = self.live(effect, field)?;
+        if value.is_null() && !live.form.takes_none() {
+            bail!("{} needs {}, got None", live.what, live.form.needs());
+        }
+        let at = format!("layer '{}'", self.name());
+        let mut d = match self {
+            Layer::Text(l) => l.to_dict(&l.text),
+            Layer::Image(l) => l.to_dict(),
+        };
+        match effect {
+            Some(key) => d[key][field] = value.clone(),
+            None => d[field] = value.clone(),
+        }
+        match self {
+            Layer::Text(l) => {
+                let mut new = TextLayer::from_dict(&at, &d)?;
+                new.data = l.data.take();
+                new.emoji = l.emoji.take();
+                *l = new;
+            }
+            Layer::Image(l) => {
+                let mut new = ImageLayer::from_dict(&at, &d)?;
+                if new.image == l.image {
+                    new.data = l.data.take();
+                }
+                *l = new;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// ghee's name for the uniform `token` of layer `layer`.
 pub fn uniform(layer: &str, token: &str) -> String {
     format!("{}{layer}_{token}", crate::scene::PREFIX)
@@ -1644,7 +1939,7 @@ const PLACE: &str = r#"    float ghee_ppe = max(ghee_fs, 1.0 / 16384.0);
 /// enters at the pass's right edge, and starts there again once it has left
 /// at the left.
 const SCROLL_LINES: &str = r#"    float ghee_trip = resolution.x + NAME_size.x * ghee_fs;
-    float ghee_sx = floor(resolution.x - mod(time * ghee_NAME_scrollspeed * ghee_fs, ghee_trip));
+    float ghee_sx = floor(resolution.x - mod(ghee_NAME_scrollphase * ghee_fs, ghee_trip));
     ghee_org.x = mix(ghee_org.x, ghee_sx, ghee_NAME_scrollvisible);"#;
 
 /// The lines of karaoke: ghee_kf, the fill of the letters up to the sung
@@ -2146,5 +2441,256 @@ mod tests {
             ))]
         );
         assert_eq!(laid.built.unwrap().glyphs[1].gid, 0);
+    }
+
+    fn text_and_image() -> (Layer, Layer) {
+        let d = json!({"name": "t", "text": "I", "glow": {}, "wave": {}});
+        let text = Layer::from_dict("a layer", &d).unwrap();
+        let image = Layer::from_dict("a layer", &json!({"name": "i", "image": "pic"})).unwrap();
+        (text, image)
+    }
+
+    #[test]
+    fn a_field_that_a_layer_takes_no_live_value_for_is_refused_naming_the_live_fields() {
+        let (text, image) = text_and_image();
+        let rebuild = "changes with a rebuild, and the live fields";
+        let rows = [
+            (
+                &text,
+                None,
+                "font_size",
+                format!("layer 't' font_size {rebuild} of a text layer are x, y, color, opacity and visible"),
+            ),
+            (
+                &image,
+                None,
+                "width",
+                format!(
+                    "layer 'i' width {rebuild} of an image layer are x, y, color, opacity, visible \
+                     and image"
+                ),
+            ),
+            (
+                &text,
+                Some("glow"),
+                "blur",
+                format!("layer 't' glow blur {rebuild} of glow are color, strength and visible"),
+            ),
+            (
+                &text,
+                Some("wave"),
+                "height",
+                format!("layer 't' wave height {rebuild} of wave are speed and visible"),
+            ),
+            (
+                &text,
+                None,
+                "text",
+                "layer 't' holds its words in the scene param 't'".to_string(),
+            ),
+            (&text, None, "colour", "layer 't' has no field 'colour'".to_string()),
+            (&text, None, "image", "layer 't' has no field 'image'".to_string()),
+            (
+                &text,
+                Some("glow"),
+                "size",
+                "layer 't' glow has no field 'size'".to_string(),
+            ),
+            (
+                &text,
+                Some("karaoke"),
+                "sung",
+                "layer 't' has no effect 'karaoke'".to_string(),
+            ),
+            (
+                &image,
+                Some("glow"),
+                "color",
+                "layer 'i' has no effect 'glow'".to_string(),
+            ),
+        ];
+        for (l, effect, field, want) in rows {
+            assert_eq!(l.live(effect, field).unwrap_err().to_string(), want);
+        }
+    }
+
+    #[test]
+    fn a_live_value_takes_the_form_of_its_field_on_the_wire() {
+        let (text, image) = text_and_image();
+        let gradient = json!({"from": [1.0, 0.0, 0.0], "to": [0.0, 0.0, 1.0], "angle": 90.0});
+        let ok = [
+            (&text, None, "x", vec![5.0], json!(5.0)),
+            (&text, None, "x", vec![], json!(null)),
+            (&text, None, "visible", vec![0.0], json!(false)),
+            (&text, None, "visible", vec![1.0], json!(true)),
+            (
+                &text,
+                None,
+                "color",
+                vec![1.0, 0.0, 0.0],
+                json!([1.0, 0.0, 0.0]),
+            ),
+            (
+                &text,
+                None,
+                "color",
+                vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 90.0],
+                gradient,
+            ),
+            (&text, None, "color", vec![], json!(null)),
+            (&image, None, "color", vec![], json!(null)),
+            (&text, Some("glow"), "strength", vec![0.5], json!(0.5)),
+            (&text, Some("wave"), "visible", vec![0.0], json!(false)),
+        ];
+        for (l, effect, field, numbers, want) in ok {
+            let live = l.live(effect, field).unwrap();
+            assert_eq!(
+                live.of_numbers(&numbers).unwrap(),
+                want,
+                "{field} {numbers:?}"
+            );
+        }
+        let refused = [
+            (
+                &text,
+                None,
+                "x",
+                vec![1.0, 2.0],
+                "layer 't' x takes 1 number or 0 for its default, got 2",
+            ),
+            (
+                &text,
+                None,
+                "opacity",
+                vec![],
+                "layer 't' opacity takes 1 number, got 0",
+            ),
+            (
+                &text,
+                None,
+                "visible",
+                vec![],
+                "layer 't' visible takes 1 number, 0 or 1, got 0",
+            ),
+            (
+                &text,
+                None,
+                "color",
+                vec![1.0, 0.0],
+                "layer 't' color takes 3 numbers, 7 for a gradient or 0 for its default, got 2",
+            ),
+            (
+                &image,
+                None,
+                "color",
+                vec![0.0; 7],
+                "layer 'i' color takes 3 numbers or 0 for its default, got 7",
+            ),
+            (
+                &text,
+                Some("glow"),
+                "color",
+                vec![],
+                "layer 't' glow color takes 3 numbers, got 0",
+            ),
+            (
+                &image,
+                None,
+                "image",
+                vec![1.0],
+                "layer 'i' image takes the name of an image asset, got numbers",
+            ),
+        ];
+        for (l, effect, field, numbers, want) in refused {
+            let live = l.live(effect, field).unwrap();
+            assert_eq!(live.of_numbers(&numbers).unwrap_err().to_string(), want);
+        }
+        let live = image.live(None, "image").unwrap();
+        assert_eq!(live.of_text("wifi").unwrap(), json!("wifi"));
+        let live = text.live(None, "x").unwrap();
+        assert_eq!(
+            live.of_text("4").unwrap_err().to_string(),
+            "layer 't' x takes numbers, got text"
+        );
+    }
+
+    #[test]
+    fn a_live_value_changes_the_layer_as_the_scene_would_declare_it() {
+        let (mut text, mut image) = text_and_image();
+        let gradient = json!({"from": "#ff0000", "to": "#0000ff", "angle": 90.0});
+        let rows = [
+            ("t", None, "x", json!(5.0), json!({"x": 5.0})),
+            ("t", None, "x", json!(null), json!({})),
+            (
+                "t",
+                None,
+                "color",
+                gradient.clone(),
+                json!({"color": gradient}),
+            ),
+            (
+                "t",
+                None,
+                "visible",
+                json!(false),
+                json!({"visible": false}),
+            ),
+            (
+                "t",
+                Some("glow"),
+                "visible",
+                json!(false),
+                json!({"glow": {"visible": false}}),
+            ),
+            (
+                "t",
+                Some("wave"),
+                "speed",
+                json!(2.0),
+                json!({"wave": {"speed": 2.0}}),
+            ),
+            ("i", None, "image", json!("pic2"), json!({"image": "pic2"})),
+            (
+                "i",
+                None,
+                "color",
+                json!("#ff8000"),
+                json!({"color": "#ff8000"}),
+            ),
+            ("i", None, "color", json!(null), json!({})),
+        ];
+        for (name, effect, field, value, keys) in rows {
+            let l = if name == "t" { &mut text } else { &mut image };
+            let mut want = match &*l {
+                Layer::Text(t) => t.to_dict("I"),
+                Layer::Image(i) => i.to_dict(),
+            };
+            match effect {
+                Some(e) => want[e] = json!({}),
+                None => {
+                    want.as_object_mut().unwrap().remove(field);
+                }
+            }
+            want.as_object_mut()
+                .unwrap()
+                .extend(keys.as_object().unwrap().clone());
+            l.set_live(effect, field, &value).unwrap();
+            let got = match &*l {
+                Layer::Text(t) => t.to_dict("I"),
+                Layer::Image(i) => i.to_dict(),
+            };
+            assert_eq!(got, want, "{field} = {value}");
+        }
+        let err = |l: &mut Layer, field: &str, value: Value| {
+            l.set_live(None, field, &value).unwrap_err().to_string()
+        };
+        assert_eq!(
+            err(&mut text, "opacity", json!(null)),
+            "layer 't' opacity needs a number, got None"
+        );
+        assert_eq!(
+            err(&mut text, "opacity", json!(2)),
+            "layer 't' opacity needs a number from 0 to 1, got 2"
+        );
     }
 }

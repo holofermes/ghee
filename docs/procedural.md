@@ -58,12 +58,19 @@ After the handshake, stdout carries binary messages:
 - Kind 1 sets the named live param. A float takes one value, a color three,
   and a vecN N. A name of the form `pass.param` sets the param of that one
   pass. A bare name sets the scene param, or the param of the first pass that
-  declares it.
+  declares it. A name whose first part names a layer, `layer.field` or
+  `layer.effect.field` such as `title.x` or `title.karaoke.sung`, sets that
+  live field of the layer, one of the fields that `/set?layer=` takes in
+  docs/http.md. A number takes one value, `visible` takes 0 or 1, a color
+  three, and a text layer's gradient seven: from, to and its angle. A
+  message with no values takes a layer's `x`, `y` or `color` back to its
+  default.
 - Kind 2 marks the tick clean: it needs no render, and the display keeps the
   last frame. The message is the kind byte alone, with no name and no values.
-- Kind 3 sets the named string param, and the name of a text sets its words.
-  The header is the same as kind 0's, and the payload is count bytes of UTF-8
-  text.
+- Kind 3 sets the named string param, and the name of a text layer sets its
+  words. `layer.image` sets an image layer's `image` to the image asset of
+  the scene that the text names. The header is the same as kind 0's, and
+  the payload is count bytes of UTF-8 text.
 - Kind 4 sets the named array from u8 values. The header is the same as kind
   0's, and the payload is count u8 bytes, each value byte / 255. A big mask
   then costs a quarter of the bytes on the pipe.
@@ -72,8 +79,8 @@ After the handshake, stdout carries binary messages:
 
 ghee reads without blocking and applies the newest data. Arrays and params
 keep their values until a message changes them. A message that names no param
-of the scene, or that does not fit the param's type, changes nothing, and
-ghee logs it once.
+or live field of the scene, or that does not fit its type, changes nothing,
+and ghee logs it once.
 
 ## Ticks, ghee to scene
 

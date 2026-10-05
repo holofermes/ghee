@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
-use crate::engine::Feed;
-use crate::layer::Rgb;
+use crate::engine::{Feed, Given, Refused};
+use crate::layer::{Address, Rgb};
 use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::resolve;
 use crate::scene::{ArraySize, ParamValue, Reach, Scene};
@@ -510,6 +510,9 @@ pub struct SceneProcess {
     incoming: Vec<(String, ParamData)>,
     /// param name -> (the pass that holds it, its type). None is scene scope.
     params: HashMap<String, (Option<String>, String)>,
+    /// The names of the scene's layers, which address their live fields as
+    /// `layer.field` and `layer.effect.field`.
+    layers: HashSet<String>,
     /// The string params as they stand, and the last values read by the
     /// process.
     strings: HashMap<String, String>,
@@ -584,6 +587,7 @@ impl SceneProcess {
             data: HashMap::new(),
             incoming: Vec::new(),
             params: HashMap::new(),
+            layers: HashSet::new(),
             strings: HashMap::new(),
             sent: HashMap::new(),
             clean: 0,
@@ -665,6 +669,7 @@ impl SceneProcess {
     /// The first tick carries every string param.
     pub fn bind(&mut self, scene: &Scene) {
         self.params.clear();
+        self.layers = scene.layers().map(|l| l.name().to_string()).collect();
         self.strings.clear();
         self.sent.clear();
         let scoped: Vec<(Option<&str>, &crate::scene::ParamMap)> =
@@ -847,6 +852,23 @@ impl SceneController for SceneProcess {
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
         for (name, data) in std::mem::take(&mut self.incoming) {
+            // A first part that names a layer addresses a live field of it.
+            // Names are unique across the scene, so no pass has that name.
+            let layer = Address::dotted(&name).filter(|at| self.layers.contains(at.layer));
+            if let Some(at) = layer {
+                let given = match &data {
+                    ParamData::F32(values) => Given::Numbers(values),
+                    ParamData::Str(text) => Given::Text(text),
+                };
+                if let Err(e) = renderer.set_layer(&at, given) {
+                    let Some(refused) = e.downcast_ref::<Refused>() else {
+                        return Err(e);
+                    };
+                    let why = refused.0.clone();
+                    self.refuse(&name, &why);
+                }
+                continue;
+            }
             let Some((pass, ty)) = self.params.get(&name).cloned() else {
                 let why = format!("param '{name}' is not a param this scene declares");
                 self.refuse(&name, &why);
@@ -1252,6 +1274,8 @@ sleep 60
     #[derive(Default)]
     struct Stub {
         set: std::cell::RefCell<Vec<(Option<String>, String, ParamValue)>>,
+        /// The live fields of layers set, as their wire names and values.
+        layers: std::cell::RefCell<Vec<(String, String)>>,
         feeds: Vec<(String, ArraySize)>,
         bytes: std::cell::RefCell<Vec<(String, Vec<u8>)>>,
         floats: std::cell::RefCell<Vec<(String, Vec<f32>)>>,
@@ -1314,6 +1338,20 @@ sleep 60
                 .borrow_mut()
                 .push((pass.map(str::to_string), name.to_string(), value.clone()));
             Ok(true)
+        }
+
+        /// Records the field and the value, and refuses a font_size as the
+        /// scene does.
+        fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
+            if at.field == "font_size" {
+                return Err(Refused("a rebuild field".to_string()).into());
+            }
+            let name = match at.effect {
+                Some(e) => format!("{}.{e}.{}", at.layer, at.field),
+                None => format!("{}.{}", at.layer, at.field),
+            };
+            self.layers.borrow_mut().push((name, format!("{given:?}")));
+            Ok(())
         }
     }
 
@@ -1982,5 +2020,85 @@ while IFS= read -r line; do :; done
         assert!(routed
             .iter()
             .any(|(p, n, _)| (*p, *n) == (Some("draw"), "color")));
+    }
+
+    /// The printf line that writes a message of `kind` for `name`, with the
+    /// count `count` and the payload `payload`, as the wire frames it.
+    fn message(kind: u8, name: &str, count: u32, payload: &[u8]) -> String {
+        let mut bytes = vec![kind, name.len() as u8];
+        bytes.extend(name.as_bytes());
+        bytes.extend(count.to_le_bytes());
+        bytes.extend(payload);
+        let octal: String = bytes.iter().map(|b| format!("\\{b:03o}")).collect();
+        format!("printf '{octal}'\n")
+    }
+
+    /// A kind 1 message of `values`.
+    fn numbers(name: &str, values: &[f32]) -> String {
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        message(1, name, values.len() as u32, &payload)
+    }
+
+    #[test]
+    fn a_first_part_that_names_a_layer_sets_its_live_field_and_a_pass_param_stays() {
+        let d = tmpdir("layers");
+        let pic = crate::output::encode_png(crate::looper::Frame {
+            data: &[255; 4],
+            width: 1,
+            height: 1,
+            components: 4,
+        })
+        .unwrap();
+        fs::write(format!("{d}/pic.png"), pic).unwrap();
+        let doc = serde_json::json!({
+            "version": 1,
+            "assets": {"pic": {"file": "pic.png"}},
+            "passes": [{"name": "draw", "code": "void main(){}",
+                        "params": {"color": {"type": "float", "value": 0.2}},
+                        "layers": [{"name": "title", "text": "hi", "karaoke": {}},
+                                   {"name": "icon", "image": "pic"}]}],
+        });
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            numbers("title.x", &[5.0]),
+            numbers("title.karaoke.sung", &[2.5]),
+            message(3, "icon.image", 3, b"pic"),
+            numbers("title.font_size", &[20.0]),
+            numbers("draw.color", &[0.65]),
+            numbers("nope.x", &[1.0]),
+            numbers("title.karaoke.sung.more", &[1.0]),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "feed", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(pump(&mut f, |f| f.incoming.len() >= 7));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        let fields = |n: &str, v: &str| (n.to_string(), v.to_string());
+        assert_eq!(
+            *stub.layers.borrow(),
+            [
+                fields("title.x", "Numbers([5.0])"),
+                fields("title.karaoke.sung", "Numbers([2.5])"),
+                fields("icon.image", "Text(\"pic\")"),
+            ]
+        );
+        assert_eq!(
+            *stub.set.borrow(),
+            [(
+                Some("draw".to_string()),
+                "color".to_string(),
+                ParamValue::Float(f64::from(0.65f32))
+            )]
+        );
+        let mut refused: Vec<&String> = f.refused.iter().collect();
+        refused.sort();
+        assert_eq!(
+            refused,
+            ["nope.x", "title.font_size", "title.karaoke.sung.more"]
+        );
     }
 }

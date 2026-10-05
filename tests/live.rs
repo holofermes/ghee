@@ -147,44 +147,115 @@ fn at<'a>(layer: &'a str, effect: Option<&'a str>, field: &'a str) -> Address<'a
     }
 }
 
+/// A live value as a wire message gives it.
+#[derive(Debug)]
+enum Wire {
+    Numbers(Vec<f32>),
+    Text(&'static str),
+}
+
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_live_field_draws_what_a_scene_built_with_its_value_draws() {
+    // Each row sets a field as the scene format writes it, then as the wire's
+    // numbers or text give it.
     let dir = Dir::new("fields");
     let doc = scene(json!([
         {"name": "t", "text": "Hi", "font_size": 40, "x": 10, "y": 8,
          "text_shadow": {}, "glow": {}, "text_stroke": {}, "karaoke": {"sung": 1}},
         {"name": "i", "image": "pic", "x": 110, "y": 10, "width": 8, "color": "#80ff80"},
     ]));
+    let orange = 128.0 / 255.0;
     let rows = [
-        (at("t", None, "x"), json!(30)),
-        (at("t", None, "y"), json!(null)),
-        (at("t", None, "color"), json!("#ff0000")),
+        (at("t", None, "x"), json!(30), Wire::Numbers(vec![30.0])),
+        (at("t", None, "y"), json!(null), Wire::Numbers(vec![])),
+        (
+            at("t", None, "color"),
+            json!("#ff0000"),
+            Wire::Numbers(vec![1.0, 0.0, 0.0]),
+        ),
         (
             at("t", None, "color"),
             json!({"from": "#ff0000", "to": [0, 0, 1], "angle": 90}),
+            Wire::Numbers(vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 90.0]),
         ),
-        (at("t", None, "opacity"), json!(0.5)),
-        (at("t", None, "visible"), json!(false)),
-        (at("t", Some("text_shadow"), "visible"), json!(false)),
-        (at("t", Some("text_shadow"), "color"), json!("#00ff00")),
-        (at("t", Some("text_shadow"), "strength"), json!(0.3)),
-        (at("t", Some("glow"), "visible"), json!(false)),
-        (at("t", Some("glow"), "color"), json!([0, 0, 1])),
-        (at("t", Some("glow"), "strength"), json!(0.2)),
-        (at("t", Some("text_stroke"), "color"), json!("#ffffff")),
-        (at("t", Some("karaoke"), "sung"), json!(0.5)),
-        (at("t", Some("karaoke"), "color"), json!("#00ffff")),
-        (at("i", None, "x"), json!(120)),
-        (at("i", None, "y"), json!(null)),
-        (at("i", None, "color"), json!("#ff8000")),
-        (at("i", None, "color"), json!(null)),
-        (at("i", None, "opacity"), json!(0.5)),
-        (at("i", None, "visible"), json!(false)),
-        (at("i", None, "image"), json!("pic2")),
+        (
+            at("t", None, "opacity"),
+            json!(0.5),
+            Wire::Numbers(vec![0.5]),
+        ),
+        (
+            at("t", None, "visible"),
+            json!(false),
+            Wire::Numbers(vec![0.0]),
+        ),
+        (
+            at("t", Some("text_shadow"), "visible"),
+            json!(false),
+            Wire::Numbers(vec![0.0]),
+        ),
+        (
+            at("t", Some("text_shadow"), "color"),
+            json!("#00ff00"),
+            Wire::Numbers(vec![0.0, 1.0, 0.0]),
+        ),
+        (
+            at("t", Some("text_shadow"), "strength"),
+            json!(0.3),
+            Wire::Numbers(vec![0.3]),
+        ),
+        (
+            at("t", Some("glow"), "visible"),
+            json!(false),
+            Wire::Numbers(vec![0.0]),
+        ),
+        (
+            at("t", Some("glow"), "color"),
+            json!([0, 0, 1]),
+            Wire::Numbers(vec![0.0, 0.0, 1.0]),
+        ),
+        (
+            at("t", Some("glow"), "strength"),
+            json!(0.2),
+            Wire::Numbers(vec![0.2]),
+        ),
+        (
+            at("t", Some("text_stroke"), "color"),
+            json!("#ffffff"),
+            Wire::Numbers(vec![1.0, 1.0, 1.0]),
+        ),
+        (
+            at("t", Some("karaoke"), "sung"),
+            json!(0.5),
+            Wire::Numbers(vec![0.5]),
+        ),
+        (
+            at("t", Some("karaoke"), "color"),
+            json!("#00ffff"),
+            Wire::Numbers(vec![0.0, 1.0, 1.0]),
+        ),
+        (at("i", None, "x"), json!(120), Wire::Numbers(vec![120.0])),
+        (at("i", None, "y"), json!(null), Wire::Numbers(vec![])),
+        (
+            at("i", None, "color"),
+            json!("#ff8000"),
+            Wire::Numbers(vec![1.0, orange, 0.0]),
+        ),
+        (at("i", None, "color"), json!(null), Wire::Numbers(vec![])),
+        (
+            at("i", None, "opacity"),
+            json!(0.5),
+            Wire::Numbers(vec![0.5]),
+        ),
+        (
+            at("i", None, "visible"),
+            json!(false),
+            Wire::Numbers(vec![0.0]),
+        ),
+        (at("i", None, "image"), json!("pic2"), Wire::Text("pic2")),
     ];
     let (_g, mut r) = gpu(160, 64);
-    for (at, value) in rows {
+    for (at, value, wire) in rows {
         let row = format!("{at:?} = {value}");
         let before = render(&mut r, &dir.load(&doc));
         r.set_layer(&at, Given::Json(&value)).unwrap();
@@ -192,6 +263,13 @@ fn a_live_field_draws_what_a_scene_built_with_its_value_draws() {
         let built = render(&mut r, &dir.load(&written(&doc, &at, &value)));
         assert_ne!(live, before, "{row}: the frame changes");
         assert_eq!(worst(&live, &built), 0, "{row}");
+        render(&mut r, &dir.load(&doc));
+        let given = match &wire {
+            Wire::Numbers(numbers) => Given::Numbers(numbers),
+            Wire::Text(text) => Given::Text(text),
+        };
+        r.set_layer(&at, given).unwrap();
+        assert_eq!(worst(&again(&mut r), &built), 0, "{row} from {wire:?}");
     }
 }
 

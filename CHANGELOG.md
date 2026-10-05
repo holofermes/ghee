@@ -223,6 +223,12 @@
 
 ### Procedural scenes
 
+- Set a live field of a layer from a scene process. Kind 1 takes
+  `layer.field` and `layer.effect.field`, such as `title.x` and
+  `title.karaoke.sung`, with one value, 0 or 1 for `visible`, three for a
+  color, seven for a gradient or none for the default, and kind 3 takes
+  `icon.image` with the name of an image asset. A message whose first part
+  names no layer sets a param, and a field that the scene refuses logs once.
 - Set a string param, and so a text layer's words, from a scene process with
   message kind 3.
 - Wait under a fixed `--timestep` for a lockstep scene process to answer

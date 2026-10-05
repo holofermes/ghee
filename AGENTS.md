@@ -271,8 +271,8 @@ lands.
   and the shader sits closed under a line.
 - A number field has no spin buttons in any browser. A colour shows its
   swatch alone, with no hex code beside it.
-- Rename is a pencil that opens the console's dialog. Remove asks first in the
-  same dialog.
+- Rename is a pencil that opens the console's dialog. Removing a pass or a
+  layer asks first in the same dialog.
 - An edit goes into the page's working copy, and Save writes the scene, as
   every other edit does.
 

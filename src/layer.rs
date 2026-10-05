@@ -63,6 +63,14 @@ const GRADIENT_ANGLE: f64 = 180.0;
 /// `font_size`, as a fraction of the pass's shorter side.
 pub const FIT_MARGIN: f64 = 0.05;
 
+/// The texels per em of an MTSDF atlas, smallest first. A layer takes the
+/// first step at or above its pixels per em at build, so layers of near sizes
+/// share an atlas, and the last step at most. Text under 32 px takes 32, since
+/// an atlas at a small text's own size strays further from its outline. On a
+/// Pi Zero 2 W the first render with an empty cache, which generates the
+/// preload, takes 7 s at 128 texels per em and 14 s at 192.
+pub const ATLAS_STEPS: [u32; 5] = [32, 48, 64, 96, 128];
+
 /// A colour, each channel 0 to 1, and whether the scene wrote it as
 /// `"#rrggbb"`, so a save writes it back in the form it came in.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -774,6 +782,37 @@ impl Layer {
             });
         }
         pad
+    }
+
+    /// The pixels per em of the layer when ghee builds it in a pass of `pass`
+    /// pixels, its words a block of `block` em: its `font_size`, or the size
+    /// that fits the block to its room, as the vertex stage works it out.
+    pub fn font_px(&self, pass: [f64; 2], block: [f64; 2]) -> f64 {
+        if let Some(px) = self.font_size {
+            return px;
+        }
+        let m = FIT_MARGIN * pass[0].min(pass[1]);
+        let room = |axis: usize, at: Option<f64>| match at {
+            Some(at) => pass[axis] - m - at,
+            None => pass[axis] - 2.0 * m,
+        };
+        let mut fit = [room(0, self.x), room(1, self.y)];
+        // A scrolling block fits its room on y alone.
+        if self.draws(Kind::Scroll).is_some_and(|e| e.visible) {
+            fit[0] = f64::INFINITY;
+        }
+        let s = [0, 1].map(|a| fit[a] / block[a].max(1.0e-6));
+        s[0].min(s[1]).max(0.0)
+    }
+
+    /// The texels per em of the layer's atlas at `font_px` pixels per em: the
+    /// first of ATLAS_STEPS at or above it, the last at most.
+    pub fn atlas_px_em(font_px: f64) -> u32 {
+        let last = ATLAS_STEPS[ATLAS_STEPS.len() - 1];
+        ATLAS_STEPS
+            .into_iter()
+            .find(|s| f64::from(*s) >= font_px)
+            .unwrap_or(last)
     }
 
     /// The atlas detail of the layer at `px_em` texels per em: a field that
@@ -1523,6 +1562,49 @@ mod tests {
         ] {
             let d = layer(keys.clone()).detail(px_em);
             assert_eq!((d.px_em, d.range), (px_em, range), "{keys}");
+        }
+    }
+
+    #[test]
+    fn a_layer_without_font_size_takes_the_size_that_fits_its_words_to_its_room() {
+        // A pass of 400x200 has a margin of 10 px, 5% of its shorter side.
+        // Each row: the layer's keys, its block in em, and its pixels per em.
+        let off = json!({"visible": false});
+        for (keys, block, px) in [
+            (json!({"font_size": 30}), [4.0, 1.0], 30.0),
+            // Centred: 380x180 of room.
+            (json!({}), [4.0, 1.0], 95.0),
+            (json!({}), [1.0, 1.0], 180.0),
+            // At x 100, 290 px to the margin at the right edge.
+            (json!({"x": 100}), [4.0, 1.0], 72.5),
+            // At y 150, 40 px to the margin at the bottom.
+            (json!({"y": 150}), [4.0, 1.0], 40.0),
+            (json!({"x": 500}), [4.0, 1.0], 0.0),
+            // A scrolling block fits on y alone.
+            (json!({"scroll": {}}), [40.0, 1.0], 180.0),
+            (json!({"scroll": off}), [40.0, 1.0], 9.5),
+        ] {
+            assert_eq!(
+                layer(keys.clone()).font_px([400.0, 200.0], block),
+                px,
+                "{keys}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_layer_takes_the_first_atlas_step_at_or_above_its_size_and_the_last_at_most() {
+        assert_eq!(Layer::atlas_px_em(0.0), ATLAS_STEPS[0]);
+        let mut below = 0.0;
+        for step in ATLAS_STEPS {
+            let at = f64::from(step);
+            for px in [below + 0.01, (below + at) / 2.0, at] {
+                assert_eq!(Layer::atlas_px_em(px), step, "{px} px/em");
+            }
+            below = at;
+        }
+        for px in [below + 0.01, 4.0 * below] {
+            assert_eq!(Layer::atlas_px_em(px), below as u32, "{px} px/em");
         }
     }
 

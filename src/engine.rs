@@ -513,6 +513,8 @@ pub struct Renderer {
     colours: std::cell::RefCell<HashMap<String, ColourAtlas>>,
     /// set_time() pinned the time, so a render waits for held words.
     pinned: std::cell::Cell<bool>,
+    /// The texels per em of each drawn layer's atlas, by the layer's name.
+    px_em: HashMap<String, u32>,
     /// The font of an atlas generator.
     atlas_font: AtlasFont,
     /// The atlas cache directory. None takes the generator's own.
@@ -570,6 +572,7 @@ impl Renderer {
             curves: HashSet::new(),
             colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(false),
+            px_em: HashMap::new(),
             atlas_font: Box::new(|fonts| Arc::new(text::AtlasFont(fonts.to_vec()))),
             atlas_cache: None,
             #[cfg(test)]
@@ -766,6 +769,7 @@ impl Renderer {
         let mut batch_ix: Vec<c_int> = vec![-1; batches.len()];
         let mut layers: Vec<LayerBatches> = Vec::new();
         let hw_linear = self.data_texture_linear();
+        let sizes = self.atlas_sizes(scene, &drawn);
         #[cfg(test)]
         let hw_linear = hw_linear && !self.shader_lerp;
         let total = drawn.len();
@@ -818,8 +822,11 @@ impl Renderer {
             {
                 idx = -1;
             }
-            let shaders: Vec<crate::layer::Shaders> =
-                p.layers.iter().map(|l| l.shaders(self.detail(l))).collect();
+            let shaders: Vec<crate::layer::Shaders> = p
+                .layers
+                .iter()
+                .map(|l| l.shaders(l.detail(sizes.get(&l.name).copied().unwrap_or(atlas::PX_EM))))
+                .collect();
             for (l, sh) in p.layers.iter().zip(&shaders) {
                 if idx < 0 {
                     break;
@@ -923,6 +930,7 @@ impl Renderer {
             self.batches = batch_ix;
         }
         self.layers = layers;
+        self.px_em = sizes;
         // A new scene logs its text problems afresh.
         self.reported.borrow_mut().clear();
         if !self.text_errors.borrow().is_empty() {
@@ -1623,9 +1631,31 @@ impl Renderer {
         Ok((quads.floats, boxes.floats))
     }
 
-    /// The atlas detail of `layer`.
+    /// The atlas detail of `layer`, as setup() worked it out.
     fn detail(&self, layer: &Layer) -> Detail {
-        layer.detail(atlas::PX_EM)
+        let px_em = self.px_em.get(&layer.name).copied();
+        layer.detail(px_em.unwrap_or(atlas::PX_EM))
+    }
+
+    /// The texels per em of the atlas of each layer of `drawn`, by its
+    /// name: the step at or above its font_size, or the size at which its
+    /// words fit its pass, laid out on the CPU. A layer whose words lay out
+    /// in no font takes atlas::PX_EM.
+    fn atlas_sizes(&self, scene: &Scene, drawn: &[Pass]) -> HashMap<String, u32> {
+        let mut out = HashMap::new();
+        for p in drawn {
+            let (w, h) = p
+                .size
+                .unwrap_or((i64::from(self.width), i64::from(self.height)));
+            for l in &p.layers {
+                let words = scene.words(&l.name).unwrap_or(&l.text);
+                let block = l.place(words).ok().and_then(|laid| laid.built);
+                let Some(b) = block else { continue };
+                let px = l.font_px([w as f64, h as f64], b.size);
+                out.insert(l.name.clone(), Layer::atlas_px_em(px));
+            }
+        }
+        out
     }
 
     /// Set up the atlases of the layers of `drawn`: one generator per font,
@@ -4949,5 +4979,48 @@ mod tests {
         sc.passes[0].layers[0].visible = false;
         assert_eq!(r.setup(&sc).unwrap(), "");
         assert!(r.atlases.borrow().is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn layers_of_near_sizes_share_an_atlas_and_a_far_size_takes_its_own() {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let near = Layer::atlas_px_em(40.0);
+        let far = Layer::atlas_px_em(100.0);
+        assert_eq!(Layer::atlas_px_em(44.0), near);
+        assert_ne!(far, near);
+        let layer = |name: &str, px: f64, visible: bool| {
+            json!({"name": name, "text": "AV", "font_family": "sans", "y": 1,
+                   "font_size": px, "visible": visible})
+        };
+        let mut sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+                "passes": [{"name": "main",
+                    "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                    "layers": [layer("a", 40.0, true), layer("b", 44.0, true),
+                               layer("c", 100.0, true), layer("d", 70.0, false)]}],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(fonts).unwrap();
+        let cache = crate::testing::TempDir::new("engine-steps");
+        let (_g, mut r) = gpu();
+        r.atlas_cache = Some(cache.join("atlas"));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let mut slots: Vec<(u32, Vec<String>)> = r
+            .atlases
+            .borrow()
+            .iter()
+            .map(|s| (s.px_em, s.textures.iter().map(|t| t.0.clone()).collect()))
+            .collect();
+        slots.sort();
+        let tex = |name: &str| text::internal(name, "_atlas");
+        let mut want = vec![(near, vec![tex("a"), tex("b")]), (far, vec![tex("c")])];
+        want.sort();
+        assert_eq!(slots, want);
     }
 }

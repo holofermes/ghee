@@ -117,6 +117,10 @@
   is in. A setup and a render with `--timestep` wait for them. A full atlas
   draws an error box with an error of its own. A hidden layer builds no
   atlas.
+- Generate a layer's atlas at the detail of its size, its `font_size` or the
+  size that fits its words at setup, rounded up to 32, 48, 64, 96 or 128
+  texels per em, and 128 for larger text, so layers of near sizes share one
+  atlas.
 - Read the coverage of a layer's words at any point in any pass shader,
   filter passes excepted, with `<name>_cover(p, font_size)`, and the block's
   size in em with `<name>_size`. A shader carries the coverage reader of a

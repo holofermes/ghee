@@ -1109,14 +1109,16 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
 
 #[test]
 fn every_scene_pass_reads_the_texts_and_a_filter_pass_none() {
+    let reads = "float c = label_cover(v_texCoord, 8.0) + title_cover(v_texCoord, 8.0);";
     let doc = json!({
         "version": 1,
         "assets": font_assets(),
         "texts": {"label": {"value": "I", "font": "sans"}, "title": {"value": "O", "font": "cff"}},
         "passes": [
-            {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0); }"},
+            {"name": "a", "code": format!("void main(){{ {reads} gl_FragColor = vec4(c); }}")},
             {"name": "main", "channels": [{"buffer": "a"}],
-             "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }"},
+             "code": format!("void main(){{ {reads} \
+                 gl_FragColor = texture2D(iChannel0, v_texCoord) * c; }}")},
         ],
     });
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();

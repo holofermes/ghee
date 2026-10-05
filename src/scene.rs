@@ -1987,7 +1987,10 @@ impl Pass {
             let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |_| false);
             return format!("{}\n\n{}", l.join("\n"), self.code);
         }
-        let l = self.preamble(scene_params, assets, texts, hw_linear);
+        let common_code = common.unwrap_or_default();
+        let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |t| {
+            calls_cover(common_code, &t.name) || calls_cover(&self.code, &t.name)
+        });
         // An author writes a filter on its own, and ghee appends it to any
         // scene. The scene's common block never reaches it, so a filter name
         // never collides with a scene name.
@@ -2016,7 +2019,21 @@ impl Pass {
             _ => crate::text::slug_vertex_main(d.pad),
         };
         let v = self.layer_vertex(d, scene, hw_linear, main);
-        let mut f = self.preamble(Some(&scene.params), &scene.assets, &scene.texts, hw_linear);
+        // A slug layer reads its own text's curves, and any layer the texts
+        // whose coverage its fragment GLSL or the common block calls.
+        let common = scene.common.as_deref().unwrap_or_default();
+        let slug = text.is_none_or(|t| t.fill == Fill::Slug);
+        let mut f = self.preamble_reading(
+            Some(&scene.params),
+            &scene.assets,
+            &scene.texts,
+            hw_linear,
+            |t| {
+                (slug && t.name == d.text)
+                    || calls_cover(common, &t.name)
+                    || calls_cover(d.fragment_glsl(), &t.name)
+            },
+        );
         f.push(String::new());
         if let Some(c) = scene.common.as_deref().filter(|c| !c.is_empty()) {
             f.push(c.to_string());
@@ -2071,9 +2088,7 @@ impl Pass {
     /// declares what the pass's preamble declares, at the same precision,
     /// since GLSL ES links a uniform declared by both stages only when the two
     /// declarations match, and the scene's common block follows, so the
-    /// common block compiles as it does in a pass. A text's coverage reader
-    /// is long to compile on VC4, so the stage holds it only for a text whose
-    /// `<name>_cover` the common block or the layer's vertex GLSL names.
+    /// common block compiles as it does in a pass.
     fn layer_vertex(&self, d: &Layer, scene: &Scene, hw_linear: bool, main: Vec<String>) -> String {
         let common = scene.common.as_deref().unwrap_or_default();
         let vertex = d.vertex_glsl();
@@ -2082,10 +2097,7 @@ impl Pass {
             &scene.assets,
             &scene.texts,
             hw_linear,
-            |t| {
-                let cover = format!("{}_cover", t.name);
-                common.contains(&cover) || vertex.contains(&cover)
-            },
+            |t| calls_cover(common, &t.name) || calls_cover(&vertex, &t.name),
         );
         // The fragment stage's int defaults to mediump and the vertex stage's
         // to highp, so an int uniform declared in both needs this to link.
@@ -2102,16 +2114,6 @@ impl Pass {
         v.push(String::new());
         v.extend(main);
         v.join("\n")
-    }
-
-    fn preamble(
-        &self,
-        scene_params: Option<&ParamMap>,
-        assets: &[Asset],
-        texts: &[Text],
-        hw_linear: bool,
-    ) -> Vec<String> {
-        self.preamble_reading(scene_params, assets, texts, hw_linear, |_| true)
     }
 
     /// The preamble, with the coverage reader of each text for which `reads`
@@ -2188,6 +2190,13 @@ impl Pass {
         }
         l
     }
+}
+
+/// True when `glsl` names the coverage reader of text `name`. A reader is
+/// long to compile on VC4, so a shader holds the reader of such a text
+/// alone.
+fn calls_cover(glsl: &str, name: &str) -> bool {
+    glsl.contains(&format!("{name}_cover"))
 }
 
 /// The code of a hidden pass after the first: a copy of the pass before it.
@@ -3185,7 +3194,6 @@ mod tests {
             "uniform sampler2D logo_tex;",
             "uniform vec2 logo_size;",
             "uniform vec2 label_size;",
-            "float label_cover(vec2 p, float font_size)",
         ];
         let own = [
             vec![
@@ -3214,6 +3222,45 @@ mod tests {
                 }
                 // A string param stays on the host.
                 assert!(!g.contains("title"), "{g}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_pass_holds_the_cover_reader_of_a_text_that_its_code_or_the_common_block_calls() {
+        // The common block calls title_cover, pass a calls label_cover, and
+        // pass b calls neither of its own.
+        let sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "assets": {"sans": {"file": "sans.ttf"}},
+                "texts": {"label": {"value": "hi", "font": "sans"},
+                          "title": {"value": "ho", "font": "sans"}},
+                "common": {"code": "float t(vec2 p){ return title_cover(p, 8.0); }"},
+                "passes": [
+                    {"name": "a", "code": "void main(){ gl_FragColor = \
+                        vec4(label_cover(v_texCoord, 8.0) + t(v_texCoord)); }"},
+                    {"name": "b", "code": "void main(){ gl_FragColor = vec4(t(v_texCoord)); }"},
+                ],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        let reader = |n: &str| format!("float {n}_cover(vec2 p, float font_size)");
+        for (p, label) in sc.passes.iter().zip([true, false]) {
+            let g = p.glsl(
+                Some(&sc.params),
+                sc.common.as_deref(),
+                &sc.assets,
+                &sc.texts,
+                false,
+            );
+            let has = |want: &str| g.lines().any(|l| l.starts_with(want));
+            assert_eq!(has(&reader("label")), label, "pass {}", p.name);
+            assert!(has(&reader("title")), "pass {}", p.name);
+            for size in ["uniform vec2 label_size;", "uniform vec2 title_size;"] {
+                assert!(has(size), "pass {} lacks {size}", p.name);
             }
         }
     }

@@ -4,8 +4,10 @@
 //! writes into
 //! modified/ beside them and never touches the original. A JSON scene saves a
 //! modified copy that shadows it. A procedural scene saves a .values.json
-//! sidecar of param values and its filter list. A load applies that sidecar over
-//! the code's defaults.
+//! sidecar of its param values, its filter list, each pass's `visible` and
+//! each layer's settings and effects. A load applies that sidecar over the
+//! scene that the code wrote, and the code keeps which layers exist and their
+//! order.
 //!
 //! A host whose scenes live elsewhere implements names, resolve and save of its
 //! own, and hands them to its ConsoleHost.
@@ -17,14 +19,55 @@ use serde_json::{Map, Value};
 
 use crate::console::core::{ConsoleError, ConsoleResult};
 use crate::filters::apply_filters;
+use crate::layer::Layer;
 use crate::procedural::process::{self, SceneProcess};
 use crate::scene::{py_repr, Param, Reach, Scene};
 
 const SCENE_SUFFIX: &str = ".scene.json";
 
-/// Overlay a values sidecar onto the resolved scene. A filter pass takes the
-/// overlay too, because its params are tweakable. The code decides which params
-/// exist, so this reports an unknown name and skips it.
+/// Lay the saved settings of each layer in `saved` over the layer of that
+/// name in `doc`, the scene document of procedural scene `name`. The layer
+/// keeps its name and its words. A saved layer that the document no longer
+/// declares, or whose settings the layer there refuses, is reported and
+/// skipped.
+fn overlay_layers(doc: &mut Value, name: &str, saved: &Map<String, Value>) {
+    let mut found: Vec<String> = Vec::new();
+    let layers = doc
+        .get_mut("passes")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get_mut("layers")?.as_array_mut())
+        .flatten();
+    for l in layers {
+        let Some(n) = l.get("name").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        let Some(Value::Object(keys)) = saved.get(&n) else {
+            continue;
+        };
+        found.push(n.clone());
+        let mut over = keys.clone();
+        over.insert("name".to_string(), Value::from(n.as_str()));
+        if let Some(words) = l.get("text") {
+            over.insert("text".to_string(), words.clone());
+        }
+        let over = Value::Object(over);
+        match Layer::from_dict("a layer", &over) {
+            Ok(_) => *l = over,
+            Err(e) => eprintln!("values {name}: bad layer '{n}': {e}"),
+        }
+    }
+    for n in saved.keys().filter(|n| !found.contains(n)) {
+        eprintln!("values {name}: no layer '{n}'");
+    }
+}
+
+/// Overlay a values sidecar onto the resolved scene: the params and the eye
+/// of each pass. A filter pass takes the overlay too, because its params are
+/// tweakable. The code decides which passes and params exist, so this
+/// reports an unknown name and skips it, and a sidecar that would hide every
+/// pass leaves the eyes alone.
 pub fn apply_values(scene: &mut Scene, name: &str, vals: &Value) {
     let empty = Map::new();
     let saved_passes = vals
@@ -71,10 +114,35 @@ pub fn apply_values(scene: &mut Scene, name: &str, vals: &Value) {
                 p.options.clone().map(Value::from),
             );
             match built {
-                Ok(param) => existing.insert(n.clone(), param),
+                // The words of a text layer stay the param that ghee declared.
+                Ok(param) => existing.insert(
+                    n.clone(),
+                    Param {
+                        of_text: p.of_text,
+                        ..param
+                    },
+                ),
                 Err(e) => eprintln!("values {name}: bad '{label}.{n}': {e}"),
             }
         }
+    }
+    let Some(Value::Object(eyes)) = vals.get("visible") else {
+        return;
+    };
+    let mut visible: Vec<bool> = scene.passes.iter().map(|p| p.visible).collect();
+    for (pn, v) in eyes {
+        match (scene.passes.iter().position(|p| p.name == *pn), v) {
+            (None, _) => eprintln!("values {name}: no pass '{pn}'"),
+            (Some(i), Value::Bool(b)) => visible[i] = *b,
+            (Some(_), v) => eprintln!("values {name}: bad '{pn}.visible': {}", py_repr(v)),
+        }
+    }
+    if !visible.contains(&true) {
+        eprintln!("values {name}: every pass hidden, so the passes keep their eyes");
+        return;
+    }
+    for (p, v) in scene.passes.iter_mut().zip(visible) {
+        p.visible = v;
     }
 }
 
@@ -200,10 +268,20 @@ impl SceneStore {
         // Anyone who reaches the console posts and saves the scenes that it
         // loads, so their files stay inside the store. A modified copy finds
         // its files beside its original.
+        let vals = match self.source(name) {
+            Some(p) if p.ends_with(SCENE_SUFFIX) => None,
+            _ => self.read_values(name),
+        };
+        let layers = vals.as_ref().and_then(|v| v.get("layers"));
+        let overlay = |doc: &mut Value| {
+            if let Some(Value::Object(saved)) = layers {
+                overlay_layers(doc, name, saved);
+            }
+        };
         let (mut scene, mut process) = match process::executable(&path) {
             // the console error state reaches a browser, so it carries the
             // stderr of a dead process
-            Some(exe) => SceneProcess::start(&exe, &self.args, Reach::Inside)
+            Some(exe) => SceneProcess::start(&exe, &self.args, Reach::Inside, overlay)
                 .map(|(scene, fed)| (scene, Some(fed)))
                 .map_err(|e| ConsoleError::server_error(process::with_stderr(&e)))?,
             None => (
@@ -211,10 +289,6 @@ impl SceneStore {
                     .map_err(|e| ConsoleError::server_error(e.to_string()))?,
                 None,
             ),
-        };
-        let vals = match self.source(name) {
-            Some(p) if p.ends_with(SCENE_SUFFIX) => None,
-            _ => self.read_values(name),
         };
         if let Some(Value::Array(items)) = vals.as_ref().and_then(|v| v.get("filters")) {
             scene.filters = items
@@ -260,17 +334,23 @@ impl SceneStore {
             scene.filters = applied;
         }
         if !source.ends_with(SCENE_SUFFIX) {
-            // A procedural scene's shape lives in code. Save the param values
-            // and the filter list as a sidecar. The loader applies that over
-            // the code's own defaults.
+            // A procedural scene's shape lives in code. Save the param values,
+            // the filter list, the eyes and the layers as a sidecar. The
+            // loader applies that over the code's own scene.
             let mut vals = Map::new();
             vals.insert("filters".to_string(), Value::from(scene.filters.clone()));
             vals.insert("scene".to_string(), values_of(&scene.params));
-            let mut passes = Map::new();
+            let (mut passes, mut visible, mut layers) = (Map::new(), Map::new(), Map::new());
             for ps in &scene.passes {
                 passes.insert(ps.name.clone(), values_of(&ps.params));
+                visible.insert(ps.name.clone(), Value::from(ps.visible));
+                for l in &ps.layers {
+                    layers.insert(l.name().to_string(), settings_of(l));
+                }
             }
             vals.insert("passes".to_string(), Value::Object(passes));
+            vals.insert("visible".to_string(), Value::Object(visible));
+            vals.insert("layers".to_string(), Value::Object(layers));
             return write(&self.values_path(name), &Value::Object(vals));
         }
         // Store the scene unexpanded. A load rebuilds each filter pass from the
@@ -279,6 +359,21 @@ impl SceneStore {
         scene.assets.retain(|a| a.from_filter.is_empty());
         write(&self.modified_path(name), &scene.to_dict())
     }
+}
+
+/// The settings and the effects of `layer` as a sidecar keeps them: the layer
+/// as a scene declares it, less its name and its words, which the code and the
+/// words param hold.
+fn settings_of(layer: &Layer) -> Value {
+    let mut d = match layer {
+        Layer::Text(l) => l.to_dict(""),
+        Layer::Image(l) => l.to_dict(),
+    };
+    if let Value::Object(o) = &mut d {
+        o.remove("name");
+        o.remove("text");
+    }
+    d
 }
 
 fn values_of(params: &crate::scene::ParamMap) -> Value {
@@ -367,7 +462,7 @@ fn abspath(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{ParamMap, Pass};
+    use crate::scene::{ParamMap, ParamValue, Pass};
 
     const SCENE: &str = r#"{"version": 1,
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
@@ -854,6 +949,99 @@ mod tests {
         assert_eq!(
             scene.passes[0].params.get("on").unwrap().value.to_json(),
             Value::from(false)
+        );
+    }
+
+    /// A procedural scene, proc, whose code writes passes a and b, the text
+    /// layer title and the image layer icon over pic.png.
+    fn layered_store(tag: &str) -> (crate::testing::TempDir, SceneStore) {
+        let d = tmpdir(tag);
+        let pic = crate::output::encode_png(crate::looper::Frame {
+            data: &[255; 4],
+            width: 1,
+            height: 1,
+            components: 4,
+        })
+        .unwrap();
+        fs::write(format!("{d}/pic.png"), pic).unwrap();
+        let doc = serde_json::json!({
+            "version": 1,
+            "assets": {"pic": {"file": "pic.png"}},
+            "passes": [
+                {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0); }",
+                 "layers": [{"name": "title", "text": "hi", "x": 1, "karaoke": {}},
+                            {"name": "icon", "image": "pic"}]},
+                {"name": "b", "code": "void main(){ gl_FragColor = vec4(0.5); }"},
+            ],
+        });
+        let body = format!("#!/bin/sh\nprintf '%s\\n' '{doc}'\nwhile read -r l; do :; done\n");
+        crate::testing::script(&d, "proc", &body);
+        let store = SceneStore::new(&d, false, Vec::new());
+        (d, store)
+    }
+
+    /// The scene of proc as the store starts it.
+    fn started(store: &SceneStore) -> Scene {
+        let _spawn = crate::testing::SCRIPTS.read().unwrap();
+        store.start("proc").unwrap().0
+    }
+
+    #[test]
+    fn a_procedural_sidecar_keeps_each_eye_and_each_layer_over_the_layers_of_the_code() {
+        let (d, store) = layered_store("layers");
+        let code = started(&store);
+        let mut scene = code.clone();
+        scene.passes[0].visible = false;
+        let at = |field| crate::layer::Address {
+            layer: "title",
+            effect: None,
+            field,
+        };
+        scene.set_layer(&at("x"), &Value::from(10)).unwrap();
+        scene
+            .set_layer(&at("color"), &Value::from("#ff0000"))
+            .unwrap();
+        let sung = crate::layer::Address {
+            effect: Some("karaoke"),
+            ..at("sung")
+        };
+        scene.set_layer(&sung, &Value::from(2)).unwrap();
+        if let Layer::Text(l) = &mut scene.passes[0].layers[0] {
+            l.font_size = Some(30.0);
+        }
+        scene.params.get_mut("title").unwrap().value = ParamValue::Str("hey".to_string());
+        store.save("proc", scene.clone()).unwrap();
+        let path = format!("{d}/modified/proc.values.json");
+        let mut vals = read_json(&path);
+        assert_eq!(vals["visible"], serde_json::json!({"a": false, "b": true}));
+        assert_eq!(
+            vals["layers"]["title"],
+            serde_json::json!({"x": 10.0, "color": "#ff0000", "font_size": 30.0,
+                               "karaoke": {"sung": 2.0}})
+        );
+        // The code no longer declares a layer that the sidecar holds.
+        vals["layers"]["gone"] = serde_json::json!({"x": 3});
+        write_text(&path, &vals.to_string());
+        let back = started(&store);
+        assert_eq!(back.to_dict(), scene.to_dict());
+        assert!(back.to_dict()["params"].get("title").is_none());
+        // A sidecar that hides every pass leaves the code's eyes.
+        vals["visible"] = serde_json::json!({"a": false, "b": false});
+        write_text(&path, &vals.to_string());
+        let eyes: Vec<bool> = started(&store).passes.iter().map(|p| p.visible).collect();
+        assert_eq!(eyes, [true, true]);
+        // A saved layer that the code's scene refuses leaves the code's layer.
+        vals["visible"] = serde_json::json!({});
+        vals["layers"]["title"]["font_family"] = serde_json::json!("nope");
+        write_text(&path, &vals.to_string());
+        assert_eq!(
+            started(&store).to_dict(),
+            {
+                let mut want = code.clone();
+                want.params.get_mut("title").unwrap().value = ParamValue::Str("hey".to_string());
+                want
+            }
+            .to_dict()
         );
     }
 }

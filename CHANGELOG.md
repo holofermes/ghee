@@ -257,6 +257,12 @@
   `--serve` and `ghee.open(stats=)`, with no rebuild. The value reads as the
   field takes it, `none` included, and a field that changes with a rebuild
   answers 400 with the live fields named.
+- Save each pass's `visible` and the settings and effects of each layer of a
+  procedural scene in its `.values.json` sidecar, beside its params and
+  filters, and apply them over the scene that the process writes at its next
+  start. The process keeps which layers exist and their order, a saved layer
+  that it no longer declares is skipped with a log line, and a value that
+  the process sets after the start wins over the saved one.
 - Take the scene that an edit is for in `scene=` on `/set`, in `name=` on
   `POST /scene` and in the body of `/save`, and refuse with 409 an edit for
   a scene other than the active one, which `/scenes` and `/stats` name as

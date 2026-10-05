@@ -255,7 +255,7 @@ fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
     report::detail("scene", &path);
     let (mut scene, mut process) = match process::executable(&path) {
         Some(exe) => {
-            let (scene, fed) = SceneProcess::start(&exe, &a.scene_args, Reach::Any)?;
+            let (scene, fed) = SceneProcess::start(&exe, &a.scene_args, Reach::Any, |_| {})?;
             (scene, Some(fed))
         }
         None => (load_scene(&path, &a.scene_args, true)?, None),

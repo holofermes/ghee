@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::RwLock;
 
 /// An empty directory of one test's own under the temp directory. The drop
 /// removes it, with everything that the test wrote in it.
@@ -60,4 +61,21 @@ impl AsRef<str> for TempDir {
     fn as_ref(&self) -> &str {
         &self.0
     }
+}
+
+/// A fork that lands while another thread holds a write descriptor on a
+/// fresh executable hands that descriptor to the child, and the exec of that
+/// file answers ETXTBSY until it closes. Writing a script takes this lock
+/// exclusively and spawning one takes it shared, so the two never overlap,
+/// and concurrent spawns still run together.
+pub(crate) static SCRIPTS: RwLock<()> = RwLock::new(());
+
+/// Write the executable `name` in `dir`, holding `body`, and return its path.
+pub(crate) fn script(dir: &str, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let _write = SCRIPTS.write().unwrap();
+    let path = format!("{dir}/{name}");
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
 }

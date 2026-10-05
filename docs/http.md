@@ -63,9 +63,14 @@ later.
   the active scene as a working copy.
 - `POST /save`: takes `{name, scene}` in the body, and writes the scene into
   `<scenes>/modified/`. A JSON scene saves a copy that shadows the original
-  and finds its files beside the original. A procedural scene saves its
-  params and filters as a `.values.json` sidecar. A read-only host refuses
-  the save.
+  and finds its files beside the original. A procedural scene saves a
+  `.values.json` sidecar of its params, its filters, each pass's `visible`,
+  and the settings and effects of each layer under the layer's name. At its
+  next start the sidecar applies over the scene that the process writes: the
+  process keeps which layers exist and their order, a saved layer that it no
+  longer declares is skipped with a log line, and a value that the process
+  sets after the start wins over the saved one. A read-only host refuses the
+  save.
 
 ## Streams
 

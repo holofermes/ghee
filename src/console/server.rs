@@ -3247,6 +3247,62 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_saved_layer_field_starts_a_procedural_scene_and_a_tick_sets_it_over() {
+        // The code of proc places the layer title at x 1, its sidecar at x 8,
+        // and each answer of the process at x 20.
+        let d = crate::testing::TempDir::new("console-sidecar");
+        let doc = |x: f64| {
+            serde_json::json!({"version": 1, "passes": [{"name": "main",
+                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "layers": [{"name": "title", "text": "I", "font_size": 16, "x": x, "y": 4}]}]})
+        };
+        let mut handshake = doc(1.0);
+        handshake["lockstep"] = Value::from(true);
+        // kind 1, title.x, one value: 20.0, then kind 5
+        let answer = r"\001\007title.x\001\000\000\000\000\000\240\101\005";
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' '{handshake}'\nwhile read -r l; do printf '{answer}'; done\n"
+        );
+        crate::testing::script(&d, "proc", &body);
+        fs::create_dir_all(d.join("modified")).unwrap();
+        let saved = serde_json::json!({"layers": {"title": {"font_size": 16, "x": 8, "y": 4}}});
+        fs::write(d.join("modified/proc.values.json"), saved.to_string()).unwrap();
+        let console = Console::new(SceneStore::new(&d, false, Vec::new()));
+        let renderer = RefCell::new(gpu(48, 24));
+        let st = RefCell::new(Running { scene: None });
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let frame = || {
+            renderer.borrow().set_time(Some(0.0));
+            renderer.borrow_mut().render(None).unwrap().to_vec()
+        };
+        let built = |x: f64| {
+            let sc = Scene::from_dict(&doc(x), None, None).unwrap();
+            assert_eq!(renderer.borrow_mut().setup(&sc).unwrap(), "");
+            frame()
+        };
+        let (at8, at20) = (built(8.0), built(20.0));
+        {
+            let _spawn = crate::testing::SCRIPTS.read().unwrap();
+            load(&console, &renderer, &st, &ctrl, "proc");
+        }
+        assert!(frame() == at8, "the saved x places the layer");
+        // The loop's tick and update, until the process answers.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        for n in 0.. {
+            let mut slot = ctrl.borrow_mut();
+            let running = slot.as_mut().expect("the scene runs");
+            running.tick(n, 0.0, 1.0 / 60.0).unwrap();
+            running.update(&mut *renderer.borrow_mut(), n, 0.0).unwrap();
+            drop(slot);
+            if frame() == at20 || std::time::Instant::now() > deadline {
+                break;
+            }
+        }
+        assert!(frame() == at20, "the tick's x places the layer");
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn posted_words_past_the_texture_keep_the_last_words_and_show_why() {
         let renderer = RefCell::new(gpu(32, 24));
         let (_d, console) = tmp_console("toolong");

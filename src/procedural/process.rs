@@ -543,8 +543,15 @@ impl SceneProcess {
     /// `args` are the tokens after `--`, as they came. The process parses them,
     /// and a process that refuses one dies with its own message on stderr.
     /// The scene's files resolve beside the executable, as far as `reach`
-    /// allows.
-    pub fn start(path: &str, args: &[String], reach: Reach) -> Result<(Scene, SceneProcess)> {
+    /// allows. `edit` changes the scene document that the process wrote
+    /// before ghee builds it, and a scene that the edit breaks runs as the
+    /// process wrote it, with a warning.
+    pub fn start(
+        path: &str,
+        args: &[String],
+        reach: Reach,
+        edit: impl FnOnce(&mut Value),
+    ) -> Result<(Scene, SceneProcess)> {
         let (program, dir) = where_to_run(path)?;
         let mut cmd = Command::new(program);
         if let Some(size) = render_size() {
@@ -620,7 +627,16 @@ impl SceneProcess {
         })?;
         // "lockstep" belongs to the handshake, and the scene takes no such key.
         let lockstep = doc.as_object_mut().and_then(|o| o.remove("lockstep"));
-        let mut scene = Scene::from_dict_in(&doc, &dir, reach, Some(path))?;
+        let mut edited = doc.clone();
+        edit(&mut edited);
+        let mut scene = match Scene::from_dict_in(&edited, &dir, reach, Some(path)) {
+            Ok(scene) => scene,
+            Err(e) if edited != doc => {
+                crate::report::warn(format!("{e}, so the scene runs as its process wrote it"));
+                Scene::from_dict_in(&doc, &dir, reach, Some(path))?
+            }
+            Err(e) => return Err(e),
+        };
         scene.load_assets_in(&dir, reach)?;
         process.lockstep = lockstep == Some(Value::Bool(true));
         process.writer = Some(write_ticks(stdin, Arc::clone(&process.outbox)));
@@ -1154,6 +1170,7 @@ fn write_ticks(mut stdin: ChildStdin, outbox: Arc<(Mutex<Outbox>, Condvar)>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{script, SCRIPTS};
 
     /// A process that answers the probe, then hands over a scene.
     /// It feeds one array and one param for each tick.
@@ -1214,28 +1231,13 @@ sleep 60
         crate::testing::TempDir::new(&format!("proc-{tag}"))
     }
 
-    fn script(dir: &str, name: &str, body: &str) -> String {
-        let _write = SCRIPTS.write().unwrap();
-        let path = format!("{dir}/{name}");
-        fs::write(&path, body).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path
-    }
-
     fn no_args() -> Vec<String> {
         Vec::new()
     }
 
-    /// A fork that lands while another thread holds a write descriptor on a
-    /// fresh executable hands that descriptor to the child, and the exec of
-    /// that file answers ETXTBSY until it closes. Writing a script takes this
-    /// lock exclusively and spawning takes it shared, so the two never
-    /// overlap, and concurrent spawns still run together.
-    static SCRIPTS: RwLock<()> = RwLock::new(());
-
     fn start_scene(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
         let _spawn = SCRIPTS.read().unwrap();
-        SceneProcess::start(path, args, Reach::Any)
+        SceneProcess::start(path, args, Reach::Any, |_| {})
     }
 
     /// declarations(), spawn-locked like start_scene.
@@ -1472,7 +1474,7 @@ sleep 60
              sleep 5\n"
         );
         let (_scene, mut f) =
-            SceneProcess::start("/bin/sh", &args(&["-c", &body]), Reach::Any).unwrap();
+            SceneProcess::start("/bin/sh", &args(&["-c", &body]), Reach::Any, |_| {}).unwrap();
         (f.term_after, f.kill_after) = (SOON, SOON);
         assert!(wait_until(SETTLE, || fs::read_to_string(&mark).is_ok()));
         assert_eq!(fs::read_to_string(&mark).unwrap(), "1 1");

@@ -1161,9 +1161,6 @@ impl Asset {
         let Value::Object(o) = d else {
             bail!("asset '{name}' needs an object, got {}", py_repr(d));
         };
-        if o.contains_key("filter") {
-            bail!("asset '{name}' takes 'nearest' or 'linear' in 'sampling', got 'filter'");
-        }
         known_keys(o, &format!("asset '{name}'"), &ASSET_KEYS, &[])?;
         let file = match o.get("file") {
             None => bail!("asset '{name}' has no 'file'"),
@@ -3045,10 +3042,6 @@ mod tests {
             (
                 asset(json!({"file": "logo.png", "sampling": "cubic"})),
                 "asset 'd' sampling needs 'nearest' or 'linear', got 'cubic'".to_string(),
-            ),
-            (
-                asset(json!({"file": "logo.png", "filter": "linear"})),
-                "asset 'd' takes 'nearest' or 'linear' in 'sampling', got 'filter'".to_string(),
             ),
             (
                 asset(json!({"file": "sans.ttf", "sampling": "linear"})),

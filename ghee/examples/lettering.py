@@ -7,13 +7,13 @@
 
 The rows stand on a ladder of sizes, each `grow` times the one above it, and
 the ladder slides down: a row grows as it falls and scrolls sideways, and a
-new one enters at the top. The shader reads the words with `words_cover` at
-the pixels per em of the row, so an edge stays one pixel wide at any size.
+new one enters at the top. The text layer `words` is hidden, so the pass
+shader alone shows its words: it reads them with `words_cover` at the font
+size of each row, and an edge stays one pixel wide at any size.
 
-The hidden text layer `words` takes its words live, through the string param
-of its name. The scene steps them through WORDS, and ghee lays out each new
-entry with no recompile. Words set in the console end the steps. fonts/ holds
-DejaVu Sans cut to Latin, with its license.
+The tick hook steps the words through WORDS by the string param of the
+layer's name, and ghee lays out each new entry with no recompile. Words set
+in the console end the steps.
 
     ghee render --demo lettering -o out.####.png --frames 60 --timestep 0.1
     ghee render --demo lettering --display st7789
@@ -28,8 +28,9 @@ WORDS = ("ghee", "lettering", "sharp at any size", "set live")
 HOLD = 4.0  # seconds on each entry of WORDS
 
 SHADER = """
-// A row under this many pixels per em reads as noise, so it draws nothing.
-const float MIN_PPEM = 4.0;
+// A row under this font size, in pixels per em, reads as noise, so it draws
+// nothing.
+const float MIN_SIZE = 4.0;
 // The space between two repeats of the words along a row, in em.
 const float GAP = 1.0;
 
@@ -43,19 +44,19 @@ void main() {
     float u = log(px.y / resolution.y) / lg - time * zoom;
     float k = floor(u);
     float rise = exp((u - k) * lg);
-    // The words fill the row, so the row's height sets their size.
-    float ppem = px.y / rise * (grow - 1.0) / words_size.y;
+    // The words fill the row, so the row's height sets their font size.
+    float font_size = px.y / rise * (grow - 1.0) / words_size.y;
 
     // Rows run in turn left and right, each 0.37 of a repeat on from the
     // row above, so no column of words lines up.
     float period = words_size.x + GAP;
     float side = mod(k, 2.0) * 2.0 - 1.0;
-    float x = (px.x - 0.5 * resolution.x) / ppem + 0.5 * words_size.x
+    float x = (px.x - 0.5 * resolution.x) / font_size + 0.5 * words_size.x
             + side * time * scroll + k * 0.37 * period;
     vec2 p = vec2(mod(x, period), (rise - 1.0) / (grow - 1.0) * words_size.y);
-    p = ppem < MIN_PPEM ? vec2(-1.0e4) : p;
+    p = font_size < MIN_SIZE ? vec2(-1.0e4) : p;
 
-    float c = words_cover(p, ppem);
+    float c = words_cover(p, font_size);
     float far = 1.0 - v_texCoord.y;
     gl_FragColor = vec4(mix(paper, ink, c * (1.0 - 0.5 * far * far)), 1.0);
 }
@@ -69,13 +70,7 @@ def build():
                 name="main",
                 code=SHADER,
                 layers=[
-                    ghee.Layer(
-                        "words",
-                        WORDS[0],
-                        visible=False,
-                        font_family="sans",
-                        text_align="center",
-                    )
+                    ghee.Layer("words", WORDS[0], visible=False, text_align="center")
                 ],
             )
         ],
@@ -86,7 +81,6 @@ def build():
             "ink": ghee.Param("ink", "color", [0.96, 0.9, 0.76]),
             "paper": ghee.Param("paper", "color", [0.04, 0.05, 0.09]),
         },
-        assets=[ghee.Asset("sans", "fonts/DejaVuSans-Latin.ttf")],
     )
 
 

@@ -29,8 +29,7 @@
         {
           "name": "page",
           "visible": false,
-          "text": "A lens drifts over the page.\nUnder it the words grow,\nand every edge stays sharp:\nthe shader reads the words\nfrom the curves of the font\nat the size where they land.",
-          "font_family": "fonts/DejaVuSans-Latin.ttf"
+          "text": "A lens drifts over the page.\nUnder it the words grow,\nand every edge stays sharp:\nthe shader reads the words\nfrom the curves of the font\nat the size where they land."
         }
       ]
     }

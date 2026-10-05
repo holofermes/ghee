@@ -1784,7 +1784,20 @@ impl Layer {
                 .as_text()
                 .and_then(|l| l.effects.iter().find(|e| e.kind.key() == key));
             let Some(e) = e else {
-                bail!("{layer} has no effect '{key}'");
+                let effects: Vec<&str> = match self {
+                    Layer::Text(l) => l.effects.iter().map(|e| e.kind.key()).collect(),
+                    Layer::Image(_) => {
+                        bail!("{layer} has no effect '{key}', and an image layer takes no effects")
+                    }
+                };
+                match effects[..] {
+                    [] => bail!("{layer} has no effect '{key}' and no other effect"),
+                    [one] => bail!("{layer} has no effect '{key}', and its effect is {one}"),
+                    _ => bail!(
+                        "{layer} has no effect '{key}', and its effects are {}",
+                        spoken(&effects)
+                    ),
+                }
             };
             let fields = e.kind.fields();
             let live: Vec<&str> = fields
@@ -1795,7 +1808,10 @@ impl Layer {
                 .collect();
             let form = match fields.iter().find(|f| f.name == field) {
                 _ if field == "visible" => Form::Flag,
-                None => bail!("{layer} {key} has no field '{field}'"),
+                None => bail!(
+                    "{layer} {key} has no field '{field}', and the live fields of {key} are {}",
+                    spoken(&live)
+                ),
                 Some(f) if f.change == Change::Rebuild => bail!(
                     "{layer} {key} {field} changes with a rebuild, and the live fields of {key} \
                      are {}",
@@ -1833,7 +1849,10 @@ impl Layer {
                 "{layer} {field} changes with a rebuild, and the live fields of {kind} are {}",
                 spoken(&live)
             ),
-            _ => bail!("{layer} has no field '{field}'"),
+            _ => bail!(
+                "{layer} has no field '{field}', and the live fields of {kind} are {}",
+                spoken(&live)
+            ),
         };
         Ok(Live {
             what: format!("{layer} {field}"),
@@ -2451,9 +2470,13 @@ mod tests {
     }
 
     #[test]
-    fn a_field_that_a_layer_takes_no_live_value_for_is_refused_naming_the_live_fields() {
+    fn a_live_set_that_a_layer_cannot_take_is_refused_naming_what_it_takes() {
         let (text, image) = text_and_image();
+        let glow = Layer::from_dict("a layer", &json!({"name": "g", "text": "I", "glow": {}}));
+        let glow = glow.unwrap();
+        let bare = Layer::from_dict("a layer", &json!({"name": "b", "text": "I"})).unwrap();
         let rebuild = "changes with a rebuild, and the live fields";
+        let text_live = "and the live fields of a text layer are x, y, color, opacity and visible";
         let rows = [
             (
                 &text,
@@ -2488,25 +2511,57 @@ mod tests {
                 "text",
                 "layer 't' holds its words in the scene param 't'".to_string(),
             ),
-            (&text, None, "colour", "layer 't' has no field 'colour'".to_string()),
-            (&text, None, "image", "layer 't' has no field 'image'".to_string()),
+            (
+                &text,
+                None,
+                "colour",
+                format!("layer 't' has no field 'colour', {text_live}"),
+            ),
+            (
+                &text,
+                None,
+                "image",
+                format!("layer 't' has no field 'image', {text_live}"),
+            ),
+            (
+                &image,
+                None,
+                "text",
+                "layer 'i' has no field 'text', and the live fields of an image layer are x, y, \
+                 color, opacity, visible and image"
+                    .to_string(),
+            ),
             (
                 &text,
                 Some("glow"),
                 "size",
-                "layer 't' glow has no field 'size'".to_string(),
+                "layer 't' glow has no field 'size', and the live fields of glow are color, \
+                 strength and visible"
+                    .to_string(),
             ),
             (
                 &text,
                 Some("karaoke"),
                 "sung",
-                "layer 't' has no effect 'karaoke'".to_string(),
+                "layer 't' has no effect 'karaoke', and its effects are glow and wave".to_string(),
+            ),
+            (
+                &glow,
+                Some("karaoke"),
+                "sung",
+                "layer 'g' has no effect 'karaoke', and its effect is glow".to_string(),
+            ),
+            (
+                &bare,
+                Some("karaoke"),
+                "sung",
+                "layer 'b' has no effect 'karaoke' and no other effect".to_string(),
             ),
             (
                 &image,
                 Some("glow"),
                 "color",
-                "layer 'i' has no effect 'glow'".to_string(),
+                "layer 'i' has no effect 'glow', and an image layer takes no effects".to_string(),
             ),
         ];
         for (l, effect, field, want) in rows {

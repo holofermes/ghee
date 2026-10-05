@@ -816,7 +816,7 @@ impl Session {
 
     /// Set the live field `field` of layer `layer`, or of its effect
     /// `effect`, with no rebuild. A layer, a field or a value that the scene
-    /// refuses is the caller's.
+    /// refuses is a fault of the caller's.
     pub fn set_layer(
         &mut self,
         layer: &str,

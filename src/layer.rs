@@ -1717,7 +1717,7 @@ pub struct Live {
 impl Live {
     /// The value of the numbers `values` that the wire gives the field: one
     /// for a number, 0 or 1 for a flag, three for a colour, seven for a
-    /// gradient, from, to and angle, and none for none.
+    /// gradient, from, to and angle, and no value for none.
     pub fn of_numbers(&self, values: &[f32]) -> Result<Value> {
         let n: Vec<f64> = values.iter().map(|v| f64::from(*v)).collect();
         let what = &self.what;
@@ -1842,10 +1842,10 @@ impl Layer {
     }
 
     /// Set the live field `field` of the layer, or of its effect `effect`,
-    /// to `value`, written as the scene format writes the key. Null takes
-    /// the key back to its default. The value goes through the checks of a
-    /// layer that a scene declares, and the layer keeps its fonts, and the
-    /// pixels of its file while its image stays.
+    /// to `value`, written as the scene format writes the key. Null takes a
+    /// field that takes none back to its default. The value goes through the
+    /// checks of a layer that a scene declares, and the layer keeps its
+    /// fonts, and the pixels of its file while its image stays.
     pub fn set_live(&mut self, effect: Option<&str>, field: &str, value: &Value) -> Result<()> {
         let live = self.live(effect, field)?;
         if value.is_null() && !live.form.takes_none() {

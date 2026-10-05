@@ -959,6 +959,8 @@ function mergeNewParams(pristine, work){
   // shows up, one edited here stays as the user left it
   if (pristine.common && !(work.common && work.common.commonEdited))
     work.common = clone(pristine.common);
+  // a program has the common block its code declares, or none
+  else if (!pristine.common && isProcedural()) delete work.common;
 }
 
 // `local` takes this browser's working copy of the scene, and posts it.
@@ -1038,8 +1040,8 @@ addEventListener("scroll", closeMenus, true);
 
 // Tabs never change width or place. The open tab's pencil, eye and × sit at
 // the row's end, greyed where the tab takes none. A script declares the
-// passes of its scene: + adds none there, and the pencil and × stay grey on
-// them.
+// passes and the common block of its scene: + adds neither there, and the
+// pencil and × stay grey on them.
 function buildTabs(){
   const row = $("#tabs"), was = row.querySelector(".strip"), left = was ? was.scrollLeft : 0;
   const t = strip("tstrip");
@@ -1059,7 +1061,7 @@ function buildTabs(){
     p.filter ? `filter: ${p.filter} (read-only, tweak params)` : ""));
   const proc = isProcedural();
   const items = proc ? [] : [["empty pass", addPass]];
-  if (!hasCommon()) items.push(["common", addCommon]);   // one per scene
+  if (!proc && !hasCommon()) items.push(["common", addCommon]);   // one per scene
   const fnames = Object.keys(FILTERS);
   if (fnames.length) items.push(...(items.length ? [null] : []), ...fnames.map(n => ["ƒ " + n, () => addFilter(n)]));
   t.appendChild(addMenu("+", items, "tab add", proc ? "add a filter" : "add a pass or a filter"));
@@ -1071,7 +1073,9 @@ function buildTabs(){
   if (onCommon()){
     const ren = tbtn(PENCIL, "rename", "", () => {}), eye = tbtn(EYE, "hide", "m", () => {});
     ren.disabled = eye.disabled = true;
-    acts.append(ren, eye, tbtn("×", "remove the common block", "x", delCommon));
+    const del = tbtn("×", "remove the common block", "x", delCommon);
+    del.disabled = proc;
+    acts.append(ren, eye, del);
   } else {
     const i = curPass, p = work.passes[i], off = p.visible === false;
     const shown = work.passes.filter(q => q.visible !== false).length;

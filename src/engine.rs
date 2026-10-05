@@ -448,17 +448,23 @@ fn or_else(s: String, fallback: &str) -> String {
     }
 }
 
-/// The line a GL compile error names. The line is the first `:<digits>(` in
-/// the error text.
+/// The line a GL compile error names. Mesa writes `0:18(5): error`, and the
+/// line is the first `:<digits>(` in the error text. NVIDIA writes
+/// `0(18) : error C1503`, and the line is the first `<digits>(<digits>)`.
 fn error_line_number(err: &str) -> Option<i64> {
     let b = err.as_bytes();
+    let digits_end = |i: usize| i + b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let line = |from: usize, to: usize| Some(err[from..to].parse::<i64>().unwrap_or(i64::MAX));
     for (i, _) in err.match_indices(':') {
-        let mut j = i + 1;
-        while j < b.len() && b[j].is_ascii_digit() {
-            j += 1;
+        let j = digits_end(i + 1);
+        if j > i + 1 && b.get(j) == Some(&b'(') {
+            return line(i + 1, j);
         }
-        if j > i + 1 && j < b.len() && b[j] == b'(' {
-            return Some(err[i + 1..j].parse::<i64>().unwrap_or(i64::MAX));
+    }
+    for (i, _) in err.match_indices('(') {
+        let j = digits_end(i + 1);
+        if i > 0 && b[i - 1].is_ascii_digit() && j > i + 1 && b.get(j) == Some(&b')') {
+            return line(i + 1, j);
         }
     }
     None
@@ -2719,6 +2725,18 @@ mod tests {
         );
         // An error with no line attributes nothing.
         assert_eq!(user_line("out of memory", glsl, code, None), (None, false));
+    }
+
+    #[test]
+    fn a_compile_error_names_its_line_in_the_log_of_each_driver() {
+        // Mesa's row is the form of the tests above. NVIDIA's is the log of
+        // an undefined name on NVIDIA 615.71.09.
+        for (log, line) in [
+            ("0:6(3): error: no function nope", 6),
+            ("0(18) : error C1503: undefined variable \"nope\"", 18),
+        ] {
+            assert_eq!(error_line_number(log), Some(line), "{log}");
+        }
     }
 
     #[test]

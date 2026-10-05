@@ -2057,6 +2057,36 @@ fn layer_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_hidden_pass_draws_none_of_its_layers() {
+    // under is gray, main draws white words over black, and post shows main.
+    let fit = Fit {
+        x: 8.0,
+        y: 8.0,
+        ppem: 48.0,
+    };
+    let (_g, mut r) = gpu(W, H);
+    let mut doc = layer_scene(SANS, "Ag", Align::Left, fit);
+    let main = doc["passes"][0].clone();
+    doc["passes"] = json!([
+        {"name": "under", "code": "void main(){ gl_FragColor = vec4(0.25, 0.25, 0.25, 1.0); }"},
+        main,
+        {"name": "post", "channels": [{"buffer": "main"}],
+         "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }"},
+    ]);
+    let shown = render(&mut r, &loaded(&doc));
+    assert!(shown.contains(&255), "the layer paints nothing");
+    doc["passes"][1]["visible"] = json!(false);
+    let hidden = render(&mut r, &loaded(&doc));
+    assert!(
+        hidden
+            .chunks(4)
+            .all(|p| p[..3].iter().all(|v| v.abs_diff(64) <= 1)),
+        "a hidden pass's layer drew"
+    );
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_vertex_reads_the_glyph_values_the_frame_uniforms_the_params_its_text_size_and_the_common_block(
 ) {
     let fit = Fit {

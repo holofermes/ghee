@@ -814,11 +814,14 @@ impl Renderer {
                 }
             }
         }
+        // The engine draws the hidden passes as copies, and the passes after
+        // the last visible one not at all.
+        let drawn = scene.drawn_passes();
         // The output pass renders at the renderer size. Its buffer feeds the
         // readback, the display and the encoder.
         // The check reads the resolved pass list, so a filter pass appended
         // after a sized pass keeps the scene valid.
-        let last = scene.output();
+        let last = &drawn[drawn.len() - 1];
         if last.size.is_some() {
             self.error = format!(
                 "output pass '{}' must not set a size; it renders at the renderer \
@@ -828,7 +831,7 @@ impl Renderer {
             return Ok(self.error.clone());
         }
         let npot = self.mipmaps_npot();
-        for p in scene.passes.iter().filter(|p| p.mipmaps) {
+        for p in drawn.iter().filter(|p| p.mipmaps) {
             let (w, h) = p
                 .size
                 .unwrap_or((i64::from(self.width), i64::from(self.height)));
@@ -839,8 +842,8 @@ impl Renderer {
         }
         // A channel binds to a pass by name. A name that names no pass is an
         // error. buffer=None is the unbound channel, and it reads black.
-        let names: Vec<&str> = scene.passes.iter().map(|p| p.name.as_str()).collect();
-        for p in &scene.passes {
+        let names: Vec<&str> = drawn.iter().map(|p| p.name.as_str()).collect();
+        for p in drawn.iter() {
             for (c, ch) in p.channels.iter().enumerate() {
                 if let Some(b) = ch.buffer.as_deref().filter(|b| !names.contains(b)) {
                     self.error = format!(
@@ -867,7 +870,7 @@ impl Renderer {
         // The engine counts the assets and the texts that each program
         // samples once it compiles. These counts come first, and a scene
         // that they refuse leaves the running scene in place.
-        for p in &scene.passes {
+        for p in drawn.iter() {
             let mut used: Vec<&str> = p.arrays.iter().map(|a| a.name.as_str()).collect();
             used.sort_unstable();
             used.dedup();
@@ -886,7 +889,7 @@ impl Renderer {
             self.error = e;
             return Ok(self.error.clone());
         }
-        if let Some(e) = scene.passes.iter().find_map(Pass::empty) {
+        if let Some(e) = drawn.iter().find_map(Pass::empty) {
             self.error = e;
             return Ok(self.error.clone());
         }
@@ -897,16 +900,15 @@ impl Renderer {
         let hw_linear = self.data_texture_linear();
         #[cfg(test)]
         let hw_linear = hw_linear && !self.shader_lerp;
-        let total = scene.passes.len();
+        let total = drawn.len();
         // Every pass buffer stores alpha but the output pass's, which stores
         // it only when the readback keeps it or a channel reads it. An RGB
         // buffer reads back alpha 255 at no cost.
         let out = last.name.as_str();
-        let out_read = scene
-            .passes
+        let out_read = drawn
             .iter()
             .any(|p| p.channels.iter().any(|c| c.buffer.as_deref() == Some(out)));
-        for (i, p) in scene.passes.iter().enumerate() {
+        for (i, p) in drawn.iter().enumerate() {
             // A VC4 takes a while over a big shader, and a scene of several
             // compiles them one after another with nothing to show for it.
             crate::report::progress("compile", format!("pass {} of {total}, {}", i + 1, p.name));
@@ -1217,7 +1219,7 @@ impl Renderer {
         // A text builds from the scene's string param of its name, through
         // set_text below, and it looks itself up in self.scene.
         self.scene = Some(scene.clone());
-        for (i, p) in scene.passes.iter().enumerate() {
+        for (i, p) in drawn.iter().enumerate() {
             for (c, ch) in p.channels.iter().enumerate() {
                 let src = match ch.buffer.as_deref() {
                     None => -1,
@@ -1262,7 +1264,7 @@ impl Renderer {
         }
 
         let mut feeds: Vec<(String, ArraySize)> = Vec::new();
-        for (i, p) in scene.passes.iter().enumerate() {
+        for (i, p) in drawn.iter().enumerate() {
             for a in &p.arrays {
                 let cname = CString::new(a.name.as_str())?;
                 if unsafe { ffi::ghee_mp_declare_array(self.handle, self.mp[i].1, cname.as_ptr()) }
@@ -2619,6 +2621,79 @@ mod tests {
         let f = r.render(None).unwrap().to_vec();
         for c in 0..3 {
             assert!(channel(&f, c).iter().fold(0.0, |a: f64, b| a.max(*b)) <= 2.0);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_hidden_pass_draws_the_pass_before_it_and_the_last_visible_pass_shows() {
+        // a is red, b adds green to a, and c halves the red of b and adds
+        // blue. A hidden pass copies the pass before it, a hidden first pass
+        // is black, and the frame is the last visible pass. Each row is
+        // worked by hand, in levels of 255.
+        let (_g, mut r) = gpu();
+        let read = |more: &str| {
+            format!("void main(){{ gl_FragColor = texture2D(iChannel0, v_texCoord){more}; }}")
+        };
+        let passes = |hidden: &[&str]| {
+            let mut ps = json!([
+                {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }",
+                 "params": {"gain": {"type": "float", "value": 1.0}},
+                 "arrays": [{"name": "level", "size": 4}]},
+                {"name": "b", "channels": [{"buffer": "a"}],
+                 "code": read(" + vec4(0.0, 0.5, 0.0, 0.0)"),
+                 "params": {"gain": {"type": "float", "value": 1.0}},
+                 "arrays": [{"name": "level", "size": 4}]},
+                {"name": "c", "channels": [{"buffer": "b"}],
+                 "code": read(" * vec4(0.5, 1.0, 1.0, 1.0) + vec4(0.0, 0.0, 0.25, 0.0)")},
+            ]);
+            for p in ps.as_array_mut().unwrap() {
+                p["visible"] = json!(!hidden.contains(&p["name"].as_str().unwrap()));
+            }
+            scene_of(ps)
+        };
+        for (hidden, want) in [
+            (vec![], [128.0, 128.0, 64.0]),
+            (vec!["b"], [128.0, 0.0, 64.0]),
+            (vec!["a"], [0.0, 128.0, 64.0]),
+            (vec!["c"], [255.0, 128.0, 0.0]),
+            (vec!["b", "c"], [255.0, 0.0, 0.0]),
+            (vec!["a", "c"], [0.0, 128.0, 0.0]),
+        ] {
+            assert_eq!(r.setup(&passes(&hidden)).unwrap(), "", "{hidden:?}");
+            r.set_time(Some(0.0));
+            // A hidden pass keeps its params and arrays, so a set and a feed
+            // still land.
+            r.set_param("b", "gain", "float", &ParamValue::Float(0.5))
+                .unwrap();
+            let mut feed = |_: &str, _: ArraySize| Feed::Data(vec![0.5; 4]);
+            let f = r.render(Some(&mut feed)).unwrap().to_vec();
+            let got = [0, 1, 2].map(|c| mean(&channel(&f, c)));
+            assert!(near3(got, want), "{hidden:?}: {got:?}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_channel_that_reads_a_pass_past_the_last_visible_one_reads_that_pass() {
+        // b adds a to the last frame of c, a copy of b. With c hidden, b reads
+        // its own last frame, as c's copy shows it: 0.25 at frame 1, 0.5 at
+        // frame 2.
+        let (_g, mut r) = gpu();
+        let sc = scene_of(json!([
+            {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.25, 0.0, 0.0, 1.0); }"},
+            {"name": "b", "channels": [{"buffer": "a"}, {"buffer": "c"}],
+             "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord) \
+                      + texture2D(iChannel1, v_texCoord); }"},
+            {"name": "c", "channels": [{"buffer": "b"}], "visible": false,
+             "code": "void main(){ gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }"},
+        ]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        for want in [64.0, 128.0] {
+            let f = r.render(None).unwrap().to_vec();
+            let got = [0, 1, 2].map(|c| mean(&channel(&f, c)));
+            assert!(near3(got, [want, 0.0, 0.0]), "{got:?}");
         }
     }
 

@@ -267,6 +267,9 @@ class Pass:
     A pass with layers and no code starts each frame transparent.
     `params` holds the Params of this pass alone, in a list or in a dict keyed
     by their names.
+    `visible` False hides the pass: it draws a copy of the pass before it, or
+    black as the first pass, its layers draw nothing, and the frame is the
+    last visible pass.
     """
 
     name: str
@@ -278,6 +281,7 @@ class Pass:
     size: tuple[int, int] | None = None
     layers: list[Layer] = field(default_factory=list)
     mipmaps: bool = False
+    visible: bool = True
 
     def __post_init__(self) -> None:
         self.params = _keyed(
@@ -286,6 +290,8 @@ class Pass:
 
     def to_dict(self) -> dict:
         out: dict = {"name": self.name}
+        if self.visible is not True:
+            out["visible"] = _plain(self.visible)
         code = self.code
         if not self.layers or not isinstance(code, str) or code.strip():
             out["code"] = code

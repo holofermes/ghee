@@ -20,6 +20,11 @@
   reads it, so a buffer read far away and minified stays calm. On a GPU
   without OES_texture_npot, a pass with mipmaps takes a power-of-two size
   alone.
+- Hide a pass with `"visible": false`, which a save keeps. A hidden pass
+  draws a copy of the pass before it, or black as the first pass, its layers
+  draw nothing, and the frame is the last visible pass. It keeps its params
+  and arrays, so a set and a feed still land, and a scene that hides every
+  pass fails to load.
 - Store alpha in every pass buffer, so a channel reads the alpha that its
   pass wrote. Every frame stays opaque unless `ghee render --alpha` or
   `ghee.open(..., alpha=True)` keeps the output pass's alpha: a raw frame and
@@ -142,7 +147,7 @@
   emoji)`, in `Scene(assets=..., texts=...)` and `Pass(layers=...)`. A text
   with no `font` draws from the built-in font, and a keyword left at None
   leaves its key to ghee's default, `pad` included. `mipmaps=True` on
-  `ghee.Pass` builds its mip chain.
+  `ghee.Pass` builds its mip chain, and `visible=False` hides the pass.
 - Take a scene's and a pass's `params` as a list of `ghee.Param`. Raise
   ValueError for a dict key that differs from its param's name, where the
   param went out under the key.

@@ -19,6 +19,7 @@
 //! the same preamble, with ghee's code for the text's fill around the
 //! layer's own GLSL.
 
+use std::borrow::Cow;
 use std::fs;
 
 use anyhow::{anyhow, bail, Result};
@@ -167,8 +168,9 @@ const SCENE_KEYS: [&str; 7] = [
 ];
 
 /// The keys of a pass.
-const PASS_KEYS: [&str; 10] = [
-    "name", "code", "shader", "arrays", "channels", "params", "filter", "size", "mipmaps", "layers",
+const PASS_KEYS: [&str; 11] = [
+    "name", "code", "shader", "arrays", "channels", "params", "filter", "size", "mipmaps",
+    "layers", "visible",
 ];
 
 /// The keys of a layer.
@@ -1679,6 +1681,10 @@ pub struct Pass {
     pub mipmaps: bool,
     /// Texts drawn into this pass's buffer after its quad, in order.
     pub layers: Vec<Layer>,
+    /// False hides the pass: it draws a copy of the pass before it, or black
+    /// as the first pass, and its layers draw nothing. It keeps its params,
+    /// arrays and layers. Scene::drawn_passes() says what the engine draws.
+    pub visible: bool,
 }
 
 impl Pass {
@@ -1719,6 +1725,7 @@ impl Pass {
             size,
             mipmaps: false,
             layers: Vec::new(),
+            visible: true,
         })
     }
 
@@ -1822,6 +1829,14 @@ impl Pass {
                 py_repr(v)
             ),
         };
+        pass.visible = match o.get("visible").filter(|v| !v.is_null()) {
+            None => true,
+            Some(Value::Bool(b)) => *b,
+            Some(v) => bail!(
+                "pass '{name}' visible needs true or false, got {}",
+                py_repr(v)
+            ),
+        };
         let layers = list_of(o, "layers").map_err(|e| anyhow!("pass '{name}': {e}"))?;
         // A layer goes by its name and its text in an error about any key,
         // so each comes from the dict before the layer parses.
@@ -1855,6 +1870,9 @@ impl Pass {
     pub fn to_dict(&self) -> Value {
         let mut out = Map::new();
         out.insert("name".to_string(), Value::from(self.name.clone()));
+        if !self.visible {
+            out.insert("visible".to_string(), Value::from(false));
+        }
         if self.has_code() || self.layers.is_empty() {
             out.insert("code".to_string(), Value::from(self.code.clone()));
         }
@@ -1963,6 +1981,12 @@ impl Pass {
         texts: &[Text],
         hw_linear: bool,
     ) -> String {
+        // A hidden pass, as Scene::drawn_passes() leaves it, runs ghee's copy
+        // in its code, which reads neither the common block nor a text.
+        if !self.visible {
+            let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |_| false);
+            return format!("{}\n\n{}", l.join("\n"), self.code);
+        }
         let l = self.preamble(scene_params, assets, texts, hw_linear);
         // An author writes a filter on its own, and ghee appends it to any
         // scene. The scene's common block never reaches it, so a filter name
@@ -2166,6 +2190,12 @@ impl Pass {
     }
 }
 
+/// The code of a hidden pass after the first: a copy of the pass before it.
+const COPY: &str = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+
+/// The code of a hidden first pass.
+const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
+
 // mediump cannot hold a texel coord like (col+0.5)/w. A feedback pass that
 // resamples its own output then drifts a fraction of a pixel per frame. highp
 // keeps a ping-pong buffer stable, and VC4 supports it.
@@ -2233,6 +2263,9 @@ impl Scene {
         }
         if let Some(e) = passes.iter().find_map(Pass::twin_layers) {
             bail!("{e}");
+        }
+        if !passes.is_empty() && passes.iter().all(|p| !p.visible) {
+            bail!("every pass is hidden, and a scene shows one pass at least");
         }
         {
             let mut seen: Vec<&str> = Vec::new();
@@ -2619,6 +2652,51 @@ impl Scene {
 
     pub fn output(&self) -> &Pass {
         &self.passes[self.passes.len() - 1]
+    }
+
+    /// The passes that the engine draws, as the scene's own when every pass
+    /// is visible. A hidden pass draws a copy of the pass before it, or black
+    /// as the first pass, and its layers draw nothing. The passes after the
+    /// last visible one stay out, so that pass holds the frame, and a channel
+    /// that reads one of them reads that pass, which their copies would show.
+    pub(crate) fn drawn_passes(&self) -> Cow<'_, [Pass]> {
+        if self.passes.iter().all(|p| p.visible) {
+            return Cow::Borrowed(&self.passes);
+        }
+        let last = self
+            .passes
+            .iter()
+            .rposition(|p| p.visible)
+            .unwrap_or(self.passes.len() - 1);
+        let shown = &self.passes[..=last];
+        let gone: Vec<&str> = self.passes[last + 1..]
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        let drawn = shown
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let mut d = p.clone();
+                if !p.visible {
+                    d.layers.clear();
+                    (d.code, d.channels) = match i {
+                        0 => (BLACK.to_string(), Vec::new()),
+                        _ => (
+                            COPY.to_string(),
+                            vec![Channel::new(Some(&shown[i - 1].name))],
+                        ),
+                    };
+                }
+                for c in &mut d.channels {
+                    if c.buffer.as_deref().is_some_and(|b| gone.contains(&b)) {
+                        c.buffer = Some(shown[last].name.clone());
+                    }
+                }
+                d
+            })
+            .collect();
+        Cow::Owned(drawn)
     }
 
     /// `path` names the scene in an error message. A `shader` file resolves
@@ -3176,6 +3254,24 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_pass_saves_visible_false_and_a_shown_one_leaves_it_out() {
+        let d = json!({"version": 1, "passes": [
+            {"name": "a", "visible": false, "code": GOOD},
+            {"name": "b", "code": GOOD},
+            {"name": "c", "visible": true, "code": GOOD},
+        ]});
+        let back = Scene::from_dict(&d, None, None).unwrap().to_dict();
+        assert_eq!(
+            back["passes"],
+            json!([
+                {"name": "a", "visible": false, "code": GOOD},
+                {"name": "b", "code": GOOD},
+                {"name": "c", "code": GOOD},
+            ])
+        );
+    }
+
+    #[test]
     fn a_color_param_takes_hex_or_three_numbers() {
         // Each hex pair is a byte, and the channel is byte / 255.
         for (value, want) in [
@@ -3241,6 +3337,14 @@ mod tests {
             (
                 pass(json!({"mipmaps": "yes"})),
                 "pass 'm' mipmaps needs true or false, got 'yes'".to_string(),
+            ),
+            (
+                pass(json!({"visible": "no"})),
+                "pass 'm' visible needs true or false, got 'no'".to_string(),
+            ),
+            (
+                pass(json!({"visible": false})),
+                "every pass is hidden, and a scene shows one pass at least".to_string(),
             ),
             (
                 json!({"version": 1, "passes": [{"name": "m"}]}),

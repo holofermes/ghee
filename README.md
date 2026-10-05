@@ -169,14 +169,13 @@ scenes](#procedural-scenes).
 
 ghee refuses a scene with an unknown key. The error names the key and where it
 sits, and it suggests the closest known key, or the object that takes the key:
-`"fill"` on a layer points to the layer's text.
+`"font"` on a layer points to `font_family`, and `"code"` on a layer points to
+its pass.
 
 When GLSL fails to compile, `ghee render` stops with an error. The error opens
 with the pass and the line of its code that holds the mistake, as in
 `pass 'main', line 2 of its code:`, and the GL's own message follows. A
-mistake in the common block reads `line 2 of the common block`. A mistake in a
-layer names the layer and its `vertex` or `fragment`, as in
-`pass 'main' layer 'glow', line 2 of its fragment:`.
+mistake in the common block reads `line 2 of the common block`.
 
 ghee also looks a scene name up in the directories on `$GHEE_SCENES`, a
 colon-separated list. Careful: procedural scenes are executables, and ghee
@@ -196,6 +195,11 @@ normalized coordinates. A pass with `"mipmaps": true` builds the mip chain of
 its buffer after each frame, and every channel that reads the buffer samples
 it trilinearly. A buffer drawn small and far away, such as words in
 perspective, then stays calm.
+
+A pass with `"visible": false` is hidden. It draws a copy of the pass before
+it, or black as the first pass, its layers draw nothing, and the frame is the
+last visible pass. A hidden pass keeps its params, arrays and layers, so a set
+and a feed still land, and a scene that hides every pass fails to load.
 
 A pass buffer holds 8-bit RGBA, and a channel reads the alpha that its pass
 wrote. Every output frame is opaque, with alpha 255, unless
@@ -273,297 +277,227 @@ binds it in every pass:
 
 ghee looks a relative `file` up in the directory of the scene file, or of a
 procedural scene's executable, then in each directory on `$GHEE_ASSETS`, a
-colon-separated list. A path may be absolute or climb out with `..`. The
-console is the exception: it reads only the files inside its scenes directory.
+colon-separated list. A path may be absolute or climb out with `..`, except
+in a scene that [the console](#the-console) serves.
 
-Every pass samples the asset as `uniform sampler2D noise`, and reads its size
-in pixels in `uniform vec2 noise_size`. Sampling is `nearest` unless the asset
-sets `"sampling": "linear"`.
+A pass samples the asset as `uniform sampler2D noise_tex`, and reads its size
+in pixels in `uniform vec2 noise_size`. Sampling is `nearest` unless the
+asset sets `"sampling": "linear"`.
 
 An asset file is a `.png`, a `.jpg`, or a `.raw` file of bare pixels. A `.raw`
 file declares `width`, `height` and `format`, `u8` or little-endian `f32`, and
 `components` sets 1, 3 or 4 values per pixel, 1 by default. A `.ttf` or `.otf`
-file is a font for a [text](#text), and only the text reads it.
+file is a font for a [text layer](#text-layers)'s `font_family`, and only the
+layer reads it.
 
-### Names in GLSL
+### Names
+
+Every pass, layer, asset and scene param of a scene takes a name of its own.
+A pass's params and arrays take names unique within the pass that no pass,
+layer, asset or scene param holds, so two passes may each declare a param
+`gain`. A name holds ASCII letters, digits and `_`, starts with a letter, ends
+with a letter or a digit, holds no `__`, and does not start with `gl_` or
+`ghee`.
 
 ghee writes these names into every shader: `time`, `DT`, `frame`,
-`resolution`, `v_texCoord`, and `iChannel0` and up. Every other name that ghee
-writes for its own use starts with `ghee_`, and the names that a layer reads
-start with `glyph_`. A scene fails to load when a param, an array, an asset or
-a text takes a built-in name, or a name that starts with `ghee_` or `glyph_`.
+`resolution`, `v_texCoord`, and `iChannel0` and up. A param, an array or an
+asset that takes one of them fails to load. A layer may take any name that
+the rule allows.
 
 Each declaration adds names to the GLSL of the passes that it reaches:
 
-- A param adds its own name, in its pass, or in every pass for a scene param.
-- An array adds `<name>_tex` and the readers in the preamble above, in its
-  pass.
-- An asset adds `<name>` and `<name>_size`, in every pass.
-- A text adds `<name>_cover` and `<name>_size`, in every pass.
-- A layer's GLSL reads the `glyph_` names that [Layers](#layers) lists.
+| Declared | GLSL names | Reaches |
+| --- | --- | --- |
+| a param `gain` | `gain` | its pass, or every pass for a scene param |
+| an array `amplitudes` | `amplitudes_tex`, `amplitudes_size` and the readers in the preamble | its pass |
+| an image asset `noise` | `noise_tex`, `noise_size` | every pass except a filter pass |
+| a text layer `title` | `title_cover`, `title_size` | every pass except a filter pass |
 
-A scene fails to load when two declarations add the same name to one pass,
-such as a param `title_size` beside a text `title`, and the error names both.
+A font asset and an image layer add no name. A scene fails to load when two
+declarations add the same name to one pass, such as a param `title_size`
+beside a text layer `title`, and the error names both.
 
-## Text
+## Layers
 
-ghee draws text on the GPU from the outlines of a font. A scene declares each
-text in `texts`, with its words in `value`. A layer on a pass then paints the
-text into the pass's buffer.
+A pass's shader fills its buffer, then the pass's `layers` paint over it, in
+list order. A text layer draws words from a font, and an image layer draws a
+picture. Both take their settings as keys, and ghee draws them. A pass's shader
+can also read the words of any text layer and any image asset, for the
+per-pixel work that settings do not cover, as [Coverage in a
+shader](#coverage-in-a-shader) shows.
 
-This scene holds a text with words and nothing else. ghee draws the words
-white on black, in its built-in font, DejaVu Sans, and fits them to the pass:
+This scene draws `hello` in a red to yellow gradient with a soft shadow,
+fitted to the frame and centred, and puts the image `stamp.png` 16 pixels wide
+in the top left corner:
 
 ```json
 {
   "version": 1,
-  "texts": { "title": { "value": "hello" } },
-  "passes": [{ "name": "main", "layers": [{ "text": "title" }] }]
+  "assets": { "stamp": { "file": "stamp.png" } },
+  "passes": [{
+    "name": "main",
+    "code": "void main() { gl_FragColor = vec4(0.1, 0.12, 0.2, 1.0); }",
+    "layers": [
+      { "name": "title", "text": "hello",
+        "color": { "from": "#ff0000", "to": "#ffff00", "angle": 90 },
+        "text_shadow": {} },
+      { "name": "icon", "image": "stamp", "x": 4, "y": 4, "width": 16 }
+    ]
+  }]
 }
 ```
 
+Every layer takes these keys:
+
+| Key | Value | Default |
+| --- | --- | --- |
+| `name` | the layer's name, per [Names](#names) | required |
+| `visible` | `false` hides the layer | `true` |
+| `x`, `y` | the pass pixel of the block's top left, y down | centred on a missing axis |
+| `color` | `"#rrggbb"`, or `[r, g, b]` with each 0 to 1 | white for text, no tint for an image |
+| `opacity` | 0 to 1 | 1 |
+| `blend` | `normal`, `add`, `multiply` or `screen` | `normal` |
+
+A layer's colour, premultiplied by alpha, lands on the pass's buffer by its
+`blend`, and alpha blends the same way: `normal` gives src + dst × (1 −
+src.a), `add` gives src + dst, `multiply` gives src × dst + dst × (1 −
+src.a), and `screen` gives src + dst × (1 − src). The formulas of `multiply`
+and `screen` hold over an opaque buffer, such as the output of the pass's own
+shader. A pass with `layers` and no GLSL of its own starts each frame
+transparent and holds its layers alone, for a later pass to read through a
+channel. A later pass reads the whole buffer, layers included.
+
+### Text layers
+
+A text layer takes these keys on top of every layer's:
+
+| Key | Value | Default |
+| --- | --- | --- |
+| `text` | the words | required |
+| `font_size` | pixels per em | the largest size that fits |
+| `font_family` | a font asset's name, or a `.ttf` or `.otf` file | DejaVu Sans, built in |
+| `text_align` | `left`, `center` or `right` | `left` |
+| `render` | `mtsdf` or `slug`, as [Render](#render) describes | `mtsdf` |
+
 The words lay out into a block, as wide as the longest line, with one line
-height for each line. A layer with no `font_size` and no `vertex` takes the
-largest size at which the block fits inside the pass, with a margin of 5% of
-the pass's shorter side on every edge, and centres the block. The size follows
-the words, so new words fit again.
+height for each line, and `text_align` puts each line within the block. A
+layer with no `font_size` takes the largest size at which the block fits
+inside the pass, with a margin of 5% of the pass's shorter side on every
+edge. On an axis with `x` or `y` given, the room runs from that pixel to the
+margin at the far edge. The size follows the words, so new words fit again.
 
 `font_size` sets the size in pixels per em, as a font size does in CSS. One
 line of DejaVu Sans is 1.164 em tall, so at 48 pixels per em a line is 56
-pixels tall. This layer draws the block at 48 pixels per em, centred in the
-pass:
-
-```json
-"layers": [{ "text": "title", "font_size": 48 }]
-```
-
-`at` puts the top left of the block at a pixel of the pass, `[x, y]` with y
-down. With `font_size`, the block draws at that size. Without it, the block
-takes the largest size that fits right of and below that pixel, less the
-margin at the right and bottom edges. This status screen puts two lines in the
-top left corner of a 128x32 panel:
-
-```json
-"texts": { "cpu": { "value": "cpu 12%" }, "temp": { "value": "temp 41°C" } },
-"passes": [{ "name": "main", "layers": [
-  { "text": "cpu", "font_size": 12, "at": [0, 0] },
-  { "text": "temp", "font_size": 12, "at": [0, 16] }
-]}]
-```
-
-A glow is a second layer of the text, under the words. `pad` lets the glow
-layer reach 0.3 em past the letters, and its `fragment` turns the distance
-from the letters into light. `glyph_round_dist()` is that distance in pixels,
-above 0 inside the letters, and `glyph_font_size` holds the pixels per em, so
-`far` is the distance outside the letters in em. Both layers fit the block to
-the same size, so the glow stays under its words:
+pixels tall. This status screen puts two lines in the top left corner of a
+128x32 panel:
 
 ```json
 "layers": [
-  { "text": "title", "name": "glow", "pad": 0.3,
-    "fragment": "void main() { float far = -glyph_round_dist() / glyph_font_size; gl_FragColor = vec4(0.3, 0.6, 1.0, 1.0) * exp(-10.0 * max(far, 0.0)); }" },
-  { "text": "title" }
+  { "name": "cpu", "text": "cpu 12%", "font_size": 12, "x": 0, "y": 0 },
+  { "name": "temp", "text": "temp 41°C", "font_size": 12, "x": 0, "y": 16 }
 ]
 ```
 
-[Recipes](#recipes) holds more effects: an outline, a drop shadow, a
-per-letter wave and a marquee.
+A text layer's `color` also takes a gradient, `{"from", "to", "angle"}`, with
+CSS's angle in degrees: 0 runs up, 90 right, and 180, the default, down. The
+gradient spans the block and moves with it.
 
-`font` names the text's font, a `.ttf` or `.otf` file beside the scene, as in
-`"font": "DejaVuSans.ttf"`. [Fonts and words](#fonts-and-words) holds the
-rest: font assets, fallback lists, colour emoji and the limits of the layout.
+ghee declares a scene string param under each text layer's name, which holds
+the words. `set_param`, `/set`, the console and a procedural scene set new
+words through it, and ghee lays them out again with no rebuild.
 
-The words change live. `set_param`, `/set`, the console's texts panel and a
-procedural scene set new words, and ghee lays them out again with no
-recompile. For this, ghee declares a scene string param under each text's
-name. A scene that declares its own param under a text's name fails to load.
+### Effects
 
-A pass draws a text in one of two ways. A [layer](#layers) paints the words
-over the pass's buffer, as one quad over each glyph, and its own GLSL places
-and colours each glyph. Take a layer for words that sit on the screen, still
-or moving glyph by glyph. [`<name>_cover`](#coverage-in-a-shader) gives the
-pass's own shader the coverage of the words at any point. Take it when the
-words feed the shader's math, such as a warp or a mask. A layer shades the
-pixels of its glyphs alone, and `_cover` searches the font's curves at every
-pixel that calls it.
+An effect is a key of a text layer that holds an object of its fields. A field
+left out takes its default, so `"glow": {}` draws the default glow. Sizes are
+in em, and so scale with the words.
 
-### Layers
+| Effect | Fields and defaults |
+| --- | --- |
+| `text_shadow` | `x` 0.06, `y` 0.08, `blur` 0.15, `color` `#000000`, `strength` 0.7 |
+| `glow` | `blur` 0.3, `color` `#ffa500`, `strength` 0.8 |
+| `text_stroke` | `width` 0.06, `color` `#000000` |
+| `karaoke` | `sung` 0, `color` `#ffad2e` |
+| `wave` | `height` 0.1, `speed` 0.6 |
+| `scroll` | `speed` 2 |
+| `blink` | `rate` 1 |
 
-A pass's shader fills its buffer, then its `layers` paint texts over it, in
-order. This layer puts `title` in amber at 48 pixels per em, centred in the
-pass:
+- `text_shadow` draws a copy of the letters moved by `x` and `y`, softened
+  over `blur`, at `strength` alpha.
+- `glow` lights the room around the letters, from `strength` alpha at their
+  outline to nothing at `blur`.
+- `text_stroke` grows the letters by `width` in its colour.
+- `karaoke` fills the letters in its colour up to the `sung` point, which
+  counts characters and takes fractions, and lifts the letter being sung by
+  up to 0.15 em as the point passes its middle.
+- `wave` bobs each letter up and down by `height`, `speed` waves a second,
+  each letter a tenth of a wave behind the one before it.
+- `scroll` moves the block from right to left, `speed` em a second, by whole
+  pixels, so on a 1-bit panel each letter keeps its pixels. The block enters
+  at the pass's right edge, and starts there again once it has left at the
+  left. The layer's `x` takes no part while it scrolls.
+- `blink` shows the layer for the first half of each blink, `rate` blinks a
+  second.
 
-```json
-"layers": [{
-  "text": "title",
-  "vertex": "vec2 glyph_place(vec2 em) { return (resolution - title_size * 48.0) * 0.5 + em * 48.0; }",
-  "fragment": "void main() { float c = glyph_cover(); gl_FragColor = vec4(vec3(1.0, 0.7, 0.2) * c, c); }"
-}]
-```
+Each glyph draws its shadow, glow and stroke, in that order, before any glyph
+draws its letter, so one letter's glow never covers the next letter. The
+motion effects move the letters and their effects together. `"visible": false`
+on an effect bypasses it and keeps its values. ghee works out how far a
+layer's effects reach past its letters, and fades them out at the edge of
+that reach.
 
-- `text` names a scene text.
-- `name` names the layer in errors and in the console: ASCII letters, digits,
-  `_` and `-`, unique among the layers of its pass. A layer without a name
-  goes by its text's name, `title`. A second layer of that text without a name
-  goes by `title 2`, and a third by `title 3`.
-- `font_size` sets the pixels per em, and `at` sets the pass pixel of the
-  block's top left. Without `at` the block sits centred, and without
-  `font_size` it takes the largest size that fits, as [Text](#text) shows.
-- `vertex` places the glyphs in GLSL, and a layer with `vertex` takes neither
-  `font_size` nor `at`. It defines `vec2 glyph_place(vec2 em)`. The function
-  takes a point of the block, in em from its top left with y down, and returns
-  the pass pixel where that point lands, y down like
-  `v_texCoord * resolution`.
-- `fragment` holds a `void main()` that writes the colour premultiplied by
-  alpha. Without it, the letters draw white.
-- `blend` is `over` by default, or `add` or `replace`.
-- `pad` sets how far the layer reaches past the letters, in em, for a glow or
-  an outline. It is 0 by default. Each glyph's quad grows that far past its
-  ink, and `glyph_dist` and `glyph_round_dist` reach at least that far.
-- `fade` sets a band at the outer edge of the pad, in em, over which the layer
-  fades to 0. It is a quarter of `pad` by default and at most `pad`, and 0
-  turns the fade off. [Recipes](#recipes) shows why a glow needs it. A layer
-  of the slug fill takes no `fade`.
-- `emoji` sets whether the layer paints the text's colour glyphs. By default
-  the last layer of the text in its pass paints them, and the layers under it,
-  such as a glow or a shadow, paint none.
+Careful: `opacity` applies to the effects and to the letters each, so below 1
+the shadow and the glow show through the letters. The effects draw with the
+layer's `blend` too, so under `add` a black shadow adds nothing.
 
-`fragment` reads:
+### Image layers
 
-```glsl
-float glyph_cover();       // coverage 0..1
-float glyph_dist();        // signed distance to the outline in pixels, > 0 inside
-float glyph_round_dist();  // true signed distance in pixels, round at corners
-float glyph_fade;          // 1 up to pad - fade em from the letters, 0 at pad em
-vec2  glyph_em;            // the point in em, as glyph_place takes it
-float glyph_index;         // the character's index in the words, newlines counted
-float glyph_word;          // the index of its word
-float glyph_line;          // the index of its line
-vec2  glyph_span;          // its advance, start and end x in em
-float glyph_font_size;     // pixels per em at this glyph
-```
+An image layer takes these keys on top of every layer's, and no effects:
 
-`vertex` reads `glyph_index`, `glyph_word`, `glyph_line`, `glyph_span` and
-`glyph_box`, the glyph's ink box in em as x0, y0, x1, y1. Both `vertex` and
-`fragment` see the pass's preamble and the scene's common block, as the pass's
-shader does.
+| Key | Value | Default |
+| --- | --- | --- |
+| `image` | an image asset's name, or a `.png` or `.jpg` file | required |
+| `width`, `height` | pass pixels | the image's own size |
 
-ghee draws each glyph as one quad over its ink box. The vertex shader calls
-`glyph_place` four times at each corner of the quad. The first three calls, at
-the corner and a sixteenth of an em to its right and below it, measure how
-many pixels an em spans there along each axis. The fourth call places the
-corner, pushed out past the ink by a little over half a pixel at that scale,
-or by `pad` when `pad` is larger. The GPU fills the quad flat between its four
-corners, so `glyph_place` can move, turn, scale or shear each glyph, and a
-bend inside one glyph draws straight. The pixels per em at the corners set
-`glyph_font_size` and the antialiasing, which softens an edge over one pixel.
+One of `width` and `height` left out keeps the image's aspect, and both given
+stretch it. `color` tints the image: it multiplies each pixel. An image layer
+gives the passes no GLSL name of its own, and a pass's shader reads the image
+as its asset's `<name>_tex`.
 
-Each frame, a pass draws in this order. Its shader fills the buffer, or a pass
-with `layers` and no GLSL of its own clears the buffer to transparent black.
-Each layer then paints its glyphs, in list order. The layers that paint emoji
-paint the colour glyphs after that, and every error box comes last. A layer's
-colour, premultiplied by alpha, lands on the buffer by its `blend`: `over`
-gives src + dst × (1 − src.a), `add` gives src + dst, and `replace` writes
-src. Alpha blends the same way. Careful: `replace` writes the whole quad of
-each glyph, faded or not. The first layer of a text thus puts a glow or a
-shadow under the fill of every glyph. A later pass reads the whole buffer,
-layers included, through a channel.
+### Live fields
 
-A layer that paints emoji draws each colour glyph from its bitmap, and the
-layer's `fragment` never runs for them. The bitmap comes from the font's
-largest strike, and mipmaps keep it smooth at text size. `vertex` places it
-like any other glyph, and the layer's `blend` blends it. A shadow layer with
-`"emoji": true` paints a copy of its own. ghee decodes the bitmaps into an
-RGBA atlas when the words first hold them.
+Some fields change with no rebuild: a layer's `x`, `y`, `color`, `opacity`
+and `visible`, a text layer's words, an image layer's `image`, which takes
+another image asset of the scene, and an effect's `visible`, `color`,
+`strength`, `sung`, `speed` and `rate`. A change to any other field rebuilds
+the layer. Setting `x` or `y` to none centres the block on that axis again,
+and setting `color` to none takes its default back.
 
-### Recipes
+Python sets a live field through `layers`, as `h.layers.title.x = 10` on a
+`ghee.open` handle or `ghee.layers.title.karaoke.sung = 12` in a procedural
+scene's tick, and [python/README.md](python/README.md) holds the rest. The
+console sets them through `/set?layer=`, which [docs/http.md](docs/http.md)
+describes, a procedural scene through its message kind 1, and Rust through
+`Renderer::set_layer`.
 
-Each recipe draws a text named `title` and fits any pass, from a 128x32 panel
-to HDMI. Paste its layers into a pass with no GLSL of its own, and the words
-draw over black. The drop shadow brings its own pass and `common` block.
-
-The glow in [Text](#text) needs its `pad`. Each glyph's quad reaches `pad` em
-past the letters, and the glow lives in that room. A glow that has not reached
-0 at the quad's edge shows the quad as a faint box. So ghee fades a padded
-`mtsdf` layer to 0 over the last quarter of its pad, by the distance from the
-letters, and the glow ends along the letters' shape. `fade` sets that band in
-em, and `"fade": 0` turns the fade off. `glyph_fade` holds the fade's factor
-in `fragment`, and ghee multiplies the layer's colour and alpha by it after
-`main` returns. In a layer that does not fade, `glyph_fade` holds 1.
-
-An outline is a layer under the words that grows the letters by the outline's
-width, here 0.06 em. The second layer fills the letters black, which leaves
-hollow letters in an amber outline. Fill it with a colour for outlined
-letters. The outline's `pad` reaches well past its edge, so the fade leaves
-the edge alone:
-
-```json
-"layers": [
-  { "text": "title", "name": "outline", "pad": 0.15,
-    "fragment": "void main() { float c = clamp(glyph_round_dist() + 0.06 * glyph_font_size + 0.5, 0.0, 1.0); gl_FragColor = vec4(1.0, 0.6, 0.1, 1.0) * c; }" },
-  { "text": "title", "fragment": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0) * glyph_cover(); }" }
-]
-```
-
-A drop shadow is a copy of the words moved down and right, and moving glyphs
-takes `vertex`. This scene's `common` block holds `place`, which sizes the
-block to 0.8 of the pass and centres it, and both layers place their glyphs
-with it. The shadow layer moves its glyphs 0.06 em right and 0.08 em down, and
-darkens the blue background softly up to 0.15 em past the letters:
-
-```json
-"common": { "code": "vec2 place(vec2 em) { float px = 0.8 * min(resolution.x / title_size.x, resolution.y / title_size.y); return 0.5 * (resolution - title_size * px) + em * px; }" },
-"passes": [{
-  "name": "main",
-  "code": "void main() { gl_FragColor = vec4(0.25, 0.45, 0.75, 1.0); }",
-  "layers": [
-    { "text": "title", "name": "shadow", "pad": 0.2,
-      "vertex": "vec2 glyph_place(vec2 em) { return place(em + vec2(0.06, 0.08)); }",
-      "fragment": "void main() { float far = -glyph_round_dist() / glyph_font_size; gl_FragColor = vec4(0.0, 0.0, 0.0, 0.7) * (1.0 - smoothstep(-0.05, 0.15, far)); }" },
-    { "text": "title", "vertex": "vec2 glyph_place(vec2 em) { return place(em); }" }
-  ]
-}]
-```
-
-A per-letter wave gives each glyph its own phase. `glyph_index` counts the
-characters, so this layer bobs each letter up and down by 0.1 em, a little
-behind the one before it. It takes `place` from the drop shadow's `common`
-block:
-
-```json
-"layers": [
-  { "text": "title",
-    "vertex": "vec2 glyph_place(vec2 em) { return place(em + vec2(0.0, 0.1 * sin(4.0 * time - 0.6 * glyph_index))); }" }
-]
-```
-
-A marquee scrolls the words from right to left, here at 2 em a second, with
-the block 0.8 of the pass tall. The words start over once they leave the pass.
-`floor` moves the block by whole pixels, so on a 1-bit panel each letter keeps
-its pixels as it scrolls:
-
-```json
-"layers": [
-  { "text": "title",
-    "vertex": "vec2 glyph_place(vec2 em) { float px = 0.8 * resolution.y / title_size.y; float trip = resolution.x + title_size.x * px; float x = floor(resolution.x - mod(time * 2.0 * px, trip)); return vec2(x, 0.5 * (resolution.y - title_size.y * px)) + em * px; }" }
-]
-```
-
-`ghee/examples/nowplaying.py` puts an artist over a scrolling title on a
-128x32 or a 256x64 panel.
+`wave`, `scroll` and `blink` move by a phase that ghee keeps for each layer.
+Each frame advances the phase by the effect's `speed` or `rate` times the
+frame's time step, so a new speed carries the motion on from where it is.
+Under `--timestep` the phase starts at 0 with the scene.
 
 ### Text on 1-bit and 16-level panels
 
 A 1-bit panel such as the SSD1306 lights a pixel or leaves it dark. ghee's
 `ssd1306` driver lights a pixel whose grey is above 128 of 255. A letter keeps
 its shape, since a pixel at its edge lights when the pixel's centre lies
-inside the outline. A glow, a soft shadow and every other dim pixel go dark. A
-stroke thinner than a pixel can go dark too, such as the bar of a small e at
-11 pixels per em. This fill grows the letters by a tenth of a pixel and keeps
-such strokes:
+inside the outline. A glow, a soft shadow and every other dim pixel go dark.
+A stroke thinner than a pixel can go dark too, such as the bar of a small e at
+11 pixels per em. A `text_stroke` in the letters' colour, 0.01 em wide, grows
+them by a tenth of a pixel at that size and keeps such strokes:
 
 ```json
-{ "text": "title", "fragment": "void main() { gl_FragColor = vec4(clamp(glyph_dist() + 0.6, 0.0, 1.0)); }" }
+{ "name": "title", "text": "hello", "font_size": 11,
+  "text_stroke": { "width": 0.01, "color": "#ffffff" } }
 ```
 
 Three filters bring grey back. A scene names them in `filters`, or `--filters`
@@ -595,66 +529,63 @@ clock above runs at 216 fps. The table's 86 fps is the bus at 400 kHz, where
 `frc` flickers, and a panel that stays under about 200 fps is better served by
 `dither`.
 
-### Fills
+### Render
 
-A text's `fill` sets how its layers find the coverage of each pixel: `mtsdf`,
+A text layer's `render` sets how it finds the coverage of each pixel: `mtsdf`,
 the default, or `slug`.
 
 `mtsdf` reads an atlas that holds an MTSDF, a multi-channel signed distance
 field, for each glyph. Each texel of a glyph's cell holds distances to the
 outline, 0.5 on the outline and rising inward. Red, green and blue each hold
 the distance to some of the outline's edges, and their median keeps the
-corners sharp. Alpha holds the true distance, which rounds the corners. A
-layer reads one bilinear sample of the cell for each pixel, with no mipmaps,
-and scales it to pixels by the pixels per em at the glyph. `glyph_dist()`
-returns the median's distance and `glyph_round_dist()` the alpha's, both in
-pixels and above 0 inside. `glyph_cover()` returns
-`clamp(glyph_dist() + 0.5, 0.0, 1.0)`.
+corners sharp. Alpha holds the true distance, which rounds the corners, and
+the shadow, the glow and the stroke read it. A layer reads one bilinear sample
+of the cell for each pixel.
 
-The first time a font is used, ghee generates the glyphs of the words and a
-preload: ASCII, Latin-1, the curly quotes, the en and em dash, the ellipsis,
-the bullet and the euro sign. It generates them on every core, in 0.6 s on a
-Pi Zero 2 W, and caches the atlas in `$XDG_CACHE_HOME/ghee/atlas`, else
-`~/.cache/ghee/atlas`. Any other character follows when words first need it.
-New words show in their first frame when the atlas already holds all their
-glyphs. Other new words wait for their glyphs, and the text keeps its last
-words on screen meanwhile. A setup waits for them, and so does a render with
-`--timestep`. `atlas` on the text sets the texels per em of a glyph's cell, 32
-by default:
-
-```json
-"texts": { "title": { "font": "sans", "atlas": { "font_size": 48 } } }
-```
-
-The field reaches past the outline as far as the largest `pad` among the
-text's layers, so a glow fits with no tuning. It reaches 3 texels at least,
-0.094 em at 32 texels per em. Its 8 bits span the whole reach, so a large
-`pad` coarsens the edges of every layer of the text.
+The atlas's detail follows the layer's size, its `font_size` or the size that
+fits its words at setup, rounded up to 32, 48, 64, 96 or 128 texels per em, so
+layers of near sizes share one atlas. Words that grow live keep the detail
+that the layer was built with. The first time a font is used at a detail, ghee
+generates the glyphs of the words, then a preload: ASCII, Latin-1, the curly
+quotes, the en and em dash, the ellipsis, the bullet and the euro sign. It
+generates them on every core, and caches the atlas in
+`$XDG_CACHE_HOME/ghee/atlas`, else `~/.cache/ghee/atlas`. Any other character
+follows when words first need it. New words show in their first frame when
+the atlas already holds all their glyphs. Other new words wait for their
+glyphs, and the layer keeps its last words on screen meanwhile. A setup waits
+for them, and so does a render with `--timestep`.
 
 `slug` reads no atlas. Each pixel of a glyph's quad casts one ray along x and
 one along y, and the curves crossed by the rays give the pixel's coverage.
-That coverage is exact at any size and under any `glyph_place`. This is Eric
-Lengyel's [Slug](https://github.com/EricLengyel/Slug) method, and `_cover`
-runs it too. A slug text takes no `atlas` key, and its layers get no
-distances: a layer that reads `glyph_dist`, `glyph_round_dist` or `glyph_fade`
-fails to compile, and the error names `"fill": "mtsdf"`.
+That coverage is exact at any size. This is Eric Lengyel's
+[Slug](https://github.com/EricLengyel/Slug) method, and `_cover` runs it too.
+A slug layer has no distance to the letters, so it skips `text_shadow`, `glow`
+and `text_stroke` and draws its other effects.
 
-Take `mtsdf` for most words, and for any layer that reads a distance. It costs
-one texture read a pixel. Take `slug` when new words must show in their first
-frame, whatever characters they hold, and when the frame has time for a loop
-over the curves at every pixel of every glyph. On a Pi Zero 2 W, seven lines
-of 216 characters at 46 pixels per em, in a 1280x800 frame, draw in 3.2 ms
-with `mtsdf` and in 22.7 ms with `slug`. The background pass takes 2.1 ms of
-each.
+Take `mtsdf` for most words, and for the shadow, the glow and the stroke. It
+costs one texture read a pixel. Take `slug` when new words must show in their
+first frame, whatever characters they hold, and when the frame has time for a
+loop over the curves at every pixel of every glyph. On a Pi Zero 2 W, seven
+lines of 216 characters at 46 pixels per em, in a 1280x800 frame, draw in 3.2
+ms with `mtsdf` and in 22.7 ms with `slug`. The background pass takes 2.1 ms
+of each.
 
 ### Coverage in a shader
 
-Every pass of the scene except a filter pass can read a text's words with
-`float <name>_cover(vec2 p, float font_size)`. The function returns the
+Every pass of the scene except a filter pass can read a text layer's words
+with `float <name>_cover(vec2 p, float font_size)`. The function returns the
 coverage of the words at `p`, from 0 to 1. `p` is in em from the block's top
 left, y down like `v_texCoord`. `<name>_size` holds the block's width and
-height in em. This shader draws `title` white on black, centred in the frame
-at 48 pixels per em:
+height in em. The layer's `x`, `y`, `font_size`, `color`, effects and
+`visible` play no part, so a hidden layer gives a shader words that the layer
+never draws itself, and ghee builds no atlas for it until it shows:
+
+```json
+"layers": [{ "name": "title", "text": "hello", "visible": false }]
+```
+
+This shader draws `title` white on black, centred in the frame at 48 pixels
+per em:
 
 ```glsl
 void main() {
@@ -673,62 +604,70 @@ them. A shader that warps `p` passes the pixels per em after the warp. Where
 the warp stretches the two axes unevenly, it passes the smaller of the two, as
 the `lens` example does.
 
-`_cover` runs the slug fill's method, so its edges stay exact at any size.
-ghee stores each control point to within 1/4094 of its glyph's size, 0.17 px
-for a 1 em glyph at 700 pixels per em. A colour glyph is a bitmap with no
-outline, so `_cover` reads it as no coverage, and only a layer paints it.
+`_cover` runs the slug method, so its edges stay exact at any size. ghee
+stores each control point to within 1/4094 of its glyph's size, 0.17 px for a
+1 em glyph at 700 pixels per em. An emoji is a bitmap with no outline, so
+`_cover` reads it as no coverage.
 
 On VC4, the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre.
 A shader that needs exact centres, like the one above, samples at
 `floor(v_texCoord * resolution) + 0.5`.
 
-### Fonts and words
+### Fonts and emoji
 
-A font is a TrueType or OpenType font with outlines, or a colour emoji font
-with PNG bitmaps in a CBDT or sbix table, such as Noto Color Emoji. A text
-with no `font` draws from the built-in font: DejaVu Sans, cut to ASCII,
-Latin-1, the common punctuation, the euro sign and the trade mark sign. `font`
-takes a `.ttf` or `.otf` file, which resolves as an asset file does, or the
-name of a font asset, which several texts can share. It also takes a list that
-mixes both, `"font": ["sans", "NotoColorEmoji.ttf"]`. Each character then
-draws from the first font in the list whose cmap holds it, and a character
-that no font holds draws the first font's missing-glyph box. A character
-followed by U+FE0F, the emoji variation selector, draws from the first font
-with a colour glyph for it, so ❤️ draws in colour even when an earlier font
-holds a plain heart. Line height and baseline come from the first font.
+A font is a TrueType or OpenType font with outlines. A text layer with no
+`font_family` draws from the built-in font: DejaVu Sans, cut to ASCII,
+Latin-1, the common punctuation, the euro sign and the trade mark sign.
+`font_family` takes a `.ttf` or `.otf` file, which resolves as an asset file
+does, or the name of a font asset, which several layers can share.
 
-Lines break at each newline. `align` puts each line `left`, `center` or
-`right` within the block, `left` by default. ghee draws one glyph for each
-character. The advances and the pair kerning of the font's `kern` table space
-the glyphs, and two glyphs from two fonts take no kerning between them.
+Emoji fall back to Noto Color Emoji. ghee looks for `NotoColorEmoji.ttf`
+beside the scene, then in each directory on `$GHEE_ASSETS`, then in
+`/usr/share/fonts/truetype/noto/`, where `sudo apt install
+fonts-noto-color-emoji` puts it. An emoji that the layer's font lacks draws
+from the first file found, and with no file found, it draws the font's
+missing-glyph box. A character followed by U+FE0F, the emoji variation
+selector, draws its emoji even from a font that holds a plain glyph for it, so
+❤️ draws in colour. ghee reads the emoji font once, when words first need it,
+and every layer shares it.
+
+An emoji draws its bitmap in its own colours, mipmapped, and moves, fades and
+hides with its layer's letters. It takes no `text_shadow`, `glow` or
+`text_stroke`, and a layer's emoji draw after every layer of its pass.
+
+Lines break at each newline. ghee draws one glyph for each character. The
+advances and the pair kerning of the font's `kern` table space the glyphs.
 Careful: a font that kerns through GPOS alone draws unkerned. Since each
 character draws as one glyph, ghee cannot lay out scripts that need shaping,
-such as Arabic and the Indic scripts. Such text goes in as a host-rasterized
-2D input, the way the `marquee` demo draws its words. An emoji sequence draws
-one code point at a time: a flag shows its two regional-indicator letters, a
-sequence joined by U+200D shows each of its emoji, and variation selectors and
-the joiner take no room.
+such as Arabic and the Indic scripts. Such words go in as a 2D input drawn by
+the host, the way the `marquee` example draws its words in Pillow. An emoji
+sequence draws one code point at a time: a flag shows its two
+regional-indicator letters, a sequence joined by U+200D shows each of its
+emoji, and variation selectors and the joiner take no room.
 
 A text problem leaves the scene running, and `ghee render` still exits 0. ghee
 prints the problem once as an error, under `--quiet` too, and the console
-shows it. A font that fails to load drops out of its text's fonts. A text with
-no font left draws every character as an error box, which `_cover` reads as
-diagonal stripes of coverage. These glyphs each draw an error box in their
-place, and the rest of the words draw: a character whose glyph has neither an
-outline nor a colour bitmap, a glyph past the curve limit, and in a layer, a
-glyph too large for its atlas. New words that do not fit leave the last words
-that did, and a scene whose first words do not fit draws none.
+shows it. A layer whose font fails to load draws every character as an error
+box, which `_cover` reads as diagonal stripes of coverage. These glyphs each
+draw an error box in their place, and the rest of the words draw: a character
+whose glyph has neither an outline nor a colour bitmap, a glyph past the curve
+limit, and a glyph that finds no room in the atlas. New words that do not fit
+leave the last words that did, and a layer whose first words do not fit draws
+none.
 
-Render the bundled text examples to PNGs. `lettering` reads its words through
-`_cover` on a ladder of sizes. `karaoke` sings a line in layers over a
-reflection, with its emoji from Noto Color Emoji when `$GHEE_ASSETS` holds it.
-`lens` magnifies a page through `_cover`:
+Render the bundled text examples to PNGs. `karaoke` fills a line as it is
+sung, with a glow, and mirrors it in water through a later pass. `lettering`
+reads a hidden layer's words through `_cover` on a ladder of sizes. `lens`
+magnifies a page through `_cover`:
 
 ```
-ghee render --demo lettering -o lettering.png
 ghee render --demo karaoke -o karaoke.png
+ghee render --demo lettering -o lettering.png
 ghee render --demo lens -o lens.png
 ```
+
+`nowplaying` puts an artist over a scrolling title on a 128x32 or a 256x64
+panel.
 
 ## Procedural scenes
 
@@ -737,9 +676,9 @@ scene and data. ghee starts it and talks to it over stdin and stdout.
 [docs/procedural.md](docs/procedural.md) holds the wire contract.
 
 The Python package `ghee-render` speaks that contract for Python.
-`import ghee` gives `Scene`, `Pass`, `Param`, `Text` and `Layer` to build the
-scene, `@ghee.feed` and `@ghee.tick` to supply the data, and `ghee.run` for
-the loop. A PEP 723 scene declares `ghee-render` inline, under
+`import ghee` gives `Scene`, `Pass`, `Param`, `Asset` and `Layer` to build
+the scene, `@ghee.feed` and `@ghee.tick` to supply the data, `ghee.layers` to
+set the layers' live fields, and `ghee.run` for the loop. A PEP 723 scene declares `ghee-render` inline, under
 `#!/usr/bin/env -S uv run --script`, as the bundled examples do.
 
 A Python scene also renders on its own, with no `ghee` command:
@@ -752,10 +691,15 @@ holds the Python side.
 
 `ghee serve <scenes_dir>` starts the web console on `127.0.0.1:8090`. The
 console shows a hardware accelerated live preview of the running scene. It
-edits the GLSL of each pass and each layer, with compile errors inline, and
-each text's words, font and alignment. It shows each param as a slider, mutes
-passes and picks filters. Each edit reloads into the running renderer.
-[docs/http.md](docs/http.md) holds its API.
+edits each pass's layers and their effects, and the GLSL of each pass, with
+compile errors inline. It shows each param as a slider, hides passes, layers
+and effects, and picks filters. A live field applies as it changes, and every
+other edit reloads into the running renderer. [docs/http.md](docs/http.md)
+holds its API.
+
+The console reads files from its scenes directory, the `$GHEE_ASSETS`
+directories and the system's emoji font alone, so a scene that it serves
+fails to load a path that is absolute or climbs out with `..`.
 
 ![the console editing a live scene](https://raw.githubusercontent.com/holofermes/ghee/main/media/console.png)
 
@@ -872,44 +816,41 @@ engine is thread-affine: build and use a Renderer on one thread.
 
 ## Limits
 
-A scene holds any number of assets, texts and layers, and names of any length.
-These caps hold, and a scene past one fails to load or to set up with the
-error shown:
+A scene holds any number of assets and layers, and names of any length. These
+caps hold, and a scene past one fails to load or to set up with the error
+shown:
 
 - 16 textures in one pass, fewer on a GPU with fewer texture units. A pass
   counts its channels and arrays, each asset that its GLSL samples, and the
-  curves of each text whose `_cover` it reads. A layer counts the same, plus
-  its text's atlas, or its text's curves under `"fill": "slug"`:
+  curves of each text layer whose `_cover` it reads. A layer counts its pass's
+  channels and arrays, plus a texture of its own: its atlas, its curves under
+  `"render": "slug"`, or its image:
   `pass 'main' needs 17 texture units, a pass binds at most 16`, or
-  `pass 'main' layer 'title' needs 17 texture units, a pass binds at most 16`.
+  `layer 'title' needs 17 texture units, a pass binds at most 16`.
 - 16 passes, filter passes included: `17 passes, over the cap of 16`.
 - 16384 pixels on a side and 16777216 pixels in all, for a sized pass, an
   array and a `.raw` asset:
   `pass 'a' size needs two positive ints [w, h] up to 16384, got [20000, 8]`,
   `pass 'a' is 8192x4096, over the 16777216 pixel cap`. The GPU's own texture
   limit is lower: 2048 on a VC4.
-- 2048 texels per em in a text's MTSDF atlas, and 2048 texels of field reach,
-  which the largest `pad` among the text's layers sets:
-  `text 't' atlas font_size needs a whole number from 1 to 2048, got 4096`,
-  `pass 'main' layer 't' pad 100.0 needs an atlas range of 6400 texels at the atlas font_size 32 of text 't', over the cap of 2048`.
 
-A text past one of these caps leaves the scene running. ghee prints the
+A text layer past one of these caps leaves the scene running. ghee prints the
 problem once, and the console shows it:
 
-- A 1024x2048 data texture holds the curves of a text, which `_cover` and slug
-  layers read: about 24000 characters of DejaVu Sans in lines of 60. At most 4
-  glyphs can overlap one spot. Words past either cap leave the last words that
-  fit, and a scene whose first words do not fit draws none:
-  `text 't': the words need a 1024x8192 texture, and a VC4 holds 1024x2048 at most`,
-  `text 't': more than 4 glyphs overlap at one spot`.
+- A 1024x2048 data texture holds the curves of a layer's words, which `_cover`
+  and the slug render read: about 24000 characters of DejaVu Sans in lines of
+  60. At most 4 glyphs can overlap one spot. Words past either cap leave the
+  last words that fit, and a layer whose first words do not fit draws none:
+  `layer 'title': the words need a 1024x8192 texture, and a VC4 holds 1024x2048 at most`,
+  `layer 'title': more than 4 glyphs overlap at one spot`.
 - 64 curves in one strip of a glyph. The data texture cuts each glyph into as
   many as 64 strips across and 64 down, fewer when the words crowd it. A glyph
   past the cap draws an error box:
-  `text 't': 'X' has more than 64 curves in one band`.
-- A 2048x2048 atlas holds the MTSDF fields of a font, and another holds the
-  colour glyphs of a text, with room for 132 emoji of Noto Color Emoji. A
-  glyph past either draws an error box:
-  `text 't': 'A' has no field in the atlas: the 2048x2048 atlas is full`.
+  `layer 'title': 'X' has more than 64 curves in one band`.
+- A 2048x2048 atlas holds the MTSDF fields of a font at one detail, and
+  another holds the emoji of a layer, with room for 132 emoji of Noto Color
+  Emoji. A glyph past either draws an error box:
+  `layer 'title': 'A' has no field in the atlas: the 2048x2048 atlas is full`.
 
 The wire of a [procedural scene](#procedural-scenes) names an array or a param
 in 255 bytes at most, and the Python shim raises ValueError past it.

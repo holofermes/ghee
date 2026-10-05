@@ -462,3 +462,34 @@ def test_a_layer_draws_its_words_in_its_color(monkeypatch):
         h.frame()
         px = h.pixels()
     assert (255, 0, 0) in {tuple(px[i : i + 3]) for i in range(0, len(px), 4)}
+
+
+def test_a_layer_field_reaches_the_engine_live():
+    # The built-in font draws the layer's words, red over black.
+    words = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "layers": [
+                    {
+                        "name": "t",
+                        "text": "I",
+                        "font_size": 24,
+                        "color": "#ff0000",
+                        "glow": {},
+                    }
+                ],
+            }
+        ],
+    }
+    with ghee.open(words, width=32, height=32, timestep=0) as h:
+        h.frame()
+        assert max(h.pixels()[0::4]) == 255
+        h.set_layer("t", "color", (0, 1, 0))
+        h.set_layer("t", "visible", False, effect="glow")
+        h.frame()
+        assert max(h.pixels()[0::4]) == 0 and max(h.pixels()[1::4]) == 255
+        with pytest.raises(ValueError, match="font_size changes with a rebuild"):
+            h.set_layer("t", "font_size", 12)

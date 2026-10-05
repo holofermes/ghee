@@ -178,6 +178,10 @@
 
 ### Python
 
+- Set a live field of a layer on a `ghee.open` handle with
+  `h.set_layer(name, field, value, effect=None)`, with no rebuild. A field
+  that changes with a rebuild, an unknown layer, effect or field, and a
+  value that the field does not take raise ValueError.
 - Declare an asset with `ghee.Asset` and a text layer with
   `ghee.Layer(name, text, visible, x, y, color, opacity, blend, font_size,
   font_family, text_align, render)` and a keyword for each effect, a dict of

@@ -283,6 +283,27 @@ impl Handle {
             .map_err(fault)
     }
 
+    /// Set a live field of the layer `name`, or of its effect `effect`, with
+    /// no rebuild: `x`, `y`, `color`, `opacity` and `visible`, an image
+    /// layer's `image`, and an effect's `visible`, `color`, `strength`,
+    /// `sung`, `speed` and `rate`. `value` takes the form that the scene
+    /// format gives the field, and None takes `x`, `y` or `color` back to its
+    /// default. A field that changes with a rebuild raises ValueError.
+    #[pyo3(signature = (name, field, value, effect=None))]
+    fn set_layer(
+        &mut self,
+        name: &str,
+        field: &str,
+        value: &Bound<'_, PyAny>,
+        effect: Option<&str>,
+    ) -> PyResult<()> {
+        let value = to_json(value)?;
+        self.held
+            .get()?
+            .set_layer(name, effect, field, &value)
+            .map_err(fault)
+    }
+
     /// The string params that changed since the last call, by name, with
     /// their words: the sets of the console, which this applies at once. The
     /// first call returns every string param.

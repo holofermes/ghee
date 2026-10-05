@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use ghee::console::server::{coerce, H264_FPS};
 use ghee::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
-use ghee::engine::{probe_display, Feed, Given, Renderer};
+use ghee::engine::{probe_display, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
 use ghee::h264::{HardwareH264, HW_COLOR};
+use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
@@ -811,6 +812,29 @@ impl Session {
             self.held_string(pass.as_deref(), &p.uniform.clone(), words, true);
         }
         Ok(())
+    }
+
+    /// Set the live field `field` of layer `layer`, or of its effect
+    /// `effect`, with no rebuild. A layer, a field or a value that the scene
+    /// refuses is the caller's.
+    pub fn set_layer(
+        &mut self,
+        layer: &str,
+        effect: Option<&str>,
+        field: &str,
+        value: &Value,
+    ) -> Outcome<()> {
+        let at = Address {
+            layer,
+            effect,
+            field,
+        };
+        self.renderer
+            .set_layer(&at, Given::Json(value))
+            .map_err(|e| match e.downcast_ref::<Refused>() {
+                Some(refused) => Fault::scene(refused.0.clone()),
+                None => system_fault(e),
+            })
     }
 
     /// Hold `words` for the string param `name` of `pass`, under its bare

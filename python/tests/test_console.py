@@ -261,7 +261,9 @@ def test_a_layer_set_lands_on_the_next_frame():
             {
                 "name": "main",
                 "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
-                "layers": [{"name": "t", "text": "I", "font_size": 24, "color": "#ff0000"}],
+                "layers": [
+                    {"name": "t", "text": "I", "font_size": 24, "color": "#ff0000"}
+                ],
             }
         ],
     }

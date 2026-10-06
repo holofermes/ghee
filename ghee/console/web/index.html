@@ -977,7 +977,7 @@ async function loadScene(name, local = true){
   work = saved ? JSON.parse(saved) : clone(pristine);
   if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
-  curPass = 0; postErr = ""; errOpen = null;
+  curPass = 0; postErr = ""; errOpen = null; layerUI.clear();
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
     $("#tabs").innerHTML = ""; $("#inputs").innerHTML = ""; $("#layers").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">no parameters</div>';
@@ -1237,11 +1237,12 @@ const BLENDS = ["normal", "add", "multiply", "screen"], RENDERS = ["mtsdf", "slu
 // a layer's own fields that change with no rebuild
 const LIVE = ["x", "y", "color", "opacity", "visible", "image"];
 
-// A layer's place in the page, open or closed, by its name: editor state.
+// A layer's place in the page, open or closed, by its name: editor state. A
+// scene loads with every layer closed.
 const layerUI = new Map();
 function ui(name){
   let u = layerUI.get(name);
-  if (!u){ u = {open: true}; layerUI.set(name, u); }
+  if (!u){ u = {open: false}; layerUI.set(name, u); }
   return u;
 }
 

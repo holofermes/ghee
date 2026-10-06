@@ -281,7 +281,10 @@
   double-click on a pass's tab renamed it.
 - Hide a pass with its eye, which the scene keeps as the pass's `visible`,
   where the eye muted the pass in the page alone. A hidden pass, a hidden
-  layer and a bypassed effect dim the same way and stay editable.
+  layer and a bypassed effect dim the same way. A hidden pass and a bypassed
+  effect stay editable. A hidden layer keeps its content editable, a text
+  layer's words, font_family and text_align and an image layer's image, and
+  locks every setting that only changes how it draws.
 - Show a colour as its swatch alone, in the Parameters panel too, and a
   number field with no spin buttons.
 - Keep the shader open or closed under its line as the user left it, one

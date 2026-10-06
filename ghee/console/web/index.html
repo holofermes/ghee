@@ -253,7 +253,7 @@
   .tbtn:disabled{opacity:.35; background:transparent}
   .tbtn.m.off{color:var(--ink)}
   /* a hidden pass, a hidden layer and a bypassed effect dim the same way */
-  .tab.off .lbl, .lay.hid .lstrip, .lay.hid .lbody, .fxrow.off>.strip, .pgroup.off, .row.off{opacity:.4}
+  .tab.off .lbl, .lay.hid .tog, .locked, .fxrow.off>.strip, .pgroup.off, .row.off{opacity:.4}
   .pgroup{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:14px 0 2px}
   .pgroup:first-child{margin-top:2px}
   .addwrap{display:inline-flex}
@@ -278,6 +278,7 @@
   .chan .x:hover{opacity:1; color:var(--hot)}
   .addmini{cursor:pointer; color:var(--muted); border:1px dashed var(--line); border-radius:7px; padding:3px 8px; font-size:12px}
   .addmini:hover{color:var(--ink); border-color:var(--muted)}
+  .addmini[aria-disabled="true"]{cursor:default; color:var(--muted); border-color:var(--line)}
   .inputs{display:flex; gap:6px; align-items:center; margin:12px 0; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .inputs>.addmini{flex:none}
   .inputs + .inputs{margin-top:0}
@@ -1020,6 +1021,7 @@ function addMenu(label, items, trigCls = "addmini", title = ""){
   if (title) trig.title = title;
   const toggle = e => {
     e.stopPropagation();
+    if (trig.getAttribute("aria-disabled") === "true") return;
     const open = !menu.classList.contains("open");
     closeMenus();
     if (!open) return;
@@ -1547,6 +1549,14 @@ function strip(cls){
   stripSeen.observe(st);
   return st;
 }
+// A hidden layer keeps its content editable, and locks what only changes how
+// the layer draws: shown dimmed, every control in it disabled.
+function locked(node){
+  node.classList.add("locked");
+  node.querySelectorAll("input, select, textarea, button").forEach(c => { c.disabled = true; });
+  node.querySelectorAll("[role=button]").forEach(c => { c.setAttribute("aria-disabled", "true"); c.tabIndex = -1; });
+  return node;
+}
 // a closed text layer's words on one line: a newline shows as ↵
 const oneLine = t => t.split("\n").join("↵"), fromOneLine = t => t.split("↵").join("\n");
 
@@ -1595,7 +1605,7 @@ function layerCard(p, d){
       st.appendChild(w);
     }
   }
-  st.append(sels, el("span", "lsp"));
+  st.append(hidden ? locked(sels) : sels, el("span", "lsp"));
   if (!proc){
     const list = p.layers, k = list.indexOf(d), mv = el("span", "lmv");
     const up = tbtn("↑", `move layer ${d.name} up`, "", () => moveLayer(p, d, -1));
@@ -1607,13 +1617,13 @@ function layerCard(p, d){
   head.append(st, acts); card.appendChild(head);
   if (!u.open) return card;
 
-  const body = el("div", "lbody"), kvs = el("div", "kvs");
+  const body = el("div", "lbody"), kvs = el("div", "kvs"), look = n => hidden ? locked(n) : n;
   if (img){
     const {kv, v} = KV("image");
     v.appendChild(keyed(pick(images, d.image, x => setKey(p, d, "image", x)), "image"));
     const tint = KV("color");
     tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", true), "color"));
-    kvs.append(kv, pairKV(p, d, "x", "y", "centre", true), pairKV(p, d, "width", "height", "auto", false), tint.kv);
+    kvs.append(kv, look(pairKV(p, d, "x", "y", "centre", true)), look(pairKV(p, d, "width", "height", "auto", false)), look(tint.kv));
   } else {
     const {kv, v} = KV("text"), send = wordsTo(p, d);
     v.appendChild(words(() => d.text || "", send, "text"));
@@ -1623,10 +1633,10 @@ function layerCard(p, d){
     fam.v.appendChild(keyed(pick(["built-in"], d.font_family || "built-in", x => setKey(p, d, "font_family", x === "built-in" ? null : x)), "font_family"));
     const align = KV("text_align");
     align.v.appendChild(keyed(pick(ALIGNS, d.text_align || "left", x => setKey(p, d, "text_align", x === "left" ? null : x)), "text_align"));
-    kvs.append(kv, colorKV(p, d), size.kv, pairKV(p, d, "x", "y", "centre", true), fam.kv, align.kv);
+    kvs.append(kv, look(colorKV(p, d)), look(size.kv), look(pairKV(p, d, "x", "y", "centre", true)), fam.kv, align.kv);
   }
   body.appendChild(kvs);
-  if (!img) body.appendChild(fxBlock(p, d));   // an image layer takes no effects
+  if (!img) body.appendChild(look(fxBlock(p, d)));   // an image layer takes no effects
   card.appendChild(body);
   return card;
 }

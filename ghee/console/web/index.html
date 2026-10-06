@@ -1426,8 +1426,11 @@ function buildLayers(){
     ["text", () => addLayer(p, "text")],
     ["image", () => addLayer(p, "image"), !imageAssets().length, "the scene has no image asset"]]));
   box.appendChild(row);
-  (p.layers || []).forEach(d => box.appendChild(layerCard(p, d)));
+  (p.layers || []).slice().reverse().forEach(d => box.appendChild(layerCard(p, d)));
 }
+// A pass's layers paint in list order, and the card shows them front first:
+// layer k of the list is card length - 1 - k.
+const cardOf = (list, k) => document.querySelectorAll("#layers .lay")[list.length - 1 - k];
 function addLayer(p, kind){
   const list = p.layers = p.layers || [];
   let d;
@@ -1440,8 +1443,7 @@ function addLayer(p, kind){
   ui(d.name).open = true;
   edited(p); postScene();
   buildLayers(); buildInputs();
-  const cards = document.querySelectorAll("#layers .lay");
-  cards[cards.length - 1].scrollIntoView({block: "nearest", behavior: "smooth"});
+  cardOf(list, list.length - 1).scrollIntoView({block: "nearest", behavior: "smooth"});
 }
 async function delLayer(p, d){
   if (!await ask(`Remove layer ${p.name} › ${d.name}?`)) return;
@@ -1453,17 +1455,17 @@ async function delLayer(p, d){
   edited(p); postScene();
   buildLayers(); buildInputs();
 }
-// The list's order is the draw order. The moved layer's header stays under the
-// pointer: the page scrolls by as much as the layer moved.
+// by +1 brings a layer forward, -1 sends it back. The moved layer's header
+// stays under the pointer: the page scrolls by as much as the layer moved.
 function moveLayer(p, d, by){
   const list = p.layers, k = list.indexOf(d), j = k + by;
   if (k < 0 || j < 0 || j >= list.length) return;
-  const was = document.querySelectorAll("#layers .lay")[k];
+  const was = cardOf(list, k);
   const before = was.getBoundingClientRect().top, sideways = was.querySelector(".lstrip").scrollLeft;
   list.splice(k, 1); list.splice(j, 0, d);
   edited(p); postScene();
   buildInputs(); buildLayers();
-  const now = document.querySelectorAll("#layers .lay")[j];
+  const now = cardOf(list, j);
   now.querySelector(".lstrip").scrollLeft = sideways;
   const after = now.getBoundingClientRect().top;
   const card = $(".shadercard");
@@ -1608,9 +1610,9 @@ function layerCard(p, d){
   st.append(hidden ? locked(sels) : sels, el("span", "lsp"));
   if (!proc){
     const list = p.layers, k = list.indexOf(d), mv = el("span", "lmv");
-    const up = tbtn("↑", `move layer ${d.name} up`, "", () => moveLayer(p, d, -1));
-    const down = tbtn("↓", `move layer ${d.name} down`, "", () => moveLayer(p, d, 1));
-    up.disabled = k === 0; down.disabled = k === list.length - 1;
+    const up = tbtn("↑", `move layer ${d.name} up`, "", () => moveLayer(p, d, 1));
+    const down = tbtn("↓", `move layer ${d.name} down`, "", () => moveLayer(p, d, -1));
+    up.disabled = k === list.length - 1; down.disabled = k === 0;
     mv.append(up, down);
     st.appendChild(mv);
   }

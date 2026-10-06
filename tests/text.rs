@@ -3056,7 +3056,8 @@ fn only_an_mtsdf_layer_that_shows_starts_an_atlas() {
         assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
     }
     render(&mut r, &loaded(&rendered(slug, "mtsdf")));
-    assert_eq!(threads_named("ghee-atlas"), 1);
+    // The worker's glyph threads inherit its name, so more than one can list.
+    assert!(threads_named("ghee-atlas") >= 1);
     // The worker writes the cache after the glyphs are in.
     let file = std::path::Path::new(&cache).join("ghee/atlas");
     let t0 = std::time::Instant::now();
@@ -3065,7 +3066,15 @@ fn only_an_mtsdf_layer_that_shows_starts_an_atlas() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     drop(r);
-    assert_eq!(threads_named("ghee-atlas"), 0);
+    // A joined thread can stay listed under /proc for a moment after the join.
+    let t0 = std::time::Instant::now();
+    while threads_named("ghee-atlas") > 0 {
+        assert!(
+            t0.elapsed().as_secs() < 5,
+            "the atlas worker outlived its renderer"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     fs::remove_dir_all(&cache).unwrap();
 }
 

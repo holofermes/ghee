@@ -11,9 +11,9 @@ new one enters at the top. The text layer `words` is hidden, so the pass
 shader alone shows its words: it reads them with `words_cover` at the font
 size of each row, and an edge stays one pixel wide at any size.
 
-The tick hook steps the words through WORDS by the string param of the
-layer's name, and ghee lays out each new entry with no recompile. Words set
-in the console end the steps.
+The tick hook steps the words through WORDS: it sets the layer's text
+through `ghee.layers`, and ghee lays out each new entry with no recompile.
+Words set in the console end the steps.
 
     ghee render --demo lettering -o out.####.png --frames 60 --timestep 0.1
     ghee render --demo lettering --display st7789
@@ -101,7 +101,7 @@ def step(tick):
     word = WORDS[int(tick.time / HOLD) % len(WORDS)]
     if word != _steps["words"]:
         _steps["words"] = word
-        ghee.set_param("words", word)
+        ghee.layers.words.text = word
 
 
 ghee.run(build())

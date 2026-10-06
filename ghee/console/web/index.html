@@ -280,6 +280,7 @@
   .addmini:hover{color:var(--ink); border-color:var(--muted)}
   .inputs{display:flex; gap:6px; align-items:center; margin:12px 0; flex:0 0 auto; font-size:12px; color:var(--muted)}
   .inputs>.addmini{flex:none}
+  .inputs + .inputs{margin-top:0}
   .istrip{flex:0 1 auto; gap:6px}
   .chip{border:1px solid var(--line); border-radius:7px; padding:3px 8px; color:var(--muted); cursor:help; font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
   .chip.arr{color:var(--ink); border-color:var(--accent)}
@@ -506,6 +507,7 @@
       <div class="tabs" id="tabs"></div>
     </div>
     <div class="inputs" id="inputs"></div>
+    <div class="inputs" id="chans"></div>
     <div class="layers" id="layers"></div>
     <button class="disc shtog" id="shTog" type="button" aria-expanded="false">▸ shader</button>
     <div class="editor" id="codeEd" hidden><pre aria-hidden="true"></pre><textarea id="code" spellcheck="false" aria-label="shader"></textarea><div class="errmark"></div></div>
@@ -779,7 +781,7 @@ async function loadHwinfo(){
 async function jget(u){ return (await fetch(u)).json(); }
 async function jpost(u){ return (await fetch(u, {method:"POST"})).json(); }
 function clone(o){ return JSON.parse(JSON.stringify(o)); }
-// Compare against disk ignoring empties the editor adds (e.g. buildInputs sets
+// Compare against disk ignoring empties the editor adds (e.g. buildChannels sets
 // channels:[]), so a freshly-loaded scene isn't reported as edited.
 function norm(s){
   return JSON.stringify(s, (k,v) => {
@@ -979,7 +981,7 @@ async function loadScene(name, local = true){
   $("#scenes").value = name;
   curPass = 0; postErr = ""; errOpen = null; layerUI.clear();
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
-    $("#tabs").innerHTML = ""; $("#inputs").innerHTML = ""; $("#layers").innerHTML = "";
+    $("#tabs").innerHTML = ""; $("#inputs").innerHTML = ""; $("#chans").innerHTML = ""; $("#layers").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">no parameters</div>';
     $("#shTog").hidden = true; CODE.box.hidden = true;
     CODE.ta.value = ""; CODE.sync(); showErrors(); refreshInfo(); updateStatus();
@@ -989,11 +991,11 @@ async function loadScene(name, local = true){
   buildPass(); buildParams(); refreshInfo(); updateStatus();
 }
 
-// ---- the passes card: the tab row, a pass's inputs, its layers, its shader ----
+// ---- the passes card: the tab row, a pass's inputs, its channels, its layers, its shader ----
 
 function setPass(i){ curPass = i; buildPass(); }
 function buildPass(){
-  buildTabs(); buildInputs(); buildLayers(); loadCode(); paintShader(); showErrors(); syncAddRow();
+  buildTabs(); buildInputs(); buildChannels(); buildLayers(); loadCode(); paintShader(); showErrors(); syncAddRow();
 }
 
 const EYE = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -1149,7 +1151,7 @@ const imageAssets = () => Object.entries(work.assets || {})
 function buildInputs(){
   const row = $("#inputs"), was = row.querySelector(".strip"), left = was ? was.scrollLeft : 0;
   row.innerHTML = "";
-  row.hidden = onCommon();   // common has no channels of its own
+  row.hidden = onCommon();   // common has no inputs of its own
   if (onCommon()) return;
   const p = work.passes[curPass], box = strip("istrip");
   box.appendChild(el("span", null, "inputs"));
@@ -1163,6 +1165,18 @@ function buildInputs(){
   (p.arrays || []).forEach(a => {
     chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i) reads element i (loop-safe on VC4)\n${a.name}_size is ${a.size}`, "arr");
   });
+  row.appendChild(box);
+  box.scrollLeft = left;
+  stripFade(box);
+}
+// the passes a pass's shader reads, as iChannel0, iChannel1...
+function buildChannels(){
+  const row = $("#chans"), was = row.querySelector(".strip"), left = was ? was.scrollLeft : 0;
+  row.innerHTML = "";
+  row.hidden = onCommon();   // common has no channels of its own
+  if (onCommon()) return;
+  const p = work.passes[curPass], box = strip("istrip");
+  box.appendChild(el("span", null, "channels"));
   p.channels = p.channels || [];
   p.channels.forEach((ch, ci) => {
     const wrap = el("span", "chan"), sel = el("select");
@@ -1170,12 +1184,12 @@ function buildInputs(){
     sel.value = ch.buffer || work.passes[0].name;
     sel.addEventListener("change", () => { ch.buffer = sel.value; markDirty(); postScene(); });
     const x = el("span", "x", "×");
-    x.addEventListener("click", () => { p.channels.splice(ci, 1); markDirty(); postScene(); buildInputs(); });
+    x.addEventListener("click", () => { p.channels.splice(ci, 1); markDirty(); postScene(); buildChannels(); });
     wrap.append(el("span", null, "iChannel" + ci), sel, x);
     box.appendChild(wrap);
   });
   const add = el("span", "addmini", "+ channel");
-  add.addEventListener("click", () => { p.channels.push({buffer: work.passes[0].name}); markDirty(); postScene(); buildInputs(); });
+  add.addEventListener("click", () => { p.channels.push({buffer: work.passes[0].name}); markDirty(); postScene(); buildChannels(); });
   row.append(box, add);
   box.scrollLeft = left;
   stripFade(box);

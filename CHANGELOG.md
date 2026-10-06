@@ -263,10 +263,10 @@
 
 - Edit each pass's layers. A pass shows its tab row, with the open pass's
   rename, eye and remove at its end, then its inputs, with a chip for each
-  text layer's `_cover`, each image asset's `_tex` and each array, and its
-  channels, then its layers, each collapsed when a scene or the page loads,
-  and its shader under a line. `+ layer` adds a text or an image layer. A
-  layer shows a one-row header with its
+  text layer's `_cover`, each image asset's `_tex` and each array, then its
+  channels on a row of their own, then its layers, each collapsed when a
+  scene or the page loads, and its shader under a line. `+ layer` adds a
+  text or an image layer. A layer shows a one-row header with its
   blend, render, opacity, move, rename, eye and remove, then its settings,
   and a text layer adds `+ effect` and one row for each of its effects.
 - Set a live field from the console with no rebuild, as it changes. Every

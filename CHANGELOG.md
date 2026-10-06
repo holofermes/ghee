@@ -264,8 +264,8 @@
 - Edit each pass's layers. A pass shows its tab row, with the open pass's
   rename, eye and remove at its end, then its inputs, with a chip for each
   text layer's `_cover`, each image asset's `_tex` and each array, and its
-  channels, then its layers, and its shader closed under a line. `+ layer`
-  adds a text or an image layer. A layer shows a one-row header with its
+  channels, then its layers, and its shader under a line. `+ layer` adds a
+  text or an image layer. A layer shows a one-row header with its
   blend, render, opacity, move, rename, eye and remove, then its settings,
   and a text layer adds `+ effect` and one row for each of its effects.
 - Set a live field from the console with no rebuild, as it changes. Every
@@ -283,7 +283,9 @@
   layer and a bypassed effect dim the same way and stay editable.
 - Show a colour as its swatch alone, in the Parameters panel too, and a
   number field with no spin buttons.
-- Open the shader of the pass that holds a compile error.
+- Keep the shader open or closed under its line as the user left it, one
+  choice for every scene, kept in the browser across a reload. A compile
+  error opens the shader of the pass that holds it and leaves the choice.
 - Show a procedural scene's passes and layers with no add, move, rename or
   remove, since its process declares them.
 - Keep a hidden filter's pass hidden when the console posts the scene.

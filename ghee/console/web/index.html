@@ -977,7 +977,7 @@ async function loadScene(name, local = true){
   work = saved ? JSON.parse(saved) : clone(pristine);
   if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
-  curPass = 0; postErr = ""; shaderOpen = false;
+  curPass = 0; postErr = ""; errOpen = null;
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
     $("#tabs").innerHTML = ""; $("#inputs").innerHTML = ""; $("#layers").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">no parameters</div>';
@@ -1181,18 +1181,27 @@ function buildInputs(){
   stripFade(box);
 }
 
-// ---- the shader: closed under a line on a pass, open on common and a filter ----
-let shaderOpen = false;
+// ---- the shader: under a line on a pass, open on common and a filter ----
+// Open or closed under the line is the user's choice, one for the whole
+// console, kept in this browser. A compile error opens its pass's shader and
+// leaves the choice as it was.
+const SHADER_KEY = "ghee:shader";
+let shaderOpen = localStorage.getItem(SHADER_KEY) === "open", errOpen = null;
+const shaderShown = () => shaderOpen || errOpen === curPass;
 function paintShader(){
-  const p = onCommon() ? null : work.passes[curPass], solo = !p || !!p.filter;
+  const p = onCommon() ? null : work.passes[curPass], solo = !p || !!p.filter, open = shaderShown();
   $(".shadercard").classList.toggle("solo", solo);
   $("#shTog").hidden = solo;
-  $("#shTog").textContent = (shaderOpen ? "▾" : "▸") + " shader";
-  $("#shTog").setAttribute("aria-expanded", String(shaderOpen));
-  CODE.box.hidden = !(solo || shaderOpen);
+  $("#shTog").textContent = (open ? "▾" : "▸") + " shader";
+  $("#shTog").setAttribute("aria-expanded", String(open));
+  CODE.box.hidden = !(solo || open);
   CODE.sync();
 }
-$("#shTog").addEventListener("click", () => { shaderOpen = !shaderOpen; paintShader(); showErrors(); });
+$("#shTog").addEventListener("click", () => {
+  shaderOpen = !shaderShown(); errOpen = null;
+  localStorage.setItem(SHADER_KEY, shaderOpen ? "open" : "closed");
+  paintShader(); showErrors();
+});
 function loadCode(){
   const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass];
   ta.value = p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
@@ -2178,7 +2187,7 @@ function showErrors(){
   if (!s.error) errOpened = "";
   else if (inPass && errOpened !== s.error + "\n" + curPass){
     errOpened = s.error + "\n" + curPass;
-    if (!shaderOpen){ shaderOpen = true; paintShader(); }
+    if (!shaderShown()){ errOpen = curPass; paintShader(); }
   }
   const here = !postErr && s.error && s.error_line && (s.error_pass == null || s.error_pass === curPass);
   CODE.mark(here ? s.error_line : 0);

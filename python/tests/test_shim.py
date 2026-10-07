@@ -348,6 +348,13 @@ def test_a_layer_takes_the_scene_json_keys():
     assert json.dumps(built) == json.dumps(recorded)  # key order too
 
 
+def test_a_layer_leaves_render_to_ghee_unless_it_names_one():
+    shim = load()
+    assert "render" not in shim.Layer("t", text="hi", font_family="pixel").to_dict()
+    named = shim.Layer("t", text="hi", font_family="pixel", render="mtsdf")
+    assert named.to_dict()["render"] == "mtsdf"
+
+
 def test_an_image_layer_takes_the_scene_json_keys():
     shim = load()
     layer = shim.Layer(

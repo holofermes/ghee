@@ -385,9 +385,9 @@ A text layer takes these keys on top of every layer's:
 | --- | --- | --- |
 | `text` | the words | required |
 | `font_size` | pixels per em | the largest size that fits |
-| `font_family` | a font asset's name, or a `.ttf` or `.otf` file | DejaVu Sans, built in |
+| `font_family` | a font asset's name, a `.ttf` or `.otf` file, or `pixel` | DejaVu Sans, built in |
 | `text_align` | `left`, `center` or `right` | `left` |
-| `render` | `mtsdf` or `slug`, as [Render](#render) describes | `mtsdf` |
+| `render` | `mtsdf` or `slug`, as [Render](#render) describes | `mtsdf`, `slug` in `pixel` |
 
 The words lay out into a block, as wide as the longest line, with one line
 height for each line, and `text_align` puts each line within the block. A
@@ -582,7 +582,7 @@ clock above runs at 216 fps. The table's 86 fps is the bus at 400 kHz, where
 ### Render
 
 A text layer's `render` sets how it finds the coverage of each pixel: `mtsdf`,
-the default, or `slug`.
+the default outside the pixel font, or `slug`.
 
 `mtsdf` reads an atlas that holds an MTSDF, a multi-channel signed distance
 field, for each glyph. Each texel of a glyph's cell holds distances to the
@@ -670,6 +670,13 @@ A font is a TrueType or OpenType font with outlines. A text layer with no
 Latin-1, the common punctuation, the euro sign and the trade mark sign.
 `font_family` takes a `.ttf` or `.otf` file, which resolves as an asset file
 does, or the name of a font asset, which several layers can share.
+
+`font_family: "pixel"` draws from Pixel Operator 8, a pixel font that ghee
+carries, drawn on a grid of 8 px to the em. Its layer takes `render` `slug`
+unless it names one, a size that fits rounds down to a whole multiple of 8
+px, 8 at the least, and the block, each pen and each baseline land on whole
+pixels, so at 8 px and its multiples every pixel is fully on or off. A
+`font_size` stays as given. A font asset named `pixel` stays the scene's own.
 
 Emoji fall back to Noto Color Emoji. ghee looks for `NotoColorEmoji.ttf`
 beside the scene, then in each directory on `$GHEE_ASSETS`, then in

@@ -249,7 +249,7 @@ raises RuntimeError.
 
 `ghee.Layer(name, text=None, visible=True, x=None, y=None, color=None,
 opacity=None, blend="normal", font_size=None, font_family=None,
-text_align="left", render="mtsdf", text_shadow=None, glow=None,
+text_align="left", render=None, text_shadow=None, glow=None,
 text_stroke=None, karaoke=None, wave=None, scroll=None, blink=None,
 image=None, width=None, height=None, shape=None, border=None,
 border_radius=None, points=None, stroke_width=None)` takes the keys of a layer

@@ -194,8 +194,9 @@ class Layer:
     `font_size` is the pixels per em, and without it the block takes the
     largest size that fits its room. Its `color` takes a gradient too,
     {"from": ..., "to": ..., "angle": degrees}, with CSS's angle.
-    `font_family` is a font file (.ttf or .otf) or the name of a font Asset,
-    and None draws from the DejaVu Sans Latin that ghee carries.
+    `font_family` is a font file (.ttf or .otf), the name of a font Asset,
+    or "pixel" for the Pixel Operator 8 that ghee carries, and None draws
+    from the DejaVu Sans Latin that ghee carries.
     `text_align` is "left", "center" or "right", and `render` is "mtsdf" or
     "slug".
 
@@ -234,7 +235,7 @@ class Layer:
     font_size: float | None = None
     font_family: str | os.PathLike[str] | None = None
     text_align: TextAlign = "left"
-    render: Render = "mtsdf"
+    render: Render | None = None
     text_shadow: dict | None = None
     glow: dict | None = None
     text_stroke: dict | None = None
@@ -282,7 +283,7 @@ class Layer:
             d["font_family"] = _plain(self.font_family)
         if self.text_align != "left":
             d["text_align"] = self.text_align
-        if self.render != "mtsdf":
+        if self.render is not None:
             d["render"] = self.render
         for k in _EFFECTS:
             if getattr(self, k) is not None:

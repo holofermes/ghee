@@ -34,6 +34,9 @@ const EMOJI_SBIX: &str = "NotoColorEmoji-Smiles-sbix.ttf";
 /// DejaVu Sans cut to Latin, the built-in font, as ghee/examples/fonts holds
 /// it.
 const LATIN: &str = "../../../ghee/examples/fonts/DejaVuSans-Latin.ttf";
+/// Pixel Operator 8, the built-in pixel font, as ghee/examples/fonts holds
+/// it.
+const PIXEL: &str = "../../../ghee/examples/fonts/PixelOperator8.ttf";
 
 fn font(file: &str) -> Vec<u8> {
     fs::read(format!("{FONTS}/{file}")).unwrap()
@@ -95,9 +98,10 @@ struct Laid {
     glyphs: Vec<Outline>,
 }
 
-/// One glyph's outline as straight segments, and their box, in em from the
-/// block's top left, y down.
+/// One glyph's outline as straight segments, their box, and the glyph's
+/// pen on its baseline, in em from the block's top left, y down.
 struct Outline {
+    origin: [f64; 2],
     lo: [f64; 2],
     hi: [f64; 2],
     segs: Vec<[[f64; 2]; 2]>,
@@ -237,6 +241,7 @@ fn lay(file: &str, words: &str, align: Align) -> Laid {
                 }
             }
             outlines.push(Outline {
+                origin: f.origin,
                 lo,
                 hi,
                 segs: f.segs,
@@ -299,6 +304,32 @@ impl Laid {
             }
         }
         Some(winding != 0)
+    }
+}
+
+impl Laid {
+    /// The layout in pixels at `px` pixels per em, its top left at the pixel
+    /// `top`, each glyph's pen and baseline moved to the nearest whole pixel.
+    fn on_pixels(&self, top: [f64; 2], px: f64) -> Laid {
+        let glyphs = self
+            .glyphs
+            .iter()
+            .map(|g| {
+                let pen = [0, 1].map(|a| top[a] + (g.origin[a] * px + 0.5).floor());
+                let at = |p: [f64; 2]| [0, 1].map(|a| pen[a] + (p[a] - g.origin[a]) * px);
+                Outline {
+                    origin: pen,
+                    lo: at(g.lo),
+                    hi: at(g.hi),
+                    segs: g.segs.iter().map(|s| s.map(at)).collect(),
+                }
+            })
+            .collect();
+        Laid {
+            width: self.width * px,
+            height: self.height * px,
+            glyphs,
+        }
     }
 }
 
@@ -691,6 +722,7 @@ fn layers_round_trip_and_leave_their_defaults_out() {
          "karaoke": {"color": "TRANSPARENT"}},
         {"name": "i", "color": {"from": "lime", "to": "Transparent", "angle": 90.0},
          "text": "I"},
+        {"name": "j", "text": "I", "font_family": "pixel", "render": "mtsdf"},
     ]));
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     assert_eq!(sc.to_dict(), doc);
@@ -714,6 +746,8 @@ fn layers_round_trip_and_leave_their_defaults_out() {
     }, {
         "name": "d", "color": "White", "text": "I",
         "text_shadow": {"color": "black"}, "glow": {"color": "ORANGE"},
+    }, {
+        "name": "e", "text": "I", "font_family": "pixel", "render": "slug",
     }]));
     let back = Scene::from_dict(&defaults, None, None).unwrap().to_dict();
     assert_eq!(
@@ -723,7 +757,8 @@ fn layers_round_trip_and_leave_their_defaults_out() {
                 "text": "I"},
                {"name": "c", "text": "I", "text_shadow": {}, "glow": {}, "text_stroke": {},
                 "karaoke": {}, "wave": {}, "scroll": {}, "blink": {}},
-               {"name": "d", "text": "I", "text_shadow": {}, "glow": {}}])
+               {"name": "d", "text": "I", "text_shadow": {}, "glow": {}},
+               {"name": "e", "text": "I", "font_family": "pixel"}])
     );
 }
 
@@ -1405,6 +1440,94 @@ fn a_fitted_capital_i_covers_its_stem_and_nothing_beside_it() {
         }
     }
     assert!(stem > 300 && beside > 10_000, "{stem} {beside}");
+}
+
+/// A layer in the pixel font that names no render lights the font's own
+/// pixels. The reference lays the words out from the font with ttf-parser,
+/// at the size that the layer gives, or the size that fits rounded down to a
+/// whole multiple of 8 px and 8 at the least, with the block's top left,
+/// each pen and each baseline rounded to whole pixels. At a multiple of 8 px
+/// the font's squares cover whole pixels, so every pixel reads 0 or 255 as
+/// the outline says, up to TOL: slug's curves sit on a lattice of 2047 steps
+/// across each glyph's box, which moves an edge by up to 1/400 px at 8 px.
+/// At 28 px the edges antialias, and the pixels away from them read full or
+/// none.
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn the_pixel_font_lights_its_own_pixels_on_whole_pixels() {
+    // Each row: the pass's size, the words, their alignment, the layer's
+    // keys, and the pixels per em that it draws at.
+    let rows = [
+        // Room for 9.2 px, two lines 8.72 px apart, the second 13.5 px in.
+        (
+            (80, 24),
+            "Hg 42%\nxy",
+            Align::Center,
+            json!({"x": 3.4, "y": 2.7}),
+            8.0,
+        ),
+        // Room for 7.98 px.
+        ((80, 12), "Hg", Align::Left, json!({"x": 0, "y": 2.7}), 8.0),
+        // Room for 19.8 px, the block centred 23.5 px across, 6.56 px down.
+        ((97, 48), "Hg 4\n2%,", Align::Left, json!({}), 16.0),
+        (
+            (64, 40),
+            "Ag",
+            Align::Left,
+            json!({"x": 2, "y": 1, "font_size": 8}),
+            8.0,
+        ),
+        (
+            (64, 40),
+            "Ag",
+            Align::Left,
+            json!({"x": 1, "y": 2, "font_size": 28}),
+            28.0,
+        ),
+    ];
+    for ((w, h), words, align, keys, px) in rows {
+        let laid = lay(PIXEL, words, align);
+        let corner = |at: &str, room: usize, block: f64| {
+            let centred = (room as f64 - block * px) / 2.0;
+            (keys[at].as_f64().unwrap_or(centred) + 0.5).floor()
+        };
+        let top = [corner("x", w, laid.width), corner("y", h, laid.height)];
+        let want = laid.on_pixels(top, px);
+        let mut layer = json!({"name": "t", "text": words, "font_family": "pixel",
+                               "text_align": align_name(align)});
+        layer
+            .as_object_mut()
+            .unwrap()
+            .extend(keys.as_object().unwrap().clone());
+        let doc = json!({"version": 1, "passes": [{"name": "main",
+            "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+            "layers": [layer]}]});
+        let (_g, mut r) = gpu(w, h);
+        let f = render(&mut r, &Scene::from_dict(&doc, None, None).unwrap());
+        let what = format!("{words:?} in {w}x{h}");
+        let centre = |x: usize, y: usize| [x as f64 + 0.5, y as f64 + 0.5];
+        if px % 8.0 != 0.0 {
+            assert_draws_at(&f, w, 0, &want, centre, EDGE, &what);
+            continue;
+        }
+        let (mut lit, mut off) = (0, Vec::new());
+        for (x, y) in (0..h).flat_map(|y| (0..w).map(move |x| (x, y))) {
+            let inside = want.inside(centre(x, y), 0.0);
+            lit += usize::from(inside == Some(true));
+            let got = f[(y * w + x) * 4];
+            let want = if inside == Some(true) { 255 } else { 0 };
+            if inside.is_none() || got.abs_diff(want) > TOL {
+                off.push((x, y, got, inside));
+            }
+        }
+        assert!(lit > 20, "{what}: {lit} pixels lit");
+        assert!(
+            off.is_empty(),
+            "{what}: {} pixels off, (x, y, got, inside) {:?}",
+            off.len(),
+            &off[..off.len().min(8)]
+        );
+    }
 }
 
 #[test]
@@ -2978,6 +3101,7 @@ fn moved(laid: &Laid, dy: impl Fn(usize) -> f64) -> Laid {
             .map(|(i, g)| {
                 let d = dy(i);
                 Outline {
+                    origin: [g.origin[0], g.origin[1] + d],
                     lo: [g.lo[0], g.lo[1] + d],
                     hi: [g.hi[0], g.hi[1] + d],
                     segs: g.segs.iter().map(|s| s.map(|p| [p[0], p[1] + d])).collect(),

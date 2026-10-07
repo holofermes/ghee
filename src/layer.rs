@@ -276,6 +276,18 @@ pub enum Render {
     Slug,
 }
 
+impl Render {
+    /// The render of a text layer in `font_family` that names none: slug
+    /// for the pixel font, whose square edges it draws exactly, and mtsdf
+    /// for any other.
+    pub fn default_for(font_family: Option<&str>) -> Render {
+        match font_family {
+            Some(text::PIXEL) => Render::Slug,
+            _ => Render::Mtsdf,
+        }
+    }
+}
+
 /// The texels per em of an MTSDF atlas, and the range of its field in
 /// texels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -846,7 +858,7 @@ impl TextLayer {
             },
         };
         let render = match given("render").map(Value::as_str) {
-            None => Render::Mtsdf,
+            None => Render::default_for(font_family.as_deref()),
             Some(Some("mtsdf")) => Render::Mtsdf,
             Some(Some("slug")) => Render::Slug,
             Some(_) => bail!(
@@ -909,8 +921,12 @@ impl TextLayer {
                 Value::from(self.text_align.as_str()),
             );
         }
-        if self.render == Render::Slug {
-            d.insert("render".to_string(), Value::from("slug"));
+        if self.render != Render::default_for(self.font_family.as_deref()) {
+            let render = match self.render {
+                Render::Mtsdf => "mtsdf",
+                Render::Slug => "slug",
+            };
+            d.insert("render".to_string(), Value::from(render));
         }
         for e in &self.effects {
             d.insert(e.kind.key().to_string(), e.to_dict());
@@ -1068,7 +1084,19 @@ impl TextLayer {
             fit[0] = f64::INFINITY;
         }
         let s = [0, 1].map(|a| fit[a] / block[a].max(1.0e-6));
-        s[0].min(s[1]).max(0.0)
+        let px = s[0].min(s[1]).max(0.0);
+        match self.grid() {
+            Some(g) => ((px / g).floor() * g).max(g),
+            None => px,
+        }
+    }
+
+    /// The pixels per em of the grid that the layer's font draws on, for
+    /// the pixel font. A fitted size then rounds down to a whole multiple of
+    /// it, one grid at the least, and the block, each pen and each baseline
+    /// land on whole pixels.
+    fn grid(&self) -> Option<f64> {
+        (self.font_family.as_deref() == Some(text::PIXEL)).then_some(text::PIXEL_EM)
     }
 
     /// The texels per em of the layer's atlas at `font_px` pixels per em: the
@@ -1223,10 +1251,18 @@ impl TextLayer {
                         "    ghee_s.x = mix(ghee_s.x, 1.0e6, ghee_NAME_scrollvisible);".to_string(),
                     );
                 }
-                main.push("    float ghee_fs = max(min(ghee_s.x, ghee_s.y), 0.0);".to_string());
+                main.push(match self.grid() {
+                    Some(g) => format!(
+                        "    float ghee_fs = max(floor(min(ghee_s.x, ghee_s.y) / {g:?}) * {g:?}, {g:?});"
+                    ),
+                    None => "    float ghee_fs = max(min(ghee_s.x, ghee_s.y), 0.0);".to_string(),
+                });
             }
         }
         main.push(PLACE.to_string());
+        if self.grid().is_some() {
+            main.push("    ghee_org = floor(ghee_org + 0.5);".to_string());
+        }
         if scroll.is_some() {
             main.push(SCROLL_LINES.to_string());
         }
@@ -1272,6 +1308,14 @@ impl TextLayer {
         };
         decls.push(own);
         main.push(lines);
+        if self.grid().is_some() {
+            let (ascent, line) = text::line_metrics(self.data.as_deref().unwrap_or_default());
+            main.push(format!(
+                "    // Each glyph's pen and baseline, after its motion, land on whole pixels.\n    \
+                 vec2 ghee_pen = (vec2(ghee_a3.y, {ascent:?} + ghee_a3.x * {line:?}) + ghee_mv) * ghee_fs;\n    \
+                 ghee_org += floor(ghee_pen + 0.5) - ghee_pen;"
+            ));
+        }
         let mut hide = "ghee_NAME_visible < 0.5".to_string();
         if blink.is_some() {
             hide.push_str(
@@ -2447,6 +2491,16 @@ mod tests {
             // A scrolling block fits on y alone.
             (json!({"scroll": {}}), [40.0, 1.0], 180.0),
             (json!({"scroll": off}), [40.0, 1.0], 9.5),
+            // The pixel font rounds a fit down to a whole multiple of 8 px,
+            // 8 at the least, and takes a font_size as given.
+            (json!({"font_family": "pixel"}), [4.0, 1.0], 88.0),
+            (json!({"font_family": "pixel", "y": 150}), [4.0, 1.0], 40.0),
+            (json!({"font_family": "pixel", "x": 500}), [4.0, 1.0], 8.0),
+            (
+                json!({"font_family": "pixel", "font_size": 30}),
+                [4.0, 1.0],
+                30.0,
+            ),
         ] {
             assert_eq!(
                 layer(keys.clone()).font_px([400.0, 200.0], block),

@@ -120,8 +120,12 @@
 ### Text
 
 - Draw a text layer from Pixel Operator 8, a second built-in font, with
-  `font_family: "pixel"`. Its edges fall on whole pixels at `font_size` 8.
-  A font asset named `pixel` stays the scene's own.
+  `font_family: "pixel"`, as the font's own pixels: such a layer takes
+  `render` slug unless it names one, a size that fits rounded down to a
+  whole multiple of 8 px, 8 at the least, and its block, each pen and each
+  baseline on whole pixels, so at 8 px and its multiples every pixel is
+  fully on or off. A `font_size` stays as given. A font asset named `pixel`
+  stays the scene's own.
 - Draw text on the GPU from a font in text layers. A pass's `layers` paint
   over its buffer after its own shader, in list order, as one quad over each
   glyph. A layer needs a `name`, holds its words in `text`, and takes

@@ -1477,9 +1477,13 @@ async function renameLayer(p, d){
   buildLayers(); buildInputs();
 }
 
+// A text layer that names no render takes slug in the pixel font and mtsdf
+// in any other, as ghee does.
+const defaultRender = d => d.font_family === "pixel" ? "slug" : "mtsdf";
+const renderOf = d => d.render || defaultRender(d);
 // An effect's `visible` is the user's own choice. Whether it draws also
 // depends on render: slug has no distance field for three of them.
-const slugLocked = (d, f) => d.render === "slug" && NEEDS_MTSDF.includes(f);
+const slugLocked = (d, f) => renderOf(d) === "slug" && NEEDS_MTSDF.includes(f);
 function fxRow(p, d, f, redo){
   const o = d[f], own = o.visible === false, locked = slugLocked(d, f), off = own || locked;
   const row = el("div", "fxrow" + (off ? " off" : "")), v = strip("fstrip"), fields = el("span", "fxf");
@@ -1579,7 +1583,7 @@ function layerCard(p, d){
     sels.appendChild(l);
   };
   hk("blend", pick(BLENDS, d.blend || "normal", x => setKey(p, d, "blend", x === "normal" ? null : x)));
-  if (!img) hk("render", pick(RENDERS, d.render || "mtsdf", x => { setKey(p, d, "render", x === "mtsdf" ? null : x); redo(); }));
+  if (!img) hk("render", pick(RENDERS, renderOf(d), x => { setKey(p, d, "render", x === defaultRender(d) ? null : x); redo(); }));
   hk("opacity", num(d.opacity == null ? 1 : d.opacity, "", x => setKey(p, d, "opacity", x == null || x === 1 ? null : x), true, {min: 0, max: 1, step: 0.05}));
   const acts = el("span", "lacts");
   if (!proc) acts.appendChild(tbtn(PENCIL, "rename", "", () => renameLayer(p, d)));

@@ -161,9 +161,12 @@ pub fn built_in_font() -> Font {
 /// The font_family that names the built-in pixel font, PIXEL_FONT.
 pub const PIXEL: &str = "pixel";
 
-/// Pixel Operator 8, drawn on a grid of 8 pixels to the em, so at
+/// Pixel Operator 8, drawn on a grid of PIXEL_EM pixels to the em, so at
 /// `font_size` 8 every edge falls on a pixel edge.
 pub const PIXEL_FONT: &[u8] = include_bytes!("../ghee/examples/fonts/PixelOperator8.ttf");
+
+/// The pixels per em of PIXEL_FONT's grid.
+pub const PIXEL_EM: f64 = 8.0;
 
 /// The font of a text that names `family`, when ghee carries it: the
 /// built-in font for none, and the pixel font for PIXEL.
@@ -805,15 +808,7 @@ fn kerning(face: &Face, l: GlyphId, r: GlyphId) -> f64 {
 /// do not kern. With no font in `faces`, every character that needs ink takes
 /// an error box, ERROR_ADVANCE wide.
 fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
-    let (ascent, line) = match faces.iter().flatten().next() {
-        Some(face) => {
-            let upem = f64::from(face.units_per_em());
-            let line = f64::from(face.ascender()) - f64::from(face.descender())
-                + f64::from(face.line_gap());
-            (f64::from(face.ascender()) / upem, line / upem)
-        }
-        None => (ERROR_ASCENT, ERROR_LINE),
-    };
+    let (ascent, line) = face_lines(faces);
     let lines: Vec<&str> = words.split('\n').collect();
     let height = line * lines.len() as f64;
     let mut placed = Vec::new();
@@ -895,6 +890,27 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
         }
     }
     (placed, width, height)
+}
+
+/// The first baseline below the top of a block and the height of a line,
+/// in em, from the first font of `faces` that parsed: its ascent, and its
+/// ascent less its descent plus its line gap.
+fn face_lines(faces: &Faces) -> (f64, f64) {
+    match faces.iter().flatten().next() {
+        Some(face) => {
+            let upem = f64::from(face.units_per_em());
+            let line = f64::from(face.ascender()) - f64::from(face.descender())
+                + f64::from(face.line_gap());
+            (f64::from(face.ascender()) / upem, line / upem)
+        }
+        None => (ERROR_ASCENT, ERROR_LINE),
+    }
+}
+
+/// The first baseline below the top of a block and the height of a line,
+/// in em, of a text in `fonts`, as its layout places them.
+pub fn line_metrics(fonts: &[Font]) -> (f64, f64) {
+    face_lines(&faces(fonts))
 }
 
 fn u16x2(a: u16, b: u16) -> [u8; 4] {

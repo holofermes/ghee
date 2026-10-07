@@ -995,10 +995,9 @@ fn json_body(headers: &Headers, body: &[u8], what: &str) -> ConsoleResult<Value>
 }
 
 /// Validate a posted scene into a Scene. The renderer never gets an
-/// unvalidated document.
+/// unvalidated document. The scene's errors start with `what`, the request.
 fn scene_of(d: &Value, what: &str) -> ConsoleResult<Scene> {
-    Scene::from_dict(d, None, None)
-        .map_err(|e| ConsoleError::bad_request(format!("bad {what}: {e}")))
+    Scene::from_dict(d, None, Some(what)).map_err(|e| ConsoleError::bad_request(format!("bad {e}")))
 }
 
 #[cfg(test)]
@@ -1678,6 +1677,21 @@ mod tests {
         assert_eq!(r.status, 400);
         assert!(body(&r).contains("passes"), "{}", body(&r));
         assert!(api.host.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_refused_scene_names_its_request_once() {
+        let api = api();
+        let posted =
+            br#"{"passes": [{"name": "main", "fragment": "void main(){}", "chanels": []}]}"#;
+        let r = api.dispatch("POST", "/scene", &Query::new(), &json_ct(), posted);
+        assert_eq!(
+            (r.status, body(&r).as_str()),
+            (
+                400,
+                "bad /scene: pass 'main' takes no 'chanels', the closest key is 'channels'"
+            )
+        );
     }
 
     #[test]

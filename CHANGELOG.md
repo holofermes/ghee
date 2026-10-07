@@ -13,10 +13,10 @@
   name of an image asset or a `.png` or `.jpg` file, in place of `text`.
   `width` and `height` scale it in pass pixels, one of them left out keeps
   the image's aspect, and both left out take its own size. It takes `x`,
-  `y`, `opacity`, `blend` and `visible` as a text layer does, and `color`,
-  `"#rrggbb"` or `[r, g, b]`, tints the picture. An image layer takes no
-  effects and gives a pass no GLSL name of its own, so a pass reads the
-  image as the asset's `<name>_tex`.
+  `y`, `opacity`, `blend` and `visible` as a text layer does, and its
+  `color` tints the picture. An image layer takes no effects and gives a
+  pass no GLSL name of its own, so a pass reads the image as the asset's
+  `<name>_tex`.
 - Resolve an asset or a font that a scene names from the directory of the
   scene file or of a procedural scene's executable, then from each directory
   on `$GHEE_ASSETS`. A path may be absolute or leave that directory, except
@@ -54,39 +54,17 @@
   `[r, g, b]`, through `GET /scene`, `/set`, a save and a procedural scene's
   values sidecar. The console sends the colour picked in its swatch as
   `#rrggbb`, so it saves as hex.
-- Grow a running scene with no rebuild through `Renderer::add_layer`, which
-  puts a layer, written as a scene declares it, into a pass at an index
-  among its layers, and refuses one that a scene file would refuse there.
-  Every other layer keeps its program, its atlas, its phases and its quads,
-  and every pass its program, its arrays and its buffers. A shape compiles
-  nothing, an image layer loads its picture, and a text layer builds its
-  shaders and its atlas. A layer's own shaders hold no name of the layer's
-  and take its settings from uniforms of its batches alone, so layers whose
-  shaders come out the same, in one scene or added, draw through one
-  program.
-- Take an image file in a live `image`, which loads once and stays until
-  the next setup, where a live image took the scene's image assets alone.
-- Build one layer of a running scene again in its place with
-  `Renderer::replace_layer`, of its kind or of another, and give a layer a
-  whole new look with `Renderer::update_layer`, which sets the live fields
-  that changed and builds the layer again for any other change. A key that
-  the look leaves out takes its default, and an effect that it leaves out
-  stays, bypassed. Every other layer keeps its program, its atlas, its
-  phases and its quads, the layer's moving effects carry their phases on,
-  and a layer that the scene refuses changes nothing.
-- Measure words with `Scene::measure` and `Renderer::measure`: the width and
-  height in pixels of the block that a text layer of a pass lays them out
-  in, at a `font_size` or at the size that fits the pass.
 - Draw rects and lines with shape layers, which hold `"shape": "rect"` or
   `"line"` and take no effects. A rect fills `width` by `height` pass
-  pixels, the pass's own by default, with its `color`, draws its `border`,
-  `{"width", "color", "visible"}`, inside its edge, and rounds its corners by
-  `border_radius`. A line runs through `points`, each `[x, y]` a pixel as
+  pixels, the pass's own by default, with its `color`, white by default,
+  draws its `border`, `{"width", "color", "visible"}`, inside its edge, and
+  rounds its corners by `border_radius`. A line runs through `points`, each `[x, y]` a pixel as
   Pillow counts them, `stroke_width` pixels thick, and its `x` and `y` shift
   every point. Every edge is antialiased from the distance to the shape. One
   shader draws every shape, consecutive shape layers of one blend in one
   draw, so a shape layer that changes or hides compiles nothing. Every field
-  but `shape` and `blend` is live, a rect's border in an effect's place:
+  but `shape` and `blend` is live, none takes a rect's `width` or `height`
+  back to the pass's own, and a rect's border takes an effect's place:
   `/set?layer=frame&effect=border&field=color`, `frame.border.color` on the
   wire, and a line's points as an array in message kind 0, `scope.points`,
   x and y in turn.
@@ -130,13 +108,6 @@
 
 ### Text
 
-- Draw a text layer from Pixel Operator 8, a second built-in font, with
-  `font_family: "pixel"`, as the font's own pixels: such a layer takes
-  `render` slug unless it names one, a size that fits rounded down to a
-  whole multiple of 8 px, 8 at the least, and its block, each pen and each
-  baseline on whole pixels, so at 8 px and its multiples every pixel is
-  fully on or off. A `font_size` stays as given. A font asset named `pixel`
-  stays the scene's own.
 - Draw text on the GPU from a font in text layers. A pass's `layers` paint
   over its buffer after its own shader, in list order, as one quad over each
   glyph. A layer needs a `name`, holds its words in `text`, and takes
@@ -152,7 +123,7 @@
   at which the words fit the pass, less a margin of 5% of its shorter side,
   and on a given axis the room past the given pixel, less the margin at the
   far edge. The fitted size follows the words.
-- Colour a layer with `color`, `"#rrggbb"`, `[r, g, b]` or a gradient
+- Colour a layer with `color`, any colour that a scene takes or a gradient
   `{"from", "to", "angle"}` with CSS's angle, 0 up and 90 right, across the
   block, white by default. `opacity` scales it, and `blend` lays it on the
   pass's buffer as `normal`, `add`, `multiply` or `screen`, colour and alpha
@@ -176,13 +147,13 @@
   from its effects, and fades the effects out at the edge of their quads.
 - Set a layer's live fields with no rebuild, `Renderer::set_layer` in the
   library: `x`, `y`, `color`, `opacity` and `visible`, an image layer's
-  `image`, which takes another image asset of the scene at that image's
-  size, and an effect's `visible`, `color`, `strength`, `sung`, `speed` and
-  `rate`. None takes `x` and `y` back to centring and `color` back to its
-  default. Every other field changes with a rebuild, so a live set of one is
-  refused with the live fields named, and a set that names an effect or a
-  field that the layer lacks is refused with the layer's effects or its live
-  fields named.
+  `image`, which takes another image asset of the scene, or an image file that
+  loads once and stays until the next setup, at that image's size, and an
+  effect's `visible`, `color`, `strength`, `sung`, `speed` and `rate`. None
+  takes `x`, `y` and `color` back to their defaults. Every other field changes
+  with a rebuild, so a live set of one is refused with the live fields named,
+  and a set that names an effect or a field that the layer lacks is refused
+  with the layer's effects or its live fields named.
 - Move `wave`, `scroll` and `blink` by a phase that ghee keeps for each
   layer and advances each frame by the effect's `speed` or `rate` times the
   frame's time step, so a new speed carries the motion on from where it is.
@@ -190,6 +161,13 @@
 - Draw a layer's glyphs from an MTSDF atlas by default, one texture read a
   pixel. `"render": "slug"` computes Slug's exact coverage from the font's
   curves instead, at any size and with no atlas.
+- Draw a text layer from Pixel Operator 8, a second built-in font, with
+  `font_family: "pixel"`, as the font's own pixels: such a layer takes
+  `render` slug unless it names one, a size that fits rounded down to a
+  whole multiple of 8 px, 8 at the least, and its block, each pen and each
+  baseline on whole pixels, so at 8 px and its multiples every pixel is
+  fully on or off. A `font_size` stays as given. A font asset named `pixel`
+  stays the scene's own.
 - Generate a font's atlas on every core at its first use: the glyphs of the
   words first, then a preload of ASCII, Latin-1 and the common punctuation in
   the room left. Cache the atlas in `$XDG_CACHE_HOME/ghee/atlas`. New words
@@ -237,7 +215,8 @@
   `h.layers` by attribute or by key, `h.layers.title.x = 10` or
   `h.layers["title"]["karaoke"]["sung"] = 12`, or through
   `h.set_layer(name, field, value, effect=None)`. `text` sets a text layer's
-  words and `image` an image layer's image, and None takes `x`, `y` or
+  words, `image` an image layer's image, and a rect's border takes an
+  effect's place, as `h.layers.frame.border.color`. None takes `x`, `y` or
   `color` back to its default. A field that changes with a rebuild, an
   unknown layer, effect or field, and a value that the field does not take
   raise ValueError, and an unknown layer's error names the scene's layers.
@@ -245,11 +224,14 @@
   `ghee.layers`, as on a handle. Under ghee, each set goes out with the
   tick's answer, checked against the scene first, so a set that ghee would
   refuse raises ValueError. In a direct run, each set goes to the handle.
-- Declare an asset with `ghee.Asset` and a text layer with
-  `ghee.Layer(name, text, visible, x, y, color, opacity, blend, font_size,
-  font_family, text_align, render)` and a keyword for each effect, a dict of
-  its fields, or an image layer with `image`, `width` and `height`, in
-  `Scene(assets=...)` and `Pass(layers=...)`. A keyword left at None leaves its key to ghee's
+- Declare an asset with `ghee.Asset`, which takes `sampling`, and a `.raw`
+  file's `width`, `height`, `format` and `components`, and declare a text
+  layer with `ghee.Layer(name, text, visible, x, y, color, opacity, blend,
+  font_size, font_family, text_align, render)` and a keyword for each
+  effect, a dict of its fields, an image layer with `image`, `width` and
+  `height`, or a shape layer with `shape`, `width`, `height`, `border`,
+  `border_radius`, `points` and `stroke_width`, in `Scene(assets=...)` and
+  `Pass(layers=...)`. A keyword left at None leaves its key to ghee's
   default. `mipmaps=True` on `ghee.Pass` builds its mip chain, and
   `visible=False` hides the pass.
 - Take a scene's and a pass's `params` as a list of `ghee.Param`. Raise
@@ -277,12 +259,11 @@
   `--stats` for the timing summary, where `--output` named the display and
   `--stats` the console's port. With no `--frames`, `-o` renders one frame,
   as `ghee render` does, and a display or the console runs until stopped.
-- Hand a direct run's `@ghee.tick` the string params that the console
-  changed, as the wire does, where the tick's `params` stayed empty.
-- Return the string params that the console changed since the last tick
-  from `h.frame()` and `h.skip()`, in the tick's `params`, with their words,
-  as a scene script's tick holds them: the first tick holds every string
-  param, and a set from the host itself stays out.
+- Return the string params that the console changed since the last tick, with
+  their words, in the tick's `params`: from `h.frame()` and `h.skip()`, and in
+  a direct run's `@ghee.tick`, where that tick's `params` stayed empty. The
+  first tick holds every string param, as a scene script's tick does under
+  ghee, and a set from the host itself stays out.
 - Hand the DT that a frame draws with in the tick that `h.frame()` returns,
   in a direct run's and on the wire: the time since the frame before, a
   quarter second at most, and 1/60 for the first frame, where the tick held
@@ -290,9 +271,10 @@
   pinned timestep is the tick's `dt` as given, where a quarter second capped
   it.
 - Name the display of `ghee.open` with `display=` and the console's port
-  with `serve=`, the words of `ghee render`'s flags, where `output=` and
-  `stats=` named them. `dri=` picks the card, and `rotate=` turns the frame
-  clockwise on its way to every output, as `--rotate` does.
+  with `serve=`, the words of `ghee render`'s flags, in place of `output=`
+  and `stats=`, which now raise TypeError. `dri=` picks the card, and
+  `rotate=` turns the frame clockwise on its way to every output, as
+  `--rotate` does.
 - Open a screen with no scene: `ghee.open()` makes one pass, `main`, that
   clears to black.
 - Read and set a KMS display's backlight through `h.brightness`, 0 to 1, as
@@ -315,8 +297,6 @@
   of the block that ghee lays them out in, at the size that fits the pass
   when `font_size` is None.
 - Write a text's gradient with `ghee.gradient(start, end, angle=0)`.
-- Declare an asset's `sampling`, and a `.raw` file's `width`, `height`,
-  `format` and `components`, in `ghee.Asset`.
 - Stop a direct run with ghee's one line and exit status 1 when ghee refuses
   its scene or its display, where a traceback ended it, and refuse more than
   one frame into one file name, as `ghee render` refuses it. An exception of
@@ -325,12 +305,9 @@
   the scene does not declare or a value that does not fit its type, under
   ghee as in direct mode, and name the param in the type error of
   `set_param` and of the console.
-- Declare a shape layer with `ghee.Layer(name, shape=...)`, which takes
-  `width`, `height`, `border`, `border_radius`, `points` and `stroke_width`,
-  and set its border through `layers`, as `h.layers.frame.border.color`.
 - Ship type stubs for `ghee.open` and `Handle`, mark the package typed, and
   type the closed string sets of the shim as `Literal`: a param's type, a
-  layer's text_align, render and blend, and an arg's type.
+  layer's text_align, render, blend and shape, and an arg's type.
 - Draw from a scene script with `ghee.draw()` in a tick or a feed, as on a
   screen, and the frame of the tick draws the calls. Under ghee, a layer
   that a call adds or changes goes out with the tick's answer, checked
@@ -347,8 +324,8 @@
   `title.karaoke.sung`, with one value, 0 or 1 for `visible`, three for a
   color, seven for a gradient or none for the default, and kind 3 takes
   `title.text` with a text layer's words and `icon.image` with the name of
-  an image asset. A message whose first part
-  names no layer sets a param, and a field that the scene refuses logs once.
+  an image asset or an image file. A message whose first part names no
+  layer sets a param, and a field that the scene refuses logs once.
 - Set a string param, and so a text layer's words, from a scene process with
   message kind 3.
 - Take a colour as text in message kind 3, `#rrggbb` or a CSS colour name,
@@ -357,20 +334,17 @@
   Python shim sends a colour name, a layer's colour given as text and a
   gradient that way, and `ghee.set_param` checks a colour name through the
   native half of the package.
-- Wait under a fixed `--timestep` for a lockstep scene process to answer
-  each tick, so the params and arrays sent for a tick land in that tick's
-  frame, where they landed a frame later. Message kind 5 ends an answer,
-  `"lockstep": true` in the handshake promises one for every tick, and ghee
-  sets `GHEE_LOCKSTEP=1` in the scene process to say that it reads both.
-  The Python shim sends both when it finds `GHEE_LOCKSTEP`, and under an
-  older ghee it writes the wire as before.
+- Wait for a lockstep scene process to answer its first tick, with the time
+  pinned or not, and under a fixed `--timestep` each tick, so the params and
+  arrays sent for a tick land in that tick's frame, where they landed a frame
+  later or more. Message kind 5 ends an answer, `"lockstep": true` in the
+  handshake promises one for every tick, and ghee sets `GHEE_LOCKSTEP=1` in
+  the scene process to say that it reads both. The Python shim sends both when
+  it finds `GHEE_LOCKSTEP`, and under an older ghee it writes the wire as
+  before.
 - Log once a param message from a scene process that names no param of the
   scene or does not fit the param's type, where it changed nothing in
   silence.
-- Wait for a lockstep scene process to answer its first tick before that
-  frame draws, with the time pinned or not, so the first frame shows the
-  data of its own tick, where an unpinned render drew it before the first
-  feed arrived.
 - Add a layer to the running scene from a scene process with message kind
   6, named for the pass, its payload the UTF-8 JSON `{"index": n, "layer":
   {...}}`, and give a layer a new look with kind 7, named for the layer, its
@@ -378,7 +352,7 @@
   with their programs, arrays and moving effects, a look that changes live
   fields alone sets them live, and a layer that a scene file would refuse
   there logs once. ghee applies the sets of a process in the order that they
-  arrive, and a message kind past 7 ends the scene, where a kind past 5 did.
+  arrive, and a message kind past 7 ends the scene.
 
 ### Console
 
@@ -455,11 +429,13 @@
 
 ### Displays and H264
 
-- Write the I2C bus rate and the panel's height in `ghee overlay ssd1306`:
-  `height=32` or `height=64` is required, `speed` sets
-  `dtparam=i2c_arm_baudrate`, 1000000 by default, and `address` passes the
-  panel's I2C address to the overlay, where ghee refused any address but
-  0x3C. A 128x64 module takes the overlay's own wiring.
+- Write the I2C bus rate and the panel's height in `ghee overlay ssd1306`,
+  which needs `height=32` or `height=64`, where it wrote a 128x32 setup with
+  no options. `speed` sets `dtparam=i2c_arm_baudrate`, the rate of the whole
+  bus, 1000000 by default. `address` passes the panel's I2C address to the
+  overlay, where the overlay took `addr` and refused any address but 0x3C,
+  and `addr` stays the userspace driver's. A 128x64 module takes the
+  overlay's own wiring.
 - Turn the frame clockwise on its way to every output with `--rotate 90`,
   `180` or `270` on `ghee render` and `ghee serve`, and
   `Renderer::set_rotate` in Rust: the display, the files, the raw frames
@@ -507,18 +483,34 @@
 
 - Read back a frame at a whole multiple of the render size with each pixel a
   square block, in `Renderer::render_into` and `render_scaled`.
+- Grow a running scene with no rebuild through `Renderer::add_layer`, which
+  puts a layer, written as a scene declares it, into a pass at an index
+  among its layers, and refuses one that a scene file would refuse there.
+  Every other layer keeps its program, its atlas, its phases and its quads,
+  and every pass its program, its arrays and its buffers. A shape compiles
+  nothing, an image layer loads its picture, and a text layer builds its
+  shaders and its atlas. A layer's own shaders hold no name of the layer's
+  and take its settings from uniforms of its batches alone, so layers whose
+  shaders come out the same, in one scene or added, draw through one
+  program, and `Renderer::compiled` counts the programs that a renderer
+  linked.
+- Build one layer of a running scene again in its place with
+  `Renderer::replace_layer`, of its kind or of another, and give a layer a
+  whole new look with `Renderer::update_layer`, which sets the live fields
+  that changed and builds the layer again for any other change. A key that
+  the look leaves out takes its default, and an effect that it leaves out
+  stays, bypassed. Every other layer keeps its program, its atlas, its
+  phases and its quads, the layer's moving effects carry their phases on,
+  and a layer that the scene refuses changes nothing.
+- Measure words with `Scene::measure` and `Renderer::measure`: the width and
+  height in pixels of the block that a text layer of a pass lays them out
+  in, at a `font_size` or at the size that fits the pass.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
-- Compile one program for the batches whose two shaders match, and set
-  `resolution` at each draw, so one program serves passes of any size. A
-  batch takes uniforms of its own, which it sets before it draws, and
-  `ghee_mp_insert_batch` adds a batch anywhere among the batches of a
-  running pass. `Renderer::compiled` counts the programs that a renderer
-  linked.
 - Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
   `feeds`, `isf`, `report` and `sources` modules inside the crate.
-- Ship NOTICE and the DejaVu font's license in the deb under
-  `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
+- Ship NOTICE and the licenses of DejaVu Sans and Pixel Operator 8 in the deb
+  under `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
   LICENSE and NOTICE in the wheel.
 
 ## 0.4.0 - 2026-08-06

@@ -867,6 +867,9 @@ pub struct Renderer {
     /// The pinned time of the last render since the setup, 0 before the
     /// first.
     drawn_at: std::cell::Cell<f64>,
+    /// The pin that iTime reads as 0, and whether the next set_time() takes
+    /// its place, after restart_clock().
+    time_base: std::cell::Cell<(f64, bool)>,
     /// The time step that set_dt() set, which advances the phases while the
     /// time runs free.
     dt: std::cell::Cell<f64>,
@@ -950,6 +953,7 @@ impl Renderer {
             colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(None),
             drawn_at: std::cell::Cell::new(0.0),
+            time_base: std::cell::Cell::new((0.0, false)),
             dt: std::cell::Cell::new(DT),
             px_em: HashMap::new(),
             atlas_font: Box::new(|fonts| Arc::new(text::AtlasFont(fonts.to_vec()))),
@@ -4156,11 +4160,28 @@ impl Renderer {
     /// The default is the monotonic clock since the engine start.
     /// None returns the uniform to that clock.
     pub fn set_time(&self, t: Option<f64>) {
+        let t = t.map(|t| match self.time_base.get() {
+            (_, true) => {
+                self.time_base.set((t, false));
+                0.0
+            }
+            (base, false) => t - base,
+        });
         self.pinned.set(t);
         match t {
             None => unsafe { ffi::ghee_clear_time(self.handle) },
             Some(t) => unsafe { ffi::ghee_set_time(self.handle, t as f32) },
         }
+    }
+
+    /// Restart the clock: the next frame draws as iFrame 0 at iTime 0, and
+    /// iTimeDelta stays as set_dt() set it. The monotonic clock counts from
+    /// that frame. With the time pinned, the next pin reads 0, and later pins
+    /// count from it.
+    pub fn restart_clock(&self) {
+        unsafe { ffi::ghee_restart_clock(self.handle) };
+        self.time_base.set((0.0, self.pinned.get().is_some()));
+        self.drawn_at.set(0.0);
     }
 
     /// Set the `iTimeDelta` uniform, this frame's advance in seconds of scene
@@ -5564,6 +5585,40 @@ mod tests {
             assert_eq!(r.setup(&sc).unwrap(), want);
             assert_eq!(r.render(None).unwrap(), before);
         }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_restarted_clock_draws_its_next_frame_as_i_frame_0_at_i_time_0() {
+        // Red is iFrame and green iTime / 5, in levels.
+        let (_g, mut r) = gpu();
+        let sc = scene_of(json!([{
+            "name": "main",
+            "fragment": "void main(){ gl_FragColor = vec4(float(iFrame) / 255.0, iTime * 0.2, 0.0, 1.0); }",
+        }]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let drawn = |r: &mut Renderer| {
+            let f = r.render(None).unwrap().to_vec();
+            [0, 1].map(|c| px(&f, W, 0, 0, c))
+        };
+        // the monotonic clock
+        for _ in 0..3 {
+            drawn(&mut r);
+        }
+        sleep(Duration::from_millis(50));
+        let before = drawn(&mut r);
+        assert!(before[0] == 3.0 && before[1] > 0.0, "{before:?}");
+        r.restart_clock();
+        assert_eq!(drawn(&mut r), [0.0, 0.0]);
+        assert_eq!(drawn(&mut r)[0], 1.0);
+        // a pinned time
+        r.set_time(Some(4.0));
+        assert_eq!(drawn(&mut r), [2.0, 204.0]);
+        r.restart_clock();
+        r.set_time(Some(5.5));
+        assert_eq!(drawn(&mut r), [0.0, 0.0]);
+        r.set_time(Some(6.5));
+        assert_eq!(drawn(&mut r), [1.0, 51.0]);
     }
 
     #[test]

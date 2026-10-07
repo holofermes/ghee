@@ -147,6 +147,7 @@ struct GheeScene {
     GLuint VBO, VAO;
 
     struct timespec start_time;
+    bool restart;                        // the next frame drawn sets start_time
     bool has_time_override;              // when set, render uses time_override instead of the wall clock
     float time_override;
     float dt;                            // how many seconds the last frame took, fed to every pass as iTimeDelta
@@ -2166,6 +2167,10 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name) {
 static float elapsed_seconds(GheeScene *g) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
+    if (g->restart) {
+        g->start_time = now;
+        g->restart = false;
+    }
     return g->has_time_override ? g->time_override
         : (now.tv_sec - g->start_time.tv_sec) + (now.tv_nsec - g->start_time.tv_nsec) / 1e9f;
 }
@@ -2718,6 +2723,11 @@ void ghee_set_time(GheeScene *g, float t) { g->time_override = t; g->has_time_ov
 
 // Back to the monotonic clock after a ghee_set_time.
 void ghee_clear_time(GheeScene *g) { g->has_time_override = false; }
+
+void ghee_restart_clock(GheeScene *g) {
+    g->frame = 0;
+    g->restart = true;
+}
 
 void ghee_set_dt(GheeScene *g, float dt) { g->dt = dt; }
 

@@ -255,6 +255,7 @@ int  ghee_compiled(GheeScene *g);            // programs that the renderer linke
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
 void ghee_clear_time(GheeScene *g);   // back to the monotonic clock
+void ghee_restart_clock(GheeScene *g);  // the next frame is iFrame 0, and the monotonic clock counts from it
 void ghee_set_dt(GheeScene *g, float dt);  // the iTimeDelta uniform on every pass, 1/60 until set
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode

@@ -1858,6 +1858,7 @@ fn load(
             let working = opened.working.clone();
             let generation = console.install(name, opened, vid);
             let err = set_scene(console, renderer, st, working, generation, Some(snap));
+            renderer.borrow().restart_clock();
             if let (Some(f), Some(_)) = (process.as_mut(), console.timestep) {
                 f.pin();
             }
@@ -4661,6 +4662,34 @@ mod tests {
         assert_eq!(n, 3);
         assert!(wall > 0.0);
         assert_eq!(out, [crate::stats::DEST_PANEL]);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_switch_starts_i_frame_at_0_and_an_apply_keeps_it_running() {
+        let renderer = RefCell::new(gpu(8, 8));
+        let d = crate::testing::TempDir::new("console-clock");
+        let count = r#"{"version": 1, "passes": [{"name": "main",
+            "fragment": "void main(){ gl_FragColor = vec4(float(iFrame) / 255.0, 0.0, 0.0, 1.0); }"}]}"#;
+        fs::write(d.join("count.scene.json"), count).unwrap();
+        let console = Arc::new(Console::new(SceneStore::new(&d, Vec::new())));
+        let st = RefCell::new(Running::default());
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        // iFrame in levels of red
+        let frame = || f64::from(renderer.borrow_mut().render(None).unwrap()[0]);
+        let switch = || {
+            api.host.switch(Some("count")).unwrap();
+            drain(&console, &renderer, &st, &ctrl);
+        };
+        switch();
+        let drawn: Vec<f64> = (0..3).map(|_| frame()).collect();
+        assert_eq!(drawn, [0.0, 1.0, 2.0]);
+        switch();
+        assert_eq!(frame(), 0.0, "a reload starts the clock again");
+        assert_eq!(ask(&api, "POST", "/scene", "name=count", count).0, 200);
+        drain(&console, &renderer, &st, &ctrl);
+        assert_eq!(frame(), 1.0, "an apply keeps the clock running");
     }
 
     #[test]

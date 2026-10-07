@@ -13,11 +13,12 @@ Build the wheel yourself with maturin:
 maturin build --release --compatibility linux
 ```
 
-## Text on your OLED
+## Drawing on a panel
 
-This script shows a clock on a 128x32 SSD1306. The text layer `clock` names
-no font, so it draws in ghee's built-in DejaVu Sans, and no size, so the words
-fit the panel. Each turn of the loop sets the words and draws one frame:
+This script shows the time on a 128x32 SSD1306 that the kernel drives, set up
+as [Hardware displays](https://github.com/holofermes/ghee#hardware-displays)
+shows. Each `with` block draws one frame, four a second, and the text names
+no size or position, so it fits the panel, centred:
 
 ```python
 #!/usr/bin/env -S uv run --script
@@ -28,44 +29,15 @@ import time
 
 import ghee
 
-scene = ghee.Scene(
-    passes=[ghee.Pass("main", layers=[ghee.Layer("clock", text="00:00:00")])],
-)
-
-with ghee.open(scene, display="ssd1306", fps=4) as screen:
-    while True:
-        screen.layers.clock.text = time.strftime("%H:%M:%S")
-        screen.frame()
+screen = ghee.open(display="kms", fps=4)
+while True:
+    with screen.draw() as d:
+        d.text(time.strftime("%H:%M:%S"))
 ```
 
-`display="kms"` takes a panel with a kernel driver in place of ghee's own
-`ssd1306` driver.
-
-The same clock with a glow around the digits takes the `glow` effect. A 1-bit
-panel leaves every dim pixel dark, so the `dither` filter draws the glow as
-dots:
-
-```python
-scene = ghee.Scene(
-    passes=[
-        ghee.Pass(
-            "main",
-            layers=[
-                ghee.Layer(
-                    "clock",
-                    text="00:00:00",
-                    glow={"color": "#ffffff", "strength": 0.4},
-                )
-            ],
-        )
-    ],
-    filters=["dither"],
-)
-```
-
-[Layers](https://github.com/holofermes/ghee#layers) holds more: `font_size`,
-`x` and `y`, every effect, image layers, and what each filter does on a 1-bit
-panel.
+[Drawing](#drawing) holds every call, and [Text on 1-bit and 16-level
+panels](https://github.com/holofermes/ghee#text-on-1-bit-and-16-level-panels)
+holds the fonts and the filters that suit a 1-bit panel.
 
 ## ghee.open
 
@@ -182,10 +154,13 @@ raises ValueError there and on a screen with no KMS display.
 
 ## Drawing
 
-`h.draw()` opens one frame for a `with` block, and each call in the block
-writes a layer. Leaving the block draws the frame, and the panel holds it
-until the next, so the host's loop sets the pace: a loop that sleeps
+`screen.draw()` opens one frame for a `with` block, and each call in the
+block writes a layer. Leaving the block draws the frame, and the panel holds
+it until the next, so the host's loop sets the pace: a loop that sleeps
 freezes the scroll, the wave and the blink between its frames.
+
+This loop draws the time, the load of the machine as a share of its cores
+with a bar beside it, and a blinking HOT past 90%:
 
 ```python
 import os
@@ -198,7 +173,7 @@ while True:
     load = os.getloadavg()[0] / os.cpu_count()
     with screen.draw() as d:
         d.text(time.strftime("%H:%M"), x=0, y=0, font_size=16)
-        d.text(f"load {load:.0%}", x=0, y=20, font_size=8)
+        d.text(f"load {load:.0%}", x=0, y=20, font_size=8, font_family="pixel")
         d.rect(x=64, y=20, width=64, height=8, color="transparent",
                border={"width": 1, "color": "white"})
         d.rect(x=66, y=22, width=60 * min(load, 1), height=4)
@@ -246,9 +221,9 @@ hides, and an effect that a call stops naming is bypassed. A layer keeps its
 place once added, and stays, hidden, after its call stops. A frame whose
 calls changed nothing sends nothing.
 
-`h.measure(words, font_size=None, font_family=None)` gives the width and
-height in pixels of the block that a drawing's text lays `words` out in, at
-the size that fits the screen when `font_size` is None.
+`screen.measure(words, font_size=None, font_family=None)` gives the width
+and height in pixels of the block that a drawing's text lays `words` out in,
+at the size that fits the screen when `font_size` is None.
 
 ## Rules
 
@@ -288,8 +263,11 @@ The shim gives:
 
 A `ghee.Tick` holds `frame`, the tick's number, `time` and `dt` in seconds,
 `dt` the DT that its frame draws with, and `params`, the string params that
-changed, by name. The first tick's `params` holds every string param. This
-scene is the clock above, written as a procedural scene:
+changed, by name. The first tick's `params` holds every string param.
+
+This scene is the clock above, written as a procedural scene. With no scene,
+`ghee.run()` starts from one pass, `main`, that clears to black, and the
+first tick's drawing grows it:
 
 ```python
 import time
@@ -301,15 +279,15 @@ ghee.args()  # the probe, this scene takes no arguments
 
 @ghee.tick
 def clock(tick):
-    ghee.layers.clock.text = time.strftime("%H:%M:%S")
+    with ghee.draw() as d:
+        d.text(time.strftime("%H:%M:%S"))
 
 
-ghee.run(
-    ghee.Scene(
-        passes=[ghee.Pass("main", layers=[ghee.Layer("clock", text="00:00:00")])],
-    )
-)
+ghee.run()
 ```
+
+`ghee render --demo stats` draws the time and the load of the machine this
+way.
 
 `params` on `ghee.Scene` and `ghee.Pass` takes a list of `ghee.Param`, such as
 `params=[ghee.Param("gain", "float", 0.5, min=0.0, max=1.0)]`. A dict keyed
@@ -346,29 +324,21 @@ a tick states the whole drawing of that frame. The calls land as the sets of
 `ghee.layers` do, checked against the scene first, and under ghee a layer
 that a call adds or changes goes out with the tick's answer.
 
-With no scene, `ghee.run()` starts from one pass, `main`, that clears to
-black, and the first tick's drawing grows it. This scene draws the clock
-above with no scene of its own:
+The same clock from a scene of its own declares its text layer, and the
+tick sets the layer's words through `ghee.layers` in place of the drawing:
 
 ```python
-import time
-
-import ghee
-
-ghee.args()  # the probe, this scene takes no arguments
-
-
 @ghee.tick
 def clock(tick):
-    with ghee.draw() as d:
-        d.text(time.strftime("%H:%M:%S"))
+    ghee.layers.clock.text = time.strftime("%H:%M:%S")
 
 
-ghee.run()
+ghee.run(
+    ghee.Scene(
+        passes=[ghee.Pass("main", layers=[ghee.Layer("clock", text="00:00:00")])],
+    )
+)
 ```
-
-`ghee render --demo stats` draws the time and the load of the machine this
-way.
 
 ## Layers
 

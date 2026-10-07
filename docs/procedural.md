@@ -111,9 +111,9 @@ skip. ghee never blocks on a full stdin pipe.
 
 A frame takes the messages that arrived before it starts, so the answer to a
 tick lands one frame later at the earliest, and later still when the process
-falls behind. With a fixed `--timestep`, ghee waits up to 30 seconds for a
-lockstep process to end its answer to each tick, and the answer lands in that
-tick's frame.
+falls behind. ghee waits up to 30 seconds for a lockstep process to end its
+answer to its first tick, and with a fixed `--timestep` to each tick, and the
+answer lands in that tick's frame.
 
 ## Stop
 

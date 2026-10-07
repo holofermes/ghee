@@ -307,6 +307,10 @@
 - Log once a param message from a scene process that names no param of the
   scene or does not fit the param's type, where it changed nothing in
   silence.
+- Wait for a lockstep scene process to answer its first tick before that
+  frame draws, with the time pinned or not, so the first frame shows the
+  data of its own tick, where an unpinned render drew it before the first
+  feed arrived.
 
 ### Console
 

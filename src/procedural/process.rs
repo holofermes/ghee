@@ -527,8 +527,8 @@ pub struct SceneProcess {
     /// The stop sequence's waits, TERM_AFTER and KILL_AFTER.
     term_after: Duration,
     kill_after: Duration,
-    /// The loop pins time to a fixed step, so a tick waits for the answer of
-    /// a lockstep process.
+    /// The loop pins time to a fixed step, so every tick waits for the
+    /// answer of a lockstep process, the first one waiting either way.
     pinned: bool,
     /// The ticks handed to the writer, each one written to the process.
     offered: u64,
@@ -644,7 +644,8 @@ impl SceneProcess {
     }
 
     /// The loop pins time to a fixed step. A lockstep process then answers
-    /// each tick before the tick's frame draws.
+    /// each tick before the tick's frame draws, where it otherwise answers
+    /// the first one alone first.
     pub fn pin(&mut self) {
         self.pinned = true;
     }
@@ -847,8 +848,12 @@ impl SceneController for SceneProcess {
         if let Some(dead) = &self.dead {
             return Err(anyhow!(dead.clone()));
         }
+        // A lockstep process answers its first tick before that frame draws,
+        // so the frame shows the data of its own tick. Later ticks wait only
+        // with the time pinned.
+        let first = self.offered == 0;
         self.offer(frame, t, dt);
-        if self.lockstep && self.pinned {
+        if self.lockstep && (self.pinned || first) {
             self.await_answers(frame)?;
             self.drain();
             if let Some(dead) = &self.dead {
@@ -1815,7 +1820,7 @@ done
 "#;
 
     #[test]
-    fn a_pinned_tick_waits_for_a_lockstep_answer_and_an_unpinned_one_draws_what_arrived() {
+    fn a_first_or_pinned_tick_waits_for_a_lockstep_answer_and_a_later_one_draws_what_arrived() {
         let d = tmpdir("lockstep");
         let path = script(&d, "lockstep", LOCKSTEP_SCRIPT);
         let word = |stub: &Stub| match stub.set.borrow().last() {
@@ -1836,13 +1841,16 @@ done
         let stub = &mut Stub::default();
         f.tick(0, 0.0, 1.0 / 60.0).unwrap();
         f.update(stub, 0, 0.0).unwrap();
-        assert_eq!(word(stub), None);
+        assert_eq!(word(stub), Some("0".to_string()));
+        f.tick(1, 1.0 / 60.0, 1.0 / 60.0).unwrap();
+        f.update(stub, 1, 0.0).unwrap();
+        assert_eq!(word(stub), Some("0".to_string()));
         assert!(wait_until(Duration::from_secs(5), || {
             f.drain();
             !f.incoming.is_empty()
         }));
-        f.update(stub, 1, 0.0).unwrap();
-        assert_eq!(word(stub), Some("0".to_string()));
+        f.update(stub, 2, 0.0).unwrap();
+        assert_eq!(word(stub), Some("1".to_string()));
     }
 
     #[test]

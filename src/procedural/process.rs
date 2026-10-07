@@ -24,7 +24,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
 use crate::engine::{Feed, Given, Refused};
-use crate::layer::{Address, Rgb};
+use crate::layer::{Address, Layer, Rgb};
 use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::resolve;
 use crate::scene::{py_repr, ArraySize, ParamValue, Reach, Scene};
@@ -97,6 +97,8 @@ const CLEAN: u8 = 2;
 const SET_STRING: u8 = 3;
 const SET_ARRAY_U8: u8 = 4;
 const END_TICK: u8 = 5;
+const ADD_LAYER: u8 = 6;
+const UPDATE_LAYER: u8 = 7;
 
 const SIGTERM: c_int = 15;
 
@@ -395,11 +397,33 @@ enum ParamData {
     Str(String),
 }
 
+/// One message that sets something by name: a param or a live field of a
+/// layer (kinds 1 and 3), a layer added to the pass of that name (kind 6),
+/// or the new look of the layer of that name (kind 7), each of the last two
+/// as its JSON text.
+enum Set {
+    Param(ParamData),
+    Layer(String),
+    Look(String),
+}
+
+impl Set {
+    /// True when this set, the newer, leaves nothing of `older`, a set of
+    /// the same name.
+    fn overrides(&self, older: &Set) -> bool {
+        matches!(
+            (self, older),
+            (Set::Param(_), Set::Param(_)) | (Set::Look(_), Set::Look(_))
+        )
+    }
+}
+
 /// What the reader thread takes off stdout between two drains.
 #[derive(Default)]
 struct Inbox {
     arrays: Vec<(String, ArrayData)>,
-    params: Vec<(String, ParamData)>,
+    /// The sets in the order of arrival, as latest() queues them.
+    params: Vec<(String, Set)>,
     /// The process calls these ticks clean.
     clean: u32,
     /// The answers that the process ended with kind 5, one a tick.
@@ -415,6 +439,15 @@ fn newest<T>(into: &mut Vec<(String, T)>, name: String, values: T) {
         Some(slot) => slot.1 = values,
         None => into.push((name, values)),
     }
+}
+
+/// Queue `set` of `name` last, and drop each older set of that name that it
+/// overrides. The queue then ends in the newest state of every layer, when
+/// the answers to several ticks arrive between two frames: a layer hidden
+/// by one answer and drawn again by the next ends up shown.
+fn latest(into: &mut Vec<(String, Set)>, name: String, set: Set) {
+    into.retain(|(n, older)| *n != name || !set.overrides(older));
+    into.push((name, set));
 }
 
 /// One render tick on its way to the process stdin.
@@ -506,8 +539,8 @@ pub struct SceneProcess {
     threads: Vec<JoinHandle<()>>,
     /// Array data still waiting for a frame, newest for each name.
     data: HashMap<String, ArrayData>,
-    /// Param values that wait for a renderer.
-    incoming: Vec<(String, ParamData)>,
+    /// The sets that wait for a renderer, in the order of arrival.
+    incoming: Vec<(String, Set)>,
     /// param name -> (the pass that holds it, its type). None is scene scope.
     params: HashMap<String, (Option<String>, String)>,
     /// The names of the scene's layers, which address their live fields as
@@ -680,6 +713,82 @@ impl SceneProcess {
         }
     }
 
+    /// Log a message that the renderer refused, once for each name, and
+    /// hand on any other failure.
+    fn refuse_or_fail(&mut self, name: &str, e: anyhow::Error) -> Result<()> {
+        let Some(refused) = e.downcast_ref::<Refused>() else {
+            return Err(e);
+        };
+        let why = refused.0.clone();
+        self.refuse(name, &why);
+        Ok(())
+    }
+
+    /// Add the layer of a kind 6 message to pass `pass`, `text` its JSON.
+    fn add_layer(&mut self, renderer: &mut dyn RenderTarget, pass: &str, text: &str) -> Result<()> {
+        let (index, layer) = match added(pass, text) {
+            Ok(found) => found,
+            Err(why) => {
+                self.refuse(pass, &why);
+                return Ok(());
+            }
+        };
+        let name = layer.get("name").and_then(Value::as_str).unwrap_or(pass);
+        let name = name.to_string();
+        match renderer.add_layer(pass, index, &layer) {
+            Ok(()) => self.took(&layer),
+            Err(e) => self.refuse_or_fail(&name, e)?,
+        }
+        Ok(())
+    }
+
+    /// Give layer `name` the look of a kind 7 message, `text` its JSON.
+    fn update_layer(
+        &mut self,
+        renderer: &mut dyn RenderTarget,
+        name: &str,
+        text: &str,
+    ) -> Result<()> {
+        let look = match look_of(name, text) {
+            Ok(look) => look,
+            Err(why) => {
+                self.refuse(name, &why);
+                return Ok(());
+            }
+        };
+        match renderer.update_layer(&look) {
+            Ok(true) => self.took(&look),
+            Ok(false) => {}
+            Err(e) => self.refuse_or_fail(name, e)?,
+        }
+        Ok(())
+    }
+
+    /// Index `layer`, a layer that the renderer took from the process: its
+    /// live fields, and the words param of a text layer, its words the
+    /// process's own, which no tick carries back.
+    fn took(&mut self, layer: &Value) {
+        let Ok(layer) = Layer::from_dict("the layer", layer) else {
+            return;
+        };
+        let name = layer.name().to_string();
+        let was_text = self.layers.insert(name.clone(), layer.as_text().is_some());
+        match layer.as_text() {
+            Some(l) => {
+                self.params
+                    .insert(name.clone(), (None, "string".to_string()));
+                self.strings.insert(name.clone(), l.text.clone());
+                self.sent.insert(name, l.text.clone());
+            }
+            None if was_text == Some(true) => {
+                self.params.remove(&name);
+                self.strings.remove(&name);
+                self.sent.remove(&name);
+            }
+            None => {}
+        }
+    }
+
     /// Index the params of the compiled scene.
     /// The set holds the handshake params, plus any param added by a filter
     /// or a saved value.
@@ -738,8 +847,8 @@ impl SceneProcess {
         for (name, values) in arrays {
             self.data.insert(name, values);
         }
-        for (name, values) in params {
-            newest(&mut self.incoming, name, values);
+        for (name, set) in params {
+            latest(&mut self.incoming, name, set);
         }
         self.clean = self.clean.saturating_add(clean);
         if self.dead.is_none() && (done || !fault.is_empty()) {
@@ -875,37 +984,18 @@ impl SceneController for SceneProcess {
     }
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
-        // An array message whose name addresses a layer, such as
-        // `scope.points`, sets that live field of the layer.
-        let fields: Vec<String> = self
-            .data
-            .keys()
-            .filter(|n| Address::dotted(n).is_some_and(|at| self.layers.contains_key(at.layer)))
-            .cloned()
-            .collect();
-        for name in fields {
-            let at = Address::dotted(&name).expect("the name was just matched");
-            let refused = match self.data.remove(&name) {
-                Some(ArrayData::F32(values)) => {
-                    match renderer.set_layer(&at, Given::Numbers(&values)) {
-                        Ok(()) => None,
-                        Err(e) => match e.downcast_ref::<Refused>() {
-                            Some(r) => Some(r.0.clone()),
-                            None => return Err(e),
-                        },
-                    }
+        for (mut name, set) in std::mem::take(&mut self.incoming) {
+            let data = match set {
+                Set::Layer(text) => {
+                    self.add_layer(renderer, &name, &text)?;
+                    continue;
                 }
-                Some(ArrayData::U8(_)) => Some(format!(
-                    "layer '{}' {} takes floats in message kind 0, got bytes",
-                    at.layer, at.field
-                )),
-                None => None,
+                Set::Look(text) => {
+                    self.update_layer(renderer, &name, &text)?;
+                    continue;
+                }
+                Set::Param(data) => data,
             };
-            if let Some(why) = refused {
-                self.refuse(&name, &why);
-            }
-        }
-        for (mut name, data) in std::mem::take(&mut self.incoming) {
             // The `text` of a text layer is its words, the scene param of the
             // layer's name.
             if let Some(layer) = name.strip_suffix(".text") {
@@ -922,11 +1012,7 @@ impl SceneController for SceneProcess {
                     ParamData::Str(text) => Given::Text(text),
                 };
                 if let Err(e) = renderer.set_layer(&at, given) {
-                    let Some(refused) = e.downcast_ref::<Refused>() else {
-                        return Err(e);
-                    };
-                    let why = refused.0.clone();
-                    self.refuse(&name, &why);
+                    self.refuse_or_fail(&name, e)?;
                 }
                 continue;
             }
@@ -975,6 +1061,32 @@ impl SceneController for SceneProcess {
                 self.sent.insert(name, text.clone());
             }
         }
+        // An array message whose name addresses a layer, such as
+        // `scope.points`, sets that live field of the layer.
+        let fields: Vec<String> = self
+            .data
+            .keys()
+            .filter(|n| Address::dotted(n).is_some_and(|at| self.layers.contains_key(at.layer)))
+            .cloned()
+            .collect();
+        for name in fields {
+            let at = Address::dotted(&name).expect("the name was just matched");
+            match self.data.remove(&name) {
+                Some(ArrayData::F32(values)) => {
+                    if let Err(e) = renderer.set_layer(&at, Given::Numbers(&values)) {
+                        self.refuse_or_fail(&name, e)?;
+                    }
+                }
+                Some(ArrayData::U8(_)) => {
+                    let why = format!(
+                        "layer '{}' {} takes floats in message kind 0, got bytes",
+                        at.layer, at.field
+                    );
+                    self.refuse(&name, &why);
+                }
+                None => {}
+            }
+        }
         Ok(())
     }
 
@@ -1019,6 +1131,38 @@ fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
                 .then(|| ParamValue::Vec(values[..n].iter().map(|v| f64::from(*v)).collect()))
         }
         _ => None,
+    }
+}
+
+/// The place and the layer of a kind 6 message to pass `pass`, read from
+/// `text`, its JSON, or why the message carries none.
+fn added(pass: &str, text: &str) -> Result<(usize, Value), String> {
+    let doc: Value = serde_json::from_str(text)
+        .map_err(|e| format!("kind 6 to pass '{pass}' is no JSON: {e}"))?;
+    let index = doc
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|i| usize::try_from(i).ok());
+    let layer = doc.get("layer").filter(|l| l.is_object());
+    match (index, layer, doc.as_object().map(Map::len)) {
+        (Some(index), Some(layer), Some(2)) => Ok((index, layer.clone())),
+        _ => Err(format!(
+            "kind 6 to pass '{pass}' needs {{\"index\": n, \"layer\": {{...}}}}, n a whole \
+             number from 0"
+        )),
+    }
+}
+
+/// The look of a kind 7 message to layer `layer`, read from `text`, its
+/// JSON, or why the message carries none.
+fn look_of(layer: &str, text: &str) -> Result<Value, String> {
+    let doc: Value = serde_json::from_str(text)
+        .map_err(|e| format!("kind 7 to layer '{layer}' is no JSON: {e}"))?;
+    match doc.get("name").and_then(Value::as_str) {
+        Some(name) if name == layer => Ok(doc),
+        _ => Err(format!(
+            "kind 7 to layer '{layer}' holds no layer named '{layer}'"
+        )),
     }
 }
 
@@ -1117,7 +1261,7 @@ fn read_stream(
 
 /// kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE.
 /// Kind 4 carries count u8 bytes instead, and the value is byte / 255.
-/// Kind 3 carries count bytes of UTF-8 text.
+/// Kinds 3, 6 and 7 carry count bytes of UTF-8 text.
 /// Kind 2 (clean) and kind 5 (the end of a tick's answer) are the single byte.
 fn messages(
     out: &mut impl BufRead,
@@ -1139,11 +1283,8 @@ fn messages(
             answered.notify_all();
             continue;
         }
-        if !matches!(kind[0], SET_ARRAY | SET_PARAM | SET_STRING | SET_ARRAY_U8) {
-            return Err(format!(
-                "wrote message kind {} (0, 1, 2, 3, 4 or 5 only)",
-                kind[0]
-            ));
+        if kind[0] > UPDATE_LAYER {
+            return Err(format!("wrote message kind {} (0 to 7 only)", kind[0]));
         }
         let mut len = [0u8; 1];
         let mut count = [0u8; 4];
@@ -1160,10 +1301,9 @@ fn messages(
                 "wrote a message of {count} values, over the {MAX_VALUES} cap"
             ));
         }
-        let width = if matches!(kind[0], SET_STRING | SET_ARRAY_U8) {
-            1
-        } else {
-            4
+        let width = match kind[0] {
+            SET_ARRAY | SET_PARAM => 4,
+            _ => 1,
         };
         let mut body = vec![0u8; count * width];
         if out.read_exact(&mut body).is_err() {
@@ -1174,9 +1314,14 @@ fn messages(
             newest(&mut lock(inbox).arrays, name, ArrayData::U8(body));
             continue;
         }
-        if kind[0] == SET_STRING {
+        if matches!(kind[0], SET_STRING | ADD_LAYER | UPDATE_LAYER) {
             let text = String::from_utf8_lossy(&body).into_owned();
-            newest(&mut lock(inbox).params, name, ParamData::Str(text));
+            let set = match kind[0] {
+                ADD_LAYER => Set::Layer(text),
+                UPDATE_LAYER => Set::Look(text),
+                _ => Set::Param(ParamData::Str(text)),
+            };
+            latest(&mut lock(inbox).params, name, set);
             continue;
         }
         let values: Vec<f32> = body
@@ -1186,7 +1331,7 @@ fn messages(
         let mut held = lock(inbox);
         match kind[0] {
             SET_ARRAY => newest(&mut held.arrays, name, ArrayData::F32(values)),
-            _ => newest(&mut held.params, name, ParamData::F32(values)),
+            _ => latest(&mut held.params, name, Set::Param(ParamData::F32(values))),
         }
     }
 }
@@ -1330,6 +1475,8 @@ sleep 60
         feeds: Vec<(String, ArraySize)>,
         bytes: std::cell::RefCell<Vec<(String, Vec<u8>)>>,
         floats: std::cell::RefCell<Vec<(String, Vec<f32>)>>,
+        /// Every param set, live set, layer added and look given, in order.
+        log: std::cell::RefCell<Vec<String>>,
     }
 
     impl RenderTarget for Stub {
@@ -1388,6 +1535,25 @@ sleep 60
             self.set
                 .borrow_mut()
                 .push((pass.map(str::to_string), name.to_string(), value.clone()));
+            self.log
+                .borrow_mut()
+                .push(format!("param {name} {value:?}"));
+            Ok(true)
+        }
+
+        /// Records the layer, and refuses a layer named `refused`.
+        fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Result<()> {
+            if layer["name"] == "refused" {
+                return Err(Refused("a layer the scene refuses".to_string()).into());
+            }
+            self.log
+                .borrow_mut()
+                .push(format!("add {pass} {index} {layer}"));
+            Ok(())
+        }
+
+        fn update_layer(&mut self, layer: &Value) -> Result<bool> {
+            self.log.borrow_mut().push(format!("look {layer}"));
             Ok(true)
         }
 
@@ -1401,6 +1567,7 @@ sleep 60
                 Some(e) => format!("{}.{e}.{}", at.layer, at.field),
                 None => format!("{}.{}", at.layer, at.field),
             };
+            self.log.borrow_mut().push(format!("set {name} {given:?}"));
             self.layers.borrow_mut().push((name, format!("{given:?}")));
             Ok(())
         }
@@ -1718,7 +1885,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
         let text = |f: &SceneProcess| {
             f.incoming
                 .iter()
-                .any(|(n, v)| n == "words" && matches!(v, ParamData::Str(_)))
+                .any(|(n, v)| n == "words" && matches!(v, Set::Param(ParamData::Str(_))))
         };
         assert!(wait_until(Duration::from_secs(5), || {
             f.drain();
@@ -2057,7 +2224,7 @@ done
             &d,
             "garbage",
             "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\n\
-             printf '\\007'\nsleep 5\n",
+             printf '\\010'\nsleep 5\n",
         );
         let (_scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         let mut last = Ok(());
@@ -2069,10 +2236,7 @@ done
             thread::sleep(Duration::from_millis(10));
         }
         let e = last.unwrap_err().to_string();
-        assert!(
-            e.contains("wrote message kind 7 (0, 1, 2, 3, 4 or 5 only)"),
-            "{e}"
-        );
+        assert!(e.contains("wrote message kind 8 (0 to 7 only)"), "{e}");
     }
 
     const DOTTED_SCRIPT: &str = r#"#!/bin/sh
@@ -2263,5 +2427,155 @@ while IFS= read -r line; do :; done
             )]
         );
         assert!(f.refused.is_empty());
+    }
+
+    /// A process that adds the text layer `title` to pass `main`, sets its
+    /// words and its x, gives it a new look, adds the line `scope`, adds a
+    /// layer that the renderer refuses, sends a kind 6 message that holds no
+    /// layer, then sets the points of `scope` in a kind 0 message.
+    fn grow_script() -> String {
+        let title = r#"{"index": 1, "layer": {"name": "title", "text": "hi"}}"#;
+        let look = r#"{"name": "title", "text": "ho", "font_size": 20}"#;
+        let scope = r#"{"index": 2, "layer": {"name": "scope", "shape": "line", "points": [[0, 0], [1, 1]]}}"#;
+        let refused = r#"{"index": 0, "layer": {"name": "refused", "shape": "rect"}}"#;
+        let points: Vec<u8> = [0f32, 1.0, 2.0, 3.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "code": "void main(){}",
+                        "layers": [{"name": "dot", "shape": "rect"}]}],
+        });
+        [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            message(6, "main", title.len() as u32, title.as_bytes()),
+            message(3, "title.text", 2, b"ho"),
+            numbers("title.x", &[4.0]),
+            message(7, "title", look.len() as u32, look.as_bytes()),
+            message(6, "main", scope.len() as u32, scope.as_bytes()),
+            message(6, "main", refused.len() as u32, refused.as_bytes()),
+            message(6, "main", 4, b"nope"),
+            message(0, "scope.points", 4, &points),
+            "while IFS= read -r line; do printf '%s\\n' \"$line\" >> ticks.jsonl; done\n"
+                .to_string(),
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn a_kind_6_message_adds_a_layer_that_later_messages_address() {
+        let d = tmpdir("grow");
+        let path = script(&d, "grow", &grow_script());
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            f.data.contains_key("scope.points")
+        }));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        let title = r#"{"name":"title","text":"hi"}"#;
+        let look = r#"{"name":"title","text":"ho","font_size":20}"#;
+        let scope = r#"{"name":"scope","shape":"line","points":[[0,0],[1,1]]}"#;
+        assert_eq!(
+            *stub.log.borrow(),
+            [
+                format!("add main 1 {title}"),
+                "param title Str(\"ho\")".to_string(),
+                "set title.x Numbers([4.0])".to_string(),
+                format!("look {look}"),
+                format!("add main 2 {scope}"),
+                "set scope.points Numbers([0.0, 1.0, 2.0, 3.0])".to_string(),
+            ]
+        );
+        let mut refused: Vec<&String> = f.refused.iter().collect();
+        refused.sort();
+        assert_eq!(refused, ["main", "refused"]);
+        // the console's words for the added layer reach the process, and
+        // the process's own words stay with it
+        f.on_param("title", "from the console");
+        f.tick(0, 0.0, 1.0 / 60.0).unwrap();
+        let seen = ticks(&d, 1);
+        assert_eq!(
+            seen[0]["params"],
+            serde_json::json!({"title": "from the console"})
+        );
+    }
+
+    #[test]
+    fn a_layer_message_that_holds_no_layer_says_what_it_needs() {
+        assert_eq!(
+            added(
+                "main",
+                r#"{"index": -1, "layer": {"name": "t", "text": "hi"}}"#
+            ),
+            Err(
+                "kind 6 to pass 'main' needs {\"index\": n, \"layer\": {...}}, n a whole number \
+                 from 0"
+                    .to_string()
+            )
+        );
+        for text in [r#"{"index": 0}"#, r#"{"index": 0, "layer": {}, "more": 1}"#] {
+            let e = added("main", text).unwrap_err();
+            assert!(e.starts_with("kind 6 to pass 'main' needs"), "{e}");
+        }
+        let e = added("main", "nope").unwrap_err();
+        assert!(e.starts_with("kind 6 to pass 'main' is no JSON: "), "{e}");
+        assert_eq!(
+            look_of("title", r#"{"name": "other", "text": "hi"}"#),
+            Err("kind 7 to layer 'title' holds no layer named 'title'".to_string())
+        );
+        let e = look_of("title", "[1]").unwrap_err();
+        assert!(
+            e.starts_with("kind 7 to layer 'title' holds no layer"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn the_answers_of_several_ticks_leave_each_layer_in_its_newest_state() {
+        let d = tmpdir("newest");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "code": "void main(){}",
+                        "layers": [{"name": "dot", "shape": "rect"},
+                                   {"name": "bar", "shape": "rect"}]}],
+        });
+        let drawn = |x: u32| format!(r#"{{"name": "dot", "shape": "rect", "x": {x}}}"#);
+        let (first, again) = (drawn(1), drawn(2));
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            // one tick draws dot, the next hides it, the next draws it again
+            message(7, "dot", first.len() as u32, first.as_bytes()),
+            numbers("dot.visible", &[0.0]),
+            message(7, "dot", again.len() as u32, again.as_bytes()),
+            numbers("bar.x", &[1.0]),
+            numbers("bar.x", &[2.0]),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "newest", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        let last = |(n, s): &(String, Set)| {
+            n == "bar.x" && matches!(s, Set::Param(ParamData::F32(v)) if v[..] == [2.0])
+        };
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            f.incoming.iter().any(last)
+        }));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert_eq!(
+            *stub.log.borrow(),
+            [
+                "set dot.visible Numbers([0.0])".to_string(),
+                r#"look {"name":"dot","shape":"rect","x":2}"#.to_string(),
+                "set bar.x Numbers([2.0])".to_string(),
+            ]
+        );
     }
 }

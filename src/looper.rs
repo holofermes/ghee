@@ -61,6 +61,18 @@ pub trait RenderTarget {
         Err(Refused(format!("this renderer adds no layer to pass '{pass}'")).into())
     }
 
+    /// Give a layer of the running scene the look `layer`, written as a
+    /// scene declares it, as Renderer::update_layer() does. False when the
+    /// layer has that look already. A target that draws no layers refuses
+    /// every look.
+    fn update_layer(&mut self, layer: &Value) -> Result<bool> {
+        let name = layer
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        Err(Refused(format!("this renderer draws no layer '{name}'")).into())
+    }
+
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()>;
     fn render_into(
         &mut self,
@@ -121,6 +133,10 @@ impl RenderTarget for Renderer {
 
     fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Result<()> {
         Renderer::add_layer(self, pass, index, layer)
+    }
+
+    fn update_layer(&mut self, layer: &Value) -> Result<bool> {
+        Renderer::update_layer(self, layer)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {

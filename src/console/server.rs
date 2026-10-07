@@ -1328,6 +1328,14 @@ impl RenderTarget for SharedRenderer {
         self.0.borrow().set_layer(at, given)
     }
 
+    fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Result<()> {
+        self.0.borrow_mut().add_layer(pass, index, layer)
+    }
+
+    fn update_layer(&mut self, layer: &Value) -> Result<bool> {
+        self.0.borrow_mut().update_layer(layer)
+    }
+
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
         self.0.borrow_mut().draw(provider)
     }

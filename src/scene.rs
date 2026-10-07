@@ -25,6 +25,7 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
 use crate::layer::{is_image_file, Address, Form, Layer, Rgb, TextLayer, COLOUR_FORMS};
+use crate::shape::Shape;
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
@@ -1757,6 +1758,74 @@ pub(crate) fn not_an_image(what: &str, value: &Value) -> String {
     )
 }
 
+/// A new look of a layer of the scene, as Scene::look() finds it.
+pub struct Look {
+    /// The layer as the scene holds it, and its words.
+    pub old: Layer,
+    pub old_words: String,
+    /// The layer in its new look, and its words. With `rebuild` false, it
+    /// holds the fonts and the file of `old`.
+    pub new: Layer,
+    pub new_words: String,
+    /// The new look as a scene declares it, with the effects that it leaves
+    /// out bypassed.
+    pub look: Value,
+    /// True when a field that changes with a rebuild differs.
+    pub rebuild: bool,
+}
+
+/// The kind of `layer`: text, image, or its shape for a shape layer.
+fn kind_of(layer: &Layer) -> &'static str {
+    match layer {
+        Layer::Text(_) => "text",
+        Layer::Image(_) => "image",
+        Layer::Shape(l) => match l.shape {
+            Shape::Rect { .. } => "rect",
+            Shape::Line { .. } => "line",
+        },
+    }
+}
+
+/// `look`, a layer of the kind of `old` as a scene declares it, with each
+/// effect of `old` that it leaves out, and a rect's border, bypassed with
+/// its values.
+fn keep_bypassed(old: &Layer, look: &Value) -> Value {
+    let mut look = look.clone();
+    let (Some(o), Value::Object(was)) = (look.as_object_mut(), old.to_dict("")) else {
+        return look;
+    };
+    for (key, mut v) in was {
+        let effect = v.is_object() && old.live(Some(&key), "visible").is_ok();
+        if effect && o.get(&key).is_none_or(Value::is_null) {
+            v["visible"] = Value::from(false);
+            o.insert(key, v);
+        }
+    }
+    look
+}
+
+/// The keys of `d`, layer `layer` as a scene writes it, that change with a
+/// rebuild: every key but the name, the words and the live fields of
+/// `layer`, its effects' among them. A rect's border is live whole.
+fn build_of(layer: &Layer, d: &Value) -> Value {
+    let mut d = d.clone();
+    if let Some(o) = d.as_object_mut() {
+        o.retain(|k, v| {
+            if k == "name" || k == "text" || layer.live(None, k).is_ok() {
+                return false;
+            }
+            match v {
+                Value::Object(fields) if layer.live(Some(k), "visible").is_ok() => {
+                    fields.retain(|f, _| layer.live(Some(k), f).is_err());
+                    !(fields.is_empty() && layer.as_shape().is_some())
+                }
+                _ => true,
+            }
+        });
+    }
+    d
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene {
     pub passes: Vec<Pass>,
@@ -2132,6 +2201,72 @@ impl Scene {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// The new look `look` of the layer of its name, a layer as a scene
+    /// declares it: every key that `look` leaves out takes its default, and
+    /// an effect of the layer that `look` leaves out stays, bypassed, with
+    /// its values, and so does a rect's border. None when the layer has that
+    /// look already. A look that no layer takes, and a name that names no
+    /// layer of the scene, fail.
+    pub fn look(&self, look: &Value) -> Result<Option<Look>> {
+        let new = Layer::from_dict("the new layer", look)?;
+        let name = new.name().to_string();
+        let Some(old) = self.layer(&name) else {
+            bail!("the scene has no layer '{name}'");
+        };
+        let look = match kind_of(old) == kind_of(&new) {
+            true => keep_bypassed(old, look),
+            false => look.clone(),
+        };
+        let mut new = Layer::from_dict("the new layer", &look)?;
+        let old_words = match self.words(&name) {
+            Some(w) => w.to_string(),
+            None => old.as_text().map_or(String::new(), |l| l.text.clone()),
+        };
+        let new_words = new.as_text().map_or(String::new(), |l| l.text.clone());
+        let (was, will) = (old.to_dict(&old_words), new.to_dict(&new_words));
+        if was == will {
+            return Ok(None);
+        }
+        let rebuild = build_of(old, &was) != build_of(old, &will);
+        // The same build: the fonts and the file of the layer stay.
+        if !rebuild {
+            match (&mut new, old) {
+                (Layer::Text(n), Layer::Text(o)) => {
+                    n.data.clone_from(&o.data);
+                    n.emoji.clone_from(&o.emoji);
+                }
+                (Layer::Image(n), Layer::Image(o)) if n.image == o.image => {
+                    n.data.clone_from(&o.data);
+                }
+                _ => {}
+            }
+        }
+        Ok(Some(Look {
+            old: old.clone(),
+            old_words,
+            new,
+            new_words,
+            look,
+            rebuild,
+        }))
+    }
+
+    /// Give the layer of the name of `look` that look, as look() finds it:
+    /// through the checks of a scene that declares it there when a field
+    /// that changes with a rebuild differs, and through the checks of a
+    /// live set otherwise. False when the layer has that look already. A
+    /// look that the scene refuses leaves the scene as it was.
+    pub fn update_layer(&mut self, look: &Value) -> Result<bool> {
+        let Some(found) = self.look(look)? else {
+            return Ok(false);
+        };
+        match found.rebuild {
+            true => self.replace_layer(found.new)?,
+            false => self.swap_live(found.new)?,
+        }
+        Ok(true)
     }
 
     /// The pass index and the index among its layers of layer `name`.

@@ -363,6 +363,14 @@
   frame draws, with the time pinned or not, so the first frame shows the
   data of its own tick, where an unpinned render drew it before the first
   feed arrived.
+- Add a layer to the running scene from a scene process with message kind
+  6, named for the pass, its payload the UTF-8 JSON `{"index": n, "layer":
+  {...}}`, and give a layer a new look with kind 7, named for the layer, its
+  payload the layer's UTF-8 JSON. Every other layer and every pass carry on
+  with their programs, arrays and moving effects, a look that changes live
+  fields alone sets them live, and a layer that a scene file would refuse
+  there logs once. ghee applies the sets of a process in the order that they
+  arrive, and a message kind past 7 ends the scene, where a kind past 5 did.
 
 ### Console
 

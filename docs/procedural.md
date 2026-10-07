@@ -47,6 +47,9 @@ ghee waits 30 seconds for the scene. If the process exits before it writes
 the scene, that is an error, and ghee shows its stderr. A process that ends
 its answer to every tick with kind 5 sets `"lockstep": true` in that object.
 
+A process that draws everything that it shows can write a scene of one pass
+that clears to black, and add its layers with kind 6 as it runs.
+
 The console saves its edits of a procedural scene in a sidecar beside the
 executable, `modified/<name>.values.json`, and lays the sidecar over the
 scene that the process writes at each start. The process keeps which passes
@@ -88,11 +91,23 @@ After the handshake, stdout carries binary messages:
   then costs a quarter of the bytes on the pipe.
 - Kind 5 ends the messages that answer one tick. Like kind 2, it is the kind
   byte alone.
+- Kind 6 adds a layer to the running scene. The name is the pass, and the
+  payload is count bytes of UTF-8 JSON,
+  `{"index": <place among the pass's layers>, "layer": {...}}`, with the
+  layer as a scene file declares it. Every other layer and every pass keep
+  their programs, their arrays and their moving effects. Kinds 1 and 3 set
+  the new layer's live fields from then on.
+- Kind 7 gives a layer a new look. The name is the layer, and the payload is
+  count bytes of UTF-8 JSON, the layer as a scene file declares it under that
+  name, every key that it leaves out at its default. A look that differs in
+  live fields alone sets them live, any other difference builds that layer
+  alone again, and an effect that the look leaves out stays, bypassed.
 
-ghee reads without blocking and applies the newest data. Arrays and params
-keep their values until a message changes them. A message that names no param
-or live field of the scene, or that does not fit its type, changes nothing,
-and ghee logs it once.
+ghee reads without blocking and applies the newest data, the sets in the
+order that they arrive. Arrays and params keep their values until a message
+changes them. A message that names no param or live field of the scene, that
+does not fit its type, or that holds a layer that a scene file would refuse
+in that place, changes nothing, and ghee logs it once.
 
 ## Ticks, ghee to scene
 

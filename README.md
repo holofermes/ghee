@@ -325,7 +325,9 @@ list order. A text layer draws words from a font, an image layer draws a
 picture, and a shape layer draws a rect or a line. Each takes its settings as
 keys, and ghee draws them. A pass's shader can also read the words of any text
 layer and any image asset, for the per-pixel work that settings do not cover,
-as [Coverage in a shader](#coverage-in-a-shader) shows.
+as [Coverage in a shader](#coverage-in-a-shader) shows. From Python, the
+`draw()` of a `ghee.open` handle writes the same layers from a loop, with no
+scene to write first, as [python/README.md](python/README.md#drawing) shows.
 
 This scene draws `hello` in a red to yellow gradient with a soft shadow,
 fitted to the frame and centred, and puts the image `stamp.png` 16 pixels wide
@@ -355,7 +357,7 @@ Every layer takes these keys:
 | `name` | the layer's name, per [Names](#names) | required |
 | `visible` | `false` hides the layer | `true` |
 | `x`, `y` | the pass pixel of the block's top left, y down | centred on a missing axis |
-| `color` | a [colour](#colours) | white for text, no tint for an image |
+| `color` | a [colour](#colours) | white for text and a shape, no tint for an image |
 | `opacity` | 0 to 1 | 1 |
 | `blend` | `normal`, `add`, `multiply` or `screen` | `normal` |
 
@@ -529,6 +531,12 @@ console sets them through `/set?layer=`, which [docs/http.md](docs/http.md)
 describes, a procedural scene through its messages, as
 [docs/procedural.md](docs/procedural.md) describes, and Rust through
 `Renderer::set_layer`.
+
+A running scene also takes a new layer and builds that layer alone, while
+the other layers and passes carry on. A handle's `draw()` in Python adds one
+for each call that runs for the first time, a procedural scene sends one in
+message kind 6, and Rust calls `Renderer::add_layer`, as [From
+Rust](#from-rust) shows.
 
 `wave`, `scroll` and `blink` move by a phase that ghee keeps for each layer.
 Each frame advances the phase by the effect's `speed` or `rate` times the

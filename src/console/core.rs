@@ -154,6 +154,13 @@ impl ConsoleError {
         }
     }
 
+    pub fn stale(msg: impl Into<String>) -> ConsoleError {
+        ConsoleError {
+            status: 412,
+            message: msg.into(),
+        }
+    }
+
     pub fn unsupported_media(msg: impl Into<String>) -> ConsoleError {
         ConsoleError {
             status: 415,
@@ -495,6 +502,16 @@ pub trait ConsoleHost {
     /// Make name active and return the new active name.
     fn switch(&self, name: Option<&str>) -> ConsoleResult<String>;
 
+    /// switch() for a request that `by` describes. A switch that names a
+    /// scene in `by` is a page's reload of that scene, and refuses with a 409
+    /// while the console is on another scene.
+    fn switch_by(&self, name: Option<&str>, by: &Edit) -> ConsoleResult<String> {
+        if let Some(scene) = by.scene {
+            other_reload(scene, self.active_name()?.as_deref())?;
+        }
+        self.switch(name)
+    }
+
     /// Move to the next or previous of scene_names().
     fn step(&self, direction: &str) -> ConsoleResult<String> {
         let names = self.scene_names()?;
@@ -518,22 +535,33 @@ pub trait ConsoleHost {
     /// Recompile the running renderer onto a validated Scene.
     fn apply_scene(&self, scene: Scene) -> ConsoleResult<()>;
 
-    /// Run `edit`, a change to scene `scene` or to its values, while `scene`
-    /// is the active scene, else refuse it as other_scene() does. No `scene`
-    /// edits the active one. A host whose switch() queues the switch holds one
-    /// lock over its switch and over this check and the edit, so an edit
-    /// queued behind a switch never lands on the scene that the switch
-    /// brought.
+    /// Run `edit`, a change to the scene that `at` names or to its values,
+    /// while that scene is the active scene, else refuse it as other_scene()
+    /// does. No scene edits the active one. A host whose switch() queues the
+    /// switch holds one lock over its switch and over this check and the
+    /// edit, so an edit queued behind a switch never lands on the scene that
+    /// the switch brought. A host that keeps revisions refuses an edit whose
+    /// revision another client's change made stale.
     fn edit_scene(
         &self,
-        scene: Option<&str>,
+        at: &Edit,
         edit: &mut dyn FnMut() -> ConsoleResult<()>,
     ) -> ConsoleResult<()> {
-        if let Some(scene) = scene {
+        if let Some(scene) = at.scene {
             other_scene(scene, self.active_name()?.as_deref())?;
         }
         edit()
     }
+}
+
+/// What a request that changes a scene says of itself: the scene that it is
+/// for, the revision of that scene that its page last read, and the page's
+/// id, the one that its streams use.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Edit<'a> {
+    pub scene: Option<&'a str>,
+    pub rev: Option<u64>,
+    pub vid: &'a str,
 }
 
 /// An item set aside, as POST /aside names it.
@@ -727,6 +755,17 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     ) -> ConsoleResult<Response> {
         let h = &self.host;
         let name = query.get("name").map(String::as_str);
+        let rev = match query.get("rev") {
+            None => None,
+            Some(r) => Some(r.parse::<u64>().map_err(|_| {
+                ConsoleError::bad_request(format!(
+                    "bad {path}: rev needs a revision number, got {}",
+                    py_repr(&Value::from(r.as_str()))
+                ))
+            })?),
+        };
+        let vid = query.get("vid").map_or("", String::as_str);
+        let at = |scene| Edit { scene, rev, vid };
         if path == "/set" {
             let mut set = || {
                 let set = parse_set(h, query)?
@@ -736,14 +775,15 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                     Set::Layer(set) => h.set_layer(set),
                 }
             };
-            h.edit_scene(query.get("scene").map(String::as_str), &mut set)?;
+            h.edit_scene(&at(query.get("scene").map(String::as_str)), &mut set)?;
             return Ok(Response::text(200, "ok"));
         }
         if path == "/next" || path == "/prev" {
             return Ok(Response::json(&active_json(h.step(&path[1..])?)));
         }
         if path == "/switch" {
-            let active = h.switch(query.get("name").map(String::as_str))?;
+            let reload = at(rev.and(name));
+            let active = h.switch_by(name, &reload)?;
             return Ok(Response::json(&active_json(active)));
         }
         if path == "/scene" {
@@ -757,21 +797,21 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 doc = scene.to_dict();
                 h.apply_scene(scene)
             };
-            h.edit_scene(name, &mut apply)?;
+            h.edit_scene(&at(name), &mut apply)?;
             return Ok(Response::json(&doc));
         }
         if path == "/save" {
-            h.edit_scene(name, &mut || h.save(name))?;
+            h.edit_scene(&at(name), &mut || h.save(name))?;
             return Ok(Response::text(200, "ok"));
         }
         if path == "/reset" {
-            h.edit_scene(name, &mut || h.reset(name))?;
+            h.edit_scene(&at(name), &mut || h.reset(name))?;
             return Ok(Response::text(200, "ok"));
         }
         if path == "/aside" {
             let (aside, keep) = parse_aside(query)
                 .map_err(|e| ConsoleError::bad_request(format!("bad /aside: {e}")))?;
-            h.edit_scene(name, &mut || h.answer(name, &aside, keep))?;
+            h.edit_scene(&at(name), &mut || h.answer(name, &aside, keep))?;
             return Ok(Response::text(200, "ok"));
         }
         Ok(Response::text(404, "no"))
@@ -1050,6 +1090,17 @@ pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
         None => Err(ConsoleError::conflict(format!(
             "the console is on no scene, and this edit is for scene '{scene}'"
         ))),
+    }
+}
+
+/// The 409 for a page's reload of scene `scene` while `active` is the active
+/// scene: a page left open on one scene never switches the console back.
+pub fn other_reload(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
+    match active {
+        Some(a) if a != scene => Err(ConsoleError::conflict(format!(
+            "the console is on scene '{a}', and this reload is for scene '{scene}'"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -1696,6 +1747,21 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, Call::SetParam(..))));
         }
+    }
+
+    #[test]
+    fn an_edit_whose_rev_is_no_number_is_400() {
+        let api = api();
+        let r = post(
+            &api,
+            "/set",
+            &[("name", "tint"), ("value", "1"), ("rev", "x")],
+        );
+        assert_eq!(
+            (r.status, body(&r).as_str()),
+            (400, "bad /set: rev needs a revision number, got 'x'")
+        );
+        assert!(api.host.calls.borrow().is_empty());
     }
 
     #[test]

@@ -194,8 +194,33 @@ struct ShapeRun {
     blend: Blend,
     /// The size of the pass in pixels.
     size: [f64; 2],
-    /// The names of the layers, in their order.
-    layers: Vec<String>,
+    /// The layers, in their order.
+    shapes: Vec<RunShape>,
+}
+
+impl ShapeRun {
+    /// The place in `shapes` of layer `name`.
+    fn find(&self, name: &str) -> Option<usize> {
+        self.shapes.iter().position(|s| s.name == name)
+    }
+}
+
+/// A shape layer of a run, and the quads that the run's batch holds for it.
+struct RunShape {
+    name: String,
+    quads: std::cell::RefCell<Vec<f32>>,
+}
+
+impl RunShape {
+    /// Shape `l` in a pass of `size` pixels.
+    fn of(l: &ShapeLayer, size: [f64; 2]) -> RunShape {
+        let mut quads = Vec::new();
+        l.quads(size, &mut quads);
+        RunShape {
+            name: l.name.clone(),
+            quads: std::cell::RefCell::new(quads),
+        }
+    }
 }
 
 /// One atlas generator, and the engine textures that hold its atlas.
@@ -645,6 +670,10 @@ pub struct Renderer {
     /// The layouts run by set_text, for a test to count.
     #[cfg(test)]
     layouts: std::cell::Cell<usize>,
+    /// The floats of the shape quads handed to the engine, for a test to
+    /// count.
+    #[cfg(test)]
+    shape_quads: std::cell::Cell<usize>,
     /// The bytes of GLYPHS handed to the engine, for a test to count.
     #[cfg(test)]
     glyph_bytes: std::cell::Cell<usize>,
@@ -711,6 +740,8 @@ impl Renderer {
             shader_lerp: false,
             #[cfg(test)]
             layouts: std::cell::Cell::new(0),
+            #[cfg(test)]
+            shape_quads: std::cell::Cell::new(0),
             #[cfg(test)]
             glyph_bytes: std::cell::Cell::new(0),
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
@@ -983,7 +1014,7 @@ impl Renderer {
                 let li = match (l, sh) {
                     (Layer::Shape(s), _) => match run.filter(|r| runs[*r].blend == s.blend) {
                         Some(r) => {
-                            runs[r].layers.push(s.name.clone());
+                            runs[r].shapes.push(RunShape::of(s, size));
                             runs[r].batch
                         }
                         None => {
@@ -992,7 +1023,7 @@ impl Renderer {
                                 batch: b,
                                 blend: s.blend,
                                 size,
-                                layers: vec![s.name.clone()],
+                                shapes: vec![RunShape::of(s, size)],
                             });
                             run = Some(runs.len() - 1);
                             b
@@ -1769,15 +1800,11 @@ impl Renderer {
                     self.bind_image(dl.batch, &self.image_asset(l)?)?;
                 }
             }
+            if let Layer::Shape(l) = layer {
+                self.reshape(l)?;
+            }
             layer.as_text().is_some_and(|l| l.visible)
         };
-        let run = self
-            .runs
-            .iter()
-            .find(|r| r.layers.iter().any(|n| n == at.layer));
-        if let Some(run) = run {
-            self.run_quads(run)?;
-        }
         if now_shown && !shown {
             self.first_shown(at.layer)?;
         }
@@ -2068,8 +2095,8 @@ impl Renderer {
                 self.bind_image(dl.batch, &self.image_asset(n)?)?;
             }
         }
-        if let Some(run) = self.runs.iter().find(|r| r.layers.contains(&name)) {
-            self.run_quads(run)?;
+        if let Layer::Shape(l) = &new {
+            self.reshape(l)?;
         }
         if new_words != old_words {
             self.set_text(&name, &new_words)?;
@@ -2112,14 +2139,10 @@ impl Renderer {
             return Ok(Vec::new());
         };
         let dl = self.layers.remove(k);
-        match self
-            .runs
-            .iter()
-            .position(|r| r.layers.iter().any(|n| n == name))
-        {
+        match self.runs.iter().position(|r| r.find(name).is_some()) {
             Some(r) => {
-                self.runs[r].layers.retain(|n| n != name);
-                if self.runs[r].layers.is_empty() {
+                self.runs[r].shapes.retain(|s| s.name != name);
+                if self.runs[r].shapes.is_empty() {
                     let run = self.runs.remove(r);
                     self.remove_batch(run.batch)?;
                 } else {
@@ -2224,16 +2247,12 @@ impl Renderer {
         let Some(r) = self
             .runs
             .iter()
-            .position(|r| r.layers.contains(prev) && r.layers.contains(next))
+            .position(|r| r.find(prev).is_some() && r.find(next).is_some())
         else {
             return Ok(());
         };
-        let cut = self.runs[r]
-            .layers
-            .iter()
-            .position(|n| n == next)
-            .expect("next is in the run");
-        let tail: Vec<String> = self.runs[r].layers.split_off(cut);
+        let cut = self.runs[r].find(next).expect("next is in the run");
+        let tail: Vec<RunShape> = self.runs[r].shapes.split_off(cut);
         let batch = self.insert_batch(
             pass,
             after,
@@ -2241,14 +2260,18 @@ impl Renderer {
             Some(self.shape_program()?),
             self.runs[r].blend,
         )?;
-        for d in self.layers.iter_mut().filter(|d| tail.contains(&d.name)) {
+        for d in self
+            .layers
+            .iter_mut()
+            .filter(|d| tail.iter().any(|s| s.name == d.name))
+        {
             d.batch = batch;
         }
         let run = ShapeRun {
             batch,
             blend: self.runs[r].blend,
             size: self.runs[r].size,
-            layers: tail,
+            shapes: tail,
         };
         self.run_quads(&self.runs[r])?;
         self.run_quads(&run)?;
@@ -2306,24 +2329,21 @@ impl Renderer {
             n.and_then(|n| {
                 self.runs
                     .iter()
-                    .position(|r| r.layers.contains(n) && r.blend == l.blend)
+                    .position(|r| r.find(n).is_some() && r.blend == l.blend)
             })
         };
         let prev = index.checked_sub(1).and_then(|k| names.get(k));
         let next = names.get(index + 1);
         let joined = match (run_of(prev), run_of(next)) {
             (Some(r), _) => {
-                let at = self.runs[r]
-                    .layers
-                    .iter()
-                    .position(|n| Some(n) == prev)
-                    .expect("prev")
-                    + 1;
-                self.runs[r].layers.insert(at, l.name.clone());
+                let at = prev.and_then(|n| self.runs[r].find(n)).expect("prev") + 1;
+                let shape = RunShape::of(l, self.runs[r].size);
+                self.runs[r].shapes.insert(at, shape);
                 Some(r)
             }
             (None, Some(r)) => {
-                self.runs[r].layers.insert(0, l.name.clone());
+                let shape = RunShape::of(l, self.runs[r].size);
+                self.runs[r].shapes.insert(0, shape);
                 Some(r)
             }
             (None, None) => None,
@@ -2340,11 +2360,12 @@ impl Renderer {
                     l.blend,
                 )?;
                 self.split_run(pass, pass_name, index, batch)?;
+                let size = self.pass_size(pass_name);
                 self.runs.push(ShapeRun {
                     batch,
                     blend: l.blend,
-                    size: self.pass_size(pass_name),
-                    layers: vec![l.name.clone()],
+                    size,
+                    shapes: vec![RunShape::of(l, size)],
                 });
                 self.runs.len() - 1
             }
@@ -2490,19 +2511,65 @@ impl Renderer {
         Ok(())
     }
 
-    /// Hand the batch of `run` the quads of its shape layers, as the scene
-    /// holds them.
+    /// Hand the batch of `run` the quads of its shape layers.
     fn run_quads(&self, run: &ShapeRun) -> Result<()> {
         let mut quads: Vec<f32> = Vec::new();
-        if let Some(scene) = self.scene.borrow().as_ref() {
-            for name in &run.layers {
-                if let Some(Layer::Shape(s)) = scene.layer(name) {
-                    s.quads(run.size, &mut quads);
-                }
-            }
+        for s in &run.shapes {
+            quads.extend_from_slice(&s.quads.borrow());
         }
-        let what = format!("layer '{}'", run.layers[0]);
+        #[cfg(test)]
+        self.shape_quads.set(self.shape_quads.get() + quads.len());
+        let what = format!("layer '{}'", run.shapes[0].name);
         self.batch_quads(run.batch, &what, &quads, crate::shape::ATTRIBUTES)
+    }
+
+    /// Hand the run of shape layer `l` its quads as `l` draws them. The
+    /// quads of the other layers of the run stay as the batch holds them.
+    fn reshape(&self, l: &ShapeLayer) -> Result<()> {
+        let Some((run, k)) = self
+            .runs
+            .iter()
+            .find_map(|r| r.find(&l.name).map(|k| (r, k)))
+        else {
+            return Ok(());
+        };
+        let mut quads = Vec::new();
+        l.quads(run.size, &mut quads);
+        let held = run.shapes[k].quads.replace(quads);
+        let quads = run.shapes[k].quads.borrow();
+        if quads.len() != held.len() {
+            drop(quads);
+            return self.run_quads(run);
+        }
+        if quads.is_empty() {
+            return Ok(());
+        }
+        let per_quad = 16 * crate::shape::ATTRIBUTES;
+        let first: usize = run.shapes[..k]
+            .iter()
+            .map(|s| s.quads.borrow().len() / per_quad)
+            .sum();
+        #[cfg(test)]
+        self.shape_quads.set(self.shape_quads.get() + quads.len());
+        let ok = unsafe {
+            ffi::ghee_mp_set_batch_quads_at(
+                self.handle,
+                run.batch,
+                c_int::try_from(first)?,
+                quads.as_ptr(),
+                c_int::try_from(quads.len() / per_quad)?,
+            )
+        };
+        if !ok {
+            bail!(
+                "{}",
+                or_else(
+                    self.last_error(),
+                    &format!("layer '{}' refused its quads", l.name)
+                )
+            );
+        }
+        Ok(())
     }
 
     /// Build the atlas of the text layer `name`, which shows for the first
@@ -5993,6 +6060,60 @@ mod tests {
         assert!(r.set_text("t", "AB").unwrap());
         assert!(r.glyph_bytes.get() > sent);
         assert_eq!(r.glyphs.borrow().reads, read + 2);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_changed_shape_hands_the_engine_its_own_quads_and_draws_as_a_scene_built_with_it() {
+        // Three rects of one run. Each row gives b a look, by an update or
+        // by a live set, and the frame matches the scene built with it. A
+        // look that keeps b's count of quads hands the engine b's quads
+        // alone.
+        let rect = |name: &str, x: i32, w: i32, color: &str| {
+            json!({"name": name, "shape": "rect", "x": x, "y": 2, "width": w, "height": 10,
+                   "color": color})
+        };
+        let scene = |b: &Value| {
+            scene_of(json!([{"name": "main", "code": FLAT, "layers": [
+                rect("a", 2, 10, "red"), b, rect("c", 40, 10, "blue")]}]))
+        };
+        let quad = 16 * crate::shape::ATTRIBUTES;
+        let rows = [
+            (rect("b", 20, 16, "lime"), None, Some(quad)),
+            (
+                rect("b", 20, 10, "yellow"),
+                Some(("color", json!("yellow"))),
+                Some(quad),
+            ),
+            (
+                json!({"name": "b", "shape": "rect", "x": 20, "y": 2, "width": 10,
+                       "height": 10, "color": "lime", "visible": false}),
+                Some(("visible", json!(false))),
+                None,
+            ),
+        ];
+        let (_g, mut r) = gpu();
+        for (look, live, floats) in rows {
+            let built = first_frames(&mut r, &scene(&look), 1);
+            first_frames(&mut r, &scene(&rect("b", 20, 10, "lime")), 1);
+            let before = r.shape_quads.get();
+            match &live {
+                Some((field, value)) => {
+                    let at = Address {
+                        layer: "b",
+                        effect: None,
+                        field,
+                    };
+                    r.set_layer(&at, Given::Json(value)).unwrap();
+                }
+                None => assert!(r.update_layer(&look).unwrap()),
+            }
+            if let Some(floats) = floats {
+                assert_eq!(r.shape_quads.get() - before, floats, "{look}");
+            }
+            r.set_time(Some(0.0));
+            assert!(still(&mut r) == built, "{look}");
+        }
     }
 
     #[test]

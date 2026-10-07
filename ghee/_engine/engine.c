@@ -1507,6 +1507,29 @@ bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int qua
     return true;
 }
 
+bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float *data, int quads) {
+    struct mp_batch *l = running_batch(g, batch);
+    if (!l) return false;
+    if (first < 0 || quads < 1 || first > l->quads - quads) {
+        set_error(g, "%s: quads %d to %d, where the batch holds %d", l->name, first,
+                  first + quads, l->quads);
+        return false;
+    }
+    const size_t quad_bytes = 4 * (size_t)l->nattr * 4 * sizeof(GLfloat);
+    make_current(g);
+    glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
+    while (glGetError() != GL_NO_ERROR) { }
+    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)((size_t)first * quad_bytes),
+                    (GLsizeiptr)((size_t)quads * quad_bytes), data);
+    const GLenum err = glGetError();
+    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+    if (err != GL_NO_ERROR) {
+        set_error(g, "%s: the upload of %d quads failed: GL 0x%X", l->name, quads, err);
+        return false;
+    }
+    return true;
+}
+
 // assets sampled by one program, one texture unit each
 static int mp_assets(const struct mp_locs *loc) {
     int n = 0;

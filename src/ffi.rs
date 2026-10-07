@@ -187,6 +187,13 @@ extern "C" {
         quads: c_int,
         nattr: c_int,
     ) -> bool;
+    pub fn ghee_mp_set_batch_quads_at(
+        g: *mut GheeScene,
+        batch: c_int,
+        first: c_int,
+        data: *const f32,
+        quads: c_int,
+    ) -> bool;
     pub fn ghee_mp_bind_asset(
         g: *mut GheeScene,
         batch: c_int,

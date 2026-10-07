@@ -197,6 +197,10 @@ bool ghee_mp_remove_batch(GheeScene *g, int batch);
 // The quads of a committed batch: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.
 bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int quads, int nattr);
+// Replace quads first to first + quads of a committed batch with `data`, in
+// the attributes of its last ghee_mp_set_batch_quads, and leave the others
+// as they are. false with ghee_last_error set for quads past those it holds.
+bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float *data, int quads);
 // Bind the set asset `asset` to committed batch `batch` under `name`: the
 // batch's program samples it as <name>_tex and reads its size as <name>_size,
 // in place of the asset bound there before, and pays a texture unit for it as

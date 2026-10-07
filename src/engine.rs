@@ -1878,7 +1878,8 @@ impl Renderer {
     /// A "color" param is [r, g, b] and sets a vec3 uniform. A "vecK" param
     /// is K floats and sets a vecK uniform.
     /// A "string" param is host-side. The scene's controller consumes it, so
-    /// this call sets nothing.
+    /// this call sets no uniform.
+    /// The renderer's scene holds the value, as with_scene() gives it.
     pub fn set_param(
         &self,
         pass_name: &str,
@@ -1887,6 +1888,7 @@ impl Renderer {
         value: &ParamValue,
     ) -> Result<bool> {
         if ptype == "string" {
+            self.hold_param(Some(pass_name), name, value);
             return Ok(false);
         }
         let Some(idx) = self.pass_index(pass_name) else {
@@ -1906,11 +1908,32 @@ impl Renderer {
                 _ => bail!("{ptype} param '{name}' needs {} numbers", &ptype[3..]),
             }
         }
-        let value = match value {
+        let json = match value {
             ParamValue::Color(c) => Value::from(c.rgb.to_vec()),
             v => v.to_json(),
         };
-        self.set_uniform(idx, name, ptype, value)
+        let set = self.set_uniform(idx, name, ptype, json)?;
+        self.hold_param(Some(pass_name), name, value);
+        Ok(set)
+    }
+
+    /// Write `value` into the renderer's scene as the value of param `name`
+    /// of pass `pass`, or of the scene when None, when it declares one.
+    fn hold_param(&self, pass: Option<&str>, name: &str, value: &ParamValue) {
+        let mut scene = self.scene.borrow_mut();
+        let Some(scene) = scene.as_mut() else {
+            return;
+        };
+        let params = match pass {
+            Some(pass) => match scene.passes.iter_mut().find(|p| p.name == pass) {
+                Some(p) => &mut p.params,
+                None => return,
+            },
+            None => &mut scene.params,
+        };
+        if let Some(p) = params.get_mut(name) {
+            p.value = value.clone();
+        }
     }
 
     fn set_uniform(&self, idx: c_int, name: &str, ptype: &str, value: Value) -> Result<bool> {
@@ -1966,17 +1989,22 @@ impl Renderer {
     /// A scene param sits in every pass's preamble, so the set reaches every
     /// pass. A pass that never reads the param holds an inactive uniform, and
     /// the engine skips it.
-    /// Returns true when at least one pass takes the value.
+    /// Returns true when at least one pass takes the value. The renderer's
+    /// scene holds the value, as with_scene() gives it.
     pub fn set_scene_param(&self, name: &str, ptype: &str, value: &ParamValue) -> Result<bool> {
-        if let ParamValue::Str(words) = value {
-            return self.set_text(name, words);
-        }
-        let oks = self
-            .mp
-            .iter()
-            .map(|(pn, _)| self.set_param(pn, name, ptype, value))
-            .collect::<Result<Vec<bool>>>()?;
-        Ok(oks.into_iter().any(|o| o))
+        let set = match value {
+            ParamValue::Str(words) => self.set_text(name, words)?,
+            _ => {
+                let oks = self
+                    .mp
+                    .iter()
+                    .map(|(pn, _)| self.set_param(pn, name, ptype, value))
+                    .collect::<Result<Vec<bool>>>()?;
+                oks.into_iter().any(|o| o)
+            }
+        };
+        self.hold_param(None, name, value);
+        Ok(set)
     }
 
     /// Lay out new words for the text layer `name` and upload them, with no
@@ -5585,6 +5613,39 @@ mod tests {
             assert_eq!(r.setup(&sc).unwrap(), want);
             assert_eq!(r.render(None).unwrap(), before);
         }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_param_set_live_is_the_value_of_the_renderers_scene() {
+        let (_g, mut r) = gpu();
+        let sc = Scene::from_dict(
+            &json!({"version": 1,
+                "params": {"speed": {"type": "float", "value": 0.5}},
+                "passes": [{"name": "main",
+                    "params": {"gain": {"type": "float", "value": 1.0},
+                               "mode": {"type": "string", "value": "a"}},
+                    "fragment": "void main(){ gl_FragColor = vec4(vec3(gain * speed), 1.0); }",
+                    "layers": [{"name": "title", "text": "hi", "font_family": "pixel"}]}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_param("main", "gain", "float", &ParamValue::Float(0.25))
+            .unwrap();
+        r.set_param("main", "mode", "string", &ParamValue::Str("b".into()))
+            .unwrap();
+        r.set_scene_param("speed", "float", &ParamValue::Float(2.0))
+            .unwrap();
+        r.set_scene_param("title", "string", &ParamValue::Str("ho".into()))
+            .unwrap();
+        let doc = r.with_scene(Scene::to_dict).unwrap();
+        let main = &doc["passes"][0];
+        assert_eq!(main["params"]["gain"]["value"], json!(0.25));
+        assert_eq!(main["params"]["mode"]["value"], json!("b"));
+        assert_eq!(doc["params"]["speed"]["value"], json!(2.0));
+        assert_eq!(main["layers"][0]["text"], json!("ho"));
     }
 
     #[test]

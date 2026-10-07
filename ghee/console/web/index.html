@@ -1772,9 +1772,8 @@ async function renameLayer(p, d){
   buildLayers(); buildInputs();
 }
 
-// A text layer that names no render takes slug in the pixel font and mtsdf
-// in any other, as ghee does.
-const defaultRender = d => d.font_family === "pixel" ? "slug" : "mtsdf";
+// A text layer that names no render takes its font's render, from GET /format.
+const defaultRender = d => has(FORMAT.render.fonts, d.font_family) ? FORMAT.render.fonts[d.font_family] : FORMAT.render.default;
 const renderOf = d => d.render || defaultRender(d);
 // The font_family dropdown: ghee's built-in fonts, then the scene's font
 // assets. A built-in font writes its value from GET /format, null for none.
@@ -1895,8 +1894,8 @@ function fillKV(p, d){
   return kv;
 }
 // A rect's border, an object like an effect: its fields, an eye and a ×. A
-// removed border comes back as it was.
-const BORDER = {width: 1, color: "#ffffff"};
+// removed border comes back as it was. Its fields' defaults come from GET /format.
+const borderDefault = k => FORMAT.border.find(f => f.key === k).default;
 function borderKV(p, d, redo){
   const o = d.border, u = ui(d.name);
   if (!o){
@@ -1910,10 +1909,11 @@ function borderKV(p, d, redo){
     if (x == null) delete o[field]; else o[field] = x;
     setLive(d, field, String(liveColor(x == null ? def : x)), "border");
   };
-  const sw = sub("width", num(o.width == null ? BORDER.width : o.width, "", set("width", BORDER.width), true));
-  const sc = sub("color", colorCtl(() => o.color == null ? BORDER.color : o.color, set("color", BORDER.color), BORDER.color));
-  markSub(sw.firstChild, d, "border", "width", x => { set("width", BORDER.width)(x); redo(); });
-  markSub(sc.firstChild, d, "border", "color", x => { set("color", BORDER.color)(x); redo(); });
+  const bw = borderDefault("width"), bc = toHex(borderDefault("color"));
+  const sw = sub("width", num(o.width == null ? bw : o.width, "", set("width", bw), true));
+  const sc = sub("color", colorCtl(() => o.color == null ? bc : o.color, set("color", bc), bc));
+  markSub(sw.firstChild, d, "border", "width", x => { set("width", bw)(x); redo(); });
+  markSub(sc.firstChild, d, "border", "color", x => { set("color", bc)(x); redo(); });
   v.append(sw, sc);
   const acts = el("span", "fxacts");
   acts.append(
@@ -1944,14 +1944,13 @@ function pointsKV(p, d, redo){
   return kv;
 }
 // Switching shape puts the old shape's own keys aside and brings the new
-// one's back. A line needs two points.
-const SHAPE_KEYS = {rect: ["width", "height", "border", "border_radius"], line: ["points", "stroke_width"]};
+// one's back, as GET /format lists each shape's keys. A line needs two points.
 function switchShape(p, d, to){
   const u = ui(d.name), from = d.shape;
-  if (to === from || !SHAPE_KEYS[to]) return;
+  if (to === from || !FORMAT.shapes[to]) return;
   u.shapes = u.shapes || {};
   const keep = {};
-  (SHAPE_KEYS[from] || []).forEach(k => { if (k in d){ keep[k] = d[k]; delete d[k]; } });
+  (FORMAT.shapes[from] || []).forEach(k => { if (k in d){ keep[k] = d[k]; delete d[k]; } });
   u.shapes[from] = keep;
   d.shape = to;
   Object.assign(d, u.shapes[to] || (to === "line" ? {points: [[0, 0], [16, 16]]} : {}));
@@ -2025,7 +2024,7 @@ function layerCard(p, d){
     // a shape has no content: every row only changes how it draws
     const {kv, v} = KV("shape");
     markField(kv.firstChild, p, d, "shape");
-    v.appendChild(keyed(pick(Object.keys(SHAPE_KEYS), d.shape, x => { switchShape(p, d, x); redo(); }), "shape"));
+    v.appendChild(keyed(pick(Object.keys(FORMAT.shapes), d.shape, x => { switchShape(p, d, x); redo(); }), "shape"));
     const rows = [kv, fillKV(p, d)];
     if (d.shape === "line") rows.push(pairKV(p, d, "x", "y"), pointsKV(p, d, redo), numKV(p, d, "stroke_width"));
     else rows.push(pairKV(p, d, "x", "y"), pairKV(p, d, "width", "height"), borderKV(p, d, redo), numKV(p, d, "border_radius"));

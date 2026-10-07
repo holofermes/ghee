@@ -334,6 +334,24 @@ pub(crate) fn py_repr(v: &Value) -> String {
     }
 }
 
+/// Write each float in `v` in the shortest form that reads back as the same
+/// 32-bit float, the precision that the GPU takes. A float past the range of
+/// one keeps its form.
+pub fn short_floats(v: &mut Value) {
+    match v {
+        Value::Number(n) if n.is_f64() => {
+            let f = n.as_f64().unwrap_or_default();
+            let short = (f as f32).to_string().parse::<f64>().ok();
+            if let Some(n) = short.and_then(serde_json::Number::from_f64) {
+                *v = Value::Number(n);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(short_floats),
+        Value::Object(o) => o.values_mut().for_each(short_floats),
+        _ => {}
+    }
+}
+
 /// A JSON value as Python's str() writes it: as py_repr() does, but a string
 /// stays unquoted.
 fn py_str(v: &Value) -> String {
@@ -2841,7 +2859,9 @@ impl Scene {
             }
             out.insert("assets".to_string(), Value::Object(m));
         }
-        Value::Object(out)
+        let mut out = Value::Object(out);
+        short_floats(&mut out);
+        out
     }
 
     /// Load a scene file. Its files resolve beside it, with the reach of a
@@ -4734,6 +4754,25 @@ mod tests {
         assert_eq!(py_repr(&json!([1, "a"])), "[1, 'a']");
         assert_eq!(py_repr(&json!({"k": 1})), "{'k': 1}");
         assert_eq!(py_float(96.0), "96.0");
+    }
+
+    #[test]
+    fn a_float_of_a_scene_is_written_in_the_shortest_form_of_its_32_bit_float() {
+        // numpy's repr of each as a float32. 1e300 is past the range of one.
+        for (given, written) in [
+            (2.580413818359375, "2.5804138"),
+            (0.1, "0.1"),
+            (1.0, "1.0"),
+            (1e300, "1e+300"),
+        ] {
+            let d = json!({"version": 1, "passes": [{"name": "m", "fragment": "x",
+                "params": {"g": {"type": "float", "value": given}}}]});
+            let doc = Scene::from_dict(&d, None, None).unwrap().to_dict();
+            assert_eq!(
+                doc["passes"][0]["params"]["g"]["value"].to_string(),
+                written
+            );
+        }
     }
 
     #[test]

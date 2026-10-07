@@ -150,7 +150,7 @@ struct GheeScene {
     bool has_time_override;              // when set, render uses time_override instead of the wall clock
     float time_override;
     float dt;                            // how many seconds the last frame took, fed to every pass as iTimeDelta
-    int frame;                           // frames rendered, fed to every pass as iFrame, wrapped at 2^20 so that float(iFrame) stays exact
+    int frame;                           // the frame being drawn, 0 first, fed to every pass as iFrame, wrapped at 2^20 so that float(iFrame) stays exact
 
     // The running scene's passes, in draw order. Each pass has a program and
     // two buffers, and mp_write names the one that it draws into this frame. A
@@ -2281,9 +2281,6 @@ static void mp_draw_batches(GheeScene *g, int p, float vflip, float elapsed) {
 // window surface. The caller sets it only when nothing reads the last pass
 // this frame, neither a channel nor a preview.
 static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
-    // wrap frame at a power of two
-    g->frame += 1;
-    if (g->frame >= 1048576) g->frame = 0;
     for (int p = 0; p < g->mp_count; p++) {
         const bool direct = direct_last && p == g->mp_count - 1;
         glBindFramebuffer(GL_FRAMEBUFFER, direct ? g->scan_fbo : g->mp_fbo[p][g->mp_write[p]]);
@@ -2315,6 +2312,8 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
             glGenerateMipmap(GL_TEXTURE_2D);
         }
     }
+    g->frame += 1;
+    if (g->frame >= 1048576) g->frame = 0;
 }
 
 // Read a rectangle back as `components` bytes a pixel. A GL that cannot hand

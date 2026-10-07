@@ -57,7 +57,8 @@ A scene written for 0.4.0 needs these changes.
   on `$GHEE_ASSETS`. A path may be absolute or leave that directory, except
   under the console, and the error for a file that no directory holds names
   `$GHEE_ASSETS`.
-- Read `uniform int iFrame`, the count of frames rendered, in every pass.
+- Read `uniform int iFrame` in every pass, the number of the frame drawn: 0
+  on the first frame, as in Shadertoy.
 - Build the mip chain of a pass's buffer after each frame with
   `"mipmaps": true`, and sample it trilinearly through every channel that
   reads it, so a buffer read far away and minified stays calm. On a GPU

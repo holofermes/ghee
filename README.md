@@ -213,7 +213,7 @@ ghee puts a preamble like this one in front of the GLSL of every pass:
 ```glsl
 uniform float iTime;                // seconds since start
 uniform float iTimeDelta;           // seconds the last frame took
-uniform int   iFrame;               // frames rendered, wraps at 2^20
+uniform int   iFrame;               // frame number, 0 first, wraps at 2^20
 uniform vec3  iResolution;          // buffer size in pixels, z = 1.0
 varying vec2  uv;                   // 0..1 across the buffer, y = 0 at the top
 // gl_FragCoord maps to the varying, so its y = 0 is at the

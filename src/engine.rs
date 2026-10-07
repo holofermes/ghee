@@ -4860,7 +4860,7 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_whole_multiple_readback_leaves_feedback_filtered() {
-        // Frame 1 draws one-pixel stripes, and each later frame reads the last
+        // Frame 0 draws one-pixel stripes, and each later frame reads the last
         // one half a pixel over. A linear fetch there blends two stripes.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
@@ -4868,7 +4868,7 @@ mod tests {
             "channels": [{"buffer": "main"}],
             "fragment": "void main(){ float s = mod(floor(gl_FragCoord.x), 2.0); \
                      vec4 last = texture2D(iChannel0, uv + vec2(0.5 / iResolution.x, 0.0)); \
-                     gl_FragColor = iFrame < 2 ? vec4(vec3(s), 1.0) : last; }",
+                     gl_FragColor = iFrame == 0 ? vec4(vec3(s), 1.0) : last; }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -5421,14 +5421,14 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn i_frame_counts_the_frames_drawn_as_an_int() {
+    fn i_frame_reads_0_on_the_first_frame_drawn_and_counts_up_as_an_int() {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
             "fragment": "void main(){ gl_FragColor = vec4(float(iFrame) / 255.0, 0.0, 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
-        for want in [1.0, 2.0, 3.0] {
+        for want in [0.0, 1.0, 2.0] {
             let f = r.render(None).unwrap().to_vec();
             assert_eq!(px(&f, W, 0, 0, 0), want);
         }

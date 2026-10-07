@@ -332,7 +332,8 @@ pub trait SceneController {
     /// False means this frame matches the last one, so the loop skips it
     /// whole. The display keeps scanning out the last flipped buffer. The
     /// default is true: every frame renders, which a scene animating on
-    /// `iTime` needs. `iFrame` advances over a skipped frame too.
+    /// `iTime` needs. The hooks' `frame` advances over a skipped frame too,
+    /// and `iFrame` counts the frames drawn.
     fn dirty(&mut self, _frame: u64, _t: f64) -> bool {
         true
     }

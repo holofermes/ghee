@@ -630,6 +630,25 @@ fn open(
     })
 }
 
+/// The width and height of the frame on `display`, as open() takes it with
+/// `opts` and `dri`, worked out before anything opens it. None when no size
+/// can be known: no such driver, options that it refuses, or no connected
+/// display.
+#[pyfunction]
+#[pyo3(signature = (display, opts=None, dri=None))]
+fn _display_size(
+    display: &str,
+    opts: Option<&Bound<'_, PyAny>>,
+    dri: Option<PathBuf>,
+) -> PyResult<Option<(i32, i32)>> {
+    let opts: Vec<(String, Value)> = match opts.map(to_json).transpose()? {
+        Some(Value::Object(map)) => map.into_iter().collect(),
+        _ => Vec::new(),
+    };
+    let dri = dri.map(|d| d.to_string_lossy().into_owned());
+    Ok(session::display_size(display, &opts, dri.as_deref()))
+}
+
 /// True when the image file name `pattern` numbers its frames: a run of `#`
 /// or a printf field.
 #[pyfunction]
@@ -652,6 +671,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.setattr("_LayerWire", m.py().get_type::<wire::LayerWire>())?;
     m.setattr("_colour_name", wrap_pyfunction!(wire::_colour_name, m)?)?;
     m.setattr("_numbered", wrap_pyfunction!(_numbered, m)?)?;
+    m.setattr("_display_size", wrap_pyfunction!(_display_size, m)?)?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
     Ok(())
 }

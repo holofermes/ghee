@@ -456,6 +456,22 @@ fn open_sink(display: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
     Ok(Sink::Panel((spec.open)(opts).map_err(system_fault)?))
 }
 
+/// The size of the frame on `display`, a driver's name or "kms", worked out
+/// before anything opens it: a driver's own size with `opts`, or the mode
+/// of the connected display on card `dri`, else on the first card with one.
+/// None for a driver that is not in this build or options that it refuses,
+/// and for no connected display.
+pub fn display_size(
+    display: &str,
+    opts: &[(String, Value)],
+    dri: Option<&str>,
+) -> Option<(i32, i32)> {
+    match display {
+        KMS => probe_display(dri),
+        name => (get_driver(name).ok()?.size)(opts).ok(),
+    }
+}
+
 /// (size, components) of the frame. A panel states its own geometry and pixel
 /// layout, and a connected display on card `dri`, else on the first card
 /// with one, states its mode. Both win over the host's own size.

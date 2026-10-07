@@ -254,17 +254,26 @@ def test_a_share_of_the_render_size_turns_with_a_quarter_rotate(monkeypatch):
     assert got.bar == (16, 64)
 
 
+def test_a_share_of_the_render_size_is_a_share_of_the_display(monkeypatch):
+    shim, _, _ = host(monkeypatch, ["--display", "ssd1306"])
+    got = shim.args([shim.Arg("bar", "size", default="half")])
+    assert got.bar == (64, 16)
+
+
+# An SSD1306 module of ghee's driver is 128x32.
 @pytest.mark.parametrize(
     "argv,size",
     [
-        ([], (320, 240)),
+        (["-o", "f.png"], (320, 240)),
+        (["--serve"], (320, 240)),
         (["--size", "128x32"], (128, 32)),
         (["--size", "128x32", "--rotate", "270"], (32, 128)),
+        (["--display", "ssd1306"], (128, 32)),
+        (["--display=ssd1306", "--rotate", "90"], (32, 128)),
+        (["--display", "st7789", "--display-opts", "width=240,height=135"], (240, 135)),
     ],
 )
-def test_a_direct_run_renders_at_its_size_turned_by_its_rotate(
-    argv, size, monkeypatch
-):
+def test_a_direct_run_renders_at_its_size_turned_by_its_rotate(argv, size, monkeypatch):
     shim, _, _ = host(monkeypatch, argv)
     monkeypatch.delenv(shim.SIZE, raising=False)
     shim.args([])

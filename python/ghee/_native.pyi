@@ -239,6 +239,14 @@ class _LayerWire:
 def _numbered(pattern: str) -> bool:
     """True when the image file name `pattern` numbers its frames."""
 
+def _display_size(
+    display: str,
+    opts: dict[str, Any] | None = None,
+    dri: str | os.PathLike[str] | None = None,
+) -> tuple[int, int] | None:
+    """The width and height of the frame on `display`, worked out before
+    anything opens it. None when no size can be known."""
+
 def open(
     scene: str | os.PathLike[str] | dict[str, Any] | Scene | None = None,
     display: _Display | None = None,

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import array
+import functools
 import json
 import numbers
 import os
@@ -679,11 +680,11 @@ _FRACTIONS = {"full": 1, "half": 2, "quarter": 4, "eighth": 8, "sixteenth": 16}
 def render_size() -> tuple[int, int]:
     """The size that the scene renders at, as (w, h).
 
-    Under ghee it is ghee's render size. A direct run takes its --size,
-    turned by a --rotate of 90 or 270, and 320x240 without one, as
-    `ghee render` does with no display. A pass with a size of its own reads
-    that size in iResolution, so a scene that needs the frame's shape in
-    such a pass writes it from here.
+    Under ghee it is ghee's render size. A direct run takes its --size, else
+    the size of the display that it drives, else 320x240, the size of
+    `ghee render` with no display, and a --rotate of 90 or 270 turns it. A
+    pass with a size of its own reads that size in iResolution, so a scene
+    that needs the frame's shape in such a pass writes it from here.
 
     Raises RuntimeError when ghee gives no WxH size.
     """
@@ -697,21 +698,68 @@ def _render_size() -> tuple[int, int] | None:
     """ghee's next render size, None when $GHEE_SIZE names none.
 
     ghee puts it in the environment before it starts the scene. A direct run
-    has no ghee, so the host --size stands in, and the default matches the one
-    that `ghee render` uses with no display.
+    has no ghee, so the host flags stand in.
     """
     given = os.environ.get(SIZE)
     if given:
         return _wxh(given)
-    argv = sys.argv[1:]
-    size = (320, 240)
-    if "--size" in argv[:-1]:
-        size = _wxh(argv[argv.index("--size") + 1])
+    return _direct_size(tuple(sys.argv[1:]))
+
+
+@functools.cache
+def _direct_size(argv: tuple[str, ...]) -> tuple[int, int] | None:
+    """The render size of a direct run of `argv`, read before the parse: its
+    --size, else the size of its display as ghee.open() works it out, else
+    the size of `ghee render` with no display."""
+    size = _flag(argv, "--size")
+    if size is not None:
+        size = _wxh(size)
+    else:
+        # the display that _display() picks
+        display = _display_flag(argv)
+        if display is None and _flag(argv, "-o", "--output") is None:
+            display = None if "--serve" in argv else "kms"
+        found = None
+        if display is not None:
+            from ghee import _ext
+
+            try:
+                opts = _display_opts(_flag(argv, "--display-opts") or "")
+            except argparse.ArgumentTypeError:
+                opts = {}
+            found = _ext()._display_size(display, opts, _flag(argv, "--dri"))
+        size = found or (320, 240)
     # A run turned a quarter renders its scene at the size turned.
-    turn = argv[argv.index("--rotate") + 1] if "--rotate" in argv[:-1] else ""
+    turn = _flag(argv, "--rotate") or ""
     if size and turn.strip() in ("90", "270"):
         size = (size[1], size[0])
     return size
+
+
+def _flag(argv: tuple[str, ...], *names: str) -> str | None:
+    """The value of the last of the flags `names` in `argv`, given as
+    `--name value` or `--name=value`, or None."""
+    got = None
+    for i, a in enumerate(argv):
+        for n in names:
+            if a == n and i + 1 < len(argv):
+                got = argv[i + 1]
+            elif a.startswith(n + "="):
+                got = a[len(n) + 1 :]
+    return got
+
+
+def _display_flag(argv: tuple[str, ...]) -> str | None:
+    """--display in `argv` as the host flags parse it: its name, "kms" when
+    bare, or None."""
+    got = None
+    for i, a in enumerate(argv):
+        if a == "--display":
+            name = argv[i + 1] if i + 1 < len(argv) else "-"
+            got = "kms" if name.startswith("-") else name
+        elif a.startswith("--display="):
+            got = a[len("--display=") :]
+    return got
 
 
 def _wxh(s: str) -> tuple[int, int] | None:

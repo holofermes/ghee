@@ -68,7 +68,7 @@ def build():
         passes=[
             ghee.Pass(
                 name="main",
-                code=SHADER,
+                fragment=SHADER,
                 layers=[
                     ghee.Layer("words", WORDS[0], visible=False, text_align="center")
                 ],

@@ -258,8 +258,8 @@ impl SceneStore {
         Ok(p)
     }
 
-    /// A scene ready to render and edit: shader files inlined, declared filters
-    /// expanded, saved values overlaid.
+    /// A scene ready to render and edit: GLSL files as their text, declared
+    /// filters expanded, saved values overlaid.
     ///
     /// The store hands the session's scene args to every scene it loads. A scene
     /// keeps what it declares and ignores the rest.
@@ -480,7 +480,7 @@ mod tests {
     use crate::scene::{ParamMap, ParamValue, Pass};
 
     const SCENE: &str = r#"{"version": 1,
-        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
+        "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
 
     fn scene_json() -> Value {
         serde_json::from_str(SCENE).unwrap()
@@ -523,7 +523,7 @@ mod tests {
 
         // a scene that already ends with the filter takes it once
         let own = r#"{"version": 1, "filters": ["dither"],
-             "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
+             "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
         write_text(&format!("{d}/own.scene.json"), own);
         store.scenes = scan(&store.dir);
         let (once, _) = store.start("own").unwrap();
@@ -579,7 +579,7 @@ mod tests {
         let (d, store) = scenes("shadow");
         let before = fs::read_to_string(format!("{d}/one{SCENE_SUFFIX}")).unwrap();
         let mut edited = scene_json();
-        edited["passes"][0]["code"] = Value::from("void main(){ discard; }");
+        edited["passes"][0]["fragment"] = Value::from("void main(){ discard; }");
         store
             .save("one", Scene::from_dict(&edited, None, None).unwrap())
             .unwrap();
@@ -589,7 +589,7 @@ mod tests {
         );
         assert!(Path::new(&format!("{d}/modified/one{SCENE_SUFFIX}")).is_file());
         assert!(store.resolve("one").unwrap().passes[0]
-            .code
+            .fragment
             .contains("discard"));
     }
 
@@ -610,10 +610,10 @@ mod tests {
         write_text(&format!("{d}/two{SCENE_SUFFIX}"), &doc("../out.raw"));
         let store = SceneStore::new(&d, false, Vec::new());
         let mut edited = store.resolve("one").unwrap();
-        edited.passes[0].code = "void main(){ discard; }".to_string();
+        edited.passes[0].fragment = "void main(){ discard; }".to_string();
         store.save("one", edited).unwrap();
         let copy = store.resolve("one").unwrap();
-        assert!(copy.passes[0].code.contains("discard"));
+        assert!(copy.passes[0].fragment.contains("discard"));
         let img = copy.assets[0].image.as_ref().unwrap();
         assert_eq!(img.pixels, crate::assets::Pixels::U8(vec![7u8; 4]));
         let e = store.resolve("two").unwrap_err();
@@ -705,16 +705,16 @@ mod tests {
         let want = scene.common.clone();
         store.save("one", scene).unwrap();
         let written = read_json(&format!("{d}/modified/one{SCENE_SUFFIX}"));
-        assert_eq!(written["common"], serde_json::json!({ "code": want }));
+        assert_eq!(written["common"], serde_json::json!(want));
         assert_eq!(store.resolve("one").unwrap().common, want);
     }
 
     #[test]
-    fn a_common_file_reference_saves_as_inline_code() {
+    fn a_common_file_reference_saves_as_its_glsl_text() {
         let d = tmpdir("commonfile");
         write_text(&format!("{d}/shared.glsl"), "float k(){ return 1.0; }");
         let mut doc = scene_json();
-        doc["common"] = serde_json::json!({"shader": "shared.glsl"});
+        doc["common"] = serde_json::json!({"file": "shared.glsl"});
         write_text(&format!("{d}/c{SCENE_SUFFIX}"), &doc.to_string());
         let store = SceneStore::new(&d, false, Vec::new());
         let scene = store.resolve("c").unwrap();
@@ -722,7 +722,7 @@ mod tests {
         let written = read_json(&format!("{d}/modified/c{SCENE_SUFFIX}"));
         assert_eq!(
             written["common"],
-            serde_json::json!({"code": "float k(){ return 1.0; }"})
+            serde_json::json!("float k(){ return 1.0; }")
         );
     }
 
@@ -1015,10 +1015,10 @@ mod tests {
             "version": 1,
             "assets": {"pic": {"file": "pic.png"}},
             "passes": [
-                {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0); }",
+                {"name": "a", "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
                  "layers": [{"name": "title", "text": "hi", "x": 1, "karaoke": {}},
                             {"name": "icon", "image": "pic"}]},
-                {"name": "b", "code": "void main(){ gl_FragColor = vec4(0.5); }"},
+                {"name": "b", "fragment": "void main(){ gl_FragColor = vec4(0.5); }"},
             ],
         });
         let body = format!("#!/bin/sh\nprintf '%s\\n' '{doc}'\nwhile read -r l; do :; done\n");

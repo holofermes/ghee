@@ -93,7 +93,7 @@ fn image_scene(layers: Value) -> Value {
     json!({
         "version": 1,
         "assets": {"pic": {"file": "pic.png"}},
-        "passes": [{"name": "main", "code": GREY, "layers": layers}],
+        "passes": [{"name": "main", "fragment": GREY, "layers": layers}],
     })
 }
 
@@ -444,9 +444,9 @@ fn an_image_layer_past_the_texture_units_fails_naming_the_layer() {
     let channels: Vec<Value> = (0..units - 1).map(|_| json!({"buffer": "a"})).collect();
     let mut doc = plain.clone();
     doc["passes"] = json!([
-        {"name": "a", "code": GREY},
+        {"name": "a", "fragment": GREY},
         {"name": "main", "channels": channels, "arrays": [{"name": "v", "size": 4}],
-         "code": "void main(){ gl_FragColor = vec4(v_at(0)); }",
+         "fragment": "void main(){ gl_FragColor = vec4(v_at(0)); }",
          "layers": [{"name": "icon", "image": "pic"}]},
     ]);
     let past = match unsafe { ghee::ffi::ghee_gl_texture_units(r.handle()) } > 16 {
@@ -467,7 +467,7 @@ fn an_image_layer_past_the_texture_units_fails_naming_the_layer() {
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn an_image_layer_of_a_scene_built_without_a_directory_names_its_file() {
-    let doc = json!({"version": 1, "passes": [{"name": "main", "code": GREY,
+    let doc = json!({"version": 1, "passes": [{"name": "main", "fragment": GREY,
         "layers": [{"name": "icon", "image": "pic.png"}]}]});
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let (_g, mut r) = gpu(8, 8);

@@ -1,12 +1,10 @@
 {
   "version": 1,
-  "common": {
-    "code": "\nfloat wave(float x, float t) {\n    return 0.28 * sin(x * 4.4 + t) + 0.10 * sin(x * 9.7 - t * 0.6);\n}\n\nvec3 palette(float t) {\n    vec3 a = vec3(0.42, 0.40, 0.52);\n    vec3 b = vec3(0.42, 0.38, 0.45);\n    vec3 c = vec3(1.00, 1.05, 0.95);\n    vec3 d = vec3(0.10, 0.42, 0.72);\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 tone(vec3 col, float black, float exposure) {\n    col = vec3(1.0) - exp(-col * exposure);\n    col = max(col - black, 0.0) / max(1.0 - black, 1e-3);\n    return pow(col, vec3(1.0 / 2.2));\n}\n"
-  },
+  "common": "\nfloat wave(float x, float t) {\n    return 0.28 * sin(x * 4.4 + t) + 0.10 * sin(x * 9.7 - t * 0.6);\n}\n\nvec3 palette(float t) {\n    vec3 a = vec3(0.42, 0.40, 0.52);\n    vec3 b = vec3(0.42, 0.38, 0.45);\n    vec3 c = vec3(1.00, 1.05, 0.95);\n    vec3 d = vec3(0.10, 0.42, 0.72);\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 tone(vec3 col, float black, float exposure) {\n    col = vec3(1.0) - exp(-col * exposure);\n    col = max(col - black, 0.0) / max(1.0 - black, 1e-3);\n    return pow(col, vec3(1.0 / 2.2));\n}\n",
   "passes": [
     {
       "name": "buf",
-      "code": "void main() {\n\n  // buf reads itself = feedback, and reading it off-centre is what makes the\n  // wake travel. The buffer is 8-bit: subtract less than one LSB and dim\n  // pixels never reach black.\n  float steps = iTimeDelta * 60.0;\n  float prev = texture2D(iChannel0, uv + vec2(0.0, drift * steps)).r;\n  prev = max(prev * pow(decay, steps) - 1.5 / 255.0 * steps, 0.0);\n\n  float y = 0.5 + wave(uv.x, iTime * speed);\n  float crest = smoothstep(0.012, 0.0, abs(uv.y - y));\n\n  gl_FragColor = vec4(vec3(prev + crest * (1.0 - prev)), 1.0);\n}\n",
+      "fragment": "void main() {\n\n  // buf reads itself = feedback, and reading it off-centre is what makes the\n  // wake travel. The buffer is 8-bit: subtract less than one LSB and dim\n  // pixels never reach black.\n  float steps = iTimeDelta * 60.0;\n  float prev = texture2D(iChannel0, uv + vec2(0.0, drift * steps)).r;\n  prev = max(prev * pow(decay, steps) - 1.5 / 255.0 * steps, 0.0);\n\n  float y = 0.5 + wave(uv.x, iTime * speed);\n  float crest = smoothstep(0.012, 0.0, abs(uv.y - y));\n\n  gl_FragColor = vec4(vec3(prev + crest * (1.0 - prev)), 1.0);\n}\n",
       "channels": [
         {
           "buffer": "buf"
@@ -38,7 +36,7 @@
     },
     {
       "name": "image",
-      "code": "void main() {\n  // buf carries one number per pixel; this pass is where it becomes a picture.\n  // Feeding a curve back into a loop compounds it every frame, so the tone\n  // curve has to live out here, after the feedback.\n  float v = texture2D(iChannel0, uv).r;\n  vec3 col = palette(hue + 0.28 * v) * v;\n  col += vec3(1.0, 0.72, 0.42) * smoothstep(0.7, 1.0, v) * 0.5;\n  gl_FragColor = vec4(tone(col, 0.04, exposure), 1.0);\n}\n",
+      "fragment": "void main() {\n  // buf carries one number per pixel; this pass is where it becomes a picture.\n  // Feeding a curve back into a loop compounds it every frame, so the tone\n  // curve has to live out here, after the feedback.\n  float v = texture2D(iChannel0, uv).r;\n  vec3 col = palette(hue + 0.28 * v) * v;\n  col += vec3(1.0, 0.72, 0.42) * smoothstep(0.7, 1.0, v) * 0.5;\n  gl_FragColor = vec4(tone(col, 0.04, exposure), 1.0);\n}\n",
       "channels": [
         {
           "buffer": "buf"

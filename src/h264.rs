@@ -1116,7 +1116,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let scene = crate::scene::Scene::from_dict(
             &serde_json::json!({"version": 1, "passes": [{"name": "main",
-                "code": "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }"}]}),
+                "fragment": "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }"}]}),
             None,
             None,
         )

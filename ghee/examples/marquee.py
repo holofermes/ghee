@@ -113,7 +113,7 @@ def build():
         passes=[
             ghee.Pass(
                 name="main",
-                code=f"const float mask_aspect = {W / H:.6f};\n{SHADER}",
+                fragment=f"const float mask_aspect = {W / H:.6f};\n{SHADER}",
                 arrays=[ghee.ArrayInput("mask", (W, H))],
                 params={
                     "speed": ghee.Param(

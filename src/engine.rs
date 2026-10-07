@@ -1174,7 +1174,7 @@ impl Renderer {
             // A VC4 takes a while over a big shader, and a scene of several
             // compiles them one after another with nothing to show for it.
             crate::report::progress("compile", format!("pass {} of {total}, {}", i + 1, p.name));
-            let glsl = match p.has_code() {
+            let glsl = match p.has_fragment() {
                 true => p.glsl(
                     Some(&scene.params),
                     scene.common.as_deref(),
@@ -1191,7 +1191,7 @@ impl Renderer {
                 ffi::ghee_mp_add_pass(
                     self.handle,
                     cname.as_ptr(),
-                    match p.has_code() {
+                    match p.has_fragment() {
                         true => cglsl.as_ptr(),
                         false => ptr::null(),
                     },
@@ -1378,7 +1378,8 @@ impl Renderer {
             if idx < 0 {
                 let err = or_else(self.last_error(), "compile error");
                 unsafe { ffi::ghee_mp_abort(self.handle) };
-                let (line, in_common) = user_line(&err, &glsl, &p.code, scene.common.as_deref());
+                let (line, in_common) =
+                    user_line(&err, &glsl, &p.fragment, scene.common.as_deref());
                 let pass = format!("pass '{}'", p.name);
                 self.error = match (line, in_common) {
                     (Some(n), true) => format!("{pass}, line {n} of the common block: {err}"),
@@ -4386,7 +4387,7 @@ mod tests {
     }
 
     fn flat_scene() -> Scene {
-        scene_of(json!([{"name": "main", "code": FLAT}]))
+        scene_of(json!([{"name": "main", "fragment": FLAT}]))
     }
 
     /// One channel of every pixel, 0..255 as floats.
@@ -4572,8 +4573,8 @@ mod tests {
     fn channel_naming_no_pass_is_rejected() {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([
-            {"name": "a", "code": FLAT},
-            {"name": "b", "channels": [{"buffer": "a"}, {"buffer": "typo"}], "code": FLAT},
+            {"name": "a", "fragment": FLAT},
+            {"name": "b", "channels": [{"buffer": "a"}, {"buffer": "typo"}], "fragment": FLAT},
         ]));
         assert_eq!(
             r.setup(&sc).unwrap(),
@@ -4587,7 +4588,7 @@ mod tests {
         // buffer=None is the unbound channel. The scene stays valid.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([
-            {"name": "a", "channels": [{"buffer": null}], "code": FLAT},
+            {"name": "a", "channels": [{"buffer": null}], "fragment": FLAT},
         ]));
         assert_eq!(r.setup(&sc).unwrap(), "");
     }
@@ -4597,8 +4598,8 @@ mod tests {
     fn setup_rejects_a_scene_in_a_fixed_order() {
         let (_g, mut r) = gpu();
         let clash = json!([
-            {"name": "a", "code": FLAT, "arrays": [{"name": "v", "size": 4}]},
-            {"name": "b", "code": FLAT, "arrays": [{"name": "v", "size": [2, 2]}]},
+            {"name": "a", "fragment": FLAT, "arrays": [{"name": "v", "size": 4}]},
+            {"name": "b", "fragment": FLAT, "arrays": [{"name": "v", "size": [2, 2]}]},
         ]);
         assert_eq!(
             r.setup(&scene_of(clash)).unwrap(),
@@ -4606,8 +4607,8 @@ mod tests {
         );
         // The size clash outranks the bad channel below it.
         let both = json!([
-            {"name": "a", "code": FLAT, "arrays": [{"name": "v", "size": 4}]},
-            {"name": "b", "code": FLAT, "channels": [{"buffer": "typo"}],
+            {"name": "a", "fragment": FLAT, "arrays": [{"name": "v", "size": 4}]},
+            {"name": "b", "fragment": FLAT, "channels": [{"buffer": "typo"}],
              "arrays": [{"name": "v", "size": [2, 2]}]},
         ]);
         assert!(r.setup(&scene_of(both)).unwrap().starts_with("array 'v'"));
@@ -4620,11 +4621,11 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_sized_output_pass_renders_at_the_screen_size_and_keeps_its_size_under_a_later_pass() {
         let (_g, mut r) = gpu();
-        let a = json!({"name": "a", "size": [8, 8], "code":
+        let a = json!({"name": "a", "size": [8, 8], "fragment":
             "void main(){ gl_FragColor = vec4(gl_FragCoord.x > 4.0 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"});
         let through = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
         let b = |visible: bool| {
-            json!({"name": "b", "code": through, "channels": [{"buffer": "a"}],
+            json!({"name": "b", "fragment": through, "channels": [{"buffer": "a"}],
                    "visible": visible})
         };
         for (passes, red) in [
@@ -4649,9 +4650,9 @@ mod tests {
         let (_g, mut r) = gpu();
         let sample = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
         let sc = scene_of(json!([
-            {"name": "bright", "code": "void main(){ gl_FragColor = vec4(1.0); }"},
-            {"name": "leak", "channels": [{"buffer": "bright"}], "code": sample},
-            {"name": "main", "channels": [{"buffer": null}], "code": sample},
+            {"name": "bright", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"},
+            {"name": "leak", "channels": [{"buffer": "bright"}], "fragment": sample},
+            {"name": "main", "channels": [{"buffer": null}], "fragment": sample},
         ]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -4673,15 +4674,15 @@ mod tests {
             |more: &str| format!("void main(){{ gl_FragColor = texture2D(iChannel0, uv){more}; }}");
         let passes = |hidden: &[&str]| {
             let mut ps = json!([
-                {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }",
+                {"name": "a", "fragment": "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }",
                  "params": {"gain": {"type": "float", "value": 1.0}},
                  "arrays": [{"name": "level", "size": 4}]},
                 {"name": "b", "channels": [{"buffer": "a"}],
-                 "code": read(" + vec4(0.0, 0.5, 0.0, 0.0)"),
+                 "fragment": read(" + vec4(0.0, 0.5, 0.0, 0.0)"),
                  "params": {"gain": {"type": "float", "value": 1.0}},
                  "arrays": [{"name": "level", "size": 4}]},
                 {"name": "c", "channels": [{"buffer": "b"}],
-                 "code": read(" * vec4(0.5, 1.0, 1.0, 1.0) + vec4(0.0, 0.0, 0.25, 0.0)")},
+                 "fragment": read(" * vec4(0.5, 1.0, 1.0, 1.0) + vec4(0.0, 0.0, 0.25, 0.0)")},
             ]);
             for p in ps.as_array_mut().unwrap() {
                 p["visible"] = json!(!hidden.contains(&p["name"].as_str().unwrap()));
@@ -4717,12 +4718,12 @@ mod tests {
         // frame 2.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([
-            {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.25, 0.0, 0.0, 1.0); }"},
+            {"name": "a", "fragment": "void main(){ gl_FragColor = vec4(0.25, 0.0, 0.0, 1.0); }"},
             {"name": "b", "channels": [{"buffer": "a"}, {"buffer": "c"}],
-             "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                       + texture2D(iChannel1, uv); }"},
             {"name": "c", "channels": [{"buffer": "b"}], "visible": false,
-             "code": "void main(){ gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }"},
+             "fragment": "void main(){ gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }"},
         ]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -4742,8 +4743,8 @@ mod tests {
         let before = r.render(None).unwrap().to_vec();
 
         let bad = scene_of(json!([
-            {"name": "main", "code": FLAT},
-            {"name": "broken", "channels": [{"buffer": "main"}], "code": BROKEN},
+            {"name": "main", "fragment": FLAT},
+            {"name": "broken", "channels": [{"buffer": "main"}], "fragment": BROKEN},
         ]));
         assert!(!r.setup(&bad).unwrap().is_empty());
         assert_eq!(r.error_pass, Some(ErrorPass::Index(1)));
@@ -4834,7 +4835,7 @@ mod tests {
     fn a_whole_multiple_readback_repeats_each_pixel() {
         let (_g, mut r) = gpu();
         assert_eq!(
-            r.setup(&scene_of(json!([{"name": "main", "code": SPECKLE}])))
+            r.setup(&scene_of(json!([{"name": "main", "fragment": SPECKLE}])))
                 .unwrap(),
             ""
         );
@@ -4865,7 +4866,7 @@ mod tests {
         let sc = scene_of(json!([{
             "name": "main",
             "channels": [{"buffer": "main"}],
-            "code": "void main(){ float s = mod(floor(gl_FragCoord.x), 2.0); \
+            "fragment": "void main(){ float s = mod(floor(gl_FragCoord.x), 2.0); \
                      vec4 last = texture2D(iChannel0, uv + vec2(0.5 / iResolution.x, 0.0)); \
                      gl_FragColor = iFrame < 2 ? vec4(vec3(s), 1.0) : last; }",
         }]));
@@ -4901,7 +4902,7 @@ mod tests {
         let sc = scene_of(json!([{
             "name": "main",
             "channels": [{"buffer": "main"}],
-            "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
+            "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                      + vec4(0.1, 0.0, 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -4921,20 +4922,20 @@ mod tests {
             {
                 "name": "a",
                 "arrays": [{"name": "shared", "size": 4}],
-                "code": "void main(){ gl_FragColor = vec4(shared_at(0), 0.0, 0.0, 1.0); }",
+                "fragment": "void main(){ gl_FragColor = vec4(shared_at(0), 0.0, 0.0, 1.0); }",
             },
             {
                 "name": "b",
                 "channels": [{"buffer": "a"}],
                 "arrays": [{"name": "shared", "size": 4}],
-                "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
+                "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                          + vec4(0.0, shared_at(1), 0.0, 0.0); }",
             },
             {
                 "name": "c",
                 "channels": [{"buffer": "b"}],
                 "arrays": [{"name": "shared", "size": 4}],
-                "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
+                "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                          + vec4(0.0, 0.0, shared_at(2), 0.0); }",
             },
         ]));
@@ -4976,7 +4977,7 @@ mod tests {
             let layer = json!({"name": "t", "text": "AV", "font_size": 20, "render": render,
                                "font_family": "DejaVuSans-ASCII.ttf"});
             let mut sc = Scene::from_dict(
-                &json!({"version": 1, "passes": [{"name": "main", "code": code,
+                &json!({"version": 1, "passes": [{"name": "main", "fragment": code,
                                                   "layers": [layer]}]}),
                 None,
                 None,
@@ -5008,7 +5009,7 @@ mod tests {
             );
             let mut sc = Scene::from_dict(
                 &json!({"version": 1, "assets": {name.clone(): {"file": format!("{name}.png")}},
-                        "passes": [{"name": "main", "code": code}]}),
+                        "passes": [{"name": "main", "fragment": code}]}),
                 None,
                 None,
             )
@@ -5033,12 +5034,12 @@ mod tests {
         // refuse the second pass of the next scene.
         let (_g, mut r) = gpu();
         let mut passes: Vec<Value> = (0..15)
-            .map(|i| json!({"name": format!("p{i}"), "code": FLAT}))
+            .map(|i| json!({"name": format!("p{i}"), "fragment": FLAT}))
             .collect();
-        passes.push(json!({"name": "main", "code": "void main(){}\u{0}"}));
+        passes.push(json!({"name": "main", "fragment": "void main(){}\u{0}"}));
         assert!(r.setup(&scene_of(Value::from(passes))).is_err());
-        let two = scene_of(json!([{"name": "a", "code": FLAT},
-            {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]));
+        let two = scene_of(json!([{"name": "a", "fragment": FLAT},
+            {"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]));
         assert_eq!(r.setup(&two).unwrap(), "");
         r.set_time(Some(0.0));
         assert_eq!(&r.render(None).unwrap()[..4], [255; 4]);
@@ -5056,12 +5057,12 @@ mod tests {
         let units = r.max_texture_units() as usize;
         let channels: Vec<Value> = (0..units).map(|_| json!({"buffer": "a"})).collect();
         let greedy = scene_of(json!([
-            {"name": "a", "code": FLAT},
+            {"name": "a", "fragment": FLAT},
             {
                 "name": "main",
                 "channels": channels,
                 "arrays": [{"name": "v", "size": 4}],
-                "code": "void main(){ gl_FragColor = vec4(v_at(0)); }",
+                "fragment": "void main(){ gl_FragColor = vec4(v_at(0)); }",
             },
         ]));
         assert_eq!(
@@ -5088,8 +5089,8 @@ mod tests {
         let channels: Vec<Value> = (0..units - 5).map(|_| json!({"buffer": "a"})).collect();
         let sc = scene_of(json!([
             {"name": "a", "arrays": own,
-             "code": "void main(){ gl_FragColor = vec4(a11_at(0), 0.0, 0.0, 1.0); }"},
-            {"name": "main", "channels": channels, "arrays": arrays, "code": format!(
+             "fragment": "void main(){ gl_FragColor = vec4(a11_at(0), 0.0, 0.0, 1.0); }"},
+            {"name": "main", "channels": channels, "arrays": arrays, "fragment": format!(
                 "void main(){{ gl_FragColor = vec4(texture2D(iChannel{}, uv).r, \
                  m4_at(0), 0.0, 1.0); }}", units - 6)},
         ]));
@@ -5119,7 +5120,7 @@ mod tests {
                 "params": {p.clone(): {"type": "float", "value": 0.25}},
                 "assets": {i.clone(): {"file": "i.png"}},
                 "passes": [{"name": "main", "arrays": [{"name": a.clone(), "size": 4}],
-                    "code": format!("void main(){{ gl_FragColor = vec4({p}, {a}_at(0), \
+                    "fragment": format!("void main(){{ gl_FragColor = vec4({p}, {a}_at(0), \
                         texture2D({i}_tex, vec2(0.5)).r, 1.0); }}")}]}),
             None,
             None,
@@ -5150,7 +5151,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let passes = |n: usize| -> Vec<Value> {
             (0..n)
-                .map(|i| json!({"name": format!("p{i}"), "code": FLAT}))
+                .map(|i| json!({"name": format!("p{i}"), "fragment": FLAT}))
                 .collect()
         };
         assert_eq!(r.setup(&scene_of(json!(passes(16)))).unwrap(), "");
@@ -5198,10 +5199,10 @@ mod tests {
                 .collect();
             let mut sc = Scene::from_dict(
                 &json!({"version": 1, "assets": assets, "passes": [
-                    {"name": "a", "code": format!(
+                    {"name": "a", "fragment": format!(
                         "void main(){{ gl_FragColor = vec4(0.0, {}, 0.0, 1.0); }}",
                         sum(&names[units..]))},
-                    {"name": "main", "channels": channels, "code": format!(
+                    {"name": "main", "channels": channels, "fragment": format!(
                         "void main(){{ gl_FragColor = vec4({}, 0.0, 0.0, 1.0); }}",
                         sum(&names[..units]))},
                 ]}),
@@ -5255,7 +5256,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_readback_reads_alpha_255_unless_the_alpha_is_kept() {
         let (_g, mut r) = gpu();
-        let sc = scene_of(json!([{"name": "main", "code": HALF}]));
+        let sc = scene_of(json!([{"name": "main", "fragment": HALF}]));
         let opaque = first_frames(&mut r, &sc, 1);
         assert!(channel(&opaque, 3).iter().all(|a| *a == 255.0));
         let small = (W as i32 / 2, H as i32 / 2);
@@ -5295,8 +5296,8 @@ mod tests {
     fn a_channel_reads_the_alpha_its_pass_wrote() {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([
-            {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0, 1.0, 1.0, 0.25); }"},
-            {"name": "main", "channels": [{"buffer": "a"}], "code":
+            {"name": "a", "fragment": "void main(){ gl_FragColor = vec4(1.0, 1.0, 1.0, 0.25); }"},
+            {"name": "main", "channels": [{"buffer": "a"}], "fragment":
                 "void main(){ gl_FragColor = vec4(texture2D(iChannel0, uv).a, 0.0, 0.0, 1.0); }"},
         ]));
         let f = first_frames(&mut r, &sc, 1);
@@ -5310,7 +5311,7 @@ mod tests {
         // alpha.
         let (_g, mut r) = gpu();
         let sc = scene_of(
-            json!([{"name": "main", "channels": [{"buffer": "main"}], "code":
+            json!([{"name": "main", "channels": [{"buffer": "main"}], "fragment":
             "void main(){ gl_FragColor = vec4(texture2D(iChannel0, uv).a, 0.0, 0.0, 0.5); }"}]),
         );
         let f = first_frames(&mut r, &sc, 2);
@@ -5327,11 +5328,10 @@ mod tests {
     fn a_pass_with_no_code_and_no_layers_is_refused_naming_it() {
         let (_g, mut r) = gpu();
         let mut sc = flat_scene();
-        sc.passes[0].code = String::new();
+        sc.passes[0].fragment = String::new();
         assert_eq!(
             r.setup(&sc).unwrap(),
-            "pass 'main' has no 'code' (inline GLSL), no 'shader' (a file next to the scene) \
-             and no 'layers'"
+            "pass 'main' has no 'fragment' and no 'layers'"
         );
     }
 
@@ -5351,7 +5351,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(mod(iTime * 37.0, 1.0), 0.0, 0.0, 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(mod(iTime * 37.0, 1.0), 0.0, 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(1.0));
@@ -5371,10 +5371,10 @@ mod tests {
         // Green carries the second pass's iTimeDelta.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([
-            {"name": "src", "code": "void main(){ gl_FragColor = vec4(iTimeDelta, 0.0, 0.0, 1.0); }"},
+            {"name": "src", "fragment": "void main(){ gl_FragColor = vec4(iTimeDelta, 0.0, 0.0, 1.0); }"},
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = vec4(\
+                "fragment": "void main(){ gl_FragColor = vec4(\
                          texture2D(iChannel0, uv).r, iTimeDelta, 0.0, 1.0); }",
                 "channels": [{"buffer": "src"}],
             },
@@ -5407,9 +5407,9 @@ mod tests {
         let own = "vec4(iResolution.x / 255.0, iResolution.y / 255.0, iResolution.z, 1.0)";
         let sc = scene_of(json!([
             {"name": "a", "size": [8, 4],
-             "code": format!("void main(){{ gl_FragColor = {own}; }}")},
+             "fragment": format!("void main(){{ gl_FragColor = {own}; }}")},
             {"name": "main", "channels": [{"buffer": "a"}],
-             "code": format!("void main(){{ gl_FragColor = uv.x < 0.5 ? \
+             "fragment": format!("void main(){{ gl_FragColor = uv.x < 0.5 ? \
                               texture2D(iChannel0, uv) : {own}; }}")},
         ]));
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -5425,7 +5425,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(float(iFrame) / 255.0, 0.0, 0.0, 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(float(iFrame) / 255.0, 0.0, 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         for want in [1.0, 2.0, 3.0] {
@@ -5440,7 +5440,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
-            "code": "void main(){ vec2 uv = vec2(0.0); \
+            "fragment": "void main(){ vec2 uv = vec2(0.0); \
                      gl_FragColor = vec4(floor(gl_FragCoord.x) / 255.0, uv, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -5477,7 +5477,7 @@ mod tests {
         let sc = scene_of(json!([{
             "name": "main",
             "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "vals", "size": 2}],
-            "code": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.75, 0.75)), \
+            "fragment": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.75, 0.75)), \
                      vals_at(1), 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -5499,7 +5499,7 @@ mod tests {
         let sc = scene_of(json!([{
             "name": "main",
             "arrays": [{"name": "vals", "size": 4}],
-            "code": "void main(){ gl_FragColor = vec4(vals_at(0), 0.0, 0.0, 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(vals_at(0), 0.0, 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -5518,10 +5518,10 @@ mod tests {
         let sc = Scene::from_dict(
             &json!({
                 "version": 1,
-                "common": {"code": bad},
+                "common": bad,
                 "passes": [{
                     "name": "main",
-                    "code": "void main(){ gl_FragColor = vec4(sat(uv.x), 0.0, 0.0, 1.0); }",
+                    "fragment": "void main(){ gl_FragColor = vec4(sat(uv.x), 0.0, 0.0, 1.0); }",
                 }],
             }),
             None,
@@ -5545,10 +5545,10 @@ mod tests {
         let sc = Scene::from_dict(
             &json!({
                 "version": 1,
-                "common": {"code": "float sat(float x){ return clamp(x, 0.0, 1.0); }"},
+                "common": "float sat(float x){ return clamp(x, 0.0, 1.0); }",
                 "passes": [
-                    {"name": "a", "code": FLAT},
-                    {"name": "b", "code": "void main(){\n  float v = 1.0;\n  nope(v);\n}"},
+                    {"name": "a", "fragment": FLAT},
+                    {"name": "b", "fragment": "void main(){\n  float v = 1.0;\n  nope(v);\n}"},
                 ],
             }),
             None,
@@ -5579,7 +5579,7 @@ mod tests {
     fn array_scene(code: &str, name: &str, size: Value) -> Scene {
         scene_of(json!([{
             "name": "main",
-            "code": code,
+            "fragment": code,
             "arrays": [{"name": name, "size": size}],
         }]))
     }
@@ -5670,7 +5670,7 @@ mod tests {
                     logo_size.x / 8.0, 1.0); }";
         r.set_asset("logo", 2, 2, 4, false, AssetData::U8(&[128u8; 16]))
             .unwrap();
-        let sc = scene_of(json!([{"name": "main", "code": code}]));
+        let sc = scene_of(json!([{"name": "main", "fragment": code}]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
         r.set_asset("late", 1, 1, 1, false, AssetData::U8(&[64u8]))
@@ -5844,8 +5844,8 @@ mod tests {
         let (_g, mut r) = gpu();
         // A 2D size prints as a pair. A 1D size prints as an int.
         let clash = json!([
-            {"name": "a", "code": FLAT, "arrays": [{"name": "v", "size": [3, 5]}]},
-            {"name": "b", "code": FLAT, "arrays": [{"name": "v", "size": 7}]},
+            {"name": "a", "fragment": FLAT, "arrays": [{"name": "v", "size": [3, 5]}]},
+            {"name": "b", "fragment": FLAT, "arrays": [{"name": "v", "size": 7}]},
         ]);
         assert_eq!(
             r.setup(&scene_of(clash)).unwrap(),
@@ -5855,9 +5855,9 @@ mod tests {
         let units = r.max_texture_units() as usize;
         let typos: Vec<Value> = (0..units).map(|_| json!({"buffer": "typo"})).collect();
         let both = json!([
-            {"name": "a", "code": FLAT},
+            {"name": "a", "fragment": FLAT},
             {"name": "main", "channels": typos, "arrays": [{"name": "v", "size": 4}],
-             "code": "void main(){ gl_FragColor = vec4(v_at(0)); }"},
+             "fragment": "void main(){ gl_FragColor = vec4(v_at(0)); }"},
         ]);
         assert_eq!(
             r.setup(&scene_of(both)).unwrap(),
@@ -5875,10 +5875,10 @@ mod tests {
         let units = r.max_texture_units() as usize;
         let channels: Vec<Value> = (0..units - 1).map(|_| json!({"buffer": "a"})).collect();
         let mut sc = scene_of(json!([
-            {"name": "a", "code": FLAT},
+            {"name": "a", "fragment": FLAT},
             {"name": "main", "channels": channels,
              "arrays": [{"name": "v", "size": 4}],
-             "code": "void main(){ gl_FragColor = vec4(v_at(0)); }"},
+             "fragment": "void main(){ gl_FragColor = vec4(v_at(0)); }"},
         ]));
         let v = sc.passes[1].arrays[0].clone();
         sc.passes[1].arrays.push(v);
@@ -5901,7 +5901,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(tint.r, off.x, off.y, 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(tint.r, off.x, off.y, 1.0); }",
             "params": {"tint": {"type": "color", "value": [0.0, 0.0, 0.0]},
                        "off": {"type": "vec2", "value": [0.0, 0.0]},
                        "label": {"type": "string", "value": "hi"}},
@@ -5971,7 +5971,7 @@ mod tests {
                 "version": 1,
                 "params": {"a": {"type": "vec2", "value": [0.25, 0.5]},
                            "tint": {"type": "color", "value": [0.5, 0.25, 1.0]}},
-                "passes": [{"name": "main", "code": code, "params": {
+                "passes": [{"name": "main", "fragment": code, "params": {
                     "b": {"type": "vec3", "value": [0.75, 0.5, 0.25]},
                     "c": {"type": "vec4", "value": [1.0, 0.5, 0.25, 0.5]}}}],
             }),
@@ -6016,7 +6016,7 @@ mod tests {
         let code = "vec3 lift(vec3 tint){ return tint + 0.25; }\n\
                     void main(){ vec3 tint = vec3(0.0, 0.25, 0.0); \
                     gl_FragColor = vec4(lift(tint), 1.0); }";
-        let sc = scene_of(json!([{"name": "main", "code": code,
+        let sc = scene_of(json!([{"name": "main", "fragment": code,
             "params": {"tint": {"type": "color", "value": [1.0, 1.0, 1.0]}}}]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -6050,9 +6050,9 @@ mod tests {
         scene_of(json!([
             {"name": "check", "size": [256, 256], "mipmaps": mipmaps,
              "params": {"level": {"type": "float", "value": 1.0}},
-             "code": "void main(){ vec2 t = floor(uv * 256.0); \
+             "fragment": "void main(){ vec2 t = floor(uv * 256.0); \
                       gl_FragColor = vec4(vec3(mod(t.x + t.y, 2.0) * level), 1.0); }"},
-            {"name": "main", "channels": [{"buffer": "check"}], "code": main},
+            {"name": "main", "channels": [{"buffer": "check"}], "fragment": main},
         ]))
     }
 
@@ -6120,9 +6120,9 @@ mod tests {
                 "version": 1,
                 "params": {"P": {"type": "float", "value": 0.0}},
                 "passes": [
-                    {"name": "a", "code": "void main(){ gl_FragColor = vec4(P, 0.0, 0.0, 1.0); }"},
+                    {"name": "a", "fragment": "void main(){ gl_FragColor = vec4(P, 0.0, 0.0, 1.0); }"},
                     {"name": "main", "channels": [{"buffer": "a"}],
-                     "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
+                     "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                               + vec4(0.0, P, 0.0, 0.0); }"},
                 ],
             }),
@@ -6154,7 +6154,7 @@ mod tests {
         let sc = scene_of(json!([{
             "name": "main",
             "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "vals", "size": 3}],
-            "code": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.25, 0.25)), \
+            "fragment": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.25, 0.25)), \
                      mask_sample2(vec2(0.75, 0.75)), vals_at(2), 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -6209,7 +6209,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(uv.x, uv.y, 0.25, 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(uv.x, uv.y, 0.25, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -6295,7 +6295,7 @@ mod tests {
             // src + dst * (1 - src): (0.625, 0.5, 0.5)
             (Blend::Screen, [159.0, 128.0, 128.0]),
         ] {
-            let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+            let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
             let l = batch("main", PLAIN_FS, blend);
             assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "", "{blend:?}");
             r.set_batch_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, src), 2)
@@ -6321,7 +6321,7 @@ mod tests {
         // The pass paints the top rows, uv.y < 0.25, red. The batch
         // covers the same rows by pixel and adds green.
         let (_g, mut r) = gpu();
-        let sc = scene_of(json!([{"name": "main", "code":
+        let sc = scene_of(json!([{"name": "main", "fragment":
             "void main(){ gl_FragColor = vec4(uv.y < 0.25 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
         assert_eq!(
             r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
@@ -6346,7 +6346,7 @@ mod tests {
         // it paint each pixel red. Every pixel ends yellow only if the second
         // draw reads its own vertices.
         let (_g, mut r) = gpu();
-        let sc = scene_of(json!([{"name": "main", "code":
+        let sc = scene_of(json!([{"name": "main", "fragment":
             "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"}]));
         assert_eq!(
             r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
@@ -6386,7 +6386,7 @@ mod tests {
         // that comes in.
         let (_g, mut r) = gpu();
         let words = |px: i32| json!({"name": "t", "text": "Hi", "font_size": px});
-        let doc = json!([{"name": "main", "code": FLAT, "layers": [words(12)]}]);
+        let doc = json!([{"name": "main", "fragment": FLAT, "layers": [words(12)]}]);
         assert_eq!(r.setup(&scene_of(doc)).unwrap(), "");
         let held = |r: &Renderer| {
             let d = r.drawn("t").unwrap();
@@ -6407,7 +6407,7 @@ mod tests {
         // Each batch adds 1/255 of red over black.
         let (_g, mut r) = gpu();
         let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
-        let sc = scene_of(json!([{"name": "main", "code": black}]));
+        let sc = scene_of(json!([{"name": "main", "fragment": black}]));
         let batches: Vec<Batch> = (0..100)
             .map(|_| batch("main", PLAIN_FS, Blend::Add))
             .collect();
@@ -6429,7 +6429,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn batches_of_a_pass_draw_in_order_and_new_quads_replace_the_last() {
         let (_g, mut r) = gpu();
-        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
         let batches = [
             batch("main", PLAIN_FS, Blend::Normal),
             batch("main", PLAIN_FS, Blend::Normal),
@@ -6468,10 +6468,10 @@ mod tests {
                     "shift": {"type": "float", "value": 0.0},
                 },
                 "passes": [
-                    {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.75, 1.0); }"},
+                    {"name": "a", "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.75, 1.0); }"},
                     {"name": "main", "channels": [{"buffer": "a"}],
                      "arrays": [{"name": "vals", "size": 4}],
-                     "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
+                     "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
                 ],
             }),
             None,
@@ -6525,7 +6525,7 @@ mod tests {
         let (_g, mut r) = gpu();
         r.set_asset("early", 1, 1, 1, false, AssetData::U8(&[64u8]))
             .unwrap();
-        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
         let l = batch(
             "main",
             "uniform sampler2D early_tex; uniform sampler2D late_tex;\n\
@@ -6551,9 +6551,9 @@ mod tests {
     fn a_later_pass_samples_the_batch_drawn_into_an_earlier_one() {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([
-            {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
+            {"name": "a", "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
             {"name": "main", "channels": [{"buffer": "a"}],
-             "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
         ]));
         assert_eq!(
             r.setup_batches(&sc, &[batch("a", PLAIN_FS, Blend::Normal)])
@@ -6571,7 +6571,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_broken_batch_leaves_the_running_scene_and_names_its_stage() {
         let (_g, mut r) = gpu();
-        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
         assert_eq!(
             r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
                 .unwrap(),
@@ -6648,7 +6648,7 @@ mod tests {
         // channel is the sum of one of ghee_a1 to ghee_a3 and one of ghee_a5
         // to ghee_a7, and ghee_a4 holds the alpha.
         let (_g, mut r) = gpu();
-        let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
         let attributes: String = (0..8)
             .map(|k| format!("attribute vec4 ghee_a{k};\n"))
             .collect();
@@ -6709,7 +6709,7 @@ mod tests {
                     "version": 1,
                     "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
                     "passes": [{"name": "main", "layers": layers,
-                        "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }"}],
+                        "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }"}],
                 }),
                 None,
                 None,
@@ -6791,7 +6791,7 @@ mod tests {
             &json!({
                 "version": 1,
                 "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-                "passes": [{"name": "main", "code": "void main(){ \
+                "passes": [{"name": "main", "fragment": "void main(){ \
                     float c = label_cover(uv * label_size, iResolution.y / label_size.y); \
                     gl_FragColor = vec4(c, c, c, 1.0); }",
                     "layers": [{"name": "label", "text": words, "font_family": "sans",
@@ -6834,7 +6834,7 @@ mod tests {
     fn slug_words_of_glyphs_that_the_renderer_holds_read_no_outline_and_upload_nothing() {
         let layer = json!({"name": "t", "text": "0123456789", "font_family": "pixel",
                            "font_size": 8});
-        let sc = scene_of(json!([{"name": "main", "code": FLAT, "layers": [layer]}]));
+        let sc = scene_of(json!([{"name": "main", "fragment": FLAT, "layers": [layer]}]));
         let (_g, mut r) = gpu();
         assert_eq!(r.setup(&sc).unwrap(), "");
         let held = || (r.glyph_bytes.get(), r.glyphs.borrow().reads);
@@ -6861,7 +6861,8 @@ mod tests {
             json!({"name": "t", "text": words, "font_family": "pixel",
                    "font_size": px})
         };
-        let scene = |l: &Value| scene_of(json!([{"name": "main", "code": FLAT, "layers": [l]}]));
+        let scene =
+            |l: &Value| scene_of(json!([{"name": "main", "fragment": FLAT, "layers": [l]}]));
         let rows = [
             (text("ab", 8), false),
             (text("cd", 8), false),
@@ -6911,7 +6912,7 @@ mod tests {
                 args,
             }
         };
-        let sc = scene_of(json!([{"name": "main", "code": FLAT, "layers": [
+        let sc = scene_of(json!([{"name": "main", "fragment": FLAT, "layers": [
             rect("a", 2.0), rect("b", 10.0), rect("c", 18.0)]}]));
         let quad = 16 * crate::shape::ATTRIBUTES;
         let rows = [
@@ -6941,7 +6942,7 @@ mod tests {
                    "color": color})
         };
         let scene = |b: &Value| {
-            scene_of(json!([{"name": "main", "code": FLAT, "layers": [
+            scene_of(json!([{"name": "main", "fragment": FLAT, "layers": [
                 rect("a", 2, 10, "red"), b, rect("c", 40, 10, "blue")]}]))
         };
         let quad = 16 * crate::shape::ATTRIBUTES;
@@ -6988,7 +6989,7 @@ mod tests {
     fn run_scene(layers: &[Value]) -> Scene {
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "assets": {"pic": {"file": "pic.png"}},
-                    "passes": [{"name": "main", "code": FLAT, "layers": layers}]}),
+                    "passes": [{"name": "main", "fragment": FLAT, "layers": layers}]}),
             None,
             None,
         )
@@ -7410,7 +7411,7 @@ mod tests {
         let layers = members();
         let doc = |layers: &[Value]| {
             let mut sc = run_scene(layers);
-            sc.passes[0].code = "void main(){ float c = t2_cover(uv * t2_size, 16.0); \
+            sc.passes[0].fragment = "void main(){ float c = t2_cover(uv * t2_size, 16.0); \
                                  gl_FragColor = vec4(0.5, 0.25 + 0.5 * c, 0.75, 1.0); }"
                 .to_string();
             sc
@@ -7534,7 +7535,7 @@ mod tests {
                     "version": 1,
                     "assets": {"emoji": {"file": "smiles.ttf"}},
                     "passes": [{"name": "main",
-                        "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                        "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                         "layers": [layer]}],
                 }),
                 None,
@@ -7608,7 +7609,7 @@ mod tests {
                 "version": 1,
                 "assets": {"emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
                 "passes": [{"name": "main",
-                    "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                    "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                     "layers": layers}],
             }),
             None,
@@ -7734,7 +7735,7 @@ mod tests {
                 "version": 1,
                 "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
                 "passes": [{"name": "main",
-                    "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                    "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                     "layers": [{"name": "label", "text": words, "font_family": "sans",
                                 "x": 2, "y": 1, "font_size": 40}]}],
             }),
@@ -7935,7 +7936,7 @@ mod tests {
                 "version": 1,
                 "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
                 "passes": [{"name": "main",
-                    "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                    "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                     "layers": [layer("a", 40.0, true), layer("b", 44.0, true),
                                layer("c", 100.0, true), layer("d", 70.0, false)]}],
             }),
@@ -7977,7 +7978,7 @@ mod tests {
             let (_g, mut r) = gpu_at(w, h);
             r.set_rotate(degrees).unwrap();
             assert_eq!(r.scene_size(), scene_size, "{degrees}");
-            let sc = scene_of(json!([{"name": "main", "code": POSITION}]));
+            let sc = scene_of(json!([{"name": "main", "fragment": POSITION}]));
             assert_eq!(r.setup(&sc).unwrap(), "");
             let frame = r.render(None).unwrap().to_vec();
             let scaled = r.render_scaled(None, (2 * w as i32, 2 * h as i32)).unwrap();

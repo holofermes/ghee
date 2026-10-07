@@ -1833,7 +1833,7 @@ mod tests {
     use std::fs;
 
     const SCENE: &str = r#"{"version":1,"passes":[{"name":"main",
-        "code":"void main(){ gl_FragColor = vec4(0.25,0.5,0.75,1.0); }"}]}"#;
+        "fragment":"void main(){ gl_FragColor = vec4(0.25,0.5,0.75,1.0); }"}]}"#;
 
     fn argv(tokens: &[&str]) -> Vec<String> {
         tokens.iter().map(|s| (*s).to_string()).collect()

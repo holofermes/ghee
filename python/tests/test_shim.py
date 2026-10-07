@@ -119,14 +119,14 @@ RECORDED = {
         {
             "name": "grid",
             "visible": False,
-            "code": "void main(){}",
+            "fragment": "void main(){}",
             "size": [64, 32],
             "mipmaps": True,
             "arrays": [{"name": "bins", "size": 16}, {"name": "mask", "size": [8, 4]}],
         },
         {
             "name": "main",
-            "code": "void main(){}",
+            "fragment": "void main(){}",
             "channels": [{"buffer": "grid"}],
             "params": {
                 "gain": {
@@ -144,7 +144,7 @@ RECORDED = {
             },
         },
     ],
-    "common": {"code": "float k(){ return 1.0; }"},
+    "common": "float k(){ return 1.0; }",
     "filters": ["dither"],
     "params": {"speed": {"type": "float", "value": 0.5}},
 }
@@ -157,7 +157,7 @@ def test_the_scene_json_is_the_recorded_json():
         passes=[
             shim.Pass(
                 name="grid",
-                code="void main(){}",
+                fragment="void main(){}",
                 size=(64, 32),
                 mipmaps=True,
                 visible=False,
@@ -165,7 +165,7 @@ def test_the_scene_json_is_the_recorded_json():
             ),
             shim.Pass(
                 name="main",
-                code="void main(){}",
+                fragment="void main(){}",
                 channels=[shim.Channel(buffer="grid")],
                 params={
                     "gain": shim.Param("gain", "float", 1, min=0, max=2, step=0.1),
@@ -237,7 +237,7 @@ def test_a_layer_carries_its_words():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){}",
+                "fragment": "void main(){}",
                 "layers": [
                     {
                         "name": "words",
@@ -328,7 +328,7 @@ def test_numpy_numbers_build_a_document_that_json_takes():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){}",
+                "fragment": "void main(){}",
                 "size": [64, 32],
                 "arrays": [{"name": "mask", "size": [8, 4]}],
                 "params": {"tint": {"type": "color", "value": [1.0, 0.5, 0.0]}},
@@ -470,15 +470,15 @@ def test_a_layer_leaves_its_defaults_out():
     assert "layers" not in shim.Pass("main", "void main(){}").to_dict()
 
 
-def test_a_pass_of_layers_alone_has_no_code():
+def test_a_pass_of_layers_alone_has_no_fragment():
     shim = load()
     alone = shim.Pass("ink", layers=[shim.Layer("words", "hi")])
     assert alone.to_dict() == {
         "name": "ink",
         "layers": [{"name": "words", "text": "hi"}],
     }
-    # a filter pass takes its code from its filter
-    assert shim.Pass("dither", filter="dither").to_dict()["code"] == ""
+    # a filter pass takes its fragment from its filter
+    assert shim.Pass("dither", filter="dither").to_dict()["fragment"] == ""
 
 
 # ---------------------------------------------------------------------- args

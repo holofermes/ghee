@@ -307,8 +307,9 @@ class Pass:
     The last pass leaves `size` None, because it feeds the display.
     `mipmaps` builds the mip chain of the pass's buffer after each frame, so
     a pass that reads it far smaller than its size samples it smooth.
-    `layers` paint over the pass's buffer after its code, in list order.
-    A pass with layers and no code starts each frame transparent.
+    `fragment` is the pass's GLSL. `layers` paint over the pass's buffer
+    after it, in list order. A pass with layers and no fragment starts each
+    frame transparent.
     `params` holds the Params of this pass alone, in a list or in a dict keyed
     by their names.
     `visible` False hides the pass: it draws a copy of the pass before it, or
@@ -317,7 +318,7 @@ class Pass:
     """
 
     name: str
-    code: str = ""
+    fragment: str = ""
     arrays: list[ArrayInput] = field(default_factory=list)
     channels: list[Channel] = field(default_factory=list)
     params: dict[str, Param] | list[Param] = field(default_factory=dict)
@@ -336,9 +337,9 @@ class Pass:
         out: dict = {"name": self.name}
         if self.visible is not True:
             out["visible"] = _plain(self.visible)
-        code = self.code
-        if not self.layers or not isinstance(code, str) or code.strip():
-            out["code"] = code
+        fragment = self.fragment
+        if not self.layers or not isinstance(fragment, str) or fragment.strip():
+            out["fragment"] = fragment
         if self.size is not None:
             out["size"] = _plain(self.size)
         if self.mipmaps is not False:
@@ -418,7 +419,7 @@ class Scene:
             "passes": [p.to_dict() for p in self.passes],
         }
         if self.common is not None:
-            out["common"] = {"code": self.common}
+            out["common"] = self.common
         if self.filters:
             out["filters"] = list(self.filters)
         if self.params:

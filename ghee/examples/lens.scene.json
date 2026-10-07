@@ -3,7 +3,7 @@
   "passes": [
     {
       "name": "main",
-      "shader": "lens.glsl",
+      "fragment": {"file": "lens.glsl"},
       "params": {
         "zoom": {
           "type": "float",

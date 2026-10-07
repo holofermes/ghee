@@ -85,7 +85,7 @@ fn scene() -> Value {
         "version": 1,
         "assets": {"sans": {"file": "sans.ttf"}},
         "passes": [{"name": "main",
-                    "code": "void main(){ gl_FragColor = vec4(0.1, 0.1, 0.3, 1.0); }",
+                    "fragment": "void main(){ gl_FragColor = vec4(0.1, 0.1, 0.3, 1.0); }",
                     "layers": [
             {"name": "clock", "text": "12:00", "font_family": "pixel", "font_size": 8,
              "x": 2, "y": 2},

@@ -2616,7 +2616,7 @@ mod tests {
     use super::*;
 
     const SCENE: &str = r#"{"version": 1,
-        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
+        "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
     const SC: &[u8] = &[0, 0, 0, 1];
 
     /// A console over a directory of one scene, which lives as long as the
@@ -3314,7 +3314,7 @@ mod tests {
         let doc = serde_json::json!({
             "version": 1,
             "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
-            "passes": [{"name": "main", "code": "void main(){ \
+            "passes": [{"name": "main", "fragment": "void main(){ \
                 float c = label_cover(uv * label_size, iResolution.y / label_size.y); \
                 gl_FragColor = vec4(c, c, c, 1.0); }",
                 "layers": [{"name": "label", "text": words, "font_family": "sans",
@@ -3445,7 +3445,7 @@ mod tests {
         let d = crate::testing::TempDir::new("console-sidecar");
         let doc = |x: f64| {
             serde_json::json!({"version": 1, "passes": [{"name": "main",
-                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                 "layers": [{"name": "title", "text": "I", "font_size": 16, "x": x, "y": 4}]}]})
         };
         let mut handshake = doc(1.0);

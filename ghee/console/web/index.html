@@ -562,9 +562,9 @@ let active = null;
 const COMMON = "common";
 let curPass = 0;
 const onCommon = () => curPass === COMMON;
-const hasCommon = () => !!(work && work.common && typeof work.common.code === "string");
-const commonCode = () => (hasCommon() ? work.common.code : "");
-function setCommon(code){ work.common = {code, commonEdited: true}; }
+const hasCommon = () => !!work && typeof work.common === "string";
+const commonCode = () => (hasCommon() ? work.common : "");
+function setCommon(code){ work.common = code; work.commonEdited = true; }
 // the names of the scenes that a program writes, from /scenes
 let procedural = [];
 const isProcedural = () => procedural.includes(active);
@@ -804,7 +804,7 @@ function dirty(){ return norm(work) !== norm(pristine); }
 function sceneOnly(s){
   const q = clone(s);
   (q.passes || []).forEach(p => { delete p.codeEdited; delete p.layersEdited; });
-  if (q.common) delete q.common.commonEdited;
+  delete q.commonEdited;
   return q;
 }
 
@@ -960,8 +960,8 @@ function mergeNewParams(pristine, work){
     if (p.size) wp.size = clone(p.size); else delete wp.size;
     // shader code the user never touched in the editor tracks the scene's
     // current source, so new uniforms arrive with the code that reads them
-    if (!wp.codeEdited && typeof p.code === "string" && wp.code !== p.code)
-      wp.code = p.code;
+    if (!wp.codeEdited && typeof p.fragment === "string" && wp.fragment !== p.fragment)
+      wp.fragment = p.fragment;
     // and so do its layers. A program keeps which layers its scene has and
     // their order, and each keeps the settings edited here, by name.
     if (isProcedural()){
@@ -971,10 +971,10 @@ function mergeNewParams(pristine, work){
   });
   // same for the common block: one added to the file since this copy was saved
   // shows up, one edited here stays as the user left it
-  if (pristine.common && !(work.common && work.common.commonEdited))
-    work.common = clone(pristine.common);
+  if (typeof pristine.common === "string" && !work.commonEdited)
+    work.common = pristine.common;
   // a program has the common block its code declares, or none
-  else if (!pristine.common && isProcedural()) delete work.common;
+  else if (typeof pristine.common !== "string" && isProcedural()) delete work.common;
 }
 
 // `local` takes this browser's working copy of the scene, and posts it.
@@ -1231,7 +1231,7 @@ $("#shTog").addEventListener("click", () => {
 });
 function loadCode(){
   const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass];
-  ta.value = p ? (p.code || "") : commonCode(); ta.scrollTop = 0;
+  ta.value = p ? (p.fragment || "") : commonCode(); ta.scrollTop = 0;
   ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
   CODE.box.classList.toggle("readonly", !!(p && p.filter));
   CODE.sync();
@@ -1844,26 +1844,26 @@ function recard(p, name){
 async function addFilter(name){
   if (!FILTERS[name]) return;
   // name and place only: the server builds the pass from the filter
-  work.passes.push({ name: uniqueName(name), code: "", channels: [], params: {}, filter: name });
+  work.passes.push({ name: uniqueName(name), fragment: "", channels: [], params: {}, filter: name });
   (work.filters = work.filters || []).push(name);  // save strips the pass, keeps this
   curPass = work.passes.length - 1; markDirty(); await postScene();
   buildPass(); buildParams(); refreshInfo();
 }
 function addCommon(){
-  work.common = {code: ""};
+  work.common = "";
   curPass = COMMON; markDirty(); postScene();
   buildPass(); buildParams(); refreshInfo();
 }
 async function delCommon(){
   if (!await ask("Remove the common block?") || !hasCommon()) return;
-  delete work.common;
+  delete work.common; delete work.commonEdited;
   if (onCommon()) curPass = 0;
   markDirty(); postScene();
   buildPass(); buildParams(); refreshInfo();
 }
 function addPass(){
   const name = uniqueName("pass");
-  work.passes.push({ name, code:"void main(){\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
+  work.passes.push({ name, fragment:"void main(){\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
   curPass = work.passes.length - 1; markDirty(); postScene();
   buildPass(); buildParams(); refreshInfo();
 }
@@ -2236,14 +2236,14 @@ async function sceneMoved(from){
 }
 $("#moved").addEventListener("click", ()=>{ $("#moved").hidden = true; });
 
-// A filter pass is the server's: take its code and channels as the server
+// A filter pass is the server's: take its fragment and channels as the server
 // built them, and any param it added. Values already here stay.
 function adoptFilters(doc){
   (doc.passes||[]).forEach(d => {
     if (!d.filter) return;
     const p = work.passes.find(w => w.name === d.name && w.filter === d.filter);
     if (!p) return;
-    p.code = d.code; p.channels = d.channels || [];
+    p.fragment = d.fragment; p.channels = d.channels || [];
     const params = {};
     Object.entries(d.params||{}).forEach(([n, v]) => { params[n] = (p.params||{})[n] || v; });
     p.params = params;
@@ -2256,7 +2256,7 @@ function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = 
 CODE.ta.addEventListener("input", ()=>{
   if (onCommon()) setCommon(CODE.ta.value);
   else {
-    work.passes[curPass].code = CODE.ta.value;
+    work.passes[curPass].fragment = CODE.ta.value;
     work.passes[curPass].codeEdited = true;
   }
   CODE.sync(); liveCompile();
@@ -2265,7 +2265,7 @@ CODE.ta.addEventListener("input", ()=>{
 // top-bar actions
 $("#apply").addEventListener("click", async ()=>{
   if (onCommon()) setCommon(CODE.ta.value);
-  else work.passes[curPass].code = CODE.ta.value;
+  else work.passes[curPass].fragment = CODE.ta.value;
   await postScene(); markDirty();
   if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files
     const b = $("#apply");

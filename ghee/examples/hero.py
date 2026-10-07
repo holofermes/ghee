@@ -367,13 +367,13 @@ def build(a):
         passes=[
             ghee.Pass(
                 name="prev",
-                code=SHADER_PREV,
+                fragment=SHADER_PREV,
                 size=grid,
                 channels=[ghee.Channel(buffer="state")],
             ),
             ghee.Pass(
                 name="state",
-                code=SHADER_STATE,
+                fragment=SHADER_STATE,
                 size=grid,
                 channels=[ghee.Channel(buffer="state"), ghee.Channel(buffer="life")],
                 params={
@@ -396,14 +396,14 @@ def build(a):
             ),
             ghee.Pass(
                 name="life",
-                code=SHADER_LIFE,
+                fragment=SHADER_LIFE,
                 size=grid,
                 channels=[ghee.Channel(buffer="life")],
                 params={"particle_life": knob("particle_life", 0.83, 0.0, 1.0, 0.01)},
             ),
             ghee.Pass(
                 name="attr",
-                code=SHADER_ATTR,
+                fragment=SHADER_ATTR,
                 size=grid,
                 channels=[ghee.Channel(buffer="state"), ghee.Channel(buffer="prev")],
                 params={
@@ -414,7 +414,7 @@ def build(a):
             ),
             ghee.Pass(
                 name="glow",
-                code=_grid_consts(col, row) + SHADER_GLOW,
+                fragment=_grid_consts(col, row) + SHADER_GLOW,
                 size=a.particle_buffer,
                 channels=[
                     ghee.Channel(buffer="state"),
@@ -429,7 +429,7 @@ def build(a):
             ),
             ghee.Pass(
                 name="main",
-                code=SHADER_MAIN,
+                fragment=SHADER_MAIN,
                 arrays=[ghee.ArrayInput("canvas", CANVAS)],
                 channels=[ghee.Channel(buffer="glow")],
                 params={

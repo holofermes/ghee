@@ -10,7 +10,8 @@
 //! [`Pass::of`] build a scene in code.
 //!
 //! [`Pass::glsl`] writes the fragment shader of a pass in three parts: the
-//! preamble, the scene's common block, then the pass's own GLSL. The preamble
+//! preamble, the scene's common block, then the pass's own GLSL, its
+//! `fragment`. The preamble
 //! declares what every pass reads, the varying `uv` and the uniforms `iTime`,
 //! `iTimeDelta`, `iFrame`, `iResolution` and `iChannel0` and up, then one
 //! uniform for each param
@@ -181,9 +182,9 @@ fn filter_entry(v: &Value) -> Option<(String, bool)> {
 const SCENE_KEYS: [&str; 6] = ["version", "passes", "filters", "params", "common", "assets"];
 
 /// The keys of a pass.
-pub(crate) const PASS_KEYS: [&str; 11] = [
-    "name", "code", "shader", "arrays", "channels", "params", "filter", "size", "mipmaps",
-    "layers", "visible",
+pub(crate) const PASS_KEYS: [&str; 10] = [
+    "name", "fragment", "arrays", "channels", "params", "filter", "size", "mipmaps", "layers",
+    "visible",
 ];
 
 /// The keys of an asset. Only a .raw file takes the four after `sampling`.
@@ -199,10 +200,10 @@ pub(crate) const ASSET_KEYS: [&str; 6] = [
 /// The keys of a param.
 const PARAM_KEYS: [&str; 6] = ["type", "value", "min", "max", "step", "options"];
 
-/// The keys of a channel, an array and the common block.
+/// The keys of a channel, an array and a file of GLSL.
 const CHANNEL_KEYS: [&str; 1] = ["buffer"];
 const ARRAY_KEYS: [&str; 2] = ["name", "size"];
-const COMMON_KEYS: [&str; 2] = ["code", "shader"];
+const GLSL_FILE_KEYS: [&str; 1] = ["file"];
 
 /// The edits that turn `a` into `b`, one at a time: a character inserted,
 /// removed or replaced, or two neighbours swapped.
@@ -481,20 +482,35 @@ fn any_file(base_dir: Option<&str>) -> Option<Files<'_>> {
     })
 }
 
-/// Read a `shader` file from the scene's own directory.
+/// GLSL as a pass's `fragment` or the scene's `common` holds it: the text
+/// itself, or `{"file": <path>}`, a file that resolves in the scene's
+/// directory. `what` names the holder in an error.
 ///
 /// A scene with no directory names no file. A console post and an in-memory
 /// scene have no directory. A scene read with Reach::Inside reads inside its
-/// directory only. `what` names the holder in an error: a pass, or the
-/// scene's common block.
-fn read_shader(path: &Value, files: Option<Files>, what: &str) -> Result<String> {
+/// directory only.
+fn glsl_of(v: &Value, files: Option<Files>, what: &str) -> Result<String> {
+    let path = match v {
+        Value::String(s) => return Ok(s.clone()),
+        Value::Object(o) => {
+            known_keys(o, what, &GLSL_FILE_KEYS, &[])?;
+            o.get("file")
+        }
+        _ => None,
+    };
+    let Some(path) = path else {
+        bail!(
+            "{what} needs GLSL text or {{\"file\": <path>}}, got {}",
+            py_repr(v)
+        );
+    };
     let Value::String(name) = path else {
-        bail!("{what} shader needs a filename, got {}", py_repr(path));
+        bail!("{what} file needs a path, got {}", py_repr(path));
     };
     let Some(files) = files.filter(|f| !f.dir.is_empty()) else {
         bail!(
-            "{what} names a shader file ({}) but the scene has no directory to \
-             resolve it against; inline the GLSL in 'code'",
+            "{what} names the file {} but the scene has no directory to resolve \
+             it against; give the GLSL text itself",
             py_repr(path)
         );
     };
@@ -502,7 +518,7 @@ fn read_shader(path: &Value, files: Option<Files>, what: &str) -> Result<String>
     let full = normpath(&join(&root, name));
     if files.reach == Reach::Inside && !inside(&full, &root) {
         bail!(
-            "{what} shader {} is outside the scene directory",
+            "{what} file {} is outside the scene directory",
             py_repr(path)
         );
     }
@@ -511,41 +527,16 @@ fn read_shader(path: &Value, files: Option<Files>, what: &str) -> Result<String>
             crate::sources::record(&full);
             Ok(code)
         }
-        Err(e) => bail!("{what} shader {}: {}", py_repr(path), strerror(&e)),
+        Err(e) => bail!("{what} file {}: {}", py_repr(path), strerror(&e)),
     }
 }
 
-/// The scene's shared GLSL. It arrives as a pass's own GLSL does:
-/// 'code' inline, or a 'shader' file next to the scene. None is no common block.
-/// "" is an empty block the console creates.
+/// The scene's shared GLSL, which arrives as a pass's `fragment` does. None
+/// is no common block, and "" is an empty block the console creates.
 fn common_block(d: &Map<String, Value>, files: Option<Files>) -> Result<Option<String>> {
-    let c = match d.get("common") {
-        None | Some(Value::Null) => return Ok(None),
-        Some(v) => v,
-    };
-    let Value::Object(c) = c else {
-        bail!(
-            "'common' needs an object with 'code' (inline GLSL) or 'shader' \
-             (a file next to the scene), got {}",
-            py_repr(c)
-        );
-    };
-    known_keys(c, "'common'", &COMMON_KEYS, &[])?;
-    let code = c.get("code").filter(|v| !v.is_null());
-    let shader = c.get("shader").filter(|v| !v.is_null());
-    if code.is_none() == shader.is_none() {
-        bail!(
-            "'common' needs exactly one of 'code' (inline GLSL) or 'shader' \
-             (a file next to the scene)"
-        );
-    }
-    if let Some(s) = shader {
-        return read_shader(s, files, "common").map(Some);
-    }
-    match code {
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(v) => bail!("'common' needs GLSL text in 'code', got {}", py_repr(v)),
-        None => Ok(None),
+    match d.get("common") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => glsl_of(v, files, "'common'").map(Some),
     }
 }
 
@@ -1362,7 +1353,7 @@ pub struct Pass {
     pub name: String,
     /// The pass's fragment shader. A pass with layers may leave it empty: the
     /// pass then starts each frame transparent and draws its layers alone.
-    pub code: String,
+    pub fragment: String,
     pub arrays: Vec<ArrayInput>,
     pub channels: Vec<Channel>,
     pub params: ParamMap,
@@ -1388,7 +1379,7 @@ pub struct Pass {
 impl Pass {
     pub fn new(
         name: &str,
-        code: &str,
+        fragment: &str,
         arrays: Vec<ArrayInput>,
         channels: Vec<Channel>,
         params: ParamMap,
@@ -1415,7 +1406,7 @@ impl Pass {
         };
         Ok(Pass {
             name: name.to_string(),
-            code: code.to_string(),
+            fragment: fragment.to_string(),
             arrays,
             channels,
             params,
@@ -1428,10 +1419,10 @@ impl Pass {
     }
 
     /// A pass with a name and GLSL only. Every other field takes its default.
-    pub fn of(name: &str, code: &str) -> Result<Pass> {
+    pub fn of(name: &str, fragment: &str) -> Result<Pass> {
         Pass::new(
             name,
-            code,
+            fragment,
             Vec::new(),
             Vec::new(),
             ParamMap::new(),
@@ -1441,19 +1432,14 @@ impl Pass {
     }
 
     /// False for a pass of layers alone, with no quad of its own.
-    pub fn has_code(&self) -> bool {
-        !self.code.trim().is_empty()
+    pub fn has_fragment(&self) -> bool {
+        !self.fragment.trim().is_empty()
     }
 
-    /// The error for a pass with no code and no layers, which draws nothing.
+    /// The error for a pass with no fragment and no layers, which draws nothing.
     pub(crate) fn empty(&self) -> Option<String> {
-        (!self.has_code() && self.layers.is_empty()).then(|| {
-            format!(
-                "pass '{}' has no 'code' (inline GLSL), no 'shader' (a file next to \
-                 the scene) and no 'layers'",
-                self.name
-            )
-        })
+        (!self.has_fragment() && self.layers.is_empty())
+            .then(|| format!("pass '{}' has no 'fragment' and no 'layers'", self.name))
     }
 
     /// True when a channel reads this pass's own buffer.
@@ -1464,8 +1450,8 @@ impl Pass {
             .any(|c| c.buffer.as_deref() == Some(self.name.as_str()))
     }
 
-    /// A `shader` file resolves in `base_dir`, with the reach of a scene that
-    /// its user runs.
+    /// A `fragment` file resolves in `base_dir`, with the reach of a scene
+    /// that its user runs.
     pub fn from_dict(d: &Value, base_dir: Option<&str>) -> Result<Pass> {
         Pass::parse(d, any_file(base_dir))
     }
@@ -1484,10 +1470,9 @@ impl Pass {
         ]
         .concat();
         known_keys(o, &format!("pass '{name}'"), &PASS_KEYS, &elsewhere)?;
-        let code = match (o.get("code").filter(|v| !v.is_null()), o.get("shader")) {
-            (Some(v), _) => py_str(v),
-            (None, Some(s)) => read_shader(s, files, &format!("pass '{name}'"))?,
-            (None, None) => String::new(),
+        let fragment = match o.get("fragment").filter(|v| !v.is_null()) {
+            Some(v) => glsl_of(v, files, &format!("pass '{name}' fragment"))?,
+            None => String::new(),
         };
         let (arrays, channels, params) =
             (|| -> Result<(Vec<ArrayInput>, Vec<Channel>, ParamMap)> {
@@ -1509,7 +1494,7 @@ impl Pass {
             .map_err(|e| anyhow!("pass '{name}': {e}"))?;
         let mut pass = Pass::new(
             &name,
-            &code,
+            &fragment,
             arrays,
             channels,
             params,
@@ -1566,8 +1551,8 @@ impl Pass {
         if !self.visible {
             out.insert("visible".to_string(), Value::from(false));
         }
-        if self.has_code() || self.layers.is_empty() {
-            out.insert("code".to_string(), Value::from(self.code.clone()));
+        if self.has_fragment() || self.layers.is_empty() {
+            out.insert("fragment".to_string(), Value::from(self.fragment.clone()));
         }
         if let Some((w, h)) = self.size {
             out.insert("size".to_string(), Value::from(vec![w, h]));
@@ -1638,18 +1623,20 @@ impl Pass {
         // in its code, which reads neither the common block nor a text.
         if !self.visible {
             let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |_| false);
-            return format!("{}\n\n{}", l.join("\n"), self.code);
+            return format!("{}\n\n{}", l.join("\n"), self.fragment);
         }
         let common_code = common.unwrap_or_default();
         let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |t| {
-            calls_cover(common_code, t) || calls_cover(&self.code, t)
+            calls_cover(common_code, t) || calls_cover(&self.fragment, t)
         });
         // An author writes a filter on its own, and ghee appends it to any
         // scene. The scene's common block never reaches it, so a filter name
         // never collides with a scene name.
         let body = match common {
-            Some(c) if !c.is_empty() && self.filter.is_empty() => format!("{c}\n\n{}", self.code),
-            _ => self.code.clone(),
+            Some(c) if !c.is_empty() && self.filter.is_empty() => {
+                format!("{c}\n\n{}", self.fragment)
+            }
+            _ => self.fragment.clone(),
         };
         format!("{}\n\n{body}", l.join("\n"))
     }
@@ -2626,7 +2613,7 @@ impl Scene {
                 let mut d = p.clone();
                 if !p.visible {
                     d.layers.clear();
-                    (d.code, d.channels) = match i {
+                    (d.fragment, d.channels) = match i {
                         0 => (BLACK.to_string(), Vec::new()),
                         _ => (
                             COPY.to_string(),
@@ -2645,7 +2632,7 @@ impl Scene {
         Cow::Owned(drawn)
     }
 
-    /// `path` names the scene in an error message. A `shader` file resolves
+    /// `path` names the scene in an error message. A file of GLSL resolves
     /// in `base_dir`, with the reach of a scene that its user runs.
     pub fn from_dict(d: &Value, base_dir: Option<&str>, path: Option<&str>) -> Result<Scene> {
         Scene::parse(d, any_file(base_dir), path)
@@ -2721,9 +2708,7 @@ impl Scene {
         );
         // "" is a common block the console can fill.
         if let Some(c) = &self.common {
-            let mut m = Map::new();
-            m.insert("code".to_string(), Value::from(c.clone()));
-            out.insert("common".to_string(), Value::Object(m));
+            out.insert("common".to_string(), Value::from(c.clone()));
         }
         if !self.filters.is_empty() {
             let entry = |n: &String| match self.hidden_filters.contains(n) {
@@ -2966,7 +2951,7 @@ impl PassBuilder for Result<Pass> {
         let p = self?;
         let mut sized = Pass::new(
             &p.name,
-            &p.code,
+            &p.fragment,
             p.arrays,
             p.channels,
             p.params,
@@ -3022,7 +3007,7 @@ mod tests {
         let pixel = json!({"name": "t", "text": "hi", "font_family": "pixel"});
         let scene = |assets: Value, layers: Value| {
             json!({"version": 1, "assets": assets,
-                   "passes": [{"name": "m", "code": GOOD, "layers": layers}]})
+                   "passes": [{"name": "m", "fragment": GOOD, "layers": layers}]})
         };
         let font_of = |sc: &Scene| -> Vec<u8> {
             let l = sc.text_layers().find(|l| l.name == "t").unwrap();
@@ -3062,7 +3047,7 @@ mod tests {
     }
 
     fn asset_scene(assets: Value) -> Value {
-        json!({"version": 1, "passes": [{"name": "m", "code": GOOD}], "assets": assets})
+        json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}], "assets": assets})
     }
 
     fn common_scene(common: Option<Value>, passes: Option<Vec<Value>>) -> Value {
@@ -3070,7 +3055,7 @@ mod tests {
         d.insert("version".to_string(), json!(1));
         d.insert(
             "passes".to_string(),
-            Value::from(passes.unwrap_or_else(|| vec![json!({"name": "main", "code": CODE})])),
+            Value::from(passes.unwrap_or_else(|| vec![json!({"name": "main", "fragment": CODE})])),
         );
         if let Some(c) = common {
             d.insert("common".to_string(), c);
@@ -3085,7 +3070,7 @@ mod tests {
         let mut d = json!({
             "version": 1,
             "assets": {"sans": {"file": "sans.ttf"}},
-            "passes": [{"name": "a", "code": GOOD}, {"name": "b", "code": GOOD,
+            "passes": [{"name": "a", "fragment": GOOD}, {"name": "b", "fragment": GOOD,
                 "layers": [{"name": "label", "text": "hi", "font_family": "sans"}]}],
         });
         for (k, v) in extra.as_object().unwrap() {
@@ -3140,10 +3125,10 @@ mod tests {
                            "title": {"type": "string", "value": "GHEE"}},
                 "assets": {"logo": {"file": "logo.png"}, "sans": {"file": "sans.ttf"}},
                 "passes": [
-                    {"name": "a", "code": GOOD, "params": {"k": f(json!(1.0))},
+                    {"name": "a", "fragment": GOOD, "params": {"k": f(json!(1.0))},
                      "arrays": [{"name": "amps", "size": 8}, {"name": "mask", "size": [4, 2]}],
                      "layers": [{"name": "label", "text": "hi", "font_family": "sans"}]},
-                    {"name": "b", "code": GOOD, "channels": [{"buffer": "a"}, {"buffer": null}]},
+                    {"name": "b", "fragment": GOOD, "channels": [{"buffer": "a"}, {"buffer": null}]},
                 ],
             }),
             None,
@@ -3212,13 +3197,13 @@ mod tests {
             &json!({
                 "version": 1,
                 "assets": {"sans": {"file": "sans.ttf"}},
-                "common": {"code": "float t(vec2 p){ return title_cover(p, 8.0); }"},
+                "common": "float t(vec2 p){ return title_cover(p, 8.0); }",
                 "passes": [
-                    {"name": "a", "code": "void main(){ gl_FragColor = \
+                    {"name": "a", "fragment": "void main(){ gl_FragColor = \
                         vec4(label_cover(uv, 8.0) + t(uv)); }",
                      "layers": [{"name": "label", "text": "hi", "font_family": "sans"},
                                 {"name": "title", "text": "ho", "font_family": "sans"}]},
-                    {"name": "b", "code": "void main(){ gl_FragColor = vec4(t(uv)); }"},
+                    {"name": "b", "fragment": "void main(){ gl_FragColor = vec4(t(uv)); }"},
                 ],
             }),
             None,
@@ -3247,10 +3232,10 @@ mod tests {
     fn the_common_block_sits_between_the_preamble_and_the_code_of_every_scene_pass() {
         let sc = Scene::from_dict(
             &common_scene(
-                Some(json!({"code": COMMON})),
+                Some(json!(COMMON)),
                 Some(vec![
-                    json!({"name": "a", "code": CODE}),
-                    json!({"name": "b", "code": FLAT}),
+                    json!({"name": "a", "fragment": CODE}),
+                    json!({"name": "b", "fragment": FLAT}),
                 ]),
             ),
             None,
@@ -3267,7 +3252,7 @@ mod tests {
             );
             let pre = g.find("uniform int iFrame;").unwrap();
             let common_at = g.find(COMMON).unwrap();
-            let code_at = g.find(&p.code).unwrap();
+            let code_at = g.find(&p.fragment).unwrap();
             assert!(pre < common_at && common_at < code_at, "{g}");
         }
         // An empty block adds nothing.
@@ -3281,17 +3266,17 @@ mod tests {
     #[test]
     fn a_hidden_pass_saves_visible_false_and_a_shown_one_leaves_it_out() {
         let d = json!({"version": 1, "passes": [
-            {"name": "a", "visible": false, "code": GOOD},
-            {"name": "b", "code": GOOD},
-            {"name": "c", "visible": true, "code": GOOD},
+            {"name": "a", "visible": false, "fragment": GOOD},
+            {"name": "b", "fragment": GOOD},
+            {"name": "c", "visible": true, "fragment": GOOD},
         ]});
         let back = Scene::from_dict(&d, None, None).unwrap().to_dict();
         assert_eq!(
             back["passes"],
             json!([
-                {"name": "a", "visible": false, "code": GOOD},
-                {"name": "b", "code": GOOD},
-                {"name": "c", "code": GOOD},
+                {"name": "a", "visible": false, "fragment": GOOD},
+                {"name": "b", "fragment": GOOD},
+                {"name": "c", "fragment": GOOD},
             ])
         );
     }
@@ -3340,7 +3325,7 @@ mod tests {
     #[test]
     fn a_scene_that_ghee_refuses_names_what_is_wrong() {
         let pass = |extra: Value| {
-            let mut p = json!({"name": "m", "code": GOOD});
+            let mut p = json!({"name": "m", "fragment": GOOD});
             p.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
@@ -3349,13 +3334,12 @@ mod tests {
         let param = |ty: &str, v: Value| pass(json!({"params": {"g": {"type": ty, "value": v}}}));
         let array = |size: Value| pass(json!({"arrays": [{"name": "a", "size": size}]}));
         let asset = |a: Value| {
-            json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
+            json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}],
                                       "assets": {"d": a}})
         };
         let common = |c: Value| common_scene(Some(c), None);
         let size = "size needs two positive ints [w, h] up to 16384";
-        let both = "needs an object with 'code' (inline GLSL) or 'shader' (a file next to \
-                    the scene)";
+        let glsl = "needs GLSL text or {\"file\": <path>}";
         let rows = [
             // a pass
             (
@@ -3400,21 +3384,31 @@ mod tests {
             ),
             (
                 json!({"version": 1, "passes": [{"name": "m"}]}),
-                "pass 'm' has no 'code' (inline GLSL), no 'shader' (a file next to the \
-                 scene) and no 'layers'"
-                    .to_string(),
+                "pass 'm' has no 'fragment' and no 'layers'".to_string(),
             ),
             (
-                json!({"version": 1, "passes": [{"name": "a", "code": GOOD},
-                                                {"name": "a", "code": GOOD}]}),
+                pass(json!({"fragment": 5})),
+                format!("pass 'm' fragment {glsl}, got 5"),
+            ),
+            (
+                pass(json!({"fragment": {}})),
+                format!("pass 'm' fragment {glsl}, got {{}}"),
+            ),
+            (
+                pass(json!({"fragment": {"file": ["x.glsl"]}})),
+                "pass 'm' fragment file needs a path, got ['x.glsl']".to_string(),
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "a", "fragment": GOOD},
+                                                {"name": "a", "fragment": GOOD}]}),
                 "pass 'a' is declared twice; a pass name is the buffer name channels bind \
                  to, so it must be unique"
                     .to_string(),
             ),
             (
-                json!({"version": 1, "passes": [{"name": "main", "shader": "/etc/hostname"}]}),
-                "pass 'main' names a shader file ('/etc/hostname') but the scene has no \
-                 directory to resolve it against; inline the GLSL in 'code'"
+                pass(json!({"fragment": {"file": "/etc/hostname"}})),
+                "pass 'm' fragment names the file '/etc/hostname' but the scene has no \
+                 directory to resolve it against; give the GLSL text itself"
                     .to_string(),
             ),
             (
@@ -3512,7 +3506,7 @@ mod tests {
             ),
             (
                 json!({"version": 1,
-                       "passes": [{"name": "p0", "code": GOOD,
+                       "passes": [{"name": "p0", "fragment": GOOD,
                                    "params": {"g": {"type": "float", "value": 0.1}}}],
                        "params": {"g": {"type": "float", "value": 0.2}}}),
                 "scene param 'g' and param 'g' in pass 'p0' share a name".to_string(),
@@ -3591,27 +3585,16 @@ mod tests {
                     .to_string(),
             ),
             // the common block
-            (common(json!(["x"])), format!("'common' {both}, got ['x']")),
+            (common(json!(["x"])), format!("'common' {glsl}, got ['x']")),
+            (common(json!({})), format!("'common' {glsl}, got {{}}")),
             (
-                common(json!({})),
-                "'common' needs exactly one of 'code' (inline GLSL) or 'shader' (a file next \
-                 to the scene)"
-                    .to_string(),
+                common(json!({"file": 5})),
+                "'common' file needs a path, got 5".to_string(),
             ),
             (
-                common(json!({"code": COMMON, "shader": "c.glsl"})),
-                "'common' needs exactly one of 'code' (inline GLSL) or 'shader' (a file next \
-                 to the scene)"
-                    .to_string(),
-            ),
-            (
-                common(json!({"code": ["x"]})),
-                "'common' needs GLSL text in 'code', got ['x']".to_string(),
-            ),
-            (
-                common(json!({"shader": "/etc/hostname"})),
-                "common names a shader file ('/etc/hostname') but the scene has no directory \
-                 to resolve it against; inline the GLSL in 'code'"
+                common(json!({"file": "/etc/hostname"})),
+                "'common' names the file '/etc/hostname' but the scene has no directory to \
+                 resolve it against; give the GLSL text itself"
                     .to_string(),
             ),
         ];
@@ -3625,7 +3608,7 @@ mod tests {
     fn a_key_that_ghee_does_not_take_is_refused_naming_the_closest_key() {
         // Each row puts one key into a scene that loads without it.
         let pass = |extra: Value| {
-            let mut p = json!({"name": "main", "code": GOOD});
+            let mut p = json!({"name": "main", "fragment": GOOD});
             p.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
@@ -3644,8 +3627,8 @@ mod tests {
                 "scene: the scene takes no 'paramz', the closest key is 'params'",
             ),
             (
-                json!({"version": 1, "code": GOOD, "passes": [pass(json!({}))]}),
-                "scene: the scene takes no 'code', which sits on a pass",
+                json!({"version": 1, "fragment": GOOD, "passes": [pass(json!({}))]}),
+                "scene: the scene takes no 'fragment', which sits on a pass",
             ),
             (
                 json!({"version": 1, "params": {"g": {"type": "float", "value": 1, "mni": 0}},
@@ -3686,8 +3669,8 @@ mod tests {
                 "scene: layer 't' takes no 'text_alig', the closest key is 'text_align'",
             ),
             (
-                layer(json!({"code": GOOD})),
-                "scene: layer 't' takes no 'code', which sits on its pass",
+                layer(json!({"fragment": GOOD})),
+                "scene: layer 't' takes no 'fragment', which sits on its pass",
             ),
             (
                 layer(json!({"vertex": GOOD})),
@@ -3708,8 +3691,12 @@ mod tests {
                 "scene: pass 'main': array 'v' takes no 'sise', the closest key is 'size'",
             ),
             (
-                json!({"version": 1, "common": {"cod": COMMON}, "passes": [pass(json!({}))]}),
-                "scene: 'common' takes no 'cod', the closest key is 'code'",
+                json!({"version": 1, "common": {"fil": "c.glsl"}, "passes": [pass(json!({}))]}),
+                "scene: 'common' takes no 'fil', the closest key is 'file'",
+            ),
+            (
+                json!({"version": 1, "passes": [pass(json!({"fragment": {"path": "m.glsl"}}))]}),
+                "scene: pass 'main' fragment takes no 'path', only file",
             ),
         ];
         for (d, want) in rows {
@@ -3756,7 +3743,7 @@ mod tests {
         .unwrap();
         let e = Scene::load(&p).unwrap_err().to_string();
         assert!(
-            e.starts_with(&format!("{p}: pass 'm' has no 'code'")),
+            e.starts_with(&format!("{p}: pass 'm' has no 'fragment'")),
             "{e}"
         );
     }
@@ -3773,12 +3760,13 @@ mod tests {
         );
         for (d, want) in [
             (
-                json!({"version": 1, "passes": [{"name": "main", "shader": "gone.glsl"}]}),
-                gone(&format!("{p}: pass 'main' shader 'gone.glsl'")),
+                json!({"version": 1,
+                       "passes": [{"name": "main", "fragment": {"file": "gone.glsl"}}]}),
+                gone(&format!("{p}: pass 'main' fragment file 'gone.glsl'")),
             ),
             (
-                common_scene(Some(json!({"shader": "gone.glsl"})), None),
-                gone(&format!("{p}: common shader 'gone.glsl'")),
+                common_scene(Some(json!({"file": "gone.glsl"})), None),
+                gone(&format!("{p}: 'common' file 'gone.glsl'")),
             ),
         ] {
             fs::write(&p, d.to_string()).unwrap();
@@ -3802,22 +3790,22 @@ mod tests {
     }
 
     #[test]
-    fn a_common_file_is_inlined_like_a_pass_shader() {
+    fn a_common_file_is_inlined_like_a_pass_fragment() {
         let base = tmpdir("common-file");
         fs::write(format!("{base}/shared.glsl"), COMMON).unwrap();
         let sc = Scene::from_dict(
-            &common_scene(Some(json!({"shader": "shared.glsl"})), None),
+            &common_scene(Some(json!({"file": "shared.glsl"})), None),
             Some(&base),
             None,
         )
         .unwrap();
         assert_eq!(sc.common.as_deref(), Some(COMMON));
-        // The console posts code back inline, and a save writes the same form.
-        assert_eq!(sc.to_dict()["common"], json!({"code": COMMON}));
+        // The console posts the GLSL back as text, and a save writes the same form.
+        assert_eq!(sc.to_dict()["common"], json!(COMMON));
         let p = format!("{base}/x.scene.json");
         fs::write(
             &p,
-            common_scene(Some(json!({"shader": "shared.glsl"})), None).to_string(),
+            common_scene(Some(json!({"file": "shared.glsl"})), None).to_string(),
         )
         .unwrap();
         assert_eq!(Scene::load(&p).unwrap().common.as_deref(), Some(COMMON));
@@ -3827,11 +3815,11 @@ mod tests {
     fn serialized_scene_reloads_without_a_directory() {
         let scene = Scene::load(&repo("ghee/examples/bars.scene.json")).unwrap();
         let d = scene.to_dict();
-        // The console posts code back inline.
-        assert!(!d.to_string().contains("shader"));
+        // The console posts the GLSL back as text.
+        assert!(d["passes"][0]["fragment"].is_string());
         assert_eq!(
-            Scene::from_dict(&d, None, None).unwrap().passes[0].code,
-            scene.passes[0].code
+            Scene::from_dict(&d, None, None).unwrap().passes[0].fragment,
+            scene.passes[0].fragment
         );
     }
 
@@ -3916,14 +3904,14 @@ mod tests {
         let raw = |file: String| json!({"file": file, "width": 2, "height": 2, "format": "u8"});
         let mut d = asset_scene(json!({"d": raw("../d.raw".to_string()),
                                        "e": raw(format!("{root}/e.raw"))}));
-        d["passes"][0] = json!({"name": "main", "shader": format!("{root}/in.glsl")});
+        d["passes"][0] = json!({"name": "main", "fragment": {"file": format!("{root}/in.glsl")}});
         let p = format!("{base}/x.scene.json");
         fs::write(&p, d.to_string()).unwrap();
         let sc = Scene::load(&p).unwrap();
         let px = |i: usize| sc.assets[i].image.as_ref().unwrap().pixels.clone();
         assert_eq!(px(0), crate::assets::Pixels::U8(vec![7u8; 4]));
         assert_eq!(px(1), crate::assets::Pixels::U8(vec![9u8; 4]));
-        assert_eq!(sc.passes[0].code, GOOD);
+        assert_eq!(sc.passes[0].fragment, GOOD);
     }
 
     #[test]
@@ -3943,10 +3931,10 @@ mod tests {
         scene.load_assets("/").unwrap();
         let img = scene.assets[0].image.as_ref().unwrap();
         assert_eq!(img.pixels, crate::assets::Pixels::U8(vec![1, 2, 3, 4]));
-        let d =
-            json!({"version": 1, "passes": [{"name": "main", "shader": format!("{rel}/in.glsl")}]});
+        let d = json!({"version": 1,
+                       "passes": [{"name": "main", "fragment": {"file": format!("{rel}/in.glsl")}}]});
         let sc = Scene::from_dict(&d, Some("/"), None).unwrap();
-        assert_eq!(sc.passes[0].code, GOOD);
+        assert_eq!(sc.passes[0].fragment, GOOD);
         let mut missing = Scene::from_dict(
             &asset_scene(json!({"mask": {"file": "ghee-no-such.png"}})),
             None,
@@ -3982,7 +3970,7 @@ mod tests {
         fs::write(dir.join("pic.png"), &png).unwrap();
         fs::write(dir.join("bad.png"), b"not a png").unwrap();
         let load = |image: &str| {
-            let doc = json!({"version": 1, "passes": [{"name": "m", "code": GOOD,
+            let doc = json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD,
                 "layers": [{"name": "icon", "image": image}]}]});
             let mut sc = Scene::from_dict(&doc, None, None).unwrap();
             sc.load_assets_from(&dir, Reach::Any, &[], &dir)
@@ -4032,22 +4020,24 @@ mod tests {
         ] {
             fs::write(format!("{root}/{f}"), [0u8; 4]).unwrap();
         }
-        let shader =
-            |path: &str| json!({"version": 1, "passes": [{"name": "main", "shader": path}]});
+        let shader = |path: &str| json!({"version": 1, "passes": [{"name": "main", "fragment": {"file": path}}]});
         let secret = format!("{root}/secret.glsl");
         for (d, what) in [
             (
                 shader("../secret.glsl"),
-                "pass 'main' shader '../secret.glsl'".to_string(),
+                "pass 'main' fragment file '../secret.glsl'".to_string(),
             ),
-            (shader(&secret), format!("pass 'main' shader '{secret}'")),
+            (
+                shader(&secret),
+                format!("pass 'main' fragment file '{secret}'"),
+            ),
             (
                 shader("sub/../../secret.glsl"),
-                "pass 'main' shader 'sub/../../secret.glsl'".to_string(),
+                "pass 'main' fragment file 'sub/../../secret.glsl'".to_string(),
             ),
             (
-                common_scene(Some(json!({"shader": "../secret.glsl"})), None),
-                "common shader '../secret.glsl'".to_string(),
+                common_scene(Some(json!({"file": "../secret.glsl"})), None),
+                "'common' file '../secret.glsl'".to_string(),
             ),
         ] {
             let e = Scene::from_dict_in(&d, &base, Reach::Inside, None).unwrap_err();
@@ -4057,7 +4047,7 @@ mod tests {
             );
         }
         let inside = Scene::from_dict_in(&shader("sub/in.glsl"), &base, Reach::Inside, None);
-        assert_eq!(inside.unwrap().passes[0].code, GOOD);
+        assert_eq!(inside.unwrap().passes[0].fragment, GOOD);
         let raw = json!({"file": "../secret.raw", "width": 2, "height": 2, "format": "u8"});
         for (d, what) in [
             (
@@ -4066,17 +4056,17 @@ mod tests {
             ),
             (
                 json!({"version": 1, "assets": {"face": {"file": "../up.ttf"}},
-                       "passes": [{"name": "m", "code": GOOD,
+                       "passes": [{"name": "m", "fragment": GOOD,
                            "layers": [{"name": "label", "text": "hi", "font_family": "face"}]}]}),
                 "asset 'face' file '../up.ttf'",
             ),
             (
-                json!({"version": 1, "passes": [{"name": "m", "code": GOOD,
+                json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD,
                     "layers": [{"name": "label", "text": "hi", "font_family": "../up.ttf"}]}]}),
                 "layer 'label' font_family '../up.ttf'",
             ),
             (
-                json!({"version": 1, "passes": [{"name": "m", "code": GOOD,
+                json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD,
                     "layers": [{"name": "icon", "image": "../up.png"}]}]}),
                 "layer 'icon' image '../up.png'",
             ),
@@ -4095,7 +4085,7 @@ mod tests {
         fs::create_dir_all(&filters).unwrap();
         fs::write(
             format!("{filters}/esc.filter.json"),
-            json!({"name": "esc", "code": GOOD,
+            json!({"name": "esc", "fragment": GOOD,
                    "assets": {"m": {"file": "../m.raw", "width": 2, "height": 2, "format": "u8"}}})
             .to_string(),
         )
@@ -4122,7 +4112,7 @@ mod tests {
             .iter()
             .map(|n| json!({"name": n, "text": words}))
             .collect();
-        json!({"version": 1, "passes": [{"name": "m", "code": GOOD, "layers": layers}]})
+        json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD, "layers": layers}]})
     }
 
     #[test]
@@ -4504,7 +4494,7 @@ mod tests {
                 json!({"name": "dither", "visible": false}),
             ),
         ] {
-            let d = json!({"passes": [{"name": "m", "code": "x"}], "filters": [entry]});
+            let d = json!({"passes": [{"name": "m", "fragment": "x"}], "filters": [entry]});
             let sc = Scene::from_dict(&d, None, None).unwrap();
             assert_eq!(sc.filters, ["dither"], "{entry}");
             assert_eq!(sc.to_dict()["filters"], json!([back]), "{entry}");
@@ -4526,7 +4516,7 @@ mod tests {
                 "{'name': 'dither', 'visble': False}",
             ),
         ] {
-            let d = json!({"passes": [{"name": "m", "code": "x"}], "filters": [entry]});
+            let d = json!({"passes": [{"name": "m", "fragment": "x"}], "filters": [entry]});
             assert_eq!(
                 Scene::from_dict(&d, None, None).unwrap_err().to_string(),
                 format!(
@@ -4625,8 +4615,8 @@ mod tests {
         let d = json!({
             "version": 2,
             "passes": [
-                {"name": "a", "code": "x", "size": [8, 8], "mipmaps": true},
-                {"name": "b", "code": "y",
+                {"name": "a", "fragment": "x", "size": [8, 8], "mipmaps": true},
+                {"name": "b", "fragment": "y",
                  "arrays": [{"name": "v", "size": 4}, {"name": "m", "size": [3, 5]}],
                  "channels": [{"buffer": "a"}, {"buffer": null}],
                  "params": {"g": {"type": "float", "value": 1, "min": 0, "max": 2, "step": 0.5},
@@ -4640,7 +4630,7 @@ mod tests {
                  "filter": "dither"}],
             "filters": ["dither", "dither"],
             "params": {"S": {"type": "float", "value": 0.5}},
-            "common": {"code": "float f(){ return 1.0; }"},
+            "common": "float f(){ return 1.0; }",
             "assets": {"stbn": {"file": "stbn.raw", "width": 64, "height": 32, "format": "f32"},
                        "mask": {"file": "mask.raw", "width": 8, "height": 8, "format": "u8",
                                 "components": 4},
@@ -4649,31 +4639,31 @@ mod tests {
         });
         assert_eq!(
             canon(&Scene::from_dict(&d, None, None).unwrap()),
-            r#"{"version":2,"passes":[{"name":"a","code":"x","size":[8,8],"mipmaps":true},{"name":"b","code":"y","arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"on":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v3":{"type":"vec3","value":[1.0,2.0,3.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":{"code":"float f(){ return 1.0; }"},"filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}},"assets":{"stbn":{"file":"stbn.raw","width":64,"height":32,"format":"f32"},"mask":{"file":"mask.raw","width":8,"height":8,"format":"u8","components":4},"logo":{"file":"logo.png","sampling":"linear"},"photo":{"file":"photo.jpg"}}}"#
+            r#"{"version":2,"passes":[{"name":"a","fragment":"x","size":[8,8],"mipmaps":true},{"name":"b","fragment":"y","arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"on":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v3":{"type":"vec3","value":[1.0,2.0,3.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":"float f(){ return 1.0; }","filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}},"assets":{"stbn":{"file":"stbn.raw","width":64,"height":32,"format":"f32"},"mask":{"file":"mask.raw","width":8,"height":8,"format":"u8","components":4},"logo":{"file":"logo.png","sampling":"linear"},"photo":{"file":"photo.jpg"}}}"#
         );
         // A null range or option list is no range or option list. to_dict drops
         // an empty filter mark and a false mipmaps. An absent version takes the
         // default.
         let sparse = json!({
-            "passes": [{"name": "m", "code": "x", "filter": "", "mipmaps": false,
+            "passes": [{"name": "m", "fragment": "x", "filter": "", "mipmaps": false,
                         "params": {"g": {"type": "int", "value": 2.0, "min": null,
                                          "max": null, "step": null, "options": null}}}],
         });
         assert_eq!(
             canon(&Scene::from_dict(&sparse, None, None).unwrap()),
-            r#"{"version":1,"passes":[{"name":"m","code":"x","params":{"g":{"type":"int","value":2}}}]}"#
+            r#"{"version":1,"passes":[{"name":"m","fragment":"x","params":{"g":{"type":"int","value":2}}}]}"#
         );
         // "" is a common block the console makes. None is no block.
-        let empty_common = json!({"passes": [{"name": "m", "code": "z"}], "common": {"code": ""}});
+        let empty_common = json!({"passes": [{"name": "m", "fragment": "z"}], "common": ""});
         assert_eq!(
             canon(&Scene::from_dict(&empty_common, None, None).unwrap()),
-            r#"{"version":1,"passes":[{"name":"m","code":"z"}],"common":{"code":""}}"#
+            r#"{"version":1,"passes":[{"name":"m","fragment":"z"}],"common":""}"#
         );
         // to_dict carries any version through unchanged.
-        let odd = json!({"version": "x", "passes": [{"name": "m", "code": "x"}]});
+        let odd = json!({"version": "x", "passes": [{"name": "m", "fragment": "x"}]});
         assert_eq!(
             canon(&Scene::from_dict(&odd, None, None).unwrap()),
-            r#"{"version":"x","passes":[{"name":"m","code":"x"}]}"#
+            r#"{"version":"x","passes":[{"name":"m","fragment":"x"}]}"#
         );
     }
 
@@ -4717,7 +4707,7 @@ mod tests {
         let doc = json!({
             "assets": {"pic": {"file": "pic.png"}, "pic2": {"file": "pic2.png"},
                        "sans": {"file": "sans.ttf"}},
-            "passes": [{"name": "main", "code": GOOD,
+            "passes": [{"name": "main", "fragment": GOOD,
                         "layers": [{"name": "i", "image": "pic"}]}],
         });
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();

@@ -121,7 +121,7 @@ def build():
         passes=[
             ghee.Pass(
                 name="buf",
-                code=SHADER_BUF,
+                fragment=SHADER_BUF,
                 arrays=[ghee.ArrayInput("amplitudes", BANDS)],
                 channels=[ghee.Channel(buffer="buf")],
                 params={
@@ -138,7 +138,7 @@ def build():
             ),
             ghee.Pass(
                 name="main",
-                code=SHADER_MAIN,
+                fragment=SHADER_MAIN,
                 channels=[ghee.Channel(buffer="buf")],
                 params={
                     "cols": ghee.Param(

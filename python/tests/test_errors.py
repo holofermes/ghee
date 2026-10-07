@@ -86,7 +86,7 @@ def test_a_font_that_is_nowhere_draws_error_boxes(tmp_path, monkeypatch, capfd):
         "passes": [
             {
                 "name": "main",
-                "code": (
+                "fragment": (
                     "void main(){ vec2 px = floor(uv * iResolution.xy) + 0.5;"
                     " gl_FragColor = vec4(vec3(words_cover(px / 16.0, 16.0)), 1.0); }"
                 ),
@@ -169,7 +169,7 @@ MISTAKE = {
     "passes": [
         {
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
             "layers": [
                 {
                     "name": "words",

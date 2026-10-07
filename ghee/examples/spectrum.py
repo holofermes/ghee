@@ -54,7 +54,7 @@ def build():
         passes=[
             ghee.Pass(
                 name="main",
-                code=SHADER,
+                fragment=SHADER,
                 arrays=[ghee.ArrayInput("bars", BARS)],
                 params={
                     "gain": ghee.Param(

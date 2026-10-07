@@ -113,11 +113,11 @@ fn scene() -> Value {
         "version": 1,
         "assets": {"sans": {"file": "sans.ttf"}, "pic": {"file": "pic.png"}},
         "passes": [
-            {"name": "small", "size": [64, 48], "code": GREY,
+            {"name": "small", "size": [64, 48], "fragment": GREY,
              "layers": [{"name": "bar", "shape": "rect", "x": 4, "y": 4, "width": 20,
                          "height": 6, "color": "orange"}]},
             {"name": "main", "channels": [{"buffer": "small"}],
-             "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) * 0.5; }",
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv) * 0.5; }",
              "layers": [
                 {"name": "title", "text": "Hi", "font_family": "sans", "font_size": 20,
                  "x": 4, "y": 4, "glow": {}},
@@ -291,7 +291,7 @@ fn an_added_layer_leaves_the_running_state_of_the_scene_alone() {
         "version": 1,
         "assets": {"sans": {"file": "sans.ttf"}},
         "passes": [{"name": "main", "arrays": [{"name": "level", "size": 1}],
-                    "code": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
+                    "fragment": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
                     "layers": [{"name": "news", "text": "scrolling words", "font_family": "sans",
                                 "font_size": 16, "y": 4, "scroll": {"speed": 3}}]}],
     });
@@ -344,7 +344,7 @@ fn layers_whose_shaders_come_out_the_same_share_one_program() {
         |name: &str, y: i32| json!({"name": name, "image": "pic", "x": 4, "y": y, "width": 8});
     let doc = |layers: Value| {
         json!({"version": 1, "assets": {"sans": {"file": "sans.ttf"}, "pic": {"file": "pic.png"}},
-               "passes": [{"name": "main", "code": GREY, "layers": layers}]})
+               "passes": [{"name": "main", "fragment": GREY, "layers": layers}]})
     };
     let (_g, mut r) = gpu(160, 96);
     render(&mut r, &dir.load(&doc(json!([]))));
@@ -375,7 +375,7 @@ fn a_live_image_takes_a_file_and_keeps_it_once_loaded() {
     let doc = json!({
         "version": 1,
         "assets": {"pic": {"file": "pic.png"}},
-        "passes": [{"name": "main", "code": GREY,
+        "passes": [{"name": "main", "fragment": GREY,
                     "layers": [{"name": "icon", "image": "pic", "x": 0, "y": 0, "width": 8}]}],
     });
     let at = Address {
@@ -566,7 +566,7 @@ fn a_layer_built_again_carries_its_motion_on_and_leaves_the_rest_running() {
             "version": 1,
             "assets": {"sans": {"file": "sans.ttf"}},
             "passes": [{"name": "main", "arrays": [{"name": "level", "size": 1}],
-                        "code": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
+                        "fragment": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
                         "layers": [news,
                                    {"name": "other", "text": "more words", "font_family": "sans",
                                     "font_size": 14, "y": 60, "scroll": {"speed": 5}}]}],

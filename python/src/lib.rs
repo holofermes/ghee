@@ -221,7 +221,7 @@ fn source_of(scene: Option<&Bound<'_, PyAny>>, base_dir: Option<PathBuf>) -> PyR
     let Some(scene) = scene.filter(|s| !s.is_none()) else {
         return Ok(doc(serde_json::json!({
             "version": 1,
-            "passes": [{"name": "main", "code": BLACK}],
+            "passes": [{"name": "main", "fragment": BLACK}],
         })));
     };
     if scene.cast::<PyDict>().is_ok() {

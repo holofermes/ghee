@@ -3,7 +3,7 @@
   "passes": [
     {
       "name": "main",
-      "shader": "bars.glsl",
+      "fragment": {"file": "bars.glsl"},
       "arrays": [
         {
           "name": "amplitudes",

@@ -24,9 +24,9 @@ open it with `--host` only on a network you trust.
   when there are none. A program keeps which layers its scene has and their
   order. `ghee.open(serve=)` lists its scene there, since the Python host
   writes it.
-- `GET /scene?name=`: the resolved scene JSON, with shader files inlined and
-  filters expanded. For the active scene, ghee answers with the document that
-  it renders: applied edits, `/set` values, and the layers that a drawing
+- `GET /scene?name=`: the resolved scene JSON, with each GLSL file as its text
+  and filters expanded. For the active scene, ghee answers with the document
+  that it renders: applied edits, `/set` values, and the layers that a drawing
   added and changed. For any other name, ghee reads the scene from disk.
 - `GET /filters`: the filter registry, `{name: filter def}`
 - `GET /hwinfo`: the host hardware report

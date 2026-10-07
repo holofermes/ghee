@@ -453,16 +453,16 @@ def build(a):
     w, h = ghee.render_size()
     return ghee.Scene(
         passes=[
-            ghee.Pass(name="seg", code=SHADER_SEG, size=SEG),
+            ghee.Pass(name="seg", fragment=SHADER_SEG, size=SEG),
             ghee.Pass(
                 name="wash",
-                code=SHADER_WASH,
+                fragment=SHADER_WASH,
                 size=a.wash or _wash_size(emit),
                 channels=[ghee.Channel(buffer="seg")],
             ),
             ghee.Pass(
                 name="tube",
-                code=SHADER_TUBE,
+                fragment=SHADER_TUBE,
                 size=emit,
                 channels=[ghee.Channel(buffer="seg")],
                 params={
@@ -477,7 +477,7 @@ def build(a):
             ),
             ghee.Pass(
                 name="main",
-                code=SHADER_MAIN,
+                fragment=SHADER_MAIN,
                 channels=[ghee.Channel(buffer="wash"), ghee.Channel(buffer="tube")],
                 arrays=[ghee.ArrayInput("wall", WALL)],
                 params={

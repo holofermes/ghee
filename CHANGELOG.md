@@ -15,6 +15,12 @@ A scene written for 0.4.0 needs these changes.
   `iResolution.x / iResolution.y`, and a pass with a size of its own takes
   the frame's shape from its scene: a Python scene reads the size that it
   renders at with `ghee.render_size()`.
+- Give a pass its GLSL in `fragment`, as the text, where `code` held it, or as
+  `{"file": <path>}`, a file beside the scene, where `shader` named it. The
+  scene's `common` takes the same two forms, the text where
+  `{"code": <text>}` held it and `{"file": <path>}` where
+  `{"shader": <path>}` named it. A filter file holds its GLSL in `fragment`,
+  and Python's `ghee.Pass` takes `fragment=` where it took `code=`.
 
 ### Scenes
 
@@ -92,8 +98,8 @@ A scene written for 0.4.0 needs these changes.
   them.
 - Refuse a key that ghee does not take anywhere in a scene, where the scene
   loaded and ignored it, and name the key, where it sits, and the closest key
-  that ghee takes, or the object that takes it: `"code"` on a layer names its
-  pass, and `"font"` names `font_family`.
+  that ghee takes, or the object that takes it: `"fragment"` on a layer names
+  its pass, and `"font"` names `font_family`.
 - Take as the name of a pass, a layer, a param, an array or an asset ASCII
   letters, digits and `_`, with a letter first and a letter or a digit last,
   where a pass took any name, and refuse a name that holds `__` or starts

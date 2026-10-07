@@ -92,7 +92,7 @@ fn scene(layers: Value) -> Value {
     json!({
         "version": 1,
         "assets": {"pic": {"file": "pic.png"}, "pic2": {"file": "pic2.png"}},
-        "passes": [{"name": "main", "code": BLACK, "layers": layers}],
+        "passes": [{"name": "main", "fragment": BLACK, "layers": layers}],
     })
 }
 

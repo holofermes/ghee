@@ -51,9 +51,9 @@ fn accept(out: &mut Map<String, Value>, path: &str, text: &str) -> Option<String
         }
     };
     let named = fd.get("name").is_some_and(Value::is_string)
-        && fd.get("code").is_some_and(Value::is_string);
+        && fd.get("fragment").is_some_and(Value::is_string);
     if !named {
-        eprintln!("filter {path}: skipped (needs a string 'name' and 'code')");
+        eprintln!("filter {path}: skipped (needs a string 'name' and 'fragment')");
         return None;
     }
     let name = fd["name"].as_str().unwrap_or_default().to_string();
@@ -149,7 +149,7 @@ fn append_filters(
             continue;
         };
         let Some(fname) = fd.get("name").and_then(Value::as_str) else {
-            bail!("filter '{name}': needs a string 'name' and 'code'");
+            bail!("filter '{name}': needs a string 'name' and 'fragment'");
         };
         let own = unique(scene, fname, fd);
         let prev = scene.passes[scene.passes.len() - 1].name.clone();
@@ -226,8 +226,8 @@ pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>)
 /// replace the defaults where the filter still declares that param, and the
 /// pass keeps the eye of `was`.
 fn filter_pass(name: &str, fd: &Value, own: &str, prev: &str, was: Option<&Pass>) -> Result<Pass> {
-    let Some(code) = fd.get("code").and_then(Value::as_str) else {
-        bail!("filter '{name}': needs a string 'name' and 'code'");
+    let Some(fragment) = fd.get("fragment").and_then(Value::as_str) else {
+        bail!("filter '{name}': needs a string 'name' and 'fragment'");
     };
     let mut params = fd
         .get("params")
@@ -242,7 +242,7 @@ fn filter_pass(name: &str, fd: &Value, own: &str, prev: &str, was: Option<&Pass>
     }
     let mut d = Map::new();
     d.insert("name".to_string(), Value::from(own));
-    d.insert("code".to_string(), Value::from(code));
+    d.insert("fragment".to_string(), Value::from(fragment));
     d.insert("params".to_string(), params);
     let mut channel = Map::new();
     channel.insert("buffer".to_string(), Value::from(prev));
@@ -430,7 +430,7 @@ mod tests {
     fn a_shipped_filter_brings_its_asset() {
         let _g = env_guard();
         let mut sc = Scene::from_dict(
-            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            &json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}]}),
             None,
             None,
         )
@@ -452,14 +452,14 @@ mod tests {
         let d = tmpdir("font-filter");
         std::fs::write(
             format!("{d}/lettered.filter.json"),
-            json!({"name": "lettered", "code": GOOD,
+            json!({"name": "lettered", "fragment": GOOD,
                    "assets": {"face": {"file": "face.ttf"}}})
             .to_string(),
         )
         .unwrap();
         let reg = load_filters(&[&d]);
         let mut sc = Scene::from_dict(
-            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            &json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}]}),
             None,
             None,
         )
@@ -480,14 +480,14 @@ mod tests {
         std::fs::write(format!("{d}/m.raw"), [1u8, 2, 3, 4]).unwrap();
         std::fs::write(
             format!("{d}/masked.filter.json"),
-            json!({"name": "masked", "code": GOOD,
+            json!({"name": "masked", "fragment": GOOD,
                    "assets": {"m": {"file": "m.raw", "width": 2, "height": 2, "format": "u8"}}})
             .to_string(),
         )
         .unwrap();
         let reg = load_filters(&[&d]);
         let mut sc = Scene::from_dict(
-            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            &json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}]}),
             None,
             None,
         )
@@ -514,7 +514,7 @@ mod tests {
         // filter.
         let _g = env_guard();
         let mut sc = Scene::from_dict(
-            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+            &json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}]}),
             None,
             None,
         )
@@ -524,10 +524,10 @@ mod tests {
         // A filter's asset stays out of the document, and comes back with its
         // filter.
         assert!(doc.get("assets").is_none(), "{doc}");
-        doc["passes"][1]["code"] = json!("void main(){ gl_FragColor = vec4(0.0); }");
+        doc["passes"][1]["fragment"] = json!("void main(){ gl_FragColor = vec4(0.0); }");
         let mut back = Scene::from_dict(&doc, None, None).unwrap();
         rebuild_filters(&mut back, None).unwrap();
-        assert_eq!(back.passes[1].code, sc.passes[1].code);
+        assert_eq!(back.passes[1].fragment, sc.passes[1].fragment);
         let img = back.assets[0].image.as_ref().expect("decoded");
         assert_eq!((img.width, img.height), (64, 64));
     }
@@ -541,7 +541,7 @@ mod tests {
         std::fs::write(format!("{d}/bluenoise.raw"), [1u8, 2, 3, 4]).unwrap();
         let mut sc = Scene::from_dict(
             &json!({"version": 1,
-                    "passes": [{"name": "m", "code": GOOD}],
+                    "passes": [{"name": "m", "fragment": GOOD}],
                     "assets": {"bluenoise": {"file": "bluenoise.raw",
                                              "width": 2, "height": 2, "format": "u8"}}}),
             None,
@@ -562,7 +562,7 @@ mod tests {
         assert!(!filt.contains("uniform sampler2D bluenoise_tex;"));
 
         let mut sp = Scene::from_dict(
-            &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}],
+            &json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}],
                     "params": {"bluenoise_size": {"type": "float", "value": 0.5}}}),
             None,
             None,
@@ -585,7 +585,7 @@ mod tests {
         std::fs::write(&f, [1u8, 2, 3, 4]).unwrap();
         std::fs::write(
             format!("{d}/masked.filter.json"),
-            json!({"name": "masked", "code": GOOD,
+            json!({"name": "masked", "fragment": GOOD,
                    "assets": {"m": {"file": "m.raw", "width": 2, "height": 2, "format": "u8"}}})
             .to_string(),
         )
@@ -593,7 +593,7 @@ mod tests {
         let reg = load_filters(&[&d]);
         let first = |reg: &Map<String, Value>| {
             let mut sc = Scene::from_dict(
-                &json!({"version": 1, "passes": [{"name": "m", "code": GOOD}]}),
+                &json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}]}),
                 None,
                 None,
             )
@@ -620,8 +620,8 @@ mod tests {
         let _g = env_guard();
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "passes": [
-                {"name": "m", "code": GOOD},
-                {"name": "dither", "code": "", "filter": "dither",
+                {"name": "m", "fragment": GOOD},
+                {"name": "dither", "fragment": "", "filter": "dither",
                  "params": {"levels": {"type": "float", "value": 4.0}}}]}),
             None,
             None,
@@ -629,7 +629,7 @@ mod tests {
         .unwrap();
         rebuild_filters(&mut sc, None).unwrap();
         let p = &sc.passes[1];
-        assert!(p.code.contains("main"));
+        assert!(p.fragment.contains("main"));
         assert_eq!(p.channels[0].buffer.as_deref(), Some("m"));
         assert_eq!(p.params.get("levels").unwrap().value.to_json(), json!(4.0));
         assert_eq!(p.params.get("amount").unwrap().value.to_json(), json!(1.0));
@@ -641,7 +641,7 @@ mod tests {
         let _g = env_guard();
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "filters": ["frc256"],
-                    "passes": [{"name": "m", "code": GOOD}]}),
+                    "passes": [{"name": "m", "fragment": GOOD}]}),
             None,
             None,
         )
@@ -661,14 +661,14 @@ mod tests {
         let _g = env_guard();
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "passes": [
-                {"name": "m", "code": GOOD},
-                {"name": "dither", "code": "", "filter": "dither", "visible": false}]}),
+                {"name": "m", "fragment": GOOD},
+                {"name": "dither", "fragment": "", "filter": "dither", "visible": false}]}),
             None,
             None,
         )
         .unwrap();
         rebuild_filters(&mut sc, None).unwrap();
-        assert!(sc.passes[1].code.contains("main"));
+        assert!(sc.passes[1].fragment.contains("main"));
         assert!(!sc.passes[1].visible);
     }
 
@@ -690,7 +690,7 @@ mod tests {
                 json!(["dither"]),
             ),
         ] {
-            let passes = json!([{"name": "m", "code": GOOD}]);
+            let passes = json!([{"name": "m", "fragment": GOOD}]);
             let d = json!({"version": 1, "filters": filters, "passes": passes});
             let mut sc = Scene::from_dict(&d, None, None).unwrap();
             let names = sc.filters.clone();
@@ -714,8 +714,8 @@ mod tests {
         let _g = env_guard();
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "filters": [],
-                    "passes": [{"name": "m", "code": GOOD},
-                               {"name": "frc256", "code": GOOD}]}),
+                    "passes": [{"name": "m", "fragment": GOOD},
+                               {"name": "frc256", "fragment": GOOD}]}),
             None,
             None,
         )
@@ -730,7 +730,7 @@ mod tests {
         let _g = env_guard();
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "filters": ["nope"],
-                    "passes": [{"name": "m", "code": GOOD}]}),
+                    "passes": [{"name": "m", "fragment": GOOD}]}),
             None,
             None,
         )
@@ -744,8 +744,8 @@ mod tests {
         let _g = env_guard();
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "passes": [
-                {"name": "m", "code": GOOD},
-                {"name": "x", "code": GOOD, "filter": "nope"}]}),
+                {"name": "m", "fragment": GOOD},
+                {"name": "x", "fragment": GOOD, "filter": "nope"}]}),
             None,
             None,
         )
@@ -773,7 +773,7 @@ mod tests {
         let d = tmpdir("picker");
         std::fs::write(
             format!("{d}/plain.filter.json"),
-            json!({"name": "plain", "code": GOOD}).to_string(),
+            json!({"name": "plain", "fragment": GOOD}).to_string(),
         )
         .unwrap();
         std::env::set_var("GHEE_FILTERS", &d);
@@ -821,7 +821,7 @@ mod tests {
         let _g = env_guard();
         let mut reg = Map::new();
         let accum: Value = serde_json::from_str(
-            r#"{"name":"accum","code":"void main(){gl_FragColor=mix(texture2D(iChannel1,gl_FragCoord.xy/iResolution.xy),texture2D(iChannel0,gl_FragCoord.xy/iResolution.xy),0.3);}","channels":[{"buffer":"self"}]}"#,
+            r#"{"name":"accum","fragment":"void main(){gl_FragColor=mix(texture2D(iChannel1,gl_FragCoord.xy/iResolution.xy),texture2D(iChannel0,gl_FragCoord.xy/iResolution.xy),0.3);}","channels":[{"buffer":"self"}]}"#,
         )
         .unwrap();
         reg.insert("accum".to_string(), accum);
@@ -838,12 +838,12 @@ mod tests {
         let _g = env_guard();
         let f = json!({"type": "float", "value": 1.0});
         for doc in [
-            json!({"passes": [{"name": "dither", "code": GOOD}]}),
-            json!({"passes": [{"name": "main", "code": GOOD}],
+            json!({"passes": [{"name": "dither", "fragment": GOOD}]}),
+            json!({"passes": [{"name": "main", "fragment": GOOD}],
                    "assets": {"dither": {"file": "d.png"}}}),
-            json!({"passes": [{"name": "main", "code": GOOD}], "params": {"dither": f}}),
-            json!({"passes": [{"name": "main", "code": GOOD, "params": {"dither": f}}]}),
-            json!({"passes": [{"name": "main", "code": GOOD,
+            json!({"passes": [{"name": "main", "fragment": GOOD}], "params": {"dither": f}}),
+            json!({"passes": [{"name": "main", "fragment": GOOD, "params": {"dither": f}}]}),
+            json!({"passes": [{"name": "main", "fragment": GOOD,
                                "arrays": [{"name": "dither", "size": 4}]}]}),
         ] {
             let mut sc = Scene::from_dict(&doc, None, None).unwrap();
@@ -851,7 +851,7 @@ mod tests {
             assert_eq!(names(&sc)[1], "dither1", "{doc}");
         }
         // A filter's pass takes no name of the filter's own params.
-        let reg = json!({"amount": {"name": "amount", "code": GOOD,
+        let reg = json!({"amount": {"name": "amount", "fragment": GOOD,
                                     "params": {"amount": f}}});
         let mut sc = Scene::of(vec![Pass::of("main", GOOD).unwrap()]).unwrap();
         apply_filters(&mut sc, &["amount".to_string()], reg.as_object()).unwrap();
@@ -863,8 +863,8 @@ mod tests {
         let _g = env_guard();
         let d = json!({
             "version": 1,
-            "passes": [{"name": "main", "code": GOOD}],
-            "common": {"code": COMMON},
+            "passes": [{"name": "main", "fragment": GOOD}],
+            "common": COMMON,
         });
         let mut sc = Scene::from_dict(&d, None, None).unwrap();
         apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
@@ -895,7 +895,7 @@ mod tests {
         let mut reg = Map::new();
         reg.insert(
             "invert".to_string(),
-            json!({"name": "invert", "code": "void main(){}", "params": {}}),
+            json!({"name": "invert", "fragment": "void main(){}", "params": {}}),
         );
         let mut sc = Scene::of(vec![Pass::of("main", FLAT).unwrap()]).unwrap();
         apply_filters(&mut sc, &["invert".to_string()], Some(&reg)).unwrap();
@@ -909,12 +909,12 @@ mod tests {
         std::fs::write(format!("{dir}/broken.filter.json"), "{not json").unwrap();
         std::fs::write(
             format!("{dir}/nameless.filter.json"),
-            json!({"code": "x"}).to_string(),
+            json!({"fragment": "x"}).to_string(),
         )
         .unwrap();
         std::fs::write(
             format!("{dir}/invert.filter.json"),
-            json!({"name": "invert", "code": GOOD}).to_string(),
+            json!({"name": "invert", "fragment": GOOD}).to_string(),
         )
         .unwrap();
 
@@ -929,10 +929,13 @@ mod tests {
         // A later directory wins a name clash.
         std::fs::write(
             format!("{dir}/dither.filter.json"),
-            json!({"name": "dither", "code": "void main(){}", "params": {}}).to_string(),
+            json!({"name": "dither", "fragment": "void main(){}", "params": {}}).to_string(),
         )
         .unwrap();
-        assert_eq!(load_filters(&[])["dither"]["code"], json!("void main(){}"));
+        assert_eq!(
+            load_filters(&[])["dither"]["fragment"],
+            json!("void main(){}")
+        );
         // A shadowed name keeps its first insertion position.
         assert_eq!(load_filters(&[]).keys().next().unwrap(), "dither");
         match prev {
@@ -987,13 +990,13 @@ mod tests {
         let mut reg = Map::new();
         reg.insert(
             "invert".to_string(),
-            json!({"name": "invert", "code": "void main(){}"}),
+            json!({"name": "invert", "fragment": "void main(){}"}),
         );
         let mut sc = Scene::of(vec![Pass::of("main", FLAT).unwrap()]).unwrap();
         apply_filters(&mut sc, &["invert".to_string()], Some(&reg)).unwrap();
         assert_eq!(
             serde_json::to_string(&sc.passes[1].to_dict()).unwrap(),
-            r#"{"name":"invert","code":"void main(){}","channels":[{"buffer":"main"}],"filter":"invert"}"#
+            r#"{"name":"invert","fragment":"void main(){}","channels":[{"buffer":"main"}],"filter":"invert"}"#
         );
     }
 }

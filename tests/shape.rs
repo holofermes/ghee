@@ -42,7 +42,7 @@ const GREY: &str = "void main(){ gl_FragColor = vec4(0.25, 0.25, 0.25, 1.0); }";
 fn shape_scene(layers: Value) -> Value {
     json!({
         "version": 1,
-        "passes": [{"name": "main", "code": GREY, "layers": layers}],
+        "passes": [{"name": "main", "fragment": GREY, "layers": layers}],
     })
 }
 
@@ -591,10 +591,10 @@ fn every_field_of_a_shape_changes_live_and_compiles_nothing() {
     let doc = json!({
         "version": 1,
         "passes": [
-            {"name": "small", "size": [48, 32], "code": GREY,
+            {"name": "small", "size": [48, 32], "fragment": GREY,
              "layers": [{"name": "dot", "shape": "rect", "x": 2, "y": 2, "width": 6,
                          "height": 6}]},
-            {"name": "main", "code": "void main(){ gl_FragColor = texture2D(iChannel0, \
+            {"name": "main", "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, \
               uv); }", "channels": [{"buffer": "small"}], "layers": layers},
         ],
     });
@@ -643,7 +643,8 @@ fn the_shapes_of_a_renderer_compile_one_program_once() {
     // The same scene with and without its shapes, set up after a scene that
     // compiled no shape: the shapes add one program, however many runs and
     // passes they span, and the renderer compiles it once.
-    let pass = |name: &str, layers: Value| json!({"name": name, "code": GREY, "layers": layers});
+    let pass =
+        |name: &str, layers: Value| json!({"name": name, "fragment": GREY, "layers": layers});
     let shapes = json!([
         {"name": "a", "shape": "rect", "width": 4, "height": 4},
         {"name": "b", "shape": "rect", "width": 8, "height": 8, "blend": "add"},

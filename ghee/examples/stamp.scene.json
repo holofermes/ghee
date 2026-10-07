@@ -3,7 +3,7 @@
   "passes": [
     {
       "name": "main",
-      "shader": "stamp.glsl",
+      "fragment": {"file": "stamp.glsl"},
       "params": {
         "size": {
           "type": "float",

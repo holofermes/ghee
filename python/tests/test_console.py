@@ -126,7 +126,7 @@ def test_the_console_lists_a_text_problem_apart_from_the_error(tmp_path):
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = vec4(1.0); }",
+                "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
                 "layers": [
                     {"name": "words", "text": "hi", "font_family": "Missing.ttf"}
                 ],
@@ -148,7 +148,7 @@ def test_a_tick_hands_the_host_the_words_the_console_set():
         "version": 1,
         "params": {"mood": {"type": "string", "value": "calm"}},
         "passes": [
-            {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}
+            {"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}
         ],
     }
     with ghee.open(doc, width=8, height=8, serve=port) as h:
@@ -287,7 +287,7 @@ def test_a_layer_set_lands_on_the_next_frame():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                 "layers": [
                     {"name": "t", "text": "I", "font_size": 24, "color": "#ff0000"}
                 ],
@@ -338,7 +338,7 @@ def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                 "layers": [
                     {
                         "name": "box",
@@ -372,7 +372,7 @@ def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():
         h.frame()
         assert json_of(port, "/scene") == looked
         coded = copy.deepcopy(looked)
-        coded["passes"][0]["code"] = "void main(){ gl_FragColor = vec4(1.0); }"
+        coded["passes"][0]["fragment"] = "void main(){ gl_FragColor = vec4(1.0); }"
         with pytest.raises(urllib.error.HTTPError) as raised:
             post_json(port, "/scene", coded)
         assert raised.value.code == 403

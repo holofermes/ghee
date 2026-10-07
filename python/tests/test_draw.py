@@ -702,7 +702,7 @@ LEVEL = {
         {
             "name": "main",
             "arrays": [{"name": "level", "size": 1}],
-            "code": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
         }
     ],
 }

@@ -1389,7 +1389,7 @@ if [ "$1" = "--ghee-args" ]; then
     printf '%s\n' '{"args": [{"name": "emit", "type": "size", "default": [4, 2], "help": "the array shape"}, {"name": "loud", "type": "bool", "default": false, "help": ""}]}'
     exit 0
 fi
-printf '%s\n' '{"version": 1, "params": {"text": {"type": "string", "value": "GHEE"}}, "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(level_at(0)); }", "arrays": [{"name": "level", "size": 4}], "params": {"amt": {"type": "float", "value": 0.0}}}]}'
+printf '%s\n' '{"version": 1, "params": {"text": {"type": "string", "value": "GHEE"}}, "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(level_at(0)); }", "arrays": [{"name": "level", "size": 4}], "params": {"amt": {"type": "float", "value": 0.0}}}]}'
 
 while IFS= read -r line; do
     printf '%s\n' "$line" >> ticks.jsonl
@@ -1405,7 +1405,7 @@ printf 'eof\n' >> ticks.jsonl
 
     /// A process that ignores stdin. It writes its data, then waits for the stop.
     const FREE: &str = r#"#!/bin/sh
-printf '%s\n' '{"version": 1, "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }", "arrays": [{"name": "level", "size": 2}]}]}'
+printf '%s\n' '{"version": 1, "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }", "arrays": [{"name": "level", "size": 2}]}]}'
 # kind 0, level, the floats 7.0 and 8.0
 printf '\000\005level\002\000\000\000\000\000\340\100\000\000\000\101'
 sleep 60
@@ -1413,7 +1413,7 @@ sleep 60
 
     /// A process that sends one array as kind 4 bytes and one as kind 0 floats.
     const U8_SCRIPT: &str = r#"#!/bin/sh
-printf '%s\n' '{"version": 1, "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }", "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "state", "size": 2}]}]}'
+printf '%s\n' '{"version": 1, "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }", "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "state", "size": 2}]}]}'
 # kind 4, mask, the bytes 0 64 128 255
 printf '\004\004mask\004\000\000\000\000\100\200\377'
 # kind 0, state, the floats 0.25 and 1.0
@@ -1686,7 +1686,7 @@ sleep 60
         let mark = format!("{d}/mark");
         let body = format!(
             "printf '%s %s' \"$GHEE_WIRE\" \"$GHEE_LOCKSTEP\" > {mark}\n\
-             printf '{{\"passes\":[{{\"name\":\"main\",\"code\":\"void main(){{}}\"}}]}}\\n'\n\
+             printf '{{\"passes\":[{{\"name\":\"main\",\"fragment\":\"void main(){{}}\"}}]}}\\n'\n\
              sleep 5\n"
         );
         let (_scene, mut f) =
@@ -1864,7 +1864,7 @@ sleep 60
     /// A process that sets its string param as kind 3 text, after a kind 1
     /// message to the same name, and sends kind 3 text to a float param.
     const STRING_SCRIPT: &str = r#"#!/bin/sh
-printf '%s\n' '{"version": 1, "params": {"words": {"type": "string", "value": "GHEE"}, "gain": {"type": "float", "value": 0.0}}, "passes": [{"name": "main", "code": "void main(){}"}]}'
+printf '%s\n' '{"version": 1, "params": {"words": {"type": "string", "value": "GHEE"}, "gain": {"type": "float", "value": 0.0}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
 # kind 1, words, the float 1.0
 printf '\001\005words\001\000\000\000\000\000\200\077'
 # kind 3, gain, the text "x"
@@ -1912,7 +1912,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
     /// A process that sets the color param `tint` to a colour name as kind 3
     /// text, and `bg` to text that names no colour.
     const COLOUR_SCRIPT: &str = r#"#!/bin/sh
-printf '%s\n' '{"version": 1, "params": {"tint": {"type": "color", "value": [0, 0, 0]}, "bg": {"type": "color", "value": [0, 0, 0]}}, "passes": [{"name": "main", "code": "void main(){}"}]}'
+printf '%s\n' '{"version": 1, "params": {"tint": {"type": "color", "value": [0, 0, 0]}, "bg": {"type": "color", "value": [0, 0, 0]}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
 # kind 3, tint, the text "Navy"
 printf '\003\004tint\004\000\000\000Navy'
 # kind 3, bg, the text "rde"
@@ -1945,7 +1945,7 @@ while IFS= read -r line; do :; done
     /// A process that sends a param that the scene lacks, text to a float
     /// param, and one number to a color.
     const REFUSED_SCRIPT: &str = r#"#!/bin/sh
-printf '%s\n' '{"version": 1, "params": {"gain": {"type": "float", "value": 0.0}, "tint": {"type": "color", "value": [0, 0, 0]}}, "passes": [{"name": "main", "code": "void main(){}"}]}'
+printf '%s\n' '{"version": 1, "params": {"gain": {"type": "float", "value": 0.0}, "tint": {"type": "color", "value": [0, 0, 0]}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
 # kind 1, nope, the float 1.0
 printf '\001\004nope\001\000\000\000\000\000\200\077'
 # kind 3, gain, the text "x"
@@ -1978,7 +1978,7 @@ while IFS= read -r line; do :; done
     /// `word`, then kind 5.
     const LOCKSTEP_SCRIPT: &str = r#"#!/bin/sh
 [ "$GHEE_LOCKSTEP" = 1 ] || exit 1
-printf '%s\n' '{"version": 1, "lockstep": true, "params": {"word": {"type": "string", "value": ""}}, "passes": [{"name": "main", "code": "void main(){}"}]}'
+printf '%s\n' '{"version": 1, "lockstep": true, "params": {"word": {"type": "string", "value": ""}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
 while IFS= read -r line; do
     n=${line#*\"frame\":}; n=${n%%,*}; n=${n%%\}*}
     sleep 0.2
@@ -2040,7 +2040,7 @@ done
         let path = script(
             &d,
             "shortlived",
-            "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\n\
+            "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"fragment\":\"void main(){}\"}]}\\n'\n\
              echo 'the process gave up' >&2\nexit 1\n",
         );
         let (_scene, mut f) = start_scene(&path, &no_args()).unwrap();
@@ -2082,7 +2082,7 @@ done
             &d,
             "stubborn",
             "#!/bin/sh\ntrap '' TERM\nprintf '{\"passes\":[{\"name\":\"main\",\
-             \"code\":\"void main(){}\"}]}\\n'\nexec sleep 10\n",
+             \"fragment\":\"void main(){}\"}]}\\n'\nexec sleep 10\n",
         );
         let (_scene, mut f) = start_scene(&stubborn, &no_args()).unwrap();
         let (term, kill) = (SOON * 4, SOON * 2);
@@ -2202,7 +2202,7 @@ done
             &d,
             "picky",
             "#!/bin/sh\ntest \"$1\" = --emit || { echo \"picky: unrecognized: $1\" >&2; exit 2; }\n\
-             printf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\nsleep 30\n",
+             printf '{\"passes\":[{\"name\":\"main\",\"fragment\":\"void main(){}\"}]}\\n'\nsleep 30\n",
         );
         let e = failure(start_scene(&path, &args(&["--bogus"])));
         assert!(
@@ -2223,7 +2223,7 @@ done
         let path = script(
             &d,
             "garbage",
-            "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"code\":\"void main(){}\"}]}\\n'\n\
+            "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"fragment\":\"void main(){}\"}]}\\n'\n\
              printf '\\010'\nsleep 5\n",
         );
         let (_scene, mut f) = start_deaf(&path, &no_args()).unwrap();
@@ -2240,7 +2240,7 @@ done
     }
 
     const DOTTED_SCRIPT: &str = r#"#!/bin/sh
-printf '%s\n' '{"version": 1, "params": {}, "passes": [{"name": "draw", "code": "void main(){}", "params": {"color": {"type": "float", "value": 0.2}}}, {"name": "dither", "code": "void main(){}", "params": {"color": {"type": "float", "value": 0.0}}}]}'
+printf '%s\n' '{"version": 1, "params": {}, "passes": [{"name": "draw", "fragment": "void main(){}", "params": {"color": {"type": "float", "value": 0.2}}}, {"name": "dither", "fragment": "void main(){}", "params": {"color": {"type": "float", "value": 0.0}}}]}'
 # kind 1: dither.color = 0.65, then color = 0.1
 printf '\001\014dither.color\001\000\000\000\146\146\046\077'
 printf '\001\005color\001\000\000\000\315\314\314\075'
@@ -2304,7 +2304,7 @@ while IFS= read -r line; do :; done
         let doc = serde_json::json!({
             "version": 1,
             "assets": {"pic": {"file": "pic.png"}},
-            "passes": [{"name": "draw", "code": "void main(){}",
+            "passes": [{"name": "draw", "fragment": "void main(){}",
                         "params": {"color": {"type": "float", "value": 0.2}},
                         "layers": [{"name": "title", "text": "hi", "karaoke": {}},
                                    {"name": "icon", "image": "pic"}]}],
@@ -2358,7 +2358,7 @@ while IFS= read -r line; do :; done
         let d = tmpdir("points");
         let doc = serde_json::json!({
             "version": 1,
-            "passes": [{"name": "draw", "code": "void main(){}",
+            "passes": [{"name": "draw", "fragment": "void main(){}",
                         "arrays": [{"name": "level", "size": 2}],
                         "layers": [
                             {"name": "scope", "shape": "line", "points": [[0, 0], [1, 1]]},
@@ -2401,7 +2401,7 @@ while IFS= read -r line; do :; done
         let d = tmpdir("words");
         let doc = serde_json::json!({
             "version": 1,
-            "passes": [{"name": "draw", "code": "void main(){}",
+            "passes": [{"name": "draw", "fragment": "void main(){}",
                         "layers": [{"name": "title", "text": "hi"}]}],
         });
         let body = [
@@ -2444,7 +2444,7 @@ while IFS= read -r line; do :; done
             .collect();
         let doc = serde_json::json!({
             "version": 1,
-            "passes": [{"name": "main", "code": "void main(){}",
+            "passes": [{"name": "main", "fragment": "void main(){}",
                         "layers": [{"name": "dot", "shape": "rect"}]}],
         });
         [
@@ -2539,7 +2539,7 @@ while IFS= read -r line; do :; done
         let d = tmpdir("newest");
         let doc = serde_json::json!({
             "version": 1,
-            "passes": [{"name": "main", "code": "void main(){}",
+            "passes": [{"name": "main", "fragment": "void main(){}",
                         "layers": [{"name": "dot", "shape": "rect"},
                                    {"name": "bar", "shape": "rect"}]}],
         });

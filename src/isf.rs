@@ -466,7 +466,7 @@ fn build(
         let mut flt = Map::new();
         flt.insert("name".to_string(), Value::from(title));
         flt.insert(
-            "code".to_string(),
+            "fragment".to_string(),
             Value::from(format!("{}\n{body}", shim(src, 0, &sized))),
         );
         let mut declared = Map::new();
@@ -1798,7 +1798,7 @@ void main() {
         assert_eq!((&a.name[..], a.size), ("fft", ArraySize::Linear(32)));
         // ghee binds the array as sampler2D <name>_tex in GL_LUMINANCE. The ISF
         // (r+g+b)/3 then reads the array value.
-        assert!(sc.passes[0].code.contains("#define fft fft_tex"));
+        assert!(sc.passes[0].fragment.contains("#define fft fft_tex"));
         assert!(sc.passes[0].channels.is_empty());
     }
 
@@ -1819,7 +1819,9 @@ void main() {
         let (sc, warn) = to_scene(FILTER, "half tint.fs", (64, 48), false).unwrap();
         assert_eq!(names(&sc), ["isf_source", "out"]);
         assert_eq!(buffers(&sc.passes[1]), [Some("isf_source".to_string())]);
-        assert!(sc.passes[1].code.contains("#define inputImage iChannel0"));
+        assert!(sc.passes[1]
+            .fragment
+            .contains("#define inputImage iChannel0"));
         assert!(warn.iter().any(|w| w.contains("no producer")));
     }
 
@@ -1827,13 +1829,13 @@ void main() {
     fn multipass_shares_one_body_with_its_own_passindex() {
         let sc = scene(TWO_PASS, "two.fs", (320, 240));
         assert_eq!(names(&sc), ["acc", "out"]);
-        assert!(sc.passes[0].code.contains("const int PASSINDEX = 0;"));
-        assert!(sc.passes[1].code.contains("const int PASSINDEX = 1;"));
+        assert!(sc.passes[0].fragment.contains("const int PASSINDEX = 0;"));
+        assert!(sc.passes[1].fragment.contains("const int PASSINDEX = 1;"));
         // ISF puts one body in every pass. Only the constant differs.
         let body = "void main() {";
         assert_eq!(
-            sc.passes[0].code.split_once(body).unwrap().1,
-            sc.passes[1].code.split_once(body).unwrap().1
+            sc.passes[0].fragment.split_once(body).unwrap().1,
+            sc.passes[1].fragment.split_once(body).unwrap().1
         );
     }
 
@@ -1842,7 +1844,7 @@ void main() {
         let sc = scene(TWO_PASS, "two.fs", (320, 240));
         assert_eq!(buffers(&sc.passes[0]), [Some("acc".to_string())]);
         assert_eq!(buffers(&sc.passes[1]), [Some("acc".to_string())]);
-        assert!(sc.passes[0].code.contains("#define acc iChannel0"));
+        assert!(sc.passes[0].fragment.contains("#define acc iChannel0"));
     }
 
     #[test]
@@ -1851,7 +1853,7 @@ void main() {
         assert_eq!(sc.passes[0].size, Some((160, 60)));
         assert_eq!(sc.passes[1].size, None); // The output pass takes the render size.
         assert!(sc.passes[0]
-            .code
+            .fragment
             .contains("const vec2 acc_isf_size = vec2(160.0, 60.0);"));
     }
 
@@ -1875,7 +1877,7 @@ void main() {
         );
         let (sc, warn) = to_scene(&src, "r.fs", (8, 8), false).unwrap();
         assert_eq!(names(&sc), ["isf_iTime", "out"]);
-        assert!(sc.passes[0].code.contains("IMG_THIS_PIXEL(isf_iTime)"));
+        assert!(sc.passes[0].fragment.contains("IMG_THIS_PIXEL(isf_iTime)"));
         assert!(warn.iter().any(|w| w.contains("renamed to 'isf_iTime'")));
         // Every built-in and every name with ghee's prefix takes the rename.
         let src = isf_body(
@@ -1888,7 +1890,7 @@ void main() {
         let params: Vec<&String> = sc.params.keys().chain(sc.passes[0].params.keys()).collect();
         assert_eq!(params, ["isf_iFrame", "isf_ghee_k", "frames"]);
         assert!(sc.passes[0]
-            .code
+            .fragment
             .contains("vec4(isf_iFrame, isf_ghee_k, frames, 1.0)"));
         assert_eq!(
             warn.iter()
@@ -1905,7 +1907,7 @@ void main() {
             "void main(){ gl_FragColor = vec4(IMG_SIZE(inputImage), 0.0, 1.0); }",
         );
         let sc = scene(&src, "z.fs", (64, 48));
-        let code = &sc.passes.last().unwrap().code;
+        let code = &sc.passes.last().unwrap().fragment;
         assert!(code.contains("inputImage_isf_size") && !code.contains("IMG_SIZE("));
         assert!(code.contains("const vec2 inputImage_isf_size = vec2(64.0, 48.0);"));
     }
@@ -1917,7 +1919,7 @@ void main() {
             .passes
             .last()
             .unwrap()
-            .code
+            .fragment
             .contains("IMG_PIXEL(inputImage_isf_size, inputImage,"));
     }
 
@@ -1933,7 +1935,7 @@ void main() {
             .passes
             .last()
             .unwrap()
-            .code
+            .fragment
             .contains("IMG_PIXEL(nosuchimage, vec2(0.0))"));
     }
 
@@ -2086,7 +2088,7 @@ void main() {
         let (fd, _) = to_filter(FILTER, "half tint.fs", (64, 48), false).unwrap();
         assert_eq!(fd["name"], json!("half_tint"));
         assert_eq!(fd["description"], json!("half tint tests"));
-        assert!(fd["code"]
+        assert!(fd["fragment"]
             .as_str()
             .unwrap()
             .contains("#define inputImage iChannel0"));

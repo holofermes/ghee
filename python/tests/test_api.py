@@ -22,7 +22,7 @@ SHOWS_DT = {
     "passes": [
         {
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(iTimeDelta * 4.0, 0, 0, 1); }",
+            "fragment": "void main(){ gl_FragColor = vec4(iTimeDelta * 4.0, 0, 0, 1); }",
         }
     ],
 }
@@ -83,7 +83,7 @@ def test_vec_and_color_values_reach_the_shader():
         passes=[
             ghee.Pass(
                 "main",
-                VECS["passes"][0]["code"],
+                VECS["passes"][0]["fragment"],
                 params={
                     "b": ghee.Param("b", "vec3", [0.75, 0.5, 0.25]),
                     "c": ghee.Param("c", "vec4", [1.0, 0.5, 0.25, 0.5]),
@@ -252,7 +252,7 @@ HOST_SCENE = {
             "name": "hold",
             "channels": [{"buffer": "main"}, {"buffer": "hold"}],
             "params": {"snap": {"type": "float", "value": 0.0}},
-            "code": (
+            "fragment": (
                 "void main(){ gl_FragColor = mix(texture2D(iChannel1, uv),"
                 " texture2D(iChannel0, uv), snap); }"
             ),
@@ -268,7 +268,7 @@ HOST_SCENE = {
                 "hotColor": {"type": "vec3", "value": [1.0, 0.0, 0.0]},
                 "visLines": {"type": "float", "value": 1.0},
             },
-            "code": (
+            "fragment": (
                 "void main(){ gl_FragColor = vec4(hotColor * (text_sample2(uv)"
                 " * visLines + state_at(0)), 1.0); }"
             ),
@@ -305,7 +305,7 @@ WORDS = {
     "passes": [
         {
             "name": "main",
-            "code": (
+            "fragment": (
                 "void main(){ vec2 px = floor(uv * iResolution.xy) + 0.5;"
                 " gl_FragColor = vec4(vec3(words_cover(px / 24.0, 24.0)), 1.0); }"
             ),
@@ -403,7 +403,7 @@ def test_open_takes_a_ghee_scene_and_a_path_like(tmp_path):
     layer = ghee.Layer("words", "ghee", visible=False, font_family="sans")
     scene = ghee.Scene(
         assets=[ghee.Asset("sans", pathlib.Path(FONT))],
-        passes=[ghee.Pass("main", WORDS["passes"][0]["code"], layers=[layer])],
+        passes=[ghee.Pass("main", WORDS["passes"][0]["fragment"], layers=[layer])],
     )
     assert scene.to_dict()["assets"] == {"sans": {"file": FONT}}
     frames = []
@@ -433,7 +433,7 @@ HALF = {
     "passes": [
         {
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(0.25, 0.5, 0.0, 0.5); }",
+            "fragment": "void main(){ gl_FragColor = vec4(0.25, 0.5, 0.0, 0.5); }",
         }
     ],
 }
@@ -489,7 +489,7 @@ def test_a_layer_field_reaches_the_engine_live():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                 "layers": [
                     {
                         "name": "t",
@@ -520,7 +520,7 @@ def test_a_shape_field_reaches_the_engine_live():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                 "layers": [{"name": "box", "shape": "rect", "color": "red"}],
             }
         ],
@@ -543,7 +543,7 @@ def test_a_handle_sets_a_layer_field_by_attribute_or_by_key():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                 "layers": [
                     {
                         "name": "t",
@@ -606,7 +606,7 @@ def test_rotate_turns_the_frame_clockwise_and_the_scene_renders_turned():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = uv.x < 0.5 ?"
+                "fragment": "void main(){ gl_FragColor = uv.x < 0.5 ?"
                 " vec4(1, 0, 0, 1) : vec4(0, 0, 1, 1); }",
             }
         ],

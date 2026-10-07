@@ -14,7 +14,7 @@ RED = {
     "passes": [
         {
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(tint * gain * level_at(0), 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(tint * gain * level_at(0), 1.0); }",
             "arrays": [{"name": "level", "size": 8}],
             "params": {"gain": {"type": "float", "value": 1.0}},
         }
@@ -32,7 +32,7 @@ VECS = {
     "passes": [
         {
             "name": "main",
-            "code": "void main(){ float x = uv.x;"
+            "fragment": "void main(){ float x = uv.x;"
             " gl_FragColor = x < 0.25 ? vec4(a, 0.0, 1.0) : x < 0.5 ? vec4(b, 1.0)"
             " : x < 0.75 ? vec4(c.xyz * c.w, 1.0) : vec4(tint, 1.0); }",
             "params": {
@@ -60,7 +60,7 @@ def near(got, want):
 BROKEN = {
     "version": 1,
     "passes": [
-        {"name": "main", "code": "void main(){ gl_FragColor = no_such_symbol; }"}
+        {"name": "main", "fragment": "void main(){ gl_FragColor = no_such_symbol; }"}
     ],
 }
 

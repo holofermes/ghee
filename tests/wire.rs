@@ -74,7 +74,7 @@ fn process(held: &[Value], at: &[(u64, String)]) -> String {
         "version": 1,
         "lockstep": true,
         "passes": [{"name": "main",
-                    "code": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
+                    "fragment": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
                     "arrays": [{"name": "level", "size": 1}],
                     "layers": layers}],
     });

@@ -177,7 +177,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    const JSON_SCENE: &str = r#"{"version":1,"passes":[{"name":"main","code":"void main(){}",
+    const JSON_SCENE: &str = r#"{"version":1,"passes":[{"name":"main","fragment":"void main(){}",
         "arrays":[{"name":"level","size":2}]}]}"#;
 
     const SCENE_PY: &str = "#!/usr/bin/env python3\n\

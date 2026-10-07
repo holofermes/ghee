@@ -41,7 +41,7 @@ fn frame(r: &mut Renderer, code: &str, visible: bool) -> Vec<u8> {
     let doc = json!({
         "version": 1,
         "assets": {"font": {"file": SANS}},
-        "passes": [{"name": "main", "code": code,
+        "passes": [{"name": "main", "fragment": code,
                     "layers": [{"name": "t", "visible": visible, "text": LYRICS,
                                 "font_size": 46, "font_family": "font",
                                 "text_align": "center"}]}],

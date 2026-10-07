@@ -458,7 +458,7 @@ fn label_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     json!({
         "version": 1,
         "assets": {"face": {"file": file}},
-        "passes": [{"name": "main", "code": format!(
+        "passes": [{"name": "main", "fragment": format!(
             "void main(){{ float c = {}; gl_FragColor = vec4(c, c, c, 1.0); }}",
             fit.cover("label")),
             "layers": [{"name": "label", "text": words, "font_family": "face",
@@ -688,7 +688,7 @@ fn layers_scene(layers: Value) -> Value {
     json!({
         "version": 1,
         "assets": font_assets(),
-        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
+        "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
                     "layers": layers}],
     })
 }
@@ -973,7 +973,7 @@ fn a_layer_declaration_names_what_it_lacks() {
     doc["passes"]
         .as_array_mut()
         .unwrap()
-        .push(json!({"name": "d", "code": BLACK, "filter": "dither",
+        .push(json!({"name": "d", "fragment": BLACK, "filter": "dither",
             "layers": [{"name": "t", "text": "I"}]}));
     assert_eq!(
         scene_err(&doc),
@@ -1025,7 +1025,7 @@ fn a_name_beside_the_names_of_a_layer_compiles() {
     doc["assets"]["emoji"] = json!({"file": EMOJI});
     doc["params"] = json!({"label_w": float, "label_sizes": float});
     doc["passes"][0]["name"] = json!("label_tex");
-    doc["passes"][0]["code"] = json!(BLACK);
+    doc["passes"][0]["fragment"] = json!(BLACK);
     doc["passes"][0]["params"] =
         json!({"label_emoji_size": float, "label_emoji": float, "label_covers": float});
     doc["passes"][0]["arrays"] = json!([{"name": "label_texels", "size": 4}]);
@@ -1095,7 +1095,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
          "x": 60, "y": 8, "font_size": 48},
     ]));
     doc["assets"]["emoji"] = json!({"file": EMOJI});
-    doc["passes"][0]["code"] =
+    doc["passes"][0]["fragment"] =
         json!("void main(){ gl_FragColor = vec4(vec3(title_cover(uv * title_size, 32.0)), 1.0); }");
     doc["passes"][0]["arrays"] =
         json!([{"name": "amps", "size": 4}, {"name": "mask", "size": [4, 4]}]);
@@ -1150,7 +1150,7 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
     let scene = |params: Value, code: &str| {
         let mut doc = layers_scene(json!([]));
         doc["params"] = params;
-        doc["passes"][0]["code"] = json!(code);
+        doc["passes"][0]["fragment"] = json!(code);
         doc
     };
     let (_g, mut r) = gpu(W, H);
@@ -1174,11 +1174,11 @@ fn every_scene_pass_reads_the_layers_and_a_filter_pass_none() {
         "version": 1,
         "assets": font_assets(),
         "passes": [
-            {"name": "a", "code": format!("void main(){{ {reads} gl_FragColor = vec4(c); }}"),
+            {"name": "a", "fragment": format!("void main(){{ {reads} gl_FragColor = vec4(c); }}"),
              "layers": [{"name": "label", "text": "I", "font_family": "sans"},
                         {"name": "title", "text": "O", "font_family": "cff"}]},
             {"name": "main", "channels": [{"buffer": "a"}],
-             "code": format!("void main(){{ {reads} \
+             "fragment": format!("void main(){{ {reads} \
                  gl_FragColor = texture2D(iChannel0, uv) * c; }}")},
         ],
     });
@@ -1227,7 +1227,7 @@ fn a_measure_is_the_block_in_pixels_at_its_size_or_at_the_fit() {
     // rounds down to a whole multiple of 8 px, 8 at the least.
     let _g = lock();
     let sc = loaded(&json!({"version": 1, "assets": {"face": {"file": SANS}},
-                            "passes": [{"name": "main", "code": "void main(){}"}]}));
+                            "passes": [{"name": "main", "fragment": "void main(){}"}]}));
     let rows = [
         (
             Some("face"),
@@ -1266,7 +1266,7 @@ fn a_measure_is_the_block_in_pixels_at_its_size_or_at_the_fit() {
 fn a_measure_names_a_size_or_a_font_that_the_scene_cannot_take() {
     let _g = lock();
     let sc = loaded(&json!({"version": 1, "assets": {"face": {"file": SANS}},
-                            "passes": [{"name": "main", "code": "void main(){}"}]}));
+                            "passes": [{"name": "main", "fragment": "void main(){}"}]}));
     let rows = [
         (
             Some(0.0),
@@ -1577,7 +1577,7 @@ fn the_pixel_font_lights_its_own_pixels_on_whole_pixels() {
             .unwrap()
             .extend(keys.as_object().unwrap().clone());
         let doc = json!({"version": 1, "passes": [{"name": "main",
-            "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
             "layers": [layer]}]});
         let (_g, mut r) = gpu(w, h);
         let f = render(&mut r, &Scene::from_dict(&doc, None, None).unwrap());
@@ -1666,7 +1666,7 @@ fn size_reads_the_block_in_em() {
     let doc = json!({
         "version": 1,
         "assets": font_assets(),
-        "passes": [{"name": "main", "code": format!(
+        "passes": [{"name": "main", "fragment": format!(
             "void main(){{ gl_FragColor = vec4(\
              abs(label_size.x - {:.6}) < 1e-4 ? 1.0 : 0.0, \
              abs(label_size.y - {:.6}) < 1e-4 ? 1.0 : 0.0, 0.0, 1.0); }}",
@@ -1686,7 +1686,7 @@ fn a_string_param_relays_the_text_live() {
     let fit = Fit::of(o.width, o.height, W, H);
     let mut doc = label_scene(SANS, "I", Align::Left, fit);
     doc["params"]["gain"] = json!({"type": "float", "value": 0.0});
-    doc["passes"][0]["code"] = json!(format!(
+    doc["passes"][0]["fragment"] = json!(format!(
         "void main(){{ gl_FragColor = vec4({}, gain, 0.0, 1.0); }}",
         fit.cover("label")
     ));
@@ -1722,10 +1722,10 @@ fn a_text_reaches_every_pass() {
         "version": 1,
         "assets": font_assets(),
         "passes": [
-            {"name": "a", "code": format!(
+            {"name": "a", "fragment": format!(
                 "void main(){{ gl_FragColor = vec4({}, 0.0, 0.0, 1.0); }}", fit.cover("label")),
              "layers": [{"name": "label", "text": "AV", "font_family": "sans", "visible": false}]},
-            {"name": "main", "channels": [{"buffer": "a"}], "code": format!(
+            {"name": "main", "channels": [{"buffer": "a"}], "fragment": format!(
                 "void main(){{ gl_FragColor = vec4(texture2D(iChannel0, uv).r, {}, \
                  0.0, 1.0); }}", fit.cover("label"))},
         ],
@@ -1756,7 +1756,7 @@ fn two_layers_draw_their_own_words() {
     let doc = json!({
         "version": 1,
         "assets": font_assets(),
-        "passes": [{"name": "main", "code": format!(
+        "passes": [{"name": "main", "fragment": format!(
             "void main(){{ gl_FragColor = vec4({}, {}, 0.0, 1.0); }}",
             fit.cover("label"), fit.cover("title")),
             "layers": [{"name": "label", "text": "AV", "font_family": "sans", "visible": false},
@@ -1788,7 +1788,7 @@ fn a_later_setup_draws_its_own_text() {
     let title = json!({
         "version": 1,
         "assets": font_assets(),
-        "passes": [{"name": "main", "code": format!(
+        "passes": [{"name": "main", "fragment": format!(
             "void main(){{ gl_FragColor = vec4(vec3({}), 1.0); }}", fit.cover("title")),
             "layers": [{"name": "title", "text": "I", "font_family": "sans", "visible": false}]}],
     });
@@ -1837,7 +1837,7 @@ fn a_setup_frees_the_asset_slots_of_the_last_scenes_layers() {
         let doc = json!({
             "version": 1,
             "assets": font_assets(),
-            "passes": [{"name": "main", "code": format!(
+            "passes": [{"name": "main", "fragment": format!(
                 "void main(){{ float c = {}; gl_FragColor = vec4(c, c, c, 1.0); }}",
                 fit.cover(&name)),
                 "layers": [{"name": name, "text": "I", "font_family": "sans",
@@ -1942,7 +1942,7 @@ fn assert_striped(frame: &[u8], w: usize, fit: Fit, rects: &[[f64; 4]], what: &s
 fn hazard_scene(file: &str, words: &str, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, Align::Left, fit);
     doc["passes"][0] = json!({"name": "main",
-        "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }",
+        "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }",
         "layers": [placed(words, fit)]});
     doc
 }
@@ -2176,7 +2176,7 @@ fn pixel_pair(a: &str, b: &str) -> Scene {
                "x": 0, "y": y})
     };
     let doc = json!({"version": 1, "passes": [{"name": "main",
-        "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+        "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
         "layers": [layer("a", a, 0), layer("b", b, 12)]}]});
     Scene::from_dict(&doc, None, None).unwrap()
 }
@@ -2311,7 +2311,7 @@ fn layer_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     let mut l = placed(words, fit);
     l["text_align"] = json!(align_name(align));
     l["render"] = json!("slug");
-    doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [l]});
+    doc["passes"][0] = json!({"name": "main", "fragment": BLACK, "layers": [l]});
     doc
 }
 
@@ -2336,10 +2336,10 @@ fn a_hidden_pass_draws_none_of_its_layers() {
     let mut doc = layer_scene(SANS, "Ag", Align::Left, fit);
     let main = doc["passes"][0].clone();
     doc["passes"] = json!([
-        {"name": "under", "code": "void main(){ gl_FragColor = vec4(0.25, 0.25, 0.25, 1.0); }"},
+        {"name": "under", "fragment": "void main(){ gl_FragColor = vec4(0.25, 0.25, 0.25, 1.0); }"},
         main,
         {"name": "post", "channels": [{"buffer": "main"}],
-         "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
+         "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
     ]);
     let shown = render(&mut r, &loaded(&doc));
     assert!(shown.contains(&255), "the layer paints nothing");
@@ -2488,7 +2488,7 @@ fn layers_land_in_their_order() {
         let mut over = placed("I", fit);
         over["color"] = json!(last.map(|c| f64::from(c) / 255.0));
         let mut doc = label_scene(SANS, "I", Align::Left, fit);
-        doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [under, over]});
+        doc["passes"][0] = json!({"name": "main", "fragment": BLACK, "layers": [under, over]});
         let frame = render(&mut r, &loaded(&doc));
         let at = (stem.1 * w + stem.0) * 4;
         assert_eq!(frame[at..at + 3], last, "{first:?} under");
@@ -2532,7 +2532,7 @@ fn a_layer_paints_its_color_at_its_opacity_by_its_blend() {
         l["blend"] = json!(blend);
         let mut doc = label_scene(SANS, "I", Align::Left, fit);
         doc["passes"][0] = json!({"name": "main", "layers": [l],
-            "code": "void main(){ gl_FragColor = vec4(vec3(0.25), 1.0); }"});
+            "fragment": "void main(){ gl_FragColor = vec4(vec3(0.25), 1.0); }"});
         let frame = render(&mut r, &loaded(&doc));
         for (k, c) in c.iter().enumerate() {
             let s = c * opacity;
@@ -2567,7 +2567,7 @@ fn a_gradient_spans_the_block_along_its_angle_as_css_does() {
         let mut l = placed(words, fit);
         l["color"] = json!({"from": "#ff0000", "to": [0.0, 0.0, 1.0], "angle": angle});
         let mut doc = label_scene(SANS, words, Align::Left, fit);
-        doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [l]});
+        doc["passes"][0] = json!({"name": "main", "fragment": BLACK, "layers": [l]});
         let frame = render(&mut r, &loaded(&doc));
         let a = f64::to_radians(angle);
         let dir = [a.sin(), -a.cos()];
@@ -2662,7 +2662,7 @@ fn a_colour_name_paints_its_value_from_css_and_transparent_paints_nothing() {
     for (keys, renders, width, want) in rows {
         for render_as in renders {
             let mut doc = effect_scene(words, fit, keys.clone());
-            doc["passes"][0]["code"] =
+            doc["passes"][0]["fragment"] =
                 json!("void main(){ gl_FragColor = vec4(vec3(0.25), 1.0); }");
             layer_of(&mut doc, "label")["render"] = json!(render_as);
             let frame = render(&mut r, &loaded(&doc));
@@ -2796,22 +2796,21 @@ fn a_pass_of_layers_alone_round_trips_with_no_code_and_a_pass_of_neither_is_refu
     let mut doc = layers_scene(json!([]));
     doc["passes"] = json!([
         {"name": "words", "layers": [{"name": "label", "text": "I", "font_family": "sans"}]},
-        {"name": "main", "code": BLACK},
+        {"name": "main", "fragment": BLACK},
     ]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
-    assert!(!sc.passes[0].has_code());
+    assert!(!sc.passes[0].has_fragment());
     let back = sc.to_dict();
     assert_eq!(back["passes"][0], doc["passes"][0]);
     assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
     for words in [
         json!({"name": "words"}),
-        json!({"name": "words", "code": " "}),
+        json!({"name": "words", "fragment": " "}),
     ] {
         doc["passes"][0] = words;
         assert_eq!(
             scene_err(&doc),
-            "scene: pass 'words' has no 'code' (inline GLSL), no 'shader' (a file next to \
-             the scene) and no 'layers'"
+            "scene: pass 'words' has no 'fragment' and no 'layers'"
         );
     }
 }
@@ -2830,7 +2829,8 @@ fn a_layer_on_a_sized_pass_covers_as_the_text_does_there() {
         let mut a = pass;
         a["name"] = json!("a");
         a["size"] = json!([w / 2, h / 2]);
-        doc["passes"] = json!([a, {"name": "main", "channels": [{"buffer": "a"}], "code": show}]);
+        doc["passes"] =
+            json!([a, {"name": "main", "channels": [{"buffer": "a"}], "fragment": show}]);
         loaded(&doc)
     };
     let cover = sized(label_scene(SANS, words, Align::Left, fit)["passes"][0].clone());
@@ -2859,8 +2859,8 @@ fn a_layer_past_the_texture_units_fails_naming_the_layer() {
     let mut main = doc["passes"][0].clone();
     main["channels"] = json!(channels);
     main["arrays"] = json!([{"name": "v", "size": 4}]);
-    main["code"] = json!("void main(){ gl_FragColor = vec4(v_at(0)); }");
-    doc["passes"] = json!([{"name": "a", "code": BLACK}, main]);
+    main["fragment"] = json!("void main(){ gl_FragColor = vec4(v_at(0)); }");
+    doc["passes"] = json!([{"name": "a", "fragment": BLACK}, main]);
     let past = match unsafe { ghee::ffi::ghee_gl_texture_units(r.handle()) } > 16 {
         true => "a pass binds at most",
         false => "this GPU has",
@@ -2927,7 +2927,7 @@ fn a_pass_of_layers_alone_starts_transparent_and_a_later_pass_composites_it() {
     doc["passes"].as_array_mut().unwrap().push(json!({
         "name": "main",
         "channels": [{"buffer": "words"}],
-        "code": "void main(){ vec4 t = texture2D(iChannel0, uv); \
+        "fragment": "void main(){ vec4 t = texture2D(iChannel0, uv); \
                  gl_FragColor = vec4(vec3(0.0, 0.0, 1.0) * (1.0 - t.a) + t.rgb, 1.0); }",
     }));
     let composed = render(&mut r, &loaded(&doc));
@@ -2950,7 +2950,7 @@ fn a_layer_blends_the_pass_alpha_as_its_colour() {
     r.set_alpha(true);
     for how in RENDERS {
         let mut doc = rendered(layer_scene(SANS, "I", Align::Left, I_FIT), how);
-        doc["passes"][0]["code"] =
+        doc["passes"][0]["fragment"] =
             json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
         let frame = render(&mut r, &loaded(&doc));
         // White over the half-transparent pass: opaque in the stem, the pass's
@@ -3652,7 +3652,7 @@ fn assert_bitmap(
 /// placed by `fit` over a black pass.
 fn colour_scene(file: &str, words: &str, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, Align::Left, fit);
-    doc["passes"][0] = json!({"name": "main", "code": BLACK, "layers": [placed(words, fit)]});
+    doc["passes"][0] = json!({"name": "main", "fragment": BLACK, "layers": [placed(words, fit)]});
     doc
 }
 
@@ -3749,7 +3749,8 @@ fn a_colour_glyph_blends_the_pass_alpha_as_its_colour() {
     let (_g, mut r) = gpu(56, 56);
     r.set_alpha(true);
     let mut doc = colour_scene(EMOJI, words, fit);
-    doc["passes"][0]["code"] = json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
+    doc["passes"][0]["fragment"] =
+        json!("void main(){ gl_FragColor = vec4(0.0, 0.0, 0.25, 0.5); }");
     let frame = render(&mut r, &loaded(&doc));
     assert!(plane(&frame, 0).iter().any(|v| *v > 200), "no emoji drawn");
     assert!(alphas(&frame).contains(&255));
@@ -3795,7 +3796,7 @@ fn fallback_scene(words: &str, fit: Fit, keys: Value) -> Value {
     l.as_object_mut()
         .unwrap()
         .extend(keys.as_object().unwrap().clone());
-    json!({"version": 1, "passes": [{"name": "main", "code": BLACK, "layers": [l]}]})
+    json!({"version": 1, "passes": [{"name": "main", "fragment": BLACK, "layers": [l]}]})
 }
 
 /// The layout of `words` in the built-in font, then EMOJI.

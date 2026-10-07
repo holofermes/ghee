@@ -138,7 +138,7 @@ GLSL fragment shader. This is `bars.scene.json`, one of the bundled examples:
   "passes": [
     {
       "name": "main",
-      "shader": "bars.glsl",
+      "fragment": { "file": "bars.glsl" },
       "arrays": [{ "name": "amplitudes", "size": 16 }],
       "params": {
         "base": { "type": "color", "value": [0.04, 0.04, 0.04] },
@@ -162,14 +162,14 @@ void main() {
 }
 ```
 
-A pass can also hold its GLSL inline, in a `"code"` string. A scene can also
-be a program that writes its own JSON and feeds it data: see [Procedural
-scenes](#procedural-scenes).
+A pass's `fragment` holds its GLSL as text, or names a file beside the scene
+as `{ "file": "bars.glsl" }`. A scene can also be a program that writes its
+own JSON and feeds it data: see [Procedural scenes](#procedural-scenes).
 
 ghee refuses a scene with an unknown key. The error names the key and where it
 sits, and it suggests the closest known key, or the object that takes the key:
-`"font"` on a layer points to `font_family`, and `"code"` on a layer points to
-its pass.
+`"font"` on a layer points to `font_family`, and `"fragment"` on a layer
+points to its pass.
 
 When GLSL fails to compile, `ghee render` stops with an error. The error opens
 with the pass and the line of its code that holds the mistake, as in
@@ -234,14 +234,13 @@ float mask_sample2(vec2 uv);        // bilinear, normalized uv
 ```
 
 The scene's `common` block holds GLSL that ghee puts after the preamble of
-every pass except a filter pass. The block holds its GLSL inline, as
-`"common": { "code": "..." }`, or names a file beside the scene, as
-`"common": { "shader": "common.glsl" }`.
+every pass except a filter pass. It takes the two forms of a `fragment`:
+`"common": "..."`, or `"common": { "file": "common.glsl" }`.
 
 A pass declares each channel by the name of the buffer that it reads:
 
 ```json
-{ "name": "compose", "shader": "compose.glsl", "channels": [{ "buffer": "compose" }] }
+{ "name": "compose", "fragment": { "file": "compose.glsl" }, "channels": [{ "buffer": "compose" }] }
 ```
 
 That pass samples its own previous frame through `iChannel0`:
@@ -338,7 +337,7 @@ in the top left corner:
   "assets": { "stamp": { "file": "stamp.png" } },
   "passes": [{
     "name": "main",
-    "code": "void main() { gl_FragColor = vec4(0.1, 0.12, 0.2, 1.0); }",
+    "fragment": "void main() { gl_FragColor = vec4(0.1, 0.12, 0.2, 1.0); }",
     "layers": [
       { "name": "title", "text": "hello",
         "color": { "from": "#ff0000", "to": "#ffff00", "angle": 90 },

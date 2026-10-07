@@ -435,7 +435,7 @@ pub trait ConsoleHost {
     fn active_name(&self) -> ConsoleResult<Option<String>>;
 
     /// The resolved scene JSON for a name, or for the active scene when name is
-    /// None. Resolved means shader files inlined and filters expanded.
+    /// None. Resolved means each GLSL file as its text and filters expanded.
     fn scene_def(&self, name: Option<&str>) -> ConsoleResult<Value>;
 
     /// Each filter name and its definition, for the "+ filter" picker.
@@ -952,7 +952,7 @@ mod tests {
         "params": {"tint": {"type": "float", "value": 0.0},
                    "title": {"type": "string", "value": "hi"}},
         "assets": {"pic": {"file": "pic.png"}, "sans": {"file": "sans.ttf"}},
-        "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
+        "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
                     "layers": [{"name": "words", "text": "ho", "font_family": "sans.ttf",
                                 "karaoke": {}},
                                {"name": "icon", "image": "icon.png"},
@@ -1054,7 +1054,7 @@ mod tests {
         }
 
         fn filters(&self) -> ConsoleResult<Value> {
-            Ok(serde_json::json!({"dither": {"code": "x"}}))
+            Ok(serde_json::json!({"dither": {"fragment": "x"}}))
         }
 
         fn hwinfo(&self) -> ConsoleResult<Value> {
@@ -1217,7 +1217,7 @@ mod tests {
         let api = api();
         assert_eq!(
             as_json(&get(&api, "/filters", &[])),
-            serde_json::json!({"dither": {"code": "x"}})
+            serde_json::json!({"dither": {"fragment": "x"}})
         );
         assert_eq!(
             as_json(&get(&api, "/hwinfo", &[])),
@@ -1614,19 +1614,19 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_naming_a_shader_file_is_400() {
-        // A posted scene has no base directory. A "shader" path reads a file off
-        // disk, so the model refuses it and the API passes that on.
+    fn a_scene_naming_a_fragment_file_is_400() {
+        // A posted scene has no base directory. A fragment file reads a file
+        // off disk, so the model refuses it and the API passes that on.
         let api = api();
         let r = api.dispatch(
             "POST",
             "/scene",
             &Query::new(),
             &json_ct(),
-            br#"{"passes": [{"name": "main", "shader": "/etc/hostname"}]}"#,
+            br#"{"passes": [{"name": "main", "fragment": {"file": "/etc/hostname"}}]}"#,
         );
         assert_eq!(r.status, 400);
-        assert!(body(&r).contains("shader"), "{}", body(&r));
+        assert!(body(&r).contains("names the file"), "{}", body(&r));
         assert!(api.host.calls.borrow().is_empty());
     }
 

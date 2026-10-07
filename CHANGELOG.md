@@ -160,7 +160,11 @@
   Under `--timestep` the phase runs from 0 at the scene's start.
 - Draw a layer's glyphs from an MTSDF atlas by default, one texture read a
   pixel. `"render": "slug"` computes Slug's exact coverage from the font's
-  curves instead, at any size and with no atlas.
+  curves instead, at any size and with no atlas. The slug layers that no
+  pass reads through `<name>_cover` share one texture of curves, which
+  takes a glyph at the first words that draw it, so new words of glyphs
+  already drawn upload nothing, and a layer in the pixel font takes new
+  two-digit words in 0.35 ms on a Pi Zero 2 W.
 - Draw a text layer from Pixel Operator 8, a second built-in font, with
   `font_family: "pixel"`, as the font's own pixels: such a layer takes
   `render` slug unless it names one, a size that fits rounded down to a
@@ -292,7 +296,10 @@
   `text`, `text2`. A live field changes live, any other change builds that
   layer alone again, a call that runs for the first time adds its layer, a
   layer whose call stops hides, and an effect that a call stops naming is
-  bypassed. Two calls that draw one layer in a frame raise ValueError.
+  bypassed. Two calls that draw one layer in a frame raise ValueError. On a
+  Pi Zero 2 W, a frame of 50 calls, rects and two-digit words in the pixel
+  font, half of them changed each frame, draws at 64 fps on a 128x32
+  SSD1306.
 - Measure words with `h.measure(words, font_size=None, font_family=None)`,
   and with `ghee.measure` in a scene script: the width and height in pixels
   of the block that ghee lays them out in, at the size that fits the pass

@@ -1507,6 +1507,12 @@ bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int qua
     return true;
 }
 
+int ghee_mp_batch_quads(GheeScene *g, int batch, int nattr) {
+    struct mp_batch *l = running_batch(g, batch);
+    if (!l || l->nattr != nattr) return -1;
+    return l->quads;
+}
+
 bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float *data, int quads) {
     struct mp_batch *l = running_batch(g, batch);
     if (!l) return false;

@@ -185,7 +185,13 @@ struct LayerBatches {
     phases: std::cell::RefCell<Vec<(Kind, f64)>>,
     /// True while the batch reads the curves of its glyphs from GLYPHS.
     shared: std::cell::Cell<bool>,
+    /// The uniforms and the size of the words that show() last set on the
+    /// batches, None before the first.
+    shown: std::cell::RefCell<Option<Shown>>,
 }
+
+/// A layout's float uniforms and its block's size, as show() sets them.
+type Shown = (Vec<(&'static str, f64)>, [f64; 2]);
 
 /// Where each layer sits, by its name: its pass and its index among the
 /// pass's layers, its index among the drawn layers, and for a shape drawn in
@@ -657,6 +663,9 @@ pub struct Renderer {
     covered: HashSet<String>,
     /// The outlines that the layouts read, and the texture of GLYPHS.
     glyphs: std::cell::RefCell<text::Glyphs>,
+    /// The uniforms and the size of each text layer's words that show() last
+    /// set on the passes, by the layer's name.
+    pass_shown: std::cell::RefCell<HashMap<String, Shown>>,
     /// Where each layer sits, None after a change of places until the next
     /// lookup makes it again.
     places: std::cell::RefCell<Option<Places>>,
@@ -743,6 +752,7 @@ impl Renderer {
             curves: HashSet::new(),
             covered: HashSet::new(),
             glyphs: std::cell::RefCell::new(text::Glyphs::default()),
+            pass_shown: std::cell::RefCell::new(HashMap::new()),
             places: std::cell::RefCell::new(None),
             colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(None),
@@ -1065,6 +1075,7 @@ impl Renderer {
                     name: l.name().to_string(),
                     phases: std::cell::RefCell::new(Vec::new()),
                     shared: std::cell::Cell::new(false),
+                    shown: std::cell::RefCell::new(None),
                 });
             }
             // A test's batches draw after the layers of their pass.
@@ -1171,6 +1182,7 @@ impl Renderer {
         self.curves.clear();
         self.covered.clear();
         *self.glyphs.borrow_mut() = text::Glyphs::default();
+        self.pass_shown.borrow_mut().clear();
         for l in scene.text_layers() {
             let tex = CString::new(text::internal(&l.name, "_curves_tex"))?;
             let slug = l.render == Render::Slug && self.layers.iter().any(|d| d.name == l.name);
@@ -2454,6 +2466,7 @@ impl Renderer {
             name: l.name.clone(),
             phases: std::cell::RefCell::new(Vec::new()),
             shared: std::cell::Cell::new(false),
+            shown: std::cell::RefCell::new(None),
         };
         self.put_drawn(pass_name, index, dl);
         self.run_quads(&self.runs[r])
@@ -2479,6 +2492,7 @@ impl Renderer {
             name: l.name.clone(),
             phases: std::cell::RefCell::new(Vec::new()),
             shared: std::cell::Cell::new(false),
+            shown: std::cell::RefCell::new(None),
         };
         for (u, ty, value) in Layer::Image(l.clone()).uniforms() {
             self.set_layer_uniform(&dl, &u, ty, value)?;
@@ -2568,6 +2582,7 @@ impl Renderer {
             name: l.name.clone(),
             phases: std::cell::RefCell::new(Vec::new()),
             shared: std::cell::Cell::new(false),
+            shown: std::cell::RefCell::new(None),
         };
         for (u, ty, value) in l.uniforms() {
             self.set_layer_uniform(&dl, &u, ty, value)?;
@@ -2764,38 +2779,68 @@ impl Renderer {
             }
         }
         // The names of a layer reach the passes alone: a layer's batches
-        // read their own under GLSL_NAME.
-        for (suffix, v) in &built.uniforms {
-            let uniform = text::internal(name, suffix);
-            for (_, idx) in &self.mp {
-                self.set_pass_uniform(*idx, &uniform, "float", Value::from(*v))?;
+        // read their own under GLSL_NAME. A pass or a batch that holds
+        // these values already takes none.
+        let shown: Shown = (built.uniforms, built.size);
+        let size = Value::from(built.size.to_vec());
+        if self.pass_shown.borrow().get(name) != Some(&shown) {
+            for (suffix, v) in &shown.0 {
+                let uniform = text::internal(name, suffix);
+                for (_, idx) in &self.mp {
+                    self.set_pass_uniform(*idx, &uniform, "float", Value::from(*v))?;
+                }
             }
-            if let Some(d) = drawn {
+            for (_, idx) in &self.mp {
+                self.set_pass_uniform(*idx, &format!("{name}_size"), "vec2", size.clone())?;
+            }
+            self.pass_shown
+                .borrow_mut()
+                .insert(name.clone(), shown.clone());
+        }
+        let Some(d) = drawn else {
+            return Ok(());
+        };
+        if d.shown.borrow().as_ref() != Some(&shown) {
+            for (suffix, v) in &shown.0 {
                 let own = text::internal(GLSL_NAME, suffix);
                 self.set_layer_uniform(d, &own, "float", Value::from(*v))?;
             }
-        }
-        let size = Value::from(built.size.to_vec());
-        for (_, idx) in &self.mp {
-            self.set_pass_uniform(*idx, &format!("{name}_size"), "vec2", size.clone())?;
-        }
-        if let Some(d) = drawn {
             let own = text::internal(GLSL_NAME, "_size");
             self.set_layer_uniform(d, &own, "vec2", size)?;
+            *d.shown.borrow_mut() = Some(shown);
         }
-        for d in self.layers.iter().filter(|d| d.name == *name) {
-            let what = format!("layer '{name}'");
-            for (batch, floats, what) in [
-                (d.batch, &quads, what.clone()),
-                (d.colour, &colour.0, format!("{what} colour glyphs")),
-                (d.boxes, &boxes, format!("{what} error boxes")),
-            ] {
-                if batch >= 0 {
-                    self.batch_quads(batch, &what, floats, text::QUAD_FLOATS / 4)?;
-                }
+        let what = format!("layer '{name}'");
+        for (batch, floats, what) in [
+            (d.batch, &quads, what.clone()),
+            (d.colour, &colour.0, format!("{what} colour glyphs")),
+            (d.boxes, &boxes, format!("{what} error boxes")),
+        ] {
+            if batch >= 0 {
+                self.text_quads(batch, &what, floats)?;
             }
         }
         Ok(())
+    }
+
+    /// Hand the engine text batch `batch` its quads. A batch that holds as
+    /// many quads takes them in place, and an empty batch that stays empty
+    /// takes no call.
+    fn text_quads(&self, batch: c_int, what: &str, floats: &[f32]) -> Result<()> {
+        let nattr = text::QUAD_FLOATS / 4;
+        let quads = c_int::try_from(floats.len() / (16 * nattr))?;
+        let held = unsafe { ffi::ghee_mp_batch_quads(self.handle, batch, nattr as c_int) };
+        if held == quads && quads == 0 {
+            return Ok(());
+        }
+        if held == quads
+            && floats.len().is_multiple_of(16 * nattr)
+            && unsafe {
+                ffi::ghee_mp_set_batch_quads_at(self.handle, batch, 0, floats.as_ptr(), quads)
+            }
+        {
+            return Ok(());
+        }
+        self.batch_quads(batch, what, floats, nattr)
     }
 
     /// The quads of the colour glyphs `glyphs` of `layer`, for its colour
@@ -3635,6 +3680,7 @@ impl Renderer {
         self.atlases.borrow_mut().clear();
         self.colours.borrow_mut().clear();
         *self.glyphs.borrow_mut() = text::Glyphs::default();
+        self.pass_shown.borrow_mut().clear();
     }
 
     pub fn close(&mut self) {
@@ -6145,6 +6191,43 @@ mod tests {
         assert!(r.set_text("t", "AB").unwrap());
         assert!(r.glyph_bytes.get() > sent);
         assert_eq!(r.glyphs.borrow().reads, read + 2);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_text_given_words_after_words_draws_as_a_scene_built_with_the_last() {
+        // Each row gives t, centred by its size, its words by set_text, or a
+        // look by update_layer that builds it again, and the frame matches
+        // the scene built with that look: words of as many glyphs, none,
+        // none again, more, the same words built again at another size.
+        let text = |words: &str, px: i32| {
+            json!({"name": "t", "text": words, "font_family": "pixel",
+                   "font_size": px})
+        };
+        let scene = |l: &Value| scene_of(json!([{"name": "main", "code": FLAT, "layers": [l]}]));
+        let rows = [
+            (text("ab", 8), false),
+            (text("cd", 8), false),
+            (text("", 8), false),
+            (text("", 8), false),
+            (text("abc", 8), false),
+            (text("abc", 16), true),
+            (text("xy", 16), false),
+        ];
+        let (_g, mut r) = gpu();
+        let built: Vec<Vec<u8>> = rows
+            .iter()
+            .map(|(look, _)| first_frames(&mut r, &scene(look), 1))
+            .collect();
+        first_frames(&mut r, &scene(&rows[0].0), 1);
+        for ((look, rebuild), built) in rows.iter().zip(&built) {
+            match rebuild {
+                true => assert!(r.update_layer(look).unwrap()),
+                false => assert!(r.set_text("t", look["text"].as_str().unwrap()).unwrap()),
+            }
+            r.set_time(Some(0.0));
+            assert!(still(&mut r) == *built, "{look}");
+        }
     }
 
     #[test]

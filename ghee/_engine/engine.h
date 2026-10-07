@@ -201,6 +201,9 @@ bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int qua
 // the attributes of its last ghee_mp_set_batch_quads, and leave the others
 // as they are. false with ghee_last_error set for quads past those it holds.
 bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float *data, int quads);
+// The quads that batch `batch` holds, when its last ghee_mp_set_batch_quads
+// gave them `nattr` attributes a vertex, and -1 otherwise.
+int ghee_mp_batch_quads(GheeScene *g, int batch, int nattr);
 // Bind the set asset `asset` to committed batch `batch` under `name`: the
 // batch's program samples it as <name>_tex and reads its size as <name>_size,
 // in place of the asset bound there before, and pays a texture unit for it as

@@ -38,7 +38,7 @@ use crate::h264::{
     SoftwareH264, HW_COLOR, NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, SW_COLOR, WIRE_ERROR,
 };
 use crate::layer::Address;
-use crate::looper::{ControllerSlot, Frame, Loop, Output, RenderTarget, SceneController};
+use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
 use crate::scene::{ArraySize, Param, ParamValue, Reach, Scene};
 use crate::sources::{collect, Snapshot};
@@ -2109,6 +2109,7 @@ pub fn render_loop(
     console: &Arc<Console>,
     renderer: Rc<RefCell<Renderer>>,
     mut sinks: Vec<Box<dyn Output>>,
+    pacer: Option<Box<dyn Pacer>>,
     on_stats: Option<StatsHook>,
 ) {
     let hz = if console.display {
@@ -2154,6 +2155,7 @@ pub fn render_loop(
         render.frames = console.frames;
         render.timestep = console.timestep;
         render.rate = Some(Arc::clone(&console.frame_rate));
+        render.pacer = pacer;
         // A panel sink blocks acquire() at its bus rate, and that wait is the
         // yield. Any other loop rests so the handler and encoder threads run.
         render.rest = if paced_by_panel { 0.0 } else { 0.003 };
@@ -2859,6 +2861,9 @@ pub struct Options {
     /// is a mode the renderer is created in. run() writes these from its own
     /// thread, so a sink bound to the thread that built it belongs here.
     pub sinks: Vec<Box<dyn Output>>,
+    /// Paces the render loop, as a display's fixed rate does. None draws as
+    /// fast as the sinks and the viewers take frames.
+    pub pacer: Option<Box<dyn Pacer>>,
     /// The pixel format a panel sink packs to, for /stats.
     pub native_format: Option<String>,
     pub components: i32,
@@ -2896,6 +2901,8 @@ impl Default for Options {
             store: None,
             filters: Vec::new(),
             sinks: Vec::new(),
+            pacer: None,
+
             native_format: None,
             components: 4,
             alpha: false,
@@ -2929,6 +2936,7 @@ pub fn run(opts: Options) -> Result<()> {
         scene_args,
         store,
         sinks,
+        pacer,
         native_format,
         components,
         alpha,
@@ -3029,7 +3037,7 @@ pub fn run(opts: Options) -> Result<()> {
                 size.0,
                 size.1,
             );
-            render_loop(&console, Rc::new(RefCell::new(r)), sinks, on_stats);
+            render_loop(&console, Rc::new(RefCell::new(r)), sinks, pacer, on_stats);
         }
         Err(e) => {
             lock(&console.stat).error = e.to_string();
@@ -4653,6 +4661,32 @@ mod tests {
         assert_eq!(n, 3);
         assert!(wall > 0.0);
         assert_eq!(out, [crate::stats::DEST_PANEL]);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_console_with_a_frame_rate_cap_draws_no_faster_than_it() {
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
+        let (_d, console) = tmp_console("capped");
+        let summary: Summary = Rc::new(RefCell::new(None));
+        let got = Rc::clone(&summary);
+        let ran = run(Options {
+            store: Some(SceneStore::new(&console.store.dir, Vec::new())),
+            port: free_port(),
+            size: (32, 24),
+            frames: 5,
+            sinks: vec![Box::new(Bound(Rc::new(Cell::new(0))))],
+            pacer: Some(Box::new(crate::output::FixedPacer::new(20.0))),
+            on_stats: Some(Box::new(move |times, wall, out| {
+                *got.borrow_mut() = Some((times.len(), wall, out.to_vec()));
+            })),
+            ..Options::default()
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        let (n, wall, _) = summary.borrow().clone().expect("no summary");
+        // five frames at 20 a second leave four periods of 50 ms between them
+        assert_eq!(n, 5);
+        assert!(wall >= 0.19, "{wall}");
     }
 
     fn free_port() -> u16 {

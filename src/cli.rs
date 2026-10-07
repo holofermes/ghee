@@ -997,12 +997,20 @@ fn serve(
         timestep: a.timestep,
         dri_device: dri,
         on_stats: a.stats.then(serve_stats),
+        pacer: console_pacer(a),
         ..Default::default()
     });
     if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
         std::process::exit(143);
     }
     ran
+}
+
+/// The console's frame rate cap: --fps, whatever takes the frames.
+fn console_pacer(a: &Ns) -> Option<Box<dyn Pacer>> {
+    a.fps
+        .filter(|f| *f != 0.0)
+        .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>)
 }
 
 /// A store for the single scene `render --serve` names. A bundled example
@@ -1575,6 +1583,13 @@ struct ServeArgs {
     #[arg(long, help = "serve the bundled example scenes")]
     demo: bool,
 
+    #[arg(
+        long,
+        help = "cap the render's frame rate (default: as fast as the display and the \
+                viewers take frames)"
+    )]
+    fps: Option<f64>,
+
     #[command(flatten)]
     render: RenderFlags,
 
@@ -1708,7 +1723,7 @@ impl ServeArgs {
             alpha: false,
             save_opts: None,
             write_buffer: 16,
-            fps: None,
+            fps: self.fps,
             filters: None,
             stats: false,
             display: self.render.display,
@@ -2344,6 +2359,18 @@ mod tests {
         let a = ns(&["render", "s.py", "--display", "ssd1306"]);
         assert_eq!(prospective_size(&a), (ssd1306.size)(&[]).ok());
         assert!(prospective_size(&a).is_some());
+    }
+
+    #[test]
+    fn a_console_takes_the_frame_rate_cap_it_is_given() {
+        for (tokens, capped) in [
+            (vec!["serve", "scenes/", "--fps", "24"], true),
+            (vec!["render", "s", "--serve", "--fps", "106"], true),
+            (vec!["serve", "scenes/", "--fps", "0"], false),
+            (vec!["serve", "scenes/"], false),
+        ] {
+            assert_eq!(console_pacer(&ns(&tokens)).is_some(), capped, "{tokens:?}");
+        }
     }
 
     #[test]

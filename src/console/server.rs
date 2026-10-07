@@ -264,6 +264,8 @@ pub struct Console {
     pub display: bool,
     /// Scan out in 16-bit color. This halves the GPU store and the scanout bytes.
     pub rgb565: bool,
+    /// The degrees clockwise that every output turns the frame.
+    pub rotate: i64,
     /// The longest side of the browser preview. The encoder thread downscales it.
     pub preview_max: i32,
     /// The browser preview refresh cap. The display and the panel stay at full
@@ -344,6 +346,7 @@ impl Console {
             h: 240,
             display: false,
             rgb565: false,
+            rotate: 0,
             preview_max: 480,
             preview_fps: 15.0,
             stream_max: 0,
@@ -1355,6 +1358,7 @@ impl RenderTarget for SharedRenderer {
 fn make_renderer(console: &Console) -> Result<Renderer> {
     let mut r = open_renderer(console)?;
     r.set_alpha(console.alpha);
+    r.set_rotate(console.rotate)?;
     Ok(r)
 }
 
@@ -2222,6 +2226,9 @@ pub struct Options {
     pub host: String,
     pub display: bool,
     pub rgb565: bool,
+    /// The degrees clockwise that every output turns the frame: 0, 90, 180
+    /// or 270. `size` stays the output's.
+    pub rotate: i64,
     pub preview_max: i32,
     pub preview_fps: f64,
     pub stream_max: i32,
@@ -2264,6 +2271,7 @@ impl Default for Options {
             host: "127.0.0.1".to_string(),
             display: false,
             rgb565: false,
+            rotate: 0,
             preview_max: 480,
             preview_fps: 15.0,
             stream_max: 0,
@@ -2295,6 +2303,7 @@ pub fn run(opts: Options) -> Result<()> {
         host,
         display,
         rgb565,
+        rotate,
         preview_max,
         preview_fps,
         stream_max,
@@ -2336,6 +2345,7 @@ pub fn run(opts: Options) -> Result<()> {
     console.h = size.1;
     console.display = display;
     console.rgb565 = rgb565;
+    console.rotate = rotate;
     console.preview_max = preview_max;
     console.preview_fps = preview_fps;
     console.stream_max = stream_max;

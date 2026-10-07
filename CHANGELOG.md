@@ -381,6 +381,12 @@
   `dtparam=i2c_arm_baudrate`, 1000000 by default, and `address` passes the
   panel's I2C address to the overlay, where ghee refused any address but
   0x3C. A 128x64 module takes the overlay's own wiring.
+- Turn the frame clockwise on its way to every output with `--rotate 90`,
+  `180` or `270` on `ghee render` and `ghee serve`, and
+  `Renderer::set_rotate` in Rust: the display, the files, the raw frames
+  and the console's preview and H264 all take the turned frame, on the GPU.
+  At 90 and 270 the scene renders at the output's size turned, so a 128x32
+  panel gives the scene 32x128.
 - Find a KMS display for `ghee displays` and `--display kms` in the
   kernel's cached connector state, and probe a connector, which rereads an
   HDMI display's EDID, only when that state lists no modes.

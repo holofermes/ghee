@@ -218,6 +218,12 @@ void ghee_mp_reset(GheeScene *g);
 // downscaled one. Off by default. The scanout and the encoder input take alpha
 // 1 either way.
 void ghee_keep_alpha(GheeScene *g, int keep);
+// Turn the frame quarter_turns times 90 degrees clockwise on its way to every
+// output: the readback, the scanout and the encoder. The size given at create
+// stays the output's, and at 1 or 3 quarter turns the scene renders at that
+// size turned. Call it before the first ghee_mp_add_pass. false with
+// ghee_last_error set otherwise.
+bool ghee_set_rotate(GheeScene *g, int quarter_turns);
 // The texture units one program of a pass binds at most: its pass's channels and
 // arrays, then the assets it samples. min(16, GL_MAX_TEXTURE_IMAGE_UNITS): VC4
 // has 16, so a pass that fits one Pi fits them all.

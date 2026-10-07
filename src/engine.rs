@@ -392,6 +392,17 @@ pub fn display_renders(dri_device: &str) -> bool {
     unsafe { ffi::ghee_display_renders(cdev.as_ptr()) != 0 }
 }
 
+/// The turns that a renderer takes, in degrees clockwise.
+pub const ROTATIONS: [i64; 4] = [0, 90, 180, 270];
+
+/// The quarter turns clockwise of a rotation of `degrees`.
+pub fn quarter_turns(degrees: i64) -> Result<c_int> {
+    match ROTATIONS.iter().position(|d| *d == degrees) {
+        Some(q) => Ok(q as c_int),
+        None => bail!("rotate takes 0, 90, 180 or 270, got {degrees}"),
+    }
+}
+
 /// The size of a packed frame in bytes.
 /// bw packs 1bpp. Otherwise the frame packs RGB565.
 pub fn packed_size(width: i32, height: i32, bw: bool) -> usize {
@@ -544,6 +555,8 @@ pub struct Renderer {
     pub display: bool,
     /// The readbacks keep the output pass's alpha. set_alpha() sets it.
     alpha: bool,
+    /// The quarter turns clockwise that set_rotate() set.
+    turns: c_int,
     /// pass name -> engine pass index, in the order setup() adds the passes.
     mp: Vec<(String, c_int)>,
     /// array name -> size, in declaration order.
@@ -643,6 +656,7 @@ impl Renderer {
             error_pass: None,
             display,
             alpha: false,
+            turns: 0,
             mp: Vec::new(),
             feeds: Vec::new(),
             scene_assets: std::cell::RefCell::new(Vec::new()),
@@ -790,23 +804,20 @@ impl Renderer {
         // passes, so a filter pass appended after a sized pass keeps its
         // size, and a sized pass that hidden passes leave last loses it.
         let n = drawn.len();
+        let (sw, sh) = self.scene_size();
         if let Some((w, h)) = drawn[n - 1].size {
             crate::report::warn(format!(
                 "output pass '{}' sets a size ({w}x{h}) and renders at the screen size \
-                 ({}x{}); to keep its size, add a filter or a pass after it that reads it \
+                 ({sw}x{sh}); to keep its size, add a filter or a pass after it that reads it \
                  through a channel",
                 drawn[n - 1].name,
-                self.width,
-                self.height
             ));
             drawn.to_mut()[n - 1].size = None;
         }
         let last = &drawn[n - 1];
         let npot = self.mipmaps_npot();
         for p in drawn.iter().filter(|p| p.mipmaps) {
-            let (w, h) = p
-                .size
-                .unwrap_or((i64::from(self.width), i64::from(self.height)));
+            let (w, h) = p.size.unwrap_or((i64::from(sw), i64::from(sh)));
             if let Some(e) = mip_refusal(&p.name, w, h, npot) {
                 self.error = e;
                 return Ok(self.error.clone());
@@ -932,11 +943,9 @@ impl Renderer {
                     Some(l.shaders(l.detail(px_em)))
                 })
                 .collect();
-            let size = p
-                .size
-                .map_or([f64::from(self.width), f64::from(self.height)], |(w, h)| {
-                    [w as f64, h as f64]
-                });
+            let size = p.size.map_or([f64::from(sw), f64::from(sh)], |(w, h)| {
+                [w as f64, h as f64]
+            });
             // The run that the layer before joined, when it is a shape.
             let mut run: Option<usize> = None;
             for (l, sh) in p.layers.iter().zip(&shaders) {
@@ -1135,7 +1144,7 @@ impl Renderer {
         self.set_scene_param(
             "aspect",
             "float",
-            &ParamValue::Float(f64::from(self.width) / f64::from(self.height.max(1))),
+            &ParamValue::Float(f64::from(sw) / f64::from(sh.max(1))),
         )?;
         // Assets go in before the channels and the arrays, so the engine's
         // texture-unit budget counts them.
@@ -1770,10 +1779,11 @@ impl Renderer {
         Ok(name)
     }
 
-    /// The size in pixels of drawn pass `pass`: the renderer's for the pass
-    /// that holds the frame, else its own size or the renderer's.
+    /// The size in pixels of drawn pass `pass`: the scene's for the pass
+    /// that holds the frame, else its own size or the scene's.
     fn pass_size(&self, pass: &str) -> [f64; 2] {
-        let full = [f64::from(self.width), f64::from(self.height)];
+        let (sw, sh) = self.scene_size();
+        let full = [f64::from(sw), f64::from(sh)];
         if self.mp.last().is_some_and(|(n, _)| n == pass) {
             return full;
         }
@@ -2453,10 +2463,9 @@ impl Renderer {
     /// in no font takes atlas::PX_EM.
     fn atlas_sizes(&self, scene: &Scene, drawn: &[Pass]) -> HashMap<String, u32> {
         let mut out = HashMap::new();
+        let (sw, sh) = self.scene_size();
         for p in drawn {
-            let (w, h) = p
-                .size
-                .unwrap_or((i64::from(self.width), i64::from(self.height)));
+            let (w, h) = p.size.unwrap_or((i64::from(sw), i64::from(sh)));
             for l in p.layers.iter().filter_map(Layer::as_text) {
                 let words = scene.words(&l.name).unwrap_or(&l.text);
                 let block = l.place(words).ok().and_then(|laid| laid.built);
@@ -3037,6 +3046,29 @@ impl Renderer {
             false => "this GPU has",
         };
         Some(format!("{what} needs {want} texture units, {has} {units}"))
+    }
+
+    /// Turn the frame `degrees` clockwise, 0, 90, 180 or 270, on its way to
+    /// every output: the readback, the display and the H264 encoder. width
+    /// and height stay the frame's, and at 90 and 270 the scene renders at
+    /// that size turned, as scene_size() gives it. Call it before the first
+    /// setup().
+    pub fn set_rotate(&mut self, degrees: i64) -> Result<()> {
+        let turns = quarter_turns(degrees)?;
+        if !unsafe { ffi::ghee_set_rotate(self.handle, turns) } {
+            bail!("{}", or_else(self.last_error(), "rotate refused"));
+        }
+        self.turns = turns;
+        Ok(())
+    }
+
+    /// The size that the scene renders at: the frame's size, turned at 90
+    /// and 270 degrees.
+    pub fn scene_size(&self) -> (i32, i32) {
+        match self.turns % 2 {
+            1 => (self.height, self.width),
+            _ => (self.width, self.height),
+        }
     }
 
     /// Keep the output pass's alpha in 4-component frames. Off by default,
@@ -6028,5 +6060,68 @@ mod tests {
         let mut want = vec![(near, vec![tex("a"), tex("b")]), (far, vec![tex("c")])];
         want.sort();
         assert_eq!(slots, want);
+    }
+
+    /// Each pixel of the scene holds its column in red and its row from the
+    /// top in green, which read back exactly.
+    const POSITION: &str = "void main(){ vec2 p = floor(v_texCoord * resolution); \
+        gl_FragColor = vec4(p / 255.0, 0.0, 1.0); }";
+
+    /// The frame's pixel (x, y) of a w x h frame shows the scene pixel that a
+    /// clockwise turn of `degrees` puts there. The scaled readback takes the
+    /// same turn, at two frame pixels to a side.
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn every_readback_turns_the_frame_clockwise() {
+        let (w, h) = (8usize, 4usize);
+        for (degrees, scene_size) in [(0, (8, 4)), (90, (4, 8)), (180, (8, 4)), (270, (4, 8))] {
+            let (_g, mut r) = gpu_at(w, h);
+            r.set_rotate(degrees).unwrap();
+            assert_eq!(r.scene_size(), scene_size, "{degrees}");
+            let sc = scene_of(json!([{"name": "main", "code": POSITION}]));
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            let frame = r.render(None).unwrap().to_vec();
+            let scaled = r.render_scaled(None, (2 * w as i32, 2 * h as i32)).unwrap();
+            for (x, y) in (0..h).flat_map(|y| (0..w).map(move |x| (x, y))) {
+                let (sx, sy) = match degrees {
+                    0 => (x, y),
+                    90 => (y, w - 1 - x),
+                    180 => (w - 1 - x, h - 1 - y),
+                    _ => (h - 1 - y, x),
+                };
+                let want = (sx as f64, sy as f64);
+                let at = |f: &[u8], fw: usize, x: usize, y: usize| {
+                    (px(f, fw, x, y, 0), px(f, fw, x, y, 1))
+                };
+                assert_eq!(at(&frame, w, x, y), want, "{degrees} at ({x}, {y})");
+                for (dx, dy) in [(0, 0), (1, 1)] {
+                    let got = at(&scaled, 2 * w, 2 * x + dx, 2 * y + dy);
+                    assert_eq!(got, want, "{degrees} scaled at ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_turn_is_a_quarter_turn_clockwise() {
+        for (degrees, turns) in [(0, 0), (90, 1), (180, 2), (270, 3)] {
+            assert_eq!(quarter_turns(degrees).unwrap(), turns);
+        }
+        assert_eq!(
+            quarter_turns(45).unwrap_err().to_string(),
+            "rotate takes 0, 90, 180 or 270, got 45"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_turn_comes_before_the_first_scene() {
+        let (_g, mut r) = gpu();
+        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        assert_eq!(
+            r.set_rotate(90).unwrap_err().to_string(),
+            "rotate needs a renderer with no scene yet"
+        );
+        assert_eq!(r.scene_size(), (W as i32, H as i32));
     }
 }

@@ -197,6 +197,7 @@ extern "C" {
     ) -> *mut c_void;
     pub fn ghee_mp_reset(g: *mut GheeScene);
     pub fn ghee_keep_alpha(g: *mut GheeScene, keep: c_int);
+    pub fn ghee_set_rotate(g: *mut GheeScene, quarter_turns: c_int) -> bool;
     pub fn ghee_max_texture_units(g: *mut GheeScene) -> c_int;
     pub fn ghee_gl_texture_units(g: *mut GheeScene) -> c_int;
     pub fn ghee_data_texture_linear(g: *mut GheeScene) -> bool;

@@ -129,7 +129,11 @@ struct mp_batch {
 };
 
 struct GheeScene {
+    // The scene renders at width x height. The readback, the scanout and the
+    // encoder take the frame at out_w x out_h, turned `turn` quarter turns
+    // clockwise, so at an odd turn the two sizes swap.
     int width, height, components;
+    int out_w, out_h, turn;
 
     int drm_fd;
     struct gbm_device *gbm;
@@ -257,7 +261,7 @@ struct GheeScene {
     bool flip_pending;           // a submitted page flip whose event hasn't been reaped
     bool flip_failed;            // a refused flip, reported once instead of every frame
     GLuint blit_prog;
-    GLint blit_sampler, blit_flip, blit_opaque;
+    GLint blit_sampler, blit_flip, blit_opaque, blit_turn, blit_shift;
     GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
     int preview_w, preview_h;
     int keep_last;                     // >0: an encoder samples the final pass, never draw it direct
@@ -289,8 +293,9 @@ static const char *vertex_shader_source =
     "}";
 
 // Present blit: sample the final pass texture onto the scanout target. flipY
-// mirrors it for the window surface, which Mesa stores top row first, and
-// opaque 1 writes alpha 1.
+// mirrors it for the window surface, which Mesa stores top row first, `turn`
+// and `shift` map the target's uv onto the frame's, and opaque 1 writes
+// alpha 1.
 static const char *blit_fragment_source =
     "#version 100\n"
     "precision mediump float;"
@@ -298,9 +303,22 @@ static const char *blit_fragment_source =
     "uniform sampler2D tex;"
     "uniform float flipY;"
     "uniform float opaque;"
+    "uniform mat2 turn;"
+    "uniform vec2 shift;"
     "void main() { vec2 uv = vec2(v_texCoord.x, mix(v_texCoord.y, 1.0 - v_texCoord.y, flipY));"
-    " vec4 c = texture2D(tex, uv);"
+    " vec4 c = texture2D(tex, turn * uv + shift);"
     " gl_FragColor = vec4(c.rgb, max(c.a, opaque)); }";
+
+// Each quarter turn clockwise as the blit's `turn`, column-major, then its
+// `shift`: the target's uv o samples the frame at turn * o + shift, both with
+// y down from the top row. No turn multiplies by 1 and adds 0, which leaves
+// every uv exact.
+static const GLfloat TURNS[4][6] = {
+    { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f },
+    { 0.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f },
+    { -1.0f, 0.0f, 0.0f, -1.0f, 1.0f, 1.0f },
+    { 0.0f, 1.0f, -1.0f, 0.0f, 1.0f, 0.0f },
+};
 
 static int say_level = 1;
 void ghee_set_verbosity(int level) { say_level = level; }
@@ -578,8 +596,8 @@ static GheeScene *create_impl(int width, int height, int components, const char 
 
     GheeScene *g = calloc(1, sizeof(GheeScene));
     if (!g) { if (err) *err = "out of memory"; return NULL; }
-    g->width = width;
-    g->height = height;
+    g->width = g->out_w = width;
+    g->height = g->out_h = height;
     g->components = components;
     g->drm_fd = -1;
     g->gpu_fd = -1;
@@ -833,9 +851,9 @@ static bool lend_buffers(GheeScene *g, char *eb, size_t n) {
     for (int i = 0; i < LENT_BUFFERS; i++) {
         // The card's driver reads a buffer row by row and knows nothing of the
         // GPU's tiling, so every lent buffer is linear.
-        struct gbm_bo *bo = gbm_bo_create(g->gbm, g->width, g->height, GBM_FORMAT_XRGB8888,
+        struct gbm_bo *bo = gbm_bo_create(g->gbm, g->out_w, g->out_h, GBM_FORMAT_XRGB8888,
                                           GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
-        if (!bo) { snprintf(eb, n, "the GPU cannot allocate a linear %dx%d scanout buffer", g->width, g->height); return false; }
+        if (!bo) { snprintf(eb, n, "the GPU cannot allocate a linear %dx%d scanout buffer", g->out_w, g->out_h); return false; }
         g->lent[i].bo = bo;
         g->lent_count = i + 1;
         uint32_t handle = 0, fb = 0;
@@ -853,8 +871,8 @@ static bool lend_buffers(GheeScene *g, char *eb, size_t n) {
         const int fd = gbm_bo_get_fd(bo);
         if (fd < 0) { snprintf(eb, n, "cannot export a scanout buffer from the GPU"); return false; }
         const EGLint attr[] = {
-            EGL_WIDTH, g->width,
-            EGL_HEIGHT, g->height,
+            EGL_WIDTH, g->out_w,
+            EGL_HEIGHT, g->out_h,
             EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_XRGB8888,
             EGL_DMA_BUF_PLANE0_FD_EXT, fd,
             EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
@@ -2362,18 +2380,40 @@ static bool ensure_blit(GheeScene *g) {
     g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");
     g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
     g->blit_opaque = glGetUniformLocation(g->blit_prog, "opaque");
+    g->blit_turn = glGetUniformLocation(g->blit_prog, "turn");
+    g->blit_shift = glGetUniformLocation(g->blit_prog, "shift");
     glUseProgram(g->blit_prog);   // ghee_vflip stays 1: the blit mirrors with flipY in its fragment shader
     const GLint bvf = glGetUniformLocation(g->blit_prog, "ghee_vflip");
     if (bvf >= 0) glUniform1f(bvf, 1.0f);
     return true;
 }
 
+// Set the blit program up to sample `tex`, the frame, turned as the output
+// takes it. flipY mirrors it for the window surface, and opaque 1 writes alpha 1.
+static void bind_blit(GheeScene *g, GLuint tex, float flipY, float opaque) {
+    glUseProgram(g->blit_prog);
+    glUniform1f(g->blit_flip, flipY);
+    glUniform1f(g->blit_opaque, opaque);
+    glUniformMatrix2fv(g->blit_turn, 1, GL_FALSE, TURNS[g->turn]);
+    glUniform2fv(g->blit_shift, 1, TURNS[g->turn] + 4);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(g->blit_sampler, 0);
+    glBindVertexArray(g->VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(1);
+}
+
 // Draw the bound blit quad into a w x h target. A target at a whole multiple of
-// the frame samples nearest, so each frame pixel lands as an exact square block.
+// the output's size samples nearest, so each frame pixel lands as an exact
+// square block, and a turned frame lands pixel for pixel.
 static void draw_blit(GheeScene *g, int w, int h) {
-    const bool blocks = g->width > 0 && g->height > 0 && w > g->width &&
-                        w % g->width == 0 && h % g->height == 0 &&
-                        w / g->width == h / g->height;
+    const int ow = g->out_w, oh = g->out_h;
+    const bool blocks = ow > 0 && oh > 0 && w >= ow && w % ow == 0 && h % oh == 0 &&
+                        w / ow == h / oh;
     if (blocks) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (blocks) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -2411,18 +2451,8 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     }
     glBindFramebuffer(GL_FRAMEBUFFER, g->preview_fbo);
     glViewport(0, 0, pw, ph);
-    glUseProgram(g->blit_prog);
-    glUniform1f(g->blit_flip, 0.0f);   // preview matches glReadPixels orientation
-    glUniform1f(g->blit_opaque, g->keep_alpha ? 0.0f : 1.0f);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
-    glUniform1i(g->blit_sampler, 0);
-    glBindVertexArray(g->VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
-    glEnableVertexAttribArray(1);
+    // the preview matches glReadPixels orientation
+    bind_blit(g, g->mp_tex[last][g->mp_write[last]], 0.0f, g->keep_alpha ? 0.0f : 1.0f);
     draw_blit(g, pw, ph);
     read_pixels(g, pw, ph, g->components, buffer_rgb);
 }
@@ -2473,7 +2503,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (g->mp_count <= 0) { set_error(g, "present: the scene has no passes"); return; }
     make_current(g);
     const int last = g->mp_count - 1;
-    bool direct = !(buffer_rgb && pw > 0 && ph > 0) && !g->keep_last;
+    bool direct = !(buffer_rgb && pw > 0 && ph > 0) && !g->keep_last && !g->turn;
     for (int p = 0; p < g->mp_count && direct; p++)
         for (int c = 0; c < g->mp_nchan[p]; c++)
             if (g->mp_chan_src[p][c] == last) { direct = false; break; }
@@ -2488,21 +2518,10 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
 
     if (!direct) {
         glBindFramebuffer(GL_FRAMEBUFFER, g->scan_fbo);
-        glViewport(0, 0, g->width, g->height);
+        glViewport(0, 0, g->out_w, g->out_h);
         glClear(GL_COLOR_BUFFER_BIT);   // skip the tile load (see render_passes)
-        glUseProgram(g->blit_prog);
-        glUniform1f(g->blit_flip, g->lent_count ? 0.0f : 1.0f);
-        glUniform1f(g->blit_opaque, 1.0f);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][g->mp_write[last]]);
-        glUniform1i(g->blit_sampler, 0);
-        glBindVertexArray(g->VAO);
-        glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
-        glEnableVertexAttribArray(1);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        bind_blit(g, g->mp_tex[last][g->mp_write[last]], g->lent_count ? 0.0f : 1.0f, 1.0f);
+        draw_blit(g, g->out_w, g->out_h);
     }
     if (g->lent_count) {
         // The page flip waits on the fence of the GPU's writes, so a flush
@@ -2523,7 +2542,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
             if (!g->disp_saved) g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
             g->disp_first = false;
         }
-        if (set_scaled_plane(g, fb, g->width, g->height)) {
+        if (set_scaled_plane(g, fb, g->out_w, g->out_h)) {
             release_bo(g, g->disp_shown);
             g->disp_shown = g->disp_prev;
             g->disp_prev = bo;
@@ -2571,14 +2590,16 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     const int last = g->mp_count - 1;
     if (buffer_rgb && pw > 0 && ph > 0) {
         read_preview(g, buffer_rgb, pw, ph);
+    } else if (buffer_rgb && g->turn) {
+        read_preview(g, buffer_rgb, g->out_w, g->out_h);
     } else if (buffer_rgb) {
         glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[last][g->mp_write[last]]);
-        read_pixels(g, g->width, g->height, g->components, buffer_rgb);
+        read_pixels(g, g->out_w, g->out_h, g->components, buffer_rgb);
         // An RGB buffer reads back alpha 255 by itself. A final pass that
         // stores its alpha takes 255 here.
         if (g->components == 4 && g->mp_alpha[last] && !g->keep_alpha) {
             uint8_t *a = buffer_rgb + 3;
-            for (size_t i = 0, n = (size_t)g->width * g->height; i < n; i++, a += 4) *a = 255;
+            for (size_t i = 0, n = (size_t)g->out_w * g->out_h; i < n; i++, a += 4) *a = 255;
         }
     }
 
@@ -2604,6 +2625,21 @@ void ghee_clear_time(GheeScene *g) { g->has_time_override = false; }
 void ghee_set_dt(GheeScene *g, float dt) { g->dt = dt; }
 
 void ghee_keep_alpha(GheeScene *g, int keep) { g->keep_alpha = keep; }
+
+bool ghee_set_rotate(GheeScene *g, int quarter_turns) {
+    if (quarter_turns < 0 || quarter_turns > 3) {
+        set_error(g, "%d quarter turns is not 0 to 3", quarter_turns);
+        return false;
+    }
+    if (g->mp_count > 0 || g->stage_count > 0) {
+        set_error(g, "rotate needs a renderer with no scene yet");
+        return false;
+    }
+    g->turn = quarter_turns;
+    g->width = quarter_turns % 2 ? g->out_h : g->out_w;
+    g->height = quarter_turns % 2 ? g->out_w : g->out_h;
+    return true;
+}
 
 int ghee_max_texture_units(GheeScene *g) { return g ? (int)g->max_units : 0; }
 
@@ -2635,18 +2671,7 @@ void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, w, h);
     glClear(GL_COLOR_BUFFER_BIT);
-    glUseProgram(g->blit_prog);
-    glUniform1f(g->blit_flip, flipY);
-    glUniform1f(g->blit_opaque, 1.0f);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g->mp_tex[last][buf]);
-    glUniform1i(g->blit_sampler, 0);
-    glBindVertexArray(g->VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
-    glEnableVertexAttribArray(1);
+    bind_blit(g, g->mp_tex[last][buf], flipY, 1.0f);
     draw_blit(g, w, h);
 }
 

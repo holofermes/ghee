@@ -75,6 +75,14 @@ fn text(v: &Option<String>) -> &str {
     v.as_deref().unwrap_or_default()
 }
 
+/// --rotate's degrees, one of the turns that a renderer takes.
+fn rotation(s: &str) -> Result<i64, String> {
+    match s.trim().parse::<i64>() {
+        Ok(d) if crate::engine::ROTATIONS.contains(&d) => Ok(d),
+        _ => Err(format!("'{s}' is not 0, 90, 180 or 270")),
+    }
+}
+
 fn size(s: &str) -> Result<(i32, i32), String> {
     let bad = || format!("invalid _size value: '{s}'");
     let lower = s.to_lowercase();
@@ -789,8 +797,9 @@ fn cmd_render(a: &Ns) -> Result<()> {
     // the scene loads first: it owns the tokens after `--` and their --help. A
     // rejected scene fails before a panel opens. It builds its own buffers as
     // it loads, so it learns the render size before that.
-    if let Some(size) = prospective_size(a) {
-        crate::procedural::process::set_render_size(size);
+    if let Some((w, h)) = prospective_size(a) {
+        let turned = a.rotate == 90 || a.rotate == 270;
+        crate::procedural::process::set_render_size(if turned { (h, w) } else { (w, h) });
     }
     let scene = if a.serve { None } else { Some(scene_of(a)?) };
     let panel = panel_of(a)?;
@@ -834,6 +843,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
         RefCell::new(process.map(|f| Box::new(f) as Box<dyn SceneController>));
     let mut r = Renderer::new(w, h, components, dri.as_deref(), kms, a.rgb565)?;
     r.set_alpha(a.alpha);
+    r.set_rotate(a.rotate)?;
     let err = r.setup(&scene)?;
     if !err.is_empty() {
         return Err(exit(format!("compile error: {err}")));
@@ -954,6 +964,7 @@ fn serve(
         native_format,
         display: kms,
         rgb565: a.rgb565,
+        rotate: a.rotate,
         port: a.port,
         host: a.host.clone(),
         preview_max: a.preview_max,
@@ -1311,6 +1322,16 @@ struct RenderFlags {
                 bandwidth (worth it on VC4-class boards), slight banding in gradients"
     )]
     rgb565: bool,
+
+    #[arg(
+        long,
+        value_name = "DEGREES",
+        default_value_t = 0,
+        value_parser = rotation,
+        help = "turn the frame clockwise on its way to every output: 0, 90, 180 or \
+                270. At 90 and 270 the scene renders at the output's size turned"
+    )]
+    rotate: i64,
     #[arg(
         long,
         help = "with `-- --help`, list the scenes without asking each one what \
@@ -1603,6 +1624,7 @@ pub struct Ns {
     display: Option<String>,
     display_opts: Option<String>,
     rgb565: bool,
+    rotate: i64,
     frames: Option<i64>,
     timestep: Option<f64>,
     size: Option<(i32, i32)>,
@@ -1642,6 +1664,7 @@ impl RenderArgs {
             display: self.render.display,
             display_opts: self.render.display_opts,
             rgb565: self.render.rgb565,
+            rotate: self.render.rotate,
             frames: self.render.frames,
             timestep: self.render.timestep,
             size: self.render.size,
@@ -1681,6 +1704,7 @@ impl ServeArgs {
             display: self.render.display,
             display_opts: self.render.display_opts,
             rgb565: self.render.rgb565,
+            rotate: self.render.rotate,
             frames: self.render.frames,
             timestep: self.render.timestep,
             size: self.render.size,
@@ -1825,6 +1849,16 @@ mod tests {
         let path = format!("{d}/s.scene.json");
         fs::write(&path, SCENE).unwrap();
         (d, path)
+    }
+
+    #[test]
+    fn rotate_takes_the_four_turns() {
+        for d in ["0", "90", "180", "270"] {
+            let a = ns(&["render", "s.scene.json", "-o", "x.png", "--rotate", d]);
+            assert_eq!(a.rotate.to_string(), d);
+        }
+        assert_eq!(ns(&["serve", "--demo"]).rotate, 0);
+        assert_eq!(rotation("45").unwrap_err(), "'45' is not 0, 90, 180 or 270");
     }
 
     #[test]

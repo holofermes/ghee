@@ -98,3 +98,34 @@ fn a_sized_output_pass_says_once_that_it_renders_at_the_screen_size_and_quiet_sa
     assert!(out.status.success(), "{out:?}");
     assert_eq!(String::from_utf8(out.stderr).unwrap(), "");
 }
+
+/// Each pixel of the scene holds its column in red and its row from the top
+/// in green.
+const POSITION: &str = r#"{"passes": [{"name": "main",
+    "code": "void main(){ vec2 p = floor(v_texCoord * resolution); gl_FragColor = vec4(p / 255.0, 0.0, 1.0); }"}]}"#;
+
+/// The PNG's size and its RGBA rows, decoded by the png crate.
+fn decode(path: &Path) -> ((u32, u32), Vec<u8>) {
+    let mut reader = png::Decoder::new(fs::File::open(path).unwrap())
+        .read_info()
+        .unwrap();
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    buf.truncate(info.buffer_size());
+    ((info.width, info.height), buf)
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn rotate_turns_the_written_frame_and_keeps_its_size() {
+    let dir = Dir::new("rotate");
+    let out = render(&dir.0, POSITION, &["--size", "8x4", "--rotate", "90"]);
+    assert!(out.status.success(), "{out:?}");
+    let ((w, h), px) = decode(&dir.join("out.png"));
+    assert_eq!((w, h), (8, 4));
+    // the scene is 4x8, and its bottom-left pixel lands top left
+    assert_eq!(&px[..2], &[0, 7]);
+    // its top-left pixel lands top right
+    assert_eq!(&px[7 * 4..7 * 4 + 2], &[0, 0]);
+}

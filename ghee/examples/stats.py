@@ -27,7 +27,7 @@ def show(tick):
     load = os.getloadavg()[0] / (os.cpu_count() or 1)
     with ghee.draw() as d:
         d.text(time.strftime("%H:%M"), x=0, y=0, font_size=16)
-        d.text(f"load {load:.0%}", x=0, y=20, font_size=8)
+        d.text(f"load {load:.0%}", x=0, y=20, font_size=8, font_family="pixel")
         d.rect(
             x=64,
             y=20,

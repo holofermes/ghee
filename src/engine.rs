@@ -187,6 +187,16 @@ struct LayerBatches {
     shared: std::cell::Cell<bool>,
 }
 
+/// Where each layer sits, by its name: its pass and its index among the
+/// pass's layers, its index among the drawn layers, and for a shape drawn in
+/// a run, the run and its index there.
+#[derive(Debug, Default, PartialEq)]
+struct Places {
+    scene: HashMap<String, (usize, usize)>,
+    drawn: HashMap<String, usize>,
+    runs: HashMap<String, (usize, usize)>,
+}
+
 /// Consecutive shape layers of a pass with one blend, which one batch draws
 /// with the shape program.
 struct ShapeRun {
@@ -647,6 +657,9 @@ pub struct Renderer {
     covered: HashSet<String>,
     /// The outlines that the layouts read, and the texture of GLYPHS.
     glyphs: std::cell::RefCell<text::Glyphs>,
+    /// Where each layer sits, None after a change of places until the next
+    /// lookup makes it again.
+    places: std::cell::RefCell<Option<Places>>,
     /// The colour atlas of each drawn layer whose words held colour glyphs,
     /// by the layer's name.
     colours: std::cell::RefCell<HashMap<String, ColourAtlas>>,
@@ -730,6 +743,7 @@ impl Renderer {
             curves: HashSet::new(),
             covered: HashSet::new(),
             glyphs: std::cell::RefCell::new(text::Glyphs::default()),
+            places: std::cell::RefCell::new(None),
             colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(None),
             drawn_at: std::cell::Cell::new(0.0),
@@ -1143,6 +1157,7 @@ impl Renderer {
         }
         self.layers = layers;
         self.runs = runs;
+        self.moved();
         self.drawn_at.set(0.0);
         self.px_em = sizes;
         // A new scene logs its text problems afresh.
@@ -1258,6 +1273,7 @@ impl Renderer {
         // A layer builds from the scene's string param of its name, through
         // set_text below, and it looks itself up in self.scene.
         *self.scene.borrow_mut() = Some(scene.clone());
+        self.moved();
         for (dl, l) in self.layers.iter().zip(drawn.iter().flat_map(|p| &p.layers)) {
             for (name, ty, value) in l.uniforms() {
                 self.set_layer_uniform(dl, &name, ty, value)?;
@@ -1707,7 +1723,7 @@ impl Renderer {
     /// with the time pinned by set_time() waits for them, and so does a setup.
     pub fn set_text(&self, name: &str, words: &str) -> Result<bool> {
         let scene = self.scene.borrow();
-        let Some(layer) = scene.as_ref().and_then(|s| s.text_layer(name)) else {
+        let Some(layer) = scene.as_ref().and_then(|s| self.text_layer(s, name)) else {
             return Ok(false);
         };
         if self.words.borrow().get(name).is_some_and(|w| w == words) {
@@ -1783,7 +1799,7 @@ impl Renderer {
         if let Some(scene) = self.scene.borrow_mut().as_mut() {
             scene.set_layer(at, &value).map_err(refused)?;
         }
-        let Some(dl) = self.layers.iter().find(|d| d.name == at.layer) else {
+        let Some(dl) = self.drawn(at.layer) else {
             return Ok(());
         };
         let now_shown = {
@@ -1926,6 +1942,7 @@ impl Renderer {
             .expect("admit() found the scene")
             .insert_layer(pass, index, new.clone())
             .map_err(refused)?;
+        self.moved();
         if !drawn {
             return Ok(());
         }
@@ -1933,6 +1950,7 @@ impl Renderer {
             if let Some(scene) = self.scene.borrow_mut().as_mut() {
                 scene.remove_layer(&name);
             }
+            self.moved();
             return Err(e);
         }
         Ok(())
@@ -2022,6 +2040,7 @@ impl Renderer {
             if let Some(scene) = self.scene.borrow_mut().as_mut() {
                 scene.remove_layer(&name);
             }
+            self.moved();
             return Err(e);
         }
         let (Some(l), Some(dl)) = (new.as_text(), self.drawn(&name)) else {
@@ -2140,11 +2159,13 @@ impl Renderer {
             return Ok(Vec::new());
         };
         let dl = self.layers.remove(k);
+        self.moved();
         match self.runs.iter().position(|r| r.find(name).is_some()) {
             Some(r) => {
                 self.runs[r].shapes.retain(|s| s.name != name);
                 if self.runs[r].shapes.is_empty() {
                     let run = self.runs.remove(r);
+                    self.moved();
                     self.remove_batch(run.batch)?;
                 } else {
                     self.run_quads(&self.runs[r])?;
@@ -2203,7 +2224,55 @@ impl Renderer {
 
     /// The drawn layer named `name`.
     fn drawn(&self, name: &str) -> Option<&LayerBatches> {
-        self.layers.iter().find(|d| d.name == name)
+        let k = *self.places().drawn.get(name)?;
+        Some(&self.layers[k])
+    }
+
+    /// The text layer of the scene named `name`.
+    fn text_layer<'s>(&self, scene: &'s Scene, name: &str) -> Option<&'s TextLayer> {
+        let (p, i) = *self.places().scene.get(name)?;
+        scene.passes.get(p)?.layers.get(i)?.as_text()
+    }
+
+    /// Drop the places of the layers, after a change to the scene's layers,
+    /// the drawn layers or the runs.
+    fn moved(&self) {
+        self.places.borrow_mut().take();
+    }
+
+    /// Where each layer sits now.
+    fn places(&self) -> std::cell::Ref<'_, Places> {
+        #[cfg(test)]
+        if let Some(held) = self.places.borrow().as_ref() {
+            assert!(*held == self.places_now(), "the places outlived a change");
+        }
+        if self.places.borrow().is_none() {
+            let now = self.places_now();
+            *self.places.borrow_mut() = Some(now);
+        }
+        std::cell::Ref::map(self.places.borrow(), |p| {
+            p.as_ref().expect("the places were just made")
+        })
+    }
+
+    fn places_now(&self) -> Places {
+        let mut places = Places::default();
+        if let Some(scene) = self.scene.borrow().as_ref() {
+            for (p, pass) in scene.passes.iter().enumerate() {
+                for (i, l) in pass.layers.iter().enumerate() {
+                    places.scene.insert(l.name().to_string(), (p, i));
+                }
+            }
+        }
+        for (k, d) in self.layers.iter().enumerate() {
+            places.drawn.insert(d.name.clone(), k);
+        }
+        for (r, run) in self.runs.iter().enumerate() {
+            for (k, shape) in run.shapes.iter().enumerate() {
+                places.runs.insert(shape.name.clone(), (r, k));
+            }
+        }
+        places
     }
 
     /// The batch after which a new layer at `index` of pass `pass` draws:
@@ -2226,6 +2295,7 @@ impl Renderer {
             .and_then(|n| self.layers.iter().position(|d| d.name == *n))
             .map_or(self.layers.len(), |k| k + 1);
         self.layers.insert(at, dl);
+        self.moved();
     }
 
     /// When the layers at `index` - 1 and `index` + 1 of pass `pass` share a
@@ -2254,6 +2324,7 @@ impl Renderer {
         };
         let cut = self.runs[r].find(next).expect("next is in the run");
         let tail: Vec<RunShape> = self.runs[r].shapes.split_off(cut);
+        self.moved();
         let batch = self.insert_batch(
             pass,
             after,
@@ -2277,6 +2348,7 @@ impl Renderer {
         self.run_quads(&self.runs[r])?;
         self.run_quads(&run)?;
         self.runs.push(run);
+        self.moved();
         Ok(())
     }
 
@@ -2340,11 +2412,13 @@ impl Renderer {
                 let at = prev.and_then(|n| self.runs[r].find(n)).expect("prev") + 1;
                 let shape = RunShape::of(l, self.runs[r].size);
                 self.runs[r].shapes.insert(at, shape);
+                self.moved();
                 Some(r)
             }
             (None, Some(r)) => {
                 let shape = RunShape::of(l, self.runs[r].size);
                 self.runs[r].shapes.insert(0, shape);
+                self.moved();
                 Some(r)
             }
             (None, None) => None,
@@ -2368,6 +2442,7 @@ impl Renderer {
                     size,
                     shapes: vec![RunShape::of(l, size)],
                 });
+                self.moved();
                 self.runs.len() - 1
             }
         };
@@ -2527,13 +2602,10 @@ impl Renderer {
     /// Hand the run of shape layer `l` its quads as `l` draws them. The
     /// quads of the other layers of the run stay as the batch holds them.
     fn reshape(&self, l: &ShapeLayer) -> Result<()> {
-        let Some((run, k)) = self
-            .runs
-            .iter()
-            .find_map(|r| r.find(&l.name).map(|k| (r, k)))
-        else {
+        let Some(&(r, k)) = self.places().runs.get(&l.name) else {
             return Ok(());
         };
+        let run = &self.runs[r];
         let mut quads = Vec::new();
         l.quads(run.size, &mut quads);
         let held = run.shapes[k].quads.replace(quads);
@@ -2585,7 +2657,7 @@ impl Renderer {
             let Some(scene) = scene.as_ref() else {
                 return Ok(());
             };
-            let Some(layer) = scene.text_layer(name) else {
+            let Some(layer) = self.text_layer(scene, name) else {
                 return Ok(());
             };
             self.add_atlas(&mut self.atlases.borrow_mut(), &mut Vec::new(), layer)?;
@@ -2661,7 +2733,7 @@ impl Renderer {
         boxes.extend(&colour.1);
         self.text_faults(layer, &faults, true);
         // A layout with no texture of curves leaves the texture alone.
-        let drawn = self.layers.iter().find(|d| d.name == *name);
+        let drawn = self.drawn(name);
         if built.shared {
             self.send_glyphs()?;
             let rows = self.glyphs.borrow().rows();
@@ -2947,8 +3019,8 @@ impl Renderer {
         let Some(scene) = scene.as_ref() else {
             return Ok(());
         };
-        for dl in &self.layers {
-            let Some(layer) = scene.text_layer(&dl.name) else {
+        for layer in scene.text_layers().filter(|l| !l.effects.is_empty()) {
+            let Some(dl) = self.drawn(&layer.name) else {
                 continue;
             };
             let mut phases = dl.phases.borrow_mut();
@@ -3007,7 +3079,7 @@ impl Renderer {
                 continue;
             };
             let scene = self.scene.borrow();
-            if let Some(layer) = scene.as_ref().and_then(|s| s.text_layer(&name)) {
+            if let Some(layer) = scene.as_ref().and_then(|s| self.text_layer(s, &name)) {
                 self.show(layer, h.laid)?;
             }
         }
@@ -3479,6 +3551,15 @@ impl Renderer {
         self.scene.borrow().as_ref().map(read)
     }
 
+    /// `read` of the scene and its layer named `name`, None when the scene
+    /// has no such layer.
+    pub fn with_layer<R>(&self, name: &str, read: impl FnOnce(&Scene, &Layer) -> R) -> Option<R> {
+        let scene = self.scene.borrow();
+        let scene = scene.as_ref()?;
+        let (p, i) = *self.places().scene.get(name)?;
+        Some(read(scene, &scene.passes[p].layers[i]))
+    }
+
     /// Keep the output pass's alpha in 4-component frames. Off by default,
     /// and every frame then reads alpha 255. A 3-component frame and the
     /// scanout carry no alpha, and the H264 input stays opaque. It takes
@@ -3547,6 +3628,7 @@ impl Renderer {
         }
         self.layers = Vec::new();
         self.runs = Vec::new();
+        self.moved();
         self.feeds = Vec::new();
         self.held.borrow_mut().clear();
         self.words.borrow_mut().clear();

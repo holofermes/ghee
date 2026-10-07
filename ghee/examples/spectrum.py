@@ -28,8 +28,8 @@ BARS = 48
 SHADER = """
 void main() {
     vec2 p = vec2(uv.x, 1.0 - uv.y);  // y climbs off the floor
-    float fi = p.x * float(bars_size);
-    int i = int(min(fi, float(bars_size - 1)));
+    float fi = p.x * float(bars_count);
+    int i = int(min(fi, float(bars_count - 1)));
     float h = gain * bars_at(i);
 
     // bars stand on the baseline, their reflection hangs under it

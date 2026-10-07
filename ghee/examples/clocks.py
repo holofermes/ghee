@@ -54,7 +54,7 @@ void main(){
     vec2 uv = gl_FragCoord.xy / iResolution.xy;
     float px = 1.0 / iResolution.y;
     if (uv.y < px) {
-        float raw = amplitudes_at(int(uv.x * float(amplitudes_size - 1)));
+        float raw = amplitudes_at(int(uv.x * float(amplitudes_count - 1)));
         float fftP = max(0.0, raw - thres) / (1.0 - thres);
         float cur = rgbToFloat(texture2D(iChannel0, uv).rgb);
         float old = rgbToFloat(texture2D(iChannel0, texel(vec2(uv.x, RATE_ROWS/iResolution.y))).rgb);

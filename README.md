@@ -153,7 +153,7 @@ and `bars.glsl` beside it:
 
 ```glsl
 void main() {
-  int last = amplitudes_size - 1;
+  int last = amplitudes_count - 1;
   float fi = uv.x * float(last);
   int i0 = int(floor(fi));
   float h = mix(amplitudes_at(i0), amplitudes_at(min(i0 + 1, last)), fract(fi));
@@ -219,7 +219,7 @@ varying vec2  uv;                   // 0..1 across the buffer, y = 0 at the top
 // top too, where Shadertoy has y = 0 at the bottom
 
 // declared array, e.g. {"name": "amplitudes", "size": 16}:
-const int amplitudes_size;          // = 16
+const int amplitudes_count;         // = 16
 float amplitudes_at(int i);         // one element
 float amplitudes_sample(float t);   // interpolated, t in 0..1, clamped edges
 // arrays are bound as 1xN textures
@@ -308,7 +308,7 @@ Each declaration adds names to the GLSL of the passes that it reaches:
 | Declared | GLSL names | Reaches |
 | --- | --- | --- |
 | a param `gain` | `gain` | its pass, or every pass for a scene param |
-| an array `amplitudes` | `amplitudes_tex`, `amplitudes_size` and the readers in the preamble | its pass |
+| an array `amplitudes` | `amplitudes_tex`, `amplitudes_count` and the readers in the preamble | its pass |
 | an image asset `noise` | `noise_tex`, `noise_size` | every pass except a filter pass |
 | a text layer `title` | `title_cover`, `title_size` | every pass except a filter pass |
 

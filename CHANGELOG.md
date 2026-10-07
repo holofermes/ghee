@@ -21,6 +21,9 @@ A scene written for 0.4.0 needs these changes.
   `{"code": <text>}` held it and `{"file": <path>}` where
   `{"shader": <path>}` named it. A filter file holds its GLSL in `fragment`,
   and Python's `ghee.Pass` takes `fragment=` where it took `code=`.
+- Read the length of a 1xN array as `<name>_count`, where it was
+  `<name>_size`. `<name>_size` stays the size of an image asset and of a text
+  layer's block.
 
 ### Scenes
 

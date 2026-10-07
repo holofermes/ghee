@@ -1176,7 +1176,7 @@ function buildInputs(){
     imageAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s picture`));
   }
   (p.arrays || []).forEach(a => {
-    chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i) reads element i (loop-safe on VC4)\n${a.name}_size is ${a.size}`, "arr");
+    chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i) reads element i (loop-safe on VC4)\n${a.name}_count is ${a.size}`, "arr");
   });
   row.appendChild(box);
   box.scrollLeft = left;

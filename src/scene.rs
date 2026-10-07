@@ -991,7 +991,7 @@ impl ArrayInput {
 fn array_lines(a: &ArrayInput) -> Vec<String> {
     let mut l = vec![format!("uniform sampler2D {}_tex;", a.name)];
     if let ArraySize::Linear(n) = a.size {
-        l.push(format!("const int {}_size = {n};", a.name));
+        l.push(format!("const int {}_count = {n};", a.name));
     }
     l
 }
@@ -1070,7 +1070,7 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     }
     let at = format!(
         "float {n}_at(int i0){{ return texture2D({n}_tex, \
-         vec2((float(i0)+0.5)/float({n}_size), 0.5)).r; }}"
+         vec2((float(i0)+0.5)/float({n}_count), 0.5)).r; }}"
     );
     if hw_linear {
         return vec![
@@ -1081,9 +1081,9 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     vec![
         at,
         format!("float {n}_sample(float t){{"),
-        format!("  float x = t * float({n}_size) - 0.5;"),
+        format!("  float x = t * float({n}_count) - 0.5;"),
         "  float i = floor(x);".to_string(),
-        format!("  float last = float({n}_size - 1);"),
+        format!("  float last = float({n}_count - 1);"),
         format!("  float a = {n}_at(int(clamp(i, 0.0, last)));"),
         format!("  float b = {n}_at(int(clamp(i + 1.0, 0.0, last)));"),
         "  return mix(a, b, x - i);".to_string(),
@@ -3155,7 +3155,7 @@ mod tests {
         let own = [
             vec![
                 "uniform sampler2D amps_tex;",
-                "const int amps_size = 8;",
+                "const int amps_count = 8;",
                 "float amps_at(int i0)",
                 "float amps_sample(float t)",
                 "uniform sampler2D mask_tex;",

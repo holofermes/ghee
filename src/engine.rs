@@ -5590,7 +5590,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = array_scene(
             "void main(){ vec2 uv=gl_FragCoord.xy/iResolution.xy; \
-             gl_FragColor=vec4(vec3(vals_at(int(uv.x*float(vals_size-1)))),1.0); }",
+             gl_FragColor=vec4(vec3(vals_at(int(uv.x*float(vals_count-1)))),1.0); }",
             "vals",
             json!(N),
         );

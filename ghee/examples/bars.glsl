@@ -16,8 +16,8 @@ vec3 tone(vec3 col, float black, float exposure) {
 // same host array interpolated, for the glow that runs behind the bars.
 void main() {
   vec2 p = vec2(uv.x, 1.0 - uv.y);  // y climbs off the floor
-  float fi = p.x * float(amplitudes_size);
-  int i = int(min(fi, float(amplitudes_size - 1)));
+  float fi = p.x * float(amplitudes_count);
+  int i = int(min(fi, float(amplitudes_count - 1)));
   float h = gain * amplitudes_at(i);
   float curve = gain * amplitudes_sample(p.x);
 

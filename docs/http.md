@@ -6,19 +6,31 @@ built on this API, and a script can call it the same way. Anyone who reaches
 the port can change params and post GLSL, so keep the port on loopback, or
 open it with `--host` only on a network you trust.
 
+ghee holds a working copy of each scene that the console opens: the scene's
+defaults, with its saved edits and every edit made since laid over them. The
+defaults are the scene's files, or the scene that a procedural scene's program
+writes at its start. Every page reads the same working copy, and every edit
+applies to it at once. ghee keeps the working copy until it stops, through a
+switch away and back. `/save` writes what differs from the defaults to the
+scene's state file, as [Saved edits](../README.md#saved-edits) in the README
+describes.
+
 ## Read
 
 - `GET /stats`: `{fps, frame_ms, stream_fps, out, error, error_line,
-  error_pass, text_errors, active, display, stale, layer_changes}`. On a
-  compile error, `error_pass` is the index of the pass that holds the error,
-  or `"common"` for the common block, and `error_line` counts from the first
-  line of that GLSL. `text_errors` lists the problems of the scene's text
-  layers, one line each, such as `layer 'title': 'X' has more than 64 curves
-  in one band`. A text problem leaves the scene running. `layer_changes`
-  counts the changes that the program behind the scene made to its layers: a
-  drawing that added a layer or gave one a new look, or a field that a tick
-  or the Python host set. A client that shows the layers reads `GET /scene`
-  again when the count moves.
+  error_pass, text_errors, active, display, stale, layer_changes, rev}`.
+  `active` is the scene of the last switch, even one that failed to compile,
+  and `rev` is its revision. While the active scene fails to compile, ghee
+  keeps drawing the last program that compiled. On a compile error,
+  `error_pass` is the index of the pass that holds the error, or `"common"`
+  for the common block, and `error_line` counts from the first line of that
+  GLSL. `text_errors` lists the problems of the scene's text layers, one
+  line each, such as `layer 'title': 'X' has more than 64 curves in one
+  band`. A text problem leaves the scene running. `layer_changes` counts the
+  changes that the program behind the scene made to its layers: a drawing
+  that added a layer or gave one a new look, or a field that a tick or the
+  Python host set. A client that shows the layers reads `GET /scene` again
+  when the count or `rev` moves.
 - `GET /stats?usage=1`: the same, with what the ghee process uses, read
   from files that it may read without root, at this request alone:
   - `rss_mib`: the process's resident set, in MiB.
@@ -41,12 +53,29 @@ open it with `--host` only on a network you trust.
   when there are none. A program keeps which layers its scene has and their
   order. `ghee.open(serve=)` lists its scene there, since the Python host
   writes it.
-- `GET /scene?name=`: the resolved scene JSON, with each GLSL file as its text
-  and filters expanded. For the active scene, ghee answers with the document
-  that it renders: applied edits, `/set` values, and the layers that a drawing
-  added and changed. For any other name, ghee reads the scene from disk.
+- `GET /scene?name=`: the working copy of the scene, resolved, with each
+  GLSL file as its text and filters expanded, and the scene's revision in
+  the `ETag` header. With no name, it answers the active scene. For a
+  procedural scene that runs, the document also holds the layers that its
+  program drew and the values that it set. `GET /scene?name=&defaults=1`
+  answers the defaults, with no edit. While the active scene loads, `GET
+  /scene` and `GET /edits` for it wait up to 35 seconds for the load.
+- `GET /edits?name=`: `{rev, values, items, unsaved, aside}`. `values` and
+  `items` are the working copy's edits, as a save writes them in the state
+  file. `unsaved` says whether they differ from the state file. `aside`
+  lists the items set aside, each as `{item, pass, param}` with the keys
+  that its kind takes.
+- `GET /format`: the layer format that the console edits. `effects` holds
+  each effect's fields in order, each as `{key, default, live}`, where
+  `live` says that a `/set` changes it with no rebuild. `live` holds the
+  live fields of each kind of layer, `text`, `image`, `rect` and `line`.
+  `empty` holds what a field left out takes, for each kind: `centre`, `fit`,
+  `auto`, `pass` or a number. `fonts` maps each built-in font's name to the
+  `font_family` that picks it, null for the default font.
 - `GET /filters`: the filter registry, `{name: filter def}`
-- `GET /hwinfo`: the host hardware report
+- `GET /hwinfo`: the host's hardware: `model`, the board as the device tree
+  names it, `gpu`, `ram`, `ram_free`, and on a Raspberry Pi `gpu_mem` and
+  `temp`. A fact that the host cannot read is absent.
 - `GET /frame.png`: one lossless PNG of the next frame, at the render size.
   The request goes on the command queue, so the frame carries every `/set`
   that returned before it. It answers 409 while the scene holds an error, and
@@ -54,13 +83,19 @@ open it with `--host` only on a network you trust.
 
 ## Change
 
-The active scene is the one that the last switch asked for. An edit names the
-scene that it edits: `/set` in `scene=`, `POST /scene` in `name=`, and
-`/save` in its body. An edit for a scene other than the active one answers
-409 and changes nothing. `/set` and `POST /scene` without a name edit the
-active scene. The console names its scene in each request, so a page left
-open on one scene never writes into a scene that the console switched to
-later.
+An edit names the scene that it edits: `/set` in `scene=`, every other edit
+in `name=`. An edit for a scene other than the active one answers 409 and
+changes nothing. An edit without a name edits the active scene. While the
+active scene loads, an edit answers 503, `scene 'clocks' is loading`.
+
+Every change applied through the API gives the scene a new revision: a set,
+an apply, a save, a reset, an answer and a switch. An edit takes `rev=`,
+the revision of the scene that its page last read, and `vid=`, the page's
+id, the one that its streams use. An edit whose scene another client
+changed after `rev` answers 412, `this scene changed since you loaded it`,
+and changes nothing. A page's own changes never make its `rev` stale, so a
+slider's sets, sent before the last one answers, all land. An edit with no
+`rev` is never refused this way.
 
 - `POST /set?scene=&pass=&name=&value=`: sets a live param, with no recompile.
   `pass=` names the pass that holds the param. With no `pass=`, `name` is the
@@ -88,27 +123,29 @@ later.
   image asset of the scene or a `.png` or `.jpg` file for `image`, a JSON list
   of `[x, y]` for a line's `points`, or `none`, which takes `x`, `y`, `color`
   or a rect's `width` or `height` back to its default.
-- `POST /switch?name=`: switches to a named scene. Switching to the active
-  name reloads it from disk.
+- `POST /switch?name=`: switches to a named scene, and `iFrame` and `iTime`
+  start at 0. Switching to the active name reloads its files, keeps the
+  working copy's edits and checks its items as a start does. A switch that
+  carries `rev=` is a page's reload, and answers 409 when the console is on
+  another scene.
 - `POST /next`, `POST /prev`: step through the scene list.
-- `POST /scene?name=`: takes the full scene JSON in the body, and recompiles
-  the active scene as a working copy. A procedural scene keeps its layers:
-  each layer of the running scene that the posted scene leaves out stays, in
-  its place. `ghee.open(serve=)` compiles no scene: there `POST /scene` gives
-  each layer of the running scene the look that the posted scene gives it,
-  and answers 403 to a posted scene that differs in anything but its layers
-  and its param values.
-- `POST /save`: takes `{name, scene}` in the body, and writes the scene into
-  `<scenes>/modified/`. A JSON scene saves a copy that shadows the original
-  and finds its files beside the original. A procedural scene saves a
-  `.values.json` sidecar: `scene` and `passes` hold the param values, the
-  words of each text layer among them, `filters` the filter list, `visible`
-  each pass's eye by the pass's name, and `layers` the settings and effects
-  of each layer by the layer's name. At its next start the sidecar applies
-  over the scene that the process writes: the process keeps which layers
-  exist and their order, a saved layer that it no longer declares is skipped
-  with a log line, and a value that the process sets after the start wins
-  over the saved one. A read-only host refuses the save.
+- `POST /scene?name=`: takes the full scene JSON in the body, applies it to
+  the working copy, and recompiles. `iFrame` and `iTime` keep running. A
+  procedural scene keeps its layers: each layer of the running scene that
+  the posted scene leaves out stays, in its place. `ghee.open(serve=)`
+  compiles no scene: there `POST /scene` gives each layer of the running
+  scene the look that the posted scene gives it, and answers 403 to a posted
+  scene that differs in anything but its layers and its param values.
+- `POST /save?name=`: writes the working copy's edits to the scene's state
+  file, with the items still set aside, or removes the file when there are
+  none. `ghee.open(serve=)` answers 403, `this console saves no scene`.
+- `POST /reset?name=`: takes the working copy back to the defaults. The
+  state file keeps its edits until the next save.
+- `POST /aside?name=&item=&pass=&param=&answer=`: answers an item set aside,
+  named as `GET /edits` lists it, and writes the state file at once.
+  `answer=keep` applies the edit over the new default and takes the default
+  item's hash as its base, and `answer=default` removes the item. It answers
+  404 when no such item is set aside, as when another page answered first.
 
 ## Streams
 

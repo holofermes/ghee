@@ -50,11 +50,12 @@ its answer to every tick with kind 5 sets `"lockstep": true` in that object.
 A process that draws everything that it shows can write a scene of one pass
 that clears to black, and add its layers with kind 6 as it runs.
 
-The console saves its edits of a procedural scene in a sidecar beside the
-executable, `modified/<name>.values.json`, and lays the sidecar over the
-scene that the process writes at each start. The process keeps which passes
-and layers exist and their order. `/save` in [http.md](http.md) lists what
-the sidecar holds.
+Under the console, ghee lays the scene's saved edits over the scene that the
+process writes, at each start: values, GLSL, channels and the filter list.
+The process keeps which passes, layers and params exist, and their order. A
+value that the process sets after the start replaces the saved one, and the
+console saves none of them. A layer that the process adds after the start
+takes no saved value.
 
 ## Messages, scene to ghee
 
@@ -115,8 +116,9 @@ ghee writes one JSON line to the process's stdin for each render tick:
 
     {"frame": N, "time": T, "dt": D, "params": {...}}
 
-`D` is the `iTimeDelta` that the tick's frame draws with: the time since the
-frame before, a quarter second at most, 1/60 for the first frame, or the fixed
+`N` and `T` count from 0 at the process's first tick. `D` is the
+`iTimeDelta` that the tick's frame draws with: the time since the frame
+before, a quarter second at most, 1/60 for the first frame, or the fixed
 `--timestep`. `params` holds the string params that changed, and the first
 tick holds them all.
 

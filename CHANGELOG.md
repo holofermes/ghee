@@ -391,6 +391,14 @@
   error opens the shader of the pass that holds it and leaves the choice.
 - Show a procedural scene's passes and layers with no add, move, rename or
   remove, since its process declares them.
+- Edit shape layers: `+ layer` adds a rect named `rect`, then `rect2`, and a
+  shape layer shows its shape, its color, `x y`, then a rect's `width
+  height`, its border with an eye and a remove, and its `border_radius`, or a
+  line's points, one `x y` to a row, and its `stroke_width`. A closed shape
+  layer shows its colour in its header. A rect's fill turns off with a ×,
+  which writes `transparent`, and switching a layer's shape keeps the other
+  shape's settings for a switch back. Every field but `shape` and `blend`
+  changes live.
 - Keep a hidden filter's pass hidden when the console posts the scene.
 - Save each pass's `visible` and the settings and effects of each layer of a
   procedural scene in its `.values.json` sidecar, beside its params and

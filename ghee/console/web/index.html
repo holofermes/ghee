@@ -329,7 +329,8 @@
   /* one setting per line: its key, then its control */
   .kvs{display:flex; flex-direction:column; align-items:stretch; gap:8px}
   .kv{display:flex; align-items:flex-start; gap:8px; min-width:0}
-  .kvs>.kv>.k{width:88px; flex:none; padding-top:4px}
+  /* the key column fits the longest key, border_radius, at the phone's size */
+  .kvs>.kv>.k{width:92px; flex:none; padding-top:4px}
   .kvs>.kv>.v{flex:1}
   .kv>.v>.grow{flex:1}
   .kv>.k, .fxname{font-size:13px; color:var(--accent)}
@@ -360,8 +361,13 @@
   .fxf>*{flex:none}
   .fxf>.sub, .fxacts{min-height:32px}
   .fxacts{display:inline-flex; align-items:center; gap:2px}
+  /* a rect's border: its fields, then its eye and remove button at the row's end */
+  .kv>.fxacts{flex:none}
+  .kv.off>.k, .kv.off>.v{opacity:.4}
+  /* a line's points, one x y pair per line */
+  .pts{display:flex; flex-direction:column; align-items:flex-start; gap:6px}
+  .pt{display:inline-flex; align-items:center; gap:6px 14px}
   @container (max-width:520px){
-    .kvs>.kv>.k{width:80px}
     .grad{column-gap:8px}
     .lstrip>input.ctl.hword{flex-basis:150px; min-width:150px}
     .fstrip>.fxname{width:auto}
@@ -1146,7 +1152,9 @@ function nameError(n, current){
 // ---- the inputs a pass's shader reads ----
 const isGrad = c => !!c && typeof c === "object" && !Array.isArray(c);
 const isImage = d => d.image != null;
-const textLayers = () => (work.passes || []).flatMap(p => (p.layers || []).filter(d => !isImage(d)));
+const isShape = d => d.shape != null;
+const kindOf = d => isImage(d) ? "image" : isShape(d) ? "shape" : "text";
+const textLayers = () => (work.passes || []).flatMap(p => (p.layers || []).filter(d => kindOf(d) === "text"));
 // the scene's image assets: every asset but a font
 const imageAssets = () => Object.entries(work.assets || {})
   .filter(([, a]) => a && typeof a.file === "string" && !/\.(ttf|otf)$/i.test(a.file)).map(([n]) => n);
@@ -1250,8 +1258,13 @@ const FX = {
 // slug draws no distance field, so these draw under mtsdf only
 const NEEDS_MTSDF = ["text_shadow", "glow", "text_stroke"];
 const BLENDS = ["normal", "add", "multiply", "screen"], RENDERS = ["mtsdf", "slug"], ALIGNS = ["left", "center", "right"];
-// a layer's own fields that change with no rebuild
+// a layer's own fields that change with no rebuild, and every field of a
+// shape but shape and blend
 const LIVE = ["x", "y", "color", "opacity", "visible", "image"];
+const SHAPE_LIVE = ["x", "y", "color", "opacity", "visible", "width", "height", "border_radius", "points", "stroke_width"];
+const isLive = (d, key) => (isShape(d) ? SHAPE_LIVE : LIVE).includes(key);
+// a shape field that takes no none sends its default for an empty field
+const SHAPE_DEFAULT = {border_radius: 0, stroke_width: 1};
 
 // A layer's place in the page, open or closed, by its name: editor state. A
 // scene loads with every layer closed.
@@ -1284,8 +1297,9 @@ function edited(p){ p.layersEdited = true; markDirty(); }
 function setKey(p, d, key, v){
   if (v == null) delete d[key]; else d[key] = v;
   edited(p);
-  if (!LIVE.includes(key)){ postScene(); return; }
-  const wire = key === "opacity" ? (v == null ? 1 : v) : key === "visible" ? (v !== false) : key === "color" ? liveColor(v) : (v == null ? "none" : v);
+  if (!isLive(d, key)){ postScene(); return; }
+  const wire = key === "opacity" ? (v == null ? 1 : v) : key === "visible" ? (v !== false) : key === "color" ? liveColor(v)
+    : key === "points" ? JSON.stringify(v) : v != null ? v : key in SHAPE_DEFAULT ? SHAPE_DEFAULT[key] : "none";
   setLive(d, key, String(wire));
 }
 // The words, live through the string param of the layer's name.
@@ -1329,15 +1343,17 @@ function pick(opts, value, set, cls = "ctl"){
   s.addEventListener("change", () => set(s.value));
   return s;
 }
-// The console's colour control, the swatch alone. `empty` gives the colour a
-// "none" state and a button back to it. transparent shows as none.
-function colorCtl(get, set, def, empty){
-  const box = el("span", "clr");
+// The console's colour control, the swatch alone. `none` is the value of a
+// colour that can be off: null for a tint, "transparent" for a rect's fill.
+// An off or transparent colour shows "none", and a × beside a set one turns
+// it off.
+function colorCtl(get, set, def, none){
+  const box = el("span", "clr"), canOff = none !== undefined;
   const paint = () => {
     box.innerHTML = "";
     const v = get();
-    if ((empty && v == null) || clear(v)){
-      box.appendChild(noneBtn(empty ? "pick a tint" : "pick a colour", () => {
+    if ((none === null && v == null) || clear(v)){
+      box.appendChild(noneBtn(none === null ? "pick a tint" : "pick a colour", () => {
         set(def); paint();
         const i = box.querySelector("input[type=color]");
         try { i.showPicker(); } catch (e) {}
@@ -1348,7 +1364,7 @@ function colorCtl(get, set, def, empty){
     inp.type = "color"; inp.value = toHex(v == null ? def : v); inp.setAttribute("aria-label", box.dataset.k || "color");
     inp.addEventListener("input", () => set(inp.value));
     box.appendChild(inp);
-    if (empty) box.appendChild(tbtn("×", "no tint", "x", () => { set(null); paint(); }));
+    if (canOff) box.appendChild(tbtn("×", none === null ? "no tint" : "no fill", "x", () => { set(none); paint(); }));
   };
   paint();
   return box;
@@ -1421,7 +1437,8 @@ function buildLayers(){
   // a program owns which layers its scene has, and their order
   if (!proc) row.appendChild(addMenu("+ layer ▾", [
     ["text", () => addLayer(p, "text")],
-    ["image", () => addLayer(p, "image"), !imageAssets().length, "the scene has no image asset"]]));
+    ["image", () => addLayer(p, "image"), !imageAssets().length, "the scene has no image asset"],
+    ["shape", () => addLayer(p, "shape")]]));
   box.appendChild(row);
   (p.layers || []).slice().reverse().forEach(d => box.appendChild(layerCard(p, d)));
 }
@@ -1432,6 +1449,7 @@ function addLayer(p, kind){
   const list = p.layers = p.layers || [];
   let d;
   if (kind === "text") d = {name: uniqueName("text"), text: "text"};
+  else if (kind === "shape") d = {name: uniqueName("rect"), shape: "rect"};
   else {
     const imgs = imageAssets(), used = new Set(list.map(x => x.image));
     d = {name: uniqueName("image"), image: imgs.find(n => !used.has(n)) || imgs[0]};
@@ -1563,8 +1581,92 @@ function locked(node){
 // a closed text layer's words on one line: a newline shows as ↵
 const oneLine = t => t.split("\n").join("↵"), fromOneLine = t => t.split("↵").join("\n");
 
+// A dashed "+ ..." button. A locked one does nothing.
+function addBtn(label, fn){
+  const b = el("span", "addmini", label);
+  b.setAttribute("role", "button"); b.tabIndex = 0;
+  const go = () => { if (b.getAttribute("aria-disabled") !== "true") fn(); };
+  b.addEventListener("click", go);
+  b.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); go(); } });
+  return b;
+}
+// one number under its key
+function numKV(p, d, key, ph){
+  const {kv, v} = KV(key);
+  v.appendChild(keyed(num(d[key], ph, x => setKey(p, d, key, x), isLive(d, key)), key));
+  return kv;
+}
+// a shape's fill: white unless set, and a rect's turns off, which writes
+// transparent
+function fillKV(p, d){
+  const {kv, v} = KV("color");
+  v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff",
+    d.shape === "rect" ? "transparent" : undefined), "color"));
+  return kv;
+}
+// A rect's border, an object like an effect: its fields, an eye and a ×. A
+// removed border comes back as it was.
+const BORDER = {width: 1, color: "#ffffff"};
+function borderKV(p, d, redo){
+  const o = d.border, u = ui(d.name);
+  if (!o){
+    const row = el("div", "kv");
+    row.appendChild(addBtn("+ border", () => { d.border = u.border || {}; edited(p); postScene(); redo(); }));
+    return row;
+  }
+  const off = o.visible === false, {kv, v} = KV("border");
+  if (off) kv.classList.add("off");
+  const set = (field, def) => x => {
+    if (x == null) delete o[field]; else o[field] = x;
+    edited(p); setLive(d, field, String(x == null ? def : x), "border");
+  };
+  v.append(sub("width", num(o.width == null ? BORDER.width : o.width, "", set("width", BORDER.width), true)),
+           sub("color", colorCtl(() => o.color == null ? BORDER.color : o.color, set("color", BORDER.color), BORDER.color)));
+  const acts = el("span", "fxacts");
+  acts.append(
+    tbtn(off ? EYE_OFF : EYE, off ? "border is bypassed, draw it" : "bypass border", "m" + (off ? " off" : ""), () => {
+      if (off) delete o.visible; else o.visible = false;
+      edited(p); setLive(d, "visible", String(off), "border"); redo();
+    }),
+    tbtn("×", "remove border", "x", () => { u.border = o; delete d.border; edited(p); postScene(); redo(); }));
+  kv.appendChild(acts);
+  return kv;
+}
+// A line's points, one x y pair per line. A line keeps two at least, and a
+// new point starts where the last one is.
+function pointsKV(p, d, redo){
+  const {kv, v} = KV("points"), box = el("div", "pts"), pts = d.points;
+  const send = () => setKey(p, d, "points", pts);
+  pts.forEach((pt, i) => {
+    const row = el("span", "pt");
+    const at = j => n => { if (n != null){ pt[j] = n; send(); } };
+    const x = tbtn("×", "remove this point", "x", () => { pts.splice(i, 1); send(); redo(); });
+    x.disabled = pts.length <= 2;
+    row.append(sub("x", num(pt[0], "", at(0), true)), sub("y", num(pt[1], "", at(1), true)), x);
+    box.appendChild(row);
+  });
+  box.appendChild(addBtn("+ point", () => { pts.push(pts[pts.length - 1].slice()); send(); redo(); }));
+  v.appendChild(box);
+  return kv;
+}
+// Switching shape puts the old shape's own keys aside and brings the new
+// one's back. A line needs two points.
+const SHAPE_KEYS = {rect: ["width", "height", "border", "border_radius"], line: ["points", "stroke_width"]};
+function switchShape(p, d, to){
+  const u = ui(d.name), from = d.shape;
+  if (to === from || !SHAPE_KEYS[to]) return;
+  u.shapes = u.shapes || {};
+  const keep = {};
+  (SHAPE_KEYS[from] || []).forEach(k => { if (k in d){ keep[k] = d[k]; delete d[k]; } });
+  u.shapes[from] = keep;
+  d.shape = to;
+  Object.assign(d, u.shapes[to] || (to === "line" ? {points: [[0, 0], [16, 16]]} : {}));
+  edited(p); postScene();
+}
+
 function layerCard(p, d){
-  const u = ui(d.name), img = isImage(d), hidden = d.visible === false, proc = isProcedural();
+  const u = ui(d.name), kind = kindOf(d), img = kind === "image", shape = kind === "shape";
+  const hidden = d.visible === false, proc = isProcedural();
   const card = el("div", "lay" + (hidden ? " hid" : ""));
   const redo = () => {
     const was = card.querySelector(".lstrip").scrollLeft, next = layerCard(p, d);
@@ -1573,7 +1675,7 @@ function layerCard(p, d){
   };
   const head = el("div", "lhead"), st = strip("lstrip"), tog = el("button", "tog");
   tog.type = "button"; tog.setAttribute("aria-expanded", String(u.open));
-  tog.append(el("span", "car", u.open ? "▾" : "▸"), el("span", "lname", d.name), el("span", "lkind", img ? "image" : "text"));
+  tog.append(el("span", "car", u.open ? "▾" : "▸"), el("span", "lname", d.name), el("span", "lkind", kind));
   tog.addEventListener("click", () => { u.open = !u.open; redo(); });
   const sels = el("span", "lsels");
   const hk = (key, ctl) => {
@@ -1583,7 +1685,7 @@ function layerCard(p, d){
     sels.appendChild(l);
   };
   hk("blend", pick(BLENDS, d.blend || "normal", x => setKey(p, d, "blend", x === "normal" ? null : x)));
-  if (!img) hk("render", pick(RENDERS, renderOf(d), x => { setKey(p, d, "render", x === defaultRender(d) ? null : x); redo(); }));
+  if (kind === "text") hk("render", pick(RENDERS, renderOf(d), x => { setKey(p, d, "render", x === defaultRender(d) ? null : x); redo(); }));
   hk("opacity", num(d.opacity == null ? 1 : d.opacity, "", x => setKey(p, d, "opacity", x == null || x === 1 ? null : x), true, {min: 0, max: 1, step: 0.05}));
   const acts = el("span", "lacts");
   if (!proc) acts.appendChild(tbtn(PENCIL, "rename", "", () => renameLayer(p, d)));
@@ -1592,9 +1694,11 @@ function layerCard(p, d){
   }));
   if (!proc) acts.appendChild(tbtn("×", `remove layer ${p.name} › ${d.name}`, "x", () => delLayer(p, d)));
   st.appendChild(tog);
-  const images = imageAssets();
+  const images = imageAssets(), look = n => hidden ? locked(n) : n;
   if (!u.open){
-    if (img){
+    // a closed shape shows its colour, the one control that fits beside its name on a phone
+    if (shape) st.appendChild(look(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff"), "color")));
+    else if (img){
       const s = pick(images, d.image, x => setKey(p, d, "image", x));
       s.setAttribute("aria-label", "image");
       st.appendChild(s);
@@ -1608,7 +1712,7 @@ function layerCard(p, d){
       st.appendChild(w);
     }
   }
-  st.append(hidden ? locked(sels) : sels, el("span", "lsp"));
+  st.append(look(sels), el("span", "lsp"));
   if (!proc){
     const list = p.layers, k = list.indexOf(d), mv = el("span", "lmv");
     const up = tbtn("↑", `move layer ${d.name} up`, "", () => moveLayer(p, d, 1));
@@ -1620,26 +1724,33 @@ function layerCard(p, d){
   head.append(st, acts); card.appendChild(head);
   if (!u.open) return card;
 
-  const body = el("div", "lbody"), kvs = el("div", "kvs"), look = n => hidden ? locked(n) : n;
-  if (img){
+  const body = el("div", "lbody"), kvs = el("div", "kvs");
+  if (shape){
+    // a shape has no content: every row only changes how it draws
+    const {kv, v} = KV("shape");
+    v.appendChild(keyed(pick(Object.keys(SHAPE_KEYS), d.shape, x => { switchShape(p, d, x); redo(); }), "shape"));
+    const rows = [kv, fillKV(p, d)];
+    if (d.shape === "line") rows.push(pairKV(p, d, "x", "y", "0", true), pointsKV(p, d, redo), numKV(p, d, "stroke_width", "1"));
+    else rows.push(pairKV(p, d, "x", "y", "centre", true), pairKV(p, d, "width", "height", "pass", true),
+      borderKV(p, d, redo), numKV(p, d, "border_radius", "0"));
+    kvs.append(...rows.map(look));
+  } else if (img){
     const {kv, v} = KV("image");
     v.appendChild(keyed(pick(images, d.image, x => setKey(p, d, "image", x)), "image"));
     const tint = KV("color");
-    tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", true), "color"));
+    tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", null), "color"));
     kvs.append(kv, look(pairKV(p, d, "x", "y", "centre", true)), look(pairKV(p, d, "width", "height", "auto", false)), look(tint.kv));
   } else {
     const {kv, v} = KV("text"), send = wordsTo(p, d);
     v.appendChild(words(() => d.text || "", send, "text"));
-    const size = KV("font_size");
-    size.v.appendChild(keyed(num(d.font_size, "fit", x => setKey(p, d, "font_size", x), false), "font_size"));
     const fam = KV("font_family");
     fam.v.appendChild(keyed(pick(["built-in"], d.font_family || "built-in", x => setKey(p, d, "font_family", x === "built-in" ? null : x)), "font_family"));
     const align = KV("text_align");
     align.v.appendChild(keyed(pick(ALIGNS, d.text_align || "left", x => setKey(p, d, "text_align", x === "left" ? null : x)), "text_align"));
-    kvs.append(kv, look(colorKV(p, d)), look(size.kv), look(pairKV(p, d, "x", "y", "centre", true)), fam.kv, align.kv);
+    kvs.append(kv, look(colorKV(p, d)), look(numKV(p, d, "font_size", "fit")), look(pairKV(p, d, "x", "y", "centre", true)), fam.kv, align.kv);
   }
   body.appendChild(kvs);
-  if (!img) body.appendChild(look(fxBlock(p, d)));   // an image layer takes no effects
+  if (kind === "text") body.appendChild(look(fxBlock(p, d)));   // an image or a shape layer takes no effects
   card.appendChild(body);
   return card;
 }

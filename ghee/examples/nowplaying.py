@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.10"
 # dependencies = ["ghee-render"]
 # ///
 """Now playing on a small panel: the artist on top, the title scrolling below.

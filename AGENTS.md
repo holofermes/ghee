@@ -49,7 +49,7 @@ the engine needs no build step of its own. Cross-compiling takes `GHEE_SYSROOT`.
 
 `python/` is one mixed crate and package: the PyO3 extension `ghee._native`,
 plus the `ghee` package that wraps it and holds the procedural-scene shim
-(`python/ghee/_shim.py`). One abi3 wheel per architecture serves CPython 3.9
+(`python/ghee/_shim.py`). One abi3 wheel per architecture serves CPython 3.10
 and up. It is a crate of its own, so the commands above never build it. The
 wheel is the only way to `import ghee`: nothing vendors the shim.
 

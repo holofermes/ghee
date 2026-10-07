@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.10"
 # dependencies = ["ghee-render", "pillow"]
 # ///
 """A word that Pillow draws, scrolled by the shader over a wave.

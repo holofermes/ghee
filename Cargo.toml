@@ -16,7 +16,7 @@ revision = ""
 section = "graphics"
 priority = "optional"
 license-file = ["LICENSE", "0"]
-depends = "libdrm2, libgbm1, libegl1, libgles2, python3 (>= 3.9)"
+depends = "libdrm2, libgbm1, libegl1, libgles2, python3 (>= 3.10)"
 conflicts = "python3-ghee"
 replaces = "python3-ghee"
 # The deb ships the command and the Python package in one. target/pydist

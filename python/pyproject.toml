@@ -10,7 +10,7 @@ license = "MIT"
 # maturin takes license files from python/ only: these two link to the files
 # at the repo root.
 license-files = ["LICENSE", "NOTICE"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dynamic = ["version"]
 
 [project.urls]

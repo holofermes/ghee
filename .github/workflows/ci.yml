@@ -28,9 +28,10 @@ jobs:
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - run: uvx ruff check python
       # The shim tests drive the scene shim with no GL device, through the wheel
-      # that pip installs, and numpy feeds their numpy rows.
+      # that pip installs, on the oldest CPython that the wheel takes, and numpy
+      # feeds their numpy rows.
       - run: cd python && uvx maturin build --release --compatibility linux
       - run: >-
-          uv run --no-project --no-cache --with pytest --with numpy
+          uv run --no-project --no-cache --python 3.10 --with pytest --with numpy
           --with python/target/wheels/ghee_render-*.whl
           pytest python/tests/test_shim.py

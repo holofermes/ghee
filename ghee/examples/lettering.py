@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.10"
 # dependencies = ["ghee-render"]
 # ///
 """Words that the GPU draws from the outlines of a font, sharp at every size.

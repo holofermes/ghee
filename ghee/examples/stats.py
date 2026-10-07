@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.10"
 # dependencies = ["ghee-render"]
 # ///
 """The time and the load of the machine, drawn from Python on a 128x32 panel.

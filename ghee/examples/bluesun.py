@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.10"
 # dependencies = ["ghee-render", "numpy", "pillow"]
 # ///
 """Blue Sun: a wall of light pipes, and the wall that the pipes light.

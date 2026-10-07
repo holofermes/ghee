@@ -22,7 +22,7 @@ use std::thread::{self, ThreadId};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyString, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyString, PyTuple};
 use serde_json::{Map, Value};
 
 use session::{Fault, Fed, Opening, Session, Source, StreamMax, Tick};
@@ -125,6 +125,11 @@ fn to_json(v: &Bound<'_, PyAny>) -> PyResult<Value> {
             out.insert(k.str()?.extract::<String>()?, to_json(&item)?);
         }
         return Ok(Value::Object(out));
+    }
+    // A float answers before the int, whose failed extraction raises and
+    // drops a Python error.
+    if let Ok(f) = v.cast::<PyFloat>() {
+        return Ok(Value::from(f.value()));
     }
     if let Ok(i) = v.extract::<i64>() {
         return Ok(Value::from(i));

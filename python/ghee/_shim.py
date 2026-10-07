@@ -39,7 +39,7 @@ import signal
 import struct
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -255,46 +255,59 @@ class Layer:
     stroke_width: float | None = None
 
     def to_dict(self) -> dict:
-        d: dict = {"name": self.name}
-        if self.visible is not True:
-            d["visible"] = _plain(self.visible)
-        for k in ("x", "y"):
-            if getattr(self, k) is not None:
-                d[k] = _floats(getattr(self, k))
-        if self.color is not None:
-            d["color"] = _floats(self.color)
-        if self.opacity is not None:
-            d["opacity"] = _floats(self.opacity)
-        if self.blend != "normal":
-            d["blend"] = self.blend
-        if self.text is not None:
-            d["text"] = self.text
-        if self.image is not None:
-            d["image"] = _plain(self.image)
-        if self.shape is not None:
-            d["shape"] = self.shape
-        for k in ("width", "height"):
-            if getattr(self, k) is not None:
-                d[k] = _floats(getattr(self, k))
-        for k in ("border", "border_radius", "points", "stroke_width"):
-            if getattr(self, k) is not None:
-                d[k] = _floats(getattr(self, k))
-        if self.font_size is not None:
-            d["font_size"] = _floats(self.font_size)
-        if self.font_family is not None:
-            d["font_family"] = _plain(self.font_family)
-        if self.text_align != "left":
-            d["text_align"] = self.text_align
-        if self.render is not None:
-            d["render"] = self.render
-        for k in _EFFECTS:
-            if getattr(self, k) is not None:
-                d[k] = _floats(getattr(self, k))
-        return d
+        return _look(vars(self), self.name)
 
 
 # The effects of a text layer, in the order that the document writes them.
 _EFFECTS = ("text_shadow", "glow", "text_stroke", "karaoke", "wave", "scroll", "blink")
+
+# Every field of a Layer but its name, at its default.
+_FIELDS = {f.name: f.default for f in fields(Layer) if f.name != "name"}
+
+
+def _look(f: dict, name: str | None) -> dict:
+    """The layer of the fields `f`, every field of a Layer, as the scene
+    format writes it, under `name`, or with no name for None."""
+    d: dict = {} if name is None else {"name": name}
+    if f["visible"] is not True:
+        d["visible"] = _plain(f["visible"])
+    for k in ("x", "y", "color", "opacity"):
+        if f[k] is not None:
+            d[k] = _floats(f[k])
+    if f["blend"] != "normal":
+        d["blend"] = f["blend"]
+    if f["text"] is not None:
+        d["text"] = f["text"]
+    if f["image"] is not None:
+        d["image"] = _plain(f["image"])
+    if f["shape"] is not None:
+        d["shape"] = f["shape"]
+    for k in ("width", "height", "border", "border_radius", "points", "stroke_width"):
+        if f[k] is not None:
+            d[k] = _floats(f[k])
+    if f["font_size"] is not None:
+        d["font_size"] = _floats(f["font_size"])
+    if f["font_family"] is not None:
+        d["font_family"] = _plain(f["font_family"])
+    if f["text_align"] != "left":
+        d["text_align"] = f["text_align"]
+    if f["render"] is not None:
+        d["render"] = f["render"]
+    for k in _EFFECTS:
+        if f[k] is not None:
+            d[k] = _floats(f[k])
+    return d
+
+
+# The types of a keyword whose value a later frame can compare with its own,
+# since nothing changes such a value in place.
+_FROZEN = (type(None), bool, int, float, str)
+
+
+def _frozen(v) -> bool:
+    """True for a value of _FROZEN, or a tuple of them."""
+    t = type(v)
+    return t in _FROZEN or (t is tuple and all(type(x) in _FROZEN for x in v))
 
 
 @dataclass
@@ -529,11 +542,15 @@ class _Screen:
         # the look last given to each layer that the drawing drew, its
         # visible False once its call stopped running
         self.looks: dict = {}
-        # the pass that the drawing paints on, its layers in their order,
-        # the scene's own count of them, every name that the scene holds,
-        # and the scene's own layers. The first drawing reads them.
+        # the keywords of each call whose keywords are all _FROZEN, by its
+        # line and its count, and the look that they made
+        self.made: dict = {}
+        # the pass that the drawing paints on, its layers in their order and
+        # as a set, the scene's own count of them, every name that the scene
+        # holds, and the scene's own layers. The first drawing reads them.
         self.pass_: str | None = None
         self.placed: list = []
+        self.at: set = set()
         self.own = 0
         self.taken: set = set()
         self.layers: set = set()
@@ -620,9 +637,10 @@ class Drawing:
     ) -> None:
         """Draw `words`, a text layer. With no `font_size` the words fit the
         screen, and an axis with no position centres them."""
-        look = dict(locals())
-        del look["self"], look["words"], look["name"]
-        self._record("text", name, text=words, **look)
+        keys = dict(locals())
+        del keys["self"], keys["words"], keys["name"]
+        keys["text"] = words
+        self._record("text", name, keys)
 
     def image(
         self,
@@ -640,9 +658,9 @@ class Drawing:
     ) -> None:
         """Draw `image`, an image layer of a .png or .jpg file or an image
         asset of the scene. A file loads once and stays with the screen."""
-        look = dict(locals())
-        del look["self"], look["image"], look["name"]
-        self._record("image", name, image=image, **look)
+        keys = dict(locals())
+        del keys["self"], keys["name"]
+        self._record("image", name, keys)
 
     def rect(
         self,
@@ -661,9 +679,10 @@ class Drawing:
     ) -> None:
         """Draw a box, a rect shape layer, the whole screen on a size left
         out."""
-        look = dict(locals())
-        del look["self"], look["name"]
-        self._record("rect", name, shape="rect", **look)
+        keys = dict(locals())
+        del keys["self"], keys["name"]
+        keys["shape"] = "rect"
+        self._record("rect", name, keys)
 
     def circle(
         self,
@@ -679,20 +698,18 @@ class Drawing:
     ) -> None:
         """Draw a circle of `radius` pixels around `centre`, (x, y): a rect
         of `2 * radius` with `border_radius` at `radius`."""
-        look = dict(locals())
-        del look["self"], look["centre"], look["radius"], look["name"]
+        keys = dict(locals())
+        del keys["self"], keys["centre"], keys["radius"], keys["name"]
         cx, cy = _plain(centre)
-        self._record(
-            "circle",
-            name,
+        keys.update(
             shape="rect",
             x=cx - radius,
             y=cy - radius,
             width=2 * radius,
             height=2 * radius,
             border_radius=radius,
-            **look,
         )
+        self._record("circle", name, keys)
 
     def line(
         self,
@@ -709,9 +726,10 @@ class Drawing:
         stroke_width: float | None = None,
     ) -> None:
         """Draw a line from `a` to `b`, each (x, y): `lines([a, b])`."""
-        look = dict(locals())
-        del look["self"], look["a"], look["b"], look["name"]
-        self._record("line", name, shape="line", points=[a, b], **look)
+        keys = dict(locals())
+        del keys["self"], keys["a"], keys["b"], keys["name"]
+        keys.update(shape="line", points=[a, b])
+        self._record("line", name, keys)
 
     def lines(
         self,
@@ -728,27 +746,41 @@ class Drawing:
     ) -> None:
         """Draw a line through `points`, each (x, y), two or more. `x` and
         `y` shift every point."""
-        look = dict(locals())
-        del look["self"], look["points"], look["name"]
-        self._record("lines", name, shape="line", points=points, **look)
+        keys = dict(locals())
+        del keys["self"], keys["name"]
+        keys["shape"] = "line"
+        self._record("lines", name, keys)
 
-    def _record(self, kind: str, name: str | None, **keys) -> None:
+    def _record(self, kind: str, name: str | None, keys: dict) -> None:
         """Hold one call of `kind` for the frame, by the line of the caller
-        of the call's method."""
+        of the call's method, with `keys` its Layer fields, None for a field
+        that it leaves out."""
         caller = sys._getframe(2)
         site = (caller.f_code.co_filename, caller.f_lineno)
         count = self._sites.get(site, 0)
         self._sites[site] = count + 1
-        look = Layer("_", **{k: v for k, v in keys.items() if v is not None})
-        look = look.to_dict()
-        del look["name"]
         key = (site, count)
-        layer = name if name is not None else self._screen.calls.get(key)
+        s = self._screen
+        layer = name if name is not None else s.calls.get(key)
         if layer is not None:
             if layer in self._drawn:
                 raise ValueError(f"two calls in one frame draw layer '{layer}'")
             self._drawn.add(layer)
-        self._calls.append((key, kind, layer, look))
+        made = s.made.get(key)
+        if layer is not None and made is not None and made[1]["name"] == layer:
+            # An array compared with a number gives an array, which has no
+            # truth value.
+            try:
+                same = made[0] == keys
+            except ValueError:
+                same = False
+            if same:
+                self._calls.append((key, kind, layer, made[1], None))
+                return
+        given = {k: v for k, v in keys.items() if v is not None}
+        look = _look({**_FIELDS, **given}, layer)
+        kept = keys if all(_frozen(v) for v in given.values()) else None
+        self._calls.append((key, kind, layer, look, kept))
 
     def _send(self) -> None:
         """Hand ghee what the frame changed."""
@@ -758,12 +790,14 @@ class Drawing:
             at = h._drawing()
             s.pass_ = at["pass"]
             s.placed = list(at["layers"])
+            s.at = set(s.placed)
             s.own = len(s.placed)
             s.taken = set(at["taken"])
             s.layers = set(at["all"])
-        named = {layer for _, _, layer, _ in self._calls if layer is not None}
+        named = {layer for _, _, layer, _, _ in self._calls if layer is not None}
+        drawn = set(named)
         after = None
-        for key, kind, layer, look in self._calls:
+        for key, kind, layer, look, kept in self._calls:
             if layer is None:
                 layer = _free(_KINDS[kind], s.taken | named)
                 named.add(layer)
@@ -772,21 +806,24 @@ class Drawing:
                 h._add_layer(s.pass_, index, look)
                 s.calls[key] = layer
                 s.placed.insert(index, layer)
+                s.at.add(layer)
                 s.taken.add(layer)
+            elif layer in s.looks or layer in s.layers:
+                last = s.looks.get(layer)
+                if last is not look and last != look:
+                    h._update_layer(look)
             else:
-                look = {"name": layer, **look}
-                if layer in s.looks or layer in s.layers:
-                    if s.looks.get(layer) != look:
-                        h._update_layer(look)
-                else:
-                    index = s.own if after is None else s.placed.index(after) + 1
-                    h._add_layer(s.pass_, index, look)
-                    s.placed.insert(index, layer)
-                    s.taken.add(layer)
+                index = s.own if after is None else s.placed.index(after) + 1
+                h._add_layer(s.pass_, index, look)
+                s.placed.insert(index, layer)
+                s.at.add(layer)
+                s.taken.add(layer)
             s.looks[layer] = look
-            if layer in s.placed:
+            if kept is not None:
+                s.made[key] = (kept, look)
+            drawn.add(layer)
+            if layer in s.at:
                 after = layer
-        drawn = {layer for _, _, layer, _ in self._calls} | named
         for layer, look in s.looks.items():
             if layer not in drawn and look.get("visible", True) is not False:
                 h.set_layer(layer, "visible", False)

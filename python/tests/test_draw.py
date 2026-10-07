@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 import pytest
-from conftest import REPO
+from conftest import REPO, numpy
 from test_api import png_pixels
 from test_errors import CLI
 from test_shim import END, drive, load, messages
@@ -103,6 +103,57 @@ def test_a_frame_whose_calls_changed_nothing_sends_nothing():
     assert sent[2] == sent[3] == [FRAME]
 
 
+def test_an_unchanged_call_writes_its_look_once(monkeypatch):
+    """A frame compares a call's keywords with its last frame's, and only a
+    call whose keywords changed writes its look again."""
+    looks = []
+    look = _shim._look
+    monkeypatch.setattr(
+        _shim, "_look", lambda f, name: looks.append(name) or look(f, name)
+    )
+
+    def draw(d, i):
+        d.text("12:00", x=0, y=0, font_size=16, color=(1.0, 0.5, 0.0))
+        d.rect(x=64, y=20, width=60 if i < 2 else 30, height=4)
+
+    frames(Fake(), draw, 3)
+    assert looks == [None, None, "rect"]
+
+
+@pytest.mark.parametrize("plain", [True, False], ids=["list", "numpy"])
+def test_a_keyword_changed_in_place_sends_its_new_look(plain):
+    """A list or an array that a keyword holds may change between frames
+    and stay the same object, and the frame sends the look that it then
+    gives."""
+    make = list if plain else numpy().array
+    points = make([[0.0, 0.0], [10.0, 10.0]])
+    color = make([1.0, 0.0, 0.0])
+
+    def draw(d, i):
+        if i:
+            points[1][0] = 20.0
+            color[1] = 1.0
+        d.lines(points, color=color)
+
+    sent = frames(Fake(), draw, 2)
+    look = {
+        "name": "line",
+        "shape": "line",
+        "points": [[0.0, 0.0], [20.0, 10.0]],
+        "color": [1.0, 1.0, 0.0],
+    }
+    assert sent[1] == [("update", look), FRAME]
+
+
+def test_a_keyword_that_turns_from_a_name_to_an_array_sends_its_new_look():
+    def draw(d, i):
+        d.rect(width=8, color="red" if i == 0 else numpy().array([0.0, 1.0, 0.0]))
+
+    sent = frames(Fake(), draw, 2)
+    look = {"name": "rect", "shape": "rect", "width": 8.0, "color": [0.0, 1.0, 0.0]}
+    assert sent[1] == [("update", look), FRAME]
+
+
 def test_each_frame_states_the_whole_look_of_a_call():
     """A keyword left out takes its default again, so the look that goes out
     holds only what the frame's call states."""
@@ -160,6 +211,18 @@ def test_a_name_names_the_layer_and_a_scene_layer_of_that_name_takes_the_call():
     assert sent[0] == [
         ("update", {"name": "clock", "text": "12:00"}),
         ("add", "main", 1, {"name": "title", "text": "hi"}),
+        FRAME,
+    ]
+
+
+def test_a_call_that_takes_another_name_draws_the_layer_of_that_name():
+    def draw(d, i):
+        d.text("hi", name="title" if i == 0 else "banner")
+
+    sent = frames(Fake(), draw, 2)
+    assert sent[1] == [
+        ("add", "main", 0, {"name": "banner", "text": "hi"}),
+        ("set", "title", "visible", False, None),
         FRAME,
     ]
 

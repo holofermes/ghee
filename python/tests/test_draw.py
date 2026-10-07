@@ -5,6 +5,7 @@ writes the wire, bar the tests at the end, which draw on the renderer.
 """
 
 import os
+import runpy
 import subprocess
 import sys
 
@@ -86,6 +87,7 @@ TEXT_KEYS = [
     "scroll",
     "blink",
 ]
+LINE_KEYS = ["points", "x", "y", "color", "opacity", "blend", "visible", "stroke_width"]
 RECT_KEYS = [
     "x",
     "y",
@@ -391,6 +393,35 @@ def test_a_frame_hands_draw_the_calls_that_changed_alone_with_their_values():
     ]
 
 
+def test_a_call_whose_lists_and_dicts_hold_the_same_values_sends_nothing():
+    def draw(d, i):
+        d.text("a", color=[1.0, 0.5, 0.0], glow={"strength": 0.5, "color": (1, 0, 0)})
+        d.lines([(0, 0), (4, 4 if i < 2 else 5)])
+
+    assert frames(Typed(), draw, 3)[1:] == [
+        [FRAME],
+        [("draw", [(3, "line", values(LINE_KEYS, points=[(0, 0), (4, 5)]))]), FRAME],
+    ]
+
+
+def test_calls_on_one_line_of_two_files_draw_two_layers(tmp_path):
+    """The file of a call is part of its line: a call of one file that stops
+    and a call of another file on the same line that starts draw apart."""
+    made = {}
+    for x, name in enumerate(("one.py", "two.py"), 1):
+        (tmp_path / name).write_text(f"def draw(d):\n    d.rect(x={x})\n")
+        made[name] = runpy.run_path(str(tmp_path / name))["draw"]
+
+    def draw(d, i):
+        made["one.py" if i == 0 else "two.py"](d)
+
+    assert frames(Fake(), draw, 2)[1] == [
+        ("add", "main", 0, {"name": "rect2", "x": 2.0, "shape": "rect"}),
+        ("set", "rect", "visible", False, None),
+        FRAME,
+    ]
+
+
 def test_a_call_that_draw_leaves_goes_out_as_its_look():
     def draw(d, i):
         d.rect(x=i)
@@ -573,21 +604,12 @@ def test_a_drawing_reaches_the_screen_and_a_call_that_stops_hides():
 
 
 class Looks:
-    """A handle whose drawing writes the look of every changed call, and
-    counts the looks that a handle with _draw takes."""
+    """A handle whose drawing writes the look of every changed call."""
 
-    def __init__(self, h, typed):
+    def __init__(self, h):
         self._h = h
-        self._typed = typed
-        self.looks = 0
-
-    def _update_layer(self, layer):
-        self.looks += 1
-        return self._h._update_layer(layer)
 
     def __getattr__(self, name):
-        if name == "_draw" and not self._typed:
-            raise AttributeError(name)
         return getattr(self._h, name)
 
 
@@ -623,23 +645,32 @@ def busy(d, i):
     d.lines([(10, 30), (14, 22 + i % 3), (18, 30)], x=i % 2)
 
 
-def test_a_drawing_draws_the_frames_that_its_looks_written_out_draw():
-    """A screen that takes its changed calls with no look written draws
-    each frame as a screen that writes each look out, and writes looks only
-    for the calls that build their layer again."""
+def test_a_drawing_draws_the_frames_that_its_looks_written_out_draw(monkeypatch):
+    """A screen's drawing draws each frame as a drawing that writes the look
+    of each changed call out, and writes a look only for a call that builds
+    its layer again."""
+    names = []
+    look = _shim._call_look
+    monkeypatch.setattr(
+        _shim,
+        "_call_look",
+        lambda kind, vals, name: names.append(name) or look(kind, vals, name),
+    )
     with (
-        ghee.open(width=64, height=32, timestep=0) as typed,
+        ghee.open(width=64, height=32, timestep=0) as screen,
         ghee.open(width=64, height=32, timestep=0) as written,
     ):
-        a, b = Looks(typed, True), Looks(written, False)
-        sa, sb = _shim._Screen(), _shim._Screen()
+        state = _shim._Screen()
+        updates = 0
         for i in range(12):
-            for h, s in ((a, sa), (b, sb)):
-                with _shim.Drawing(h, s) as d:
-                    busy(d, i)
-            assert typed.pixels() == written.pixels(), f"frame {i}"
-        assert a.looks == 1
-        assert b.looks > 20
+            names.clear()
+            with screen.draw() as d:
+                busy(d, i)
+            updates += sum(name is not None for name in names)
+            with _shim.Drawing(Looks(written), state) as d:
+                busy(d, i)
+            assert screen.pixels() == written.pixels(), f"frame {i}"
+        assert updates == 1
 
 
 def test_an_error_of_a_call_reaches_python_and_draws_no_frame():

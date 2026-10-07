@@ -23,7 +23,7 @@ use std::thread::{self, ThreadId};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyList, PyString, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyString, PyTuple};
 use serde_json::{Map, Value};
 
 use session::{Fault, Fed, Opening, Session, Source, StreamMax, Tick};
@@ -291,8 +291,16 @@ struct Handle {
     #[pyo3(get)]
     size: (i32, i32),
     held: Affine<Session>,
-    /// What the shim's drawing keeps from one frame to the next.
-    screen: Option<Py<PyAny>>,
+    /// What the screen's drawing keeps from one frame to the next.
+    screen: Option<Py<draw::Screen>>,
+}
+
+impl Handle {
+    /// Give the layers of `calls` their looks, as Session::update_calls()
+    /// does. Returns the indexes of the calls left for _update_layer().
+    pub(crate) fn update_calls(&mut self, calls: &[ghee::draw::Call]) -> PyResult<Vec<usize>> {
+        self.held.get()?.update_calls(calls).map_err(fault)
+    }
 }
 
 #[pymethods]
@@ -356,22 +364,22 @@ impl Handle {
 
     /// A drawing of one frame, for a `with` block: its calls write layers,
     /// and leaving the block draws the frame.
-    fn draw<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+    fn draw<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, draw::Drawing>> {
         let py = slf.py();
-        let shim = py.import("ghee._shim")?;
         let screen = {
             let mut h = slf.borrow_mut();
             h.held.get()?;
             match &h.screen {
                 Some(s) => s.clone_ref(py),
                 None => {
-                    let s = shim.getattr("_Screen")?.call0()?.unbind();
+                    let s = Py::new(py, draw::Screen::default())?;
                     h.screen = Some(s.clone_ref(py));
                     s
                 }
             }
         };
-        shim.getattr("Drawing")?.call1((slf, screen))
+        let handle = slf.clone().into_any().unbind();
+        Bound::new(py, draw::Drawing::of(py, handle, screen, true))
     }
 
     /// The width and height in pixels of the block that `words` lay out in,
@@ -434,30 +442,6 @@ impl Handle {
     fn _update_layer(&mut self, layer: &Bound<'_, PyAny>) -> PyResult<bool> {
         let layer = to_json(layer)?;
         self.held.get()?.update_layer(&layer).map_err(fault)
-    }
-
-    /// Give the layers of a drawing's changed calls their looks, with no
-    /// look written: each call a tuple (kind, layer, values), kind 0 a text,
-    /// 1 a rect, 2 an image and 3 a line, its values in the order of the
-    /// keywords of ghee::draw's args of that kind. Returns the indexes of
-    /// the calls left for _update_layer(), in order.
-    fn _draw(&mut self, calls: &Bound<'_, PyList>) -> PyResult<Vec<usize>> {
-        let mut typed = Vec::with_capacity(calls.len());
-        let mut at = Vec::with_capacity(calls.len());
-        let mut left = Vec::new();
-        for (k, item) in calls.iter().enumerate() {
-            match draw::call_of(&item) {
-                Some(call) => {
-                    typed.push(call);
-                    at.push(k);
-                }
-                None => left.push(k),
-            }
-        }
-        let rest = self.held.get()?.update_calls(&typed).map_err(fault)?;
-        left.extend(rest.into_iter().map(|i| at[i]));
-        left.sort_unstable();
-        Ok(left)
     }
 
     /// Hold data for one declared array. The next frame consumes it once.
@@ -662,6 +646,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__all__", vec!["Handle", "open", "__version__"])?;
     m.add_class::<Handle>()?;
     // the shim's own, so out of __all__
+    m.setattr("Drawing", m.py().get_type::<draw::Drawing>())?;
+    m.setattr("_Screen", m.py().get_type::<draw::Screen>())?;
     m.setattr("_LayerWire", m.py().get_type::<wire::LayerWire>())?;
     m.setattr("_colour_name", wrap_pyfunction!(wire::_colour_name, m)?)?;
     m.setattr("_numbered", wrap_pyfunction!(_numbered, m)?)?;

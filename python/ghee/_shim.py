@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from typing import SupportsFloat
 
-    from typing_extensions import Self
+    from ._native import Drawing
 
 
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
@@ -299,17 +299,6 @@ def _look(f: dict, name: str | None) -> dict:
     return d
 
 
-def _frozen(v) -> bool:
-    """True for a value that a later frame can compare with its own, one
-    that hashes. A list, a dict and an array change in place, and none of
-    them hashes."""
-    try:
-        hash(v)
-    except TypeError:
-        return False
-    return True
-
-
 @dataclass
 class Pass:
     """One fragment shader, and the layers that paint over its buffer.
@@ -532,41 +521,9 @@ def gradient(start, end, angle: float = 0) -> dict:
     return {"from": start, "to": end, "angle": angle}
 
 
-class _Screen:
-    """What a screen's drawing keeps from one frame to the next: the layer of
-    each call, and the values that each layer shows."""
-
-    def __init__(self) -> None:
-        # the layer of each call that names none, by its key: the number of
-        # its line and its count from that line in the frame
-        self.calls: dict = {}
-        # the layer that each call drew and its values, by the call's key,
-        # while the layer shows them; the values are None when a later frame
-        # cannot compare its own with them
-        self.last: dict = {}
-        # the key of the call whose values each layer shows
-        self.owner: dict = {}
-        # every layer that the drawing drew, in the order of its first frame,
-        # and those of them that show
-        self.order: dict = {}
-        self.visible: set = set()
-        # the look last given to each layer through a handle with no _draw
-        self.looks: dict = {}
-        # the pass that the drawing paints on, its layers in their order and
-        # as a set, the scene's own count of them, every name that the scene
-        # holds, and the scene's own layers. The first drawing reads them.
-        self.pass_: str | None = None
-        self.placed: list = []
-        self.at: set = set()
-        self.own = 0
-        self.taken: set = set()
-        self.layers: set = set()
-
-
-# The kinds of call, as the native half numbers them: each kind's keywords
-# in the order of a call's values, the shape that its look names, and the
-# name of a new layer of the kind.
-_TEXT, _RECT, _IMAGE, _LINE = 0, 1, 2, 3
+# The keywords of each kind of call, in the order of a call's values, as
+# the native half numbers the kinds: a text, a rect, an image and a line,
+# and the shape that each kind's look names.
 _CALL_KEYS = (
     (
         "text",
@@ -604,8 +561,6 @@ _CALL_KEYS = (
     ("points", "x", "y", "color", "opacity", "blend", "visible", "stroke_width"),
 )
 _CALL_SHAPES = (None, "rect", None, "line")
-_CALL_NAMES = ("text", "rect", "image", "line")
-_VISIBLE = tuple(keys.index("visible") for keys in _CALL_KEYS)
 
 
 def _call_look(kind: int, vals: tuple, name: str | None) -> dict:
@@ -618,414 +573,20 @@ def _call_look(kind: int, vals: tuple, name: str | None) -> dict:
     return _look({**_FIELDS, **given}, name)
 
 
-_getframe = sys._getframe
-# The number of the line of each call, by the id of its caller's code object
-# and the offset of the call in that code. Every code object stays, so no
-# other takes its id.
-_SITES: dict = {}
-_LINES: dict = {}
-_CODES: list = []
+def _circle(centre, radius) -> tuple:
+    """The x, y, width, height and border_radius of the box of a circle of
+    `radius` around `centre`."""
+    cx, cy = _plain(centre)
+    return cx - radius, cy - radius, 2 * radius, 2 * radius, radius
 
 
-def _site(f) -> int:
-    """The number of the line of the call that frame `f` makes."""
-    code = f.f_code
-    line = (code.co_filename, f.f_lineno)
-    site = _LINES.setdefault(line, len(_LINES))
-    _SITES[(id(code) << 32) | f.f_lasti] = site
-    _CODES.append(code)
-    return site
+def __getattr__(name: str):
+    # A drawing is the native half's: it loads on the first one.
+    if name in ("Drawing", "_Screen"):
+        from ghee import _ext
 
-
-class Drawing:
-    """One frame of a screen, the block of `with screen.draw() as d:`, or of
-    the scene that run() runs, the block of `with ghee.draw() as d:` in a
-    tick or a feed.
-
-    Each call writes a layer. Leaving a screen's block draws the frame, and
-    leaving the block of ghee.draw() hands its layers to the tick's frame.
-    A call takes the keys of its layer as keywords, the effects included, as
-    ghee.Layer takes them, and `name`. Positions and box sizes are pixels
-    from the top left, y down, on the screen's last pass before its filters,
-    and the drawing paints over the scene's own layers there, in the order
-    of the calls.
-
-    Each frame states the whole look of each call: a keyword left out takes
-    its default again. A call keeps its layer from frame to frame by the line
-    of code that makes it and its count from that line in the frame, or by
-    its `name`, which names the layer too. A call with no name names its
-    layer after its kind: text, text2, image, rect, line. Two calls that draw
-    one layer in a frame raise ValueError.
-
-    Leaving the block sends ghee what changed: a live field changes live,
-    any other change builds that layer alone again, a call that runs for the
-    first time adds its layer after the layer of the call before it, a layer
-    whose call did not run hides, and an effect that a call stops naming is
-    bypassed. A frame whose calls changed nothing sends nothing, and draws.
-    """
-
-    def __init__(self, handle, screen: _Screen, ends_frame: bool = True) -> None:
-        self._handle = handle
-        self._draw = getattr(handle, "_draw", None)
-        self._screen = screen
-        self._ends_frame = ends_frame
-        # each call's count from its line, the layer of each call in order,
-        # every layer drawn, and each call that changed
-        self._sites: dict = {}
-        self._layers: list = []
-        self._drawn: set = set()
-        self._changed: list = []
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, kind, value, traceback) -> bool:
-        if kind is None:
-            self._send()
-            if self._ends_frame:
-                self._handle.frame()
-        return False
-
-    def text(
-        self,
-        words: str,
-        *,
-        name: str | None = None,
-        x: float | None = None,
-        y: float | None = None,
-        color: str | Sequence[float] | dict | None = None,
-        opacity: float | None = None,
-        blend: Blend | None = None,
-        visible: bool | None = None,
-        font_size: float | None = None,
-        font_family: str | os.PathLike[str] | None = None,
-        text_align: TextAlign | None = None,
-        render: Render | None = None,
-        text_shadow: dict | None = None,
-        glow: dict | None = None,
-        text_stroke: dict | None = None,
-        karaoke: dict | None = None,
-        wave: dict | None = None,
-        scroll: dict | None = None,
-        blink: dict | None = None,
-    ) -> None:
-        """Draw `words`, a text layer. With no `font_size` the words fit the
-        screen, and an axis with no position centres them."""
-        self._put(
-            _getframe(1),
-            _TEXT,
-            name,
-            (
-                words,
-                x,
-                y,
-                color,
-                opacity,
-                blend,
-                visible,
-                font_size,
-                font_family,
-                text_align,
-                render,
-                text_shadow,
-                glow,
-                text_stroke,
-                karaoke,
-                wave,
-                scroll,
-                blink,
-            ),
-        )
-
-    def image(
-        self,
-        image: str | os.PathLike[str],
-        *,
-        name: str | None = None,
-        x: float | None = None,
-        y: float | None = None,
-        width: float | None = None,
-        height: float | None = None,
-        color: str | Sequence[float] | None = None,
-        opacity: float | None = None,
-        blend: Blend | None = None,
-        visible: bool | None = None,
-    ) -> None:
-        """Draw `image`, an image layer of a .png or .jpg file or an image
-        asset of the scene. A file loads once and stays with the screen."""
-        self._put(
-            _getframe(1),
-            _IMAGE,
-            name,
-            (image, x, y, width, height, color, opacity, blend, visible),
-        )
-
-    def rect(
-        self,
-        *,
-        name: str | None = None,
-        x: float | None = None,
-        y: float | None = None,
-        width: float | None = None,
-        height: float | None = None,
-        color: str | Sequence[float] | None = None,
-        opacity: float | None = None,
-        blend: Blend | None = None,
-        visible: bool | None = None,
-        border: dict | None = None,
-        border_radius: float | None = None,
-    ) -> None:
-        """Draw a box, a rect shape layer, the whole screen on a size left
-        out."""
-        self._put(
-            _getframe(1),
-            _RECT,
-            name,
-            (
-                x,
-                y,
-                width,
-                height,
-                color,
-                opacity,
-                blend,
-                visible,
-                border,
-                border_radius,
-            ),
-        )
-
-    def circle(
-        self,
-        centre: Sequence[float],
-        radius: float,
-        *,
-        name: str | None = None,
-        color: str | Sequence[float] | None = None,
-        opacity: float | None = None,
-        blend: Blend | None = None,
-        visible: bool | None = None,
-        border: dict | None = None,
-    ) -> None:
-        """Draw a circle of `radius` pixels around `centre`, (x, y): a rect
-        of `2 * radius` with `border_radius` at `radius`."""
-        cx, cy = _plain(centre)
-        self._put(
-            _getframe(1),
-            _RECT,
-            name,
-            (
-                cx - radius,
-                cy - radius,
-                2 * radius,
-                2 * radius,
-                color,
-                opacity,
-                blend,
-                visible,
-                border,
-                radius,
-            ),
-        )
-
-    def line(
-        self,
-        a: Sequence[float],
-        b: Sequence[float],
-        *,
-        name: str | None = None,
-        x: float | None = None,
-        y: float | None = None,
-        color: str | Sequence[float] | None = None,
-        opacity: float | None = None,
-        blend: Blend | None = None,
-        visible: bool | None = None,
-        stroke_width: float | None = None,
-    ) -> None:
-        """Draw a line from `a` to `b`, each (x, y): `lines([a, b])`."""
-        self._put(
-            _getframe(1),
-            _LINE,
-            name,
-            ((a, b), x, y, color, opacity, blend, visible, stroke_width),
-        )
-
-    def lines(
-        self,
-        points: Sequence[Sequence[float]],
-        *,
-        name: str | None = None,
-        x: float | None = None,
-        y: float | None = None,
-        color: str | Sequence[float] | None = None,
-        opacity: float | None = None,
-        blend: Blend | None = None,
-        visible: bool | None = None,
-        stroke_width: float | None = None,
-    ) -> None:
-        """Draw a line through `points`, each (x, y), two or more. `x` and
-        `y` shift every point."""
-        self._put(
-            _getframe(1),
-            _LINE,
-            name,
-            (points, x, y, color, opacity, blend, visible, stroke_width),
-        )
-
-    def _put(self, f, kind: int, name: str | None, vals: tuple) -> None:
-        """Hold one call of `kind` for the frame, made in frame `f` with
-        `vals`, its values in the order of the kind's keywords: a call whose
-        values are those that its layer shows holds nothing more."""
-        site = _SITES.get((id(f.f_code) << 32) | f.f_lasti)
-        if site is None:
-            site = _site(f)
-        sites = self._sites
-        count = sites.get(site, 0)
-        sites[site] = count + 1
-        key = (site, count)
-        s = self._screen
-        layer = s.calls.get(key) if name is None else name
-        if layer is not None:
-            if layer in self._drawn:
-                raise ValueError(f"two calls in one frame draw layer '{layer}'")
-            self._drawn.add(layer)
-        self._layers.append(layer)
-        last = s.last.get(key)
-        if last is not None and last[0] == layer:
-            # An array compared with a number gives an array, which has no
-            # truth value.
-            try:
-                if last[1] == vals:
-                    return
-            except ValueError:
-                pass
-        self._changed.append((len(self._layers) - 1, key, kind, layer, vals))
-
-    def _send(self) -> None:
-        """Hand ghee what the frame changed."""
-        s = self._screen
-        h = self._handle
-        if s.pass_ is None:
-            at = h._drawing()
-            s.pass_ = at["pass"]
-            s.placed = list(at["layers"])
-            s.at = set(s.placed)
-            s.own = len(s.placed)
-            s.taken = set(at["taken"])
-            s.layers = set(at["all"])
-        batch = []
-        for call in self._changed:
-            layer = call[3]
-            if layer is None or (layer not in s.at and layer not in s.layers):
-                self._add(call)
-            elif self._draw is None:
-                self._update(call)
-            else:
-                batch.append(call)
-        if batch:
-            self._flush(batch)
-        self._hide()
-
-    def _add(self, call: tuple) -> None:
-        """Add the layer of `call`, a call new to the screen, after the layer
-        of the call before it."""
-        pos, key, kind, layer, vals = call
-        s = self._screen
-        look = _call_look(kind, vals, None)
-        if layer is None:
-            layer = _free(_CALL_NAMES[kind], s.taken | self._drawn)
-            self._drawn.add(layer)
-        look = {"name": layer, **look}
-        after = next((n for n in reversed(self._layers[:pos]) if n in s.at), None)
-        index = s.own if after is None else s.placed.index(after) + 1
-        self._handle._add_layer(s.pass_, index, look)
-        if call[3] is None:
-            s.calls[key] = layer
-            self._layers[pos] = layer
-        s.placed.insert(index, layer)
-        s.at.add(layer)
-        s.taken.add(layer)
-        s.looks[layer] = look
-        self._took((pos, key, kind, layer, vals))
-
-    def _update(self, call: tuple) -> None:
-        """Give the layer of `call` its look, written as the scene format
-        writes it."""
-        _, _, kind, layer, vals = call
-        s = self._screen
-        look = _call_look(kind, vals, layer)
-        if self._draw is not None or s.looks.get(layer) != look:
-            self._handle._update_layer(look)
-        s.looks[layer] = look
-        self._took(call)
-
-    def _flush(self, batch: list) -> None:
-        """Give the layers of the calls of `batch` their looks in one native
-        call, and through _update() the calls that it leaves."""
-        s = self._screen
-        try:
-            left = self._draw(
-                [(kind, layer, vals) for _, _, kind, layer, vals in batch]
-            )
-        except BaseException:
-            for call in batch:
-                s.last.pop(call[1], None)
-            raise
-        slow = set(left)
-        for k, call in enumerate(batch):
-            if k not in slow:
-                self._took(call)
-        for k in left:
-            self._update(batch[k])
-
-    def _took(self, call: tuple) -> None:
-        """Hold that the layer of `call` shows its values."""
-        _, key, kind, layer, vals = call
-        s = self._screen
-        owner = s.owner.get(layer)
-        if owner != key:
-            last = s.last.get(owner)
-            if last is not None and last[0] == layer:
-                del s.last[owner]
-            s.owner[layer] = key
-        s.last[key] = (layer, vals if _frozen(vals) else None)
-        s.order.setdefault(layer)
-        shown = vals[_VISIBLE[kind]]
-        if shown is False or (
-            shown is not None and shown is not True and _plain(shown) is False
-        ):
-            s.visible.discard(layer)
-        else:
-            s.visible.add(layer)
-
-    def _hide(self) -> None:
-        """Hide each layer that shows and whose call did not run, through
-        its live eye."""
-        s = self._screen
-        gone = s.visible - self._drawn
-        if not gone:
-            return
-        for layer in [n for n in s.order if n in gone]:
-            self._handle.set_layer(layer, "visible", False)
-            s.visible.discard(layer)
-            look = s.looks.get(layer)
-            if look is not None:
-                s.looks[layer] = {**look, "visible": False}
-            owner = s.owner.get(layer)
-            last = s.last.get(owner)
-            if last is not None and last[0] == layer:
-                del s.last[owner]
-
-
-def _free(base: str, taken: set) -> str:
-    """`base`, else `base` and the first number from 2 that makes a name
-    outside `taken`."""
-    if base not in taken:
-        return base
-    n = 2
-    while f"{base}{n}" in taken:
-        n += 1
-    return f"{base}{n}"
+        return getattr(_ext(), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def measure(
@@ -1067,13 +628,18 @@ def draw() -> Drawing:
     half of the package checks each against the scene first, so a call that
     ghee would refuse raises ValueError. Raises RuntimeError outside run().
     """
-    if _HANDLE is not None:
-        return Drawing(_HANDLE, _DRAWN, ends_frame=False)
-    if _SCENE is None:
+    global _DRAWN
+    if _HANDLE is None and _SCENE is None:
         raise RuntimeError(
             "ghee.draw draws on the scene that run() runs: call it in a tick or a feed"
         )
-    return Drawing(_Wire(), _DRAWN, ends_frame=False)
+    from ghee import _ext
+
+    native = _ext()
+    if _DRAWN is None:
+        _DRAWN = native._Screen()
+    handle = _Wire() if _HANDLE is None else _HANDLE
+    return native.Drawing(handle, _DRAWN, ends_frame=False)
 
 
 class _Wire:
@@ -1409,7 +975,7 @@ _FILTERS: list = []
 # what ghee.draw() keeps from one tick to the next
 _SCENE: Scene | None = None
 _LIVE = None
-_DRAWN = _Screen()
+_DRAWN = None
 
 
 def feed(name: str):
@@ -1755,7 +1321,7 @@ def run(scene: Scene | None = None) -> None:
         scene = Scene(passes=[Pass("main", _BLACK)])
     _PARAMS, _FILTERS = _param_types(scene), list(scene.filters)
     _SCENE = scene
-    _DRAWN = _Screen()
+    _DRAWN = None
     try:
         if os.environ.get(WIRE):
             _wire(scene)

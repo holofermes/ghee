@@ -17,6 +17,7 @@
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
 
+use crate::draw::{self, Arg};
 use crate::engine::Blend;
 use crate::layer::{
     every_dict, given, number, object, spoken, Every, Form, Live, Rgb, COLOUR_FORMS, IMAGE_KIND,
@@ -214,6 +215,96 @@ impl ShapeLayer {
             }
         }
         Value::Object(d)
+    }
+
+    /// The layer named `name` that a drawing's call with `args` gives
+    /// `old`: a line's in the order of draw::LINE_ARGS, a rect's in the order
+    /// of draw::RECT_ARGS, as draw::layer_of() makes it. None for another
+    /// shape than `old`'s.
+    pub(crate) fn of_args(
+        name: &str,
+        line: bool,
+        args: &[Arg],
+        old: &ShapeLayer,
+    ) -> Option<ShapeLayer> {
+        let px = |a: &Arg| draw::number(a, pixels);
+        let colour = |a: &Arg| match a {
+            Arg::None => Some(Rgb::WHITE),
+            c => draw::rgb(c),
+        };
+        let (e, color, shape) = match (line, &old.shape) {
+            (true, Shape::Line { .. }) => {
+                let [points, x, y, color, opacity, blend, visible, stroke_width] = args else {
+                    return None;
+                };
+                let Arg::List(items) = points else {
+                    return None;
+                };
+                let pair = |p: &Arg| match p {
+                    Arg::List(xy) => match xy.as_slice() {
+                        [Arg::Num(x), Arg::Num(y)] if x.is_finite() && y.is_finite() => {
+                            Some([*x, *y])
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if items.len() < 2 {
+                    return None;
+                }
+                let shape = Shape::Line {
+                    points: items.iter().map(pair).collect::<Option<Vec<_>>>()?,
+                    stroke_width: px(stroke_width)?.unwrap_or(STROKE_WIDTH),
+                };
+                let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
+                (e, colour(color)?, shape)
+            }
+            (false, Shape::Rect { border: kept, .. }) => {
+                let [x, y, width, height, color, opacity, blend, visible, border, border_radius] =
+                    args
+                else {
+                    return None;
+                };
+                let border = match border {
+                    Arg::None => kept.map(|b| Border {
+                        visible: false,
+                        ..b
+                    }),
+                    b => {
+                        let m = draw::map(b, &BORDER_KEYS)?;
+                        Some(Border {
+                            width: px(draw::get(m, "width"))?.unwrap_or(BORDER_WIDTH),
+                            color: colour(draw::get(m, "color"))?,
+                            visible: draw::flag(draw::get(m, "visible"), true)?,
+                        })
+                    }
+                };
+                let shape = Shape::Rect {
+                    width: px(width)?,
+                    height: px(height)?,
+                    border,
+                    border_radius: px(border_radius)?.unwrap_or(0.0),
+                };
+                let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
+                (e, colour(color)?, shape)
+            }
+            _ => return None,
+        };
+        Some(ShapeLayer {
+            name: name.to_string(),
+            visible: e.visible,
+            x: e.x,
+            y: e.y,
+            color,
+            opacity: e.opacity,
+            blend: e.blend,
+            shape,
+        })
+    }
+
+    /// True when `other` is the same shape, a rect or a line.
+    pub(crate) fn same_shape(&self, other: &ShapeLayer) -> bool {
+        self.kind() == other.kind()
     }
 
     /// The name of the shape, as the scene writes it.

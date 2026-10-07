@@ -43,6 +43,7 @@ use serde_json::{Map, Value};
 use crate::atlas;
 use crate::colour;
 use crate::css;
+use crate::draw::{self, Arg};
 use crate::emoji::{self, EmojiFont};
 use crate::engine::Blend;
 use crate::scene::{hex_colour, keys_on, known_keys, number_list, py_float, py_repr, PASS_KEYS};
@@ -554,6 +555,36 @@ impl Effect {
         })
     }
 
+    /// The effect of a drawing's call, `a`, as from_dict() reads the same
+    /// dict. None for a value that from_dict() refuses.
+    fn of_arg(kind: Kind, a: &Arg) -> Option<Effect> {
+        let fields = kind.fields();
+        let Arg::Map(m) = a else { return None };
+        let known = |k: &str| k == "visible" || fields.iter().any(|f| f.name == k);
+        if !m.iter().all(|(k, _)| known(k)) {
+            return None;
+        }
+        let mut values = Vec::with_capacity(fields.len());
+        for f in fields {
+            let v = draw::get(m, f.name);
+            if *v == Arg::None {
+                values.push(f.default);
+                continue;
+            }
+            values.push(match f.takes {
+                Takes::Colour => FieldValue::Rgb(draw::rgb(v)?),
+                Takes::Em | Takes::Rate(_) => FieldValue::Num(draw::number(v, |n| n >= 0.0)??),
+                Takes::Number(_) => FieldValue::Num(draw::number(v, |_| true)??),
+                Takes::Unit => FieldValue::Num(draw::number(v, |n| (0.0..=1.0).contains(&n))??),
+            });
+        }
+        Some(Effect {
+            kind,
+            visible: draw::flag(draw::get(m, "visible"), true)?,
+            values,
+        })
+    }
+
     /// The effect as a layer holds it, a field at its default left out.
     fn to_dict(&self) -> Value {
         let mut d = Map::new();
@@ -892,6 +923,83 @@ impl TextLayer {
             text_align,
             render,
             effects,
+        })
+    }
+
+    /// The layer named `name` that a drawing's text call with `args`, in
+    /// the order of draw::TEXT_ARGS, gives `old`, as draw::layer_of() makes
+    /// it.
+    pub(crate) fn of_args(name: &str, args: &[Arg], old: &TextLayer) -> Option<TextLayer> {
+        let [words, x, y, color, opacity, blend, visible, rest @ ..] = args else {
+            return None;
+        };
+        let [font_size, font_family, text_align, render, effects @ ..] = rest else {
+            return None;
+        };
+        let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
+        let Arg::Str(words) = words else { return None };
+        let color = match color {
+            Arg::None => Color::Solid(Rgb::WHITE),
+            Arg::Map(_) => {
+                let m = draw::map(color, &GRADIENT_KEYS)?;
+                let end = |k: &str| match draw::get(m, k) {
+                    Arg::None => None,
+                    v => draw::rgb(v),
+                };
+                Color::Gradient {
+                    from: end("from")?,
+                    to: end("to")?,
+                    angle: draw::number(draw::get(m, "angle"), |_| true)?.unwrap_or(GRADIENT_ANGLE),
+                }
+            }
+            c => Color::Solid(draw::rgb(c)?),
+        };
+        let font_family = match font_family {
+            Arg::None => None,
+            Arg::Str(s) if !s.is_empty() => Some(s.clone()),
+            _ => return None,
+        };
+        let text_align = match text_align {
+            Arg::None => Align::Left,
+            Arg::Str(s) => *Align::ALL.iter().find(|a| a.as_str() == s)?,
+            _ => return None,
+        };
+        let render = match render {
+            Arg::None => Render::default_for(font_family.as_deref()),
+            Arg::Str(s) if s == "mtsdf" => Render::Mtsdf,
+            Arg::Str(s) if s == "slug" => Render::Slug,
+            _ => return None,
+        };
+        let mut kept = Vec::new();
+        for (kind, a) in Kind::ALL.into_iter().zip(effects) {
+            match a {
+                Arg::None => {
+                    if let Some(e) = old.effect(kind) {
+                        kept.push(Effect {
+                            visible: false,
+                            ..e.clone()
+                        });
+                    }
+                }
+                a => kept.push(Effect::of_arg(kind, a)?),
+            }
+        }
+        Some(TextLayer {
+            name: name.to_string(),
+            visible: e.visible,
+            x: e.x,
+            y: e.y,
+            color,
+            opacity: e.opacity,
+            blend: e.blend,
+            text: words.clone(),
+            font_size: draw::number(font_size, |f| f > 0.0)?,
+            font_family,
+            text_align,
+            render,
+            effects: kept,
+            data: old.data.clone(),
+            emoji: old.emoji.clone(),
         })
     }
 
@@ -1655,6 +1763,41 @@ impl ImageLayer {
         })
     }
 
+    /// The layer named `name` that a drawing's image call with `args`, in
+    /// the order of draw::IMAGE_ARGS, gives `old`, as draw::layer_of() makes
+    /// it.
+    pub(crate) fn of_args(name: &str, args: &[Arg], old: &ImageLayer) -> Option<ImageLayer> {
+        let [image, x, y, width, height, color, opacity, blend, visible] = args else {
+            return None;
+        };
+        let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
+        let image = match image {
+            Arg::Str(s) if !s.is_empty() => s.clone(),
+            _ => return None,
+        };
+        let color = match color {
+            Arg::None => None,
+            c => Some(draw::rgb(c)?),
+        };
+        let data = match image == old.image {
+            true => old.data.clone(),
+            false => None,
+        };
+        Some(ImageLayer {
+            name: name.to_string(),
+            visible: e.visible,
+            x: e.x,
+            y: e.y,
+            color,
+            opacity: e.opacity,
+            blend: e.blend,
+            image,
+            width: draw::number(width, |f| f > 0.0)?,
+            height: draw::number(height, |f| f > 0.0)?,
+            data,
+        })
+    }
+
     /// The layer as a scene holds it, a key at its default left out.
     pub fn to_dict(&self) -> Value {
         let mut d = every_dict(
@@ -1784,6 +1927,90 @@ impl Layer {
             Layer::Text(l) => l.uniforms(),
             Layer::Image(l) => l.uniforms(),
             Layer::Shape(_) => Vec::new(),
+        }
+    }
+
+    /// Each uniform of `new`, a new look of this layer, whose value differs
+    /// from this layer's, as uniforms() lists them.
+    pub fn uniforms_changed(&self, new: &Layer) -> Vec<(String, &'static str, Value)> {
+        let placed_alone = match (self, new) {
+            (Layer::Text(a), Layer::Text(b)) => {
+                a.color == b.color && a.effects == b.effects && a.render == b.render
+            }
+            (Layer::Image(a), Layer::Image(b)) => a.color == b.color,
+            (Layer::Shape(_), Layer::Shape(_)) => return Vec::new(),
+            _ => false,
+        };
+        if !placed_alone {
+            let before = self.uniforms();
+            return new
+                .uniforms()
+                .into_iter()
+                .filter(|(n, _, v)| !before.iter().any(|(m, _, w)| m == n && w == v))
+                .collect();
+        }
+        let placed = |l: &Layer| match l {
+            Layer::Text(l) => (l.x, l.y, l.visible, l.opacity),
+            Layer::Image(l) => (l.x, l.y, l.visible, l.opacity),
+            Layer::Shape(l) => (l.x, l.y, l.visible, l.opacity),
+        };
+        let ((x, y, visible, opacity), (nx, ny, nvisible, nopacity)) = (placed(self), placed(new));
+        let at = |v: Option<f64>| v.unwrap_or(0.0);
+        let mut out = Vec::new();
+        if at(x) != at(nx) {
+            out.push((uniform(GLSL_NAME, "x"), "float", Value::from(at(nx))));
+        }
+        if at(y) != at(ny) {
+            out.push((uniform(GLSL_NAME, "y"), "float", Value::from(at(ny))));
+        }
+        if (x.is_none(), y.is_none()) != (nx.is_none(), ny.is_none()) {
+            let centre = vec![flag(nx.is_none()), flag(ny.is_none())];
+            out.push((uniform(GLSL_NAME, "centre"), "vec2", Value::from(centre)));
+        }
+        if visible != nvisible {
+            out.push((uniform(GLSL_NAME, "visible"), "float", flag(nvisible)));
+        }
+        if opacity != nopacity {
+            out.push((
+                uniform(GLSL_NAME, "opacity"),
+                "float",
+                Value::from(nopacity),
+            ));
+        }
+        out
+    }
+
+    /// True when `other`, a new look of this layer, differs from it in live
+    /// fields alone, as Scene::look() tells a live change from one that
+    /// builds the layer again: the words and an image layer's image are
+    /// live.
+    pub(crate) fn builds_as(&self, other: &Layer) -> bool {
+        if self.blend() != other.blend() {
+            return false;
+        }
+        let rebuilds = |a: &Effect, b: &Effect| {
+            let fields = a.kind.fields().iter().zip(a.values.iter().zip(&b.values));
+            a.kind != b.kind
+                || fields
+                    .filter(|(f, _)| f.change == Change::Rebuild)
+                    .any(|(_, (x, y))| x != y)
+        };
+        match (self, other) {
+            (Layer::Text(a), Layer::Text(b)) => {
+                a.font_size == b.font_size
+                    && a.font_family == b.font_family
+                    && a.text_align == b.text_align
+                    && a.render == b.render
+                    && a.effects.len() == b.effects.len()
+                    && !a
+                        .effects
+                        .iter()
+                        .zip(&b.effects)
+                        .any(|(x, y)| rebuilds(x, y))
+            }
+            (Layer::Image(a), Layer::Image(b)) => a.width == b.width && a.height == b.height,
+            (Layer::Shape(a), Layer::Shape(b)) => a.same_shape(b),
+            _ => false,
         }
     }
 

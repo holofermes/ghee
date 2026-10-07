@@ -43,6 +43,7 @@ use serde_json::Value;
 use crate::assets::Pixels;
 use crate::atlas;
 use crate::cparam::create_c_parameter;
+use crate::draw::{self, Call};
 use crate::ffi;
 use crate::layer::{
     is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer, GLSL_NAME,
@@ -201,6 +202,17 @@ struct Places {
     scene: HashMap<String, (usize, usize)>,
     drawn: HashMap<String, usize>,
     runs: HashMap<String, (usize, usize)>,
+    /// The place of each scene param in the scene's params, by its name.
+    params: HashMap<String, usize>,
+}
+
+/// What update_calls() did with each call, by its index.
+#[derive(Debug, Default, PartialEq)]
+pub struct Taken {
+    /// The calls left for update_layer().
+    pub left: Vec<usize>,
+    /// The calls that gave their layer a new look.
+    pub changed: Vec<usize>,
 }
 
 /// Consecutive shape layers of a pass with one blend, which one batch draws
@@ -312,6 +324,11 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// True when `new`, a look of image layer `old`, draws another image.
+fn other_image(old: &Layer, new: &Layer) -> bool {
+    matches!((old, new), (Layer::Image(o), Layer::Image(n)) if o.image != n.image)
+}
 
 /// A fault of the caller's in a layer or a value, as a Refused error.
 fn refused(e: anyhow::Error) -> anyhow::Error {
@@ -2044,6 +2061,7 @@ impl Renderer {
             .expect("admit() found the scene")
             .replace_layer(new.clone())
             .map_err(refused)?;
+        self.moved();
         if !drawn {
             return Ok(());
         }
@@ -2113,31 +2131,183 @@ impl Renderer {
             .expect("the layer was just found")
             .swap_live(new.clone())
             .map_err(refused)?;
-        let Some(dl) = self.drawn(&name) else {
-            return Ok(true);
+        let words = (new_words != old_words).then_some(new_words.as_str());
+        self.show_live(&old, &new, words, None)?;
+        Ok(true)
+    }
+
+    /// Draw the live fields of `new`, which the scene holds now in place of
+    /// `old`, its look before: the layer's uniforms that changed, its image,
+    /// its shape's quads and its new words `words`. A text layer that shows
+    /// for the first time since the setup builds its atlas. With `runs`, a
+    /// shape's quads wait in its run for upload_runs(), and its run, its
+    /// place there and whether it keeps its count of quads go into `runs`.
+    fn show_live(
+        &self,
+        old: &Layer,
+        new: &Layer,
+        words: Option<&str>,
+        runs: Option<&mut Vec<(usize, usize, bool)>>,
+    ) -> Result<()> {
+        let name = new.name();
+        let Some(dl) = self.drawn(name) else {
+            return Ok(());
         };
-        let before = old.uniforms();
-        for (u, ty, value) in new.uniforms() {
-            if !before.iter().any(|(n, _, v)| *n == u && *v == value) {
-                self.set_layer_uniform(dl, &u, ty, value)?;
-            }
+        for (u, ty, value) in old.uniforms_changed(new) {
+            self.set_layer_uniform(dl, &u, ty, value)?;
         }
-        if let (Layer::Image(n), Layer::Image(o)) = (&new, &old) {
+        if let (Layer::Image(n), Layer::Image(o)) = (new, old) {
             if n.image != o.image {
                 self.bind_image(dl.batch, &self.image_asset(n)?)?;
             }
         }
-        if let Layer::Shape(l) = &new {
-            self.reshape(l)?;
+        if let Layer::Shape(l) = new {
+            match runs {
+                None => self.reshape(l)?,
+                Some(runs) => {
+                    let place = self.places().runs.get(name).copied();
+                    if let Some((r, k)) = place {
+                        let run = &self.runs[r];
+                        let mut quads = Vec::new();
+                        l.quads(run.size, &mut quads);
+                        let held = run.shapes[k].quads.replace(quads);
+                        let kept = held.len() == run.shapes[k].quads.borrow().len();
+                        runs.push((r, k, kept));
+                    }
+                }
+            }
         }
-        if new_words != old_words {
-            self.set_text(&name, &new_words)?;
+        if let Some(words) = words {
+            self.set_text(name, words)?;
         }
         let shown = |l: &Layer| l.as_text().is_some_and(|l| l.visible);
-        if shown(&new) && !shown(&old) {
-            self.first_shown(&name)?;
+        if shown(new) && !shown(old) {
+            self.first_shown(name)?;
         }
-        Ok(true)
+        Ok(())
+    }
+
+    /// Hand the engine the quads of the shapes in `changed`, each by its
+    /// run, its place there and whether it kept its count of quads, as
+    /// show_live() left them: a run with one changed shape that kept its
+    /// count takes that shape's quads alone, any other run all of its quads,
+    /// in place when it holds as many.
+    fn upload_runs(&self, mut changed: Vec<(usize, usize, bool)>) -> Result<()> {
+        changed.sort_unstable();
+        changed.dedup();
+        let per_quad = 16 * crate::shape::ATTRIBUTES;
+        for (r, group) in changed.chunk_by(|a, b| a.0 == b.0).map(|g| (g[0].0, g)) {
+            let run = &self.runs[r];
+            let kept = group.iter().all(|(_, _, kept)| *kept);
+            let (first, quads): (usize, Vec<f32>) = match (group, kept) {
+                ([(_, k, _)], true) => {
+                    let first = run.shapes[..*k]
+                        .iter()
+                        .map(|s| s.quads.borrow().len() / per_quad)
+                        .sum();
+                    (first, run.shapes[*k].quads.borrow().clone())
+                }
+                (_, true) => (
+                    0,
+                    run.shapes
+                        .iter()
+                        .flat_map(|s| s.quads.borrow().clone())
+                        .collect(),
+                ),
+                (_, false) => {
+                    self.run_quads(run)?;
+                    continue;
+                }
+            };
+            if quads.is_empty() {
+                continue;
+            }
+            #[cfg(test)]
+            self.shape_quads.set(self.shape_quads.get() + quads.len());
+            let ok = unsafe {
+                ffi::ghee_mp_set_batch_quads_at(
+                    self.handle,
+                    run.batch,
+                    c_int::try_from(first)?,
+                    quads.as_ptr(),
+                    c_int::try_from(quads.len() / per_quad)?,
+                )
+            };
+            if !ok {
+                bail!(
+                    "{}",
+                    or_else(
+                        self.last_error(),
+                        &format!("layer '{}' refused its quads", run.shapes[0].name)
+                    )
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Give each layer named by a call of `calls` the look of that call, as
+    /// update_layer() gives it the same look written as a scene declares
+    /// it, when the look differs from the layer's in live fields alone. The
+    /// shapes of one run that changed take one upload. Leaves for
+    /// update_layer() a call that draw::layer_of() makes no layer of, a
+    /// look that builds its layer again or gives an image layer another
+    /// image, and a name that names no layer of the scene.
+    pub fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {
+        let mut taken = Taken::default();
+        let mut runs = Vec::new();
+        // The runs take the quads that their shapes hold whatever fails.
+        let looped = self.take_calls(calls, &mut taken, &mut runs);
+        let uploaded = self.upload_runs(runs);
+        looped.and(uploaded)?;
+        Ok(taken)
+    }
+
+    /// The calls of update_calls(), into `taken`, and the shapes whose
+    /// quads wait for upload_runs() into `runs`.
+    fn take_calls(
+        &self,
+        calls: &[Call],
+        taken: &mut Taken,
+        runs: &mut Vec<(usize, usize, bool)>,
+    ) -> Result<()> {
+        for (k, call) in calls.iter().enumerate() {
+            let found = {
+                let scene = self.scene.borrow();
+                let Some(scene) = scene.as_ref() else {
+                    taken.left.push(k);
+                    continue;
+                };
+                let places = self.places();
+                let Some(&(p, i)) = places.scene.get(&call.layer) else {
+                    taken.left.push(k);
+                    continue;
+                };
+                let old = &scene.passes[p].layers[i];
+                match draw::layer_of(call, old) {
+                    Some(new) if new == *old => continue,
+                    Some(new) if old.builds_as(&new) && !other_image(old, &new) => {
+                        Some((p, i, new, places.params.get(&call.layer).copied()))
+                    }
+                    _ => None,
+                }
+            };
+            let Some((p, i, new, param)) = found else {
+                taken.left.push(k);
+                continue;
+            };
+            let (old, words) = self
+                .scene
+                .borrow_mut()
+                .as_mut()
+                .expect("the layer was just found")
+                .swap_live_at(p, i, param, new);
+            taken.changed.push(k);
+            let scene = self.scene.borrow();
+            let new = &scene.as_ref().expect("the layer was just found").passes[p].layers[i];
+            self.show_live(&old, new, words.as_deref(), Some(runs))?;
+        }
+        Ok(())
     }
 
     /// The size in pixels of the block that `words` lay out in, as a text
@@ -2274,6 +2444,9 @@ impl Renderer {
                 for (i, l) in pass.layers.iter().enumerate() {
                     places.scene.insert(l.name().to_string(), (p, i));
                 }
+            }
+            for (k, (name, _)) in scene.params.iter().enumerate() {
+                places.params.insert(name.clone(), k);
             }
         }
         for (k, d) in self.layers.iter().enumerate() {
@@ -6226,6 +6399,48 @@ mod tests {
             }
             r.set_time(Some(0.0));
             assert!(still(&mut r) == *built, "{look}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn the_changed_shapes_of_a_run_hand_the_engine_their_quads_in_one_upload() {
+        // Three rects of one run take a frame's calls at once. One rect that
+        // changes hands the engine its own quad, two hand it the whole run
+        // once, and a rect that hides hands it the run's quads that stay.
+        use crate::draw::{Arg, Call, CallKind};
+        let rect = |name: &str, x: f64| {
+            json!({"name": name, "shape": "rect", "x": x, "y": 2, "width": 4,
+                   "height": 4})
+        };
+        let call = |name: &str, x: f64, visible: bool| {
+            let mut args = vec![Arg::None; CallKind::Rect.keys().len()];
+            args[0] = Arg::Num(x);
+            args[1] = Arg::Num(2.0);
+            args[2] = Arg::Num(4.0);
+            args[3] = Arg::Num(4.0);
+            args[7] = Arg::Bool(visible);
+            Call {
+                kind: CallKind::Rect,
+                layer: name.to_string(),
+                args,
+            }
+        };
+        let sc = scene_of(json!([{"name": "main", "code": FLAT, "layers": [
+            rect("a", 2.0), rect("b", 10.0), rect("c", 18.0)]}]));
+        let quad = 16 * crate::shape::ATTRIBUTES;
+        let rows = [
+            (vec![call("b", 11.0, true)], quad),
+            (vec![call("a", 3.0, true), call("c", 19.0, true)], 3 * quad),
+            (vec![call("b", 11.0, false)], 2 * quad),
+        ];
+        let (_g, mut r) = gpu();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        for (calls, floats) in rows {
+            let before = r.shape_quads.get();
+            let taken = r.update_calls(&calls).unwrap();
+            assert_eq!(taken.changed.len(), calls.len(), "{calls:?}");
+            assert_eq!(r.shape_quads.get() - before, floats, "{calls:?}");
         }
     }
 

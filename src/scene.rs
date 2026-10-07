@@ -843,6 +843,11 @@ impl ParamMap {
         self.0.iter_mut().find(|(n, _)| n == name).map(|(_, p)| p)
     }
 
+    /// The param at place `k` in the order of the map.
+    pub(crate) fn at_mut(&mut self, k: usize) -> Option<&mut Param> {
+        self.0.get_mut(k).map(|(_, p)| p)
+    }
+
     pub fn insert(&mut self, name: String, param: Param) {
         match self.0.iter_mut().find(|(n, _)| *n == name) {
             Some(slot) => slot.1 = param,
@@ -2059,6 +2064,34 @@ impl Scene {
         }
         self.passes[at].layers[index] = layer;
         Ok(())
+    }
+
+    /// Put `layer` in the place of layer `i` of pass `p`, which it differs
+    /// from in live fields alone and which keeps its image, as swap_live()
+    /// does, with `param` the place of the scene param of its name. Returns
+    /// the layer that it replaced, and the words of `layer` when they differ
+    /// from the words that the layer held, as look() tells them apart.
+    pub(crate) fn swap_live_at(
+        &mut self,
+        p: usize,
+        i: usize,
+        param: Option<usize>,
+        layer: Layer,
+    ) -> (Layer, Option<String>) {
+        let param = param.and_then(|k| self.params.at_mut(k));
+        let old = std::mem::replace(&mut self.passes[p].layers[i], layer);
+        let Some(t) = self.passes[p].layers[i].as_text() else {
+            return (old, None);
+        };
+        let held = match param.as_ref().map(|p| &p.value) {
+            Some(ParamValue::Str(w)) => w.as_str(),
+            _ => old.as_text().map_or("", |o| o.text.as_str()),
+        };
+        let words = (held != t.text).then(|| t.text.clone());
+        if let Some(param) = param.filter(|p| p.of_text) {
+            param.value = ParamValue::Str(t.text.clone());
+        }
+        (old, words)
     }
 
     /// Why a text layer of the scene cannot take `font` as its

@@ -149,6 +149,16 @@ def test_a_call_keeps_its_layer_by_its_line_whatever_runs_above_it():
     ]
 
 
+def test_the_calls_on_one_line_keep_one_layer_whichever_of_them_runs():
+    def draw(d, i):
+        d.rect(x=1) if i == 0 else d.rect(x=2)
+
+    assert frames(Fake(), draw, 2)[1] == [
+        ("update", {"name": "rect", "x": 2.0, "shape": "rect"}),
+        FRAME,
+    ]
+
+
 def test_a_frame_whose_calls_changed_nothing_sends_nothing():
     def draw(d, i):
         d.text("12:00", x=0, y=0, font_size=16)

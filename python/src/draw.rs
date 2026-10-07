@@ -180,8 +180,9 @@ struct Held {
 #[pyclass(module = "ghee", name = "_Screen")]
 #[derive(Default)]
 pub struct Screen {
-    /// The line of each call, by its caller's code object and the line.
-    /// Every code object stays, so no other takes its address.
+    /// The line of each call, by its caller's code object and the offset of
+    /// the call's instruction in it. Every code object stays, so no other
+    /// takes its address.
     sites: HashMap<(usize, i32), u32>,
     lines: HashMap<(String, i32), u32>,
     codes: Vec<Py<PyAny>>,
@@ -239,25 +240,29 @@ impl Screen {
     fn site(&mut self, py: Python<'_>) -> PyResult<u32> {
         // SAFETY: the frame is the interpreter's own while this thread holds
         // the GIL, and PyFrame_GetCode gives a new reference.
-        let (code, line) = unsafe {
+        let (frame, code) = unsafe {
             let f = ffi::PyEval_GetFrame();
             if f.is_null() {
                 return Ok(self.line_of(String::new(), 0));
             }
-            let code = ffi::PyFrame_GetCode(f) as *mut ffi::PyObject;
             (
-                Bound::from_owned_ptr(py, code).unbind(),
-                ffi::PyFrame_GetLineNumber(f),
+                Bound::from_borrowed_ptr(py, f.cast::<ffi::PyObject>()),
+                Bound::from_owned_ptr(py, ffi::PyFrame_GetCode(f).cast::<ffi::PyObject>()),
             )
         };
-        let at = (code.as_ptr() as usize, line);
+        // PyFrame_GetLineNumber walks the code's line table from its start,
+        // so a known instruction skips it.
+        let offset: i32 = frame.getattr(pyo3::intern!(py, "f_lasti"))?.extract()?;
+        let at = (code.as_ptr() as usize, offset);
         if let Some(&site) = self.sites.get(&at) {
             return Ok(site);
         }
-        let file: String = code.bind(py).getattr("co_filename")?.extract()?;
+        // SAFETY: as above, `frame` holds the frame alive.
+        let line = unsafe { ffi::PyFrame_GetLineNumber(frame.as_ptr().cast()) };
+        let file: String = code.getattr("co_filename")?.extract()?;
         let site = self.line_of(file, line);
         self.sites.insert(at, site);
-        self.codes.push(code);
+        self.codes.push(code.unbind());
         Ok(site)
     }
 
@@ -390,10 +395,17 @@ impl Drawing {
         if unchanged {
             return Ok(());
         }
+        let mut all = Vec::with_capacity(values.len());
         let args = values
             .iter()
-            .map(|v| v.as_ref().map_or(Some(Arg::None), arg))
-            .collect::<Option<Vec<_>>>();
+            .all(|v| match v.as_ref().map_or(Some(Arg::None), arg) {
+                Some(a) => {
+                    all.push(a);
+                    true
+                }
+                None => false,
+            })
+            .then_some(all);
         let values = PyTuple::new(py, values.iter().cloned())?;
         self.changed.push(Changed {
             pos: self.layers.len() - 1,

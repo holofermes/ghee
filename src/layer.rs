@@ -289,6 +289,14 @@ impl Render {
             _ => Render::Mtsdf,
         }
     }
+
+    /// The render as a scene writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Render::Mtsdf => "mtsdf",
+            Render::Slug => "slug",
+        }
+    }
 }
 
 /// The texels per em of an MTSDF atlas, and the range of its field in
@@ -1032,11 +1040,7 @@ impl TextLayer {
             );
         }
         if self.render != Render::default_for(self.font_family.as_deref()) {
-            let render = match self.render {
-                Render::Mtsdf => "mtsdf",
-                Render::Slug => "slug",
-            };
-            d.insert("render".to_string(), Value::from(render));
+            d.insert("render".to_string(), Value::from(self.render.as_str()));
         }
         for e in &self.effects {
             d.insert(e.kind.key().to_string(), e.to_dict());
@@ -2196,9 +2200,10 @@ impl Live {
 
 /// The layer format that the console edits, for GET /format: the fields of
 /// each effect in order, with their defaults and whether a /set changes them
-/// with no rebuild, the live fields of each kind of layer, what an empty field
-/// of each kind takes, and the built-in fonts, each name the console shows
-/// with the `font_family` that it writes.
+/// with no rebuild, the same for a rect's border, the live fields of each kind
+/// of layer, what an empty field of each kind takes, the keys of each shape,
+/// the built-in fonts, each name the console shows with the `font_family` that
+/// it writes, and the render that a text layer takes in each font.
 pub fn format() -> Value {
     let mut effects = Map::new();
     for kind in Kind::ALL {
@@ -2255,10 +2260,45 @@ pub fn format() -> Value {
                                         "border_radius": shape::BORDER_RADIUS})),
         "line": {"x": 0, "y": 0, "stroke_width": shape::STROKE_WIDTH},
     });
+    let rect = Layer::from_dict(
+        "a layer",
+        &serde_json::json!({"name": "a", "shape": "rect"}),
+    )
+    .expect("a sample rect parses");
+    let color = Rgb {
+        written: Written::Hex,
+        ..shape::BORDER_COLOR
+    };
+    let border: Vec<Value> = [
+        ("width", Value::from(shape::BORDER_WIDTH)),
+        ("color", color.to_json()),
+    ]
+    .into_iter()
+    .map(|(key, default)| {
+        let live = rect.live(Some("border"), key).is_ok();
+        serde_json::json!({"key": key, "default": default, "live": live})
+    })
+    .collect();
+    let own = |keys: &[&str]| -> Vec<String> {
+        keys.iter()
+            .filter(|k| **k != "shape")
+            .map(|k| (*k).to_string())
+            .collect()
+    };
+    let shapes =
+        serde_json::json!({"rect": own(&shape::RECT_KEYS), "line": own(&shape::LINE_KEYS)});
     let mut fonts = Map::new();
     fonts.insert("built-in".to_string(), Value::Null);
     fonts.insert(text::PIXEL.to_string(), Value::from(text::PIXEL));
-    serde_json::json!({"effects": effects, "live": live, "empty": empty, "fonts": fonts})
+    let plain = Render::default_for(None);
+    let mut renders = Map::new();
+    let pixel = Render::default_for(Some(text::PIXEL));
+    if pixel != plain {
+        renders.insert(text::PIXEL.to_string(), Value::from(pixel.as_str()));
+    }
+    let render = serde_json::json!({"default": plain.as_str(), "fonts": renders});
+    serde_json::json!({"effects": effects, "border": border, "live": live, "empty": empty,
+                       "shapes": shapes, "fonts": fonts, "render": render})
 }
 
 /// `items` as a sentence names them: "a, b and c".

@@ -42,7 +42,10 @@ pub(crate) const LINE_KIND: (&[&str], &str) = (&LINE_KEYS, "a line");
 const BORDER_KEYS: [&str; 3] = ["width", "color", "visible"];
 
 /// A border's width when it names none, in pixels.
-const BORDER_WIDTH: f64 = 1.0;
+pub(crate) const BORDER_WIDTH: f64 = 1.0;
+
+/// A border's colour when it names none.
+pub(crate) const BORDER_COLOR: Rgb = Rgb::WHITE;
 
 /// A line's thickness when it names none, in pixels.
 pub(crate) const STROKE_WIDTH: f64 = 1.0;
@@ -559,7 +562,7 @@ fn border(what: &str, d: &Value) -> Result<Border> {
     known_keys(o, what, &BORDER_KEYS, &[])?;
     let width = number(o, what, "width", pixels, PIXELS)?.unwrap_or(BORDER_WIDTH);
     let color = match given(o, "color") {
-        None => Rgb::WHITE,
+        None => BORDER_COLOR,
         Some(v) => match Rgb::from_json(v) {
             Some(c) => c,
             None => bail!("{what} color needs {COLOUR_FORMS}, got {}", py_repr(v)),

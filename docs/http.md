@@ -67,11 +67,16 @@ describes.
   that its kind takes.
 - `GET /format`: the layer format that the console edits. `effects` holds
   each effect's fields in order, each as `{key, default, live}`, where
-  `live` says that a `/set` changes it with no rebuild. `live` holds the
-  live fields of each kind of layer, `text`, `image`, `rect` and `line`.
-  `empty` holds what a field left out takes, for each kind: `centre`, `fit`,
-  `auto`, `pass` or a number. `fonts` maps each built-in font's name to the
-  `font_family` that picks it, null for the default font.
+  `live` says that a `/set` changes it with no rebuild. `border` holds a
+  rect's border's fields in the same form. `live` holds the live fields of
+  each kind of layer, `text`, `image`, `rect` and `line`. `empty` holds what
+  a field left out takes, for each kind: `centre`, `fit`, `auto`, `pass` or
+  a number. `shapes` maps each shape, `rect` and `line`, to its own keys,
+  past `shape` and the keys that every layer takes. `fonts` maps each
+  built-in font's name to the `font_family` that picks it, null for the
+  default font. `render` gives the render of a text layer that names none:
+  `fonts` maps a `font_family` to its render, and every other font takes
+  `default`.
 - `GET /filters`: the filter registry, `{name: filter def}`
 - `GET /hwinfo`: the host's hardware: `model`, the board as the device tree
   names it, `gpu`, `ram`, `ram_free`, and on a Raspberry Pi `gpu_mem` and

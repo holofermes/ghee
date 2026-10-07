@@ -1556,6 +1556,28 @@ mod tests {
         assert_eq!(f["fonts"], json!({"built-in": null, "pixel": "pixel"}));
     }
 
+    /// A rect's border, the keys of each shape and the render of a text
+    /// layer that names none, as the README's tables give them.
+    #[test]
+    fn format_serves_the_border_the_keys_of_each_shape_and_the_render_of_each_font() {
+        use serde_json::json;
+        let f = as_json(&get(&api(), "/format", &[]));
+        assert_eq!(
+            f["border"],
+            json!([{"key": "width", "default": 1.0, "live": true},
+                   {"key": "color", "default": "#ffffff", "live": true}])
+        );
+        assert_eq!(
+            f["shapes"],
+            json!({"rect": ["width", "height", "border", "border_radius"],
+                   "line": ["points", "stroke_width"]})
+        );
+        assert_eq!(
+            f["render"],
+            json!({"default": "mtsdf", "fonts": {"pixel": "slug"}})
+        );
+    }
+
     // writes
 
     #[test]

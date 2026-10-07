@@ -9,9 +9,9 @@ The artist takes the top ARTIST of the panel and the title the rest, so the
 same scene fills a 128x32 SSD1306 and a 256x64 SSD1322. The pass `top` is as
 wide as the panel and as tall as the artist's share, and its text layer
 `artist` fits the words to it, so a long name shrinks to the panel's width.
-The pass `main` copies `top` into its top rows. Its text layer `title` fits
-the rows below them, and the scroll effect moves it right to left by whole
-pixels, so on a 1-bit panel its letters keep their pixels.
+The pass `main` copies `top` into its top rows, pixel for pixel. Its text
+layer `title` fits the rows below them, and the scroll effect moves it right
+to left by whole pixels, so on a 1-bit panel its letters keep their pixels.
 
 The tick hook stands in for a music player. It steps through PLAYLIST and
 sets the words of both layers through `ghee.layers`, and ghee lays them out
@@ -48,13 +48,13 @@ ARTIST = 0.4  # the artist's share of the panel height, from the top
 # grows the letters by a hundredth of an em to keep such strokes.
 INK = {"width": 0.01, "color": "#ffffff"}
 
-# The pass `top` fills the first ROWS rows of the frame, pixel for pixel.
+# The pass `top`, TOP pixels, fills the top left of the frame pixel for pixel.
 MAIN = """
 void main() {
     // VC4 interpolates uv up to 0.04 px off the pixel centre.
     vec2 px = floor(uv * iResolution.xy) + 0.5;
     vec4 c = vec4(0.0);
-    if (px.y < ROWS) c = texture2D(iChannel0, vec2(px.x / iResolution.x, px.y / ROWS));
+    if (px.x < TOP.x && px.y < TOP.y) c = texture2D(iChannel0, px / TOP);
     gl_FragColor = vec4(c.rgb, 1.0);
 }
 """
@@ -92,7 +92,7 @@ def build():
             ),
             ghee.Pass(
                 "main",
-                f"const float ROWS = {rows:.1f};\n{MAIN}",
+                f"const vec2 TOP = vec2({width:.1f}, {rows:.1f});\n{MAIN}",
                 channels=[ghee.Channel("top")],
                 layers=[ghee.Layer("title", title, y=rows, scroll={}, text_stroke=INK)],
             ),

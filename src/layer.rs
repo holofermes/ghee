@@ -1377,17 +1377,12 @@ impl TextLayer {
                         "    ghee_s.x = mix(ghee_s.x, 1.0e6, ghee_NAME_scrollvisible);".to_string(),
                     );
                 }
-                main.push(match self.grid() {
-                    Some(g) => format!(
-                        "    float ghee_fs = max(floor(min(ghee_s.x, ghee_s.y) / {g:?}) * {g:?}, {g:?});"
-                    ),
-                    None => "    float ghee_fs = max(min(ghee_s.x, ghee_s.y), 0.0);".to_string(),
-                });
+                main.push(format!("    float ghee_fs = {};", fitted(self.grid())));
             }
         }
         main.push(PLACE.to_string());
         if self.grid().is_some() {
-            main.push("    ghee_org = floor(ghee_org + 0.5);".to_string());
+            main.push(SNAP.to_string());
         }
         if scroll.is_some() {
             main.push(SCROLL_LINES.to_string());
@@ -1406,15 +1401,7 @@ impl TextLayer {
             }
             _ => "0.625 / ghee_ppe".to_string(),
         };
-        main.push(format!(
-            "    // A quad reaches half a pixel past its glyph's box for the\n    \
-             // antialiasing, and 1/8 px more, since VC4 lands a vertex up to 1/16\n    \
-             // px off the position set by this shader.\n    \
-             float ghee_g = {grow};\n    \
-             vec2 ghee_corner = mix(ghee_a1.xy, ghee_a1.zw, ghee_a0.xy);\n    \
-             vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_g;\n    \
-             vec2 ghee_mv = vec2(0.0);"
-        ));
+        main.push(CORNER.replace("GROW", &grow));
         if let Some(w) = wave {
             main.push(format!(
                 "    // Each letter trails the one before it by a tenth of a wave.\n    \
@@ -1435,12 +1422,7 @@ impl TextLayer {
         decls.push(own);
         main.push(lines);
         if self.grid().is_some() {
-            let (ascent, line) = text::line_metrics(self.data.as_deref().unwrap_or_default());
-            main.push(format!(
-                "    // Each glyph's pen and baseline, after its motion, land on whole pixels.\n    \
-                 vec2 ghee_pen = (vec2(ghee_a3.y, {ascent:?} + ghee_a3.x * {line:?}) + ghee_mv) * ghee_fs;\n    \
-                 ghee_org += floor(ghee_pen + 0.5) - ghee_pen;"
-            ));
+            main.push(pen(self.data.as_deref().unwrap_or_default()));
         }
         let mut hide = "ghee_NAME_visible < 0.5".to_string();
         if blink.is_some() {
@@ -1448,12 +1430,7 @@ impl TextLayer {
                 " || (ghee_NAME_blinkvisible > 0.5 && fract(ghee_NAME_blinkphase) >= 0.5)",
             );
         }
-        main.push(format!(
-            "    v_texCoord = (ghee_org + (ghee_e + ghee_mv) * ghee_fs) / resolution;\n    \
-             gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);\n    \
-             // A hidden glyph's quad lies outside the pass.\n    \
-             if ({hide}) gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);"
-        ));
+        main.push(POSITION.replace("HIDE", &hide));
         let v = VERTEX
             .replace("DECLS", &decls.join("\n"))
             .replace("MAIN", &main.join("\n"));
@@ -1639,11 +1616,7 @@ impl TextLayer {
     /// colour of alpha 0 holds black, so the mix of the colours is the mix
     /// of their premultiplied values.
     fn letter_colour(&self, indent: &str, t: &str, fill: &str) -> String {
-        let mut l = format!(
-            "{indent}vec3 ghee_rgb = mix(ghee_NAME_color, ghee_NAME_colorto, clamp({t}, 0.0, 1.0));\n\
-             {indent}float ghee_al = ghee_NAME_alpha\n{indent}              \
-             + (ghee_NAME_alphato - ghee_NAME_alpha) * clamp({t}, 0.0, 1.0);\n"
-        );
+        let mut l = gradient_colour(indent, t);
         if self.draws(Kind::Karaoke).is_some() {
             l.push_str(&format!(
                 "{indent}float ghee_kt = clamp({fill}, 0.0, 1.0) * ghee_NAME_karaokevisible;\n\
@@ -1678,10 +1651,11 @@ impl TextLayer {
                 "varying vec4 ghee_v2;",
             ]);
         }
-        let main = SLUG_MAIN.replace(
+        let body = SLUG_BODY.replace(
             "COLOUR\n",
             &self.letter_colour("    ", "ghee_v1.w", "ghee_v2.x"),
         );
+        let main = format!("void main() {{\n{body}{SLUG_GUARD}}}");
         let mut f = vec![PRECISION.join("\n")];
         f.extend(text::curve_reader_lines(GLSL_NAME));
         f.push(self.glsl(&format!("{}\n{main}", decls.join("\n"))));
@@ -1690,9 +1664,15 @@ impl TextLayer {
 
     /// `glsl` with the layer's name for NAME and the lattice for LATTICE.
     fn glsl(&self, glsl: &str) -> String {
-        glsl.replace("LATTICE", &format!("{:?}", text::LATTICE))
-            .replace("NAME", GLSL_NAME)
+        named(glsl)
     }
+}
+
+/// `glsl` with a layer's name in its own shaders for NAME and the lattice
+/// for LATTICE.
+fn named(glsl: &str) -> String {
+    glsl.replace("LATTICE", &format!("{:?}", text::LATTICE))
+        .replace("NAME", GLSL_NAME)
 }
 
 /// An image layer of a pass.
@@ -2400,6 +2380,57 @@ const GRADIENT: &str = r#"    float ghee_r = radians(ghee_NAME_angle);
     float ghee_t = dot(ghee_e - 0.5 * ghee_NAME_size, ghee_dir) / max(ghee_len, 1.0e-6) + 0.5;
 "#;
 
+/// The line that puts the block's top left on a whole pixel.
+const SNAP: &str = "    ghee_org = floor(ghee_org + 0.5);";
+
+/// The lines that set ghee_e, the em from the block's top left of the
+/// corner of a glyph's quad, and ghee_mv, its motion. GROW is the em that
+/// the quad reaches past the glyph's box.
+const CORNER: &str = r#"    // A quad reaches half a pixel past its glyph's box for the
+    // antialiasing, and 1/8 px more, since VC4 lands a vertex up to 1/16
+    // px off the position set by this shader.
+    float ghee_g = GROW;
+    vec2 ghee_corner = mix(ghee_a1.xy, ghee_a1.zw, ghee_a0.xy);
+    vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_g;
+    vec2 ghee_mv = vec2(0.0);"#;
+
+/// The lines that place a vertex, and HIDE, the condition that takes its
+/// quad out of the pass.
+const POSITION: &str = r#"    v_texCoord = (ghee_org + (ghee_e + ghee_mv) * ghee_fs) / resolution;
+    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
+    // A hidden glyph's quad lies outside the pass.
+    if (HIDE) gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);"#;
+
+/// The pixels per em that fit the block to its room, from ghee_s, a whole
+/// multiple of `grid` pixels per em, one at the least, when given.
+fn fitted(grid: Option<f64>) -> String {
+    match grid {
+        Some(g) => format!("max(floor(min(ghee_s.x, ghee_s.y) / {g:?}) * {g:?}, {g:?})"),
+        None => "max(min(ghee_s.x, ghee_s.y), 0.0)".to_string(),
+    }
+}
+
+/// The lines that put each glyph's pen and baseline on whole pixels, in a
+/// text of `fonts` on the pixel grid.
+fn pen(fonts: &[text::Font]) -> String {
+    let (ascent, line) = text::line_metrics(fonts);
+    format!(
+        "    // Each glyph's pen and baseline, after its motion, land on whole pixels.\n    \
+         vec2 ghee_pen = (vec2(ghee_a3.y, {ascent:?} + ghee_a3.x * {line:?}) + ghee_mv) * ghee_fs;\n    \
+         ghee_org += floor(ghee_pen + 0.5) - ghee_pen;"
+    )
+}
+
+/// The lines after `indent` that set ghee_rgb and ghee_al, the letters'
+/// colour and alpha at the point `t` on the colour's gradient.
+fn gradient_colour(indent: &str, t: &str) -> String {
+    format!(
+        "{indent}vec3 ghee_rgb = mix(ghee_NAME_color, ghee_NAME_colorto, clamp({t}, 0.0, 1.0));\n\
+         {indent}float ghee_al = ghee_NAME_alpha\n{indent}              \
+         + (ghee_NAME_alphato - ghee_NAME_alpha) * clamp({t}, 0.0, 1.0);\n"
+    )
+}
+
 /// The comment over the reads of a fragment shader.
 const GUARD: &str = r#"    // On VC4 a short shader whose last texture read sits outside an if runs
     // in two threads, whose switch loses the condition flags. Every read sits
@@ -2516,10 +2547,9 @@ fn colour_varyings() -> (String, String) {
     (decls, lines)
 }
 
-/// The main of a slug layer's glyphs, after the readers of its curves.
-/// COLOUR sets ghee_rgb.
-const SLUG_MAIN: &str = r#"void main() {
-    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
+/// The main of a slug layer's glyphs, after the readers of its curves, up
+/// to SLUG_GUARD. COLOUR sets ghee_rgb and ghee_al.
+const SLUG_BODY: &str = r#"    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
     // shader, and the varyings follow the vertex, so the sample moves to the
     // pixel centre given by v_texCoord.
     vec2 ghee_px = v_texCoord * resolution;
@@ -2529,12 +2559,15 @@ const SLUG_MAIN: &str = r#"void main() {
                                      ghee_u, ghee_v0.zw);
 COLOUR
     gl_FragColor = vec4(ghee_rgb, ghee_al) * (ghee_c * ghee_NAME_opacity);
-    // On VC4 a shader whose last texture read sits outside an if runs in two
+"#;
+
+/// The last lines of the main of a slug layer's glyphs.
+const SLUG_GUARD: &str = r#"    // On VC4 a shader whose last texture read sits outside an if runs in two
     // threads, whose switch loses the condition flags. A read after ghee's
     // own code that never runs, in an if that the compiler cannot drop,
     // keeps the shader on one thread.
     if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_curves_tex, v_texCoord);
-}"#;
+"#;
 
 #[cfg(test)]
 mod tests {

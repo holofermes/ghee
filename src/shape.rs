@@ -1,11 +1,11 @@
 //! Shape layers: a rect or a line that a pass paints over its buffer, in the
 //! order of its `layers`.
 //!
-//! Every shape draws through one program, SHAPE_VERTEX and SHAPE_FRAGMENT,
-//! which takes no GLSL from the layer: a shape is quads whose vertices carry
-//! all of it, and a change to a live field of a shape uploads new quads and
-//! compiles nothing. Consecutive shape layers of a pass with one blend draw
-//! as one batch, a run, in the order of the layers.
+//! Every shape draws through one program, [`program`], which takes no GLSL
+//! from the layer: a shape is quads whose vertices carry all of it, and a
+//! change to a live field of a shape uploads new quads and compiles nothing.
+//! Consecutive shape layers of a pass with one blend draw as one batch, a
+//! run, in the order of the layers.
 //!
 //! A rect is a box of `width` by `height` pass pixels at `x`, `y`, its
 //! corners rounded by `border_radius`, filled with `color`, and its `border`
@@ -601,17 +601,11 @@ fn quad(
     }
 }
 
-/// The vertex shader of every shape. ghee_a0 holds a rect's centre and half
-/// size or a segment's two ends, ghee_a1 the code of `quad()` and two sizes,
-/// ghee_a2 a rect's border colour or a segment's neighbours, ghee_a3 the
-/// fill. Each quad reaches a pixel past its shape for the antialiasing.
-pub(crate) const SHAPE_VERTEX: &str = r#"#version 100
-#ifdef GL_FRAGMENT_PRECISION_HIGH
-precision highp float;
-#else
-precision mediump float;
-#endif
-attribute vec4 ghee_a0;
+/// The declarations of the vertex shader of every shape. ghee_a0 holds a
+/// rect's centre and half size or a segment's two ends, ghee_a1 the code of
+/// `quad()` and two sizes, ghee_a2 a rect's border colour or a segment's
+/// neighbours, ghee_a3 the fill.
+const VERTEX_DECLS: &str = r#"attribute vec4 ghee_a0;
 attribute vec4 ghee_a1;
 attribute vec4 ghee_a2;
 attribute vec4 ghee_a3;
@@ -622,8 +616,12 @@ varying vec4 ghee_v0;
 varying vec4 ghee_v1;
 varying vec4 ghee_v2;
 varying vec4 ghee_v3;
-void main() {
-    float code = ghee_a1.x;
+"#;
+
+/// The main of the vertex shader of every shape, which sets gl_Position and
+/// the varyings ghee_px and ghee_v0 to ghee_v3. Each quad reaches a pixel
+/// past its shape for the antialiasing.
+pub(crate) const VERTEX_MAIN: &str = r#"    float code = ghee_a1.x;
     float corner = mod(code, 4.0);
     vec2 s = vec2(mod(corner, 2.0), floor(corner / 2.0)) * 2.0 - 1.0;
     float segment = mod(floor(code / 4.0), 2.0);
@@ -646,25 +644,18 @@ void main() {
     ghee_v3 = ghee_a3;
     vec2 ghee_tc = at / resolution;
     gl_Position = vec4((ghee_tc * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
-}"#;
+"#;
 
-/// The fragment shader of every shape. A rect takes its fill over its box
-/// and its border over the band inside its edge. A line segment draws a
-/// pixel when it lies nearest of the segment and its neighbours, the earlier
-/// on a tie, so a joint draws once. Every edge takes the coverage of half a
-/// pixel either side of it.
-pub(crate) const SHAPE_FRAGMENT: &str = r#"#version 100
-#ifdef GL_FRAGMENT_PRECISION_HIGH
-precision highp float;
-#else
-precision mediump float;
-#endif
-varying vec2 ghee_px;
+/// The varyings of the fragment shader of every shape.
+const FRAGMENT_DECLS: &str = r#"varying vec2 ghee_px;
 varying vec4 ghee_v0;
 varying vec4 ghee_v1;
 varying vec4 ghee_v2;
 varying vec4 ghee_v3;
-// The distance from p to a box of half size h around 0, its corners rounded
+"#;
+
+/// The functions of the fragment shader of every shape.
+const FRAGMENT_FUNCTIONS: &str = r#"// The distance from p to a box of half size h around 0, its corners rounded
 // by r, below 0 inside.
 float ghee_box(vec2 p, vec2 h, float r) {
     vec2 q = abs(p) - h + r;
@@ -681,8 +672,14 @@ float ghee_segment(vec2 p, vec2 a, vec2 b) {
 vec4 ghee_grid(vec4 v) {
     return floor(v * GRID + 0.5) / GRID;
 }
-void main() {
-    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
+"#;
+
+/// The main of the fragment shader of every shape, which sets gl_FragColor.
+/// A rect takes its fill over its box and its border over the band inside
+/// its edge. A line segment draws a pixel when it lies nearest of the
+/// segment and its neighbours, the earlier on a tie, so a joint draws once.
+/// Every edge takes the coverage of half a pixel either side of it.
+pub(crate) const FRAGMENT_MAIN: &str = r#"    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
     // shader, and the varyings follow the vertex, so the pixel's centre
     // comes from the floor.
     vec2 p = floor(ghee_px) + 0.5;
@@ -708,13 +705,23 @@ void main() {
         if (d < dp && d <= dn) o = ghee_v3 * clamp(0.5 - d, 0.0, 1.0);
     }
     gl_FragColor = o;
-}"#;
+"#;
+
+/// The functions of the fragment shader of every shape, with the grid
+/// written in.
+pub(crate) fn fragment_functions() -> String {
+    FRAGMENT_FUNCTIONS
+        .replace("GRID_INV", &format!("1/{GRID}"))
+        .replace("GRID", &format!("{GRID:?}"))
+}
 
 /// The two shaders of every shape, with the grid written in.
 pub fn program() -> (String, String) {
-    let grid = format!("{GRID:?}");
-    let fragment = SHAPE_FRAGMENT
-        .replace("GRID_INV", &format!("1/{GRID}"))
-        .replace("GRID", &grid);
-    (SHAPE_VERTEX.to_string(), fragment)
+    let precision = crate::scene::PRECISION.join("\n");
+    let vertex = format!("{precision}\n{VERTEX_DECLS}void main() {{\n{VERTEX_MAIN}}}");
+    let fragment = format!(
+        "{precision}\n{FRAGMENT_DECLS}{}void main() {{\n{FRAGMENT_MAIN}}}",
+        fragment_functions()
+    );
+    (vertex, fragment)
 }

@@ -355,6 +355,26 @@ def test_serve_takes_a_port_or_a_pair():
         ghee.open(RED, width=8, height=8, serve="8090")
 
 
+def test_the_mjpeg_stream_shows_a_frame_that_holds_alpha(served):
+    h, port = served
+
+    def read():
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/stream", timeout=20) as r:
+            head = b""
+            while not head.endswith(b"\r\n\r\n") or b"Content-Length" not in head:
+                head += read_exact(r, 1)
+            size = int(head.split(b"Content-Length:")[1].split(b"\r\n")[0])
+            return read_exact(r, size)
+
+    jpg = watching(h, read)
+    assert jpg[:2] == b"\xff\xd8"
+    # the frame's size, from the JPEG's start of frame: its height, its width
+    at = 2
+    while jpg[at + 1] != 0xC0:
+        at += 2 + int.from_bytes(jpg[at + 2 : at + 4], "big")
+    assert jpg[at + 5 : at + 9] == (32).to_bytes(2, "big") * 2
+
+
 @needs_ffmpeg
 def test_h264_serves_what_webcodecs_decodes(served):
     h, port = served

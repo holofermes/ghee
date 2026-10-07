@@ -601,12 +601,22 @@ fn stream(shared: &Arc<Shared>, request: Request) {
             continue;
         };
         seen = seq;
+        // a JPEG holds no alpha
+        let rgb: Cow<'_, [u8]> = match components {
+            4 => Cow::Owned(
+                data.chunks_exact(4)
+                    .flat_map(|p| &p[..3])
+                    .copied()
+                    .collect(),
+            ),
+            _ => Cow::Borrowed(&data),
+        };
         let Ok(jpg) = encode_jpeg(
             Frame {
-                data: &data,
+                data: &rgb,
                 width,
                 height,
-                components,
+                components: components.min(3),
             },
             PREVIEW_QUALITY,
         ) else {

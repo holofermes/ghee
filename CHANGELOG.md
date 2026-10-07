@@ -412,6 +412,8 @@
   filter is a 400, and the reply is the scene as it will run.
 - Parse a `/set` value by the param's declared type alone, and ignore
   `type=`, which overrode it. Name a param that the scene lacks.
+- Stream the MJPEG preview of `ghee.open(serve=)` when the frames hold
+  alpha, where the stream ended before its first frame.
 - Answer `/h264` with 503 and the reason when no encoder can start, and end
   a stream whose encoder fails with a type 3 frame that carries the reason.
   Show the preview in MJPEG when the H264 stream decodes no frame in 5 s.

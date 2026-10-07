@@ -414,13 +414,8 @@ fn prospective_size(a: &Ns) -> Option<(i32, i32)> {
     }
     let spec = get_driver(name).ok()?;
     let opts = parse_kv(text(&a.display_opts), "--display-opts").unwrap_or_default();
-    let known = driver_options(spec);
-    let pick = |k: &str| -> Option<i32> {
-        let given = opts.get(k).and_then(Value::as_i64);
-        let fallback = known.iter().find(|o| o.name == k).and_then(|o| o.default);
-        given.or(fallback).map(|v| v as i32)
-    };
-    Some((pick("width")?, pick("height")?))
+    let pairs: Vec<(String, Value)> = opts.into_iter().collect();
+    (spec.size)(&pairs).ok()
 }
 
 /// (size, components) of the render.
@@ -2341,6 +2336,14 @@ mod tests {
                 .as_deref(),
             Some("st7789")
         );
+    }
+
+    #[test]
+    fn a_panel_gives_a_scene_its_size_before_it_opens() {
+        let ssd1306 = get_driver("ssd1306").unwrap();
+        let a = ns(&["render", "s.py", "--display", "ssd1306"]);
+        assert_eq!(prospective_size(&a), (ssd1306.size)(&[]).ok());
+        assert!(prospective_size(&a).is_some());
     }
 
     #[test]

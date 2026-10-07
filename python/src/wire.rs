@@ -111,8 +111,7 @@ impl LayerWire {
     /// a text layer and another kind.
     fn took(&mut self, name: &str) {
         let text = self.scene.layer(name).map(|l| l.as_text().is_some());
-        let indexed = self.index.layers.iter().find(|(n, _)| n == name);
-        if indexed.map(|(_, t)| *t) != text {
+        if self.index.text(name) != text {
             self.index = Index::of(&self.scene);
         }
     }

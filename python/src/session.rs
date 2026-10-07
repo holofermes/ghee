@@ -8,6 +8,7 @@
 //! The engine is thread-affine, so a Session belongs to the thread that built
 //! it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
@@ -144,6 +145,10 @@ pub struct Index {
     pub passes: Vec<String>,
     /// Each layer's name, and true for a text layer.
     pub layers: Vec<(String, bool)>,
+    /// The place in `params` of each param, by its name on the wire.
+    wires: HashMap<String, usize>,
+    /// True for a text layer, by the layer's name.
+    texts: HashMap<String, bool>,
 }
 
 impl Index {
@@ -185,23 +190,41 @@ impl Index {
                 });
             }
         }
+        let layers: Vec<(String, bool)> = scene
+            .layers()
+            .map(|l| (l.name().to_string(), l.as_text().is_some()))
+            .collect();
         Index {
+            wires: params
+                .iter()
+                .enumerate()
+                .map(|(k, r)| (r.wire.clone(), k))
+                .collect(),
+            texts: layers.iter().cloned().collect(),
             arrays,
             params,
             passes: scene.passes.iter().map(|p| p.name.clone()).collect(),
-            layers: scene
-                .layers()
-                .map(|l| (l.name().to_string(), l.as_text().is_some()))
-                .collect(),
+            layers,
         }
+    }
+
+    /// True for a text layer named `name`, false for a layer of another
+    /// kind, None when the scene has no such layer.
+    pub fn text(&self, name: &str) -> Option<bool> {
+        self.texts.get(name).copied()
+    }
+
+    /// The param named `wire` on the wire.
+    fn wired(&self, wire: &str) -> Option<&ParamRef> {
+        self.wires.get(wire).map(|&k| &self.params[k])
     }
 
     /// True when a host's live set of `field` on layer `layer` sets the words
     /// of a text layer, which its string param holds. A layer that the scene
     /// lacks is a fault of the caller's.
     pub fn words(&self, layer: &str, effect: Option<&str>, field: &str) -> Outcome<bool> {
-        match self.layers.iter().find(|(n, _)| n == layer) {
-            Some((_, text)) => Ok(*text && effect.is_none() && field == "text"),
+        match self.text(layer) {
+            Some(text) => Ok(text && effect.is_none() && field == "text"),
             None => Err(Fault::scene(format!(
                 "layer '{layer}' is not a layer this scene declares ({})",
                 names(self.layers.iter().map(|(n, _)| n.as_str()))
@@ -216,7 +239,7 @@ impl Index {
             Some(pass) => format!("{pass}.{name}"),
             None => name.to_string(),
         };
-        self.params.iter().find(|r| r.wire == wire).ok_or_else(|| {
+        self.wired(&wire).ok_or_else(|| {
             Fault::scene(format!(
                 "param '{wire}' is not a param this scene declares ({})",
                 names(self.params.iter().map(|r| r.wire.as_str()))
@@ -1008,18 +1031,14 @@ impl Session {
         let Some(name) = layer.get("name").and_then(Value::as_str) else {
             return;
         };
-        let text = self
-            .renderer
-            .with_scene(|s| s.layer(name).map(|l| l.as_text().is_some()))
-            .flatten();
-        let indexed = self.index.layers.iter().find(|(n, _)| n == name);
-        if indexed.map(|(_, t)| *t) != text {
+        let text = self.renderer.with_layer(name, |_, l| l.as_text().is_some());
+        if self.index.text(name) != text {
             if let Some(index) = self.renderer.with_scene(Index::of) {
                 self.index = Arc::new(index);
             }
         }
-        let words = self.renderer.with_scene(|s| {
-            s.text_layer(name)
+        let words = self.renderer.with_layer(name, |s, l| {
+            l.as_text()
                 .map(|l| s.words(name).unwrap_or(&l.text).to_string())
         });
         match words.flatten() {
@@ -1075,9 +1094,8 @@ impl Session {
     fn held_string(&mut self, pass: Option<&str>, name: &str, words: &str, sent: bool) {
         let bare = self
             .index
-            .params
-            .iter()
-            .any(|r| r.wire == name && r.pass.as_deref() == pass);
+            .wired(name)
+            .is_some_and(|r| r.pass.as_deref() == pass);
         if bare {
             self.strings.insert(name.to_string(), Value::from(words));
             if sent {

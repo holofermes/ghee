@@ -251,7 +251,8 @@ fn near(typed: &str, key: &str) -> Option<usize> {
 /// the key and the closest key that `what` takes, or every key that it takes
 /// when none comes close. `elsewhere` holds the keys of other objects, each
 /// with the object that takes it, and a key that sits there, or comes close
-/// to one, names that object.
+/// to one, names that object. A key one edit from a key that `what` takes
+/// names that key, even when another object takes the key as it is written.
 pub(crate) fn known_keys(
     o: &Map<String, Value>,
     what: &str,
@@ -261,6 +262,9 @@ pub(crate) fn known_keys(
     let Some(key) = o.keys().find(|k| !takes.contains(&k.as_str())) else {
         return Ok(());
     };
+    if let Some(k) = takes.iter().find(|k| edits(key, k) == 1) {
+        bail!("{what} takes no '{key}', the closest key is '{k}'");
+    }
     if let Some((_, on)) = elsewhere.iter().find(|(k, _)| k == key) {
         bail!("{what} takes no '{key}', which sits on {on}");
     }
@@ -3658,6 +3662,16 @@ mod tests {
             (
                 json!({"version": 1, "fragment": GOOD, "passes": [pass(json!({}))]}),
                 "scene: the scene takes no 'fragment', which sits on a pass",
+            ),
+            // One edit from a key of its own names that key before another
+            // object's key of the very spelling.
+            (
+                json!({"version": 1, "filter": "dither", "passes": [pass(json!({}))]}),
+                "scene: the scene takes no 'filter', the closest key is 'filters'",
+            ),
+            (
+                json!({"version": 1, "passes": [pass(json!({"filters": ["dither"]}))]}),
+                "scene: pass 'main' takes no 'filters', the closest key is 'filter'",
             ),
             (
                 json!({"version": 1, "params": {"g": {"type": "float", "value": 1, "mni": 0}},

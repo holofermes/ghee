@@ -110,7 +110,9 @@ A scene written for 0.4.0 needs these changes.
 - Refuse a key that ghee does not take anywhere in a scene, where the scene
   loaded and ignored it, and name the key, where it sits, and the closest key
   that ghee takes, or the object that takes it: `"fragment"` on a layer names
-  its pass, and `"font"` names `font_family`.
+  its pass, and `"font"` names `font_family`. A key one edit from a key of
+  its own object names that key first, so a scene's `"filter"` names
+  `filters`.
 - Take as the name of a pass, a layer, a param, an array or an asset ASCII
   letters, digits and `_`, with a letter first and a letter or a digit last,
   where a pass took any name, and refuse a name that holds `__` or starts

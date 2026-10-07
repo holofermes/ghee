@@ -169,7 +169,8 @@ own JSON and feeds it data: see [Procedural scenes](#procedural-scenes).
 ghee refuses a scene with an unknown key. The error names the key and where it
 sits, and it suggests the closest known key, or the object that takes the key:
 `"font"` on a layer points to `font_family`, and `"fragment"` on a layer
-points to its pass.
+points to its pass. A key one edit from a key of its own object points there
+first, so a scene's `"filter"` points to `filters`.
 
 When GLSL fails to compile, `ghee render` stops with an error. The error opens
 with the pass and the line of its code that holds the mistake, as in

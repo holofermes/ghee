@@ -165,6 +165,11 @@ extern "C" {
         vertex_source: *const c_char,
         fragment_source: *const c_char,
     ) -> bool;
+    pub fn ghee_mp_let_go_program(
+        g: *mut GheeScene,
+        vertex_source: *const c_char,
+        fragment_source: *const c_char,
+    );
     pub fn ghee_mp_set_batch_uniform(
         g: *mut GheeScene,
         batch: c_int,

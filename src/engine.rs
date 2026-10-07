@@ -56,6 +56,10 @@ use crate::text::{self, Fault, Layout};
 /// the same number as MP_MAX_PASSES.
 const MAX_PASSES: usize = 16;
 
+/// The vec4 attributes of a vertex of a batch at most. engine.c holds the
+/// same number as MP_BATCH_ATTRIBS.
+const BATCH_ATTRIBUTES: usize = 8;
+
 /// The engine's time step until set_dt() sets one.
 const DT: f64 = 1.0 / 60.0;
 
@@ -1417,8 +1421,8 @@ impl Renderer {
 
     /// Hand the engine batch `idx` its quads. `batch` names it in an error.
     fn batch_quads(&self, idx: c_int, batch: &str, data: &[f32], nattr: usize) -> Result<()> {
-        if !(1..=4).contains(&nattr) {
-            bail!("{batch}: a vertex holds 1 to 4 attributes, got {nattr}");
+        if !(1..=BATCH_ATTRIBUTES).contains(&nattr) {
+            bail!("{batch}: a vertex holds 1 to {BATCH_ATTRIBUTES} attributes, got {nattr}");
         }
         let per_quad = 16 * nattr;
         if !data.len().is_multiple_of(per_quad) {
@@ -6159,8 +6163,8 @@ mod tests {
             "no batch 1: setup_batches() took 1 batch"
         );
         assert_eq!(
-            r.set_batch_quads(0, &one, 5).unwrap_err().to_string(),
-            "batch 0: a vertex holds 1 to 4 attributes, got 5"
+            r.set_batch_quads(0, &one, 9).unwrap_err().to_string(),
+            "batch 0: a vertex holds 1 to 8 attributes, got 9"
         );
         assert_eq!(
             r.set_batch_quads(0, &one[1..], 2).unwrap_err().to_string(),
@@ -6173,15 +6177,22 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_batch_with_four_attributes_reads_each_one() {
+    fn a_batch_with_eight_attributes_reads_each_one() {
+        // GLES2 guarantees eight attributes, and VC4 holds no more. Each
+        // channel is the sum of one of ghee_a1 to ghee_a3 and one of ghee_a5
+        // to ghee_a7, and ghee_a4 holds the alpha.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code": GRAY}]));
+        let attributes: String = (0..8)
+            .map(|k| format!("attribute vec4 ghee_a{k};\n"))
+            .collect();
         let vs = format!(
-            "{PRECISION}attribute vec4 ghee_a0; attribute vec4 ghee_a1; attribute vec4 ghee_a2; attribute vec4 ghee_a3;\n\
+            "{PRECISION}{attributes}\
              uniform vec2 resolution; uniform float ghee_vflip; varying vec4 v_color;\n\
              void main() {{ vec2 ndc = ghee_a0.xy / resolution * 2.0 - 1.0;\n\
                gl_Position = vec4(ndc.x, ndc.y * ghee_vflip, 0.0, 1.0);\n\
-               v_color = vec4(ghee_a1.x, ghee_a2.y, ghee_a3.z, 1.0); }}"
+               v_color = vec4(ghee_a1.x + ghee_a5.x, ghee_a2.y + ghee_a6.y, ghee_a3.z + ghee_a7.z,\n\
+                              ghee_a4.w); }}"
         );
         let l = Batch {
             pass: "main".to_string(),
@@ -6199,11 +6210,19 @@ mod tests {
         .iter()
         .flat_map(|&(x, y)| {
             [
-                x, y, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.75, 0.0,
+                [x, y, 0.0, 0.0],
+                [0.125, 0.0, 0.0, 0.0],
+                [0.0, 0.25, 0.0, 0.0],
+                [0.0, 0.0, 0.375, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [0.125, 0.0, 0.0, 0.0],
+                [0.0, 0.25, 0.0, 0.0],
+                [0.0, 0.0, 0.375, 0.0],
             ]
         })
+        .flatten()
         .collect();
-        r.set_batch_quads(0, &data, 4).unwrap();
+        r.set_batch_quads(0, &data, 8).unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert!(
             near3(rgb_at(&f, 9, 9), [64.0, 128.0, 191.0]),

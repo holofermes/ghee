@@ -139,8 +139,8 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name);
 bool ghee_mp_reads(GheeScene *g, const char *name);
 // A batch: quads drawn by a pass into its own buffer after its full-screen
 // quad, with a vertex and a fragment shader of their own, in the order of the
-// ghee_mp_add_batch calls. A vertex holds 1 to 4 vec4 attributes, ghee_a0 to
-// ghee_a3. A quad's 4 vertices are its corners in triangle-strip order, drawn
+// ghee_mp_add_batch calls. A vertex holds 1 to 8 vec4 attributes, ghee_a0 to
+// ghee_a7. A quad's 4 vertices are its corners in triangle-strip order, drawn
 // as the triangles (0, 1, 2) and (2, 1, 3). A batch reads its pass's uniforms,
 // channels, arrays and assets under the same names, and `ghee_vflip` as the shared
 // quad vertex shader does. Blending composes premultiplied colour: normal is
@@ -171,10 +171,13 @@ int  ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *ver
 bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_source,
                                const char *fragment_source);
 // Compile the batch program of the two sources, or find the one that a
-// batch holds, and hold it for the renderer's life, so a batch that asks for
-// it later compiles nothing. false with ghee_last_error set on a compile
-// error.
+// batch holds, and hold it until a ghee_mp_let_go_program of the same
+// sources, or for the renderer's life, so a batch that asks for it later
+// compiles nothing. false with ghee_last_error set on a compile error.
 bool ghee_mp_keep_program(GheeScene *g, const char *vertex_source, const char *fragment_source);
+// Let go of one hold that ghee_mp_keep_program took on the program of the
+// two sources. A program that nothing holds any more is deleted.
+void ghee_mp_let_go_program(GheeScene *g, const char *vertex_source, const char *fragment_source);
 // Set the uniform `param` of committed batch `batch` alone: the batch sets it
 // on its program before each draw, so batches that share a program each draw
 // with their own value. It holds across a program that

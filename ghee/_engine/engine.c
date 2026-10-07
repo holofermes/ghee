@@ -55,7 +55,8 @@
 #define FLIP_STUCK_MS 5000
 // One buffer on the screen, one waiting on a page flip, and one to draw into.
 #define LENT_BUFFERS 3
-#define MP_BATCH_ATTRIBS 4
+// GLES2 guarantees 8 vertex attributes, and VC4 holds no more.
+#define MP_BATCH_ATTRIBS 8
 // GLES2 guarantees 16-bit indices alone, and a quad takes 4 vertices, so a
 // batch of more quads than this draws in chunks.
 #define QUAD_CHUNK 16383
@@ -420,7 +421,7 @@ static GLuint create_program(GheeScene *g, const char *vertex_source, const char
 
 static const char *const quad_attribs[] = { "position", "texCoord" };
 static const char *const batch_attribs[MP_BATCH_ATTRIBS] = {
-    "ghee_a0", "ghee_a1", "ghee_a2", "ghee_a3"
+    "ghee_a0", "ghee_a1", "ghee_a2", "ghee_a3", "ghee_a4", "ghee_a5", "ghee_a6", "ghee_a7"
 };
 
 // A program on the shared full-screen quad vertex shader.
@@ -1850,6 +1851,17 @@ bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_sourc
 bool ghee_mp_keep_program(GheeScene *g, const char *vertex_source, const char *fragment_source) {
     make_current(g);
     return program_take(g, vertex_source, fragment_source) != 0;
+}
+
+void ghee_mp_let_go_program(GheeScene *g, const char *vertex_source, const char *fragment_source) {
+    for (int i = 0; i < g->mp_nprog; i++) {
+        const struct mp_prog *p = &g->mp_prog[i];
+        if (strcmp(p->fragment, fragment_source) == 0 && strcmp(p->vertex, vertex_source) == 0) {
+            make_current(g);
+            program_drop(g, p->program);
+            return;
+        }
+    }
 }
 
 bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param) {

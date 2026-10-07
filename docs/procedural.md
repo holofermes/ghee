@@ -100,8 +100,10 @@ ghee writes one JSON line to the process's stdin for each render tick:
 
     {"frame": N, "time": T, "dt": D, "params": {...}}
 
-`params` holds the string params that changed, and the first tick holds them
-all.
+`D` is the DT that the tick's frame draws with: the time since the frame
+before, a quarter second at most, 1/60 for the first frame, or the fixed
+`--timestep`. `params` holds the string params that changed, and the first
+tick holds them all.
 
 Reading stdin paces your process to the render, sleeping when it sleeps.
 Ignoring stdin lets it run free, but it then gets no ticks, no params, no

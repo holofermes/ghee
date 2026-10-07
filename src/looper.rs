@@ -513,17 +513,20 @@ impl<'a> Loop<'a> {
             Some(step) => self.frame as f64 * step,
             None => t0 - started,
         };
+        // The period since the last frame drawn, which DT takes when this
+        // iteration draws.
+        let period = self.prev.map(|prev| t0 - prev);
         // before the skip decision: a scene fed from outside says whether this
         // tick needs a frame
-        self.tick_controller(t)?;
+        self.tick_controller(t, period)?;
         if skippable && !self.should_draw_now(forced, t) {
             self.frame += 1;
             let idle = self.idle();
             sleep(idle);
             return Ok(());
         }
-        if let Some(prev) = self.prev {
-            self.period = Some(t0 - prev);
+        if period.is_some() {
+            self.period = period;
         }
         self.prev = Some(t0);
         // The one place the loop feeds DT: the measured frame period, or the
@@ -566,18 +569,19 @@ impl<'a> Loop<'a> {
         Ok(())
     }
 
-    /// Hand the controller this iteration, drawn or skipped. DT is the pinned
-    /// step, else the last measured period.
-    fn tick_controller(&mut self, t: f64) -> Result<()> {
+    /// Hand the controller this iteration, drawn or skipped. Its dt is the
+    /// DT that the frame draws with: the pinned step, else `period`, the time
+    /// since the last frame drawn, which MAX_DT caps, else the engine's first
+    /// 1/60.
+    fn tick_controller(&mut self, t: f64, period: Option<f64>) -> Result<()> {
         let Some(cell) = self.controller else {
             return Ok(());
         };
         let frame = self.frame;
-        let dt = self
-            .timestep
-            .or(self.period)
-            .unwrap_or(1.0 / 60.0)
-            .min(MAX_DT);
+        let dt = match self.timestep {
+            Some(step) => step,
+            None => period.map_or(1.0 / 60.0, |p| p.min(MAX_DT)),
+        };
         let mut slot = cell.borrow_mut();
         match (*slot).as_mut() {
             Some(c) => c.tick(frame, t, dt),
@@ -1259,6 +1263,37 @@ mod tests {
         }
         assert_eq!(*r.dts.borrow(), vec![0.5, 0.5, 0.5]);
         assert_eq!(*r.times.borrow(), vec![0.0, 0.5, 1.0]);
+    }
+
+    /// A scene fed from outside reads in its tick the DT that the tick's
+    /// frame draws with.
+    #[test]
+    fn a_tick_carries_the_dt_that_its_frame_draws_with() {
+        struct Ticker(Arc<Mutex<Vec<f64>>>);
+
+        impl SceneController for Ticker {
+            fn tick(&mut self, _frame: u64, _t: f64, dt: f64) -> Result<()> {
+                self.0.lock().unwrap().push(dt);
+                Ok(())
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut r = Recorder::default();
+        let mut s = Sink::new();
+        let ctrl = slot(Ticker(seen.clone()));
+        {
+            let mut lp = Loop::new(&mut r, vec![&mut s]);
+            lp.controller = Some(&ctrl);
+            lp.frames = 4;
+            lp.rest = 0.01;
+            lp.run().unwrap();
+        }
+        let seen = seen.lock().unwrap();
+        let dts = r.dts.borrow();
+        // frame 0 draws with the engine's own 1/60
+        assert_eq!(seen[0], 1.0 / 60.0);
+        assert_eq!(seen[1..], dts[..]);
     }
 
     #[test]

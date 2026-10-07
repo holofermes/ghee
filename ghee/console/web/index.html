@@ -370,16 +370,24 @@
   .mk{color:var(--mod)!important}
   /* a changed value's key takes it back to default: the tap area reaches past
      the words, and under a mouse the key takes a dotted underline and an undo
-     icon shows before it, 0.6em square and centred on the key's line box, at no
-     width, so nothing moves. A key has no vertical padding, so its box is its
-     line box. */
+     icon shows after it, 0.6em square. Under a mouse every key that can take
+     its value back keeps the icon's slot, so nothing moves when a mark comes
+     or goes, and the key column widens by the slot. The slot is an empty
+     inline box in the key's font, so the icon's middle is the middle of the
+     words' line. --ug, the gap between the words and the icon, equals the gap
+     to the control after the key. */
   .rk{position:relative; cursor:pointer}
   .rk::before{content:""; position:absolute; inset:-8px -6px}
-  .undo{position:absolute; right:100%; top:50%; width:.6em; height:.6em; margin:-.3em 3px 0 0; color:var(--mod); visibility:hidden}
-  .undo svg{display:block; width:100%; height:100%}
+  .undo{display:none}
+  .undo svg{position:absolute; right:0; top:50%; width:.6em; height:.6em; margin-top:-.3em; color:var(--mod); visibility:hidden}
+  .mark{white-space:nowrap}
+  .kv>.v>.k2{--ug:8px}
+  .lyrow>.mark{--ug:7px}
   @media (hover:hover){
+    .undo{display:inline; position:relative; padding-left:calc(.6em + var(--ug, 6px)); font-style:normal}
+    .kvs>.kv>.k{width:calc(92px + .6em + var(--ug, 6px))}
     .rk:hover{text-decoration:underline dotted; text-underline-offset:3px}
-    .rk:hover>.undo{visibility:visible}
+    .rk:hover>.undo svg{visibility:visible}
   }
   @media (pointer:coarse){ .rk::before{inset:-12px -8px} }
   .fx{display:flex; flex-direction:column; gap:4px; align-items:flex-start; border-top:1px solid var(--line); padding-top:10px}
@@ -913,9 +921,11 @@ const settled = () => !inflight && !editsTimer && !editsReading && !compileTimer
 const MARKS = new WeakMap();
 const UNDO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
 $("#shUndo").innerHTML = UNDO;
+// a key holds its undo icon's slot from the start
 function markKey(key, test, reset){
   MARKS.set(key, {test, reset});
   key.classList.add("mark");
+  const i = el("i", "undo"); i.innerHTML = UNDO; key.appendChild(i);
   return key;
 }
 function paintMarks(){
@@ -925,9 +935,6 @@ function paintMarks(){
     const on = !!m.test(), back = on && !k.closest(".locked");
     k.classList.toggle("mk", on);
     k.classList.toggle("rk", back);
-    const u = k.querySelector(":scope > .undo");
-    if (back && !u){ const i = el("i", "undo"); i.innerHTML = UNDO; k.appendChild(i); }
-    else if (!back && u) u.remove();
   });
   const sh = shaderEdited();
   $("#shTog").classList.toggle("mk", sh);

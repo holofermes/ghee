@@ -303,8 +303,9 @@ def _look(f: dict, name: str | None) -> dict:
 class Pass:
     """One fragment shader, and the layers that paint over its buffer.
 
-    `size` renders the pass at its own [w, h].
-    The last pass leaves `size` None, because it feeds the display.
+    `size` renders the pass at its own [w, h], and `scale` at a share of the
+    frame, one number for both sides or (x, y). A pass takes one of the two.
+    The last pass leaves both None, because it feeds the display.
     `mipmaps` builds the mip chain of the pass's buffer after each frame, so
     a pass that reads it far smaller than its size samples it smooth.
     `fragment` is the pass's GLSL. `layers` paint over the pass's buffer
@@ -327,6 +328,7 @@ class Pass:
     layers: list[Layer] = field(default_factory=list)
     mipmaps: bool = False
     visible: bool = True
+    scale: float | tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         self.params = _keyed(
@@ -342,6 +344,8 @@ class Pass:
             out["fragment"] = fragment
         if self.size is not None:
             out["size"] = _plain(self.size)
+        if self.scale is not None:
+            out["scale"] = _plain(self.scale)
         if self.mipmaps is not False:
             out["mipmaps"] = _plain(self.mipmaps)
         if self.arrays:

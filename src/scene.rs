@@ -182,9 +182,9 @@ fn filter_entry(v: &Value) -> Option<(String, bool)> {
 const SCENE_KEYS: [&str; 6] = ["version", "passes", "filters", "params", "common", "assets"];
 
 /// The keys of a pass.
-pub(crate) const PASS_KEYS: [&str; 10] = [
-    "name", "fragment", "arrays", "channels", "params", "filter", "size", "mipmaps", "layers",
-    "visible",
+pub(crate) const PASS_KEYS: [&str; 11] = [
+    "name", "fragment", "arrays", "channels", "params", "filter", "size", "scale", "mipmaps",
+    "layers", "visible",
 ];
 
 /// The keys of an asset. Only a .raw file takes the four after `sampling`.
@@ -1369,6 +1369,9 @@ pub struct Pass {
     /// the size. The output pass renders at the renderer's size whatever
     /// this holds.
     pub size: Option<(i64, i64)>,
+    /// The share of the frame that this pass renders at, as (x, y), None
+    /// with a size. size_in() gives the pixels.
+    pub scale: Option<(f64, f64)>,
     /// The pass's buffer holds a mip chain, built after the pass renders each
     /// frame, and every channel that reads it samples trilinearly.
     pub mipmaps: bool,
@@ -1416,10 +1419,38 @@ impl Pass {
             params,
             filter: filter.to_string(),
             size,
+            scale: None,
             mipmaps: false,
             layers: Vec::new(),
             visible: true,
         })
+    }
+
+    /// The [w, h] that the pass renders at in a frame of `frame` pixels: its
+    /// size, or its scale of the frame with each side rounded to the nearest
+    /// pixel and 1 at least. None renders at the frame.
+    pub fn size_in(&self, frame: (i64, i64)) -> Option<(i64, i64)> {
+        if self.size.is_some() {
+            return self.size;
+        }
+        let (x, y) = self.scale?;
+        let side = |n: i64, s: f64| ((n as f64 * s).round() as i64).max(1);
+        Some((side(frame.0, x), side(frame.1, y)))
+    }
+
+    /// The error for a scaled pass that a frame of `frame` pixels takes past
+    /// the caps of a sized pass.
+    pub(crate) fn scale_refusal(&self, frame: (i64, i64)) -> Option<String> {
+        self.scale?;
+        let (w, h) = self.size_in(frame)?;
+        let name = &self.name;
+        if w.max(h) > MAX_DIM {
+            return Some(format!(
+                "pass '{name}' is {w}x{h}, over the {MAX_DIM} pixel cap of a side"
+            ));
+        }
+        (w * h > MAX_TEXELS)
+            .then(|| format!("pass '{name}' is {w}x{h}, over the {MAX_TEXELS} pixel cap"))
     }
 
     /// A pass with a name and GLSL only. Every other field takes its default.
@@ -1474,6 +1505,10 @@ impl Pass {
         ]
         .concat();
         known_keys(o, &format!("pass '{name}'"), &PASS_KEYS, &elsewhere)?;
+        let given = |k: &str| o.get(k).is_some_and(|v| !v.is_null());
+        if given("size") && given("scale") {
+            bail!("pass '{name}' has both size and scale, and takes one");
+        }
         let fragment = match o.get("fragment").filter(|v| !v.is_null()) {
             Some(v) => glsl_of(v, files, &format!("pass '{name}' fragment"))?,
             None => String::new(),
@@ -1507,6 +1542,22 @@ impl Pass {
                 .map_or(String::new(), py_str),
             o.get("size").cloned(),
         )?;
+        pass.scale = match o.get("scale").filter(|v| !v.is_null()) {
+            None => None,
+            Some(v) => {
+                let share = |v: &Value| v.as_f64().filter(|s| s.is_finite() && *s > 0.0);
+                let both = match v {
+                    Value::Array(a) if a.len() == 2 => share(&a[0]).zip(share(&a[1])),
+                    v => share(v).map(|s| (s, s)),
+                };
+                Some(both.ok_or_else(|| {
+                    anyhow!(
+                        "pass '{name}' scale needs a positive number or two [x, y], got {}",
+                        py_repr(v)
+                    )
+                })?)
+            }
+        };
         pass.mipmaps = match o.get("mipmaps").filter(|v| !v.is_null()) {
             None => false,
             Some(Value::Bool(b)) => *b,
@@ -1560,6 +1611,15 @@ impl Pass {
         }
         if let Some((w, h)) = self.size {
             out.insert("size".to_string(), Value::from(vec![w, h]));
+        }
+        match self.scale {
+            Some((x, y)) if x == y => {
+                out.insert("scale".to_string(), Value::from(x));
+            }
+            Some((x, y)) => {
+                out.insert("scale".to_string(), Value::from(vec![x, y]));
+            }
+            None => {}
         }
         if self.mipmaps {
             out.insert("mipmaps".to_string(), Value::from(true));
@@ -3372,6 +3432,7 @@ mod tests {
         };
         let common = |c: Value| common_scene(Some(c), None);
         let size = "size needs two positive ints [w, h] up to 16384";
+        let scale = "scale needs a positive number or two [x, y]";
         let glsl = "needs GLSL text or {\"file\": <path>}";
         let rows = [
             // a pass
@@ -3402,6 +3463,30 @@ mod tests {
             (
                 pass(json!({"size": [16384, 16384]})),
                 "pass 'm' is 16384x16384, over the 16777216 pixel cap".to_string(),
+            ),
+            (
+                pass(json!({"size": [8, 4], "scale": 0.5})),
+                "pass 'm' has both size and scale, and takes one".to_string(),
+            ),
+            (
+                pass(json!({"scale": "half"})),
+                format!("pass 'm' {scale}, got 'half'"),
+            ),
+            (
+                pass(json!({"scale": 0})),
+                format!("pass 'm' {scale}, got 0"),
+            ),
+            (
+                pass(json!({"scale": [1, -0.5]})),
+                format!("pass 'm' {scale}, got [1, -0.5]"),
+            ),
+            (
+                pass(json!({"scale": [0.5]})),
+                format!("pass 'm' {scale}, got [0.5]"),
+            ),
+            (
+                pass(json!({"scale": true})),
+                format!("pass 'm' {scale}, got True"),
             ),
             (
                 pass(json!({"mipmaps": "yes"})),
@@ -4659,7 +4744,7 @@ mod tests {
             "version": 2,
             "passes": [
                 {"name": "a", "fragment": "x", "size": [8, 8], "mipmaps": true},
-                {"name": "b", "fragment": "y",
+                {"name": "b", "fragment": "y", "scale": [1, 0.25],
                  "arrays": [{"name": "v", "size": 4}, {"name": "m", "size": [3, 5]}],
                  "channels": [{"buffer": "a"}, {"buffer": null}],
                  "params": {"g": {"type": "float", "value": 1, "min": 0, "max": 2, "step": 0.5},
@@ -4682,7 +4767,7 @@ mod tests {
         });
         assert_eq!(
             canon(&Scene::from_dict(&d, None, None).unwrap()),
-            r#"{"version":2,"passes":[{"name":"a","fragment":"x","size":[8,8],"mipmaps":true},{"name":"b","fragment":"y","arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"on":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v3":{"type":"vec3","value":[1.0,2.0,3.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":"float f(){ return 1.0; }","filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}},"assets":{"stbn":{"file":"stbn.raw","width":64,"height":32,"format":"f32"},"mask":{"file":"mask.raw","width":8,"height":8,"format":"u8","components":4},"logo":{"file":"logo.png","sampling":"linear"},"photo":{"file":"photo.jpg"}}}"#
+            r#"{"version":2,"passes":[{"name":"a","fragment":"x","size":[8,8],"mipmaps":true},{"name":"b","fragment":"y","scale":[1.0,0.25],"arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"on":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v3":{"type":"vec3","value":[1.0,2.0,3.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":"float f(){ return 1.0; }","filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}},"assets":{"stbn":{"file":"stbn.raw","width":64,"height":32,"format":"f32"},"mask":{"file":"mask.raw","width":8,"height":8,"format":"u8","components":4},"logo":{"file":"logo.png","sampling":"linear"},"photo":{"file":"photo.jpg"}}}"#
         );
         // A null range or option list is no range or option list. to_dict drops
         // an empty filter mark and a false mipmaps. An absent version takes the

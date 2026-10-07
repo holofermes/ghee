@@ -1081,19 +1081,32 @@ impl Renderer {
         // size, and a sized pass that hidden passes leave last loses it.
         let n = drawn.len();
         let (sw, sh) = self.scene_size();
-        if let Some((w, h)) = drawn[n - 1].size {
+        let frame = (i64::from(sw), i64::from(sh));
+        let out = &drawn[n - 1];
+        let set = match (out.size, out.scale) {
+            (Some((w, h)), _) => Some(format!("a size ({w}x{h})")),
+            (_, Some((x, y))) if x == y => Some(format!("a scale ({x})")),
+            (_, Some((x, y))) => Some(format!("a scale ([{x}, {y}])")),
+            (None, None) => None,
+        };
+        if let Some(set) = set {
             crate::report::warn(format!(
-                "output pass '{}' sets a size ({w}x{h}) and renders at the screen size \
+                "output pass '{}' sets {set} and renders at the screen size \
                  ({sw}x{sh}); to keep its size, add a filter or a pass after it that reads it \
                  through a channel",
-                drawn[n - 1].name,
+                out.name,
             ));
-            drawn.to_mut()[n - 1].size = None;
+            let out = &mut drawn.to_mut()[n - 1];
+            (out.size, out.scale) = (None, None);
+        }
+        if let Some(e) = drawn.iter().find_map(|p| p.scale_refusal(frame)) {
+            self.error = e;
+            return Ok(self.error.clone());
         }
         let last = &drawn[n - 1];
         let npot = self.mipmaps_npot();
         for p in drawn.iter().filter(|p| p.mipmaps) {
-            let (w, h) = p.size.unwrap_or((i64::from(sw), i64::from(sh)));
+            let (w, h) = p.size_in(frame).unwrap_or(frame);
             if let Some(e) = mip_refusal(&p.name, w, h, npot) {
                 self.error = e;
                 return Ok(self.error.clone());
@@ -1199,7 +1212,7 @@ impl Renderer {
                 )
             };
             if idx >= 0 {
-                if let Some((w, h)) = p.size {
+                if let Some((w, h)) = p.size_in(frame) {
                     if !unsafe {
                         ffi::ghee_mp_set_pass_size(self.handle, idx, w as c_int, h as c_int)
                     } {
@@ -1220,9 +1233,11 @@ impl Renderer {
                     Some(l.shaders(l.detail(px_em)))
                 })
                 .collect();
-            let size = p.size.map_or([f64::from(sw), f64::from(sh)], |(w, h)| {
-                [w as f64, h as f64]
-            });
+            let size = p
+                .size_in(frame)
+                .map_or([f64::from(sw), f64::from(sh)], |(w, h)| {
+                    [w as f64, h as f64]
+                });
             // A text's class comes from its words laid out into the new
             // texture of curves, whose layouts set_text takes again.
             let candidates: Vec<Option<Candidate>> = p
@@ -2192,7 +2207,7 @@ impl Renderer {
         let size = scene
             .as_ref()
             .and_then(|s| s.passes.iter().find(|p| p.name == pass))
-            .and_then(|p| p.size);
+            .and_then(|p| p.size_in((i64::from(sw), i64::from(sh))));
         size.map_or(full, |(w, h)| [w as f64, h as f64])
     }
 
@@ -3579,8 +3594,9 @@ impl Renderer {
     fn atlas_sizes(&self, scene: &Scene, drawn: &[Pass]) -> HashMap<String, u32> {
         let mut out = HashMap::new();
         let (sw, sh) = self.scene_size();
+        let frame = (i64::from(sw), i64::from(sh));
         for p in drawn {
-            let (w, h) = p.size.unwrap_or((i64::from(sw), i64::from(sh)));
+            let (w, h) = p.size_in(frame).unwrap_or(frame);
             for l in p.layers.iter().filter_map(Layer::as_text) {
                 let words = scene.words(&l.name).unwrap_or(&l.text);
                 let block = l.place(words).ok().and_then(|laid| laid.built);
@@ -4614,12 +4630,13 @@ mod tests {
         assert!(r.setup(&scene_of(both)).unwrap().starts_with("array 'v'"));
     }
 
-    /// Pass `a` is 8x8 and paints red right of x = 4. Read at x = 16, it is
-    /// black when `a` keeps its size and a later pass stretches it over the
-    /// frame, and red when `a` renders at the screen size.
+    /// Pass `a` is 8x8, or 8x6 at a scale of 1/8, and paints red right of
+    /// x = 4. Read at x = 16, it is black when `a` keeps its size and a later
+    /// pass stretches it over the frame, and red when `a` renders at the
+    /// screen size.
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_sized_output_pass_renders_at_the_screen_size_and_keeps_its_size_under_a_later_pass() {
+    fn a_sized_or_scaled_pass_renders_at_the_screen_size_unless_a_later_pass_reads_it() {
         let (_g, mut r) = gpu();
         let a = json!({"name": "a", "size": [8, 8], "fragment":
             "void main(){ gl_FragColor = vec4(gl_FragCoord.x > 4.0 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"});
@@ -4628,7 +4645,12 @@ mod tests {
             json!({"name": "b", "fragment": through, "channels": [{"buffer": "a"}],
                    "visible": visible})
         };
+        let mut scaled = a.clone();
+        scaled["scale"] = json!(0.125);
+        scaled.as_object_mut().unwrap().remove("size");
         for (passes, red) in [
+            (json!([scaled]), 255.0),
+            (json!([scaled, b(true)]), 0.0),
             (json!([a]), 255.0),
             (json!([a, b(true)]), 0.0),
             (json!([a, b(false)]), 255.0),
@@ -5484,6 +5506,64 @@ mod tests {
         let rgb = |x| [0, 1, 2].map(|c| px(&f, W, x, H / 2, c));
         assert_eq!(rgb(1), [8.0, 4.0, 255.0]);
         assert_eq!(rgb(W - 2), [W as f64, H as f64, 255.0]);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_scaled_pass_renders_at_its_share_of_the_turned_frame_rounded_and_1_at_least() {
+        // The frame turns a quarter, so the scene renders at 48x64. Pass `a`
+        // writes its iResolution, and main shows it over the whole frame.
+        let (_g, mut r) = gpu();
+        r.set_rotate(90).unwrap();
+        let (fw, fh) = (H as f64, W as f64);
+        let own = "vec4(iResolution.x / 255.0, iResolution.y / 255.0, 0.0, 1.0)";
+        for (scale, (x, y)) in [
+            (json!(0.5), (0.5, 0.5)),
+            (json!([1, 0.25]), (1.0, 0.25)),
+            (json!(0.7), (0.7, 0.7)),
+            (json!(0.001), (0.001, 0.001)),
+            (json!(2), (2.0, 2.0)),
+        ] {
+            let sc = scene_of(json!([
+                {"name": "a", "scale": scale,
+                 "fragment": format!("void main(){{ gl_FragColor = {own}; }}")},
+                {"name": "main", "channels": [{"buffer": "a"}],
+                 "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
+            ]));
+            assert_eq!(r.setup(&sc).unwrap(), "", "{scale}");
+            let f = r.render(None).unwrap().to_vec();
+            let side = |n: f64, s: f64| (n * s).round().max(1.0);
+            assert_eq!(
+                [0, 1].map(|c| px(&f, W, W / 2, H / 2, c)),
+                [side(fw, x), side(fh, y)],
+                "{scale}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_scale_past_the_caps_of_a_sized_pass_is_refused_and_the_scene_runs_on() {
+        let (_g, mut r) = gpu();
+        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        let before = r.render(None).unwrap().to_vec();
+        for (scale, want) in [
+            (
+                json!(300),
+                "pass 'a' is 19200x14400, over the 16384 pixel cap of a side",
+            ),
+            (
+                json!(250),
+                "pass 'a' is 16000x12000, over the 16777216 pixel cap",
+            ),
+        ] {
+            let sc = scene_of(json!([
+                {"name": "a", "scale": scale, "fragment": FLAT},
+                {"name": "main", "channels": [{"buffer": "a"}], "fragment": FLAT},
+            ]));
+            assert_eq!(r.setup(&sc).unwrap(), want);
+            assert_eq!(r.render(None).unwrap(), before);
+        }
     }
 
     #[test]

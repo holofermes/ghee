@@ -270,6 +270,15 @@ def test_an_option_the_driver_does_not_take():
     assert str(raised.value) == "opts: kms has no option width (takes: rgb565)"
 
 
+def test_a_pass_scale_reaches_the_scene_and_its_refusal_reaches_python():
+    frag = "void main(){ gl_FragColor = vec4(1.0); }"
+    scene = ghee.Scene(passes=[ghee.Pass("a", frag, size=(8, 8), scale=(1, 0.5))])
+    assert scene.to_dict()["passes"][0]["scale"] == [1, 0.5]
+    with pytest.raises(ValueError) as raised:
+        ghee.open(scene.to_dict(), width=8, height=8)
+    assert "pass 'a' has both size and scale" in str(raised.value)
+
+
 def test_a_size_takes_both_sides():
     with pytest.raises(ValueError) as raised:
         ghee.open(RED, width=64)

@@ -545,8 +545,10 @@ A scene written for 0.4.0 needs these changes.
 - Cap the render loop's frame rate with `--fps` on `ghee serve`, and keep the
   cap that `ghee render --serve --fps` takes, where it ran uncapped.
 - Serve the layer format at `GET /format`: each effect's fields with their
-  defaults and whether they change live, the live fields of each kind of
-  layer, what a field left out takes, and the built-in fonts.
+  defaults and whether they change live, the same for a rect's border, the
+  live fields of each kind of layer, what a field left out takes, each
+  shape's own keys, the built-in fonts, and the render that a text layer
+  takes in each font when it names none.
 - Name the board and its GPU in `GET /hwinfo` from the device tree, so a
   Pi 5 reads Raspberry Pi 5 and VideoCore VII, with its memory and, on a
   Raspberry Pi, its GPU memory and temperature.
@@ -555,7 +557,7 @@ A scene written for 0.4.0 needs these changes.
   a border, the blend, render and opacity of a layer's header, a pass's size
   and the shader's line take the mark colour on their key. A click on a
   marked key takes the value back to its default at once, and under a mouse
-  the key shows a dotted underline and a `↺` before it. The shader's `↺`
+  the key shows a dotted underline and a `↺` after it. The shader's `↺`
   asks first, in the console's dialog. A name, a text layer's words and an
   eye take no mark.
 - Take a scene back to its defaults with `back to defaults`, where `reset`
@@ -573,8 +575,9 @@ A scene written for 0.4.0 needs these changes.
 - Size a pass in its size row: the frame, pixels, or a scale of the frame,
   applied on release. The row is locked on the pass that draws last and on
   a procedural scene.
-- Take the effects' fields and defaults, the live fields, what an empty field
-  takes and the built-in fonts from `GET /format`, and the device's rows of
+- Take the effects' fields and defaults, a border's defaults, the live
+  fields, what an empty field takes, each shape's keys, the built-in fonts
+  and each font's render from `GET /format`, and the device's rows of
   the render info from `GET /hwinfo`. font_family lists `built-in`, `pixel`
   and the scene's font assets, and a number shows 3 decimals at most until
   it is edited.

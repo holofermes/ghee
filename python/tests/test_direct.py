@@ -73,6 +73,14 @@ class Fake:
     def close(self):
         self.calls.append(("close",))
 
+    @property
+    def brightness(self):
+        return None
+
+    @brightness.setter
+    def brightness(self, level):
+        self.calls.append(("brightness", level))
+
 
 def host(monkeypatch, argv, on_frame=None):
     """A run of `argv` with a fake renderer -> (shim, handle, open kwargs)."""
@@ -182,6 +190,10 @@ def test_the_host_flags_reach_the_bindings(monkeypatch):
             "1",
             "--timestep",
             "0.25",
+            "--rotate",
+            "270",
+            "--dri",
+            "/dev/dri/card1",
         ],
     )
     shim.run(scene_of(shim))
@@ -194,6 +206,52 @@ def test_the_host_flags_reach_the_bindings(monkeypatch):
         ("0.0.0.0", 8099),
         0.25,
     )
+    assert (opened["rotate"], opened["dri"]) == (270, "/dev/dri/card1")
+
+
+def test_brightness_sets_the_backlight_of_the_kms_display(monkeypatch):
+    shim, fake, opened = host(
+        monkeypatch, ["--display", "kms", "--brightness", "0.25", "--frames", "1"]
+    )
+    shim.run(scene_of(shim))
+    assert opened["display"] == "kms"
+    assert fake.calls[0] == ("brightness", 0.25)
+
+
+def test_brightness_with_no_kms_display_stops_the_run_as_ghee_render_stops(
+    monkeypatch, capsys
+):
+    shim, fake, opened = host(monkeypatch, ["-o", "f.png", "--brightness", "0.5"])
+    with pytest.raises(SystemExit) as stopped:
+        shim.run(scene_of(shim))
+    assert stopped.value.code == 1
+    assert capsys.readouterr().err == "feeder.py: --brightness needs --display kms\n"
+    assert not opened and not fake.calls
+
+
+@pytest.mark.parametrize(
+    "argv,error",
+    [
+        (["--rotate", "45"], "argument --rotate: '45' is not 0, 90, 180 or 270"),
+        (
+            ["--brightness", "2"],
+            "argument --brightness: '2' is not a level from 0 to 1",
+        ),
+    ],
+)
+def test_rotate_and_brightness_take_the_values_of_ghee_render(
+    argv, error, monkeypatch, capsys
+):
+    shim, _, _ = host(monkeypatch, argv)
+    with pytest.raises(SystemExit):
+        shim.args([])
+    assert error in capsys.readouterr().err
+
+
+def test_a_share_of_the_render_size_turns_with_a_quarter_rotate(monkeypatch):
+    shim, _, _ = host(monkeypatch, ["--size", "128x32", "--rotate", "90"])
+    got = shim.args([shim.Arg("bar", "size", default="half")])
+    assert got.bar == (16, 64)
 
 
 @pytest.mark.parametrize(

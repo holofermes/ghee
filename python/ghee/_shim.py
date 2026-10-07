@@ -928,14 +928,23 @@ def _render_size() -> tuple[int, int] | None:
     that `ghee render` uses with no display.
     """
     given = os.environ.get(SIZE)
-    if not given:
-        argv = sys.argv[1:]
-        if "--size" in argv[:-1]:
-            given = argv[argv.index("--size") + 1]
-    if not given:
-        return (320, 240)
+    if given:
+        return _wxh(given)
+    argv = sys.argv[1:]
+    size = (320, 240)
+    if "--size" in argv[:-1]:
+        size = _wxh(argv[argv.index("--size") + 1])
+    # A run turned a quarter renders its scene at the size turned.
+    turn = argv[argv.index("--rotate") + 1] if "--rotate" in argv[:-1] else ""
+    if size and turn.strip() in ("90", "270"):
+        size = (size[1], size[0])
+    return size
+
+
+def _wxh(s: str) -> tuple[int, int] | None:
+    """WxH as two ints, None for any other text."""
     try:
-        w, h = given.lower().split("x")
+        w, h = s.lower().split("x")
         return (int(w), int(h))
     except ValueError:
         return None
@@ -1052,6 +1061,28 @@ def _display_opts(s: str) -> dict:
     return opts
 
 
+def _rotation(s: str) -> int:
+    """A --rotate value: 0, 90, 180 or 270."""
+    try:
+        degrees = int(s.strip())
+    except ValueError:
+        degrees = None
+    if degrees not in (0, 90, 180, 270):
+        raise argparse.ArgumentTypeError(f"'{s}' is not 0, 90, 180 or 270")
+    return degrees
+
+
+def _level(s: str) -> float:
+    """A --brightness value, 0 to 1."""
+    try:
+        level = float(s.strip())
+    except ValueError:
+        level = None
+    if level is None or not 0.0 <= level <= 1.0:
+        raise argparse.ArgumentTypeError(f"'{s}' is not a level from 0 to 1")
+    return level
+
+
 def _image_pattern(s: str) -> str:
     """An -o value: a .png or .jpg name or pattern, or '-'."""
     if s == "-" or s.lower().endswith((".png", ".jpg", ".jpeg")):
@@ -1131,6 +1162,27 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
         type=float,
         metavar="S",
         help="pin time to frame*S seconds instead of the wall clock",
+    )
+    p.add_argument(
+        "--rotate",
+        type=_rotation,
+        default=0,
+        metavar="DEGREES",
+        help="turn the frame clockwise on its way to every output: 0, 90, 180 or "
+        "270. At 90 and 270 the scene renders at the output's size turned",
+    )
+    p.add_argument(
+        "--brightness",
+        type=_level,
+        metavar="LEVEL",
+        help="set the --display kms panel's backlight, 0 to 1, through the "
+        "kernel's backlight device",
+    )
+    p.add_argument(
+        "--dri",
+        metavar="DEVICE",
+        help="DRI device, e.g. /dev/dri/renderD128. With --display it picks "
+        "which card's display to drive",
     )
 
 
@@ -1608,12 +1660,16 @@ def _open(scene: Scene, a):
     from ghee import open as open_scene
 
     w, h = a.size or (None, None)
+    if a.brightness is not None and _display(a) != "kms":
+        _refuse("--brightness needs --display kms")
     doc = scene.to_dict()
     try:
-        return open_scene(
+        handle = open_scene(
             doc,
             display=_display(a),
             opts=a.display_opts or None,
+            dri=a.dri,
+            rotate=a.rotate,
             width=w,
             height=h,
             fps=a.fps,
@@ -1623,6 +1679,13 @@ def _open(scene: Scene, a):
         )
     except (ValueError, RuntimeError) as e:
         _refuse(str(e))
+    if a.brightness is not None:
+        try:
+            handle.brightness = a.brightness
+        except (ValueError, RuntimeError) as e:
+            handle.close()
+            _refuse(str(e))
+    return handle
 
 
 def _frames(a) -> int:

@@ -255,9 +255,10 @@
   files.
 - Take the flags of `ghee render` in a direct run of a Python scene: `-o`
   for image files or raw frames on stdout, `--display` and
-  `--display-opts`, `--serve`, `--port` and `--host` for the console, and
-  `--stats` for the timing summary, where `--output` named the display and
-  `--stats` the console's port. With no `--frames`, `-o` renders one frame,
+  `--display-opts`, `--serve`, `--port` and `--host` for the console,
+  `--stats` for the timing summary, and `--rotate`, `--brightness` and
+  `--dri`, where `--output` named the display and `--stats` the console's
+  port. With no `--frames`, `-o` renders one frame,
   as `ghee render` does, and a display or the console runs until stopped.
 - Return the string params that the console changed since the last tick, with
   their words, in the tick's `params`: from `h.frame()` and `h.skip()`, and in

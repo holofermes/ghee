@@ -425,6 +425,11 @@ The scene takes its own arguments first, then these flags of `ghee render`:
 - `--display-opts K=V,...`: the options of the display driver.
 - `--serve`, `--port PORT`, `--host HOST`: the console.
 - `--size WxH`: the render size. A display or a panel states its own.
+- `--rotate DEGREES`: 0, 90, 180 or 270, the frame turned clockwise on its
+  way to every output.
+- `--brightness LEVEL`: the backlight of the `kms` display, 0 to 1.
+- `--dri DEVICE`: the DRI device, and with `--display` the card whose
+  display it drives.
 - `--fps N`, `--stats` and `--timestep S`.
 - `--frames N`: the frame count. It defaults to 1 for image files or the
   pipe, and to 0 for a display or the console, which runs until SIGINT or

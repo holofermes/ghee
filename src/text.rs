@@ -220,13 +220,14 @@ pub enum Fault {
 }
 
 /// New words, laid out.
+#[derive(Clone, PartialEq)]
 pub struct Layout {
     /// None when the words fit no texture.
     pub built: Option<Built>,
     pub faults: Vec<Fault>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Align {
     Left,
     Center,
@@ -254,6 +255,7 @@ pub fn any_outlines(fonts: &[Font]) -> bool {
 }
 
 /// The texture and the uniforms of one laid-out text.
+#[derive(Clone, PartialEq)]
 pub struct Built {
     pub width: u32,
     pub height: u32,
@@ -315,6 +317,7 @@ pub const QUAD_FLOATS: usize = 16;
 /// - ghee_a3: the line index, the advance's start and end x in em, 0
 ///
 /// Every index counts from 0.
+#[derive(Clone, PartialEq)]
 pub struct Quads {
     pub floats: Vec<f32>,
     pub per_vertex: usize,
@@ -959,7 +962,7 @@ fn curve_texels(c: &Curve) -> [[u8; 4]; 2] {
 type Packed = (usize, [f64; 2], [f64; 2]);
 
 /// The texture of curves that a layout packs its glyphs into.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Curves {
     /// None: the layout of a text that the MTSDF fill alone draws. Its Built
     /// holds no texels, no uniforms and no glyph quads.
@@ -1235,10 +1238,22 @@ pub struct Glyphs {
     /// The texels and the rows of `tex` that the renderer took.
     sent: usize,
     rows: usize,
+    /// Each layout that lay() made, by the content of its fonts, its align
+    /// and its texture of curves, then by its words. A layout reads the
+    /// texture at the texels where its glyphs went in, which stay. LAID_KEEP
+    /// layouts at most: the next one starts the store again.
+    laid: HashMap<(Vec<usize>, Align, Curves), HashMap<String, Layout>>,
+    laid_count: usize,
     /// The outlines read from the fonts, for a test to count.
     #[cfg(test)]
     pub(crate) reads: usize,
+    /// The layouts that lay() made, for a test to count.
+    #[cfg(test)]
+    pub(crate) lays: usize,
 }
+
+/// The layouts that a Glyphs keeps.
+const LAID_KEEP: usize = 512;
 
 /// The rows of the texture of a Glyphs that changed since the renderer last
 /// took them.
@@ -1254,8 +1269,39 @@ pub struct Changed {
 
 impl Glyphs {
     /// Lay `words` out in `fonts`, into the texture of curves `curves`, as
-    /// build() and place() do.
+    /// build() and place() do. Words laid out before in fonts of the same
+    /// content, with the same align and texture, take that layout again.
     pub fn lay(&mut self, fonts: &[Font], words: &str, align: Align, curves: Curves) -> Layout {
+        // A font that failed to load names its reason in the layout's
+        // faults, so such a layout is made each time.
+        let keys: Option<Vec<usize>> = fonts.iter().map(|f| self.font_key(f)).collect();
+        let Some(keys) = keys else {
+            return self.lay_now(fonts, words, align, curves);
+        };
+        let key = (keys, align, curves);
+        if let Some(laid) = self.laid.get(&key).and_then(|w| w.get(words)) {
+            return laid.clone();
+        }
+        let laid = self.lay_now(fonts, words, align, curves);
+        if laid.built.is_some() {
+            if self.laid_count >= LAID_KEEP {
+                self.laid.clear();
+                self.laid_count = 0;
+            }
+            self.laid
+                .entry(key)
+                .or_default()
+                .insert(words.to_string(), laid.clone());
+            self.laid_count += 1;
+        }
+        laid
+    }
+
+    fn lay_now(&mut self, fonts: &[Font], words: &str, align: Align, curves: Curves) -> Layout {
+        #[cfg(test)]
+        {
+            self.lays += 1;
+        }
         lay(fonts, words, align, curves, Some(self))
     }
 
@@ -2406,6 +2452,34 @@ mod tests {
         let (len, reads) = (g.tex.len(), g.reads);
         assert!(shared(g.lay(&again, "VA", Align::Left, Curves::Shared)));
         assert_eq!((g.tex.len(), g.reads), (len, reads));
+    }
+
+    #[test]
+    fn words_laid_out_before_take_that_layout_in_fonts_of_its_content_alone() {
+        let sans = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tools/fixtures/fonts/DejaVuSans-ASCII.ttf"
+        ))
+        .unwrap();
+        let font = |bytes: &[u8]| -> Vec<Font> { vec![Ok(Arc::new(bytes.to_vec()))] };
+        let (a, b) = (font(&sans), font(PIXEL_FONT));
+        let mut g = Glyphs::default();
+        // (fonts, align, texture, true when the layout is made again)
+        let rows = [
+            (&a, Align::Left, Curves::Shared, true),
+            (&font(&sans), Align::Left, Curves::Shared, false),
+            (&a, Align::Center, Curves::Shared, true),
+            (&b, Align::Left, Curves::Shared, true),
+            (&a, Align::Left, Curves::Own, true),
+            (&a, Align::Left, Curves::None, true),
+            (&a, Align::Center, Curves::Shared, false),
+        ];
+        for (k, (fonts, align, curves, made)) in rows.into_iter().enumerate() {
+            let lays = g.lays;
+            let laid = g.lay(fonts, "AV\nTo", align, curves);
+            assert_eq!(g.lays - lays, usize::from(made), "row {k}");
+            assert!(laid == g.lay_now(fonts, "AV\nTo", align, curves), "row {k}");
+        }
     }
 
     #[test]

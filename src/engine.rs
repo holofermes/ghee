@@ -2664,10 +2664,12 @@ impl Renderer {
         let drawn = self.layers.iter().find(|d| d.name == *name);
         if built.shared {
             self.send_glyphs()?;
-            if let Some(d) = drawn.filter(|d| !d.shared.get()) {
+            let rows = self.glyphs.borrow().rows();
+            // The engine binds an asset that it holds, and words with no
+            // glyph draw no quad that reads one.
+            if let Some(d) = drawn.filter(|d| !d.shared.get() && rows > 0) {
                 self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_curves"), GLYPHS)?;
                 d.shared.set(true);
-                let rows = self.glyphs.borrow().rows();
                 for (suffix, v) in text::Glyphs::uniforms(rows) {
                     let own = text::internal(GLSL_NAME, suffix);
                     self.set_layer_uniform(d, &own, "float", Value::from(v))?;

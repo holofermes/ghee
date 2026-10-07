@@ -1312,10 +1312,6 @@ impl Glyphs {
         key: impl Fn(Ink) -> Option<Option<(usize, u16)>>,
         height: f64,
     ) -> Option<Built> {
-        if self.tex.is_empty() {
-            // Texel 0 stays empty, as in a texture of a layout's own.
-            self.tex.push([0; 4]);
-        }
         let (len, mut new) = (self.tex.len(), Vec::new());
         let mut fits = true;
         for p in placed {

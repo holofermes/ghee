@@ -36,6 +36,12 @@ A scene written for 0.4.0 needs these changes.
 ### Removed
 
 - Drop the `ghee isf import` command.
+- Drop the console's `<scenes>/modified/` folder, its copies of JSON scenes
+  and its `.values.json` sidecars of procedural scenes: ghee reads none of
+  them. Fold a copy's changes into the scene's file by hand, or redo them in
+  the console and save.
+- Drop the body of `POST /save`: `/save?name=` saves the working copy that
+  ghee holds.
 
 ### Scenes
 
@@ -86,10 +92,19 @@ A scene written for 0.4.0 needs these changes.
   warning at load, where ghee refused the scene. Its size applies again once
   a filter or a pass follows it, and a pass that hidden passes leave last
   renders at the screen size.
+- Render a pass at a share of the frame with `"scale"`, one number for both
+  sides or `[x, y]`, beside `"size"` in pixels, and with `scale=` on
+  `ghee.Pass`. The frame is the render size turned by `--rotate`, a scaled
+  side rounds to the nearest pixel, 1 at least, and the output pass ignores
+  a scale as it ignores a size. A pass that names both fails to load, `pass
+  'blur' has both size and scale, and takes one`, and so does a scale that
+  is not a positive number or two.
 - Keep a color param in the form that it came in, `"#rrggbb"` or
-  `[r, g, b]`, through `GET /scene`, `/set`, a save and a procedural scene's
-  values sidecar. The console sends the colour picked in its swatch as
-  `#rrggbb`, so it saves as hex.
+  `[r, g, b]`, through `GET /scene`, `/set` and a save. The console sends the
+  colour picked in its swatch as `#rrggbb`, so it saves as hex.
+- Write each float of a scene document in the shortest form that reads back
+  as the same 32-bit float, so a drawn width reads `2.5804138` in `GET
+  /scene`, where it read `2.580413818359375`.
 - Draw rects and lines with shape layers, which hold `"shape": "rect"` or
   `"line"` and take no effects. A rect fills `width` by `height` pass
   pixels, the pass's own by default, with its `color`, white by default,
@@ -264,8 +279,13 @@ A scene written for 0.4.0 needs these changes.
 ### Python
 
 - Read the size that a scene renders at, as `(w, h)`, with
-  `ghee.render_size()`: ghee's render size, or a direct run's `--size`
-  turned by its `--rotate`.
+  `ghee.render_size()`: ghee's render size, or in a direct run its
+  `--size`, else the size of the display that it drives, turned by its
+  `--rotate`.
+- Work out a direct run's size args given as a share, such as `half`, from
+  the display that the run drives when it has no `--size`, where they took
+  320x240. A run with no `-o` and no `--serve` drives the connected display,
+  so its scene takes that display's size.
 - Require CPython 3.10 or newer: one abi3 wheel per architecture serves 3.10
   and up, and the deb depends on python3 3.10 or newer.
 - Set a layer's live fields on a `ghee.open` handle with no rebuild, through
@@ -380,6 +400,9 @@ A scene written for 0.4.0 needs these changes.
 
 ### Procedural scenes
 
+- Count a scene process's ticks from 0 at its first tick, `frame` and
+  `time` alike, where they counted from ghee's first frame. The console
+  starts a new process at each switch, so the ticks start again there.
 - Set a live field of a layer from a scene process. Kind 1 takes
   `layer.field` and `layer.effect.field`, such as `title.x` and
   `title.karaoke.sung`, with one value, 0 or 1 for `visible`, three for a
@@ -481,18 +504,59 @@ A scene written for 0.4.0 needs these changes.
   lists its scene in `procedural` and refused every post. A post that
   differs in anything but its layers and its param values answers 403.
 - Keep a hidden filter's pass hidden when the console posts the scene.
-- Save each pass's `visible` and the settings and effects of each layer of a
-  procedural scene in its `.values.json` sidecar, beside its params and
-  filters, and apply them over the scene that the process writes at its next
-  start. The process keeps which layers exist and their order, a saved layer
-  that it no longer declares is skipped with a log line, and a value that
-  the process sets after the start wins over the saved one.
-- Take the scene that an edit is for in `scene=` on `/set`, in `name=` on
-  `POST /scene` and in the body of `/save`, and refuse with 409 an edit for
-  a scene other than the active one, which `/scenes` and `/stats` name as
-  `active`. A page whose edit was refused shows the active scene as it runs,
-  where a page left open on one scene wrote its copy into the scene that the
-  console had switched to.
+- Hold a working copy of each scene that the console opens, which every
+  page reads and every edit changes at once, through a switch away and back
+  and a reload of the scene's files, until ghee stops. `GET /scene` answers
+  the working copy, of any scene, where it read a scene other than the
+  active one from disk, and `?defaults=1` answers the scene's files.
+- Save the console's edits of a scene, what differs from the scene's files,
+  in a state file outside the scenes folder, under `$XDG_STATE_HOME/ghee/`
+  or `--state-dir DIR` on `ghee serve` and `ghee render --serve`, and lay the
+  state file over the scene's files at each load. New files for a scene keep
+  its saved values, and a value whose pass, layer or param is gone is
+  skipped with a log line. An edit of GLSL or of a list holds the hash of
+  what it was made against, and once the files change that item, the files'
+  version runs and `GET /edits` lists the edit as set aside until `POST
+  /aside` answers keep or default. `GET /edits` gives the working copy's
+  edits and whether they are saved, and `POST /reset` takes the working copy
+  back to the files. Every console that ghee runs saves, `--demo` included,
+  and a console hosted by Python saves nothing.
+- Lay a procedural scene's saved values, GLSL, channels and filter list over
+  the scene that its process writes, at each start. The process keeps which
+  passes, layers and params exist and their order, and a value that it sets
+  after the start stays its own, unsaved.
+- Give each scene a revision, in the `ETag` of `GET /scene` and in `rev` on
+  `/stats` and `/edits`. An edit that carries `rev=` and `vid=` answers 412,
+  `this scene changed since you loaded it`, when another client changed the
+  scene since, and a switch that carries `rev=` answers 409 when the console
+  is on another scene.
+- Take the scene of the last switch as the active scene everywhere, one that
+  failed to compile included, where `GET /scene` with no name and the
+  running document followed the last scene that compiled. ghee keeps drawing
+  the last program that compiled. An edit while the active scene loads
+  answers 503, `scene 'clocks' is loading`, where `/set` answered 404.
+- Name the request once in a refusal, `bad /scene: pass 'main' ...`, where it
+  read `bad /scene: scene: ...`.
+- Start `iFrame` and `iTime` at 0 at each switch, reloads included, and keep
+  them running through an apply.
+- Cap the render loop's frame rate with `--fps` on `ghee serve`, and keep the
+  cap that `ghee render --serve --fps` takes, where it ran uncapped.
+- Serve the layer format at `GET /format`: each effect's fields with their
+  defaults and whether they change live, the live fields of each kind of
+  layer, what a field left out takes, and the built-in fonts.
+- Name the board and its GPU in `GET /hwinfo` from the device tree, so a
+  Pi 5 reads Raspberry Pi 5 and VideoCore VII, with its memory and, on a
+  Raspberry Pi, its GPU memory and temperature.
+- Show a param set through `set_param` or `/set` in `GET /scene` of
+  `ghee.open(serve=)`, and publish what the host changes with the frame that
+  shows it, so a script that draws twice within 0.2 s and stops shows its
+  last drawing.
+- Take the scene that an edit is for in `scene=` on `/set` and in `name=` on
+  every other edit, and refuse with 409 an edit for a scene other than the
+  active one, which `/scenes` and `/stats` name as `active`. A page whose
+  edit was refused shows the active scene as it runs, where a page left open
+  on one scene wrote its copy into the scene that the console had switched
+  to.
 - List in `procedural` on `GET /scenes` the scenes that a program writes,
   an empty list when there are none.
 - Build a posted scene's filters on the server: `POST /scene` rebuilds a
@@ -515,8 +579,6 @@ A scene written for 0.4.0 needs these changes.
 - Open a tab with a tap anywhere on it, keep each tab's width and place, and
   ask before a pass, a layer or the common block goes, in the console's
   dialog, where Escape cancels and Enter removes.
-- Resolve the files of a copy that the console saved into `modified/`
-  beside its original, where every scene looked one directory up.
 
 ### Displays and H264
 
@@ -572,6 +634,8 @@ A scene written for 0.4.0 needs these changes.
 
 ### Library and packages
 
+- Restart a renderer's clock with `Renderer::restart_clock`, so the next
+  frame draws as `iFrame` 0 at `iTime` 0.
 - Flush the GL work before a setup deletes the last scene's pass buffers.
   Mesa's v3d and vc4 keep the draws into a buffer as a job until a read of
   the buffer or a flush submits it, and the job holds every buffer it draws

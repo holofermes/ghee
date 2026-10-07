@@ -399,6 +399,15 @@
   which writes `transparent`, and switching a layer's shape keeps the other
   shape's settings for a switch back. Every field but `shape` and `blend`
   changes live.
+- Show the layers that a drawing adds as they come and change, in `ghee
+  serve` with a scene script that draws. `layer_changes` on `GET /stats`
+  counts the changes that the program behind the scene makes to its layers,
+  and the page reads the scene again when the count moves. A layer that the
+  scene changed takes the scene's look in the page, and an edit to a drawn
+  layer lasts until the drawing next gives it a look.
+- Keep each layer of a procedural scene through `POST /scene`: a layer of the
+  running scene that the posted scene leaves out stays, in its place, so an
+  apply keeps the layers that a drawing added.
 - Keep a hidden filter's pass hidden when the console posts the scene.
 - Save each pass's `visible` and the settings and effects of each layer of a
   procedural scene in its `.values.json` sidecar, beside its params and

@@ -404,7 +404,7 @@ pub trait ConsoleHost {
     }
 
     /// {fps, frame_ms, stream_fps, out, error, error_line, error_pass,
-    /// text_errors, active, display, stale}.
+    /// text_errors, active, display, stale, layer_changes}.
     ///
     /// fps counts completed render-loop frames per elapsed second, over a
     /// trailing window (stats::FrameRate). frame_ms is one loop iteration, with
@@ -415,7 +415,9 @@ pub trait ConsoleHost {
     /// inside the pass or the block. text_errors holds the problems of the
     /// scene's text layers, a line each. stale is true when the files behind
     /// the active scene changed since the compile. A host whose scenes have no
-    /// files answers false for stale.
+    /// files answers false for stale. layer_changes counts the changes that
+    /// the program behind the scene made to its layers in scene_def(), so a
+    /// page reads the scene again when it moves.
     ///
     /// A poll loop in the browser reads this, so it must not block.
     fn stats(&self) -> ConsoleResult<Value>;

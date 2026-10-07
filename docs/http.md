@@ -9,19 +9,23 @@ open it with `--host` only on a network you trust.
 ## Read
 
 - `GET /stats`: `{fps, frame_ms, stream_fps, out, error, error_line,
-  error_pass, text_errors, active, display, stale}`. On a compile error,
-  `error_pass` is the index of the pass that holds the error, or `"common"`
-  for the common block, and `error_line` counts from the first line of that
-  GLSL. `text_errors` lists the problems of the scene's text layers, one line
-  each, such as `layer 'title': 'X' has more than 64 curves in one band`. A
-  text problem leaves the scene running.
+  error_pass, text_errors, active, display, stale, layer_changes}`. On a
+  compile error, `error_pass` is the index of the pass that holds the error,
+  or `"common"` for the common block, and `error_line` counts from the first
+  line of that GLSL. `text_errors` lists the problems of the scene's text
+  layers, one line each, such as `layer 'title': 'X' has more than 64 curves
+  in one band`. A text problem leaves the scene running. `layer_changes`
+  counts the changes that the program behind the scene made to its layers: a
+  drawing that added a layer or gave one a new look, or a field that a tick
+  set. A client that shows the layers reads `GET /scene` again when the count
+  moves.
 - `GET /scenes`: `{scenes: [name...], active, procedural: [name...]}`.
   `procedural` names the scenes that a program writes, and is an empty list
   when there are none.
 - `GET /scene?name=`: the resolved scene JSON, with shader files inlined and
   filters expanded. For the active scene, ghee answers with the document that
-  it renders, applied edits and `/set` values included. For any other name,
-  ghee reads the scene from disk.
+  it renders: applied edits, `/set` values, and the layers that a drawing
+  added and changed. For any other name, ghee reads the scene from disk.
 - `GET /filters`: the filter registry, `{name: filter def}`
 - `GET /hwinfo`: the host hardware report
 - `GET /frame.png`: one lossless PNG of the next frame, at the render size.
@@ -67,7 +71,9 @@ later.
   name reloads it from disk.
 - `POST /next`, `POST /prev`: step through the scene list.
 - `POST /scene?name=`: takes the full scene JSON in the body, and recompiles
-  the active scene as a working copy.
+  the active scene as a working copy. A procedural scene keeps its layers:
+  each layer of the running scene that the posted scene leaves out stays, in
+  its place.
 - `POST /save`: takes `{name, scene}` in the body, and writes the scene into
   `<scenes>/modified/`. A JSON scene saves a copy that shadows the original
   and finds its files beside the original. A procedural scene saves a

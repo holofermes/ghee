@@ -72,6 +72,12 @@ pub const PING_INTERVAL: f64 = 3.0;
 /// Three intervals, so two lost pings are not a departure.
 pub const VIEWER_DEADLINE: f64 = 10.0;
 
+/// The shortest time in seconds between two publishes of the running
+/// document for the changes that a scene's own code makes to its layers.
+/// Writing the document takes time with each layer, and the code may change
+/// a layer every frame.
+pub const LAYERS_PUBLISH_EVERY: f64 = 0.2;
+
 /// run() sets this. stop() ends that console from anywhere.
 static CONSOLE: Mutex<Option<Arc<Console>>> = Mutex::new(None);
 
@@ -306,6 +312,9 @@ pub struct Console {
     target: Mutex<Option<String>>,
     /// The document that renders now, under the name it loaded as.
     running: Mutex<Option<(Option<String>, Value)>>,
+    /// The times that the scene's own code changed its layers in the
+    /// document: a layer added or given a new look, or a field set.
+    layer_changes: AtomicU64,
     /// The files the running scene was built from. Only a load off disk replaces
     /// this. An applied working copy leaves the scene stale when its files moved
     /// on.
@@ -371,6 +380,7 @@ impl Console {
             }),
             target: Mutex::new(None),
             running: Mutex::new(None),
+            layer_changes: AtomicU64::new(0),
             sources: Mutex::new(None),
             raw: Mutex::new(Raw::default()),
             raw_ready: Condvar::new(),
@@ -466,6 +476,10 @@ impl Console {
         );
         d.insert("out".to_string(), Value::from(self.out()));
         d.insert("stale".to_string(), Value::from(stale));
+        d.insert(
+            "layer_changes".to_string(),
+            Value::from(self.layer_changes.load(Ordering::SeqCst)),
+        );
         Value::Object(d)
     }
 
@@ -1291,27 +1305,91 @@ impl Output for ConsoleSink {
 
 /// The renderer the loop drives. The console sink samples it for the hardware
 /// encoder. Both live on the render thread, because GL is thread-affine.
-struct SharedRenderer(Rc<RefCell<Renderer>>);
+///
+/// The scene's controller changes layers through it: a procedural scene's
+/// drawing adds a layer or gives one a new look, and its ticks set fields.
+/// Each change that the renderer takes lands in the running document too.
+struct SharedRenderer {
+    renderer: Rc<RefCell<Renderer>>,
+    running: Rc<RefCell<Running>>,
+}
+
+impl SharedRenderer {
+    /// Copy layer `name`, with its place, from the renderer's scene into the
+    /// running document, and its words with `words`. The renderer lays new
+    /// words from a param out without writing them into its scene, so a
+    /// live field leaves the words of the running document alone.
+    fn mirror(&self, name: &str, words: bool) {
+        let found = self.renderer.borrow().with_scene(|s| {
+            let (p, i) = s.place_of(name)?;
+            let pass = &s.passes[p];
+            let words = s.words(name).map(str::to_string);
+            Some((pass.name.clone(), i, pass.layers[i].clone(), words))
+        });
+        let Some((pass, index, layer, said)) = found.flatten() else {
+            return;
+        };
+        let mut held = self.running.borrow_mut();
+        let Some(scene) = held.scene.as_mut() else {
+            return;
+        };
+        let text = layer.as_text().is_some();
+        let kept = match scene.place_of(name) {
+            // The same kind keeps its words param, so the layer swaps in.
+            Some((p, i)) if scene.passes[p].layers[i].as_text().is_some() == text => {
+                scene.passes[p].layers[i] = layer;
+                Ok(())
+            }
+            Some(_) => scene.replace_layer(layer),
+            None => scene.insert_layer(&pass, index, layer),
+        };
+        if let Err(e) = kept {
+            eprintln!("ghee console: layer {name}: {e}");
+            return;
+        }
+        if let (true, Some(said), Some(p)) = (words, said, scene.params.get_mut(name)) {
+            if p.of_text {
+                p.value = ParamValue::Str(said);
+            }
+        }
+        held.changed = true;
+    }
+
+    /// Copy the words of text layer `name` into the running document.
+    fn mirror_words(&self, name: &str, words: &str) {
+        let mut held = self.running.borrow_mut();
+        let Some(scene) = held.scene.as_mut() else {
+            return;
+        };
+        if scene.text_layer(name).is_none() {
+            return;
+        }
+        if let Some(p) = scene.params.get_mut(name) {
+            p.value = ParamValue::Str(words.to_string());
+            held.changed = true;
+        }
+    }
+}
 
 impl RenderTarget for SharedRenderer {
     fn width(&self) -> i32 {
-        self.0.borrow().width
+        self.renderer.borrow().width
     }
 
     fn height(&self) -> i32 {
-        self.0.borrow().height
+        self.renderer.borrow().height
     }
 
     fn components(&self) -> i32 {
-        self.0.borrow().components
+        self.renderer.borrow().components
     }
 
     fn set_dt(&self, value: f64) {
-        self.0.borrow().set_dt(value);
+        self.renderer.borrow().set_dt(value);
     }
 
     fn set_time(&self, t: f64) {
-        self.0.borrow().set_time(Some(t));
+        self.renderer.borrow().set_time(Some(t));
     }
 
     fn set_param(
@@ -1321,27 +1399,41 @@ impl RenderTarget for SharedRenderer {
         ty: &str,
         value: &ParamValue,
     ) -> Result<bool> {
-        RenderTarget::set_param(&*self.0.borrow(), pass, name, ty, value)
+        let set = RenderTarget::set_param(&*self.renderer.borrow(), pass, name, ty, value)?;
+        if let (None, ParamValue::Str(words)) = (pass, value) {
+            self.mirror_words(name, words);
+        }
+        Ok(set)
     }
 
     fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
-        self.0.borrow().set_layer(at, given)
+        self.renderer.borrow().set_layer(at, given)?;
+        self.mirror(at.layer, false);
+        Ok(())
     }
 
     fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Result<()> {
-        self.0.borrow_mut().add_layer(pass, index, layer)
+        self.renderer.borrow_mut().add_layer(pass, index, layer)?;
+        if let Some(name) = layer.get("name").and_then(Value::as_str) {
+            self.mirror(name, true);
+        }
+        Ok(())
     }
 
     fn update_layer(&mut self, layer: &Value) -> Result<bool> {
-        self.0.borrow_mut().update_layer(layer)
+        let changed = self.renderer.borrow_mut().update_layer(layer)?;
+        if let (true, Some(name)) = (changed, layer.get("name").and_then(Value::as_str)) {
+            self.mirror(name, true);
+        }
+        Ok(changed)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
-        self.0.borrow_mut().draw(provider)
+        self.renderer.borrow_mut().draw(provider)
     }
 
     fn blank(&self, on: bool) -> Result<()> {
-        self.0.borrow().blank(on)
+        self.renderer.borrow().blank(on)
     }
 
     fn render_into(
@@ -1350,7 +1442,9 @@ impl RenderTarget for SharedRenderer {
         out: &mut [u8],
         out_size: Option<(i32, i32)>,
     ) -> Result<()> {
-        self.0.borrow_mut().render_into(provider, out, out_size)
+        self.renderer
+            .borrow_mut()
+            .render_into(provider, out, out_size)
     }
 
     fn present(
@@ -1358,7 +1452,7 @@ impl RenderTarget for SharedRenderer {
         provider: Option<Provider<'_>>,
         preview: Option<(&mut [u8], (i32, i32))>,
     ) -> Result<()> {
-        self.0.borrow_mut().present(provider, preview)
+        self.renderer.borrow_mut().present(provider, preview)
     }
 }
 
@@ -1417,6 +1511,8 @@ fn open_renderer(console: &Console) -> Result<Renderer> {
 #[derive(Default)]
 struct Running {
     scene: Option<Scene>,
+    /// The scene's own code changed a layer since the last publish.
+    changed: bool,
 }
 
 /// Returns the compile error, or "" when this scene renders now.
@@ -1520,7 +1616,20 @@ fn drain(
             // in queue order, so the armed frame carries a /set ahead of it
             Command::Shot => console.shot.arm(),
             Command::SceneObj(scene) => {
-                set_scene(console, renderer, st, *scene, None, None);
+                let mut scene = *scene;
+                // A procedural scene's code owns which layers exist, so an
+                // apply keeps a layer that the code added after the page
+                // read the scene.
+                let kept = ctrl.borrow().is_some()
+                    && st
+                        .borrow()
+                        .scene
+                        .as_ref()
+                        .is_some_and(|running| keep_layers(&mut scene, running));
+                if set_scene(console, renderer, st, scene, None, None).is_empty() && kept {
+                    st.borrow_mut().changed = true;
+                    publish_changes(console, st);
+                }
             }
             Command::Preview | Command::Stop => {}
         }
@@ -1532,6 +1641,49 @@ fn drain(
         }
     }
     force
+}
+
+/// Put into `posted`, a scene applied over the procedural scene `running`,
+/// each layer of `running` that `posted` leaves out, in its place among the
+/// layers of its pass, with its words. True when one went in.
+fn keep_layers(posted: &mut Scene, running: &Scene) -> bool {
+    let mut kept = false;
+    for pass in &running.passes {
+        for (i, layer) in pass.layers.iter().enumerate() {
+            let name = layer.name();
+            if posted.layer(name).is_some() {
+                continue;
+            }
+            let Some(at) = posted.passes.iter().position(|p| p.name == pass.name) else {
+                continue;
+            };
+            let index = i.min(posted.passes[at].layers.len());
+            if let Err(e) = posted.insert_layer(&pass.name, index, layer.clone()) {
+                eprintln!("ghee console: apply: layer {name}: {e}");
+                continue;
+            }
+            if let (Some(words), Some(p)) = (running.words(name), posted.params.get_mut(name)) {
+                if p.of_text {
+                    p.value = ParamValue::Str(words.to_string());
+                }
+            }
+            kept = true;
+        }
+    }
+    kept
+}
+
+/// Publish the running document when the scene's own code changed a layer
+/// in it, and count the change for /stats.
+fn publish_changes(console: &Console, st: &RefCell<Running>) {
+    let mut held = st.borrow_mut();
+    if !std::mem::take(&mut held.changed) {
+        return;
+    }
+    if let Some(scene) = held.scene.as_ref() {
+        console.publish(scene);
+        console.layer_changes.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 fn set_pass_param(
@@ -1660,10 +1812,13 @@ pub fn render_loop(
     } else {
         0
     };
-    let st = RefCell::new(Running::default());
+    let st = Rc::new(RefCell::new(Running::default()));
     // what feeds the running scene, when the scene brings something
     let ctrl: ControllerSlot = RefCell::new(None);
-    let mut shared = SharedRenderer(Rc::clone(&renderer));
+    let mut shared = SharedRenderer {
+        renderer: Rc::clone(&renderer),
+        running: Rc::clone(&st),
+    };
     let mut scanout = Scanout;
     let mut console_sink = ConsoleSink {
         console: Arc::clone(console),
@@ -1679,6 +1834,7 @@ pub fn render_loop(
     let mut reported = String::new();
     let times: RefCell<Vec<f64>> = RefCell::new(Vec::new());
     let text_errors = Cell::new(renderer.borrow().text_errors_seq());
+    let published = Cell::new(f64::NEG_INFINITY);
     let timed = on_stats.is_some();
     let paced_by_panel = sinks.iter().any(|s| s.dest() == DEST_PANEL);
     let (elapsed, out): (f64, Vec<String>);
@@ -1719,6 +1875,11 @@ pub fn render_loop(
         render.stopping = Some(Box::new(|| console.stopping()));
         render.on_frame = Some(Box::new(|_loop, cost| {
             lock(&console.stat).frame_ms = cost * 1000.0;
+            let now = monotonic();
+            if now - published.get() >= LAYERS_PUBLISH_EVERY && st.borrow().changed {
+                publish_changes(console, &st);
+                published.set(now);
+            }
             publish_text_errors(console, &renderer.borrow(), &text_errors);
             if timed {
                 times.borrow_mut().push(cost);
@@ -3064,6 +3225,7 @@ mod tests {
             "active",
             "display",
             "stale",
+            "layer_changes",
         ] {
             assert!(stats.get(key).is_some(), "{key}");
         }
@@ -3188,7 +3350,7 @@ mod tests {
     fn a_posted_string_param_relays_its_text() {
         let renderer = RefCell::new(gpu(32, 24));
         let (_d, console) = tmp_console("text");
-        let st = RefCell::new(Running { scene: None });
+        let st = RefCell::new(Running::default());
         let ctrl: ControllerSlot = RefCell::new(None);
         let frame = || {
             renderer.borrow().set_time(Some(0.0));
@@ -3254,7 +3416,7 @@ mod tests {
     fn a_posted_layer_field_reaches_the_renderer_and_the_running_scene() {
         let renderer = RefCell::new(gpu(32, 24));
         let (_d, console) = tmp_console("layer");
-        let st = RefCell::new(Running { scene: None });
+        let st = RefCell::new(Running::default());
         let ctrl: ControllerSlot = RefCell::new(None);
         let frame = || {
             renderer.borrow().set_time(Some(0.0));
@@ -3299,7 +3461,7 @@ mod tests {
         fs::write(d.join("modified/proc.values.json"), saved.to_string()).unwrap();
         let console = Console::new(SceneStore::new(&d, false, Vec::new()));
         let renderer = RefCell::new(gpu(48, 24));
-        let st = RefCell::new(Running { scene: None });
+        let st = RefCell::new(Running::default());
         let ctrl: ControllerSlot = RefCell::new(None);
         let frame = || {
             renderer.borrow().set_time(Some(0.0));
@@ -3336,7 +3498,7 @@ mod tests {
     fn posted_words_past_the_texture_keep_the_last_words_and_show_why() {
         let renderer = RefCell::new(gpu(32, 24));
         let (_d, console) = tmp_console("toolong");
-        let st = RefCell::new(Running { scene: None });
+        let st = RefCell::new(Running::default());
         let ctrl: ControllerSlot = RefCell::new(None);
         let seen = Cell::new(renderer.borrow().text_errors_seq());
         let frame = || {
@@ -3372,6 +3534,175 @@ mod tests {
             .unwrap();
         assert!(drain(&console, &renderer, &st, &ctrl));
         assert_eq!(errors(), (Value::from(""), serde_json::json!([])));
+    }
+
+    // a scene's own layers
+
+    /// The layers of pass main of the running document, as the console
+    /// serves it, every number as a float.
+    fn running_layers(console: &Console) -> Value {
+        floats(&lock(&console.running).clone().unwrap().1["passes"][0]["layers"])
+    }
+
+    /// `v` with every number as a float, as the document writes a number.
+    fn floats(v: &Value) -> Value {
+        match v {
+            Value::Number(n) => Value::from(n.as_f64().unwrap()),
+            Value::Array(a) => Value::Array(a.iter().map(floats).collect()),
+            Value::Object(o) => {
+                Value::Object(o.iter().map(|(k, v)| (k.clone(), floats(v))).collect())
+            }
+            v => v.clone(),
+        }
+    }
+
+    fn changes(console: &Console) -> Value {
+        console.stats()["layer_changes"].clone()
+    }
+
+    /// A change that a scene's code makes through the loop's target, what
+    /// it is, and the layers of the running document after it.
+    type Step<'a> = (&'static str, Box<dyn Fn(&mut SharedRenderer) + 'a>, Value);
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn the_layers_that_a_scenes_code_changes_reach_the_running_document() {
+        let renderer = Rc::new(RefCell::new(gpu(32, 24)));
+        let (_d, console) = tmp_console("drawn");
+        let st = Rc::new(RefCell::new(Running::default()));
+        let scene = Scene::from_dict(&serde_json::from_str(SCENE).unwrap(), None, None).unwrap();
+        assert_eq!(set_scene(&console, &renderer, &st, scene, None, None), "");
+        // what a procedural scene's drawing and ticks hand the loop's target
+        let mut target = SharedRenderer {
+            renderer: Rc::clone(&renderer),
+            running: Rc::clone(&st),
+        };
+        let bar = serde_json::json!({"name": "bar", "shape": "rect", "width": 4});
+        let words = serde_json::json!({"name": "label", "text": "hi", "font_size": 8});
+        let steps: [Step<'_>; 6] = [
+            (
+                "added",
+                Box::new(|t| t.add_layer("main", 0, &bar).unwrap()),
+                serde_json::json!([bar]),
+            ),
+            (
+                "a text added after it",
+                Box::new(|t| t.add_layer("main", 1, &words).unwrap()),
+                serde_json::json!([bar, words]),
+            ),
+            (
+                "a new look",
+                Box::new(|t| {
+                    let look = serde_json::json!({"name": "bar", "shape": "rect", "width": 9});
+                    assert!(t.update_layer(&look).unwrap());
+                }),
+                serde_json::json!([{"name": "bar", "shape": "rect", "width": 9}, words]),
+            ),
+            (
+                "a field set",
+                Box::new(|t| {
+                    let at = Address {
+                        layer: "bar",
+                        effect: None,
+                        field: "visible",
+                    };
+                    t.set_layer(&at, Given::Numbers(&[0.0])).unwrap();
+                }),
+                serde_json::json!([
+                    {"name": "bar", "visible": false, "shape": "rect", "width": 9},
+                    words
+                ]),
+            ),
+            (
+                "new words",
+                Box::new(|t| {
+                    let ho = ParamValue::Str("ho".to_string());
+                    t.set_param(None, "label", "string", &ho).unwrap();
+                }),
+                serde_json::json!([
+                    {"name": "bar", "visible": false, "shape": "rect", "width": 9},
+                    {"name": "label", "text": "ho", "font_size": 8}
+                ]),
+            ),
+            (
+                "a field of a text whose words changed",
+                Box::new(|t| {
+                    let at = Address {
+                        layer: "label",
+                        effect: None,
+                        field: "x",
+                    };
+                    t.set_layer(&at, Given::Numbers(&[3.0])).unwrap();
+                }),
+                serde_json::json!([
+                    {"name": "bar", "visible": false, "shape": "rect", "width": 9},
+                    {"name": "label", "text": "ho", "x": 3, "font_size": 8}
+                ]),
+            ),
+        ];
+        for (n, (what, step, layers)) in steps.iter().enumerate() {
+            step(&mut target);
+            publish_changes(&console, &st);
+            assert_eq!(running_layers(&console), floats(layers), "{what}");
+            assert_eq!(changes(&console), Value::from(n + 1), "{what}");
+        }
+        // a frame with no change publishes nothing new
+        publish_changes(&console, &st);
+        assert_eq!(changes(&console), Value::from(steps.len()));
+    }
+
+    /// A process stand-in: a scene with something in the controller slot is
+    /// procedural.
+    struct Code;
+
+    impl SceneController for Code {}
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn an_apply_keeps_a_layer_of_a_procedural_scene_that_it_leaves_out() {
+        let doc = |layers: Value| {
+            let mut d: Value = serde_json::from_str(SCENE).unwrap();
+            d["passes"][0]["layers"] = layers;
+            Scene::from_dict(&d, None, None).unwrap()
+        };
+        let a = serde_json::json!({"name": "a", "shape": "rect", "width": 2});
+        let b = serde_json::json!({"name": "b", "shape": "line", "points": [[0, 0], [4, 4]]});
+        let c = serde_json::json!({"name": "c", "shape": "rect", "width": 6});
+        let posted = serde_json::json!({"name": "c", "shape": "rect", "width": 5});
+        for (code, kept) in [
+            (true, serde_json::json!([a, b, posted])),
+            (false, serde_json::json!([posted])),
+        ] {
+            let renderer = RefCell::new(gpu(32, 24));
+            let (_d, console) = tmp_console("keep");
+            let st = RefCell::new(Running::default());
+            let ctrl: ControllerSlot = RefCell::new(None);
+            let running = doc(serde_json::json!([a, b, c]));
+            assert_eq!(set_scene(&console, &renderer, &st, running, None, None), "");
+            if code {
+                *ctrl.borrow_mut() = Some(Box::new(Code));
+            }
+            let before = changes(&console);
+            console.command(Command::SceneObj(Box::new(doc(serde_json::json!([
+                posted
+            ])))));
+            assert!(drain(&console, &renderer, &st, &ctrl));
+            assert_eq!(running_layers(&console), floats(&kept), "code {code}");
+            let names: Vec<String> = renderer
+                .borrow()
+                .with_scene(|s| s.layers().map(|l| l.name().to_string()).collect())
+                .unwrap();
+            let want: Vec<&str> = kept
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(names, want, "code {code}");
+            // a page reads the scene again for the layers that it lacked
+            let moved = changes(&console) != before;
+            assert_eq!(moved, code, "code {code}");
+        }
     }
 
     // run()'s own loop

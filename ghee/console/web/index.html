@@ -986,7 +986,7 @@ async function loadScene(name, local = true){
   work = saved ? JSON.parse(saved) : clone(pristine);
   if (saved) mergeNewParams(pristine, work);
   $("#scenes").value = name;
-  curPass = 0; postErr = ""; errOpen = null; layerUI.clear();
+  curPass = 0; postErr = ""; errOpen = null; layerUI.clear(); layerChanges = null;
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
     $("#tabs").innerHTML = ""; $("#inputs").innerHTML = ""; $("#chans").innerHTML = ""; $("#layers").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">no parameters</div>';
@@ -1020,7 +1020,9 @@ function tbtn(icon, title, cls, fn){
 // [text, fn, off, title], or null for a rule. An off item stays in the list,
 // greyed. An open menu lives in the body, under its button, or above it when
 // the screen has no room below.
-function closeMenus(){ document.querySelectorAll(".addmenu.open").forEach(m => { m.classList.remove("open"); m.remove(); }); }
+// the button of the open menu
+let menuFrom = null;
+function closeMenus(){ menuFrom = null; document.querySelectorAll(".addmenu.open").forEach(m => { m.classList.remove("open"); m.remove(); }); }
 function addMenu(label, items, trigCls = "addmini", title = ""){
   const wrap = el("span", "addwrap"), trig = el("span", trigCls, label), menu = el("div", "addmenu");
   trig.setAttribute("role", "button"); trig.tabIndex = 0;
@@ -1037,6 +1039,7 @@ function addMenu(label, items, trigCls = "addmini", title = ""){
     const below = t.bottom + 4 + m.height <= innerHeight || m.height + 8 > t.top;
     menu.style.top = (below ? t.bottom + 4 : t.top - 4 - m.height) + "px";
     menu.classList.add("open");
+    menuFrom = trig;
   };
   trig.addEventListener("click", toggle);
   trig.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); toggle(e); } });
@@ -1668,6 +1671,7 @@ function layerCard(p, d){
   const u = ui(d.name), kind = kindOf(d), img = kind === "image", shape = kind === "shape";
   const hidden = d.visible === false, proc = isProcedural();
   const card = el("div", "lay" + (hidden ? " hid" : ""));
+  card.dataset.name = d.name;
   const redo = () => {
     const was = card.querySelector(".lstrip").scrollLeft, next = layerCard(p, d);
     card.replaceWith(next);
@@ -1753,6 +1757,87 @@ function layerCard(p, d){
   if (kind === "text") body.appendChild(look(fxBlock(p, d)));   // an image or a shape layer takes no effects
   card.appendChild(body);
   return card;
+}
+
+// ---- a scene that a program writes changes its own layers ----
+// A drawing adds layers and gives them new looks, and a tick sets their
+// fields. /stats counts those changes, and the page reads the scene again
+// when the count moves. A layer that the scene changed takes the scene's
+// look, in the working copy and in the copy that edits compare with. A layer
+// whose card holds the focus or an open menu waits for the next read.
+let layerChanges = null, following = false;
+// a value as JSON with its keys sorted, so two copies of it compare equal
+function canon(v){
+  if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
+  if (v && typeof v === "object") return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
+  return JSON.stringify(v);
+}
+async function followScene(){
+  if (following || !work || !work.passes) return;
+  following = true;
+  const name = active;
+  try {
+    const fresh = await jget("/scene?name=" + encodeURIComponent(name));
+    if (name === active && work && work.passes) takeLayers(fresh);
+  } catch (_) {
+    layerChanges = null;   // read again at the next poll
+  } finally { following = false; }
+}
+function takeLayers(fresh){
+  const busy = [document.activeElement, menuFrom].map(n => n && n.closest && n.closest("#layers .lay")).filter(Boolean).map(c => c.dataset.name);
+  const open = onCommon() ? null : work.passes[curPass], changed = [];
+  let relisted = false, waits = false;
+  (fresh.passes || []).forEach(fp => {
+    const wp = work.passes.find(p => p.name === fp.name), pp = ((pristine && pristine.passes) || []).find(p => p.name === fp.name);
+    if (!wp) return;
+    const mine = new Map((wp.layers || []).map(d => [d.name, d]));
+    const was = new Map(((pp && pp.layers) || []).map(d => [d.name, d]));
+    const next = (fp.layers || []).map(f => {
+      const d = mine.get(f.name);
+      if (d && canon(d) === canon(f)) return d;
+      if (d && busy.includes(f.name)){ waits = true; return d; }
+      if (wp === open){ if (d) changed.push(f.name); else relisted = true; }
+      was.set(f.name, clone(f));
+      return clone(f);
+    });
+    if (wp === open && next.map(d => d.name).join() !== (wp.layers || []).map(d => d.name).join()) relisted = true;
+    if (next.length) wp.layers = next; else delete wp.layers;
+    if (pp){ if (next.length) pp.layers = next.map(d => was.get(d.name) || clone(d)); else delete pp.layers; }
+  });
+  if (waits) layerChanges = null;
+  if (relisted) relist();
+  else changed.forEach(n => recard(open, n));
+  if (relisted || changed.length){ buildInputs(); updateStatus(); }
+}
+// The layer list built again. The card under the mouse, else the card at the
+// top of the view, stays where it is, so a layer that comes in moves nothing
+// under the cursor.
+let mouseAt = null;
+document.addEventListener("pointermove", e => { if (e.pointerType === "mouse") mouseAt = [e.clientX, e.clientY]; }, {passive: true});
+function relist(){
+  const card = $(".shadercard"), scrolls = getComputedStyle(card).overflowY === "auto";
+  const top = scrolls ? card.getBoundingClientRect().top : 0;
+  const cards = [...document.querySelectorAll("#layers .lay")];
+  const under = mouseAt && document.elementFromPoint(mouseAt[0], mouseAt[1]);
+  const anchor = (under && under.closest("#layers .lay")) || cards.find(c => c.getBoundingClientRect().bottom > top);
+  const before = anchor ? anchor.getBoundingClientRect().top : 0, name = anchor ? anchor.dataset.name : null;
+  const sideways = new Map(cards.map(c => [c.dataset.name, c.querySelector(".lstrip").scrollLeft]));
+  buildLayers();
+  const now = [...document.querySelectorAll("#layers .lay")];
+  now.forEach(c => { c.querySelector(".lstrip").scrollLeft = sideways.get(c.dataset.name) || 0; });
+  const same = now.find(c => c.dataset.name === name);
+  if (!same) return;
+  const by = same.getBoundingClientRect().top - before;
+  if (scrolls) card.scrollTop += by; else scrollBy(0, by);
+}
+// layer `name` of pass p drawn again in its card
+function recard(p, name){
+  const d = (p.layers || []).find(x => x.name === name);
+  const old = [...document.querySelectorAll("#layers .lay")].find(c => c.dataset.name === name);
+  if (!d || !old) return;
+  const left = old.querySelector(".lstrip").scrollLeft, next = layerCard(p, d);
+  old.replaceWith(next);
+  next.querySelector(".lstrip").scrollLeft = left;
 }
 
 // ---- passes and the common block ----
@@ -2361,6 +2446,10 @@ async function poll(){
     staleScene = !!s.stale;
     lastStats = s;
     if (s.display) lastDisplay = s.display;
+    if (s.layer_changes !== layerChanges){
+      layerChanges = s.layer_changes;
+      if (isProcedural()) followScene();
+    }
     refreshInfo(); applyRotation(); showErrors();
   }catch(_){ pollFails++; }
   showNotices();

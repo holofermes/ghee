@@ -21,6 +21,7 @@
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
 #include <unistd.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -2650,6 +2651,11 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         if (flipped) {
             g->flip_pending = true;
             g->flip_failed = false;
+            // The kernel can queue the flip's work on this CPU, where it
+            // waits until this thread blocks, and a host busy with its next
+            // frame holds the CPU for milliseconds. A yield starts that
+            // work now.
+            sched_yield();
         } else if (waited && !g->flip_failed) {  // a refused flip leaves disp_prev on the screen
             g->flip_failed = true;
             set_error(g, "drmModePageFlip failed: %s%s", strerror(err),

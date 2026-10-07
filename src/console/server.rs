@@ -28,7 +28,6 @@ use crate::console::core::{
     ConsoleResult, Edit, Headers, LayerSet, Query, Response, Scope,
 };
 use crate::console::examples_dir;
-use crate::console::feeds::default_hwinfo;
 use crate::console::state::{self, Edits, Item};
 use crate::console::store::{self, Carried, Opened, SceneStore};
 use crate::engine::{ErrorPass, Feed, Given, Provider, Renderer};
@@ -467,7 +466,6 @@ pub struct Console {
     /// The interval a stale check reads disk at. None takes the default window.
     pub stale_interval: Option<f64>,
     arrays: Vec<(String, ArraySource)>,
-    hwinfo: Box<dyn Fn() -> Value + Send + Sync>,
 
     // state
     stat: Mutex<Stat>,
@@ -546,7 +544,6 @@ impl Console {
             native_format: None,
             stale_interval: None,
             arrays: Vec::new(),
-            hwinfo: Box::new(default_hwinfo),
             stat: Mutex::new(Stat {
                 display: Value::Object(Map::new()),
                 ..Stat::default()
@@ -2292,10 +2289,6 @@ impl ConsoleHost for RenderLoopHost {
         self.console.with_copy(name, |_, copy| copy.edits_json())
     }
 
-    fn hwinfo(&self) -> ConsoleResult<Value> {
-        Ok((self.console.hwinfo)())
-    }
-
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()> {
         self.console.with_active(|_, copy| {
             let working = &mut copy.opened.working;
@@ -2828,8 +2821,6 @@ pub type StatsHook = Box<dyn FnOnce(&[f64], f64, &[String])>;
 pub struct Options {
     /// The array sources the scenes read per frame.
     pub arrays: Vec<(String, ArraySource)>,
-    /// The host info for the device-info readout.
-    pub hwinfo: Option<Box<dyn Fn() -> Value + Send + Sync>>,
     pub scenes_dir: Option<String>,
     /// Where the scenes' state files live. None takes state::default_dir().
     pub state_dir: Option<std::path::PathBuf>,
@@ -2883,7 +2874,6 @@ impl Default for Options {
     fn default() -> Options {
         Options {
             arrays: Vec::new(),
-            hwinfo: None,
             scenes_dir: None,
             state_dir: None,
             size: (320, 240),
@@ -2919,7 +2909,6 @@ impl Default for Options {
 pub fn run(opts: Options) -> Result<()> {
     let Options {
         arrays,
-        hwinfo,
         scenes_dir,
         state_dir,
         size,
@@ -2994,9 +2983,6 @@ pub fn run(opts: Options) -> Result<()> {
         .collect();
     console.native_format = native_format;
     console.arrays = arrays;
-    if let Some(hwinfo) = hwinfo {
-        console.hwinfo = hwinfo;
-    }
     let format = console.format();
     lock(&console.stat).display =
         serde_json::json!({"w": size.0, "h": size.1, "format": format, "rotation": 0});

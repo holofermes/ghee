@@ -481,8 +481,10 @@ pub trait ConsoleHost {
         Ok(Value::Object(filter_defs()))
     }
 
+    /// The board, its GPU and its memory, as crate::console::feeds reads
+    /// them.
     fn hwinfo(&self) -> ConsoleResult<Value> {
-        Ok(Value::Object(Map::new()))
+        Ok(crate::console::feeds::hwinfo())
     }
 
     /// Set a live uniform, with no recompile, to a value that param_of()
@@ -1446,8 +1448,9 @@ mod tests {
     }
 
     #[test]
-    fn defaults_supply_the_registry_and_no_hwinfo() {
-        assert_eq!(Bare.hwinfo().unwrap(), serde_json::json!({}));
+    fn defaults_supply_the_registry_and_ghees_own_hwinfo() {
+        let (host, own) = (Bare.hwinfo().unwrap(), crate::console::feeds::hwinfo());
+        assert_eq!((&host["model"], &host["gpu"]), (&own["model"], &own["gpu"]));
         assert!(Bare.filters().unwrap().is_object()); // ghee's own filter registry
     }
 

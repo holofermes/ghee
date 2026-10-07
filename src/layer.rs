@@ -2194,6 +2194,73 @@ impl Live {
     }
 }
 
+/// The layer format that the console edits, for GET /format: the fields of
+/// each effect in order, with their defaults and whether a /set changes them
+/// with no rebuild, the live fields of each kind of layer, what an empty field
+/// of each kind takes, and the built-in fonts, each name the console shows
+/// with the `font_family` that it writes.
+pub fn format() -> Value {
+    let mut effects = Map::new();
+    for kind in Kind::ALL {
+        let fields: Vec<Value> = kind
+            .fields()
+            .iter()
+            .map(|f| {
+                let default = match f.default {
+                    FieldValue::Num(n) => Value::from(n),
+                    FieldValue::Rgb(c) => c.to_json(),
+                };
+                serde_json::json!({"key": f.name, "default": default,
+                                   "live": f.change != Change::Rebuild})
+            })
+            .collect();
+        effects.insert(kind.key().to_string(), Value::from(fields));
+    }
+    let samples = [
+        ("text", serde_json::json!({"name": "a", "text": "a"})),
+        ("image", serde_json::json!({"name": "a", "image": "a.png"})),
+        ("rect", serde_json::json!({"name": "a", "shape": "rect"})),
+        (
+            "line",
+            serde_json::json!({"name": "a", "shape": "line", "points": [[0, 0], [1, 1]]}),
+        ),
+    ];
+    let mut live = Map::new();
+    for (kind, d) in samples {
+        let layer = Layer::from_dict("a layer", &d).expect("a sample layer parses");
+        let mut keys: Vec<&str> = Vec::new();
+        for key in layer_keys() {
+            if key != "name" && !keys.contains(&key) && layer.live(None, key).is_ok() {
+                keys.push(key);
+            }
+        }
+        // the words of a text layer change through their param, live
+        if layer.as_text().is_some() {
+            keys.push("text");
+        }
+        live.insert(kind.to_string(), Value::from(keys));
+    }
+    let centre = serde_json::json!({"x": "centre", "y": "centre"});
+    let with = |more: Value| {
+        let mut d = centre.clone();
+        if let (Value::Object(d), Value::Object(m)) = (&mut d, more) {
+            d.extend(m);
+        }
+        d
+    };
+    let empty = serde_json::json!({
+        "text": with(serde_json::json!({"font_size": "fit", "render": "auto"})),
+        "image": with(serde_json::json!({"width": "auto", "height": "auto"})),
+        "rect": with(serde_json::json!({"width": "pass", "height": "pass",
+                                        "border_radius": shape::BORDER_RADIUS})),
+        "line": {"x": 0, "y": 0, "stroke_width": shape::STROKE_WIDTH},
+    });
+    let mut fonts = Map::new();
+    fonts.insert("built-in".to_string(), Value::Null);
+    fonts.insert(text::PIXEL.to_string(), Value::from(text::PIXEL));
+    serde_json::json!({"effects": effects, "live": live, "empty": empty, "fonts": fonts})
+}
+
 /// `items` as a sentence names them: "a, b and c".
 pub(crate) fn spoken(items: &[&str]) -> String {
     match items.split_last() {

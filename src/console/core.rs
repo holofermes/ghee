@@ -744,6 +744,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             "/edits" => Ok(Response::json(
                 &h.edits(query.get("name").map(String::as_str))?,
             )),
+            "/format" => Ok(Response::json(&crate::layer::format())),
             _ => Ok(self.static_file(path)),
         }
     }
@@ -1452,6 +1453,107 @@ mod tests {
         let (host, own) = (Bare.hwinfo().unwrap(), crate::console::feeds::hwinfo());
         assert_eq!((&host["model"], &host["gpu"]), (&own["model"], &own["gpu"]));
         assert!(Bare.filters().unwrap().is_object()); // ghee's own filter registry
+    }
+
+    /// The effects and their defaults as the README's table gives them, and
+    /// the live fields as docs/http.md lists them for /set.
+    #[test]
+    fn format_serves_the_effects_and_the_live_fields_that_ghee_draws() {
+        let r = get(&api(), "/format", &[]);
+        let f = as_json(&r);
+        let defaults: Vec<(String, Vec<(String, Value)>)> = f["effects"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, fields)| {
+                let pairs = fields
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|d| (d["key"].as_str().unwrap().to_string(), d["default"].clone()))
+                    .collect();
+                (k.clone(), pairs)
+            })
+            .collect();
+        let row = |k: &str, fields: &[(&str, Value)]| {
+            (
+                k.to_string(),
+                fields
+                    .iter()
+                    .map(|(n, v)| ((*n).to_string(), v.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        use serde_json::json;
+        assert_eq!(
+            defaults,
+            vec![
+                row(
+                    "text_shadow",
+                    &[
+                        ("x", json!(0.06)),
+                        ("y", json!(0.08)),
+                        ("blur", json!(0.15)),
+                        ("color", json!("#000000")),
+                        ("strength", json!(0.7))
+                    ]
+                ),
+                row(
+                    "glow",
+                    &[
+                        ("blur", json!(0.3)),
+                        ("color", json!("#ffa500")),
+                        ("strength", json!(0.8))
+                    ]
+                ),
+                row(
+                    "text_stroke",
+                    &[("width", json!(0.06)), ("color", json!("#000000"))]
+                ),
+                row(
+                    "karaoke",
+                    &[("sung", json!(0.0)), ("color", json!("#ffad2e"))]
+                ),
+                row("wave", &[("height", json!(0.1)), ("speed", json!(0.6))]),
+                row("scroll", &[("speed", json!(2.0))]),
+                row("blink", &[("rate", json!(1.0))]),
+            ]
+        );
+        let live: Vec<String> = f["effects"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|fields| fields.as_array().unwrap().iter())
+            .filter(|d| d["live"] == true)
+            .map(|d| d["key"].as_str().unwrap().to_string())
+            .collect();
+        for key in &live {
+            assert!(
+                ["color", "strength", "sung", "speed", "rate"].contains(&key.as_str()),
+                "{key}"
+            );
+        }
+        let every = ["x", "y", "color", "opacity", "visible"];
+        let kinds: [(&str, &[&str]); 4] = [
+            ("text", &["text"]),
+            ("image", &["image"]),
+            ("rect", &["width", "height", "border_radius"]),
+            ("line", &["points", "stroke_width"]),
+        ];
+        for (kind, own) in kinds {
+            let mut want: Vec<&str> = every.to_vec();
+            want.extend(own);
+            want.sort_unstable();
+            let mut got: Vec<&str> = f["live"][kind]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            got.sort_unstable();
+            assert_eq!(got, want, "{kind}");
+        }
+        assert_eq!(f["fonts"], json!({"built-in": null, "pixel": "pixel"}));
     }
 
     // writes

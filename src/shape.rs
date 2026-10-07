@@ -45,7 +45,10 @@ const BORDER_KEYS: [&str; 3] = ["width", "color", "visible"];
 const BORDER_WIDTH: f64 = 1.0;
 
 /// A line's thickness when it names none, in pixels.
-const STROKE_WIDTH: f64 = 1.0;
+pub(crate) const STROKE_WIDTH: f64 = 1.0;
+
+/// A rect's corner radius when it names none, in pixels.
+pub(crate) const BORDER_RADIUS: f64 = 0.0;
 
 /// The vec4 attributes of one vertex of a shape's quad.
 pub(crate) const ATTRIBUTES: usize = 4;
@@ -156,7 +159,7 @@ impl ShapeLayer {
                     None => None,
                     Some(b) => Some(border(&format!("{what} border"), b)?),
                 },
-                border_radius: px("border_radius")?.unwrap_or(0.0),
+                border_radius: px("border_radius")?.unwrap_or(BORDER_RADIUS),
             },
         };
         Ok(ShapeLayer {
@@ -284,7 +287,7 @@ impl ShapeLayer {
                     width: px(width)?,
                     height: px(height)?,
                     border,
-                    border_radius: px(border_radius)?.unwrap_or(0.0),
+                    border_radius: px(border_radius)?.unwrap_or(BORDER_RADIUS),
                 };
                 let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
                 (e, colour(color)?, shape)

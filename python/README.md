@@ -253,8 +253,8 @@ The shim gives:
 - `ghee.Arg` and `ghee.args([...])` to declare the scene's arguments, and to
   answer `-- --help`.
 - `ghee.render_size()`, the size that the scene renders at, as `(w, h)`. A
-  pass with a size of its own reads that size in `iResolution`, so a scene
-  that needs the frame's shape there writes it from this.
+  pass with a size or a scale reads its own size in `iResolution`, so a
+  scene that needs the frame's shape there writes it from this.
 - `@ghee.feed("name")` to supply the values of a named array, each tick. The
   function returns a buffer or an iterable of numbers. A uint8 buffer, such
   as `bytes`, a `bytearray` or a numpy uint8 array, goes out as byte / 255,
@@ -298,6 +298,11 @@ way.
 `params=[ghee.Param("gain", "float", 0.5, min=0.0, max=1.0)]`. A dict keyed
 by name works too, and a key that differs from its param's name raises
 ValueError.
+
+`ghee.Pass` takes `size=(w, h)` for a buffer of its own in pixels, or
+`scale=`, a share of the frame, one number or `(x, y)`, so
+`ghee.Pass("blur", BLUR, scale=0.5)` renders at half the frame on every
+screen.
 
 `ghee.Asset(name, file)` takes the keys of an asset of the scene format:
 `sampling`, "nearest" or "linear", and for a `.raw` file of bare pixels its
@@ -428,7 +433,10 @@ The scene takes its own arguments first, then these flags of `ghee render`:
   display. It is the default with no `-o` and no `--serve`.
 - `--display-opts K=V,...`: the options of the display driver.
 - `--serve`, `--port PORT`, `--host HOST`: the console.
-- `--size WxH`: the render size. A display or a panel states its own.
+- `--size WxH`: the render size. With no `--size`, a display or a panel
+  states its own, which `ghee.render_size()` and a size arg given as a
+  share, such as `half`, take too, turned by `--rotate`. A run with no
+  display renders at 320x240.
 - `--rotate DEGREES`: 0, 90, 180 or 270, the frame turned clockwise on its
   way to every output.
 - `--brightness LEVEL`: the backlight of the `kms` display, 0 to 1.

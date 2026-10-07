@@ -252,6 +252,9 @@ The shim gives:
   the scene.
 - `ghee.Arg` and `ghee.args([...])` to declare the scene's arguments, and to
   answer `-- --help`.
+- `ghee.render_size()`, the size that the scene renders at, as `(w, h)`. A
+  pass with a size of its own reads that size in `iResolution`, so a scene
+  that needs the frame's shape there writes it from this.
 - `@ghee.feed("name")` to supply the values of a named array, each tick. The
   function returns a buffer or an iterable of numbers. A uint8 buffer, such
   as `bytes`, a `bytearray` or a numpy uint8 array, goes out as byte / 255,

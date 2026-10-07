@@ -1075,6 +1075,16 @@ def test_measure_outside_run_says_where_it_belongs():
     )
 
 
+def test_a_scene_under_ghee_renders_at_ghees_size(monkeypatch):
+    shim = load()
+    monkeypatch.setenv(shim.SIZE, "96x32")
+    assert shim.render_size() == (96, 32)
+    monkeypatch.setenv(shim.SIZE, "wide")
+    with pytest.raises(RuntimeError) as raised:
+        shim.render_size()
+    assert str(raised.value) == "$GHEE_SIZE names no WxH render size"
+
+
 def test_measure_under_ghee_lays_words_out_in_the_render_size(monkeypatch):
     """A scene that ghee runs measures on its last pass, at the render size
     that ghee gives it, and reads ghee's refusal of a font."""
@@ -1137,6 +1147,7 @@ SURFACE = [
     "gradient",
     "layers",
     "measure",
+    "render_size",
     "run",
     "set_param",
     "skip",

@@ -64,10 +64,6 @@ JUMP = 0.1
 
 SCENE_COMMON = (
     """
-// ghee sets the output aspect. A pass with its own size cannot read it off
-// `resolution`.
-uniform float aspect;
-
 """
     + look.WAVE
     + """
@@ -122,7 +118,7 @@ SHADER_STATE = """
 // swirl_scale moves the size of the swirls and not their strength.
 float psi(vec2 p) {
     float f = 24.0 * pow(0.5, swirl_scale * 4.0);
-    vec2 q = p * vec2(aspect, 1.0) * f;
+    vec2 q = p * vec2(ASPECT, 1.0) * f;
     float tf = iTime * 0.1;
     float n = sin(q.x + tf) * cos(q.y * 1.1 - tf * 0.7)
             + 0.5 * sin(q.x * 2.3 - tf * 1.3) * cos(q.y * 1.9 + tf * 0.9);
@@ -241,7 +237,7 @@ float sdSeg(vec2 p, vec2 a, vec2 b) {
     }
 
 void main() {
-    vec2 asp = vec2(aspect, 1.0);
+    vec2 asp = vec2(ASPECT, 1.0);
     vec2 uva = uv * asp;
 
     // Last frame's ink, decayed. The sub-LSB dither is what keeps an 8-bit
@@ -258,7 +254,7 @@ void main() {
     // width, the longest segment it can be strung along, and a tenth of that
     // again for the truncated position and the byte-packed delta. Past it the
     // stroke is exactly zero, so rejecting on it costs nothing but time.
-    float reach = w + (JUMP * 1.1) * max(aspect, 1.0);
+    float reach = w + (JUMP * 1.1) * max(ASPECT, 1.0);
     float reach2 = reach * reach;
 
     vec2 away;
@@ -298,7 +294,7 @@ void main() {
     // them, VC4 reads it back wrong in 4x4 blocks and the glyph body goes dry
     // in patches under the wave.
     float v = (uv.y - text_y + text_height * 0.5) / text_height;
-    float u = fract(uv.x * aspect / (text_height * TEXT_ASPECT) - iTime * text_speed);
+    float u = fract(uv.x * ASPECT / (text_height * TEXT_ASPECT) - iTime * text_speed);
     float glow = texture2D(iChannel0, uv).r;
     float m = canvas_sample2(vec2(u, v)) * step(0.0, v) * step(v, 1.0);
     m = smoothstep(0.35, 0.55, m);
@@ -362,8 +358,11 @@ def _raster(text):
 def build(a):
     grid = a.particle_grid
     col, row = grid
+    # The frame's shape, which the passes with a size of their own cannot
+    # read in iResolution.
+    w, h = ghee.render_size()
     return ghee.Scene(
-        common=SCENE_COMMON,
+        common=f"const float ASPECT = {w / h!r};\n" + SCENE_COMMON,
         filters=["dither"] if a.dither else [],
         passes=[
             ghee.Pass(

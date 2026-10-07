@@ -609,9 +609,7 @@ def measure(
             "ghee.measure lays words out in the scene that run() runs: call it in "
             "a tick or a feed"
         )
-    size = _render_size()
-    if size is None:
-        raise RuntimeError(f"${SIZE} names no WxH render size")
+    size = render_size()
     family = None if font_family is None else os.fspath(font_family)
     base = _script_dir() or os.getcwd()
     return _live().measure(words, size, base, font_size, family)
@@ -673,8 +671,25 @@ SIZE = "GHEE_SIZE"
 _FRACTIONS = {"full": 1, "half": 2, "quarter": 4, "eighth": 8, "sixteenth": 16}
 
 
+def render_size() -> tuple[int, int]:
+    """The size that the scene renders at, as (w, h).
+
+    Under ghee it is ghee's render size. A direct run takes its --size,
+    turned by a --rotate of 90 or 270, and 320x240 without one, as
+    `ghee render` does with no display. A pass with a size of its own reads
+    that size in iResolution, so a scene that needs the frame's shape in
+    such a pass writes it from here.
+
+    Raises RuntimeError when ghee gives no WxH size.
+    """
+    size = _render_size()
+    if size is None:
+        raise RuntimeError(f"${SIZE} names no WxH render size")
+    return size
+
+
 def _render_size() -> tuple[int, int] | None:
-    """ghee's next render size.
+    """ghee's next render size, None when $GHEE_SIZE names none.
 
     ghee puts it in the environment before it starts the scene. A direct run
     has no ghee, so the host --size stands in, and the default matches the one

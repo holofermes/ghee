@@ -255,6 +255,23 @@ def test_a_share_of_the_render_size_turns_with_a_quarter_rotate(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "argv,size",
+    [
+        ([], (320, 240)),
+        (["--size", "128x32"], (128, 32)),
+        (["--size", "128x32", "--rotate", "270"], (32, 128)),
+    ],
+)
+def test_a_direct_run_renders_at_its_size_turned_by_its_rotate(
+    argv, size, monkeypatch
+):
+    shim, _, _ = host(monkeypatch, argv)
+    monkeypatch.delenv(shim.SIZE, raising=False)
+    shim.args([])
+    assert shim.render_size() == size
+
+
+@pytest.mark.parametrize(
     "argv,display,serve",
     [
         ([], "kms", None),

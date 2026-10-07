@@ -83,7 +83,6 @@ PI = 3.14159265
 
 SCENE_COMMON = (
     f"""
-uniform float aspect;
 #define PI {PI}
 #define GAIN_MAX 4.0
 #define SEG_W {SEG[0]}.0
@@ -256,7 +255,7 @@ SHADER_WASH = (
     + """
 void main() {
     float zm = max(zoom, 0.05);
-    vec2 P = (uv - vec2(0.5)) * vec2(aspect, 1.0) / zm + pan;
+    vec2 P = (uv - vec2(0.5)) * vec2(ASPECT, 1.0) / zm + pan;
     float r = length(P);
     float ang0 = atan(P.y, P.x);
     float base = floor((ang0 - spin * TAU) * float(rays) / TAU + 0.5);
@@ -327,7 +326,7 @@ SHADER_TUBE = (
     + """
 void main() {
     float zm = max(zoom, 0.05);
-    vec2 P = (uv - vec2(0.5)) * vec2(aspect, 1.0) / zm + pan;
+    vec2 P = (uv - vec2(0.5)) * vec2(ASPECT, 1.0) / zm + pan;
     float r = length(P);
     float ang0 = atan(P.y, P.x);
     float base = floor((ang0 - spin * TAU) * float(rays) / TAU + 0.5);
@@ -418,7 +417,7 @@ void main() {
     // the wall itself: a mono texture riding the albedo, sampled in wall
     // coordinates so it stays put under zoom and pan
     float zm = max(zoom, 0.05);
-    vec2 Pw = (uv - 0.5) * vec2(aspect, 1.0) / zm + pan;
+    vec2 Pw = (uv - 0.5) * vec2(ASPECT, 1.0) / zm + pan;
     float wt = wall_sample2(fract(Pw * wall_scale + 0.5));
     vec3 alb = albedo * mix(1.0, wt, wall_mix);
     vec3 t = texture2D(iChannel1, uv).rgb * GAIN_MAX;
@@ -449,6 +448,9 @@ def build(a):
     ns = max(0, a.near_seg)
     nr = max(0, a.near_ray)
     ml = max(1, a.max_leds)
+    # The frame's shape, which the passes with a size of their own cannot
+    # read in iResolution.
+    w, h = ghee.render_size()
     return ghee.Scene(
         passes=[
             ghee.Pass(name="seg", code=SHADER_SEG, size=SEG),
@@ -490,6 +492,7 @@ def build(a):
             ),
         ],
         common=(
+            f"const float ASPECT = {w / h!r};\n"
             f"const int NEAR_SEG = {ns};\nconst int NEAR_RAY = {nr};\n"
             f"const int MAX_LED = {ml};\n" + SCENE_COMMON
         ),

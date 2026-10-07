@@ -1474,15 +1474,6 @@ impl Renderer {
             unsafe { ffi::ghee_mp_drop_asset(self.handle, cname.as_ptr()) };
             self.scene_assets.borrow_mut().retain(|n| n != &name);
         }
-        // The output aspect reaches every pass that declares it.
-        // A pass with its own size reads that size off `resolution`.
-        // Such a pass cannot derive the shape of the frame.
-        // A scene param of this name overwrites the value below.
-        self.set_scene_param(
-            "aspect",
-            "float",
-            &ParamValue::Float(f64::from(sw) / f64::from(sh.max(1))),
-        )?;
         // Assets go in before the channels and the arrays, so the engine's
         // texture-unit budget counts them.
         for a in scene.assets.iter().filter(|a| !a.is_font()) {
@@ -4740,40 +4731,6 @@ mod tests {
             let got = [0, 1, 2].map(|c| mean(&channel(&f, c)));
             assert!(near3(got, [want, 0.0, 0.0]), "{got:?}");
         }
-    }
-
-    /// A sized pass renders at its own size, so its `resolution` is not the
-    /// frame size. `aspect` carries the shape of the output.
-    #[test]
-    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn every_pass_reads_the_output_aspect() {
-        let (_g, mut r) = gpu();
-        let red = "uniform float aspect;\nvoid main(){ \
-                   gl_FragColor = vec4(aspect * 0.5, 0.0, 0.0, 1.0); }";
-        let through = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
-        let sc = scene_of(json!([
-            {"name": "small", "code": red, "size": [8, 8]},
-            {"name": "main", "code": through, "channels": [{"buffer": "small"}]},
-        ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
-        r.set_time(Some(0.0));
-        let f = r.render(None).unwrap().to_vec();
-        let want = 255.0 * (W as f64 / H as f64) * 0.5;
-        assert!((mean(&channel(&f, 0)) - want).abs() <= 2.0, "{}", f[0]);
-        // A scene that declares the name keeps its own value.
-        let mine = Scene::from_dict(
-            &json!({"version": 1,
-                    "params": {"aspect": {"type": "float", "value": 0.5}},
-                    "passes": [{"name": "main", "code":
-                                "void main(){ gl_FragColor = \
-                                 vec4(aspect, 0.0, 0.0, 1.0); }"}]}),
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(r.setup(&mine).unwrap(), "");
-        let f = r.render(None).unwrap().to_vec();
-        assert!((mean(&channel(&f, 0)) - 128.0).abs() <= 2.0);
     }
 
     #[test]

@@ -2,15 +2,19 @@
 
 ## Unreleased
 
-### Renamed
+### Names
 
-A scene written for 0.4.0 takes these names in their place.
+A scene written for 0.4.0 needs these changes.
 
 - Take Shadertoy's names for the uniforms of every pass: `iTime` where it
   was `time`, `iTimeDelta` where it was `DT`, and `iResolution` where it was
   `resolution`, a `vec3` now, with the size in pixels in `xy` and the pixel
   aspect, 1.0, in `z`. The varying `v_texCoord` is `uv`, with the same
   values. The old names are free for a param, an array or an asset.
+- Set no param named `aspect` to the output's aspect. A pass reads
+  `iResolution.x / iResolution.y`, and a pass with a size of its own takes
+  the frame's shape from its scene: a Python scene reads the size that it
+  renders at with `ghee.render_size()`.
 
 ### Scenes
 
@@ -235,6 +239,9 @@ A scene written for 0.4.0 takes these names in their place.
 
 ### Python
 
+- Read the size that a scene renders at, as `(w, h)`, with
+  `ghee.render_size()`: ghee's render size, or a direct run's `--size`
+  turned by its `--rotate`.
 - Require CPython 3.10 or newer: one abi3 wheel per architecture serves 3.10
   and up, and the deb depends on python3 3.10 or newer.
 - Set a layer's live fields on a `ghee.open` handle with no rebuild, through

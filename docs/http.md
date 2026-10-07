@@ -17,11 +17,13 @@ open it with `--host` only on a network you trust.
   in one band`. A text problem leaves the scene running. `layer_changes`
   counts the changes that the program behind the scene made to its layers: a
   drawing that added a layer or gave one a new look, or a field that a tick
-  set. A client that shows the layers reads `GET /scene` again when the count
-  moves.
+  or the Python host set. A client that shows the layers reads `GET /scene`
+  again when the count moves.
 - `GET /scenes`: `{scenes: [name...], active, procedural: [name...]}`.
   `procedural` names the scenes that a program writes, and is an empty list
-  when there are none.
+  when there are none. A program keeps which layers its scene has and their
+  order. `ghee.open(serve=)` lists its scene there, since the Python host
+  writes it.
 - `GET /scene?name=`: the resolved scene JSON, with shader files inlined and
   filters expanded. For the active scene, ghee answers with the document that
   it renders: applied edits, `/set` values, and the layers that a drawing
@@ -73,7 +75,10 @@ later.
 - `POST /scene?name=`: takes the full scene JSON in the body, and recompiles
   the active scene as a working copy. A procedural scene keeps its layers:
   each layer of the running scene that the posted scene leaves out stays, in
-  its place.
+  its place. `ghee.open(serve=)` compiles no scene: there `POST /scene` gives
+  each layer of the running scene the look that the posted scene gives it,
+  and answers 403 to a posted scene that differs in anything but its layers
+  and its param values.
 - `POST /save`: takes `{name, scene}` in the body, and writes the scene into
   `<scenes>/modified/`. A JSON scene saves a copy that shadows the original
   and finds its files beside the original. A procedural scene saves a

@@ -400,14 +400,18 @@
   shape's settings for a switch back. Every field but `shape` and `blend`
   changes live.
 - Show the layers that a drawing adds as they come and change, in `ghee
-  serve` with a scene script that draws. `layer_changes` on `GET /stats`
-  counts the changes that the program behind the scene makes to its layers,
-  and the page reads the scene again when the count moves. A layer that the
-  scene changed takes the scene's look in the page, and an edit to a drawn
-  layer lasts until the drawing next gives it a look.
+  serve` with a scene script that draws and in `ghee.open(serve=)`.
+  `layer_changes` on `GET /stats` counts the changes that the program behind
+  the scene makes to its layers, and the page reads the scene again when the
+  count moves. A layer that the scene changed takes the scene's look in the
+  page, and an edit to a drawn layer lasts until the drawing next gives it a
+  look.
 - Keep each layer of a procedural scene through `POST /scene`: a layer of the
   running scene that the posted scene leaves out stays, in its place, so an
   apply keeps the layers that a drawing added.
+- Give layers a new look through `POST /scene` in `ghee.open(serve=)`, which
+  lists its scene in `procedural` and refused every post. A post that
+  differs in anything but its layers and its param values answers 403.
 - Keep a hidden filter's pass hidden when the console posts the scene.
 - Save each pass's `visible` and the settings and effects of each layer of a
   procedural scene in its `.values.json` sidecar, beside its params and

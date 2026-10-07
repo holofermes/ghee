@@ -136,9 +136,10 @@ alpha. A run of `#` in the name takes the number of the frame's tick, as
 elsewhere. Anyone who reaches the port can change params, so bind beyond
 loopback only on a network you trust.
 [docs/http.md](https://github.com/holofermes/ghee/blob/main/docs/http.md)
-holds the API. This console shows the host's own scene. Params and the live
-fields of layers change from it, and it refuses scene switches, saves and
-every edit that rebuilds the scene. The video stream advances with
+holds the API. This console shows the host's own scene, the layers of a
+drawing among them, as the host changes it. Params, the live fields of
+layers and the look of each layer change from it, and it refuses scene
+switches, saves and every other edit. The video stream advances with
 `frame()`: viewers see a new frame only when the host draws one.
 
 With no scene, `ghee.open` makes one pass, `main`, that clears to black, for

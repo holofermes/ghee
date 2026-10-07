@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
-use ghee::console::server::{coerce, H264_FPS};
+use ghee::console::server::{coerce, H264_FPS, LAYERS_PUBLISH_EVERY};
 use ghee::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
 use ghee::engine::{probe_display, quarter_turns, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
@@ -320,6 +320,11 @@ pub struct Session {
     sent: Map<String, Value>,
     /// The iteration that begin() opened, for the next frame() or skip().
     opened: Option<Opened>,
+    /// The host changed a layer or the words of one since the console last
+    /// took the scene.
+    touched: bool,
+    /// When the console last took the scene, on the monotonic clock.
+    shared: f64,
 }
 
 /// The words of each string param of `scene`, by the bare name that `index`
@@ -606,6 +611,8 @@ impl Session {
             strings,
             sent: Map::new(),
             opened: None,
+            touched: false,
+            shared: f64::NEG_INFINITY,
         })
     }
 
@@ -940,6 +947,7 @@ impl Session {
         if let ParamValue::Str(words) = &v {
             let pass = p.pass.clone();
             self.held_string(pass.as_deref(), &p.uniform.clone(), words, true);
+            self.touched = true;
         }
         Ok(())
     }
@@ -965,7 +973,9 @@ impl Session {
         };
         self.renderer
             .set_layer(&at, Given::Json(value))
-            .map_err(refusal)
+            .map_err(refusal)?;
+        self.touched = true;
+        Ok(())
     }
 
     /// Add `layer`, a layer as a scene declares it, at `index` among the
@@ -976,6 +986,7 @@ impl Session {
             .add_layer(pass, index, layer)
             .map_err(refusal)?;
         self.took(layer);
+        self.touched = true;
         Ok(())
     }
 
@@ -985,6 +996,7 @@ impl Session {
         let changed = self.renderer.update_layer(layer).map_err(refusal)?;
         if changed {
             self.took(layer);
+            self.touched = true;
         }
         Ok(changed)
     }
@@ -1090,13 +1102,18 @@ impl Session {
         Ok(())
     }
 
-    /// The params queued by a console, applied before this frame draws.
+    /// What a console queued, applied before this frame draws: params, live
+    /// fields and the looks of applies. The console then takes the scene,
+    /// when it changed.
     fn drain(&mut self) -> Outcome<()> {
         let Some(console) = self.console.as_ref() else {
             return Ok(());
         };
         let layers = console.take_layers();
-        for (pass, name, ty, value) in console.take_params() {
+        let looks = console.take_looks();
+        let params = console.take_params();
+        let edited = !(layers.is_empty() && looks.is_empty() && params.is_empty());
+        for (pass, name, ty, value) in params {
             RenderTarget::set_param(&self.renderer, pass.as_deref(), &name, &ty, &value)
                 .map_err(system_fault)?;
             if let ParamValue::Str(words) = &value {
@@ -1107,6 +1124,28 @@ impl Session {
             self.renderer
                 .set_layer(&set.at(), Given::Json(&set.value))
                 .map_err(system_fault)?;
+        }
+        for look in looks {
+            let why = match self.renderer.replace_layer(&look) {
+                Ok(()) => {
+                    self.took(&look);
+                    String::new()
+                }
+                Err(e) => e.to_string(),
+            };
+            if let Some(c) = self.console.as_ref() {
+                c.look_error(&why);
+            }
+        }
+        let due = self.touched && monotonic() - self.shared >= LAYERS_PUBLISH_EVERY;
+        if edited || due {
+            self.shared = monotonic();
+            let scene = self.renderer.with_scene(Scene::to_dict);
+            if let (Some(c), Some(mut scene)) = (self.console.as_ref(), scene) {
+                words_into(&mut scene, &self.strings);
+                c.publish_scene(scene, Arc::clone(&self.index), self.touched);
+            }
+            self.touched = false;
         }
         Ok(())
     }
@@ -1135,6 +1174,31 @@ impl Session {
         self.sink = Sink::None;
         self.renderer.close();
         closing
+    }
+}
+
+/// Give each text layer of the scene document `doc` its words as they
+/// stand, from `strings`, the words of each string param by its bare name.
+/// The renderer lays new words out without writing them into its scene.
+fn words_into(doc: &mut Value, strings: &Map<String, Value>) {
+    let layers = doc
+        .get_mut("passes")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get_mut("layers")?.as_array_mut())
+        .flatten();
+    for l in layers.filter_map(Value::as_object_mut) {
+        if l.contains_key("image") || l.contains_key("shape") {
+            continue;
+        }
+        let words = l
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(|n| strings.get(n));
+        if let Some(words) = words.cloned() {
+            l.insert("text".to_string(), words);
+        }
     }
 }
 

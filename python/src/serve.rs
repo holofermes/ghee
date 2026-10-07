@@ -1,12 +1,16 @@
 //! The ghee console over a session the host drives.
 //!
 //! The console API is ghee's own (console::core). This module is the transport
-//! and a read-only host: it serves the scene, the stats and the preview, and it
-//! sets live params.
+//! and a host of the console over a session: it serves the scene, the stats
+//! and the preview, it sets live params and live fields, and an apply gives
+//! layers a new look.
 //!
-//! No request thread ever touches the engine. A /set lands on a queue that the
-//! next frame drains, and a viewer reads the last published frame. The host
-//! owns the render, so this console switches no scene and compiles none.
+//! No request thread ever touches the engine. A /set or an apply lands on a
+//! queue that the next frame drains, and a viewer reads the last published
+//! frame and the last published scene. The host owns the render: which
+//! layers exist and their order, the passes, the params and the assets. So
+//! this console switches no scene, compiles none, and lists its scene as one
+//! that a program writes.
 //!
 //! /h264 is the CLI console's stream: one encoder feeds every viewer, and it
 //! runs only while a viewer watches. The hardware lane issues GL calls, so the
@@ -81,9 +85,16 @@ struct Snap {
 
 /// What the render thread publishes and the request threads read.
 pub struct Shared {
-    index: Arc<Index>,
+    index: Mutex<Arc<Index>>,
     name: String,
-    scene: Value,
+    /// The scene that renders, as the session last published it.
+    scene: Mutex<Value>,
+    /// The times that the host changed a layer of the scene.
+    layer_changes: AtomicU64,
+    /// The new looks of layers, from applies, for the next frame.
+    looks: Mutex<Vec<Value>>,
+    /// Why the last look that an apply gave a layer failed, "" when it took.
+    look_error: Mutex<String>,
     display: Value,
     out: Vec<String>,
     queue: Mutex<Vec<Queued>>,
@@ -176,7 +187,10 @@ impl ConsoleHost for Host {
             out.push(DEST_H264.to_string());
         }
         d.insert("out".to_string(), Value::from(out));
-        d.insert("error".to_string(), Value::from(""));
+        d.insert(
+            "error".to_string(),
+            Value::from(lock(&s.look_error).clone()),
+        );
         d.insert(
             "text_errors".to_string(),
             Value::from(lock(&s.text_errors).clone()),
@@ -194,10 +208,19 @@ impl ConsoleHost for Host {
             "skipped".to_string(),
             Value::from(s.skipped.load(Ordering::SeqCst)),
         );
+        d.insert(
+            "layer_changes".to_string(),
+            Value::from(s.layer_changes.load(Ordering::SeqCst)),
+        );
         Ok(Value::Object(d))
     }
 
     fn scene_names(&self) -> ConsoleResult<Vec<String>> {
+        Ok(vec![self.0.name.clone()])
+    }
+
+    /// The host keeps which layers its scene has and their order.
+    fn procedural_names(&self) -> ConsoleResult<Vec<String>> {
         Ok(vec![self.0.name.clone()])
     }
 
@@ -208,25 +231,23 @@ impl ConsoleHost for Host {
     fn scene_def(&self, name: Option<&str>) -> ConsoleResult<Value> {
         match name {
             Some(n) if n != self.0.name => Err(ConsoleError::not_found(format!("no scene '{n}'"))),
-            _ => Ok(self.0.scene.clone()),
+            _ => Ok(lock(&self.0.scene).clone()),
         }
     }
 
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()> {
+        let index = Arc::clone(&lock(&self.0.index));
         let pass = match scope {
             Scope::Scene => None,
             Scope::Pass(i) => Some(
-                self.0
-                    .index
+                index
                     .passes
                     .get(usize::try_from(i).unwrap_or(usize::MAX))
                     .ok_or_else(|| ConsoleError::bad_request(format!("no pass {i}")))?
                     .as_str(),
             ),
         };
-        let p = self
-            .0
-            .index
+        let p = index
             .param(pass, name)
             .map_err(|e| ConsoleError::bad_request(e.message))?;
         let coerced =
@@ -246,10 +267,28 @@ impl ConsoleHost for Host {
         ))
     }
 
-    fn apply_scene(&self, _scene: Scene) -> ConsoleResult<()> {
-        Err(ConsoleError::read_only(
-            "this console compiles no scene; its host owns the render",
-        ))
+    /// An apply gives each layer of the scene the look that `scene` gives
+    /// it, and changes nothing else: a layer that `scene` leaves out keeps
+    /// its look, and one that the scene lacks is skipped.
+    fn apply_scene(&self, scene: Scene) -> ConsoleResult<()> {
+        let posted = scene.to_dict();
+        let running = lock(&self.0.scene).clone();
+        if frame_of(&posted) != frame_of(&running) {
+            return Err(ConsoleError::read_only(
+                "this console gives layers a new look and changes nothing else; its host \
+                 owns the passes, the params and the assets",
+            ));
+        }
+        let now: Vec<&Value> = layers_of(&running).collect();
+        let looks: Vec<Value> = layers_of(&posted)
+            .filter(|l| {
+                let name = l.get("name");
+                now.iter().any(|n| n.get("name") == name && *n != *l)
+            })
+            .cloned()
+            .collect();
+        lock(&self.0.looks).extend(looks);
+        Ok(())
     }
 
     fn save_refused(&self) -> String {
@@ -279,9 +318,12 @@ impl Console {
         verbose: bool,
     ) -> Result<Console> {
         let shared = Arc::new(Shared {
-            index,
+            index: Mutex::new(index),
             name: name.to_string(),
-            scene: scene.to_dict(),
+            scene: Mutex::new(scene.to_dict()),
+            layer_changes: AtomicU64::new(0),
+            looks: Mutex::new(Vec::new()),
+            look_error: Mutex::new(String::new()),
             display: serde_json::json!({
                 "w": size.0, "h": size.1, "format": format, "rotation": 0
             }),
@@ -426,6 +468,27 @@ impl Console {
         std::mem::take(&mut lock(&self.shared.layers))
     }
 
+    /// The looks that applies gave layers since the last take.
+    pub fn take_looks(&self) -> Vec<Value> {
+        std::mem::take(&mut lock(&self.shared.looks))
+    }
+
+    /// Why a look from an apply failed, for /stats, or "" when it took.
+    pub fn look_error(&self, why: &str) {
+        *lock(&self.shared.look_error) = why.to_string();
+    }
+
+    /// Publish the scene that renders and its index, after a change to it.
+    /// `by_host` counts a change that the host made, which the page reads
+    /// the scene again for.
+    pub fn publish_scene(&self, scene: Value, index: Arc<Index>, by_host: bool) {
+        *lock(&self.shared.scene) = scene;
+        *lock(&self.shared.index) = index;
+        if by_host {
+            self.shared.layer_changes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     pub fn stop(mut self) {
         self.shared.stopping.store(true, Ordering::SeqCst);
         self.shared.ready.notify_all();
@@ -437,6 +500,39 @@ impl Console {
             let _ = t.join();
         }
     }
+}
+
+/// The layers of every pass of the scene document `doc`.
+fn layers_of(doc: &Value) -> impl Iterator<Item = &Value> {
+    doc.get("passes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get("layers")?.as_array())
+        .flatten()
+}
+
+/// The scene document `doc` less what an apply here may change and what
+/// changes as the scene runs: the layers, and the value of each param.
+fn frame_of(doc: &Value) -> Value {
+    fn values(params: Option<&mut Value>) {
+        if let Some(Value::Object(m)) = params {
+            for p in m.values_mut() {
+                if let Value::Object(p) = p {
+                    p.remove("value");
+                }
+            }
+        }
+    }
+    let mut d = doc.clone();
+    values(d.get_mut("params"));
+    if let Some(Value::Array(passes)) = d.get_mut("passes") {
+        for p in passes.iter_mut().filter_map(Value::as_object_mut) {
+            p.remove("layers");
+            values(p.get_mut("params"));
+        }
+    }
+    d
 }
 
 /// Software H264 for the /h264 viewers, on a host with no hardware encoder. It

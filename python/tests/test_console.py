@@ -1,6 +1,7 @@
 """The console the host embeds: what it serves, and what a /set does."""
 
 import concurrent.futures
+import copy
 import json
 import os
 import shutil
@@ -37,6 +38,17 @@ def get(port, path, timeout=5):
 def post(port, path, timeout=5):
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}", data=b"", method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read()
+
+
+def post_json(port, path, doc, timeout=5):
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(doc).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read()
@@ -85,6 +97,17 @@ def watching(h, read, limit=30.0, step=None):
             return got.result(timeout=5)
         except concurrent.futures.TimeoutError:
             pytest.fail(f"the stream gave nothing in {limit}s")
+
+
+def scene_when(h, port, ready, limit=5.0):
+    """GET /scene once `ready` holds for it. The host skips frames meanwhile,
+    and each publishes the changes that the host made to its layers."""
+    end = time.monotonic() + limit
+    while True:
+        doc = json_of(port, "/scene")
+        if ready(doc) or time.monotonic() > end:
+            return doc
+        h.skip()
 
 
 @pytest.fixture
@@ -155,7 +178,7 @@ def test_the_console_serves_the_scene_it_renders(served):
     assert json_of(port, "/scenes") == {
         "scenes": ["scene"],
         "active": "scene",
-        "procedural": [],
+        "procedural": ["scene"],
     }
     scene = json_of(port, "/scene")
     assert [p["name"] for p in scene["passes"]] == ["main"]
@@ -281,6 +304,82 @@ def test_a_layer_set_lands_on_the_next_frame():
         with pytest.raises(urllib.error.HTTPError) as raised:
             post(port, "/set?layer=t&field=font_size&value=12")
         assert raised.value.code == 400
+
+
+def first_width(doc):
+    """The width of the first layer of the first pass of `doc`, or None."""
+    return doc["passes"][0].get("layers", [{}])[0].get("width")
+
+
+def test_the_console_shows_the_layers_that_a_drawing_adds_and_changes():
+    port = free_port()
+    with ghee.open(width=32, height=16, serve=port) as h:
+        counts = [json_of(port, "/stats")["layer_changes"]]
+        drawn = []
+        for width in (4, 9):
+            with h.draw() as d:
+                d.rect(x=1, y=2, width=width, height=3)
+                d.text("hi", name="label", font_size=8)
+            doc = scene_when(h, port, lambda s, w=width: first_width(s) == w)
+            layers = doc["passes"][0]["layers"]
+            drawn.append([(d["name"], d.get("width")) for d in layers])
+            counts.append(json_of(port, "/stats")["layer_changes"])
+        assert drawn == [[("rect", 4), ("label", None)], [("rect", 9), ("label", None)]]
+        assert counts[0] < counts[1] < counts[2]
+        # a drawn text layer's words take a /set, as a scene's own do
+        assert post(port, "/set?layer=label&field=text&value=ho")[0] == 200
+        h.frame()
+        assert json_of(port, "/scene")["passes"][0]["layers"][1]["text"] == "ho"
+
+
+def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():
+    doc = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "layers": [
+                    {
+                        "name": "box",
+                        "shape": "rect",
+                        "x": 0,
+                        "y": 0,
+                        "width": 6,
+                        "height": 6,
+                    }
+                ],
+            }
+        ],
+    }
+    centre = slice((3 * 8 + 3) * 4, (3 * 8 + 3) * 4 + 3)
+    port = free_port()
+    with ghee.open(doc, width=8, height=8, timestep=0, serve=port) as h:
+        h.frame()
+        assert list(h.pixels()[centre]) == [255, 255, 255]
+        served = json_of(port, "/scene")
+        looked = copy.deepcopy(served)
+        # blend changes with a rebuild of the layer
+        looked["passes"][0]["layers"][0].update(blend="add", color="red")
+        assert post_json(port, "/scene", looked)[0] == 200
+        h.frame()
+        assert list(h.pixels()[centre]) == [255, 0, 0]
+        assert json_of(port, "/scene") == looked
+        # a post that leaves a layer out leaves the layer as it is
+        bare = copy.deepcopy(served)
+        del bare["passes"][0]["layers"]
+        assert post_json(port, "/scene", bare)[0] == 200
+        h.frame()
+        assert json_of(port, "/scene") == looked
+        coded = copy.deepcopy(looked)
+        coded["passes"][0]["code"] = "void main(){ gl_FragColor = vec4(1.0); }"
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            post_json(port, "/scene", coded)
+        assert raised.value.code == 403
+        assert raised.value.read().decode() == (
+            "this console gives layers a new look and changes nothing else; its host "
+            "owns the passes, the params and the assets"
+        )
 
 
 def test_a_set_the_scene_refuses(served):

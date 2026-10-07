@@ -83,13 +83,57 @@ struct Snap {
     seq: u64,
 }
 
+/// A param's value that the host set: the param's pass, None for the
+/// scene's, its name and its value.
+pub type ParamSet = (Option<String>, String, Value);
+
+/// The scene that renders, as the session last published it whole, and what
+/// the host changed in it since.
+#[derive(Default)]
+struct Published {
+    scene: Value,
+    /// Each layer that the host changed since, whole, by its name.
+    layers: Map<String, Value>,
+    /// Each param that the host set since.
+    params: Vec<ParamSet>,
+}
+
+impl Published {
+    /// The scene with the host's changes laid over it.
+    fn now(&self) -> Value {
+        let mut doc = self.scene.clone();
+        let value = |name: &str| format!("/params/{name}/value");
+        let passes = doc.get_mut("passes").and_then(Value::as_array_mut);
+        for pass in passes.into_iter().flatten() {
+            let of = pass.get("name").and_then(Value::as_str).map(str::to_string);
+            for (_, name, v) in self.params.iter().filter(|(p, ..)| p.is_some() && *p == of) {
+                if let Some(slot) = pass.pointer_mut(&value(name)) {
+                    slot.clone_from(v);
+                }
+            }
+            let layers = pass.get_mut("layers").and_then(Value::as_array_mut);
+            for layer in layers.into_iter().flatten() {
+                let name = layer.get("name").and_then(Value::as_str);
+                if let Some(new) = name.and_then(|n| self.layers.get(n)) {
+                    layer.clone_from(new);
+                }
+            }
+        }
+        for (_, name, v) in self.params.iter().filter(|(p, ..)| p.is_none()) {
+            if let Some(slot) = doc.pointer_mut(&value(name)) {
+                slot.clone_from(v);
+            }
+        }
+        doc
+    }
+}
+
 /// What the render thread publishes and the request threads read.
 pub struct Shared {
     index: Mutex<Arc<Index>>,
     name: String,
-    /// The scene that renders, as the session last published it.
-    scene: Mutex<Value>,
-    /// The times that the host changed a layer of the scene.
+    published: Mutex<Published>,
+    /// The times that the host changed the scene.
     layer_changes: AtomicU64,
     /// The new looks of layers, from applies, for the next frame.
     looks: Mutex<Vec<Value>>,
@@ -231,7 +275,7 @@ impl ConsoleHost for Host {
     fn scene_def(&self, name: Option<&str>) -> ConsoleResult<Value> {
         match name {
             Some(n) if n != self.0.name => Err(ConsoleError::not_found(format!("no scene '{n}'"))),
-            _ => Ok(lock(&self.0.scene).clone()),
+            _ => Ok(lock(&self.0.published).now()),
         }
     }
 
@@ -272,7 +316,7 @@ impl ConsoleHost for Host {
     /// its look, and one that the scene lacks is skipped.
     fn apply_scene(&self, scene: Scene) -> ConsoleResult<()> {
         let posted = scene.to_dict();
-        let running = lock(&self.0.scene).clone();
+        let running = lock(&self.0.published).now();
         if frame_of(&posted) != frame_of(&running) {
             return Err(ConsoleError::read_only(
                 "this console gives layers a new look and changes nothing else; its host \
@@ -320,7 +364,10 @@ impl Console {
         let shared = Arc::new(Shared {
             index: Mutex::new(index),
             name: name.to_string(),
-            scene: Mutex::new(scene.to_dict()),
+            published: Mutex::new(Published {
+                scene: scene.to_dict(),
+                ..Published::default()
+            }),
             layer_changes: AtomicU64::new(0),
             looks: Mutex::new(Vec::new()),
             look_error: Mutex::new(String::new()),
@@ -482,11 +529,37 @@ impl Console {
     /// `by_host` counts a change that the host made, which the page reads
     /// the scene again for.
     pub fn publish_scene(&self, scene: Value, index: Arc<Index>, by_host: bool) {
-        *lock(&self.shared.scene) = scene;
+        *lock(&self.shared.published) = Published {
+            scene,
+            ..Published::default()
+        };
         *lock(&self.shared.index) = index;
         if by_host {
             self.shared.layer_changes.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    /// Publish what the host changed in the scene published last: `layers`,
+    /// each a layer whole, and the values of `params`.
+    pub fn publish_changes(&self, layers: Vec<Value>, params: Vec<ParamSet>) {
+        let mut held = lock(&self.shared.published);
+        for layer in layers {
+            if let Some(name) = layer.get("name").and_then(Value::as_str) {
+                held.layers.insert(name.to_string(), layer);
+            }
+        }
+        for (pass, name, value) in params {
+            match held
+                .params
+                .iter_mut()
+                .find(|(p, n, _)| *p == pass && *n == name)
+            {
+                Some(slot) => slot.2 = value,
+                None => held.params.push((pass, name, value)),
+            }
+        }
+        drop(held);
+        self.shared.layer_changes.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn stop(mut self) {

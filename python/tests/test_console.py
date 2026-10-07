@@ -332,6 +332,28 @@ def test_the_console_shows_the_layers_that_a_drawing_adds_and_changes():
         assert json_of(port, "/scene")["passes"][0]["layers"][1]["text"] == "ho"
 
 
+def test_a_drawing_reaches_the_scene_with_its_frame():
+    port = free_port()
+    with ghee.open(width=32, height=16, serve=port) as h:
+        for width in (4, 9):
+            with h.draw() as d:
+                d.rect(x=1, y=2, width=width, height=3)
+        assert first_width(json_of(port, "/scene")) == 9
+
+
+def test_a_param_set_by_the_host_or_the_console_reaches_the_scene(served):
+    h, port = served
+    gain = lambda: json_of(port, "/scene")["passes"][0]["params"]["gain"]["value"]
+    h.set_param("gain", 0.25)
+    h.feed("level", LEVEL)
+    h.frame()
+    assert gain() == 0.25
+    assert post(port, "/set?pass=main&name=gain&value=0.5")[0] == 200
+    h.feed("level", LEVEL)
+    h.frame()
+    assert gain() == 0.5
+
+
 def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():
     doc = {
         "version": 1,

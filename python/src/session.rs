@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
-use ghee::console::server::{coerce, H264_FPS, LAYERS_PUBLISH_EVERY};
+use ghee::console::server::{coerce, H264_FPS};
 use ghee::draw::{Arg, Call, CallKind};
 use ghee::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
 use ghee::engine::{probe_display, quarter_turns, Feed, Given, Refused, Renderer};
@@ -23,11 +23,11 @@ use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{no_layer, no_param, ArraySize, ParamValue, Scene};
+use ghee::scene::{no_layer, no_param, short_floats, ArraySize, ParamValue, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
-use crate::serve::{encode_bitrate, encode_size, Console};
+use crate::serve::{encode_bitrate, encode_size, Console, ParamSet};
 
 /// A render with no panel and no display takes this size, as in the CLI.
 pub const DEFAULT_SIZE: (i32, i32) = (320, 240);
@@ -341,11 +341,15 @@ pub struct Session {
     sent: Map<String, Value>,
     /// The iteration that begin() opened, for the next frame() or skip().
     opened: Option<Opened>,
-    /// The host changed a layer or the words of one since the console last
-    /// took the scene.
-    touched: bool,
-    /// When the console last took the scene, on the monotonic clock.
-    shared: f64,
+    /// The layers that the host changed since the console last took them,
+    /// noted only while a console runs.
+    changed: Vec<String>,
+    /// The params that the host set since the console last took them: each
+    /// one's pass, None for the scene's, and its name.
+    set: Vec<(Option<String>, String)>,
+    /// The host changed which layers the scene holds, or a layer's kind,
+    /// since the console last took the scene.
+    grown: bool,
 }
 
 /// The words of each string param of `scene`, by the bare name that `index`
@@ -632,8 +636,9 @@ impl Session {
             strings,
             sent: Map::new(),
             opened: None,
-            touched: false,
-            shared: f64::NEG_INFINITY,
+            changed: Vec::new(),
+            set: Vec::new(),
+            grown: false,
         })
     }
 
@@ -965,11 +970,13 @@ impl Session {
         };
         RenderTarget::set_param(&self.renderer, p.pass.as_deref(), &p.uniform, &p.ty, &v)
             .map_err(fault)?;
+        let (pass, uniform) = (p.pass.clone(), p.uniform.clone());
         // The host wrote these words itself, so no tick reports them.
         if let ParamValue::Str(words) = &v {
-            let pass = p.pass.clone();
-            self.held_string(pass.as_deref(), &p.uniform.clone(), words, true);
-            self.touched = true;
+            self.held_string(pass.as_deref(), &uniform, words, true);
+        }
+        if self.console.is_some() {
+            self.set.push((pass, uniform));
         }
         Ok(())
     }
@@ -996,7 +1003,7 @@ impl Session {
         self.renderer
             .set_layer(&at, Given::Json(value))
             .map_err(refusal)?;
-        self.touched = true;
+        self.note(layer);
         Ok(())
     }
 
@@ -1008,7 +1015,7 @@ impl Session {
             .add_layer(pass, index, layer)
             .map_err(refusal)?;
         self.took(layer);
-        self.touched = true;
+        self.grown = true;
         Ok(())
     }
 
@@ -1018,7 +1025,9 @@ impl Session {
         let changed = self.renderer.update_layer(layer).map_err(refusal)?;
         if changed {
             self.took(layer);
-            self.touched = true;
+            if let Some(name) = layer.get("name").and_then(Value::as_str) {
+                self.note(name);
+            }
         }
         Ok(changed)
     }
@@ -1034,10 +1043,17 @@ impl Session {
                 self.held_string(None, &call.layer, words, true);
             }
         }
-        if !taken.changed.is_empty() {
-            self.touched = true;
+        for &k in &taken.changed {
+            self.note(&calls[k].layer);
         }
         Ok(taken.left)
+    }
+
+    /// Note that the host changed layer `name`, for a console to take.
+    fn note(&mut self, name: &str) {
+        if self.console.is_some() {
+            self.changed.push(name.to_string());
+        }
     }
 
     /// Index the scene again after the layer `layer` joined it or changed
@@ -1052,6 +1068,7 @@ impl Session {
             if let Some(index) = self.renderer.with_scene(Index::of) {
                 self.index = Arc::new(index);
             }
+            self.grown = true;
         }
         let words = self.renderer.with_layer(name, |s, l| {
             l.as_text()
@@ -1171,17 +1188,67 @@ impl Session {
                 c.look_error(&why);
             }
         }
-        let due = self.touched && monotonic() - self.shared >= LAYERS_PUBLISH_EVERY;
-        if edited || due {
-            self.shared = monotonic();
+        let by_host = self.grown || !(self.changed.is_empty() && self.set.is_empty());
+        let (changed, set) = (
+            std::mem::take(&mut self.changed),
+            std::mem::take(&mut self.set),
+        );
+        if edited || self.grown {
             let scene = self.renderer.with_scene(Scene::to_dict);
             if let (Some(c), Some(mut scene)) = (self.console.as_ref(), scene) {
                 words_into(&mut scene, &self.strings);
-                c.publish_scene(scene, Arc::clone(&self.index), self.touched);
+                c.publish_scene(scene, Arc::clone(&self.index), by_host);
             }
-            self.touched = false;
+            self.grown = false;
+        } else if by_host {
+            let (layers, params) = self.changes(changed, set);
+            if let Some(c) = self.console.as_ref() {
+                c.publish_changes(layers, params);
+            }
         }
         Ok(())
+    }
+
+    /// The layers named `changed`, whole, and the values of the params of
+    /// `set`, as the renderer's scene holds them. The scene param of a text
+    /// layer's name gives the layer, with its words.
+    fn changes(
+        &self,
+        mut changed: Vec<String>,
+        set: Vec<(Option<String>, String)>,
+    ) -> (Vec<Value>, Vec<ParamSet>) {
+        let mut params = Vec::new();
+        for (pass, name) in set {
+            if pass.is_none() && self.renderer.with_layer(&name, |_, _| ()).is_some() {
+                changed.push(name);
+                continue;
+            }
+            let value = self.renderer.with_scene(|s| {
+                let params = match pass.as_deref() {
+                    Some(p) => &s.passes.iter().find(|q| q.name == p)?.params,
+                    None => &s.params,
+                };
+                Some(params.get(&name)?.value.to_json())
+            });
+            if let Some(mut value) = value.flatten() {
+                short_floats(&mut value);
+                params.push((pass, name, value));
+            }
+        }
+        changed.sort_unstable();
+        changed.dedup();
+        let layers = changed
+            .iter()
+            .filter_map(|name| {
+                self.renderer.with_layer(name, |s, l| {
+                    let text = l.as_text().map_or("", |t| t.text.as_str());
+                    let mut doc = l.to_dict(s.words(name).unwrap_or(text));
+                    short_floats(&mut doc);
+                    doc
+                })
+            })
+            .collect();
+        (layers, params)
     }
 
     /// Blank the panel, turn it off, and drop everything the session holds.

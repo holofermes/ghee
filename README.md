@@ -190,10 +190,20 @@ that pass's buffer from this frame. A channel that reads the pass itself, or a
 later pass, sees the buffer from the previous frame. ghee sends the last pass
 to the output, at the output's size.
 
-Each pass renders at its own resolution, and it samples other passes in
-normalized coordinates. A pass with `"mipmaps": true` builds the mip chain of
-its buffer after each frame, and every channel that reads the buffer samples
-it trilinearly. A buffer drawn small and far away, such as words in
+A pass renders at the frame's size, at its own `"size": [w, h]` in pixels,
+or at `"scale"`, a share of the frame, one number for both sides or `[x, y]`.
+A pass takes one of the two. The frame is the render size turned by
+`--rotate`, and a scaled side rounds to the nearest pixel, 1 at least, so
+this pass blurs at half the frame's size on every screen:
+
+```json
+{ "name": "blur", "scale": 0.5, "fragment": { "file": "blur.glsl" } }
+```
+
+The last pass ignores a size or a scale, with a warning. A pass samples other
+passes in normalized coordinates. A pass with `"mipmaps": true` builds the mip
+chain of its buffer after each frame, and every channel that reads the buffer
+samples it trilinearly. A buffer drawn small and far away, such as words in
 perspective, then stays calm.
 
 A pass with `"visible": false` is hidden. It draws a copy of the pass before
@@ -765,11 +775,17 @@ console shows a hardware accelerated live preview of the running scene. It
 edits each pass's layers and their effects, and the GLSL of each pass, with
 compile errors inline. It lists a pass's layers front first: the last one in
 the scene's `layers` paints on top and shows at the top. It shows each param
-as a slider, hides passes, layers and effects, and picks filters. A live field
-applies as it changes, and every other edit reloads into the running renderer.
-Its render info shows the frame rate, and while it is open the memory and
-the GPU time that ghee uses, where the kernel reports them.
-[docs/http.md](docs/http.md) holds its API.
+as a slider, hides passes, layers and effects, and picks filters. Its render
+info shows the frame rate, and while it is open the memory and the GPU time
+that ghee uses, where the kernel reports them. [docs/http.md](docs/http.md)
+holds its API.
+
+An edit goes into the working copy of the scene that ghee holds, which every
+open page shows. A live field applies as it changes, and every other edit
+reloads into the running renderer. The working copy lasts until ghee stops,
+and Save keeps its edits in the scene's [state file](#saved-edits).
+
+`--fps N` caps the frame rate of `ghee serve` and of `ghee render --serve`.
 
 The console reads files from its scenes directory, the `$GHEE_ASSETS`
 directories and the system's emoji font alone, so a scene that it serves
@@ -780,6 +796,56 @@ fails to load a path that is absolute or climbs out with `..`.
 Careful: the console has no auth, and it compiles any GLSL posted to it, so it
 binds to loopback by default. `--host 0.0.0.0` opens it to your network. Do
 that only on a network you trust.
+
+### Saved edits
+
+Save writes the console's edits of a scene, what differs from the scene's
+files, to the scene's state file. ghee lays the state file over the scene's
+files each time that `ghee serve` or `ghee render --serve` loads the scene. A
+new version of the scene's files leaves the state file alone: a saved value
+stays, and every other setting follows the new files. A plain `ghee render`
+reads no state file, and a console hosted by Python saves nothing.
+
+The state files live in `$XDG_STATE_HOME/ghee/`, `~/.local/state/ghee/` when
+the variable is unset, and `--state-dir DIR` puts them in DIR. A scene's state
+file takes the scene file's absolute path under `scenes/`, with `.json` in
+place of `.scene.json` or of a procedural scene's extension, and a bundled
+demo's sits under `demo/`:
+
+```
+/srv/scenes/clocks/clocks.scene.json
+  ~/.local/state/ghee/scenes/srv/scenes/clocks/clocks.json
+ghee serve --demo, the scene wavy
+  ~/.local/state/ghee/demo/wavy.json
+```
+
+This state file sets two params of the pass `main` and holds an edit of its
+GLSL:
+
+```json
+{
+  "version": 1,
+  "scene": "/srv/scenes/clocks/clocks.scene.json",
+  "values": { "passes": { "main": { "params": { "cols": 5, "rows": 4 } } } },
+  "items": [
+    { "item": "fragment", "pass": "main", "base": "4be1a2c97f3d0e55",
+      "value": "void main() { ... }" }
+  ]
+}
+```
+
+`values` is a JSON merge patch over the scene by name: `params` holds the
+scene params' values, `passes` each pass's `params`, `visible`, `size` and
+`scale`, and `layers` each layer's settings and effects, as a layer's JSON
+holds them. `null` removes a key. `items` holds each edit of code or structure
+whole, with `base`, the hash of the same item in the files that it was made
+against: a pass's `fragment`, `channels` and `layers`, the `common` block, the
+`passes`, an added `param`, and the `filters`.
+
+A value whose pass, layer or param is gone is skipped, with one line in the
+log, and the next save drops it. An item whose `base` no longer matches the
+files is set aside: the files' version runs, and the console asks once, keep
+mine or update to default.
 
 ## Filters
 
@@ -925,9 +991,10 @@ shown:
   `pass 'main' needs 17 texture units, a pass binds at most 16`, or
   `layer 'title' needs 17 texture units, a pass binds at most 16`.
 - 16 passes, filter passes included: `17 passes, over the cap of 16`.
-- 16384 pixels on a side and 16777216 pixels in all, for a sized pass, an
-  array and a `.raw` asset:
+- 16384 pixels on a side and 16777216 pixels in all, for a pass with a size
+  or a scale, an array and a `.raw` asset:
   `pass 'a' size needs two positive ints [w, h] up to 16384, got [20000, 8]`,
+  `pass 'a' is 32000x240, over the 16384 pixel cap of a side`,
   `pass 'a' is 8192x4096, over the 16777216 pixel cap`. The GPU's own texture
   limit is lower: 2048 on a VC4.
 

@@ -455,6 +455,49 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
+/// What a drawing paints on in a scene: the scene's last pass before its
+/// filters, with the names of its layers in their order, then every name
+/// that the scene holds, and the names of all its layers.
+#[derive(Default)]
+pub struct Drawing {
+    pub pass: String,
+    pub layers: Vec<String>,
+    pub taken: Vec<String>,
+    pub all: Vec<String>,
+}
+
+/// The name of the last pass of `scene` before its filters.
+pub fn draw_pass(scene: &Scene) -> String {
+    scene
+        .passes
+        .iter()
+        .rev()
+        .find(|p| p.filter.is_empty())
+        .map(|p| p.name.clone())
+        .unwrap_or_default()
+}
+
+/// What a drawing paints on in `scene`.
+pub fn drawing(scene: &Scene) -> Drawing {
+    let pass = draw_pass(scene);
+    let layers = scene
+        .passes
+        .iter()
+        .find(|p| p.name == pass)
+        .map(|p| p.layers.iter().map(|l| l.name().to_string()).collect())
+        .unwrap_or_default();
+    Drawing {
+        pass,
+        layers,
+        taken: scene
+            .taken_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        all: scene.layers().map(|l| l.name().to_string()).collect(),
+    }
+}
+
 impl Session {
     pub fn open(opening: Opening) -> Outcome<Session> {
         let Opening {
@@ -976,38 +1019,14 @@ impl Session {
         }
     }
 
-    /// The pass that a drawing paints on, the scene's last pass before its
-    /// filters, with the names of its layers in their order, then every name
-    /// that the scene holds, and the names of all its layers.
-    pub fn drawing(&self) -> (String, Vec<String>, Vec<String>, Vec<String>) {
-        let pass = self.draw_pass();
-        self.renderer
-            .with_scene(|s| {
-                let layers = s
-                    .passes
-                    .iter()
-                    .find(|p| p.name == pass)
-                    .map(|p| p.layers.iter().map(|l| l.name().to_string()).collect())
-                    .unwrap_or_default();
-                let taken = s.taken_names().into_iter().map(str::to_string).collect();
-                let all = s.layers().map(|l| l.name().to_string()).collect();
-                (pass.clone(), layers, taken, all)
-            })
-            .unwrap_or_default()
+    /// What a drawing paints on in the scene, as drawing() gives it.
+    pub fn drawing(&self) -> Drawing {
+        self.renderer.with_scene(drawing).unwrap_or_default()
     }
 
     /// The name of the scene's last pass before its filters.
     fn draw_pass(&self) -> String {
-        self.renderer
-            .with_scene(|s| {
-                s.passes
-                    .iter()
-                    .rev()
-                    .find(|p| p.filter.is_empty())
-                    .map(|p| p.name.clone())
-            })
-            .flatten()
-            .unwrap_or_default()
+        self.renderer.with_scene(draw_pass).unwrap_or_default()
     }
 
     /// The width and height in pixels of the block that `words` lay out in

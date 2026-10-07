@@ -735,8 +735,10 @@ scene and data. ghee starts it and talks to it over stdin and stdout.
 The Python package `ghee-render` speaks that contract for Python.
 `import ghee` gives `Scene`, `Pass`, `Param`, `Asset` and `Layer` to build
 the scene, `@ghee.feed` and `@ghee.tick` to supply the data, `ghee.layers` to
-set the layers' live fields, and `ghee.run` for the loop. A PEP 723 scene declares `ghee-render` inline, under
-`#!/usr/bin/env -S uv run --script`, as the bundled examples do.
+set the layers' live fields, `ghee.draw` to draw words, pictures and shapes
+from a tick, and `ghee.run` for the loop. A PEP 723 scene declares
+`ghee-render` inline, under `#!/usr/bin/env -S uv run --script`, as the
+bundled examples do.
 
 A Python scene also renders on its own, with no `ghee` command:
 `./scene.py --display --frames 300`. [python/README.md](python/README.md)

@@ -69,9 +69,14 @@ def _colour_name(text: str) -> bool:
 
 class _LayerWire:
     """A scene that a scene process runs under ghee, to check each live layer
-    set against and to give the set's message."""
+    set and each drawn layer against and to give its message."""
 
     def __init__(self, scene: dict[str, Any]) -> None: ...
+    def drawing(self) -> dict[str, Any]: ...
+    def add(
+        self, pass_: str, index: int, layer: dict[str, Any], /
+    ) -> tuple[int, str, str]: ...
+    def update(self, layer: dict[str, Any]) -> tuple[int, str, str] | None: ...
     def message(
         self,
         name: str,

@@ -551,10 +551,13 @@ _KINDS = {
 
 
 class Drawing:
-    """One frame of a screen, the block of `with screen.draw() as d:`.
+    """One frame of a screen, the block of `with screen.draw() as d:`, or of
+    the scene that run() runs, the block of `with ghee.draw() as d:` in a
+    tick or a feed.
 
-    Each call writes a layer, and leaving the block draws the frame. A call
-    takes the keys of its layer as keywords, the effects included, as
+    Each call writes a layer. Leaving a screen's block draws the frame, and
+    leaving the block of ghee.draw() hands its layers to the tick's frame.
+    A call takes the keys of its layer as keywords, the effects included, as
     ghee.Layer takes them, and `name`. Positions and box sizes are pixels
     from the top left, y down, on the screen's last pass before its filters,
     and the drawing paints over the scene's own layers there, in the order
@@ -574,9 +577,10 @@ class Drawing:
     bypassed. A frame whose calls changed nothing sends nothing, and draws.
     """
 
-    def __init__(self, handle, screen: _Screen) -> None:
+    def __init__(self, handle, screen: _Screen, ends_frame: bool = True) -> None:
         self._handle = handle
         self._screen = screen
+        self._ends_frame = ends_frame
         self._calls: list = []
         self._sites: dict = {}
         self._drawn: set = set()
@@ -587,7 +591,8 @@ class Drawing:
     def __exit__(self, kind, value, traceback) -> bool:
         if kind is None:
             self._send()
-            self._handle.frame()
+            if self._ends_frame:
+                self._handle.frame()
         return False
 
     def text(
@@ -812,7 +817,6 @@ def measure(
     Raises RuntimeError outside run(), and ValueError for a font that the
     scene cannot give a text.
     """
-    global _LIVE
     if _HANDLE is not None:
         return _HANDLE.measure(words, font_size, font_family)
     if _SCENE is None:
@@ -823,13 +827,49 @@ def measure(
     size = _render_size()
     if size is None:
         raise RuntimeError(f"${SIZE} names no WxH render size")
-    if _LIVE is None:
-        from ghee import _ext
-
-        _LIVE = _ext()._LayerWire(_SCENE.to_dict())
     family = None if font_family is None else os.fspath(font_family)
     base = _script_dir() or os.getcwd()
-    return _LIVE.measure(words, size, base, font_size, family)
+    return _live().measure(words, size, base, font_size, family)
+
+
+def draw() -> Drawing:
+    """A drawing of the tick's frame of the scene that run() runs, for a
+    `with` block in a tick or a feed: `with ghee.draw() as d:`. Its calls
+    are a screen's, and the frame of the tick draws their layers over the
+    scene's own on its last pass before its filters. One block in a tick
+    states the whole drawing of that frame.
+
+    Under ghee, the layers go out with the tick's answer, and the native
+    half of the package checks each against the scene first, so a call that
+    ghee would refuse raises ValueError. Raises RuntimeError outside run().
+    """
+    if _HANDLE is not None:
+        return Drawing(_HANDLE, _DRAWN, ends_frame=False)
+    if _SCENE is None:
+        raise RuntimeError(
+            "ghee.draw draws on the scene that run() runs: call it in a tick or a feed"
+        )
+    return Drawing(_Wire(), _DRAWN, ends_frame=False)
+
+
+class _Wire:
+    """The scene that ghee runs, as a drawing reaches it: each layer that the
+    drawing adds or gives a new look goes out with the tick's answer, kind 6
+    or kind 7, and a hidden one as a live set."""
+
+    def _drawing(self) -> dict:
+        return _live().drawing()
+
+    def _add_layer(self, pass_: str, index: int, layer: dict) -> None:
+        _send(*_live().add(pass_, index, layer))
+
+    def _update_layer(self, layer: dict) -> None:
+        message = _live().update(layer)
+        if message is not None:
+            _send(*message)
+
+    def set_layer(self, name, field, value, effect=None) -> None:
+        _set_layer(name, field, value, effect)
 
 
 # ---------------------------------------------------------------------- args
@@ -1089,9 +1129,11 @@ _STOPPED: list = []
 # filters that ghee appends
 _PARAMS: dict | None = None
 _FILTERS: list = []
-# the scene of the run, and under ghee the native check of its layer sets
+# the scene of the run, under ghee the native check of its layer sets, and
+# what ghee.draw() keeps from one tick to the next
 _SCENE: Scene | None = None
 _LIVE = None
+_DRAWN = _Screen()
 
 
 def feed(name: str):
@@ -1161,7 +1203,6 @@ def _set_layer(name: str, field: str, value: Any, effect: str | None = None) -> 
     Under ghee, the native half of the wheel checks the set against the
     scene, as Handle.set_layer does, and gives the message.
     """
-    global _LIVE
     if _HANDLE is not None:
         _HANDLE.set_layer(name, field, value, effect)
         return
@@ -1170,16 +1211,30 @@ def _set_layer(name: str, field: str, value: Any, effect: str | None = None) -> 
             "ghee.layers sets a layer of the scene that run() runs: set it in a "
             "tick or a feed"
         )
+    kind, wire, body = _live().message(name, field, value, effect)
+    _send(kind, wire, body, f"layer '{name}'")
+
+
+def _live():
+    """The native check of the scene that run() runs under ghee, made on
+    the first use."""
+    global _LIVE
     if _LIVE is None:
         from ghee import _ext
 
         _LIVE = _ext()._LayerWire(_SCENE.to_dict())
-    kind, wire, body = _LIVE.message(name, field, value, effect)
+    return _LIVE
+
+
+def _send(kind: int, wire: str, body, what: str = "") -> None:
+    """Queue one message for the tick's answer: `body` the text of kinds 3,
+    6 and 7, or the numbers of kinds 0 and 1, which `what` names in an
+    error."""
     if isinstance(body, str):
         text = body.encode("utf-8")
         _OUT.append(_message(kind, wire, len(text), text))
         return
-    count, data = _f32(body, f"layer '{name}'")
+    count, data = _f32(body, what)
     _OUT.append(_message(kind, wire, count, data))
 
 
@@ -1404,8 +1459,13 @@ def _arrays(scene: Scene) -> dict:
     return arrays
 
 
-def run(scene: Scene) -> None:
-    """Render the scene.
+# The GLSL of the scene of a run that names none: one pass, black.
+_BLACK = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"
+
+
+def run(scene: Scene | None = None) -> None:
+    """Render the scene. With no scene, the scene is one pass, `main`, that
+    clears to black, for ghee.draw() to paint on.
 
     A run under ghee answers the wire.
     A run of its own opens the scene on the bindings and drives it.
@@ -1414,9 +1474,12 @@ def run(scene: Scene) -> None:
     too and is already stopping. The scene ends where it stands, quietly: a
     traceback here would say a scene crashed, and it did what it was told.
     """
-    global _PARAMS, _FILTERS, _SCENE, _LIVE
+    global _PARAMS, _FILTERS, _SCENE, _LIVE, _DRAWN
+    if scene is None:
+        scene = Scene(passes=[Pass("main", _BLACK)])
     _PARAMS, _FILTERS = _param_types(scene), list(scene.filters)
     _SCENE = scene
+    _DRAWN = _Screen()
     try:
         if os.environ.get(WIRE):
             _wire(scene)

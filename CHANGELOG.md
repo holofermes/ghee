@@ -331,6 +331,12 @@
 - Ship type stubs for `ghee.open` and `Handle`, mark the package typed, and
   type the closed string sets of the shim as `Literal`: a param's type, a
   layer's text_align, render and blend, and an arg's type.
+- Draw from a scene script with `ghee.draw()` in a tick or a feed, as on a
+  screen, and the frame of the tick draws the calls. Under ghee, a layer
+  that a call adds or changes goes out with the tick's answer, checked
+  against the scene first, so a call that ghee would refuse raises
+  ValueError. `ghee.run()` with no scene hands ghee one pass, `main`, that
+  clears to black, and the first tick's drawing grows it.
 
 ### Procedural scenes
 

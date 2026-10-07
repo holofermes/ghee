@@ -190,6 +190,16 @@ fn tick_dict(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyDict>> {
     Ok(d)
 }
 
+/// What a drawing paints on, as the shim's drawing reads it.
+fn drawing_dict(py: Python<'_>, at: session::Drawing) -> PyResult<Bound<'_, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("pass", at.pass)?;
+    d.set_item("layers", at.layers)?;
+    d.set_item("taken", at.taken)?;
+    d.set_item("all", at.all)?;
+    Ok(d)
+}
+
 /// The GLSL of the scene of a host that names none: one pass, black.
 const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
 
@@ -399,13 +409,7 @@ impl Handle {
     /// The pass that a drawing paints on and its layers, every name that
     /// the scene holds, and every layer of the scene.
     fn _drawing<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (pass, layers, taken, all) = self.held.get()?.drawing();
-        let d = PyDict::new(py);
-        d.set_item("pass", pass)?;
-        d.set_item("layers", layers)?;
-        d.set_item("taken", taken)?;
-        d.set_item("all", all)?;
-        Ok(d)
+        drawing_dict(py, self.held.get()?.drawing())
     }
 
     /// Add `layer`, a layer as a scene declares it, at `index` among the

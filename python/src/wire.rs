@@ -1,19 +1,21 @@
-//! The live layer sets of a scene process that ghee runs, as the shim writes
-//! them on the wire.
+//! The live layer sets and the drawing of a scene process that ghee runs, as
+//! the shim writes them on the wire.
 //!
-//! The shim holds a LayerWire for the scene that it hands ghee. Each set goes
-//! through the scene's own checks there, so a set that ghee would refuse
-//! raises in the scene process, as it does on a handle.
+//! The shim holds a LayerWire for the scene that it hands ghee. Each set and
+//! each layer that the drawing adds or gives a new look goes through the
+//! scene's own checks there, so one that ghee would refuse raises in the
+//! scene process, as it does on a handle, and the scene there grows as the
+//! scene in ghee does.
 
 use ghee::console::server::coerce;
-use ghee::layer::{Address, Form, Rgb};
+use ghee::layer::{Address, Form, Layer, Rgb};
 use ghee::scene::{ParamValue, Scene};
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyString};
+use pyo3::types::{PyDict, PyList, PyString};
 use serde_json::Value;
 
-use crate::session::{Fault, Index, Outcome};
-use crate::{fault, to_json};
+use crate::session::{drawing, Fault, Index, Outcome};
+use crate::{drawing_dict, fault, to_json};
 
 /// A scene that a scene process runs under ghee, to check each live layer set
 /// against and to give the set's message, and to lay words out in.
@@ -21,7 +23,10 @@ use crate::{fault, to_json};
 pub struct LayerWire {
     scene: Scene,
     index: Index,
-    /// The scene with its files loaded, for measure(), once it first asks.
+    /// The scene as the process handed it, for measure(). The drawing grows
+    /// `scene` alone, so a file of a drawn layer never loads here.
+    handed: Scene,
+    /// `handed` with its files loaded, once measure() first asks.
     loaded: Option<Scene>,
 }
 
@@ -101,6 +106,16 @@ impl LayerWire {
         };
         Ok((wire, Body::Floats(floats)))
     }
+
+    /// Index the scene again when layer `name` joined it or changed between
+    /// a text layer and another kind.
+    fn took(&mut self, name: &str) {
+        let text = self.scene.layer(name).map(|l| l.as_text().is_some());
+        let indexed = self.index.layers.iter().find(|(n, _)| n == name);
+        if indexed.map(|(_, t)| *t) != text {
+            self.index = Index::of(&self.scene);
+        }
+    }
 }
 
 #[pymethods]
@@ -113,6 +128,7 @@ impl LayerWire {
             .map_err(fault)?;
         let index = Index::of(&scene);
         Ok(LayerWire {
+            handed: scene.clone(),
             scene,
             index,
             loaded: None,
@@ -132,7 +148,7 @@ impl LayerWire {
         font_family: Option<&str>,
     ) -> PyResult<(f64, f64)> {
         if self.loaded.is_none() {
-            let mut loaded = self.scene.clone();
+            let mut loaded = self.handed.clone();
             loaded
                 .load_assets(base_dir)
                 .map_err(scene_fault)
@@ -145,6 +161,56 @@ impl LayerWire {
             .map_err(scene_fault)
             .map_err(fault)?;
         Ok((w, h))
+    }
+
+    /// The pass that a drawing paints on and its layers, every name that the
+    /// scene holds, and every layer of the scene, as Handle._drawing() gives
+    /// them.
+    fn drawing<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        drawing_dict(py, drawing(&self.scene))
+    }
+
+    /// The message that adds `layer`, a layer as a scene declares it, at
+    /// `index` among the layers of pass `pass`: kind 6, the pass, and its
+    /// JSON text. Raises ValueError as Handle._add_layer() does.
+    fn add(
+        &mut self,
+        pass: &str,
+        index: usize,
+        layer: &Bound<'_, PyAny>,
+    ) -> PyResult<(u8, String, String)> {
+        let layer = to_json(layer)?;
+        let at = format!("the layer added at {index} to pass '{pass}'");
+        let new = Layer::from_dict(&at, &layer)
+            .map_err(scene_fault)
+            .map_err(fault)?;
+        let name = new.name().to_string();
+        self.scene
+            .insert_layer(pass, index, new)
+            .map_err(scene_fault)
+            .map_err(fault)?;
+        self.took(&name);
+        let text = serde_json::json!({"index": index, "layer": layer}).to_string();
+        Ok((6, pass.to_string(), text))
+    }
+
+    /// The message that gives the layer of the name of `layer` the look of
+    /// `layer`, a layer as a scene declares it: kind 7, the layer's name,
+    /// and its JSON text, None when the layer has that look already. Raises
+    /// ValueError as Handle._update_layer() does.
+    fn update(&mut self, layer: &Bound<'_, PyAny>) -> PyResult<Option<(u8, String, String)>> {
+        let look = to_json(layer)?;
+        let changed = self
+            .scene
+            .update_layer(&look)
+            .map_err(scene_fault)
+            .map_err(fault)?;
+        if !changed {
+            return Ok(None);
+        }
+        let name = look["name"].as_str().unwrap_or_default().to_string();
+        self.took(&name);
+        Ok(Some((7, name, look.to_string())))
     }
 
     /// The message of a live set of `field` of layer `name`, or of its

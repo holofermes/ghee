@@ -70,8 +70,8 @@ END = (5, "", [])
 def messages(buf):
     """The wire back to (kind, name, values).
 
-    Kind 4 carries one byte for each value, and kind 3 carries text. Kinds 2
-    and 5 are the single byte.
+    Kind 4 carries one byte for each value, kind 3 carries text, and kinds 6
+    and 7 carry JSON, read back. Kinds 2 and 5 are the single byte.
     """
     out, i = [], 0
     while i < len(buf):
@@ -86,8 +86,9 @@ def messages(buf):
         i += nlen
         (count,) = struct.unpack_from("<I", buf, i)
         i += 4
-        if kind == 3:
-            out.append((3, name, buf[i : i + count].decode()))
+        if kind in (3, 6, 7):
+            text = buf[i : i + count].decode()
+            out.append((kind, name, text if kind == 3 else json.loads(text)))
             i += count
             continue
         width = 1 if kind == 4 else 4
@@ -1131,6 +1132,7 @@ SURFACE = [
     "Scene",
     "Tick",
     "args",
+    "draw",
     "feed",
     "gradient",
     "layers",

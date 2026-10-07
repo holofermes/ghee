@@ -283,7 +283,7 @@ The shim gives:
   stands.
 - `@ghee.tick` to run a hook on each tick, before the feeds. The hook
   receives a `ghee.Tick` and calls `ghee.set_param(name, value)`,
-  `ghee.layers`, `ghee.measure` and `ghee.skip()`.
+  `ghee.layers`, `ghee.draw()`, `ghee.measure` and `ghee.skip()`.
 - `ghee.run(scene)` for the handshake, then the tick loop.
 
 A `ghee.Tick` holds `frame`, the tick's number, `time` and `dt` in seconds,
@@ -339,6 +339,33 @@ answer, and the first one loads the native half of the package, which checks
 every set against the scene and raises ValueError where ghee would refuse
 it. In a direct run, each set goes to the handle. A set before `ghee.run`
 raises RuntimeError.
+
+`ghee.draw()` opens a [drawing](#drawing) of the tick's frame in a tick or
+a feed, and the frame of that tick draws its calls, so one `with` block in
+a tick states the whole drawing of that frame. The calls land as the sets of
+`ghee.layers` do, checked against the scene first, and under ghee a layer
+that a call adds or changes goes out with the tick's answer.
+
+With no scene, `ghee.run()` starts from one pass, `main`, that clears to
+black, and the first tick's drawing grows it. This scene draws the clock
+above with no scene of its own:
+
+```python
+import time
+
+import ghee
+
+ghee.args()  # the probe, this scene takes no arguments
+
+
+@ghee.tick
+def clock(tick):
+    with ghee.draw() as d:
+        d.text(time.strftime("%H:%M:%S"))
+
+
+ghee.run()
+```
 
 ## Layers
 
@@ -429,12 +456,12 @@ The scene takes its own arguments first, then these flags of `ghee render`:
   pipe, and to 0 for a display or the console, which runs until SIGINT or
   SIGTERM.
 
-The feeds, the hooks, `ghee.layers` and `ghee.skip()` work the same. The tick keeps its wire
-shape: `dt` is the DT that its frame draws with, `params` holds the string
-params that the console changed, and the first tick holds every string
-param. A scene or a display that ghee refuses stops the run with ghee's one
-line and exit status 1. If one of your own arguments collides with these
-names, argparse says so.
+The feeds, the hooks, `ghee.layers`, `ghee.draw()` and `ghee.skip()` work
+the same. The tick keeps its wire shape: `dt` is the DT that its frame draws
+with, `params` holds the string params that the console changed, and the
+first tick holds every string param. A scene or a display that ghee refuses
+stops the run with ghee's one line and exit status 1. If one of your own
+arguments collides with these names, argparse says so.
 
 ## What the wire carries
 

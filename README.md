@@ -549,9 +549,13 @@ A 1-bit panel such as the SSD1306 lights a pixel or leaves it dark. ghee's
 `ssd1306` driver lights a pixel whose grey is above 128 of 255. A letter keeps
 its shape, since a pixel at its edge lights when the pixel's centre lies
 inside the outline. A glow, a soft shadow and every other dim pixel go dark.
-A stroke thinner than a pixel can go dark too, such as the bar of a small e at
-11 pixels per em. A `text_stroke` in the letters' colour, 0.01 em wide, grows
-them by a tenth of a pixel at that size and keeps such strokes:
+
+With no filter, an outline font below about 12 pixels per em loses strokes
+thinner than a pixel, such as the bar of a small e, where Pillow's hinted
+rendering keeps them. `font_family: "pixel"` keeps every stroke: at 8 pixels
+per em it lights exactly the pixels that Pillow lights from the same font. An outline font keeps such strokes with a `text_stroke` in the letters'
+colour, 0.01 em wide, which grows the letters by a tenth of a pixel at 11
+pixels per em:
 
 ```json
 { "name": "title", "text": "hello", "font_size": 11,
@@ -563,11 +567,12 @@ adds them on the command line:
 
 - `dither` lays a 4x4 ordered dither over the frame. Grey turns into a pattern
   of lit dots, so a glow shows as dots around the letters. The pattern holds
-  still at any frame rate.
+  still at any frame rate, and it breaks letters at every size.
 - `frc` blinks each pixel on a 16-frame cycle, lit for a share of the frames
-  that matches its grey, for up to 16 shades on a 1-bit panel. Sixteen shades
-  need about 200 fps. At a lower rate, its `coarse` and `calm` params trade
-  shades for stillness.
+  that matches its grey, for up to 16 shades on a 1-bit panel, so letters
+  keep soft edges. Sixteen shades need about 200 fps, where an outline font
+  reads at every size from 8 pixels per em. At a lower rate, its `coarse`
+  and `calm` params trade shades for stillness.
 - `frc256` does the same on a 16-level panel such as the SSD1322: each pixel
   blinks between two neighbouring levels, for about 256 shades.
 
@@ -576,16 +581,16 @@ a glowing clock fitted to the panel ran 300 frames at these rates:
 
 | Panel | Bus | No filter | With the filter |
 | --- | --- | --- | --- |
-| SSD1306, 128x32 | I2C | 86 fps | 86 fps with `frc` |
+| SSD1306, 128x32 | I2C at 400 kHz | 86 fps | 86 fps with `frc` |
 | SSD1322, 256x64 | SPI | 206 fps | 200 fps with `frc256` |
 
 These rates were measured on a Pi 5, and not on a Pi Zero 2 W.
 
-`frc` needs about 200 fps, and an SSD1306 on I2C reaches that only with the
-bus at 1 MHz (`dtparam=i2c_arm_baudrate=1000000` on a Raspberry Pi), where the
-clock above runs at 216 fps. The table's 86 fps is the bus at 400 kHz, where
-`frc` flickers, and a panel that stays under about 200 fps is better served by
-`dither`.
+`frc` needs about 200 fps, which an SSD1306 reaches with its I2C bus at 1
+MHz, the rate that [`ghee overlay ssd1306`](#hardware-displays) writes. With
+the frame rate held at 106 fps and `calm` at 8, or at 86 fps and `calm` at
+10, `frc` keeps text of 12 pixels per em as readable as at 210 fps, roughens
+text of 10 and breaks text of 8.
 
 ### Render
 

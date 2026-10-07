@@ -565,6 +565,9 @@ pub struct SceneProcess {
     pinned: bool,
     /// The ticks handed to the writer, each one written to the process.
     offered: u64,
+    /// The loop's frame and time at the first tick offered, which the
+    /// process reads as frame 0 at time 0.
+    origin: Option<(u64, f64)>,
     /// The params already logged as refused, so each logs once.
     refused: HashSet<String>,
 }
@@ -637,6 +640,7 @@ impl SceneProcess {
             kill_after: KILL_AFTER,
             pinned: false,
             offered: 0,
+            origin: None,
             refused: HashSet::new(),
         };
         // The wait here is the long one: the process starts an interpreter,
@@ -961,7 +965,9 @@ impl SceneController for SceneProcess {
         // so the frame shows the data of its own tick. Later ticks wait only
         // with the time pinned.
         let first = self.offered == 0;
-        self.offer(frame, t, dt);
+        let (f0, t0) = *self.origin.get_or_insert((frame, t));
+        let frame = frame.saturating_sub(f0);
+        self.offer(frame, t - t0, dt);
         if self.lockstep && (self.pinned || first) {
             self.await_answers(frame)?;
             self.drain();
@@ -1796,6 +1802,28 @@ sleep 60
         // stdin closed, and the process ended on it
         let log = fs::read_to_string(format!("{d}/ticks.jsonl")).unwrap();
         assert!(log.trim_end().ends_with("eof"), "{log}");
+    }
+
+    #[test]
+    fn a_process_started_late_in_a_run_counts_its_ticks_from_0() {
+        let d = tmpdir("late");
+        let path = script(&d, "feed", SCENE_SCRIPT);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        f.tick(300, 5.0, 1.0 / 60.0).unwrap();
+        ticks(&d, 1);
+        f.tick(301, 5.5, 0.5).unwrap();
+        let got: Vec<(Value, Value)> = ticks(&d, 2)
+            .iter()
+            .map(|t| (t["frame"].clone(), t["time"].clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Value::from(0), Value::from(0.0)),
+                (Value::from(1), Value::from(0.5))
+            ]
+        );
     }
 
     #[test]

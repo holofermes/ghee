@@ -13,6 +13,7 @@
 //! The engine is thread-affine. Open a handle on one thread, and use it on that
 //! same thread.
 
+mod draw;
 mod serve;
 mod session;
 mod wire;
@@ -22,7 +23,7 @@ use std::thread::{self, ThreadId};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyString, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyList, PyString, PyTuple};
 use serde_json::{Map, Value};
 
 use session::{Fault, Fed, Opening, Session, Source, StreamMax, Tick};
@@ -433,6 +434,30 @@ impl Handle {
     fn _update_layer(&mut self, layer: &Bound<'_, PyAny>) -> PyResult<bool> {
         let layer = to_json(layer)?;
         self.held.get()?.update_layer(&layer).map_err(fault)
+    }
+
+    /// Give the layers of a drawing's changed calls their looks, with no
+    /// look written: each call a tuple (kind, layer, values), kind 0 a text,
+    /// 1 a rect, 2 an image and 3 a line, its values in the order of the
+    /// keywords of ghee::draw's args of that kind. Returns the indexes of
+    /// the calls left for _update_layer(), in order.
+    fn _draw(&mut self, calls: &Bound<'_, PyList>) -> PyResult<Vec<usize>> {
+        let mut typed = Vec::with_capacity(calls.len());
+        let mut at = Vec::with_capacity(calls.len());
+        let mut left = Vec::new();
+        for (k, item) in calls.iter().enumerate() {
+            match draw::call_of(&item) {
+                Some(call) => {
+                    typed.push(call);
+                    at.push(k);
+                }
+                None => left.push(k),
+            }
+        }
+        let rest = self.held.get()?.update_calls(&typed).map_err(fault)?;
+        left.extend(rest.into_iter().map(|i| at[i]));
+        left.sort_unstable();
+        Ok(left)
     }
 
     /// Hold data for one declared array. The next frame consumes it once.

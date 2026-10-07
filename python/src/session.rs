@@ -14,6 +14,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use ghee::console::server::{coerce, H264_FPS, LAYERS_PUBLISH_EVERY};
+use ghee::draw::{Arg, Call, CallKind};
 use ghee::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
 use ghee::engine::{probe_display, quarter_turns, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
@@ -1022,6 +1023,23 @@ impl Session {
             self.touched = true;
         }
         Ok(changed)
+    }
+
+    /// Give the layers of `calls` their looks, as Renderer::update_calls()
+    /// does, and hold the words of each text call that changed its layer as
+    /// the host's own. Returns the indexes of the calls left for
+    /// update_layer().
+    pub fn update_calls(&mut self, calls: &[Call]) -> Outcome<Vec<usize>> {
+        let taken = self.renderer.update_calls(calls).map_err(refusal)?;
+        for call in taken.changed.iter().map(|&k| &calls[k]) {
+            if let (CallKind::Text, Some(Arg::Str(words))) = (call.kind, call.args.first()) {
+                self.held_string(None, &call.layer, words, true);
+            }
+        }
+        if !taken.changed.is_empty() {
+            self.touched = true;
+        }
+        Ok(taken.left)
     }
 
     /// Index the scene again after the layer `layer` joined it or changed

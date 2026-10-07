@@ -51,3 +51,7 @@ THE SOFTWARE.
 
 ghee/examples/fonts/DejaVuSans-Latin.ttf, a subset of DejaVu Sans, travels
 with the bundled examples. Its license is ghee/examples/fonts/LICENSE-DejaVu.txt.
+
+ghee/examples/fonts/PixelOperator8.ttf, Pixel Operator 8 by Jayvee Enaguas,
+travels with the bundled examples, under CC0 1.0 Universal. Its text is
+ghee/examples/fonts/LICENSE-PixelOperator.txt.

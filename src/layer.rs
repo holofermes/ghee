@@ -874,7 +874,7 @@ impl TextLayer {
             blend: e.blend,
             text,
             font_size,
-            data: font_family.is_none().then(|| vec![text::built_in_font()]),
+            data: text::built_in(font_family.as_deref()).map(|f| vec![f]),
             emoji: None,
             font_family,
             text_align,

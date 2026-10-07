@@ -27,6 +27,7 @@ assets = [
     ["target/pydist/**/*", "usr/lib/python3/dist-packages/", "644"],
     ["NOTICE", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-DejaVu.txt", "usr/share/doc/ghee/", "644"],
+    ["ghee/examples/fonts/LICENSE-PixelOperator.txt", "usr/share/doc/ghee/", "644"],
 ]
 
 [[bin]]

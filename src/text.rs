@@ -158,6 +158,26 @@ pub fn built_in_font() -> Font {
         .clone())
 }
 
+/// The font_family that names the built-in pixel font, PIXEL_FONT.
+pub const PIXEL: &str = "pixel";
+
+/// Pixel Operator 8, drawn on a grid of 8 pixels to the em, so at
+/// `font_size` 8 every edge falls on a pixel edge.
+pub const PIXEL_FONT: &[u8] = include_bytes!("../ghee/examples/fonts/PixelOperator8.ttf");
+
+/// The font of a text that names `family`, when ghee carries it: the
+/// built-in font for none, and the pixel font for PIXEL.
+pub fn built_in(family: Option<&str>) -> Option<Font> {
+    static PIXEL_BYTES: std::sync::OnceLock<Arc<Vec<u8>>> = std::sync::OnceLock::new();
+    match family {
+        None => Some(built_in_font()),
+        Some(PIXEL) => Some(Ok(PIXEL_BYTES
+            .get_or_init(|| Arc::new(PIXEL_FONT.to_vec()))
+            .clone())),
+        Some(_) => None,
+    }
+}
+
 /// The bytes of a font file, or why ttf-parser reads no font in them.
 pub fn font(bytes: &[u8]) -> Font {
     match Face::parse(bytes, 0) {

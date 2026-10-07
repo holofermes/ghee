@@ -52,7 +52,7 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
 /// extracts this set to a content-keyed cache directory first. A procedural
 /// example imports ghee from the ghee-render package, which pip installs.
-pub const EXAMPLES: [(&str, &[u8]); 23] = [
+pub const EXAMPLES: [(&str, &[u8]); 25] = [
     ("bars.glsl", include_bytes!("../../ghee/examples/bars.glsl")),
     (
         "bars.scene.json",
@@ -75,6 +75,11 @@ pub const EXAMPLES: [(&str, &[u8]); 23] = [
     (
         "fonts/LICENSE-DejaVu.txt",
         include_bytes!("../../ghee/examples/fonts/LICENSE-DejaVu.txt"),
+    ),
+    ("fonts/PixelOperator8.ttf", crate::text::PIXEL_FONT),
+    (
+        "fonts/LICENSE-PixelOperator.txt",
+        include_bytes!("../../ghee/examples/fonts/LICENSE-PixelOperator.txt"),
     ),
     ("hero.py", include_bytes!("../../ghee/examples/hero.py")),
     (

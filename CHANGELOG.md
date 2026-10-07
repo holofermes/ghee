@@ -119,6 +119,9 @@
 
 ### Text
 
+- Draw a text layer from Pixel Operator 8, a second built-in font, with
+  `font_family: "pixel"`. Its edges fall on whole pixels at `font_size` 8.
+  A font asset named `pixel` stays the scene's own.
 - Draw text on the GPU from a font in text layers. A pass's `layers` paint
   over its buffer after its own shader, in list order, as one quad over each
   glyph. A layer needs a `name`, holds its words in `text`, and takes

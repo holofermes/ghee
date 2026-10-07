@@ -1952,10 +1952,12 @@ impl Scene {
                     l.name,
                     py_str_repr(&a.file)
                 ),
+                None if font == crate::text::PIXEL => {}
                 None => bail!(
-                    "layer '{}' font_family '{font}' is no asset of the scene and no .ttf or \
-                     .otf file",
-                    l.name
+                    "layer '{}' font_family '{font}' is no asset of the scene, no .ttf or \
+                     .otf file and not '{}', the built-in pixel font",
+                    l.name,
+                    crate::text::PIXEL
                 ),
             }
         }
@@ -2594,11 +2596,10 @@ fn load_layer(
         return Ok(());
     };
     if !crate::text::is_font_file(&f) {
-        let font = assets
-            .iter()
-            .find(|a| a.name == f)
-            .and_then(|a| a.font.clone());
-        l.data = font.map(|f| vec![f]);
+        l.data = match assets.iter().find(|a| a.name == f) {
+            Some(a) => a.font.clone().map(|f| vec![f]),
+            None => crate::text::built_in(Some(&f)).map(|f| vec![f]),
+        };
         return Ok(());
     }
     if root.outside(&f) {
@@ -2716,6 +2717,43 @@ mod tests {
     use serde_json::json;
 
     const GOOD: &str = "void main(){ gl_FragColor = vec4(1.0); }";
+
+    /// `font_family: "pixel"` draws from Pixel Operator 8, as the font's own
+    /// name table and its 800 units to the em say, whether the scene loads
+    /// other assets or not. A font asset of that name is the scene's own.
+    #[test]
+    fn the_pixel_family_draws_from_the_built_in_pixel_font() {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let pixel = json!({"name": "t", "text": "hi", "font_family": "pixel"});
+        let scene = |assets: Value, layers: Value| {
+            json!({"version": 1, "assets": assets,
+                   "passes": [{"name": "m", "code": GOOD, "layers": layers}]})
+        };
+        let font_of = |sc: &Scene| -> Vec<u8> {
+            let l = sc.text_layers().find(|l| l.name == "t").unwrap();
+            l.data.as_ref().unwrap()[0].clone().unwrap().to_vec()
+        };
+        let parsed = Scene::from_dict(&scene(json!({}), json!([pixel])), None, None).unwrap();
+        let bytes = font_of(&parsed);
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        let family = face
+            .names()
+            .into_iter()
+            .filter(|n| n.name_id == ttf_parser::name_id::FAMILY)
+            .find_map(|n| n.to_string());
+        assert_eq!(family.as_deref(), Some("Pixel Operator 8"));
+        assert_eq!(face.units_per_em(), 800);
+        let sans = json!({"sans": {"file": "DejaVuSans-ASCII.ttf"}});
+        let other = json!({"name": "u", "text": "x", "font_family": "sans"});
+        let mut loaded = Scene::from_dict(&scene(sans, json!([pixel, other])), None, None).unwrap();
+        loaded.load_assets(fonts).unwrap();
+        assert_eq!(font_of(&loaded), bytes);
+        let own = json!({"pixel": {"file": "DejaVuSans-ASCII.ttf"}});
+        let mut sc = Scene::from_dict(&scene(own, json!([pixel])), None, None).unwrap();
+        sc.load_assets(fonts).unwrap();
+        let dejavu = fs::read(format!("{fonts}/DejaVuSans-ASCII.ttf")).unwrap();
+        assert_eq!(font_of(&sc), dejavu);
+    }
     const COMMON: &str = "float sat(float x){ return clamp(x, 0.0, 1.0); }";
     const CODE: &str = "void main(){ gl_FragColor = vec4(sat(v_texCoord.x), 0.0, 0.0, 1.0); }";
     const FLAT: &str = "void main(){ gl_FragColor = vec4(vec3(0.5), 1.0); }";

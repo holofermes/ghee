@@ -859,7 +859,8 @@ fn a_layer_declaration_names_what_it_lacks() {
         ),
         (
             t(json!({"font_family": "serif"})),
-            "layer 't' font_family 'serif' is no asset of the scene and no .ttf or .otf file"
+            "layer 't' font_family 'serif' is no asset of the scene, no .ttf or .otf file and \
+             not 'pixel', the built-in pixel font"
                 .to_string(),
         ),
         (

@@ -2081,6 +2081,29 @@ impl Renderer {
         Ok(true)
     }
 
+    /// The size in pixels of the block that `words` lay out in, as a text
+    /// layer of pass `pass` would lay them out in its font `font_family`,
+    /// the built-in font when None: at `font_size` pixels per em, or at the
+    /// size that fits the block to the pass, centred.
+    ///
+    /// A font that the scene cannot give the layer fails with a Refused
+    /// error.
+    pub fn measure(
+        &self,
+        pass: &str,
+        words: &str,
+        font_size: Option<f64>,
+        font_family: Option<&str>,
+    ) -> Result<[f64; 2]> {
+        let scene = self.scene.borrow();
+        let Some(scene) = scene.as_ref() else {
+            return Err(Refused("the renderer holds no scene".to_string()).into());
+        };
+        scene
+            .measure(self.pass_size(pass), words, font_size, font_family)
+            .map_err(refused)
+    }
+
     /// Take the drawing of layer `name` out of the engine: its batches, its
     /// place in a run of shapes, its atlas and what its words held. The
     /// model keeps the layer. Returns the phases of its moving effects.

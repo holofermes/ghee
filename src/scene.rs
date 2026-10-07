@@ -57,6 +57,9 @@ const PARAM_TYPES: [&str; 8] = [
 const MAX_DIM: i64 = 16384;
 const MAX_TEXELS: i64 = 1 << 24;
 
+/// The name of the text layer that Scene::measure() lays words out in.
+const MEASURED: &str = "measured";
+
 fn vec_arity(ty: &str) -> Option<usize> {
     VEC_ARITY.iter().find(|(t, _)| *t == ty).map(|(_, n)| *n)
 }
@@ -2009,6 +2012,58 @@ impl Scene {
                 crate::text::PIXEL
             )),
         }
+    }
+
+    /// The size in pixels of the block that `words` lay out in, as a text
+    /// layer of the scene in a pass of `pass` pixels would lay them out in
+    /// `font_family`, the built-in font when None: at `font_size` pixels per
+    /// em, or at the size that fits the block to the pass, centred. A font
+    /// file resolves as a layer's does.
+    pub fn measure(
+        &self,
+        pass: [f64; 2],
+        words: &str,
+        font_size: Option<f64>,
+        font_family: Option<&str>,
+    ) -> Result<[f64; 2]> {
+        if let Some(px) = font_size.filter(|px| !(px.is_finite() && *px > 0.0)) {
+            bail!(
+                "font_size needs a number of pixels above 0, got {}",
+                py_float(px)
+            );
+        }
+        if let Some(e) = font_family.and_then(|f| self.font_fault(f)) {
+            bail!("{e}");
+        }
+        let mut d = Map::new();
+        d.insert("name".to_string(), Value::from(MEASURED));
+        d.insert("text".to_string(), Value::from(words));
+        if let Some(px) = font_size {
+            d.insert("font_size".to_string(), Value::from(px));
+        }
+        if let Some(f) = font_family {
+            d.insert("font_family".to_string(), Value::from(f));
+        }
+        let mut layer = Layer::from_dict(MEASURED, &Value::Object(d))?;
+        // The layer's name opens each error of its fonts, and the caller
+        // named no layer.
+        let own = format!("layer '{MEASURED}' ");
+        self.load_layer(&mut layer)
+            .map_err(|e| anyhow!("{}", e.to_string().replacen(&own, "", 1)))?;
+        let l = layer.as_text().expect("a layer of words is a text layer");
+        if let Some(Err(why)) = l.data.iter().flatten().find(|f| f.is_err()) {
+            bail!("{}", why.replacen(&own, "", 1));
+        }
+        let laid = l.place(words)?;
+        let Some(built) = laid.built else {
+            let why = laid.faults.iter().find_map(|f| match f {
+                crate::text::Fault::Layout(why) => Some(why.as_str()),
+                _ => None,
+            });
+            bail!("{}", why.unwrap_or("the words lay out in no texture"));
+        };
+        let px = l.font_px(pass, built.size);
+        Ok([built.size[0] * px, built.size[1] * px])
     }
 
     /// Put `layer` into pass `pass` at `index` among its layers, through the

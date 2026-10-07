@@ -74,6 +74,9 @@
   stays, bypassed. Every other layer keeps its program, its atlas, its
   phases and its quads, the layer's moving effects carry their phases on,
   and a layer that the scene refuses changes nothing.
+- Measure words with `Scene::measure` and `Renderer::measure`: the width and
+  height in pixels of the block that a text layer of a pass lays them out
+  in, at a `font_size` or at the size that fits the pass.
 - Draw rects and lines with shape layers, which hold `"shape": "rect"` or
   `"line"` and take no effects. A rect fills `width` by `height` pass
   pixels, the pass's own by default, with its `color`, draws its `border`,

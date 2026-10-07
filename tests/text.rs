@@ -1218,6 +1218,84 @@ fn layers_survive_a_filter_asset_and_a_built_param() {
     assert_eq!(sc.passes[0].layers, layers);
 }
 
+// Measuring words
+
+#[test]
+fn a_measure_is_the_block_in_pixels_at_its_size_or_at_the_fit() {
+    // The block of the reference layout times the pixels per em: the
+    // font_size, or the size that fits the block to the pass less a
+    // twentieth of its shorter side on each edge, which the pixel font
+    // rounds down to a whole multiple of 8 px, 8 at the least.
+    let _g = lock();
+    let sc = loaded(&json!({"version": 1, "assets": {"face": {"file": SANS}},
+                            "passes": [{"name": "main", "code": "void main(){}"}]}));
+    let rows = [
+        (
+            Some("face"),
+            SANS,
+            "AV To\nghee",
+            Some(20.0),
+            [160.0_f64, 96.0],
+        ),
+        (Some("face"), SANS, "AV To\nghee", None, [160.0, 96.0]),
+        (Some("face"), SANS, "Hi", None, [128.0, 32.0]),
+        (None, LATIN, "ghee", None, [128.0, 32.0]),
+        (Some("pixel"), PIXEL, "42%", None, [128.0, 32.0]),
+        (Some("pixel"), PIXEL, "load 42%", None, [64.0, 16.0]),
+        (Some("pixel"), PIXEL, "42%", Some(8.0), [128.0, 32.0]),
+    ];
+    for (family, file, words, size, pass) in rows {
+        let laid = lay(file, words, Align::Left);
+        let px = size.unwrap_or_else(|| {
+            let m = 0.05 * pass[0].min(pass[1]);
+            let fit = ((pass[0] - 2.0 * m) / laid.width).min((pass[1] - 2.0 * m) / laid.height);
+            match family {
+                Some("pixel") => ((fit / 8.0).floor() * 8.0).max(8.0),
+                _ => fit,
+            }
+        });
+        let got = sc.measure(pass, words, size, family).unwrap();
+        let want = [laid.width * px, laid.height * px];
+        assert!(
+            (got[0] - want[0]).abs() < 1e-6 && (got[1] - want[1]).abs() < 1e-6,
+            "{family:?} {words:?} {size:?}: {got:?}, want {want:?}"
+        );
+    }
+}
+
+#[test]
+fn a_measure_names_a_size_or_a_font_that_the_scene_cannot_take() {
+    let _g = lock();
+    let sc = loaded(&json!({"version": 1, "assets": {"face": {"file": SANS}},
+                            "passes": [{"name": "main", "code": "void main(){}"}]}));
+    let rows = [
+        (
+            Some(0.0),
+            None,
+            "font_size needs a number of pixels above 0, got 0.0".to_string(),
+        ),
+        (
+            None,
+            Some("serif"),
+            "font_family 'serif' is no asset of the scene, no .ttf or .otf file and not \
+             'pixel', the built-in pixel font"
+                .to_string(),
+        ),
+        (
+            None,
+            Some("gone.ttf"),
+            format!(
+                "font_family 'gone.ttf' ({FONTS}/gone.ttf): No such file or directory, and \
+                 $GHEE_ASSETS names no directory"
+            ),
+        ),
+    ];
+    for (size, family, want) in rows {
+        let e = sc.measure([128.0, 32.0], "hi", size, family).unwrap_err();
+        assert_eq!(e.to_string(), want);
+    }
+}
+
 // Font assets
 
 /// Run `f` with $GHEE_ASSETS set, then put it back. The caller holds LOCK.

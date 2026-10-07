@@ -21,9 +21,10 @@
 //! that samples the image bound to it. [`Renderer::set_text`]
 //! lays a layer's words out through `crate::text`, uploads the texture of
 //! curves that `_cover` and the slug render read, or the glyphs new to the
-//! one that the slug layers share, and hands the layer one quad a glyph. An MTSDF layer reads its glyphs from an atlas that a
-//! `crate::atlas` generator fills on its own threads, and every render
-//! uploads the glyphs that the atlas gained since the last.
+//! one that the slug layers share, and hands the layer one quad a glyph. An
+//! MTSDF layer reads its glyphs from an atlas that a `crate::atlas`
+//! generator fills on its own threads, and every render uploads the glyphs
+//! that the atlas gained since the last.
 
 use std::collections::{HashMap, HashSet};
 use std::env;

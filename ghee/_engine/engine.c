@@ -1088,7 +1088,13 @@ void ghee_destroy(GheeScene *g) {
 // Build, commit and draw the passes of a scene, and their batches, arrays and
 // assets.
 
+// A tiler's driver (Mesa's v3d and vc4) keeps the draws into a framebuffer as
+// one job, and submits the job when a read of its texture or a flush needs it.
+// The job holds every buffer it draws with until then. A texture deleted under
+// a job that nothing will read keeps that job, and its buffers, until a flush.
+// A run with no display has no swap to flush them, so the flush comes first.
 static void mp_free_buffers(GLuint fbo[2], GLuint tex[2]) {
+    glFlush();
     glDeleteFramebuffers(2, fbo);
     glDeleteTextures(2, tex);
     fbo[0] = fbo[1] = tex[0] = tex[1] = 0;
@@ -2735,6 +2741,11 @@ bool ghee_set_rotate(GheeScene *g, int quarter_turns) {
 int ghee_max_texture_units(GheeScene *g) { return g ? (int)g->max_units : 0; }
 
 int ghee_gl_texture_units(GheeScene *g) { return g ? (int)g->gl_units : 0; }
+
+int ghee_gl_fd(GheeScene *g) {
+    if (!g) return -1;
+    return g->gpu_fd >= 0 ? g->gpu_fd : g->drm_fd;
+}
 
 // Whether this GL linear-filters a data texture. ghee_mp_set_array picks its
 // filter from the same condition. False on V3D, which has float textures but

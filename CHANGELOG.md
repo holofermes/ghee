@@ -564,6 +564,14 @@ A scene written for 0.4.0 needs these changes.
 
 ### Library and packages
 
+- Flush the GL work before a setup deletes the last scene's pass buffers.
+  Mesa's v3d and vc4 keep the draws into a buffer as a job until a read of
+  the buffer or a flush submits it, and the job holds every buffer it draws
+  with until then. With no display to swap, each scene that a setup
+  replaced left its last frame's jobs and their buffers behind: on a Pi 5 a
+  console that switched scenes at 1920x1080 held about 7 MiB more at each
+  switch, until the GPU's 4 GiB address space filled, the kernel logged
+  "Couldn't allocate binner overflow mem" and the GPU reset.
 - Read back a frame at a whole multiple of the render size with each pixel a
   square block, in `Renderer::render_into` and `render_scaled`.
 - Grow a running scene with no rebuild through `Renderer::add_layer`, which

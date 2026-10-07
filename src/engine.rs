@@ -4991,6 +4991,88 @@ mod tests {
         }
     }
 
+    extern "C" {
+        fn glIsTexture(name: u32) -> u8;
+        fn glIsFramebuffer(name: u32) -> u8;
+        fn glIsRenderbuffer(name: u32) -> u8;
+        fn glIsBuffer(name: u32) -> u8;
+        fn glIsProgram(name: u32) -> u8;
+        fn glIsShader(name: u32) -> u8;
+    }
+
+    /// The live GL objects of each kind among the first 4096 names, in the
+    /// context that the last engine call left current.
+    fn gl_objects() -> [usize; 6] {
+        let kinds: [unsafe extern "C" fn(u32) -> u8; 6] = [
+            glIsTexture,
+            glIsFramebuffer,
+            glIsRenderbuffer,
+            glIsBuffer,
+            glIsProgram,
+            glIsShader,
+        ];
+        kinds.map(|is| (1..=4096).filter(|&n| unsafe { is(n) } != 0).count())
+    }
+
+    /// The bytes of the buffers that the DRM client of `r`'s GL holds, its
+    /// fdinfo's `drm-total-<region>` keys summed. None where the driver
+    /// writes none.
+    fn gpu_bytes(r: &Renderer) -> Option<u64> {
+        let fd = unsafe { ffi::ghee_gl_fd(r.handle) };
+        let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).ok()?;
+        let size = |v: &str| {
+            let mut words = v.split_whitespace();
+            let n: u64 = words.next()?.parse().ok()?;
+            match words.next() {
+                None => Some(n),
+                Some("KiB") => Some(n << 10),
+                Some("MiB") => Some(n << 20),
+                Some("GiB") => Some(n << 30),
+                Some(_) => None,
+            }
+        };
+        text.lines()
+            .filter_map(|line| line.strip_prefix("drm-total-")?.split_once(':'))
+            .filter_map(|(_, v)| size(v))
+            .reduce(|a, b| a + b)
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn setups_in_a_row_hold_what_one_setup_holds_on_the_gpu() {
+        // Each scene draws frames that nothing reads before the next setup
+        // replaces it, as a console does between switches. A driver that
+        // reports no buffer memory leaves the GL objects to check.
+        let (_g, mut r) = gpu_at(640, 480);
+        let fed = scene_of(json!([
+            {"name": "buf", "fragment": FLAT},
+            {"name": "main", "channels": [{"buffer": "buf"}],
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
+        ]));
+        let flat = flat_scene();
+        let round = |r: &mut Renderer| {
+            for scene in [&fed, &flat] {
+                assert_eq!(r.setup(scene).unwrap(), "");
+                r.draw(None).unwrap();
+                r.draw(None).unwrap();
+            }
+        };
+        round(&mut r);
+        let (objects, bytes) = (gl_objects(), gpu_bytes(&r));
+        for _ in 0..40 {
+            round(&mut r);
+        }
+        assert_eq!(gl_objects(), objects);
+        if let (Some(before), Some(after)) = (bytes, gpu_bytes(&r)) {
+            assert!(
+                after <= 2 * before,
+                "the GPU held {} MiB after one round of setups and {} MiB after 40 more",
+                before >> 20,
+                after >> 20
+            );
+        }
+    }
+
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_setup_frees_the_slots_of_the_last_scenes_image_assets() {

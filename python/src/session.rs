@@ -925,6 +925,77 @@ impl Session {
             .map_err(refusal)
     }
 
+    /// Add `layer`, a layer as a scene declares it, at `index` among the
+    /// layers of pass `pass`, with no rebuild. Its words, when it has them,
+    /// are the host's own.
+    pub fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Outcome<()> {
+        self.renderer
+            .add_layer(pass, index, layer)
+            .map_err(refusal)?;
+        self.took(layer);
+        Ok(())
+    }
+
+    /// Give the layer of the name of `layer` its look, as
+    /// Renderer::update_layer() does. False when the layer had it already.
+    pub fn update_layer(&mut self, layer: &Value) -> Outcome<bool> {
+        let changed = self.renderer.update_layer(layer).map_err(refusal)?;
+        if changed {
+            self.took(layer);
+        }
+        Ok(changed)
+    }
+
+    /// Index the scene again after the layer `layer` joined it or changed
+    /// its kind, and hold the words of a text layer as the host's own, which
+    /// no tick reports.
+    fn took(&mut self, layer: &Value) {
+        let Some(name) = layer.get("name").and_then(Value::as_str) else {
+            return;
+        };
+        let text = self
+            .renderer
+            .with_scene(|s| s.layer(name).map(|l| l.as_text().is_some()))
+            .flatten();
+        let indexed = self.index.layers.iter().find(|(n, _)| n == name);
+        if indexed.map(|(_, t)| *t) != text {
+            if let Some(index) = self.renderer.with_scene(Index::of) {
+                self.index = Arc::new(index);
+            }
+        }
+        let words = self.renderer.with_scene(|s| {
+            s.text_layer(name)
+                .map(|l| s.words(name).unwrap_or(&l.text).to_string())
+        });
+        match words.flatten() {
+            Some(words) => self.held_string(None, name, &words, true),
+            None => {
+                self.strings.remove(name);
+                self.sent.remove(name);
+            }
+        }
+    }
+
+    /// The pass that a drawing paints on, the scene's last pass before its
+    /// filters, with the names of its layers in their order, then every name
+    /// that the scene holds, and the names of all its layers.
+    pub fn drawing(&self) -> (String, Vec<String>, Vec<String>, Vec<String>) {
+        let pass = self.draw_pass();
+        self.renderer
+            .with_scene(|s| {
+                let layers = s
+                    .passes
+                    .iter()
+                    .find(|p| p.name == pass)
+                    .map(|p| p.layers.iter().map(|l| l.name().to_string()).collect())
+                    .unwrap_or_default();
+                let taken = s.taken_names().into_iter().map(str::to_string).collect();
+                let all = s.layers().map(|l| l.name().to_string()).collect();
+                (pass.clone(), layers, taken, all)
+            })
+            .unwrap_or_default()
+    }
+
     /// The name of the scene's last pass before its filters.
     fn draw_pass(&self) -> String {
         self.renderer

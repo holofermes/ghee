@@ -6,7 +6,7 @@ from typing import Any, Literal, SupportsFloat, TypeAlias, TypedDict
 
 from typing_extensions import Buffer, Self
 
-from ._shim import Layers, Scene
+from ._shim import Drawing, Layers, Scene
 
 __version__: str
 
@@ -35,6 +35,7 @@ class Handle:
     def brightness(self) -> float | None: ...
     @brightness.setter
     def brightness(self, level: float) -> None: ...
+    def draw(self) -> Drawing: ...
     def measure(
         self,
         words: str,

@@ -99,6 +99,8 @@ h.feed("level", bars)      # bytes, bytearray, memoryview, array, numpy, numbers
 tick = h.frame()           # {"frame": 12, "time": 0.4, "dt": 0.0166, "params": {}}
 tick = h.skip()            # the same tick, with no draw
 
+with h.draw() as d:        # one frame of words, pictures and shapes
+    d.text("hello", x=4, y=4)
 w, ht = h.measure("hello", font_size=12)   # the block's size in pixels
 h.brightness = 0.5         # a KMS display's backlight, 0 to 1
 
@@ -177,6 +179,72 @@ scene renders at the frame's size turned, so a 128x32 panel gives the scene
 the backlight device that the kernel registered for it, such as a panel's
 contrast. It reads None for a display with no backlight device, and a set
 raises ValueError there and on a screen with no KMS display.
+
+## Drawing
+
+`h.draw()` opens one frame for a `with` block, and each call in the block
+writes a layer. Leaving the block draws the frame, and the panel holds it
+until the next, so the host's loop sets the pace: a loop that sleeps
+freezes the scroll, the wave and the blink between its frames.
+
+```python
+import os
+import time
+
+import ghee
+
+screen = ghee.open(display="kms")
+while True:
+    load = os.getloadavg()[0] / os.cpu_count()
+    with screen.draw() as d:
+        d.text(time.strftime("%H:%M"), x=0, y=0, font_size=16)
+        d.text(f"load {load:.0%}", x=0, y=20, font_size=8)
+        d.rect(x=64, y=20, width=64, height=8, color="transparent",
+               border={"width": 1, "color": "white"})
+        d.rect(x=66, y=22, width=60 * min(load, 1), height=4)
+        if load > 0.9:
+            d.text("HOT", x=100, y=0, font_size=12, blink={"rate": 2})
+```
+
+The calls, each with the layer that it writes:
+
+```python
+d.text("hello", x=4, y=4, font_size=12, color="orange", glow={"blur": 0.25})
+d.text("hello")                                       # fitted and centred
+d.text("hi", color=ghee.gradient("red", "yellow", angle=90))
+d.image("wifi.png", x=110, y=0, width=32, color="orange")   # an image layer
+d.rect(x=0, y=20, width=91, height=9, color="white")  # a shape layer
+d.rect(color="navy")                                  # the whole screen
+d.circle((110, 14), 10, color="white")                # a box with round ends
+d.line((0, 31), (127, 31), color="white", stroke_width=1)
+d.lines(points, color="lime", stroke_width=1)         # a waveform
+```
+
+A call takes the keys of its layer as keywords, the effects included, as
+`ghee.Layer` takes them, and `name`. Positions and box sizes are pixels from
+the top left, y down, on the scene's last pass before its filters, where the
+drawing paints over the scene's own layers in the order of the calls.
+`d.circle(centre, radius)` writes a box of `2 * radius` with `border_radius`
+at `radius`, and `d.line(a, b)` is `d.lines([a, b])`, whose points stand
+where they say: `x` and `y` shift a line, and no line is centred.
+
+Each frame states the whole look of each call, so a keyword left out takes
+its default again. A call keeps its layer from frame to frame by the line
+of code that makes it, and by its count from that line in the frame, so a
+call that comes and goes above another leaves the other's layer alone.
+`name` names the layer, for a shader that reads `<name>_cover`, and takes the
+place of the line, and when the scene holds a layer of that name, the call
+draws it. A call with no name names its layer after its kind, `text`,
+`text2`, `image`, `rect`, `line`, past every name of the scene. Two calls
+that draw one layer in a frame raise ValueError.
+
+Leaving the block sends ghee what changed. A live field changes live. Any
+other change builds that layer alone again, so an animated `font_size`
+builds its layer every frame. A call that runs for the first time adds its
+layer after the layer of the call before it, a layer whose call did not run
+hides, and an effect that a call stops naming is bypassed. A layer keeps its
+place once added, and stays, hidden, after its call stops. A frame whose
+calls changed nothing sends nothing.
 
 `h.measure(words, font_size=None, font_family=None)` gives the width and
 height in pixels of the block that a drawing's text lays `words` out in, at

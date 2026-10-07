@@ -2370,7 +2370,7 @@ impl Scene {
 
     /// Every name that a pass added to the scene may not take: a name of the
     /// scene-wide set, or of any pass's params and arrays.
-    pub(crate) fn taken_names(&self) -> Vec<&str> {
+    pub fn taken_names(&self) -> Vec<&str> {
         let mut taken: Vec<&str> = self
             .scene_wide_names()
             .into_iter()

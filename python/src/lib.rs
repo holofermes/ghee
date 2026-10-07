@@ -275,6 +275,8 @@ struct Handle {
     #[pyo3(get)]
     size: (i32, i32),
     held: Affine<Session>,
+    /// What the shim's drawing keeps from one frame to the next.
+    screen: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -336,6 +338,26 @@ impl Handle {
             .call1((slf.getattr("set_layer")?,))
     }
 
+    /// A drawing of one frame, for a `with` block: its calls write layers,
+    /// and leaving the block draws the frame.
+    fn draw<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let shim = py.import("ghee._shim")?;
+        let screen = {
+            let mut h = slf.borrow_mut();
+            h.held.get()?;
+            match &h.screen {
+                Some(s) => s.clone_ref(py),
+                None => {
+                    let s = shim.getattr("_Screen")?.call0()?.unbind();
+                    h.screen = Some(s.clone_ref(py));
+                    s
+                }
+            }
+        };
+        shim.getattr("Drawing")?.call1((slf, screen))
+    }
+
     /// The width and height in pixels of the block that `words` lay out in,
     /// as a drawing's text lays them out: at `font_size`, or at the size
     /// that fits the screen when None, in `font_family`, the built-in font
@@ -372,6 +394,36 @@ impl Handle {
     fn _tick<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let tick = self.held.get()?.begin().map_err(fault)?;
         tick_dict(py, tick)
+    }
+
+    /// The pass that a drawing paints on and its layers, every name that
+    /// the scene holds, and every layer of the scene.
+    fn _drawing<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let (pass, layers, taken, all) = self.held.get()?.drawing();
+        let d = PyDict::new(py);
+        d.set_item("pass", pass)?;
+        d.set_item("layers", layers)?;
+        d.set_item("taken", taken)?;
+        d.set_item("all", all)?;
+        Ok(d)
+    }
+
+    /// Add `layer`, a layer as a scene declares it, at `index` among the
+    /// layers of pass `pass`, with no rebuild.
+    fn _add_layer(&mut self, pass: &str, index: usize, layer: &Bound<'_, PyAny>) -> PyResult<()> {
+        let layer = to_json(layer)?;
+        self.held
+            .get()?
+            .add_layer(pass, index, &layer)
+            .map_err(fault)
+    }
+
+    /// Give the layer of the name of `layer` the look of `layer`, live where
+    /// the change is live and rebuilt alone otherwise. False when the layer
+    /// had that look.
+    fn _update_layer(&mut self, layer: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let layer = to_json(layer)?;
+        self.held.get()?.update_layer(&layer).map_err(fault)
     }
 
     /// Hold data for one declared array. The next frame consumes it once.
@@ -555,6 +607,7 @@ fn open(
     Ok(Handle {
         size: session.size(),
         held: Affine::new(session),
+        screen: None,
     })
 }
 

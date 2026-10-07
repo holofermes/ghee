@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from typing import SupportsFloat
 
+    from typing_extensions import Self
+
 
 _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 
@@ -515,6 +517,286 @@ def gradient(start, end, angle: float = 0) -> dict:
     """A text's colour that runs from `start` to `end` along `angle` degrees,
     as CSS's angle: the gradient object of the scene format."""
     return {"from": start, "to": end, "angle": angle}
+
+
+class _Screen:
+    """What a screen's drawing keeps from one frame to the next: the layer of
+    each call, and the look that it last gave each layer."""
+
+    def __init__(self) -> None:
+        # the layer of each call that names none, by its line and its count
+        self.calls: dict = {}
+        # the look last given to each layer that the drawing drew, its
+        # visible False once its call stopped running
+        self.looks: dict = {}
+        # the pass that the drawing paints on, its layers in their order,
+        # the scene's own count of them, every name that the scene holds,
+        # and the scene's own layers. The first drawing reads them.
+        self.pass_: str | None = None
+        self.placed: list = []
+        self.own = 0
+        self.taken: set = set()
+        self.layers: set = set()
+
+
+# The name of a new layer that a call names none, by the call.
+_KINDS = {
+    "text": "text",
+    "image": "image",
+    "rect": "rect",
+    "circle": "rect",
+    "line": "line",
+    "lines": "line",
+}
+
+
+class Drawing:
+    """One frame of a screen, the block of `with screen.draw() as d:`.
+
+    Each call writes a layer, and leaving the block draws the frame. A call
+    takes the keys of its layer as keywords, the effects included, as
+    ghee.Layer takes them, and `name`. Positions and box sizes are pixels
+    from the top left, y down, on the screen's last pass before its filters,
+    and the drawing paints over the scene's own layers there, in the order
+    of the calls.
+
+    Each frame states the whole look of each call: a keyword left out takes
+    its default again. A call keeps its layer from frame to frame by the line
+    of code that makes it and its count from that line in the frame, or by
+    its `name`, which names the layer too. A call with no name names its
+    layer after its kind: text, text2, image, rect, line. Two calls that draw
+    one layer in a frame raise ValueError.
+
+    Leaving the block sends ghee what changed: a live field changes live,
+    any other change builds that layer alone again, a call that runs for the
+    first time adds its layer after the layer of the call before it, a layer
+    whose call did not run hides, and an effect that a call stops naming is
+    bypassed. A frame whose calls changed nothing sends nothing, and draws.
+    """
+
+    def __init__(self, handle, screen: _Screen) -> None:
+        self._handle = handle
+        self._screen = screen
+        self._calls: list = []
+        self._sites: dict = {}
+        self._drawn: set = set()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, kind, value, traceback) -> bool:
+        if kind is None:
+            self._send()
+            self._handle.frame()
+        return False
+
+    def text(
+        self,
+        words: str,
+        *,
+        name: str | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        color: str | Sequence[float] | dict | None = None,
+        opacity: float | None = None,
+        blend: Blend | None = None,
+        visible: bool | None = None,
+        font_size: float | None = None,
+        font_family: str | os.PathLike[str] | None = None,
+        text_align: TextAlign | None = None,
+        render: Render | None = None,
+        text_shadow: dict | None = None,
+        glow: dict | None = None,
+        text_stroke: dict | None = None,
+        karaoke: dict | None = None,
+        wave: dict | None = None,
+        scroll: dict | None = None,
+        blink: dict | None = None,
+    ) -> None:
+        """Draw `words`, a text layer. With no `font_size` the words fit the
+        screen, and an axis with no position centres them."""
+        look = dict(locals())
+        del look["self"], look["words"], look["name"]
+        self._record("text", name, text=words, **look)
+
+    def image(
+        self,
+        image: str | os.PathLike[str],
+        *,
+        name: str | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        width: float | None = None,
+        height: float | None = None,
+        color: str | Sequence[float] | None = None,
+        opacity: float | None = None,
+        blend: Blend | None = None,
+        visible: bool | None = None,
+    ) -> None:
+        """Draw `image`, an image layer of a .png or .jpg file or an image
+        asset of the scene. A file loads once and stays with the screen."""
+        look = dict(locals())
+        del look["self"], look["image"], look["name"]
+        self._record("image", name, image=image, **look)
+
+    def rect(
+        self,
+        *,
+        name: str | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        width: float | None = None,
+        height: float | None = None,
+        color: str | Sequence[float] | None = None,
+        opacity: float | None = None,
+        blend: Blend | None = None,
+        visible: bool | None = None,
+        border: dict | None = None,
+        border_radius: float | None = None,
+    ) -> None:
+        """Draw a box, a rect shape layer, the whole screen on a size left
+        out."""
+        look = dict(locals())
+        del look["self"], look["name"]
+        self._record("rect", name, shape="rect", **look)
+
+    def circle(
+        self,
+        centre: Sequence[float],
+        radius: float,
+        *,
+        name: str | None = None,
+        color: str | Sequence[float] | None = None,
+        opacity: float | None = None,
+        blend: Blend | None = None,
+        visible: bool | None = None,
+        border: dict | None = None,
+    ) -> None:
+        """Draw a circle of `radius` pixels around `centre`, (x, y): a rect
+        of `2 * radius` with `border_radius` at `radius`."""
+        look = dict(locals())
+        del look["self"], look["centre"], look["radius"], look["name"]
+        cx, cy = _plain(centre)
+        self._record(
+            "circle",
+            name,
+            shape="rect",
+            x=cx - radius,
+            y=cy - radius,
+            width=2 * radius,
+            height=2 * radius,
+            border_radius=radius,
+            **look,
+        )
+
+    def line(
+        self,
+        a: Sequence[float],
+        b: Sequence[float],
+        *,
+        name: str | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        color: str | Sequence[float] | None = None,
+        opacity: float | None = None,
+        blend: Blend | None = None,
+        visible: bool | None = None,
+        stroke_width: float | None = None,
+    ) -> None:
+        """Draw a line from `a` to `b`, each (x, y): `lines([a, b])`."""
+        look = dict(locals())
+        del look["self"], look["a"], look["b"], look["name"]
+        self._record("line", name, shape="line", points=[a, b], **look)
+
+    def lines(
+        self,
+        points: Sequence[Sequence[float]],
+        *,
+        name: str | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        color: str | Sequence[float] | None = None,
+        opacity: float | None = None,
+        blend: Blend | None = None,
+        visible: bool | None = None,
+        stroke_width: float | None = None,
+    ) -> None:
+        """Draw a line through `points`, each (x, y), two or more. `x` and
+        `y` shift every point."""
+        look = dict(locals())
+        del look["self"], look["points"], look["name"]
+        self._record("lines", name, shape="line", points=points, **look)
+
+    def _record(self, kind: str, name: str | None, **keys) -> None:
+        """Hold one call of `kind` for the frame, by the line of the caller
+        of the call's method."""
+        caller = sys._getframe(2)
+        site = (caller.f_code.co_filename, caller.f_lineno)
+        count = self._sites.get(site, 0)
+        self._sites[site] = count + 1
+        look = Layer("_", **{k: v for k, v in keys.items() if v is not None})
+        look = look.to_dict()
+        del look["name"]
+        key = (site, count)
+        layer = name if name is not None else self._screen.calls.get(key)
+        if layer is not None:
+            if layer in self._drawn:
+                raise ValueError(f"two calls in one frame draw layer '{layer}'")
+            self._drawn.add(layer)
+        self._calls.append((key, kind, layer, look))
+
+    def _send(self) -> None:
+        """Hand ghee what the frame changed."""
+        s = self._screen
+        h = self._handle
+        if s.pass_ is None:
+            at = h._drawing()
+            s.pass_ = at["pass"]
+            s.placed = list(at["layers"])
+            s.own = len(s.placed)
+            s.taken = set(at["taken"])
+            s.layers = set(at["all"])
+        named = {layer for _, _, layer, _ in self._calls if layer is not None}
+        after = None
+        for key, kind, layer, look in self._calls:
+            if layer is None:
+                layer = _free(_KINDS[kind], s.taken | named)
+                named.add(layer)
+                look = {"name": layer, **look}
+                index = s.own if after is None else s.placed.index(after) + 1
+                h._add_layer(s.pass_, index, look)
+                s.calls[key] = layer
+                s.placed.insert(index, layer)
+                s.taken.add(layer)
+            else:
+                look = {"name": layer, **look}
+                if layer in s.looks or layer in s.layers:
+                    if s.looks.get(layer) != look:
+                        h._update_layer(look)
+                else:
+                    index = s.own if after is None else s.placed.index(after) + 1
+                    h._add_layer(s.pass_, index, look)
+                    s.placed.insert(index, layer)
+                    s.taken.add(layer)
+            s.looks[layer] = look
+            if layer in s.placed:
+                after = layer
+        drawn = {layer for _, _, layer, _ in self._calls} | named
+        for layer, look in s.looks.items():
+            if layer not in drawn and look.get("visible", True) is not False:
+                h.set_layer(layer, "visible", False)
+                s.looks[layer] = {**look, "visible": False}
+
+
+def _free(base: str, taken: set) -> str:
+    """`base`, else `base` and the first number from 2 that makes a name
+    outside `taken`."""
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}{n}" in taken:
+        n += 1
+    return f"{base}{n}"
 
 
 def measure(

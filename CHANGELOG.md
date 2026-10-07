@@ -299,6 +299,17 @@
   `--brightness` sets it. It reads None for a display with no backlight
   device, and a set raises ValueError there and on a screen with no KMS
   display.
+- Draw words, pictures, boxes, circles and lines on a screen from Python,
+  with no GLSL: `with h.draw() as d:` opens one frame, `d.text`, `d.image`,
+  `d.rect`, `d.circle`, `d.line` and `d.lines` each write a layer from the
+  keywords of its layer and `name`, and leaving the block sends ghee what
+  changed and draws the frame. A call keeps its layer by the line that makes
+  it and its count from that line in the frame, or by its `name`, which
+  names the layer, and a call with no name takes the console's naming,
+  `text`, `text2`. A live field changes live, any other change builds that
+  layer alone again, a call that runs for the first time adds its layer, a
+  layer whose call stops hides, and an effect that a call stops naming is
+  bypassed. Two calls that draw one layer in a frame raise ValueError.
 - Measure words with `h.measure(words, font_size=None, font_family=None)`,
   and with `ghee.measure` in a scene script: the width and height in pixels
   of the block that ghee lays them out in, at the size that fits the pass

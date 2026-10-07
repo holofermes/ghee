@@ -1,0 +1,313 @@
+"""A screen's drawing: which layer each call keeps, and what a frame sends.
+
+A fake handle records what a drawing hands it, bar the tests at the end,
+which draw on the renderer.
+"""
+
+import pytest
+
+import ghee
+from ghee import _shim
+
+
+class Fake:
+    """A handle as a drawing reaches it. The scene holds `layers` in its
+    last pass, and `taken` beside them."""
+
+    def __init__(self, layers=(), taken=()):
+        self.sent = []
+        self.scene = {
+            "pass": "main",
+            "layers": list(layers),
+            "taken": ["main", *layers, *taken],
+            "all": list(layers),
+        }
+
+    def _drawing(self):
+        return self.scene
+
+    def _add_layer(self, pass_, index, layer):
+        self.sent.append(("add", pass_, index, layer))
+
+    def _update_layer(self, layer):
+        self.sent.append(("update", layer))
+        return True
+
+    def set_layer(self, name, field, value, effect=None):
+        self.sent.append(("set", name, field, value, effect))
+
+    def frame(self):
+        self.sent.append(("frame",))
+
+
+def frames(fake, draw, n):
+    """Draw `n` frames on one screen, each through `draw(d, i)`, and give
+    what each frame sent."""
+    screen = _shim._Screen()
+    sent = []
+    for i in range(n):
+        with _shim.Drawing(fake, screen) as d:
+            draw(d, i)
+        sent.append(fake.sent)
+        fake.sent = []
+    return sent
+
+
+FRAME = ("frame",)
+
+
+def test_a_call_keeps_its_layer_by_its_line_whatever_runs_above_it():
+    """The alarm comes and goes above the scrolling title, which keeps its
+    layer, and each bar of a loop takes its own."""
+
+    def draw(d, i):
+        if i == 1:
+            d.text("ALARM", blink={"rate": 2})
+        d.text("news", y=16, scroll={"speed": 2})
+        for k in range(i):
+            d.rect(x=k * 10, width=8)
+
+    title = {"name": "text", "text": "news", "y": 16.0, "scroll": {"speed": 2.0}}
+    alarm = {"name": "text2", "text": "ALARM", "blink": {"rate": 2.0}}
+    bar = {"name": "rect", "x": 0.0, "shape": "rect", "width": 8.0}
+    bar2 = {"name": "rect2", "x": 10.0, "shape": "rect", "width": 8.0}
+    assert frames(Fake(), draw, 3) == [
+        [("add", "main", 0, title), FRAME],
+        [("add", "main", 0, alarm), ("add", "main", 2, bar), FRAME],
+        [
+            ("add", "main", 3, bar2),
+            ("set", "text2", "visible", False, None),
+            FRAME,
+        ],
+    ]
+
+
+def test_a_frame_whose_calls_changed_nothing_sends_nothing():
+    def draw(d, i):
+        d.text("12:00", x=0, y=0, font_size=16)
+        d.rect(x=64, y=20, width=60, height=4)
+        if i == 0:
+            d.circle((110, 14), 10)
+
+    sent = frames(Fake(), draw, 4)
+    assert len(sent[0]) == 4
+    assert sent[1] == [("set", "rect2", "visible", False, None), FRAME]
+    assert sent[2] == sent[3] == [FRAME]
+
+
+def test_each_frame_states_the_whole_look_of_a_call():
+    """A keyword left out takes its default again, so the look that goes out
+    holds only what the frame's call states."""
+
+    looks = [{"x": 4, "color": "red", "font_size": 12, "glow": {}}, {"font_size": 16}]
+
+    def draw(d, i):
+        d.text("a", **looks[i])
+
+    sent = frames(Fake(), draw, 2)
+    assert sent[1] == [
+        ("update", {"name": "text", "text": "a", "font_size": 16.0}),
+        FRAME,
+    ]
+
+
+def test_a_layer_whose_call_comes_back_takes_its_look_again():
+    def draw(d, i):
+        if i != 1:
+            d.image("wifi.png", x=110, y=0)
+
+    icon = {"name": "image", "x": 110.0, "y": 0.0, "image": "wifi.png"}
+    assert frames(Fake(), draw, 4) == [
+        [("add", "main", 0, icon), FRAME],
+        [("set", "image", "visible", False, None), FRAME],
+        [("update", icon), FRAME],
+        [FRAME],
+    ]
+
+
+def test_a_new_call_goes_in_after_the_layer_of_the_call_before_it():
+    """The scene's own layer stays under the drawing."""
+
+    def draw(d, i):
+        d.text("a")
+        if i == 1:
+            d.text("b")
+        d.text("c")
+
+    sent = frames(Fake(layers=["backdrop"]), draw, 2)
+    assert [s[:3] for s in sent[0][:-1]] == [("add", "main", 1), ("add", "main", 2)]
+    assert sent[1] == [
+        ("add", "main", 2, {"name": "text3", "text": "b"}),
+        FRAME,
+    ]
+
+
+def test_a_name_names_the_layer_and_a_scene_layer_of_that_name_takes_the_call():
+    def draw(d, i):
+        d.text("12:00", name="clock")
+        d.text("hi", name="title")
+
+    fake = Fake(layers=["clock"])
+    sent = frames(fake, draw, 1)
+    assert sent[0] == [
+        ("update", {"name": "clock", "text": "12:00"}),
+        ("add", "main", 1, {"name": "title", "text": "hi"}),
+        FRAME,
+    ]
+
+
+def test_an_automatic_name_skips_every_name_that_the_scene_holds():
+    def draw(d, i):
+        d.text("a")
+        d.lines([(0, 0), (8, 8)])
+
+    sent = frames(Fake(taken=["text", "text2", "line"]), draw, 1)
+    assert [s[3]["name"] for s in sent[0][:-1]] == ["text3", "line2"]
+
+
+@pytest.mark.parametrize(
+    "draw",
+    [
+        lambda d: (d.text("a", name="title"), d.text("b", name="title")),
+        lambda d: (d.text("a", name="text"), d.image("x.png", name="text")),
+    ],
+)
+def test_two_calls_that_draw_one_layer_in_a_frame_raise(draw):
+    fake = Fake()
+    with pytest.raises(ValueError) as raised, _shim.Drawing(fake, _shim._Screen()) as d:
+        draw(d)
+    assert str(raised.value).startswith("two calls in one frame draw layer '")
+    assert fake.sent == []
+
+
+def test_a_name_given_to_a_call_clashes_with_the_name_that_another_call_took():
+    def draw(d, named):
+        d.text("a")
+        if named:
+            d.text("b", name="text")
+
+    screen = _shim._Screen()
+    fake = Fake()
+    with _shim.Drawing(fake, screen) as d:
+        draw(d, False)
+    fake.sent = []
+    with pytest.raises(ValueError) as raised, _shim.Drawing(fake, screen) as d:
+        draw(d, True)
+    assert str(raised.value) == "two calls in one frame draw layer 'text'"
+    assert fake.sent == []
+
+
+# (a call, and the look that it writes)
+SHAPES = [
+    (
+        lambda d: d.circle((110, 14), 10, color="white"),
+        {
+            "name": "rect",
+            "x": 100.0,
+            "y": 4.0,
+            "color": "white",
+            "shape": "rect",
+            "width": 20.0,
+            "height": 20.0,
+            "border_radius": 10.0,
+        },
+    ),
+    (
+        lambda d: d.line((0, 31), (127, 31), color="white", stroke_width=1),
+        {
+            "name": "line",
+            "color": "white",
+            "shape": "line",
+            "points": [[0.0, 31.0], [127.0, 31.0]],
+            "stroke_width": 1.0,
+        },
+    ),
+    (
+        lambda d: d.rect(color="navy"),
+        {"name": "rect", "color": "navy", "shape": "rect"},
+    ),
+    (
+        lambda d: d.text("hi", color=ghee.gradient("red", "yellow", angle=90)),
+        {
+            "name": "text",
+            "color": {"from": "red", "to": "yellow", "angle": 90.0},
+            "text": "hi",
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize("call,look", SHAPES)
+def test_a_call_writes_the_layer_of_the_scene_format(call, look):
+    def draw(d, i):
+        call(d)
+
+    assert frames(Fake(), draw, 1) == [[("add", "main", 0, look), FRAME]]
+
+
+# ---------------------------------------------------------------- the engine
+
+
+def red_columns(h):
+    """The columns of the first row whose red is lit."""
+    px = h.pixels()
+    w = h.size[0]
+    return [x for x in range(w) if px[4 * x] > 127]
+
+
+def test_a_drawing_reaches_the_screen_and_a_call_that_stops_hides():
+    with ghee.open(width=16, height=4, timestep=0) as screen:
+        for i in range(3):
+            with screen.draw() as d:
+                if i != 1:
+                    d.rect(x=0, y=0, width=8 if i == 0 else 4, height=4, color="red")
+            assert (
+                red_columns(screen) == [[0, 1, 2, 3, 4, 5, 6, 7], [], [0, 1, 2, 3]][i]
+            )
+
+
+def test_an_error_of_a_call_reaches_python_and_draws_no_frame():
+    with ghee.open(width=16, height=4) as screen:
+        with pytest.raises(ValueError) as raised, screen.draw() as d:
+            d.rect(color="navyy")
+        assert str(raised.value) == (
+            "layer 'rect' color needs '#rrggbb', a CSS colour name or three numbers "
+            "[r, g, b], got 'navyy'"
+        )
+        with pytest.raises(RuntimeError, match="nothing is drawn yet"):
+            screen.pixels()
+
+
+# A pass that shows the array `level`, fed once, in red.
+LEVEL = {
+    "version": 1,
+    "passes": [
+        {
+            "name": "main",
+            "arrays": [{"name": "level", "size": 1}],
+            "code": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
+        }
+    ],
+}
+
+
+def test_a_call_built_again_leaves_the_scene_and_the_other_layers_running():
+    """The clock takes a new size at frame 2 and builds again, alone: the
+    array fed at frame 0 and the scrolling news above the clock draw every
+    frame as on a screen whose clock keeps its size."""
+
+    def run(grows):
+        rows = []
+        with ghee.open(LEVEL, width=64, height=48, timestep=0.1) as screen:
+            screen.feed("level", [0.5])
+            for i in range(5):
+                with screen.draw() as d:
+                    d.text("news of the day", y=0, font_size=12, scroll={"speed": 4})
+                    d.text("12:00", y=24, font_size=16 if grows and i >= 2 else 12)
+                rows.append(screen.pixels()[: 64 * 4 * 16])
+        return rows
+
+    rows = run(True)
+    # the last pixel of row 15, under the news, shows the array
+    assert abs(rows[-1][(15 * 64 + 63) * 4] - 127.5) <= 1
+    assert rows == run(False)

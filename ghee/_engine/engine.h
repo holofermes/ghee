@@ -167,6 +167,25 @@ int  ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *ver
 // texture units, and the batch keeps its last program.
 bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_source,
                                const char *fragment_source);
+// Compile the batch program of the two sources, or find the one that a
+// batch holds, and hold it for the renderer's life, so a batch that asks for
+// it later compiles nothing. false with ghee_last_error set on a compile
+// error.
+bool ghee_mp_keep_program(GheeScene *g, const char *vertex_source, const char *fragment_source);
+// Set the uniform `param` of committed batch `batch` alone: the batch sets it
+// on its program before each draw, so batches that share a program each draw
+// with their own value. It holds across a program that
+// ghee_mp_set_batch_program gives the batch. false with ghee_last_error set
+// for a batch that is not committed.
+bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param);
+// Add a batch to committed pass `pass` of the running scene, drawn right
+// after its batch `after`, or ahead of every batch of the pass for -1, with
+// the sources and the blend that ghee_mp_add_batch takes, and its program
+// shared the same way. The other batches keep their programs, quads, values
+// and indices. -1 with ghee_last_error set on a compile error, for a batch
+// that is not the pass's, or when the pass would run out of texture units.
+int  ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name,
+                          const char *vertex_source, const char *fragment_source, int blend);
 // The quads of a committed batch: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.
 bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int quads, int nattr);

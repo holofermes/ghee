@@ -357,7 +357,7 @@ fn a_live_set_that_the_scene_refuses_says_why_and_changes_nothing() {
         {"name": "t", "text": "Hi", "font_size": 40, "x": 10, "y": 8},
         {"name": "i", "image": "pic", "x": 110, "y": 10},
     ]));
-    let (one, two, white, file) = (json!(1), json!(2), json!("#ffffff"), json!("pic.png"));
+    let (one, two, white, file) = (json!(1), json!(2), json!("#ffffff"), json!("nope.png"));
     let rows = [
         (at("nope", None, "x"), Given::Json(&one), "has no layer"),
         (
@@ -380,7 +380,7 @@ fn a_live_set_that_the_scene_refuses_says_why_and_changes_nothing() {
         (
             at("i", None, "image"),
             Given::Json(&file),
-            "needs an image asset",
+            "No such file or directory",
         ),
     ];
     let (_g, mut r) = gpu(160, 64);

@@ -43,8 +43,11 @@ use crate::assets::Pixels;
 use crate::atlas;
 use crate::cparam::create_c_parameter;
 use crate::ffi;
-use crate::layer::{Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer};
+use crate::layer::{
+    is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer, GLSL_NAME,
+};
 use crate::scene::{ArraySize, ParamValue, Pass, Scene};
+use crate::shape::ShapeLayer;
 use crate::text::{self, Fault, Layout};
 
 /// The passes that the engine holds, filter passes included. engine.c holds
@@ -173,8 +176,6 @@ struct LayerBatches {
     boxes: c_int,
     /// The layer's name.
     name: String,
-    /// The engine's index of the layer's pass.
-    pass: c_int,
     /// The phase of each of the layer's effects that moves by one, as the
     /// frames advanced it.
     phases: std::cell::RefCell<Vec<(Kind, f64)>>,
@@ -577,6 +578,14 @@ pub struct Renderer {
     /// The words that set_text last took for each layer, shown or held, by
     /// the layer's name. The same words again lay out nothing.
     words: std::cell::RefCell<HashMap<String, String>>,
+    /// The engine asset of each image file that an image layer of the
+    /// running scene draws or drew, by the file as the scene names it. A
+    /// file loads once, and stays until the next setup.
+    files: std::cell::RefCell<Vec<(String, String)>>,
+    /// The files that the renderer loaded since it was created.
+    file_count: std::cell::Cell<usize>,
+    /// True once the engine holds the shape program for the renderer's life.
+    shapes_kept: std::cell::Cell<bool>,
     /// The layers whose texture of curves a program of the scene reads: a
     /// pass that calls `<name>_cover`, or a slug layer. Any other layer lays
     /// out with no such texture.
@@ -649,6 +658,9 @@ impl Renderer {
             atlases: std::cell::RefCell::new(Vec::new()),
             held: std::cell::RefCell::new(HashMap::new()),
             words: std::cell::RefCell::new(HashMap::new()),
+            files: std::cell::RefCell::new(Vec::new()),
+            file_count: std::cell::Cell::new(0),
+            shapes_kept: std::cell::Cell::new(false),
             curves: HashSet::new(),
             colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(None),
@@ -939,8 +951,7 @@ impl Renderer {
                             runs[r].batch
                         }
                         None => {
-                            let b =
-                                self.add_batch(idx, &name, &crate::shape::program(), s.blend)?;
+                            let b = self.add_batch(idx, &name, &self.shape_program()?, s.blend)?;
                             runs.push(ShapeRun {
                                 batch: b,
                                 blend: s.blend,
@@ -970,7 +981,6 @@ impl Renderer {
                     coloured: std::cell::Cell::new(false),
                     boxes: -1,
                     name: l.name().to_string(),
-                    pass: idx,
                     phases: std::cell::RefCell::new(Vec::new()),
                 });
             }
@@ -1077,7 +1087,8 @@ impl Renderer {
         self.curves.clear();
         for l in scene.text_layers() {
             let tex = CString::new(text::internal(&l.name, "_curves_tex"))?;
-            if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
+            let slug = l.render == Render::Slug && self.layers.iter().any(|d| d.name == l.name);
+            if slug || unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
                 self.curves.insert(l.name.clone());
             }
         }
@@ -1103,8 +1114,8 @@ impl Renderer {
                     .map(|l| text::internal(&l.name, "_curves")),
             )
             .chain(atlases)
-            .chain(drawn_files(&drawn).map(|l| text::internal(&l.name, "_file")))
             .collect();
+        self.files.borrow_mut().clear();
         let stale: Vec<String> = self
             .scene_assets
             .borrow()
@@ -1155,8 +1166,8 @@ impl Renderer {
             }
             self.scene_asset(&a.name);
         }
-        // An image layer's file goes in as an engine asset of the layer's
-        // own.
+        // An image layer's file goes in as an engine asset, one for each
+        // file.
         for l in drawn_files(&drawn) {
             let Some(img) = &l.data else {
                 self.error = format!(
@@ -1165,32 +1176,21 @@ impl Renderer {
                 );
                 return Ok(self.error.clone());
             };
-            let name = text::internal(&l.name, "_file");
-            let data = match &img.pixels {
-                Pixels::U8(d) => AssetData::U8(d),
-                Pixels::F32(d) => AssetData::F32(d),
-            };
-            if let Err(e) =
-                self.set_asset(&name, img.width, img.height, img.components, false, data)
-            {
+            if let Err(e) = self.file_asset(&l.image, img) {
                 self.error = e.to_string();
                 return Ok(self.error.clone());
             }
-            self.scene_asset(&name);
         }
         // A layer builds from the scene's string param of its name, through
         // set_text below, and it looks itself up in self.scene.
         *self.scene.borrow_mut() = Some(scene.clone());
         for (dl, l) in self.layers.iter().zip(drawn.iter().flat_map(|p| &p.layers)) {
             for (name, ty, value) in l.uniforms() {
-                self.set_uniform(dl.pass, &name, ty, value)?;
+                self.set_layer_uniform(dl, &name, ty, value)?;
             }
             let Layer::Image(l) = l else { continue };
-            let image = match l.is_file() {
-                true => text::internal(&l.name, "_file"),
-                false => l.image.clone(),
-            };
-            let shown = self.bind_image(dl.batch, &l.name, &image).and_then(|()| {
+            let image = self.image_asset(l)?;
+            let shown = self.bind_image(dl.batch, &image).and_then(|()| {
                 self.batch_quads(dl.batch, &format!("layer '{}'", l.name), &IMAGE_QUAD, 1)
             });
             if let Err(e) = shown {
@@ -1655,6 +1655,11 @@ impl Renderer {
             let image = layer.as_image().map(|l| l.image.clone());
             (layer.uniforms(), shown, image, value)
         };
+        if let (Some(_), Some(file)) = (&image, value.as_str().filter(|v| is_image_file(v))) {
+            if self.layers.iter().any(|d| d.name == at.layer) {
+                self.load_file(at.layer, file).map_err(refused)?;
+            }
+        }
         if let Some(scene) = self.scene.borrow_mut().as_mut() {
             scene.set_layer(at, &value).map_err(refused)?;
         }
@@ -1668,12 +1673,12 @@ impl Renderer {
             };
             for (name, ty, value) in layer.uniforms() {
                 if !before.iter().any(|(n, _, v)| *n == name && *v == value) {
-                    self.set_uniform(dl.pass, &name, ty, value)?;
+                    self.set_layer_uniform(dl, &name, ty, value)?;
                 }
             }
             if let Layer::Image(l) = layer {
                 if image.as_ref() != Some(&l.image) {
-                    self.bind_image(dl.batch, &l.name, &l.image)?;
+                    self.bind_image(dl.batch, &self.image_asset(l)?)?;
                 }
             }
             layer.as_text().is_some_and(|l| l.visible)
@@ -1688,6 +1693,486 @@ impl Renderer {
         if now_shown && !shown {
             self.first_shown(at.layer)?;
         }
+        Ok(())
+    }
+
+    /// The shaders of every shape. The first shape of the renderer compiles
+    /// them, and the engine keeps the program while the renderer lives, so
+    /// no shape after it compiles anything.
+    fn shape_program(&self) -> Result<crate::layer::Program> {
+        let (vs, fs) = crate::shape::program();
+        if !self.shapes_kept.get() {
+            let (cvs, cfs) = (CString::new(vs.as_str())?, CString::new(fs.as_str())?);
+            if !unsafe { ffi::ghee_mp_keep_program(self.handle, cvs.as_ptr(), cfs.as_ptr()) } {
+                bail!(
+                    "the shapes: {}",
+                    or_else(self.last_error(), "compile error")
+                );
+            }
+            self.shapes_kept.set(true);
+        }
+        Ok((vs, fs))
+    }
+
+    /// The engine asset that image layer `l` draws: its image asset, or the
+    /// engine asset of its file, which a setup or a live set loaded.
+    fn image_asset(&self, l: &ImageLayer) -> Result<String> {
+        if !l.is_file() {
+            return Ok(l.image.clone());
+        }
+        let files = self.files.borrow();
+        match files.iter().find(|(f, _)| *f == l.image) {
+            Some((_, asset)) => Ok(asset.clone()),
+            None => bail!("layer '{}': '{}' was never loaded", l.name, l.image),
+        }
+    }
+
+    /// The engine asset of the image file `file` of layer `layer`: the one
+    /// that the renderer holds, else one loaded from the scene's files.
+    fn load_file(&self, layer: &str, file: &str) -> Result<String> {
+        if let Some((_, asset)) = self.files.borrow().iter().find(|(f, _)| f == file) {
+            return Ok(asset.clone());
+        }
+        let img = {
+            let scene = self.scene.borrow();
+            match scene.as_ref().and_then(|s| s.root.as_ref()) {
+                Some(root) => root.image(layer, file)?,
+                None => bail!(
+                    "layer '{layer}': '{file}' is a file, and the scene was built without a \
+                     directory"
+                ),
+            }
+        };
+        self.file_asset(file, &img)
+    }
+
+    /// Hand the engine the pixels `img` of the image file `file` as an
+    /// asset, once, and return the asset's name.
+    fn file_asset(&self, file: &str, img: &crate::assets::Image) -> Result<String> {
+        if let Some((_, asset)) = self.files.borrow().iter().find(|(f, _)| f == file) {
+            return Ok(asset.clone());
+        }
+        let n = self.file_count.get();
+        self.file_count.set(n + 1);
+        // A layer's name starts with a letter, so no program reads
+        // `<name>_tex` of this asset, and it binds to the batches given it
+        // alone.
+        let name = text::internal(&n.to_string(), "_file");
+        let data = match &img.pixels {
+            Pixels::U8(d) => AssetData::U8(d),
+            Pixels::F32(d) => AssetData::F32(d),
+        };
+        self.set_asset(&name, img.width, img.height, img.components, false, data)?;
+        self.scene_asset(&name);
+        self.files
+            .borrow_mut()
+            .push((file.to_string(), name.clone()));
+        Ok(name)
+    }
+
+    /// The size in pixels of drawn pass `pass`: the renderer's for the pass
+    /// that holds the frame, else its own size or the renderer's.
+    fn pass_size(&self, pass: &str) -> [f64; 2] {
+        let full = [f64::from(self.width), f64::from(self.height)];
+        if self.mp.last().is_some_and(|(n, _)| n == pass) {
+            return full;
+        }
+        let scene = self.scene.borrow();
+        let size = scene
+            .as_ref()
+            .and_then(|s| s.passes.iter().find(|p| p.name == pass))
+            .and_then(|p| p.size);
+        size.map_or(full, |(w, h)| [w as f64, h as f64])
+    }
+
+    /// Add `layer`, a layer as a scene declares it, to the running scene at
+    /// `index` among the layers of pass `pass`, with no rebuild. Every other
+    /// layer keeps its program, its atlas, its phases and its quads, and
+    /// every pass keeps its program, its arrays and its buffers. A shape
+    /// layer compiles nothing, an image layer loads its picture, and a text
+    /// layer compiles its shaders and builds its atlas. A layer whose
+    /// shaders come out the same as another layer's draws through the same
+    /// program, and compiles nothing. The layer's files resolve as the
+    /// scene's did at its load. A layer of a hidden pass joins the scene and
+    /// draws nothing.
+    ///
+    /// A layer that the scene refuses, as a scene file would refuse it in
+    /// that place, fails with a Refused error and changes nothing.
+    pub fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Result<()> {
+        let refused = |e: anyhow::Error| anyhow::Error::new(Refused(format!("{e:#}")));
+        let at = format!("the layer added at {index} to pass '{pass}'");
+        let mut new = Layer::from_dict(&at, layer).map_err(refused)?;
+        let (drawn, want) = {
+            let scene = self.scene.borrow();
+            let Some(scene) = scene.as_ref() else {
+                return Err(Refused("the renderer holds no scene".to_string()).into());
+            };
+            scene.load_layer(&mut new).map_err(refused)?;
+            let p = scene.passes.iter().find(|p| p.name == pass);
+            let drawn = p.is_some_and(|p| p.visible) && self.pass_index(pass).is_some();
+            let want = p.map_or(0, |p| {
+                let mut arrays: Vec<&str> = p.arrays.iter().map(|a| a.name.as_str()).collect();
+                arrays.sort_unstable();
+                arrays.dedup();
+                p.channels.len() + arrays.len()
+            });
+            (drawn, want)
+        };
+        // A text or an image layer samples one texture on top of its pass's
+        // channels and arrays.
+        if drawn && new.as_shape().is_none() {
+            if let Some(e) = self.units_error(&format!("layer '{}'", new.name()), want + 1) {
+                return Err(Refused(e).into());
+            }
+        }
+        let name = new.name().to_string();
+        if let Layer::Image(l) = &new {
+            if drawn && l.is_file() {
+                let img = l.data.as_ref().expect("load_layer read the file");
+                self.file_asset(&l.image, img)?;
+            }
+        }
+        self.scene
+            .borrow_mut()
+            .as_mut()
+            .expect("the scene was just found")
+            .insert_layer(pass, index, new.clone())
+            .map_err(refused)?;
+        if !drawn {
+            return Ok(());
+        }
+        let idx = self.pass_index(pass).expect("the pass is drawn");
+        let added = match &new {
+            Layer::Shape(l) => self.add_shape(pass, idx, index, l),
+            Layer::Image(l) => self.add_image(pass, idx, index, l),
+            Layer::Text(l) => self.add_text(pass, idx, index, l),
+        };
+        if let Err(e) = added {
+            if let Some(scene) = self.scene.borrow_mut().as_mut() {
+                scene.remove_layer(&name);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The names of the layers of pass `pass`, in their order.
+    fn pass_layers(&self, pass: &str) -> Vec<String> {
+        let scene = self.scene.borrow();
+        scene
+            .as_ref()
+            .and_then(|s| s.passes.iter().find(|p| p.name == pass))
+            .map(|p| p.layers.iter().map(|l| l.name().to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The drawn layer named `name`.
+    fn drawn(&self, name: &str) -> Option<&LayerBatches> {
+        self.layers.iter().find(|d| d.name == name)
+    }
+
+    /// The batch after which a new layer at `index` of pass `pass` draws:
+    /// the batch of the layer before it, or -1 ahead of every batch of the
+    /// pass.
+    fn after(&self, pass: &str, index: usize) -> c_int {
+        let names = self.pass_layers(pass);
+        match index.checked_sub(1).and_then(|k| names.get(k)) {
+            Some(n) => self.drawn(n).map_or(-1, |d| d.batch),
+            None => -1,
+        }
+    }
+
+    /// Put `dl` among the drawn layers, after the layer before it in its
+    /// pass, or last.
+    fn put_drawn(&mut self, pass: &str, index: usize, dl: LayerBatches) {
+        let names = self.pass_layers(pass);
+        let before = index.checked_sub(1).and_then(|k| names.get(k));
+        let at = before
+            .and_then(|n| self.layers.iter().position(|d| d.name == *n))
+            .map_or(self.layers.len(), |k| k + 1);
+        self.layers.insert(at, dl);
+    }
+
+    /// When the layers at `index` - 1 and `index` + 1 of pass `pass` share a
+    /// run, end the run before the new layer at `index`: the layers after it
+    /// move to a run of their own, drawn after batch `after`.
+    fn split_run(
+        &mut self,
+        pass: c_int,
+        pass_name: &str,
+        index: usize,
+        after: c_int,
+    ) -> Result<()> {
+        let names = self.pass_layers(pass_name);
+        let (Some(prev), Some(next)) = (
+            index.checked_sub(1).and_then(|k| names.get(k)),
+            names.get(index + 1),
+        ) else {
+            return Ok(());
+        };
+        let Some(r) = self
+            .runs
+            .iter()
+            .position(|r| r.layers.contains(prev) && r.layers.contains(next))
+        else {
+            return Ok(());
+        };
+        let cut = self.runs[r]
+            .layers
+            .iter()
+            .position(|n| n == next)
+            .expect("next is in the run");
+        let tail: Vec<String> = self.runs[r].layers.split_off(cut);
+        let batch = self.insert_batch(
+            pass,
+            after,
+            &format!("layer '{next}'"),
+            Some(self.shape_program()?),
+            self.runs[r].blend,
+        )?;
+        for d in self.layers.iter_mut().filter(|d| tail.contains(&d.name)) {
+            d.batch = batch;
+        }
+        let run = ShapeRun {
+            batch,
+            blend: self.runs[r].blend,
+            size: self.runs[r].size,
+            layers: tail,
+        };
+        self.run_quads(&self.runs[r])?;
+        self.run_quads(&run)?;
+        self.runs.push(run);
+        Ok(())
+    }
+
+    /// Insert a batch into drawn pass `pass` after batch `after`, -1 for
+    /// ahead of the pass's batches, with `program`, or none, and `blend`.
+    fn insert_batch(
+        &self,
+        pass: c_int,
+        after: c_int,
+        name: &str,
+        program: Option<crate::layer::Program>,
+        blend: Blend,
+    ) -> Result<c_int> {
+        let cname = CString::new(name)?;
+        let sources = match &program {
+            Some((v, f)) => Some((CString::new(v.as_str())?, CString::new(f.as_str())?)),
+            None => None,
+        };
+        let (vs, fs) = match &sources {
+            Some((v, f)) => (v.as_ptr(), f.as_ptr()),
+            None => (ptr::null(), ptr::null()),
+        };
+        let b = unsafe {
+            ffi::ghee_mp_insert_batch(
+                self.handle,
+                pass,
+                after,
+                cname.as_ptr(),
+                vs,
+                fs,
+                blend.engine(),
+            )
+        };
+        if b < 0 {
+            bail!("{name}: {}", or_else(self.last_error(), "refused"));
+        }
+        Ok(b)
+    }
+
+    /// Draw shape layer `l`, new at `index` of drawn pass `pass`, in the run
+    /// of the shape before or after it of its blend, or in a run of its own.
+    fn add_shape(
+        &mut self,
+        pass_name: &str,
+        pass: c_int,
+        index: usize,
+        l: &ShapeLayer,
+    ) -> Result<()> {
+        let names = self.pass_layers(pass_name);
+        let run_of = |n: Option<&String>| {
+            n.and_then(|n| {
+                self.runs
+                    .iter()
+                    .position(|r| r.layers.contains(n) && r.blend == l.blend)
+            })
+        };
+        let prev = index.checked_sub(1).and_then(|k| names.get(k));
+        let next = names.get(index + 1);
+        let joined = match (run_of(prev), run_of(next)) {
+            (Some(r), _) => {
+                let at = self.runs[r]
+                    .layers
+                    .iter()
+                    .position(|n| Some(n) == prev)
+                    .expect("prev")
+                    + 1;
+                self.runs[r].layers.insert(at, l.name.clone());
+                Some(r)
+            }
+            (None, Some(r)) => {
+                self.runs[r].layers.insert(0, l.name.clone());
+                Some(r)
+            }
+            (None, None) => None,
+        };
+        let r = match joined {
+            Some(r) => r,
+            None => {
+                let after = self.after(pass_name, index);
+                let batch = self.insert_batch(
+                    pass,
+                    after,
+                    &format!("layer '{}'", l.name),
+                    Some(self.shape_program()?),
+                    l.blend,
+                )?;
+                self.split_run(pass, pass_name, index, batch)?;
+                self.runs.push(ShapeRun {
+                    batch,
+                    blend: l.blend,
+                    size: self.pass_size(pass_name),
+                    layers: vec![l.name.clone()],
+                });
+                self.runs.len() - 1
+            }
+        };
+        let dl = LayerBatches {
+            batch: self.runs[r].batch,
+            colour: -1,
+            coloured: std::cell::Cell::new(false),
+            boxes: -1,
+            name: l.name.clone(),
+            phases: std::cell::RefCell::new(Vec::new()),
+        };
+        self.put_drawn(pass_name, index, dl);
+        self.run_quads(&self.runs[r])
+    }
+
+    /// Draw image layer `l`, new at `index` of drawn pass `pass`.
+    fn add_image(
+        &mut self,
+        pass_name: &str,
+        pass: c_int,
+        index: usize,
+        l: &ImageLayer,
+    ) -> Result<()> {
+        let after = self.after(pass_name, index);
+        let name = format!("layer '{}'", l.name);
+        let batch = self.insert_batch(pass, after, &name, Some(l.shaders()), l.blend)?;
+        self.split_run(pass, pass_name, index, batch)?;
+        let dl = LayerBatches {
+            batch,
+            colour: -1,
+            coloured: std::cell::Cell::new(false),
+            boxes: -1,
+            name: l.name.clone(),
+            phases: std::cell::RefCell::new(Vec::new()),
+        };
+        for (u, ty, value) in Layer::Image(l.clone()).uniforms() {
+            self.set_layer_uniform(&dl, &u, ty, value)?;
+        }
+        self.bind_image(batch, &self.image_asset(l)?)?;
+        self.batch_quads(batch, &name, &IMAGE_QUAD, 1)?;
+        self.put_drawn(pass_name, index, dl);
+        Ok(())
+    }
+
+    /// Draw text layer `l`, new at `index` of drawn pass `pass`: its glyphs
+    /// after the layer before it, its colour glyphs and its error boxes
+    /// among those of the pass in the order of the layers, its atlas, and
+    /// its words.
+    fn add_text(
+        &mut self,
+        pass_name: &str,
+        pass: c_int,
+        index: usize,
+        l: &TextLayer,
+    ) -> Result<()> {
+        let size = self.pass_size(pass_name);
+        if let Some(b) = l.place(&l.text).ok().and_then(|laid| laid.built) {
+            let px = l.font_px(size, b.size);
+            self.px_em
+                .insert(l.name.clone(), TextLayer::atlas_px_em(px));
+        }
+        let shaders = l.shaders(self.detail(l));
+        let name = format!("layer '{}'", l.name);
+        let batch = self.insert_batch(
+            pass,
+            self.after(pass_name, index),
+            &name,
+            Some(shaders.glyphs),
+            l.blend,
+        )?;
+        self.split_run(pass, pass_name, index, batch)?;
+        let names = self.pass_layers(pass_name);
+        let text_before = |k: usize| {
+            names[..k]
+                .iter()
+                .rev()
+                .filter_map(|n| self.drawn(n))
+                .find(|d| d.colour >= 0)
+        };
+        // Every colour batch of a pass draws after every layer of it, and
+        // every error-box batch after them, each in the order of the layers.
+        let colour_after = match text_before(index) {
+            Some(d) => d.colour,
+            None => names
+                .iter()
+                .rev()
+                .find_map(|n| match *n == l.name {
+                    true => Some(batch),
+                    false => self.drawn(n).map(|d| d.batch),
+                })
+                .unwrap_or(batch),
+        };
+        let colour = self.insert_batch(
+            pass,
+            colour_after,
+            &format!("{name} colour glyphs"),
+            None,
+            l.blend,
+        )?;
+        let boxes_after = match text_before(index) {
+            Some(d) => d.boxes,
+            None => names[index + 1..]
+                .iter()
+                .rev()
+                .filter_map(|n| self.drawn(n))
+                .find(|d| d.colour >= 0)
+                .map_or(colour, |d| d.colour),
+        };
+        let boxes = self.insert_batch(
+            pass,
+            boxes_after,
+            &format!("{name} error boxes"),
+            Some(shaders.boxes),
+            Blend::Normal,
+        )?;
+        let dl = LayerBatches {
+            batch,
+            colour,
+            coloured: std::cell::Cell::new(false),
+            boxes,
+            name: l.name.clone(),
+            phases: std::cell::RefCell::new(Vec::new()),
+        };
+        for (u, ty, value) in l.uniforms() {
+            self.set_layer_uniform(&dl, &u, ty, value)?;
+        }
+        self.put_drawn(pass_name, index, dl);
+        if l.render == Render::Slug {
+            self.curves.insert(l.name.clone());
+        }
+        let layer = self
+            .scene
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.text_layer(&l.name).cloned())
+            .expect("the layer joined the scene");
+        self.add_atlas(&mut self.atlases.borrow_mut(), &mut Vec::new(), &layer)?;
+        self.set_text(&l.name, &l.text)?;
         Ok(())
     }
 
@@ -1794,26 +2279,39 @@ impl Renderer {
         boxes.extend(&colour.1);
         self.text_faults(layer, &faults, true);
         // A layout with no texture of curves leaves the texture alone.
+        let drawn = self.layers.iter().find(|d| d.name == *name);
         if built.width > 0 {
+            let curves = text::internal(name, "_curves");
             self.set_asset(
-                &text::internal(name, "_curves"),
+                &curves,
                 built.width,
                 built.height,
                 4,
                 false,
                 AssetData::U8(&built.texels),
             )?;
-            self.scene_asset(&text::internal(name, "_curves"));
+            self.scene_asset(&curves);
+            if let Some(d) = drawn {
+                self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_curves"), &curves)?;
+            }
         }
         for (suffix, v) in &built.uniforms {
             let uniform = text::internal(name, suffix);
             for (_, idx) in &self.mp {
                 self.set_uniform(*idx, &uniform, "float", Value::from(*v))?;
             }
+            if let Some(d) = drawn {
+                let own = text::internal(GLSL_NAME, suffix);
+                self.set_layer_uniform(d, &own, "float", Value::from(*v))?;
+            }
         }
         let size = Value::from(built.size.to_vec());
         for (_, idx) in &self.mp {
             self.set_uniform(*idx, &format!("{name}_size"), "vec2", size.clone())?;
+        }
+        if let Some(d) = drawn {
+            let own = text::internal(GLSL_NAME, "_size");
+            self.set_layer_uniform(d, &own, "vec2", size)?;
         }
         for d in self.layers.iter().filter(|d| d.name == *name) {
             let what = format!("layer '{name}'");
@@ -1890,6 +2388,7 @@ impl Renderer {
                 let data = AssetData::U8(&slot.atlas.texels);
                 self.put_asset(&tex, w, h, 4, ffi::GHEE_FILTER_MIPMAP, data)?;
                 self.scene_asset(&tex);
+                self.bind_asset(drawn.colour, &text::internal(GLSL_NAME, "_emoji"), &tex)?;
                 for k in 1..=slot.mips.count() {
                     let (lw, lh, texels) = slot.mips.level(k);
                     self.set_asset_rect(&tex, k, [0, 0, lw, lh], texels)?;
@@ -1939,9 +2438,6 @@ impl Renderer {
             bail!("layer '{}' colour glyphs: {err}", layer.name);
         }
         dl.coloured.set(true);
-        for (name, ty, value) in layer.uniforms() {
-            self.set_uniform(dl.pass, &name, ty, value)?;
-        }
         Ok(())
     }
 
@@ -2074,7 +2570,7 @@ impl Renderer {
                     phase = phase.rem_euclid(1.0);
                 }
                 phases[i].1 = phase;
-                self.set_uniform(dl.pass, &uniform, "float", Value::from(phase))?;
+                self.set_layer_uniform(dl, &uniform, "float", Value::from(phase))?;
             }
         }
         Ok(())
@@ -2138,6 +2634,12 @@ impl Renderer {
                     up?;
                     *fresh = false;
                     self.scene_asset(tex);
+                    let layer = tex
+                        .strip_prefix(crate::scene::PREFIX)
+                        .and_then(|t| t.strip_suffix("_atlas"));
+                    if let Some(d) = self.layers.iter().find(|d| Some(d.name.as_str()) == layer) {
+                        self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_atlas"), tex)?;
+                    }
                     continue;
                 }
                 let Some(u) = &update else { continue };
@@ -2330,20 +2832,52 @@ impl Renderer {
         self.text_errors_seq.get()
     }
 
-    /// Bind engine asset `asset` to the batch `batch` of image layer `layer`,
+    /// Bind engine asset `asset` to the batch `batch` of an image layer,
     /// which samples it as its image.
-    fn bind_image(&self, batch: c_int, layer: &str, asset: &str) -> Result<()> {
-        let sampler = CString::new(text::internal(layer, "_image"))?;
-        let image = CString::new(asset)?;
-        if !unsafe { ffi::ghee_mp_bind_asset(self.handle, batch, sampler.as_ptr(), image.as_ptr()) }
+    fn bind_image(&self, batch: c_int, asset: &str) -> Result<()> {
+        self.bind_asset(batch, &text::internal(GLSL_NAME, "_image"), asset)
+    }
+
+    /// Bind engine asset `asset` to the batch `batch`, which samples it as
+    /// `<name>_tex` and reads its size as `<name>_size`.
+    fn bind_asset(&self, batch: c_int, name: &str, asset: &str) -> Result<()> {
+        let (cname, casset) = (CString::new(name)?, CString::new(asset)?);
+        if !unsafe { ffi::ghee_mp_bind_asset(self.handle, batch, cname.as_ptr(), casset.as_ptr()) }
         {
             bail!(
                 "{}",
-                or_else(
-                    self.last_error(),
-                    &format!("layer '{layer}' refused its image")
-                )
+                or_else(self.last_error(), &format!("{asset} refused its batch"))
             );
+        }
+        Ok(())
+    }
+
+    /// Set the uniform `name` of `ptype` to `value` on batch `batch` alone.
+    fn set_batch_uniform(&self, batch: c_int, name: &str, ptype: &str, value: Value) -> Result<()> {
+        let mut cp = create_c_parameter(ptype, &value)?;
+        cp.set_c_name(name)?;
+        if !unsafe { ffi::ghee_mp_set_batch_uniform(self.handle, batch, cp.as_ptr()) } {
+            bail!(
+                "{}",
+                or_else(self.last_error(), &format!("batch {batch} refused {name}"))
+            );
+        }
+        Ok(())
+    }
+
+    /// Set the uniform `name` of `ptype` to `value` on each batch of the
+    /// drawn layer `dl`.
+    fn set_layer_uniform(
+        &self,
+        dl: &LayerBatches,
+        name: &str,
+        ptype: &str,
+        value: Value,
+    ) -> Result<()> {
+        for batch in [dl.batch, dl.colour, dl.boxes] {
+            if batch >= 0 {
+                self.set_batch_uniform(batch, name, ptype, value.clone())?;
+            }
         }
         Ok(())
     }
@@ -4967,8 +5501,9 @@ mod tests {
         assert_eq!(r.setup_batches(&alone, &[l]).unwrap(), "");
         // The layer's own uniforms and the words' texture, as a setup sets
         // them for a layer of the scene.
+        let b = r.batches[0];
         for (name, ty, value) in layer.uniforms() {
-            r.set_uniform(r.mp[0].1, &name, ty, value).unwrap();
+            r.set_batch_uniform(b, &name, ty, value).unwrap();
         }
         r.set_asset(
             "ghee_label_curves",
@@ -4979,13 +5514,19 @@ mod tests {
             AssetData::U8(&built.texels),
         )
         .unwrap();
+        r.bind_asset(
+            b,
+            &text::internal(GLSL_NAME, "_curves"),
+            "ghee_label_curves",
+        )
+        .unwrap();
         for (suffix, v) in &built.uniforms {
-            let name = text::internal("label", suffix);
-            r.set_uniform(r.mp[0].1, &name, "float", Value::from(*v))
+            let name = text::internal(GLSL_NAME, suffix);
+            r.set_batch_uniform(b, &name, "float", Value::from(*v))
                 .unwrap();
         }
         let size = Value::from(built.size.to_vec());
-        r.set_uniform(r.mp[0].1, "label_size", "vec2", size)
+        r.set_batch_uniform(b, &text::internal(GLSL_NAME, "_size"), "vec2", size)
             .unwrap();
         r.set_batch_quads(0, &built.quads.floats, 4).unwrap();
         assert!(
@@ -5081,7 +5622,7 @@ mod tests {
             r.set_time(Some(0.0));
             let frame = r.render(None).unwrap();
             let shown = frame.chunks_exact(4).any(|p| p[0] != p[2]);
-            let size = CString::new("ghee_label_emoji_size").unwrap();
+            let size = CString::new(text::internal(GLSL_NAME, "_emoji_size")).unwrap();
             let read = unsafe { ffi::ghee_mp_reads(r.handle, size.as_ptr()) };
             let held = r
                 .scene_assets

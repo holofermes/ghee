@@ -114,16 +114,17 @@ again, also with no recompile.
 
 `layers` sets a live field of a layer, by attribute or by key:
 `h.layers.title.x = 10`, `h.layers["title"]["karaoke"]["sung"] = 12`.
-`set_layer(name, field, value, effect=None)` makes the same set as a call.
-The live fields are a layer's `x`, `y`, `color`, `opacity` and `visible`, a
-text layer's `text`, the words, an image layer's `image`, the name of an
-image asset of the scene, an effect's `visible`, `color`, `strength`,
-`sung`, `speed` and `rate`, and every field of a shape layer but `shape` and
-`blend`, a rect's border as `h.layers.frame.border.color`. A value takes the
-form that the scene gives the field, and None takes `x`, `y`, `color`, or a
-rect's `width` or `height` back to its default. A set raises ValueError at once for a layer, an effect or a field
-that the scene lacks, for a field that changes with a rebuild, and for a
-value that the field does not take. `layers` sets fields and reads none back.
+`set_layer(name, field, value, effect=None)` makes the same set as a call. The
+live fields are a layer's `x`, `y`, `color`, `opacity` and `visible`, a text
+layer's `text`, the words, an image layer's `image`, the name of an image
+asset of the scene or an image file, an effect's `visible`, `color`,
+`strength`, `sung`, `speed` and `rate`, and every field of a shape layer but
+`shape` and `blend`, a rect's border as `h.layers.frame.border.color`. A value
+takes the form that the scene gives the field, and None takes `x`, `y`,
+`color`, or a rect's `width` or `height` back to its default. A set raises
+ValueError at once for a layer, an effect or a field that the scene lacks, for
+a field that changes with a rebuild, and for a value that the field does not
+take. `layers` sets fields and reads none back.
 
 A scene file finds its files beside itself, and a Python scene beside its
 script, under ghee and in [direct mode](#direct-mode) alike. A scene given as
@@ -251,13 +252,13 @@ opacity=None, blend="normal", font_size=None, font_family=None,
 text_align="left", render="mtsdf", text_shadow=None, glow=None,
 text_stroke=None, karaoke=None, wave=None, scroll=None, blink=None,
 image=None, width=None, height=None, shape=None, border=None,
-border_radius=None, points=None, stroke_width=None)` takes the keys of a
-layer as keywords, and [Layers](https://github.com/holofermes/ghee#layers)
-holds what each does. A text layer takes `text`, an image layer `image`, and
-a shape layer `shape`. A keyword left
-at None leaves its key to ghee's default, and an effect takes a dict of its
-fields, `{}` for every default. This scene draws `hello` in a gradient with
-a soft shadow, and the image `stamp.png` in the top left corner:
+border_radius=None, points=None, stroke_width=None)` takes the keys of a layer
+as keywords, and [Layers](https://github.com/holofermes/ghee#layers) holds
+what each does. A text layer takes `text`, an image layer `image`, and a shape
+layer `shape`. A keyword left at None leaves its key to ghee's default, and an
+effect takes a dict of its fields, `{}` for every default. This scene draws
+`hello` in a gradient with a soft shadow, and the image `stamp.png` in the top
+left corner:
 
 ```python
 scene = ghee.Scene(

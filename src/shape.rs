@@ -3,7 +3,7 @@
 //!
 //! Every shape draws through one program, SHAPE_VERTEX and SHAPE_FRAGMENT,
 //! which takes no GLSL from the layer: a shape is quads whose vertices carry
-//! all of it, and a change to any field of a shape uploads new quads and
+//! all of it, and a change to a live field of a shape uploads new quads and
 //! compiles nothing. Consecutive shape layers of a pass with one blend draw
 //! as one batch, a run, in the order of the layers.
 //!
@@ -19,7 +19,8 @@ use serde_json::{Map, Value};
 
 use crate::engine::Blend;
 use crate::layer::{
-    every_dict, given, number, object, Every, Form, Live, Rgb, COLOUR_FORMS, IMAGE_KIND, TEXT_KIND,
+    every_dict, given, number, object, spoken, Every, Form, Live, Rgb, COLOUR_FORMS, IMAGE_KIND,
+    TEXT_KIND,
 };
 use crate::scene::{known_keys, py_repr};
 
@@ -403,14 +404,6 @@ impl ShapeLayer {
                 }
             }
         }
-    }
-}
-
-/// `items` as a sentence names them: "a, b and c".
-fn spoken(items: &[&str]) -> String {
-    match items.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => items.join(""),
     }
 }
 

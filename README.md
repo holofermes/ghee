@@ -264,10 +264,10 @@ A param is a typed uniform declared on the pass, with optional range metadata:
 The preamble turns that into `uniform float gain;`, and the console shows
 every param as a live control. The types are `float`, `int`, `bool`, `color`
 (a `vec3` in the shader, which takes a [colour](#colours)), `vec2`, `vec3`,
-`vec4` and `string`. A string param
-never reaches the shader: a procedural scene reads it on its ticks, and
-`options` turns its text box in the console into a dropdown. A param declared
-on the scene, in place of a pass, holds one value that every pass reads.
+`vec4` and `string`. A string param never reaches the shader: a procedural
+scene reads it on its ticks, and `options` turns its text box in the console
+into a dropdown. A param declared on the scene, in place of a pass, holds one
+value that every pass reads.
 
 A scene declares an asset by its file. ghee decodes the file at setup and
 binds it in every pass:
@@ -323,10 +323,9 @@ beside a text layer `title`, and the error names both.
 A pass's shader fills its buffer, then the pass's `layers` paint over it, in
 list order. A text layer draws words from a font, an image layer draws a
 picture, and a shape layer draws a rect or a line. Each takes its settings as
-keys, and ghee draws them. A pass's shader
-can also read the words of any text layer and any image asset, for the
-per-pixel work that settings do not cover, as [Coverage in a
-shader](#coverage-in-a-shader) shows.
+keys, and ghee draws them. A pass's shader can also read the words of any text
+layer and any image asset, for the per-pixel work that settings do not cover,
+as [Coverage in a shader](#coverage-in-a-shader) shows.
 
 This scene draws `hello` in a red to yellow gradient with a soft shadow,
 fitted to the frame and centred, and puts the image `stamp.png` 16 pixels wide
@@ -496,7 +495,7 @@ right corner, and a lime waveform:
 | Key | Value | Default |
 | --- | --- | --- |
 | `width`, `height` | a rect's box in pass pixels | the pass's own |
-| `border` | a rect's border, an object of `width` in pixels, `color` and `visible` | none; `width` 1 and `color` white in an object |
+| `border` | a rect's border, an object of `width` in pixels, `color` and `visible` | none, and in the object `width` 1 and `color` white |
 | `border_radius` | a rect's corner radius in pixels | 0 |
 | `points` | a line's points, each `[x, y]`, two or more | required |
 | `stroke_width` | a line's thickness in pixels | 1 |
@@ -514,14 +513,14 @@ hides compiles nothing.
 
 ### Live fields
 
-Some fields change with no rebuild: a layer's `x`, `y`, `color`, `opacity`
-and `visible`, a text layer's words, an image layer's `image`, which takes
-another image asset of the scene, an effect's `visible`, `color`,
-`strength`, `sung`, `speed` and `rate`, and every field of a shape layer but
-`shape` and `blend`, its border's in the place of an effect's. A change to
-any other field rebuilds the layer. Setting `x` or `y` to none takes it back
-to its default, and so does setting `color`, or a rect's `width` or
-`height`.
+Some fields change with no rebuild: a layer's `x`, `y`, `color`, `opacity` and
+`visible`, a text layer's words, an image layer's `image`, which takes another
+image asset of the scene or an image file, which loads once and stays until
+the next setup, an effect's `visible`, `color`, `strength`, `sung`, `speed`
+and `rate`, and every field of a shape layer but `shape` and `blend`, its
+border's in the place of an effect's. A change to any other field rebuilds the
+layer. Setting `x` or `y` to none takes it back to its default, and so does
+setting `color`, or a rect's `width` or `height`.
 
 Python sets a live field through `layers`, as `h.layers.title.x = 10` on a
 `ghee.open` handle or `ghee.layers.title.karaoke.sung = 12` in a procedural
@@ -865,6 +864,17 @@ let frame = r.render(Some(&mut |_name, size| match size {
 
 `render` takes one closure, which answers with the data for a named array. The
 engine is thread-affine: build and use a Renderer on one thread.
+
+A running scene grows with no rebuild. `add_layer` puts a layer, written as a
+scene declares it, into a pass at an index among its layers, and every other
+layer and pass keeps what it holds, its phases and its arrays included. A
+shape compiles nothing, and a layer whose shaders come out the same as
+another layer's draws through the same program:
+
+```rust
+r.add_layer("main", 0, &serde_json::json!(
+    {"name": "bar", "shape": "rect", "x": 0, "y": 28, "width": 64, "height": 4}))?;
+```
 
 ## Limits
 

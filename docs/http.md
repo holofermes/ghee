@@ -39,31 +39,30 @@ active scene. The console names its scene in each request, so a page left
 open on one scene never writes into a scene that the console switched to
 later.
 
-- `POST /set?scene=&pass=&name=&value=`: sets a live param, with no
-  recompile. `pass=scene` sets the scene param, and `pass=0` and up set the
-  param of that pass. A text layer's words are the scene param of its name:
+- `POST /set?scene=&pass=&name=&value=`: sets a live param, with no recompile.
+  `pass=scene` sets the scene param, and `pass=0` and up set the param of that
+  pass. A text layer's words are the scene param of its name:
   `pass=scene&name=title` sets the words of the layer `title`, and ghee lays
-  them out again. `value` reads as the param's declared type: a number,
-  `true` or `false`, `#rrggbb`, a CSS colour name or comma-separated floats
-  for a color, comma-separated floats for a vec, or the words of a string. A color keeps
-  the form that `/set` gives it in `GET /scene` and in a save.
+  them out again. `value` reads as the param's declared type: a number, `true`
+  or `false`, `#rrggbb`, a CSS colour name or comma-separated floats for a
+  color, comma-separated floats for a vec, or the words of a string. A color
+  keeps the form that `/set` gives it in `GET /scene` and in a save.
 - `POST /set?scene=&layer=&effect=&field=&value=`: sets a live field of a
-  layer, with no rebuild, and `effect=` names one of the layer's effects for
-  a field of that effect. The live fields are `x`, `y`, `color`, `opacity`
-  and `visible`, a text layer's `text`, an image layer's `image`, an
-  effect's `visible`, `color`, `strength`, `sung`, `speed` and `rate`, and
-  every field of a shape layer but `shape` and `blend`. A rect's border
-  takes an effect's place, `effect=border` with `width`, `color` or
-  `visible`, and a set gives a rect with no border its border. `text` sets
-  the words, as the scene param of the layer's name does. Any other field
-  answers 400 and names the live fields, and so does an unknown layer,
-  effect or field. `value` reads as the field takes it: the words for
-  `text`, a number, `true` or `false`, `#rrggbb`, a CSS colour name or
-  comma-separated floats for a color, a JSON object `{"from", "to",
-  "angle"}` for a text layer's gradient, the name of an image asset of the
-  scene for `image`, a JSON list of `[x, y]` for a line's `points`, or
-  `none`, which takes `x`, `y`, `color` or a rect's `width` or `height` back
-  to its default.
+  layer, with no rebuild, and `effect=` names one of the layer's effects for a
+  field of that effect. The live fields are `x`, `y`, `color`, `opacity` and
+  `visible`, a text layer's `text`, an image layer's `image`, an effect's
+  `visible`, `color`, `strength`, `sung`, `speed` and `rate`, and every field
+  of a shape layer but `shape` and `blend`. A rect's border takes an effect's
+  place, `effect=border` with `width`, `color` or `visible`, and a set gives a
+  rect with no border its border. `text` sets the words, as the scene param of
+  the layer's name does. Any other field answers 400 and names the live
+  fields, and so does an unknown layer, effect or field. `value` reads as the
+  field takes it: the words for `text`, a number, `true` or `false`,
+  `#rrggbb`, a CSS colour name or comma-separated floats for a color, a JSON
+  object `{"from", "to", "angle"}` for a text layer's gradient, the name of an
+  image asset of the scene or a `.png` or `.jpg` file for `image`, a JSON list
+  of `[x, y]` for a line's `points`, or `none`, which takes `x`, `y`, `color`
+  or a rect's `width` or `height` back to its default.
 - `POST /switch?name=`: switches to a named scene. Switching to the active
   name reloads it from disk.
 - `POST /next`, `POST /prev`: step through the scene list.

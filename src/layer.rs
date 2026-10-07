@@ -1,5 +1,6 @@
-//! Layers: words or a picture that a pass paints over its buffer after its
-//! own shader, in the order of its `layers`.
+//! Layers: words, a picture or a shape that a pass paints over its buffer
+//! after its own shader, in the order of its `layers`. `crate::shape`
+//! describes shape layers.
 //!
 //! A text layer owns its words, its font and its look. ghee declares a scene
 //! string param under the layer's name, which holds the words, live, and
@@ -10,24 +11,28 @@
 //!
 //! An image layer draws an image asset of the scene, or an image file of its
 //! own, as one quad through [`ImageLayer::shaders`]. Its shader samples the
-//! image under a name of the layer's own, `ghee_<name>_image_tex`, which
-//! the engine binds to the image, so the layer gives the passes no name.
+//! image as `ghee_0_image_tex`, which the engine binds to the image for the
+//! layer's batch alone, so the layer gives the passes no name.
 //!
-//! A setting that changes with no rebuild reaches those shaders as a uniform
-//! of the layer's own, `ghee_<name>_<token>`, whose token holds no `_`, as
-//! [`Layer::uniforms`] lists them. A layer name never ends in `_`, so the
-//! name is all that comes before the last `_`, and two layers never share a
-//! uniform. A wave, a scroll and a blink move by a phase, a uniform of the
-//! layer's own too, which the engine advances each frame by the effect's
-//! speed or rate times the frame's time step, [`TextLayer::paces`], so a new
-//! speed carries the motion on from where it is.
+//! A layer's own shaders call the layer GLSL_NAME, a name that no layer can
+//! take, so every name that they hold meets no name that ghee gives a pass.
+//! A setting that changes with no rebuild reaches them as a uniform,
+//! `ghee_0_<token>`, as [`Layer::uniforms`] lists them, which the engine
+//! sets on each of the layer's batches alone. Layers with the same settings
+//! then write the same shaders, which one compiled program draws for all of
+//! them. A wave, a scroll and a blink move by a phase, a uniform of the
+//! layer's batches too, which the engine advances each frame by the
+//! effect's speed or rate times the frame's time step, [`TextLayer::paces`],
+//! so a new speed carries the motion on from where it is.
 //!
 //! The block of the words or the picture sits at `x`, `y`, the pass pixel of
 //! its top left, y down, and a missing axis centres the block on it. With no
 //! `font_size`, a text block takes the largest size at which it fits its
 //! room: the pass less FIT_MARGIN of its shorter side on each edge, and on a
 //! given axis the pass past the given pixel less the margin at the far edge.
-//! The shaders work the size out from `<name>_size`, so it follows the words.
+//! The shaders work the size out from the block's size in em,
+//! `ghee_0_size`, which the engine sets as it sets `<name>_size` for the
+//! passes, so it follows the words.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -43,6 +48,10 @@ use crate::engine::Blend;
 use crate::scene::{hex_colour, keys_on, known_keys, number_list, py_float, py_repr, PASS_KEYS};
 use crate::shape::{self, ShapeLayer};
 use crate::text::{self, Align, Font, Layout};
+
+/// The name of every layer in its own shaders. A layer's name starts with a
+/// letter, so no layer takes it.
+pub const GLSL_NAME: &str = "0";
 
 /// The keys that every layer takes.
 const EVERY_KEYS: [&str; 7] = ["name", "visible", "x", "y", "color", "opacity", "blend"];
@@ -722,14 +731,14 @@ fn flag(b: bool) -> Value {
     Value::from(if b { 1.0 } else { 0.0 })
 }
 
-/// The uniforms that place layer `name` and show it, at their values.
+/// The uniforms that place a layer and show it, at their values.
 fn placing(
-    name: &str,
     x: Option<f64>,
     y: Option<f64>,
     visible: bool,
     opacity: f64,
 ) -> Vec<(String, &'static str, Value)> {
+    let name = GLSL_NAME;
     vec![
         (uniform(name, "x"), "float", Value::from(x.unwrap_or(0.0))),
         (uniform(name, "y"), "float", Value::from(y.unwrap_or(0.0))),
@@ -979,9 +988,9 @@ impl TextLayer {
         self.data.as_deref().is_some_and(text::any_outlines)
     }
 
-    /// ghee's name for the uniform `token` of this layer.
+    /// ghee's name for the uniform `token` of this layer, in its shaders.
     pub fn uniform(&self, token: &str) -> String {
-        uniform(&self.name, token)
+        uniform(GLSL_NAME, token)
     }
 
     /// The effect `kind` of the layer, present or bypassed.
@@ -1105,7 +1114,7 @@ impl TextLayer {
     /// name, its type as a param takes it, and its value.
     pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
         let (from, to, angle) = self.color.ends();
-        let mut out = placing(&self.name, self.x, self.y, self.visible, self.opacity);
+        let mut out = placing(self.x, self.y, self.visible, self.opacity);
         out.extend([
             (
                 self.uniform("color"),
@@ -1504,7 +1513,7 @@ impl TextLayer {
             &self.letter_colour("    ", "ghee_v1.w", "ghee_v2.x"),
         );
         let mut f = vec![PRECISION.join("\n")];
-        f.extend(text::curve_reader_lines(&self.name));
+        f.extend(text::curve_reader_lines(GLSL_NAME));
         f.push(self.glsl(&format!("{}\n{main}", decls.join("\n"))));
         f.join("\n")
     }
@@ -1512,7 +1521,7 @@ impl TextLayer {
     /// `glsl` with the layer's name for NAME and the lattice for LATTICE.
     fn glsl(&self, glsl: &str) -> String {
         glsl.replace("LATTICE", &format!("{:?}", text::LATTICE))
-            .replace("NAME", &self.name)
+            .replace("NAME", GLSL_NAME)
     }
 }
 
@@ -1613,14 +1622,14 @@ impl ImageLayer {
     /// TextLayer::uniforms() lists them. No tint is white.
     pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
         let tint = self.color.unwrap_or(Rgb::WHITE);
-        let mut out = placing(&self.name, self.x, self.y, self.visible, self.opacity);
+        let mut out = placing(self.x, self.y, self.visible, self.opacity);
         out.push((
-            uniform(&self.name, "color"),
+            uniform(GLSL_NAME, "color"),
             "vec3",
             Value::from(tint.rgb.to_vec()),
         ));
         out.push((
-            uniform(&self.name, "alpha"),
+            uniform(GLSL_NAME, "alpha"),
             "float",
             Value::from(tint.alpha),
         ));
@@ -1642,8 +1651,8 @@ impl ImageLayer {
         let vertex = IMAGE_VERTEX.replace("SIZE", &size);
         let fragment = IMAGE_FRAGMENT.replace("GUARD", GUARD);
         (
-            vertex.replace("NAME", &self.name),
-            fragment.replace("NAME", &self.name),
+            vertex.replace("NAME", GLSL_NAME),
+            fragment.replace("NAME", GLSL_NAME),
         )
     }
 }
@@ -1879,7 +1888,7 @@ impl Live {
 }
 
 /// `items` as a sentence names them: "a, b and c".
-fn spoken(items: &[&str]) -> String {
+pub(crate) fn spoken(items: &[&str]) -> String {
     match items.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
         _ => items.join(""),
@@ -2050,7 +2059,7 @@ attribute vec4 ghee_a2;
 attribute vec4 ghee_a3;
 uniform vec2 resolution;
 uniform float ghee_vflip;
-uniform vec2 NAME_size;
+uniform vec2 ghee_NAME_size;
 uniform float ghee_NAME_x;
 uniform float ghee_NAME_y;
 uniform vec2 ghee_NAME_centre;
@@ -2066,19 +2075,19 @@ MAIN
 const FIT: &str = r#"    float ghee_m = FIT_MARGIN * min(resolution.x, resolution.y);
     vec2 ghee_room = mix(resolution - ghee_m - vec2(ghee_NAME_x, ghee_NAME_y),
                          resolution - 2.0 * ghee_m, ghee_NAME_centre);
-    vec2 ghee_s = ghee_room / max(NAME_size, vec2(1.0e-6));"#;
+    vec2 ghee_s = ghee_room / max(ghee_NAME_size, vec2(1.0e-6));"#;
 
 /// The lines that set ghee_ppe, the pixels per em held above 0 so that a
 /// block fitted to nothing keeps every position finite, and ghee_org, the
 /// pass pixel of the block's top left.
 const PLACE: &str = r#"    float ghee_ppe = max(ghee_fs, 1.0 / 16384.0);
-    vec2 ghee_org = mix(vec2(ghee_NAME_x, ghee_NAME_y), (resolution - NAME_size * ghee_fs) * 0.5,
+    vec2 ghee_org = mix(vec2(ghee_NAME_x, ghee_NAME_y), (resolution - ghee_NAME_size * ghee_fs) * 0.5,
                         ghee_NAME_centre);"#;
 
 /// The lines that scroll the block from right to left by whole pixels: it
 /// enters at the pass's right edge, and starts there again once it has left
 /// at the left.
-const SCROLL_LINES: &str = r#"    float ghee_trip = resolution.x + NAME_size.x * ghee_fs;
+const SCROLL_LINES: &str = r#"    float ghee_trip = resolution.x + ghee_NAME_size.x * ghee_fs;
     float ghee_sx = floor(resolution.x - mod(ghee_NAME_scrollphase * ghee_fs, ghee_trip));
     ghee_org.x = mix(ghee_org.x, ghee_sx, ghee_NAME_scrollvisible);"#;
 
@@ -2098,8 +2107,8 @@ const KARAOKE_LINES: &str = r#"    float ghee_ks = ghee_NAME_karaokesung - ghee_
 /// centre.
 const GRADIENT: &str = r#"    float ghee_r = radians(ghee_NAME_angle);
     vec2 ghee_dir = vec2(sin(ghee_r), -cos(ghee_r));
-    float ghee_len = abs(NAME_size.x * ghee_dir.x) + abs(NAME_size.y * ghee_dir.y);
-    float ghee_t = dot(ghee_e - 0.5 * NAME_size, ghee_dir) / max(ghee_len, 1.0e-6) + 0.5;
+    float ghee_len = abs(ghee_NAME_size.x * ghee_dir.x) + abs(ghee_NAME_size.y * ghee_dir.y);
+    float ghee_t = dot(ghee_e - 0.5 * ghee_NAME_size, ghee_dir) / max(ghee_len, 1.0e-6) + 0.5;
 "#;
 
 /// The comment over the reads of a fragment shader.
@@ -2258,13 +2267,28 @@ mod tests {
             .collect()
     }
 
-    /// Every name with ghee's prefix in the shaders and the uniforms of a
-    /// layer `name`, a text layer in either render or an image layer, in the
-    /// readers of its words, and in the engine's names for its image file.
+    /// Every name with ghee's prefix that ghee gives the passes for layer
+    /// `name`: the readers of its words, and the engine's assets of the
+    /// layer, each with the sampler and the size that a program reads.
     fn written(name: &str) -> Vec<String> {
         let mut out: Vec<String> = text::template_names(name);
+        for suffix in ["_curves", "_atlas", "_emoji", "_file"] {
+            let asset = text::internal(name, suffix);
+            out.extend([format!("{asset}_tex"), format!("{asset}_size"), asset]);
+        }
+        out.retain(|w| w.starts_with(crate::scene::PREFIX));
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Every name with ghee's prefix in the shaders and the uniforms of the
+    /// layers' own batches: text layers with every effect in either render,
+    /// and an image layer.
+    fn own() -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
         for render in ["mtsdf", "slug"] {
-            let mut d = json!({"name": name, "text": "", "render": render});
+            let mut d = json!({"name": "t", "text": "", "render": render});
             for kind in Kind::ALL {
                 d[kind.key()] = json!({});
             }
@@ -2281,14 +2305,11 @@ mod tests {
             }
             out.extend(l.uniforms().into_iter().map(|u| u.0));
         }
-        let l = ImageLayer::from_dict("a layer", &json!({"name": name, "image": "pic"})).unwrap();
+        let l = ImageLayer::from_dict("a layer", &json!({"name": "i", "image": "pic"})).unwrap();
         let (v, f) = l.shaders();
         out.extend(words(&v));
         out.extend(words(&f));
         out.extend(l.uniforms().into_iter().map(|u| u.0));
-        // The engine binds an asset as its name with _tex and _size.
-        let file = text::internal(name, "_file");
-        out.extend([format!("{file}_tex"), format!("{file}_size"), file]);
         out.retain(|w| w.starts_with(crate::scene::PREFIX));
         out.sort();
         out.dedup();
@@ -2296,7 +2317,7 @@ mod tests {
     }
 
     #[test]
-    fn two_layers_never_meet_in_a_name_that_ghee_writes_for_them() {
+    fn no_name_that_ghee_writes_for_a_layer_meets_another() {
         // Names that end the way another layer's names do, and the names of
         // ghee's own GLSL.
         let names = [
@@ -2328,20 +2349,18 @@ mod tests {
             "d",
         ];
         let made: Vec<Vec<String>> = names.iter().map(|n| written(n)).collect();
+        // A uniform that ghee sets on a pass reaches the batches of the
+        // pass too, so no name in a layer's own shaders is one of them.
+        let own = own();
+        for (x, mx) in names.iter().zip(&made) {
+            let met: Vec<&String> = own.iter().filter(|n| mx.contains(n)).collect();
+            assert!(met.is_empty(), "the batches and {x} meet in {met:?}");
+        }
         for (i, (x, mx)) in names.iter().zip(&made).enumerate() {
             let own = format!("{}{x}_", crate::scene::PREFIX);
             assert!(mx.iter().any(|n| n.starts_with(&own)), "{x}");
             for (y, my) in names[i + 1..].iter().zip(&made[i + 1..]) {
-                // ghee's names for one layer are its own, and the rest of
-                // the names that its shaders hold are the same in every
-                // layer's.
-                let mine = |n: &&String, of: &str| {
-                    n.starts_with(&format!("{}{of}_", crate::scene::PREFIX))
-                };
-                let met: Vec<&String> = mx
-                    .iter()
-                    .filter(|n| my.contains(n) && (mine(n, x) || mine(n, y)))
-                    .collect();
+                let met: Vec<&String> = mx.iter().filter(|n| my.contains(n)).collect();
                 assert!(met.is_empty(), "{x} and {y} meet in {met:?}");
             }
         }

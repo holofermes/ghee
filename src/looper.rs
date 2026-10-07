@@ -23,6 +23,7 @@ use crate::engine::{Feed, Given, Provider, Refused, Renderer};
 use crate::layer::Address;
 use crate::scene::{ArraySize, ParamValue};
 use crate::stats::{monotonic, FrameRate};
+use serde_json::Value;
 
 /// a frame never hands a scene more than this, however long the loop idled
 pub const MAX_DT: f64 = 0.25;
@@ -51,6 +52,13 @@ pub trait RenderTarget {
     /// target that draws no layers refuses every field.
     fn set_layer(&self, at: &Address, _given: Given) -> Result<()> {
         Err(Refused(format!("this renderer draws no layer '{}'", at.layer)).into())
+    }
+
+    /// Add a layer, written as a scene declares it, to the running scene at
+    /// `index` among the layers of pass `pass`, as Renderer::add_layer()
+    /// does. A target that draws no layers refuses every layer.
+    fn add_layer(&mut self, pass: &str, _index: usize, _layer: &Value) -> Result<()> {
+        Err(Refused(format!("this renderer adds no layer to pass '{pass}'")).into())
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()>;
@@ -109,6 +117,10 @@ impl RenderTarget for Renderer {
 
     fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
         Renderer::set_layer(self, at, given)
+    }
+
+    fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Result<()> {
+        Renderer::add_layer(self, pass, index, layer)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {

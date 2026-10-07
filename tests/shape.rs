@@ -61,6 +61,11 @@ fn again(r: &mut Renderer) -> Vec<u8> {
     r.render(None).unwrap().to_vec()
 }
 
+/// The bytes of two frames that differ.
+fn differ(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b).filter(|(x, y)| x != y).count() + a.len().abs_diff(b.len())
+}
+
 fn scene_err(doc: &Value) -> String {
     Scene::from_dict(doc, None, None).err().unwrap().to_string()
 }
@@ -617,7 +622,7 @@ fn every_field_of_a_shape_changes_live_and_compiles_nothing() {
     let compiled = r.compiled();
     // Each pass compiles its own program again, and the shapes share the one
     // that the last setup compiled.
-    assert_eq!(render(&mut r, &base), one);
+    assert_eq!(differ(&render(&mut r, &base), &one), 0);
     assert_eq!(r.compiled(), compiled + 2);
     for (at, value) in rows {
         let row = format!("{at:?} = {value}");
@@ -627,17 +632,17 @@ fn every_field_of_a_shape_changes_live_and_compiles_nothing() {
         let live = again(&mut r);
         assert_eq!(r.compiled(), compiled, "{row}: no program compiles");
         let built = loaded(&written(&doc, &at, &value));
-        assert_ne!(live, before, "{row}: the frame changes");
-        assert_eq!(live, render(&mut r, &built), "{row}");
+        assert_ne!(differ(&live, &before), 0, "{row}: the frame changes");
+        assert_eq!(differ(&live, &render(&mut r, &built)), 0, "{row}");
     }
 }
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn the_shapes_of_a_scene_compile_one_program() {
+fn the_shapes_of_a_renderer_compile_one_program_once() {
     // The same scene with and without its shapes, set up after a scene that
     // compiled no shape: the shapes add one program, however many runs and
-    // passes they span.
+    // passes they span, and the renderer compiles it once.
     let pass = |name: &str, layers: Value| json!({"name": name, "code": GREY, "layers": layers});
     let shapes = json!([
         {"name": "a", "shape": "rect", "width": 4, "height": 4},
@@ -652,4 +657,9 @@ fn the_shapes_of_a_scene_compile_one_program() {
     let before = r.compiled();
     render(&mut r, &loaded(&with));
     assert_eq!(r.compiled(), before + 2 + 1);
+    // The renderer keeps the program through a scene with no shapes.
+    render(&mut r, &loaded(&without));
+    let before = r.compiled();
+    render(&mut r, &loaded(&with));
+    assert_eq!(r.compiled(), before + 2);
 }

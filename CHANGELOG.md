@@ -54,6 +54,18 @@
   `[r, g, b]`, through `GET /scene`, `/set`, a save and a procedural scene's
   values sidecar. The console sends the colour picked in its swatch as
   `#rrggbb`, so it saves as hex.
+- Grow a running scene with no rebuild through `Renderer::add_layer`, which
+  puts a layer, written as a scene declares it, into a pass at an index
+  among its layers, and refuses one that a scene file would refuse there.
+  Every other layer keeps its program, its atlas, its phases and its quads,
+  and every pass its program, its arrays and its buffers. A shape compiles
+  nothing, an image layer loads its picture, and a text layer builds its
+  shaders and its atlas. A layer's own shaders hold no name of the layer's
+  and take its settings from uniforms of its batches alone, so layers whose
+  shaders come out the same, in one scene or added, draw through one
+  program.
+- Take an image file in a live `image`, which loads once and stays until
+  the next setup, where a live image took the scene's image assets alone.
 - Draw rects and lines with shape layers, which hold `"shape": "rect"` or
   `"line"` and take no effects. A rect fills `width` by `height` pass
   pixels, the pass's own by default, with its `color`, draws its `border`,
@@ -401,8 +413,11 @@
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
 - Compile one program for the batches whose two shaders match, and set
-  `resolution` at each draw, so one program serves passes of any size.
-  `Renderer::compiled` counts the programs that a renderer linked.
+  `resolution` at each draw, so one program serves passes of any size. A
+  batch takes uniforms of its own, which it sets before it draws, and
+  `ghee_mp_insert_batch` adds a batch anywhere among the batches of a
+  running pass. `Renderer::compiled` counts the programs that a renderer
+  linked.
 - Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
   `feeds`, `isf`, `report` and `sources` modules inside the crate.
 - Ship NOTICE and the DejaVu font's license in the deb under

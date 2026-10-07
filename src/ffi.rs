@@ -155,6 +155,25 @@ extern "C" {
         vertex_source: *const c_char,
         fragment_source: *const c_char,
     ) -> bool;
+    pub fn ghee_mp_keep_program(
+        g: *mut GheeScene,
+        vertex_source: *const c_char,
+        fragment_source: *const c_char,
+    ) -> bool;
+    pub fn ghee_mp_set_batch_uniform(
+        g: *mut GheeScene,
+        batch: c_int,
+        param: *const Parameter,
+    ) -> bool;
+    pub fn ghee_mp_insert_batch(
+        g: *mut GheeScene,
+        pass: c_int,
+        after: c_int,
+        name: *const c_char,
+        vertex_source: *const c_char,
+        fragment_source: *const c_char,
+        blend: c_int,
+    ) -> c_int;
     pub fn ghee_mp_set_batch_quads(
         g: *mut GheeScene,
         batch: c_int,

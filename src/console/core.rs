@@ -785,7 +785,7 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
     let mut layer = Layer::from_dict("a layer", d).map_err(|e| e.to_string())?;
     let live = layer.live(at.effect, at.field).map_err(|e| e.to_string())?;
     let value = parse_live_value(&live, raw)?;
-    if live.form == Form::Image {
+    if live.form == Form::Image && !crate::layer::is_image_file(raw) {
         let file = doc
             .get("assets")
             .and_then(|a| a.get(raw))
@@ -1426,7 +1426,9 @@ mod tests {
             ),
             (
                 q("icon", None, "image", "sans"),
-                "layer 'icon' image needs an image asset of the scene, got 'sans'".to_string(),
+                "layer 'icon' image needs an image asset of the scene or a .png or .jpg file, \
+                 got 'sans'"
+                    .to_string(),
             ),
             (
                 q("words", None, "color", r##"{"from": "#ff0000"}"##),

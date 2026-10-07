@@ -98,6 +98,18 @@ struct mp_prog {
     GLuint program;
     char *vertex, *fragment;
     int holders;
+    int loaded;                          // the id of the batch whose values it holds, 0 for none
+};
+
+// A uniform of one batch's own, which the batch sets on its program before
+// it draws, so batches that share a program each draw with their own values.
+struct mp_value {
+    char *name;
+    param_type_t type;
+    float v[4];
+    int i;
+    GLuint prog;                         // the program that `loc` belongs to
+    GLint loc;
 };
 
 // One batch of ghee_mp_add_batch: quads that a pass draws into its buffer
@@ -105,11 +117,15 @@ struct mp_prog {
 struct mp_batch {
     int pass;
     char name[96];                       // the batch's name in an error
+    int id;                              // the renderer's own, from 1, never reused
     GLuint program;
     int blend;                           // GHEE_BLEND_*
     GLuint vbo, vao;
     int quads, nattr;                    // nattr vec4 attributes a vertex
     struct mp_locs loc;
+    struct mp_value *values;
+    int nvalues, values_cap;
+    bool dirty;                          // a value changed since the batch last set them
 };
 
 struct GheeScene {
@@ -168,6 +184,12 @@ struct GheeScene {
     // more of them.
     int mp_nprog, mp_prog_cap;
     struct mp_prog *mp_prog;
+    int batch_ids;                       // the id of the last batch made
+    // The running batches in draw order, each pass drawing its own in this
+    // order. A commit draws them in the order of their indices, and
+    // ghee_mp_insert_batch puts a batch anywhere among its pass's.
+    int *mp_order;
+    int mp_order_cap;
     int mp_batch_cap, stage_batch_cap;
     struct mp_batch *mp_batch, *stage_batch;
     GLuint quad_ibo;                     // QUAD_CHUNK quads of indices, shared by every batch
@@ -417,7 +439,7 @@ static GLuint program_take(GheeScene *g, const char *vertex_source, const char *
         free(fragment);
         return 0;
     }
-    g->mp_prog[g->mp_nprog++] = (struct mp_prog){ prog, vertex, fragment, 1 };
+    g->mp_prog[g->mp_nprog++] = (struct mp_prog){ prog, vertex, fragment, 1, 0 };
     return prog;
 }
 
@@ -1013,6 +1035,7 @@ void ghee_destroy(GheeScene *g) {
         if (g->VBO) glDeleteBuffers(1, &g->VBO);
         if (g->VAO) glDeleteVertexArrays(1, &g->VAO);
         ghee_mp_reset(g);   // all pass programs/buffers + the pending scene
+        for (int i = 0; i < g->mp_nprog; i++) glDeleteProgram(g->mp_prog[i].program);
         if (g->quad_ibo) glDeleteBuffers(1, &g->quad_ibo);
         for (int a = 0; a < g->mp_nasset; a++) glDeleteTextures(1, &g->mp_asset[a].tex);
         eglMakeCurrent(g->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -1027,7 +1050,12 @@ void ghee_destroy(GheeScene *g) {
     free(g->mp_asset);
     free(g->mp_batch);
     free(g->stage_batch);
+    for (int i = 0; i < g->mp_nprog; i++) {
+        free(g->mp_prog[i].vertex);
+        free(g->mp_prog[i].fragment);
+    }
     free(g->mp_prog);
+    free(g->mp_order);
     for (int i = 0; i < g->lent_count; i++) gbm_bo_destroy(g->lent[i].bo);
     if (g->gbm_surface) gbm_surface_destroy(g->gbm_surface);
     if (g->gbm) gbm_device_destroy(g->gbm);
@@ -1110,9 +1138,17 @@ static void mp_free_uses(struct mp_locs *loc) {
     loc->nuses = loc->uses_cap = 0;
 }
 
+static void mp_free_values(struct mp_batch *l) {
+    for (int k = 0; k < l->nvalues; k++) free(l->values[k].name);
+    free(l->values);
+    l->values = NULL;
+    l->nvalues = l->values_cap = 0;
+}
+
 static void mp_free_batches(GheeScene *g, struct mp_batch *ls, int *n) {
     for (int i = 0; i < *n; i++) {
         program_drop(g, ls[i].program);
+        mp_free_values(&ls[i]);
         if (ls[i].vbo) glDeleteBuffers(1, &ls[i].vbo);
         if (ls[i].vao) glDeleteVertexArrays(1, &ls[i].vao);
         mp_free_uses(&ls[i].loc);
@@ -1230,6 +1266,7 @@ int ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *vert
     }
     struct mp_batch *l = &g->stage_batch[g->stage_nbatch];
     memset(l, 0, sizeof *l);
+    l->id = ++g->batch_ids;
     l->pass = pass;
     snprintf(l->name, sizeof l->name, "%s", name);
     l->program = prog;
@@ -1368,10 +1405,21 @@ int ghee_mp_commit(GheeScene *g) {
     g->stage_batch_cap = was_cap;
     g->mp_nbatch = g->stage_nbatch;
     g->stage_nbatch = 0;
+    if (g->mp_order_cap < g->mp_batch_cap) {
+        int *grown = realloc(g->mp_order, (size_t)g->mp_batch_cap * sizeof *grown);
+        if (!grown) {
+            set_error(g, "no memory for the order of %d batches", g->mp_nbatch);
+            mp_free_batches(g, g->mp_batch, &g->mp_nbatch);
+        } else {
+            g->mp_order = grown;
+            g->mp_order_cap = g->mp_batch_cap;
+        }
+    }
     for (int i = 0; i < g->mp_nbatch; i++) {
         struct mp_batch *l = &g->mp_batch[i];
         mp_resolve(g, l->program, g->mp_w[l->pass], g->mp_h[l->pass], &l->loc);
         l->quads = 0;
+        g->mp_order[i] = i;
     }
     return g->mp_count;
 }
@@ -1736,6 +1784,103 @@ bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_sourc
     return true;
 }
 
+bool ghee_mp_keep_program(GheeScene *g, const char *vertex_source, const char *fragment_source) {
+    make_current(g);
+    return program_take(g, vertex_source, fragment_source) != 0;
+}
+
+bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param) {
+    if (batch < 0 || batch >= g->mp_nbatch) { set_error(g, "no batch %d in the scene", batch); return false; }
+    struct mp_batch *l = &g->mp_batch[batch];
+    struct mp_value *v = NULL;
+    for (int k = 0; k < l->nvalues && !v; k++)
+        if (strcmp(l->values[k].name, param->name) == 0) v = &l->values[k];
+    if (!v) {
+        if (l->nvalues == l->values_cap) {
+            const int cap = l->values_cap ? 2 * l->values_cap : 16;
+            struct mp_value *grown = realloc(l->values, (size_t)cap * sizeof *grown);
+            if (!grown) { set_error(g, "%s: no memory for its uniform %s", l->name, param->name); return false; }
+            l->values = grown;
+            l->values_cap = cap;
+        }
+        char *name = suffixed(g, param->name, "");
+        if (!name) return false;
+        v = &l->values[l->nvalues++];
+        memset(v, 0, sizeof *v);
+        v->name = name;
+    }
+    v->type = param->type;
+    switch (param->type) {
+        case PARAM_TYPE_FLOAT: v->v[0] = param->value.float_param->value; break;
+        case PARAM_TYPE_INT:   v->i = param->value.int_param->value; break;
+        default: memcpy(v->v, param->value.vec_param->value, sizeof v->v); break;
+    }
+    l->dirty = true;
+    return true;
+}
+
+int ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name, const char *vertex_source,
+                         const char *fragment_source, int blend) {
+    if (pass < 0 || pass >= g->mp_count) { set_error(g, "no pass %d in the scene", pass); return -1; }
+    if (after >= g->mp_nbatch || (after >= 0 && g->mp_batch[after].pass != pass)) {
+        set_error(g, "batch %d is not a batch of pass %d", after, pass);
+        return -1;
+    }
+    if (blend < GHEE_BLEND_NORMAL || blend > GHEE_BLEND_SCREEN) { set_error(g, "no blend mode %d", blend); return -1; }
+    if (g->mp_nbatch == g->mp_batch_cap) {
+        const int cap = g->mp_batch_cap ? 2 * g->mp_batch_cap : 16;
+        struct mp_batch *grown = realloc(g->mp_batch, (size_t)cap * sizeof *grown);
+        if (!grown) { set_error(g, "no memory for batch %d", g->mp_nbatch); return -1; }
+        g->mp_batch = grown;
+        g->mp_batch_cap = cap;
+    }
+    if (g->mp_order_cap < g->mp_batch_cap) {
+        int *grown = realloc(g->mp_order, (size_t)g->mp_batch_cap * sizeof *grown);
+        if (!grown) { set_error(g, "no memory for the order of batch %d", g->mp_nbatch); return -1; }
+        g->mp_order = grown;
+        g->mp_order_cap = g->mp_batch_cap;
+    }
+    make_current(g);
+    GLuint prog = 0;
+    if (vertex_source || fragment_source) {
+        prog = program_take(g, vertex_source, fragment_source);
+        if (!prog) return -1;
+    }
+    const int idx = g->mp_nbatch;
+    struct mp_batch *l = &g->mp_batch[idx];
+    memset(l, 0, sizeof *l);
+    l->id = ++g->batch_ids;
+    l->pass = pass;
+    snprintf(l->name, sizeof l->name, "%s", name);
+    l->program = prog;
+    l->blend = blend;
+    mp_resolve(g, prog, g->mp_w[pass], g->mp_h[pass], &l->loc);
+    for (int i = 0; prog && i < g->mp_ndatatex[pass]; i++)
+        l->loc.data[i] = glGetUniformLocation(prog, g->mp_array_name[g->mp_datatex[pass][i]]);
+    g->mp_nbatch++;
+    if (!mp_pass_fits(g, pass, g->mp_nchan[pass], g->mp_ndatatex[pass])) {
+        g->mp_nbatch--;
+        mp_free_uses(&l->loc);
+        program_drop(g, prog);
+        return -1;
+    }
+    glGenBuffers(1, &l->vbo);
+    glGenVertexArrays(1, &l->vao);
+    // The new batch draws right after `after`, or ahead of every batch of
+    // its pass.
+    int at = g->mp_nbatch - 1;
+    for (int k = 0; k < g->mp_nbatch - 1; k++) {
+        const int b = g->mp_order[k];
+        if (after >= 0 ? b == after : g->mp_batch[b].pass == pass) {
+            at = after >= 0 ? k + 1 : k;
+            break;
+        }
+    }
+    memmove(&g->mp_order[at + 1], &g->mp_order[at], (size_t)(g->mp_nbatch - 1 - at) * sizeof *g->mp_order);
+    g->mp_order[at] = idx;
+    return idx;
+}
+
 // Upload one named image asset. Every pass whose program reads it gets it as
 // a sampler uniform <name>_tex and a vec2 <name>_size of (width, height),
 // bound after the channels and the arrays. An asset outlives the scene: a
@@ -1964,12 +2109,39 @@ static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, float vflip,
 }
 
 // Draw the batches of pass p into the bound target, after the pass's quad.
+// Set the values of batch `l` on its program, in use, unless the program
+// holds them already.
+static void mp_load_values(GheeScene *g, struct mp_batch *l) {
+    struct mp_prog *held = NULL;
+    for (int i = 0; i < g->mp_nprog && !held; i++)
+        if (g->mp_prog[i].program == l->program) held = &g->mp_prog[i];
+    if (held && held->loaded == l->id && !l->dirty) return;
+    for (int k = 0; k < l->nvalues; k++) {
+        struct mp_value *v = &l->values[k];
+        if (v->prog != l->program) {
+            v->loc = glGetUniformLocation(l->program, v->name);
+            v->prog = l->program;
+        }
+        if (v->loc < 0) continue;
+        switch (v->type) {
+            case PARAM_TYPE_FLOAT: glUniform1f(v->loc, v->v[0]); break;
+            case PARAM_TYPE_INT:   glUniform1i(v->loc, v->i); break;
+            case PARAM_TYPE_VEC2:  glUniform2f(v->loc, v->v[0], v->v[1]); break;
+            case PARAM_TYPE_VEC3:  glUniform3f(v->loc, v->v[0], v->v[1], v->v[2]); break;
+            case PARAM_TYPE_VEC4:  glUniform4f(v->loc, v->v[0], v->v[1], v->v[2], v->v[3]); break;
+        }
+    }
+    if (held) held->loaded = l->id;
+    l->dirty = false;
+}
+
 static void mp_draw_batches(GheeScene *g, int p, float vflip, float elapsed) {
     bool drew = false;
-    for (int i = 0; i < g->mp_nbatch; i++) {
-        const struct mp_batch *l = &g->mp_batch[i];
+    for (int k = 0; k < g->mp_nbatch; k++) {
+        struct mp_batch *l = &g->mp_batch[g->mp_order[k]];
         if (l->pass != p || l->quads <= 0 || !l->program) continue;
         glUseProgram(l->program);
+        mp_load_values(g, l);
         mp_bind(g, p, &l->loc, vflip, elapsed, false);
         glEnable(GL_BLEND);
         switch (l->blend) {

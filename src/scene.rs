@@ -1749,7 +1749,7 @@ pub(crate) const PRECISION: [&str; 6] = [
 /// image asset of the scene's own.
 pub(crate) fn not_an_image(what: &str, value: &Value) -> String {
     format!(
-        "{what} needs an image asset of the scene, got {}",
+        "{what} needs an image asset of the scene or a .png or .jpg file, got {}",
         py_repr(value)
     )
 }
@@ -1776,6 +1776,79 @@ pub struct Scene {
     /// Image assets: set up once by the host, available to every pass as a
     /// sampler uniform `<name>_tex` plus a `<name>_size` vec2.
     pub assets: Vec<Asset>,
+    /// Where the scene's files resolve, as its load found them. None for a
+    /// scene whose files never loaded.
+    pub root: Option<Root>,
+}
+
+/// Where a loaded scene's files resolve: its directory, as far as `reach`
+/// allows, then the directories of `$GHEE_ASSETS`, and the directory of the
+/// system's emoji font.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Root {
+    pub dir: String,
+    pub reach: Reach,
+    more: Vec<String>,
+    emoji_dir: String,
+}
+
+impl Root {
+    /// The bytes of `file` and the path that held them, or why no path did,
+    /// with the file named as `what`. A relative path resolves in `dir`, then
+    /// in each of `more`.
+    fn read(&self, file: &str, what: &str) -> std::result::Result<(Vec<u8>, String), String> {
+        let roots = match file.starts_with('/') {
+            true => &[][..],
+            false => &self.more[..],
+        };
+        let first = normpath(&join(&self.dir, file));
+        let found = std::iter::once(first.clone())
+            .chain(roots.iter().map(|r| normpath(&join(r, file))))
+            .find(|p| std::path::Path::new(p).is_file());
+        match found {
+            None => {
+                // A font file that shows up later marks the scene stale.
+                crate::sources::record(&first);
+                let elsewhere = match (file.starts_with('/'), self.more.is_empty()) {
+                    (true, _) => String::new(),
+                    (false, true) => ", and $GHEE_ASSETS names no directory".to_string(),
+                    (false, false) => format!(", nor in $GHEE_ASSETS ({})", self.more.join(", ")),
+                };
+                Err(format!(
+                    "{what} ({first}): No such file or directory{elsewhere}"
+                ))
+            }
+            Some(path) => {
+                crate::sources::record(&path);
+                match fs::read(&path) {
+                    Ok(bytes) => Ok((bytes, path)),
+                    Err(e) => Err(format!("{what} ({path}): {}", strerror(&e))),
+                }
+            }
+        }
+    }
+
+    /// True when `file` lies outside the directory that the reach allows.
+    fn outside(&self, file: &str) -> bool {
+        self.reach == Reach::Inside && !inside(&normpath(&join(&self.dir, file)), &self.dir)
+    }
+
+    /// The pixels of the image file `file` of layer `layer`, decoded.
+    pub fn image(&self, layer: &str, file: &str) -> Result<crate::assets::Image> {
+        if self.outside(file) {
+            bail!(
+                "layer '{layer}' image {} is outside the scene directory",
+                py_str_repr(file)
+            );
+        }
+        let what = format!("layer '{layer}' image {}", py_str_repr(file));
+        let (bytes, path) = self.read(file, &what).map_err(|e| anyhow!("{e}"))?;
+        let decoded = match file.to_ascii_lowercase().ends_with(".png") {
+            true => crate::assets::decode_png(&bytes),
+            false => crate::assets::decode_jpeg(&bytes),
+        };
+        decoded.map_err(|e| anyhow!("{what} ({path}): {e}"))
+    }
 }
 
 impl Scene {
@@ -1850,7 +1923,17 @@ impl Scene {
             params,
             common,
             assets,
+            root: None,
         };
+        scene.check_layers()?;
+        Ok(scene)
+    }
+
+    /// The error for the first name that the scene cannot take, as
+    /// name_clash() finds it, or for a layer's font or image that names no
+    /// asset of the right kind.
+    fn check_layers(&self) -> Result<()> {
+        let scene = self;
         if let Some(e) = scene.name_clash() {
             bail!("{e}");
         }
@@ -1895,7 +1978,90 @@ impl Scene {
                 ),
             }
         }
-        Ok(scene)
+        Ok(())
+    }
+
+    /// Put `layer` into pass `pass` at `index` among its layers, through the
+    /// checks of a scene that declares it there, and declare the words param
+    /// of a text layer. A layer that the scene refuses leaves it as it was.
+    pub fn insert_layer(&mut self, pass: &str, index: usize, layer: Layer) -> Result<()> {
+        let Some(at) = self.passes.iter().position(|p| p.name == pass) else {
+            bail!("the scene has no pass '{pass}'");
+        };
+        let p = &self.passes[at];
+        if !p.filter.is_empty() {
+            bail!(
+                "pass '{pass}' is filter '{}', and a filter pass takes no layers",
+                p.filter
+            );
+        }
+        let n = p.layers.len();
+        if index > n {
+            bail!("pass '{pass}' holds {n} layers, so a layer goes in at 0 to {n}, got {index}");
+        }
+        let words = layer.as_text().map(|l| Param::words(&l.name, &l.text));
+        let name = layer.name().to_string();
+        self.passes[at].layers.insert(index, layer);
+        let declared = match words {
+            Some(w) if !self.params.contains_key(&name) => {
+                self.params.insert(name.clone(), w);
+                true
+            }
+            _ => false,
+        };
+        if let Err(e) = self.check_layers() {
+            self.passes[at].layers.remove(index);
+            if declared {
+                self.params.retain(|p| p.name != name);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Take layer `name` out of the scene, with the words param of a text
+    /// layer.
+    pub(crate) fn remove_layer(&mut self, name: &str) {
+        let mut text = false;
+        for p in &mut self.passes {
+            p.layers.retain(|l| {
+                text |= l.name() == name && l.as_text().is_some();
+                l.name() != name
+            });
+        }
+        if text {
+            self.params.retain(|p| !(p.of_text && p.name == name));
+        }
+    }
+
+    /// Hand `layer`, which joins the scene, its fonts or its image file as
+    /// the scene's load did for its own layers. A scene whose files never
+    /// loaded takes a layer that names no file.
+    pub fn load_layer(&self, layer: &mut Layer) -> Result<()> {
+        let emoji = match self.text_layers().find_map(|l| l.emoji.clone()) {
+            Some(e) => Some(e),
+            None => self
+                .root
+                .as_ref()
+                .and_then(|r| crate::emoji::find(&r.dir, &r.more, &r.emoji_dir)),
+        };
+        let none = Root {
+            dir: String::new(),
+            reach: Reach::Inside,
+            more: Vec::new(),
+            emoji_dir: String::new(),
+        };
+        let root = self.root.as_ref().unwrap_or(&none);
+        if let (Layer::Image(l), None) = (&*layer, &self.root) {
+            if l.is_file() {
+                bail!(
+                    "layer '{}': '{}' is a file, and the scene was built without a directory",
+                    l.name,
+                    l.image
+                );
+            }
+        }
+        load_layer(&self.assets, layer, root, &emoji)
     }
 
     /// Every layer of the scene, in the order of its passes.
@@ -1915,13 +2081,13 @@ impl Scene {
 
     /// Set the live field at `at` to `value`, written as the scene format
     /// writes the key, as Layer::set_live() does. A live image is an image
-    /// asset of the scene's own.
+    /// asset of the scene's own, or a .png or .jpg file.
     pub fn set_layer(&mut self, at: &Address, value: &Value) -> Result<()> {
         let Some(layer) = self.layer(at.layer) else {
             bail!("the scene has no layer '{}'", at.layer);
         };
         let live = layer.live(at.effect, at.field)?;
-        if live.form == Form::Image {
+        if live.form == Form::Image && !value.as_str().is_some_and(is_image_file) {
             let image = |a: &Asset| {
                 a.from_filter.is_empty() && !a.is_font() && value.as_str() == Some(a.name.as_str())
             };
@@ -2361,73 +2527,29 @@ impl Scene {
         more: &[String],
         emoji_dir: &str,
     ) -> Result<()> {
-        let root = normpath(&abspath(base_dir));
-        if self.text_layers().next().is_some() {
-            let emoji = crate::emoji::find(&root, more, emoji_dir);
-            for layer in self.passes.iter_mut().flat_map(|p| &mut p.layers) {
-                if let Layer::Text(l) = layer {
-                    l.emoji = emoji.clone();
-                }
-            }
-        }
-        let font_files = self
-            .text_layers()
-            .filter_map(|l| l.font_family.as_deref())
-            .any(crate::text::is_font_file);
-        let image_files = self
-            .layers()
-            .filter_map(Layer::as_image)
-            .any(|l| l.is_file());
-        if self.assets.is_empty() && !font_files && !image_files {
-            return Ok(());
-        }
-        let outside =
-            |file: &str| reach == Reach::Inside && !inside(&normpath(&join(&root, file)), &root);
-        // The bytes of `file` and the path that held them, or why no path did,
-        // with the file named as `what`.
-        let read = |file: &str, what: &str| {
-            let roots = match file.starts_with('/') {
-                true => &[][..],
-                false => more,
-            };
-            let first = normpath(&join(&root, file));
-            let found = std::iter::once(first.clone())
-                .chain(roots.iter().map(|r| normpath(&join(r, file))))
-                .find(|p| std::path::Path::new(p).is_file());
-            match found {
-                None => {
-                    // A font file that shows up later marks the scene stale.
-                    crate::sources::record(&first);
-                    let elsewhere = match (file.starts_with('/'), more.is_empty()) {
-                        (true, _) => String::new(),
-                        (false, true) => ", and $GHEE_ASSETS names no directory".to_string(),
-                        (false, false) => format!(", nor in $GHEE_ASSETS ({})", more.join(", ")),
-                    };
-                    Err(format!(
-                        "{what} ({first}): No such file or directory{elsewhere}"
-                    ))
-                }
-                Some(path) => {
-                    crate::sources::record(&path);
-                    match fs::read(&path) {
-                        Ok(bytes) => Ok((bytes, path)),
-                        Err(e) => Err(format!("{what} ({path}): {}", strerror(&e))),
-                    }
-                }
-            }
+        let root = Root {
+            dir: normpath(&abspath(base_dir)),
+            reach,
+            more: more.to_vec(),
+            emoji_dir: emoji_dir.to_string(),
+        };
+        self.root = Some(root.clone());
+        let emoji = match self.text_layers().next() {
+            Some(_) => crate::emoji::find(&root.dir, more, emoji_dir),
+            None => None,
         };
         for a in &mut self.assets {
             if !a.from_filter.is_empty() {
                 continue; // the filter decoded it
             }
-            if outside(&a.file) {
+            if root.outside(&a.file) {
                 bail!(
                     "asset '{}' file {} is outside the scene directory",
                     a.name,
                     py_str_repr(&a.file)
                 );
             }
-            match read(&a.file, &format!("asset '{}'", a.name)) {
+            match root.read(&a.file, &format!("asset '{}'", a.name)) {
                 Ok((bytes, path)) => a.decode(&bytes, &path)?,
                 // A font that fails to load leaves the scene running, and its
                 // layers draw error boxes.
@@ -2437,52 +2559,7 @@ impl Scene {
         }
         let assets = &self.assets;
         for layer in self.passes.iter_mut().flat_map(|p| &mut p.layers) {
-            let l = match layer {
-                Layer::Text(l) => l,
-                Layer::Image(l) if l.is_file() => {
-                    if outside(&l.image) {
-                        bail!(
-                            "layer '{}' image {} is outside the scene directory",
-                            l.name,
-                            py_str_repr(&l.image)
-                        );
-                    }
-                    let what = format!("layer '{}' image {}", l.name, py_str_repr(&l.image));
-                    let (bytes, path) = read(&l.image, &what).map_err(|e| anyhow!("{e}"))?;
-                    let decoded = match l.image.to_ascii_lowercase().ends_with(".png") {
-                        true => crate::assets::decode_png(&bytes),
-                        false => crate::assets::decode_jpeg(&bytes),
-                    };
-                    l.data = Some(decoded.map_err(|e| anyhow!("{what} ({path}): {e}"))?);
-                    continue;
-                }
-                Layer::Image(_) | Layer::Shape(_) => continue,
-            };
-            let Some(f) = l.font_family.clone() else {
-                l.data = Some(vec![crate::text::built_in_font()]);
-                continue;
-            };
-            if !crate::text::is_font_file(&f) {
-                let font = assets
-                    .iter()
-                    .find(|a| a.name == f)
-                    .and_then(|a| a.font.clone());
-                l.data = font.map(|f| vec![f]);
-                continue;
-            }
-            if outside(&f) {
-                bail!(
-                    "layer '{}' font_family {} is outside the scene directory",
-                    l.name,
-                    py_str_repr(&f)
-                );
-            }
-            let what = format!("layer '{}' font_family {}", l.name, py_str_repr(&f));
-            let font = read(&f, &what).and_then(|(bytes, path)| {
-                crate::text::font(&bytes)
-                    .map_err(|e| format!("{what} ({path}): unreadable font: {e}"))
-            });
-            l.data = Some(vec![font]);
+            load_layer(assets, layer, &root, &emoji)?;
         }
         Ok(())
     }
@@ -2492,6 +2569,51 @@ impl Scene {
         fs::write(path, serde_json::to_string_pretty(&self.to_dict())?)?;
         Ok(())
     }
+}
+
+/// Hand `layer` its fonts and the emoji font `emoji`, from the font assets
+/// `assets` or a file, or the pixels of its image file, its files read
+/// through `root`.
+fn load_layer(
+    assets: &[Asset],
+    layer: &mut Layer,
+    root: &Root,
+    emoji: &Option<std::sync::Arc<crate::emoji::EmojiFont>>,
+) -> Result<()> {
+    let l = match layer {
+        Layer::Text(l) => l,
+        Layer::Image(l) if l.is_file() => {
+            l.data = Some(root.image(&l.name, &l.image)?);
+            return Ok(());
+        }
+        Layer::Image(_) | Layer::Shape(_) => return Ok(()),
+    };
+    l.emoji = emoji.clone();
+    let Some(f) = l.font_family.clone() else {
+        l.data = Some(vec![crate::text::built_in_font()]);
+        return Ok(());
+    };
+    if !crate::text::is_font_file(&f) {
+        let font = assets
+            .iter()
+            .find(|a| a.name == f)
+            .and_then(|a| a.font.clone());
+        l.data = font.map(|f| vec![f]);
+        return Ok(());
+    }
+    if root.outside(&f) {
+        bail!(
+            "layer '{}' font_family {} is outside the scene directory",
+            l.name,
+            py_str_repr(&f)
+        );
+    }
+    let what = format!("layer '{}' font_family {}", l.name, py_str_repr(&f));
+    let font = root.read(&f, &what).and_then(|(bytes, path)| {
+        crate::text::font(&bytes).map_err(|e| format!("{what} ({path}): unreadable font: {e}"))
+    });
+    l.data = Some(vec![font]);
+    Ok(())
 }
 
 /// The directories `$GHEE_ASSETS` names, colon-separated, absolute, in order.
@@ -4257,7 +4379,7 @@ mod tests {
     }
 
     #[test]
-    fn a_live_image_is_an_image_asset_of_the_scenes_own() {
+    fn a_live_image_is_an_image_asset_of_the_scenes_own_or_an_image_file() {
         let doc = json!({
             "assets": {"pic": {"file": "pic.png"}, "pic2": {"file": "pic2.png"},
                        "sans": {"file": "sans.ttf"}},
@@ -4273,13 +4395,18 @@ mod tests {
             effect: None,
             field: "image",
         };
-        sc.set_layer(&image, &json!("pic2")).unwrap();
-        assert_eq!(sc.layer("i").unwrap().as_image().unwrap().image, "pic2");
+        for value in ["pic2", "pic.png", "wifi.JPG"] {
+            sc.set_layer(&image, &json!(value)).unwrap();
+            assert_eq!(sc.layer("i").unwrap().as_image().unwrap().image, value);
+        }
         let mut refused = |value: Value| sc.set_layer(&image, &value).unwrap_err().to_string();
-        for value in ["pic.png", "sans", "nope", &filter] {
+        for value in ["sans", "nope", &filter] {
             assert_eq!(
                 refused(json!(value)),
-                format!("layer 'i' image needs an image asset of the scene, got '{value}'")
+                format!(
+                    "layer 'i' image needs an image asset of the scene or a .png or .jpg file, \
+                     got '{value}'"
+                )
             );
         }
         let nope = Address {

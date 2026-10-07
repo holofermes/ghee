@@ -281,7 +281,7 @@ pub fn to_scene(
     vertex_shader: bool,
 ) -> Result<(Scene, Vec<String>)> {
     match convert(text, name, size, false, vertex_shader)? {
-        (Built::Scene(scene), warnings) => Ok((scene, warnings)),
+        (Built::Scene(scene), warnings) => Ok((*scene, warnings)),
         (Built::Filter(_), _) => unreachable!("built as a scene"),
     }
 }
@@ -357,7 +357,7 @@ impl Sized {
 }
 
 enum Built {
-    Scene(Scene),
+    Scene(Box<Scene>),
     Filter(Value),
 }
 
@@ -518,7 +518,7 @@ fn build(
         )?);
     }
     let scene = Scene::new(passes, Value::from(1), Vec::new(), params, None, Vec::new())?;
-    Ok((Built::Scene(scene), warn))
+    Ok((Built::Scene(Box::new(scene)), warn))
 }
 
 fn refuse_unrunnable(meta: &Map<String, Value>, body: &str, vertex_shader: bool) -> Result<()> {

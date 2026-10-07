@@ -266,6 +266,8 @@ pub struct Console {
     pub rgb565: bool,
     /// The degrees clockwise that every output turns the frame.
     pub rotate: i64,
+    /// The backlight level that the display takes at the start, 0 to 1.
+    pub brightness: Option<f64>,
     /// The longest side of the browser preview. The encoder thread downscales it.
     pub preview_max: i32,
     /// The browser preview refresh cap. The display and the panel stay at full
@@ -347,6 +349,7 @@ impl Console {
             display: false,
             rgb565: false,
             rotate: 0,
+            brightness: None,
             preview_max: 480,
             preview_fps: 15.0,
             stream_max: 0,
@@ -1359,6 +1362,9 @@ fn make_renderer(console: &Console) -> Result<Renderer> {
     let mut r = open_renderer(console)?;
     r.set_alpha(console.alpha);
     r.set_rotate(console.rotate)?;
+    if let Some(level) = console.brightness {
+        r.set_brightness(level)?;
+    }
     Ok(r)
 }
 
@@ -2229,6 +2235,8 @@ pub struct Options {
     /// The degrees clockwise that every output turns the frame: 0, 90, 180
     /// or 270. `size` stays the output's.
     pub rotate: i64,
+    /// The backlight level that the KMS display takes at the start, 0 to 1.
+    pub brightness: Option<f64>,
     pub preview_max: i32,
     pub preview_fps: f64,
     pub stream_max: i32,
@@ -2272,6 +2280,7 @@ impl Default for Options {
             display: false,
             rgb565: false,
             rotate: 0,
+            brightness: None,
             preview_max: 480,
             preview_fps: 15.0,
             stream_max: 0,
@@ -2304,6 +2313,7 @@ pub fn run(opts: Options) -> Result<()> {
         display,
         rgb565,
         rotate,
+        brightness,
         preview_max,
         preview_fps,
         stream_max,
@@ -2346,6 +2356,7 @@ pub fn run(opts: Options) -> Result<()> {
     console.display = display;
     console.rgb565 = rgb565;
     console.rotate = rotate;
+    console.brightness = brightness;
     console.preview_max = preview_max;
     console.preview_fps = preview_fps;
     console.stream_max = stream_max;

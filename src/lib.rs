@@ -56,6 +56,7 @@ pub(crate) mod isf;
 pub mod layer;
 pub mod looper;
 pub mod output;
+pub mod panel;
 pub mod procedural;
 pub(crate) mod report;
 pub mod scene;

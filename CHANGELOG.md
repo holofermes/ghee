@@ -390,6 +390,13 @@
   and the console's preview and H264 all take the turned frame, on the GPU.
   At 90 and 270 the scene renders at the output's size turned, so a 128x32
   panel gives the scene 32x128.
+- Set a KMS display's backlight with `--brightness`, 0 to 1, on
+  `ghee render` and `ghee serve`, and `Renderer::set_brightness` in Rust,
+  which gives back the level that the device then reads, as
+  `Renderer::brightness` does. ghee writes the backlight device that the
+  kernel registered under the card's device, scaled onto its
+  `max_brightness`: under ssd130x, the panel's contrast. A display with no
+  backlight device refuses a set and reads None.
 - Find a KMS display for `ghee displays` and `--display kms` in the
   kernel's cached connector state, and probe a connector, which rereads an
   HDMI display's EDID, only when that state lists no modes.

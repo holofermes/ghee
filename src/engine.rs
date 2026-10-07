@@ -30,7 +30,7 @@ use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::os::raw::{c_char, c_double, c_int, c_void};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Arc;
 use std::thread;
@@ -553,6 +553,8 @@ pub struct Renderer {
     pub error_pass: Option<ErrorPass>,
     #[allow(dead_code)]
     pub display: bool,
+    /// The card node that the display mode scans out on.
+    card: Option<String>,
     /// The readbacks keep the output pass's alpha. set_alpha() sets it.
     alpha: bool,
     /// The quarter turns clockwise that set_rotate() set.
@@ -655,6 +657,7 @@ impl Renderer {
             error_line: None,
             error_pass: None,
             display,
+            card: None,
             alpha: false,
             turns: 0,
             mp: Vec::new(),
@@ -713,6 +716,7 @@ impl Renderer {
             if r.handle.is_null() {
                 bail!("{}", err_text(err));
             }
+            r.card = Some(dev);
             return Ok(r);
         }
         let devices = match device {
@@ -3060,6 +3064,19 @@ impl Renderer {
         }
         self.turns = turns;
         Ok(())
+    }
+
+    /// The backlight level of the display, 0 to 1. None outside display
+    /// mode, or for a display with no backlight device.
+    pub fn brightness(&self) -> Result<Option<f64>> {
+        crate::panel::brightness(Path::new(crate::panel::SYS), self.card.as_deref())
+    }
+
+    /// Set the backlight of the display, 0 to 1, through the backlight
+    /// device that the kernel registered under the card's device, and give
+    /// back the level that it then reads.
+    pub fn set_brightness(&self, level: f64) -> Result<f64> {
+        crate::panel::set_brightness(Path::new(crate::panel::SYS), self.card.as_deref(), level)
     }
 
     /// The size that the scene renders at: the frame's size, turned at 90

@@ -83,6 +83,14 @@ fn rotation(s: &str) -> Result<i64, String> {
     }
 }
 
+/// --brightness's level, 0 to 1.
+fn level(s: &str) -> Result<f64, String> {
+    match s.trim().parse::<f64>() {
+        Ok(v) if (0.0..=1.0).contains(&v) => Ok(v),
+        _ => Err(format!("'{s}' is not a level from 0 to 1")),
+    }
+}
+
 fn size(s: &str) -> Result<(i32, i32), String> {
     let bad = || format!("invalid _size value: '{s}'");
     let lower = s.to_lowercase();
@@ -804,6 +812,9 @@ fn cmd_render(a: &Ns) -> Result<()> {
     let scene = if a.serve { None } else { Some(scene_of(a)?) };
     let panel = panel_of(a)?;
     let kms = matches!(panel, Panel::Kms);
+    if a.brightness.is_some() && !kms {
+        return Err(exit(format!("{}: --brightness needs --display kms", a.cmd)));
+    }
     if matches!(panel, Panel::None) && !given(&a.output) && !given(&a.h264) && !a.serve {
         return Err(exit(format!(
             "{}: pass -o PATTERN, --display NAME, --h264 PATH or --serve",
@@ -844,6 +855,12 @@ fn cmd_render(a: &Ns) -> Result<()> {
     let mut r = Renderer::new(w, h, components, dri.as_deref(), kms, a.rgb565)?;
     r.set_alpha(a.alpha);
     r.set_rotate(a.rotate)?;
+    if let Some(level) = a.brightness {
+        let took = r
+            .set_brightness(level)
+            .map_err(|e| exit(format!("{}: {e:#}", a.cmd)))?;
+        report::detail("backlight", format!("{took:.3}"));
+    }
     let err = r.setup(&scene)?;
     if !err.is_empty() {
         return Err(exit(format!("compile error: {err}")));
@@ -965,6 +982,7 @@ fn serve(
         display: kms,
         rgb565: a.rgb565,
         rotate: a.rotate,
+        brightness: a.brightness,
         port: a.port,
         host: a.host.clone(),
         preview_max: a.preview_max,
@@ -1332,6 +1350,16 @@ struct RenderFlags {
                 270. At 90 and 270 the scene renders at the output's size turned"
     )]
     rotate: i64,
+
+    #[arg(
+        long,
+        value_name = "LEVEL",
+        value_parser = level,
+        help = "set the --display kms panel's backlight, 0 to 1, through the \
+                kernel's backlight device"
+    )]
+    brightness: Option<f64>,
+
     #[arg(
         long,
         help = "with `-- --help`, list the scenes without asking each one what \
@@ -1625,6 +1653,7 @@ pub struct Ns {
     display_opts: Option<String>,
     rgb565: bool,
     rotate: i64,
+    brightness: Option<f64>,
     frames: Option<i64>,
     timestep: Option<f64>,
     size: Option<(i32, i32)>,
@@ -1665,6 +1694,7 @@ impl RenderArgs {
             display_opts: self.render.display_opts,
             rgb565: self.render.rgb565,
             rotate: self.render.rotate,
+            brightness: self.render.brightness,
             frames: self.render.frames,
             timestep: self.render.timestep,
             size: self.render.size,
@@ -1705,6 +1735,7 @@ impl ServeArgs {
             display_opts: self.render.display_opts,
             rgb565: self.render.rgb565,
             rotate: self.render.rotate,
+            brightness: self.render.brightness,
             frames: self.render.frames,
             timestep: self.render.timestep,
             size: self.render.size,
@@ -1849,6 +1880,21 @@ mod tests {
         let path = format!("{d}/s.scene.json");
         fs::write(&path, SCENE).unwrap();
         (d, path)
+    }
+
+    #[test]
+    fn brightness_takes_a_level_for_a_kms_display() {
+        let (_d, path) = scene_file("brightness");
+        let e = run(&["render", &path, "-o", "x.png", "--brightness", "0.5"]).unwrap_err();
+        assert_eq!(e.to_string(), "render: --brightness needs --display kms");
+        assert_eq!(
+            level("1.5").unwrap_err(),
+            "'1.5' is not a level from 0 to 1"
+        );
+        assert_eq!(
+            ns(&["serve", "--demo", "--brightness", "0.25"]).brightness,
+            Some(0.25)
+        );
     }
 
     #[test]

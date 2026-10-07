@@ -803,8 +803,9 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
 
 /// `raw`, a /set value, as the live field `live` takes it: a number, true or
 /// false, a colour as `#rrggbb`, a CSS colour name, three comma-separated
-/// floats or a gradient object in JSON, the name of an image asset, or `none` for the default of
-/// a field that takes none.
+/// floats or a gradient object in JSON, the name of an image asset, a line's
+/// points as a JSON list, or `none` for the default of a field that takes
+/// none.
 fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
     let what = &live.what;
     let s = raw.trim();
@@ -847,6 +848,12 @@ fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
             Err(format!("{what} needs {forms}, got {got}"))
         }
         Form::Image => Ok(Value::from(raw)),
+        Form::Points => match serde_json::from_str::<Value>(s) {
+            Ok(v @ Value::Array(_)) => Ok(v),
+            _ => Err(format!(
+                "{what} needs a JSON list of points, each [x, y], got {got}"
+            )),
+        },
     }
 }
 
@@ -883,11 +890,12 @@ pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
 
 /// The type of a param in a scene document, or None when the scope holds no
 /// param of that name. ghee declares a scene string param under each text
-/// layer's name, and none for an image layer, which holds an `image`.
+/// layer's name, and none for an image layer, which holds an `image`, or a
+/// shape layer, which holds a `shape`.
 pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
+    let text = |l: &Value| l.get("image").is_none() && l.get("shape").is_none();
     if scope == Scope::Scene
-        && doc_layers(doc)
-            .any(|l| l.get("name") == Some(&Value::from(name)) && l.get("image").is_none())
+        && doc_layers(doc).any(|l| l.get("name") == Some(&Value::from(name)) && text(l))
     {
         return Some("string".to_string());
     }
@@ -945,7 +953,9 @@ mod tests {
         "passes": [{"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }",
                     "layers": [{"name": "words", "text": "ho", "font_family": "sans.ttf",
                                 "karaoke": {}},
-                               {"name": "icon", "image": "icon.png"}],
+                               {"name": "icon", "image": "icon.png"},
+                               {"name": "frame", "shape": "rect"},
+                               {"name": "scope", "shape": "line", "points": [[0, 0], [1, 1]]}],
                     "params": {"k": {"type": "float", "value": 0.0},
                                "on": {"type": "bool", "value": false},
                                "n": {"type": "int", "value": 0},
@@ -1329,6 +1339,15 @@ mod tests {
             ("words", Some("karaoke"), "visible", "0", Value::from(false)),
             ("icon", None, "color", "none", Value::Null),
             ("icon", None, "image", "pic", Value::from("pic")),
+            (
+                "scope",
+                None,
+                "points",
+                "[[0, 16], [8, 4.5]]",
+                serde_json::json!([[0, 16], [8, 4.5]]),
+            ),
+            ("frame", Some("border"), "color", "Red", Value::from("Red")),
+            ("frame", None, "width", "none", Value::Null),
         ] {
             let api = api();
             let r = post(&api, "/set", &layer_query(layer, effect, field, raw));

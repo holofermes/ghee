@@ -53,6 +53,7 @@ _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 ParamType = Literal["float", "int", "bool", "color", "string", "vec2", "vec3", "vec4"]
 TextAlign = Literal["left", "center", "right"]
 Render = Literal["mtsdf", "slug"]
+Shape = Literal["rect", "line"]
 Blend = Literal["normal", "add", "multiply", "screen"]
 ArgType = Literal["string", "int", "float", "size", "bool"]
 
@@ -177,7 +178,7 @@ class Channel:
 
 @dataclass
 class Layer:
-    """Words or a picture that ghee paints over the buffer of its pass.
+    """Words, a picture or a shape that ghee paints over the buffer of its pass.
 
     `name` is required. A key left at None takes ghee's default.
     `visible` False hides the layer. `x` and `y` put the block's top left at
@@ -211,6 +212,13 @@ class Layer:
     keeps the image's aspect, and both left out take its own size. Its
     `color` is a tint that multiplies the picture.
 
+    A shape layer draws `shape`, "rect" or "line", in its `color`. A rect
+    fills `width` by `height` pass pixels, the pass's own on a size left out,
+    with `x`, `y` at its top left. `border` draws inside its edge, a dict of
+    `width` in pixels, `color` and `visible`, and `border_radius` rounds its
+    corners by that many pixels. A line runs through `points`, each [x, y]
+    a pixel, `stroke_width` pixels thick, and `x`, `y` shift every point.
+
     `ghee.layers` and a handle's `layers` set a layer's live fields while
     the scene runs.
     """
@@ -237,6 +245,11 @@ class Layer:
     image: str | os.PathLike[str] | None = None
     width: float | None = None
     height: float | None = None
+    shape: Shape | None = None
+    border: dict | None = None
+    border_radius: float | None = None
+    points: Sequence[Sequence[float]] | None = None
+    stroke_width: float | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"name": self.name}
@@ -255,7 +268,12 @@ class Layer:
             d["text"] = self.text
         if self.image is not None:
             d["image"] = _plain(self.image)
+        if self.shape is not None:
+            d["shape"] = self.shape
         for k in ("width", "height"):
+            if getattr(self, k) is not None:
+                d[k] = _floats(getattr(self, k))
+        for k in ("border", "border_radius", "points", "stroke_width"):
             if getattr(self, k) is not None:
                 d[k] = _floats(getattr(self, k))
         if self.font_size is not None:
@@ -817,13 +835,13 @@ def _set_layer(name: str, field: str, value: Any, effect: str | None = None) -> 
         from ghee import _ext
 
         _LIVE = _ext()._LayerWire(_SCENE.to_dict())
-    wire, body = _LIVE.message(name, field, value, effect)
+    kind, wire, body = _LIVE.message(name, field, value, effect)
     if isinstance(body, str):
         text = body.encode("utf-8")
-        _OUT.append(_message(3, wire, len(text), text))
+        _OUT.append(_message(kind, wire, len(text), text))
         return
     count, data = _f32(body, f"layer '{name}'")
-    _OUT.append(_message(1, wire, count, data))
+    _OUT.append(_message(kind, wire, count, data))
 
 
 # The live fields of the layers of the scene that run() runs, set from a tick

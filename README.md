@@ -321,8 +321,9 @@ beside a text layer `title`, and the error names both.
 ## Layers
 
 A pass's shader fills its buffer, then the pass's `layers` paint over it, in
-list order. A text layer draws words from a font, and an image layer draws a
-picture. Both take their settings as keys, and ghee draws them. A pass's shader
+list order. A text layer draws words from a font, an image layer draws a
+picture, and a shape layer draws a rect or a line. Each takes its settings as
+keys, and ghee draws them. A pass's shader
 can also read the words of any text layer and any image asset, for the
 per-pixel work that settings do not cover, as [Coverage in a
 shader](#coverage-in-a-shader) shows.
@@ -474,20 +475,60 @@ stretch it. `color` tints the image: it multiplies each pixel. An image layer
 gives the passes no GLSL name of its own, and a pass's shader reads the image
 as its asset's `<name>_tex`.
 
+### Shape layers
+
+A shape layer holds `shape`, `rect` or `line`, and takes no effects. This
+scene draws a progress bar at the bottom of a 128x32 panel, a disc in the top
+right corner, and a lime waveform:
+
+```json
+"layers": [
+  { "name": "frame", "shape": "rect", "x": 0, "y": 24, "width": 128, "height": 8,
+    "color": "transparent", "border": { "width": 1, "color": "white" } },
+  { "name": "fill", "shape": "rect", "x": 2, "y": 26, "width": 60, "height": 4 },
+  { "name": "dial", "shape": "rect", "x": 100, "y": 4, "width": 20, "height": 20,
+    "border_radius": 10 },
+  { "name": "scope", "shape": "line", "points": [[0, 16], [8, 4], [16, 28]],
+    "stroke_width": 1, "color": "lime" }
+]
+```
+
+| Key | Value | Default |
+| --- | --- | --- |
+| `width`, `height` | a rect's box in pass pixels | the pass's own |
+| `border` | a rect's border, an object of `width` in pixels, `color` and `visible` | none; `width` 1 and `color` white in an object |
+| `border_radius` | a rect's corner radius in pixels | 0 |
+| `points` | a line's points, each `[x, y]`, two or more | required |
+| `stroke_width` | a line's thickness in pixels | 1 |
+
+A rect's `color` fills its box, and its border lies inside the box's edge. A
+radius of half the shorter side gives round ends, and more rounds no further.
+A line's point is a pixel, as luma and Pillow count them, so a line of
+`stroke_width` 1 from `[0, 31]` to `[127, 31]` lights row 31. A line's `x`
+and `y` shift every point, 0 by default. Every edge is antialiased from the
+distance to the shape, so a shape at whole pixels lights whole pixels.
+
+Every field of a shape layer but `shape` and `blend` changes with no rebuild.
+ghee draws every shape with one shader, so a shape layer that changes or
+hides compiles nothing.
+
 ### Live fields
 
 Some fields change with no rebuild: a layer's `x`, `y`, `color`, `opacity`
 and `visible`, a text layer's words, an image layer's `image`, which takes
-another image asset of the scene, and an effect's `visible`, `color`,
-`strength`, `sung`, `speed` and `rate`. A change to any other field rebuilds
-the layer. Setting `x` or `y` to none centres the block on that axis again,
-and setting `color` to none takes its default back.
+another image asset of the scene, an effect's `visible`, `color`,
+`strength`, `sung`, `speed` and `rate`, and every field of a shape layer but
+`shape` and `blend`, its border's in the place of an effect's. A change to
+any other field rebuilds the layer. Setting `x` or `y` to none takes it back
+to its default, and so does setting `color`, or a rect's `width` or
+`height`.
 
 Python sets a live field through `layers`, as `h.layers.title.x = 10` on a
 `ghee.open` handle or `ghee.layers.title.karaoke.sung = 12` in a procedural
 scene's tick, and [python/README.md](python/README.md) holds the rest. The
 console sets them through `/set?layer=`, which [docs/http.md](docs/http.md)
-describes, a procedural scene through its message kind 1, and Rust through
+describes, a procedural scene through its messages, as
+[docs/procedural.md](docs/procedural.md) describes, and Rust through
 `Renderer::set_layer`.
 
 `wave`, `scroll` and `blink` move by a phase that ghee keeps for each layer.

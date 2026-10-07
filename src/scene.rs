@@ -1603,7 +1603,7 @@ impl Pass {
                 .iter()
                 .map(|l| match l {
                     Layer::Text(t) => t.to_dict(&words(t)),
-                    Layer::Image(i) => i.to_dict(),
+                    l => l.to_dict(""),
                 })
                 .collect();
             out.insert("layers".to_string(), Value::from(layers));
@@ -2456,7 +2456,7 @@ impl Scene {
                     l.data = Some(decoded.map_err(|e| anyhow!("{what} ({path}): {e}"))?);
                     continue;
                 }
-                Layer::Image(_) => continue,
+                Layer::Image(_) | Layer::Shape(_) => continue,
             };
             let Some(f) = l.font_family.clone() else {
                 l.data = Some(vec![crate::text::built_in_font()]);

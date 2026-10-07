@@ -379,6 +379,44 @@ def test_an_image_layer_takes_the_scene_json_keys():
     assert json.dumps(built) == json.dumps(recorded)  # key order too
 
 
+def test_a_shape_layer_takes_the_scene_json_keys():
+    shim = load()
+    rect = shim.Layer(
+        "frame",
+        shape="rect",
+        x=0,
+        y=24,
+        width=128,
+        height=8,
+        color="transparent",
+        border={"width": 1, "color": "white"},
+        border_radius=2,
+    )
+    line = shim.Layer("scope", shape="line", points=[(0, 16), (8, 4)], stroke_width=2)
+    recorded = [
+        {
+            "name": "frame",
+            "x": 0.0,
+            "y": 24.0,
+            "color": "transparent",
+            "shape": "rect",
+            "width": 128.0,
+            "height": 8.0,
+            "border": {"width": 1.0, "color": "white"},
+            "border_radius": 2.0,
+        },
+        {
+            "name": "scope",
+            "shape": "line",
+            "points": [[0.0, 16.0], [8.0, 4.0]],
+            "stroke_width": 2.0,
+        },
+    ]
+    built = [rect.to_dict(), line.to_dict()]
+    assert built == recorded
+    assert json.dumps(built) == json.dumps(recorded)  # key order too
+
+
 def test_a_layer_leaves_its_defaults_out():
     shim = load()
     assert shim.Layer(name="words").to_dict() == {"name": "words"}
@@ -871,6 +909,33 @@ def test_a_layer_set_goes_out_in_the_form_of_its_field(monkeypatch):
         (3, "title.color", '{"from":[0,0,1],"to":"navy"}'),
         (3, "title", "ho"),
         (3, "icon.image", "b"),
+        END,
+    ]
+
+
+def test_a_shape_set_goes_out_in_the_form_of_its_field(monkeypatch):
+    shim = load()
+    scene = scene_of(shim)
+    scene.passes[0].layers = [
+        shim.Layer("frame", shape="rect"),
+        shim.Layer("scope", shape="line", points=[[0, 0], [1, 1]]),
+    ]
+
+    @shim.tick
+    def hook(tick):
+        shim.layers.scope.points = [(0, 16), (8, 4.5)]
+        shim.layers.frame.border.color = "Red"
+        shim.layers.frame.border.width = 2
+        shim.layers.frame.width = None
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, scene, ticks, monkeypatch)
+    # points go as an array, x and y in turn
+    assert messages(rest) == [
+        (0, "scope.points", [0.0, 16.0, 8.0, 4.5]),
+        (3, "frame.border.color", "Red"),
+        (1, "frame.border.width", [2.0]),
+        (1, "frame.width", []),
         END,
     ]
 

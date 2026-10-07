@@ -59,6 +59,7 @@ pub mod output;
 pub mod procedural;
 pub(crate) mod report;
 pub mod scene;
+pub mod shape;
 pub(crate) mod sources;
 pub mod stats;
 #[cfg(test)]

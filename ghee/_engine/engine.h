@@ -148,7 +148,10 @@ bool ghee_mp_reads(GheeScene *g, const char *name);
 // nothing.
 enum { GHEE_BLEND_NORMAL, GHEE_BLEND_ADD, GHEE_BLEND_MULTIPLY, GHEE_BLEND_SCREEN };
 // Staged like ghee_mp_add_pass: `pass` is a pending pass, the commit keeps the
-// returned index, and an abort drops the batch. `name` stands for the batch in
+// returned index, and an abort drops the batch. A batch whose two sources
+// match those of a batch that the renderer holds, running or staged, shares
+// its program and compiles nothing, so a uniform set on one sets it on both,
+// and `resolution` holds each draw's own pass size. `name` stands for the batch in
 // the errors of later calls. An error of this call leaves the name out, as a
 // compile error does, and its caller names the batch. NULL for both sources
 // adds a batch with no program, which draws nothing until
@@ -203,6 +206,7 @@ int  ghee_max_texture_units(GheeScene *g);
 int  ghee_gl_texture_units(GheeScene *g);    // GL_MAX_TEXTURE_IMAGE_UNITS itself
 bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 bool ghee_mipmaps_npot(GheeScene *g);        // GPU mipmaps a texture of any size
+int  ghee_compiled(GheeScene *g);            // programs that the renderer linked since its create
 
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);

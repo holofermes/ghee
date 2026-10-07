@@ -499,6 +499,28 @@ def test_a_layer_field_reaches_the_engine_live():
             h.set_layer("t", "font_size", 12)
 
 
+def test_a_shape_field_reaches_the_engine_live():
+    # A red rect fills the frame, and its border lies inside its edge.
+    shapes = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "layers": [{"name": "box", "shape": "rect", "color": "red"}],
+            }
+        ],
+    }
+    with ghee.open(shapes, width=8, height=8, timestep=0) as h:
+        h.frame()
+        assert tuple(h.pixels()[0:3]) == (255, 0, 0)
+        h.layers.box.border.color = "lime"
+        h.frame()
+        assert tuple(h.pixels()[0:3]) == (0, 255, 0)
+        with pytest.raises(ValueError, match="layer 'box' has no field 'points'"):
+            h.layers.box.points = [(0, 0), (1, 1)]
+
+
 def test_a_handle_sets_a_layer_field_by_attribute_or_by_key():
     # The built-in font draws the layer's words, red over black, with an
     # orange glow.

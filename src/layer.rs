@@ -41,6 +41,7 @@ use crate::css;
 use crate::emoji::{self, EmojiFont};
 use crate::engine::Blend;
 use crate::scene::{hex_colour, keys_on, known_keys, number_list, py_float, py_repr, PASS_KEYS};
+use crate::shape::{self, ShapeLayer};
 use crate::text::{self, Align, Font, Layout};
 
 /// The keys that every layer takes.
@@ -65,10 +66,23 @@ const TEXT_KEYS: [&str; 12] = [
 /// The keys of an image layer past EVERY_KEYS.
 const IMAGE_KEYS: [&str; 3] = ["image", "width", "height"];
 
-/// Every key that a layer takes, of either kind.
+/// Every key that a layer takes, of any kind.
 pub(crate) fn layer_keys() -> Vec<&'static str> {
-    [&EVERY_KEYS[..], &TEXT_KEYS, &IMAGE_KEYS].concat()
+    [
+        &EVERY_KEYS[..],
+        &TEXT_KEYS,
+        &IMAGE_KEYS,
+        &shape::RECT_KEYS,
+        &shape::LINE_KEYS,
+    ]
+    .concat()
 }
+
+/// A text layer's keys, and the kind of layer in an error.
+pub(crate) const TEXT_KIND: (&[&str], &str) = (&TEXT_KEYS, "a text layer");
+
+/// An image layer's keys, and the kind of layer in an error.
+pub(crate) const IMAGE_KIND: (&[&str], &str) = (&IMAGE_KEYS, "an image layer");
 
 /// The keys of every layer that change with no rebuild, as live fields.
 const LIVE_KEYS: [&str; 5] = ["x", "y", "color", "opacity", "visible"];
@@ -565,38 +579,37 @@ impl Effect {
 }
 
 /// The settings that every layer takes, and `what`, the layer in an error.
-struct Every {
-    name: String,
-    what: String,
-    visible: bool,
-    x: Option<f64>,
-    y: Option<f64>,
-    opacity: f64,
-    blend: Blend,
+pub(crate) struct Every {
+    pub(crate) name: String,
+    pub(crate) what: String,
+    pub(crate) visible: bool,
+    pub(crate) x: Option<f64>,
+    pub(crate) y: Option<f64>,
+    pub(crate) opacity: f64,
+    pub(crate) blend: Blend,
 }
 
 impl Every {
     /// Check the keys of layer `o`, which takes EVERY_KEYS and `own`, and
     /// read the settings of every layer. `at` names the layer by its place
-    /// in an error until its name is known, and `other` names the kind of
-    /// layer that takes `others`.
-    fn from_dict(
+    /// in an error until its name is known, and `others` holds the keys of
+    /// the other kinds of layer, each with the kind that takes it.
+    pub(crate) fn from_dict(
         at: &str,
         o: &Map<String, Value>,
         own: &[&str],
-        others: &[&str],
-        other: &str,
+        others: &[(&[&str], &str)],
     ) -> Result<Every> {
         let what = match o.get("name") {
             Some(Value::String(n)) => format!("layer '{n}'"),
             _ => at.to_string(),
         };
         let takes = [&EVERY_KEYS[..], own].concat();
-        let elsewhere = [
-            keys_on(&takes, others, other),
-            keys_on(&takes, &PASS_KEYS, "its pass"),
-        ]
-        .concat();
+        let mut elsewhere: Vec<(&str, String)> = Vec::new();
+        for (keys, kind) in others {
+            elsewhere.extend(keys_on(&takes, keys, kind));
+        }
+        elsewhere.extend(keys_on(&takes, &PASS_KEYS, "its pass"));
         known_keys(o, &what, &takes, &elsewhere)?;
         let name = match given(o, "name") {
             None => bail!("{at} has no 'name'"),
@@ -642,7 +655,7 @@ impl Every {
 
 /// The keys of every layer that leave their default, as a scene holds them,
 /// `name` first, then `color` when it is Some.
-fn every_dict(
+pub(crate) fn every_dict(
     name: &str,
     visible: bool,
     x: Option<f64>,
@@ -674,7 +687,7 @@ fn every_dict(
 }
 
 /// Layer `d` as an object. `at` names it in the error.
-fn object<'a>(at: &str, d: &'a Value) -> Result<&'a Map<String, Value>> {
+pub(crate) fn object<'a>(at: &str, d: &'a Value) -> Result<&'a Map<String, Value>> {
     match d {
         Value::Object(o) => Ok(o),
         _ => bail!("{at} needs an object, got {}", py_repr(d)),
@@ -682,13 +695,13 @@ fn object<'a>(at: &str, d: &'a Value) -> Result<&'a Map<String, Value>> {
 }
 
 /// Key `k` of `o`, None when it is missing or null.
-fn given<'a>(o: &'a Map<String, Value>, k: &str) -> Option<&'a Value> {
+pub(crate) fn given<'a>(o: &'a Map<String, Value>, k: &str) -> Option<&'a Value> {
     o.get(k).filter(|v| !v.is_null())
 }
 
 /// Key `k` of layer `o`, a finite number that `ok` takes, or None when it
 /// is missing. `needs` says what it takes in the error.
-fn number(
+pub(crate) fn number(
     o: &Map<String, Value>,
     what: &str,
     k: &str,
@@ -783,7 +796,12 @@ impl TextLayer {
     /// pass 'main'", until its name is known.
     pub fn from_dict(at: &str, d: &Value) -> Result<TextLayer> {
         let o = object(at, d)?;
-        let e = Every::from_dict(at, o, &TEXT_KEYS, &IMAGE_KEYS, "an image layer")?;
+        let e = Every::from_dict(
+            at,
+            o,
+            &TEXT_KEYS,
+            &[IMAGE_KIND, shape::RECT_KIND, shape::LINE_KIND],
+        )?;
         let what = e.what.as_str();
         let given = |k: &str| given(o, k);
         let number = |k: &str, ok: fn(f64) -> bool, needs: &str| number(o, what, k, ok, needs);
@@ -1526,7 +1544,12 @@ impl ImageLayer {
     /// pass 'main'", until its name is known.
     pub fn from_dict(at: &str, d: &Value) -> Result<ImageLayer> {
         let o = object(at, d)?;
-        let e = Every::from_dict(at, o, &IMAGE_KEYS, &TEXT_KEYS, "a text layer")?;
+        let e = Every::from_dict(
+            at,
+            o,
+            &IMAGE_KEYS,
+            &[TEXT_KIND, shape::RECT_KIND, shape::LINE_KIND],
+        )?;
         let what = e.what.as_str();
         let color = match given(o, "color") {
             None => None,
@@ -1632,22 +1655,37 @@ pub fn is_image_file(image: &str) -> bool {
     [".png", ".jpg", ".jpeg"].iter().any(|e| f.ends_with(e))
 }
 
-/// A layer of a pass, which paints its words or its picture over the pass's
-/// buffer.
+/// A layer of a pass, which paints its words, its picture or its shape over
+/// the pass's buffer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Layer {
     Text(TextLayer),
     Image(ImageLayer),
+    Shape(ShapeLayer),
 }
 
 impl Layer {
-    /// An image layer when `d` holds an `image`, else a text layer. `at`
-    /// names the layer by its place in an error, as "the 2nd layer of pass
-    /// 'main'", until its name is known.
+    /// A shape layer when `d` holds a `shape`, else an image layer when it
+    /// holds an `image`, else a text layer. `at` names the layer by its
+    /// place in an error, as "the 2nd layer of pass 'main'", until its name
+    /// is known.
     pub fn from_dict(at: &str, d: &Value) -> Result<Layer> {
-        match given(object(at, d)?, "image") {
+        let o = object(at, d)?;
+        if given(o, "shape").is_some() {
+            return ShapeLayer::from_dict(at, d).map(Layer::Shape);
+        }
+        match given(o, "image") {
             Some(_) => ImageLayer::from_dict(at, d).map(Layer::Image),
             None => TextLayer::from_dict(at, d).map(Layer::Text),
+        }
+    }
+
+    /// The layer as a scene holds it, `words` in a text layer's `text`.
+    pub fn to_dict(&self, words: &str) -> Value {
+        match self {
+            Layer::Text(l) => l.to_dict(words),
+            Layer::Image(l) => l.to_dict(),
+            Layer::Shape(l) => l.to_dict(),
         }
     }
 
@@ -1655,6 +1693,7 @@ impl Layer {
         match self {
             Layer::Text(l) => &l.name,
             Layer::Image(l) => &l.name,
+            Layer::Shape(l) => &l.name,
         }
     }
 
@@ -1662,36 +1701,46 @@ impl Layer {
         match self {
             Layer::Text(l) => l.blend,
             Layer::Image(l) => l.blend,
+            Layer::Shape(l) => l.blend,
         }
     }
 
     /// Each uniform of the layer's own at its value from the scene, as its
-    /// name, its type as a param takes it, and its value.
+    /// name, its type as a param takes it, and its value. A shape layer has
+    /// none.
     pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
         match self {
             Layer::Text(l) => l.uniforms(),
             Layer::Image(l) => l.uniforms(),
+            Layer::Shape(_) => Vec::new(),
         }
     }
 
     pub fn as_text(&self) -> Option<&TextLayer> {
         match self {
             Layer::Text(l) => Some(l),
-            Layer::Image(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_text_mut(&mut self) -> Option<&mut TextLayer> {
         match self {
             Layer::Text(l) => Some(l),
-            Layer::Image(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_image(&self) -> Option<&ImageLayer> {
         match self {
             Layer::Image(l) => Some(l),
-            Layer::Text(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn as_shape(&self) -> Option<&ShapeLayer> {
+        match self {
+            Layer::Shape(l) => Some(l),
+            _ => None,
         }
     }
 }
@@ -1738,6 +1787,8 @@ pub enum Form {
     Colour { gradient: bool, none: bool },
     /// The name of an image asset of the scene.
     Image,
+    /// A line's points, each [x, y], two or more.
+    Points,
 }
 
 impl Form {
@@ -1756,6 +1807,7 @@ impl Form {
             Form::Flag => "true or false",
             Form::Colour { .. } => COLOUR_FORMS,
             Form::Image => "the name of an image asset",
+            Form::Points => "two points or more, each [x, y]",
         }
     }
 }
@@ -1788,6 +1840,13 @@ impl Live {
                 Value::Object(d)
             }
             (Form::Image, _) => bail!("{what} takes the name of an image asset, got numbers"),
+            (Form::Points, n) if n.len() >= 4 && n.len() % 2 == 0 => {
+                Value::from(n.chunks_exact(2).map(<[f64]>::to_vec).collect::<Vec<_>>())
+            }
+            (Form::Points, _) => bail!(
+                "{what} takes x and y in turn for two points or more, got {} numbers",
+                n.len()
+            ),
             (Form::Number { none }, _) => {
                 let or = if none { " or 0 for its default" } else { "" };
                 bail!("{what} takes 1 number{or}, got {}", n.len())
@@ -1835,6 +1894,7 @@ impl Layer {
         let (name, kind, own) = match self {
             Layer::Text(l) => (&l.name, "a text layer", &TEXT_KEYS[..]),
             Layer::Image(l) => (&l.name, "an image layer", &IMAGE_KEYS[..]),
+            Layer::Shape(l) => return l.live(effect, field),
         };
         let layer = format!("layer '{name}'");
         if let Some(key) = effect {
@@ -1844,6 +1904,7 @@ impl Layer {
             let Some(e) = e else {
                 let effects: Vec<&str> = match self {
                     Layer::Text(l) => l.effects.iter().map(|e| e.kind.key()).collect(),
+                    Layer::Shape(_) => unreachable!("a shape layer answers for itself"),
                     Layer::Image(_) => {
                         bail!("{layer} has no effect '{key}', and an image layer takes no effects")
                     }
@@ -1932,6 +1993,7 @@ impl Layer {
         let mut d = match self {
             Layer::Text(l) => l.to_dict(&l.text),
             Layer::Image(l) => l.to_dict(),
+            Layer::Shape(l) => return l.set_live(effect, field, value),
         };
         match effect {
             Some(key) => d[key][field] = value.clone(),
@@ -1951,6 +2013,7 @@ impl Layer {
                 }
                 *l = new;
             }
+            Layer::Shape(_) => unreachable!("a shape layer sets its own fields"),
         }
         Ok(())
     }
@@ -2537,7 +2600,58 @@ mod tests {
         let bare = Layer::from_dict("a layer", &json!({"name": "b", "text": "I"})).unwrap();
         let rebuild = "changes with a rebuild, and the live fields";
         let text_live = "and the live fields of a text layer are x, y, color, opacity and visible";
+        let rect = Layer::from_dict("a layer", &json!({"name": "r", "shape": "rect"})).unwrap();
+        let line = json!({"name": "l", "shape": "line", "points": [[0, 0], [1, 1]]});
+        let line = Layer::from_dict("a layer", &line).unwrap();
+        let rect_live = "the live fields of a rect are x, y, color, opacity, visible, width, \
+                         height and border_radius";
+        let line_live = "the live fields of a line are x, y, color, opacity, visible, points \
+                         and stroke_width";
         let rows = [
+            (
+                &rect,
+                None,
+                "points",
+                format!("layer 'r' has no field 'points', and {rect_live}"),
+            ),
+            (
+                &line,
+                None,
+                "width",
+                format!("layer 'l' has no field 'width', and {line_live}"),
+            ),
+            (
+                &rect,
+                None,
+                "blend",
+                format!("layer 'r' blend changes with a rebuild, and {rect_live}"),
+            ),
+            (
+                &line,
+                None,
+                "shape",
+                format!("layer 'l' shape changes with a rebuild, and {line_live}"),
+            ),
+            (
+                &rect,
+                Some("border"),
+                "style",
+                "layer 'r' border has no field 'style', and the live fields of border are width, \
+                 color and visible"
+                    .to_string(),
+            ),
+            (
+                &rect,
+                Some("glow"),
+                "color",
+                "layer 'r' has no effect 'glow', and a rect takes border alone".to_string(),
+            ),
+            (
+                &line,
+                Some("border"),
+                "color",
+                "layer 'l' has no effect 'border', and a line takes no effects".to_string(),
+            ),
             (
                 &text,
                 None,
@@ -2632,6 +2746,9 @@ mod tests {
     #[test]
     fn a_live_value_takes_the_form_of_its_field_on_the_wire() {
         let (text, image) = text_and_image();
+        let rect = Layer::from_dict("a layer", &json!({"name": "r", "shape": "rect"})).unwrap();
+        let line = json!({"name": "l", "shape": "line", "points": [[0, 0], [1, 1]]});
+        let line = Layer::from_dict("a layer", &line).unwrap();
         let gradient = json!({"from": [1.0, 0.0, 0.0], "to": [0.0, 0.0, 1.0], "angle": 90.0});
         let ok = [
             (&text, None, "x", vec![5.0], json!(5.0)),
@@ -2656,6 +2773,14 @@ mod tests {
             (&image, None, "color", vec![], json!(null)),
             (&text, Some("glow"), "strength", vec![0.5], json!(0.5)),
             (&text, Some("wave"), "visible", vec![0.0], json!(false)),
+            (
+                &line,
+                None,
+                "points",
+                vec![0.0, 16.0, 8.0, 4.5],
+                json!([[0.0, 16.0], [8.0, 4.5]]),
+            ),
+            (&rect, Some("border"), "width", vec![2.0], json!(2.0)),
         ];
         for (l, effect, field, numbers, want) in ok {
             let live = l.live(effect, field).unwrap();
@@ -2714,6 +2839,20 @@ mod tests {
                 "image",
                 vec![1.0],
                 "layer 'i' image takes the name of an image asset, got numbers",
+            ),
+            (
+                &line,
+                None,
+                "points",
+                vec![0.0, 16.0, 8.0],
+                "layer 'l' points takes x and y in turn for two points or more, got 3 numbers",
+            ),
+            (
+                &line,
+                None,
+                "points",
+                vec![0.0, 16.0],
+                "layer 'l' points takes x and y in turn for two points or more, got 2 numbers",
             ),
         ];
         for (l, effect, field, numbers, want) in refused {
@@ -2783,10 +2922,7 @@ mod tests {
         ];
         for (name, effect, field, value, keys) in rows {
             let l = if name == "t" { &mut text } else { &mut image };
-            let mut want = match &*l {
-                Layer::Text(t) => t.to_dict("I"),
-                Layer::Image(i) => i.to_dict(),
-            };
+            let mut want = l.to_dict("I");
             match effect {
                 Some(e) => want[e] = json!({}),
                 None => {
@@ -2797,10 +2933,7 @@ mod tests {
                 .unwrap()
                 .extend(keys.as_object().unwrap().clone());
             l.set_live(effect, field, &value).unwrap();
-            let got = match &*l {
-                Layer::Text(t) => t.to_dict("I"),
-                Layer::Image(i) => i.to_dict(),
-            };
+            let got = l.to_dict("I");
             assert_eq!(got, want, "{field} = {value}");
         }
         let err = |l: &mut Layer, field: &str, value: Value| {

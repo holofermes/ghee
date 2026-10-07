@@ -29,10 +29,12 @@ pub fn _colour_name(text: &str) -> bool {
     ghee::css::named(text).is_some()
 }
 
-/// The body of a message: the floats of kind 1, or the text of kind 3.
+/// The body of a message: the floats of kind 1, the text of kind 3, or the
+/// array of kind 0.
 enum Body {
     Floats(Vec<f64>),
     Text(String),
+    Array(Vec<f64>),
 }
 
 fn scene_fault(e: anyhow::Error) -> Fault {
@@ -78,6 +80,15 @@ impl LayerWire {
             (Form::Colour { .. }, v @ Value::Object(_)) => {
                 return Ok((wire, Body::Text(v.to_string())))
             }
+            // A line's points go as an array, x and y in turn.
+            (Form::Points, Value::Array(points)) => {
+                let flat = points
+                    .iter()
+                    .flat_map(|p| p.as_array().into_iter().flatten())
+                    .filter_map(Value::as_f64)
+                    .collect();
+                return Ok((wire, Body::Array(flat)));
+            }
             (_, Value::Null) => vec![],
             (Form::Flag, v) => vec![if v.as_bool() == Some(true) { 1.0 } else { 0.0 }],
             (Form::Colour { .. }, v) => match Rgb::from_json(v) {
@@ -103,8 +114,9 @@ impl LayerWire {
     }
 
     /// The message of a live set of `field` of layer `name`, or of its
-    /// effect `effect`: its wire name, and its floats for kind 1 or its
-    /// text for kind 3. Raises ValueError as Handle.set_layer does.
+    /// effect `effect`: its kind, its wire name, and its floats for kind 0
+    /// or 1, or its text for kind 3. Raises ValueError as Handle.set_layer
+    /// does.
     #[pyo3(signature = (name, field, value, effect=None))]
     fn message<'py>(
         &mut self,
@@ -113,13 +125,14 @@ impl LayerWire {
         field: &str,
         value: &Bound<'py, PyAny>,
         effect: Option<&str>,
-    ) -> PyResult<(String, Bound<'py, PyAny>)> {
+    ) -> PyResult<(u8, String, Bound<'py, PyAny>)> {
         let value = to_json(value)?;
         let (wire, body) = self.set(name, effect, field, &value).map_err(fault)?;
-        let body = match body {
-            Body::Floats(floats) => PyList::new(py, floats)?.into_any(),
-            Body::Text(text) => PyString::new(py, &text).into_any(),
+        let (kind, body) = match body {
+            Body::Floats(floats) => (1, PyList::new(py, floats)?.into_any()),
+            Body::Text(text) => (3, PyString::new(py, &text).into_any()),
+            Body::Array(floats) => (0, PyList::new(py, floats)?.into_any()),
         };
-        Ok((wire, body))
+        Ok((kind, wire, body))
     }
 }

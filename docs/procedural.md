@@ -60,7 +60,8 @@ After the handshake, stdout carries binary messages:
     kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE
 
 - Kind 0 sets the named array. A 2D array takes w*h values, in its declared
-  shape.
+  shape. A name whose first part names a layer, such as `scope.points`, sets
+  that line's points, x and y in turn.
 - Kind 1 sets the named live param. A float takes one value, a color three,
   and a vecN N. A name of the form `pass.param` sets the param of that one
   pass. A bare name sets the scene param, or the param of the first pass that
@@ -68,9 +69,10 @@ After the handshake, stdout carries binary messages:
   `layer.effect.field` such as `title.x` or `title.karaoke.sung`, sets that
   live field of the layer, one of the fields that `/set?layer=` takes in
   docs/http.md. A number takes one value, `visible` takes 0 or 1, a color
-  three, and a text layer's gradient seven: from, to and its angle. A
-  message with no values takes a layer's `x`, `y` or `color` back to its
-  default.
+  three, and a text layer's gradient seven: from, to and its angle. A rect's
+  border takes an effect's place, as `frame.border.width`. A message with no
+  values takes a layer's `x`, `y` or `color`, or a rect's `width` or
+  `height`, back to its default.
 - Kind 2 marks the tick clean: it needs no render, and the display keeps the
   last frame. The message is the kind byte alone, with no name and no values.
 - Kind 3 sets the named string param. The name of a text layer, or

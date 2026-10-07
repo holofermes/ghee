@@ -182,6 +182,7 @@ extern "C" {
     pub fn ghee_gl_texture_units(g: *mut GheeScene) -> c_int;
     pub fn ghee_data_texture_linear(g: *mut GheeScene) -> bool;
     pub fn ghee_mipmaps_npot(g: *mut GheeScene) -> bool;
+    pub fn ghee_compiled(g: *mut GheeScene) -> c_int;
     pub fn ghee_set_profiling(g: *mut GheeScene, on: bool);
     pub fn ghee_set_time(g: *mut GheeScene, t: f32);
     pub fn ghee_clear_time(g: *mut GheeScene);

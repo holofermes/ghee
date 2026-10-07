@@ -383,10 +383,7 @@ impl SceneStore {
 /// as a scene declares it, less its name and its words, which the code and the
 /// words param hold.
 fn settings_of(layer: &Layer) -> Value {
-    let mut d = match layer {
-        Layer::Text(l) => l.to_dict(""),
-        Layer::Image(l) => l.to_dict(),
-    };
+    let mut d = layer.to_dict("");
     if let Value::Object(o) = &mut d {
         o.remove("name");
         o.remove("text");

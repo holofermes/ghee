@@ -54,6 +54,19 @@
   `[r, g, b]`, through `GET /scene`, `/set`, a save and a procedural scene's
   values sidecar. The console sends the colour picked in its swatch as
   `#rrggbb`, so it saves as hex.
+- Draw rects and lines with shape layers, which hold `"shape": "rect"` or
+  `"line"` and take no effects. A rect fills `width` by `height` pass
+  pixels, the pass's own by default, with its `color`, draws its `border`,
+  `{"width", "color", "visible"}`, inside its edge, and rounds its corners by
+  `border_radius`. A line runs through `points`, each `[x, y]` a pixel as
+  Pillow counts them, `stroke_width` pixels thick, and its `x` and `y` shift
+  every point. Every edge is antialiased from the distance to the shape. One
+  shader draws every shape, consecutive shape layers of one blend in one
+  draw, so a shape layer that changes or hides compiles nothing. Every field
+  but `shape` and `blend` is live, a rect's border in an effect's place:
+  `/set?layer=frame&effect=border&field=color`, `frame.border.color` on the
+  wire, and a line's points as an array in message kind 0, `scope.points`,
+  x and y in turn.
 - Take CSS's colour names wherever a scene takes a colour, a layer's and an
   effect's `color`, a gradient's `from` and `to`, and a color param: the 148
   named colors of CSS Color 4 and `transparent`, in any case, which the
@@ -241,6 +254,9 @@
   the scene does not declare or a value that does not fit its type, under
   ghee as in direct mode, and name the param in the type error of
   `set_param` and of the console.
+- Declare a shape layer with `ghee.Layer(name, shape=...)`, which takes
+  `width`, `height`, `border`, `border_radius`, `points` and `stroke_width`,
+  and set its border through `layers`, as `h.layers.frame.border.color`.
 - Ship type stubs for `ghee.open` and `Handle`, mark the package typed, and
   type the closed string sets of the shim as `Literal`: a param's type, a
   layer's text_align, render and blend, and an arg's type.
@@ -384,6 +400,9 @@
   square block, in `Renderer::render_into` and `render_scaled`.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
+- Compile one program for the batches whose two shaders match, and set
+  `resolution` at each draw, so one program serves passes of any size.
+  `Renderer::compiled` counts the programs that a renderer linked.
 - Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
   `feeds`, `isf`, `report` and `sources` modules inside the crate.
 - Ship NOTICE and the DejaVu font's license in the deb under

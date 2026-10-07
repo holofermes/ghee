@@ -66,7 +66,7 @@ class _LayerWire:
         field: str,
         value: SupportsFloat | str | Iterable[SupportsFloat] | dict[str, Any] | None,
         effect: str | None = None,
-    ) -> tuple[str, list[float] | str]: ...
+    ) -> tuple[int, str, list[float] | str]: ...
 
 def open(
     scene: str | os.PathLike[str] | dict[str, Any] | Scene,

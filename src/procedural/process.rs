@@ -870,6 +870,36 @@ impl SceneController for SceneProcess {
     }
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
+        // An array message whose name addresses a layer, such as
+        // `scope.points`, sets that live field of the layer.
+        let fields: Vec<String> = self
+            .data
+            .keys()
+            .filter(|n| Address::dotted(n).is_some_and(|at| self.layers.contains_key(at.layer)))
+            .cloned()
+            .collect();
+        for name in fields {
+            let at = Address::dotted(&name).expect("the name was just matched");
+            let refused = match self.data.remove(&name) {
+                Some(ArrayData::F32(values)) => {
+                    match renderer.set_layer(&at, Given::Numbers(&values)) {
+                        Ok(()) => None,
+                        Err(e) => match e.downcast_ref::<Refused>() {
+                            Some(r) => Some(r.0.clone()),
+                            None => return Err(e),
+                        },
+                    }
+                }
+                Some(ArrayData::U8(_)) => Some(format!(
+                    "layer '{}' {} takes floats in message kind 0, got bytes",
+                    at.layer, at.field
+                )),
+                None => None,
+            };
+            if let Some(why) = refused {
+                self.refuse(&name, &why);
+            }
+        }
         for (mut name, data) in std::mem::take(&mut self.incoming) {
             // The `text` of a text layer is its words, the scene param of the
             // layer's name.
@@ -2149,6 +2179,49 @@ while IFS= read -r line; do :; done
             refused,
             ["nope.x", "title.font_size", "title.karaoke.sung.more"]
         );
+    }
+
+    #[test]
+    fn an_array_message_that_names_a_layer_sets_its_live_field() {
+        let d = tmpdir("points");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "draw", "code": "void main(){}",
+                        "arrays": [{"name": "level", "size": 2}],
+                        "layers": [
+                            {"name": "scope", "shape": "line", "points": [[0, 0], [1, 1]]},
+                            {"name": "wave", "shape": "line", "points": [[0, 0], [1, 1]]}]}],
+        });
+        let floats =
+            |values: &[f32]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            message(0, "scope.points", 4, &floats(&[0.0, 16.0, 8.0, 4.0])),
+            message(4, "wave.points", 4, &[0, 16, 8, 4]),
+            message(0, "level", 2, &floats(&[0.5, 1.0])),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "feed", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(pump(&mut f, |f| f.data.len() >= 3));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert_eq!(
+            *stub.layers.borrow(),
+            [(
+                "scope.points".to_string(),
+                "Numbers([0.0, 16.0, 8.0, 4.0])".to_string()
+            )]
+        );
+        assert_eq!(f.refused, HashSet::from(["wave.points".to_string()]));
+        // A declared array stays an array.
+        assert!(matches!(
+            f.provide("level", ArraySize::Linear(2), 0),
+            Some(Feed::Data(v)) if v == [0.5, 1.0]
+        ));
     }
 
     #[test]

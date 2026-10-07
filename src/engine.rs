@@ -180,6 +180,18 @@ struct LayerBatches {
     phases: std::cell::RefCell<Vec<(Kind, f64)>>,
 }
 
+/// Consecutive shape layers of a pass with one blend, which one batch draws
+/// with the shape program.
+struct ShapeRun {
+    /// The engine's index of the batch.
+    batch: c_int,
+    blend: Blend,
+    /// The size of the pass in pixels.
+    size: [f64; 2],
+    /// The names of the layers, in their order.
+    layers: Vec<String>,
+}
+
 /// One atlas generator, and the engine textures that hold its atlas.
 struct AtlasSlot {
     fonts: Vec<text::Font>,
@@ -549,6 +561,8 @@ pub struct Renderer {
     test_batches: Vec<Batch>,
     /// The layers that the engine draws, in the order of their passes.
     layers: Vec<LayerBatches>,
+    /// The runs of the shape layers that the engine draws.
+    runs: Vec<ShapeRun>,
     /// The text problem causes logged since the setup, so each logs once.
     reported: std::cell::RefCell<HashSet<String>>,
     /// The problems of each text layer, by its name.
@@ -628,6 +642,7 @@ impl Renderer {
             #[cfg(test)]
             test_batches: Vec::new(),
             layers: Vec::new(),
+            runs: Vec::new(),
             reported: std::cell::RefCell::new(HashSet::new()),
             text_errors: std::cell::RefCell::new(HashMap::new()),
             text_errors_seq: std::cell::Cell::new(0),
@@ -823,7 +838,9 @@ impl Renderer {
             let mut over = self.units_error(&format!("pass '{}'", p.name), want);
             // A layer samples its own texture, its words' or its image, on
             // top of its pass's channels and arrays, which stay bound for it.
-            if let (None, Some(l)) = (&over, p.layers.first()) {
+            // A shape samples none.
+            let sampling = p.layers.iter().find(|l| l.as_shape().is_none());
+            if let (None, Some(l)) = (&over, sampling) {
                 over = self.units_error(&format!("layer '{}'", l.name()), want + 1);
             }
             if let Some(e) = over {
@@ -839,6 +856,7 @@ impl Renderer {
         #[cfg(test)]
         let mut batch_ix: Vec<c_int> = vec![-1; batches.len()];
         let mut layers: Vec<LayerBatches> = Vec::new();
+        let mut runs: Vec<ShapeRun> = Vec::new();
         let hw_linear = self.data_texture_linear();
         let sizes = self.atlas_sizes(scene, &drawn);
         #[cfg(test)]
@@ -902,14 +920,45 @@ impl Renderer {
                     Some(l.shaders(l.detail(px_em)))
                 })
                 .collect();
+            let size = p
+                .size
+                .map_or([f64::from(self.width), f64::from(self.height)], |(w, h)| {
+                    [w as f64, h as f64]
+                });
+            // The run that the layer before joined, when it is a shape.
+            let mut run: Option<usize> = None;
             for (l, sh) in p.layers.iter().zip(&shaders) {
                 if idx < 0 {
                     break;
                 }
                 let name = format!("layer '{}'", l.name());
                 let li = match (l, sh) {
-                    (Layer::Image(l), _) => self.add_batch(idx, &name, &l.shaders(), l.blend)?,
-                    (_, Some(sh)) => self.add_batch(idx, &name, &sh.glyphs, l.blend())?,
+                    (Layer::Shape(s), _) => match run.filter(|r| runs[*r].blend == s.blend) {
+                        Some(r) => {
+                            runs[r].layers.push(s.name.clone());
+                            runs[r].batch
+                        }
+                        None => {
+                            let b =
+                                self.add_batch(idx, &name, &crate::shape::program(), s.blend)?;
+                            runs.push(ShapeRun {
+                                batch: b,
+                                blend: s.blend,
+                                size,
+                                layers: vec![s.name.clone()],
+                            });
+                            run = Some(runs.len() - 1);
+                            b
+                        }
+                    },
+                    (Layer::Image(l), _) => {
+                        run = None;
+                        self.add_batch(idx, &name, &l.shaders(), l.blend)?
+                    }
+                    (_, Some(sh)) => {
+                        run = None;
+                        self.add_batch(idx, &name, &sh.glyphs, l.blend())?
+                    }
                     (_, None) => unreachable!("a text layer has shaders"),
                 };
                 if li < 0 {
@@ -1014,6 +1063,7 @@ impl Renderer {
             self.batches = batch_ix;
         }
         self.layers = layers;
+        self.runs = runs;
         self.drawn_at.set(0.0);
         self.px_em = sizes;
         // A new scene logs its text problems afresh.
@@ -1144,6 +1194,12 @@ impl Renderer {
                 self.batch_quads(dl.batch, &format!("layer '{}'", l.name), &IMAGE_QUAD, 1)
             });
             if let Err(e) = shown {
+                self.error = e.to_string();
+                return Ok(self.error.clone());
+            }
+        }
+        for run in &self.runs {
+            if let Err(e) = self.run_quads(run) {
                 self.error = e.to_string();
                 return Ok(self.error.clone());
             }
@@ -1622,10 +1678,32 @@ impl Renderer {
             }
             layer.as_text().is_some_and(|l| l.visible)
         };
+        let run = self
+            .runs
+            .iter()
+            .find(|r| r.layers.iter().any(|n| n == at.layer));
+        if let Some(run) = run {
+            self.run_quads(run)?;
+        }
         if now_shown && !shown {
             self.first_shown(at.layer)?;
         }
         Ok(())
+    }
+
+    /// Hand the batch of `run` the quads of its shape layers, as the scene
+    /// holds them.
+    fn run_quads(&self, run: &ShapeRun) -> Result<()> {
+        let mut quads: Vec<f32> = Vec::new();
+        if let Some(scene) = self.scene.borrow().as_ref() {
+            for name in &run.layers {
+                if let Some(Layer::Shape(s)) = scene.layer(name) {
+                    s.quads(run.size, &mut quads);
+                }
+            }
+        }
+        let what = format!("layer '{}'", run.layers[0]);
+        self.batch_quads(run.batch, &what, &quads, crate::shape::ATTRIBUTES)
     }
 
     /// Build the atlas of the text layer `name`, which shows for the first
@@ -2449,6 +2527,12 @@ impl Renderer {
         unsafe { ffi::ghee_mipmaps_npot(self.handle) }
     }
 
+    /// The programs that the renderer linked since it was created: each
+    /// pass's, each distinct batch's, and its own.
+    pub fn compiled(&self) -> i32 {
+        unsafe { ffi::ghee_compiled(self.handle) }
+    }
+
     /// The last frame's split, as (draw_ms, read_ms).
     /// draw_ms is the GPU render of every pass.
     /// read_ms is the glReadPixels readback.
@@ -2488,6 +2572,7 @@ impl Renderer {
             self.batches = Vec::new();
         }
         self.layers = Vec::new();
+        self.runs = Vec::new();
         self.feeds = Vec::new();
         self.held.borrow_mut().clear();
         self.words.borrow_mut().clear();

@@ -3248,6 +3248,8 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
         json!({"name": "i", "image": "pic"}),
         json!({"name": "i", "image": "pic.png", "color": "#ff8000", "width": 8}),
         json!({"name": "i", "image": "pic", "height": 8, "visible": false}),
+        json!({"name": "r", "shape": "rect"}),
+        json!({"name": "l", "shape": "line", "points": [[0, 0], [4, 4]]}),
     ]);
     for keys in rows {
         let programs = match Layer::from_dict("a layer", &keys).unwrap() {
@@ -3260,6 +3262,8 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
                 ]
             }
             Layer::Image(l) => vec![("image", l.shaders().1)],
+            // Every shape draws through one program, which reads no texture.
+            Layer::Shape(_) => vec![("shapes", ghee::shape::program().1)],
         };
         for (what, fs) in programs {
             let main = own_main(&fs);

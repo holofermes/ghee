@@ -21,6 +21,10 @@
 //! the JSON content type, an edit of a scene other than the active one and the
 //! static root check.
 //!
+//! A host that keeps each scene's working copy and its defaults says so
+//! through scene_doc(), edits(), save(), reset() and answer(). The defaults of
+//! those refuse, for a host whose scene is written in code.
+//!
 //! An API holds no mutable state, so any number of threads may call it at once.
 //! A host states its own thread contract for set_param, switch and apply_scene.
 
@@ -42,7 +46,9 @@ pub const MAX_BODY: usize = 1 << 20;
 /// The paths that change the renderer. They take POST only. A hostile page
 /// reaches a GET through <img src>, and that request carries no Origin to
 /// refuse.
-pub const POST_ONLY: [&str; 4] = ["/set", "/switch", "/next", "/prev"];
+pub const POST_ONLY: [&str; 7] = [
+    "/set", "/switch", "/next", "/prev", "/save", "/reset", "/aside",
+];
 
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 const BOOLS: [(&str, bool); 4] = [("true", true), ("1", true), ("false", false), ("0", false)];
@@ -87,6 +93,8 @@ pub struct Response {
     pub status: u16,
     pub body: Vec<u8>,
     pub content_type: String,
+    /// Headers beside the content type, such as a scene's ETag.
+    pub headers: Vec<(String, String)>,
 }
 
 impl Response {
@@ -95,6 +103,7 @@ impl Response {
             status,
             body: msg.as_bytes().to_vec(),
             content_type: "text/plain".to_string(),
+            headers: Vec::new(),
         }
     }
 
@@ -103,6 +112,7 @@ impl Response {
             status: 200,
             body: obj.to_string().into_bytes(),
             content_type: "application/json".to_string(),
+            headers: Vec::new(),
         }
     }
 }
@@ -381,13 +391,9 @@ pub fn static_path(urlpath: &str) -> Option<&'static str> {
 /// method may return a ConsoleError, and the client gets its status and its
 /// message.
 pub trait ConsoleHost {
-    /// /save is refused unless a host opts in. save_refused carries the text.
-    fn writable(&self) -> bool {
-        false
-    }
-
+    /// Why save() refuses, for a host that keeps no state file.
     fn save_refused(&self) -> String {
-        "this console cannot save".to_string()
+        "this console saves no scene".to_string()
     }
 
     /// {fps, frame_ms, stream_fps, out, error, error_line, error_pass,
@@ -424,6 +430,44 @@ pub trait ConsoleHost {
     /// The resolved scene JSON for a name, or for the active scene when name is
     /// None. Resolved means each GLSL file as its text and filters expanded.
     fn scene_def(&self, name: Option<&str>) -> ConsoleResult<Value>;
+
+    /// GET /scene: scene_def(), or the scene's defaults with `defaults`,
+    /// with the scene's revision when the host keeps one.
+    fn scene_doc(&self, name: Option<&str>, defaults: bool) -> ConsoleResult<(Value, Option<u64>)> {
+        if defaults {
+            return Err(ConsoleError::not_found(
+                "this console's scene has no defaults",
+            ));
+        }
+        Ok((self.scene_def(name)?, None))
+    }
+
+    /// GET /edits: `{rev, values, items, unsaved, aside}`, the working copy's
+    /// edits as save() writes them, whether they differ from the state file,
+    /// and the items set aside.
+    fn edits(&self, _name: Option<&str>) -> ConsoleResult<Value> {
+        Ok(
+            serde_json::json!({"rev": null, "values": {}, "items": [], "unsaved": false,
+                              "aside": []}),
+        )
+    }
+
+    /// Write the working copy's edits to the scene's state file.
+    fn save(&self, _name: Option<&str>) -> ConsoleResult<()> {
+        Err(ConsoleError::read_only(self.save_refused()))
+    }
+
+    /// Take the working copy back to the defaults.
+    fn reset(&self, _name: Option<&str>) -> ConsoleResult<()> {
+        Err(ConsoleError::read_only(
+            "this console's scene has no defaults to go back to",
+        ))
+    }
+
+    /// Answer an item set aside: keep it over the new default, or drop it.
+    fn answer(&self, _name: Option<&str>, _item: &Aside, _keep: bool) -> ConsoleResult<()> {
+        Err(ConsoleError::not_found("no such item is set aside"))
+    }
 
     /// Each filter name and its definition, for the "+ filter" picker.
     fn filters(&self) -> ConsoleResult<Value> {
@@ -475,22 +519,29 @@ pub trait ConsoleHost {
     fn apply_scene(&self, scene: Scene) -> ConsoleResult<()>;
 
     /// Run `edit`, a change to scene `scene` or to its values, while `scene`
-    /// is the active scene, else refuse it as other_scene() does. A host whose
-    /// switch() queues the switch holds one lock over its switch and over this
-    /// check and the edit, so an edit queued behind a switch never lands on
-    /// the scene that the switch brought.
+    /// is the active scene, else refuse it as other_scene() does. No `scene`
+    /// edits the active one. A host whose switch() queues the switch holds one
+    /// lock over its switch and over this check and the edit, so an edit
+    /// queued behind a switch never lands on the scene that the switch
+    /// brought.
     fn edit_scene(
         &self,
-        scene: &str,
+        scene: Option<&str>,
         edit: &mut dyn FnMut() -> ConsoleResult<()>,
     ) -> ConsoleResult<()> {
-        other_scene(scene, self.active_name()?.as_deref())?;
+        if let Some(scene) = scene {
+            other_scene(scene, self.active_name()?.as_deref())?;
+        }
         edit()
     }
+}
 
-    fn save_scene(&self, _name: &str, _scene: Scene) -> ConsoleResult<()> {
-        Err(ConsoleError::read_only(self.save_refused()))
-    }
+/// An item set aside, as POST /aside names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Aside {
+    pub item: String,
+    pub pass: Option<String>,
+    pub param: Option<String>,
 }
 
 /// Routes one transport-free request onto a ConsoleHost.
@@ -651,8 +702,17 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             }
             "/hwinfo" => Ok(Response::json(&h.hwinfo()?)),
             "/filters" => Ok(Response::json(&h.filters()?)),
-            "/scene" => Ok(Response::json(
-                &h.scene_def(query.get("name").map(String::as_str))?,
+            "/scene" => {
+                let defaults = query.get("defaults").map(String::as_str) == Some("1");
+                let (doc, rev) = h.scene_doc(query.get("name").map(String::as_str), defaults)?;
+                let mut r = Response::json(&doc);
+                if let Some(rev) = rev {
+                    r.headers.push(("ETag".to_string(), format!("\"{rev}\"")));
+                }
+                Ok(r)
+            }
+            "/edits" => Ok(Response::json(
+                &h.edits(query.get("name").map(String::as_str))?,
             )),
             _ => Ok(self.static_file(path)),
         }
@@ -666,6 +726,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
         body: &[u8],
     ) -> ConsoleResult<Response> {
         let h = &self.host;
+        let name = query.get("name").map(String::as_str);
         if path == "/set" {
             let mut set = || {
                 let set = parse_set(h, query)?
@@ -675,10 +736,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                     Set::Layer(set) => h.set_layer(set),
                 }
             };
-            match query.get("scene") {
-                Some(scene) => h.edit_scene(scene, &mut set)?,
-                None => set()?,
-            }
+            h.edit_scene(query.get("scene").map(String::as_str), &mut set)?;
             return Ok(Response::text(200, "ok"));
         }
         if path == "/next" || path == "/prev" {
@@ -699,26 +757,21 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 doc = scene.to_dict();
                 h.apply_scene(scene)
             };
-            match query.get("name") {
-                Some(name) => h.edit_scene(name, &mut apply)?,
-                None => apply()?,
-            }
+            h.edit_scene(name, &mut apply)?;
             return Ok(Response::json(&doc));
         }
         if path == "/save" {
-            let d = json_body(headers, body, "/save")?;
-            if !h.writable() {
-                return Err(ConsoleError::read_only(h.save_refused()));
-            }
-            let name = d
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ConsoleError::bad_request("bad /save: 'name'"))?
-                .to_string();
-            let mut scene = Some(scene_of(d.get("scene").unwrap_or(&Value::Null), "/save")?);
-            h.edit_scene(&name, &mut || {
-                h.save_scene(&name, scene.take().expect("one save a request"))
-            })?;
+            h.edit_scene(name, &mut || h.save(name))?;
+            return Ok(Response::text(200, "ok"));
+        }
+        if path == "/reset" {
+            h.edit_scene(name, &mut || h.reset(name))?;
+            return Ok(Response::text(200, "ok"));
+        }
+        if path == "/aside" {
+            let (aside, keep) = parse_aside(query)
+                .map_err(|e| ConsoleError::bad_request(format!("bad /aside: {e}")))?;
+            h.edit_scene(name, &mut || h.answer(name, &aside, keep))?;
             return Ok(Response::text(200, "ok"));
         }
         Ok(Response::text(404, "no"))
@@ -736,8 +789,31 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             status: 200,
             body: body.to_vec(),
             content_type: ctype.to_string(),
+            headers: Vec::new(),
         }
     }
+}
+
+/// The item that a POST /aside answers, and whether its answer keeps it.
+fn parse_aside(query: &Query) -> Result<(Aside, bool), String> {
+    let item = query.get("item").ok_or("the query has no 'item'")?;
+    let keep = match query.get("answer").map(String::as_str) {
+        Some("keep") => true,
+        Some("default") => false,
+        Some(a) => {
+            return Err(format!(
+                "answer needs keep or default, got {}",
+                py_repr(&Value::from(a))
+            ))
+        }
+        None => return Err("the query has no 'answer'".to_string()),
+    };
+    let aside = Aside {
+        item: item.clone(),
+        pass: query.get("pass").cloned(),
+        param: query.get("param").cloned(),
+    };
+    Ok((aside, keep))
 }
 
 /// What a /set changes, or the first thing wrong with it. A query that names
@@ -1045,7 +1121,8 @@ mod tests {
         SetLayer(LayerSet),
         Switch(String),
         ApplyScene(Scene),
-        SaveScene(String, Scene),
+        Save(Option<String>),
+        Answer(Aside, bool),
     }
 
     /// A host that records instead of rendering.
@@ -1053,7 +1130,6 @@ mod tests {
         names: RefCell<Vec<String>>,
         active: RefCell<String>,
         calls: RefCell<Vec<Call>>,
-        writable: bool,
         boom: bool,
     }
 
@@ -1063,21 +1139,12 @@ mod tests {
                 names: RefCell::new(["a", "b", "c"].iter().map(|s| (*s).to_string()).collect()),
                 active: RefCell::new("a".to_string()),
                 calls: RefCell::new(Vec::new()),
-                writable: false,
                 boom: false,
             }
         }
     }
 
     impl ConsoleHost for FakeHost {
-        fn writable(&self) -> bool {
-            self.writable
-        }
-
-        fn save_refused(&self) -> String {
-            "nope".to_string()
-        }
-
         fn stats(&self) -> ConsoleResult<Value> {
             let mut d = Map::new();
             d.insert("fps".to_string(), Value::from(12.0));
@@ -1153,10 +1220,17 @@ mod tests {
             Ok(())
         }
 
-        fn save_scene(&self, name: &str, scene: Scene) -> ConsoleResult<()> {
+        fn save(&self, name: Option<&str>) -> ConsoleResult<()> {
             self.calls
                 .borrow_mut()
-                .push(Call::SaveScene(name.to_string(), scene));
+                .push(Call::Save(name.map(str::to_string)));
+            Ok(())
+        }
+
+        fn answer(&self, _name: Option<&str>, aside: &Aside, keep: bool) -> ConsoleResult<()> {
+            self.calls
+                .borrow_mut()
+                .push(Call::Answer(aside.clone(), keep));
             Ok(())
         }
     }
@@ -1302,6 +1376,21 @@ mod tests {
         assert_eq!(
             as_json(&get(&api, "/hwinfo", &[])),
             serde_json::json!({"model": "fake"})
+        );
+    }
+
+    #[test]
+    fn a_host_with_no_working_copies_reports_no_edit() {
+        assert_eq!(
+            as_json(&ConsoleAPI::new(Bare).dispatch(
+                "GET",
+                "/edits",
+                &Query::new(),
+                &Headers::new(),
+                b""
+            )),
+            serde_json::json!({"rev": null, "values": {}, "items": [], "unsaved": false,
+                               "aside": []})
         );
     }
 
@@ -1728,69 +1817,84 @@ mod tests {
 
     #[test]
     fn a_body_without_a_json_content_type_is_415() {
-        for path in ["/scene", "/save"] {
-            let api = api();
-            let r = api.dispatch(
-                "POST",
-                path,
-                &Query::new(),
-                &Headers::new(),
-                SCENE.as_bytes(),
-            );
-            assert_eq!(r.status, 415, "{path}");
-            assert!(body(&r).contains("application/json"));
-            assert!(api.host.calls.borrow().is_empty());
-        }
-    }
-
-    #[test]
-    fn save_is_refused_unless_the_host_opts_in() {
         let api = api();
-        let posted = serde_json::json!({"name": "a", "scene": scene_json()}).to_string();
         let r = api.dispatch(
             "POST",
-            "/save",
+            "/scene",
             &Query::new(),
-            &json_ct(),
-            posted.as_bytes(),
+            &Headers::new(),
+            SCENE.as_bytes(),
         );
-        assert_eq!((r.status, body(&r).as_str()), (403, "nope"));
+        assert_eq!(r.status, 415);
+        assert!(body(&r).contains("application/json"));
         assert!(api.host.calls.borrow().is_empty());
     }
 
     #[test]
-    fn a_writable_host_gets_the_name_and_a_scene() {
-        let mut api = api();
-        api.host.writable = true;
-        let posted = serde_json::json!({"name": "a", "scene": scene_json()}).to_string();
+    fn a_host_that_keeps_no_state_file_refuses_a_save_and_a_reset() {
+        let api = ConsoleAPI::new(Bare);
+        for (path, why) in [
+            ("/save", "this console saves no scene"),
+            (
+                "/reset",
+                "this console's scene has no defaults to go back to",
+            ),
+        ] {
+            let r = api.dispatch("POST", path, &Query::new(), &Headers::new(), b"");
+            assert_eq!((r.status, body(&r).as_str()), (403, why));
+        }
         let r = api.dispatch(
-            "POST",
-            "/save",
-            &Query::new(),
-            &json_ct(),
-            posted.as_bytes(),
+            "GET",
+            "/scene",
+            &query(&[("defaults", "1")]),
+            &Headers::new(),
+            b"",
+        );
+        assert_eq!(
+            (r.status, body(&r).as_str()),
+            (404, "this console's scene has no defaults")
+        );
+    }
+
+    #[test]
+    fn a_save_reaches_the_host_with_the_scene_it_names() {
+        let api = api();
+        let r = post(&api, "/save", &[("name", "a")]);
+        assert_eq!(r.status, 200);
+        assert_eq!(
+            *api.host.calls.borrow(),
+            vec![Call::Save(Some("a".to_string()))]
+        );
+    }
+
+    #[test]
+    fn an_answer_names_its_item_and_keeps_or_drops_it() {
+        let kept = api();
+        let r = post(
+            &kept,
+            "/aside",
+            &[("item", "fragment"), ("pass", "main"), ("answer", "keep")],
         );
         assert_eq!(r.status, 200);
-        let calls = api.host.calls.borrow();
-        match &calls[0] {
-            Call::SaveScene(name, _) => assert_eq!(name, "a"),
-            c => panic!("{c:?}"),
+        let main = Aside {
+            item: "fragment".to_string(),
+            pass: Some("main".to_string()),
+            param: None,
+        };
+        assert_eq!(*kept.host.calls.borrow(), vec![Call::Answer(main, true)]);
+        for (q, why) in [
+            (
+                vec![("item", "fragment"), ("answer", "maybe")],
+                "answer needs keep or default, got 'maybe'",
+            ),
+            (vec![("item", "fragment")], "the query has no 'answer'"),
+            (vec![("answer", "keep")], "the query has no 'item'"),
+        ] {
+            let api = api();
+            let r = post(&api, "/aside", &q);
+            assert_eq!((r.status, body(&r)), (400, format!("bad /aside: {why}")));
+            assert!(api.host.calls.borrow().is_empty());
         }
-    }
-
-    #[test]
-    fn a_save_without_a_scene_is_400() {
-        let mut api = api();
-        api.host.writable = true;
-        let r = api.dispatch(
-            "POST",
-            "/save",
-            &Query::new(),
-            &json_ct(),
-            br#"{"name": "a"}"#,
-        );
-        assert_eq!(r.status, 400);
-        assert!(api.host.calls.borrow().is_empty());
     }
 
     #[test]
@@ -1814,9 +1918,8 @@ mod tests {
     }
 
     /// Each request that edits a scene, naming scene `name`: a /set, a posted
-    /// scene and a save.
-    fn edits(api: &ConsoleAPI<FakeHost>, name: &str) -> [Response; 3] {
-        let save = serde_json::json!({"name": name, "scene": scene_json()}).to_string();
+    /// scene, a save and an answer.
+    fn edits(api: &ConsoleAPI<FakeHost>, name: &str) -> [Response; 4] {
         [
             post(
                 api,
@@ -1830,14 +1933,18 @@ mod tests {
                 &json_ct(),
                 SCENE.as_bytes(),
             ),
-            api.dispatch("POST", "/save", &Query::new(), &json_ct(), save.as_bytes()),
+            post(api, "/save", &[("name", name)]),
+            post(
+                api,
+                "/aside",
+                &[("name", name), ("item", "common"), ("answer", "keep")],
+            ),
         ]
     }
 
     #[test]
     fn an_edit_for_a_scene_other_than_the_active_one_is_409_and_never_reaches_the_host() {
-        let mut api = api();
-        api.host.writable = true;
+        let api = api();
         for r in edits(&api, "b") {
             assert_eq!(
                 (r.status, body(&r).as_str()),
@@ -1864,7 +1971,7 @@ mod tests {
             .iter()
             .filter(|c| !matches!(c, Call::SceneDef(_)))
             .count();
-        assert_eq!(landed, 3);
+        assert_eq!(landed, 4);
     }
 
     // refusals: precheck decides them, dispatch enforces them again
@@ -1872,7 +1979,9 @@ mod tests {
     #[test]
     fn state_changing_paths_are_post_only() {
         let api = api();
-        for path in ["/set", "/switch", "/next", "/prev"] {
+        for path in [
+            "/set", "/switch", "/next", "/prev", "/save", "/reset", "/aside",
+        ] {
             let r = get(
                 &api,
                 path,

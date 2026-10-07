@@ -1,11 +1,13 @@
 //! The console modules.
 //!
-//! core is the API. store holds the scenes. feeds fills in the host info.
-//! server mounts them on a render loop.
+//! core is the API. store holds the scenes, and state the edits that a
+//! scene's state file keeps. feeds fills in the host info. server mounts them
+//! on a render loop.
 
 pub mod core;
 pub mod feeds;
 pub mod server;
+pub mod state;
 pub mod store;
 
 /// The web assets, compiled in. A binary carries no package directory. Each

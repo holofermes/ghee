@@ -11,25 +11,26 @@
 //! render thread applies the queue between frames.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 use tiny_http::{Header, Request, Server, StatusCode};
 
 use crate::console::core::{
-    other_scene, parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers,
+    other_scene, parse_query, Aside, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers,
     LayerSet, Query, Response, Scope,
 };
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
-use crate::console::store::SceneStore;
+use crate::console::state::{self, Edits, Item};
+use crate::console::store::{self, Carried, Opened, SceneStore};
 use crate::engine::{ErrorPass, Feed, Given, Provider, Renderer};
 use crate::feeds::demo_feed;
 use crate::h264::{
@@ -59,6 +60,10 @@ pub const H264_FPS: i32 = 30;
 
 /// How long GET /frame.png waits for the render loop to answer its request.
 pub const FRAME_TIMEOUT: f64 = 4.0;
+
+/// How long GET /scene and GET /edits wait for the active scene's load. A
+/// procedural scene's program takes up to 30 s to hand over its scene.
+pub const LOAD_TIMEOUT: Duration = Duration::from_secs(35);
 
 /// A page opens /h264?vid=<id> or /stream?vid=<id>. It repeats POST
 /// /ping?vid=<id> while it watches. Consumption proves nothing: a page frozen in
@@ -162,8 +167,9 @@ pub enum Command {
     Layer(LayerSet),
     /// GET /frame.png: arm the still where this item lands in queue order.
     Shot,
-    /// A working copy to compile onto the running renderer.
-    SceneObj(Box<Scene>),
+    /// A working copy to compile onto the running renderer, with its
+    /// generation.
+    SceneObj(Box<Scene>, u64),
     /// Draw one frame, for a stream that just opened or closed.
     Preview,
     Stop,
@@ -265,19 +271,128 @@ struct Active {
     asked: u64,
     /// The last switch whose load ended, whether or not its scene compiled.
     loaded: u64,
+    /// Why that load made no working copy.
+    failed: Option<String>,
 }
 
 impl Active {
-    /// The 503 for an edit that arrives before the active scene's load
-    /// ended. The edit would land on the scene before it.
-    fn loading(&self) -> ConsoleResult<()> {
-        match (&self.name, self.asked == self.loaded) {
-            (Some(name), false) => Err(ConsoleError::unavailable(format!(
+    fn is_loading(&self) -> bool {
+        self.name.is_some() && self.asked != self.loaded
+    }
+
+    /// The name of the active scene, or why an edit cannot land on it: the
+    /// 503 for an edit that arrives before its load ended, which would land
+    /// on the scene before it, and the load's own error.
+    fn editable(&self) -> ConsoleResult<String> {
+        let Some(name) = &self.name else {
+            return Err(ConsoleError::not_found("no scene"));
+        };
+        if self.is_loading() {
+            return Err(ConsoleError::unavailable(format!(
                 "scene '{name}' is loading"
-            ))),
-            _ => Ok(()),
+            )));
+        }
+        if let Some(why) = &self.failed {
+            return Err(ConsoleError::server_error(why.clone()));
+        }
+        Ok(name.clone())
+    }
+}
+
+/// One scene as the console holds it since its last load: its defaults, its
+/// working copy, and what its state file holds.
+struct WorkingCopy {
+    opened: Opened,
+    /// opened.defaults.to_dict(), which every diff reads.
+    defaults_doc: Value,
+    /// The scene's revision: every change applied through the API counts.
+    rev: u64,
+    /// The changes to the working copy that the render thread compiles anew:
+    /// a load, an apply, a reset, a kept item. A procedural scene's running
+    /// document carries this working copy once it carries this count.
+    generation: u64,
+}
+
+impl WorkingCopy {
+    fn new(opened: Opened, rev: u64, generation: u64) -> WorkingCopy {
+        WorkingCopy {
+            defaults_doc: opened.defaults.to_dict(),
+            opened,
+            rev,
+            generation,
         }
     }
+
+    fn working_doc(&self) -> Value {
+        self.opened.working.to_dict()
+    }
+
+    /// The working copy's edits.
+    fn edits(&self) -> Edits {
+        state::diff(
+            &self.defaults_doc,
+            &self.working_doc(),
+            self.opened.procedural,
+        )
+    }
+
+    /// What a save writes: the working copy's edits and the items set aside.
+    fn to_save(&self) -> Edits {
+        let mut edits = self.edits();
+        edits.items.extend(self.opened.aside.iter().cloned());
+        edits
+    }
+
+    fn unsaved(&self) -> bool {
+        let edits = self.to_save();
+        match &self.opened.saved {
+            Some(saved) => !edits.same(saved),
+            None => !edits.is_empty(),
+        }
+    }
+
+    fn carried(&self) -> Carried {
+        Carried {
+            edits: self.to_save(),
+            saved: self.opened.saved.clone(),
+        }
+    }
+
+    /// GET /edits.
+    fn edits_json(&self) -> Value {
+        let edits = self.edits();
+        serde_json::json!({
+            "rev": self.rev,
+            "values": edits.values,
+            "items": edits.items.iter().map(Item::to_json).collect::<Vec<_>>(),
+            "unsaved": self.unsaved(),
+            "aside": self.opened.aside.iter().map(Item::key).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The document that a page reads and a /set checks against: the
+    /// working copy, or for a procedural scene the document that runs, which
+    /// holds what its program drew and set, once it carries this working copy.
+    fn live_doc(&self, name: &str, running: &Option<Published>) -> Value {
+        match running {
+            Some(p)
+                if self.opened.procedural
+                    && p.name.as_deref() == Some(name)
+                    && p.generation == self.generation =>
+            {
+                p.doc.clone()
+            }
+            _ => self.working_doc(),
+        }
+    }
+}
+
+/// The document of the scene that the render thread set last.
+struct Published {
+    name: Option<String>,
+    /// The generation of the working copy behind it.
+    generation: u64,
+    doc: Value,
 }
 
 /// A source for one declared array: the host's data for this frame.
@@ -335,10 +450,15 @@ pub struct Console {
     /// active scene and the edit, so an edit queued behind a switch never
     /// lands on the scene that the switch brought.
     editing: Mutex<()>,
+    /// Signalled at the end of each load.
+    loaded: Condvar,
+    /// The working copy of each scene that the console loaded since it
+    /// started, by name.
+    copies: Mutex<HashMap<String, WorkingCopy>>,
     /// The document of the active scene as the render thread last set it,
     /// under the scene's name. A scene that failed to compile is published
     /// too, while the renderer keeps drawing the last one that compiled.
-    running: Mutex<Option<(Option<String>, Value)>>,
+    running: Mutex<Option<Published>>,
     /// The times that the scene's own code changed its layers in the
     /// document: a layer added or given a new look, or a field set.
     layer_changes: AtomicU64,
@@ -407,6 +527,8 @@ impl Console {
             }),
             active: Mutex::new(Active::default()),
             editing: Mutex::new(()),
+            loaded: Condvar::new(),
+            copies: Mutex::new(HashMap::new()),
             running: Mutex::new(None),
             layer_changes: AtomicU64::new(0),
             sources: Mutex::new(None),
@@ -526,10 +648,85 @@ impl Console {
         stat.error_pass = None;
     }
 
-    /// Republish the running document of scene `name`. The render thread
-    /// calls this after a load, an applied scene, or a /set that landed.
-    fn publish(&self, name: Option<&str>, scene: &Scene) {
-        *lock(&self.running) = Some((name.map(str::to_string), scene.to_dict()));
+    /// Republish the running document of scene `name`, built from the
+    /// working copy of `generation`. The render thread calls this after a
+    /// load, an applied scene, or a /set that landed.
+    fn publish(&self, name: Option<&str>, generation: u64, scene: &Scene) {
+        *lock(&self.running) = Some(Published {
+            name: name.map(str::to_string),
+            generation,
+            doc: scene.to_dict(),
+        });
+    }
+
+    /// Hold `opened` as the working copy of scene `name`, with the next
+    /// revision and generation, and return that generation.
+    fn install(&self, name: &str, opened: Opened) -> u64 {
+        let mut copies = lock(&self.copies);
+        let (rev, generation) = copies.get(name).map_or((0, 0), |c| (c.rev, c.generation));
+        copies.insert(
+            name.to_string(),
+            WorkingCopy::new(opened, rev + 1, generation + 1),
+        );
+        generation + 1
+    }
+
+    /// Run `f` on the working copy of the active scene, or say why no edit
+    /// lands on it.
+    fn with_active<T>(
+        &self,
+        f: impl FnOnce(&str, &mut WorkingCopy) -> ConsoleResult<T>,
+    ) -> ConsoleResult<T> {
+        let name = lock(&self.active).editable()?;
+        let mut copies = lock(&self.copies);
+        let copy = copies
+            .get_mut(&name)
+            .ok_or_else(|| ConsoleError::not_found("no scene"))?;
+        f(&name, copy)
+    }
+
+    /// Run `f` on the working copy of scene `name`, or of the active scene:
+    /// the one that the console holds, after the load of the active scene
+    /// ends, or else one built from the scene's files and its state file.
+    /// Its revision is 0 when the console never loaded it.
+    fn with_copy<T>(
+        &self,
+        name: Option<&str>,
+        f: impl FnOnce(&str, &WorkingCopy) -> T,
+    ) -> ConsoleResult<T> {
+        let name = {
+            let mut active = lock(&self.active);
+            let name = name
+                .map(str::to_string)
+                .or_else(|| active.name.clone())
+                .unwrap_or_default();
+            let deadline = Instant::now() + LOAD_TIMEOUT;
+            while active.is_loading() && active.name.as_deref() == Some(name.as_str()) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() || self.stopping() {
+                    return Err(ConsoleError::unavailable(format!(
+                        "scene '{name}' is loading"
+                    )));
+                }
+                active = self
+                    .loaded
+                    .wait_timeout(active, left.min(Duration::from_millis(250)))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
+            }
+            name
+        };
+        if !self.store.contains(&name) {
+            return Err(ConsoleError::not_found("no scene"));
+        }
+        if let Some(copy) = lock(&self.copies).get(&name) {
+            return Ok(f(&name, copy));
+        }
+        let (opened, _) = self
+            .store
+            .open(&name, None)
+            .map_err(|e| ConsoleError::server_error(format!("build {name}: {e}")))?;
+        Ok(f(&name, &WorkingCopy::new(opened, 0, 0)))
     }
 
     /// Make `name` the active scene, and number the switch for the load
@@ -1550,8 +1747,9 @@ fn open_renderer(console: &Console) -> Result<Renderer> {
 struct Running {
     /// The scene that the renderer draws, the last one that compiled.
     scene: Option<Scene>,
-    /// The name of that scene.
+    /// The name of that scene, and the generation of its working copy.
     name: Option<String>,
+    generation: u64,
     /// The name of the scene that the last load asked for. A /set is for
     /// this scene, so it lands only while `scene` is this scene.
     loaded: Option<String>,
@@ -1567,6 +1765,7 @@ fn set_scene(
     renderer: &RefCell<Renderer>,
     st: &RefCell<Running>,
     scene: Scene,
+    generation: u64,
     snap: Option<Snapshot>,
 ) -> String {
     let err = match renderer.borrow_mut().setup(&scene) {
@@ -1589,14 +1788,15 @@ fn set_scene(
         if let Some(last) = st.borrow().scene.as_ref() {
             let _ = renderer.borrow_mut().setup(last); // keep the last good scene rendering
         }
-        console.publish(name.as_deref(), &scene);
+        console.publish(name.as_deref(), generation, &scene);
         return err;
     }
     console.reset_stats();
-    console.publish(name.as_deref(), &scene);
+    console.publish(name.as_deref(), generation, &scene);
     let mut held = st.borrow_mut();
     held.scene = Some(scene);
     held.name = name;
+    held.generation = generation;
     String::new()
 }
 
@@ -1613,22 +1813,36 @@ fn load(
 ) {
     *ctrl.borrow_mut() = None;
     st.borrow_mut().loaded = Some(name.to_string());
-    let (built, read) = collect(|| console.store.start(name));
-    match built {
-        Ok((scene, mut process)) => {
+    // A switch away and back, and a reload, keep the edits made since the
+    // last save, and check them against the files as they are now.
+    let carried = lock(&console.copies).get(name).map(WorkingCopy::carried);
+    let (built, read) = collect(|| console.store.open(name, carried));
+    let failed = match built {
+        Ok((opened, mut process)) => {
             let snap = console.snapshot(read);
-            let err = set_scene(console, renderer, st, scene, Some(snap));
+            let working = opened.working.clone();
+            let generation = console.install(name, opened);
+            let err = set_scene(console, renderer, st, working, generation, Some(snap));
             if let (Some(f), Some(_)) = (process.as_mut(), console.timestep) {
                 f.pin();
             }
             if err.is_empty() {
                 *ctrl.borrow_mut() = process.map(|f| Box::new(f) as Box<dyn SceneController>);
             }
+            None
         }
-        Err(e) => lock(&console.stat).error = format!("load {name}: {e}"),
-    }
+        Err(e) => {
+            let why = format!("load {name}: {e}");
+            lock(&console.stat).error = why.clone();
+            Some(why)
+        }
+    };
     let mut active = lock(&console.active);
-    active.loaded = active.loaded.max(switch);
+    if switch >= active.loaded {
+        active.loaded = switch;
+        active.failed = failed;
+    }
+    console.loaded.notify_all();
 }
 
 /// Apply every queued command, and report whether one landed. A queued command
@@ -1668,7 +1882,7 @@ fn drain(
             }
             // in queue order, so the armed frame carries a /set ahead of it
             Command::Shot => console.shot.arm(),
-            Command::SceneObj(scene) => {
+            Command::SceneObj(scene, generation) => {
                 let mut scene = *scene;
                 // A procedural scene's code owns which layers exist, so an
                 // apply keeps a layer that the code added after the page
@@ -1679,7 +1893,7 @@ fn drain(
                         .scene
                         .as_ref()
                         .is_some_and(|running| keep_layers(&mut scene, running));
-                if set_scene(console, renderer, st, scene, None).is_empty() && kept {
+                if set_scene(console, renderer, st, scene, generation, None).is_empty() && kept {
                     st.borrow_mut().changed = true;
                     publish_changes(console, st);
                 }
@@ -1690,7 +1904,7 @@ fn drain(
     if edited {
         let held = st.borrow();
         if let Some(scene) = held.scene.as_ref() {
-            console.publish(held.name.as_deref(), scene);
+            console.publish(held.name.as_deref(), held.generation, scene);
         }
     }
     force
@@ -1734,7 +1948,7 @@ fn publish_changes(console: &Console, st: &RefCell<Running>) {
         return;
     }
     if let Some(scene) = held.scene.as_ref() {
-        console.publish(held.name.as_deref(), scene);
+        console.publish(held.name.as_deref(), held.generation, scene);
         console.layer_changes.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -2003,14 +2217,6 @@ impl RenderLoopHost {
 }
 
 impl ConsoleHost for RenderLoopHost {
-    fn writable(&self) -> bool {
-        !self.console.store.read_only
-    }
-
-    fn save_refused(&self) -> String {
-        "demo scenes are read-only; serve your own directory to save".to_string()
-    }
-
     fn stats(&self) -> ConsoleResult<Value> {
         Ok(self.console.stats())
     }
@@ -2028,22 +2234,22 @@ impl ConsoleHost for RenderLoopHost {
     }
 
     fn scene_def(&self, name: Option<&str>) -> ConsoleResult<Value> {
-        let active = lock(&self.console.active).name.clone();
-        let name = name.map(str::to_string).or(active).unwrap_or_default();
-        if !self.console.store.contains(&name) {
-            return Err(ConsoleError::not_found("no scene"));
-        }
-        if let Some((cur, doc)) = lock(&self.console.running).as_ref() {
-            if cur.as_deref() == Some(name.as_str()) {
-                return Ok(doc.clone());
-            }
-        }
-        let scene = self
-            .console
-            .store
-            .resolve(&name)
-            .map_err(|e| ConsoleError::server_error(format!("build {name}: {e}")))?;
-        Ok(scene.to_dict())
+        self.scene_doc(name, false).map(|(doc, _)| doc)
+    }
+
+    fn scene_doc(&self, name: Option<&str>, defaults: bool) -> ConsoleResult<(Value, Option<u64>)> {
+        let running = &self.console.running;
+        self.console.with_copy(name, |name, copy| {
+            let doc = match defaults {
+                true => copy.defaults_doc.clone(),
+                false => copy.live_doc(name, &lock(running)),
+            };
+            (doc, Some(copy.rev))
+        })
+    }
+
+    fn edits(&self, name: Option<&str>) -> ConsoleResult<Value> {
+        self.console.with_copy(name, |_, copy| copy.edits_json())
     }
 
     fn hwinfo(&self) -> ConsoleResult<Value> {
@@ -2051,28 +2257,46 @@ impl ConsoleHost for RenderLoopHost {
     }
 
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()> {
+        self.console.with_active(|_, copy| {
+            let working = &mut copy.opened.working;
+            let params = match scope {
+                Scope::Scene => Some(&mut working.params),
+                Scope::Pass(i) => working
+                    .passes
+                    .get_mut(usize::try_from(i).unwrap_or(usize::MAX))
+                    .map(|p| &mut p.params),
+            };
+            if let Some(p) = params.and_then(|p| p.get_mut(name)) {
+                p.value = coerce(name, &p.ty, &value)
+                    .map_err(|e| ConsoleError::bad_request(format!("bad /set: {e}")))?;
+            }
+            Ok(())
+        })?;
         self.console.command(set_item(scope, name, value));
         Ok(())
     }
 
     fn set_layer(&self, set: LayerSet) -> ConsoleResult<()> {
+        self.console.with_active(|_, copy| {
+            let working = &mut copy.opened.working;
+            // A layer that a procedural scene's program drew is the program's.
+            if working.layer(&set.layer).is_some() {
+                working
+                    .set_layer(&set.at(), &set.value)
+                    .map_err(|e| ConsoleError::bad_request(format!("bad /set: {e}")))?;
+            }
+            Ok(())
+        })?;
         self.console.command(Command::Layer(set));
         Ok(())
     }
 
-    /// The /set lands on the active scene, so it checks against that scene's
-    /// running document. scene_def would start a procedural scene's process
-    /// when no document runs.
+    /// The /set lands on the active scene, so it checks against the document
+    /// that a page reads of it.
     fn live_doc(&self) -> ConsoleResult<Value> {
-        let active = {
-            let active = lock(&self.console.active);
-            active.loading()?;
-            active.name.clone()
-        };
-        match lock(&self.console.running).as_ref() {
-            Some((name, doc)) if *name == active => Ok(doc.clone()),
-            _ => Err(ConsoleError::not_found("no scene")),
-        }
+        let running = &self.console.running;
+        self.console
+            .with_active(|name, copy| Ok(copy.live_doc(name, &lock(running))))
     }
 
     fn switch(&self, name: Option<&str>) -> ConsoleResult<String> {
@@ -2087,29 +2311,124 @@ impl ConsoleHost for RenderLoopHost {
         Ok(name.to_string())
     }
 
+    /// Every edit gives the active scene a new revision.
     fn edit_scene(
         &self,
-        scene: &str,
+        scene: Option<&str>,
         edit: &mut dyn FnMut() -> ConsoleResult<()>,
     ) -> ConsoleResult<()> {
         let _editing = lock(&self.console.editing);
-        other_scene(scene, self.active_name()?.as_deref())?;
-        edit()
-    }
-
-    fn apply_scene(&self, mut scene: Scene) -> ConsoleResult<()> {
-        lock(&self.console.active).loading()?;
-        // A posted scene names its asset files only. They resolve against the
-        // store, where GET /scene took them from.
-        scene
-            .load_assets_in(&self.console.store.dir, Reach::Inside)
-            .map_err(|e| ConsoleError::bad_request(e.to_string()))?;
-        self.console.command(Command::SceneObj(Box::new(scene)));
+        if let Some(scene) = scene {
+            other_scene(scene, self.active_name()?.as_deref())?;
+        }
+        let name = lock(&self.console.active).editable()?;
+        edit()?;
+        if let Some(copy) = lock(&self.console.copies).get_mut(&name) {
+            copy.rev += 1;
+        }
         Ok(())
     }
 
-    fn save_scene(&self, name: &str, scene: Scene) -> ConsoleResult<()> {
-        self.console.store.save(name, scene)
+    fn apply_scene(&self, mut scene: Scene) -> ConsoleResult<()> {
+        let running = &self.console.running;
+        self.console.with_active(|name, copy| {
+            // A posted scene names its asset files only. They resolve where
+            // the scene's own files do, where GET /scene took them from.
+            let (dir, reach) = match &copy.opened.defaults.root {
+                Some(root) => (root.dir.clone(), root.reach),
+                None => (self.console.store.dir.clone(), Reach::Inside),
+            };
+            scene
+                .load_assets_in(&dir, reach)
+                .map_err(|e| ConsoleError::bad_request(format!("bad /scene: {e}")))?;
+            if copy.opened.procedural {
+                // The program's own drawings and sets stay its own: the
+                // working copy takes what the page changed in what runs.
+                let changed =
+                    state::diff(&copy.live_doc(name, &lock(running)), &scene.to_dict(), true);
+                let doc = state::fold(&copy.defaults_doc, &copy.working_doc(), &changed);
+                match store::scene_of(&copy.opened.defaults, &doc, name) {
+                    Ok(working) => copy.opened.working = working,
+                    Err(e) => eprintln!(
+                        "ghee console: {name}: the working copy keeps no edit of this apply: {e}"
+                    ),
+                }
+            } else {
+                copy.opened.working = scene.clone();
+            }
+            copy.generation += 1;
+            self.console
+                .command(Command::SceneObj(Box::new(scene), copy.generation));
+            Ok(())
+        })
+    }
+
+    fn save(&self, _name: Option<&str>) -> ConsoleResult<()> {
+        let store = &self.console.store;
+        self.console.with_active(|name, copy| {
+            let edits = copy.to_save();
+            store.save(name, &edits)?;
+            copy.opened.saved = (!edits.is_empty()).then_some(edits);
+            Ok(())
+        })
+    }
+
+    fn reset(&self, _name: Option<&str>) -> ConsoleResult<()> {
+        self.console.with_active(|_, copy| {
+            copy.opened.working = copy.opened.defaults.clone();
+            copy.generation += 1;
+            let defaults = Box::new(copy.opened.defaults.clone());
+            self.console
+                .command(Command::SceneObj(defaults, copy.generation));
+            Ok(())
+        })
+    }
+
+    /// Keep takes the default item's hash as the edit's base and applies the
+    /// edit, and default drops it. Either writes the state file at once, as
+    /// it was with that one item answered.
+    fn answer(&self, _name: Option<&str>, aside: &Aside, keep: bool) -> ConsoleResult<()> {
+        let store = &self.console.store;
+        self.console.with_active(|name, copy| {
+            let is = |i: &Item| i.is(&aside.item, aside.pass.as_deref(), aside.param.as_deref());
+            let at = copy
+                .opened
+                .aside
+                .iter()
+                .position(is)
+                .ok_or_else(|| ConsoleError::not_found("no such item is set aside"))?;
+            let mut item = copy.opened.aside[at].clone();
+            let mut saved = copy.opened.saved.clone().unwrap_or_default();
+            saved.items.retain(|i| !is(i));
+            let mut working = None;
+            if keep {
+                item.base = state::base_of(&copy.defaults_doc, &item).flatten();
+                let only = Edits {
+                    values: serde_json::Map::new(),
+                    items: vec![item.clone()],
+                };
+                let doc = state::fold(&copy.defaults_doc, &copy.working_doc(), &only);
+                working = Some(
+                    store::scene_of(&copy.opened.defaults, &doc, name)
+                        .map_err(|e| ConsoleError::server_error(format!("{name}: {e}")))?,
+                );
+                saved.items.push(item);
+                saved
+                    .items
+                    .sort_by_key(|i| state::KINDS.iter().position(|k| *k == i.item));
+            }
+            store.save(name, &saved)?;
+            copy.opened.aside.remove(at);
+            copy.opened.saved = (!saved.is_empty()).then_some(saved);
+            if let Some(working) = working {
+                copy.opened.working = working;
+                copy.generation += 1;
+                let scene = Box::new(copy.opened.working.clone());
+                self.console
+                    .command(Command::SceneObj(scene, copy.generation));
+            }
+            Ok(())
+        })
     }
 }
 
@@ -2215,6 +2534,11 @@ fn send(request: Request, resp: &Response) {
         tiny_http::Response::from_data(resp.body.clone()).with_status_code(StatusCode(resp.status));
     if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], resp.content_type.as_bytes()) {
         out = out.with_header(h);
+    }
+    for (name, value) in &resp.headers {
+        if let Ok(h) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
+            out = out.with_header(h);
+        }
     }
     let _ = request.respond(out);
 }
@@ -2448,6 +2772,8 @@ pub struct Options {
     /// The host info for the device-info readout.
     pub hwinfo: Option<Box<dyn Fn() -> Value + Send + Sync>>,
     pub scenes_dir: Option<String>,
+    /// Where the scenes' state files live. None takes state::default_dir().
+    pub state_dir: Option<std::path::PathBuf>,
     pub size: (i32, i32),
     pub port: u16,
     /// Loopback by default. The console has no auth, and it compiles POSTed
@@ -2497,6 +2823,7 @@ impl Default for Options {
             arrays: Vec::new(),
             hwinfo: None,
             scenes_dir: None,
+            state_dir: None,
             size: (320, 240),
             port: 8090,
             host: "127.0.0.1".to_string(),
@@ -2530,6 +2857,7 @@ pub fn run(opts: Options) -> Result<()> {
         arrays,
         hwinfo,
         scenes_dir,
+        state_dir,
         size,
         port,
         host,
@@ -2554,25 +2882,29 @@ pub fn run(opts: Options) -> Result<()> {
         on_stats,
         filters,
     } = opts;
-    let store = match store {
+    let mut store = match store {
         Some(store) => store,
         None => {
-            let read_only = scenes_dir.is_none();
+            let demo = scenes_dir.is_none();
             let dir = match scenes_dir {
                 Some(dir) => dir,
                 None => examples_dir().ok_or_else(|| {
                     anyhow!("no scenes directory (set GHEE_EXAMPLES for the bundled scenes)")
                 })?,
             };
-            SceneStore::new(&dir, read_only, scene_args)
+            let mut store = SceneStore::new(&dir, scene_args);
+            store.demo = demo;
+            store
         }
     };
     let names = store.names();
     if names.is_empty() {
         bail!("no .scene.json in {}", store.dir);
     }
-    let mut store = store;
     store.filters = filters;
+    store.state_dir = state_dir
+        .or_else(|| store.state_dir.take())
+        .or_else(state::default_dir);
     let mut console = Console::new(store);
     console.w = size.0;
     console.h = size.1;
@@ -2669,12 +3001,263 @@ mod tests {
         "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
     const SC: &[u8] = &[0, 0, 0, 1];
 
+    /// Make `scene` the working copy of the active scene `name`, as a load
+    /// ends.
+    fn opened(console: &Console, name: &str, scene: Scene) {
+        let opened = Opened {
+            defaults: scene.clone(),
+            working: scene,
+            aside: Vec::new(),
+            saved: None,
+            procedural: false,
+        };
+        ready(console, name, opened);
+    }
+
+    /// Make `opened` the working copy of the active scene `name`, as a load
+    /// ends.
+    fn ready(console: &Console, name: &str, opened: Opened) {
+        let switch = console.ask(name);
+        console.install(name, opened);
+        lock(&console.active).loaded = switch;
+    }
+
+    /// A store of clocks, one pass main with the params cols and rows, and
+    /// its state directory.
+    fn clocks(
+        tag: &str,
+    ) -> (
+        crate::testing::TempDir,
+        crate::testing::TempDir,
+        Arc<Console>,
+    ) {
+        let d = crate::testing::TempDir::new(&format!("console-{tag}"));
+        let doc = serde_json::json!({"version": 1, "passes": [{"name": "main",
+            "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
+            "params": {"cols": {"type": "int", "value": 7},
+                       "rows": {"type": "int", "value": 13}}}]});
+        fs::write(d.join("clocks.scene.json"), doc.to_string()).unwrap();
+        let states = crate::testing::TempDir::new(&format!("console-{tag}-state"));
+        let mut store = SceneStore::new(&d, Vec::new());
+        store.state_dir = Some(std::path::PathBuf::from(&*states));
+        (d, states, Arc::new(Console::new(store)))
+    }
+
+    /// The state file of clocks in the directory `d`.
+    fn clocks_file(d: &str, states: &str) -> std::path::PathBuf {
+        std::path::Path::new(states).join(format!("scenes{d}/clocks.json"))
+    }
+
+    /// One request of a page: its status, its body and its ETag.
+    fn ask(
+        api: &ConsoleAPI<RenderLoopHost>,
+        method: &str,
+        path: &str,
+        q: &str,
+        body: &str,
+    ) -> (u16, String, Option<String>) {
+        let headers = Headers::from([("Content-Type", "application/json")]);
+        let r = api.dispatch(method, path, &parse_query(q), &headers, body.as_bytes());
+        let etag = r
+            .headers
+            .iter()
+            .find(|(k, _)| k == "ETag")
+            .map(|(_, v)| v.clone());
+        (
+            r.status,
+            String::from_utf8_lossy(&r.body).into_owned(),
+            etag,
+        )
+    }
+
+    fn json_of(text: &str) -> Value {
+        serde_json::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn two_params_save_alone_and_back_to_defaults_removes_the_state_file() {
+        let (d, states, console) = clocks("two-params");
+        let (opened, _) = console.store.open("clocks", None).unwrap();
+        ready(&console, "clocks", opened);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let (_, _, first) = ask(&api, "GET", "/scene", "", "");
+        for q in [
+            "scene=clocks&pass=main&name=cols&value=5",
+            "scene=clocks&pass=main&name=rows&value=4",
+        ] {
+            assert_eq!(ask(&api, "POST", "/set", q, "").0, 200);
+        }
+        let (_, scene, etag) = ask(&api, "GET", "/scene", "name=clocks", "");
+        assert_eq!(json_of(&scene)["passes"][0]["params"]["cols"]["value"], 5);
+        assert!(etag.is_some() && etag != first, "{etag:?} {first:?}");
+        let (_, defaults, _) = ask(&api, "GET", "/scene", "name=clocks&defaults=1", "");
+        assert_eq!(
+            json_of(&defaults)["passes"][0]["params"]["cols"]["value"],
+            7
+        );
+        let values = serde_json::json!({"passes": {"main": {"params": {"cols": 5, "rows": 4}}}});
+        let edits = json_of(&ask(&api, "GET", "/edits", "name=clocks", "").1);
+        assert_eq!(
+            (&edits["values"], &edits["items"], &edits["unsaved"]),
+            (&values, &serde_json::json!([]), &Value::from(true))
+        );
+        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        let file = clocks_file(&d, &states);
+        assert_eq!(
+            json_of(&fs::read_to_string(&file).unwrap()),
+            serde_json::json!({"version": 1, "scene": format!("{d}/clocks.scene.json"),
+                               "values": values})
+        );
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(edits["unsaved"], false);
+        assert_eq!(ask(&api, "POST", "/reset", "name=clocks", "").0, 200);
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(
+            (&edits["values"], &edits["unsaved"]),
+            (&serde_json::json!({}), &Value::from(true))
+        );
+        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn a_shader_edit_whose_default_changed_waits_for_keep_mine_or_update_to_default() {
+        let mine = "void main(){ gl_FragColor = vec4(0.5); }";
+        let default = "void main(){ gl_FragColor = vec4(1.0); }";
+        for answer in ["keep", "default"] {
+            let (d, states, console) = clocks(answer);
+            let file = clocks_file(&d, &states);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let saved = serde_json::json!({"version": 1,
+                "values": {"passes": {"main": {"params": {"cols": 5}}}},
+                "items": [{"item": "fragment", "pass": "main", "base": "0123456789abcdef",
+                           "value": mine}]});
+            fs::write(&file, saved.to_string()).unwrap();
+            let (opened, _) = console.store.open("clocks", None).unwrap();
+            ready(&console, "clocks", opened);
+            let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+            let fragment = |api: &ConsoleAPI<RenderLoopHost>| {
+                json_of(&ask(api, "GET", "/scene", "", "").1)["passes"][0]["fragment"].clone()
+            };
+            assert_eq!(fragment(&api), default);
+            let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+            assert_eq!(
+                edits["aside"],
+                serde_json::json!([{"item": "fragment", "pass": "main"}])
+            );
+            assert_eq!(edits["unsaved"], false);
+            let q = format!("name=clocks&item=fragment&pass=main&answer={answer}");
+            assert_eq!(ask(&api, "POST", "/aside", &q, "").0, 200);
+            let written = json_of(&fs::read_to_string(&file).unwrap());
+            let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+            assert_eq!(
+                (&edits["aside"], &edits["unsaved"]),
+                (&serde_json::json!([]), &Value::from(false))
+            );
+            match answer {
+                "keep" => {
+                    // sha256sum of the default shader's text
+                    assert_eq!(written["items"][0]["base"], "758cc820f81e647b");
+                    assert_eq!(fragment(&api), mine);
+                }
+                _ => {
+                    assert!(written.get("items").is_none(), "{written}");
+                    assert_eq!(fragment(&api), default);
+                }
+            }
+            assert_eq!(written["values"], saved["values"]);
+            assert_eq!(
+                ask(&api, "POST", "/aside", &q, ""),
+                (404, "no such item is set aside".to_string(), None)
+            );
+        }
+    }
+
+    #[test]
+    fn an_apply_of_a_procedural_scene_leaves_what_its_program_drew_and_set_out_of_its_edits() {
+        let (_d, console) = tmp_console("program");
+        let doc = |x: f64, color: Option<&str>, bar: Option<f64>| {
+            let mut title = serde_json::json!({"name": "title", "text": "hi", "x": x});
+            if let Some(c) = color {
+                title["color"] = Value::from(c);
+            }
+            let mut layers = vec![title];
+            if let Some(w) = bar {
+                layers.push(serde_json::json!({"name": "bar", "shape": "rect", "width": w}));
+            }
+            serde_json::json!({"version": 1, "passes": [{"name": "main",
+                "fragment": "void main(){ gl_FragColor = vec4(1.0); }", "layers": layers}]})
+        };
+        let scene = |d: Value| Scene::from_dict(&d, None, None).unwrap();
+        ready(
+            &console,
+            "one",
+            Opened {
+                defaults: scene(doc(1.0, None, None)),
+                working: scene(doc(1.0, None, None)),
+                aside: Vec::new(),
+                saved: None,
+                procedural: true,
+            },
+        );
+        // the program set title's x and drew bar
+        console.publish(Some("one"), 1, &scene(doc(20.0, None, Some(4.0))));
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let posted = doc(20.0, Some("#ff0000"), Some(9.0)).to_string();
+        assert_eq!(ask(&api, "POST", "/scene", "name=one", &posted).0, 200);
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(
+            (&edits["values"], &edits["items"]),
+            (
+                &serde_json::json!({"layers": {"title": {"color": "#ff0000"}}}),
+                &serde_json::json!([])
+            )
+        );
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_switch_away_and_back_keeps_the_edits_made_since_the_last_save() {
+        let renderer = RefCell::new(gpu(8, 8));
+        let (_d, console) = good_and_bad("away");
+        let st = RefCell::new(Running::default());
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        api.host.switch(Some("good")).unwrap();
+        drain(&console, &renderer, &st, &ctrl);
+        assert_eq!(
+            ask(&api, "POST", "/set", "scene=good&name=k&value=0.5", "").0,
+            200
+        );
+        for name in ["bad", "good"] {
+            api.host.switch(Some(name)).unwrap();
+            drain(&console, &renderer, &st, &ctrl);
+        }
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(
+            edits["values"],
+            serde_json::json!({"passes": {"main": {"params": {"k": 0.5}}}})
+        );
+        let drawn = st.borrow().scene.as_ref().unwrap().passes[0]
+            .params
+            .get("k")
+            .unwrap()
+            .value
+            .to_json();
+        assert_eq!(drawn, Value::from(0.5));
+    }
+
+    /// The running document, as the render thread published it last.
+    fn running_doc(console: &Console) -> Value {
+        lock(&console.running).as_ref().unwrap().doc.clone()
+    }
+
     /// A console over a directory of one scene, which lives as long as the
     /// TempDir.
     fn tmp_console(tag: &str) -> (crate::testing::TempDir, Arc<Console>) {
         let d = crate::testing::TempDir::new(&format!("console-{tag}"));
         fs::write(d.join("one.scene.json"), SCENE).unwrap();
-        let console = Arc::new(Console::new(SceneStore::new(&d, true, Vec::new())));
+        let console = Arc::new(Console::new(SceneStore::new(&d, Vec::new())));
         (d, console)
     }
 
@@ -3307,7 +3890,6 @@ mod tests {
             Some(404)
         );
         assert_eq!(host.switch(Some("nope")).err().map(|e| e.status), Some(404));
-        assert!(!host.writable()); // a read-only store
     }
 
     #[test]
@@ -3327,7 +3909,7 @@ mod tests {
         for name in ["one", "two"] {
             fs::write(d.join(format!("{name}.scene.json")), SCENE).unwrap();
         }
-        let console = Arc::new(Console::new(SceneStore::new(&d, true, Vec::new())));
+        let console = Arc::new(Console::new(SceneStore::new(&d, Vec::new())));
         let host = RenderLoopHost::new(Arc::clone(&console));
         host.switch(Some("one")).unwrap();
         host.switch(Some("two")).unwrap();
@@ -3336,12 +3918,15 @@ mod tests {
         assert_eq!(host.active_name(), Ok(Some("two".to_string())));
         assert_eq!(console.stats()["active"], "two");
         let mut ran = 0;
-        let refused = host.edit_scene("one", &mut || {
+        let refused = host.edit_scene(Some("one"), &mut || {
             ran += 1;
             Ok(())
         });
         assert_eq!(refused.map_err(|e| e.status), Err(409));
-        host.edit_scene("two", &mut || {
+        let mut active = lock(&console.active);
+        active.loaded = active.asked;
+        drop(active);
+        host.edit_scene(Some("two"), &mut || {
             ran += 1;
             Ok(())
         })
@@ -3396,7 +3981,7 @@ mod tests {
             doc("void main(){ gl_FragColor = vec4(k); }"),
         )
         .unwrap();
-        let console = Arc::new(Console::new(SceneStore::new(&d, true, Vec::new())));
+        let console = Arc::new(Console::new(SceneStore::new(&d, Vec::new())));
         (d, console)
     }
 
@@ -3486,7 +4071,7 @@ mod tests {
         let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
         let r = set("layer=label&field=text&value=O");
         assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
-        console.publish(None, &text_scene("I"));
+        opened(&console, "one", text_scene("I"));
         assert_eq!(set("layer=label&field=text&value=hello").status, 200);
         match console.q.take() {
             Some(Command::SceneParam(name, v)) => {
@@ -3509,9 +4094,10 @@ mod tests {
             renderer.borrow().set_time(Some(0.0));
             renderer.borrow_mut().render(None).unwrap().to_vec()
         };
-        let set = |sc| set_scene(&console, &renderer, &st, sc, None);
+        let set = |sc| set_scene(&console, &renderer, &st, sc, 0, None);
         assert_eq!(set(text_scene("I")), "");
         let i = frame();
+        opened(&console, "one", text_scene("I"));
         // what a POST /set queues
         let host = RenderLoopHost::new(Arc::clone(&console));
         host.set_param(Scope::Scene, "label", Value::from("O"))
@@ -3519,7 +4105,7 @@ mod tests {
         assert!(drain(&console, &renderer, &st, &ctrl));
         let o = frame();
         assert!(o != i, "the frame kept the old words");
-        let running = lock(&console.running).clone().unwrap().1;
+        let running = running_doc(&console);
         assert_eq!(running["passes"][0]["layers"][0]["text"], "O");
         // the relayed words draw what a scene built on them draws
         assert_eq!(set(text_scene("O")), "");
@@ -3554,7 +4140,7 @@ mod tests {
         let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
         let r = set("layer=label&field=x&value=4");
         assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
-        console.publish(None, &placed_scene(2.0));
+        opened(&console, "one", placed_scene(2.0));
         assert_eq!(set("layer=label&field=x&value=4").status, 200);
         match console.q.take() {
             Some(Command::Layer(set)) => assert_eq!(set, label_x(4.0)),
@@ -3575,16 +4161,17 @@ mod tests {
             renderer.borrow().set_time(Some(0.0));
             renderer.borrow_mut().render(None).unwrap().to_vec()
         };
-        let set = |sc| set_scene(&console, &renderer, &st, sc, None);
+        let set = |sc| set_scene(&console, &renderer, &st, sc, 0, None);
         assert_eq!(set(placed_scene(2.0)), "");
         let before = frame();
+        opened(&console, "one", placed_scene(2.0));
         // what a POST /set queues
         let host = RenderLoopHost::new(Arc::clone(&console));
         host.set_layer(label_x(12.0)).unwrap();
         assert!(drain(&console, &renderer, &st, &ctrl));
         let live = frame();
         assert!(live != before, "the frame kept the layer where it was");
-        let running = lock(&console.running).clone().unwrap().1;
+        let running = running_doc(&console);
         assert_eq!(running["passes"][0]["layers"][0]["x"], 12.0);
         assert_eq!(set(placed_scene(12.0)), "");
         assert!(frame() == live, "the live field drew another frame");
@@ -3593,8 +4180,8 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_saved_layer_field_starts_a_procedural_scene_and_a_tick_sets_it_over() {
-        // The code of proc places the layer title at x 1, its sidecar at x 8,
-        // and each answer of the process at x 20.
+        // The code of proc places the layer title at x 1, its state file at
+        // x 8, and each answer of the process at x 20.
         let d = crate::testing::TempDir::new("console-sidecar");
         let doc = |x: f64| {
             serde_json::json!({"version": 1, "passes": [{"name": "main",
@@ -3608,11 +4195,15 @@ mod tests {
         let body = format!(
             "#!/bin/sh\nprintf '%s\\n' '{handshake}'\nwhile read -r l; do printf '{answer}'; done\n"
         );
-        crate::testing::script(&d, "proc", &body);
-        fs::create_dir_all(d.join("modified")).unwrap();
-        let saved = serde_json::json!({"layers": {"title": {"font_size": 16, "x": 8, "y": 4}}});
-        fs::write(d.join("modified/proc.values.json"), saved.to_string()).unwrap();
-        let console = Console::new(SceneStore::new(&d, false, Vec::new()));
+        let path = crate::testing::script(&d, "proc", &body);
+        let states = crate::testing::TempDir::new("console-states");
+        let saved = serde_json::json!({"version": 1, "values": {"layers": {"title": {"x": 8}}}});
+        let file = state::file_of(std::path::Path::new(&*states), &path, None);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, saved.to_string()).unwrap();
+        let mut store = SceneStore::new(&d, Vec::new());
+        store.state_dir = Some(std::path::PathBuf::from(&*states));
+        let console = Console::new(store);
         let renderer = RefCell::new(gpu(48, 24));
         let st = RefCell::new(Running::default());
         let ctrl: ControllerSlot = RefCell::new(None);
@@ -3665,11 +4256,12 @@ mod tests {
             (stats["error"].clone(), stats["text_errors"].clone())
         };
         assert_eq!(
-            set_scene(&console, &renderer, &st, text_scene("O"), None),
+            set_scene(&console, &renderer, &st, text_scene("O"), 0, None),
             ""
         );
         let o = frame();
         assert_eq!(errors(), (Value::from(""), serde_json::json!([])));
+        opened(&console, "one", text_scene("O"));
         let host = RenderLoopHost::new(Arc::clone(&console));
         let long = "I".repeat(400_000);
         host.set_param(Scope::Scene, "label", Value::from(long.as_str()))
@@ -3681,7 +4273,7 @@ mod tests {
         let e = texts[0].as_str().unwrap();
         assert!(e.starts_with("layer 'label': ") && e.contains("VC4"), "{e}");
         // The document holds the words posted.
-        let running = lock(&console.running).clone().unwrap().1;
+        let running = running_doc(&console);
         assert_eq!(running["passes"][0]["layers"][0]["text"], long.as_str());
         host.set_param(Scope::Scene, "label", Value::from("I"))
             .unwrap();
@@ -3694,7 +4286,7 @@ mod tests {
     /// The layers of pass main of the running document, as the console
     /// serves it, every number as a float.
     fn running_layers(console: &Console) -> Value {
-        floats(&lock(&console.running).clone().unwrap().1["passes"][0]["layers"])
+        floats(&running_doc(console)["passes"][0]["layers"])
     }
 
     /// `v` with every number as a float, as the document writes a number.
@@ -3724,7 +4316,7 @@ mod tests {
         let (_d, console) = tmp_console("drawn");
         let st = Rc::new(RefCell::new(Running::default()));
         let scene = Scene::from_dict(&serde_json::from_str(SCENE).unwrap(), None, None).unwrap();
-        assert_eq!(set_scene(&console, &renderer, &st, scene, None), "");
+        assert_eq!(set_scene(&console, &renderer, &st, scene, 0, None), "");
         // what a procedural scene's drawing and ticks hand the loop's target
         let mut target = SharedRenderer {
             renderer: Rc::clone(&renderer),
@@ -3831,14 +4423,15 @@ mod tests {
             let st = RefCell::new(Running::default());
             let ctrl: ControllerSlot = RefCell::new(None);
             let running = doc(serde_json::json!([a, b, c]));
-            assert_eq!(set_scene(&console, &renderer, &st, running, None), "");
+            assert_eq!(set_scene(&console, &renderer, &st, running, 0, None), "");
             if code {
                 *ctrl.borrow_mut() = Some(Box::new(Code));
             }
             let before = changes(&console);
-            console.command(Command::SceneObj(Box::new(doc(serde_json::json!([
-                posted
-            ])))));
+            console.command(Command::SceneObj(
+                Box::new(doc(serde_json::json!([posted]))),
+                0,
+            ));
             assert!(drain(&console, &renderer, &st, &ctrl));
             assert_eq!(running_layers(&console), floats(&kept), "code {code}");
             let names: Vec<String> = renderer
@@ -3886,7 +4479,7 @@ mod tests {
         let (_d, console) = tmp_console("bound"); // for its scene directory
         let drawn = Rc::new(Cell::new(0));
         let ran = run(Options {
-            store: Some(SceneStore::new(&console.store.dir, true, Vec::new())),
+            store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port: free_port(),
             size: (32, 24),
             frames: 3,
@@ -3910,7 +4503,7 @@ mod tests {
         let summary: Summary = Rc::new(RefCell::new(None));
         let got = Rc::clone(&summary);
         let ran = run(Options {
-            store: Some(SceneStore::new(&console.store.dir, true, Vec::new())),
+            store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port: free_port(),
             size: (32, 24),
             frames: 3,

@@ -649,6 +649,11 @@ fn send(request: Request, resp: &Response) {
     if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], resp.content_type.as_bytes()) {
         out = out.with_header(h);
     }
+    for (name, value) in &resp.headers {
+        if let Ok(h) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
+            out = out.with_header(h);
+        }
+    }
     let _ = request.respond(out);
 }
 

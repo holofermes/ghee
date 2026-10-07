@@ -244,7 +244,7 @@ fn scene_set(a: &Ns) -> Result<Vec<(String, String)>> {
     if !Path::new(&dir).is_dir() {
         return Ok(one(dir));
     }
-    Ok(SceneStore::new(&dir, true, Vec::new()).scenes)
+    Ok(SceneStore::new(&dir, Vec::new()).scenes)
 }
 
 /// `-- --help` lists what each scene takes, grouped per scene. This runs each
@@ -979,6 +979,7 @@ fn serve(
     }
     let ran = server::run(server::Options {
         scenes_dir,
+        state_dir: a.state_dir.clone(),
         store,
         size,
         components,
@@ -1010,10 +1011,12 @@ fn serve(
 }
 
 /// A store for the single scene `render --serve` names. A bundled example
-/// stays read-only, whichever way a command reaches it.
+/// keeps its state file as a demo, whichever way a command reaches it.
 fn one_scene_store(a: &Ns, path: &str) -> Result<SceneStore> {
-    SceneStore::one(path, in_examples(path), a.scene_args.clone())
-        .map_err(|e| exit(format!("{}: {e}", a.cmd)))
+    let mut store =
+        SceneStore::one(path, a.scene_args.clone()).map_err(|e| exit(format!("{}: {e}", a.cmd)))?;
+    store.demo = in_examples(path);
+    Ok(store)
 }
 
 /// True when a scene sits in the bundled examples directory. The comparison
@@ -1430,6 +1433,14 @@ struct ConsoleFlags {
 
     #[arg(
         long,
+        value_name = "DIR",
+        help = "keep the console's saved edits in DIR \
+                (default $XDG_STATE_HOME/ghee, else ~/.local/state/ghee)"
+    )]
+    state_dir: Option<std::path::PathBuf>,
+
+    #[arg(
+        long,
         default_value = "127.0.0.1",
         help = "bind address, 0.0.0.0 exposes the console (no auth) to the network"
     )]
@@ -1632,6 +1643,7 @@ pub struct Ns {
     dri: Option<String>,
     port: u16,
     host: String,
+    state_dir: Option<std::path::PathBuf>,
     preview_max: i32,
     preview_fps: i32,
     stream_max: i32,
@@ -1673,6 +1685,7 @@ impl RenderArgs {
             dri: self.render.dri,
             port: self.console.port,
             host: self.console.host,
+            state_dir: self.console.state_dir,
             preview_max: self.console.preview_max,
             preview_fps: self.console.preview_fps,
             stream_max: self.console.stream_max,
@@ -1687,7 +1700,7 @@ impl ServeArgs {
     fn ns(self, scene_args: Vec<String>) -> Ns {
         Ns {
             cmd: "serve",
-            // --demo leaves it None: the bundled examples, read-only
+            // --demo leaves it None: the bundled examples
             scene: self.scenes,
             demo: self.demo,
             output: None,
@@ -1714,6 +1727,7 @@ impl ServeArgs {
             dri: self.render.dri,
             port: self.console.port,
             host: self.console.host,
+            state_dir: self.console.state_dir,
             preview_max: self.console.preview_max,
             preview_fps: self.console.preview_fps,
             stream_max: self.console.stream_max,
@@ -2300,6 +2314,8 @@ mod tests {
             "--bitrate",
             "123",
             "--rgb565",
+            "--state-dir",
+            "/srv/state",
             "--",
             "--text",
             "hi",
@@ -2308,6 +2324,7 @@ mod tests {
             (a.port, a.host.as_str(), a.size),
             (9, "0.0.0.0", Some((80, 60)))
         );
+        assert_eq!(a.state_dir, Some(std::path::PathBuf::from("/srv/state")));
         assert_eq!((a.preview_fps, a.preview_max, a.stream_max), (5, 120, 320));
         assert_eq!((a.bitrate, a.rgb565), (123, true));
         assert_eq!(a.scene_args, argv(&["--text", "hi"]));
@@ -2367,18 +2384,18 @@ mod tests {
         let a = ns(&["render", &path, "--serve"]);
         let store = one_scene_store(&a, &path).unwrap();
         assert_eq!(store.names(), ["s"]);
-        assert!(!store.read_only);
+        assert!(!store.demo);
         assert!(!in_examples(&path));
     }
 
-    /// A bundled scene served on its own stays read-only, whichever way a
-    /// command reaches it.
+    /// A bundled scene served on its own keeps its state file as a demo,
+    /// whichever way a command reaches it.
     #[test]
-    fn a_bundled_scene_is_read_only() {
+    fn a_bundled_scene_keeps_its_state_file_as_a_demo() {
         let _e = crate::console::repo_examples();
         let path = "ghee/examples/bars.scene.json";
         assert!(in_examples(path));
         let a = ns(&["render", "--demo", "bars", "--serve"]);
-        assert!(one_scene_store(&a, path).unwrap().read_only);
+        assert!(one_scene_store(&a, path).unwrap().demo);
     }
 }

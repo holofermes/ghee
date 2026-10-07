@@ -277,8 +277,9 @@ lands.
   swatch alone, with no hex code beside it.
 - Rename is a pencil that opens the console's dialog. Removing a pass or a
   layer asks first in the same dialog.
-- An edit goes into the page's working copy, and Save writes the scene, as
-  every other edit does.
+- An edit applies at once to the working copy that ghee holds of the
+  scene, which every open page shows, and Save keeps it on the device, in
+  the scene's state file. The page keeps no copy of its own.
 
 ## Names
 

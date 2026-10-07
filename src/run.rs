@@ -227,7 +227,7 @@ pub fn program() -> (String, String) {
     let mut vs = vec![precision.clone()];
     vs.extend((0..ATTRIBUTES).map(|k| format!("attribute vec4 ghee_a{k};")));
     vs.extend([
-        "uniform vec2 resolution;".to_string(),
+        "uniform vec3 iResolution;".to_string(),
         "uniform float ghee_vflip;".to_string(),
         VARYINGS.trim_end().to_string(),
         "void main() {".to_string(),
@@ -243,13 +243,10 @@ pub fn program() -> (String, String) {
         local("vec2", "centre", lane(CENTRE, 2)),
         local("vec2", "size", lane(SIZE, 2)),
         local("float", "angle", lane(ANGLE, 1)),
-        "    vec2 v_texCoord;".to_string(),
+        "    vec2 uv;".to_string(),
         "    vec4 ghee_v4;".to_string(),
         glyph_vs,
-        format!(
-            "    ghee_pk = vec4(v_texCoord, {kind}, {});",
-            lane(OPACITY, 1)
-        ),
+        format!("    ghee_pk = vec4(uv, {kind}, {});", lane(OPACITY, 1)),
         "    ghee_v2 = ghee_v4;".to_string(),
         format!(
             "    ghee_v3 = vec4({}, {});",
@@ -267,7 +264,7 @@ pub fn program() -> (String, String) {
     let mut fs = vec![precision];
     fs.extend(text::curve_reader_lines(GLSL_NAME));
     fs.extend([
-        "uniform vec2 resolution;".to_string(),
+        "uniform vec3 iResolution;".to_string(),
         VARYINGS.trim_end().to_string(),
         crate::shape::fragment_functions().trim_end().to_string(),
         "void main() {".to_string(),
@@ -275,7 +272,7 @@ pub fn program() -> (String, String) {
         "    vec2 ghee_px = ghee_pk.xy;".to_string(),
         crate::shape::FRAGMENT_MAIN.trim_end().to_string(),
         "} else {".to_string(),
-        "    vec2 v_texCoord = ghee_pk.xy;".to_string(),
+        "    vec2 uv = ghee_pk.xy;".to_string(),
         "    vec4 ghee_v4 = ghee_v2;".to_string(),
         local("vec3", "color", "ghee_v3.rgb".to_string()),
         local("float", "alpha", "ghee_v3.a".to_string()),

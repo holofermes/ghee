@@ -2,8 +2,8 @@
 //!
 //! The scene loading, the driver construction and the pacing are ghee's own.
 //! A frame follows ghee::looper: `t` is the wall clock since the first frame,
-//! DT is the period since the last frame drawn, and MAX_DT caps it. The tick
-//! of a frame carries the DT that the frame draws with.
+//! iTimeDelta is the period since the last frame drawn, and MAX_DT caps it.
+//! The tick of a frame carries the iTimeDelta that the frame draws with.
 //!
 //! The engine is thread-affine, so a Session belongs to the thread that built
 //! it.
@@ -653,10 +653,11 @@ impl Session {
         self.renderer.renderer()
     }
 
-    /// Open this iteration, once: apply the console's sets, and give the
-    /// tick that the next frame() or skip() takes and returns. Its dt is the
-    /// DT that the frame draws with: the pinned step, else the period since
-    /// the last frame drawn, which MAX_DT caps, else the engine's first 1/60.
+    /// Open this iteration, once: apply the console's sets, and give the tick
+    /// that the next frame() or skip() takes and returns. Its dt is the
+    /// iTimeDelta that the frame draws with: the pinned step, else the period
+    /// since the last frame drawn, which MAX_DT caps, else the engine's first
+    /// 1/60.
     pub fn begin(&mut self) -> Outcome<Tick> {
         if let Some(o) = &self.opened {
             return Ok(o.tick.clone());
@@ -733,9 +734,9 @@ impl Session {
             self.period = period;
         }
         self.prev = Some(t0);
-        // The one place a frame feeds DT: the measured period, or the pinned
-        // step. A draw after a skip stretch measures the whole gap, so MAX_DT
-        // caps it.
+        // The one place a frame feeds iTimeDelta: the measured period, or the
+        // pinned step. A draw after a skip stretch measures the whole gap, so
+        // MAX_DT caps it.
         if let Some(step) = self.timestep {
             self.renderer.set_dt(step);
         } else if let Some(period) = self.period {

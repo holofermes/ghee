@@ -153,7 +153,6 @@ and `bars.glsl` beside it:
 
 ```glsl
 void main() {
-  vec2 uv = v_texCoord;
   int last = amplitudes_size - 1;
   float fi = uv.x * float(last);
   int i0 = int(floor(fi));
@@ -211,11 +210,11 @@ straight.
 ghee puts a preamble like this one in front of the GLSL of every pass:
 
 ```glsl
-uniform float time;                 // seconds since start
-uniform float DT;                   // seconds the last frame took
-uniform float frame;                // frames rendered, wraps at 2^20
-uniform vec2  resolution;           // buffer size in pixels
-varying vec2  v_texCoord;           // 0..1 across the buffer, y = 0 at the top
+uniform float iTime;                // seconds since start
+uniform float iTimeDelta;           // seconds the last frame took
+uniform int   iFrame;               // frames rendered, wraps at 2^20
+uniform vec3  iResolution;          // buffer size in pixels, z = 1.0
+varying vec2  uv;                   // 0..1 across the buffer, y = 0 at the top
 // gl_FragCoord maps to the varying, so its y = 0 is at the
 // top too, where Shadertoy has y = 0 at the bottom
 
@@ -250,7 +249,7 @@ That pass samples its own previous frame through `iChannel0`:
 ```glsl
 // compose.glsl: everything drawn so far, fading a little each frame
 void main() {
-  vec3 prev = texture2D(iChannel0, v_texCoord).rgb;
+  vec3 prev = texture2D(iChannel0, uv).rgb;
   gl_FragColor = vec4(prev * 0.95, 1.0);
 }
 ```
@@ -300,8 +299,8 @@ layer, asset or scene param holds, so two passes may each declare a param
 with a letter or a digit, holds no `__`, and does not start with `gl_` or
 `ghee`.
 
-ghee writes these names into every shader: `time`, `DT`, `frame`,
-`resolution`, `v_texCoord`, and `iChannel0` and up. A param, an array or an
+ghee writes these names into every shader: `iTime`, `iTimeDelta`, `iFrame`,
+`iResolution`, `uv`, and `iChannel0` and up. A param, an array or an
 asset that takes one of them fails to load. A layer may take any name that
 the rule allows.
 
@@ -638,7 +637,7 @@ of each.
 Every pass of the scene except a filter pass can read a text layer's words
 with `float <name>_cover(vec2 p, float font_size)`. The function returns the
 coverage of the words at `p`, from 0 to 1. `p` is in em from the block's top
-left, y down like `v_texCoord`. `<name>_size` holds the block's width and
+left, y down like `uv`. `<name>_size` holds the block's width and
 height in em. The layer's `x`, `y`, `font_size`, `color`, effects and
 `visible` play no part, so a hidden layer gives a shader words that the layer
 never draws itself, and ghee builds no atlas for it until it shows:
@@ -653,8 +652,8 @@ per em:
 ```glsl
 void main() {
   float font_size = 48.0;
-  vec2 px = floor(v_texCoord * resolution) + 0.5;
-  vec2 p = (px - 0.5 * (resolution - title_size * font_size)) / font_size;
+  vec2 px = floor(uv * iResolution.xy) + 0.5;
+  vec2 p = (px - 0.5 * (iResolution.xy - title_size * font_size)) / font_size;
   gl_FragColor = vec4(vec3(title_cover(p, font_size)), 1.0);
 }
 ```
@@ -672,9 +671,9 @@ stores each control point to within 1/4094 of its glyph's size, 0.17 px for a
 1 em glyph at 700 pixels per em. An emoji is a bitmap with no outline, so
 `_cover` reads it as no coverage.
 
-On VC4, the interpolated `v_texCoord` sits up to 0.04 px off the pixel centre.
-A shader that needs exact centres, like the one above, samples at
-`floor(v_texCoord * resolution) + 0.5`.
+On VC4, the interpolated `uv` sits up to 0.04 px off the pixel centre. A
+shader that needs exact centres, like the one above, samples at
+`floor(uv * iResolution.xy) + 0.5`.
 
 ### Fonts and emoji
 

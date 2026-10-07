@@ -3315,7 +3315,7 @@ mod tests {
             "version": 1,
             "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
             "passes": [{"name": "main", "code": "void main(){ \
-                float c = label_cover(v_texCoord * label_size, resolution.y / label_size.y); \
+                float c = label_cover(uv * label_size, iResolution.y / label_size.y); \
                 gl_FragColor = vec4(c, c, c, 1.0); }",
                 "layers": [{"name": "label", "text": words, "font_family": "sans",
                             "visible": false}]}],

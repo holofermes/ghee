@@ -4,16 +4,16 @@
 // and page_cover reads the words at that point, at the font size that the
 // lens gives it, so an edge stays one pixel soft at every magnification.
 void main() {
-  // VC4 interpolates v_texCoord up to 0.04 px off the pixel centre.
-  vec2 px = floor(v_texCoord * resolution) + 0.5;
+  // VC4 interpolates uv up to 0.04 px off the pixel centre.
+  vec2 px = floor(uv * iResolution.xy) + 0.5;
 
   // The page fills 0.9 of the frame, centred, at font_size pixels per em.
-  float font_size = 0.9 * min(resolution.x / page_size.x, resolution.y / page_size.y);
-  vec2 corner = 0.5 * (resolution - page_size * font_size);
+  float font_size = 0.9 * min(iResolution.x / page_size.x, iResolution.y / page_size.y);
+  vec2 corner = 0.5 * (iResolution.xy - page_size * font_size);
 
   // The lens wanders over the page, its radius a third of the frame height.
-  vec2 centre = resolution * (0.5 + vec2(0.3 * sin(time * 0.4), 0.25 * sin(time * 0.7)));
-  float radius = resolution.y / 3.0;
+  vec2 centre = iResolution.xy * (0.5 + vec2(0.3 * sin(iTime * 0.4), 0.25 * sin(iTime * 0.7)));
+  float radius = iResolution.y / 3.0;
   vec2 d = px - centre;
   float r = min(length(d) / radius, 1.0);
 

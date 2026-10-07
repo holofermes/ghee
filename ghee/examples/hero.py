@@ -74,7 +74,7 @@ uniform float aspect;
 // Everything downstream works in [0, 1] uv, so the flow and the particles look
 // the same at every render size.
 float waterline(float x) {
-    return 0.55 - wave(x, time * wave_speed * 6.28318);
+    return 0.55 - wave(x, iTime * wave_speed * 6.28318);
 }
 float depth(vec2 p) {
     return p.y - waterline(p.x);
@@ -112,7 +112,7 @@ vec2 coarsePos(vec3 e) {
 # frame and a stroke needs two.
 SHADER_PREV = """
 void main() {
-    gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).rgb, 1.0);
+    gl_FragColor = vec4(texture2D(iChannel0, uv).rgb, 1.0);
 }
 """
 
@@ -123,7 +123,7 @@ SHADER_STATE = """
 float psi(vec2 p) {
     float f = 24.0 * pow(0.5, swirl_scale * 4.0);
     vec2 q = p * vec2(aspect, 1.0) * f;
-    float tf = time * 0.1;
+    float tf = iTime * 0.1;
     float n = sin(q.x + tf) * cos(q.y * 1.1 - tf * 0.7)
             + 0.5 * sin(q.x * 2.3 - tf * 1.3) * cos(q.y * 1.9 + tf * 0.9);
     float free = drift.x * p.y - drift.y * p.x + n * swirl_strength * 0.5 / f;
@@ -137,14 +137,13 @@ vec2 vel(vec2 p) {
 }
 
 void main() {
-    vec2 uv = v_texCoord;
     vec2 p = unpackPos(texture2D(iChannel0, uv).rgb);
-    bool born = time < 0.1 || texture2D(iChannel1, uv).r <= 1.5 / 255.0;
+    bool born = iTime < 0.1 || texture2D(iChannel1, uv).r <= 1.5 / 255.0;
     if (!born) {
         // particle_speed_spread is ratio-symmetric around particle_speed:
         // 0 = every particle alike, 1 = 0.5x to 2x
         float sv = pow(2.0, (hash(uv * 9.3) - 0.5) * 2.0 * particle_speed_spread);
-        p += vel(p) * (DT * particle_speed * sv);
+        p += vel(p) * (iTimeDelta * particle_speed * sv);
         born = p.x < -0.25 || p.x > 1.25 || p.y > 1.25
             // the surface moves and can sweep over a particle riding it; past
             // the surface the field is zero, so it would strand there
@@ -171,10 +170,10 @@ void main() {
 # this frame.
 SHADER_LIFE = """
 void main() {
-    float life = texture2D(iChannel0, v_texCoord).r;
-    if (time < 0.1) life = hash(v_texCoord * 7.3);
-    else if (life <= 1.5 / 255.0) life = mix(0.35, 1.0, hash(v_texCoord + time));
-    else life -= (1.0 / 255.0) * (0.35 / max(particle_life, 0.02)) * DT * 60.0;
+    float life = texture2D(iChannel0, uv).r;
+    if (iTime < 0.1) life = hash(uv * 7.3);
+    else if (life <= 1.5 / 255.0) life = mix(0.35, 1.0, hash(uv + iTime));
+    else life -= (1.0 / 255.0) * (0.35 / max(particle_life, 0.02)) * iTimeDelta * 60.0;
     gl_FragColor = vec4(life, 0.0, 0.0, 1.0);
 }
 """
@@ -188,7 +187,6 @@ const float JUMP = {JUMP};
 """
     + """
 void main() {
-    vec2 uv = v_texCoord;
     vec2 p1 = unpackPos(texture2D(iChannel0, uv).rgb);
     vec2 d = p1 - unpackPos(texture2D(iChannel1, uv).rgb);
     // surface_fade tapers a particle out as it nears the surface; a step longer
@@ -243,14 +241,13 @@ float sdSeg(vec2 p, vec2 a, vec2 b) {
     }
 
 void main() {
-    vec2 uv = v_texCoord;
     vec2 asp = vec2(aspect, 1.0);
     vec2 uva = uv * asp;
 
     // Last frame's ink, decayed. The sub-LSB dither is what keeps an 8-bit
     // buffer fading smoothly instead of banding into contour rings.
-    float dj = hash(uv + fract(time) * 113.1);
-    float steps = DT * 60.0;
+    float dj = hash(uv + fract(iTime) * 113.1);
+    float steps = iTimeDelta * 60.0;
     float ink = max(texture2D(iChannel2, uv).r * pow(trail_length, steps)
                     - trail_cutoff * 0.01 * steps + (dj - 0.5) / 255.0, 0.0);
 
@@ -296,13 +293,12 @@ const float TEXT_ASPECT = {CANVAS[0] / CANVAS[1]:.4f};
 """
     + """
 void main() {
-    vec2 uv = v_texCoord;
 
     // The texture reads come before the surface: with `wet` computed ahead of
     // them, VC4 reads it back wrong in 4x4 blocks and the glyph body goes dry
     // in patches under the wave.
     float v = (uv.y - text_y + text_height * 0.5) / text_height;
-    float u = fract(uv.x * aspect / (text_height * TEXT_ASPECT) - time * text_speed);
+    float u = fract(uv.x * aspect / (text_height * TEXT_ASPECT) - iTime * text_speed);
     float glow = texture2D(iChannel0, uv).r;
     float m = canvas_sample2(vec2(u, v)) * step(0.0, v) * step(v, 1.0);
     m = smoothstep(0.35, 0.55, m);

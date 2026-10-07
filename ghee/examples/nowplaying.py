@@ -51,10 +51,10 @@ INK = {"width": 0.01, "color": "#ffffff"}
 # The pass `top` fills the first ROWS rows of the frame, pixel for pixel.
 MAIN = """
 void main() {
-    // VC4 interpolates v_texCoord up to 0.04 px off the pixel centre.
-    vec2 px = floor(v_texCoord * resolution) + 0.5;
+    // VC4 interpolates uv up to 0.04 px off the pixel centre.
+    vec2 px = floor(uv * iResolution.xy) + 0.5;
     vec4 c = vec4(0.0);
-    if (px.y < ROWS) c = texture2D(iChannel0, vec2(px.x / resolution.x, px.y / ROWS));
+    if (px.y < ROWS) c = texture2D(iChannel0, vec2(px.x / iResolution.x, px.y / ROWS));
     gl_FragColor = vec4(c.rgb, 1.0);
 }
 """

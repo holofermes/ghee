@@ -34,16 +34,15 @@ FONT_SIZE = 28
 
 SHADER = """
 void main() {
-    vec2 uv = v_texCoord;
-    float aspect = resolution.x / resolution.y;
+    float aspect = iResolution.x / iResolution.y;
     float across = max(1.0, aspect / mask_aspect);
     float down = max(1.0, mask_aspect / aspect);
     float v = (uv.y - 0.5) * down + 0.5;
-    float m = mask_sample2(vec2(fract(uv.x * across - time * speed), v));
+    float m = mask_sample2(vec2(fract(uv.x * across - iTime * speed), v));
     m *= step(0.0, v) * step(v, 1.0);
     float g = smoothstep(threshold - 0.08, threshold + 0.08, m);
 
-    float band = exp(-abs(uv.y - 0.5 - wave(uv.x, time * 0.5)) * 9.0);
+    float band = exp(-abs(uv.y - 0.5 - wave(uv.x, iTime * 0.5)) * 9.0);
     vec3 col = palette(0.14 + 0.16 * uv.x) * glow * band + ink * g * 2.0;
     gl_FragColor = vec4(tone(col, 0.02, 1.4), 1.0);
 }

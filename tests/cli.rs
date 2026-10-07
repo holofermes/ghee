@@ -48,7 +48,7 @@ fn render(dir: &Path, scene: &str, args: &[&str]) -> Output {
 fn quiet_still_says_what_is_wrong_with_a_text_layer() {
     let dir = Dir::new("quiet");
     let scene = r#"{"passes": [{"name": "main",
-        "code": "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }",
+        "code": "void main(){ gl_FragColor = vec4(t_cover(uv, 20.0)); }",
         "layers": [{"name": "t", "text": "hi", "font_family": "missing.ttf", "visible": false}]}]}"#;
     let out = render(&dir.0, scene, &["-q"]);
     assert!(out.status.success(), "{out:?}");
@@ -102,7 +102,7 @@ fn a_sized_output_pass_says_once_that_it_renders_at_the_screen_size_and_quiet_sa
 /// Each pixel of the scene holds its column in red and its row from the top
 /// in green.
 const POSITION: &str = r#"{"passes": [{"name": "main",
-    "code": "void main(){ vec2 p = floor(v_texCoord * resolution); gl_FragColor = vec4(p / 255.0, 0.0, 1.0); }"}]}"#;
+    "code": "void main(){ vec2 p = floor(uv * iResolution.xy); gl_FragColor = vec4(p / 255.0, 0.0, 1.0); }"}]}"#;
 
 /// The PNG's size and its RGBA rows, decoded by the png crate.
 fn decode(path: &Path) -> ((u32, u32), Vec<u8>) {

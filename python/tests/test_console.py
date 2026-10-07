@@ -228,7 +228,7 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
             ),
             ghee.Pass(
                 "main",
-                "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
+                "void main(){ gl_FragColor = texture2D(iChannel0, uv); }",
                 channels=[ghee.Channel("ink")],
                 layers=[
                     ghee.Layer("glow", "hi", color={"from": "#ff0000", "to": "#0000ff"})

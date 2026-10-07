@@ -64,8 +64,8 @@ fn the_mtsdf_fill_at_46_px_em_matches_exact_coverage() {
     let cover = frame(
         &mut r,
         "void main() {\n\
-         vec2 px = floor(v_texCoord * resolution) + 0.5;\n\
-         vec2 off = (resolution - t_size * 46.0) * 0.5;\n\
+         vec2 px = floor(uv * iResolution.xy) + 0.5;\n\
+         vec2 off = (iResolution.xy - t_size * 46.0) * 0.5;\n\
          float c = t_cover((px - off) / 46.0, 46.0);\n\
          gl_FragColor = vec4(vec3(c), 1.0);\n\
          }",

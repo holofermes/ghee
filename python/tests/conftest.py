@@ -32,7 +32,7 @@ VECS = {
     "passes": [
         {
             "name": "main",
-            "code": "void main(){ float x = v_texCoord.x;"
+            "code": "void main(){ float x = uv.x;"
             " gl_FragColor = x < 0.25 ? vec4(a, 0.0, 1.0) : x < 0.5 ? vec4(b, 1.0)"
             " : x < 0.75 ? vec4(c.xyz * c.w, 1.0) : vec4(tint, 1.0); }",
             "params": {

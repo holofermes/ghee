@@ -821,7 +821,7 @@ mod tests {
         let _g = env_guard();
         let mut reg = Map::new();
         let accum: Value = serde_json::from_str(
-            r#"{"name":"accum","code":"void main(){gl_FragColor=mix(texture2D(iChannel1,gl_FragCoord.xy/resolution),texture2D(iChannel0,gl_FragCoord.xy/resolution),0.3);}","channels":[{"buffer":"self"}]}"#,
+            r#"{"name":"accum","code":"void main(){gl_FragColor=mix(texture2D(iChannel1,gl_FragCoord.xy/iResolution.xy),texture2D(iChannel0,gl_FragCoord.xy/iResolution.xy),0.3);}","channels":[{"buffer":"self"}]}"#,
         )
         .unwrap();
         reg.insert("accum".to_string(), accum);

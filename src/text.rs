@@ -2020,13 +2020,13 @@ fn lines(glsl: &str, name: &str) -> Vec<String> {
         .collect()
 }
 
-const BOX_FRAGMENT: &str = r#"varying vec2 v_texCoord;
-uniform vec2 resolution;
+const BOX_FRAGMENT: &str = r#"varying vec2 uv;
+uniform vec3 iResolution;
 varying vec4 ghee_v0;
 varying vec4 ghee_v4;
 void main() {
     // The sample moves to the pixel centre, as the slug fill's does.
-    vec2 px = v_texCoord * resolution;
+    vec2 px = uv * iResolution.xy;
     vec2 d = floor(px) + 0.5 - px;
     vec2 u = ghee_v0.xy + vec2(dot(ghee_v4.xy, d), dot(ghee_v4.zw, d));
     // The box's coverage, antialiased over a pixel at each edge.
@@ -2137,7 +2137,7 @@ float ghee_NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
         xcov *= dx;
         vec4 vb = ghee_NAME_texel(h + nb.x + band.y);
         float dy = u.y < LATTICE_MID ? -1.0 : 1.0;
-        vec2 uv = vec2(u.x, dy > 0.0 ? u.y : LATTICE - u.y);
+        vec2 uf = vec2(u.x, dy > 0.0 ? u.y : LATTICE - u.y);
         float ycov = 0.0;
         float ywgt = 0.0;
         at = ghee_NAME_list(vb, dy);
@@ -2146,8 +2146,8 @@ float ghee_NAME_outline(float h, vec2 nb, vec2 u, vec2 ppu) {
             vec3 c1 = ghee_NAME_lattice(texture2D(ghee_NAME_curves_tex, at));
             vec3 c3 = ghee_NAME_lattice(texture2D(ghee_NAME_curves_tex, at + vec2(ghee_NAME_itw, 0.0)));
             at.x += ghee_NAME_itw * 2.0;
-            vec2 p1 = (c1.xy - uv).yx;
-            vec2 p3 = (c3.xy - uv).yx;
+            vec2 p1 = (c1.xy - uf).yx;
+            vec2 p3 = (c3.xy - uf).yx;
             vec2 p2 = p3 + vec2(c3.z, c1.z);
             if (max(max(p1.x, p2.x), p3.x) * ppu.y < -0.5) break;
             // Which roots count, by the signs of p1.y, p2.y and p3.y: Slug's
@@ -2187,7 +2187,7 @@ float ghee_NAME_glyph(float h, vec2 q, vec2 sz, float font_size) {
     return ghee_NAME_outline(h + 1.0, vec2(ghee_NAME_nb), q / sz * LATTICE, sz * (font_size / LATTICE));
 }
 // The coverage of the words at p, in em from the top left of the block, y
-// down like v_texCoord, drawn at font_size pixels per em.
+// down like uv, drawn at font_size pixels per em.
 float NAME_cover(vec2 p, float font_size) {
     float cov = 0.0;
     vec2 at = vec2(p.x, NAME_size.y - p.y);

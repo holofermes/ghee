@@ -154,10 +154,10 @@ enum { GHEE_BLEND_NORMAL, GHEE_BLEND_ADD, GHEE_BLEND_MULTIPLY, GHEE_BLEND_SCREEN
 // returned index, and an abort drops the batch. A batch whose two sources
 // match those of a batch that the renderer holds, running or staged, shares
 // its program and compiles nothing, so a uniform set on one sets it on both,
-// and `resolution` holds each draw's own pass size. `name` stands for the batch in
-// the errors of later calls. An error of this call leaves the name out, as a
-// compile error does, and its caller names the batch. NULL for both sources
-// adds a batch with no program, which draws nothing until
+// and `iResolution` holds each draw's own pass size. `name` stands for the
+// batch in the errors of later calls. An error of this call leaves the name
+// out, as a compile error does, and its caller names the batch. NULL for both
+// sources adds a batch with no program, which draws nothing until
 // ghee_mp_set_batch_program gives it one. -1 = refused.
 int  ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *vertex_source,
                        const char *fragment_source, int blend);
@@ -254,7 +254,7 @@ int  ghee_compiled(GheeScene *g);            // programs that the renderer linke
 void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
 void ghee_clear_time(GheeScene *g);   // back to the monotonic clock
-void ghee_set_dt(GheeScene *g, float dt);  // the DT uniform on every pass, 1/60 until set
+void ghee_set_dt(GheeScene *g, float dt);  // the iTimeDelta uniform on every pass, 1/60 until set
 void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
 // Size of the mode that the connected display drives, without creating a scene

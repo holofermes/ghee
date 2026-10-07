@@ -35,13 +35,13 @@ const float MIN_SIZE = 4.0;
 const float GAP = 1.0;
 
 void main() {
-    // VC4 interpolates v_texCoord up to 0.04 px off the pixel centre.
-    vec2 px = floor(v_texCoord * resolution) + 0.5;
+    // VC4 interpolates uv up to 0.04 px off the pixel centre.
+    vec2 px = floor(uv * iResolution.xy) + 0.5;
 
     // Row k spans grow^(k + time * zoom) to grow^(k + 1 + time * zoom) of
     // the frame height. rise is this pixel's height over its row's top.
     float lg = log(grow);
-    float u = log(px.y / resolution.y) / lg - time * zoom;
+    float u = log(px.y / iResolution.y) / lg - iTime * zoom;
     float k = floor(u);
     float rise = exp((u - k) * lg);
     // The words fill the row, so the row's height sets their font size.
@@ -51,13 +51,13 @@ void main() {
     // row above, so no column of words lines up.
     float period = words_size.x + GAP;
     float side = mod(k, 2.0) * 2.0 - 1.0;
-    float x = (px.x - 0.5 * resolution.x) / font_size + 0.5 * words_size.x
-            + side * time * scroll + k * 0.37 * period;
+    float x = (px.x - 0.5 * iResolution.x) / font_size + 0.5 * words_size.x
+            + side * iTime * scroll + k * 0.37 * period;
     vec2 p = vec2(mod(x, period), (rise - 1.0) / (grow - 1.0) * words_size.y);
     p = font_size < MIN_SIZE ? vec2(-1.0e4) : p;
 
     float c = words_cover(p, font_size);
-    float far = 1.0 - v_texCoord.y;
+    float far = 1.0 - uv.y;
     gl_FragColor = vec4(mix(paper, ink, c * (1.0 - 0.5 * far * far)), 1.0);
 }
 """

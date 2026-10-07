@@ -362,7 +362,7 @@ impl Fit {
     /// The GLSL that takes `name`'s coverage at this pixel.
     fn cover(&self, name: &str) -> String {
         format!(
-            "{name}_cover((v_texCoord * resolution - vec2({:.4}, {:.4})) / {:.4}, {:.4})",
+            "{name}_cover((uv * iResolution.xy - vec2({:.4}, {:.4})) / {:.4}, {:.4})",
             self.x, self.y, self.ppem, self.ppem
         )
     }
@@ -1095,9 +1095,8 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
          "x": 60, "y": 8, "font_size": 48},
     ]));
     doc["assets"]["emoji"] = json!({"file": EMOJI});
-    doc["passes"][0]["code"] = json!(
-        "void main(){ gl_FragColor = vec4(vec3(title_cover(v_texCoord * title_size, 32.0)), 1.0); }"
-    );
+    doc["passes"][0]["code"] =
+        json!("void main(){ gl_FragColor = vec4(vec3(title_cover(uv * title_size, 32.0)), 1.0); }");
     doc["passes"][0]["arrays"] =
         json!([{"name": "amps", "size": 4}, {"name": "mask", "size": [4, 4]}]);
     let sc = Scene::from_dict(&doc, None, None).unwrap();
@@ -1144,7 +1143,7 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
     let red = json!({"type": "color", "value": [1.0, 0.0, 0.0]});
     let code = |read: &str| {
         format!(
-            "void main(){{\n    vec4 v = vec4(v_texCoord, 0.25, 1.0);\n    \
+            "void main(){{\n    vec4 v = vec4(uv, 0.25, 1.0);\n    \
              gl_FragColor = vec4({read}, 0.0, 1.0);\n}}"
         )
     };
@@ -1170,7 +1169,7 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
 
 #[test]
 fn every_scene_pass_reads_the_layers_and_a_filter_pass_none() {
-    let reads = "float c = label_cover(v_texCoord, 8.0) + title_cover(v_texCoord, 8.0);";
+    let reads = "float c = label_cover(uv, 8.0) + title_cover(uv, 8.0);";
     let doc = json!({
         "version": 1,
         "assets": font_assets(),
@@ -1180,7 +1179,7 @@ fn every_scene_pass_reads_the_layers_and_a_filter_pass_none() {
                         {"name": "title", "text": "O", "font_family": "cff"}]},
             {"name": "main", "channels": [{"buffer": "a"}],
              "code": format!("void main(){{ {reads} \
-                 gl_FragColor = texture2D(iChannel0, v_texCoord) * c; }}")},
+                 gl_FragColor = texture2D(iChannel0, uv) * c; }}")},
         ],
     });
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
@@ -1727,7 +1726,7 @@ fn a_text_reaches_every_pass() {
                 "void main(){{ gl_FragColor = vec4({}, 0.0, 0.0, 1.0); }}", fit.cover("label")),
              "layers": [{"name": "label", "text": "AV", "font_family": "sans", "visible": false}]},
             {"name": "main", "channels": [{"buffer": "a"}], "code": format!(
-                "void main(){{ gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).r, {}, \
+                "void main(){{ gl_FragColor = vec4(texture2D(iChannel0, uv).r, {}, \
                  0.0, 1.0); }}", fit.cover("label"))},
         ],
     });
@@ -2340,7 +2339,7 @@ fn a_hidden_pass_draws_none_of_its_layers() {
         {"name": "under", "code": "void main(){ gl_FragColor = vec4(0.25, 0.25, 0.25, 1.0); }"},
         main,
         {"name": "post", "channels": [{"buffer": "main"}],
-         "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }"},
+         "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
     ]);
     let shown = render(&mut r, &loaded(&doc));
     assert!(shown.contains(&255), "the layer paints nothing");
@@ -2825,7 +2824,7 @@ fn a_layer_on_a_sized_pass_covers_as_the_text_does_there() {
     let words = "AV To\nghee";
     let laid = lay(SANS, words, Align::Left);
     let fit = Fit::of(laid.width, laid.height, w / 2, h / 2);
-    let show = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+    let show = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
     let sized = |pass: Value| {
         let mut doc = label_scene(SANS, words, Align::Left, fit);
         let mut a = pass;
@@ -2928,7 +2927,7 @@ fn a_pass_of_layers_alone_starts_transparent_and_a_later_pass_composites_it() {
     doc["passes"].as_array_mut().unwrap().push(json!({
         "name": "main",
         "channels": [{"buffer": "words"}],
-        "code": "void main(){ vec4 t = texture2D(iChannel0, v_texCoord); \
+        "code": "void main(){ vec4 t = texture2D(iChannel0, uv); \
                  gl_FragColor = vec4(vec3(0.0, 0.0, 1.0) * (1.0 - t.a) + t.rgb, 1.0); }",
     }));
     let composed = render(&mut r, &loaded(&doc));

@@ -27,21 +27,21 @@ BARS = 48
 
 SHADER = """
 void main() {
-    vec2 uv = vec2(v_texCoord.x, 1.0 - v_texCoord.y);  // y climbs off the floor
-    float fi = uv.x * float(bars_size);
+    vec2 p = vec2(uv.x, 1.0 - uv.y);  // y climbs off the floor
+    float fi = p.x * float(bars_size);
     int i = int(min(fi, float(bars_size - 1)));
     float h = gain * bars_at(i);
 
     // bars stand on the baseline, their reflection hangs under it
     float base = 0.34;
-    float under = step(uv.y, base);
-    float y = mix(uv.y - base, (base - uv.y) * 2.4, under) / (1.0 - base);
+    float under = step(p.y, base);
+    float y = mix(p.y - base, (base - p.y) * 2.4, under) / (1.0 - base);
 
     float column = smoothstep(0.46, 0.30, abs(fract(fi) - 0.5));
     float body = column * (1.0 - smoothstep(h - 0.004, h + 0.004, y));
     float cap = body * smoothstep(h - 0.12, h, y);
 
-    vec3 col = palette(0.16 + 0.30 * uv.x + 0.06 * h);
+    vec3 col = palette(0.16 + 0.30 * p.x + 0.06 * h);
     col *= (body * (0.15 + 0.6 * y) + cap * 1.3) * mix(1.0, 0.30, under) * (0.4 + gain);
     gl_FragColor = vec4(tone(col, 0.02, 1.5), 1.0);
 }

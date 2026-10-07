@@ -1169,8 +1169,8 @@ function buildInputs(){
   const p = work.passes[curPass], box = strip("istrip");
   box.appendChild(el("span", null, "inputs"));
   const chip = (label, title, cls) => { const s = el("span", "chip" + (cls ? " " + cls : ""), label); s.title = title; box.appendChild(s); };
-  chip("time", "uniform float time;  seconds since start");
-  chip("resolution", "uniform vec2 resolution;  render size in pixels");
+  chip("iTime", "uniform float iTime;  seconds since start");
+  chip("iResolution", "uniform vec3 iResolution;  render size in pixels");
   if (!p.filter){
     textLayers().forEach(d => chip(d.name + "_cover", `float ${d.name}_cover(vec2 p, float font_size);  layer ${d.name}'s words`));
     imageAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s picture`));
@@ -1863,7 +1863,7 @@ async function delCommon(){
 }
 function addPass(){
   const name = uniqueName("pass");
-  work.passes.push({ name, code:"void main(){\n  vec2 uv = v_texCoord;\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
+  work.passes.push({ name, code:"void main(){\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
   curPass = work.passes.length - 1; markDirty(); postScene();
   buildPass(); buildParams(); refreshInfo();
 }

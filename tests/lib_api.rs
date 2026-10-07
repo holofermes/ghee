@@ -196,7 +196,7 @@ fn a_sugar_built_channel_reads_its_named_pass() {
         .unwrap(),
         Pass::of(
             "out",
-            "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }",
+            "void main(){ gl_FragColor = texture2D(iChannel0, uv); }",
         )
         .channel("main")
         .unwrap(),

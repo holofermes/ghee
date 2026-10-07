@@ -595,7 +595,7 @@ fn every_field_of_a_shape_changes_live_and_compiles_nothing() {
              "layers": [{"name": "dot", "shape": "rect", "x": 2, "y": 2, "width": 6,
                          "height": 6}]},
             {"name": "main", "code": "void main(){ gl_FragColor = texture2D(iChannel0, \
-              v_texCoord); }", "channels": [{"buffer": "small"}], "layers": layers},
+              uv); }", "channels": [{"buffer": "small"}], "layers": layers},
         ],
     });
     let rows = [

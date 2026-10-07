@@ -32,10 +32,9 @@ BEAT = 4.0  # seconds to sing LINE
 
 SKY = """
 void main() {
-    vec2 uv = v_texCoord;
     // The water mirrors the lyrics about the horizon, and ripples sideways.
     float depth = max(uv.y - horizon, 0.0);
-    vec2 mirror = vec2(uv.x + 0.004 * sin(depth * 90.0 - time * 3.0),
+    vec2 mirror = vec2(uv.x + 0.004 * sin(depth * 90.0 - iTime * 3.0),
                        2.0 * horizon - uv.y);
     vec4 words = texture2D(iChannel0, uv);
     // On VC4 a short pass that reads a texture, then selects on a compare,

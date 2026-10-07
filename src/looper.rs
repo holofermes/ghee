@@ -331,8 +331,8 @@ pub trait SceneController {
 
     /// False means this frame matches the last one, so the loop skips it
     /// whole. The display keeps scanning out the last flipped buffer. The
-    /// default is true: every frame renders, which a scene animating on `time`
-    /// needs. `frame` advances over a skipped frame too.
+    /// default is true: every frame renders, which a scene animating on
+    /// `iTime` needs. `iFrame` advances over a skipped frame too.
     fn dirty(&mut self, _frame: u64, _t: f64) -> bool {
         true
     }
@@ -395,7 +395,7 @@ pub struct Loop<'a> {
     /// (name, size, frame) -> this frame's data for one declared array
     pub provider: Option<LoopProvider<'a>>,
     pub frames: u64,
-    /// pin time and DT to frame * timestep
+    /// pin iTime to frame * timestep and iTimeDelta to timestep
     pub timestep: Option<f64>,
     pub pacer: Option<Box<dyn Pacer + 'a>>,
     /// frames drawn, counted into a rate a host may read from its own thread
@@ -414,7 +414,7 @@ pub struct Loop<'a> {
     pub frame: u64,
     pub drawn: u64,
     pub elapsed: f64,
-    /// measured frame period, the DT fed to a scene
+    /// measured frame period, the iTimeDelta fed to a scene
     pub period: Option<f64>,
     prev: Option<f64>,
     buf: Vec<u8>,
@@ -529,8 +529,8 @@ impl<'a> Loop<'a> {
             Some(step) => self.frame as f64 * step,
             None => t0 - started,
         };
-        // The period since the last frame drawn, which DT takes when this
-        // iteration draws.
+        // The period since the last frame drawn, which iTimeDelta takes when
+        // this iteration draws.
         let period = self.prev.map(|prev| t0 - prev);
         // before the skip decision: a scene fed from outside says whether this
         // tick needs a frame
@@ -545,9 +545,9 @@ impl<'a> Loop<'a> {
             self.period = period;
         }
         self.prev = Some(t0);
-        // The one place the loop feeds DT: the measured frame period, or the
-        // pinned step for a reproducible render. Before the first measurement
-        // the engine's default stands.
+        // The one place the loop feeds iTimeDelta: the measured frame period,
+        // or the pinned step for a reproducible render. Before the first
+        // measurement the engine's default stands.
         if let Some(step) = self.timestep {
             self.renderer.set_dt(step);
         } else if let Some(period) = self.period {
@@ -586,9 +586,9 @@ impl<'a> Loop<'a> {
     }
 
     /// Hand the controller this iteration, drawn or skipped. Its dt is the
-    /// DT that the frame draws with: the pinned step, else `period`, the time
-    /// since the last frame drawn, which MAX_DT caps, else the engine's first
-    /// 1/60.
+    /// iTimeDelta that the frame draws with: the pinned step, else `period`,
+    /// the time since the last frame drawn, which MAX_DT caps, else the
+    /// engine's first 1/60.
     fn tick_controller(&mut self, t: f64, period: Option<f64>) -> Result<()> {
         let Some(cell) = self.controller else {
             return Ok(());
@@ -1250,7 +1250,7 @@ mod tests {
         assert!(m.frames.is_empty());
     }
 
-    // DT and time, fed in one place
+    // iTimeDelta and iTime, fed in one place
 
     #[test]
     fn dt_is_the_measured_frame_period() {
@@ -1281,8 +1281,8 @@ mod tests {
         assert_eq!(*r.times.borrow(), vec![0.0, 0.5, 1.0]);
     }
 
-    /// A scene fed from outside reads in its tick the DT that the tick's
-    /// frame draws with.
+    /// A scene fed from outside reads in its tick the iTimeDelta that the
+    /// tick's frame draws with.
     #[test]
     fn a_tick_carries_the_dt_that_its_frame_draws_with() {
         struct Ticker(Arc<Mutex<Vec<f64>>>);

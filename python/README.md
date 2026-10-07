@@ -116,11 +116,11 @@ or iterable of numbers as floats. An array keeps its texture data until a
 feed changes it.
 
 `frame` draws and hands the frame to the output. `time` is the wall clock
-since the first frame, and `dt` is the DT that the frame draws with: the time
-since the frame before, a quarter second at most, and 1/60 for the first
-frame. `timestep` pins `time` to `frame * S` and `dt` to S. `params` holds the
-string params that the console changed since the last tick, with their
-words, and the first tick holds every string param. A set from the host
+since the first frame, and `dt` is the `iTimeDelta` that the frame draws with:
+the time since the frame before, a quarter second at most, and 1/60 for the
+first frame. `timestep` pins `time` to `frame * S` and `dt` to S. `params`
+holds the string params that the console changed since the last tick, with
+their words, and the first tick holds every string param. A set from the host
 itself stays out.
 
 `pixels` reads alpha 255 in every pixel, unless `alpha=True` keeps the alpha
@@ -263,8 +263,9 @@ The shim gives:
 - `ghee.run(scene)` for the handshake, then the tick loop.
 
 A `ghee.Tick` holds `frame`, the tick's number, `time` and `dt` in seconds,
-`dt` the DT that its frame draws with, and `params`, the string params that
-changed, by name. The first tick's `params` holds every string param.
+`dt` the `iTimeDelta` that its frame draws with, and `params`, the string
+params that changed, by name. The first tick's `params` holds every string
+param.
 
 This scene is the clock above, written as a procedural scene. With no scene,
 `ghee.run()` starts from one pass, `main`, that clears to black, and the
@@ -387,7 +388,7 @@ it. ghee prints it once on stderr, and the console shows it.
 
 Every pass except a filter pass reads the words of a text layer with
 `float <name>_cover(vec2 p, float font_size)`: `p` in em from the top left of
-the block, y down like `v_texCoord`, and `font_size` the pixels per em there,
+the block, y down like `uv`, and `font_size` the pixels per em there,
 which sets the antialiasing. `<name>_size` is the block in em. A hidden layer
 gives a shader its words and draws none itself. With `CODE` holding a shader
 such as the one in
@@ -435,9 +436,9 @@ The scene takes its own arguments first, then these flags of `ghee render`:
   pipe, and to 0 for a display or the console, which runs until SIGINT or
   SIGTERM.
 
-The feeds, the hooks, `ghee.layers`, `ghee.draw()` and `ghee.skip()` work
-the same. The tick keeps its wire shape: `dt` is the DT that its frame draws
-with, `params` holds the string params that the console changed, and the
+The feeds, the hooks, `ghee.layers`, `ghee.draw()` and `ghee.skip()` work the
+same. The tick keeps its wire shape: `dt` is the `iTimeDelta` that its frame
+draws with, `params` holds the string params that the console changed, and the
 first tick holds every string param. A scene or a display that ghee refuses
 stops the run with ghee's one line and exit status 1. If one of your own
 arguments collides with these names, argparse says so.

@@ -1633,13 +1633,13 @@ impl TextLayer {
     /// then ghee's main.
     fn slug_fragment(&self) -> String {
         let mut decls = vec![
-            "uniform vec2 resolution;",
+            "uniform vec3 iResolution;",
             "uniform vec3 ghee_NAME_color;",
             "uniform vec3 ghee_NAME_colorto;",
             "uniform float ghee_NAME_alpha;",
             "uniform float ghee_NAME_alphato;",
             "uniform float ghee_NAME_opacity;",
-            "varying vec2 v_texCoord;",
+            "varying vec2 uv;",
             "varying vec4 ghee_v0;",
             "varying vec4 ghee_v1;",
             "varying vec4 ghee_v4;",
@@ -1683,7 +1683,7 @@ fn named(glsl: &str) -> String {
 /// block to its room, and `grid` true for a text on the pixel grid, and the
 /// fragment stage's lines, which set gl_FragColor. Each uniform that the
 /// text's own program reads is a local of the same name, which the caller
-/// declares, and so are v_texCoord and ghee_v4.
+/// declares, and so are uv and ghee_v4.
 pub(crate) fn run_glyph(fs: &str, grid: &str) -> (String, String) {
     let pixel = text::built_in(Some(text::PIXEL)).expect("ghee carries the pixel font");
     let vertex = [
@@ -1710,7 +1710,7 @@ pub(crate) fn run_glyph(fs: &str, grid: &str) -> (String, String) {
 /// The last lines of the main of a fragment stage that draws slug glyphs,
 /// which read the texture of curves at `at`.
 pub(crate) fn run_guard(at: &str) -> String {
-    named(&SLUG_GUARD.replace("v_texCoord", at))
+    named(&SLUG_GUARD.replace("_curves_tex, uv)", &format!("_curves_tex, {at})")))
 }
 
 /// An image layer of a pass.
@@ -2364,14 +2364,14 @@ attribute vec4 ghee_a0;
 attribute vec4 ghee_a1;
 attribute vec4 ghee_a2;
 attribute vec4 ghee_a3;
-uniform vec2 resolution;
+uniform vec3 iResolution;
 uniform float ghee_vflip;
 uniform vec2 ghee_NAME_size;
 uniform float ghee_NAME_x;
 uniform float ghee_NAME_y;
 uniform vec2 ghee_NAME_centre;
 uniform float ghee_NAME_visible;
-varying vec2 v_texCoord;
+varying vec2 uv;
 DECLS
 void main() {
 MAIN
@@ -2379,23 +2379,23 @@ MAIN
 
 /// The lines that fit the block to its room, up to ghee_s, the pixels per
 /// em that fit each axis.
-const FIT: &str = r#"    float ghee_m = FIT_MARGIN * min(resolution.x, resolution.y);
-    vec2 ghee_room = mix(resolution - ghee_m - vec2(ghee_NAME_x, ghee_NAME_y),
-                         resolution - 2.0 * ghee_m, ghee_NAME_centre);
+const FIT: &str = r#"    float ghee_m = FIT_MARGIN * min(iResolution.x, iResolution.y);
+    vec2 ghee_room = mix(iResolution.xy - ghee_m - vec2(ghee_NAME_x, ghee_NAME_y),
+                         iResolution.xy - 2.0 * ghee_m, ghee_NAME_centre);
     vec2 ghee_s = ghee_room / max(ghee_NAME_size, vec2(1.0e-6));"#;
 
 /// The lines that set ghee_ppe, the pixels per em held above 0 so that a
 /// block fitted to nothing keeps every position finite, and ghee_org, the
 /// pass pixel of the block's top left.
 const PLACE: &str = r#"    float ghee_ppe = max(ghee_fs, 1.0 / 16384.0);
-    vec2 ghee_org = mix(vec2(ghee_NAME_x, ghee_NAME_y), (resolution - ghee_NAME_size * ghee_fs) * 0.5,
+    vec2 ghee_org = mix(vec2(ghee_NAME_x, ghee_NAME_y), (iResolution.xy - ghee_NAME_size * ghee_fs) * 0.5,
                         ghee_NAME_centre);"#;
 
 /// The lines that scroll the block from right to left by whole pixels: it
 /// enters at the pass's right edge, and starts there again once it has left
 /// at the left.
-const SCROLL_LINES: &str = r#"    float ghee_trip = resolution.x + ghee_NAME_size.x * ghee_fs;
-    float ghee_sx = floor(resolution.x - mod(ghee_NAME_scrollphase * ghee_fs, ghee_trip));
+const SCROLL_LINES: &str = r#"    float ghee_trip = iResolution.x + ghee_NAME_size.x * ghee_fs;
+    float ghee_sx = floor(iResolution.x - mod(ghee_NAME_scrollphase * ghee_fs, ghee_trip));
     ghee_org.x = mix(ghee_org.x, ghee_sx, ghee_NAME_scrollvisible);"#;
 
 /// The lines of karaoke: ghee_kf, the fill of the letters up to the sung
@@ -2434,8 +2434,8 @@ const CORNER: &str = r#"    // A quad reaches half a pixel past its glyph's box 
 
 /// The lines that place a vertex, and HIDE, the condition that takes its
 /// quad out of the pass.
-const POSITION: &str = r#"    v_texCoord = (ghee_org + (ghee_e + ghee_mv) * ghee_fs) / resolution;
-    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
+const POSITION: &str = r#"    uv = (ghee_org + (ghee_e + ghee_mv) * ghee_fs) / iResolution.xy;
+    gl_Position = vec4((uv * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
     // A hidden glyph's quad lies outside the pass.
     if (HIDE) gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);"#;
 
@@ -2485,23 +2485,23 @@ precision highp float;
 precision mediump float;
 #endif
 attribute vec4 ghee_a0;
-uniform vec2 resolution;
+uniform vec3 iResolution;
 uniform float ghee_vflip;
 uniform vec2 ghee_NAME_image_size;
 uniform float ghee_NAME_x;
 uniform float ghee_NAME_y;
 uniform vec2 ghee_NAME_centre;
 uniform float ghee_NAME_visible;
-varying vec2 v_texCoord;
+varying vec2 uv;
 varying vec4 ghee_v0;
 void main() {
     vec2 ghee_wh = SIZE;
-    vec2 ghee_org = mix(vec2(ghee_NAME_x, ghee_NAME_y), (resolution - ghee_wh) * 0.5,
+    vec2 ghee_org = mix(vec2(ghee_NAME_x, ghee_NAME_y), (iResolution.xy - ghee_wh) * 0.5,
                         ghee_NAME_centre);
-    v_texCoord = (ghee_org + ghee_a0.xy * ghee_wh) / resolution;
+    uv = (ghee_org + ghee_a0.xy * ghee_wh) / iResolution.xy;
     // The point on the image, and its step per pass pixel.
     ghee_v0 = vec4(ghee_a0.xy, 1.0 / max(ghee_wh, vec2(1.0e-6)));
-    gl_Position = vec4((v_texCoord * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
+    gl_Position = vec4((uv * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
     // A hidden layer's quad lies outside the pass.
     if (ghee_NAME_visible < 0.5) gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);
 }"#;
@@ -2514,18 +2514,18 @@ precision highp float;
 #else
 precision mediump float;
 #endif
-uniform vec2 resolution;
+uniform vec3 iResolution;
 uniform sampler2D ghee_NAME_image_tex;
 uniform vec3 ghee_NAME_color;
 uniform float ghee_NAME_alpha;
 uniform float ghee_NAME_opacity;
-varying vec2 v_texCoord;
+varying vec2 uv;
 varying vec4 ghee_v0;
 void main() {
     // VC4 lands a vertex up to 1/16 px off the position set by the vertex
     // shader, and the varyings follow the vertex, so the sample moves to the
-    // pixel centre given by v_texCoord.
-    vec2 ghee_px = v_texCoord * resolution;
+    // pixel centre given by uv.
+    vec2 ghee_px = uv * iResolution.xy;
     vec2 ghee_uv = ghee_v0.xy + (floor(ghee_px) + 0.5 - ghee_px) * ghee_v0.zw;
     vec4 ghee_t = vec4(0.0);
 GUARD    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_image_tex, ghee_uv);
@@ -2589,8 +2589,8 @@ fn colour_varyings() -> (String, String) {
 /// to SLUG_GUARD. COLOUR sets ghee_rgb and ghee_al.
 const SLUG_BODY: &str = r#"    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
     // shader, and the varyings follow the vertex, so the sample moves to the
-    // pixel centre given by v_texCoord.
-    vec2 ghee_px = v_texCoord * resolution;
+    // pixel centre given by uv.
+    vec2 ghee_px = uv * iResolution.xy;
     vec2 ghee_d = floor(ghee_px) + 0.5 - ghee_px;
     vec2 ghee_u = ghee_v0.xy + vec2(dot(ghee_v4.xy, ghee_d), dot(ghee_v4.zw, ghee_d));
     float ghee_c = ghee_NAME_outline(float(int(ghee_v1.x + 0.5)), vec2(ivec2(ghee_v1.yz + 0.5)),
@@ -2604,7 +2604,7 @@ const SLUG_GUARD: &str = r#"    // On VC4 a shader whose last texture read sits 
     // threads, whose switch loses the condition flags. A read after ghee's
     // own code that never runs, in an if that the compiler cannot drop,
     // keeps the shader on one thread.
-    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_curves_tex, v_texCoord);
+    if (gl_FragCoord.x < 0.0) gl_FragColor = texture2D(ghee_NAME_curves_tex, uv);
 "#;
 
 #[cfg(test)]

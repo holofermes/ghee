@@ -8,7 +8,7 @@
       "name": "shape",
       "channels": [],
       "params": {},
-      "code": "void main() {\n  vec2 p = (v_texCoord - 0.5) * vec2(resolution.x / resolution.y, 1.0);\n  vec3 col = vec3(0.0);\n  for (int k = 0; k < 3; k++) {\n    float f = float(k);\n    float a = time * (0.5 + 0.19 * f) + 2.1 * f;\n    vec2 c = vec2(0.30 * cos(a), 0.23 * sin(a * 1.4));\n    col += palette(0.16 + 0.31 * f) * (1.0 - 0.30 * f)\n         * exp(-abs(distance(p, c) - 0.11) * 30.0);\n  }\n  gl_FragColor = vec4(col, 1.0);\n}\n"
+      "code": "void main() {\n  vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);\n  vec3 col = vec3(0.0);\n  for (int k = 0; k < 3; k++) {\n    float f = float(k);\n    float a = iTime * (0.5 + 0.19 * f) + 2.1 * f;\n    vec2 c = vec2(0.30 * cos(a), 0.23 * sin(a * 1.4));\n    col += palette(0.16 + 0.31 * f) * (1.0 - 0.30 * f)\n         * exp(-abs(distance(p, c) - 0.11) * 30.0);\n  }\n  gl_FragColor = vec4(col, 1.0);\n}\n"
     },
     {
       "name": "out",
@@ -33,7 +33,7 @@
           "step": 0.05
         }
       },
-      "code": "void main() {\n  vec2 uv = v_texCoord;\n  vec2 off = radius / resolution;\n  vec3 sum = vec3(0.0);\n  float total = 0.0;\n  for (int x = -3; x <= 3; x++) {\n    for (int y = -3; y <= 3; y++) {\n      vec2 d = vec2(float(x), float(y));\n      float w = exp(-dot(d, d) * 0.22);   // round falloff; a box kernel is square\n      sum += w * texture2D(iChannel0, uv + d * off).rgb;\n      total += w;\n    }\n  }\n  gl_FragColor = vec4(tone(sum * (bloom / total), 0.02, 1.5), 1.0);\n}\n"
+      "code": "void main() {\n  vec2 off = radius / iResolution.xy;\n  vec3 sum = vec3(0.0);\n  float total = 0.0;\n  for (int x = -3; x <= 3; x++) {\n    for (int y = -3; y <= 3; y++) {\n      vec2 d = vec2(float(x), float(y));\n      float w = exp(-dot(d, d) * 0.22);   // round falloff; a box kernel is square\n      sum += w * texture2D(iChannel0, uv + d * off).rgb;\n      total += w;\n    }\n  }\n  gl_FragColor = vec4(tone(sum * (bloom / total), 0.02, 1.5), 1.0);\n}\n"
     }
   ]
 }

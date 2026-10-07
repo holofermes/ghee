@@ -455,9 +455,10 @@ impl Handle {
 
     /// Draw one frame and hand it to the output.
     ///
-    /// Returns this tick: {"frame", "time", "dt", "params"}. `dt` is the DT
-    /// that the frame draws with, and `params` holds the string params that
-    /// changed since the last tick, the first tick every string param.
+    /// Returns this tick: {"frame", "time", "dt", "params"}. `dt` is the
+    /// iTimeDelta that the frame draws with, and `params` holds the string
+    /// params that changed since the last tick, the first tick every string
+    /// param.
     fn frame<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let mut held = Held(self.held.get()?);
         let tick = py.detach(move || held.frame()).map_err(fault)?;

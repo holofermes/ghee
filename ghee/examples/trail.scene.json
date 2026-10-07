@@ -6,7 +6,7 @@
   "passes": [
     {
       "name": "main",
-      "code": "void main() {\n  vec2 uv = v_texCoord;\n  vec2 p = (uv - 0.5) * vec2(resolution.x / resolution.y, 1.0);\n\n  float t = time * speed;\n  vec2 head = 0.34 * vec2(cos(t * 1.7), sin(t * 1.1));\n  float d = distance(p, head);\n  vec3 ink = palette(hue + 0.16 * sin(time * 0.5))\n           * (smoothstep(0.028, 0.0, d) + 0.4 * exp(-d * 26.0));\n\n  // channel 0 is this pass, so this fetch is the previous frame. The buffer\n  // is 8-bit: subtract less than one LSB and dim pixels never reach black.\n  float steps = DT * 60.0;\n  vec3 prev = max(texture2D(iChannel0, uv).rgb * pow(decay, steps) - 1.5 / 255.0 * steps, 0.0);\n\n  // screen rather than add: crossings climb toward the ink, never to white\n  gl_FragColor = vec4(prev + ink * glow * (1.0 - prev), 1.0);\n}\n",
+      "code": "void main() {\n  vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);\n\n  float t = iTime * speed;\n  vec2 head = 0.34 * vec2(cos(t * 1.7), sin(t * 1.1));\n  float d = distance(p, head);\n  vec3 ink = palette(hue + 0.16 * sin(iTime * 0.5))\n           * (smoothstep(0.028, 0.0, d) + 0.4 * exp(-d * 26.0));\n\n  // channel 0 is this pass, so this fetch is the previous frame. The buffer\n  // is 8-bit: subtract less than one LSB and dim pixels never reach black.\n  float steps = iTimeDelta * 60.0;\n  vec3 prev = max(texture2D(iChannel0, uv).rgb * pow(decay, steps) - 1.5 / 255.0 * steps, 0.0);\n\n  // screen rather than add: crossings climb toward the ink, never to white\n  gl_FragColor = vec4(prev + ink * glow * (1.0 - prev), 1.0);\n}\n",
       "channels": [
         {
           "buffer": "main"

@@ -8,8 +8,8 @@
 //! A generated shim maps ISF onto the ghee preamble:
 //!
 //! ```text
-//! RENDERSIZE -> resolution         isf_FragNormCoord -> v_texCoord
-//! TIME       -> time               an image input / PASSES target -> iChannelN
+//! RENDERSIZE -> iResolution.xy     isf_FragNormCoord -> uv
+//! TIME       -> iTime              an image input / PASSES target -> iChannelN
 //! IMG_*      -> texture2D()        an audio input -> a ghee array
 //! PASSINDEX  -> a per-pass const int, so the compiler folds the branches
 //! ```
@@ -58,9 +58,9 @@ const GLSL_TYPES: [&str; 15] = [
 const IMG_ACCESSORS: [&str; 5] = [
     "vec4 IMG_PIXEL(vec2 sz, sampler2D s, vec2 p) { return texture2D(s, p / sz); }",
     "vec4 IMG_NORM_PIXEL(sampler2D s, vec2 p) { return texture2D(s, p); }",
-    "vec4 IMG_THIS_PIXEL(sampler2D s) { return texture2D(s, v_texCoord); }",
-    "vec4 IMG_THIS_NORM_PIXEL(sampler2D s) { return texture2D(s, v_texCoord); }",
-    "vec4 IMG_NORM_THIS_PIXEL(sampler2D s) { return texture2D(s, v_texCoord); }",
+    "vec4 IMG_THIS_PIXEL(sampler2D s) { return texture2D(s, uv); }",
+    "vec4 IMG_THIS_NORM_PIXEL(sampler2D s) { return texture2D(s, uv); }",
+    "vec4 IMG_NORM_THIS_PIXEL(sampler2D s) { return texture2D(s, uv); }",
 ];
 
 // What an unbound image input reads in scene mode. The pattern is a checkered
@@ -68,7 +68,6 @@ const IMG_ACCESSORS: [&str; 5] = [
 pub const SOURCE_PASS: &str = "isf_source";
 
 const SOURCE_CODE: &str = "void main() {
-    vec2 uv = v_texCoord;
     vec2 g = floor(uv * 8.0);
     float checker = mod(g.x + g.y, 2.0);
     float disc = smoothstep(0.30, 0.28, distance(uv, vec2(0.5)));
@@ -459,7 +458,7 @@ fn build(
         ));
     }
     if search_word(&body.chars().collect::<Vec<char>>(), "DATE").is_some() {
-        warn.push("DATE is a fixed vec4(0, 0, 0, time); ghee has no calendar clock".to_string());
+        warn.push("DATE is a fixed vec4(0, 0, 0, iTime); ghee has no calendar clock".to_string());
     }
 
     let title = slug(src);
@@ -525,13 +524,13 @@ fn refuse_unrunnable(meta: &Map<String, Value>, body: &str, vertex_shader: bool)
     if vertex_shader {
         return Err(isf_error(
             "ships a custom ISF vertex shader (.vs); ghee's vertex shader is \
-             fixed and emits v_texCoord only, so this cannot link",
+             fixed and emits uv only, so this cannot link",
         ));
     }
     if let Some(name) = find_varying(&body.chars().collect::<Vec<char>>()) {
         return Err(isf_error(format!(
             "reads the custom varying '{name}', which only an ISF vertex shader \
-             can write; ghee's vertex shader emits v_texCoord only"
+             can write; ghee's vertex shader emits uv only"
         )));
     }
     if let Some(imported) = truthy(meta, "IMPORTED") {
@@ -791,7 +790,7 @@ fn passes_of(meta: &Map<String, Value>) -> Result<Vec<Map<String, Value>>> {
 }
 
 /// An ISF name can also be a name that ghee declares itself, built in such
-/// as a target called `time`, or with ghee's prefix, and a scene refuses it.
+/// as a target called `iTime`, or with ghee's prefix, and a scene refuses it.
 /// Rename it, and every reference to it in the body, before anything else
 /// reads the body.
 fn rename_reserved(
@@ -1006,13 +1005,13 @@ fn call_match(mask: &[char], i: usize, call: &str, close: &str) -> Option<(usize
 fn shim(src: &str, index: usize, sized: &Sized) -> String {
     let mut l = vec![
         format!("// ISF shim for '{src}', pass {index}"),
-        "#define RENDERSIZE resolution".to_string(),
-        "#define TIME time".to_string(),
-        "#define TIMEDELTA DT".to_string(),
-        "#define FRAMEINDEX int(time * 60.0)".to_string(),
-        "#define DATE vec4(0.0, 0.0, 0.0, time)".to_string(),
-        "#define isf_FragNormCoord v_texCoord".to_string(),
-        "#define vv_FragNormCoord v_texCoord".to_string(),
+        "#define RENDERSIZE iResolution.xy".to_string(),
+        "#define TIME iTime".to_string(),
+        "#define TIMEDELTA iTimeDelta".to_string(),
+        "#define FRAMEINDEX int(iTime * 60.0)".to_string(),
+        "#define DATE vec4(0.0, 0.0, 0.0, iTime)".to_string(),
+        "#define isf_FragNormCoord uv".to_string(),
+        "#define vv_FragNormCoord uv".to_string(),
         format!("const int PASSINDEX = {index};"),
     ];
     l.extend(IMG_ACCESSORS.iter().map(|s| (*s).to_string()));
@@ -1871,26 +1870,26 @@ void main() {
     #[test]
     fn reserved_name_is_renamed_in_the_body() {
         let src = isf_body(
-            json!({"PASSES": [{"TARGET": "time"}, {}]}),
-            "void main(){ gl_FragColor = IMG_THIS_PIXEL(time) * TIME; }",
+            json!({"PASSES": [{"TARGET": "iTime"}, {}]}),
+            "void main(){ gl_FragColor = IMG_THIS_PIXEL(iTime) * TIME; }",
         );
         let (sc, warn) = to_scene(&src, "r.fs", (8, 8), false).unwrap();
-        assert_eq!(names(&sc), ["isf_time", "out"]);
-        assert!(sc.passes[0].code.contains("IMG_THIS_PIXEL(isf_time)"));
-        assert!(warn.iter().any(|w| w.contains("renamed to 'isf_time'")));
+        assert_eq!(names(&sc), ["isf_iTime", "out"]);
+        assert!(sc.passes[0].code.contains("IMG_THIS_PIXEL(isf_iTime)"));
+        assert!(warn.iter().any(|w| w.contains("renamed to 'isf_iTime'")));
         // Every built-in and every name with ghee's prefix takes the rename.
         let src = isf_body(
-            json!({"INPUTS": [{"NAME": "frame", "TYPE": "float"},
+            json!({"INPUTS": [{"NAME": "iFrame", "TYPE": "float"},
                               {"NAME": "ghee_k", "TYPE": "float"},
                               {"NAME": "frames", "TYPE": "float"}]}),
-            "void main(){ gl_FragColor = vec4(frame, ghee_k, frames, 1.0); }",
+            "void main(){ gl_FragColor = vec4(iFrame, ghee_k, frames, 1.0); }",
         );
         let (sc, warn) = to_scene(&src, "r.fs", (8, 8), false).unwrap();
         let params: Vec<&String> = sc.params.keys().chain(sc.passes[0].params.keys()).collect();
-        assert_eq!(params, ["isf_frame", "isf_ghee_k", "frames"]);
+        assert_eq!(params, ["isf_iFrame", "isf_ghee_k", "frames"]);
         assert!(sc.passes[0]
             .code
-            .contains("vec4(isf_frame, isf_ghee_k, frames, 1.0)"));
+            .contains("vec4(isf_iFrame, isf_ghee_k, frames, 1.0)"));
         assert_eq!(
             warn.iter()
                 .filter(|w| w.contains("belongs to ghee"))

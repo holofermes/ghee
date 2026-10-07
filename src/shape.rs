@@ -635,7 +635,7 @@ const VERTEX_DECLS: &str = r#"attribute vec4 ghee_a0;
 attribute vec4 ghee_a1;
 attribute vec4 ghee_a2;
 attribute vec4 ghee_a3;
-uniform vec2 resolution;
+uniform vec3 iResolution;
 uniform float ghee_vflip;
 varying vec2 ghee_px;
 varying vec4 ghee_v0;
@@ -668,7 +668,7 @@ pub(crate) const VERTEX_MAIN: &str = r#"    float code = ghee_a1.x;
     ghee_v1 = vec4(floor(code / 8.0), ghee_a1.yz, segment);
     ghee_v2 = ghee_a2;
     ghee_v3 = ghee_a3;
-    vec2 ghee_tc = at / resolution;
+    vec2 ghee_tc = at / iResolution.xy;
     gl_Position = vec4((ghee_tc * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
 "#;
 

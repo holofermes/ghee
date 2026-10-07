@@ -235,7 +235,7 @@ void main() {
 
     // brightness travels, colour does not: each LED reads a slot of a pattern
     // scrolling along the index, crossfaded into its neighbour
-    float ph = k - time * speed + ray_jit * (hash1(ray * 5.1) - 0.5) * float(segs);
+    float ph = k - iTime * speed + ray_jit * (hash1(ray * 5.1) - 0.5) * float(segs);
     float f = smoothstep(0.0, 1.0, fract(ph));
     float b = mix(level(floor(ph)), level(floor(ph) + 1.0), f);
     b = mix(b, smoothstep(0.3, 0.8, b), snap);
@@ -256,7 +256,7 @@ SHADER_WASH = (
     + """
 void main() {
     float zm = max(zoom, 0.05);
-    vec2 P = (v_texCoord - vec2(0.5)) * vec2(aspect, 1.0) / zm + pan;
+    vec2 P = (uv - vec2(0.5)) * vec2(aspect, 1.0) / zm + pan;
     float r = length(P);
     float ang0 = atan(P.y, P.x);
     float base = floor((ang0 - spin * TAU) * float(rays) / TAU + 0.5);
@@ -309,7 +309,7 @@ void main() {
         }
     }
     // the hub is a body: it takes the wall out from under itself
-    float ha = 1.5 / max(resolution.y * zm, 1.0);
+    float ha = 1.5 / max(iResolution.y * zm, 1.0);
     float hm = smoothstep(hub + ha, hub - ha, r);
     // sqrt so the buffer's 8 bits sit where the light does, in the dim tail.
     // Stored linearly the sideways spill quantizes into onion rings.
@@ -327,11 +327,11 @@ SHADER_TUBE = (
     + """
 void main() {
     float zm = max(zoom, 0.05);
-    vec2 P = (v_texCoord - vec2(0.5)) * vec2(aspect, 1.0) / zm + pan;
+    vec2 P = (uv - vec2(0.5)) * vec2(aspect, 1.0) / zm + pan;
     float r = length(P);
     float ang0 = atan(P.y, P.x);
     float base = floor((ang0 - spin * TAU) * float(rays) / TAU + 0.5);
-    float px = 1.5 / max(resolution.y * zm, 1.0);
+    float px = 1.5 / max(iResolution.y * zm, 1.0);
 
     // the room's direction and its half vector do not vary per pixel or per
     // ray, so they are paid for once
@@ -413,7 +413,6 @@ void main() {
 
 SHADER_MAIN = """
 void main() {
-    vec2 uv = v_texCoord;
     vec4 s = texture2D(iChannel0, uv);          // wall form factor, a = openness
     s.rgb *= s.rgb;                             // undo the wash's sqrt encode
     // the wall itself: a mono texture riding the albedo, sampled in wall

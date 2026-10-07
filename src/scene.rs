@@ -11,8 +11,9 @@
 //!
 //! [`Pass::glsl`] writes the fragment shader of a pass in three parts: the
 //! preamble, the scene's common block, then the pass's own GLSL. The preamble
-//! declares the uniforms that every pass reads, `time`, `DT`, `frame` and
-//! `resolution`, and `iChannel0` and up, then one uniform for each param
+//! declares what every pass reads, the varying `uv` and the uniforms `iTime`,
+//! `iTimeDelta`, `iFrame`, `iResolution` and `iChannel0` and up, then one
+//! uniform for each param
 //! under the param's name, and the samplers and the reader functions of each
 //! array, asset and text layer. The C engine sets each uniform by looking up
 //! that same name in the compiled program, so a name that the preamble writes
@@ -38,7 +39,7 @@ pub const PREFIX: &str = "ghee_";
 
 /// The uniforms and the varying that ghee declares in every pass for its
 /// author to read, beside iChannel0 and up.
-const BUILT_INS: [&str; 5] = ["time", "DT", "frame", "resolution", "v_texCoord"];
+const BUILT_INS: [&str; 5] = ["iTime", "iTimeDelta", "iFrame", "iResolution", "uv"];
 
 /// True for a name that ghee declares in every pass for its author to read.
 pub(crate) fn built_in(name: &str) -> bool {
@@ -1053,17 +1054,17 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     if let ArraySize::Grid(w, h) = a.size {
         if hw_linear {
             return vec![format!(
-                "float {n}_sample2(vec2 uv){{ return texture2D({n}_tex, uv).r; }}"
+                "float {n}_sample2(vec2 p){{ return texture2D({n}_tex, p).r; }}"
             )];
         }
         return vec![
-            format!("float {n}_sample2(vec2 uv){{"),
+            format!("float {n}_sample2(vec2 p){{"),
             format!(
                 "  vec2 dim = vec2({}, {});",
                 py_float(w as f64),
                 py_float(h as f64)
             ),
-            "  vec2 x = uv * dim - 0.5;".to_string(),
+            "  vec2 x = p * dim - 0.5;".to_string(),
             "  vec2 i = floor(x);".to_string(),
             "  vec2 lo = (clamp(i, vec2(0.0), dim - 1.0) + 0.5) / dim;".to_string(),
             "  vec2 hi = (clamp(i + 1.0, vec2(0.0), dim - 1.0) + 0.5) / dim;".to_string(),
@@ -1666,17 +1667,20 @@ impl Pass {
         let mut l: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         l.extend(
             [
-                "varying vec2 v_texCoord;",
-                "uniform vec2 resolution;",
-                "uniform float time;",
-                "uniform float DT;",
-                "uniform float frame;",
-                // VC4 shears gl_FragCoord.xy by about 1/3 px per row when a pass
-                // samples its own output. The interpolated varying stays within
-                // 0.04 px of the pixel centre. This define maps gl_FragCoord onto
-                // the varying, so scene code that reads gl_FragCoord.xy/resolution
-                // samples feedback without drift.
-                "#define gl_FragCoord vec4(v_texCoord * resolution, 0.0, 1.0)",
+                "varying vec2 uv;",
+                "uniform vec3 iResolution;",
+                "uniform float iTime;",
+                "uniform float iTimeDelta;",
+                "uniform int iFrame;",
+                // VC4 shears gl_FragCoord.xy by about 1/3 px per row when a
+                // pass samples its own output. The interpolated varying stays
+                // within 0.04 px of the pixel centre. This define maps
+                // gl_FragCoord onto the varying, so scene code that reads
+                // gl_FragCoord.xy/iResolution.xy samples feedback without
+                // drift. A function reads the varying, so a local `uv` in the
+                // scene's own code leaves gl_FragCoord alone.
+                "vec4 ghee_fragcoord() { return vec4(uv * iResolution.xy, 0.0, 1.0); }",
+                "#define gl_FragCoord ghee_fragcoord()",
             ]
             .map(str::to_string),
         );
@@ -1737,7 +1741,7 @@ fn calls_cover(glsl: &str, name: &str) -> bool {
 }
 
 /// The code of a hidden pass after the first: a copy of the pass before it.
-const COPY: &str = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+const COPY: &str = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
 
 /// The code of a hidden first pass.
 const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
@@ -3046,7 +3050,7 @@ mod tests {
         assert_eq!(font_of(&sc), dejavu);
     }
     const COMMON: &str = "float sat(float x){ return clamp(x, 0.0, 1.0); }";
-    const CODE: &str = "void main(){ gl_FragColor = vec4(sat(v_texCoord.x), 0.0, 0.0, 1.0); }";
+    const CODE: &str = "void main(){ gl_FragColor = vec4(sat(uv.x), 0.0, 0.0, 1.0); }";
     const FLAT: &str = "void main(){ gl_FragColor = vec4(vec3(0.5), 1.0); }";
 
     fn tmpdir(tag: &str) -> crate::testing::TempDir {
@@ -3147,11 +3151,11 @@ mod tests {
         )
         .unwrap();
         let every = [
-            "varying vec2 v_texCoord;",
-            "uniform vec2 resolution;",
-            "uniform float time;",
-            "uniform float DT;",
-            "uniform float frame;",
+            "varying vec2 uv;",
+            "uniform vec3 iResolution;",
+            "uniform float iTime;",
+            "uniform float iTimeDelta;",
+            "uniform int iFrame;",
             "uniform float gain;",
             "uniform int n;",
             "uniform bool on;",
@@ -3170,7 +3174,7 @@ mod tests {
                 "float amps_at(int i0)",
                 "float amps_sample(float t)",
                 "uniform sampler2D mask_tex;",
-                "float mask_sample2(vec2 uv)",
+                "float mask_sample2(vec2 p)",
                 "uniform float k;",
             ],
             vec![
@@ -3211,10 +3215,10 @@ mod tests {
                 "common": {"code": "float t(vec2 p){ return title_cover(p, 8.0); }"},
                 "passes": [
                     {"name": "a", "code": "void main(){ gl_FragColor = \
-                        vec4(label_cover(v_texCoord, 8.0) + t(v_texCoord)); }",
+                        vec4(label_cover(uv, 8.0) + t(uv)); }",
                      "layers": [{"name": "label", "text": "hi", "font_family": "sans"},
                                 {"name": "title", "text": "ho", "font_family": "sans"}]},
-                    {"name": "b", "code": "void main(){ gl_FragColor = vec4(t(v_texCoord)); }"},
+                    {"name": "b", "code": "void main(){ gl_FragColor = vec4(t(uv)); }"},
                 ],
             }),
             None,
@@ -3261,7 +3265,7 @@ mod tests {
                 &[],
                 false,
             );
-            let pre = g.find("uniform float frame;").unwrap();
+            let pre = g.find("uniform int iFrame;").unwrap();
             let common_at = g.find(COMMON).unwrap();
             let code_at = g.find(&p.code).unwrap();
             assert!(pre < common_at && common_at < code_at, "{g}");
@@ -4286,8 +4290,9 @@ mod tests {
         // a name that only looks like ghee's or GLSL's.
         let extra = json!({
             "params": {"gains": f, "amps_ats": f, "label_covers": f, "glyphs": f,
-                       "glyph": f, "Ghee_x": f, "GL_x": f, "gl": f, "frames": f,
-                       "DTs": f, "iChannel": f, "iChannelx": f, "times": f, "a_b_c": f,
+                       "glyph": f, "Ghee_x": f, "GL_x": f, "gl": f, "iFrames": f,
+                       "iTimeDeltas": f, "iChannel": f, "iChannelx": f, "iTimes": f,
+                       "uvs": f, "a_b_c": f,
                        "words": {"type": "string", "value": "w"}},
             "assets": {"logo": {"file": "l.png"}, "logos": {"file": "l.png"}},
         });
@@ -4305,11 +4310,11 @@ mod tests {
     fn a_built_in_name_is_refused_as_any_declared_name() {
         let f = json!({"type": "float", "value": 1.0});
         for name in [
-            "time",
-            "DT",
-            "frame",
-            "resolution",
-            "v_texCoord",
+            "iTime",
+            "iTimeDelta",
+            "iFrame",
+            "iResolution",
+            "uv",
             "iChannel0",
             "iChannel12",
         ] {

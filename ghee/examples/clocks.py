@@ -39,7 +39,7 @@ const float MAX_INC = 0.999 / RATE_ROWS;
 // The buffer packs a float across RGB and the sampler is bilinear, so a read
 // has to land on a texel centre. Blending two packed values decodes to an
 // angle that belongs to neither, which shows as a clock jumping.
-vec2 texel(vec2 p){ return (floor(p*resolution)+0.5)/resolution; }
+vec2 texel(vec2 p){ return (floor(p*iResolution.xy)+0.5)/iResolution.xy; }
 
 float rgbToFloat(vec3 c){ return c.r + c.g/255.0 + c.b/(255.0*255.0); }
 vec3 floatToRgb(float v){ float r=mod(v,1.0); float g=mod(v*255.0,1.0); r-=g/255.0;
@@ -51,16 +51,16 @@ vec3 floatToRgb(float v){ float r=mod(v,1.0); float g=mod(v*255.0,1.0); r-=g/255
 // so a kick ramps the spin up instead of jerking it. The rows above scroll the
 // phase history up so the image pass can read a few frames back for the motion glow.
 void main(){
-    vec2 uv = gl_FragCoord.xy / resolution;
-    float px = 1.0 / resolution.y;
+    vec2 uv = gl_FragCoord.xy / iResolution.xy;
+    float px = 1.0 / iResolution.y;
     if (uv.y < px) {
         float raw = amplitudes_at(int(uv.x * float(amplitudes_size - 1)));
         float fftP = max(0.0, raw - thres) / (1.0 - thres);
         float cur = rgbToFloat(texture2D(iChannel0, uv).rgb);
-        float old = rgbToFloat(texture2D(iChannel0, texel(vec2(uv.x, RATE_ROWS/resolution.y))).rgb);
+        float old = rgbToFloat(texture2D(iChannel0, texel(vec2(uv.x, RATE_ROWS/iResolution.y))).rgb);
         float recentRate = fract(cur - old + 1.0) / RATE_ROWS;
         // gain is calibrated to a 0.03 s frame
-        float inc = mix(min(fftP / 255.0 * gain * (DT / 0.03), MAX_INC), recentRate, damp);
+        float inc = mix(min(fftP / 255.0 * gain * (iTimeDelta / 0.03), MAX_INC), recentRate, damp);
         gl_FragColor = vec4(floatToRgb(cur + inc), 1.0);
     } else {
         gl_FragColor = vec4(texture2D(iChannel0, uv - vec2(0.0, px)).rgb, 1.0);
@@ -78,17 +78,17 @@ const float CELL = 160.0;
 const float MIN_CELL = 32.0;
 vec2 gridOf(){
     if (cols >= 1.0 && rows >= 1.0) return vec2(cols, rows);
-    float r = max(1.0, floor(resolution.y / CELL + 0.5));
-    float cell = resolution.y / r;
-    if (cell < MIN_CELL) { cell = MIN_CELL; r = max(1.0, floor(resolution.y / cell)); }
-    float c = max(1.0, floor(resolution.x / cell + 0.5));
+    float r = max(1.0, floor(iResolution.y / CELL + 0.5));
+    float cell = iResolution.y / r;
+    if (cell < MIN_CELL) { cell = MIN_CELL; r = max(1.0, floor(iResolution.y / cell)); }
+    float c = max(1.0, floor(iResolution.x / cell + 0.5));
     return vec2(c, r);
 }
 
 // The buffer packs a float across RGB and the sampler is bilinear, so a read
 // has to land on a texel centre. Blending two packed values decodes to an
 // angle that belongs to neither, which shows as a clock jumping.
-vec2 texel(vec2 p){ return (floor(p*resolution)+0.5)/resolution; }
+vec2 texel(vec2 p){ return (floor(p*iResolution.xy)+0.5)/iResolution.xy; }
 
 #define PI 3.14159265
 #define TAU 6.2831853
@@ -98,19 +98,19 @@ float clockMap(vec2 p, float value){
     return smoothstep(-PI, PI, ang);
 }
 void main(){
-    vec2 uv = gl_FragCoord.xy / resolution;
+    vec2 uv = gl_FragCoord.xy / iResolution.xy;
     vec2 grid = gridOf();
     float nc = grid.x, nr = grid.y;
     int gid = int((uv.x + floor(uv.y*nr)) * nc);
     vec2 g = mod(uv*grid, 1.0) - 0.5;
-    g.x /= (resolution.y*nc)/(resolution.x*nr);
+    g.x /= (iResolution.y*nc)/(iResolution.x*nr);
     float sx = float(gid)/(nc*nr);
     float value = rgbToFloat(texture2D(iChannel0, texel(vec2(sx, 0.0))).rgb) * TAU;
-    float prev  = rgbToFloat(texture2D(iChannel0, texel(vec2(sx, lag/resolution.y))).rgb) * TAU;
+    float prev  = rgbToFloat(texture2D(iChannel0, texel(vec2(sx, lag/iResolution.y))).rgb) * TAU;
     float cv = clockMap(g, value);
     cv += max(0.0, cv - clockMap(g, prev)) * glow;
     cv += abs(sin(value) - sin(prev)) * glow;
-    cv *= smoothstep(0.0, 1.0, max(resolution.x, resolution.y)/8.0 * (face - length(g)));
+    cv *= smoothstep(0.0, 1.0, max(iResolution.x, iResolution.y)/8.0 * (face - length(g)));
     gl_FragColor = vec4(vec3(cv), 1.0);
 }
 """

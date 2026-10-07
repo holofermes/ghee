@@ -16,13 +16,13 @@ import ghee
 
 LEVEL = array.array("f", [1.0] * 8)
 
-# DT, scaled into red: a quarter second reads 255.
+# iTimeDelta, scaled into red: a quarter second reads 255.
 SHOWS_DT = {
     "version": 1,
     "passes": [
         {
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(DT * 4.0, 0, 0, 1); }",
+            "code": "void main(){ gl_FragColor = vec4(iTimeDelta * 4.0, 0, 0, 1); }",
         }
     ],
 }
@@ -253,8 +253,8 @@ HOST_SCENE = {
             "channels": [{"buffer": "main"}, {"buffer": "hold"}],
             "params": {"snap": {"type": "float", "value": 0.0}},
             "code": (
-                "void main(){ gl_FragColor = mix(texture2D(iChannel1, v_texCoord),"
-                " texture2D(iChannel0, v_texCoord), snap); }"
+                "void main(){ gl_FragColor = mix(texture2D(iChannel1, uv),"
+                " texture2D(iChannel0, uv), snap); }"
             ),
         },
         {
@@ -269,7 +269,7 @@ HOST_SCENE = {
                 "visLines": {"type": "float", "value": 1.0},
             },
             "code": (
-                "void main(){ gl_FragColor = vec4(hotColor * (text_sample2(v_texCoord)"
+                "void main(){ gl_FragColor = vec4(hotColor * (text_sample2(uv)"
                 " * visLines + state_at(0)), 1.0); }"
             ),
         },
@@ -306,7 +306,7 @@ WORDS = {
         {
             "name": "main",
             "code": (
-                "void main(){ vec2 px = floor(v_texCoord * resolution) + 0.5;"
+                "void main(){ vec2 px = floor(uv * iResolution.xy) + 0.5;"
                 " gl_FragColor = vec4(vec3(words_cover(px / 24.0, 24.0)), 1.0); }"
             ),
             "layers": [
@@ -606,7 +606,7 @@ def test_rotate_turns_the_frame_clockwise_and_the_scene_renders_turned():
         "passes": [
             {
                 "name": "main",
-                "code": "void main(){ gl_FragColor = v_texCoord.x < 0.5 ?"
+                "code": "void main(){ gl_FragColor = uv.x < 0.5 ?"
                 " vec4(1, 0, 0, 1) : vec4(0, 0, 1, 1); }",
             }
         ],

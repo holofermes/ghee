@@ -500,7 +500,7 @@ import ghee
 from ghee import _shim
 
 CODE = (
-    "void main(){ vec2 px = floor(v_texCoord * resolution) + 0.5;"
+    "void main(){ vec2 px = floor(uv * iResolution.xy) + 0.5;"
     " gl_FragColor = vec4(vec3(words_cover(px / 12.0, 12.0)), 1.0); }"
 )
 

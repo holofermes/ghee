@@ -4144,7 +4144,7 @@ impl Renderer {
         unsafe { ffi::ghee_set_profiling(self.handle, on) };
     }
 
-    /// Pin the `time` uniform to a fixed value, for a reproducible render.
+    /// Pin the `iTime` uniform to a fixed value, for a reproducible render.
     /// The default is the monotonic clock since the engine start.
     /// None returns the uniform to that clock.
     pub fn set_time(&self, t: Option<f64>) {
@@ -4155,8 +4155,9 @@ impl Renderer {
         }
     }
 
-    /// Set the `DT` uniform, this frame's advance in seconds of scene time.
-    /// DT rides the draw like `time`: one store here, one upload per pass.
+    /// Set the `iTimeDelta` uniform, this frame's advance in seconds of scene
+    /// time. iTimeDelta rides the draw like `iTime`: one store here, one
+    /// upload per pass.
     /// The default is 1/60 until a caller feeds a measured period.
     pub fn set_dt(&self, value: f64) {
         self.dt.set(value);
@@ -4630,7 +4631,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let a = json!({"name": "a", "size": [8, 8], "code":
             "void main(){ gl_FragColor = vec4(gl_FragCoord.x > 4.0 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"});
-        let through = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+        let through = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
         let b = |visible: bool| {
             json!({"name": "b", "code": through, "channels": [{"buffer": "a"}],
                    "visible": visible})
@@ -4655,7 +4656,7 @@ mod tests {
         // 'leak' leaves a white texture bound on unit 0.
         // Channel 0 of 'main' is unbound, and it reads black.
         let (_g, mut r) = gpu();
-        let sample = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+        let sample = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
         let sc = scene_of(json!([
             {"name": "bright", "code": "void main(){ gl_FragColor = vec4(1.0); }"},
             {"name": "leak", "channels": [{"buffer": "bright"}], "code": sample},
@@ -4677,9 +4678,8 @@ mod tests {
         // is black, and the frame is the last visible pass. Each row is
         // worked by hand, in levels of 255.
         let (_g, mut r) = gpu();
-        let read = |more: &str| {
-            format!("void main(){{ gl_FragColor = texture2D(iChannel0, v_texCoord){more}; }}")
-        };
+        let read =
+            |more: &str| format!("void main(){{ gl_FragColor = texture2D(iChannel0, uv){more}; }}");
         let passes = |hidden: &[&str]| {
             let mut ps = json!([
                 {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }",
@@ -4728,8 +4728,8 @@ mod tests {
         let sc = scene_of(json!([
             {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.25, 0.0, 0.0, 1.0); }"},
             {"name": "b", "channels": [{"buffer": "a"}, {"buffer": "c"}],
-             "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord) \
-                      + texture2D(iChannel1, v_texCoord); }"},
+             "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
+                      + texture2D(iChannel1, uv); }"},
             {"name": "c", "channels": [{"buffer": "b"}], "visible": false,
              "code": "void main(){ gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }"},
         ]));
@@ -4750,7 +4750,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let red = "uniform float aspect;\nvoid main(){ \
                    gl_FragColor = vec4(aspect * 0.5, 0.0, 0.0, 1.0); }";
-        let through = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }";
+        let through = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
         let sc = scene_of(json!([
             {"name": "small", "code": red, "size": [8, 8]},
             {"name": "main", "code": through, "channels": [{"buffer": "small"}]},
@@ -4909,8 +4909,8 @@ mod tests {
             "name": "main",
             "channels": [{"buffer": "main"}],
             "code": "void main(){ float s = mod(floor(gl_FragCoord.x), 2.0); \
-                     vec4 last = texture2D(iChannel0, v_texCoord + vec2(0.5 / resolution.x, 0.0)); \
-                     gl_FragColor = frame < 1.5 ? vec4(vec3(s), 1.0) : last; }",
+                     vec4 last = texture2D(iChannel0, uv + vec2(0.5 / iResolution.x, 0.0)); \
+                     gl_FragColor = iFrame < 2 ? vec4(vec3(s), 1.0) : last; }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -4944,7 +4944,7 @@ mod tests {
         let sc = scene_of(json!([{
             "name": "main",
             "channels": [{"buffer": "main"}],
-            "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord) \
+            "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                      + vec4(0.1, 0.0, 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -4970,14 +4970,14 @@ mod tests {
                 "name": "b",
                 "channels": [{"buffer": "a"}],
                 "arrays": [{"name": "shared", "size": 4}],
-                "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord) \
+                "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                          + vec4(0.0, shared_at(1), 0.0, 0.0); }",
             },
             {
                 "name": "c",
                 "channels": [{"buffer": "b"}],
                 "arrays": [{"name": "shared", "size": 4}],
-                "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord) \
+                "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                          + vec4(0.0, 0.0, shared_at(2), 0.0); }",
             },
         ]));
@@ -5005,7 +5005,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_text_lays_out_its_curves_only_for_a_program_that_reads_them() {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
-        let pass_reads = "void main(){ gl_FragColor = vec4(t_cover(v_texCoord, 20.0)); }";
+        let pass_reads = "void main(){ gl_FragColor = vec4(t_cover(uv, 20.0)); }";
         let black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
         let cache = crate::testing::TempDir::new("engine-curves");
         let (_g, mut r) = gpu();
@@ -5133,7 +5133,7 @@ mod tests {
             {"name": "a", "arrays": own,
              "code": "void main(){ gl_FragColor = vec4(a11_at(0), 0.0, 0.0, 1.0); }"},
             {"name": "main", "channels": channels, "arrays": arrays, "code": format!(
-                "void main(){{ gl_FragColor = vec4(texture2D(iChannel{}, v_texCoord).r, \
+                "void main(){{ gl_FragColor = vec4(texture2D(iChannel{}, uv).r, \
                  m4_at(0), 0.0, 1.0); }}", units - 6)},
         ]));
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -5340,7 +5340,7 @@ mod tests {
         let sc = scene_of(json!([
             {"name": "a", "code": "void main(){ gl_FragColor = vec4(1.0, 1.0, 1.0, 0.25); }"},
             {"name": "main", "channels": [{"buffer": "a"}], "code":
-                "void main(){ gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).a, 0.0, 0.0, 1.0); }"},
+                "void main(){ gl_FragColor = vec4(texture2D(iChannel0, uv).a, 0.0, 0.0, 1.0); }"},
         ]));
         let f = first_frames(&mut r, &sc, 1);
         assert!(channel(&f, 0).iter().all(|v| (v - 63.75).abs() <= 1.0));
@@ -5354,7 +5354,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(
             json!([{"name": "main", "channels": [{"buffer": "main"}], "code":
-            "void main(){ gl_FragColor = vec4(texture2D(iChannel0, v_texCoord).a, 0.0, 0.0, 0.5); }"}]),
+            "void main(){ gl_FragColor = vec4(texture2D(iChannel0, uv).a, 0.0, 0.0, 0.5); }"}]),
         );
         let f = first_frames(&mut r, &sc, 2);
         assert!(channel(&f, 0).iter().all(|v| (v - 127.5).abs() <= 1.0));
@@ -5394,7 +5394,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(mod(time * 37.0, 1.0), 0.0, 0.0, 1.0); }",
+            "code": "void main(){ gl_FragColor = vec4(mod(iTime * 37.0, 1.0), 0.0, 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(1.0));
@@ -5409,16 +5409,16 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn set_dt_reaches_every_pass() {
-        // DT rides the draw like time, so one store lands in every pass.
-        // Red carries the first pass's DT through a channel.
-        // Green carries the second pass's DT.
+        // iTimeDelta rides the draw like iTime, so one store lands in every
+        // pass. Red carries the first pass's iTimeDelta through a channel.
+        // Green carries the second pass's iTimeDelta.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([
-            {"name": "src", "code": "void main(){ gl_FragColor = vec4(DT, 0.0, 0.0, 1.0); }"},
+            {"name": "src", "code": "void main(){ gl_FragColor = vec4(iTimeDelta, 0.0, 0.0, 1.0); }"},
             {
                 "name": "main",
                 "code": "void main(){ gl_FragColor = vec4(\
-                         texture2D(iChannel0, v_texCoord).r, DT, 0.0, 1.0); }",
+                         texture2D(iChannel0, uv).r, iTimeDelta, 0.0, 1.0); }",
                 "channels": [{"buffer": "src"}],
             },
         ]));
@@ -5439,6 +5439,58 @@ mod tests {
         r.set_dt(0.5);
         let same = r.render(None).unwrap().to_vec();
         assert_eq!(r.render(None).unwrap(), same);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn i_resolution_holds_each_pass_size_and_a_pixel_aspect_of_one() {
+        // The left half shows the 8x4 pass `a`, the right half writes its own:
+        // red and green the size, blue the pixel aspect.
+        let (_g, mut r) = gpu();
+        let own = "vec4(iResolution.x / 255.0, iResolution.y / 255.0, iResolution.z, 1.0)";
+        let sc = scene_of(json!([
+            {"name": "a", "size": [8, 4],
+             "code": format!("void main(){{ gl_FragColor = {own}; }}")},
+            {"name": "main", "channels": [{"buffer": "a"}],
+             "code": format!("void main(){{ gl_FragColor = uv.x < 0.5 ? \
+                              texture2D(iChannel0, uv) : {own}; }}")},
+        ]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let f = r.render(None).unwrap().to_vec();
+        let rgb = |x| [0, 1, 2].map(|c| px(&f, W, x, H / 2, c));
+        assert_eq!(rgb(1), [8.0, 4.0, 255.0]);
+        assert_eq!(rgb(W - 2), [W as f64, H as f64, 255.0]);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn i_frame_counts_the_frames_drawn_as_an_int() {
+        let (_g, mut r) = gpu();
+        let sc = scene_of(json!([{
+            "name": "main",
+            "code": "void main(){ gl_FragColor = vec4(float(iFrame) / 255.0, 0.0, 0.0, 1.0); }",
+        }]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        for want in [1.0, 2.0, 3.0] {
+            let f = r.render(None).unwrap().to_vec();
+            assert_eq!(px(&f, W, 0, 0, 0), want);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn gl_frag_coord_reads_the_pixel_beside_a_local_named_uv() {
+        let (_g, mut r) = gpu();
+        let sc = scene_of(json!([{
+            "name": "main",
+            "code": "void main(){ vec2 uv = vec2(0.0); \
+                     gl_FragColor = vec4(floor(gl_FragCoord.x) / 255.0, uv, 1.0); }",
+        }]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let f = r.render(None).unwrap().to_vec();
+        for x in [0, 5, W - 1] {
+            assert_eq!(px(&f, W, x, H / 2, 0), x as f64);
+        }
     }
 
     #[test]
@@ -5512,7 +5564,7 @@ mod tests {
                 "common": {"code": bad},
                 "passes": [{
                     "name": "main",
-                    "code": "void main(){ gl_FragColor = vec4(sat(v_texCoord.x), 0.0, 0.0, 1.0); }",
+                    "code": "void main(){ gl_FragColor = vec4(sat(uv.x), 0.0, 0.0, 1.0); }",
                 }],
             }),
             None,
@@ -5580,7 +5632,7 @@ mod tests {
     fn array_samples_correctly() {
         let (_g, mut r) = gpu();
         let sc = array_scene(
-            "void main(){ vec2 uv=gl_FragCoord.xy/resolution; \
+            "void main(){ vec2 uv=gl_FragCoord.xy/iResolution.xy; \
              gl_FragColor=vec4(vec3(vals_at(int(uv.x*float(vals_size-1)))),1.0); }",
             "vals",
             json!(N),
@@ -5602,7 +5654,7 @@ mod tests {
     fn sample_interpolates() {
         let (_g, mut r) = gpu();
         let sc = array_scene(
-            "void main(){ vec2 uv=gl_FragCoord.xy/resolution; \
+            "void main(){ vec2 uv=gl_FragCoord.xy/iResolution.xy; \
              gl_FragColor=vec4(vec3(vals_sample(uv.x)),1.0); }",
             "vals",
             json!(N),
@@ -5627,11 +5679,11 @@ mod tests {
         let floats: Vec<f32> = bytes.iter().map(|b| f32::from(*b) / 255.0).collect();
         for (code, size) in [
             (
-                "void main(){ gl_FragColor=vec4(vec3(vals_sample(v_texCoord.x)),1.0); }",
+                "void main(){ gl_FragColor=vec4(vec3(vals_sample(uv.x)),1.0); }",
                 json!(N),
             ),
             (
-                "void main(){ gl_FragColor=vec4(vec3(vals_sample2(v_texCoord)),1.0); }",
+                "void main(){ gl_FragColor=vec4(vec3(vals_sample2(uv)),1.0); }",
                 json!([8, 8]),
             ),
         ] {
@@ -5656,8 +5708,8 @@ mod tests {
         let code = "uniform sampler2D logo_tex; uniform vec2 logo_size; \
                     uniform sampler2D late_tex; \
                     void main(){ gl_FragColor = vec4(\
-                    texture2D(logo_tex, v_texCoord).r, \
-                    texture2D(late_tex, v_texCoord).r, \
+                    texture2D(logo_tex, uv).r, \
+                    texture2D(late_tex, uv).r, \
                     logo_size.x / 8.0, 1.0); }";
         r.set_asset("logo", 2, 2, 4, false, AssetData::U8(&[128u8; 16]))
             .unwrap();
@@ -5697,7 +5749,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let vals: Vec<f32> = vec![0.10, 0.90, 0.30, 0.70, 0.50];
         let sc = array_scene(
-            "void main(){ gl_FragColor=vec4(vec3(vals_sample(v_texCoord.x)),1.0); }",
+            "void main(){ gl_FragColor=vec4(vec3(vals_sample(uv.x)),1.0); }",
             "vals",
             json!(vals.len()),
         );
@@ -5954,7 +6006,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn vec_and_color_values_reach_glsl_from_the_scene_and_a_set() {
         let (_g, mut r) = gpu();
-        let code = "void main(){ float x = v_texCoord.x; \
+        let code = "void main(){ float x = uv.x; \
                     gl_FragColor = x < 0.25 ? vec4(a, 0.0, 1.0) : x < 0.5 ? vec4(b, 1.0) \
                     : x < 0.75 ? vec4(c.xyz * c.w, 1.0) : vec4(tint, 1.0); }";
         let sc = Scene::from_dict(
@@ -6041,7 +6093,7 @@ mod tests {
         scene_of(json!([
             {"name": "check", "size": [256, 256], "mipmaps": mipmaps,
              "params": {"level": {"type": "float", "value": 1.0}},
-             "code": "void main(){ vec2 t = floor(v_texCoord * 256.0); \
+             "code": "void main(){ vec2 t = floor(uv * 256.0); \
                       gl_FragColor = vec4(vec3(mod(t.x + t.y, 2.0) * level), 1.0); }"},
             {"name": "main", "channels": [{"buffer": "check"}], "code": main},
         ]))
@@ -6051,7 +6103,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_with_mipmaps_read_small_reads_its_average() {
         let (_g, mut r) = gpu_at(64, 64);
-        let read = "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord + 0.5 / 256.0); }";
+        let read = "void main(){ gl_FragColor = texture2D(iChannel0, uv + 0.5 / 256.0); }";
         let reds = |f: &[u8]| {
             (0..64 * 64)
                 .map(|i| f64::from(f[i * COMPONENTS]))
@@ -6081,8 +6133,8 @@ mod tests {
         // A batch that reads the pass through its channel samples the chain
         // too.
         let red = "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }";
-        let fs = "uniform sampler2D iChannel0; uniform vec2 resolution;\n\
-                  void main(){ gl_FragColor = texture2D(iChannel0, v_px / resolution + 0.5 / 256.0); }";
+        let fs = "uniform sampler2D iChannel0; uniform vec3 iResolution;\n\
+                  void main(){ gl_FragColor = texture2D(iChannel0, v_px / iResolution.xy + 0.5 / 256.0); }";
         let batches = [batch("main", fs, Blend::Normal)];
         assert_eq!(
             r.setup_batches(&checker_scene(true, red), &batches)
@@ -6113,7 +6165,7 @@ mod tests {
                 "passes": [
                     {"name": "a", "code": "void main(){ gl_FragColor = vec4(P, 0.0, 0.0, 1.0); }"},
                     {"name": "main", "channels": [{"buffer": "a"}],
-                     "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord) \
+                     "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                               + vec4(0.0, P, 0.0, 0.0); }"},
                 ],
             }),
@@ -6200,7 +6252,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{
             "name": "main",
-            "code": "void main(){ gl_FragColor = vec4(v_texCoord.x, v_texCoord.y, 0.25, 1.0); }",
+            "code": "void main(){ gl_FragColor = vec4(uv.x, uv.y, 0.25, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -6221,15 +6273,15 @@ mod tests {
     const PRECISION: &str = "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\n\
         precision highp float;\n#else\nprecision mediump float;\n#endif\n";
 
-    /// ghee_a0.xy is the vertex in pass pixels, y down like v_texCoord, and
+    /// ghee_a0.xy is the vertex in pass pixels, y down like uv, and
     /// ghee_a1 the premultiplied colour.
     fn batch_vs(extra: &str) -> String {
         format!(
             "{PRECISION}attribute vec4 ghee_a0; attribute vec4 ghee_a1;\n\
-             uniform vec2 resolution; uniform float ghee_vflip;\n\
+             uniform vec3 iResolution; uniform float ghee_vflip;\n\
              varying vec4 v_color; varying vec2 v_px;\n{extra}\n\
              void main() {{\n\
-               vec2 ndc = ghee_a0.xy / resolution * 2.0 - 1.0;\n\
+               vec2 ndc = ghee_a0.xy / iResolution.xy * 2.0 - 1.0;\n\
                gl_Position = vec4(ndc.x, ndc.y * ghee_vflip, 0.0, 1.0);\n\
                v_color = ghee_a1; v_px = ghee_a0.xy;\n\
              }}"
@@ -6309,11 +6361,11 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_lands_with_rows_counted_like_v_tex_coord() {
-        // The pass paints the top rows, v_texCoord.y < 0.25, red. The batch
+        // The pass paints the top rows, uv.y < 0.25, red. The batch
         // covers the same rows by pixel and adds green.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "code":
-            "void main(){ gl_FragColor = vec4(v_texCoord.y < 0.25 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
+            "void main(){ gl_FragColor = vec4(uv.y < 0.25 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
         assert_eq!(
             r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
                 .unwrap(),
@@ -6447,7 +6499,7 @@ mod tests {
     fn a_batch_reads_scene_params_in_both_stages_and_its_pass_inputs() {
         // The vertex stage shifts the quad by `shift` pixels once `level` is
         // set, and the fragment stage writes `level`, an array texel, an asset
-        // texel and the channel. `level` and `resolution` sit in both stages.
+        // texel and the channel. `level` and `iResolution` sit in both stages.
         let (_g, mut r) = gpu();
         r.set_asset("pad", 1, 1, 1, false, AssetData::U8(&[64u8]))
             .unwrap();
@@ -6473,14 +6525,14 @@ mod tests {
             pass: "main".to_string(),
             vertex: batch_vs("uniform float shift; uniform float level;").replace(
                 "v_px = ghee_a0.xy;",
-                "v_px = ghee_a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / resolution.x;",
+                "v_px = ghee_a0.xy; gl_Position.x += step(0.25, level) * shift * 2.0 / iResolution.x;",
             ),
             fragment: batch_fs(
                 "uniform float level; uniform sampler2D vals_tex; uniform sampler2D pad_tex;\n\
-                 uniform sampler2D iChannel0; uniform vec2 pad_size; uniform vec2 resolution;\n\
+                 uniform sampler2D iChannel0; uniform vec2 pad_size; uniform vec3 iResolution;\n\
                  void main(){ gl_FragColor = vec4(level, \
                    texture2D(vals_tex, vec2(0.125, 0.5)).r * 0.5 + texture2D(pad_tex, vec2(0.5)).r, \
-                   texture2D(iChannel0, v_px / resolution).b * pad_size.x, 1.0); }",
+                   texture2D(iChannel0, v_px / iResolution.xy).b * pad_size.x, 1.0); }",
             ),
             blend: Blend::Normal,
         };
@@ -6544,7 +6596,7 @@ mod tests {
         let sc = scene_of(json!([
             {"name": "a", "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"},
             {"name": "main", "channels": [{"buffer": "a"}],
-             "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord); }"},
+             "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
         ]));
         assert_eq!(
             r.setup_batches(&sc, &[batch("a", PLAIN_FS, Blend::Normal)])
@@ -6645,8 +6697,8 @@ mod tests {
             .collect();
         let vs = format!(
             "{PRECISION}{attributes}\
-             uniform vec2 resolution; uniform float ghee_vflip; varying vec4 v_color;\n\
-             void main() {{ vec2 ndc = ghee_a0.xy / resolution * 2.0 - 1.0;\n\
+             uniform vec3 iResolution; uniform float ghee_vflip; varying vec4 v_color;\n\
+             void main() {{ vec2 ndc = ghee_a0.xy / iResolution.xy * 2.0 - 1.0;\n\
                gl_Position = vec4(ndc.x, ndc.y * ghee_vflip, 0.0, 1.0);\n\
                v_color = vec4(ghee_a1.x + ghee_a5.x, ghee_a2.y + ghee_a6.y, ghee_a3.z + ghee_a7.z,\n\
                               ghee_a4.w); }}"
@@ -6783,7 +6835,7 @@ mod tests {
                 "version": 1,
                 "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
                 "passes": [{"name": "main", "code": "void main(){ \
-                    float c = label_cover(v_texCoord * label_size, resolution.y / label_size.y); \
+                    float c = label_cover(uv * label_size, iResolution.y / label_size.y); \
                     gl_FragColor = vec4(c, c, c, 1.0); }",
                     "layers": [{"name": "label", "text": words, "font_family": "sans",
                                 "text_align": align, "visible": false}]}],
@@ -7401,7 +7453,7 @@ mod tests {
         let layers = members();
         let doc = |layers: &[Value]| {
             let mut sc = run_scene(layers);
-            sc.passes[0].code = "void main(){ float c = t2_cover(v_texCoord * t2_size, 16.0); \
+            sc.passes[0].code = "void main(){ float c = t2_cover(uv * t2_size, 16.0); \
                                  gl_FragColor = vec4(0.5, 0.25 + 0.5 * c, 0.75, 1.0); }"
                 .to_string();
             sc
@@ -7954,7 +8006,7 @@ mod tests {
 
     /// Each pixel of the scene holds its column in red and its row from the
     /// top in green, which read back exactly.
-    const POSITION: &str = "void main(){ vec2 p = floor(v_texCoord * resolution); \
+    const POSITION: &str = "void main(){ vec2 p = floor(uv * iResolution.xy); \
         gl_FragColor = vec4(p / 255.0, 0.0, 1.0); }";
 
     /// The frame's pixel (x, y) of a w x h frame shows the scene pixel that a

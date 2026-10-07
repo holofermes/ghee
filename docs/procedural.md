@@ -115,8 +115,8 @@ ghee writes one JSON line to the process's stdin for each render tick:
 
     {"frame": N, "time": T, "dt": D, "params": {...}}
 
-`D` is the DT that the tick's frame draws with: the time since the frame
-before, a quarter second at most, 1/60 for the first frame, or the fixed
+`D` is the `iTimeDelta` that the tick's frame draws with: the time since the
+frame before, a quarter second at most, 1/60 for the first frame, or the fixed
 `--timestep`. `params` holds the string params that changed, and the first
 tick holds them all.
 

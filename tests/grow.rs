@@ -117,7 +117,7 @@ fn scene() -> Value {
              "layers": [{"name": "bar", "shape": "rect", "x": 4, "y": 4, "width": 20,
                          "height": 6, "color": "orange"}]},
             {"name": "main", "channels": [{"buffer": "small"}],
-             "code": "void main(){ gl_FragColor = texture2D(iChannel0, v_texCoord) * 0.5; }",
+             "code": "void main(){ gl_FragColor = texture2D(iChannel0, uv) * 0.5; }",
              "layers": [
                 {"name": "title", "text": "Hi", "font_family": "sans", "font_size": 20,
                  "x": 4, "y": 4, "glow": {}},

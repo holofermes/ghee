@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Renamed
+
+A scene written for 0.4.0 takes these names in their place.
+
+- Take Shadertoy's names for the uniforms of every pass: `iTime` where it
+  was `time`, `iTimeDelta` where it was `DT`, and `iResolution` where it was
+  `resolution`, a `vec3` now, with the size in pixels in `xy` and the pixel
+  aspect, 1.0, in `z`. The varying `v_texCoord` is `uv`, with the same
+  values. The old names are free for a param, an array or an asset.
+
 ### Scenes
 
 - Declare image files in `assets`: a `.png`, a `.jpg`, or a `.raw` file of
@@ -22,7 +32,7 @@
   on `$GHEE_ASSETS`. A path may be absolute or leave that directory, except
   under the console, and the error for a file that no directory holds names
   `$GHEE_ASSETS`.
-- Read `uniform float frame`, the count of frames rendered, in every pass.
+- Read `uniform int iFrame`, the count of frames rendered, in every pass.
 - Build the mip chain of a pass's buffer after each frame with
   `"mipmaps": true`, and sample it trilinearly through every channel that
   reads it, so a buffer read far away and minified stays calm. On a GPU
@@ -89,8 +99,8 @@
   and arrays take names unique in the pass and outside that set, so two
   passes may each declare a param `gain`. A filter's pass takes a name that
   nothing in the scene holds, as `dither1` beside a pass `dither`.
-- Refuse `time`, `DT`, `frame`, `resolution`, `v_texCoord` and `iChannel0` and
-  up as the name of a param, an array or an asset. A layer may take any of
+- Refuse `iTime`, `iTimeDelta`, `iFrame`, `iResolution`, `uv` and `iChannel0`
+  and up as the name of a param, an array or an asset. A layer may take any of
   them, since every GLSL name that it gives a pass carries a suffix. Refuse a
   scene where two declarations make one GLSL name in a pass, such as a param
   `title_size` beside a layer `title`, and name both.
@@ -281,9 +291,9 @@
   a direct run's `@ghee.tick`, where that tick's `params` stayed empty. The
   first tick holds every string param, as a scene script's tick does under
   ghee, and a set from the host itself stays out.
-- Hand the DT that a frame draws with in the tick that `h.frame()` returns,
-  in a direct run's and on the wire: the time since the frame before, a
-  quarter second at most, and 1/60 for the first frame, where the tick held
+- Hand the iTimeDelta that a frame draws with in the tick that `h.frame()`
+  returns, in a direct run's and on the wire: the time since the frame before,
+  a quarter second at most, and 1/60 for the first frame, where the tick held
   the period of the frame before and a direct run's first tick held 0. A
   pinned timestep is the tick's `dt` as given, where a quarter second capped
   it.
@@ -521,10 +531,10 @@
   is compiled in, a scanned filter's resolves beside it. Only the filter's
   own pass sees them, so they never clash with a scene's names.
 - Take `frc256`'s per-pixel phase from a shipped 64x64 blue-noise mask.
-- Rename an ISF input or pass target named like a built-in, such as `frame`,
-  or named with the `ghee_` prefix, and rename an input's param with it,
-  where an input named `time` kept the name on its param. Give the import's
-  own reason when it refuses an ISF shader with `IMPORTED` images.
+- Rename an ISF input or pass target named like a built-in, such as `iFrame`,
+  or named with the `ghee_` prefix, and rename an input's param with it. Give
+  the import's own reason when it refuses an ISF shader with `IMPORTED`
+  images.
 
 ### Library and packages
 

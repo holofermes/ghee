@@ -686,6 +686,11 @@ fn layers_round_trip_and_leave_their_defaults_out() {
          "text_stroke": {"width": 0.0, "color": "#ffffff", "visible": false},
          "karaoke": {"sung": 2.5, "color": "#0000ff"}, "wave": {"height": -0.2, "speed": 1.5},
          "scroll": {"speed": -1.0}, "blink": {"rate": 0.0, "visible": false}},
+        {"name": "h", "color": "NavY", "text": "I", "text_shadow": {"color": "transparent"},
+         "glow": {"color": "Gold"}, "text_stroke": {"color": "white"},
+         "karaoke": {"color": "TRANSPARENT"}},
+        {"name": "i", "color": {"from": "lime", "to": "Transparent", "angle": 90.0},
+         "text": "I"},
     ]));
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     assert_eq!(sc.to_dict(), doc);
@@ -706,6 +711,9 @@ fn layers_round_trip_and_leave_their_defaults_out() {
         "text_stroke": {"width": 0.06, "color": [0, 0, 0]},
         "karaoke": {"sung": 0, "color": "#ffad2e"}, "wave": {"height": 0.1, "speed": 0.6},
         "scroll": {"speed": 2}, "blink": {"rate": 1, "visible": null},
+    }, {
+        "name": "d", "color": "White", "text": "I",
+        "text_shadow": {"color": "black"}, "glow": {"color": "ORANGE"},
     }]));
     let back = Scene::from_dict(&defaults, None, None).unwrap().to_dict();
     assert_eq!(
@@ -714,7 +722,8 @@ fn layers_round_trip_and_leave_their_defaults_out() {
                {"name": "b", "color": {"from": [1.0, 0.0, 0.0], "to": [0.0, 0.0, 1.0]},
                 "text": "I"},
                {"name": "c", "text": "I", "text_shadow": {}, "glow": {}, "text_stroke": {},
-                "karaoke": {}, "wave": {}, "scroll": {}, "blink": {}}])
+                "karaoke": {}, "wave": {}, "scroll": {}, "blink": {}},
+               {"name": "d", "text": "I", "text_shadow": {}, "glow": {}}])
     );
 }
 
@@ -757,7 +766,9 @@ fn a_layer_declaration_names_what_it_lacks() {
             .extend(keys.as_object().unwrap().clone());
         one(d)
     };
-    let colour = "needs '#rrggbb', [r, g, b] or a gradient {\"from\", \"to\", \"angle\"}";
+    let colour =
+        "needs '#rrggbb', a CSS colour name, [r, g, b] or a gradient {\"from\", \"to\", \"angle\"}";
+    let forms = "needs '#rrggbb', a CSS colour name or three numbers [r, g, b]";
     let family = "font_family needs the name of a font asset or a .ttf or .otf file";
     let cases = [
         (
@@ -799,8 +810,8 @@ fn a_layer_declaration_names_what_it_lacks() {
             "layer 't' y needs a number of pixels, got True".to_string(),
         ),
         (
-            t(json!({"color": "red"})),
-            format!("layer 't' color {colour}, got 'red'"),
+            t(json!({"color": "rde"})),
+            format!("layer 't' color {colour}, got 'rde'"),
         ),
         (
             t(json!({"color": [1, 0]})),
@@ -812,8 +823,7 @@ fn a_layer_declaration_names_what_it_lacks() {
         ),
         (
             t(json!({"color": {"from": "#00", "to": "#000000"}})),
-            "layer 't' color from needs '#rrggbb' or three numbers [r, g, b], got '#00'"
-                .to_string(),
+            format!("layer 't' color from {forms}, got '#00'"),
         ),
         (
             t(json!({"color": {"from": "#000000", "to": "#000000", "angle": "up"}})),
@@ -885,9 +895,8 @@ fn a_layer_declaration_names_what_it_lacks() {
             "layer 't' text_shadow x needs a number of em, got 'left'".to_string(),
         ),
         (
-            t(json!({"text_shadow": {"color": "black"}})),
-            "layer 't' text_shadow color needs '#rrggbb' or three numbers [r, g, b], got 'black'"
-                .to_string(),
+            t(json!({"text_shadow": {"color": "blak"}})),
+            format!("layer 't' text_shadow color {forms}, got 'blak'"),
         ),
         (
             t(json!({"glow": {"strength": 1.5}})),
@@ -895,7 +904,7 @@ fn a_layer_declaration_names_what_it_lacks() {
         ),
         (
             t(json!({"karaoke": {"sung": null, "color": 3}})),
-            "layer 't' karaoke color needs '#rrggbb' or three numbers [r, g, b], got 3".to_string(),
+            format!("layer 't' karaoke color {forms}, got 3"),
         ),
         (
             t(json!({"karaoke": {"sung": "4"}})),
@@ -2344,6 +2353,115 @@ fn a_gradient_spans_the_block_along_its_angle_as_css_does() {
         }
         assert!(seen > 500, "{angle}: {seen}");
         assert!(off.is_empty(), "{angle}: {:?}", &off[..off.len().min(8)]);
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_colour_name_paints_its_value_from_css_and_transparent_paints_nothing() {
+    // An I at 64 px/em over a grey pass. CSS Color 4 gives lime as #00ff00,
+    // blue as #0000ff and red as #ff0000. Each row: the layer's keys, its
+    // renders, the stroke's width, and the reference's straight colour and
+    // alpha at a pixel, from the distance to the outline, d, in em and below
+    // 0 inside, and the point t on the gradient line. A gradient to
+    // transparent fades its colour's alpha, as CSS mixes premultiplied
+    // colours.
+    let words = "I";
+    let laid = lay(SANS, words, Align::Left);
+    let fit = Fit {
+        x: 48.0,
+        y: 16.0,
+        ppem: 64.0,
+    };
+    let (w, h) = (160, 128);
+    let px = 1.0 / fit.ppem;
+    let grey = 0.25;
+    let letters =
+        |rgb: [f64; 3], alpha: f64| move |d: f64| (rgb, if d < 0.0 { alpha } else { 0.0 });
+    type Want = Box<dyn Fn(f64, f64) -> ([f64; 3], f64)>;
+    let rows: Vec<(Value, &[&str], f64, Want)> = vec![
+        (
+            json!({"color": "Lime"}),
+            &RENDERS,
+            0.0,
+            Box::new(move |d, _| letters([0.0, 1.0, 0.0], 1.0)(d)),
+        ),
+        (
+            json!({"color": "transparent"}),
+            &RENDERS,
+            0.0,
+            Box::new(|_, _| ([0.0; 3], 0.0)),
+        ),
+        (
+            json!({"color": {"from": "red", "to": "Transparent", "angle": 90}}),
+            &RENDERS,
+            0.0,
+            Box::new(move |d, t| letters([1.0, 0.0, 0.0], 1.0 - t)(d)),
+        ),
+        (
+            json!({"color": "Lime", "karaoke": {"sung": 1, "color": "transparent"}}),
+            &RENDERS,
+            0.0,
+            Box::new(|_, _| ([0.0; 3], 0.0)),
+        ),
+        (
+            json!({"color": "TRANSPARENT", "text_stroke": {"width": 0.1, "color": "blue"}}),
+            &["mtsdf"],
+            0.1,
+            Box::new(move |d, _| ([0.0, 0.0, 1.0], ((0.1 - d) / px + 0.5).clamp(0.0, 1.0))),
+        ),
+        (
+            json!({"color": "lime", "glow": {"color": "transparent", "strength": 1.0},
+                   "text_shadow": {"color": "Transparent", "strength": 1.0}}),
+            &["mtsdf"],
+            0.0,
+            Box::new(move |d, _| letters([0.0, 1.0, 0.0], 1.0)(d)),
+        ),
+    ];
+    let (_g, mut r) = gpu(w, h);
+    for (keys, renders, width, want) in rows {
+        for render_as in renders {
+            let mut doc = effect_scene(words, fit, keys.clone());
+            doc["passes"][0]["code"] =
+                json!("void main(){ gl_FragColor = vec4(vec3(0.25), 1.0); }");
+            layer_of(&mut doc, "label")["render"] = json!(render_as);
+            let frame = render(&mut r, &loaded(&doc));
+            let len = laid.width;
+            let (mut seen, mut off) = (0, Vec::new());
+            for y in 0..h {
+                for x in 0..w {
+                    let p = fit.em(x, y);
+                    let d = laid.distance(p);
+                    if d.abs() < EDGE * px || (width > 0.0 && (d - width).abs() < EDGE * px) {
+                        continue;
+                    }
+                    // At 90 degrees the gradient line runs left to right
+                    // across the block.
+                    let t = (p[0] / len).clamp(0.0, 1.0);
+                    // The field gives the distance within half a pixel.
+                    let q = 0.5 * px;
+                    let ends = [-q, q].map(|e| {
+                        let (rgb, a) = want(d + e, t);
+                        rgb.map(|c| 255.0 * (c * a + grey * (1.0 - a)))
+                    });
+                    seen += 1;
+                    for k in 0..3 {
+                        let got = f64::from(frame[(y * w + x) * 4 + k]);
+                        let (lo, hi) = (ends[0][k].min(ends[1][k]), ends[0][k].max(ends[1][k]));
+                        if got < lo - 3.0 || got > hi + 3.0 {
+                            off.push((x, y, k, got, lo.round(), hi.round()));
+                        }
+                    }
+                }
+            }
+            assert!(seen > 10_000, "{keys} {render_as}: {seen}");
+            assert!(
+                off.is_empty(),
+                "{keys} {render_as}: {} off, (x, y, channel, got, least, most) {:?}",
+                off.len(),
+                &off[..off.len().min(8)]
+            );
+        }
     }
 }
 

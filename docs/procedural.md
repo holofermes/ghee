@@ -76,8 +76,11 @@ After the handshake, stdout carries binary messages:
 - Kind 3 sets the named string param. The name of a text layer, or
   `layer.text` such as `title.text`, sets its words, and a name of the form
   `layer.image`, such as `icon.image`, sets that image layer's `image` to the
-  image asset that the text names. The header
-  is the same as kind 0's, and the payload is count bytes of UTF-8 text.
+  image asset that the text names. A color param and a layer's colour, such
+  as `title.color` or `title.glow.color`, take the colour as text,
+  `#rrggbb` or a CSS colour name, which ghee keeps as written, and a text
+  layer's `color` takes its gradient as the JSON object. The header is the
+  same as kind 0's, and the payload is count bytes of UTF-8 text.
 - Kind 4 sets the named array from u8 values. The header is the same as kind
   0's, and the payload is count u8 bytes, each value byte / 255. A big mask
   then costs a quarter of the bytes on the pipe.

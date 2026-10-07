@@ -3,7 +3,8 @@
 The package holds two surfaces. `ghee.open` drives the renderer, and it needs
 the native half of the wheel. Everything else is the procedural-scene shim,
 which is Python alone until a scene that ghee runs sets a layer through
-`ghee.layers`: the native half then checks each set against the scene.
+`ghee.layers`, or a color param to a CSS colour name: the native half then
+checks each set against the scene, and holds the names.
 python/README.md and docs/procedural.md hold them.
 """
 

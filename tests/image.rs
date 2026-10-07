@@ -121,6 +121,7 @@ fn image_layers_round_trip_and_leave_their_defaults_out() {
         {"name": "b", "visible": false, "x": 4.0, "y": -2.5, "color": "#ff8000",
          "opacity": 0.5, "blend": "multiply", "image": "pic.png", "width": 8.0, "height": 3.0},
         {"name": "c", "color": [1.0, 1.0, 1.0], "image": "pic", "height": 2.0},
+        {"name": "d", "color": "DarkOrange", "image": "pic"},
     ]));
     let back = Scene::from_dict(&doc, None, None).unwrap().to_dict();
     assert_eq!(back["passes"][0]["layers"], doc["passes"][0]["layers"]);
@@ -170,12 +171,15 @@ fn an_image_layer_declaration_names_what_it_takes() {
         ),
         (
             i(json!({"color": {"from": "#000000", "to": "#ffffff"}})),
-            "layer 'i' color takes no gradient on an image layer, only '#rrggbb' or [r, g, b]"
+            "layer 'i' color takes no gradient on an image layer, only '#rrggbb', a CSS colour \
+             name or three numbers [r, g, b]"
                 .to_string(),
         ),
         (
-            i(json!({"color": "red"})),
-            "layer 'i' color needs '#rrggbb' or [r, g, b], got 'red'".to_string(),
+            i(json!({"color": "rde"})),
+            "layer 'i' color needs '#rrggbb', a CSS colour name or three numbers [r, g, b], got \
+             'rde'"
+                .to_string(),
         ),
         (
             i(json!({"glow": {}})),
@@ -258,6 +262,8 @@ fn an_image_layer_paints_its_picture_where_its_keys_place_it() {
     write_picture(dir.path());
     let plain = [1.0; 3];
     let orange = [1.0, 128.0 / 255.0, 0.0];
+    // CSS's darkorange, #ff8c00.
+    let dark_orange = [1.0, 140.0 / 255.0, 0.0];
     let rows = [
         (
             json!({"image": "pic", "x": 2, "y": 3}),
@@ -307,6 +313,18 @@ fn an_image_layer_paints_its_picture_where_its_keys_place_it() {
             Some([3.0, 2.0, 6.0, 6.0]),
             orange,
             0.5,
+        ),
+        (
+            json!({"image": "pic", "x": 3, "y": 2, "width": 6, "color": "DarkOrange"}),
+            Some([3.0, 2.0, 6.0, 6.0]),
+            dark_orange,
+            1.0,
+        ),
+        (
+            json!({"image": "pic", "x": 3, "y": 2, "color": "transparent"}),
+            None,
+            plain,
+            1.0,
         ),
         (
             json!({"image": "pic.png", "x": 3, "y": 2, "width": 6}),

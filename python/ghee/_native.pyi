@@ -52,6 +52,9 @@ class Handle:
     def __enter__(self) -> Self: ...
     def __exit__(self, *_args: object) -> bool: ...
 
+def _colour_name(text: str) -> bool:
+    """True for a CSS colour name, in any case, transparent too."""
+
 class _LayerWire:
     """A scene that a scene process runs under ghee, to check each live layer
     set against and to give the set's message."""

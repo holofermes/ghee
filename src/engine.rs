@@ -1485,7 +1485,7 @@ impl Renderer {
         };
         if !fits {
             match ptype {
-                "color" => bail!("color param '{name}' needs '#rrggbb' or three numbers [r, g, b]"),
+                "color" => bail!("color param '{name}' needs {}", crate::layer::COLOUR_FORMS),
                 _ => bail!("{ptype} param '{name}' needs {} numbers", &ptype[3..]),
             }
         }
@@ -4166,10 +4166,7 @@ mod tests {
         assert!(r
             .set_param("main", "c", "vec4", &v(&[0.5, 1.0, 0.0, 1.0]))
             .unwrap());
-        let tint = ParamValue::Color(Rgb {
-            rgb: [0.0, 1.0, 0.5],
-            hex: false,
-        });
+        let tint = ParamValue::Color(Rgb::numbers([0.0, 1.0, 0.5]));
         assert!(r.set_scene_param("tint", "color", &tint).unwrap());
         let f = r.render(None).unwrap().to_vec();
         let want = [

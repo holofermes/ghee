@@ -2517,10 +2517,7 @@ mod tests {
         );
         assert_eq!(
             coerce("k", "color", &serde_json::json!([1.0, 0.0, 0.5])).unwrap(),
-            ParamValue::Color(crate::layer::Rgb {
-                rgb: [1.0, 0.0, 0.5],
-                hex: false
-            })
+            ParamValue::Color(crate::layer::Rgb::numbers([1.0, 0.0, 0.5]))
         );
         assert!(coerce("k", "color", &serde_json::json!([1.0, 0.0])).is_err());
     }

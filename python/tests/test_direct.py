@@ -71,8 +71,12 @@ def host(monkeypatch, argv, on_frame=None):
         opened.update(kw, scene=scene)
         return fake
 
+    from ghee import _native
+
     module = types.ModuleType("ghee")
     module.open = open_scene
+    # the native half holds the colour names
+    module._ext = lambda: _native
     monkeypatch.delenv(shim.WIRE, raising=False)
     monkeypatch.setitem(sys.modules, "ghee", module)
     monkeypatch.setattr(sys, "argv", ["feeder.py", *argv])

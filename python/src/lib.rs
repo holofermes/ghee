@@ -515,6 +515,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Handle>()?;
     // the shim's own, so out of __all__
     m.setattr("_LayerWire", m.py().get_type::<wire::LayerWire>())?;
+    m.setattr("_colour_name", wrap_pyfunction!(wire::_colour_name, m)?)?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
     Ok(())
 }

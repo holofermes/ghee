@@ -99,7 +99,7 @@ class Param:
     """A live value.
 
     The scene, the console and the scene process name it the same way.
-    A color is "#rrggbb" or [r, g, b] in 0..1.
+    A color is "#rrggbb", a CSS colour name or [r, g, b] in 0..1.
     A vecK is K numbers.
     A string never reaches a shader: the scene process reads it in the tick
     line. ghee declares the string param of each text layer's name itself,
@@ -182,7 +182,8 @@ class Layer:
     `name` is required. A key left at None takes ghee's default.
     `visible` False hides the layer. `x` and `y` put the block's top left at
     that pass pixel, y down, and a missing one centres the block on its axis.
-    `color` is "#rrggbb" or [r, g, b] in 0..1, `opacity` is 0 to 1, and
+    `color` is "#rrggbb", a CSS colour name such as "navy" or "transparent",
+    or [r, g, b] in 0..1, `opacity` is 0 to 1, and
     `blend` paints the layer over the pass as "normal", "add", "multiply" or
     "screen".
 
@@ -766,8 +767,8 @@ def set_param(
 ) -> None:
     """Set a live param for this tick.
 
-    A float takes one number, a color takes "#rrggbb" or three numbers, and a
-    vecN takes N.
+    A float takes one number, a color takes "#rrggbb", a CSS colour name or
+    three numbers, and a vecN takes N.
     A string takes words, and the string param of a text layer's name holds
     the layer's words.
     `pass_` addresses the param of one pass, such as a filter param.
@@ -783,7 +784,8 @@ def set_param(
     if _HANDLE is not None:
         _HANDLE.set_param(name, value, pass_=pass_)
         return
-    # The wire carries a color as three floats.
+    # The wire carries a color written "#rrggbb" as three floats, and a
+    # colour name as text.
     rgb = None if _PARAMS and _PARAMS.get(wire) == "string" else _hex(value)
     if rgb is not None:
         value = rgb
@@ -861,6 +863,16 @@ def _hex(v) -> list[float] | None:
     return [int(v[i : i + 2], 16) / 255 for i in (1, 3, 5)]
 
 
+def _colour_name(v) -> bool:
+    """True for a CSS colour name, in any case. The native half holds the
+    names."""
+    if not isinstance(v, str) or not v.isascii() or not v.isalpha():
+        return False
+    from ghee import _ext
+
+    return _ext()._colour_name(v)
+
+
 def _numbers(v, n: int) -> bool:
     if isinstance(v, (str, bytes)):
         return False
@@ -891,10 +903,10 @@ def _check(wire: str, value) -> None:
         if not isinstance(value, str):
             raise ValueError(f"string param '{wire}' needs a string, got {value!r}")
     elif ty == "color":
-        if _hex(value) is None and not _numbers(value, n):
+        if _hex(value) is None and not _numbers(value, n) and not _colour_name(value):
             raise ValueError(
-                f"color param '{wire}' needs '#rrggbb' or three numbers [r, g, b], "
-                f"got {value!r}"
+                f"color param '{wire}' needs '#rrggbb', a CSS colour name or three "
+                f"numbers [r, g, b], got {value!r}"
             )
     elif n is not None:
         if not _numbers(value, n):

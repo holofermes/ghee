@@ -263,7 +263,8 @@ A param is a typed uniform declared on the pass, with optional range metadata:
 
 The preamble turns that into `uniform float gain;`, and the console shows
 every param as a live control. The types are `float`, `int`, `bool`, `color`
-(a `vec3` in the shader), `vec2`, `vec3`, `vec4` and `string`. A string param
+(a `vec3` in the shader, which takes a [colour](#colours)), `vec2`, `vec3`,
+`vec4` and `string`. A string param
 never reaches the shader: a procedural scene reads it on its ticks, and
 `options` turns its text box in the console into a dropdown. A param declared
 on the scene, in place of a pass, holds one value that every pass reads.
@@ -354,7 +355,7 @@ Every layer takes these keys:
 | `name` | the layer's name, per [Names](#names) | required |
 | `visible` | `false` hides the layer | `true` |
 | `x`, `y` | the pass pixel of the block's top left, y down | centred on a missing axis |
-| `color` | `"#rrggbb"`, or `[r, g, b]` with each 0 to 1 | white for text, no tint for an image |
+| `color` | a [colour](#colours) | white for text, no tint for an image |
 | `opacity` | 0 to 1 | 1 |
 | `blend` | `normal`, `add`, `multiply` or `screen` | `normal` |
 
@@ -366,6 +367,15 @@ and `screen` hold over an opaque buffer, such as the output of the pass's own
 shader. A pass with `layers` and no GLSL of its own starts each frame
 transparent and holds its layers alone, for a later pass to read through a
 channel. A later pass reads the whole buffer, layers included.
+
+### Colours
+
+A colour is `"#rrggbb"`, `[r, g, b]` with each 0 to 1, or one of the 148
+[named colors of CSS Color 4](https://www.w3.org/TR/css-color-4/#named-colors),
+such as `"navy"`, in any case. A scene keeps a name as it was written.
+`"transparent"` paints nothing: letters in it still draw their effects, and a
+gradient to it fades out. A color param reaches its shader as three numbers,
+so `transparent` reads there as black.
 
 ### Text layers
 

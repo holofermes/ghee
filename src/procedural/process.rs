@@ -27,7 +27,7 @@ use crate::engine::{Feed, Given, Refused};
 use crate::layer::{Address, Rgb};
 use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::resolve;
-use crate::scene::{ArraySize, ParamValue, Reach, Scene};
+use crate::scene::{py_repr, ArraySize, ParamValue, Reach, Scene};
 
 /// `-- --help` waits this long for a scene's declarations line.
 /// Nothing else runs a scene with `--ghee-args`.
@@ -914,6 +914,13 @@ impl SceneController for SceneProcess {
                 }),
                 ParamData::Str(text) => match ty.as_str() {
                     "string" => Ok(ParamValue::Str(text)),
+                    "color" => Rgb::from_text(&text).map(ParamValue::Color).ok_or_else(|| {
+                        format!(
+                            "color param '{name}' takes '#rrggbb' or a CSS colour name as \
+                             text, got {}",
+                            py_repr(&Value::from(text))
+                        )
+                    }),
                     _ => Err(format!("{ty} param '{name}' takes numbers, got text")),
                 },
             };
@@ -970,10 +977,7 @@ fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
         "float" => Some(ParamValue::Float(at(0)?)),
         "int" => Some(ParamValue::Int(at(0)?.round() as i64)),
         "bool" => Some(ParamValue::Bool(at(0)? != 0.0)),
-        "color" => Some(ParamValue::Color(Rgb {
-            rgb: [at(0)?, at(1)?, at(2)?],
-            hex: false,
-        })),
+        "color" => Some(ParamValue::Color(Rgb::numbers([at(0)?, at(1)?, at(2)?]))),
         "vec2" | "vec3" | "vec4" => {
             let n = ty[3..].parse::<usize>().ok()?;
             (values.len() >= n)
@@ -1701,6 +1705,39 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
         assert_eq!(seen[0]["params"], serde_json::json!({"words": "GHEE"}));
         assert_eq!(seen[1]["params"], serde_json::json!({}));
         assert_eq!(seen[2]["params"], serde_json::json!({"words": "GHEE"}));
+    }
+
+    /// A process that sets the color param `tint` to a colour name as kind 3
+    /// text, and `bg` to text that names no colour.
+    const COLOUR_SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "params": {"tint": {"type": "color", "value": [0, 0, 0]}, "bg": {"type": "color", "value": [0, 0, 0]}}, "passes": [{"name": "main", "code": "void main(){}"}]}'
+# kind 3, tint, the text "Navy"
+printf '\003\004tint\004\000\000\000Navy'
+# kind 3, bg, the text "rde"
+printf '\003\002bg\003\000\000\000rde'
+while IFS= read -r line; do :; done
+"#;
+
+    #[test]
+    fn a_kind_3_message_sets_a_color_param_to_a_colour_name_as_written() {
+        let d = tmpdir("colour");
+        let path = script(&d, "colour", COLOUR_SCRIPT);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            f.incoming.len() == 2
+        }));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        let set = stub.set.borrow();
+        let [(None, name, ParamValue::Color(c))] = set.as_slice() else {
+            panic!("{set:?}");
+        };
+        // CSS's navy is #000080.
+        assert_eq!((name.as_str(), c.rgb), ("tint", [0.0, 0.0, 128.0 / 255.0]));
+        assert_eq!(c.to_json(), serde_json::json!("Navy"));
+        assert_eq!(f.refused, HashSet::from(["bg".to_string()]));
     }
 
     /// A process that sends a param that the scene lacks, text to a float

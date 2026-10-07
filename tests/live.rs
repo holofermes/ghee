@@ -180,6 +180,16 @@ fn a_live_field_draws_what_a_scene_built_with_its_value_draws() {
             Wire::Numbers(vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 90.0]),
         ),
         (
+            at("t", None, "color"),
+            json!("Transparent"),
+            Wire::Text("Transparent"),
+        ),
+        (
+            at("t", None, "color"),
+            json!({"from": "red", "to": "transparent", "angle": 90}),
+            Wire::Text(r#"{"from": "red", "to": "transparent", "angle": 90}"#),
+        ),
+        (
             at("t", None, "opacity"),
             json!(0.5),
             Wire::Numbers(vec![0.5]),
@@ -215,6 +225,11 @@ fn a_live_field_draws_what_a_scene_built_with_its_value_draws() {
             Wire::Numbers(vec![0.0, 0.0, 1.0]),
         ),
         (
+            at("t", Some("glow"), "color"),
+            json!("transparent"),
+            Wire::Text("transparent"),
+        ),
+        (
             at("t", Some("glow"), "strength"),
             json!(0.2),
             Wire::Numbers(vec![0.2]),
@@ -240,6 +255,11 @@ fn a_live_field_draws_what_a_scene_built_with_its_value_draws() {
             at("i", None, "color"),
             json!("#ff8000"),
             Wire::Numbers(vec![1.0, orange, 0.0]),
+        ),
+        (
+            at("i", None, "color"),
+            json!("DarkOrange"),
+            Wire::Text("DarkOrange"),
         ),
         (at("i", None, "color"), json!(null), Wire::Numbers(vec![])),
         (

@@ -37,6 +37,7 @@ use serde_json::{Map, Value};
 
 use crate::atlas;
 use crate::colour;
+use crate::css;
 use crate::emoji::{self, EmojiFont};
 use crate::engine::Blend;
 use crate::scene::{hex_colour, keys_on, known_keys, number_list, py_float, py_repr, PASS_KEYS};
@@ -90,46 +91,83 @@ pub const FIT_MARGIN: f64 = 0.05;
 /// preload, takes 7 s at 128 texels per em and 14 s at 192.
 pub const ATLAS_STEPS: [u32; 5] = [32, 48, 64, 96, 128];
 
-/// A colour, each channel 0 to 1, and whether the scene wrote it as
-/// `"#rrggbb"`, so a save writes it back in the form it came in.
+/// A colour, each channel 0 to 1, its alpha, and the form that the scene
+/// wrote it in, so a save writes it back in that form.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgb {
     pub rgb: [f64; 3],
-    pub hex: bool,
+    /// 1, or 0 for `transparent`.
+    pub alpha: f64,
+    pub written: Written,
 }
 
-impl Rgb {
-    pub const WHITE: Rgb = Rgb {
-        rgb: [1.0; 3],
-        hex: false,
-    };
+/// The form of a colour in a scene.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Written {
+    /// `[r, g, b]`.
+    Numbers,
+    /// `"#rrggbb"`.
+    Hex,
+    /// A CSS colour name, in the case that the scene wrote it in.
+    Name(css::Name),
+}
 
-    /// `"#rrggbb"` or `[r, g, b]`, None for any other value.
-    pub fn from_json(v: &Value) -> Option<Rgb> {
-        match v {
-            Value::String(s) => hex_colour(s).map(|rgb| Rgb { rgb, hex: true }),
-            v => number_list(v, 3).map(|n| Rgb {
-                rgb: [n[0], n[1], n[2]],
-                hex: false,
-            }),
+/// What a colour takes, as an error says it.
+pub const COLOUR_FORMS: &str = "'#rrggbb', a CSS colour name or three numbers [r, g, b]";
+
+impl Rgb {
+    pub const WHITE: Rgb = Rgb::numbers([1.0; 3]);
+
+    /// The opaque colour `[r, g, b]`, written as three numbers.
+    pub const fn numbers(rgb: [f64; 3]) -> Rgb {
+        Rgb {
+            rgb,
+            alpha: 1.0,
+            written: Written::Numbers,
         }
     }
 
+    /// `"#rrggbb"`, a CSS colour name or `[r, g, b]`, None for any other
+    /// value.
+    pub fn from_json(v: &Value) -> Option<Rgb> {
+        match v {
+            Value::String(s) => Rgb::from_text(s),
+            v => number_list(v, 3).map(|n| Rgb::numbers([n[0], n[1], n[2]])),
+        }
+    }
+
+    /// `#rrggbb` or a CSS colour name, None for any other text.
+    pub fn from_text(s: &str) -> Option<Rgb> {
+        if let Some(rgb) = hex_colour(s) {
+            return Some(Rgb {
+                written: Written::Hex,
+                ..Rgb::numbers(rgb)
+            });
+        }
+        let (rgb, alpha, name) = css::named(s)?;
+        Some(Rgb {
+            rgb: rgb.map(|c| f64::from(c) / 255.0),
+            alpha,
+            written: Written::Name(name),
+        })
+    }
+
     pub fn to_json(self) -> Value {
-        match self.hex {
-            true => {
+        match self.written {
+            Written::Hex => {
                 let [r, g, b] = self
                     .rgb
                     .map(|c| (c * 255.0).round().clamp(0.0, 255.0) as u8);
                 Value::from(format!("#{r:02x}{g:02x}{b:02x}"))
             }
-            false => Value::from(self.rgb.to_vec()),
+            Written::Name(name) => Value::from(name.as_str()),
+            Written::Numbers => Value::from(self.rgb.to_vec()),
         }
     }
 
     /// The same colour, whatever form it came in.
     fn same(self, other: Rgb) -> bool {
-        self.rgb == other.rgb
+        self.rgb == other.rgb && self.alpha == other.alpha
     }
 }
 
@@ -155,8 +193,8 @@ impl Color {
         }
         let Value::Object(o) = v else {
             bail!(
-                "{what} color needs '#rrggbb', [r, g, b] or a gradient {{\"from\", \"to\", \
-                 \"angle\"}}, got {}",
+                "{what} color needs '#rrggbb', a CSS colour name, [r, g, b] or a gradient \
+                 {{\"from\", \"to\", \"angle\"}}, got {}",
                 py_repr(v)
             );
         };
@@ -165,10 +203,7 @@ impl Color {
         let end = |k: &str| match o.get(k).filter(|v| !v.is_null()) {
             None => bail!("{at} has no '{k}'"),
             Some(v) => Rgb::from_json(v).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{at} {k} needs '#rrggbb' or three numbers [r, g, b], got {}",
-                    py_repr(v)
-                )
+                anyhow::anyhow!("{at} {k} needs {COLOUR_FORMS}, got {}", py_repr(v))
             }),
         };
         let (from, to) = (end("from")?, end("to")?);
@@ -244,7 +279,7 @@ enum Takes {
     Unit,
     /// A number a second, 0 or more, of the thing named.
     Rate(&'static str),
-    /// A colour, `"#rrggbb"` or `[r, g, b]`.
+    /// A colour, as Rgb::from_json() takes it.
     Colour,
 }
 
@@ -291,8 +326,8 @@ const fn colour(default: [u8; 3]) -> Field {
     Field {
         name: "color",
         default: FieldValue::Rgb(Rgb {
-            rgb: [r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0],
-            hex: true,
+            written: Written::Hex,
+            ..Rgb::numbers([r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0])
         }),
         takes: Takes::Colour,
         change: Change::Uniform,
@@ -459,9 +494,9 @@ impl Effect {
             };
             let n = v.as_f64().filter(|n| n.is_finite());
             values.push(match f.takes {
-                Takes::Colour => FieldValue::Rgb(
-                    Rgb::from_json(v).ok_or_else(|| got("'#rrggbb' or three numbers [r, g, b]"))?,
-                ),
+                Takes::Colour => {
+                    FieldValue::Rgb(Rgb::from_json(v).ok_or_else(|| got(COLOUR_FORMS))?)
+                }
                 Takes::Em => match n {
                     Some(n) if n >= 0.0 => FieldValue::Num(n),
                     _ => return Err(got("a number of em, 0 or more")),
@@ -1065,6 +1100,8 @@ impl TextLayer {
                 Value::from(to.rgb.to_vec()),
             ),
             (self.uniform("angle"), "float", Value::from(angle)),
+            (self.uniform("alpha"), "float", Value::from(from.alpha)),
+            (self.uniform("alphato"), "float", Value::from(to.alpha)),
         ]);
         for e in self.drawn() {
             let token = e.kind.token();
@@ -1082,6 +1119,8 @@ impl TextLayer {
                     }
                     (Change::Uniform, FieldValue::Rgb(c)) => {
                         out.push((name, "vec3", Value::from(c.rgb.to_vec())));
+                        let alpha = self.uniform(&format!("{token}alpha"));
+                        out.push((alpha, "float", Value::from(c.alpha)));
                     }
                 }
             }
@@ -1283,6 +1322,8 @@ impl TextLayer {
             "uniform sampler2D ghee_NAME_atlas_tex;".to_string(),
             "uniform vec3 ghee_NAME_color;".to_string(),
             "uniform vec3 ghee_NAME_colorto;".to_string(),
+            "uniform float ghee_NAME_alpha;".to_string(),
+            "uniform float ghee_NAME_alphato;".to_string(),
             "uniform float ghee_NAME_opacity;".to_string(),
             "varying vec4 ghee_v0;".to_string(),
             "varying vec4 ghee_v1;".to_string(),
@@ -1297,6 +1338,7 @@ impl TextLayer {
             }
             decls.push(format!("uniform float ghee_NAME_{token}visible;"));
             decls.push(format!("uniform vec3 ghee_NAME_{token}color;"));
+            decls.push(format!("uniform float ghee_NAME_{token}alpha;"));
             if matches!(e.kind, Kind::TextShadow | Kind::Glow) {
                 decls.push(format!("uniform float ghee_NAME_{token}strength;"));
             }
@@ -1306,7 +1348,7 @@ impl TextLayer {
              // 0.5 on it and growing inward over the range.\n        \
              float ghee_d = max(min(ghee_t.r, ghee_t.g), min(max(ghee_t.r, ghee_t.g), ghee_t.b)) - 0.5;\n        \
              float ghee_c = clamp(ghee_v0.z * ghee_d + 0.5, 0.0, 1.0);\n{}        \
-             ghee_o = vec4(ghee_rgb, 1.0) * ghee_c;",
+             ghee_o = vec4(ghee_rgb, ghee_al) * ghee_c;",
             self.letter_colour("        ", "ghee_v1.x", "ghee_v1.y")
         );
         let mut main = vec![
@@ -1352,7 +1394,8 @@ impl TextLayer {
                      // each side of their outline.\n        \
                      float ghee_sb = max({:?}, 0.5 * ghee_px);\n        \
                      float ghee_a = smoothstep(-ghee_sb, ghee_sb, (ghee_ts.a - 0.5) * {range_em:?})\n        \
-                     \x20             * ghee_NAME_shadowstrength * ghee_NAME_shadowvisible;\n        \
+                     \x20             * ghee_NAME_shadowstrength * ghee_NAME_shadowvisible\n        \
+                     \x20             * ghee_NAME_shadowalpha;\n        \
                      ghee_o = vec4(ghee_NAME_shadowcolor, 1.0) * ghee_a;",
                     e.num("blur")
                 ));
@@ -1361,7 +1404,8 @@ impl TextLayer {
                 main.push(format!(
                     "        // The glow falls from the outline to nothing at its blur.\n        \
                      float ghee_f = clamp(1.0 - max(-ghee_in, 0.0) / {:?}, 0.0, 1.0);\n        \
-                     float ghee_ga = ghee_f * ghee_f * ghee_NAME_glowstrength * ghee_NAME_glowvisible;\n        \
+                     float ghee_ga = ghee_f * ghee_f * ghee_NAME_glowstrength * ghee_NAME_glowvisible\n        \
+                     \x20               * ghee_NAME_glowalpha;\n        \
                      ghee_o = vec4(ghee_NAME_glowcolor, 1.0) * ghee_ga + ghee_o * (1.0 - ghee_ga);",
                     e.num("blur").max(1.0e-6)
                 ));
@@ -1371,7 +1415,7 @@ impl TextLayer {
                     "        // The stroke grows the letters by its width, its edge antialiased\n        \
                      // over a pixel.\n        \
                      float ghee_sa = clamp((ghee_in + {:?}) * ghee_v0.w + 0.5, 0.0, 1.0)\n        \
-                     \x20              * ghee_NAME_strokevisible;\n        \
+                     \x20              * ghee_NAME_strokevisible * ghee_NAME_strokealpha;\n        \
                      ghee_o = vec4(ghee_NAME_strokecolor, 1.0) * ghee_sa + ghee_o * (1.0 - ghee_sa);",
                     e.num("width")
                 ));
@@ -1392,17 +1436,22 @@ impl TextLayer {
         )
     }
 
-    /// The lines that set ghee_rgb, the letters' colour at a pixel, after
-    /// `indent`: the colour, or the point `t` on its gradient, and the
-    /// karaoke colour where the fill `fill` reaches.
+    /// The lines that set ghee_rgb and ghee_al, the letters' colour and
+    /// alpha at a pixel, after `indent`: the colour, or the point `t` on its
+    /// gradient, and the karaoke colour where the fill `fill` reaches. A
+    /// colour of alpha 0 holds black, so the mix of the colours is the mix
+    /// of their premultiplied values.
     fn letter_colour(&self, indent: &str, t: &str, fill: &str) -> String {
         let mut l = format!(
-            "{indent}vec3 ghee_rgb = mix(ghee_NAME_color, ghee_NAME_colorto, clamp({t}, 0.0, 1.0));\n"
+            "{indent}vec3 ghee_rgb = mix(ghee_NAME_color, ghee_NAME_colorto, clamp({t}, 0.0, 1.0));\n\
+             {indent}float ghee_al = ghee_NAME_alpha\n{indent}              \
+             + (ghee_NAME_alphato - ghee_NAME_alpha) * clamp({t}, 0.0, 1.0);\n"
         );
         if self.draws(Kind::Karaoke).is_some() {
             l.push_str(&format!(
-                "{indent}ghee_rgb = mix(ghee_rgb, ghee_NAME_karaokecolor,\n{indent}               \
-                 clamp({fill}, 0.0, 1.0) * ghee_NAME_karaokevisible);\n"
+                "{indent}float ghee_kt = clamp({fill}, 0.0, 1.0) * ghee_NAME_karaokevisible;\n\
+                 {indent}ghee_rgb = mix(ghee_rgb, ghee_NAME_karaokecolor, ghee_kt);\n\
+                 {indent}ghee_al += (ghee_NAME_karaokealpha - ghee_al) * ghee_kt;\n"
             ));
         }
         l
@@ -1415,6 +1464,8 @@ impl TextLayer {
             "uniform vec2 resolution;",
             "uniform vec3 ghee_NAME_color;",
             "uniform vec3 ghee_NAME_colorto;",
+            "uniform float ghee_NAME_alpha;",
+            "uniform float ghee_NAME_alphato;",
             "uniform float ghee_NAME_opacity;",
             "varying vec2 v_texCoord;",
             "varying vec4 ghee_v0;",
@@ -1426,6 +1477,7 @@ impl TextLayer {
             decls.extend([
                 "uniform float ghee_NAME_karaokevisible;",
                 "uniform vec3 ghee_NAME_karaokecolor;",
+                "uniform float ghee_NAME_karaokealpha;",
                 "varying vec4 ghee_v2;",
             ]);
         }
@@ -1480,13 +1532,10 @@ impl ImageLayer {
             None => None,
             Some(v) => match Rgb::from_json(v) {
                 Some(c) => Some(c),
-                None if v.is_object() => bail!(
-                    "{what} color takes no gradient on an image layer, only '#rrggbb' or [r, g, b]"
-                ),
-                None => bail!(
-                    "{what} color needs '#rrggbb' or [r, g, b], got {}",
-                    py_repr(v)
-                ),
+                None if v.is_object() => {
+                    bail!("{what} color takes no gradient on an image layer, only {COLOUR_FORMS}")
+                }
+                None => bail!("{what} color needs {COLOUR_FORMS}, got {}", py_repr(v)),
             },
         };
         let image = match given(o, "image") {
@@ -1540,12 +1589,17 @@ impl ImageLayer {
     /// Each uniform of the layer's own at its value from the scene, as
     /// TextLayer::uniforms() lists them. No tint is white.
     pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
-        let tint = self.color.map_or([1.0; 3], |c| c.rgb);
+        let tint = self.color.unwrap_or(Rgb::WHITE);
         let mut out = placing(&self.name, self.x, self.y, self.visible, self.opacity);
         out.push((
             uniform(&self.name, "color"),
             "vec3",
-            Value::from(tint.to_vec()),
+            Value::from(tint.rgb.to_vec()),
+        ));
+        out.push((
+            uniform(&self.name, "alpha"),
+            "float",
+            Value::from(tint.alpha),
         ));
         out
     }
@@ -1679,7 +1733,7 @@ pub enum Form {
     Number { none: bool },
     /// true or false.
     Flag,
-    /// A colour, `"#rrggbb"` or `[r, g, b]`, a gradient object too with
+    /// A colour, as Rgb::from_json() takes it, a gradient object too with
     /// `gradient`. With `none`, none takes the field back to its default.
     Colour { gradient: bool, none: bool },
     /// The name of an image asset of the scene.
@@ -1700,7 +1754,7 @@ impl Form {
         match self {
             Form::Number { .. } => "a number",
             Form::Flag => "true or false",
-            Form::Colour { .. } => "'#rrggbb' or [r, g, b]",
+            Form::Colour { .. } => COLOUR_FORMS,
             Form::Image => "the name of an image asset",
         }
     }
@@ -1752,10 +1806,14 @@ impl Live {
     }
 
     /// The value of the text `text` that the wire gives the field: the name
-    /// of an image asset.
+    /// of an image asset, or a colour, `#rrggbb` or a CSS colour name, or a
+    /// text layer's gradient as its JSON object.
     pub fn of_text(&self, text: &str) -> Result<Value> {
         match self.form {
-            Form::Image => Ok(Value::from(text)),
+            Form::Colour { gradient: true, .. } if text.trim_start().starts_with('{') => {
+                Ok(serde_json::from_str(text).unwrap_or_else(|_| Value::from(text)))
+            }
+            Form::Image | Form::Colour { .. } => Ok(Value::from(text)),
             _ => bail!("{} takes numbers, got text", self.what),
         }
     }
@@ -2029,6 +2087,7 @@ precision mediump float;
 uniform vec2 resolution;
 uniform sampler2D ghee_NAME_image_tex;
 uniform vec3 ghee_NAME_color;
+uniform float ghee_NAME_alpha;
 uniform float ghee_NAME_opacity;
 varying vec2 v_texCoord;
 varying vec4 ghee_v0;
@@ -2040,7 +2099,8 @@ void main() {
     vec2 ghee_uv = ghee_v0.xy + (floor(ghee_px) + 0.5 - ghee_px) * ghee_v0.zw;
     vec4 ghee_t = vec4(0.0);
 GUARD    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_image_tex, ghee_uv);
-    gl_FragColor = vec4(ghee_t.rgb * ghee_NAME_color * ghee_t.a, ghee_t.a) * ghee_NAME_opacity;
+    gl_FragColor = vec4(ghee_t.rgb * ghee_NAME_color * ghee_t.a, ghee_t.a) * ghee_NAME_opacity
+                 * ghee_NAME_alpha;
 }"#;
 
 /// A read of the layer's atlas at UV.
@@ -2107,7 +2167,7 @@ const SLUG_MAIN: &str = r#"void main() {
     float ghee_c = ghee_NAME_outline(float(int(ghee_v1.x + 0.5)), vec2(ivec2(ghee_v1.yz + 0.5)),
                                      ghee_u, ghee_v0.zw);
 COLOUR
-    gl_FragColor = vec4(ghee_rgb, 1.0) * (ghee_c * ghee_NAME_opacity);
+    gl_FragColor = vec4(ghee_rgb, ghee_al) * (ghee_c * ghee_NAME_opacity);
     // On VC4 a shader whose last texture read sits outside an if runs in two
     // threads, whose switch loses the condition flags. A read after ghee's
     // own code that never runs, in an if that the compiler cannot drop,
@@ -2662,6 +2722,13 @@ mod tests {
         }
         let live = image.live(None, "image").unwrap();
         assert_eq!(live.of_text("wifi").unwrap(), json!("wifi"));
+        let live = text.live(None, "color").unwrap();
+        assert_eq!(live.of_text("Navy").unwrap(), json!("Navy"));
+        let gradient = r#"{"from": "red", "to": "transparent"}"#;
+        assert_eq!(
+            live.of_text(gradient).unwrap(),
+            json!({"from": "red", "to": "transparent"})
+        );
         let live = text.live(None, "x").unwrap();
         assert_eq!(
             live.of_text("4").unwrap_err().to_string(),

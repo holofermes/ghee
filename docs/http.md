@@ -44,8 +44,8 @@ later.
   param of that pass. A text layer's words are the scene param of its name:
   `pass=scene&name=title` sets the words of the layer `title`, and ghee lays
   them out again. `value` reads as the param's declared type: a number,
-  `true` or `false`, `#rrggbb` or comma-separated floats for a color,
-  comma-separated floats for a vec, or the words of a string. A color keeps
+  `true` or `false`, `#rrggbb`, a CSS colour name or comma-separated floats
+  for a color, comma-separated floats for a vec, or the words of a string. A color keeps
   the form that `/set` gives it in `GET /scene` and in a save.
 - `POST /set?scene=&layer=&effect=&field=&value=`: sets a live field of a
   layer, with no rebuild, and `effect=` names one of the layer's effects for
@@ -55,8 +55,8 @@ later.
   `text` sets the words, as the scene param of the layer's name does. Any
   other field answers 400 and names the live fields, and so does an unknown
   layer, effect or field. `value` reads as the field takes it: the words for
-  `text`, a number, `true` or `false`, `#rrggbb` or comma-separated floats
-  for a color, a JSON object `{"from", "to", "angle"}` for a text layer's
+  `text`, a number, `true` or `false`, `#rrggbb`, a CSS colour name or
+  comma-separated floats for a color, a JSON object `{"from", "to", "angle"}` for a text layer's
   gradient, the name of an image asset of the scene for `image`, or `none`,
   which centres the block on `x` or `y` and takes `color` back to its
   default.

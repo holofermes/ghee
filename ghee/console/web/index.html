@@ -1277,7 +1277,7 @@ function sendLive(q, scene = active){
 }
 function rebuildSoon(){ clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
 const liveColor = c => c == null ? "none" : isGrad(c) ? JSON.stringify(c) : Array.isArray(c) ? c.join(",") : c;
-const toHex = c => Array.isArray(c) ? rgbToHex(c) : c;
+const toHex = c => Array.isArray(c) || typeof c === "string" ? rgbToHex(c) : c;
 
 function edited(p){ p.layersEdited = true; markDirty(); }
 // Layer d's own key. null leaves the key out, for ghee's default.
@@ -1330,21 +1330,18 @@ function pick(opts, value, set, cls = "ctl"){
   return s;
 }
 // The console's colour control, the swatch alone. `empty` gives the colour a
-// "none" state and a button back to it.
+// "none" state and a button back to it. transparent shows as none.
 function colorCtl(get, set, def, empty){
   const box = el("span", "clr");
   const paint = () => {
     box.innerHTML = "";
     const v = get();
-    if (empty && v == null){
-      const b = el("button", "clrnone", "none");
-      b.type = "button"; b.title = "pick a tint";
-      b.addEventListener("click", () => {
+    if ((empty && v == null) || clear(v)){
+      box.appendChild(noneBtn(empty ? "pick a tint" : "pick a colour", () => {
         set(def); paint();
         const i = box.querySelector("input[type=color]");
         try { i.showPicker(); } catch (e) {}
-      });
-      box.appendChild(b);
+      }));
       return;
     }
     const inp = el("input");
@@ -1764,11 +1761,27 @@ $("#ren").addEventListener("keydown", e => {
 
 const VEC_ARITY = {vec2:2, vec3:3, vec4:4};
 const VEC_AXES = ["x","y","z","w"];
-// a color param holds "#rrggbb" or [r,g,b] floats; the native input speaks #rrggbb
+// a colour holds "#rrggbb", a CSS colour name or [r,g,b] floats; the native
+// input speaks #rrggbb, and the browser's own canvas reads a name
+const cssColour = document.createElement("canvas").getContext("2d");
 function rgbToHex(rgb){
-  if (typeof rgb === "string") return rgb.toLowerCase();
+  if (typeof rgb === "string"){
+    cssColour.fillStyle = "#000000";
+    cssColour.fillStyle = rgb;
+    const c = cssColour.fillStyle;
+    return c.startsWith("#") ? c : "#000000";
+  }
   const h = x => Math.max(0, Math.min(255, Math.round((+x)*255))).toString(16).padStart(2,"0");
   return "#" + h(rgb[0]) + h(rgb[1]) + h(rgb[2]);
+}
+// transparent, in any case, which no swatch shows
+const clear = c => typeof c === "string" && c.toLowerCase() === "transparent";
+// the "none" look of a colour with no swatch, a button that picks one
+function noneBtn(title, pick){
+  const b = el("button", "clrnone", "none");
+  b.type = "button"; b.title = title;
+  b.addEventListener("click", pick);
+  return b;
 }
 // A param name is scene data: it only ever reaches the DOM as text or as an
 // input property, never as markup.
@@ -1844,7 +1857,13 @@ function buildParamRow(box, pm, name, scope){
       pm.value = inp.value;
       send(inp.value);
     });
-    row.appendChild(inp);
+    if (clear(pm.value)){
+      const none = noneBtn("pick a colour", () => {
+        none.replaceWith(inp);
+        try { inp.showPicker(); } catch (e) {}
+      });
+      row.appendChild(none);
+    } else row.appendChild(inp);
     box.appendChild(row);
     return;
   }

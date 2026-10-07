@@ -54,6 +54,14 @@
   `[r, g, b]`, through `GET /scene`, `/set`, a save and a procedural scene's
   values sidecar. The console sends the colour picked in its swatch as
   `#rrggbb`, so it saves as hex.
+- Take CSS's colour names wherever a scene takes a colour, a layer's and an
+  effect's `color`, a gradient's `from` and `to`, and a color param: the 148
+  named colors of CSS Color 4 and `transparent`, in any case, which the
+  scene keeps as written through `GET /scene`, `/set` and a save.
+  `transparent` paints nothing, so letters in it still draw their effects
+  and a gradient to it fades out, and a color param reads it as black. A
+  colour that ghee refuses names every form that it takes, names among
+  them.
 - Refuse a key that ghee does not take anywhere in a scene, where the scene
   loaded and ignored it, and name the key, where it sits, and the closest key
   that ghee takes, or the object that takes it: `"code"` on a layer names its
@@ -248,6 +256,12 @@
   names no layer sets a param, and a field that the scene refuses logs once.
 - Set a string param, and so a text layer's words, from a scene process with
   message kind 3.
+- Take a colour as text in message kind 3, `#rrggbb` or a CSS colour name,
+  for a color param and a layer's colour, and a text layer's gradient as its
+  JSON object, so a name keeps its form and `transparent` its alpha. The
+  Python shim sends a colour name, a layer's colour given as text and a
+  gradient that way, and `ghee.set_param` checks a colour name through the
+  native half of the package.
 - Wait under a fixed `--timestep` for a lockstep scene process to answer
   each tick, so the params and arrays sent for a tick land in that tick's
   frame, where they landed a frame later. Message kind 5 ends an answer,
@@ -289,6 +303,8 @@
   locks every setting that only changes how it draws.
 - Show a colour as its swatch alone, in the Parameters panel too, and a
   number field with no spin buttons.
+- Show a CSS colour name in its swatch as its colour, and `transparent` in
+  the "none" look, which picks a colour when tapped.
 - Keep the shader open or closed under its line as the user left it, one
   choice for every scene, kept in the browser across a reload. A compile
   error opens the shader of the pass that holds it and leaves the choice.

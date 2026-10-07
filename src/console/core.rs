@@ -31,8 +31,8 @@ use serde_json::{Map, Value};
 
 use crate::console::{static_asset, WEB};
 use crate::filters::{filter_defs, rebuild_filters};
-use crate::layer::{Address, Form, Layer, Live};
-use crate::scene::{hex_colour, not_an_image, py_repr, Scene};
+use crate::layer::{Address, Form, Layer, Live, Rgb};
+use crate::scene::{not_an_image, py_repr, Scene};
 
 /// The console's cap on a request body. A POSTed scene is JSON text.
 pub const MAX_BODY: usize = 1 << 20;
@@ -302,8 +302,8 @@ fn py_int(raw: &str) -> Option<i64> {
 
 /// The value set_param expects, from a /set raw query string.
 ///
-/// A "color" is "#rrggbb", which stays as written, or "r,g,b", which gives
-/// three floats. A "vecK" is K comma-separated floats. A "bool" is true or
+/// A "color" is "#rrggbb" or a CSS colour name, which stays as written, or
+/// "r,g,b", which gives three floats. A "vecK" is K comma-separated floats. A "bool" is true or
 /// false (1 or 0), and the scene model demands a real bool. Anything else is
 /// one float. Malformed input errs.
 pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
@@ -321,14 +321,14 @@ pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
             });
     }
     if ptype == "color" {
-        let hex = raw.trim();
-        if crate::scene::hex_colour(hex).is_some() {
-            return Ok(Value::from(hex));
+        let text = raw.trim();
+        if Rgb::from_text(text).is_some() {
+            return Ok(Value::from(text));
         }
         let rgb = floats(raw).ok().filter(|p| p.len() == 3);
         return rgb.map(Value::from).ok_or_else(|| {
             format!(
-                "color needs '#rrggbb' or three comma-separated floats, got {}",
+                "color needs '#rrggbb', a CSS colour name or three comma-separated floats, got {}",
                 py_repr(&Value::from(raw))
             )
         });
@@ -802,8 +802,8 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
 }
 
 /// `raw`, a /set value, as the live field `live` takes it: a number, true or
-/// false, a colour as `#rrggbb`, three comma-separated floats or a gradient
-/// object in JSON, the name of an image asset, or `none` for the default of
+/// false, a colour as `#rrggbb`, a CSS colour name, three comma-separated
+/// floats or a gradient object in JSON, the name of an image asset, or `none` for the default of
 /// a field that takes none.
 fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
     let what = &live.what;
@@ -823,7 +823,7 @@ fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
             .map(|(_, v)| Value::from(*v))
             .ok_or_else(|| format!("{what} needs true or false, got {got}")),
         Form::Colour { gradient, none } => {
-            if hex_colour(s).is_some() {
+            if Rgb::from_text(s).is_some() {
                 return Ok(Value::from(s));
             }
             if gradient && s.starts_with('{') {
@@ -836,10 +836,13 @@ fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
             }
             let forms = match (gradient, none) {
                 (true, true) => {
-                    "'#rrggbb', three comma-separated numbers, a gradient object or none"
+                    "'#rrggbb', a CSS colour name, three comma-separated numbers, a gradient \
+                     object or none"
                 }
-                (false, true) => "'#rrggbb', three comma-separated numbers or none",
-                _ => "'#rrggbb' or three comma-separated numbers",
+                (false, true) => {
+                    "'#rrggbb', a CSS colour name, three comma-separated numbers or none"
+                }
+                _ => "'#rrggbb', a CSS colour name or three comma-separated numbers",
             };
             Err(format!("{what} needs {forms}, got {got}"))
         }
@@ -1291,6 +1294,20 @@ mod tests {
                 "words",
                 None,
                 "color",
+                "DarkOrange",
+                Value::from("DarkOrange"),
+            ),
+            (
+                "words",
+                Some("karaoke"),
+                "color",
+                "transparent",
+                Value::from("transparent"),
+            ),
+            (
+                "words",
+                None,
+                "color",
                 "1,0,0.5",
                 serde_json::json!([1.0, 0.0, 0.5]),
             ),
@@ -1372,20 +1389,20 @@ mod tests {
             ),
             (
                 q("words", None, "color", "1,0"),
-                "layer 'words' color needs '#rrggbb', three comma-separated numbers, a \
-                 gradient object or none, got '1,0'"
+                "layer 'words' color needs '#rrggbb', a CSS colour name, three comma-separated \
+                 numbers, a gradient object or none, got '1,0'"
                     .to_string(),
             ),
             (
                 q("icon", None, "color", r#"{"from": [1, 0, 0]}"#),
-                "layer 'icon' color needs '#rrggbb', three comma-separated numbers or none, \
-                 got '{\"from\": [1, 0, 0]}'"
+                "layer 'icon' color needs '#rrggbb', a CSS colour name, three comma-separated \
+                 numbers or none, got '{\"from\": [1, 0, 0]}'"
                     .to_string(),
             ),
             (
                 q("words", some, "color", "none"),
-                "layer 'words' karaoke color needs '#rrggbb' or three comma-separated \
-                 numbers, got 'none'"
+                "layer 'words' karaoke color needs '#rrggbb', a CSS colour name or three \
+                 comma-separated numbers, got 'none'"
                     .to_string(),
             ),
             (
@@ -1472,7 +1489,8 @@ mod tests {
             ),
             (
                 vec![("pass", "0"), ("name", "c"), ("value", "1,0")],
-                "color needs '#rrggbb' or three comma-separated floats, got '1,0'",
+                "color needs '#rrggbb', a CSS colour name or three comma-separated floats, got \
+                 '1,0'",
             ),
             (
                 vec![("pass", "0"), ("name", "on"), ("value", "yes")],
@@ -1930,30 +1948,32 @@ mod tests {
             ("bool", "0.0", Err("bool needs true or false, got '0.0'")),
             ("color", "1,0,0.5", Ok(json!([1.0, 0.0, 0.5]))),
             ("color", " #0A0b0C ", Ok(json!("#0A0b0C"))),
+            ("color", " NavY ", Ok(json!("NavY"))),
+            ("color", "transparent", Ok(json!("transparent"))),
             (
                 "color",
                 "1,0",
-                Err("color needs '#rrggbb' or three comma-separated floats, got '1,0'"),
+                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '1,0'"),
             ),
             (
                 "color",
                 "1,0,0,0",
-                Err("color needs '#rrggbb' or three comma-separated floats, got '1,0,0,0'"),
+                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '1,0,0,0'"),
             ),
             (
                 "color",
                 "1,x,0",
-                Err("color needs '#rrggbb' or three comma-separated floats, got '1,x,0'"),
+                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '1,x,0'"),
             ),
             (
                 "color",
                 "#ff80",
-                Err("color needs '#rrggbb' or three comma-separated floats, got '#ff80'"),
+                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '#ff80'"),
             ),
             (
                 "color",
                 "#ff800g",
-                Err("color needs '#rrggbb' or three comma-separated floats, got '#ff800g'"),
+                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '#ff800g'"),
             ),
             ("vec2", "0.1,0.2", Ok(json!([0.1, 0.2]))),
             ("vec3", "1,0,0.5", Ok(json!([1.0, 0.0, 0.5]))),

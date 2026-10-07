@@ -6,7 +6,7 @@
 //! raises in the scene process, as it does on a handle.
 
 use ghee::console::server::coerce;
-use ghee::layer::{Address, Color, Form, Rgb};
+use ghee::layer::{Address, Form, Rgb};
 use ghee::scene::{ParamValue, Scene};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
@@ -21,6 +21,12 @@ use crate::{fault, to_json};
 pub struct LayerWire {
     scene: Scene,
     index: Index,
+}
+
+/// True for a CSS colour name, in any case, `transparent` too.
+#[pyfunction]
+pub fn _colour_name(text: &str) -> bool {
+    ghee::css::named(text).is_some()
 }
 
 /// The body of a message: the floats of kind 1, or the text of kind 3.
@@ -64,18 +70,19 @@ impl LayerWire {
             None => format!("{layer}.{field}"),
         };
         let floats = match (live.form, value) {
-            (Form::Image, Value::String(name)) => return Ok((wire, Body::Text(name.clone()))),
+            // A colour's text keeps its form, and transparent its alpha.
+            (Form::Image | Form::Colour { .. }, Value::String(text)) => {
+                return Ok((wire, Body::Text(text.clone())))
+            }
+            // A gradient goes as its JSON, so its ends keep theirs.
+            (Form::Colour { .. }, v @ Value::Object(_)) => {
+                return Ok((wire, Body::Text(v.to_string())))
+            }
             (_, Value::Null) => vec![],
             (Form::Flag, v) => vec![if v.as_bool() == Some(true) { 1.0 } else { 0.0 }],
-            (Form::Colour { .. }, v) => match (Rgb::from_json(v), set.as_text()) {
-                (Some(c), _) => c.rgb.to_vec(),
-                (None, Some(text)) => match text.color {
-                    Color::Gradient { from, to, angle } => {
-                        [&from.rgb[..], &to.rgb, &[angle]].concat()
-                    }
-                    Color::Solid(c) => c.rgb.to_vec(),
-                },
-                (None, None) => unreachable!("an image layer took its tint as one colour"),
+            (Form::Colour { .. }, v) => match Rgb::from_json(v) {
+                Some(c) => c.rgb.to_vec(),
+                None => unreachable!("the layer took the colour"),
             },
             (_, v) => vec![v.as_f64().expect("the layer took a number")],
         };

@@ -24,7 +24,7 @@ use std::fs;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
-use crate::layer::{is_image_file, Address, Form, Layer, Rgb, TextLayer};
+use crate::layer::{is_image_file, Address, Form, Layer, Rgb, TextLayer, COLOUR_FORMS};
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
 
@@ -614,11 +614,10 @@ impl Param {
                 PARAM_TYPES.join(", ")
             );
         }
-        // A color is "#rrggbb" or [r, g, b], each 0..1.
         let stored = if ty == "color" {
             let Some(rgb) = Rgb::from_json(&value) else {
                 bail!(
-                    "color param '{name}' needs '#rrggbb' or three numbers [r, g, b], got {}",
+                    "color param '{name}' needs {COLOUR_FORMS}, got {}",
                     py_repr(&value)
                 );
             };
@@ -721,7 +720,7 @@ impl Param {
 
     /// [r, g, b], each 0..1. It reaches a pass as a vec3.
     pub fn color(name: &str, rgb: [f64; 3]) -> Param {
-        Param::plain(name, "color", ParamValue::Color(Rgb { rgb, hex: false }))
+        Param::plain(name, "color", ParamValue::Color(Rgb::numbers(rgb)))
     }
 
     /// The value count sets the type. 2 numbers are a vec2, 3 a vec3, 4 a vec4.
@@ -2843,7 +2842,7 @@ mod tests {
     }
 
     #[test]
-    fn a_color_param_takes_hex_or_three_numbers_and_writes_back_the_form_it_came_in() {
+    fn a_color_param_takes_hex_a_name_or_three_numbers_and_writes_back_the_form_it_came_in() {
         // Each hex pair is a byte, and the channel is byte / 255.
         for (value, want, written) in [
             (
@@ -2861,6 +2860,13 @@ mod tests {
                 [1.0, 0.5, 0.25],
                 json!([1.0, 0.5, 0.25]),
             ),
+            // CSS's darkorange is #ff8c00, and transparent is black.
+            (
+                json!("DarkOrange"),
+                [1.0, 140.0 / 255.0, 0.0],
+                json!("DarkOrange"),
+            ),
+            (json!("transparent"), [0.0; 3], json!("transparent")),
         ] {
             let d = json!({"type": "color", "value": value});
             let p = Param::from_dict("tint", &d).unwrap();
@@ -2968,31 +2974,32 @@ mod tests {
             // a param
             (
                 param("color", json!([0.1, 0.2])),
-                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got \
-                 [0.1, 0.2]"
+                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                 [r, g, b], got [0.1, 0.2]"
                     .to_string(),
             ),
             (
-                param("color", json!("red")),
-                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got 'red'"
+                param("color", json!("rde")),
+                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                 [r, g, b], got 'rde'"
                     .to_string(),
             ),
             (
                 param("color", json!([0.1, 0.2, "x"])),
-                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got \
-                 [0.1, 0.2, 'x']"
+                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                 [r, g, b], got [0.1, 0.2, 'x']"
                     .to_string(),
             ),
             (
                 param("color", json!("#ff80")),
-                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got \
-                 '#ff80'"
+                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                 [r, g, b], got '#ff80'"
                     .to_string(),
             ),
             (
                 param("color", json!("ff8000")),
-                "pass 'm': color param 'g' needs '#rrggbb' or three numbers [r, g, b], got \
-                 'ff8000'"
+                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                 [r, g, b], got 'ff8000'"
                     .to_string(),
             ),
             (

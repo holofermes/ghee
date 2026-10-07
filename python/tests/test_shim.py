@@ -571,6 +571,19 @@ def test_a_color_written_hex_goes_out_as_three_floats(monkeypatch):
     assert messages(rest) == [(1, "tint", list(f32)), END]
 
 
+def test_a_color_written_as_a_name_goes_out_as_text(monkeypatch):
+    """kind 3: the name as written, which ghee keeps."""
+    shim = load()
+
+    @shim.tick
+    def hook(tick):
+        shim.set_param("tint", "Navy")
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
+    assert messages(rest) == [(3, "tint", "Navy"), END]
+
+
 def test_a_string_param_goes_out_as_text(monkeypatch):
     """kind 3: the UTF-8 bytes, and the count is their length."""
     shim = load()
@@ -779,11 +792,24 @@ REFUSED = [
     (("gain", True), "float param 'gain' needs a number, got True"),
     (
         ("tint", [1.0, 0.0]),
-        "color param 'tint' needs '#rrggbb' or three numbers [r, g, b], got [1.0, 0.0]",
+        (
+            "color param 'tint' needs '#rrggbb', a CSS colour name or three numbers "
+            "[r, g, b], got [1.0, 0.0]"
+        ),
     ),
     (
         ("tint", "#ff80"),
-        "color param 'tint' needs '#rrggbb' or three numbers [r, g, b], got '#ff80'",
+        (
+            "color param 'tint' needs '#rrggbb', a CSS colour name or three numbers "
+            "[r, g, b], got '#ff80'"
+        ),
+    ),
+    (
+        ("tint", "navyy"),
+        (
+            "color param 'tint' needs '#rrggbb', a CSS colour name or three numbers "
+            "[r, g, b], got 'navyy'"
+        ),
     ),
     (("words", 3), "string param 'words' needs a string, got 3"),
     (("on", "yes", "main"), "bool param 'main.on' needs true or false, got 'yes'"),
@@ -824,21 +850,25 @@ def test_a_layer_set_goes_out_in_the_form_of_its_field(monkeypatch):
         shim.layers.title.y = None
         shim.layers["title"]["karaoke"]["sung"] = 2.5
         shim.layers.title.karaoke.visible = False
+        shim.layers.title.color = [1, 0, 0]
         shim.layers.title.color = "#ff0000"
-        shim.layers.title.color = {"from": [0, 0, 1], "to": "#00ff00"}
+        shim.layers.title.color = "Transparent"
+        shim.layers.title.color = {"from": [0, 0, 1], "to": "navy"}
         shim.layers.title.text = "ho"
         shim.layers.icon.image = "b"
 
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     _, rest = drive(shim, layered(shim), ticks, monkeypatch)
-    # a gradient with no angle takes CSS's, 180 degrees, top to bottom
+    # a colour written as text, a gradient as its JSON, keeps its form
     assert messages(rest) == [
         (1, "title.x", [10.0]),
         (1, "title.y", []),
         (1, "title.karaoke.sung", [2.5]),
         (1, "title.karaoke.visible", [0.0]),
         (1, "title.color", [1.0, 0.0, 0.0]),
-        (1, "title.color", [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 180.0]),
+        (3, "title.color", "#ff0000"),
+        (3, "title.color", "Transparent"),
+        (3, "title.color", '{"from":[0,0,1],"to":"navy"}'),
         (3, "title", "ho"),
         (3, "icon.image", "b"),
         END,

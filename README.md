@@ -836,6 +836,20 @@ ghee overlay st7789                   # take the kernel route instead
 `kms` is any connected KMS display: HDMI, or an SPI/I2C panel with a kernel
 driver. `ghee displays` lists the cards, and `--dri` picks one.
 
+`--rotate` turns the frame clockwise on the GPU, by 90, 180 or 270 degrees,
+on its way to every output: the display, the files, the raw frames and the
+console's video. At 90 and 270 the scene renders at the output's size turned,
+so a 128x32 panel gives the scene 32x128. `--brightness` sets a KMS display's
+backlight from 0 to 1, through the backlight device that the kernel
+registered for it, and a display with no backlight device refuses it. On a panel under the
+kernel's ssd130x driver, the backlight sets the panel's contrast.
+
+Show the `stats` demo on a panel mounted upside down, its backlight at 0.5:
+
+```
+ghee render --demo stats --display kms --rotate 180 --brightness 0.5
+```
+
 Take the kernel route for a panel where you can. On a Pi Zero W at 240x240,
 the `hero` demo renders 44% more fps through the kernel than through the
 userspace `st7789` driver, at 40% less CPU. The kernel drives a range of SPI
@@ -851,6 +865,23 @@ dtparam=dc-gpio=25,backlight-gpio=26
 dtparam=write-only
 wrote panel.bin. Copy it to /lib/firmware/panel.bin, add the lines above to
 /boot/firmware/config.txt, and reboot
+```
+
+`ghee overlay ssd1306` needs the panel's `height`, 32 or 64. `address` takes
+the panel's I2C address, 0x3C by default, and `speed` the bus rate in Hz,
+1000000 by default. The rate line sets the whole of I2C bus 1, every device
+on it included. On a Pi 5, a 128x32 SSD1306 reaches about 216 fps at 1 MHz
+and about 86 at 400 kHz, and above 1 MHz the Pi 5's I2C controller slows it
+to about 43.
+
+Write the setup of a 128x32 SSD1306 at the default address:
+
+```
+$ ghee overlay ssd1306 --display-opts height=32
+dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=1000000
+dtoverlay=ssd1306,height=32,inverted,sequential
+add the lines above to /boot/firmware/config.txt, and reboot
 ```
 
 ghee also carries two userspace panel drivers: `st7789`, for a 135x240 SPI

@@ -57,6 +57,9 @@ const MAX_PASSES: usize = 16;
 /// The engine's time step until set_dt() sets one.
 const DT: f64 = 1.0 / 60.0;
 
+/// The engine asset of the texture of curves that the slug layers share.
+const GLYPHS: &str = "ghee_glyphs";
+
 /// error_pass for a compile error in the scene's common block.
 /// A pass error reports the pass index.
 pub const COMMON_PASS: &str = "common";
@@ -179,6 +182,8 @@ struct LayerBatches {
     /// The phase of each of the layer's effects that moves by one, as the
     /// frames advanced it.
     phases: std::cell::RefCell<Vec<(Kind, f64)>>,
+    /// True while the batch reads the curves of its glyphs from GLYPHS.
+    shared: std::cell::Cell<bool>,
 }
 
 /// Consecutive shape layers of a pass with one blend, which one batch draws
@@ -610,6 +615,12 @@ pub struct Renderer {
     /// pass that calls `<name>_cover`, or a slug layer. Any other layer lays
     /// out with no such texture.
     curves: HashSet<String>,
+    /// The layers whose `<name>_cover` a pass reads, which lay out into a
+    /// texture of their own, with its grid. A slug layer that no pass reads
+    /// lays out into GLYPHS.
+    covered: HashSet<String>,
+    /// The outlines that the layouts read, and the texture of GLYPHS.
+    glyphs: std::cell::RefCell<text::Glyphs>,
     /// The colour atlas of each drawn layer whose words held colour glyphs,
     /// by the layer's name.
     colours: std::cell::RefCell<HashMap<String, ColourAtlas>>,
@@ -634,6 +645,9 @@ pub struct Renderer {
     /// The layouts run by set_text, for a test to count.
     #[cfg(test)]
     layouts: std::cell::Cell<usize>,
+    /// The bytes of GLYPHS handed to the engine, for a test to count.
+    #[cfg(test)]
+    glyph_bytes: std::cell::Cell<usize>,
     rgb: Vec<u8>,
     handle: *mut ffi::GheeScene,
 }
@@ -684,6 +698,8 @@ impl Renderer {
             file_count: std::cell::Cell::new(0),
             shapes_kept: std::cell::Cell::new(false),
             curves: HashSet::new(),
+            covered: HashSet::new(),
+            glyphs: std::cell::RefCell::new(text::Glyphs::default()),
             colours: std::cell::RefCell::new(HashMap::new()),
             pinned: std::cell::Cell::new(None),
             drawn_at: std::cell::Cell::new(0.0),
@@ -695,6 +711,8 @@ impl Renderer {
             shader_lerp: false,
             #[cfg(test)]
             layouts: std::cell::Cell::new(0),
+            #[cfg(test)]
+            glyph_bytes: std::cell::Cell::new(0),
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
             handle: ptr::null_mut(),
         };
@@ -1000,6 +1018,7 @@ impl Renderer {
                     boxes: -1,
                     name: l.name().to_string(),
                     phases: std::cell::RefCell::new(Vec::new()),
+                    shared: std::cell::Cell::new(false),
                 });
             }
             // A test's batches draw after the layers of their pass.
@@ -1103,10 +1122,15 @@ impl Renderer {
         self.held.borrow_mut().clear();
         self.words.borrow_mut().clear();
         self.curves.clear();
+        self.covered.clear();
+        *self.glyphs.borrow_mut() = text::Glyphs::default();
         for l in scene.text_layers() {
             let tex = CString::new(text::internal(&l.name, "_curves_tex"))?;
             let slug = l.render == Render::Slug && self.layers.iter().any(|d| d.name == l.name);
-            if slug || unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
+            if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
+                self.covered.insert(l.name.clone());
+            }
+            if slug || self.covered.contains(&l.name) {
                 self.curves.insert(l.name.clone());
             }
         }
@@ -1576,6 +1600,48 @@ impl Renderer {
         Ok(unsafe { ffi::ghee_mp_set_uniform(self.handle, idx, cp.as_ptr()) })
     }
 
+    /// set_uniform() on the program of pass `idx` alone, and on none of its
+    /// batches.
+    fn set_pass_uniform(&self, idx: c_int, name: &str, ptype: &str, value: Value) -> Result<bool> {
+        let mut cp = create_c_parameter(ptype, &value)?;
+        cp.set_c_name(name)?;
+        Ok(unsafe { ffi::ghee_mp_set_pass_uniform(self.handle, idx, cp.as_ptr()) })
+    }
+
+    /// Upload the rows of GLYPHS that changed since the last upload. A
+    /// texture that grew goes up whole, and every layer that reads it takes
+    /// its new height.
+    fn send_glyphs(&self) -> Result<()> {
+        let mut glyphs = self.glyphs.borrow_mut();
+        let Some(c) = glyphs.changed() else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        self.glyph_bytes
+            .set(self.glyph_bytes.get() + c.texels.len());
+        if c.height > glyphs.rows() {
+            self.set_asset(
+                GLYPHS,
+                c.width,
+                c.height,
+                4,
+                false,
+                AssetData::U8(&c.texels),
+            )?;
+            self.scene_asset(GLYPHS);
+            for d in self.layers.iter().filter(|d| d.shared.get()) {
+                for (suffix, v) in text::Glyphs::uniforms(c.height) {
+                    let own = text::internal(GLSL_NAME, suffix);
+                    self.set_layer_uniform(d, &own, "float", Value::from(v))?;
+                }
+            }
+        } else {
+            self.set_asset_rows(GLYPHS, c.first, c.width, &c.texels)?;
+        }
+        glyphs.took();
+        Ok(())
+    }
+
     /// Set one scene-scoped uniform on every pass live, with no recompile.
     ///
     /// A scene param sits in every pass's preamble, so the set reaches every
@@ -1617,10 +1683,14 @@ impl Renderer {
         }
         #[cfg(test)]
         self.layouts.set(self.layouts.get() + 1);
-        let laid = match self.curves.contains(name) {
-            true => layer.build(words)?,
-            false => layer.place(words)?,
+        let curves = match self.curves.contains(name) {
+            false => text::Curves::None,
+            true if layer.render == Render::Slug && !self.covered.contains(name) => {
+                text::Curves::Shared
+            }
+            true => text::Curves::Own,
         };
+        let laid = layer.lay_out(words, curves, &mut self.glyphs.borrow_mut())?;
         self.held.borrow_mut().remove(name);
         if laid.built.is_some() {
             if let Some(i) = self.atlas_of(name) {
@@ -2286,6 +2356,7 @@ impl Renderer {
             boxes: -1,
             name: l.name.clone(),
             phases: std::cell::RefCell::new(Vec::new()),
+            shared: std::cell::Cell::new(false),
         };
         self.put_drawn(pass_name, index, dl);
         self.run_quads(&self.runs[r])
@@ -2310,6 +2381,7 @@ impl Renderer {
             boxes: -1,
             name: l.name.clone(),
             phases: std::cell::RefCell::new(Vec::new()),
+            shared: std::cell::Cell::new(false),
         };
         for (u, ty, value) in Layer::Image(l.clone()).uniforms() {
             self.set_layer_uniform(&dl, &u, ty, value)?;
@@ -2398,6 +2470,7 @@ impl Renderer {
             boxes,
             name: l.name.clone(),
             phases: std::cell::RefCell::new(Vec::new()),
+            shared: std::cell::Cell::new(false),
         };
         for (u, ty, value) in l.uniforms() {
             self.set_layer_uniform(&dl, &u, ty, value)?;
@@ -2521,7 +2594,18 @@ impl Renderer {
         self.text_faults(layer, &faults, true);
         // A layout with no texture of curves leaves the texture alone.
         let drawn = self.layers.iter().find(|d| d.name == *name);
-        if built.width > 0 {
+        if built.shared {
+            self.send_glyphs()?;
+            if let Some(d) = drawn.filter(|d| !d.shared.get()) {
+                self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_curves"), GLYPHS)?;
+                d.shared.set(true);
+                let rows = self.glyphs.borrow().rows();
+                for (suffix, v) in text::Glyphs::uniforms(rows) {
+                    let own = text::internal(GLSL_NAME, suffix);
+                    self.set_layer_uniform(d, &own, "float", Value::from(v))?;
+                }
+            }
+        } else if built.width > 0 {
             let curves = text::internal(name, "_curves");
             self.set_asset(
                 &curves,
@@ -2534,12 +2618,15 @@ impl Renderer {
             self.scene_asset(&curves);
             if let Some(d) = drawn {
                 self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_curves"), &curves)?;
+                d.shared.set(false);
             }
         }
+        // The names of a layer reach the passes alone: a layer's batches
+        // read their own under GLSL_NAME.
         for (suffix, v) in &built.uniforms {
             let uniform = text::internal(name, suffix);
             for (_, idx) in &self.mp {
-                self.set_uniform(*idx, &uniform, "float", Value::from(*v))?;
+                self.set_pass_uniform(*idx, &uniform, "float", Value::from(*v))?;
             }
             if let Some(d) = drawn {
                 let own = text::internal(GLSL_NAME, suffix);
@@ -2548,7 +2635,7 @@ impl Renderer {
         }
         let size = Value::from(built.size.to_vec());
         for (_, idx) in &self.mp {
-            self.set_uniform(*idx, &format!("{name}_size"), "vec2", size.clone())?;
+            self.set_pass_uniform(*idx, &format!("{name}_size"), "vec2", size.clone())?;
         }
         if let Some(d) = drawn {
             let own = text::internal(GLSL_NAME, "_size");
@@ -3395,6 +3482,7 @@ impl Renderer {
         self.words.borrow_mut().clear();
         self.atlases.borrow_mut().clear();
         self.colours.borrow_mut().clear();
+        *self.glyphs.borrow_mut() = text::Glyphs::default();
     }
 
     pub fn close(&mut self) {
@@ -4091,11 +4179,11 @@ mod tests {
         let cache = crate::testing::TempDir::new("engine-curves");
         let (_g, mut r) = gpu();
         r.atlas_cache = Some(cache.join("atlas"));
-        // An MTSDF layer, a pass that reads the words, and a slug layer.
+        // An MTSDF layer, a slug layer, and a pass that reads the words.
         for (code, render, reads) in [
             (black, "mtsdf", false),
-            (pass_reads, "mtsdf", true),
             (black, "slug", true),
+            (pass_reads, "mtsdf", true),
         ] {
             let layer = json!({"name": "t", "text": "AV", "font_size": 20, "render": render,
                                "font_family": "DejaVuSans-ASCII.ttf"});
@@ -4108,7 +4196,8 @@ mod tests {
             .unwrap();
             sc.load_assets(fonts).unwrap();
             assert_eq!(r.setup(&sc).unwrap(), "");
-            let held = r.scene_assets.borrow().iter().any(|n| n == "ghee_t_curves");
+            let assets = r.scene_assets.borrow();
+            let held = assets.iter().any(|n| n == "ghee_t_curves" || n == GLYPHS);
             assert_eq!(held, reads, "{code} {render}");
         }
     }
@@ -5883,6 +5972,27 @@ mod tests {
         let left = still(&mut r);
         assert_eq!(r.setup(&cover_scene("I\nIIIIII", "right")).unwrap(), "");
         assert!(still(&mut r) != left);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn slug_words_of_glyphs_that_the_renderer_holds_read_no_outline_and_upload_nothing() {
+        let layer = json!({"name": "t", "text": "0123456789", "font_family": "pixel",
+                           "font_size": 8});
+        let sc = scene_of(json!([{"name": "main", "code": FLAT, "layers": [layer]}]));
+        let (_g, mut r) = gpu();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let held = || (r.glyph_bytes.get(), r.glyphs.borrow().reads);
+        let (sent, read) = held();
+        assert!(sent > 0 && read == 10, "{sent} bytes, {read} outlines");
+        for k in 0..100 {
+            assert!(r.set_text("t", &format!("{:02}", k * 37 % 100)).unwrap());
+        }
+        assert_eq!(held(), (sent, read));
+        // New glyphs read their outlines and upload their rows.
+        assert!(r.set_text("t", "AB").unwrap());
+        assert!(r.glyph_bytes.get() > sent);
+        assert_eq!(r.glyphs.borrow().reads, read + 2);
     }
 
     #[test]

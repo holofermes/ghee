@@ -97,6 +97,11 @@ extern "C" {
         src_pass: c_int,
     ) -> bool;
     pub fn ghee_mp_set_uniform(g: *mut GheeScene, pass: c_int, param: *const Parameter) -> bool;
+    pub fn ghee_mp_set_pass_uniform(
+        g: *mut GheeScene,
+        pass: c_int,
+        param: *const Parameter,
+    ) -> bool;
     pub fn ghee_mp_declare_array(g: *mut GheeScene, pass: c_int, name: *const c_char) -> c_int;
     pub fn ghee_mp_set_array(
         g: *mut GheeScene,

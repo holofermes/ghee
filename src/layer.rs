@@ -946,19 +946,37 @@ impl TextLayer {
         self.lay(words, false)
     }
 
+    /// Lay out `words` into the texture of curves `curves`, with the
+    /// outlines and the shared texture of `glyphs`. Fails when the fonts
+    /// were never loaded.
+    pub fn lay_out(
+        &self,
+        words: &str,
+        curves: text::Curves,
+        glyphs: &mut text::Glyphs,
+    ) -> Result<Layout> {
+        let fonts = self.fonts(self.loaded()?, words);
+        Ok(glyphs.lay(&fonts, words, self.text_align, curves))
+    }
+
     fn lay(&self, words: &str, curves: bool) -> Result<Layout> {
-        let Some(own) = &self.data else {
-            bail!(
-                "layer '{}': {} was never loaded, the scene was built without a directory",
-                self.name,
-                self.font_name(0)
-            );
-        };
-        let fonts = self.fonts(own, words);
+        let fonts = self.fonts(self.loaded()?, words);
         Ok(match curves {
             true => text::build(&fonts, words, self.text_align),
             false => text::place(&fonts, words, self.text_align),
         })
+    }
+
+    /// The layer's own fonts, or why a layout has none.
+    fn loaded(&self) -> Result<&[Font]> {
+        match &self.data {
+            Some(own) => Ok(own),
+            None => bail!(
+                "layer '{}': {} was never loaded, the scene was built without a directory",
+                self.name,
+                self.font_name(0)
+            ),
+        }
     }
 
     /// The fonts that draw `words`: the layer's own fonts `own`, then the

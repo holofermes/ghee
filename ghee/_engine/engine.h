@@ -87,6 +87,9 @@ int  ghee_mp_commit(GheeScene *g);   // -> pass count, -1 = nothing pending
 void ghee_mp_abort(GheeScene *g);
 bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);
 bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param);
+// Set the uniform `param` on the program of committed pass `pass` alone, and
+// on none of its batches. false when that program does not read it.
+bool ghee_mp_set_pass_uniform(GheeScene *g, int pass, const parameter_t *param);
 // Set the uniform float array `name` of a committed pass. ghee binds no
 // uniform array of its own: VC4 caps the size of a uniform array that a
 // shader indexes with a variable, so a scene's arrays are textures, filled by

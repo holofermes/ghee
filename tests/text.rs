@@ -2170,6 +2170,45 @@ fn words_that_fit_no_texture_draw_nothing_at_setup_keep_the_last_words_later_and
     }
 }
 
+/// Two slug layers in the pixel font, `a` over `b`, on a black pass.
+fn pixel_pair(a: &str, b: &str) -> Scene {
+    let layer = |name: &str, words: &str, y: i32| {
+        json!({"name": name, "text": words, "font_family": "pixel", "font_size": 8,
+               "x": 0, "y": y})
+    };
+    let doc = json!({"version": 1, "passes": [{"name": "main",
+        "code": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+        "layers": [layer("a", a, 0), layer("b", b, 12)]}]});
+    Scene::from_dict(&doc, None, None).unwrap()
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn slug_words_changed_many_times_draw_what_a_scene_built_with_them_draws() {
+    // The slug layers of a renderer share one texture of their glyphs,
+    // which grows as words bring new glyphs. Layer b's words walk the
+    // printable ASCII and back, so the texture takes new glyphs within its
+    // rows and grows several times under layer a, whose words stay. A
+    // second renderer builds the scene afresh at each step.
+    let printable: Vec<char> = (' '..='~').collect();
+    let mut steps: Vec<String> = printable.chunks(5).map(String::from_iter).collect();
+    steps.extend(steps.clone().into_iter().rev().step_by(3));
+    let (_g, mut r) = gpu(256, 24);
+    let mut fresh = probe_dri_devices()
+        .iter()
+        .find_map(|d| Renderer::new(256, 24, 4, Some(d), false, false).ok())
+        .unwrap();
+    render(&mut r, &pixel_pair("AV 42", "x"));
+    for words in &steps {
+        assert!(r.set_text("b", words).unwrap());
+        r.set_time(Some(0.0));
+        let changed = r.render(None).unwrap().to_vec();
+        let built = render(&mut fresh, &pixel_pair("AV 42", words));
+        assert!(!blank(&built, 0), "{words:?}");
+        assert!(changed == built, "{words:?}");
+    }
+}
+
 // Layers
 
 /// Quad `i`'s vertex `v`: glyph_a0 to glyph_a3.

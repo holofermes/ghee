@@ -1581,6 +1581,12 @@ bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
     return any;
 }
 
+bool ghee_mp_set_pass_uniform(GheeScene *g, int pass, const parameter_t *param) {
+    if (pass < 0 || pass >= g->mp_count) return false;
+    make_current(g);
+    return program_uniform(g->mp_program[pass], param);
+}
+
 // Set the uniform float array `name` of a committed pass. A scene's arrays
 // are textures, filled by ghee_mp_set_array, since VC4 caps the size of a
 // uniform array that a shader indexes with a variable.

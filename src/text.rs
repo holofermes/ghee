@@ -53,8 +53,8 @@
 //! left, every character draws an error box. Words that fit no texture leave
 //! the last words that did.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Weak};
 
 use anyhow::{anyhow, bail, Result};
 use sha2::{Digest, Sha256};
@@ -269,6 +269,9 @@ pub struct Built {
     pub glyphs: Vec<Placement>,
     /// The colour glyphs, for a layer's colour batch.
     pub colour: Vec<Placement>,
+    /// True when the glyph data that the quads name lies in the texture of
+    /// a Glyphs, and this Built holds no texels.
+    pub shared: bool,
 }
 
 /// A glyph of a font, placed in the block.
@@ -432,6 +435,7 @@ impl ttf_parser::OutlineBuilder for Outline {
 type Curve = [[u16; 2]; 3];
 
 /// A glyph's outline on its lattice.
+#[derive(Clone)]
 struct Glyph {
     /// The box, quantized as the shader decodes it.
     min: [f64; 2],
@@ -949,30 +953,65 @@ fn curve_texels(c: &Curve) -> [[u8; 4]; 2] {
 /// bottom left, and the size.
 type Packed = (usize, [f64; 2], [f64; 2]);
 
+/// The texture of curves that a layout packs its glyphs into.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Curves {
+    /// None: the layout of a text that the MTSDF fill alone draws. Its Built
+    /// holds no texels, no uniforms and no glyph quads.
+    None,
+    /// A texture of the layout's own, with the grid that `<name>_cover`
+    /// reads.
+    Own,
+    /// The texture of a Glyphs, which needs no grid, or a texture of the
+    /// layout's own when the glyphs do not fit it.
+    Shared,
+}
+
 /// Lay out `words` in `fonts`, in order, and pack glyphs and grid into
 /// texels. A font that failed to load or to parse drops out with a fault.
 pub fn build(fonts: &[Font], words: &str, align: Align) -> Layout {
-    lay(fonts, words, align, true)
+    lay(fonts, words, align, Curves::Own, None)
 }
 
 /// Lay out `words` as build() does, with no texture of curves: the layout
 /// of a text that the MTSDF fill alone draws. Its Built holds no texels, no
 /// uniforms and no glyph quads.
 pub fn place(fonts: &[Font], words: &str, align: Align) -> Layout {
-    lay(fonts, words, align, false)
+    lay(fonts, words, align, Curves::None, None)
 }
 
-/// build() when `curves` holds, place() otherwise.
-fn lay(fonts: &[Font], words: &str, align: Align, curves: bool) -> Layout {
+/// The outline of a glyph, or why it draws none.
+type Read = std::result::Result<Option<Glyph>, String>;
+
+/// Lay out `words` into the texture `curves`, reading each outline, and
+/// each glyph's data at BANDS bands, through `glyphs` when given.
+fn lay(
+    fonts: &[Font],
+    words: &str,
+    align: Align,
+    curves: Curves,
+    mut glyphs: Option<&mut Glyphs>,
+) -> Layout {
     let faces = faces(fonts);
     let (mut placed, width, height) = layout(&faces, words, align);
-    let (glyphs, mut faults) = settle(
+    let keys: Vec<Option<usize>> = match glyphs.as_deref_mut() {
+        Some(g) => fonts.iter().map(|f| g.font_key(f)).collect(),
+        None => vec![None; fonts.len()],
+    };
+    let read = |f: usize, gid: u16| -> Read {
+        faces[f]
+            .as_ref()
+            .map_or(Ok(None), |face| glyph(face, GlyphId(gid)))
+    };
+    let (inks, mut faults) = settle(
         &mut placed,
-        curves,
-        |f, gid| {
-            faces[f]
-                .as_ref()
-                .map_or(Ok(None), |face| glyph(face, GlyphId(gid)))
+        curves != Curves::None,
+        |f, gid| match (glyphs.as_deref_mut(), keys[f]) {
+            (Some(g), Some(k)) => match g.outlines.get(&(k, gid)) {
+                Some(got) => got.clone(),
+                None => g.keep_outline((k, gid), read(f, gid)),
+            },
+            _ => read(f, gid),
         },
         |f, gid| {
             faces[f]
@@ -990,7 +1029,40 @@ fn lay(fonts: &[Font], words: &str, align: Align, curves: bool) -> Layout {
         });
     let failed: Vec<Fault> = failed.map(Fault::Font).collect();
     faults.splice(0..0, failed);
-    finish(&placed, &glyphs, faults, width, height, curves)
+    // A glyph's key in `glyphs`: the index of its font's content and its
+    // glyph id, None for the error box.
+    let key = |ink: Ink| match ink {
+        Ink::Glyph(f, gid) => keys[f].map(|k| Some((k, gid))),
+        _ => Some(None),
+    };
+    let packed = match curves {
+        Curves::None => Ok(boxes_alone(&placed, &inks, height)),
+        Curves::Own | Curves::Shared => {
+            let mut blocks: HashMap<Ink, Arc<Block>> = HashMap::new();
+            for (ink, g) in &inks {
+                let made = match (glyphs.as_deref_mut(), key(*ink)) {
+                    (Some(store), Some(k)) => store.block(k, g),
+                    _ => Block::of(g, BANDS).map(Arc::new),
+                };
+                if let Some(b) = made {
+                    blocks.insert(*ink, b);
+                }
+            }
+            // The texture of the Glyphs takes the words that a texture of
+            // their own packs at BANDS bands, so they draw the same.
+            let shared = match (curves, glyphs) {
+                (Curves::Shared, Some(store)) if fits(&placed, &inks, &blocks) => {
+                    store.share(&placed, &inks, &blocks, key, height)
+                }
+                _ => None,
+            };
+            match shared {
+                Some(built) => Ok(built),
+                None => pack_fitting(&placed, &inks, &blocks, height),
+            }
+        }
+    };
+    finish(&placed, packed, faults, width, height)
 }
 
 /// Settle what each placed character draws. `outline` reads the outline of
@@ -1006,7 +1078,6 @@ fn settle(
     mut outline: impl FnMut(usize, u16) -> std::result::Result<Option<Glyph>, String>,
     mut bitmap: impl FnMut(usize, u16) -> bool,
 ) -> (HashMap<Ink, Glyph>, Vec<Fault>) {
-    type Read = std::result::Result<Option<Glyph>, String>;
     let mut read: HashMap<(usize, u16), Read> = HashMap::new();
     let mut coloured: HashMap<(usize, u16), bool> = HashMap::new();
     let mut missing: Vec<(usize, Vec<char>)> = Vec::new();
@@ -1077,20 +1148,16 @@ fn settle(
     (glyphs, faults)
 }
 
-/// Pack the placed glyphs into a layout of a block `width` x `height` em,
-/// with a texture of curves when `curves` holds.
+/// The layout of the placed glyphs in a block `width` x `height` em, from
+/// `packed`, their texture of curves and their quads, or why the words fit
+/// no texture.
 fn finish(
     placed: &[Placed],
-    glyphs: &HashMap<Ink, Glyph>,
+    packed: Result<Built>,
     mut faults: Vec<Fault>,
     width: f64,
     height: f64,
-    curves: bool,
 ) -> Layout {
-    let packed = match curves {
-        true => pack_fitting(placed, glyphs, height),
-        false => Ok(boxes_alone(placed, glyphs, height)),
-    };
     let built = match packed {
         Ok(mut built) => {
             built.size = [width, height];
@@ -1134,6 +1201,196 @@ fn boxes_alone(placed: &[Placed], glyphs: &HashMap<Ink, Glyph>, height: f64) -> 
         boxes: glyph_quads(&inked, true, 0, height),
         glyphs: Vec::new(),
         colour: Vec::new(),
+        shared: false,
+    }
+}
+
+/// The glyphs that a renderer's texts draw: the outline of each glyph and
+/// its data at BANDS bands, each made once, and one texture of curves that
+/// the slug layers share. A glyph's data goes into the texture at the first
+/// layout that draws it, and stays at that texel. The texture only grows.
+#[derive(Default)]
+pub struct Glyphs {
+    /// One font of each content that a layout drew from. A glyph's key names
+    /// its font by the index here.
+    fonts: Vec<Arc<Vec<u8>>>,
+    /// Each font that a layout drew from, by its address, with the index of
+    /// its content in `fonts`. The Weak keeps a later font off the address.
+    seen: Vec<(Weak<Vec<u8>>, usize)>,
+    /// The outline of each glyph, by the index of its font and its glyph id.
+    outlines: HashMap<(usize, u16), Read>,
+    /// The data of each glyph at BANDS bands, by its key: the index of its
+    /// font and its glyph id, or None for the error box. None for a glyph
+    /// with a band past BAND_CURVES curves.
+    blocks: HashMap<Option<(usize, u16)>, Option<Arc<Block>>>,
+    /// The texture, TEX_W texels to a row.
+    tex: Vec<[u8; 4]>,
+    /// The texel where the data of each glyph in `tex` starts, by its key.
+    starts: HashMap<Option<(usize, u16)>, usize>,
+    /// The texels and the rows of `tex` that the renderer took.
+    sent: usize,
+    rows: usize,
+    /// The outlines read from the fonts, for a test to count.
+    #[cfg(test)]
+    pub(crate) reads: usize,
+}
+
+/// The rows of the texture of a Glyphs that changed since the renderer last
+/// took them.
+pub struct Changed {
+    /// The texture's width and height. A height past the last one taken sets
+    /// the texture again, whole, from row 0.
+    pub width: u32,
+    pub height: u32,
+    pub first: u32,
+    /// RGBA8, the rows from `first` on.
+    pub texels: Vec<u8>,
+}
+
+impl Glyphs {
+    /// Lay `words` out in `fonts`, into the texture of curves `curves`, as
+    /// build() and place() do.
+    pub fn lay(&mut self, fonts: &[Font], words: &str, align: Align, curves: Curves) -> Layout {
+        lay(fonts, words, align, curves, Some(self))
+    }
+
+    /// The index of the content of `font` among the fonts, None for a font
+    /// that failed to load.
+    fn font_key(&mut self, font: &Font) -> Option<usize> {
+        let font = font.as_ref().ok()?;
+        self.seen.retain(|(w, _)| w.strong_count() > 0);
+        if let Some((_, k)) = self
+            .seen
+            .iter()
+            .find(|(w, _)| w.as_ptr() == Arc::as_ptr(font))
+        {
+            return Some(*k);
+        }
+        let k = match self.fonts.iter().position(|f| f[..] == font[..]) {
+            Some(k) => k,
+            None => {
+                self.fonts.push(font.clone());
+                self.fonts.len() - 1
+            }
+        };
+        self.seen.push((Arc::downgrade(font), k));
+        Some(k)
+    }
+
+    /// Hold `got`, the outline of the glyph of key `k`, and give it.
+    fn keep_outline(&mut self, k: (usize, u16), got: Read) -> Read {
+        #[cfg(test)]
+        {
+            self.reads += 1;
+        }
+        self.outlines.insert(k, got.clone());
+        got
+    }
+
+    /// The data of glyph `g`, of key `k`, at BANDS bands.
+    fn block(&mut self, k: Option<(usize, u16)>, g: &Glyph) -> Option<Arc<Block>> {
+        self.blocks
+            .entry(k)
+            .or_insert_with(|| Block::of(g, BANDS).map(Arc::new))
+            .clone()
+    }
+
+    /// The Built of `placed` whose quads read each glyph's data from the
+    /// texture, with `blocks` the data of each ink and `key` its key. A glyph
+    /// new to the texture goes in. None when the texture would grow past
+    /// MAX_TEX_H rows, and it then keeps what it held.
+    fn share(
+        &mut self,
+        placed: &[Placed],
+        glyphs: &HashMap<Ink, Glyph>,
+        blocks: &HashMap<Ink, Arc<Block>>,
+        key: impl Fn(Ink) -> Option<Option<(usize, u16)>>,
+        height: f64,
+    ) -> Option<Built> {
+        if self.tex.is_empty() {
+            // Texel 0 stays empty, as in a texture of a layout's own.
+            self.tex.push([0; 4]);
+        }
+        let (len, mut new) = (self.tex.len(), Vec::new());
+        let mut fits = true;
+        for p in placed {
+            let Some(ink) = p.ink.and_then(Ink::curves) else {
+                continue;
+            };
+            let (Some(k), Some(b)) = (key(ink), blocks.get(&ink)) else {
+                fits = false;
+                break;
+            };
+            if !self.starts.contains_key(&k) {
+                self.starts.insert(k, b.put(&mut self.tex));
+                new.push(k);
+            }
+        }
+        if !fits || tex_rows(self.tex.len()) > MAX_TEX_H {
+            self.tex.truncate(len);
+            for k in new {
+                self.starts.remove(&k);
+            }
+            return None;
+        }
+        let inked = inked(placed, glyphs, |ink| {
+            self.starts[&key(ink).expect("every ink has its key")]
+        });
+        Some(Built {
+            width: 0,
+            height: 0,
+            texels: Vec::new(),
+            size: [0.0; 2],
+            uniforms: Vec::new(),
+            quads: glyph_quads(&inked, false, BANDS, height),
+            boxes: glyph_quads(&inked, true, BANDS, height),
+            glyphs: Vec::new(),
+            colour: Vec::new(),
+            shared: true,
+        })
+    }
+
+    /// The rows that changed since took(), None when none did.
+    pub fn changed(&self) -> Option<Changed> {
+        if self.sent == self.tex.len() {
+            return None;
+        }
+        let height = tex_rows(self.tex.len());
+        let (first, end) = match height > self.rows {
+            true => (0, height * TEX_W),
+            false => (self.sent / TEX_W, self.tex.len().next_multiple_of(TEX_W)),
+        };
+        let mut texels = vec![0u8; (end - first * TEX_W) * 4];
+        let have = self.tex[first * TEX_W..].as_flattened();
+        texels[..have.len()].copy_from_slice(have);
+        Some(Changed {
+            width: TEX_W as u32,
+            height: height as u32,
+            first: first as u32,
+            texels,
+        })
+    }
+
+    /// Mark the rows that changed() gave as taken.
+    pub fn took(&mut self) {
+        self.sent = self.tex.len();
+        self.rows = self.rows.max(tex_rows(self.tex.len()));
+    }
+
+    /// The height of the texture that the renderer took, 0 before the first.
+    pub fn rows(&self) -> u32 {
+        self.rows as u32
+    }
+
+    /// The float uniforms of the texture at `rows` rows that the reader of a
+    /// glyph's curves takes, each named by internal() from a layer's name
+    /// and its suffix.
+    pub fn uniforms(rows: u32) -> [(&'static str, f64); 3] {
+        [
+            ("_tw", TEX_W as f64),
+            ("_itw", 1.0 / TEX_W as f64),
+            ("_ith", 1.0 / f64::from(rows)),
+        ]
     }
 }
 
@@ -1198,12 +1455,120 @@ fn glyph_quads(inked: &[(&Placed, Packed)], boxed: bool, nb: usize, height: f64)
     }
 }
 
-/// pack() at the most bands to an axis, up to BANDS, that fit the texture.
-fn pack_fitting(placed: &[Placed], glyphs: &HashMap<Ink, Glyph>, height: f64) -> Result<Built> {
+/// A glyph's data at some number of bands, as a texture of curves holds
+/// it: the box size, an entry for each band, horizontal bands first, and
+/// the lists of the bands. A band whose curves match an earlier band's
+/// shares that band's lists.
+struct Block {
+    size: [u8; 4],
+    /// Each band's index in `lists`, and its count of curves.
+    entries: Vec<(usize, u8)>,
+    /// The texels of each band's two lists. The ray toward + along the band
+    /// reads the first list, the ray toward - the second, mirrored. Each
+    /// sorts by the far end of its curves, largest first.
+    lists: Vec<Vec<[u8; 4]>>,
+}
+
+impl Block {
+    /// The data of glyph `g`, `nb` bands to an axis. None when a band holds
+    /// more than BAND_CURVES curves.
+    fn of(g: &Glyph, nb: usize) -> Option<Block> {
+        let hbands = bands(&g.curves, 1, nb, BAND_EPS / g.size[1])?;
+        let vbands = bands(&g.curves, 0, nb, BAND_EPS / g.size[0])?;
+        let sz = |a: usize| fixed(g.size[a], 0.0, BOX_SCALE).unwrap_or(0);
+        let mut index: HashMap<(usize, &[usize]), usize> = HashMap::new();
+        let mut lists: Vec<Vec<[u8; 4]>> = Vec::new();
+        let mut entries = Vec::with_capacity(2 * nb);
+        let all = hbands
+            .iter()
+            .map(|b| (0, b))
+            .chain(vbands.iter().map(|b| (1, b)));
+        for (along, band) in all {
+            let k = *index.entry((along, band.as_slice())).or_insert_with(|| {
+                let mut texels = Vec::with_capacity(band.len() * 4);
+                for flip in [false, true] {
+                    let mut cs: Vec<Curve> = band
+                        .iter()
+                        .map(|&i| match flip {
+                            false => g.curves[i],
+                            true => mirror(&g.curves[i], along),
+                        })
+                        .collect();
+                    cs.sort_by_key(|c| std::cmp::Reverse(span(c, along).1));
+                    for c in &cs {
+                        texels.extend(curve_texels(c));
+                    }
+                }
+                lists.push(texels);
+                lists.len() - 1
+            });
+            entries.push((k, band.len() as u8));
+        }
+        Some(Block {
+            size: u16x2(sz(0), sz(1)),
+            entries,
+            lists,
+        })
+    }
+
+    /// Append the data to `tex`, and give the texel where it starts.
+    fn put(&self, tex: &mut Vec<[u8; 4]>) -> usize {
+        let at = tex.len();
+        tex.resize(at + 1 + self.entries.len(), [0; 4]);
+        tex[at] = self.size;
+        let mut locs = Vec::with_capacity(self.lists.len());
+        for list in &self.lists {
+            // Both lists of a band sit in one texture row, so the shader
+            // steps from curve to curve along x.
+            if tex.len() % TEX_W + list.len() > TEX_W {
+                tex.resize(tex.len().next_multiple_of(TEX_W), [0; 4]);
+            }
+            locs.push(tex.len());
+            tex.extend_from_slice(list);
+        }
+        for (j, (k, n)) in self.entries.iter().enumerate() {
+            tex[at + 1 + j] = u24u8(locs[*k], *n);
+        }
+        at
+    }
+
+    /// The length that a texture of `len` texels reaches with the data
+    /// appended, as put() appends it.
+    fn end(&self, len: usize) -> usize {
+        let mut n = len + 1 + self.entries.len();
+        for list in &self.lists {
+            if n % TEX_W + list.len() > TEX_W {
+                n = n.next_multiple_of(TEX_W);
+            }
+            n += list.len();
+        }
+        n
+    }
+}
+
+/// pack() at the most bands to an axis, up to BANDS, that fit the texture,
+/// `blocks` the data of each glyph at BANDS bands.
+fn pack_fitting(
+    placed: &[Placed],
+    glyphs: &HashMap<Ink, Glyph>,
+    blocks: &HashMap<Ink, Arc<Block>>,
+    height: f64,
+) -> Result<Built> {
     let mut need = None;
     let mut nb = BANDS;
     while nb >= 1 {
-        match pack(placed, glyphs, nb, height) {
+        let fewer: HashMap<Ink, Arc<Block>>;
+        let at = match nb {
+            BANDS => blocks,
+            _ => {
+                fewer = glyphs
+                    .iter()
+                    .filter_map(|(ink, g)| Some((*ink, Arc::new(Block::of(g, nb)?))))
+                    .collect();
+                &fewer
+            }
+        };
+        match pack(placed, glyphs, at, nb, height) {
             Ok(built) => return Ok(built),
             Err(Unpacked::TooTall(tex_h)) => need = Some(tex_h),
             // Fewer bands hold more curves each. Once the words outgrow the
@@ -1221,6 +1586,29 @@ fn pack_fitting(placed: &[Placed], glyphs: &HashMap<Ink, Glyph>, height: f64) ->
         "the words need a {TEX_W}x{} texture, and a VC4 holds {TEX_W}x{MAX_TEX_H} at most",
         need.unwrap_or(0)
     )
+}
+
+/// True when pack() packs the placed glyphs at BANDS bands into a texture of
+/// their own, `blocks` the data of each glyph at BANDS bands.
+fn fits(
+    placed: &[Placed],
+    glyphs: &HashMap<Ink, Glyph>,
+    blocks: &HashMap<Ink, Arc<Block>>,
+) -> bool {
+    let mut len = 1;
+    let mut seen: HashSet<Ink> = HashSet::new();
+    for p in placed {
+        let Some(ink) = p.ink.and_then(Ink::curves) else {
+            continue;
+        };
+        if seen.insert(ink) {
+            match blocks.get(&ink) {
+                Some(b) => len = b.end(len),
+                None => return false,
+            }
+        }
+    }
+    grid(&inked(placed, glyphs, |_| 0), len).is_ok()
 }
 
 /// Why pack() refused the words.
@@ -1241,75 +1629,27 @@ fn tex_rows(texels: usize) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Pack the glyphs, `nb` bands to an axis, and the grid into texels, and lay
-/// the quads over a block `height` em tall.
-fn pack(
-    placed: &[Placed],
-    glyphs: &HashMap<Ink, Glyph>,
-    nb: usize,
-    height: f64,
-) -> std::result::Result<Built, Unpacked> {
-    // Texel 0 stays empty, so a slot that names a glyph is never all zero.
-    let mut tex: Vec<[u8; 4]> = vec![[0; 4]];
-    // Where the data of each ink's glyph starts.
-    let mut starts: HashMap<Ink, usize> = HashMap::new();
-    for p in placed {
-        let Some(ink) = p.ink.and_then(Ink::curves) else {
-            continue;
-        };
-        if starts.contains_key(&ink) {
-            continue;
-        }
-        let g = &glyphs[&ink];
-        let hbands = bands(&g.curves, 1, nb, BAND_EPS / g.size[1]).ok_or(Unpacked::Band(p.ch))?;
-        let vbands = bands(&g.curves, 0, nb, BAND_EPS / g.size[0]).ok_or(Unpacked::Band(p.ch))?;
-        let at = tex.len();
-        starts.insert(ink, at);
-        // The box size opens the glyph's data, then the band entries.
-        tex.resize(at + 1 + 2 * nb, [0; 4]);
-        let sz = |a: usize| fixed(g.size[a], 0.0, BOX_SCALE).unwrap_or(0);
-        tex[at] = u16x2(sz(0), sz(1));
-        // A band whose curves match an earlier band's shares that band's
-        // lists.
-        let mut lists: HashMap<(usize, &[usize]), usize> = HashMap::new();
-        let all = hbands
-            .iter()
-            .map(|b| (0, b))
-            .chain(vbands.iter().map(|b| (1, b)));
-        for (j, (along, band)) in all.enumerate() {
-            let loc = *lists.entry((along, band.as_slice())).or_insert_with(|| {
-                // Both lists of a band sit in one texture row, so the shader
-                // steps from curve to curve along x.
-                if tex.len() % TEX_W + band.len() * 4 > TEX_W {
-                    tex.resize(tex.len().next_multiple_of(TEX_W), [0; 4]);
-                }
-                let loc = tex.len();
-                // The ray toward + along reads the first list, the ray toward -
-                // the second, mirrored. Each sorts by the far end of its curves,
-                // largest first.
-                for flip in [false, true] {
-                    let mut cs: Vec<Curve> = band
-                        .iter()
-                        .map(|&i| match flip {
-                            false => g.curves[i],
-                            true => mirror(&g.curves[i], along),
-                        })
-                        .collect();
-                    cs.sort_by_key(|c| std::cmp::Reverse(span(c, along).1));
-                    for c in &cs {
-                        tex.extend(curve_texels(c));
-                    }
-                }
-                loc
-            });
-            tex[at + 1 + j] = u24u8(loc, band.len() as u8);
-        }
-    }
+/// The grid over the ink of every glyph of `inked`, in a texture whose
+/// glyph data ends at texel `len`.
+struct Grid {
+    /// Its corner in em, on the 1/ORIGIN_SCALE em lattice, as the origins
+    /// are.
+    gx: f64,
+    gy: f64,
+    cols: usize,
+    rows: usize,
+    /// The side of a cell in em.
+    cell: f64,
+    /// The slots of each cell, row by row: for each glyph that the cell
+    /// lists, the texel where its data starts, the top bit marking the
+    /// cell's last, and the corner of its box from the cell's.
+    slots: Vec<Vec<[[u8; 4]; SLOT]>>,
+}
 
-    // A grid over the ink of every glyph. Each cell lists the glyphs whose box,
-    // grown by INK_MARGIN, reaches into it. The grid corner sits on the
-    // 1/ORIGIN_SCALE em lattice, as the origins do.
-    let inked = inked(placed, glyphs, |ink| starts[&ink]);
+/// The grid over the glyphs of `inked` in a texture whose glyph data ends at
+/// texel `len`. Each cell lists the glyphs whose box, grown by INK_MARGIN,
+/// reaches into it.
+fn grid(inked: &[(&Placed, Packed)], len: usize) -> std::result::Result<Grid, Unpacked> {
     let boxes: Vec<(Packed, [f64; 4])> = inked
         .iter()
         .map(|&(_, (at, lo, size))| {
@@ -1342,7 +1682,7 @@ fn pack(
         // A grid grows with the block's area, so words past the texture fail
         // before their grid takes memory.
         let need = tex_rows(
-            tex.len().next_multiple_of(CELL_K * SLOT)
+            len.next_multiple_of(CELL_K * SLOT)
                 + cols.saturating_mul(rows).saturating_mul(CELL_K * SLOT),
         );
         if need > MAX_TEX_H {
@@ -1371,14 +1711,12 @@ fn pack(
         }
         cell /= 2.0;
     };
-    tex.resize(tex.len().next_multiple_of(CELL_K * SLOT), [0; 4]);
-    let cells = tex.len();
-    tex.resize(cells + cols * rows * CELL_K * SLOT, [0; 4]);
+    let mut slots = Vec::with_capacity(cols * rows);
     for r in 0..rows {
         for c in 0..cols {
             let corner = [gx + c as f64 * cell, gy + r as f64 * cell];
-            let at = cells + (r * cols + c) * CELL_K * SLOT;
             let list = &grid[r * cols + c];
+            let mut cell_slots = Vec::with_capacity(list.len());
             for (k, (h, lo, _)) in list.iter().enumerate() {
                 let rel = |a: usize| fixed(lo[a] - corner[a], CORNER_OFFSET, BOX_SCALE);
                 let (Some(bx), Some(by)) = (rel(0), rel(1)) else {
@@ -1387,17 +1725,66 @@ fn pack(
                     )));
                 };
                 let last = if k + 1 == list.len() { LAST_GLYPH } else { 0 };
-                tex[at + k * SLOT] = u24u8(h | last, 0);
-                tex[at + k * SLOT + 1] = u16x2(bx, by);
+                cell_slots.push([u24u8(h | last, 0), u16x2(bx, by)]);
             }
+            slots.push(cell_slots);
+        }
+    }
+    Ok(Grid {
+        gx,
+        gy,
+        cols,
+        rows,
+        cell,
+        slots,
+    })
+}
+
+/// Pack the glyphs, `nb` bands to an axis, `blocks` the data of each, and
+/// the grid into texels, and lay the quads over a block `height` em tall.
+fn pack(
+    placed: &[Placed],
+    glyphs: &HashMap<Ink, Glyph>,
+    blocks: &HashMap<Ink, Arc<Block>>,
+    nb: usize,
+    height: f64,
+) -> std::result::Result<Built, Unpacked> {
+    // Texel 0 stays empty, so a slot that names a glyph is never all zero.
+    let mut tex: Vec<[u8; 4]> = vec![[0; 4]];
+    // Where the data of each ink's glyph starts.
+    let mut starts: HashMap<Ink, usize> = HashMap::new();
+    for p in placed {
+        let Some(ink) = p.ink.and_then(Ink::curves) else {
+            continue;
+        };
+        if starts.contains_key(&ink) {
+            continue;
+        }
+        let block = blocks.get(&ink).ok_or(Unpacked::Band(p.ch))?;
+        starts.insert(ink, block.put(&mut tex));
+    }
+    let inked = inked(placed, glyphs, |ink| starts[&ink]);
+    let Grid {
+        gx,
+        gy,
+        cols,
+        rows,
+        cell,
+        slots,
+    } = grid(&inked, tex.len())?;
+    tex.resize(tex.len().next_multiple_of(CELL_K * SLOT), [0; 4]);
+    let cells = tex.len();
+    tex.resize(cells + cols * rows * CELL_K * SLOT, [0; 4]);
+    for (i, list) in slots.iter().enumerate() {
+        let at = cells + i * CELL_K * SLOT;
+        for (k, slot) in list.iter().enumerate() {
+            tex[at + k * SLOT..at + (k + 1) * SLOT].copy_from_slice(slot);
         }
     }
 
     let tex_h = tex_rows(tex.len());
     let mut texels = vec![0u8; TEX_W * tex_h * 4];
-    for (i, t) in tex.iter().enumerate() {
-        texels[i * 4..i * 4 + 4].copy_from_slice(t);
-    }
+    texels[..tex.len() * 4].copy_from_slice(tex.as_flattened());
     Ok(Built {
         width: TEX_W as u32,
         height: tex_h as u32,
@@ -1405,6 +1792,7 @@ fn pack(
         boxes: glyph_quads(&inked, true, nb, height),
         glyphs: Vec::new(),
         colour: Vec::new(),
+        shared: false,
         texels,
         size: [0.0; 2],
         uniforms: vec![
@@ -1815,6 +2203,14 @@ mod tests {
         }
     }
 
+    /// The data of each of `glyphs` at BANDS bands, where it has any.
+    fn blocks(glyphs: &HashMap<Ink, Glyph>) -> HashMap<Ink, Arc<Block>> {
+        glyphs
+            .iter()
+            .filter_map(|(ink, g)| Some((*ink, Arc::new(Block::of(g, BANDS)?))))
+            .collect()
+    }
+
     fn at_origin(gid: u16, ch: char) -> Placed {
         Placed {
             ink: Some(Ink::Glyph(0, gid)),
@@ -1831,9 +2227,9 @@ mod tests {
     #[test]
     fn a_band_past_its_loop_bound_names_the_character() {
         let glyphs = HashMap::from([(Ink::Glyph(0, 7), lines_glyph(BAND_CURVES + 1))]);
-        let got = pack(&[at_origin(7, 'x')], &glyphs, BANDS, 1.0);
+        let got = pack(&[at_origin(7, 'x')], &glyphs, &blocks(&glyphs), BANDS, 1.0);
         assert!(matches!(got, Err(Unpacked::Band('x'))));
-        let e = pack_fitting(&[at_origin(7, 'x')], &glyphs, 1.0)
+        let e = pack_fitting(&[at_origin(7, 'x')], &glyphs, &blocks(&glyphs), 1.0)
             .err()
             .unwrap();
         assert_eq!(e.to_string(), "'x' has more than 64 curves in one band");
@@ -1870,7 +2266,7 @@ mod tests {
         );
         // A box stands centred in its advance.
         assert_eq!(placed[2].x, 1.25 - ERROR_BOX[0] / 2.0);
-        let built = pack_fitting(&placed, &glyphs, 1.0).unwrap();
+        let built = pack_fitting(&placed, &glyphs, &blocks(&glyphs), 1.0).unwrap();
         assert_eq!((built.quads.count, built.boxes.count), (1, 2));
     }
 
@@ -1948,12 +2344,67 @@ mod tests {
         let glyphs: HashMap<Ink, Glyph> =
             (0..n).map(|g| (Ink::Glyph(0, g), lines_glyph(1))).collect();
         let placed: Vec<Placed> = (0..n).map(|g| at_origin(g, 'x')).collect();
+        let at = blocks(&glyphs);
         assert!(matches!(
-            pack(&placed, &glyphs, BANDS, 1.0),
+            pack(&placed, &glyphs, &at, BANDS, 1.0),
             Err(Unpacked::TooTall(_))
         ));
-        let e = pack_fitting(&placed, &glyphs, 1.0).err().unwrap();
+        let e = pack_fitting(&placed, &glyphs, &at, 1.0).err().unwrap();
         assert_eq!(e.to_string(), "more than 4 glyphs overlap at one spot");
+    }
+
+    #[test]
+    fn the_shared_texture_takes_the_words_that_a_texture_of_their_own_takes_at_every_band() {
+        // Each row places glyphs at one spot or in a row, and fits() agrees
+        // with a pack at BANDS bands.
+        let in_row = |n: u16| -> Vec<Placed> {
+            (0..n)
+                .map(|g| {
+                    let mut p = at_origin(g % 50, 'x');
+                    p.x = f64::from(g) * 0.6;
+                    p
+                })
+                .collect()
+        };
+        let rows: [(&str, Vec<Placed>); 4] = [
+            ("one glyph", vec![at_origin(0, 'x')]),
+            (
+                "four at one spot",
+                (0..4).map(|g| at_origin(g, 'x')).collect(),
+            ),
+            (
+                "five at one spot",
+                (0..5).map(|g| at_origin(g, 'x')).collect(),
+            ),
+            ("past the texture", in_row(60_000)),
+        ];
+        for (what, placed) in rows {
+            let glyphs: HashMap<Ink, Glyph> = placed
+                .iter()
+                .filter_map(|p| p.ink)
+                .map(|ink| (ink, lines_glyph(1)))
+                .collect();
+            let at = blocks(&glyphs);
+            let packs = pack(&placed, &glyphs, &at, BANDS, 1.0).is_ok();
+            assert_eq!(fits(&placed, &glyphs, &at), packs, "{what}");
+        }
+    }
+
+    #[test]
+    fn a_font_read_again_takes_the_glyphs_that_its_first_read_packed() {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tools/fixtures/fonts/DejaVuSans-ASCII.ttf"
+        ))
+        .unwrap();
+        let mut g = Glyphs::default();
+        let first: Vec<Font> = vec![Ok(Arc::new(bytes.clone()))];
+        let again: Vec<Font> = vec![Ok(Arc::new(bytes))];
+        let shared = |laid: Layout| laid.built.is_some_and(|b| b.shared);
+        assert!(shared(g.lay(&first, "AV", Align::Left, Curves::Shared)));
+        let (len, reads) = (g.tex.len(), g.reads);
+        assert!(shared(g.lay(&again, "VA", Align::Left, Curves::Shared)));
+        assert_eq!((g.tex.len(), g.reads), (len, reads));
     }
 
     #[test]

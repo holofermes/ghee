@@ -215,6 +215,8 @@
 
 ### Python
 
+- Require CPython 3.10 or newer: one abi3 wheel per architecture serves 3.10
+  and up, and the deb depends on python3 3.10 or newer.
 - Set a layer's live fields on a `ghee.open` handle with no rebuild, through
   `h.layers` by attribute or by key, `h.layers.title.x = 10` or
   `h.layers["title"]["karaoke"]["sung"] = 12`, or through
@@ -297,9 +299,9 @@
   layer alone again, a call that runs for the first time adds its layer, a
   layer whose call stops hides, and an effect that a call stops naming is
   bypassed. Two calls that draw one layer in a frame raise ValueError. On a
-  Pi Zero 2 W, a frame of 50 calls, rects and two-digit words in the pixel
-  font, half of them changed each frame, draws at 64 fps on a 128x32
-  SSD1306.
+  Pi Zero 2 W, with rects and two-digit words in the pixel font and half of
+  the calls changed each frame, a frame of 50 calls draws at 165 fps on a
+  128x32 SSD1306, and a frame of 200 calls at 61 fps.
 - Measure words with `h.measure(words, font_size=None, font_family=None)`,
   and with `ghee.measure` in a scene script: the width and height in pixels
   of the block that ghee lays them out in, at the size that fits the pass
@@ -536,6 +538,12 @@
 - Measure words with `Scene::measure` and `Renderer::measure`: the width and
   height in pixels of the block that a text layer of a pass lays them out
   in, at a `font_size` or at the size that fits the pass.
+- Give layers the looks of a drawing's calls with `Renderer::update_calls`,
+  each a `ghee::draw::Call` that holds its kind, its layer and the values of
+  its keywords, with no look written: a call gives its layer the look that
+  `update_layer` gives the same look written out, and the calls that build
+  their layer again, give an image layer another image or hold a value that
+  the scene refuses come back for `update_layer`.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
 - Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,

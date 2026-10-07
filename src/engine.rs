@@ -5014,27 +5014,12 @@ mod tests {
         kinds.map(|is| (1..=4096).filter(|&n| unsafe { is(n) } != 0).count())
     }
 
-    /// The bytes of the buffers that the DRM client of `r`'s GL holds, its
-    /// fdinfo's `drm-total-<region>` keys summed. None where the driver
-    /// writes none.
+    /// The bytes of the buffers that the DRM client of `r`'s GL holds. None
+    /// where the driver reports none.
     fn gpu_bytes(r: &Renderer) -> Option<u64> {
         let fd = unsafe { ffi::ghee_gl_fd(r.handle) };
         let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).ok()?;
-        let size = |v: &str| {
-            let mut words = v.split_whitespace();
-            let n: u64 = words.next()?.parse().ok()?;
-            match words.next() {
-                None => Some(n),
-                Some("KiB") => Some(n << 10),
-                Some("MiB") => Some(n << 20),
-                Some("GiB") => Some(n << 30),
-                Some(_) => None,
-            }
-        };
-        text.lines()
-            .filter_map(|line| line.strip_prefix("drm-total-")?.split_once(':'))
-            .filter_map(|(_, v)| size(v))
-            .reduce(|a, b| a + b)
+        crate::usage::client(&text).memory
     }
 
     #[test]

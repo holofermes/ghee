@@ -19,6 +19,23 @@ open it with `--host` only on a network you trust.
   drawing that added a layer or gave one a new look, or a field that a tick
   or the Python host set. A client that shows the layers reads `GET /scene`
   again when the count moves.
+- `GET /stats?usage=1`: the same, with what the ghee process uses, read
+  from files that it may read without root, at this request alone:
+  - `rss_mib`: the process's resident set, in MiB.
+  - `gpu_mib`: the GPU buffers that the process holds, in MiB, from the
+    `drm-total` keys in the fdinfo of its DRM descriptors. On a Pi 4 and a
+    Pi 5 those buffers are system RAM outside the resident set.
+  - `gpu_busy`: `{queue: percent}`, the share of the time since the last
+    request that asked for usage that the process kept each queue of the
+    GPU busy, from the `drm-engine` keys of the same fdinfo, for each queue
+    that ran. A queue holds null in the first answer.
+  - `machine_free_mib`: the machine's free memory, MemAvailable, in MiB.
+  - `soc_celsius`: on a Raspberry Pi, the SoC's temperature, from its one
+    sensor.
+
+  A figure that the machine does not report is null: `gpu_mib` and
+  `gpu_busy` on a Pi 1 to a Pi 3 and a Zero 2 W, whose vc4 driver reports
+  nothing per process, and under NVIDIA's driver.
 - `GET /scenes`: `{scenes: [name...], active, procedural: [name...]}`.
   `procedural` names the scenes that a program writes, and is an empty list
   when there are none. A program keeps which layers its scene has and their

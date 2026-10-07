@@ -660,9 +660,20 @@ function refreshInfo(){
   row(scene, "feedback", feedback ? "yes" : "no", "off");
   row(scene, "params", params, "off");
   row(scene, "arrays", arrays, "off");
+  if (s && s.rss_mib != null){
+    const own = sect("ghee");
+    row(own, "ram", statNum(s.rss_mib, 1, " MiB"));
+    if (s.gpu_mib != null) row(own, "gpu memory", statNum(s.gpu_mib, 1, " MiB"));
+    if (s.gpu_busy && Object.keys(s.gpu_busy).length){
+      const busy = sect("gpu busy");
+      Object.entries(s.gpu_busy).forEach(([q, v]) => row(busy, q, statNum(v, 1, " %")));
+    }
+  }
   const dev = sect("device");
   row(dev, "model", devModel || "-", "off");
   row(dev, "gpu", (devGpu && devGpu !== "n/a") ? devGpu : "unknown", "off");
+  if (s && s.machine_free_mib != null) row(dev, "free memory", statNum(s.machine_free_mib, 0, " MiB"));
+  if (s && s.soc_celsius != null) row(dev, "soc", statNum(s.soc_celsius, 1, " °C"));
 }
 
 function effectiveRotation(){
@@ -2439,9 +2450,20 @@ function showErrors(){
   CODE.mark(here ? s.error_line : 0);
 }
 
+// The usage figures cost the server file reads, so the page asks for them
+// only while the render info shows. gpu_busy covers the time since the last
+// request that asked, so the first answer after the panel opens has none.
+const infoShown = () => {
+  const w = $("#infoBtn").closest(".infowrap");
+  return w.classList.contains("open") || w.matches(":hover");
+};
+let askedUsage = false;
 async function poll(){
   try{
-    const s = await jget("/stats");
+    const asking = infoShown();
+    const s = await jget(asking ? "/stats?usage=1" : "/stats");
+    if (asking && !askedUsage && s.gpu_busy) Object.keys(s.gpu_busy).forEach(q => { s.gpu_busy[q] = null; });
+    askedUsage = asking;
     pollFails = 0;
     staleScene = !!s.stale;
     lastStats = s;

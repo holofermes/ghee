@@ -26,6 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Mutex;
 
 use serde_json::{Map, Value};
 
@@ -33,6 +34,7 @@ use crate::console::{static_asset, WEB};
 use crate::filters::{filter_defs, rebuild_filters};
 use crate::layer::{Address, Form, Layer, Live, Rgb};
 use crate::scene::{no_layer, no_param, not_an_image, py_repr, Scene};
+use crate::usage;
 
 /// The console's cap on a request body. A POSTed scene is JSON text.
 pub const MAX_BODY: usize = 1 << 20;
@@ -491,6 +493,18 @@ pub struct ConsoleAPI<H: ConsoleHost> {
     pub web: bool,
     pub post_only: Vec<String>,
     pub max_body: usize,
+    /// The GPU's engine times at the last /stats that asked for usage.
+    engines: Mutex<Option<usage::Engines>>,
+}
+
+/// A figure to a tenth.
+fn tenth(v: f64) -> Value {
+    Value::from((v * 10.0).round() / 10.0)
+}
+
+/// A count of bytes in MiB to a tenth, null when unknown.
+fn mib(bytes: Option<u64>) -> Value {
+    bytes.map_or(Value::Null, |b| tenth(usage::mib(b)))
 }
 
 impl<H: ConsoleHost> ConsoleAPI<H> {
@@ -500,12 +514,48 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             web: false,
             post_only: POST_ONLY.iter().map(|p| (*p).to_string()).collect(),
             max_body: MAX_BODY,
+            engines: Mutex::new(None),
         }
     }
 
     pub fn with_web(mut self, web: bool) -> ConsoleAPI<H> {
         self.web = web;
         self
+    }
+
+    /// Add to a host's /stats what the process uses, every host alike:
+    /// `rss_mib`, `gpu_mib`, `gpu_busy`, `machine_free_mib` and
+    /// `soc_celsius` (crate::usage). The files behind them are read here
+    /// alone, so nothing reads them while no request asks. `gpu_busy` covers
+    /// the time since the last request that asked, and holds null for each
+    /// queue in the first.
+    fn add_usage(&self, stats: &mut Value) {
+        let Value::Object(d) = stats else {
+            return;
+        };
+        d.insert("rss_mib".to_string(), mib(usage::rss()));
+        d.insert("gpu_mib".to_string(), mib(usage::gpu()));
+        let now = usage::Engines::read();
+        let mut last = self.engines.lock().unwrap_or_else(|e| e.into_inner());
+        let busy = match (&now, last.as_ref()) {
+            (None, _) => Value::Null,
+            (Some(now), Some(before)) => Value::Object(
+                now.busy_since(before)
+                    .into_iter()
+                    .map(|(q, share)| (q, tenth(share)))
+                    .collect(),
+            ),
+            (Some(now), None) => {
+                Value::Object(now.ran().map(|q| (q.to_string(), Value::Null)).collect())
+            }
+        };
+        *last = now;
+        d.insert("gpu_busy".to_string(), busy);
+        d.insert("machine_free_mib".to_string(), mib(usage::machine_free()));
+        d.insert(
+            "soc_celsius".to_string(),
+            usage::soc_celsius().map_or(Value::Null, tenth),
+        );
     }
 
     #[allow(dead_code)]
@@ -574,7 +624,13 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     fn get(&self, path: &str, query: &Query) -> ConsoleResult<Response> {
         let h = &self.host;
         match path {
-            "/stats" => Ok(Response::json(&h.stats()?)),
+            "/stats" => {
+                let mut stats = h.stats()?;
+                if query.get("usage").map(String::as_str) == Some("1") {
+                    self.add_usage(&mut stats);
+                }
+                Ok(Response::json(&stats))
+            }
             "/scenes" => {
                 let mut d = Map::new();
                 d.insert("scenes".to_string(), Value::from(h.scene_names()?));
@@ -1168,6 +1224,21 @@ mod tests {
             (200, "application/json")
         );
         assert_eq!(as_json(&r), api.host.stats().unwrap());
+    }
+
+    #[test]
+    fn stats_asked_for_usage_adds_what_the_process_uses() {
+        let api = api();
+        let mut got = as_json(&get(&api, "/stats", &[("usage", "1")]));
+        let d = got.as_object_mut().unwrap();
+        for key in ["rss_mib", "machine_free_mib"] {
+            assert!(d.remove(key).unwrap().as_f64().unwrap() > 0.0, "{key}");
+        }
+        for key in ["gpu_mib", "gpu_busy", "soc_celsius"] {
+            let v = d.remove(key).unwrap();
+            assert!(v.is_null() || v.is_number() || v.is_object(), "{key}: {v}");
+        }
+        assert_eq!(got, api.host.stats().unwrap());
     }
 
     #[test]

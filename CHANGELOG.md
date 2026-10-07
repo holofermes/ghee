@@ -417,6 +417,13 @@ A scene written for 0.4.0 needs these changes.
 
 ### Console
 
+- Show what ghee uses in the console's render info while it is open: the
+  process's resident set, its GPU memory and how busy it keeps each queue
+  of the GPU, the machine's free memory and a Pi's SoC temperature.
+  `/stats?usage=1` gives them as `rss_mib`, `gpu_mib`, `gpu_busy`,
+  `machine_free_mib` and `soc_celsius`, read at that request alone, and
+  null where the machine does not report them, as the GPU's on a Pi with
+  vc4.
 - Edit each pass's layers. A pass shows its tab row, with the open pass's
   rename, eye and remove at its end, then its inputs, with a chip for each
   text layer's `_cover`, each image asset's `_tex` and each array, then its

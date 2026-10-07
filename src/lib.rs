@@ -67,3 +67,4 @@ pub mod stats;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod text;
+pub(crate) mod usage;

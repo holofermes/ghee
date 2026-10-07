@@ -767,6 +767,8 @@ compile errors inline. It lists a pass's layers front first: the last one in
 the scene's `layers` paints on top and shows at the top. It shows each param
 as a slider, hides passes, layers and effects, and picks filters. A live field
 applies as it changes, and every other edit reloads into the running renderer.
+Its render info shows the frame rate, and while it is open the memory and
+the GPU time that ghee uses, where the kernel reports them.
 [docs/http.md](docs/http.md) holds its API.
 
 The console reads files from its scenes directory, the `$GHEE_ASSETS`

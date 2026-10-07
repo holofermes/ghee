@@ -505,9 +505,10 @@ fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver + Send>> {
     let Some(dc) = pin_opt(opts, "dc", Some(DEFAULT_DC))? else {
         bail!("dc is the panel's command pin and takes a GPIO number");
     };
+    let (width, height) = size(opts)?;
     Ok(Box::new(St7789::new(
-        i32_opt(opts, "width", DEFAULT_WIDTH)?,
-        i32_opt(opts, "height", DEFAULT_HEIGHT)?,
+        width,
+        height,
         i32_opt(opts, "x_offset", DEFAULT_X_OFFSET)?,
         i32_opt(opts, "y_offset", DEFAULT_Y_OFFSET)?,
         dc,
@@ -526,8 +527,16 @@ pub const SPEC: DriverSpec = DriverSpec {
     name: "st7789",
     options: &OPTIONS,
     open,
+    size,
     kernel,
 };
+
+fn size(opts: &Opts) -> Result<(i32, i32)> {
+    Ok((
+        i32_opt(opts, "width", DEFAULT_WIDTH)?,
+        i32_opt(opts, "height", DEFAULT_HEIGHT)?,
+    ))
+}
 
 #[cfg(test)]
 mod tests {

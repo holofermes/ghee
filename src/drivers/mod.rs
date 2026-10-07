@@ -95,6 +95,9 @@ pub struct DriverSpec {
     pub name: &'static str,
     pub options: &'static [DriverOption],
     pub open: fn(&Opts) -> Result<Box<dyn DisplayDriver + Send>>,
+    /// The width and height of the frame that the driver opened with these
+    /// options takes, known before it opens.
+    pub size: fn(&Opts) -> Result<(i32, i32)>,
     /// The kernel setup for this panel, for `ghee overlay`.
     pub kernel: fn(&Opts) -> Result<Setup>,
 }

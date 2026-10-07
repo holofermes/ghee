@@ -206,6 +206,7 @@ pub const SPEC: DriverSpec = DriverSpec {
     name: "ssd1306",
     options: &OPTIONS,
     open,
+    size: |_| Ok((WIDTH, HEIGHT)),
     kernel,
 };
 

@@ -1745,6 +1745,35 @@ pub(crate) const PRECISION: [&str; 6] = [
     "#endif",
 ];
 
+/// The error for a param that a host names as `wire`, `pass.name` or `name`,
+/// and that no param of the scene answers to. `wires` are the names that do.
+/// A /set and Python's set_param give the same text.
+pub fn no_param<'a>(wire: &str, wires: impl IntoIterator<Item = &'a str>) -> String {
+    format!(
+        "param '{wire}' is not a param this scene declares ({})",
+        listed(wires)
+    )
+}
+
+/// The error for a layer `name` that a host names and the scene lacks.
+/// `layers` are the names of the scene's layers. A /set and Python's
+/// set_layer give the same text.
+pub fn no_layer<'a>(name: &str, layers: impl IntoIterator<Item = &'a str>) -> String {
+    format!(
+        "layer '{name}' is not a layer this scene declares ({})",
+        listed(layers)
+    )
+}
+
+/// `names` joined by commas, or "none".
+fn listed<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
+    let all: Vec<&str> = names.into_iter().collect();
+    match all.is_empty() {
+        true => "none".to_string(),
+        false => all.join(", "),
+    }
+}
+
 /// The error for `value`, which the live image `what` takes when it names an
 /// image asset of the scene's own.
 pub(crate) fn not_an_image(what: &str, value: &Value) -> String {

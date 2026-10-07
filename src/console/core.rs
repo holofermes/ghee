@@ -32,7 +32,7 @@ use serde_json::{Map, Value};
 use crate::console::{static_asset, WEB};
 use crate::filters::{filter_defs, rebuild_filters};
 use crate::layer::{Address, Form, Layer, Live, Rgb};
-use crate::scene::{not_an_image, py_repr, Scene};
+use crate::scene::{no_layer, no_param, not_an_image, py_repr, Scene};
 
 /// The console's cap on a request body. A POSTed scene is JSON text.
 pub const MAX_BODY: usize = 1 << 20;
@@ -193,8 +193,8 @@ enum Set {
     Layer(LayerSet),
 }
 
-/// A /set target. The literal "scene" names the scene's shared params. Anything
-/// else is a pass index.
+/// Where a /set lands: the scene's shared params, or the params of the pass
+/// at an index of the scene that renders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     Scene,
@@ -292,14 +292,6 @@ fn py_float(raw: &str) -> Result<f64, String> {
         .map_err(|_| format!("{} is not a number", py_repr(&Value::from(raw))))
 }
 
-/// Parse a decimal integer. Whitespace around it is fine.
-fn py_int(raw: &str) -> Option<i64> {
-    let s = raw.trim();
-    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
-    let decimal = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
-    s.parse::<i64>().ok().filter(|_| decimal)
-}
-
 /// The value set_param expects, from a /set raw query string.
 ///
 /// A "color" is "#rrggbb" or a CSS colour name, which stays as written, or
@@ -351,20 +343,6 @@ pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
 
 fn floats(raw: &str) -> Result<Vec<f64>, String> {
     raw.split(',').map(py_float).collect()
-}
-
-/// The /set pass= target. The literal "scene" names the scene's shared params.
-/// Anything else is a pass index, and a non-integer errs.
-pub fn parse_scope(raw: &str) -> Result<Scope, String> {
-    if raw == "scene" {
-        return Ok(Scope::Scene);
-    }
-    py_int(raw).map(Scope::Pass).ok_or_else(|| {
-        format!(
-            "pass needs 'scene' or a pass index, got {}",
-            py_repr(&Value::from(raw))
-        )
-    })
 }
 
 /// The web asset named by a URL path, or None. The assets are compiled in, so a
@@ -447,24 +425,18 @@ pub trait ConsoleHost {
         Ok(Value::Object(Map::new()))
     }
 
-    /// Set a live uniform, with no recompile. scope is a pass index, or Scene
-    /// for a scene-scoped param.
+    /// Set a live uniform, with no recompile, to a value that param_of()
+    /// typed against live_doc().
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()>;
 
     /// Set a live field of a layer, with no rebuild, to a value that
     /// live_value() checked against live_doc().
     fn set_layer(&self, set: LayerSet) -> ConsoleResult<()>;
 
-    /// The scene document that a /set of a layer's field checks the field and
-    /// the value against: the scene that renders.
+    /// The scene document that a /set checks its param or its layer's field
+    /// and its value against: the scene that renders.
     fn live_doc(&self) -> ConsoleResult<Value> {
         self.scene_def(None)
-    }
-
-    /// The type declared by the running scene for a param, or None when its
-    /// scope holds no param of that name. A /set value parses by it.
-    fn param_type(&self, scope: Scope, name: &str) -> ConsoleResult<Option<String>> {
-        Ok(declared_type(&self.scene_def(None)?, scope, name))
     }
 
     /// Make name active and return the new active name.
@@ -707,9 +679,9 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
 
 /// What a /set changes, or the first thing wrong with it. A query that names
 /// a `layer` sets one of its live fields, and its value parses by the field.
-/// The `text` of a text layer is its words, the scene param of the layer's
-/// name. Any other query sets a param, and its value parses by the type that
-/// the host reports for the param. The outer error is the host's own.
+/// The `text` of a text layer is its words, the scene string param of the
+/// layer's name. Any other query sets the param that param_of() finds, and
+/// its value parses by the param's type. The outer error is the host's own.
 fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set, String>> {
     if let Some(layer) = query.get("layer") {
         let parts = || -> Result<(&String, &String), String> {
@@ -729,7 +701,11 @@ fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set
         };
         let doc = host.live_doc()?;
         if effect.is_none() && field == "text" && text_layer(&doc, layer) {
-            return param_set(host, Scope::Scene, layer.clone(), raw);
+            return Ok(Ok(Set::Param(
+                Scope::Scene,
+                layer.clone(),
+                Value::from(raw.as_str()),
+            )));
         }
         return Ok(live_value(&doc, &at, raw).map(|value| {
             Set::Layer(LayerSet {
@@ -740,31 +716,85 @@ fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set
             })
         }));
     }
-    let parts = || -> Result<(Scope, String, &String), String> {
+    let parts = || -> Result<(&String, &String), String> {
         let raw = query.get("value").ok_or("the query has no 'value'")?;
-        let scope = parse_scope(query.get("pass").ok_or("the query has no 'pass'")?)?;
         let name = query.get("name").ok_or("the query has no 'name'")?;
-        Ok((scope, name.clone(), raw))
+        Ok((name, raw))
     };
-    let (scope, name, raw) = match parts() {
+    let (name, raw) = match parts() {
         Ok(p) => p,
         Err(e) => return Ok(Err(e)),
     };
-    param_set(host, scope, name, raw)
+    let doc = host.live_doc()?;
+    let pass = query.get("pass").map(String::as_str);
+    Ok(param_of(&doc, pass, name).and_then(|(scope, ty)| {
+        parse_param_value(&ty, raw).map(|value| Set::Param(scope, name.clone(), value))
+    }))
 }
 
-/// The set of the param `name` of `scope` to `raw`, parsed by the type that
-/// the host reports for the param.
-fn param_set(
-    host: &impl ConsoleHost,
-    scope: Scope,
-    name: String,
-    raw: &str,
-) -> ConsoleResult<Result<Set, String>> {
-    let Some(ty) = host.param_type(scope, &name)? else {
-        return Ok(Err(undeclared(scope, &name)));
+/// The param of the scene document `doc` that `pass` and `name` address, as
+/// Python's set_param addresses one: `pass` names the pass that holds it, and
+/// with no pass, `name` is the scene param, else the param of the first pass
+/// that declares it. Its place and its type, or the error that set_param
+/// gives for the same names.
+pub fn param_of(doc: &Value, pass: Option<&str>, name: &str) -> Result<(Scope, String), String> {
+    let passes = doc_passes(doc);
+    let typed = |params: Option<&Value>| -> Option<String> {
+        Some(params?.get(name)?.get("type")?.as_str()?.to_string())
     };
-    Ok(parse_param_value(&ty, raw).map(|value| Set::Param(scope, name, value)))
+    let at = |i: usize| Scope::Pass(i64::try_from(i).unwrap_or(i64::MAX));
+    let found = match pass {
+        Some(p) => passes
+            .iter()
+            .position(|d| d.get("name").and_then(Value::as_str) == Some(p))
+            .and_then(|i| Some((at(i), typed(passes[i].get("params"))?))),
+        None => typed(doc.get("params"))
+            .map(|ty| (Scope::Scene, ty))
+            .or_else(|| {
+                passes
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, d)| Some((at(i), typed(d.get("params"))?)))
+            }),
+    };
+    found.ok_or_else(|| {
+        let wire = match pass {
+            Some(p) => format!("{p}.{name}"),
+            None => name.to_string(),
+        };
+        no_param(&wire, param_wires(doc).iter().map(String::as_str))
+    })
+}
+
+/// Every name that addresses a param of the scene document `doc`, in the
+/// order that Python lists them: each scene param, then each param of each
+/// pass as `pass.name`, and by its name alone where no name before it is the
+/// same.
+fn param_wires(doc: &Value) -> Vec<String> {
+    let names = |params: Option<&Value>| -> Vec<String> {
+        params
+            .and_then(Value::as_object)
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    let mut out = names(doc.get("params"));
+    for p in doc_passes(doc) {
+        let pass = p.get("name").and_then(Value::as_str).unwrap_or_default();
+        for n in names(p.get("params")) {
+            out.push(format!("{pass}.{n}"));
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    out
+}
+
+/// The passes of the scene document `doc`.
+fn doc_passes(doc: &Value) -> &[Value] {
+    doc.get("passes")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
 }
 
 /// True when the scene document `doc` holds a text layer named `name`.
@@ -782,7 +812,8 @@ fn text_layer(doc: &Value, name: &str) -> bool {
 pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String> {
     let named = Value::from(at.layer);
     let Some(d) = doc_layers(doc).find(|l| l.get("name") == Some(&named)) else {
-        return Err(format!("the scene has no layer '{}'", at.layer));
+        let names = doc_layers(doc).filter_map(|l| l.get("name")?.as_str());
+        return Err(no_layer(at.layer, names));
     };
     let mut layer = Layer::from_dict("a layer", d).map_err(|e| e.to_string())?;
     let live = layer.live(at.effect, at.field).map_err(|e| e.to_string())?;
@@ -869,13 +900,6 @@ fn doc_layers(doc: &Value) -> impl Iterator<Item = &Value> {
         .flatten()
 }
 
-fn undeclared(scope: Scope, name: &str) -> String {
-    match scope {
-        Scope::Scene => format!("the scene has no param '{name}'"),
-        Scope::Pass(i) => format!("pass {i} has no param '{name}'"),
-    }
-}
-
 /// The 409 for an edit of scene `scene` while `active` is the active scene,
 /// as a page left open on one scene meets after the console switched.
 pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
@@ -888,27 +912,6 @@ pub fn other_scene(scene: &str, active: Option<&str>) -> ConsoleResult<()> {
             "the console is on no scene, and this edit is for scene '{scene}'"
         ))),
     }
-}
-
-/// The type of a param in a scene document, or None when the scope holds no
-/// param of that name. ghee declares a scene string param under each text
-/// layer's name, and none for an image layer, which holds an `image`, or a
-/// shape layer, which holds a `shape`.
-pub fn declared_type(doc: &Value, scope: Scope, name: &str) -> Option<String> {
-    let text = |l: &Value| l.get("image").is_none() && l.get("shape").is_none();
-    if scope == Scope::Scene
-        && doc_layers(doc).any(|l| l.get("name") == Some(&Value::from(name)) && text(l))
-    {
-        return Some("string".to_string());
-    }
-    let params = match scope {
-        Scope::Scene => doc.get("params"),
-        Scope::Pass(i) => doc
-            .get("passes")?
-            .get(usize::try_from(i).ok()?)?
-            .get("params"),
-    };
-    Some(params?.get(name)?.get("type")?.as_str()?.to_string())
 }
 
 fn active_json(active: String) -> Value {
@@ -1236,11 +1239,7 @@ mod tests {
     #[test]
     fn set_routes_the_scene_scope() {
         let api = api();
-        post(
-            &api,
-            "/set",
-            &[("pass", "scene"), ("name", "tint"), ("value", "0.5")],
-        );
+        post(&api, "/set", &[("name", "tint"), ("value", "0.5")]);
         assert_eq!(
             *api.host.calls.borrow(),
             vec![
@@ -1252,27 +1251,29 @@ mod tests {
 
     #[test]
     fn set_parses_the_value_by_the_declared_type() {
+        let main = Some("main");
         for (pass, name, raw, want) in [
-            ("scene", "title", "hello", Value::from("hello")),
-            ("scene", "title", "1.5", Value::from("1.5")),
-            // a text's words
-            ("scene", "words", "2", Value::from("2")),
-            ("0", "on", "true", Value::from(true)),
-            ("0", "on", "false", Value::from(false)),
-            ("0", "k", "2", Value::from(2.0)),
-            ("0", "k", "0.5", Value::from(0.5)),
-            ("0", "n", "5", Value::from(5.0)),
-            ("0", "c", "1,0,0.5", serde_json::json!([1.0, 0.0, 0.5])),
-            ("0", "v", "0.1,0.2", serde_json::json!([0.1, 0.2])),
+            (None, "title", "hello", Value::from("hello")),
+            (None, "title", "1.5", Value::from("1.5")),
+            (main, "on", "true", Value::from(true)),
+            (main, "on", "false", Value::from(false)),
+            (main, "k", "2", Value::from(2.0)),
+            (main, "k", "0.5", Value::from(0.5)),
+            (main, "n", "5", Value::from(5.0)),
+            (main, "c", "1,0,0.5", serde_json::json!([1.0, 0.0, 0.5])),
+            (main, "v", "0.1,0.2", serde_json::json!([0.1, 0.2])),
+            // a bare name that no scene param holds is the first pass's
+            (None, "k", "0.25", Value::from(0.25)),
         ] {
             let api = api();
-            let r = post(
-                &api,
-                "/set",
-                &[("pass", pass), ("name", name), ("value", raw)],
-            );
+            let mut q = vec![("name", name), ("value", raw)];
+            q.extend(pass.map(|p| ("pass", p)));
+            let r = post(&api, "/set", &q);
             assert_eq!((r.status, body(&r).as_str()), (200, "ok"), "{name}");
-            let scope = parse_scope(pass).unwrap();
+            let scope = match (pass, name) {
+                (None, "title") => Scope::Scene,
+                _ => Scope::Pass(0),
+            };
             assert_eq!(
                 api.host.calls.borrow().last(),
                 Some(&Call::SetParam(scope, name.to_string(), want)),
@@ -1394,7 +1395,8 @@ mod tests {
             ),
             (
                 q("nope", None, "x", "1"),
-                "the scene has no layer 'nope'".to_string(),
+                "layer 'nope' is not a layer this scene declares (words, icon, frame, scope)"
+                    .to_string(),
             ),
             (
                 q("words", None, "x", "left"),
@@ -1459,34 +1461,36 @@ mod tests {
     }
 
     #[test]
-    fn a_set_of_an_undeclared_param_names_it() {
-        for (pass, name, want) in [
-            ("scene", "nope", "bad /set: the scene has no param 'nope'"),
-            ("0", "nope", "bad /set: pass 0 has no param 'nope'"),
-            ("3", "nope", "bad /set: pass 3 has no param 'nope'"),
-            // an image layer has no words
-            ("scene", "icon", "bad /set: the scene has no param 'icon'"),
+    fn a_set_of_an_undeclared_param_names_it_as_python_does() {
+        let wires = "tint, title, main.k, k, main.on, on, main.n, n, main.c, c, main.v, v";
+        for (pass, name, wire) in [
+            (None, "nope", "nope"),
+            (Some("main"), "nope", "main.nope"),
+            (Some("other"), "k", "other.k"),
+            (Some("scene"), "tint", "scene.tint"),
+            // a text's words take the layer's address alone
+            (None, "words", "words"),
         ] {
             let api = api();
-            let r = post(
-                &api,
-                "/set",
-                &[("pass", pass), ("name", name), ("value", "1")],
-            );
-            assert_eq!((r.status, body(&r).as_str()), (400, want));
+            let mut q = vec![("name", name), ("value", "1")];
+            q.extend(pass.map(|p| ("pass", p)));
+            let r = post(&api, "/set", &q);
+            let want =
+                format!("bad /set: param '{wire}' is not a param this scene declares ({wires})");
+            assert_eq!((r.status, body(&r)), (400, want));
             assert_eq!(*api.host.calls.borrow(), vec![Call::SceneDef(None)]);
         }
     }
 
     #[test]
-    fn a_set_carries_the_host_error_of_its_type_lookup() {
+    fn a_set_carries_the_host_error_of_its_scene_lookup() {
         let mut host = FakeHost::new();
         host.boom = true;
         let api = ConsoleAPI::new(host);
         let r = post(
             &api,
             "/set",
-            &[("pass", "0"), ("name", "k"), ("value", "1")],
+            &[("pass", "main"), ("name", "k"), ("value", "1")],
         );
         assert_eq!((r.status, body(&r).as_str()), (500, "build x: kaboom"));
     }
@@ -1495,32 +1499,24 @@ mod tests {
     fn a_malformed_set_never_reaches_the_host() {
         for (q, why) in [
             (
-                vec![("pass", "0"), ("name", "k")],
+                vec![("pass", "main"), ("name", "k")],
                 "the query has no 'value'",
             ),
             (
-                vec![("pass", "0"), ("value", "1")],
+                vec![("pass", "main"), ("value", "1")],
                 "the query has no 'name'",
             ),
             (
-                vec![("name", "k"), ("value", "1")],
-                "the query has no 'pass'",
-            ),
-            (
-                vec![("pass", "nope"), ("name", "k"), ("value", "1")],
-                "pass needs 'scene' or a pass index, got 'nope'",
-            ),
-            (
-                vec![("pass", "0"), ("name", "c"), ("value", "1,0")],
+                vec![("pass", "main"), ("name", "c"), ("value", "1,0")],
                 "color needs '#rrggbb', a CSS colour name or three comma-separated floats, got \
                  '1,0'",
             ),
             (
-                vec![("pass", "0"), ("name", "on"), ("value", "yes")],
+                vec![("pass", "main"), ("name", "on"), ("value", "yes")],
                 "bool needs true or false, got 'yes'",
             ),
             (
-                vec![("pass", "0"), ("name", "k"), ("value", "notanumber")],
+                vec![("pass", "main"), ("name", "k"), ("value", "notanumber")],
                 "'notanumber' is not a number",
             ),
         ] {
@@ -1733,12 +1729,7 @@ mod tests {
             post(
                 api,
                 "/set",
-                &[
-                    ("scene", name),
-                    ("pass", "scene"),
-                    ("name", "tint"),
-                    ("value", "0.5"),
-                ],
+                &[("scene", name), ("name", "tint"), ("value", "0.5")],
             ),
             api.dispatch(
                 "POST",
@@ -1790,7 +1781,11 @@ mod tests {
     fn state_changing_paths_are_post_only() {
         let api = api();
         for path in ["/set", "/switch", "/next", "/prev"] {
-            let r = get(&api, path, &[("pass", "0"), ("name", "k"), ("value", "1")]);
+            let r = get(
+                &api,
+                path,
+                &[("pass", "main"), ("name", "k"), ("value", "1")],
+            );
             assert_eq!((r.status, path), (405, path));
             assert!(body(&r).contains("POST"));
         }
@@ -1806,7 +1801,7 @@ mod tests {
         post(
             &api,
             "/set",
-            &[("pass", "0"), ("name", "k"), ("value", "1")],
+            &[("pass", "main"), ("name", "k"), ("value", "1")],
         );
         assert_eq!(
             *api.host.calls.borrow(),
@@ -1934,18 +1929,6 @@ mod tests {
     fn parse_query_takes_the_first_value() {
         assert_eq!(parse_query("a=1&b=x&a=2"), query(&[("a", "1"), ("b", "x")]));
         assert_eq!(parse_query(""), Query::new());
-    }
-
-    #[test]
-    fn parse_scope_reads_a_pass_index() {
-        assert_eq!(parse_scope("scene"), Ok(Scope::Scene));
-        assert_eq!(parse_scope(" +3 "), Ok(Scope::Pass(3)));
-        for raw in ["notanint", "3.0", ""] {
-            assert_eq!(
-                parse_scope(raw),
-                Err(format!("pass needs 'scene' or a pass index, got '{raw}'"))
-            );
-        }
     }
 
     #[test]

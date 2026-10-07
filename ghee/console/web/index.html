@@ -1305,13 +1305,13 @@ function setKey(p, d, key, v){
     : key === "points" ? JSON.stringify(v) : v != null ? v : key in SHAPE_DEFAULT ? SHAPE_DEFAULT[key] : "none";
   setLive(d, key, String(wire));
 }
-// The words, live through the string param of the layer's name.
+// The words, live through the layer's text field.
 function wordsTo(p, d){
   let timer = null;
   return (text, now) => {
     d.text = text; edited(p);
     clearTimeout(timer);
-    const scene = active, q = `pass=scene&name=${encodeURIComponent(d.name)}&value=${encodeURIComponent(text)}`;
+    const scene = active, q = `layer=${encodeURIComponent(d.name)}&field=text&value=${encodeURIComponent(text)}`;
     if (now) sendLive(q, scene); else timer = setTimeout(() => sendLive(q, scene), 300);
   };
 }
@@ -1998,12 +1998,12 @@ function slider(mn, mx, step, value){
   inp.type = "range"; inp.min = mn; inp.max = mx; inp.step = step; inp.value = value;
   return inp;
 }
-// One control per param, for both scopes. `scope` is the /set pass= target: a
-// pass index for a pass-scoped param, "scene" for a scene-scoped one.
-function buildParamRow(box, pm, name, scope){
-  const scene = active;
+// One control per param, for both scopes. `pass` is the name of the pass that
+// holds the param, null for a scene param.
+function buildParamRow(box, pm, name, pass){
+  const scene = active, at = pass == null ? "" : `pass=${encodeURIComponent(pass)}&`;
   const send = value => {
-    setParam(scene, `pass=${scope}&name=${encodeURIComponent(name)}&value=${encodeURIComponent(value)}`);
+    setParam(scene, `${at}name=${encodeURIComponent(name)}&value=${encodeURIComponent(value)}`);
     markDirty();
   };
   const row = el("div", "row");
@@ -2185,14 +2185,14 @@ function buildParams(){
   const grouped = (sceneNames.length ? 1 : 0) + passGroups > 1;
   if (sceneNames.length){
     if (grouped) box.appendChild(el("div", "pgroup", "scene"));
-    sceneNames.forEach(name=>{ buildParamRow(box, sceneParams[name], name, "scene"); any = true; });
+    sceneNames.forEach(name=>{ buildParamRow(box, sceneParams[name], name, null); any = true; });
   }
-  work.passes.forEach((p,pi)=>{
+  work.passes.forEach(p=>{
     const names = paramNames(p.params);
     if (!names.length) return;
     const from = box.children.length;
     if (grouped) box.appendChild(el("div", "pgroup", (p.filter ? "ƒ " : "") + p.name));
-    names.forEach(name=>{ buildParamRow(box, p.params[name], name, pi); any = true; });
+    names.forEach(name=>{ buildParamRow(box, p.params[name], name, p.name); any = true; });
     // a hidden pass keeps its params, dimmed as its tab is
     if (p.visible === false) [...box.children].slice(from).forEach(c => c.classList.add("off"));
   });

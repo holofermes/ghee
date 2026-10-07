@@ -154,7 +154,7 @@ def test_a_tick_hands_the_host_the_words_the_console_set():
     with ghee.open(doc, width=8, height=8, serve=port) as h:
         assert h.frame()["params"] == {"mood": "calm"}
         assert h.skip()["params"] == {}
-        post(port, "/set?pass=scene&name=mood&value=wild")
+        post(port, "/set?name=mood&value=wild")
         assert h.frame()["params"] == {"mood": "wild"}
         h.set_param("mood", "own")
         assert h.frame()["params"] == {}
@@ -253,12 +253,12 @@ def test_the_console_serves_its_own_page(served):
 
 def test_a_set_lands_on_the_next_frame(served):
     h, port = served
-    assert post(port, "/set?pass=0&name=gain&value=0.25")[0] == 200
+    assert post(port, "/set?pass=main&name=gain&value=0.25")[0] == 200
     h.feed("level", LEVEL)
     h.frame()
     assert abs(h.pixels()[0] - 64) <= 2
     # a scene param takes the scene scope
-    assert post(port, "/set?pass=scene&name=tint&value=0,1,0")[0] == 200
+    assert post(port, "/set?name=tint&value=0,1,0")[0] == 200
     h.feed("level", LEVEL)
     h.frame()
     assert h.pixels()[1] > 0 and h.pixels()[0] == 0
@@ -269,10 +269,10 @@ def test_a_set_reaches_a_vec_or_color_uniform():
     with ghee.open(VECS, width=8, height=1, serve=port) as h:
         h.frame()
         for q in [
-            "pass=scene&name=a&value=1,0",
-            "pass=0&name=b&value=0,0.25,1",
-            "pass=0&name=c&value=0.5,1,0,1",
-            "pass=scene&name=tint&value=0,1,0.5",
+            "name=a&value=1,0",
+            "pass=main&name=b&value=0,0.25,1",
+            "pass=main&name=c&value=0.5,1,0,1",
+            "name=tint&value=0,1,0.5",
         ]:
             assert post(port, "/set?" + q)[0] == 200
         h.frame()
@@ -382,11 +382,14 @@ def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():
         )
 
 
-def test_a_set_the_scene_refuses(served):
-    _, port = served
+def test_a_set_the_scene_refuses_reads_as_set_param_reads(served):
+    h, port = served
+    with pytest.raises(ValueError) as python:
+        h.set_param("nope", 1.0, pass_="main")
     with pytest.raises(urllib.error.HTTPError) as raised:
-        post(port, "/set?pass=scene&name=nope&value=1")
+        post(port, "/set?pass=main&name=nope&value=1")
     assert raised.value.code == 400
+    assert raised.value.read().decode() == f"bad /set: {python.value}"
 
 
 def test_this_console_switches_no_scene_and_compiles_none(served):

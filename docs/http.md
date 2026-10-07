@@ -46,13 +46,14 @@ open on one scene never writes into a scene that the console switched to
 later.
 
 - `POST /set?scene=&pass=&name=&value=`: sets a live param, with no recompile.
-  `pass=scene` sets the scene param, and `pass=0` and up set the param of that
-  pass. A text layer's words are the scene param of its name:
-  `pass=scene&name=title` sets the words of the layer `title`, and ghee lays
-  them out again. `value` reads as the param's declared type: a number, `true`
-  or `false`, `#rrggbb`, a CSS colour name or comma-separated floats for a
-  color, comma-separated floats for a vec, or the words of a string. A color
-  keeps the form that `/set` gives it in `GET /scene` and in a save.
+  `pass=` names the pass that holds the param. With no `pass=`, `name` is the
+  scene param, or the param of the first pass that declares it, as Python's
+  `set_param` takes a name. `value` reads as the param's declared type: a
+  number, `true` or `false`, `#rrggbb`, a CSS colour name or comma-separated
+  floats for a color, comma-separated floats for a vec, or the words of a
+  string. A color keeps the form that `/set` gives it in `GET /scene` and in
+  a save. A name that no param answers to is a 400 that lists the names that
+  do, as Python's `set_param` lists them.
 - `POST /set?scene=&layer=&effect=&field=&value=`: sets a live field of a
   layer, with no rebuild, and `effect=` names one of the layer's effects for a
   field of that effect. The live fields are `x`, `y`, `color`, `opacity` and
@@ -60,9 +61,10 @@ later.
   `visible`, `color`, `strength`, `sung`, `speed` and `rate`, and every field
   of a shape layer but `shape` and `blend`. A rect's border takes an effect's
   place, `effect=border` with `width`, `color` or `visible`, and a set gives a
-  rect with no border its border. `text` sets the words, as the scene param of
-  the layer's name does. Any other field answers 400 and names the live
-  fields, and so does an unknown layer, effect or field. `value` reads as the
+  rect with no border its border. `text` sets the words, and ghee lays them
+  out again. Any other field answers 400 and names the live fields, and so
+  does an unknown effect or field. An unknown layer answers 400 and names the
+  scene's layers, as Python's `set_layer` names them. `value` reads as the
   field takes it: the words for `text`, a number, `true` or `false`,
   `#rrggbb`, a CSS colour name or comma-separated floats for a color, a JSON
   object `{"from", "to", "angle"}` for a text layer's gradient, the name of an
@@ -107,7 +109,7 @@ For example, set the scene param `gain` to `0.8`, sing the first 12
 characters of the layer `title`, and read back the result:
 
 ```
-curl -X POST 'http://127.0.0.1:8090/set?pass=scene&name=gain&value=0.8'
+curl -X POST 'http://127.0.0.1:8090/set?name=gain&value=0.8'
 curl -X POST 'http://127.0.0.1:8090/set?layer=title&effect=karaoke&field=sung&value=12'
 curl -o out.png http://127.0.0.1:8090/frame.png
 ```

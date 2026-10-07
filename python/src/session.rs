@@ -23,7 +23,7 @@ use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{ArraySize, ParamValue, Scene};
+use ghee::scene::{no_layer, no_param, ArraySize, ParamValue, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
@@ -226,9 +226,9 @@ impl Index {
     pub fn words(&self, layer: &str, effect: Option<&str>, field: &str) -> Outcome<bool> {
         match self.text(layer) {
             Some(text) => Ok(text && effect.is_none() && field == "text"),
-            None => Err(Fault::scene(format!(
-                "layer '{layer}' is not a layer this scene declares ({})",
-                names(self.layers.iter().map(|(n, _)| n.as_str()))
+            None => Err(Fault::scene(no_layer(
+                layer,
+                self.layers.iter().map(|(n, _)| n.as_str()),
             ))),
         }
     }
@@ -241,10 +241,7 @@ impl Index {
             None => name.to_string(),
         };
         self.wired(&wire).ok_or_else(|| {
-            Fault::scene(format!(
-                "param '{wire}' is not a param this scene declares ({})",
-                names(self.params.iter().map(|r| r.wire.as_str()))
-            ))
+            Fault::scene(no_param(&wire, self.params.iter().map(|r| r.wire.as_str())))
         })
     }
 

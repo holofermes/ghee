@@ -24,6 +24,14 @@ A scene written for 0.4.0 needs these changes.
 - Read the length of a 1xN array as `<name>_count`, where it was
   `<name>_size`. `<name>_size` stays the size of an image asset and of a text
   layer's block.
+- Name the pass of a `/set` with `pass=<name>`, where it took the pass's
+  index, and leave `pass=` out for the scene param, or the param of the first
+  pass that declares the name, as Python's `set_param` takes a name, where
+  `pass=scene` named the scene's params. A name that no param answers to and
+  a layer that the scene lacks read as Python's errors for them, which list
+  the names that the scene takes. A text layer's words take
+  `/set?layer=<name>&field=text` alone, where `pass=scene&name=<name>` set
+  them too.
 
 ### Scenes
 
@@ -414,12 +422,11 @@ A scene written for 0.4.0 needs these changes.
   each of its effects.
 - Set a live field from the console with no rebuild, as it changes. Every
   other field applies when the cursor leaves it.
-- Set a live field of a layer with `/set?layer=title&field=x&value=10`, and
-  a field of one of its effects with `effect=` too, in `ghee serve`,
-  `--serve` and `ghee.open(serve=)`, with no rebuild. `field=text` sets a
-  text layer's words, as the scene param of the layer's name does. The value
-  reads as the field takes it, `none` included, and a field that changes
-  with a rebuild answers 400 with the live fields named.
+- Set a live field of a layer with `/set?layer=title&field=x&value=10`, and a
+  field of one of its effects with `effect=` too, in `ghee serve`, `--serve`
+  and `ghee.open(serve=)`, with no rebuild. `field=text` sets a text layer's
+  words. The value reads as the field takes it, `none` included, and a field
+  that changes with a rebuild answers 400 with the live fields named.
 - Rename a pass or a layer with its pencil, in the console's dialog, where a
   double-click on a pass's tab renamed it.
 - Hide a pass with its eye, which the scene keeps as the pass's `visible`,

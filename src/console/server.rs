@@ -24,8 +24,8 @@ use serde_json::{Map, Value};
 use tiny_http::{Header, Request, Server, StatusCode};
 
 use crate::console::core::{
-    declared_type, other_scene, parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult,
-    Headers, LayerSet, Query, Response, Scope,
+    other_scene, parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers,
+    LayerSet, Query, Response, Scope,
 };
 use crate::console::examples_dir;
 use crate::console::feeds::default_hwinfo;
@@ -2004,20 +2004,12 @@ impl ConsoleHost for RenderLoopHost {
         Ok(())
     }
 
-    /// The running document, as param_type() reads it.
+    /// The /set lands on the scene that renders, so it checks against the
+    /// running document. scene_def would start a procedural scene's process
+    /// when no document runs.
     fn live_doc(&self) -> ConsoleResult<Value> {
         match lock(&self.console.running).as_ref() {
             Some((_, doc)) => Ok(doc.clone()),
-            None => Err(ConsoleError::not_found("no scene")),
-        }
-    }
-
-    /// The /set lands on the scene that renders, so its type comes from the
-    /// running document. scene_def would start a procedural scene's process
-    /// when no document runs.
-    fn param_type(&self, scope: Scope, name: &str) -> ConsoleResult<Option<String>> {
-        match lock(&self.console.running).as_ref() {
-            Some((_, doc)) => Ok(declared_type(doc, scope, name)),
             None => Err(ConsoleError::not_found("no scene")),
         }
     }
@@ -2661,7 +2653,7 @@ mod tests {
 
     #[test]
     fn set_item_scene_scope() {
-        // the literal pass="scene" routes to a distinct scene-scoped queue item
+        // a scene param routes to a distinct scene-scoped queue item
         match set_item(Scope::Scene, "speed", Value::from(0.5)) {
             Command::SceneParam(name, v) => {
                 assert_eq!((name.as_str(), v), ("speed", Value::from(0.5)))
@@ -3331,17 +3323,17 @@ mod tests {
         let (_d, console) = tmp_console("settype");
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
-        let r = set("pass=scene&name=label&value=O");
+        let r = set("layer=label&field=text&value=O");
         assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
         console.publish(&text_scene("I"));
-        assert_eq!(set("pass=scene&name=label&value=hello").status, 200);
+        assert_eq!(set("layer=label&field=text&value=hello").status, 200);
         match console.q.take() {
             Some(Command::SceneParam(name, v)) => {
                 assert_eq!((name.as_str(), v), ("label", Value::from("hello")));
             }
             _ => panic!("no scene param queued"),
         }
-        assert_eq!(set("pass=scene&name=nope&value=1").status, 400);
+        assert_eq!(set("name=nope&value=1").status, 400);
         assert!(console.q.take().is_none());
     }
 

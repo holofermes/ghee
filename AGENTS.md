@@ -287,16 +287,21 @@ each one for a reader who has never seen ghee.
 
 - Where CSS has a word for a setting, use it: `color`, `opacity`,
   `font_size`, `font_family`, `text_align`, `text_shadow`, `text_stroke`,
-  `blend`. An underscore stands for CSS's hyphen, so Python takes the name as
-  a keyword.
-- Everywhere else, use a plain word. A name never asks a newcomer to decode
+  `border`, `border_radius`, `stroke_width`, `blend`. An underscore stands for
+  CSS's hyphen, so Python takes the name as a keyword.
+- Where CSS has a word for a value, use it too: a colour takes CSS's colour
+  names, such as `navy` and `transparent`, in any case, beside `#rrggbb` and
+  three numbers.
+- Everywhere else, use a plain word: a shape layer holds `shape`, `rect` or
+  `line`, and a line its `points`. A name never asks a newcomer to decode
   jargon such as pixels per em.
 - `vertex` and `fragment` name shader stages and nothing else.
 - A value is plain keys, never a small syntax inside a string: `x` and `y` as
   two keys, a gradient as `{"from", "to", "angle"}`, an effect as an object
   with named fields.
-- A user never has to invent a name. The console names a new layer from its
-  kind (`text`, `text2`, `image`), and renaming is a deliberate act.
+- A user never has to invent a name. The console and a Python drawing name a
+  new layer from its kind (`text`, `text2`, `image`, `rect`), and renaming is
+  a deliberate act.
 - A name that reaches GLSL is GLSL-safe: ASCII letters, digits and `_`, a
   letter first, a letter or a digit last, no `__`, and no `gl_` or `ghee` at
   the start. Every GLSL name that ghee derives from a user's name carries a

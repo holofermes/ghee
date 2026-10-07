@@ -43,7 +43,12 @@
 //!
 //! The coverage at `p` is the largest among the glyphs of its cell. A slug
 //! layer skips the grid: each of its quads carries the texel where its
-//! glyph's data starts.
+//! glyph's data starts. So the slug layers whose `<name>_cover` no pass
+//! reads share one texture, a Glyphs, which takes each glyph's data at the
+//! first words that draw it and keeps it there, and new words upload only
+//! the glyphs new to it. Words that a texture of their own would not hold
+//! at BANDS bands, and glyphs past the room of the shared one, take a
+//! texture of their own.
 //!
 //! A text problem leaves the scene running. A character whose glyph has no
 //! outline and no colour bitmap, or one past a limit, draws an error box:

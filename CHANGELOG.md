@@ -376,6 +376,11 @@
 
 ### Displays and H264
 
+- Write the I2C bus rate and the panel's height in `ghee overlay ssd1306`:
+  `height=32` or `height=64` is required, `speed` sets
+  `dtparam=i2c_arm_baudrate`, 1000000 by default, and `address` passes the
+  panel's I2C address to the overlay, where ghee refused any address but
+  0x3C. A 128x64 module takes the overlay's own wiring.
 - Find a KMS display for `ghee displays` and `--display kms` in the
   kernel's cached connector state, and probe a connector, which rereads an
   HDMI display's EDID, only when that state lists no modes.

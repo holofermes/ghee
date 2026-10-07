@@ -47,11 +47,14 @@ pub(crate) fn delay(ms: u8) -> Command {
     (0x00, vec![ms])
 }
 
-/// A constructor option and its default.
-/// --display-opts sets the option, and `ghee displays` lists it.
+/// A panel option and its default.
+/// --display-opts sets the option, and `ghee displays` lists the ones that
+/// the userspace driver takes.
 pub struct DriverOption {
     pub name: &'static str,
     pub default: Option<i64>,
+    /// The userspace driver takes it.
+    pub driver: bool,
     /// The option describes the panel, so `ghee overlay` takes it too.
     pub kernel: bool,
 }
@@ -61,6 +64,7 @@ impl DriverOption {
         DriverOption {
             name,
             default,
+            driver: true,
             kernel: true,
         }
     }
@@ -70,7 +74,19 @@ impl DriverOption {
         DriverOption {
             name,
             default,
+            driver: true,
             kernel: false,
+        }
+    }
+
+    /// An option for the kernel setup alone, such as a geometry that the
+    /// userspace driver fixes.
+    pub const fn kernel(name: &'static str, default: Option<i64>) -> DriverOption {
+        DriverOption {
+            name,
+            default,
+            driver: false,
+            kernel: true,
         }
     }
 }
@@ -99,9 +115,14 @@ pub fn get_driver(name: &str) -> Result<&'static DriverSpec> {
         .ok_or_else(|| anyhow!("no display driver '{name}'"))
 }
 
-/// What a driver's constructor takes, in declaration order.
-pub fn driver_options(spec: &DriverSpec) -> &'static [DriverOption] {
-    spec.options
+/// What the userspace driver's constructor takes, in declaration order.
+pub fn driver_options(spec: &DriverSpec) -> Vec<&'static DriverOption> {
+    spec.options.iter().filter(|o| o.driver).collect()
+}
+
+/// What `ghee overlay` takes for the panel, in declaration order.
+pub fn kernel_options(spec: &DriverSpec) -> Vec<&'static DriverOption> {
+    spec.options.iter().filter(|o| o.kernel).collect()
 }
 
 /// The value set for `name`. The last pair wins.

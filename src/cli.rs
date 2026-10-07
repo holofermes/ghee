@@ -33,7 +33,9 @@ use crate::bench::{self, BenchArgs};
 use crate::console::examples_dir;
 use crate::console::server;
 use crate::console::store::SceneStore;
-use crate::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
+use crate::drivers::{
+    available_drivers, driver_options, get_driver, kernel_options, DisplayDriver,
+};
 use crate::engine::{display_renders, probe_display, probe_display_device, Feed, Renderer};
 use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
@@ -1122,19 +1124,14 @@ fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
     };
     // Only the options that describe the panel reach a kernel setup: the
     // wire format and the update strategy are the driver's own.
-    let known = driver_options(spec);
-    let takes = || {
-        known
-            .iter()
-            .filter(|o| o.kernel)
-            .map(|o| o.name)
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let known = kernel_options(spec);
+    let driver = driver_options(spec);
+    let takes = || known.iter().map(|o| o.name).collect::<Vec<_>>().join(", ");
+    let takes_key = |k: &str| known.iter().any(|o| o.name == k);
     let own: Vec<&str> = opts
         .keys()
-        .filter(|k| known.iter().any(|o| o.name == k.as_str() && !o.kernel))
         .map(String::as_str)
+        .filter(|k| !takes_key(k) && driver.iter().any(|o| o.name == *k))
         .collect();
     if !own.is_empty() {
         return Err(exit(format!(
@@ -1145,8 +1142,8 @@ fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
     }
     let unknown: Vec<&str> = opts
         .keys()
-        .filter(|k| !known.iter().any(|o| o.name == k.as_str()))
         .map(String::as_str)
+        .filter(|k| !takes_key(k) && !driver.iter().any(|o| o.name == *k))
         .collect();
     if !unknown.is_empty() {
         return Err(exit(format!(
@@ -2090,7 +2087,14 @@ mod tests {
                 "overlay: no display driver 'does-not-exist' (see: ghee displays)",
             ),
             (
-                vec!["overlay", "ssd1306", "-o", "panel.bin"],
+                vec![
+                    "overlay",
+                    "ssd1306",
+                    "--display-opts",
+                    "height=32",
+                    "-o",
+                    "panel.bin",
+                ],
                 "overlay: -o with ssd1306, a panel that takes no firmware file",
             ),
             (
@@ -2113,7 +2117,8 @@ mod tests {
             ),
             (
                 vec!["overlay", "ssd1306", "--display-opts", "bus=0"],
-                "overlay: the userspace driver alone acts on bus (the kernel setup takes: addr)",
+                "overlay: the userspace driver alone acts on bus (the kernel setup takes: \
+                 height, address, speed)",
             ),
         ] {
             assert_eq!(run(&tokens).unwrap_err().to_string(), msg, "{tokens:?}");

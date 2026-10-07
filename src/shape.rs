@@ -5,7 +5,8 @@
 //! from the layer: a shape is quads whose vertices carry all of it, and a
 //! change to a live field of a shape uploads new quads and compiles nothing.
 //! Consecutive shape layers of a pass with one blend draw as one batch, a
-//! run, in the order of the layers.
+//! run, in the order of the layers, and `crate::run` takes the slug texts
+//! beside them into the run too.
 //!
 //! A rect is a box of `width` by `height` pass pixels at `x`, `y`, its
 //! corners rounded by `border_radius`, filled with `color`, and its `border`
@@ -495,6 +496,31 @@ impl ShapeLayer {
                 }
             }
         }
+    }
+
+    /// The pixels that the layer's quads cover in a pass of `pass` pixels,
+    /// shown or hidden, each reaching a pixel past its shape.
+    pub(crate) fn area(&self, pass: [f64; 2]) -> f64 {
+        let shown = ShapeLayer {
+            visible: true,
+            ..self.clone()
+        };
+        let mut quads = Vec::new();
+        shown.quads(pass, &mut quads);
+        quads
+            .chunks_exact(QUAD)
+            .map(|q| {
+                let [a, b, c, d] = [q[0], q[1], q[2], q[3]].map(f64::from);
+                let segment = (f64::from(q[4]) / 4.0).floor() % 2.0 == 1.0;
+                match segment {
+                    false => 4.0 * (c + 1.0) * (d + 1.0),
+                    true => {
+                        let reach = f64::from(q[5]) + 1.0;
+                        ((c - a).hypot(d - b) + 2.0 * reach) * 2.0 * reach
+                    }
+                }
+            })
+            .sum()
     }
 }
 

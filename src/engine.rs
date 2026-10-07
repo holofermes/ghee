@@ -24,7 +24,9 @@
 //! one that the slug layers share, and hands the layer one quad a glyph. An
 //! MTSDF layer reads its glyphs from an atlas that a `crate::atlas`
 //! generator fills on its own threads, and every render uploads the glyphs
-//! that the atlas gained since the last.
+//! that the atlas gained since the last. Consecutive shapes and slug texts
+//! with no effect draw as runs, one batch each, as `crate::run` groups
+//! them, and a change to a run's layers groups their pass again.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -48,6 +50,7 @@ use crate::ffi;
 use crate::layer::{
     is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer, GLSL_NAME,
 };
+use crate::run::{Candidate, Class, Mode};
 use crate::scene::{ArraySize, Look, ParamValue, Pass, Scene};
 use crate::shape::ShapeLayer;
 use crate::text::{self, Fault, Layout};
@@ -219,40 +222,198 @@ pub struct Taken {
     pub changed: Vec<usize>,
 }
 
-/// Consecutive shape layers of a pass with one blend, which one batch draws
-/// with the shape program.
-struct ShapeRun {
+/// Consecutive layers of a pass that one batch draws, as `crate::run`
+/// groups them.
+struct Run {
     /// The engine's index of the batch.
     batch: c_int,
-    blend: Blend,
-    /// The size of the pass in pixels.
+    /// The name of the pass and its size in pixels.
+    pass: String,
     size: [f64; 2],
     /// The layers, in their order.
-    shapes: Vec<RunShape>,
+    members: Vec<Member>,
+    /// The mode whose program the batch holds, None for none yet.
+    installed: std::cell::Cell<Option<Mode>>,
+    /// The texture of curves that the batch reads, as bound last.
+    curves: std::cell::Cell<Bound>,
+    /// The quads of each member that the batch holds, empty when it must
+    /// take every quad again.
+    sent: std::cell::RefCell<Vec<usize>>,
 }
 
-impl ShapeRun {
-    /// The place in `shapes` of layer `name`.
+impl Run {
+    /// The place in `members` of layer `name`.
     fn find(&self, name: &str) -> Option<usize> {
-        self.shapes.iter().position(|s| s.name == name)
+        self.members.iter().position(|m| m.name == name)
+    }
+
+    /// The program that the members ask for.
+    fn mode(&self) -> Mode {
+        let texts = self.members.iter().filter(|m| m.text.is_some()).count();
+        Mode::of(self.members.len(), texts)
     }
 }
 
-/// A shape layer of a run, and the quads that the run's batch holds for it.
-struct RunShape {
-    name: String,
-    quads: std::cell::RefCell<Vec<f32>>,
+/// The texture of curves bound to a run's batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bound {
+    None,
+    /// GLYPHS at this many rows.
+    Glyphs(u32),
+    /// The texture of the words of the run's one text.
+    Own,
 }
 
-impl RunShape {
-    /// Shape `l` in a pass of `size` pixels.
-    fn of(l: &ShapeLayer, size: [f64; 2]) -> RunShape {
+/// A layer of a run, and its quads: a shape's, shape::ATTRIBUTES vec4s a
+/// vertex, or the glyph quads of a text's last words, text::QUAD_FLOATS
+/// floats a vertex.
+struct Member {
+    name: String,
+    quads: std::cell::RefCell<Vec<f32>>,
+    /// A text's own, None for a shape.
+    text: Option<TextMember>,
+    /// The class that the member's last quads and settings give it.
+    class: std::cell::Cell<Class>,
+    /// The class that the last grouping of its pass took.
+    placed: Class,
+    /// True when the batch must take the member's vertices again.
+    dirty: std::cell::Cell<bool>,
+    /// True when the member's class must be worked out again.
+    reclass: std::cell::Cell<bool>,
+}
+
+/// What a text of a run holds past its quads.
+struct TextMember {
+    /// Its block's size in em.
+    size: std::cell::Cell<[f64; 2]>,
+    /// True while its glyphs read GLYPHS.
+    shared: std::cell::Cell<bool>,
+    /// True once its words set a texture of their own.
+    texture: std::cell::Cell<bool>,
+    /// True when its words set that texture since a run of the text alone
+    /// bound it.
+    fresh: std::cell::Cell<bool>,
+    /// The text's own program, which the renderer holds while the text
+    /// draws, so a run of the text alone compiles nothing.
+    own: Hold,
+}
+
+impl Member {
+    /// Shape layer `l` of a pass of `size` pixels.
+    fn shape(l: &ShapeLayer, size: [f64; 2]) -> Member {
         let mut quads = Vec::new();
         l.quads(size, &mut quads);
-        RunShape {
+        let class = shape_class(l, size);
+        Member {
             name: l.name.clone(),
             quads: std::cell::RefCell::new(quads),
+            text: None,
+            class: std::cell::Cell::new(class),
+            placed: class,
+            dirty: std::cell::Cell::new(true),
+            reclass: std::cell::Cell::new(false),
         }
+    }
+
+    /// Text layer `l`, with no words yet, of class `class`, whose own
+    /// program the renderer holds as `own`.
+    fn text(l: &TextLayer, class: Class, own: Hold) -> Member {
+        Member {
+            name: l.name.clone(),
+            quads: std::cell::RefCell::new(Vec::new()),
+            text: Some(TextMember {
+                size: std::cell::Cell::new([0.0; 2]),
+                shared: std::cell::Cell::new(true),
+                texture: std::cell::Cell::new(false),
+                fresh: std::cell::Cell::new(false),
+                own,
+            }),
+            class: std::cell::Cell::new(class),
+            placed: class,
+            dirty: std::cell::Cell::new(true),
+            reclass: std::cell::Cell::new(false),
+        }
+    }
+
+    /// The quads that the member holds.
+    fn count(&self) -> usize {
+        self.quads.borrow().len() / QUAD
+    }
+}
+
+/// The floats of a quad of a shape or of a glyph, 4 vertices of 4 vec4s.
+const QUAD: usize = 4 * text::QUAD_FLOATS;
+const _: () = assert!(4 * crate::shape::ATTRIBUTES == text::QUAD_FLOATS);
+
+/// The class of shape layer `l` in a pass of `size` pixels.
+fn shape_class(l: &ShapeLayer, size: [f64; 2]) -> Class {
+    match l.area(size) > crate::run::SHAPE_PIXELS {
+        true => Class::Large,
+        false => Class::Joins,
+    }
+}
+
+/// The class of text layer `l` in a pass of `pass` pixels, with the glyph
+/// quads `quads` of a block of `size` em, which read GLYPHS when `shared`.
+fn text_class(l: &TextLayer, quads: &[f32], size: [f64; 2], shared: bool, pass: [f64; 2]) -> Class {
+    let fs = l.font_px(pass, size);
+    match !shared || crate::run::glyph_pixels(quads, fs) > crate::run::GLYPH_PIXELS {
+        true => Class::Alone,
+        false => Class::Joins,
+    }
+}
+
+/// True for a layer that a run takes: a shape, or a slug text with no
+/// effect.
+fn joins_runs(l: &Layer) -> bool {
+    match l {
+        Layer::Shape(_) => true,
+        Layer::Text(t) => t.render == Render::Slug && t.effects.is_empty(),
+        Layer::Image(_) => false,
+    }
+}
+
+/// A batch program that the renderer holds through ghee_mp_keep_program,
+/// and lets go of when dropped.
+struct Hold {
+    handle: *mut ffi::GheeScene,
+    vertex: CString,
+    fragment: CString,
+}
+
+impl Hold {
+    /// Hold `program` in the engine of `handle`, which compiles it unless a
+    /// batch holds it. `what` names it in an error.
+    fn keep(
+        handle: *mut ffi::GheeScene,
+        what: &str,
+        program: &crate::layer::Program,
+    ) -> Result<Hold> {
+        let vertex = CString::new(program.0.as_str())?;
+        let fragment = CString::new(program.1.as_str())?;
+        if !unsafe { ffi::ghee_mp_keep_program(handle, vertex.as_ptr(), fragment.as_ptr()) } {
+            let err = unsafe { ffi::ghee_last_error(handle) };
+            let err = match err.is_null() {
+                true => String::new(),
+                false => unsafe { CStr::from_ptr(err) }
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            bail!("{what}: {}", or_else(err, "compile error"));
+        }
+        Ok(Hold {
+            handle,
+            vertex,
+            fragment,
+        })
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::ghee_mp_let_go_program(self.handle, self.vertex.as_ptr(), self.fragment.as_ptr())
+        };
     }
 }
 
@@ -650,8 +811,13 @@ pub struct Renderer {
     test_batches: Vec<Batch>,
     /// The layers that the engine draws, in the order of their passes.
     layers: Vec<LayerBatches>,
-    /// The runs of the shape layers that the engine draws.
-    runs: Vec<ShapeRun>,
+    /// The runs of the layers that the engine draws.
+    runs: Vec<Run>,
+    /// True when a run must take a program, a binding or quads before the
+    /// next frame draws.
+    unsettled: std::cell::Cell<bool>,
+    /// True when a member of a run may have changed its class.
+    reclassed: std::cell::Cell<bool>,
     /// The text problem causes logged since the setup, so each logs once.
     reported: std::cell::RefCell<HashSet<String>>,
     /// The problems of each text layer, by its name.
@@ -674,6 +840,9 @@ pub struct Renderer {
     file_count: std::cell::Cell<usize>,
     /// True once the engine holds the shape program for the renderer's life.
     shapes_kept: std::cell::Cell<bool>,
+    /// True once the engine holds crate::run::program for the renderer's
+    /// life.
+    mixed_kept: std::cell::Cell<bool>,
     /// The layers whose texture of curves a program of the scene reads: a
     /// pass that calls `<name>_cover`, or a slug layer. Any other layer lays
     /// out with no such texture.
@@ -714,10 +883,10 @@ pub struct Renderer {
     /// The layouts run by set_text, for a test to count.
     #[cfg(test)]
     layouts: std::cell::Cell<usize>,
-    /// The floats of the shape quads handed to the engine, for a test to
-    /// count.
+    /// The floats of the vertices of runs handed to the engine, for a test
+    /// to count.
     #[cfg(test)]
-    shape_quads: std::cell::Cell<usize>,
+    run_floats: std::cell::Cell<usize>,
     /// The bytes of GLYPHS handed to the engine, for a test to count.
     #[cfg(test)]
     glyph_bytes: std::cell::Cell<usize>,
@@ -761,6 +930,8 @@ impl Renderer {
             test_batches: Vec::new(),
             layers: Vec::new(),
             runs: Vec::new(),
+            unsettled: std::cell::Cell::new(false),
+            reclassed: std::cell::Cell::new(false),
             reported: std::cell::RefCell::new(HashSet::new()),
             text_errors: std::cell::RefCell::new(HashMap::new()),
             text_errors_seq: std::cell::Cell::new(0),
@@ -770,6 +941,7 @@ impl Renderer {
             files: std::cell::RefCell::new(Vec::new()),
             file_count: std::cell::Cell::new(0),
             shapes_kept: std::cell::Cell::new(false),
+            mixed_kept: std::cell::Cell::new(false),
             curves: HashSet::new(),
             covered: HashSet::new(),
             glyphs: std::cell::RefCell::new(text::Glyphs::default()),
@@ -787,7 +959,7 @@ impl Renderer {
             #[cfg(test)]
             layouts: std::cell::Cell::new(0),
             #[cfg(test)]
-            shape_quads: std::cell::Cell::new(0),
+            run_floats: std::cell::Cell::new(0),
             #[cfg(test)]
             glyph_bytes: std::cell::Cell::new(0),
             rgb: vec![0u8; (i64::from(height) * i64::from(width) * i64::from(components)) as usize],
@@ -983,7 +1155,8 @@ impl Renderer {
         #[cfg(test)]
         let mut batch_ix: Vec<c_int> = vec![-1; batches.len()];
         let mut layers: Vec<LayerBatches> = Vec::new();
-        let mut runs: Vec<ShapeRun> = Vec::new();
+        let mut runs: Vec<Run> = Vec::new();
+        let mut glyphs = text::Glyphs::default();
         let hw_linear = self.data_texture_linear();
         let sizes = self.atlas_sizes(scene, &drawn);
         #[cfg(test)]
@@ -1050,40 +1223,88 @@ impl Renderer {
             let size = p.size.map_or([f64::from(sw), f64::from(sh)], |(w, h)| {
                 [w as f64, h as f64]
             });
-            // The run that the layer before joined, when it is a shape.
-            let mut run: Option<usize> = None;
-            for (l, sh) in p.layers.iter().zip(&shaders) {
+            // A text's class comes from its words laid out into the new
+            // texture of curves, whose layouts set_text takes again.
+            let candidates: Vec<Option<Candidate>> = p
+                .layers
+                .iter()
+                .map(|l| {
+                    if !joins_runs(l) {
+                        return None;
+                    }
+                    let class = match l {
+                        Layer::Shape(s) => shape_class(s, size),
+                        Layer::Text(t) => {
+                            let words = scene.words(&t.name).unwrap_or(&t.text);
+                            match t.lay_out(words, text::Curves::Shared, &mut glyphs) {
+                                Ok(Layout { built: Some(b), .. }) => {
+                                    text_class(t, &b.quads.floats, b.size, b.shared, size)
+                                }
+                                _ => Class::Joins,
+                            }
+                        }
+                        Layer::Image(_) => unreachable!("a run takes no image"),
+                    };
+                    Some(Candidate {
+                        text: l.as_text().is_some(),
+                        class,
+                        blend: l.blend(),
+                    })
+                })
+                .collect();
+            let spans = crate::run::partition(&candidates);
+            for (k, (l, sh)) in p.layers.iter().zip(&shaders).enumerate() {
                 if idx < 0 {
                     break;
                 }
                 let name = format!("layer '{}'", l.name());
-                let li = match (l, sh) {
-                    (Layer::Shape(s), _) => match run.filter(|r| runs[*r].blend == s.blend) {
-                        Some(r) => {
-                            runs[r].shapes.push(RunShape::of(s, size));
-                            runs[r].batch
-                        }
-                        None => {
-                            let b = self.add_batch(idx, &name, &self.shape_program()?, s.blend)?;
-                            runs.push(ShapeRun {
-                                batch: b,
-                                blend: s.blend,
-                                size,
-                                shapes: vec![RunShape::of(s, size)],
+                let span = spans.iter().find(|r| r.contains(&k));
+                let li = match (span, l, sh) {
+                    (Some(r), _, _) if r.start < k => {
+                        runs.last().expect("the run of its first").batch
+                    }
+                    (Some(r), _, _) => {
+                        let mut members = Vec::new();
+                        for (m, sh) in p.layers[r.clone()].iter().zip(&shaders[r.clone()]) {
+                            let class =
+                                candidates[members.len() + r.start].expect("a member").class;
+                            members.push(match (m, sh) {
+                                (Layer::Shape(s), _) => Member::shape(s, size),
+                                (Layer::Text(t), Some(sh)) => {
+                                    let what = format!("layer '{}'", t.name);
+                                    match Hold::keep(self.handle, &what, &sh.glyphs) {
+                                        Ok(own) => Member::text(t, class, own),
+                                        Err(_) => return self.batch_refused(&what, i),
+                                    }
+                                }
+                                _ => unreachable!("a run holds shapes and texts"),
                             });
-                            run = Some(runs.len() - 1);
-                            b
                         }
-                    },
-                    (Layer::Image(l), _) => {
-                        run = None;
+                        let texts = members.iter().filter(|m| m.text.is_some()).count();
+                        let mode = Mode::of(members.len(), texts);
+                        let program = match (mode, sh) {
+                            (Mode::Shapes, _) => self.shape_program()?,
+                            (Mode::Mixed, _) => self.run_program()?,
+                            (Mode::Alone, Some(sh)) => sh.glyphs.clone(),
+                            (Mode::Alone, None) => unreachable!("a text layer has shaders"),
+                        };
+                        let b = self.add_batch(idx, &name, &program, l.blend())?;
+                        runs.push(Run {
+                            batch: b,
+                            pass: p.name.clone(),
+                            size,
+                            members,
+                            installed: std::cell::Cell::new(Some(mode)),
+                            curves: std::cell::Cell::new(Bound::None),
+                            sent: std::cell::RefCell::new(Vec::new()),
+                        });
+                        b
+                    }
+                    (None, Layer::Image(l), _) => {
                         self.add_batch(idx, &name, &l.shaders(), l.blend)?
                     }
-                    (_, Some(sh)) => {
-                        run = None;
-                        self.add_batch(idx, &name, &sh.glyphs, l.blend())?
-                    }
-                    (_, None) => unreachable!("a text layer has shaders"),
+                    (None, _, Some(sh)) => self.add_batch(idx, &name, &sh.glyphs, l.blend())?,
+                    (None, _, None) => unreachable!("a text layer has shaders"),
                 };
                 if li < 0 {
                     return self.batch_refused(&name, i);
@@ -1188,7 +1409,10 @@ impl Renderer {
             self.batches = batch_ix;
         }
         self.layers = layers;
+        // The last scene's runs let go of their texts' programs once the new
+        // scene's runs hold theirs.
         self.runs = runs;
+        self.unsettled.set(true);
         self.moved();
         self.drawn_at.set(0.0);
         self.px_em = sizes;
@@ -1202,7 +1426,7 @@ impl Renderer {
         self.words.borrow_mut().clear();
         self.curves.clear();
         self.covered.clear();
-        *self.glyphs.borrow_mut() = text::Glyphs::default();
+        *self.glyphs.borrow_mut() = glyphs;
         self.pass_shown.borrow_mut().clear();
         for l in scene.text_layers() {
             let tex = CString::new(text::internal(&l.name, "_curves_tex"))?;
@@ -1321,12 +1545,6 @@ impl Renderer {
                 return Ok(self.error.clone());
             }
         }
-        for run in &self.runs {
-            if let Err(e) = self.run_quads(run) {
-                self.error = e.to_string();
-                return Ok(self.error.clone());
-            }
-        }
         for (i, p) in drawn.iter().enumerate() {
             for (c, ch) in p.channels.iter().enumerate() {
                 let src = match ch.buffer.as_deref() {
@@ -1357,7 +1575,7 @@ impl Renderer {
         // never loaded, refuse the scene, as an asset does.
         for (nm, pm) in scene.params.iter() {
             if let ParamValue::Str(words) = &pm.value {
-                if let Err(e) = self.set_text(nm, words) {
+                if let Err(e) = self.lay_text(nm, words) {
                     self.error = e.to_string();
                     return Ok(self.error.clone());
                 }
@@ -1366,7 +1584,11 @@ impl Renderer {
             self.set_scene_param(nm, &pm.ty, &pm.value)?;
         }
         // The first frame draws the words: they wait here for their glyphs.
-        if let Err(e) = self.tick_texts(true) {
+        if let Err(e) = self
+            .tick_texts(true)
+            .and_then(|()| self.regroup())
+            .and_then(|()| self.settle())
+        {
             self.error = e.to_string();
             return Ok(self.error.clone());
         }
@@ -1448,6 +1670,7 @@ impl Renderer {
     /// `provider` fills each declared array for this frame.
     /// None leaves the arrays as they are.
     pub fn render(&mut self, provider: Option<Provider<'_>>) -> Result<&[u8]> {
+        self.regroup()?;
         self.feed(provider)?;
         unsafe { ffi::ghee_mp_render(self.handle, self.rgb.as_mut_ptr(), 0, 0) };
         Ok(&self.rgb)
@@ -1463,6 +1686,7 @@ impl Renderer {
         out: &mut [u8],
         out_size: Option<(i32, i32)>,
     ) -> Result<()> {
+        self.regroup()?;
         self.feed(provider)?;
         let (pw, ph) = out_size.unwrap_or((0, 0));
         // The engine scales only when both dimensions are positive.
@@ -1500,6 +1724,7 @@ impl Renderer {
 
     /// Render all passes with no readback.
     pub fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
+        self.regroup()?;
         self.feed(provider)?;
         unsafe { ffi::ghee_mp_render(self.handle, ptr::null_mut(), 0, 0) };
         Ok(())
@@ -1514,6 +1739,7 @@ impl Renderer {
     fn feed(&self, provider: Option<Provider<'_>>) -> Result<()> {
         self.tick_texts(false)?;
         self.advance()?;
+        self.settle()?;
         let Some(provider) = provider else {
             return Ok(());
         };
@@ -1616,6 +1842,7 @@ impl Renderer {
         provider: Option<Provider<'_>>,
         preview: Option<(&mut [u8], (i32, i32))>,
     ) -> Result<()> {
+        self.regroup()?;
         self.feed(provider)?;
         let (buf, pw, ph) = match preview {
             Some((out, (pw, ph))) => {
@@ -1755,6 +1982,15 @@ impl Renderer {
     /// wait for them, and the layer draws its last words meanwhile. A render
     /// with the time pinned by set_time() waits for them, and so does a setup.
     pub fn set_text(&self, name: &str, words: &str) -> Result<bool> {
+        let laid = self.lay_text(name, words);
+        let settled = self.settle();
+        let laid = laid?;
+        settled?;
+        Ok(laid)
+    }
+
+    /// set_text() with the runs left to the next settle().
+    fn lay_text(&self, name: &str, words: &str) -> Result<bool> {
         let scene = self.scene.borrow();
         let Some(layer) = scene.as_ref().and_then(|s| self.text_layer(s, name)) else {
             return Ok(false);
@@ -1851,14 +2087,14 @@ impl Renderer {
                 }
             }
             if let Layer::Shape(l) = layer {
-                self.reshape(l)?;
+                self.reshape(l);
             }
             layer.as_text().is_some_and(|l| l.visible)
         };
         if now_shown && !shown {
             self.first_shown(at.layer)?;
         }
-        Ok(())
+        self.settle()
     }
 
     /// The shaders of every shape. The first shape of the renderer compiles
@@ -1875,6 +2111,23 @@ impl Renderer {
                 );
             }
             self.shapes_kept.set(true);
+        }
+        Ok((vs, fs))
+    }
+
+    /// The shaders of every run of a text and another member, which the
+    /// engine keeps from the first such run on while the renderer lives.
+    fn run_program(&self) -> Result<crate::layer::Program> {
+        let (vs, fs) = crate::run::program();
+        if !self.mixed_kept.get() {
+            let (cvs, cfs) = (CString::new(vs.as_str())?, CString::new(fs.as_str())?);
+            if !unsafe { ffi::ghee_mp_keep_program(self.handle, cvs.as_ptr(), cfs.as_ptr()) } {
+                bail!(
+                    "the runs of shapes and texts: {}",
+                    or_else(self.last_error(), "compile error")
+                );
+            }
+            self.mixed_kept.set(true);
         }
         Ok((vs, fs))
     }
@@ -1980,13 +2233,23 @@ impl Renderer {
             return Ok(());
         }
         if let Err(e) = self.draw_new(pass, index, &new) {
-            if let Some(scene) = self.scene.borrow_mut().as_mut() {
-                scene.remove_layer(&name);
-            }
-            self.moved();
+            self.unwind(&name);
             return Err(e);
         }
-        Ok(())
+        self.refresh()
+    }
+
+    /// Take layer `name`, which failed to draw, out of the engine and out of
+    /// the scene.
+    fn unwind(&mut self, name: &str) {
+        // The layer leaves the engine as best it can, and the error that
+        // the caller holds says why.
+        let _ = self.drop_drawn(name);
+        if let Some(scene) = self.scene.borrow_mut().as_mut() {
+            scene.remove_layer(name);
+        }
+        self.moved();
+        let _ = self.refresh();
     }
 
     /// Ready `new`, a layer that joins pass `pass`, as the scene's load
@@ -2029,7 +2292,7 @@ impl Renderer {
     fn draw_new(&mut self, pass: &str, index: usize, new: &Layer) -> Result<()> {
         let idx = self.pass_index(pass).expect("the pass is drawn");
         match new {
-            Layer::Shape(l) => self.add_shape(pass, idx, index, l),
+            Layer::Shape(l) => self.add_shape(pass, index, l),
             Layer::Image(l) => self.add_image(pass, idx, index, l),
             Layer::Text(l) => self.add_text(pass, idx, index, l),
         }
@@ -2071,24 +2334,20 @@ impl Renderer {
         }
         let phases = self.drop_drawn(&name)?;
         if let Err(e) = self.draw_new(&pass, index, &new) {
-            if let Some(scene) = self.scene.borrow_mut().as_mut() {
-                scene.remove_layer(&name);
-            }
-            self.moved();
+            self.unwind(&name);
             return Err(e);
         }
-        let (Some(l), Some(dl)) = (new.as_text(), self.drawn(&name)) else {
-            return Ok(());
-        };
-        let mut carried = Vec::new();
-        for (kind, uniform, _) in l.paces() {
-            if let Some((_, phase)) = phases.iter().find(|(k, _)| *k == kind) {
-                self.set_layer_uniform(dl, &uniform, "float", Value::from(*phase))?;
-                carried.push((kind, *phase));
+        if let (Some(l), Some(dl)) = (new.as_text(), self.drawn(&name)) {
+            let mut carried = Vec::new();
+            for (kind, uniform, _) in l.paces() {
+                if let Some((_, phase)) = phases.iter().find(|(k, _)| *k == kind) {
+                    self.set_layer_uniform(dl, &uniform, "float", Value::from(*phase))?;
+                    carried.push((kind, *phase));
+                }
             }
+            *dl.phases.borrow_mut() = carried;
         }
-        *dl.phases.borrow_mut() = carried;
-        Ok(())
+        self.refresh()
     }
 
     /// Give the layer of the name of `layer` the look of `layer`, a layer as
@@ -2136,23 +2395,18 @@ impl Renderer {
             .swap_live(new.clone())
             .map_err(refused)?;
         let words = (new_words != old_words).then_some(new_words.as_str());
-        self.show_live(&old, &new, words, None)?;
+        let shown = self.show_live(&old, &new, words);
+        self.refresh()?;
+        shown?;
         Ok(true)
     }
 
     /// Draw the live fields of `new`, which the scene holds now in place of
     /// `old`, its look before: the layer's uniforms that changed, its image,
-    /// its shape's quads and its new words `words`. A text layer that shows
-    /// for the first time since the setup builds its atlas. With `runs`, a
-    /// shape's quads wait in its run for upload_runs(), and its run, its
-    /// place there and whether it keeps its count of quads go into `runs`.
-    fn show_live(
-        &self,
-        old: &Layer,
-        new: &Layer,
-        words: Option<&str>,
-        runs: Option<&mut Vec<(usize, usize, bool)>>,
-    ) -> Result<()> {
+    /// its shape's quads and its new words `words`, which the runs take at
+    /// the next settle(). A text layer that shows for the first time since
+    /// the setup builds its atlas.
+    fn show_live(&self, old: &Layer, new: &Layer, words: Option<&str>) -> Result<()> {
         let name = new.name();
         let Some(dl) = self.drawn(name) else {
             return Ok(());
@@ -2166,86 +2420,14 @@ impl Renderer {
             }
         }
         if let Layer::Shape(l) = new {
-            match runs {
-                None => self.reshape(l)?,
-                Some(runs) => {
-                    let place = self.places().runs.get(name).copied();
-                    if let Some((r, k)) = place {
-                        let run = &self.runs[r];
-                        let mut quads = Vec::new();
-                        l.quads(run.size, &mut quads);
-                        let held = run.shapes[k].quads.replace(quads);
-                        let kept = held.len() == run.shapes[k].quads.borrow().len();
-                        runs.push((r, k, kept));
-                    }
-                }
-            }
+            self.reshape(l);
         }
         if let Some(words) = words {
-            self.set_text(name, words)?;
+            self.lay_text(name, words)?;
         }
         let shown = |l: &Layer| l.as_text().is_some_and(|l| l.visible);
         if shown(new) && !shown(old) {
             self.first_shown(name)?;
-        }
-        Ok(())
-    }
-
-    /// Hand the engine the quads of the shapes in `changed`, each by its
-    /// run, its place there and whether it kept its count of quads, as
-    /// show_live() left them: a run with one changed shape that kept its
-    /// count takes that shape's quads alone, any other run all of its quads,
-    /// in place when it holds as many.
-    fn upload_runs(&self, mut changed: Vec<(usize, usize, bool)>) -> Result<()> {
-        changed.sort_unstable();
-        changed.dedup();
-        let per_quad = 16 * crate::shape::ATTRIBUTES;
-        for (r, group) in changed.chunk_by(|a, b| a.0 == b.0).map(|g| (g[0].0, g)) {
-            let run = &self.runs[r];
-            let kept = group.iter().all(|(_, _, kept)| *kept);
-            let (first, quads): (usize, Vec<f32>) = match (group, kept) {
-                ([(_, k, _)], true) => {
-                    let first = run.shapes[..*k]
-                        .iter()
-                        .map(|s| s.quads.borrow().len() / per_quad)
-                        .sum();
-                    (first, run.shapes[*k].quads.borrow().clone())
-                }
-                (_, true) => (
-                    0,
-                    run.shapes
-                        .iter()
-                        .flat_map(|s| s.quads.borrow().clone())
-                        .collect(),
-                ),
-                (_, false) => {
-                    self.run_quads(run)?;
-                    continue;
-                }
-            };
-            if quads.is_empty() {
-                continue;
-            }
-            #[cfg(test)]
-            self.shape_quads.set(self.shape_quads.get() + quads.len());
-            let ok = unsafe {
-                ffi::ghee_mp_set_batch_quads_at(
-                    self.handle,
-                    run.batch,
-                    c_int::try_from(first)?,
-                    quads.as_ptr(),
-                    c_int::try_from(quads.len() / per_quad)?,
-                )
-            };
-            if !ok {
-                bail!(
-                    "{}",
-                    or_else(
-                        self.last_error(),
-                        &format!("layer '{}' refused its quads", run.shapes[0].name)
-                    )
-                );
-            }
         }
         Ok(())
     }
@@ -2259,22 +2441,15 @@ impl Renderer {
     /// image, and a name that names no layer of the scene.
     pub fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {
         let mut taken = Taken::default();
-        let mut runs = Vec::new();
-        // The runs take the quads that their shapes hold whatever fails.
-        let looped = self.take_calls(calls, &mut taken, &mut runs);
-        let uploaded = self.upload_runs(runs);
-        looped.and(uploaded)?;
+        // The runs take the quads that their members hold whatever fails.
+        let looped = self.take_calls(calls, &mut taken);
+        let settled = self.refresh();
+        looped.and(settled)?;
         Ok(taken)
     }
 
-    /// The calls of update_calls(), into `taken`, and the shapes whose
-    /// quads wait for upload_runs() into `runs`.
-    fn take_calls(
-        &self,
-        calls: &[Call],
-        taken: &mut Taken,
-        runs: &mut Vec<(usize, usize, bool)>,
-    ) -> Result<()> {
+    /// The calls of update_calls(), into `taken`.
+    fn take_calls(&self, calls: &[Call], taken: &mut Taken) -> Result<()> {
         for (k, call) in calls.iter().enumerate() {
             let found = {
                 let scene = self.scene.borrow();
@@ -2309,7 +2484,7 @@ impl Renderer {
             taken.changed.push(k);
             let scene = self.scene.borrow();
             let new = &scene.as_ref().expect("the layer was just found").passes[p].layers[i];
-            self.show_live(&old, new, words.as_deref(), Some(runs))?;
+            self.show_live(&old, new, words.as_deref())?;
         }
         Ok(())
     }
@@ -2344,26 +2519,30 @@ impl Renderer {
         let Some(k) = self.layers.iter().position(|d| d.name == name) else {
             return Ok(Vec::new());
         };
+        let pass = self
+            .runs
+            .iter()
+            .find(|r| r.find(name).is_some())
+            .map_or_else(
+                || {
+                    let scene = self.scene.borrow();
+                    let (p, _) = *self.places().scene.get(name)?;
+                    Some(scene.as_ref()?.passes[p].name.clone())
+                },
+                |r| Some(r.pass.clone()),
+            );
+        let member = self.places().runs.contains_key(name);
         let dl = self.layers.remove(k);
         self.moved();
-        match self.runs.iter().position(|r| r.find(name).is_some()) {
-            Some(r) => {
-                self.runs[r].shapes.retain(|s| s.name != name);
-                if self.runs[r].shapes.is_empty() {
-                    let run = self.runs.remove(r);
-                    self.moved();
-                    self.remove_batch(run.batch)?;
-                } else {
-                    self.run_quads(&self.runs[r])?;
-                }
+        for batch in [dl.batch, dl.colour, dl.boxes] {
+            if batch >= 0 && !(member && batch == dl.batch) {
+                self.remove_batch(batch)?;
             }
-            None => {
-                for batch in [dl.batch, dl.colour, dl.boxes] {
-                    if batch >= 0 {
-                        self.remove_batch(batch)?;
-                    }
-                }
-            }
+        }
+        // The runs of the pass group again with the layer gone, which takes
+        // a member out of its run and joins the runs that the layer split.
+        if let Some(pass) = pass {
+            self.rerun(&pass, Vec::new())?;
         }
         // An atlas that no layer draws from stays, for a layer of the same
         // font and detail to take with its glyphs.
@@ -2457,8 +2636,8 @@ impl Renderer {
             places.drawn.insert(d.name.clone(), k);
         }
         for (r, run) in self.runs.iter().enumerate() {
-            for (k, shape) in run.shapes.iter().enumerate() {
-                places.runs.insert(shape.name.clone(), (r, k));
+            for (k, m) in run.members.iter().enumerate() {
+                places.runs.insert(m.name.clone(), (r, k));
             }
         }
         places
@@ -2487,57 +2666,394 @@ impl Renderer {
         self.moved();
     }
 
-    /// When the layers at `index` - 1 and `index` + 1 of pass `pass` share a
-    /// run, end the run before the new layer at `index`: the layers after it
-    /// move to a run of their own, drawn after batch `after`.
-    fn split_run(
-        &mut self,
-        pass: c_int,
-        pass_name: &str,
-        index: usize,
-        after: c_int,
-    ) -> Result<()> {
-        let names = self.pass_layers(pass_name);
-        let (Some(prev), Some(next)) = (
-            index.checked_sub(1).and_then(|k| names.get(k)),
-            names.get(index + 1),
-        ) else {
+    /// The run of layer `name` and its place there.
+    fn member_of(&self, name: &str) -> Option<(usize, usize)> {
+        self.places().runs.get(name).copied()
+    }
+
+    /// Group the layers of drawn pass `pass` into runs again, as
+    /// crate::run::partition() groups them, with `fresh` the members of the
+    /// layers that join the pass. A run that starts at the layer where a run
+    /// started keeps that run's batch, and any other run takes a new batch
+    /// right after the batch of the layer before it, so the batches draw in
+    /// the order of the layers. A layer's blend changes as it is built
+    /// again, which takes it out of its run first, so a kept batch holds the
+    /// run's blend. settle() gives the batches their programs and their
+    /// quads.
+    fn rerun(&mut self, pass: &str, fresh: Vec<Member>) -> Result<()> {
+        let Some(pass_index) = self.pass_index(pass) else {
             return Ok(());
         };
-        let Some(r) = self
-            .runs
-            .iter()
-            .position(|r| r.find(prev).is_some() && r.find(next).is_some())
-        else {
-            return Ok(());
-        };
-        let cut = self.runs[r].find(next).expect("next is in the run");
-        let tail: Vec<RunShape> = self.runs[r].shapes.split_off(cut);
-        self.moved();
-        let batch = self.insert_batch(
-            pass,
-            after,
-            &format!("layer '{next}'"),
-            Some(self.shape_program()?),
-            self.runs[r].blend,
-        )?;
-        for d in self
-            .layers
-            .iter_mut()
-            .filter(|d| tail.iter().any(|s| s.name == d.name))
-        {
-            d.batch = batch;
+        let size = self.pass_size(pass);
+        let mut old: Vec<Run> = Vec::new();
+        let mut k = 0;
+        while k < self.runs.len() {
+            match self.runs[k].pass == pass {
+                true => old.push(self.runs.remove(k)),
+                false => k += 1,
+            }
         }
-        let run = ShapeRun {
-            batch,
-            blend: self.runs[r].blend,
-            size: self.runs[r].size,
-            shapes: tail,
-        };
-        self.run_quads(&self.runs[r])?;
-        self.run_quads(&run)?;
-        self.runs.push(run);
         self.moved();
+        let olds: Vec<Vec<String>> = old
+            .iter()
+            .map(|r| r.members.iter().map(|m| m.name.clone()).collect())
+            .collect();
+        let mut pool: HashMap<String, Member> = HashMap::new();
+        for m in fresh
+            .into_iter()
+            .chain(old.iter_mut().flat_map(|r| r.members.drain(..)))
+        {
+            pool.insert(m.name.clone(), m);
+        }
+        let (names, candidates): (Vec<String>, Vec<Option<Candidate>>) = {
+            let scene = self.scene.borrow();
+            let layers = scene
+                .as_ref()
+                .and_then(|s| s.passes.iter().find(|p| p.name == pass))
+                .map_or(&[][..], |p| &p.layers[..]);
+            layers
+                .iter()
+                .map(|l| {
+                    let m = pool
+                        .get(l.name())
+                        .filter(|_| joins_runs(l) && self.drawn(l.name()).is_some());
+                    let c = m.map(|m| {
+                        if m.reclass.replace(false) {
+                            m.class.set(self.class_now(m, l, size));
+                        }
+                        Candidate {
+                            text: m.text.is_some(),
+                            class: m.class.get(),
+                            blend: l.blend(),
+                        }
+                    });
+                    (l.name().to_string(), c)
+                })
+                .unzip()
+        };
+        let spans = crate::run::partition(&candidates);
+        // Each run's batch, kept or new, before any member moves, so a
+        // batch that the engine refuses leaves the runs as they were.
+        let mut batches: Vec<(c_int, Option<usize>)> = Vec::new();
+        let mut claimed = vec![false; old.len()];
+        let mut planned: HashMap<&str, c_int> = HashMap::new();
+        for span in &spans {
+            let first = &names[span.start];
+            let blend = candidates[span.start].expect("a run's layer").blend;
+            let kept = (0..old.len()).find(|k| !claimed[*k] && olds[*k][0] == *first);
+            let made = match kept {
+                Some(k) => {
+                    claimed[k] = true;
+                    Ok(old[k].batch)
+                }
+                None => {
+                    let before = names[..span.start].iter().rev().find_map(|n| {
+                        planned
+                            .get(n.as_str())
+                            .copied()
+                            .or_else(|| self.drawn(n).map(|d| d.batch))
+                    });
+                    self.insert_batch(
+                        pass_index,
+                        before.unwrap_or(-1),
+                        &format!("layer '{first}'"),
+                        None,
+                        blend,
+                    )
+                }
+            };
+            let batch = match made {
+                Ok(b) => b,
+                Err(e) => {
+                    for (b, k) in &batches {
+                        if k.is_none() {
+                            let _ = self.remove_batch(*b);
+                        }
+                    }
+                    for (run, names) in old.iter_mut().zip(&olds) {
+                        run.members = names.iter().filter_map(|n| pool.remove(n)).collect();
+                    }
+                    self.runs.extend(old);
+                    self.moved();
+                    return Err(e);
+                }
+            };
+            for n in &names[span.clone()] {
+                planned.insert(n, batch);
+            }
+            batches.push((batch, kept));
+        }
+        for (span, (batch, kept)) in spans.iter().zip(batches) {
+            let members: Vec<Member> = names[span.clone()]
+                .iter()
+                .map(|n| {
+                    let mut m = pool.remove(n).expect("each member of a run is in the pool");
+                    m.placed = m.class.get();
+                    m
+                })
+                .collect();
+            for d in self
+                .layers
+                .iter_mut()
+                .filter(|d| names[span.clone()].contains(&d.name))
+            {
+                d.batch = batch;
+            }
+            let was = kept.map(|k| &old[k]);
+            let same = kept.is_some_and(|k| olds[k] == names[span.clone()]);
+            self.runs.push(Run {
+                batch,
+                pass: pass.to_string(),
+                size,
+                members,
+                installed: std::cell::Cell::new(was.and_then(|r| r.installed.get())),
+                curves: std::cell::Cell::new(was.map_or(Bound::None, |r| r.curves.get())),
+                sent: std::cell::RefCell::new(match same {
+                    true => was.map(|r| r.sent.take()).unwrap_or_default(),
+                    false => Vec::new(),
+                }),
+            });
+        }
+        self.moved();
+        self.unsettled.set(true);
+        // The batches that no run kept go, and the members of layers that
+        // left the pass go with the pool.
+        let mut gone = Ok(());
+        for (k, run) in old.iter().enumerate() {
+            if !claimed[k] {
+                gone = gone.and(self.remove_batch(run.batch));
+            }
+        }
+        gone
+    }
+
+    /// The class of member `m` of a pass of `size` pixels, layer `l`, from
+    /// its quads and `l`'s settings now.
+    fn class_now(&self, m: &Member, l: &Layer, size: [f64; 2]) -> Class {
+        match (l, &m.text) {
+            (Layer::Shape(s), _) => shape_class(s, size),
+            (Layer::Text(t), Some(own)) => {
+                text_class(t, &m.quads.borrow(), own.size.get(), own.shared.get(), size)
+            }
+            _ => m.class.get(),
+        }
+    }
+
+    /// Group the runs of each pass again where a member's class changed.
+    fn regroup(&mut self) -> Result<()> {
+        if !self.reclassed.replace(false) {
+            return Ok(());
+        }
+        let mut passes: Vec<String> = Vec::new();
+        {
+            let scene = self.scene.borrow();
+            for run in &self.runs {
+                for m in run.members.iter().filter(|m| m.reclass.get()) {
+                    m.reclass.set(false);
+                    let layer = scene.as_ref().and_then(|s| {
+                        let (p, i) = *self.places().scene.get(&m.name)?;
+                        s.passes[p].layers.get(i)
+                    });
+                    if let Some(l) = layer {
+                        m.class.set(self.class_now(m, l, run.size));
+                    }
+                }
+                if run.members.iter().any(|m| m.class.get() != m.placed)
+                    && !passes.contains(&run.pass)
+                {
+                    passes.push(run.pass.clone());
+                }
+            }
+        }
+        for pass in passes {
+            self.rerun(&pass, Vec::new())?;
+        }
+        Ok(())
+    }
+
+    /// regroup(), then settle().
+    fn refresh(&mut self) -> Result<()> {
+        self.regroup()?;
+        self.settle()
+    }
+
+    /// Give each run's batch the program of its mode, the texture of curves
+    /// that it reads, a run of one text the text's uniforms, and the quads
+    /// of its members that changed: every quad when a member's count of
+    /// quads changed, else one upload from the first changed member to the
+    /// last.
+    fn settle(&self) -> Result<()> {
+        if !self.unsettled.replace(false) {
+            return Ok(());
+        }
+        let settled = self.runs.iter().try_for_each(|run| self.settle_run(run));
+        if settled.is_err() {
+            self.unsettled.set(true);
+        }
+        settled
+    }
+
+    fn settle_run(&self, run: &Run) -> Result<()> {
+        let mode = run.mode();
+        let first = &run.members[0].name;
+        let what = format!("layer '{first}'");
+        let alone = run.members[0].text.as_ref().filter(|_| mode == Mode::Alone);
+        if run.installed.get() != Some(mode) {
+            let program = match (mode, alone) {
+                (Mode::Shapes, _) => self.shape_program()?,
+                (Mode::Mixed, _) => self.run_program()?,
+                (Mode::Alone, Some(t)) => (
+                    t.own.vertex.to_string_lossy().into_owned(),
+                    t.own.fragment.to_string_lossy().into_owned(),
+                ),
+                (Mode::Alone, None) => unreachable!("a run of one text"),
+            };
+            let (vs, fs) = (CString::new(program.0)?, CString::new(program.1)?);
+            if !unsafe {
+                ffi::ghee_mp_set_batch_program(self.handle, run.batch, vs.as_ptr(), fs.as_ptr())
+            } {
+                bail!("{what}: {}", or_else(self.last_error(), "compile error"));
+            }
+            run.installed.set(Some(mode));
+            run.curves.set(Bound::None);
+            run.sent.borrow_mut().clear();
+            if alone.is_some() {
+                self.install(run)?;
+            }
+        }
+        let rows = self.glyphs.borrow().rows();
+        let glyphs = match rows {
+            0 => Bound::None,
+            r => Bound::Glyphs(r),
+        };
+        let want = match (mode, alone) {
+            (Mode::Shapes, _) => Bound::None,
+            (Mode::Alone, Some(t)) if !t.shared.get() => Bound::Own,
+            _ => glyphs,
+        };
+        let fresh = alone.is_some_and(|t| t.fresh.replace(false));
+        if want != Bound::None && (want != run.curves.get() || fresh) {
+            match want {
+                Bound::Own if !alone.is_some_and(|t| t.texture.get()) => {}
+                Bound::Own => {
+                    let curves = text::internal(first, "_curves");
+                    self.bind_asset(run.batch, &text::internal(GLSL_NAME, "_curves"), &curves)?;
+                    run.curves.set(want);
+                }
+                _ => {
+                    self.bind_glyphs(run.batch, rows)?;
+                    run.curves.set(want);
+                }
+            }
+        }
+        self.run_quads(run, mode, &what)
+    }
+
+    /// Set on the batch of `run`, a run of one text, the text's uniforms
+    /// and those of its words.
+    fn install(&self, run: &Run) -> Result<()> {
+        let scene = self.scene.borrow();
+        let first = &run.members[0].name;
+        let Some(l) = scene.as_ref().and_then(|s| self.text_layer(s, first)) else {
+            return Ok(());
+        };
+        for (u, ty, value) in l.uniforms() {
+            self.set_batch_uniform(run.batch, &u, ty, value)?;
+        }
+        let Some(dl) = self.drawn(first) else {
+            return Ok(());
+        };
+        if let Some((values, size)) = dl.shown.borrow().as_ref() {
+            for (suffix, v) in values {
+                let own = text::internal(GLSL_NAME, suffix);
+                self.set_batch_uniform(run.batch, &own, "float", Value::from(*v))?;
+            }
+            let own = text::internal(GLSL_NAME, "_size");
+            self.set_batch_uniform(run.batch, &own, "vec2", Value::from(size.to_vec()))?;
+        }
+        Ok(())
+    }
+
+    /// Bind GLYPHS at `rows` rows to `batch`, with the uniforms that read it.
+    fn bind_glyphs(&self, batch: c_int, rows: u32) -> Result<()> {
+        self.bind_asset(batch, &text::internal(GLSL_NAME, "_curves"), GLYPHS)?;
+        for (suffix, v) in text::Glyphs::uniforms(rows) {
+            let own = text::internal(GLSL_NAME, suffix);
+            self.set_batch_uniform(batch, &own, "float", Value::from(v))?;
+        }
+        Ok(())
+    }
+
+    /// Hand the batch of `run` the vertices of its members in `mode` that
+    /// changed since it last took them. `what` names the batch in an error.
+    fn run_quads(&self, run: &Run, mode: Mode, what: &str) -> Result<()> {
+        let counts: Vec<usize> = run.members.iter().map(Member::count).collect();
+        let all = *run.sent.borrow() != counts;
+        let span = match all {
+            true => 0..run.members.len(),
+            false => {
+                let changed = |m: &&Member| m.dirty.get();
+                let Some(first) = run.members.iter().position(|m| changed(&m)) else {
+                    return Ok(());
+                };
+                let last = run
+                    .members
+                    .iter()
+                    .rposition(|m| changed(&m))
+                    .expect("a first");
+                first..last + 1
+            }
+        };
+        let mut data: Vec<f32> = Vec::new();
+        {
+            let scene = self.scene.borrow();
+            for m in &run.members[span.clone()] {
+                m.dirty.set(false);
+                let quads = m.quads.borrow();
+                match (mode, &m.text) {
+                    (Mode::Mixed, None) => crate::run::shape_vertices(&quads, &mut data),
+                    (Mode::Mixed, Some(t)) => {
+                        let l = scene
+                            .as_ref()
+                            .and_then(|s| self.text_layer(s, &m.name))
+                            .expect("a run's text is a text layer of the scene");
+                        crate::run::glyph_vertices(l, &quads, t.size.get(), &mut data);
+                    }
+                    _ => data.extend_from_slice(&quads),
+                }
+            }
+        }
+        let nattr = match mode {
+            Mode::Mixed => crate::run::ATTRIBUTES,
+            _ => crate::shape::ATTRIBUTES,
+        };
+        #[cfg(test)]
+        self.run_floats.set(self.run_floats.get() + data.len());
+        if all {
+            self.batch_quads(run.batch, what, &data, nattr)?;
+            *run.sent.borrow_mut() = counts;
+            return Ok(());
+        }
+        if data.is_empty() {
+            return Ok(());
+        }
+        let per_quad = 16 * nattr;
+        let first: usize = counts[..span.start].iter().sum();
+        let ok = unsafe {
+            ffi::ghee_mp_set_batch_quads_at(
+                self.handle,
+                run.batch,
+                c_int::try_from(first)?,
+                data.as_ptr(),
+                c_int::try_from(data.len() / per_quad)?,
+            )
+        };
+        if !ok {
+            bail!(
+                "{}",
+                or_else(self.last_error(), &format!("{what} refused its quads"))
+            );
+        }
         Ok(())
     }
 
@@ -2577,76 +3093,26 @@ impl Renderer {
         Ok(b)
     }
 
-    /// Draw shape layer `l`, new at `index` of drawn pass `pass`, in the run
-    /// of the shape before or after it of its blend, or in a run of its own.
-    fn add_shape(
-        &mut self,
-        pass_name: &str,
-        pass: c_int,
-        index: usize,
-        l: &ShapeLayer,
-    ) -> Result<()> {
-        let names = self.pass_layers(pass_name);
-        let run_of = |n: Option<&String>| {
-            n.and_then(|n| {
-                self.runs
-                    .iter()
-                    .position(|r| r.find(n).is_some() && r.blend == l.blend)
-            })
-        };
-        let prev = index.checked_sub(1).and_then(|k| names.get(k));
-        let next = names.get(index + 1);
-        let joined = match (run_of(prev), run_of(next)) {
-            (Some(r), _) => {
-                let at = prev.and_then(|n| self.runs[r].find(n)).expect("prev") + 1;
-                let shape = RunShape::of(l, self.runs[r].size);
-                self.runs[r].shapes.insert(at, shape);
-                self.moved();
-                Some(r)
-            }
-            (None, Some(r)) => {
-                let shape = RunShape::of(l, self.runs[r].size);
-                self.runs[r].shapes.insert(0, shape);
-                self.moved();
-                Some(r)
-            }
-            (None, None) => None,
-        };
-        let r = match joined {
-            Some(r) => r,
-            None => {
-                let after = self.after(pass_name, index);
-                let batch = self.insert_batch(
-                    pass,
-                    after,
-                    &format!("layer '{}'", l.name),
-                    Some(self.shape_program()?),
-                    l.blend,
-                )?;
-                self.split_run(pass, pass_name, index, batch)?;
-                let size = self.pass_size(pass_name);
-                self.runs.push(ShapeRun {
-                    batch,
-                    blend: l.blend,
-                    size,
-                    shapes: vec![RunShape::of(l, size)],
-                });
-                self.moved();
-                self.runs.len() - 1
-            }
-        };
-        let dl = LayerBatches {
-            batch: self.runs[r].batch,
+    /// A drawn layer named `name`, with no batch yet.
+    fn undrawn(name: &str) -> LayerBatches {
+        LayerBatches {
+            batch: -1,
             colour: -1,
             coloured: std::cell::Cell::new(false),
             boxes: -1,
-            name: l.name.clone(),
+            name: name.to_string(),
             phases: std::cell::RefCell::new(Vec::new()),
             shared: std::cell::Cell::new(false),
             shown: std::cell::RefCell::new(None),
-        };
-        self.put_drawn(pass_name, index, dl);
-        self.run_quads(&self.runs[r])
+        }
+    }
+
+    /// Draw shape layer `l`, new at `index` of drawn pass `pass`, in the
+    /// runs of the pass.
+    fn add_shape(&mut self, pass: &str, index: usize, l: &ShapeLayer) -> Result<()> {
+        let size = self.pass_size(pass);
+        self.put_drawn(pass, index, Self::undrawn(&l.name));
+        self.rerun(pass, vec![Member::shape(l, size)])
     }
 
     /// Draw image layer `l`, new at `index` of drawn pass `pass`.
@@ -2660,16 +3126,9 @@ impl Renderer {
         let after = self.after(pass_name, index);
         let name = format!("layer '{}'", l.name);
         let batch = self.insert_batch(pass, after, &name, Some(l.shaders()), l.blend)?;
-        self.split_run(pass, pass_name, index, batch)?;
         let dl = LayerBatches {
             batch,
-            colour: -1,
-            coloured: std::cell::Cell::new(false),
-            boxes: -1,
-            name: l.name.clone(),
-            phases: std::cell::RefCell::new(Vec::new()),
-            shared: std::cell::Cell::new(false),
-            shown: std::cell::RefCell::new(None),
+            ..Self::undrawn(&l.name)
         };
         for (u, ty, value) in Layer::Image(l.clone()).uniforms() {
             self.set_layer_uniform(&dl, &u, ty, value)?;
@@ -2677,13 +3136,13 @@ impl Renderer {
         self.bind_image(batch, &self.image_asset(l)?)?;
         self.batch_quads(batch, &name, &IMAGE_QUAD, 1)?;
         self.put_drawn(pass_name, index, dl);
-        Ok(())
+        self.rerun(pass_name, Vec::new())
     }
 
     /// Draw text layer `l`, new at `index` of drawn pass `pass`: its glyphs
-    /// after the layer before it, its colour glyphs and its error boxes
-    /// among those of the pass in the order of the layers, its atlas, and
-    /// its words.
+    /// in the runs of the pass, or after the layer before it, its colour
+    /// glyphs and its error boxes among those of the pass in the order of
+    /// the layers, its atlas, and its words.
     fn add_text(
         &mut self,
         pass_name: &str,
@@ -2699,14 +3158,24 @@ impl Renderer {
         }
         let shaders = l.shaders(self.detail(l));
         let name = format!("layer '{}'", l.name);
-        let batch = self.insert_batch(
-            pass,
-            self.after(pass_name, index),
-            &name,
-            Some(shaders.glyphs),
-            l.blend,
-        )?;
-        self.split_run(pass, pass_name, index, batch)?;
+        match joins_runs(&Layer::Text(l.clone())) {
+            true => {
+                let own = Hold::keep(self.handle, &name, &shaders.glyphs)?;
+                self.put_drawn(pass_name, index, Self::undrawn(&l.name));
+                self.rerun(pass_name, vec![Member::text(l, Class::Joins, own)])?;
+            }
+            false => {
+                let after = self.after(pass_name, index);
+                let batch = self.insert_batch(pass, after, &name, Some(shaders.glyphs), l.blend)?;
+                let dl = LayerBatches {
+                    batch,
+                    ..Self::undrawn(&l.name)
+                };
+                self.put_drawn(pass_name, index, dl);
+                self.rerun(pass_name, Vec::new())?;
+            }
+        }
+        let batch = self.drawn(&l.name).expect("the layer was just drawn").batch;
         let names = self.pass_layers(pass_name);
         let text_before = |k: usize| {
             names[..k]
@@ -2722,10 +3191,7 @@ impl Renderer {
             None => names
                 .iter()
                 .rev()
-                .find_map(|n| match *n == l.name {
-                    true => Some(batch),
-                    false => self.drawn(n).map(|d| d.batch),
-                })
+                .find_map(|n| self.drawn(n).map(|d| d.batch))
                 .unwrap_or(batch),
         };
         let colour = self.insert_batch(
@@ -2751,20 +3217,13 @@ impl Renderer {
             Some(shaders.boxes),
             Blend::Normal,
         )?;
-        let dl = LayerBatches {
-            batch,
-            colour,
-            coloured: std::cell::Cell::new(false),
-            boxes,
-            name: l.name.clone(),
-            phases: std::cell::RefCell::new(Vec::new()),
-            shared: std::cell::Cell::new(false),
-            shown: std::cell::RefCell::new(None),
-        };
+        let k = self.places().drawn[&l.name];
+        self.layers[k].colour = colour;
+        self.layers[k].boxes = boxes;
+        let dl = &self.layers[k];
         for (u, ty, value) in l.uniforms() {
-            self.set_layer_uniform(&dl, &u, ty, value)?;
+            self.set_layer_uniform(dl, &u, ty, value)?;
         }
-        self.put_drawn(pass_name, index, dl);
         if l.render == Render::Slug {
             self.curves.insert(l.name.clone());
         }
@@ -2775,66 +3234,27 @@ impl Renderer {
             .and_then(|s| s.text_layer(&l.name).cloned())
             .expect("the layer joined the scene");
         self.add_atlas(&mut self.atlases.borrow_mut(), &mut Vec::new(), &layer)?;
-        self.set_text(&l.name, &l.text)?;
+        self.lay_text(&l.name, &l.text)?;
         Ok(())
     }
 
-    /// Hand the batch of `run` the quads of its shape layers.
-    fn run_quads(&self, run: &ShapeRun) -> Result<()> {
-        let mut quads: Vec<f32> = Vec::new();
-        for s in &run.shapes {
-            quads.extend_from_slice(&s.quads.borrow());
-        }
-        #[cfg(test)]
-        self.shape_quads.set(self.shape_quads.get() + quads.len());
-        let what = format!("layer '{}'", run.shapes[0].name);
-        self.batch_quads(run.batch, &what, &quads, crate::shape::ATTRIBUTES)
-    }
-
-    /// Hand the run of shape layer `l` its quads as `l` draws them. The
-    /// quads of the other layers of the run stay as the batch holds them.
-    fn reshape(&self, l: &ShapeLayer) -> Result<()> {
-        let Some(&(r, k)) = self.places().runs.get(&l.name) else {
-            return Ok(());
+    /// Give the run of shape layer `l` its quads as `l` draws them, for the
+    /// next settle().
+    fn reshape(&self, l: &ShapeLayer) {
+        let Some((r, k)) = self.member_of(&l.name) else {
+            return;
         };
         let run = &self.runs[r];
+        let m = &run.members[k];
         let mut quads = Vec::new();
         l.quads(run.size, &mut quads);
-        let held = run.shapes[k].quads.replace(quads);
-        let quads = run.shapes[k].quads.borrow();
-        if quads.len() != held.len() {
-            drop(quads);
-            return self.run_quads(run);
+        *m.quads.borrow_mut() = quads;
+        m.dirty.set(true);
+        m.class.set(shape_class(l, run.size));
+        self.unsettled.set(true);
+        if m.class.get() != m.placed {
+            self.reclassed.set(true);
         }
-        if quads.is_empty() {
-            return Ok(());
-        }
-        let per_quad = 16 * crate::shape::ATTRIBUTES;
-        let first: usize = run.shapes[..k]
-            .iter()
-            .map(|s| s.quads.borrow().len() / per_quad)
-            .sum();
-        #[cfg(test)]
-        self.shape_quads.set(self.shape_quads.get() + quads.len());
-        let ok = unsafe {
-            ffi::ghee_mp_set_batch_quads_at(
-                self.handle,
-                run.batch,
-                c_int::try_from(first)?,
-                quads.as_ptr(),
-                c_int::try_from(quads.len() / per_quad)?,
-            )
-        };
-        if !ok {
-            bail!(
-                "{}",
-                or_else(
-                    self.last_error(),
-                    &format!("layer '{}' refused its quads", l.name)
-                )
-            );
-        }
-        Ok(())
     }
 
     /// Build the atlas of the text layer `name`, which shows for the first
@@ -2859,7 +3279,7 @@ impl Renderer {
             return Ok(());
         }
         self.words.borrow_mut().remove(name);
-        self.set_text(name, &words)?;
+        self.lay_text(name, &words)?;
         Ok(())
     }
 
@@ -2924,14 +3344,16 @@ impl Renderer {
         let colour = self.colour_quads(layer, &built.colour, &mut faults)?;
         boxes.extend(&colour.1);
         self.text_faults(layer, &faults, true);
-        // A layout with no texture of curves leaves the texture alone.
+        // A layout with no texture of curves leaves the texture alone. A
+        // run binds the texture of its texts as it settles.
         let drawn = self.drawn(name);
+        let member = self.member_of(name);
         if built.shared {
             self.send_glyphs()?;
             let rows = self.glyphs.borrow().rows();
             // The engine binds an asset that it holds, and words with no
             // glyph draw no quad that reads one.
-            if let Some(d) = drawn.filter(|d| !d.shared.get() && rows > 0) {
+            if let Some(d) = drawn.filter(|d| member.is_none() && !d.shared.get() && rows > 0) {
                 self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_curves"), GLYPHS)?;
                 d.shared.set(true);
                 for (suffix, v) in text::Glyphs::uniforms(rows) {
@@ -2950,7 +3372,7 @@ impl Renderer {
                 AssetData::U8(&built.texels),
             )?;
             self.scene_asset(&curves);
-            if let Some(d) = drawn {
+            if let Some(d) = drawn.filter(|_| member.is_none()) {
                 self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_curves"), &curves)?;
                 d.shared.set(false);
             }
@@ -2992,9 +3414,24 @@ impl Renderer {
             (d.colour, &colour.0, format!("{what} colour glyphs")),
             (d.boxes, &boxes, format!("{what} error boxes")),
         ] {
-            if batch >= 0 {
+            if batch >= 0 && !(member.is_some() && batch == d.batch) {
                 self.text_quads(batch, &what, floats)?;
             }
+        }
+        if let Some((r, k)) = member {
+            let m = &self.runs[r].members[k];
+            let t = m.text.as_ref().expect("a text's member");
+            t.size.set(built.size);
+            t.shared.set(built.shared);
+            if !built.shared && built.width > 0 {
+                t.texture.set(true);
+                t.fresh.set(true);
+            }
+            *m.quads.borrow_mut() = quads;
+            m.dirty.set(true);
+            m.reclass.set(true);
+            self.unsettled.set(true);
+            self.reclassed.set(true);
         }
         Ok(())
     }
@@ -3556,7 +3993,8 @@ impl Renderer {
     }
 
     /// Set the uniform `name` of `ptype` to `value` on each batch of the
-    /// drawn layer `dl`.
+    /// drawn layer `dl`. A text of a run of more members holds its uniforms
+    /// in its vertices, which its run takes again at the next settle().
     fn set_layer_uniform(
         &self,
         dl: &LayerBatches,
@@ -3564,8 +4002,20 @@ impl Renderer {
         ptype: &str,
         value: Value,
     ) -> Result<()> {
+        let mut own = true;
+        if let Some((r, k)) = self.member_of(&dl.name) {
+            let run = &self.runs[r];
+            let m = &run.members[k];
+            m.reclass.set(true);
+            self.reclassed.set(true);
+            if run.installed.get() != Some(Mode::Alone) {
+                own = false;
+                m.dirty.set(true);
+                self.unsettled.set(true);
+            }
+        }
         for batch in [dl.batch, dl.colour, dl.boxes] {
-            if batch >= 0 {
+            if batch >= 0 && (own || batch != dl.batch) {
                 self.set_batch_uniform(batch, name, ptype, value.clone())?;
             }
         }
@@ -3860,6 +4310,8 @@ impl Renderer {
     }
 
     pub fn close(&mut self) {
+        // The runs let go of their texts' programs while the engine lives.
+        self.runs.clear();
         if !self.handle.is_null() {
             unsafe { ffi::ghee_destroy(self.handle) };
             self.handle = ptr::null_mut();
@@ -6456,10 +6908,10 @@ mod tests {
         let (_g, mut r) = gpu();
         assert_eq!(r.setup(&sc).unwrap(), "");
         for (calls, floats) in rows {
-            let before = r.shape_quads.get();
+            let before = r.run_floats.get();
             let taken = r.update_calls(&calls).unwrap();
             assert_eq!(taken.changed.len(), calls.len(), "{calls:?}");
-            assert_eq!(r.shape_quads.get() - before, floats, "{calls:?}");
+            assert_eq!(r.run_floats.get() - before, floats, "{calls:?}");
         }
     }
 
@@ -6497,7 +6949,7 @@ mod tests {
         for (look, live, floats) in rows {
             let built = first_frames(&mut r, &scene(&look), 1);
             first_frames(&mut r, &scene(&rect("b", 20, 10, "lime")), 1);
-            let before = r.shape_quads.get();
+            let before = r.run_floats.get();
             match &live {
                 Some((field, value)) => {
                     let at = Address {
@@ -6510,10 +6962,538 @@ mod tests {
                 None => assert!(r.update_layer(&look).unwrap()),
             }
             if let Some(floats) = floats {
-                assert_eq!(r.shape_quads.get() - before, floats, "{look}");
+                assert_eq!(r.run_floats.get() - before, floats, "{look}");
             }
             r.set_time(Some(0.0));
             assert!(still(&mut r) == built, "{look}");
+        }
+    }
+
+    /// A scene of pass `main` of `layers` over FLAT, with `pic`, an image
+    /// asset of 2x2 pixels.
+    fn run_scene(layers: &[Value]) -> Scene {
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "assets": {"pic": {"file": "pic.png"}},
+                    "passes": [{"name": "main", "code": FLAT, "layers": layers}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.assets[0].image = Some(crate::assets::Image {
+            width: 2,
+            height: 2,
+            components: 4,
+            pixels: Pixels::U8(vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128,
+            ]),
+        });
+        sc
+    }
+
+    /// The runs of `r` in the order of the layers: each one's members and
+    /// its mode.
+    fn runs_of(r: &Renderer) -> Vec<(Vec<String>, Mode)> {
+        let mut out: Vec<(Vec<String>, Mode)> = r
+            .runs
+            .iter()
+            .map(|run| {
+                let names = run.members.iter().map(|m| m.name.clone()).collect();
+                (names, run.mode())
+            })
+            .collect();
+        out.sort_by_key(|(names, _)| r.places().scene[&names[0]]);
+        out
+    }
+
+    /// A rect at `x`, `y` of `w` by `h` pixels, half opaque.
+    fn rect(name: &str, at: [f64; 4], color: &str) -> Value {
+        json!({"name": name, "shape": "rect", "x": at[0], "y": at[1], "width": at[2],
+               "height": at[3], "color": color, "opacity": 0.6})
+    }
+
+    /// Words in the pixel font at `x`, `y` and `px` pixels per em.
+    fn words(name: &str, words: &str, x: f64, y: f64, px: f64) -> Value {
+        json!({"name": name, "text": words, "font_family": "pixel", "font_size": px,
+               "x": x, "y": y})
+    }
+
+    /// `layers` with `layer` at `at`, or in place of the layer of its name.
+    fn with(layers: &[Value], at: Option<usize>, layer: &Value) -> Vec<Value> {
+        let mut out = layers.to_vec();
+        match at {
+            Some(k) => out.insert(k, layer.clone()),
+            None => {
+                let k = out.iter().position(|l| l["name"] == layer["name"]).unwrap();
+                out[k] = layer.clone();
+            }
+        }
+        out
+    }
+
+    /// Overlapping shapes and slug texts that draw as one run: the pixel
+    /// font at 8 and 16 px and fitted, and DejaVu at 13 px in a gradient.
+    fn members() -> Vec<Value> {
+        let mut t4 = json!({"name": "t4", "text": "Wq", "render": "slug", "font_size": 13,
+                            "x": 70.5, "y": 30, "color": {"from": "red", "to": "#40a0ff",
+                            "angle": 60}});
+        t4["opacity"] = json!(0.8);
+        vec![
+            rect("a", [2.0, 2.0, 30.0, 12.0], "red"),
+            words("t1", "Ab", 10.0, 4.0, 8.0),
+            json!({"name": "b", "shape": "line", "points": [[4, 8], [40, 20], [52, 6]],
+                   "stroke_width": 2, "color": "lime"}),
+            json!({"name": "t2", "text": "cd", "font_family": "pixel", "font_size": 16,
+                   "x": 20, "y": 6, "color": "orange", "opacity": 0.6}),
+            rect("c", [30.0, 0.0, 20.0, 20.0], "blue"),
+            json!({"name": "t3", "text": "fit", "font_family": "pixel", "x": 96}),
+            t4,
+        ]
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_run_changed_in_place_draws_and_groups_as_a_scene_set_up_with_its_layers() {
+        // Each row changes a running scene of shapes and slug texts in one
+        // way, and the frame and the runs match those of the scene set up
+        // with the layers that the change leaves: a layer added into a run,
+        // or splitting one, a member built again, replaced or leaving its
+        // run, a layer between runs that leaves them to join, and the live
+        // fields of members. An image ahead of a run leaves its picture on
+        // the texture unit that a run's texts read their curves from.
+        enum Op {
+            Add(usize, Value),
+            Replace(Value),
+            Update(Value),
+            Set(&'static str, &'static str, Value),
+            Words(&'static str, &'static str),
+        }
+        let base = members();
+        let shapes: Vec<Value> = base
+            .iter()
+            .filter(|l| l.get("shape").is_some())
+            .cloned()
+            .collect();
+        let mut t2_blink = base[3].clone();
+        t2_blink["blink"] = json!({});
+        let mut t2_small = base[3].clone();
+        t2_small["font_size"] = json!(8);
+        let t2_other = json!({"name": "t2", "text": "xy", "font_family": "pixel", "font_size": 16,
+                              "x": 22, "y": 8, "color": "lime"});
+        let mut wave = words("w", "w", 24.0, 30.0, 8.0);
+        wave["wave"] = json!({"height": 0.2});
+        let calm = words("w", "w", 24.0, 30.0, 8.0);
+        let mut wave_b = wave.clone();
+        wave_b["name"] = json!("b");
+        let between = with(&base, Some(3), &wave);
+        let mut a_add = base[0].clone();
+        a_add["blend"] = json!("add");
+        let mut t3_fits = base[5].clone();
+        t3_fits["text"] = json!("fits");
+        let set = |name: &str, field: &str, value: Value| {
+            let mut out = base.clone();
+            let k = out.iter().position(|l| l["name"] == name).unwrap();
+            out[k][field] = value;
+            out
+        };
+        let gradient = json!({"from": "yellow", "to": "purple", "angle": 30});
+        let s = rect("s", [12.0, 10.0, 6.0, 6.0], "yellow");
+        let image = json!({"name": "img", "image": "pic", "x": 20, "y": 4, "width": 8});
+        let add = {
+            let mut l = rect("plus", [18.0, 4.0, 10.0, 10.0], "white");
+            l["blend"] = json!("add");
+            l
+        };
+        let rows: Vec<(&str, Vec<Value>, Op, Vec<Value>)> = vec![
+            (
+                "a shape joins",
+                base.clone(),
+                Op::Add(2, s.clone()),
+                with(&base, Some(2), &s),
+            ),
+            (
+                "a shape joins a text alone",
+                vec![image.clone(), base[1].clone()],
+                Op::Add(2, s.clone()),
+                vec![image.clone(), base[1].clone(), s.clone()],
+            ),
+            (
+                "a text is left alone",
+                vec![image.clone(), base[1].clone(), base[2].clone()],
+                Op::Replace(wave_b.clone()),
+                vec![image.clone(), base[1].clone(), wave_b.clone()],
+            ),
+            (
+                "a text joins shapes",
+                shapes.clone(),
+                Op::Add(1, base[1].clone()),
+                with(&shapes, Some(1), &base[1]),
+            ),
+            (
+                "an image splits",
+                base.clone(),
+                Op::Add(3, image.clone()),
+                with(&base, Some(3), &image),
+            ),
+            (
+                "an effect splits",
+                base.clone(),
+                Op::Add(3, wave.clone()),
+                between.clone(),
+            ),
+            (
+                "a blend splits",
+                base.clone(),
+                Op::Add(3, add.clone()),
+                with(&base, Some(3), &add),
+            ),
+            (
+                "a member takes an effect",
+                base.clone(),
+                Op::Update(t2_blink.clone()),
+                with(&base, None, &t2_blink),
+            ),
+            (
+                "a member is replaced",
+                base.clone(),
+                Op::Replace(t2_other.clone()),
+                with(&base, None, &t2_other),
+            ),
+            (
+                "a member takes a size",
+                base.clone(),
+                Op::Update(t2_small.clone()),
+                with(&base, None, &t2_small),
+            ),
+            (
+                "the first member takes a blend",
+                base.clone(),
+                Op::Update(a_add.clone()),
+                with(&base, None, &a_add),
+            ),
+            (
+                "an effect leaves",
+                between.clone(),
+                Op::Replace(calm.clone()),
+                with(&between, None, &calm),
+            ),
+            (
+                "a shape becomes a text",
+                base.clone(),
+                Op::Replace(words("c", "C", 30.0, 0.0, 8.0)),
+                with(&base, None, &words("c", "C", 30.0, 0.0, 8.0)),
+            ),
+            (
+                "a text moves",
+                base.clone(),
+                Op::Set("t2", "x", json!(30)),
+                set("t2", "x", json!(30)),
+            ),
+            (
+                "a text hides",
+                base.clone(),
+                Op::Set("t1", "visible", json!(false)),
+                set("t1", "visible", json!(false)),
+            ),
+            (
+                "a text takes a gradient",
+                base.clone(),
+                Op::Set("t1", "color", gradient.clone()),
+                set("t1", "color", gradient.clone()),
+            ),
+            (
+                "a line grows",
+                base.clone(),
+                Op::Set("b", "stroke_width", json!(3)),
+                set("b", "stroke_width", json!(3)),
+            ),
+            (
+                "a text takes words",
+                base.clone(),
+                Op::Words("t3", "fits"),
+                with(&base, None, &t3_fits),
+            ),
+        ];
+        let (_g, mut r) = gpu_at(128, 64);
+        for (what, from, op, want) in rows {
+            let built = first_frames(&mut r, &run_scene(&want), 1);
+            let grouped = runs_of(&r);
+            first_frames(&mut r, &run_scene(&from), 1);
+            match op {
+                Op::Add(k, l) => r.add_layer("main", k, &l).unwrap(),
+                Op::Replace(l) => r.replace_layer(&l).unwrap(),
+                Op::Update(l) => assert!(r.update_layer(&l).unwrap(), "{what}"),
+                Op::Set(layer, field, value) => {
+                    let at = Address {
+                        layer,
+                        effect: None,
+                        field,
+                    };
+                    r.set_layer(&at, Given::Json(&value)).unwrap();
+                }
+                Op::Words(layer, words) => assert!(r.set_text(layer, words).unwrap()),
+            }
+            r.set_time(Some(0.0));
+            assert!(still(&mut r) == built, "{what}");
+            assert_eq!(runs_of(&r), grouped, "{what}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_run_draws_each_member_as_its_own_program_does_and_a_glyph_edge_within_a_level() {
+        // The members draw as one run, and apart, each between texts with an
+        // effect and no words. A run reads a glyph's font size from its
+        // vertex, where the text's own program holds a constant, which moves
+        // an edge pixel by a level at most.
+        let together = members();
+        let mut apart = Vec::new();
+        for (k, l) in together.iter().enumerate() {
+            apart.push(l.clone());
+            apart.push(
+                json!({"name": format!("x{k}"), "text": "", "font_family": "pixel",
+                              "blink": {}}),
+            );
+        }
+        let (_g, mut r) = gpu_at(128, 64);
+        let run = first_frames(&mut r, &run_scene(&together), 1);
+        let names: Vec<String> = together
+            .iter()
+            .map(|l| l["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(runs_of(&r), [(names, Mode::Mixed)]);
+        let each = first_frames(&mut r, &run_scene(&apart), 1);
+        assert!(runs_of(&r).iter().all(|(m, _)| m.len() == 1));
+        assert!(each != first_frames(&mut r, &run_scene(&[]), 1));
+        assert!(worst(&run, &each) <= 1, "{}", worst(&run, &each));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_run_of_one_member_or_of_shapes_draws_through_its_own_program() {
+        // A text alone draws through its own program and shapes through
+        // theirs, and a scene with no run of a text and another member
+        // compiles none.
+        let layers = vec![
+            words("t1", "Ab", 2.0, 2.0, 8.0),
+            json!({"name": "img", "image": "pic", "x": 20, "y": 4, "width": 8}),
+            rect("a", [2.0, 20.0, 10.0, 10.0], "red"),
+            rect("b", [8.0, 24.0, 10.0, 10.0], "blue"),
+            {
+                let mut t = words("t2", "cd", 30.0, 20.0, 16.0);
+                t["blend"] = json!("add");
+                t
+            },
+        ];
+        let (_g, mut r) = gpu_at(128, 64);
+        first_frames(&mut r, &run_scene(&layers), 1);
+        let s = |n: &[&str]| n.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            runs_of(&r),
+            [
+                (s(&["t1"]), Mode::Alone),
+                (s(&["a", "b"]), Mode::Shapes),
+                (s(&["t2"]), Mode::Alone)
+            ]
+        );
+        assert!(!r.mixed_kept.get());
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_layer_past_its_cutoff_stays_out_of_a_run_with_a_text() {
+        // A rect past SHAPE_PIXELS between texts draws in a run of shapes,
+        // and a text past GLYPH_PIXELS between shapes draws alone, so every
+        // layer draws through its own program, byte for byte as apart. A
+        // live set that brings the rect under its cutoff joins it to the
+        // texts at the next frame, and a text that leaves the run compiles
+        // nothing.
+        let side = (crate::run::SHAPE_PIXELS.sqrt() * 1.2).ceil();
+        let big = rect("big", [4.0, 4.0, side, side], "navy");
+        let mut long = String::from("M");
+        let px = 32.0;
+        loop {
+            let t = TextLayer::from_dict("t", &words("t", &long, 0.0, 0.0, px)).unwrap();
+            let b = t.build(&long).unwrap().built.unwrap();
+            if crate::run::glyph_pixels(&b.quads.floats, px) > crate::run::GLYPH_PIXELS {
+                break;
+            }
+            long.push('M');
+        }
+        let tall = words("tall", &long, 2.0, 30.0, px);
+        let rows = [
+            vec![
+                words("t1", "Ab", 2.0, 2.0, 8.0),
+                big.clone(),
+                words("t2", "cd", 6.0, 8.0, 8.0),
+            ],
+            vec![
+                rect("a", [0.0, 28.0, 6.0, 6.0], "red"),
+                tall,
+                rect("b", [10.0, 40.0, 6.0, 6.0], "lime"),
+            ],
+        ];
+        let (_g, mut r) = gpu_at(256, 128);
+        for layers in rows {
+            let together = first_frames(&mut r, &run_scene(&layers), 1);
+            assert!(runs_of(&r).iter().all(|(m, _)| m.len() == 1), "{layers:?}");
+            let mut apart = Vec::new();
+            for (k, l) in layers.iter().enumerate() {
+                apart.push(l.clone());
+                apart.push(
+                    json!({"name": format!("x{k}"), "text": "", "font_family": "pixel",
+                                  "blink": {}}),
+                );
+            }
+            assert!(
+                first_frames(&mut r, &run_scene(&apart), 1) == together,
+                "{layers:?}"
+            );
+        }
+        let around = |l: &Value| {
+            [
+                words("t1", "Ab", 2.0, 2.0, 8.0),
+                l.clone(),
+                words("t2", "cd", 6.0, 8.0, 8.0),
+            ]
+        };
+        let small = rect("big", [4.0, 4.0, 4.0, 4.0], "navy");
+        for (from, to, side) in [(&big, &small, 4.0), (&small, &big, side)] {
+            first_frames(&mut r, &run_scene(&around(from)), 1);
+            let compiled = r.compiled();
+            for field in ["width", "height"] {
+                let at = Address {
+                    layer: "big",
+                    effect: None,
+                    field,
+                };
+                r.set_layer(&at, Given::Json(&json!(side))).unwrap();
+            }
+            r.set_time(Some(0.0));
+            let live = still(&mut r);
+            let grouped = runs_of(&r);
+            if side > 4.0 {
+                assert_eq!(
+                    r.compiled(),
+                    compiled,
+                    "the texts that leave compile nothing"
+                );
+            }
+            assert!(
+                first_frames(&mut r, &run_scene(&around(to)), 1) == live,
+                "{side}"
+            );
+            assert_eq!(runs_of(&r), grouped, "{side}");
+            assert_eq!(grouped.len(), if side > 4.0 { 3 } else { 1 }, "{side}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_text_whose_cover_a_pass_reads_draws_alone() {
+        // A pass reads t2's words through `t2_cover`, which lays them out
+        // into a texture of their own, so t2 draws alone between runs of
+        // the members beside it, as it draws apart.
+        let layers = members();
+        let doc = |layers: &[Value]| {
+            let mut sc = run_scene(layers);
+            sc.passes[0].code = "void main(){ float c = t2_cover(v_texCoord * t2_size, 16.0); \
+                                 gl_FragColor = vec4(0.5, 0.25 + 0.5 * c, 0.75, 1.0); }"
+                .to_string();
+            sc
+        };
+        let (_g, mut r) = gpu_at(128, 64);
+        let run = first_frames(&mut r, &doc(&layers), 1);
+        let s = |n: &[&str]| n.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            runs_of(&r),
+            [
+                (s(&["a", "t1", "b"]), Mode::Mixed),
+                (s(&["t2"]), Mode::Alone),
+                (s(&["c", "t3", "t4"]), Mode::Mixed)
+            ]
+        );
+        let mut apart = Vec::new();
+        for (k, l) in layers.iter().enumerate() {
+            apart.push(l.clone());
+            apart.push(
+                json!({"name": format!("x{k}"), "text": "", "font_family": "pixel",
+                              "blink": {}}),
+            );
+        }
+        assert!(worst(&run, &first_frames(&mut r, &doc(&apart), 1)) <= 1);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_changed_member_of_a_run_of_a_text_hands_the_engine_its_own_vertices() {
+        // A run of a rect, two glyphs of t1 and a rect. A change to one
+        // member hands the engine that member's vertices alone, changes to
+        // the two rects one span from the first to the last, and new words
+        // of another count every vertex of the run.
+        use crate::draw::{Arg, Call, CallKind};
+        let call = |name: &str, x: f64| {
+            let mut args = vec![Arg::None; CallKind::Rect.keys().len()];
+            args[0] = Arg::Num(x);
+            args[1] = Arg::Num(2.0);
+            args[2] = Arg::Num(6.0);
+            args[3] = Arg::Num(6.0);
+            Call {
+                kind: CallKind::Rect,
+                layer: name.to_string(),
+                args,
+            }
+        };
+        let layers = [
+            json!({"name": "a", "shape": "rect", "x": 2, "y": 2, "width": 6, "height": 6}),
+            words("t1", "Ab", 10.0, 2.0, 8.0),
+            json!({"name": "b", "shape": "rect", "x": 30, "y": 2, "width": 6, "height": 6}),
+        ];
+        let quad = 4 * 4 * crate::run::ATTRIBUTES;
+        let (_g, mut r) = gpu_at(64, 32);
+        first_frames(&mut r, &run_scene(&layers), 1);
+        assert_eq!(runs_of(&r).len(), 1);
+        let x = Address {
+            layer: "t1",
+            effect: None,
+            field: "x",
+        };
+        type Change = Box<dyn Fn(&mut Renderer)>;
+        let rows: [(&str, Change, usize); 5] = [
+            (
+                "t1 x",
+                Box::new(move |r| r.set_layer(&x, Given::Json(&json!(12))).unwrap()),
+                2 * quad,
+            ),
+            (
+                "b",
+                Box::new(move |r| {
+                    assert_eq!(r.update_calls(&[call("b", 31.0)]).unwrap().changed, [0])
+                }),
+                quad,
+            ),
+            (
+                "a and b",
+                Box::new(move |r| {
+                    let taken = r.update_calls(&[call("a", 3.0), call("b", 32.0)]).unwrap();
+                    assert_eq!(taken.changed, [0, 1]);
+                }),
+                4 * quad,
+            ),
+            (
+                "t1 words",
+                Box::new(|r| assert!(r.set_text("t1", "Cd").unwrap())),
+                2 * quad,
+            ),
+            (
+                "t1 more words",
+                Box::new(|r| assert!(r.set_text("t1", "Cde").unwrap())),
+                5 * quad,
+            ),
+        ];
+        for (what, change, floats) in rows {
+            let before = r.run_floats.get();
+            change(&mut r);
+            assert_eq!(r.run_floats.get() - before, floats, "{what}");
         }
     }
 

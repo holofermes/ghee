@@ -60,6 +60,7 @@ pub mod output;
 pub mod panel;
 pub mod procedural;
 pub(crate) mod report;
+pub mod run;
 pub mod scene;
 pub mod shape;
 pub(crate) mod sources;

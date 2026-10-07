@@ -3462,7 +3462,8 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
     // VC4 runs a short fragment shader whose last texture read sits outside
     // an if in two threads, and the switch loses the condition flags. Each
     // row is one layer, and every fragment shader of each of its batches that
-    // reads a texture reads it last in such an if.
+    // reads a texture reads it last in such an if, as does the program of a
+    // run of a text and other layers.
     let effects = [
         json!({}),
         json!({"text_shadow": {}}),
@@ -3493,6 +3494,7 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
         json!({"name": "r", "shape": "rect"}),
         json!({"name": "l", "shape": "line", "points": [[0, 0], [4, 4]]}),
     ]);
+    let mut all = vec![(json!("a run"), vec![("runs", ghee::run::program().1)])];
     for keys in rows {
         let programs = match Layer::from_dict("a layer", &keys).unwrap() {
             Layer::Text(l) => {
@@ -3507,6 +3509,9 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
             // Every shape draws through one program, which reads no texture.
             Layer::Shape(_) => vec![("shapes", ghee::shape::program().1)],
         };
+        all.push((keys, programs));
+    }
+    for (keys, programs) in all {
         for (what, fs) in programs {
             let main = own_main(&fs);
             let reads: Vec<usize> = (0..main.len())

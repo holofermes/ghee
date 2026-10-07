@@ -7,7 +7,9 @@
 //! every pass of the scene except a filter pass reads them with
 //! `<name>_cover` and `<name>_size`, whether the layer shows or not. The
 //! layer draws one quad over each inked glyph through shaders that ghee
-//! writes from its settings, [`TextLayer::shaders`].
+//! writes from its settings, [`TextLayer::shaders`], and a slug layer with
+//! no effect draws in one batch with the shapes and the slug layers beside
+//! it, as `crate::run` describes.
 //!
 //! An image layer draws an image asset of the scene, or an image file of its
 //! own, as one quad through [`ImageLayer::shaders`]. Its shader samples the
@@ -258,7 +260,7 @@ impl Color {
 
     /// The colours at the gradient's start and end, and its angle. A solid
     /// colour is a gradient of one colour.
-    fn ends(self) -> (Rgb, Rgb, f64) {
+    pub(crate) fn ends(self) -> (Rgb, Rgb, f64) {
         match self {
             Color::Solid(c) => (c, c, GRADIENT_ANGLE),
             Color::Gradient { from, to, angle } => (from, to, angle),
@@ -1221,7 +1223,7 @@ impl TextLayer {
     /// the pixel font. A fitted size then rounds down to a whole multiple of
     /// it, one grid at the least, and the block, each pen and each baseline
     /// land on whole pixels.
-    fn grid(&self) -> Option<f64> {
+    pub(crate) fn grid(&self) -> Option<f64> {
         (self.font_family.as_deref() == Some(text::PIXEL)).then_some(text::PIXEL_EM)
     }
 
@@ -1673,6 +1675,42 @@ impl TextLayer {
 fn named(glsl: &str) -> String {
     glsl.replace("LATTICE", &format!("{:?}", text::LATTICE))
         .replace("NAME", GLSL_NAME)
+}
+
+/// The main of a glyph of a slug text with no effects in each stage of a
+/// run's program, which draws the glyph as the text's own program does:
+/// the vertex stage's lines, with the font size in `fs`, 0 to fit the
+/// block to its room, and `grid` true for a text on the pixel grid, and the
+/// fragment stage's lines, which set gl_FragColor. Each uniform that the
+/// text's own program reads is a local of the same name, which the caller
+/// declares, and so are v_texCoord and ghee_v4.
+pub(crate) fn run_glyph(fs: &str, grid: &str) -> (String, String) {
+    let pixel = text::built_in(Some(text::PIXEL)).expect("ghee carries the pixel font");
+    let vertex = [
+        format!("    float ghee_fs = {fs};"),
+        "    if (ghee_fs <= 0.0) {".to_string(),
+        FIT.replace("FIT_MARGIN", &py_float(FIT_MARGIN)),
+        format!(
+            "    if ({grid}) ghee_fs = {};",
+            fitted(Some(text::PIXEL_EM))
+        ),
+        format!("    else ghee_fs = {};", fitted(None)),
+        "    }".to_string(),
+        PLACE.to_string(),
+        format!("    if ({grid}) {}", SNAP.trim_start()),
+        CORNER.replace("GROW", "0.625 / ghee_ppe"),
+        slug_varyings(true, false).1.trim_end().to_string(),
+        format!("    if ({grid}) {{\n{}\n    }}", pen(&[pixel])),
+        POSITION.replace("HIDE", "ghee_NAME_visible < 0.5"),
+    ];
+    let fragment = SLUG_BODY.replace("COLOUR\n", &gradient_colour("    ", "ghee_v1.w"));
+    (named(&vertex.join("\n")), named(&fragment))
+}
+
+/// The last lines of the main of a fragment stage that draws slug glyphs,
+/// which read the texture of curves at `at`.
+pub(crate) fn run_guard(at: &str) -> String {
+    named(&SLUG_GUARD.replace("v_texCoord", at))
 }
 
 /// An image layer of a pass.

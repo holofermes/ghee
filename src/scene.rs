@@ -1938,49 +1938,77 @@ impl Scene {
             bail!("{e}");
         }
         for l in scene.text_layers() {
-            let Some(font) = l.font_family.as_deref() else {
-                continue;
-            };
-            if crate::text::is_font_file(font) {
-                continue;
-            }
-            match scene.assets.iter().find(|a| a.name == font) {
-                Some(a) if a.is_font() => {}
-                Some(a) => bail!(
-                    "layer '{}' font_family '{font}' is the image {}, a font is a .ttf or .otf \
-                     file",
-                    l.name,
-                    py_str_repr(&a.file)
-                ),
-                None if font == crate::text::PIXEL => {}
-                None => bail!(
-                    "layer '{}' font_family '{font}' is no asset of the scene, no .ttf or \
-                     .otf file and not '{}', the built-in pixel font",
-                    l.name,
-                    crate::text::PIXEL
-                ),
+            if let Some(e) = l.font_family.as_deref().and_then(|f| scene.font_fault(f)) {
+                bail!("layer '{}' {e}", l.name);
             }
         }
         for l in scene.layers().filter_map(Layer::as_image) {
-            let image = l.image.as_str();
-            if is_image_file(image) {
-                continue;
-            }
-            let own = |a: &&Asset| a.name == image && a.from_filter.is_empty();
-            match scene.assets.iter().find(own) {
-                Some(a) if a.is_font() => bail!(
-                    "layer '{}' image '{image}' is the font {}, an image is a .png or .jpg file",
-                    l.name,
-                    py_str_repr(&a.file)
-                ),
-                Some(_) => {}
-                None => bail!(
-                    "layer '{}' image '{image}' is no asset of the scene and no .png or .jpg file",
-                    l.name
-                ),
+            if let Some(e) = scene.image_fault(&l.image) {
+                bail!("layer '{}' {e}", l.name);
             }
         }
         Ok(())
+    }
+
+    /// Why an image layer of the scene cannot take `image`, or None when it
+    /// can: a .png or .jpg file, or an image asset of the scene's own.
+    fn image_fault(&self, image: &str) -> Option<String> {
+        if is_image_file(image) {
+            return None;
+        }
+        let own = |a: &&Asset| a.name == image && a.from_filter.is_empty();
+        match self.assets.iter().find(own) {
+            Some(a) if a.is_font() => Some(format!(
+                "image '{image}' is the font {}, an image is a .png or .jpg file",
+                py_str_repr(&a.file)
+            )),
+            Some(_) => None,
+            None => Some(format!(
+                "image '{image}' is no asset of the scene and no .png or .jpg file"
+            )),
+        }
+    }
+
+    /// Put `layer` in the place of the layer of its name, which it differs
+    /// from in live fields alone, through the checks of a live set: an image
+    /// layer's image. The words param of a text layer takes its words.
+    pub(crate) fn swap_live(&mut self, layer: Layer) -> Result<()> {
+        let name = layer.name().to_string();
+        let Some((at, index)) = self.place_of(&name) else {
+            bail!("the scene has no layer '{name}'");
+        };
+        if let Some(e) = layer.as_image().and_then(|l| self.image_fault(&l.image)) {
+            bail!("layer '{name}' {e}");
+        }
+        if let (Some(l), Some(p)) = (layer.as_text(), self.params.get_mut(&name)) {
+            if p.of_text {
+                p.value = ParamValue::Str(l.text.clone());
+            }
+        }
+        self.passes[at].layers[index] = layer;
+        Ok(())
+    }
+
+    /// Why a text layer of the scene cannot take `font` as its
+    /// font_family, or None when it can: a font file, a font asset of the
+    /// scene, or the built-in pixel font.
+    fn font_fault(&self, font: &str) -> Option<String> {
+        if crate::text::is_font_file(font) {
+            return None;
+        }
+        match self.assets.iter().find(|a| a.name == font) {
+            Some(a) if a.is_font() => None,
+            Some(a) => Some(format!(
+                "font_family '{font}' is the image {}, a font is a .ttf or .otf file",
+                py_str_repr(&a.file)
+            )),
+            None if font == crate::text::PIXEL => None,
+            None => Some(format!(
+                "font_family '{font}' is no asset of the scene, no .ttf or .otf file and not \
+                 '{}', the built-in pixel font",
+                crate::text::PIXEL
+            )),
+        }
     }
 
     /// Put `layer` into pass `pass` at `index` among its layers, through the
@@ -2019,6 +2047,46 @@ impl Scene {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// Put `layer` in the place of the layer of its name, through the checks
+    /// of a scene that declares it there. The words param of a text layer
+    /// takes its words, and a layer of another kind leaves no words param. A
+    /// layer that the scene refuses leaves it as it was.
+    pub fn replace_layer(&mut self, layer: Layer) -> Result<()> {
+        let name = layer.name().to_string();
+        let Some((at, index)) = self.place_of(&name) else {
+            bail!("the scene has no layer '{name}'");
+        };
+        let held = self.params.get(&name).filter(|p| p.of_text).cloned();
+        let words = layer.as_text().map(|l| Param::words(&name, &l.text));
+        let old = std::mem::replace(&mut self.passes[at].layers[index], layer);
+        match words {
+            Some(w) if held.is_some() || !self.params.contains_key(&name) => {
+                self.params.insert(name.clone(), w);
+            }
+            Some(_) => {}
+            None => self.params.retain(|p| !(p.of_text && p.name == name)),
+        }
+        if let Err(e) = self.check_layers() {
+            self.passes[at].layers[index] = old;
+            self.params.retain(|p| !(p.of_text && p.name == name));
+            if let Some(p) = held {
+                self.params.insert(name, p);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The pass index and the index among its layers of layer `name`.
+    pub(crate) fn place_of(&self, name: &str) -> Option<(usize, usize)> {
+        self.passes.iter().enumerate().find_map(|(p, pass)| {
+            pass.layers
+                .iter()
+                .position(|l| l.name() == name)
+                .map(|i| (p, i))
+        })
     }
 
     /// Take layer `name` out of the scene, with the words param of a text

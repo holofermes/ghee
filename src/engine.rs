@@ -47,7 +47,7 @@ use crate::layer::{
     is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer, GLSL_NAME,
 };
 use crate::scene::{ArraySize, ParamValue, Pass, Scene};
-use crate::shape::ShapeLayer;
+use crate::shape::{Shape, ShapeLayer};
 use crate::text::{self, Fault, Layout};
 
 /// The passes that the engine holds, filter passes included. engine.c holds
@@ -265,6 +265,63 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// A fault of the caller's in a layer or a value, as a Refused error.
+fn refused(e: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(Refused(format!("{e:#}")))
+}
+
+/// The kind of `layer`: text, image, or its shape for a shape layer.
+fn kind_of(layer: &Layer) -> &'static str {
+    match layer {
+        Layer::Text(_) => "text",
+        Layer::Image(_) => "image",
+        Layer::Shape(l) => match l.shape {
+            Shape::Rect { .. } => "rect",
+            Shape::Line { .. } => "line",
+        },
+    }
+}
+
+/// `look`, a layer of the kind of `old` as a scene declares it, with each
+/// effect of `old` that it leaves out, and a rect's border, bypassed with
+/// its values.
+fn keep_bypassed(old: &Layer, look: &Value) -> Value {
+    let mut look = look.clone();
+    let (Some(o), Value::Object(was)) = (look.as_object_mut(), old.to_dict("")) else {
+        return look;
+    };
+    for (key, mut v) in was {
+        let effect = v.is_object() && old.live(Some(&key), "visible").is_ok();
+        if effect && o.get(&key).is_none_or(Value::is_null) {
+            v["visible"] = Value::from(false);
+            o.insert(key, v);
+        }
+    }
+    look
+}
+
+/// The keys of `d`, layer `layer` as a scene writes it, that change with a
+/// rebuild: every key but the name, the words and the live fields of
+/// `layer`, its effects' among them. A rect's border is live whole.
+fn build_of(layer: &Layer, d: &Value) -> Value {
+    let mut d = d.clone();
+    if let Some(o) = d.as_object_mut() {
+        o.retain(|k, v| {
+            if k == "name" || k == "text" || layer.live(None, k).is_ok() {
+                return false;
+            }
+            match v {
+                Value::Object(fields) if layer.live(Some(k), "visible").is_ok() => {
+                    fields.retain(|f, _| layer.live(Some(k), f).is_err());
+                    !(fields.is_empty() && layer.as_shape().is_some())
+                }
+                _ => true,
+            }
+        });
+    }
+    d
+}
 
 /// The image layers of `drawn` that draw a file of their own.
 fn drawn_files(drawn: &[Pass]) -> impl Iterator<Item = &ImageLayer> {
@@ -1813,15 +1870,38 @@ impl Renderer {
     /// A layer that the scene refuses, as a scene file would refuse it in
     /// that place, fails with a Refused error and changes nothing.
     pub fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Result<()> {
-        let refused = |e: anyhow::Error| anyhow::Error::new(Refused(format!("{e:#}")));
         let at = format!("the layer added at {index} to pass '{pass}'");
         let mut new = Layer::from_dict(&at, layer).map_err(refused)?;
+        let drawn = self.admit(pass, &mut new)?;
+        let name = new.name().to_string();
+        self.scene
+            .borrow_mut()
+            .as_mut()
+            .expect("admit() found the scene")
+            .insert_layer(pass, index, new.clone())
+            .map_err(refused)?;
+        if !drawn {
+            return Ok(());
+        }
+        if let Err(e) = self.draw_new(pass, index, &new) {
+            if let Some(scene) = self.scene.borrow_mut().as_mut() {
+                scene.remove_layer(&name);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Ready `new`, a layer that joins pass `pass`, as the scene's load
+    /// readied its own: its fonts or its image file, and a texture unit for
+    /// a layer that samples one. Returns true when the pass draws.
+    fn admit(&mut self, pass: &str, new: &mut Layer) -> Result<bool> {
         let (drawn, want) = {
             let scene = self.scene.borrow();
             let Some(scene) = scene.as_ref() else {
                 return Err(Refused("the renderer holds no scene".to_string()).into());
             };
-            scene.load_layer(&mut new).map_err(refused)?;
+            scene.load_layer(new).map_err(refused)?;
             let p = scene.passes.iter().find(|p| p.name == pass);
             let drawn = p.is_some_and(|p| p.visible) && self.pass_index(pass).is_some();
             let want = p.map_or(0, |p| {
@@ -1839,33 +1919,227 @@ impl Renderer {
                 return Err(Refused(e).into());
             }
         }
-        let name = new.name().to_string();
-        if let Layer::Image(l) = &new {
+        if let Layer::Image(l) = &*new {
             if drawn && l.is_file() {
                 let img = l.data.as_ref().expect("load_layer read the file");
                 self.file_asset(&l.image, img)?;
             }
         }
+        Ok(drawn)
+    }
+
+    /// Draw `new`, which the model holds at `index` of drawn pass `pass`.
+    fn draw_new(&mut self, pass: &str, index: usize, new: &Layer) -> Result<()> {
+        let idx = self.pass_index(pass).expect("the pass is drawn");
+        match new {
+            Layer::Shape(l) => self.add_shape(pass, idx, index, l),
+            Layer::Image(l) => self.add_image(pass, idx, index, l),
+            Layer::Text(l) => self.add_text(pass, idx, index, l),
+        }
+    }
+
+    /// Build the layer of the name of `layer`, a layer as a scene declares
+    /// it, again from `layer`, in its place among the layers of its pass.
+    /// Every other layer keeps its program, its atlas, its phases and its
+    /// quads, and every pass keeps its program, its arrays and its buffers.
+    /// The layer's moving effects carry their phases on, and its kind may
+    /// change.
+    ///
+    /// A layer that the scene refuses in that place, or a name that names no
+    /// layer, fails with a Refused error and changes nothing.
+    pub fn replace_layer(&mut self, layer: &Value) -> Result<()> {
+        let mut new = Layer::from_dict("the new layer", layer).map_err(refused)?;
+        let name = new.name().to_string();
+        let (pass, index) = {
+            let scene = self.scene.borrow();
+            let place = scene.as_ref().and_then(|s| {
+                let (p, i) = s.place_of(&name)?;
+                Some((s.passes[p].name.clone(), i))
+            });
+            match place {
+                Some(place) => place,
+                None => return Err(Refused(format!("the scene has no layer '{name}'")).into()),
+            }
+        };
+        let drawn = self.admit(&pass, &mut new)?;
         self.scene
             .borrow_mut()
             .as_mut()
-            .expect("the scene was just found")
-            .insert_layer(pass, index, new.clone())
+            .expect("admit() found the scene")
+            .replace_layer(new.clone())
             .map_err(refused)?;
         if !drawn {
             return Ok(());
         }
-        let idx = self.pass_index(pass).expect("the pass is drawn");
-        let added = match &new {
-            Layer::Shape(l) => self.add_shape(pass, idx, index, l),
-            Layer::Image(l) => self.add_image(pass, idx, index, l),
-            Layer::Text(l) => self.add_text(pass, idx, index, l),
-        };
-        if let Err(e) = added {
+        let phases = self.drop_drawn(&name)?;
+        if let Err(e) = self.draw_new(&pass, index, &new) {
             if let Some(scene) = self.scene.borrow_mut().as_mut() {
                 scene.remove_layer(&name);
             }
             return Err(e);
+        }
+        let (Some(l), Some(dl)) = (new.as_text(), self.drawn(&name)) else {
+            return Ok(());
+        };
+        let mut carried = Vec::new();
+        for (kind, uniform, _) in l.paces() {
+            if let Some((_, phase)) = phases.iter().find(|(k, _)| *k == kind) {
+                self.set_layer_uniform(dl, &uniform, "float", Value::from(*phase))?;
+                carried.push((kind, *phase));
+            }
+        }
+        *dl.phases.borrow_mut() = carried;
+        Ok(())
+    }
+
+    /// Give the layer of the name of `layer` the look of `layer`, a layer as
+    /// a scene declares it: every key that `layer` leaves out takes its
+    /// default. An effect of the layer that `layer` leaves out stays,
+    /// bypassed, with its values, and so does a rect's border. A look that
+    /// differs in live fields alone takes them as set_layer() would, with no
+    /// rebuild, and any other difference builds the layer again in its
+    /// place, as replace_layer() does. Returns false when the layer has that
+    /// look already, and then changes nothing.
+    ///
+    /// A layer that the scene refuses, or a name that names no layer, fails
+    /// with a Refused error and changes nothing.
+    pub fn update_layer(&mut self, layer: &Value) -> Result<bool> {
+        let new = Layer::from_dict("the new layer", layer).map_err(refused)?;
+        let name = new.name().to_string();
+        let (old, words) = {
+            let scene = self.scene.borrow();
+            let Some(old) = scene.as_ref().and_then(|s| s.layer(&name)) else {
+                return Err(Refused(format!("the scene has no layer '{name}'")).into());
+            };
+            let words = scene
+                .as_ref()
+                .and_then(|s| s.words(&name))
+                .map(str::to_string);
+            (old.clone(), words)
+        };
+        let look = match kind_of(&old) == kind_of(&new) {
+            true => keep_bypassed(&old, layer),
+            false => layer.clone(),
+        };
+        let mut new = Layer::from_dict("the new layer", &look).map_err(refused)?;
+        let old_words =
+            words.unwrap_or_else(|| old.as_text().map_or(String::new(), |l| l.text.clone()));
+        let new_words = new.as_text().map_or(String::new(), |l| l.text.clone());
+        let (was, will) = (old.to_dict(&old_words), new.to_dict(&new_words));
+        if was == will {
+            return Ok(false);
+        }
+        if build_of(&old, &was) != build_of(&old, &will) {
+            self.replace_layer(&look)?;
+            return Ok(true);
+        }
+        // The same build: the fonts and the file of the layer stay.
+        match (&mut new, &old) {
+            (Layer::Text(n), Layer::Text(o)) => {
+                n.data.clone_from(&o.data);
+                n.emoji.clone_from(&o.emoji);
+            }
+            (Layer::Image(n), Layer::Image(o)) if n.image == o.image => n.data.clone_from(&o.data),
+            _ => {}
+        }
+        let drawn = self.drawn(&name).is_some();
+        if let (Layer::Image(n), Layer::Image(o)) = (&new, &old) {
+            if drawn && n.image != o.image && is_image_file(&n.image) {
+                self.load_file(&name, &n.image).map_err(refused)?;
+            }
+        }
+        self.scene
+            .borrow_mut()
+            .as_mut()
+            .expect("the layer was just found")
+            .swap_live(new.clone())
+            .map_err(refused)?;
+        let Some(dl) = self.drawn(&name) else {
+            return Ok(true);
+        };
+        let before = old.uniforms();
+        for (u, ty, value) in new.uniforms() {
+            if !before.iter().any(|(n, _, v)| *n == u && *v == value) {
+                self.set_layer_uniform(dl, &u, ty, value)?;
+            }
+        }
+        if let (Layer::Image(n), Layer::Image(o)) = (&new, &old) {
+            if n.image != o.image {
+                self.bind_image(dl.batch, &self.image_asset(n)?)?;
+            }
+        }
+        if let Some(run) = self.runs.iter().find(|r| r.layers.contains(&name)) {
+            self.run_quads(run)?;
+        }
+        if new_words != old_words {
+            self.set_text(&name, &new_words)?;
+        }
+        let shown = |l: &Layer| l.as_text().is_some_and(|l| l.visible);
+        if shown(&new) && !shown(&old) {
+            self.first_shown(&name)?;
+        }
+        Ok(true)
+    }
+
+    /// Take the drawing of layer `name` out of the engine: its batches, its
+    /// place in a run of shapes, its atlas and what its words held. The
+    /// model keeps the layer. Returns the phases of its moving effects.
+    fn drop_drawn(&mut self, name: &str) -> Result<Vec<(Kind, f64)>> {
+        let Some(k) = self.layers.iter().position(|d| d.name == name) else {
+            return Ok(Vec::new());
+        };
+        let dl = self.layers.remove(k);
+        match self
+            .runs
+            .iter()
+            .position(|r| r.layers.iter().any(|n| n == name))
+        {
+            Some(r) => {
+                self.runs[r].layers.retain(|n| n != name);
+                if self.runs[r].layers.is_empty() {
+                    let run = self.runs.remove(r);
+                    self.remove_batch(run.batch)?;
+                } else {
+                    self.run_quads(&self.runs[r])?;
+                }
+            }
+            None => {
+                for batch in [dl.batch, dl.colour, dl.boxes] {
+                    if batch >= 0 {
+                        self.remove_batch(batch)?;
+                    }
+                }
+            }
+        }
+        // An atlas that no layer draws from stays, for a layer of the same
+        // font and detail to take with its glyphs.
+        let atlas = text::internal(name, "_atlas");
+        for slot in self.atlases.borrow_mut().iter_mut() {
+            slot.textures.retain(|t| t.0 != atlas);
+        }
+        self.px_em.remove(name);
+        self.words.borrow_mut().remove(name);
+        self.held.borrow_mut().remove(name);
+        self.colours.borrow_mut().remove(name);
+        if self.text_errors.borrow_mut().remove(name).is_some() {
+            self.text_errors_seq.set(self.text_errors_seq.get() + 1);
+        }
+        // A pass that reads the layer's `_cover` keeps reading its curves.
+        self.curves.remove(name);
+        let tex = CString::new(text::internal(name, "_curves_tex"))?;
+        if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
+            self.curves.insert(name.to_string());
+        }
+        Ok(dl.phases.into_inner())
+    }
+
+    /// Take batch `batch` out of the engine.
+    fn remove_batch(&self, batch: c_int) -> Result<()> {
+        if !unsafe { ffi::ghee_mp_remove_batch(self.handle, batch) } {
+            bail!(
+                "{}",
+                or_else(self.last_error(), &format!("batch {batch} stayed"))
+            );
         }
         Ok(())
     }
@@ -5214,6 +5488,28 @@ mod tests {
                 assert!(near3(got, [255.0, 255.0, 0.0]), "({x}, {y}): {got:?}");
             }
         }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_layer_built_again_and_again_holds_the_batches_of_one_layer() {
+        // The engine hands the index of a batch taken out to the next batch
+        // that comes in.
+        let (_g, mut r) = gpu();
+        let words = |px: i32| json!({"name": "t", "text": "Hi", "font_size": px});
+        let doc = json!([{"name": "main", "code": FLAT, "layers": [words(12)]}]);
+        assert_eq!(r.setup(&scene_of(doc)).unwrap(), "");
+        let held = |r: &Renderer| {
+            let d = r.drawn("t").unwrap();
+            let mut b = vec![d.batch, d.colour, d.boxes];
+            b.sort_unstable();
+            b
+        };
+        let first = held(&r);
+        for px in [14, 16, 18, 20] {
+            r.replace_layer(&words(px)).unwrap();
+        }
+        assert_eq!(held(&r), first);
     }
 
     #[test]

@@ -1458,9 +1458,19 @@ static bool make_quad_indices(GheeScene *g) {
     return true;
 }
 
+// Committed batch `batch`, or NULL with the error set for an index that
+// holds none: out of range, or a batch that ghee_mp_remove_batch took out.
+static struct mp_batch *running_batch(GheeScene *g, int batch) {
+    if (batch < 0 || batch >= g->mp_nbatch || g->mp_batch[batch].pass < 0) {
+        set_error(g, "no batch %d in the scene", batch);
+        return NULL;
+    }
+    return &g->mp_batch[batch];
+}
+
 bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int quads, int nattr) {
-    if (batch < 0 || batch >= g->mp_nbatch) { set_error(g, "no batch %d in the scene", batch); return false; }
-    struct mp_batch *l = &g->mp_batch[batch];
+    struct mp_batch *l = running_batch(g, batch);
+    if (!l) return false;
     if (quads < 0 || nattr < 1 || nattr > MP_BATCH_ATTRIBS) {
         set_error(g, "%s: %d quads of %d attributes a vertex, where a vertex holds 1 to %d",
                   l->name, quads, nattr, MP_BATCH_ATTRIBS);
@@ -1747,8 +1757,8 @@ bool ghee_mp_reads(GheeScene *g, const char *name) {
 // Bind a set asset to a committed batch under `name`, in place of the asset
 // bound there before.
 bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *asset) {
-    if (batch < 0 || batch >= g->mp_nbatch) { set_error(g, "no batch %d in the scene", batch); return false; }
-    struct mp_batch *l = &g->mp_batch[batch];
+    struct mp_batch *l = running_batch(g, batch);
+    if (!l) return false;
     if (!l->program) { set_error(g, "%s has no program", l->name); return false; }
     const int a = mp_asset_index(g, asset);
     if (a < 0) { set_error(g, "%s: asset '%s' is not set", l->name, asset); return false; }
@@ -1778,8 +1788,8 @@ bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *a
 
 bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_source,
                                const char *fragment_source) {
-    if (batch < 0 || batch >= g->mp_nbatch) { set_error(g, "no batch %d in the scene", batch); return false; }
-    struct mp_batch *l = &g->mp_batch[batch];
+    struct mp_batch *l = running_batch(g, batch);
+    if (!l) return false;
     const int p = l->pass;
     make_current(g);
     const GLuint prog = program_take(g, vertex_source, fragment_source);
@@ -1808,8 +1818,8 @@ bool ghee_mp_keep_program(GheeScene *g, const char *vertex_source, const char *f
 }
 
 bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param) {
-    if (batch < 0 || batch >= g->mp_nbatch) { set_error(g, "no batch %d in the scene", batch); return false; }
-    struct mp_batch *l = &g->mp_batch[batch];
+    struct mp_batch *l = running_batch(g, batch);
+    if (!l) return false;
     struct mp_value *v = NULL;
     for (int k = 0; k < l->nvalues && !v; k++)
         if (strcmp(l->values[k].name, param->name) == 0) v = &l->values[k];
@@ -1845,7 +1855,14 @@ int ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name, co
         return -1;
     }
     if (blend < GHEE_BLEND_NORMAL || blend > GHEE_BLEND_SCREEN) { set_error(g, "no blend mode %d", blend); return -1; }
-    if (g->mp_nbatch == g->mp_batch_cap) {
+    // The slot of a batch that ghee_mp_remove_batch took out goes to the
+    // next batch, so a scene that removes and inserts batches holds no more
+    // slots than batches at once.
+    int idx = -1;
+    for (int i = 0; i < g->mp_nbatch && idx < 0; i++)
+        if (g->mp_batch[i].pass < 0) idx = i;
+    const bool fresh = idx < 0;
+    if (fresh && g->mp_nbatch == g->mp_batch_cap) {
         const int cap = g->mp_batch_cap ? 2 * g->mp_batch_cap : 16;
         struct mp_batch *grown = realloc(g->mp_batch, (size_t)cap * sizeof *grown);
         if (!grown) { set_error(g, "no memory for batch %d", g->mp_nbatch); return -1; }
@@ -1864,7 +1881,7 @@ int ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name, co
         prog = program_take(g, vertex_source, fragment_source);
         if (!prog) return -1;
     }
-    const int idx = g->mp_nbatch;
+    if (fresh) idx = g->mp_nbatch++;
     struct mp_batch *l = &g->mp_batch[idx];
     memset(l, 0, sizeof *l);
     l->id = ++g->batch_ids;
@@ -1875,28 +1892,50 @@ int ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name, co
     mp_resolve(g, prog, g->mp_w[pass], g->mp_h[pass], &l->loc);
     for (int i = 0; prog && i < g->mp_ndatatex[pass]; i++)
         l->loc.data[i] = glGetUniformLocation(prog, g->mp_array_name[g->mp_datatex[pass][i]]);
-    g->mp_nbatch++;
     if (!mp_pass_fits(g, pass, g->mp_nchan[pass], g->mp_ndatatex[pass])) {
-        g->mp_nbatch--;
         mp_free_uses(&l->loc);
         program_drop(g, prog);
+        memset(l, 0, sizeof *l);
+        l->pass = -1;
+        if (fresh) g->mp_nbatch--;
         return -1;
     }
     glGenBuffers(1, &l->vbo);
     glGenVertexArrays(1, &l->vao);
-    // The new batch draws right after `after`, or ahead of every batch of
+    // The order holds every slot. A reused slot leaves its old place, and
+    // the batch then draws right after `after`, or ahead of every batch of
     // its pass.
-    int at = g->mp_nbatch - 1;
-    for (int k = 0; k < g->mp_nbatch - 1; k++) {
+    const int others = g->mp_nbatch - 1;
+    if (!fresh) {
+        int k = 0;
+        while (g->mp_order[k] != idx) k++;
+        memmove(&g->mp_order[k], &g->mp_order[k + 1], (size_t)(others - k) * sizeof *g->mp_order);
+    }
+    int at = others;
+    for (int k = 0; k < others; k++) {
         const int b = g->mp_order[k];
         if (after >= 0 ? b == after : g->mp_batch[b].pass == pass) {
             at = after >= 0 ? k + 1 : k;
             break;
         }
     }
-    memmove(&g->mp_order[at + 1], &g->mp_order[at], (size_t)(g->mp_nbatch - 1 - at) * sizeof *g->mp_order);
+    memmove(&g->mp_order[at + 1], &g->mp_order[at], (size_t)(others - at) * sizeof *g->mp_order);
     g->mp_order[at] = idx;
     return idx;
+}
+
+bool ghee_mp_remove_batch(GheeScene *g, int batch) {
+    struct mp_batch *l = running_batch(g, batch);
+    if (!l) return false;
+    make_current(g);
+    program_drop(g, l->program);
+    mp_free_values(l);
+    if (l->vbo) glDeleteBuffers(1, &l->vbo);
+    if (l->vao) glDeleteVertexArrays(1, &l->vao);
+    mp_free_uses(&l->loc);
+    memset(l, 0, sizeof *l);
+    l->pass = -1;
+    return true;
 }
 
 // Upload one named image asset. Every pass whose program reads it gets it as

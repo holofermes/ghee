@@ -186,6 +186,11 @@ bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param
 // that is not the pass's, or when the pass would run out of texture units.
 int  ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name,
                           const char *vertex_source, const char *fragment_source, int blend);
+// Take committed batch `batch` out of the scene: it draws no more, and its
+// program, quads and values go. The other batches keep their indices, and
+// the next ghee_mp_insert_batch takes the index. false with ghee_last_error
+// set for a batch that is not committed.
+bool ghee_mp_remove_batch(GheeScene *g, int batch);
 // The quads of a committed batch: quads * 4 vertices of nattr vec4s each,
 // which replace the last set. false with ghee_last_error set on refusal.
 bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int quads, int nattr);

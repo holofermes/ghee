@@ -66,6 +66,14 @@
   program.
 - Take an image file in a live `image`, which loads once and stays until
   the next setup, where a live image took the scene's image assets alone.
+- Build one layer of a running scene again in its place with
+  `Renderer::replace_layer`, of its kind or of another, and give a layer a
+  whole new look with `Renderer::update_layer`, which sets the live fields
+  that changed and builds the layer again for any other change. A key that
+  the look leaves out takes its default, and an effect that it leaves out
+  stays, bypassed. Every other layer keeps its program, its atlas, its
+  phases and its quads, the layer's moving effects carry their phases on,
+  and a layer that the scene refuses changes nothing.
 - Draw rects and lines with shape layers, which hold `"shape": "rect"` or
   `"line"` and take no effects. A rect fills `width` by `height` pass
   pixels, the pass's own by default, with its `color`, draws its `border`,

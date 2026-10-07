@@ -1,5 +1,6 @@
-//! A running scene that grows: a layer added to it, with no rebuild, against
-//! the same scene built with that layer in its place, on this host's GPU.
+//! A running scene that grows: a layer added to it, with no rebuild, or
+//! built again alone in its place, against the same scene built with that
+//! layer in its place, on this host's GPU.
 //!
 //! The pictures that a built layer paints are checked against references
 //! computed off the GPU in tests/text.rs, tests/image.rs and tests/shape.rs,
@@ -488,4 +489,224 @@ fn a_layer_added_to_a_hidden_pass_joins_it_and_draws_nothing() {
     };
     r.set_layer(&at, Given::Json(&json!(3))).unwrap();
     assert_eq!(differ(&again(&mut r), &before), 0);
+}
+
+/// `doc` with layer `name` in its pass replaced by `layer`.
+fn replaced(doc: &Value, name: &str, layer: &Value) -> Value {
+    let mut doc = doc.clone();
+    for p in doc["passes"].as_array_mut().unwrap() {
+        for l in p["layers"].as_array_mut().into_iter().flatten() {
+            if l["name"] == name {
+                *l = layer.clone();
+            }
+        }
+    }
+    doc
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_layer_built_again_in_its_place_draws_as_a_scene_built_with_it() {
+    // Each row builds a layer of the running scene again from a new layer
+    // of its name, of its kind or of another, and the frame matches the
+    // scene built with the new layer there, byte for byte. Building the
+    // first layer back then draws the first frame again.
+    let dir = Dir::new("replace");
+    let doc = scene();
+    let rows = [
+        json!({"name": "title", "text": "Ho", "font_family": "sans", "font_size": 28,
+               "x": 4, "y": 4, "text_stroke": {}}),
+        json!({"name": "title", "shape": "rect", "x": 4, "y": 4, "width": 30, "height": 10}),
+        json!({"name": "a", "shape": "rect", "x": 100, "y": 10, "width": 30, "height": 20,
+               "color": "navy", "blend": "add"}),
+        json!({"name": "a", "text": "Ok", "font_family": "sans", "font_size": 20,
+               "x": 100, "y": 10}),
+        json!({"name": "b", "image": "dot.png", "x": 100, "y": 50, "width": 10}),
+        json!({"name": "icon", "text": "Mm", "font_family": "sans", "font_size": 16,
+               "x": 10, "y": 60, "render": "slug"}),
+        json!({"name": "bar", "shape": "line", "points": [[4, 4], [40, 30]],
+               "stroke_width": 2}),
+    ];
+    let (_g, mut r) = gpu(160, 96);
+    let first = render(&mut r, &dir.load(&doc));
+    for layer in rows {
+        let name = layer["name"].as_str().unwrap();
+        let built = render(&mut r, &dir.load(&replaced(&doc, name, &layer)));
+        let was = render(&mut r, &dir.load(&doc));
+        assert_eq!(differ(&was, &first), 0, "{layer}");
+        r.replace_layer(&layer).unwrap();
+        assert_eq!(differ(&again(&mut r), &built), 0, "{layer}");
+        let old = doc["passes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["layers"].as_array().unwrap())
+            .find(|l| l["name"] == name)
+            .unwrap()
+            .clone();
+        r.replace_layer(&old).unwrap();
+        assert_eq!(differ(&again(&mut r), &first), 0, "{layer} back");
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_layer_built_again_carries_its_motion_on_and_leaves_the_rest_running() {
+    // Two scrolling layers run from time 0 and a pass reads an array fed
+    // once. At 0.5 s one layer takes a new size and a new colour, built
+    // again: every frame from then matches the scene that holds the new
+    // layer from the start, where a setup at 0.5 s would start over.
+    let dir = Dir::new("motion");
+    let news = |size: i32, color: &str| {
+        json!({"name": "news", "text": "scrolling words", "font_family": "sans",
+               "font_size": size, "y": 4, "color": color, "scroll": {"speed": 3}})
+    };
+    let doc = |news: Value| {
+        json!({
+            "version": 1,
+            "assets": {"sans": {"file": "sans.ttf"}},
+            "passes": [{"name": "main", "arrays": [{"name": "level", "size": 1}],
+                        "code": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }",
+                        "layers": [news,
+                                   {"name": "other", "text": "more words", "font_family": "sans",
+                                    "font_size": 14, "y": 60, "scroll": {"speed": 5}}]}],
+        })
+    };
+    let (_g, mut r) = gpu(160, 96);
+    let feed = |r: &mut Renderer, t: f64, fed: bool| {
+        r.set_time(Some(t));
+        let mut provider = |_: &str, _: ArraySize| match fed {
+            true => Feed::Data(vec![0.5]),
+            false => Feed::Unchanged,
+        };
+        r.render(Some(&mut provider)).unwrap().to_vec()
+    };
+    let times = [0.0, 0.25, 0.5, 0.75, 1.0];
+    assert_eq!(r.setup(&dir.load(&doc(news(22, "lime")))).unwrap(), "");
+    let want: Vec<Vec<u8>> = times
+        .iter()
+        .enumerate()
+        .map(|(i, t)| feed(&mut r, *t, i == 0))
+        .collect();
+    assert_eq!(r.setup(&dir.load(&doc(news(16, "white")))).unwrap(), "");
+    for (i, t) in times.iter().enumerate() {
+        if *t == 0.5 {
+            r.replace_layer(&news(22, "lime")).unwrap();
+        }
+        let got = feed(&mut r, *t, i == 0);
+        if *t >= 0.5 {
+            assert_eq!(differ(&got, &want[i]), 0, "at {t} s");
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn an_update_sets_live_fields_live_and_builds_the_layer_again_for_the_rest() {
+    // Each row gives a layer a new look, and the frame matches the scene
+    // built with the look that the layer then has: an effect or a border
+    // that the look leaves out stays, bypassed. A live row links no
+    // program.
+    let dir = Dir::new("update");
+    let doc = scene();
+    let rows = [
+        (
+            json!({"name": "title", "text": "Hey", "font_family": "sans", "font_size": 20,
+                   "x": 10, "y": 8, "color": "orange", "glow": {"color": "red"}}),
+            json!({"name": "title", "text": "Hey", "font_family": "sans", "font_size": 20,
+                   "x": 10, "y": 8, "color": "orange", "glow": {"color": "red"}}),
+            true,
+        ),
+        (
+            json!({"name": "title", "text": "Hi", "font_family": "sans", "font_size": 20,
+                   "x": 4, "y": 4}),
+            json!({"name": "title", "text": "Hi", "font_family": "sans", "font_size": 20,
+                   "x": 4, "y": 4, "glow": {"visible": false}}),
+            true,
+        ),
+        (
+            json!({"name": "title", "text": "Hi", "font_family": "sans", "font_size": 30,
+                   "x": 4, "y": 4, "glow": {}}),
+            json!({"name": "title", "text": "Hi", "font_family": "sans", "font_size": 30,
+                   "x": 4, "y": 4, "glow": {}}),
+            false,
+        ),
+        (
+            json!({"name": "a", "shape": "rect", "x": 90, "y": 12, "width": 40,
+                   "height": 16, "border": {"width": 2, "color": "white"}}),
+            json!({"name": "a", "shape": "rect", "x": 90, "y": 12, "width": 40,
+                   "height": 16, "border": {"width": 2, "color": "white"}}),
+            true,
+        ),
+        (
+            json!({"name": "a", "shape": "line", "points": [[90, 12], [130, 30]]}),
+            json!({"name": "a", "shape": "line", "points": [[90, 12], [130, 30]]}),
+            false,
+        ),
+        (
+            json!({"name": "icon", "image": "dot.png", "x": 10, "y": 60, "width": 16}),
+            json!({"name": "icon", "image": "dot.png", "x": 10, "y": 60, "width": 16}),
+            true,
+        ),
+        (
+            json!({"name": "icon", "image": "pic", "x": 10, "y": 60, "width": 16,
+                   "blend": "screen"}),
+            json!({"name": "icon", "image": "pic", "x": 10, "y": 60, "width": 16,
+                   "blend": "screen"}),
+            false,
+        ),
+    ];
+    let (_g, mut r) = gpu(160, 96);
+    for (look, has, live) in rows {
+        let name = look["name"].as_str().unwrap();
+        let built = render(&mut r, &dir.load(&replaced(&doc, name, &has)));
+        render(&mut r, &dir.load(&doc));
+        let compiled = r.compiled();
+        assert!(r.update_layer(&look).unwrap(), "{look}");
+        if live {
+            assert_eq!(r.compiled(), compiled, "{look}: programs");
+        }
+        assert_eq!(differ(&again(&mut r), &built), 0, "{look}");
+        // The same look again changes nothing.
+        assert!(!r.update_layer(&look).unwrap(), "{look} again");
+        assert_eq!(differ(&again(&mut r), &built), 0, "{look} again");
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_look_that_the_scene_refuses_is_refused_whole_and_changes_nothing() {
+    let dir = Dir::new("refused-look");
+    let rows = [
+        (
+            json!({"name": "nope", "shape": "rect"}),
+            "the scene has no layer 'nope'",
+        ),
+        (
+            json!({"name": "a", "shape": "rect", "color": "navyy"}),
+            "layer 'a' color needs '#rrggbb', a CSS colour name or three numbers [r, g, b], \
+             got 'navyy'",
+        ),
+        (
+            json!({"name": "icon", "image": "nope", "x": 10, "y": 60, "width": 16}),
+            "layer 'icon' image 'nope' is no asset of the scene and no .png or .jpg file",
+        ),
+        (
+            json!({"name": "title", "text": "Hi", "font_family": "serif"}),
+            "layer 'title' font_family 'serif' is no asset of the scene, no .ttf or .otf file \
+             and not 'pixel', the built-in pixel font",
+        ),
+    ];
+    let (_g, mut r) = gpu(160, 96);
+    let before = render(&mut r, &dir.load(&scene()));
+    for (look, want) in rows {
+        for e in [
+            r.update_layer(&look).unwrap_err(),
+            r.replace_layer(&look).unwrap_err(),
+        ] {
+            assert!(e.downcast_ref::<Refused>().is_some(), "{e}");
+            assert_eq!(e.to_string(), want);
+        }
+        assert_eq!(differ(&again(&mut r), &before), 0, "{want}");
+    }
 }

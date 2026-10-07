@@ -14,6 +14,7 @@
 //! ```
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::ffi::c_int;
 use std::fs::File;
 use std::io::{stdout, Stdout, Write};
@@ -46,6 +47,7 @@ use crate::procedural::{load_scene, scene_name};
 use crate::report;
 use crate::scene::{Reach, Scene};
 use crate::stats::rate;
+use crate::usage;
 
 /// main() prints this message as written, status 1. main() puts the command
 /// name in front of any other error.
@@ -888,6 +890,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     // a terminal watches the run, a pipe and a service unit do not
     let live = report::tty() && report::level() >= report::NORMAL;
     let keep = a.stats;
+    let engines = keep.then(usage::Engines::read).flatten();
     let want = frames_of(a);
     let (ran, drawn, elapsed, out) = {
         let sinks = sink_list(&mut scanout, &mut sink, &mut file, &mut h264);
@@ -921,6 +924,11 @@ fn cmd_render(a: &Ns) -> Result<()> {
         let out: Vec<String> = lp.out().iter().map(|d| (*d).to_string()).collect();
         (ran, lp.drawn, lp.elapsed, out)
     };
+    // before the renderer lets its buffers go
+    let used = match keep {
+        true => usage_now(engines.as_ref()),
+        false => Usage::default(),
+    };
     let pipe = text(&a.output) == "-" || text(&a.h264) == "-";
     let ran = match ran {
         Err(e) if pipe && broken_pipe(&e) => Ok(()),
@@ -943,7 +951,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
         report::step("wrote", format!("{drawn} frame(s) to {}", text(&a.h264)));
     }
     if a.stats {
-        print_stats(&times.borrow(), elapsed, &out);
+        print_stats(&times.borrow(), elapsed, &out, &used);
     }
     Ok(())
 }
@@ -1063,11 +1071,62 @@ fn stats_line(times: &[f64], wall: f64, out: &[String]) -> String {
     )
 }
 
-fn print_stats(times: &[f64], wall: f64, out: &[String]) {
+/// What this process used at the end of a run, where the machine reports it
+/// (crate::usage).
+#[derive(Default)]
+struct Usage {
+    rss: Option<u64>,
+    gpu: Option<u64>,
+    /// The percent of the run that each queue of the GPU was busy.
+    busy: Option<BTreeMap<String, f64>>,
+    machine_free: Option<u64>,
+    soc_celsius: Option<f64>,
+}
+
+/// The process's usage now, its GPU busy since the reading `start`.
+fn usage_now(start: Option<&usage::Engines>) -> Usage {
+    let busy = start
+        .zip(usage::Engines::read())
+        .map(|(s, now)| now.busy_since(s));
+    Usage {
+        rss: usage::rss(),
+        gpu: usage::gpu(),
+        busy,
+        machine_free: usage::machine_free(),
+        soc_celsius: usage::soc_celsius(),
+    }
+}
+
+/// --stats: the line under the summary, with each figure of `u` that the
+/// machine reports.
+fn usage_line(u: &Usage) -> String {
+    let mib = |b: u64| format!("{:.1} MiB", usage::mib(b));
+    let mut parts = Vec::new();
+    if let Some(b) = u.rss {
+        parts.push(format!("rss {}", mib(b)));
+    }
+    if let Some(b) = u.gpu {
+        parts.push(format!("gpu {}", mib(b)));
+    }
+    if let Some(busy) = u.busy.as_ref().filter(|b| !b.is_empty()) {
+        let queues: Vec<String> = busy.iter().map(|(q, p)| format!("{q} {p:.1}%")).collect();
+        parts.push(format!("gpu busy {}", queues.join(" ")));
+    }
+    if let Some(b) = u.machine_free {
+        parts.push(format!("machine free {:.0} MiB", usage::mib(b)));
+    }
+    if let Some(c) = u.soc_celsius {
+        parts.push(format!("soc {c:.1} °C"));
+    }
+    format!("usage: {}", parts.join(", "))
+}
+
+fn print_stats(times: &[f64], wall: f64, out: &[String], used: &Usage) {
     if times.is_empty() {
         return;
     }
     report::summary(stats_line(times, wall, out));
+    report::summary(usage_line(used));
 }
 
 /// Where a serve run's frames go. A console with no panel and no file is still
@@ -1081,7 +1140,10 @@ fn serve_out(out: &[String]) -> Vec<String> {
 
 /// The same summary line, for the end of the console's render.
 fn serve_stats() -> server::StatsHook {
-    Box::new(|times, wall, out| print_stats(times, wall, &serve_out(out)))
+    let start = usage::Engines::read();
+    Box::new(move |times, wall, out| {
+        print_stats(times, wall, &serve_out(out), &usage_now(start.as_ref()))
+    })
 }
 
 /// One line of a listing. A reader that closes the pipe ends the command,
@@ -1478,7 +1540,10 @@ struct RenderArgs {
     )]
     filters: Option<String>,
 
-    #[arg(long, help = "print a timing summary when the render ends")]
+    #[arg(
+        long,
+        help = "print a timing summary and what ghee used when the render ends"
+    )]
     stats: bool,
 
     #[command(flatten)]
@@ -2115,6 +2180,35 @@ mod tests {
             stats_line(&[0.010, 0.030, 0.020], 2.0, &out),
             "stats: 3 frame(s) in 2.00s, 20.00 ms/frame \
              (min 10.00, max 30.00), 1.5 fps -> panel+file"
+        );
+    }
+
+    #[test]
+    fn the_usage_line_gives_each_figure_that_the_machine_reports() {
+        let pi5 = Usage {
+            rss: Some(83 << 20 | 1 << 19),
+            gpu: Some(12 << 20),
+            busy: Some(BTreeMap::from([
+                ("bin".to_string(), 2.14),
+                ("render".to_string(), 19.9),
+            ])),
+            machine_free: Some(14892 << 20),
+            soc_celsius: Some(52.31),
+        };
+        assert_eq!(
+            usage_line(&pi5),
+            "usage: rss 83.5 MiB, gpu 12.0 MiB, gpu busy bin 2.1% render 19.9%, \
+             machine free 14892 MiB, soc 52.3 °C"
+        );
+        let vc4 = Usage {
+            rss: Some(40 << 20),
+            machine_free: Some(300 << 20),
+            soc_celsius: Some(48.0),
+            ..Usage::default()
+        };
+        assert_eq!(
+            usage_line(&vc4),
+            "usage: rss 40.0 MiB, machine free 300 MiB, soc 48.0 °C"
         );
     }
 

@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 
+use crate::engine::Refused;
+
 /// The sysfs root of a running system.
 pub const SYS: &str = "/sys";
 
@@ -67,7 +69,7 @@ impl Backlight {
     /// and give back the level that the device then reads.
     pub fn set_level(&self, level: f64) -> Result<f64> {
         if !(0.0..=1.0).contains(&level) {
-            bail!("brightness takes 0 to 1, got {level}");
+            return Err(Refused(format!("brightness takes 0 to 1, got {level}")).into());
         }
         let max = self.read("max_brightness")?;
         let path = self.dir.join("brightness");
@@ -87,14 +89,17 @@ pub fn brightness(sys: &Path, card: Option<&str>) -> Result<Option<f64>> {
 }
 
 /// Set the backlight of the display on the card node `card`, 0 to 1, and
-/// give back the level that it then reads.
+/// give back the level that it then reads. A level out of range and a
+/// display with no backlight device fail with a Refused error.
 pub fn set_brightness(sys: &Path, card: Option<&str>, level: f64) -> Result<f64> {
     let Some(card) = card else {
-        bail!("brightness needs a KMS display, and nothing drives one");
+        return Err(
+            Refused("brightness needs a KMS display, and nothing drives one".into()).into(),
+        );
     };
     match Backlight::of_card(sys, card) {
         Some(b) => b.set_level(level),
-        None => bail!("the display on {card} has no backlight device"),
+        None => Err(Refused(format!("the display on {card} has no backlight device")).into()),
     }
 }
 

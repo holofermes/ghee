@@ -261,6 +261,44 @@ def test_an_asset_is_its_file():
     assert "assets" not in shim.Scene(passes=[]).to_dict()
 
 
+def test_an_asset_takes_the_keys_of_the_scene_format():
+    shim = load()
+    raw = shim.Asset(
+        "mask",
+        "mask.raw",
+        width=4,
+        height=2,
+        format="u8",
+        components=1,
+        sampling="linear",
+    )
+    icon = shim.Asset("icon", "icon.png", sampling="nearest")
+    recorded = [
+        {
+            "file": "mask.raw",
+            "width": 4,
+            "height": 2,
+            "format": "u8",
+            "components": 1,
+            "sampling": "linear",
+        },
+        {"file": "icon.png", "sampling": "nearest"},
+    ]
+    built = [raw.to_dict(), icon.to_dict()]
+    assert built == recorded
+    assert json.dumps(built) == json.dumps(recorded)  # key order too
+
+
+def test_a_gradient_is_the_gradient_object_of_the_format():
+    shim = load()
+    assert shim.gradient("red", "yellow", angle=90) == {
+        "from": "red",
+        "to": "yellow",
+        "angle": 90,
+    }
+    assert shim.gradient("red", [0, 0, 1])["angle"] == 0
+
+
 def test_two_assets_of_one_name_are_refused():
     """The document keys them by name, where the second would hide the first."""
     shim = load()
@@ -1026,6 +1064,43 @@ def test_a_layer_set_of_a_scene_that_ghee_runs_lands_in_the_frame(tmp_path):
     assert [max(px[c::n]) for c in range(3)] == [0, 255, 0]
 
 
+def test_measure_outside_run_says_where_it_belongs():
+    shim = load()
+    with pytest.raises(RuntimeError) as raised:
+        shim.measure("hi")
+    assert str(raised.value) == (
+        "ghee.measure lays words out in the scene that run() runs: call it in a "
+        "tick or a feed"
+    )
+
+
+def test_measure_under_ghee_lays_words_out_in_the_render_size(monkeypatch):
+    """A scene that ghee runs measures on its last pass, at the render size
+    that ghee gives it, and reads ghee's refusal of a font."""
+    shim = load()
+    got = []
+
+    @shim.tick
+    def hook(tick):
+        got.append(shim.measure("Hi there", font_size=12))
+        got.append(shim.measure("Hi there", font_size=24))
+        got.append(shim.measure("Hi there"))
+        with pytest.raises(ValueError) as raised:
+            shim.measure("Hi", font_family="serif")
+        got.append(str(raised.value))
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    for size in ("96x32", "192x64"):
+        monkeypatch.setenv(shim.SIZE, size)
+        drive(shim, scene_of(shim), ticks, monkeypatch)
+    small, large, fit, refused = got[:4]
+    assert large == pytest.approx((2 * small[0], 2 * small[1]))
+    # the words fit a 96x32 pass, wider than tall, and twice the pass twice
+    assert 32 < fit[0] <= 96 and fit[1] <= 32
+    assert got[6] == pytest.approx((2 * fit[0], 2 * fit[1]))
+    assert refused.startswith("font_family 'serif' is no asset of the scene")
+
+
 def test_the_tick_line_carries_the_string_params(monkeypatch):
     shim = load()
     seen = []
@@ -1057,7 +1132,9 @@ SURFACE = [
     "Tick",
     "args",
     "feed",
+    "gradient",
     "layers",
+    "measure",
     "run",
     "set_param",
     "skip",
@@ -1104,7 +1181,7 @@ def test_the_stubs_name_what_the_native_module_takes():
     methods = {f.name: f for f in handle.body if isinstance(f, ast.FunctionDef)}
     public = {n for n in dir(native.Handle) if not n.startswith("_")}
     assert {n for n in methods if not n.startswith("_")} == public
-    for name in public - {"size", "components", "layers"}:
+    for name in public - {"size", "components", "layers", "brightness"}:
         assert params(methods[name]) == runtime(getattr(native.Handle, name)), name
 
 

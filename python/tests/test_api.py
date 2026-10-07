@@ -16,6 +16,17 @@ import ghee
 
 LEVEL = array.array("f", [1.0] * 8)
 
+# DT, scaled into red: a quarter second reads 255.
+SHOWS_DT = {
+    "version": 1,
+    "passes": [
+        {
+            "name": "main",
+            "code": "void main(){ gl_FragColor = vec4(DT * 4.0, 0, 0, 1); }",
+        }
+    ],
+}
+
 
 def pixel(h, i=0):
     """Pixel `i` of the last frame, as a tuple of components."""
@@ -157,10 +168,13 @@ def test_a_tick_carries_the_frame_the_time_and_the_step():
     assert [t["dt"] for t in ticks] == [0.1, 0.1, 0.1]
 
 
-def test_a_step_no_frame_may_hand_a_scene():
+def test_a_frame_after_a_long_wait_steps_a_quarter_second_at_most():
     # one frame must never step a simulation by seconds
-    with ghee.open(RED, width=8, height=8, timestep=1.0) as h:
-        assert h.frame()["dt"] == 0.25
+    with ghee.open(SHOWS_DT, width=4, height=4) as h:
+        h.frame()
+        time.sleep(0.4)
+        tick = h.frame()
+        assert (tick["dt"], pixel(h)[0]) == (0.25, 255)
 
 
 def test_an_unpinned_tick_reads_the_wall_clock():
@@ -558,3 +572,77 @@ def test_a_handle_sets_a_layer_field_by_attribute_or_by_key():
         assert red > 0 and blue == 255
         h.layers.t.text = ""
         assert peaks(h) == [0, 0, 0]
+
+
+def test_open_with_no_scene_clears_to_black():
+    with ghee.open(width=8, height=4) as h:
+        h.frame()
+        assert set(h.pixels()) == {0, 255}
+        assert all(pixel(h, i) == (0, 0, 0, 255) for i in range(32))
+
+
+def test_a_tick_carries_the_dt_that_its_frame_draws_with():
+    """Frame 0 draws with 1/60, and each later frame with the time since the
+    frame before, which the tick opened by _tick() pins."""
+    with ghee.open(SHOWS_DT, width=4, height=4) as h:
+        ticks = []
+        for wait in (0.0, 0.03, 0.12, 0.06):
+            time.sleep(wait)
+            opened = h._tick()
+            time.sleep(0.02)
+            tick = h.frame()
+            assert tick == opened
+            ticks.append((tick["dt"], pixel(h)[0]))
+    assert ticks[0][0] == 1.0 / 60.0
+    for dt, red in ticks:
+        assert abs(dt * 4 * 255 - red) <= 1.5, ticks
+
+
+def test_rotate_turns_the_frame_clockwise_and_the_scene_renders_turned():
+    # The scene, 2 wide and 4 tall, is red on its left half and blue on its
+    # right, so the frame, 4 wide and 2 tall, is red on top.
+    halves = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "code": "void main(){ gl_FragColor = v_texCoord.x < 0.5 ?"
+                " vec4(1, 0, 0, 1) : vec4(0, 0, 1, 1); }",
+            }
+        ],
+    }
+    with ghee.open(halves, width=4, height=2, rotate=90) as h:
+        assert h.size == (4, 2)
+        h.frame()
+        assert [pixel(h, i) for i in range(8)] == [(255, 0, 0, 255)] * 4 + [
+            (0, 0, 255, 255)
+        ] * 4
+    with pytest.raises(ValueError) as raised:
+        ghee.open(halves, width=4, height=2, rotate=45)
+    assert str(raised.value) == "rotate takes 0, 90, 180 or 270, got 45"
+
+
+def test_a_headless_screen_reads_no_brightness_and_refuses_one():
+    with ghee.open(width=8, height=8) as h:
+        assert h.brightness is None
+        with pytest.raises(ValueError) as raised:
+            h.brightness = 0.5
+    assert str(raised.value) == "brightness needs a KMS display, and nothing drives one"
+
+
+def test_dri_names_the_device_that_renders():
+    with pytest.raises(RuntimeError, match="/dev/dri/no-such-node"):
+        ghee.open(width=8, height=8, dri="/dev/dri/no-such-node")
+
+
+def test_measure_lays_words_out_as_ghee_draws_them():
+    with ghee.open(width=128, height=32) as h:
+        w, ht = h.measure("Hi", font_size=20)
+        assert h.measure("Hi Hi", font_size=20)[0] > w > 0
+        assert h.measure("Hi", font_size=40) == pytest.approx((2 * w, 2 * ht))
+        # with no size the block fits the screen
+        fit = h.measure("a wide line of words")
+        assert fit[0] <= 128 and fit[1] <= 32
+        with pytest.raises(ValueError) as raised:
+            h.measure("Hi", font_family="serif")
+    assert str(raised.value).startswith("font_family 'serif' is no asset of the scene")

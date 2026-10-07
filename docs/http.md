@@ -1,7 +1,7 @@
 # The console HTTP API
 
 `ghee serve` and `--serve` serve this API on `127.0.0.1:8090`, and
-`ghee.open(stats=8090)` serves the same API from Python. The web console is
+`ghee.open(serve=8090)` serves the same API from Python. The web console is
 built on this API, and a script can call it the same way. Anyone who reaches
 the port can change params and post GLSL, so keep the port on loopback, or
 open it with `--host` only on a network you trust.

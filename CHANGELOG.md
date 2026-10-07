@@ -278,8 +278,38 @@
   `--stats` the console's port. With no `--frames`, `-o` renders one frame,
   as `ghee render` does, and a display or the console runs until stopped.
 - Hand a direct run's `@ghee.tick` the string params that the console
-  changed, as the wire does, through `h.changed_params()`, where the tick's
-  `params` stayed empty.
+  changed, as the wire does, where the tick's `params` stayed empty.
+- Return the string params that the console changed since the last tick
+  from `h.frame()` and `h.skip()`, in the tick's `params`, with their words,
+  as a scene script's tick holds them: the first tick holds every string
+  param, and a set from the host itself stays out.
+- Hand the DT that a frame draws with in the tick that `h.frame()` returns,
+  in a direct run's and on the wire: the time since the frame before, a
+  quarter second at most, and 1/60 for the first frame, where the tick held
+  the period of the frame before and a direct run's first tick held 0. A
+  pinned timestep is the tick's `dt` as given, where a quarter second capped
+  it.
+- Name the display of `ghee.open` with `display=` and the console's port
+  with `serve=`, the words of `ghee render`'s flags, where `output=` and
+  `stats=` named them. `dri=` picks the card, and `rotate=` turns the frame
+  clockwise on its way to every output, as `--rotate` does.
+- Open a screen with no scene: `ghee.open()` makes one pass, `main`, that
+  clears to black.
+- Read and set a KMS display's backlight through `h.brightness`, 0 to 1, as
+  `--brightness` sets it. It reads None for a display with no backlight
+  device, and a set raises ValueError there and on a screen with no KMS
+  display.
+- Measure words with `h.measure(words, font_size=None, font_family=None)`,
+  and with `ghee.measure` in a scene script: the width and height in pixels
+  of the block that ghee lays them out in, at the size that fits the pass
+  when `font_size` is None.
+- Write a text's gradient with `ghee.gradient(start, end, angle=0)`.
+- Declare an asset's `sampling`, and a `.raw` file's `width`, `height`,
+  `format` and `components`, in `ghee.Asset`.
+- Stop a direct run with ghee's one line and exit status 1 when ghee refuses
+  its scene or its display, where a traceback ended it, and refuse more than
+  one frame into one file name, as `ghee render` refuses it. An exception of
+  the script's own keeps its traceback.
 - Raise ValueError from `ghee.set_param` in a Python scene for a param that
   the scene does not declare or a value that does not fit its type, under
   ghee as in direct mode, and name the param in the type error of
@@ -339,7 +369,7 @@
   other field applies when the cursor leaves it.
 - Set a live field of a layer with `/set?layer=title&field=x&value=10`, and
   a field of one of its effects with `effect=` too, in `ghee serve`,
-  `--serve` and `ghee.open(stats=)`, with no rebuild. `field=text` sets a
+  `--serve` and `ghee.open(serve=)`, with no rebuild. `field=text` sets a
   text layer's words, as the scene param of the layer's name does. The value
   reads as the field takes it, `none` included, and a field that changes
   with a rebuild answers 400 with the live fields named.

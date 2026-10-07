@@ -90,7 +90,7 @@ def watching(h, read, limit=30.0, step=None):
 @pytest.fixture
 def served():
     port = free_port()
-    with ghee.open(RED, width=32, height=32, stats=port) as h:
+    with ghee.open(RED, width=32, height=32, serve=port) as h:
         h.feed("level", LEVEL)
         h.frame()
         yield h, port
@@ -110,7 +110,7 @@ def test_the_console_lists_a_text_problem_apart_from_the_error(tmp_path):
             }
         ],
     }
-    with ghee.open(doc, width=16, height=16, stats=port, base_dir=tmp_path) as h:
+    with ghee.open(doc, width=16, height=16, serve=port, base_dir=tmp_path) as h:
         h.frame()
         stats = json_of(port, "/stats")
     assert stats["error"] == ""
@@ -119,7 +119,7 @@ def test_the_console_lists_a_text_problem_apart_from_the_error(tmp_path):
     ]
 
 
-def test_changed_params_hands_the_host_the_words_the_console_set():
+def test_a_tick_hands_the_host_the_words_the_console_set():
     port = free_port()
     doc = {
         "version": 1,
@@ -128,13 +128,13 @@ def test_changed_params_hands_the_host_the_words_the_console_set():
             {"name": "main", "code": "void main(){ gl_FragColor = vec4(1.0); }"}
         ],
     }
-    with ghee.open(doc, width=8, height=8, stats=port) as h:
-        assert h.changed_params() == {"mood": "calm"}
-        assert h.changed_params() == {}
+    with ghee.open(doc, width=8, height=8, serve=port) as h:
+        assert h.frame()["params"] == {"mood": "calm"}
+        assert h.skip()["params"] == {}
         post(port, "/set?pass=scene&name=mood&value=wild")
-        assert h.changed_params() == {"mood": "wild"}
+        assert h.frame()["params"] == {"mood": "wild"}
         h.set_param("mood", "own")
-        assert h.changed_params() == {}
+        assert h.frame()["params"] == {}
 
 
 def test_the_console_publishes_the_render(served):
@@ -214,7 +214,7 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
         ],
     ).to_dict()
     port = free_port()
-    with ghee.open(scene, width=32, height=32, stats=port) as h:
+    with ghee.open(scene, width=32, height=32, serve=port) as h:
         h.frame()
         served = json_of(port, "/scene")
     assert served == scene
@@ -243,7 +243,7 @@ def test_a_set_lands_on_the_next_frame(served):
 
 def test_a_set_reaches_a_vec_or_color_uniform():
     port = free_port()
-    with ghee.open(VECS, width=8, height=1, stats=port) as h:
+    with ghee.open(VECS, width=8, height=1, serve=port) as h:
         h.frame()
         for q in [
             "pass=scene&name=a&value=1,0",
@@ -272,7 +272,7 @@ def test_a_layer_set_lands_on_the_next_frame():
         ],
     }
     port = free_port()
-    with ghee.open(words, width=32, height=32, timestep=0, stats=port) as h:
+    with ghee.open(words, width=32, height=32, timestep=0, serve=port) as h:
         h.frame()
         assert max(h.pixels()[0::4]) == 255
         assert post(port, "/set?layer=t&field=visible&value=false")[0] == 200
@@ -335,24 +335,24 @@ def test_a_still_reaches_a_settled_host(served):
 
 def test_the_port_closes_with_the_handle():
     port = free_port()
-    h = ghee.open(RED, width=8, height=8, stats=port)
+    h = ghee.open(RED, width=8, height=8, serve=port)
     assert json_of(port, "/stats")["active"] == "scene"
     h.close()
     with pytest.raises(OSError):
         get(port, "/stats", timeout=2)
 
 
-def test_stats_binds_where_it_is_told():
+def test_serve_binds_where_it_is_told():
     port = free_port()
-    with ghee.open(RED, width=8, height=8, stats=("127.0.0.1", port)) as h:
+    with ghee.open(RED, width=8, height=8, serve=("127.0.0.1", port)) as h:
         h.feed("level", LEVEL)
         h.frame()
         assert json_of(port, "/stats")["active"] == "scene"
 
 
-def test_stats_takes_a_port_or_a_pair():
+def test_serve_takes_a_port_or_a_pair():
     with pytest.raises(ValueError):
-        ghee.open(RED, width=8, height=8, stats="8090")
+        ghee.open(RED, width=8, height=8, serve="8090")
 
 
 @needs_ffmpeg
@@ -383,7 +383,7 @@ def test_h264_serves_what_webcodecs_decodes(served):
 def test_a_stream_with_no_encoder_answers_503_with_the_reason(monkeypatch):
     monkeypatch.setenv("PATH", "/nonexistent")  # no ffmpeg, so no software lane
     port = free_port()
-    with ghee.open(RED, width=32, height=32, stats=port) as h:
+    with ghee.open(RED, width=32, height=32, serve=port) as h:
         h.feed("level", LEVEL)
         h.frame()
 
@@ -413,7 +413,7 @@ def test_h264_reaches_a_settled_host(served):
 @needs_ffmpeg
 def test_stream_max_caps_the_preview():
     port = free_port()
-    with ghee.open(RED, width=64, height=64, stats=port, stream_max=0.5) as h:
+    with ghee.open(RED, width=64, height=64, serve=port, stream_max=0.5) as h:
         h.feed("level", LEVEL)
         h.frame()
 

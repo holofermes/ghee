@@ -2,7 +2,8 @@
 //!
 //! The scene loading, the driver construction and the pacing are ghee's own.
 //! A frame follows ghee::looper: `t` is the wall clock since the first frame,
-//! DT is the measured frame period, and MAX_DT caps it.
+//! DT is the period since the last frame drawn, and MAX_DT caps it. The tick
+//! of a frame carries the DT that the frame draws with.
 //!
 //! The engine is thread-affine, so a Session belongs to the thread that built
 //! it.
@@ -13,7 +14,7 @@ use std::time::Duration;
 
 use ghee::console::server::{coerce, H264_FPS};
 use ghee::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
-use ghee::engine::{probe_display, Feed, Given, Refused, Renderer};
+use ghee::engine::{probe_display, quarter_turns, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
 use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::layer::Address;
@@ -69,13 +70,32 @@ fn system_fault(e: anyhow::Error) -> Fault {
     Fault::system(format!("{e:#}"))
 }
 
-/// What one frame or one skip reports: the numbers that the loop hands a scene
-/// each tick.
-#[derive(Clone, Copy)]
+/// A refusal of the caller's value as a fault of the caller's, anything
+/// else as the system's.
+fn refusal(e: anyhow::Error) -> Fault {
+    match e.downcast_ref::<Refused>() {
+        Some(refused) => Fault::scene(refused.0.clone()),
+        None => system_fault(e),
+    }
+}
+
+/// What one frame or one skip reports: what the loop hands a scene each
+/// tick. `params` holds the string params that changed since the last tick,
+/// and the first tick holds every string param.
+#[derive(Clone)]
 pub struct Tick {
     pub frame: u64,
     pub time: f64,
     pub dt: f64,
+    pub params: Map<String, Value>,
+}
+
+/// An iteration that begin() opened: its clock, the period since the last
+/// frame drawn, and its tick.
+struct Opened {
+    t0: f64,
+    period: Option<f64>,
+    tick: Tick,
 }
 
 /// Data waiting for the next frame. U8 values reach the texture as byte / 255.
@@ -249,13 +269,18 @@ pub enum StreamMax {
 /// What open() takes, once the host's own values are parsed.
 pub struct Opening {
     pub source: Source,
-    pub output: Option<String>,
+    /// A display driver, or KMS.
+    pub display: Option<String>,
     pub opts: Vec<(String, Value)>,
+    /// The DRI card or render node.
+    pub dri: Option<String>,
+    /// The degrees that the frame turns clockwise on its way out.
+    pub rotate: i64,
     pub size: Option<(i32, i32)>,
     pub fps: Option<f64>,
     pub timestep: Option<f64>,
     /// The console's bind address and port.
-    pub stats: Option<(String, u16)>,
+    pub serve: Option<(String, u16)>,
     pub stream_max: Option<StreamMax>,
     pub verbose: bool,
     /// Keep the output pass's alpha in the frames.
@@ -291,8 +316,10 @@ pub struct Session {
     /// The words of each string param, by the bare name that the wire gives
     /// it.
     strings: Map<String, Value>,
-    /// The words of each string param at the last changed_params().
+    /// The words of each string param at the last tick.
     sent: Map<String, Value>,
+    /// The iteration that begin() opened, for the next frame() or skip().
+    opened: Option<Opened>,
 }
 
 /// The words of each string param of `scene`, by the bare name that `index`
@@ -358,11 +385,11 @@ fn load(source: Source) -> Outcome<(Scene, String)> {
     Ok((scene, name))
 }
 
-/// The driver named by `output`, built from `opts` as --display-opts does.
-fn open_sink(output: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
-    let Some(name) = output else {
+/// The driver named by `display`, built from `opts` as --display-opts does.
+fn open_sink(display: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
+    let Some(name) = display else {
         if !opts.is_empty() {
-            return Err(Fault::scene("opts without output"));
+            return Err(Fault::scene("opts without display"));
         }
         return Ok(Sink::None);
     };
@@ -399,12 +426,16 @@ fn open_sink(output: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
     Ok(Sink::Panel((spec.open)(opts).map_err(system_fault)?))
 }
 
-/// (size, components) of the render. A panel states its own geometry and pixel
-/// layout, and a connected display states its mode. Both win over the host's
-/// own size.
-fn geometry(sink: &Sink, size: Option<(i32, i32)>) -> Outcome<((i32, i32), i32)> {
+/// (size, components) of the frame. A panel states its own geometry and pixel
+/// layout, and a connected display on card `dri`, else on the first card
+/// with one, states its mode. Both win over the host's own size.
+fn geometry(
+    sink: &Sink,
+    size: Option<(i32, i32)>,
+    dri: Option<&str>,
+) -> Outcome<((i32, i32), i32)> {
     match sink {
-        Sink::Kms => match probe_display(None).or(size) {
+        Sink::Kms => match probe_display(dri).or(size) {
             Some(size) => Ok((size, 4)),
             None => Err(Fault::system(
                 "no connected display to size from; pass width and height",
@@ -428,27 +459,31 @@ impl Session {
     pub fn open(opening: Opening) -> Outcome<Session> {
         let Opening {
             source,
-            output,
+            display,
             opts,
+            dri,
+            rotate,
             size,
             fps,
             timestep,
-            stats,
+            serve,
             stream_max,
             verbose,
             alpha,
         } = opening;
+        quarter_turns(rotate).map_err(scene_fault)?;
         let (scene, name) = load(source)?;
-        let sink = open_sink(output.as_deref(), &opts)?;
-        let ((w, h), components) = geometry(&sink, size)?;
+        let sink = open_sink(display.as_deref(), &opts)?;
+        let ((w, h), components) = geometry(&sink, size, dri.as_deref())?;
         let kms = matches!(sink, Sink::Kms);
         let rgb565 = opts
             .iter()
             .find(|(k, _)| k == "rgb565")
             .is_some_and(|(_, v)| truthy(v));
         let mut renderer =
-            Renderer::new(w, h, components, None, kms, rgb565).map_err(system_fault)?;
+            Renderer::new(w, h, components, dri.as_deref(), kms, rgb565).map_err(system_fault)?;
         renderer.set_alpha(alpha);
+        renderer.set_rotate(rotate).map_err(system_fault)?;
         let err = renderer.setup(&scene).map_err(system_fault)?;
         if !err.is_empty() {
             // the command's own line, without the engine's trailing newline
@@ -482,7 +517,7 @@ impl Session {
             Some(StreamMax::Pixels(n)) => n,
             Some(StreamMax::Fraction(f)) => ((f64::from(w.max(h)) * f).round() as i32).max(2),
         };
-        let console = match stats {
+        let console = match serve {
             None => None,
             Some((host, port)) => Some(
                 Console::start(
@@ -527,6 +562,7 @@ impl Session {
             text_errors: u64::MAX,
             strings,
             sent: Map::new(),
+            opened: None,
         })
     }
 
@@ -543,18 +579,55 @@ impl Session {
         self.renderer.renderer()
     }
 
-    /// This iteration's tick, drawn or skipped. DT is the pinned step, else the
-    /// last measured period.
-    fn tick(&self, t: f64) -> Tick {
-        Tick {
+    /// Open this iteration, once: apply the console's sets, and give the
+    /// tick that the next frame() or skip() takes and returns. Its dt is the
+    /// DT that the frame draws with: the pinned step, else the period since
+    /// the last frame drawn, which MAX_DT caps, else the engine's first 1/60.
+    pub fn begin(&mut self) -> Outcome<Tick> {
+        if let Some(o) = &self.opened {
+            return Ok(o.tick.clone());
+        }
+        self.drain()?;
+        let params = self.changed();
+        let t0 = monotonic();
+        let t = self.clock(t0);
+        let period = self.prev.map(|prev| t0 - prev);
+        let tick = Tick {
             frame: self.frame,
             time: t,
-            dt: self
-                .timestep
-                .or(self.period)
-                .unwrap_or(1.0 / 60.0)
-                .min(MAX_DT),
+            dt: match self.timestep {
+                Some(step) => step,
+                None => period.map_or(1.0 / 60.0, |p| p.min(MAX_DT)),
+            },
+            params,
+        };
+        self.opened = Some(Opened {
+            t0,
+            period,
+            tick: tick.clone(),
+        });
+        Ok(tick)
+    }
+
+    /// The iteration that begin() opened, opened now when none is.
+    fn take_opened(&mut self) -> Outcome<Opened> {
+        if self.opened.is_none() {
+            self.begin()?;
         }
+        Ok(self.opened.take().expect("begin() opened the iteration"))
+    }
+
+    /// The string params that changed since the last tick, by their bare
+    /// names, with their words. The first tick holds every string param.
+    fn changed(&mut self) -> Map<String, Value> {
+        let mut out = Map::new();
+        for (k, v) in &self.strings {
+            if self.sent.get(k) != Some(v) {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        self.sent.clone_from(&self.strings);
+        out
     }
 
     /// This iteration's t. Unpinned it is the wall clock since the first frame:
@@ -579,12 +652,11 @@ impl Session {
     }
 
     pub fn frame(&mut self) -> Outcome<Tick> {
-        let t0 = monotonic();
-        let t = self.clock(t0);
-        let tick = self.tick(t);
+        let Opened { t0, period, tick } = self.take_opened()?;
+        let t = tick.time;
         self.drain()?;
-        if let Some(prev) = self.prev {
-            self.period = Some(t0 - prev);
+        if period.is_some() {
+            self.period = period;
         }
         self.prev = Some(t0);
         // The one place a frame feeds DT: the measured period, or the pinned
@@ -734,24 +806,21 @@ impl Session {
     /// reader still gets one: while a viewer wants a frame, the skip draws, as
     /// the CLI queues a preview for its console. A preview draw that fails
     /// falls back to a plain skip; the host's own frame() reports it.
-    pub fn skip(&mut self) -> Tick {
-        if self.console.as_ref().is_some_and(Console::wants_draw) {
-            if let Ok(tick) = self.frame() {
-                if self.pacer.is_none() {
-                    nap(self.idle());
-                }
-                return tick;
+    pub fn skip(&mut self) -> Outcome<Tick> {
+        let tick = self.begin()?;
+        if self.console.as_ref().is_some_and(Console::wants_draw) && self.frame().is_ok() {
+            if self.pacer.is_none() {
+                nap(self.idle());
             }
+            return Ok(tick);
         }
-        let t0 = monotonic();
-        let t = self.clock(t0);
-        let tick = self.tick(t);
+        self.opened = None;
         self.frame += 1;
         if let Some(c) = self.console.as_ref() {
             c.skipped();
         }
         nap(self.idle());
-        tick
+        Ok(tick)
     }
 
     /// The last frame, row-major (height, width, components).
@@ -824,8 +893,7 @@ impl Session {
         };
         RenderTarget::set_param(&self.renderer, p.pass.as_deref(), &p.uniform, &p.ty, &v)
             .map_err(fault)?;
-        // The host wrote these words itself, so changed_params() leaves them
-        // out.
+        // The host wrote these words itself, so no tick reports them.
         if let ParamValue::Str(words) = &v {
             let pass = p.pass.clone();
             self.held_string(pass.as_deref(), &p.uniform.clone(), words, true);
@@ -854,10 +922,50 @@ impl Session {
         };
         self.renderer
             .set_layer(&at, Given::Json(value))
-            .map_err(|e| match e.downcast_ref::<Refused>() {
-                Some(refused) => Fault::scene(refused.0.clone()),
-                None => system_fault(e),
+            .map_err(refusal)
+    }
+
+    /// The name of the scene's last pass before its filters.
+    fn draw_pass(&self) -> String {
+        self.renderer
+            .with_scene(|s| {
+                s.passes
+                    .iter()
+                    .rev()
+                    .find(|p| p.filter.is_empty())
+                    .map(|p| p.name.clone())
             })
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// The width and height in pixels of the block that `words` lay out in
+    /// on the pass that a drawing paints on, as Renderer::measure() gives
+    /// them.
+    pub fn measure(
+        &self,
+        words: &str,
+        font_size: Option<f64>,
+        font_family: Option<&str>,
+    ) -> Outcome<(f64, f64)> {
+        let pass = self.draw_pass();
+        let [w, h] = self
+            .renderer
+            .measure(&pass, words, font_size, font_family)
+            .map_err(refusal)?;
+        Ok((w, h))
+    }
+
+    /// The backlight level of the display, 0 to 1. None for a display with
+    /// no backlight device, and with no KMS display.
+    pub fn brightness(&self) -> Outcome<Option<f64>> {
+        self.renderer.brightness().map_err(system_fault)
+    }
+
+    /// Set the backlight of the display, 0 to 1. A level out of range, and a
+    /// display with no backlight device, are faults of the caller's.
+    pub fn set_brightness(&self, level: f64) -> Outcome<f64> {
+        self.renderer.set_brightness(level).map_err(refusal)
     }
 
     /// Hold `words` for the string param `name` of `pass`, under its bare
@@ -874,22 +982,6 @@ impl Session {
                 self.sent.insert(name.to_string(), Value::from(words));
             }
         }
-    }
-
-    /// The string params that changed since the last call, by their bare
-    /// names, with their words: the console's sets, which this applies first.
-    /// The first call holds every string param, as the first tick of the
-    /// wire does.
-    pub fn changed_params(&mut self) -> Outcome<Map<String, Value>> {
-        self.drain()?;
-        let mut out = Map::new();
-        for (k, v) in &self.strings {
-            if self.sent.get(k) != Some(v) {
-                out.insert(k.clone(), v.clone());
-            }
-        }
-        self.sent.clone_from(&self.strings);
-        Ok(out)
     }
 
     /// Hold data for the next frame. That frame consumes it once.

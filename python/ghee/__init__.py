@@ -3,8 +3,9 @@
 The package holds two surfaces. `ghee.open` drives the renderer, and it needs
 the native half of the wheel. Everything else is the procedural-scene shim,
 which is Python alone until a scene that ghee runs sets a layer through
-`ghee.layers`, or a color param to a CSS colour name: the native half then
-checks each set against the scene, and holds the names.
+`ghee.layers`, sets a color param to a CSS colour name, or measures words
+with `ghee.measure`: the native half then checks each set against the scene,
+holds the names, and lays the words out.
 python/README.md and docs/procedural.md hold them.
 """
 
@@ -25,7 +26,9 @@ from ._shim import (
     Tick,
     args,
     feed,
+    gradient,
     layers,
+    measure,
     run,
     set_param,
     skip,
@@ -49,7 +52,9 @@ __all__ = [
     "__version__",
     "args",
     "feed",
+    "gradient",
     "layers",
+    "measure",
     "open",
     "run",
     "set_param",

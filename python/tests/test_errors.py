@@ -6,7 +6,6 @@ thread error is a RuntimeError.
 
 import concurrent.futures
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -211,19 +210,15 @@ def test_a_scene_mistake_reads_as_ghee_wrote_it_in_open_a_direct_run_and_ghee_re
     path.write_text(MISTAKE_SCENE.format(python=sys.executable))
     path.chmod(0o755)
     out = ["-o", str(tmp_path / "f.png"), "--size", "8x8"]
-    # Python colours a traceback when one of these says so
-    colours = ("FORCE_COLOR", "PYTHON_COLORS", "NO_COLOR")
-    plain = {k: v for k, v in os.environ.items() if k not in colours}
     direct = subprocess.run(
         [str(path), *out],
         capture_output=True,
         check=False,
         text=True,
         timeout=120,
-        env=plain,
     )
     assert direct.returncode == 1
-    assert direct.stderr.splitlines()[-1] == f"ValueError: {message}"
+    assert direct.stderr == f"mistake.py: {message}\n"
     if not CLI.exists():
         pytest.skip(f"no {CLI} to run the scene")
     ran = subprocess.run(
@@ -259,19 +254,19 @@ def test_a_feed_that_carries_no_numbers():
     assert str(raised.value).startswith("feed 'level' takes")
 
 
-def test_an_output_no_driver_answers_to():
+def test_a_display_no_driver_answers_to():
     with pytest.raises(ValueError) as raised:
-        ghee.open(RED, output="nosuchpanel")
+        ghee.open(RED, display="nosuchpanel")
     assert "no display driver 'nosuchpanel'" in str(raised.value)
     assert "st7789" in str(raised.value)
 
 
 def test_an_option_the_driver_does_not_take():
     with pytest.raises(ValueError) as raised:
-        ghee.open(RED, output="st7789", opts={"widht": 240})
+        ghee.open(RED, display="st7789", opts={"widht": 240})
     assert str(raised.value).startswith("opts: st7789 has no option widht")
     with pytest.raises(ValueError) as raised:
-        ghee.open(RED, output="kms", opts={"width": 240})
+        ghee.open(RED, display="kms", opts={"width": 240})
     assert str(raised.value) == "opts: kms has no option width (takes: rgb565)"
 
 

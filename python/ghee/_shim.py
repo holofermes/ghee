@@ -356,17 +356,29 @@ class Pass:
 class Asset:
     """A named file a scene declares once.
 
-    An image (.png, .jpg) is `uniform sampler2D <name>_tex` in every pass,
-    and `vec2 <name>_size` is its size in pixels. A font (.ttf, .otf) is for a
-    Layer's font_family to name. `file` resolves beside the scene's script,
-    then through $GHEE_ASSETS.
+    An image (.png, .jpg, or .raw bare pixels) is `uniform sampler2D
+    <name>_tex` in every pass, and `vec2 <name>_size` is its size in pixels.
+    A font (.ttf, .otf) is for a Layer's font_family to name. `file` resolves
+    beside the scene's script, then through $GHEE_ASSETS.
+    `sampling` reads an image "nearest", by default, or "linear".
+    A .raw file declares its `width` and `height` in pixels, its `format`,
+    "u8" or "f32", and its `components`, 1, 3 or 4, 1 by default.
     """
 
     name: str
     file: str | os.PathLike[str]
+    sampling: Literal["nearest", "linear"] | None = None
+    width: int | None = None
+    height: int | None = None
+    format: Literal["u8", "f32"] | None = None
+    components: int | None = None
 
     def to_dict(self) -> dict:
-        return {"file": _plain(self.file)}
+        d: dict = {"file": _plain(self.file)}
+        for k in ("width", "height", "format", "components", "sampling"):
+            if getattr(self, k) is not None:
+                d[k] = _plain(getattr(self, k))
+        return d
 
 
 @dataclass
@@ -494,6 +506,48 @@ class _LiveEffect:
 
     def __repr__(self) -> str:
         return f"<layer '{self._layer}' {self._name}>"
+
+
+# ------------------------------------------------------------------- drawing
+
+
+def gradient(start, end, angle: float = 0) -> dict:
+    """A text's colour that runs from `start` to `end` along `angle` degrees,
+    as CSS's angle: the gradient object of the scene format."""
+    return {"from": start, "to": end, "angle": angle}
+
+
+def measure(
+    words: str,
+    font_size: float | None = None,
+    font_family: str | os.PathLike[str] | None = None,
+) -> tuple[float, float]:
+    """The width and height in pixels of the block that `words` lay out in,
+    as a text of the scene that run() runs lays them out on its last pass:
+    at `font_size`, or at the size that fits the pass when None, in
+    `font_family`, the built-in font when None.
+
+    Raises RuntimeError outside run(), and ValueError for a font that the
+    scene cannot give a text.
+    """
+    global _LIVE
+    if _HANDLE is not None:
+        return _HANDLE.measure(words, font_size, font_family)
+    if _SCENE is None:
+        raise RuntimeError(
+            "ghee.measure lays words out in the scene that run() runs: call it in "
+            "a tick or a feed"
+        )
+    size = _render_size()
+    if size is None:
+        raise RuntimeError(f"${SIZE} names no WxH render size")
+    if _LIVE is None:
+        from ghee import _ext
+
+        _LIVE = _ext()._LayerWire(_SCENE.to_dict())
+    family = None if font_family is None else os.fspath(font_family)
+    base = _script_dir() or os.getcwd()
+    return _LIVE.measure(words, size, base, font_size, family)
 
 
 # ---------------------------------------------------------------------- args
@@ -728,7 +782,9 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
 class Tick:
     """One render tick.
 
-    `frame` counts the ticks, and `time` and `dt` are in seconds.
+    `frame` counts the ticks, and `time` and `dt` are in seconds: `dt` is
+    the DT that the tick's frame draws with, 1/60 for the first frame unless
+    a timestep pins it.
     `params` holds the string params that changed.
     The first tick holds every string param.
     """
@@ -1038,12 +1094,16 @@ def _array_message(name: str, values) -> tuple[int, bytes]:
 
 
 def _tick(line: str) -> Tick:
-    d = json.loads(line)
+    return _tick_of(json.loads(line))
+
+
+def _tick_of(d: dict) -> Tick:
+    """The Tick of a tick as the wire and a handle write it."""
     return Tick(
         int(d.get("frame", 0)),
         float(d.get("time", 0.0)),
         float(d.get("dt", 0.0)),
-        d.get("params") or {},
+        dict(d.get("params") or {}),
     )
 
 
@@ -1153,22 +1213,34 @@ def _display(a) -> str | None:
     return "kms"
 
 
+def _refuse(why: str):
+    """Stop a direct run that ghee refuses: its one line, and exit status 1,
+    as `ghee render` stops."""
+    print(f"{os.path.basename(sys.argv[0])}: {why}", file=sys.stderr)
+    raise SystemExit(1)
+
+
 def _open(scene: Scene, a):
-    """Open the scene on the bindings."""
+    """Open the scene on the bindings. A scene or a display that ghee
+    refuses stops the run."""
     from ghee import open as open_scene
 
     w, h = a.size or (None, None)
-    return open_scene(
-        scene.to_dict(),
-        output=_display(a),
-        opts=a.display_opts or None,
-        width=w,
-        height=h,
-        fps=a.fps,
-        stats=(a.host, a.port) if a.serve else None,
-        timestep=a.timestep,
-        base_dir=_script_dir(),
-    )
+    doc = scene.to_dict()
+    try:
+        return open_scene(
+            doc,
+            display=_display(a),
+            opts=a.display_opts or None,
+            width=w,
+            height=h,
+            fps=a.fps,
+            serve=(a.host, a.port) if a.serve else None,
+            timestep=a.timestep,
+            base_dir=_script_dir(),
+        )
+    except (ValueError, RuntimeError) as e:
+        _refuse(str(e))
 
 
 def _frames(a) -> int:
@@ -1212,27 +1284,30 @@ def _direct(scene: Scene) -> None:
     """Drive the scene from the wire's own hooks and feeds.
 
     The tick keeps its wire shape: `params` holds the string params that the
-    console changed, and the first tick holds every string param.
+    console changed, and the first tick holds every string param. Its `dt`
+    is the DT that its frame draws with, as under ghee.
     """
     global _CLEAN, _HANDLE
     a = _HOST if _HOST is not None else _host_args()
     _arrays(scene)
+    if a.output not in (None, "-") and (a.frames or 0) > 1:
+        from ghee import _ext
+
+        if not _ext()._numbered(a.output):
+            _refuse(
+                "multiple frames into one filename; number them with a # run "
+                "(frame.####.png)"
+            )
     handle = _open(scene, a)
     del _STOPPED[:]
     caught = [(s, signal.signal(s, _stop)) for s in (signal.SIGINT, signal.SIGTERM)]
     _HANDLE = handle
     frames = _frames(a)
-    frame, started, last = 0, time.monotonic(), 0.0
+    frame, started = 0, time.monotonic()
     times: list = []
     try:
         while not _STOPPED and (frames == 0 or frame < frames):
-            now = (
-                frame * a.timestep
-                if a.timestep is not None
-                else time.monotonic() - started
-            )
-            t = Tick(frame, now, now - last, handle.changed_params())
-            last = now
+            t = _tick_of(handle._tick())
             _CLEAN = False
             for hook in _HOOKS:
                 hook(t)

@@ -32,13 +32,13 @@ scene = ghee.Scene(
     passes=[ghee.Pass("main", layers=[ghee.Layer("clock", text="00:00:00")])],
 )
 
-with ghee.open(scene, output="ssd1306", fps=4) as screen:
+with ghee.open(scene, display="ssd1306", fps=4) as screen:
     while True:
         screen.layers.clock.text = time.strftime("%H:%M:%S")
         screen.frame()
 ```
 
-`output="kms"` takes a panel with a kernel driver in place of ghee's own
+`display="kms"` takes a panel with a kernel driver in place of ghee's own
 `ssd1306` driver.
 
 The same clock with a glow around the digits takes the `glow` effect. A 1-bit
@@ -73,12 +73,14 @@ panel.
 import ghee
 
 h = ghee.open(
-    "scene.json",      # a path, the JSON text of a scene, a dict, or a ghee.Scene
-    output="st7789",   # a driver name, "kms", or None for headless
+    "scene.json",      # a path, the JSON text of a scene, a dict, a ghee.Scene, or None
+    display="st7789",  # a driver name, "kms", or None for headless
     opts={"width": 240, "height": 240, "backlight": 26},
+    dri=None,          # the card, as --dri takes it
+    rotate=0,          # 0, 90, 180 or 270 degrees clockwise
     width=None, height=None,   # a headless size, a panel states its own
     fps=30,            # pace cap, None runs free
-    stats=8090,        # console port, ("0.0.0.0", 8090) binds elsewhere
+    serve=8090,        # console port, ("0.0.0.0", 8090) binds elsewhere
     stream_max=None,   # h264 stream cap: pixels, or a fraction of the render size
     verbose=False,
     timestep=None,     # pin time to frame*S for a reproducible render
@@ -94,9 +96,11 @@ h.layers.title.x = 10                    # a live field of a layer
 h.layers.title.karaoke.sung = 12         # a live field of one of its effects
 
 h.feed("level", bars)      # bytes, bytearray, memoryview, array, numpy, numbers
-tick = h.frame()           # {"frame": 12, "time": 0.4, "dt": 0.0166}
+tick = h.frame()           # {"frame": 12, "time": 0.4, "dt": 0.0166, "params": {}}
 tick = h.skip()            # the same tick, with no draw
-h.changed_params()         # {"title": "hi"}: string params that the console set
+
+w, ht = h.measure("hello", font_size=12)   # the block's size in pixels
+h.brightness = 0.5         # a KMS display's backlight, 0 to 1
 
 h.size          # (width, height)
 h.components    # 3 for RGB, 4 for RGBA
@@ -138,23 +142,23 @@ or iterable of numbers as floats. An array keeps its texture data until a
 feed changes it.
 
 `frame` draws and hands the frame to the output. `time` is the wall clock
-since the first frame, `dt` is the measured frame period, and `timestep`
-pins both to `frame * S`.
+since the first frame, and `dt` is the DT that the frame draws with: the time
+since the frame before, a quarter second at most, and 1/60 for the first
+frame. `timestep` pins `time` to `frame * S` and `dt` to S. `params` holds the
+string params that the console changed since the last tick, with their
+words, and the first tick holds every string param. A set from the host
+itself stays out.
 
 `pixels` reads alpha 255 in every pixel, unless `alpha=True` keeps the alpha
 that the output pass wrote, with the colour premultiplied by it.
 
 `skip` takes the tick and draws nothing, and the panel keeps its last frame.
 
-`changed_params` returns the string params that changed since its last call,
-with their words, and the first call returns every string param. It applies
-the console's sets at once. A set from the host itself stays out.
-
 `save` writes the last frame to a `.png` file, or to a `.jpg`, which holds no
 alpha. A run of `#` in the name takes the number of the frame's tick, as
 `ghee render -o` numbers its files.
 
-`stats` serves the console on `127.0.0.1`, and a `(host, port)` pair binds it
+`serve` serves the console on `127.0.0.1`, and a `(host, port)` pair binds it
 elsewhere. Anyone who reaches the port can change params, so bind beyond
 loopback only on a network you trust.
 [docs/http.md](https://github.com/holofermes/ghee/blob/main/docs/http.md)
@@ -162,6 +166,21 @@ holds the API. This console shows the host's own scene. Params and the live
 fields of layers change from it, and it refuses scene switches, saves and
 every edit that rebuilds the scene. The video stream advances with
 `frame()`: viewers see a new frame only when the host draws one.
+
+With no scene, `ghee.open` makes one pass, `main`, that clears to black, for
+a drawing to paint on. `rotate` turns the frame clockwise on its way to every
+output, the display, the files and the console's video, and at 90 and 270 the
+scene renders at the frame's size turned, so a 128x32 panel gives the scene
+32x128. `h.size` is the frame's size, the size of `pixels()`.
+
+`brightness` reads and sets the backlight of a KMS display, 0 to 1, through
+the backlight device that the kernel registered for it, such as a panel's
+contrast. It reads None for a display with no backlight device, and a set
+raises ValueError there and on a screen with no KMS display.
+
+`h.measure(words, font_size=None, font_family=None)` gives the width and
+height in pixels of the block that a drawing's text lays `words` out in, at
+the size that fits the screen when `font_size` is None.
 
 ## Rules
 
@@ -196,13 +215,13 @@ The shim gives:
   stands.
 - `@ghee.tick` to run a hook on each tick, before the feeds. The hook
   receives a `ghee.Tick` and calls `ghee.set_param(name, value)`,
-  `ghee.layers` and `ghee.skip()`.
+  `ghee.layers`, `ghee.measure` and `ghee.skip()`.
 - `ghee.run(scene)` for the handshake, then the tick loop.
 
 A `ghee.Tick` holds `frame`, the tick's number, `time` and `dt` in seconds,
-and `params`, the string params that changed, by name. The first tick's
-`params` holds every string param. This scene is the clock above, written as
-a procedural scene:
+`dt` the DT that its frame draws with, and `params`, the string params that
+changed, by name. The first tick's `params` holds every string param. This
+scene is the clock above, written as a procedural scene:
 
 ```python
 import time
@@ -229,6 +248,10 @@ ghee.run(
 by name works too, and a key that differs from its param's name raises
 ValueError.
 
+`ghee.Asset(name, file)` takes the keys of an asset of the scene format:
+`sampling`, "nearest" or "linear", and for a `.raw` file of bare pixels its
+`width`, `height`, `format`, "u8" or "f32", and `components`.
+
 The shim builds the scene and leaves every check to ghee, so a mistake in the
 scene reads the same in `ghee.open`, in a direct run and under `ghee render`.
 
@@ -237,6 +260,10 @@ declare, or for a value that does not fit the param's type. A param set in a
 hook lands in the frame of its tick in [direct mode](#direct-mode), and under
 ghee with `--timestep`. Under ghee without it, the param lands a frame later
 or more.
+
+`ghee.measure` measures words as a handle's `measure` does, on the last pass
+of the scene that `run()` runs, at the render size that ghee gives the scene,
+and raises RuntimeError outside a tick or a feed.
 
 `ghee.layers` makes the sets of a handle's `layers` from a tick or a feed,
 and they land as a param does. Under ghee, each set goes out with the tick's
@@ -322,7 +349,8 @@ the two apart by it.
 The scene takes its own arguments first, then these flags of `ghee render`:
 
 - `-o PATTERN`: image files, as `frame.####.png`, or `-` for raw RGBA frames
-  on stdout. Files and the pipe take every frame, a skipped one too.
+  on stdout. Files and the pipe take every frame, a skipped one too, and
+  more than one frame takes a pattern that numbers them.
 - `--display [NAME]`: a driver name, or bare or `kms` for the connected
   display. It is the default with no `-o` and no `--serve`.
 - `--display-opts K=V,...`: the options of the display driver.
@@ -334,9 +362,11 @@ The scene takes its own arguments first, then these flags of `ghee render`:
   SIGTERM.
 
 The feeds, the hooks, `ghee.layers` and `ghee.skip()` work the same. The tick keeps its wire
-shape: `params` holds the string params that the console changed, and the
-first tick holds every string param. If one of your own arguments collides
-with these names, argparse says so.
+shape: `dt` is the DT that its frame draws with, `params` holds the string
+params that the console changed, and the first tick holds every string
+param. A scene or a display that ghee refuses stops the run with ghee's one
+line and exit status 1. If one of your own arguments collides with these
+names, argparse says so.
 
 ## What the wire carries
 

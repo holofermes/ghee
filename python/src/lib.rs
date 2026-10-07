@@ -3,7 +3,7 @@
 //! ```python
 //! import ghee
 //!
-//! with ghee.open("scene.json", output="st7789", fps=30) as h:
+//! with ghee.open("scene.json", display="st7789", fps=30) as h:
 //!     while playing:
 //!         h.set_param("gain", 1.5)
 //!         h.feed("level", bars)
@@ -101,7 +101,7 @@ impl Held<'_> {
         self.0.frame()
     }
 
-    fn skip(&mut self) -> Tick {
+    fn skip(&mut self) -> session::Outcome<Tick> {
         self.0.skip()
     }
 }
@@ -182,17 +182,31 @@ fn tick_dict(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyDict>> {
     d.set_item("frame", tick.frame)?;
     d.set_item("time", tick.time)?;
     d.set_item("dt", tick.dt)?;
+    let params = PyDict::new(py);
+    for (k, v) in tick.params {
+        params.set_item(k, v.as_str().unwrap_or_default())?;
+    }
+    d.set_item("params", params)?;
     Ok(d)
 }
 
+/// The GLSL of the scene of a host that names none: one pass, black.
+const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
+
 /// The scene named by a caller: a path, a JSON document, the JSON text of
-/// one, or a ghee.Scene. A document's files resolve in `base_dir`, else in
-/// the working directory.
-fn source_of(scene: &Bound<'_, PyAny>, base_dir: Option<PathBuf>) -> PyResult<Source> {
+/// one, a ghee.Scene, or None for one pass, `main`, that clears to black. A
+/// document's files resolve in `base_dir`, else in the working directory.
+fn source_of(scene: Option<&Bound<'_, PyAny>>, base_dir: Option<PathBuf>) -> PyResult<Source> {
     let dir = base_dir.map_or(".".to_string(), |d| d.to_string_lossy().into_owned());
     let doc = |doc: Value| Source::Doc {
         doc,
         dir: dir.clone(),
+    };
+    let Some(scene) = scene.filter(|s| !s.is_none()) else {
+        return Ok(doc(serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "code": BLACK}],
+        })));
     };
     if scene.cast::<PyDict>().is_ok() {
         return Ok(doc(to_json(scene)?));
@@ -236,28 +250,28 @@ fn stream_max_of(v: &Bound<'_, PyAny>) -> PyResult<StreamMax> {
     ))
 }
 
-fn bind_of(stats: &Bound<'_, PyAny>) -> PyResult<(String, u16)> {
-    if let Ok(port) = stats.extract::<i64>() {
+fn bind_of(serve: &Bound<'_, PyAny>) -> PyResult<(String, u16)> {
+    if let Ok(port) = serve.extract::<i64>() {
         return Ok((serve::LOOPBACK.to_string(), port_of(port)?));
     }
-    if let Ok((host, port)) = stats.extract::<(String, i64)>() {
+    if let Ok((host, port)) = serve.extract::<(String, i64)>() {
         return Ok((host, port_of(port)?));
     }
     Err(PyValueError::new_err(format!(
-        "stats takes a port, or a (host, port) pair; got {}",
-        stats.get_type().name()?
+        "serve takes a port, or a (host, port) pair; got {}",
+        serve.get_type().name()?
     )))
 }
 
 fn port_of(port: i64) -> PyResult<u16> {
     u16::try_from(port)
-        .map_err(|_| PyValueError::new_err(format!("stats: {port} is no port (0-65535)")))
+        .map_err(|_| PyValueError::new_err(format!("serve: {port} is no port (0-65535)")))
 }
 
 /// A rendering scene, and the output it draws to.
 #[pyclass(module = "ghee")]
 struct Handle {
-    /// (width, height) of the scene's render
+    /// (width, height) of the frame: of pixels() and of a saved frame
     #[pyo3(get)]
     size: (i32, i32),
     held: Affine<Session>,
@@ -322,16 +336,42 @@ impl Handle {
             .call1((slf.getattr("set_layer")?,))
     }
 
-    /// The string params that changed since the last call, by name, with
-    /// their words: the sets of the console, which this applies at once. The
-    /// first call returns every string param.
-    fn changed_params<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let changed = self.held.get()?.changed_params().map_err(fault)?;
-        let d = PyDict::new(py);
-        for (k, v) in changed {
-            d.set_item(k, v.as_str().unwrap_or_default())?;
-        }
-        Ok(d)
+    /// The width and height in pixels of the block that `words` lay out in,
+    /// as a drawing's text lays them out: at `font_size`, or at the size
+    /// that fits the screen when None, in `font_family`, the built-in font
+    /// when None.
+    #[pyo3(signature = (words, font_size=None, font_family=None))]
+    fn measure(
+        &mut self,
+        words: &str,
+        font_size: Option<f64>,
+        font_family: Option<PathBuf>,
+    ) -> PyResult<(f64, f64)> {
+        let family = font_family.map(|f| f.to_string_lossy().into_owned());
+        self.held
+            .get()?
+            .measure(words, font_size, family.as_deref())
+            .map_err(fault)
+    }
+
+    /// The backlight level of the display, 0 to 1, None for a display with
+    /// no backlight device. Setting it writes the level.
+    #[getter]
+    fn get_brightness(&mut self) -> PyResult<Option<f64>> {
+        self.held.get()?.brightness().map_err(fault)
+    }
+
+    #[setter]
+    fn set_brightness(&mut self, level: f64) -> PyResult<()> {
+        self.held.get()?.set_brightness(level).map_err(fault)?;
+        Ok(())
+    }
+
+    /// Open this iteration and give its tick, which the next frame() or
+    /// skip() takes and returns: the shim's hooks run between the two.
+    fn _tick<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let tick = self.held.get()?.begin().map_err(fault)?;
+        tick_dict(py, tick)
     }
 
     /// Hold data for one declared array. The next frame consumes it once.
@@ -345,7 +385,9 @@ impl Handle {
 
     /// Draw one frame and hand it to the output.
     ///
-    /// Returns this tick: {"frame", "time", "dt"}.
+    /// Returns this tick: {"frame", "time", "dt", "params"}. `dt` is the DT
+    /// that the frame draws with, and `params` holds the string params that
+    /// changed since the last tick, the first tick every string param.
     fn frame<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let mut held = Held(self.held.get()?);
         let tick = py.detach(move || held.frame()).map_err(fault)?;
@@ -357,7 +399,7 @@ impl Handle {
     /// Returns the same tick as frame().
     fn skip<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let mut held = Held(self.held.get()?);
-        let tick = py.detach(move || held.skip());
+        let tick = py.detach(move || held.skip()).map_err(fault)?;
         tick_dict(py, tick)
     }
 
@@ -423,30 +465,36 @@ impl Handle {
 /// Open a scene and render it.
 ///
 /// `scene` is a path to a .scene.json, the JSON text of a scene, a dict, or a
-/// ghee.Scene.
-/// `output` names a display driver as `ghee render --display` takes it, or
+/// ghee.Scene. None makes one pass, `main`, that clears to black.
+/// `display` names a display driver as `ghee render --display` takes it, or
 /// "kms" for the connected display. None renders headless, and pixels() reads
 /// the frame back.
 /// `opts` holds the driver options, as `--display-opts` takes them.
-/// `width` and `height` size a headless render. A panel or a display states its
+/// `dri` is the card, as `--dri` takes it: with "kms", the card whose display
+/// shows the frames, the first card with a display when None.
+/// `rotate` turns the frame clockwise on its way out, 0, 90, 180 or 270
+/// degrees, and at 90 and 270 the scene renders at the frame's size turned.
+/// `width` and `height` size a headless frame. A panel or a display states its
 /// own size.
 /// `fps` caps the pace. None runs free.
 /// `timestep` pins time to frame*S, so a render repeats bit for bit.
 /// `alpha` keeps the output pass's alpha in pixels(), opaque without it.
 /// `base_dir` is where a scene given as a dict, as JSON text or as a
 /// ghee.Scene finds its files, the working directory when None.
-/// `stats` serves the ghee console on that port, on 127.0.0.1. A (host, port)
+/// `serve` serves the ghee console on that port, on 127.0.0.1. A (host, port)
 /// pair binds it elsewhere. `stream_max` caps the console's h264 stream on
 /// its longest side: pixels, or a fraction of the render size.
 #[pyfunction]
 #[pyo3(signature = (
-    scene,
-    output=None,
+    scene=None,
+    display=None,
     opts=None,
+    dri=None,
+    rotate=0,
     width=None,
     height=None,
     fps=None,
-    stats=None,
+    serve=None,
     stream_max=None,
     verbose=false,
     timestep=None,
@@ -455,13 +503,15 @@ impl Handle {
 ))]
 #[allow(clippy::too_many_arguments)]
 fn open(
-    scene: &Bound<'_, PyAny>,
-    output: Option<String>,
+    scene: Option<&Bound<'_, PyAny>>,
+    display: Option<String>,
     opts: Option<&Bound<'_, PyAny>>,
+    dri: Option<PathBuf>,
+    rotate: i64,
     width: Option<i32>,
     height: Option<i32>,
     fps: Option<f64>,
-    stats: Option<&Bound<'_, PyAny>>,
+    serve: Option<&Bound<'_, PyAny>>,
     stream_max: Option<&Bound<'_, PyAny>>,
     verbose: bool,
     timestep: Option<f64>,
@@ -469,7 +519,7 @@ fn open(
     base_dir: Option<PathBuf>,
 ) -> PyResult<Handle> {
     let source = source_of(scene, base_dir)?;
-    let stats = stats.map(bind_of).transpose()?;
+    let serve = serve.map(bind_of).transpose()?;
     let stream_max = stream_max.map(stream_max_of).transpose()?;
     let opts = match opts {
         None => Vec::new(),
@@ -489,12 +539,14 @@ fn open(
     };
     let session = Session::open(Opening {
         source,
-        output,
+        display,
         opts,
+        dri: dri.map(|d| d.to_string_lossy().into_owned()),
+        rotate,
         size,
         fps,
         timestep,
-        stats,
+        serve,
         stream_max,
         verbose,
         alpha,
@@ -504,6 +556,15 @@ fn open(
         size: session.size(),
         held: Affine::new(session),
     })
+}
+
+/// True when the image file name `pattern` numbers its frames: a run of `#`
+/// or a printf field.
+#[pyfunction]
+fn _numbered(pattern: &str) -> PyResult<bool> {
+    let first = ghee::output::expand_pattern(pattern, 0)
+        .map_err(|e| PyValueError::new_err(format!("{e:#}")))?;
+    Ok(first != pattern)
 }
 
 #[pymodule]
@@ -516,6 +577,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // the shim's own, so out of __all__
     m.setattr("_LayerWire", m.py().get_type::<wire::LayerWire>())?;
     m.setattr("_colour_name", wrap_pyfunction!(wire::_colour_name, m)?)?;
+    m.setattr("_numbered", wrap_pyfunction!(_numbered, m)?)?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
     Ok(())
 }

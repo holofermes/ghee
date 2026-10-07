@@ -19,14 +19,30 @@ from test_shim import REFUSED, load, scene_of
 
 
 class Fake:
-    """The handle open() hands back. It records what the loop asks of it."""
+    """The handle open() hands back. It records what the loop asks of it, and
+    its ticks run half a second apart."""
 
     def __init__(self, on_frame=None):
         self.calls = []
         self.on_frame = on_frame
         self.drawn = 0
-        # what changed_params() returns, a call each, then {}
+        self.ticks = 0
+        self.opened = None
+        # the params of each tick, then {}
         self.changes = [{"words": "hi"}, {}, {"words": "ho"}]
+
+    def _tick(self):
+        if self.opened is None:
+            params = self.changes.pop(0) if self.changes else {}
+            n = self.ticks
+            self.opened = {"frame": n, "time": 0.5 * n, "dt": 0.5, "params": params}
+        return self.opened
+
+    def _taken(self):
+        tick = self._tick()
+        self.opened = None
+        self.ticks += 1
+        return tick
 
     def feed(self, name, values):
         self.calls.append(("feed", name, list(values)))
@@ -42,14 +58,11 @@ class Fake:
         self.drawn += 1
         if self.on_frame:
             self.on_frame(self.drawn)
-        return {"frame": self.drawn - 1, "time": 0.0, "dt": 0.0}
+        return self._taken()
 
     def skip(self):
         self.calls.append(("skip",))
-        return {"frame": self.drawn, "time": 0.0, "dt": 0.0}
-
-    def changed_params(self):
-        return self.changes.pop(0) if self.changes else {}
+        return self._taken()
 
     def save(self, path):
         self.calls.append(("save", path))
@@ -84,9 +97,7 @@ def host(monkeypatch, argv, on_frame=None):
 
 
 def test_the_loop_runs_the_hooks_then_the_feeds_then_the_frame(monkeypatch):
-    shim, fake, _ = host(
-        monkeypatch, ["--display", "st7789", "--frames", "3", "--timestep", "0.5"]
-    )
+    shim, fake, _ = host(monkeypatch, ["--display", "st7789", "--frames", "3"])
     seen = []
 
     @shim.tick
@@ -101,9 +112,10 @@ def test_the_loop_runs_the_hooks_then_the_feeds_then_the_frame(monkeypatch):
         return None if t.frame == 2 else [float(t.frame)] * 4
 
     shim.run(scene_of(shim))
-    # the tick keeps its wire shape, with the string params that changed
+    # the tick is the handle's, in its wire shape, with the string params
+    # that changed
     assert seen == [
-        (0, 0.0, 0.0, {"words": "hi"}),
+        (0, 0.0, 0.5, {"words": "hi"}),
         (1, 0.5, 0.5, {}),
         (2, 1.0, 0.5, {"words": "ho"}),
     ]
@@ -174,10 +186,10 @@ def test_the_host_flags_reach_the_bindings(monkeypatch):
     )
     shim.run(scene_of(shim))
     assert opened["scene"] == scene_of(shim).to_dict()
-    assert opened["output"] == "st7789"
+    assert opened["display"] == "st7789"
     assert opened["opts"] == {"width": 240, "backlight": 26, "madctl": 0, "bus": "spi0"}
     assert (opened["width"], opened["height"]) == (64, 48)
-    assert (opened["fps"], opened["stats"], opened["timestep"]) == (
+    assert (opened["fps"], opened["serve"], opened["timestep"]) == (
         30.0,
         ("0.0.0.0", 8099),
         0.25,
@@ -185,7 +197,7 @@ def test_the_host_flags_reach_the_bindings(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "argv,output,stats",
+    "argv,display,serve",
     [
         ([], "kms", None),
         (["--display"], "kms", None),
@@ -194,11 +206,11 @@ def test_the_host_flags_reach_the_bindings(monkeypatch):
         (["-o", "-", "--display", "st7789"], "st7789", None),
     ],
 )
-def test_a_run_with_no_output_goes_to_the_display(argv, output, stats, monkeypatch):
+def test_a_run_with_no_output_goes_to_the_display(argv, display, serve, monkeypatch):
     shim, _, opened = host(monkeypatch, [*argv, "--frames", "1"])
     monkeypatch.setattr(sys, "stdout", Out())
     shim.run(scene_of(shim))
-    assert (opened["output"], opened["stats"]) == (output, stats)
+    assert (opened["display"], opened["serve"]) == (display, serve)
     assert (opened["width"], opened["height"]) == (None, None)
 
 
@@ -256,7 +268,7 @@ def test_a_scene_takes_its_own_args_beside_the_host_flags(monkeypatch):
     got = shim.args([shim.Arg("bins", "int", default=4)])
     assert got.bins == 8
     shim.run(scene_of(shim))
-    assert opened["output"] == "st7789"
+    assert opened["display"] == "st7789"
 
 
 def test_a_wire_run_refuses_the_host_flags(monkeypatch):
@@ -278,6 +290,49 @@ def test_a_feed_the_scene_never_declared_stops_before_the_render(monkeypatch):
     with pytest.raises(ValueError, match="feed 'nope' is not an array"):
         shim.run(scene_of(shim))
     assert not opened and not fake.calls
+
+
+def test_many_frames_into_one_file_stop_the_run_as_ghee_render_stops(
+    monkeypatch, capsys
+):
+    shim, fake, opened = host(monkeypatch, ["-o", "one.png", "--frames", "4"])
+    with pytest.raises(SystemExit) as stopped:
+        shim.run(scene_of(shim))
+    assert stopped.value.code == 1
+    assert capsys.readouterr().err == (
+        "feeder.py: multiple frames into one filename; number them with a # run "
+        "(frame.####.png)\n"
+    )
+    assert not opened and not fake.calls
+
+
+@pytest.mark.parametrize("error", [ValueError, RuntimeError])
+def test_a_run_that_ghee_refuses_stops_with_its_one_line(error, monkeypatch, capsys):
+    """A scene or a display that ghee refuses ends the run with ghee's line,
+    and an exception of the script's own keeps its traceback."""
+    shim, _, _ = host(monkeypatch, ["--frames", "1"])
+
+    def refuse(scene, **kw):
+        raise error("no connected display to size from; pass width and height")
+
+    sys.modules["ghee"].open = refuse
+    with pytest.raises(SystemExit) as stopped:
+        shim.run(scene_of(shim))
+    assert stopped.value.code == 1
+    assert capsys.readouterr().err == (
+        "feeder.py: no connected display to size from; pass width and height\n"
+    )
+
+
+def test_an_exception_of_the_script_keeps_its_traceback(monkeypatch):
+    shim, _, _ = host(monkeypatch, ["--display", "st7789", "--frames", "1"])
+
+    @shim.tick
+    def hook(t):
+        raise KeyError("own")
+
+    with pytest.raises(KeyError, match="own"):
+        shim.run(scene_of(shim))
 
 
 @pytest.mark.parametrize(
@@ -370,8 +425,9 @@ def test_a_scene_file_renders_itself(tmp_path):
         timeout=120,
     )
     assert ran.returncode == 0, ran.stderr
+    # frame 0 draws with the pinned step too
     assert ran.stdout.splitlines() == [
-        "tick 0 0.0 0.0 {}",
+        "tick 0 0.0 0.5 {}",
         "tick 1 0.5 0.5 {}",
         "tick 2 1.0 0.5 {}",
     ]

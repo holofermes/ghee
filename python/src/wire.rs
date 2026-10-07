@@ -16,11 +16,13 @@ use crate::session::{Fault, Index, Outcome};
 use crate::{fault, to_json};
 
 /// A scene that a scene process runs under ghee, to check each live layer set
-/// against and to give the set's message.
+/// against and to give the set's message, and to lay words out in.
 #[pyclass(module = "ghee", name = "_LayerWire", unsendable)]
 pub struct LayerWire {
     scene: Scene,
     index: Index,
+    /// The scene with its files loaded, for measure(), once it first asks.
+    loaded: Option<Scene>,
 }
 
 /// True for a CSS colour name, in any case, `transparent` too.
@@ -110,7 +112,39 @@ impl LayerWire {
             .map_err(scene_fault)
             .map_err(fault)?;
         let index = Index::of(&scene);
-        Ok(LayerWire { scene, index })
+        Ok(LayerWire {
+            scene,
+            index,
+            loaded: None,
+        })
+    }
+
+    /// The width and height in pixels of the block that `words` lay out in
+    /// on the scene's last pass in a frame of `size` pixels, as
+    /// Scene::measure() gives them, the scene's files found in `base_dir`.
+    #[pyo3(signature = (words, size, base_dir, font_size=None, font_family=None))]
+    fn measure(
+        &mut self,
+        words: &str,
+        size: (f64, f64),
+        base_dir: &str,
+        font_size: Option<f64>,
+        font_family: Option<&str>,
+    ) -> PyResult<(f64, f64)> {
+        if self.loaded.is_none() {
+            let mut loaded = self.scene.clone();
+            loaded
+                .load_assets(base_dir)
+                .map_err(scene_fault)
+                .map_err(fault)?;
+            self.loaded = Some(loaded);
+        }
+        let scene = self.loaded.as_ref().expect("loaded just now");
+        let [w, h] = scene
+            .measure([size.0, size.1], words, font_size, font_family)
+            .map_err(scene_fault)
+            .map_err(fault)?;
+        Ok((w, h))
     }
 
     /// The message of a live set of `field` of layer `name`, or of its

@@ -3385,6 +3385,13 @@ impl Renderer {
         }
     }
 
+    /// Hand `read` the scene that the renderer draws: the scene of its last
+    /// setup, with the layers and the live values set since. None before the
+    /// first setup.
+    pub fn with_scene<R>(&self, read: impl FnOnce(&Scene) -> R) -> Option<R> {
+        self.scene.borrow().as_ref().map(read)
+    }
+
     /// Keep the output pass's alpha in 4-component frames. Off by default,
     /// and every frame then reads alpha 255. A 3-component frame and the
     /// scanout carry no alpha, and the H264 input stays opaque. It takes

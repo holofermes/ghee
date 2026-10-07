@@ -165,6 +165,16 @@
   takes a glyph at the first words that draw it, so new words of glyphs
   already drawn upload nothing, and a layer in the pixel font takes new
   two-digit words in 0.35 ms on a Pi Zero 2 W.
+- Draw consecutive shape layers and slug text layers with no effect, of one
+  blend, in one draw through one program, which reads each text's settings
+  from its glyphs' vertices. A glyph drawn there can land an edge pixel one
+  level from where the text's own program lands it, since the program
+  reads the font size from the vertex where the text's own holds a
+  constant. A text whose glyphs' quads cover more than 800 pixels, or whose
+  words take a texture of their own, keeps a draw of its own, and so does a
+  shape of more than 3400 pixels beside a text, since on a Pi Zero 2 W that
+  program costs 28 ns more for each pixel of a glyph and 5.6 ns more for
+  each pixel of a shape.
 - Draw a text layer from Pixel Operator 8, a second built-in font, with
   `font_family: "pixel"`, as the font's own pixels: such a layer takes
   `render` slug unless it names one, a size that fits rounded down to a
@@ -300,8 +310,8 @@
   layer whose call stops hides, and an effect that a call stops naming is
   bypassed. Two calls that draw one layer in a frame raise ValueError. On a
   Pi Zero 2 W, with rects and two-digit words in the pixel font and half of
-  the calls changed each frame, a frame of 50 calls draws at 165 fps on a
-  128x32 SSD1306, and a frame of 200 calls at 61 fps.
+  the calls changed each frame, a frame of 50 calls draws at 172 fps on a
+  128x32 SSD1306, and a frame of 200 calls at 120 fps.
 - Measure words with `h.measure(words, font_size=None, font_family=None)`,
   and with `ghee.measure` in a scene script: the width and height in pixels
   of the block that ghee lays them out in, at the size that fits the pass

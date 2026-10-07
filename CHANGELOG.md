@@ -42,6 +42,9 @@ A scene written for 0.4.0 needs these changes.
   the console and save.
 - Drop the body of `POST /save`: `/save?name=` saves the working copy that
   ghee holds.
+- Drop the console page's working copy in the browser's localStorage, which
+  the page posted over the scene at each load, and the scene that its save
+  posted. The page reads no edit that a browser kept there.
 
 ### Scenes
 
@@ -547,6 +550,36 @@ A scene written for 0.4.0 needs these changes.
 - Name the board and its GPU in `GET /hwinfo` from the device tree, so a
   Pi 5 reads Raspberry Pi 5 and VideoCore VII, with its memory and, on a
   Raspberry Pi, its GPU memory and temperature.
+- Mark each value that differs from its default, as `GET /edits` lists the
+  working copy's edits: a param, a layer's setting, a field of an effect or
+  a border, the blend, render and opacity of a layer's header, a pass's size
+  and the shader's line take the mark colour on their key. A click on a
+  marked key takes the value back to its default at once, and under a mouse
+  the key shows a dotted underline and a `↺` before it. The shader's `↺`
+  asks first, in the console's dialog. A name, a text layer's words and an
+  eye take no mark.
+- Take a scene back to its defaults with `back to defaults`, where `reset`
+  stood, which asks first and greys out while the working copy holds no
+  edit. Save lights while the working copy holds edits that the state file
+  lacks, and greys out once they are saved.
+- Ask once about each edit set aside when the page opens its scene, in the
+  console's dialog, titled with the item, as `Default post shader updated`:
+  `keep mine`, first in focus, or `update to default`. Escape and the scrim
+  do nothing.
+- Show `this scene changed since you loaded it · reload` when ghee refuses a
+  stale edit, and read the scene and its edits again at a tap. With no edit
+  in flight, the page reads the scene again when `rev` on `/stats` moves, and
+  leaves alone the layer in use. `files changed · reload` keeps the edits.
+- Size a pass in its size row: the frame, pixels, or a scale of the frame,
+  applied on release. The row is locked on the pass that draws last and on
+  a procedural scene.
+- Take the effects' fields and defaults, the live fields, what an empty field
+  takes and the built-in fonts from `GET /format`, and the device's rows of
+  the render info from `GET /hwinfo`. font_family lists `built-in`, `pixel`
+  and the scene's font assets, and a number shows 3 decimals at most until
+  it is edited.
+- Give up on a `/stats` poll after 5 s, and poll again after any answer or
+  none, where a hung answer stopped the page's polling.
 - Show a param set through `set_param` or `/set` in `GET /scene` of
   `ghee.open(serve=)`, and publish what the host changes with the frame that
   shows it, so a script that draws twice within 0.2 s and stops shows its

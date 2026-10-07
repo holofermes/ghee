@@ -151,6 +151,13 @@ impl ConsoleError {
         }
     }
 
+    pub fn unavailable(msg: impl Into<String>) -> ConsoleError {
+        ConsoleError {
+            status: 503,
+            message: msg.into(),
+        }
+    }
+
     pub fn server_error(msg: impl Into<String>) -> ConsoleError {
         ConsoleError {
             status: 500,

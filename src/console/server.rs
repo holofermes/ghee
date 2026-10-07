@@ -155,7 +155,8 @@ fn round_half_even(x: f64) -> f64 {
 
 /// What the render thread drains off the command queue.
 pub enum Command {
-    Switch(String),
+    /// A scene to load, with the number of the switch that asked for it.
+    Switch(String, u64),
     Param(i64, String, Value),
     SceneParam(String, Value),
     Layer(LayerSet),
@@ -250,10 +251,33 @@ struct Stat {
     error: String,
     /// The renderer's text_errors(), a line each.
     texts: Vec<String>,
-    active: Option<String>,
     display: Value,
     error_line: Option<i64>,
     error_pass: Option<ErrorPass>,
+}
+
+/// The active scene: the one that the last switch asked for, which an edit
+/// must name, and how far the render thread got with its load.
+#[derive(Default)]
+struct Active {
+    name: Option<String>,
+    /// The switches asked for.
+    asked: u64,
+    /// The last switch whose load ended, whether or not its scene compiled.
+    loaded: u64,
+}
+
+impl Active {
+    /// The 503 for an edit that arrives before the active scene's load
+    /// ended. The edit would land on the scene before it.
+    fn loading(&self) -> ConsoleResult<()> {
+        match (&self.name, self.asked == self.loaded) {
+            (Some(name), false) => Err(ConsoleError::unavailable(format!(
+                "scene '{name}' is loading"
+            ))),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// A source for one declared array: the host's data for this frame.
@@ -306,11 +330,14 @@ pub struct Console {
 
     // state
     stat: Mutex<Stat>,
-    /// The active scene: the one that the last switch asked for, which an edit
-    /// must name. A handler sets it and queues the switch under its lock, and
-    /// checks an edit and queues it under the same lock.
-    target: Mutex<Option<String>>,
-    /// The document that renders now, under the name it loaded as.
+    active: Mutex<Active>,
+    /// A handler holds this over a switch, and over an edit's check of the
+    /// active scene and the edit, so an edit queued behind a switch never
+    /// lands on the scene that the switch brought.
+    editing: Mutex<()>,
+    /// The document of the active scene as the render thread last set it,
+    /// under the scene's name. A scene that failed to compile is published
+    /// too, while the renderer keeps drawing the last one that compiled.
     running: Mutex<Option<(Option<String>, Value)>>,
     /// The times that the scene's own code changed its layers in the
     /// document: a layer added or given a new look, or a field set.
@@ -378,7 +405,8 @@ impl Console {
                 display: Value::Object(Map::new()),
                 ..Stat::default()
             }),
-            target: Mutex::new(None),
+            active: Mutex::new(Active::default()),
+            editing: Mutex::new(()),
             running: Mutex::new(None),
             layer_changes: AtomicU64::new(0),
             sources: Mutex::new(None),
@@ -463,7 +491,10 @@ impl Console {
         }
         d.insert(
             "active".to_string(),
-            lock(&self.target).clone().map_or(Value::Null, Value::from),
+            lock(&self.active)
+                .name
+                .clone()
+                .map_or(Value::Null, Value::from),
         );
         let stale = lock(&self.sources).as_mut().is_some_and(Snapshot::stale);
         d.insert(
@@ -495,12 +526,19 @@ impl Console {
         stat.error_pass = None;
     }
 
-    /// Republish the running document from the scene the loop holds. The render
-    /// thread calls this after a load, an applied scene that compiled, or a /set
-    /// that landed.
-    fn publish(&self, scene: &Scene) {
-        let active = lock(&self.stat).active.clone();
-        *lock(&self.running) = Some((active, scene.to_dict()));
+    /// Republish the running document of scene `name`. The render thread
+    /// calls this after a load, an applied scene, or a /set that landed.
+    fn publish(&self, name: Option<&str>, scene: &Scene) {
+        *lock(&self.running) = Some((name.map(str::to_string), scene.to_dict()));
+    }
+
+    /// Make `name` the active scene, and number the switch for the load
+    /// that the render thread runs.
+    fn ask(&self, name: &str) -> u64 {
+        let mut active = lock(&self.active);
+        active.name = Some(name.to_string());
+        active.asked += 1;
+        active.asked
     }
 
     fn snapshot(&self, paths: impl IntoIterator<Item = impl AsRef<std::path::Path>>) -> Snapshot {
@@ -1510,24 +1548,37 @@ fn open_renderer(console: &Console) -> Result<Renderer> {
 /// What the render thread holds between commands.
 #[derive(Default)]
 struct Running {
+    /// The scene that the renderer draws, the last one that compiled.
     scene: Option<Scene>,
+    /// The name of that scene.
+    name: Option<String>,
+    /// The name of the scene that the last load asked for. A /set is for
+    /// this scene, so it lands only while `scene` is this scene.
+    loaded: Option<String>,
     /// The scene's own code changed a layer since the last publish.
     changed: bool,
 }
 
-/// Returns the compile error, or "" when this scene renders now.
+/// Set `scene`, the scene of the last load, on the renderer. Returns the
+/// compile error, or "" when this scene renders now. A scene that fails to
+/// compile is published all the same, so a page opens it to fix it.
 fn set_scene(
     console: &Console,
     renderer: &RefCell<Renderer>,
     st: &RefCell<Running>,
     scene: Scene,
-    name: Option<&str>,
     snap: Option<Snapshot>,
 ) -> String {
     let err = match renderer.borrow_mut().setup(&scene) {
         Ok(err) => err,
         Err(e) => e.to_string(),
     };
+    let name = st.borrow().loaded.clone();
+    // Store the snapshot before the publish. A /stats between the two must not
+    // read the new scene against the snapshot before it.
+    if let Some(snap) = snap {
+        *lock(&console.sources) = Some(snap);
+    }
     if !err.is_empty() {
         {
             let mut stat = lock(&console.stat);
@@ -1538,40 +1589,35 @@ fn set_scene(
         if let Some(last) = st.borrow().scene.as_ref() {
             let _ = renderer.borrow_mut().setup(last); // keep the last good scene rendering
         }
+        console.publish(name.as_deref(), &scene);
         return err;
     }
-    st.borrow_mut().scene = Some(scene);
     console.reset_stats();
-    if let Some(name) = name {
-        lock(&console.stat).active = Some(name.to_string());
-    }
-    // Store the snapshot before the publish. A /stats between the two must not
-    // read the new scene against the snapshot before it.
-    if let Some(snap) = snap {
-        *lock(&console.sources) = Some(snap);
-    }
-    let held = st.borrow();
-    if let Some(scene) = held.scene.as_ref() {
-        console.publish(scene);
-    }
+    console.publish(name.as_deref(), &scene);
+    let mut held = st.borrow_mut();
+    held.scene = Some(scene);
+    held.name = name;
     String::new()
 }
 
-/// Load a scene by name, and put what feeds it in the controller slot. The last
-/// scene's process stops first, so two procedural scenes never overlap.
+/// Load a scene by name for switch number `switch`, and put what feeds it in
+/// the controller slot. The last scene's process stops first, so two
+/// procedural scenes never overlap.
 fn load(
     console: &Console,
     renderer: &RefCell<Renderer>,
     st: &RefCell<Running>,
     ctrl: &ControllerSlot,
     name: &str,
+    switch: u64,
 ) {
     *ctrl.borrow_mut() = None;
+    st.borrow_mut().loaded = Some(name.to_string());
     let (built, read) = collect(|| console.store.start(name));
     match built {
         Ok((scene, mut process)) => {
             let snap = console.snapshot(read);
-            let err = set_scene(console, renderer, st, scene, Some(name), Some(snap));
+            let err = set_scene(console, renderer, st, scene, Some(snap));
             if let (Some(f), Some(_)) = (process.as_mut(), console.timestep) {
                 f.pin();
             }
@@ -1581,6 +1627,8 @@ fn load(
         }
         Err(e) => lock(&console.stat).error = format!("load {name}: {e}"),
     }
+    let mut active = lock(&console.active);
+    active.loaded = active.loaded.max(switch);
 }
 
 /// Apply every queued command, and report whether one landed. A queued command
@@ -1596,8 +1644,13 @@ fn drain(
     while !console.q.is_empty() {
         let Some(item) = console.q.take() else { break };
         force = true;
+        let drawn = {
+            let held = st.borrow();
+            held.name == held.loaded
+        };
         match item {
-            Command::Switch(name) => load(console, renderer, st, ctrl, &name),
+            Command::Switch(name, switch) => load(console, renderer, st, ctrl, &name, switch),
+            Command::Param(..) | Command::SceneParam(..) | Command::Layer(_) if !drawn => {}
             Command::Param(pi, name, value) => {
                 if set_pass_param(renderer, st, ctrl, pi, &name, &value) {
                     edited = true;
@@ -1626,7 +1679,7 @@ fn drain(
                         .scene
                         .as_ref()
                         .is_some_and(|running| keep_layers(&mut scene, running));
-                if set_scene(console, renderer, st, scene, None, None).is_empty() && kept {
+                if set_scene(console, renderer, st, scene, None).is_empty() && kept {
                     st.borrow_mut().changed = true;
                     publish_changes(console, st);
                 }
@@ -1637,7 +1690,7 @@ fn drain(
     if edited {
         let held = st.borrow();
         if let Some(scene) = held.scene.as_ref() {
-            console.publish(scene);
+            console.publish(held.name.as_deref(), scene);
         }
     }
     force
@@ -1681,7 +1734,7 @@ fn publish_changes(console: &Console, st: &RefCell<Running>) {
         return;
     }
     if let Some(scene) = held.scene.as_ref() {
-        console.publish(scene);
+        console.publish(held.name.as_deref(), scene);
         console.layer_changes.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -1898,9 +1951,12 @@ pub fn render_loop(
             }
             true
         }));
-        let first = console.store.names().first().cloned();
-        if let Some(name) = first {
-            load(console, &renderer, &st, &ctrl, &name);
+        let first = {
+            let active = lock(&console.active);
+            active.name.clone().map(|name| (name, active.asked))
+        };
+        if let Some((name, switch)) = first {
+            load(console, &renderer, &st, &ctrl, &name, switch);
         }
         if let Err(e) = render.run() {
             eprintln!("ghee console: render: {e}");
@@ -1968,11 +2024,11 @@ impl ConsoleHost for RenderLoopHost {
     }
 
     fn active_name(&self) -> ConsoleResult<Option<String>> {
-        Ok(lock(&self.console.target).clone())
+        Ok(lock(&self.console.active).name.clone())
     }
 
     fn scene_def(&self, name: Option<&str>) -> ConsoleResult<Value> {
-        let active = lock(&self.console.stat).active.clone();
+        let active = lock(&self.console.active).name.clone();
         let name = name.map(str::to_string).or(active).unwrap_or_default();
         if !self.console.store.contains(&name) {
             return Err(ConsoleError::not_found("no scene"));
@@ -2004,13 +2060,18 @@ impl ConsoleHost for RenderLoopHost {
         Ok(())
     }
 
-    /// The /set lands on the scene that renders, so it checks against the
+    /// The /set lands on the active scene, so it checks against that scene's
     /// running document. scene_def would start a procedural scene's process
     /// when no document runs.
     fn live_doc(&self) -> ConsoleResult<Value> {
+        let active = {
+            let active = lock(&self.console.active);
+            active.loading()?;
+            active.name.clone()
+        };
         match lock(&self.console.running).as_ref() {
-            Some((_, doc)) => Ok(doc.clone()),
-            None => Err(ConsoleError::not_found("no scene")),
+            Some((name, doc)) if *name == active => Ok(doc.clone()),
+            _ => Err(ConsoleError::not_found("no scene")),
         }
     }
 
@@ -2019,24 +2080,25 @@ impl ConsoleHost for RenderLoopHost {
         if !self.console.store.contains(name) {
             return Err(ConsoleError::not_found("no scene"));
         }
-        let mut target = lock(&self.console.target);
-        *target = Some(name.to_string());
-        self.console.command(Command::Switch(name.to_string()));
+        let _editing = lock(&self.console.editing);
+        let switch = self.console.ask(name);
+        self.console
+            .command(Command::Switch(name.to_string(), switch));
         Ok(name.to_string())
     }
 
-    /// The edit runs under the lock, so it never calls active_name().
     fn edit_scene(
         &self,
         scene: &str,
         edit: &mut dyn FnMut() -> ConsoleResult<()>,
     ) -> ConsoleResult<()> {
-        let target = lock(&self.console.target);
-        other_scene(scene, target.as_deref())?;
+        let _editing = lock(&self.console.editing);
+        other_scene(scene, self.active_name()?.as_deref())?;
         edit()
     }
 
     fn apply_scene(&self, mut scene: Scene) -> ConsoleResult<()> {
+        lock(&self.console.active).loading()?;
         // A posted scene names its asset files only. They resolve against the
         // store, where GET /scene took them from.
         scene
@@ -2539,13 +2601,9 @@ pub fn run(opts: Options) -> Result<()> {
         console.hwinfo = hwinfo;
     }
     let format = console.format();
-    {
-        let mut stat = lock(&console.stat);
-        stat.active = Some(names[0].clone());
-        stat.display =
-            serde_json::json!({"w": size.0, "h": size.1, "format": format, "rotation": 0});
-    }
-    *lock(&console.target) = Some(names[0].clone());
+    lock(&console.stat).display =
+        serde_json::json!({"w": size.0, "h": size.1, "format": format, "rotation": 0});
+    console.ask(&names[0]);
     let console = Arc::new(console);
     console.reset_stats();
     *lock(&CONSOLE) = Some(Arc::clone(&console));
@@ -3258,7 +3316,7 @@ mod tests {
         let host = RenderLoopHost::new(Arc::clone(&console));
         assert_eq!(host.switch(Some("one")), Ok("one".to_string()));
         match console.q.take() {
-            Some(Command::Switch(name)) => assert_eq!(name, "one"),
+            Some(Command::Switch(name, _)) => assert_eq!(name, "one"),
             _ => panic!("no switch was queued"),
         }
     }
@@ -3289,6 +3347,109 @@ mod tests {
         })
         .unwrap();
         assert_eq!(ran, 1);
+    }
+
+    #[test]
+    fn an_edit_while_the_active_scene_loads_answers_503() {
+        let (_d, console) = tmp_console("loading");
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        api.host.switch(Some("one")).unwrap();
+        let set = api.dispatch(
+            "POST",
+            "/set",
+            &parse_query("scene=one&name=k&value=1"),
+            &Headers::new(),
+            b"",
+        );
+        let json = Headers::from([("Content-Type", "application/json")]);
+        let apply = api.dispatch(
+            "POST",
+            "/scene",
+            &parse_query("name=one"),
+            &json,
+            SCENE.as_bytes(),
+        );
+        for r in [set, apply] {
+            assert_eq!(
+                (r.status, String::from_utf8_lossy(&r.body).as_ref()),
+                (503, "scene 'one' is loading")
+            );
+        }
+    }
+
+    /// The scenes good and bad, each with the param k, and bad's shader
+    /// does not compile.
+    fn good_and_bad(tag: &str) -> (crate::testing::TempDir, Arc<Console>) {
+        let d = crate::testing::TempDir::new(&format!("console-{tag}"));
+        let doc = |fragment: &str| {
+            serde_json::json!({"version": 1, "passes": [{"name": "main", "fragment": fragment,
+                "params": {"k": {"type": "float", "value": 0.0}}}]})
+            .to_string()
+        };
+        fs::write(
+            d.join("bad.scene.json"),
+            doc("void main(){ gl_FragColor = nope; }"),
+        )
+        .unwrap();
+        fs::write(
+            d.join("good.scene.json"),
+            doc("void main(){ gl_FragColor = vec4(k); }"),
+        )
+        .unwrap();
+        let console = Arc::new(Console::new(SceneStore::new(&d, true, Vec::new())));
+        (d, console)
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_scene_that_fails_to_compile_is_the_active_scene_and_takes_its_fix() {
+        let renderer = RefCell::new(gpu(8, 8));
+        let (_d, console) = good_and_bad("failed");
+        let st = RefCell::new(Running::default());
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let fragment = |doc: Value| doc["passes"][0]["fragment"].as_str().unwrap().to_string();
+        api.host.switch(Some("good")).unwrap();
+        drain(&console, &renderer, &st, &ctrl);
+        api.host.switch(Some("bad")).unwrap();
+        drain(&console, &renderer, &st, &ctrl);
+        assert!(!console.stats()["error"].as_str().unwrap().is_empty());
+        // The page opens the scene that failed, to fix it there.
+        assert!(fragment(api.host.scene_def(None).unwrap()).contains("nope"));
+        // A set for the scene that failed leaves the scene that draws alone.
+        let set = api.dispatch(
+            "POST",
+            "/set",
+            &parse_query("scene=bad&name=k&value=1"),
+            &Headers::new(),
+            b"",
+        );
+        assert_eq!(set.status, 200);
+        drain(&console, &renderer, &st, &ctrl);
+        let k = |s: &RefCell<Running>| {
+            s.borrow().scene.as_ref().unwrap().passes[0]
+                .params
+                .get("k")
+                .unwrap()
+                .value
+                .to_json()
+        };
+        assert_eq!(k(&st), Value::from(0.0));
+        let fix = r#"{"version": 1, "passes": [{"name": "main",
+            "fragment": "void main(){ gl_FragColor = vec4(0.5); }"}]}"#;
+        let json = Headers::from([("Content-Type", "application/json")]);
+        let r = api.dispatch(
+            "POST",
+            "/scene",
+            &parse_query("name=bad"),
+            &json,
+            fix.as_bytes(),
+        );
+        assert_eq!(r.status, 200);
+        drain(&console, &renderer, &st, &ctrl);
+        assert_eq!(console.stats()["error"], "");
+        assert!(fragment(api.host.scene_def(Some("bad")).unwrap()).contains("0.5"));
+        assert!(fragment(api.host.scene_def(Some("good")).unwrap()).contains("vec4(k)"));
     }
 
     #[test]
@@ -3325,7 +3486,7 @@ mod tests {
         let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
         let r = set("layer=label&field=text&value=O");
         assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
-        console.publish(&text_scene("I"));
+        console.publish(None, &text_scene("I"));
         assert_eq!(set("layer=label&field=text&value=hello").status, 200);
         match console.q.take() {
             Some(Command::SceneParam(name, v)) => {
@@ -3348,7 +3509,7 @@ mod tests {
             renderer.borrow().set_time(Some(0.0));
             renderer.borrow_mut().render(None).unwrap().to_vec()
         };
-        let set = |sc| set_scene(&console, &renderer, &st, sc, None, None);
+        let set = |sc| set_scene(&console, &renderer, &st, sc, None);
         assert_eq!(set(text_scene("I")), "");
         let i = frame();
         // what a POST /set queues
@@ -3393,7 +3554,7 @@ mod tests {
         let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
         let r = set("layer=label&field=x&value=4");
         assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
-        console.publish(&placed_scene(2.0));
+        console.publish(None, &placed_scene(2.0));
         assert_eq!(set("layer=label&field=x&value=4").status, 200);
         match console.q.take() {
             Some(Command::Layer(set)) => assert_eq!(set, label_x(4.0)),
@@ -3414,7 +3575,7 @@ mod tests {
             renderer.borrow().set_time(Some(0.0));
             renderer.borrow_mut().render(None).unwrap().to_vec()
         };
-        let set = |sc| set_scene(&console, &renderer, &st, sc, None, None);
+        let set = |sc| set_scene(&console, &renderer, &st, sc, None);
         assert_eq!(set(placed_scene(2.0)), "");
         let before = frame();
         // what a POST /set queues
@@ -3467,7 +3628,7 @@ mod tests {
         let (at8, at20) = (built(8.0), built(20.0));
         {
             let _spawn = crate::testing::SCRIPTS.read().unwrap();
-            load(&console, &renderer, &st, &ctrl, "proc");
+            load(&console, &renderer, &st, &ctrl, "proc", 0);
         }
         assert!(frame() == at8, "the saved x places the layer");
         // The loop's tick and update, until the process answers.
@@ -3504,7 +3665,7 @@ mod tests {
             (stats["error"].clone(), stats["text_errors"].clone())
         };
         assert_eq!(
-            set_scene(&console, &renderer, &st, text_scene("O"), None, None),
+            set_scene(&console, &renderer, &st, text_scene("O"), None),
             ""
         );
         let o = frame();
@@ -3563,7 +3724,7 @@ mod tests {
         let (_d, console) = tmp_console("drawn");
         let st = Rc::new(RefCell::new(Running::default()));
         let scene = Scene::from_dict(&serde_json::from_str(SCENE).unwrap(), None, None).unwrap();
-        assert_eq!(set_scene(&console, &renderer, &st, scene, None, None), "");
+        assert_eq!(set_scene(&console, &renderer, &st, scene, None), "");
         // what a procedural scene's drawing and ticks hand the loop's target
         let mut target = SharedRenderer {
             renderer: Rc::clone(&renderer),
@@ -3670,7 +3831,7 @@ mod tests {
             let st = RefCell::new(Running::default());
             let ctrl: ControllerSlot = RefCell::new(None);
             let running = doc(serde_json::json!([a, b, c]));
-            assert_eq!(set_scene(&console, &renderer, &st, running, None, None), "");
+            assert_eq!(set_scene(&console, &renderer, &st, running, None), "");
             if code {
                 *ctrl.borrow_mut() = Some(Box::new(Code));
             }

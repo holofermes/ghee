@@ -52,7 +52,7 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
 /// extracts this set to a content-keyed cache directory first. A procedural
 /// example imports ghee from the ghee-render package, which pip installs.
-pub const EXAMPLES: [(&str, &[u8]); 25] = [
+pub const EXAMPLES: [(&str, &[u8]); 26] = [
     ("bars.glsl", include_bytes!("../../ghee/examples/bars.glsl")),
     (
         "bars.scene.json",
@@ -124,6 +124,7 @@ pub const EXAMPLES: [(&str, &[u8]); 25] = [
         "stamp.scene.json",
         include_bytes!("../../ghee/examples/stamp.scene.json"),
     ),
+    ("stats.py", include_bytes!("../../ghee/examples/stats.py")),
     (
         "trail.scene.json",
         include_bytes!("../../ghee/examples/trail.scene.json"),
@@ -240,6 +241,7 @@ mod tests {
         assert!(out.join("bars.scene.json").is_file());
         assert!(out.join("lib/look.py").is_file());
         assert!(out.join("hero.py").is_file());
+        assert!(out.join("stats.py").is_file());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

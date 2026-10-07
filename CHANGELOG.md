@@ -337,6 +337,8 @@
   against the scene first, so a call that ghee would refuse raises
   ValueError. `ghee.run()` with no scene hands ghee one pass, `main`, that
   clears to black, and the first tick's drawing grows it.
+- Add `--demo stats`, the time and the load of the machine drawn on a
+  128x32 panel through `ghee.draw()`.
 
 ### Procedural scenes
 

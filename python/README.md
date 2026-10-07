@@ -367,6 +367,9 @@ def clock(tick):
 ghee.run()
 ```
 
+`ghee render --demo stats` draws the time and the load of the machine this
+way.
+
 ## Layers
 
 `ghee.Layer(name, text=None, visible=True, x=None, y=None, color=None,

@@ -4,10 +4,14 @@ A fake handle records what a drawing hands it, and a scene script's drawing
 writes the wire, bar the tests at the end, which draw on the renderer.
 """
 
+import os
 import subprocess
 import sys
 
 import pytest
+from conftest import REPO
+from test_api import png_pixels
+from test_errors import CLI
 from test_shim import END, drive, load, messages
 
 import ghee
@@ -452,3 +456,43 @@ def test_a_scene_script_with_no_scene_draws_on_black_in_its_own_frames(tmp_path)
         assert rgb(frame, 11, 2) == [0, 0, 0]
     assert rgb(first, 8, 2) == [255, 0, 0]
     assert rgb(second, 8, 2) == [0, 0, 0]
+
+
+def test_ghee_render_demo_stats_draws_the_time_and_the_load(tmp_path):
+    """`ghee render --demo stats` runs the bundled example under ghee, which
+    draws its whole screen from its tick."""
+    if not CLI.exists():
+        pytest.skip(f"no {CLI} to run the scene")
+    demos = tmp_path / "demos"
+    demos.mkdir()
+    # the Python of this test, which holds this wheel, in place of uv's
+    body = (REPO / "ghee/examples/stats.py").read_text().partition("\n")[2]
+    stats = demos / "stats.py"
+    stats.write_text(f"#!{sys.executable}\n{body}")
+    stats.chmod(0o755)
+    ran = subprocess.run(
+        [str(CLI), "render", "--demo", "stats", "-o", str(tmp_path / "f.png")]
+        + ["--size", "128x32", "--timestep", "0.1"],
+        env={
+            **os.environ,
+            "GHEE_EXAMPLES": str(demos),
+            "XDG_CACHE_HOME": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert ran.returncode == 0, ran.stderr
+    assert "changes nothing" not in ran.stderr, ran.stderr
+    w, h, px = png_pixels((tmp_path / "f.png").read_bytes())
+    assert (w, h) == (128, 32)
+
+    def lit(x0, x1, y0, y1):
+        return any(
+            px[(y * w + x) * 4] > 127 for y in range(y0, y1) for x in range(x0, x1)
+        )
+
+    # the time at the top left, and the frame of the load bar at the right
+    assert lit(0, 64, 0, 16)
+    assert lit(64, 128, 20, 28)

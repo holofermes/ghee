@@ -9,7 +9,6 @@
 //! ghee serve scenes/                                     # editor console
 //! ghee serve --demo                                      # console on the bundled examples
 //! ghee render --demo bars -o frame.png                   # a bundled example by name
-//! ghee isf import shader.fs -o shader.scene.json         # import an ISF shader
 //! ghee displays                                          # list display drivers
 //! ghee overlay st7789                                     # kernel setup for a panel
 //! ```
@@ -40,7 +39,6 @@ use crate::engine::{display_renders, probe_display, probe_display_device, Feed, 
 use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
 use crate::h264::H264Stream;
-use crate::isf::{read_isf, slug, to_filter, to_scene};
 use crate::looper::{ControllerSlot, Frame, Loop, Output, OwnedFrame, Pacer, SceneController};
 use crate::output::{expand_pattern, FixedPacer, ImageSequence, RawStream, Scanout};
 use crate::procedural::process::{self, SceneProcess};
@@ -1086,45 +1084,6 @@ fn serve_stats() -> server::StatsHook {
     Box::new(|times, wall, out| print_stats(times, wall, &serve_out(out)))
 }
 
-fn cmd_isf_import(a: &ImportArgs) -> Result<()> {
-    let (source, name, vs) =
-        read_isf(&a.source).map_err(|e| exit(format!("isf import: {}: {e}", a.source)))?;
-    let (body, what, warnings) = if a.as_filter {
-        let (out, warnings) = to_filter(&source, &name, a.size, vs).map_err(isf_failed)?;
-        let named = out.get("name").and_then(Value::as_str).unwrap_or_default();
-        let what = format!("filter '{named}'");
-        (serde_json::to_string_pretty(&out)?, what, warnings)
-    } else {
-        let (scene, warnings) = to_scene(&source, &name, a.size, vs).map_err(isf_failed)?;
-        let what = format!("scene, {} pass(es)", scene.passes.len());
-        (
-            serde_json::to_string_pretty(&scene.to_dict())?,
-            what,
-            warnings,
-        )
-    };
-    for w in warnings {
-        eprintln!("isf import: {name}: {w}");
-    }
-    let path = match a.output.as_deref().filter(|p| !p.is_empty()) {
-        Some(p) => p.to_string(),
-        None => format!(
-            "{}.{}.json",
-            slug(&name),
-            if a.as_filter { "filter" } else { "scene" }
-        ),
-    };
-    let mut f = File::create(&path).with_context(|| path.clone())?;
-    f.write_all(body.as_bytes())?;
-    f.write_all(b"\n")?;
-    report::step("wrote", format!("{what} to {path}"));
-    Ok(())
-}
-
-fn isf_failed(e: anyhow::Error) -> anyhow::Error {
-    exit(format!("isf import: {e:#}"))
-}
-
 /// One line of a listing. A reader that closes the pipe ends the command,
 /// the way `ghee displays | head` does.
 fn line(text: &str) {
@@ -1292,9 +1251,6 @@ enum Command {
                       them per scene"
     )]
     Serve(ServeArgs),
-
-    #[command(about = "Interactive Shader Format (ISF) shaders")]
-    Isf(IsfArgs),
 
     #[command(about = "list connected cards, display drivers, and their options")]
     Displays,
@@ -1583,55 +1539,6 @@ struct OverlayArgs {
     output: Option<String>,
 }
 
-#[derive(Args)]
-struct IsfArgs {
-    #[command(subcommand)]
-    isf_cmd: IsfCommand,
-}
-
-#[derive(Subcommand)]
-enum IsfCommand {
-    #[command(
-        about = "convert an ISF shader to a scene or filter",
-        allow_negative_numbers = true
-    )]
-    Import(ImportArgs),
-}
-
-#[derive(Args)]
-struct ImportArgs {
-    #[arg(help = "a .fs file, or an http(s) URL to one")]
-    source: String,
-
-    #[arg(
-        short,
-        long,
-        help = "output path (default: the shader's name, .scene.json or .filter.json)"
-    )]
-    output: Option<String>,
-
-    #[arg(
-        long,
-        default_value = "320x240",
-        value_parser = isf_size,
-        help = "evaluate the pass WIDTH/HEIGHT equations against this WxH, since \
-                ghee pass sizes are fixed at import (default 320x240)"
-    )]
-    size: (i64, i64),
-
-    #[arg(
-        long,
-        help = "write a ghee filter (a single-pass ISF whose image input becomes \
-                iChannel0, the frame so far) instead of a scene"
-    )]
-    as_filter: bool,
-}
-
-/// ghee::isf evaluates its size equations in i64.
-fn isf_size(s: &str) -> Result<(i64, i64), String> {
-    size(s).map(|(w, h)| (i64::from(w), i64::from(h)))
-}
-
 /// render and serve both resolve to this namespace. serve is render --serve
 /// over a directory. It carries render's whole namespace, and every flag it
 /// does not offer keeps its default.
@@ -1757,7 +1664,6 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
     let cmd = match &cli.cmd {
         Command::Render(_) => "render",
         Command::Serve(_) => "serve",
-        Command::Isf(_) => "isf",
         Command::Displays => "displays",
         Command::Overlay(_) => "overlay",
         Command::Bench(_) => "bench",
@@ -1771,9 +1677,6 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
     let ran = match cli.cmd {
         Command::Render(a) => cmd_render(&a.ns(scene_args)),
         Command::Serve(a) => cmd_serve(&a.ns(scene_args)),
-        Command::Isf(a) => match &a.isf_cmd {
-            IsfCommand::Import(i) => cmd_isf_import(i),
-        },
         Command::Displays => cmd_displays(),
         Command::Overlay(a) => cmd_overlay(&a),
         Command::Bench(a) => bench::run(&a),

@@ -803,25 +803,6 @@ panels](#text-on-1-bit-and-16-level-panels) describes. Write your own as
 colon-separated list. A filter declares assets as a scene does, and ghee
 resolves the asset's file beside the filter.
 
-## ISF import
-
-`ghee isf import` converts an [Interactive Shader Format](https://isf.video)
-shader into a ghee scene or filter.
-
-```
-ghee isf import shader.fs                        # -> shader.scene.json
-ghee isf import https://host/shader.fs -o s.json
-ghee isf import shader.fs --as-filter            # -> shader.filter.json
-ghee isf import shader.fs --size 640x480
-```
-
-ghee refuses three kinds of ISF:
-
-- `FLOAT` pass buffers. ghee's pass buffers are 8-bit RGBA.
-- `IMPORTED` external images. The import converts the shader file alone.
-- A vertex shader, or a body that reads a varying. ghee's vertex shader is
-  fixed.
-
 ## Hardware displays
 
 ```

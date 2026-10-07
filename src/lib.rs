@@ -53,7 +53,6 @@ pub mod ffi;
 pub mod filters;
 pub mod golden;
 pub mod h264;
-pub(crate) mod isf;
 pub mod layer;
 pub mod looper;
 pub mod output;

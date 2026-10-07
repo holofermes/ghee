@@ -43,7 +43,7 @@ pub const PREFIX: &str = "ghee_";
 const BUILT_INS: [&str; 5] = ["iTime", "iTimeDelta", "iFrame", "iResolution", "uv"];
 
 /// True for a name that ghee declares in every pass for its author to read.
-pub(crate) fn built_in(name: &str) -> bool {
+fn built_in(name: &str) -> bool {
     BUILT_INS.contains(&name)
         || name
             .strip_prefix("iChannel")
@@ -80,7 +80,7 @@ fn is_dim(v: &Value) -> bool {
 }
 
 /// `[A-Za-z_]\w*$` matched from the start.
-pub(crate) fn is_ident(s: &str) -> bool {
+fn is_ident(s: &str) -> bool {
     let mut it = s.chars();
     match it.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {
@@ -336,7 +336,7 @@ pub(crate) fn py_repr(v: &Value) -> String {
 
 /// A JSON value as Python's str() writes it: as py_repr() does, but a string
 /// stays unquoted.
-pub(crate) fn py_str(v: &Value) -> String {
+fn py_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         _ => py_repr(v),

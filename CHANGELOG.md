@@ -33,6 +33,10 @@ A scene written for 0.4.0 needs these changes.
   `/set?layer=<name>&field=text` alone, where `pass=scene&name=<name>` set
   them too.
 
+### Removed
+
+- Drop the `ghee isf import` command.
+
 ### Scenes
 
 - Declare image files in `assets`: a `.png`, a `.jpg`, or a `.raw` file of
@@ -545,7 +549,7 @@ A scene written for 0.4.0 needs these changes.
   whole factor that reaches 16384 with each pixel a square block, where the
   encoder refused it. A 128x32 panel streams at 256x64.
 
-### Filters and ISF
+### Filters
 
 - Declare `channels` in a filter, and read the filter's own previous frame
   through `self`.
@@ -556,10 +560,6 @@ A scene written for 0.4.0 needs these changes.
   is compiled in, a scanned filter's resolves beside it. Only the filter's
   own pass sees them, so they never clash with a scene's names.
 - Take `frc256`'s per-pixel phase from a shipped 64x64 blue-noise mask.
-- Rename an ISF input or pass target named like a built-in, such as `iFrame`,
-  or named with the `ghee_` prefix, and rename an input's param with it. Give
-  the import's own reason when it refuses an ISF shader with `IMPORTED`
-  images.
 
 ### Library and packages
 
@@ -596,7 +596,7 @@ A scene written for 0.4.0 needs these changes.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
 - Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
-  `feeds`, `isf`, `report` and `sources` modules inside the crate.
+  `feeds`, `report` and `sources` modules inside the crate.
 - Ship NOTICE and the licenses of DejaVu Sans and Pixel Operator 8 in the deb
   under `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
   LICENSE and NOTICE in the wheel.

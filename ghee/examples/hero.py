@@ -23,8 +23,8 @@ ARGS = [
     ghee.Arg(
         "particle-buffer",
         "size",
-        default="eighth",
-        help="the particle field's own buffer size, magnified onto the frame",
+        help="the particle field's own buffer size, magnified onto the frame, "
+        "an eighth of the frame by default",
     ),
     # A count, not a share of the frame: the shader unrolls the grid, so the
     # cost is the whole grid every frame however small the panel is. A share
@@ -416,6 +416,7 @@ def build(a):
                 name="glow",
                 fragment=_grid_consts(col, row) + SHADER_GLOW,
                 size=a.particle_buffer,
+                scale=None if a.particle_buffer else 1 / 8,
                 channels=[
                     ghee.Channel(buffer="state"),
                     ghee.Channel(buffer="attr"),

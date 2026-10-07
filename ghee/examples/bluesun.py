@@ -25,10 +25,9 @@ ARGS = [
     ghee.Arg(
         "emit",
         "size",
-        default="half",
-        help="draw the tubes at this size and blit, instead of the full frame",
+        help="draw the tubes at this size and blit, half the frame by default",
     ),
-    ghee.Arg("wash", "size", default="quarter", help="the wall buffer"),
+    ghee.Arg("wash", "size", help="the wall buffer, a quarter of the frame by default"),
     ghee.Arg(
         "near-seg",
         "int",
@@ -58,23 +57,6 @@ from PIL import Image  # noqa: E402
 SEG = (72, 128)  # segment table: columns are segments, rows are rays, twice over
 
 WALL = (256, 256)  # the wall texture, one mono float per texel
-
-
-def _wash_size(emit):
-    """The wall buffer. It follows the aspect of the draw size when there is one.
-
-    A square buffer magnified across a 16:10 panel combs the falloff diagonally.
-    The wall then reads as low resolution, however sharp the tubes are.
-    """
-    if emit is None:
-        return (384, 384)
-    w, h = emit
-    short = 288
-    return (
-        (max(1, round(short * w / h)), short)
-        if w >= h
-        else (short, max(1, round(short * h / w)))
-    )
 
 
 # an RGBA8 buffer clips at 1.0, so the wall stores the form factor E/(pi L),
@@ -457,13 +439,15 @@ def build(a):
             ghee.Pass(
                 name="wash",
                 fragment=SHADER_WASH,
-                size=a.wash or _wash_size(emit),
+                size=a.wash,
+                scale=None if a.wash else 1 / 4,
                 channels=[ghee.Channel(buffer="seg")],
             ),
             ghee.Pass(
                 name="tube",
                 fragment=SHADER_TUBE,
                 size=emit,
+                scale=None if emit else 1 / 2,
                 channels=[ghee.Channel(buffer="seg")],
                 params={
                     "depth": p("depth", 2.0, 0.05, 2.0, 0.01),

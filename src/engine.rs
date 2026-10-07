@@ -2854,11 +2854,10 @@ impl Renderer {
         faults: &mut Vec<Fault>,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
         let name = &layer.name;
-        let drawn = self
-            .layers
-            .iter()
-            .find(|d| d.name == *name && d.colour >= 0);
-        let Some(drawn) = drawn.filter(|_| !glyphs.is_empty()) else {
+        if glyphs.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let Some(drawn) = self.drawn(name).filter(|d| d.colour >= 0) else {
             return Ok((Vec::new(), Vec::new()));
         };
         if !drawn.coloured.get() {

@@ -3004,7 +3004,13 @@ impl Renderer {
                 first..last + 1
             }
         };
-        let mut data: Vec<f32> = Vec::new();
+        let nattr = match mode {
+            Mode::Mixed => crate::run::ATTRIBUTES,
+            _ => crate::shape::ATTRIBUTES,
+        };
+        let per_quad = 16 * nattr;
+        let mut data: Vec<f32> =
+            Vec::with_capacity(counts[span.clone()].iter().sum::<usize>() * per_quad);
         {
             let scene = self.scene.borrow();
             for m in &run.members[span.clone()] {
@@ -3023,10 +3029,6 @@ impl Renderer {
                 }
             }
         }
-        let nattr = match mode {
-            Mode::Mixed => crate::run::ATTRIBUTES,
-            _ => crate::shape::ATTRIBUTES,
-        };
         #[cfg(test)]
         self.run_floats.set(self.run_floats.get() + data.len());
         if all {
@@ -3037,7 +3039,6 @@ impl Renderer {
         if data.is_empty() {
             return Ok(());
         }
-        let per_quad = 16 * nattr;
         let first: usize = counts[..span.start].iter().sum();
         let ok = unsafe {
             ffi::ghee_mp_set_batch_quads_at(
@@ -3286,11 +3287,15 @@ impl Renderer {
     /// The index in `atlases` of the atlas that layer `name` reads, None for a
     /// layer that reads none.
     fn atlas_of(&self, name: &str) -> Option<usize> {
-        let tex = text::internal(name, "_atlas");
+        let tex = |t: &str| {
+            t.strip_prefix(crate::scene::PREFIX)
+                .and_then(|t| t.strip_suffix("_atlas"))
+                == Some(name)
+        };
         self.atlases
             .borrow()
             .iter()
-            .position(|s| s.textures.iter().any(|t| t.0 == tex))
+            .position(|s| s.textures.iter().any(|t| tex(&t.0)))
     }
 
     /// Draw `laid`, new words of `layer`, from now on, and log their problems.
@@ -3408,14 +3413,13 @@ impl Renderer {
             self.set_layer_uniform(d, &own, "vec2", size)?;
             *d.shown.borrow_mut() = Some(shown);
         }
-        let what = format!("layer '{name}'");
-        for (batch, floats, what) in [
-            (d.batch, &quads, what.clone()),
-            (d.colour, &colour.0, format!("{what} colour glyphs")),
-            (d.boxes, &boxes, format!("{what} error boxes")),
+        for (batch, floats, part) in [
+            (d.batch, &quads, ""),
+            (d.colour, &colour.0, " colour glyphs"),
+            (d.boxes, &boxes, " error boxes"),
         ] {
             if batch >= 0 && !(member.is_some() && batch == d.batch) {
-                self.text_quads(batch, &what, floats)?;
+                self.text_quads(batch, name, part, floats)?;
             }
         }
         if let Some((r, k)) = member {
@@ -3436,10 +3440,11 @@ impl Renderer {
         Ok(())
     }
 
-    /// Hand the engine text batch `batch` its quads. A batch that holds as
-    /// many quads takes them in place, and an empty batch that stays empty
-    /// takes no call.
-    fn text_quads(&self, batch: c_int, what: &str, floats: &[f32]) -> Result<()> {
+    /// Hand the engine batch `batch` of text layer `name` its quads, the
+    /// batch named in an error as the layer and `part`. A batch that holds
+    /// as many quads takes them in place, and an empty batch that stays
+    /// empty takes no call.
+    fn text_quads(&self, batch: c_int, name: &str, part: &str, floats: &[f32]) -> Result<()> {
         let nattr = text::QUAD_FLOATS / 4;
         let quads = c_int::try_from(floats.len() / (16 * nattr))?;
         let held = unsafe { ffi::ghee_mp_batch_quads(self.handle, batch, nattr as c_int) };
@@ -3454,7 +3459,7 @@ impl Renderer {
         {
             return Ok(());
         }
-        self.batch_quads(batch, what, floats, nattr)
+        self.batch_quads(batch, &format!("layer '{name}'{part}"), floats, nattr)
     }
 
     /// The quads of the colour glyphs `glyphs` of `layer`, for its colour

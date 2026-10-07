@@ -20,6 +20,7 @@
     --t-cm:#a2a298; --t-pp:#8a5fb0; --t-ty:#2c7a72; --t-kw:#b0603a; --t-bi:#3f63ad; --t-nu:#86772f;
     --err-bg:#fdf0ef; --err-line:#f3d4d0;
     --warn:#8a5a12; --warn-bg:#fbf1de; --warn-line:#ecd9ae;
+    --mod:#9a5b00;
     --shadow:0 1px 2px rgba(20,20,16,.05), 0 6px 20px rgba(20,20,16,.05);
     --scrim:rgba(20,20,16,.32);
     --r:12px;
@@ -32,6 +33,7 @@
     --t-cm:#6f7178; --t-pp:#b89ce0; --t-ty:#5bbdb0; --t-kw:#e0916a; --t-bi:#80a1e0; --t-nu:#c4b56a;
     --err-bg:#2a1a18; --err-line:#5a322c;
     --warn:#e7c078; --warn-bg:#2b2214; --warn-line:#4e3d1e;
+    --mod:#e6a94a;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 22px rgba(0,0,0,.4);
     --scrim:rgba(0,0,0,.55);
   }
@@ -68,7 +70,7 @@
     background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn); box-shadow:none}
   button.notice:hover{border-color:var(--warn)}
   .notice.bad{background:var(--err-bg); border-color:var(--err-line); color:var(--hot)}
-  #moved{white-space:normal; text-align:left}
+  #moved, #behind{white-space:normal; text-align:left}
   .nav{display:flex; align-items:center; gap:4px}
   .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
   .actions{display:flex; gap:7px; align-items:center; flex-wrap:wrap; justify-content:flex-end}
@@ -330,7 +332,7 @@
   .kvs{display:flex; flex-direction:column; align-items:stretch; gap:8px}
   .kv{display:flex; align-items:flex-start; gap:8px; min-width:0}
   /* the key column fits the longest key, border_radius, at the phone's size */
-  .kvs>.kv>.k{width:92px; flex:none; padding-top:4px}
+  .kvs>.kv>.k{width:92px; flex:none; margin-top:4px}
   .kvs>.kv>.v{flex:1}
   .kv>.v>.grow{flex:1}
   .kv>.k, .fxname{font-size:13px; color:var(--accent)}
@@ -349,7 +351,37 @@
   .disc{align-self:flex-start; padding:4px 2px; background:none; border:0; box-shadow:none; color:var(--muted); font-size:13px; transition:none}
   .disc:hover{color:var(--ink)}
   .disc:active{transform:none}
-  .shtog{margin-top:14px}
+  /* the shader line: a changed shader's undo icon sits in a slot after the
+     toggle, kept while hidden. It shows on hover under a mouse, and always on
+     a phone */
+  .shline{display:flex; align-items:center; gap:2px; margin-top:14px}
+  .shline>.disc{align-self:center}
+  #shUndo{visibility:hidden; color:var(--mod); padding:4px 2px}
+  #shUndo.on{visibility:visible}
+  #shUndo svg{display:block; width:.6em; height:.6em}
+  @media (hover:hover){
+    #shUndo.on{visibility:hidden}
+    .shline:hover #shUndo.on, #shUndo.on:focus-visible{visibility:visible}
+  }
+  /* a pass's size: a dropdown, then its fields */
+  .sizerow .sub>.k{font-size:12px}
+  .sizerow select.ctl:disabled{opacity:.4; cursor:default}
+  /* a value that differs from its default: its key in the mark colour */
+  .mk{color:var(--mod)!important}
+  /* a changed value's key takes it back to default: the tap area reaches past
+     the words, and under a mouse the key takes a dotted underline and an undo
+     icon shows before it, 0.6em square and centred on the key's line box, at no
+     width, so nothing moves. A key has no vertical padding, so its box is its
+     line box. */
+  .rk{position:relative; cursor:pointer}
+  .rk::before{content:""; position:absolute; inset:-8px -6px}
+  .undo{position:absolute; right:100%; top:50%; width:.6em; height:.6em; margin:-.3em 3px 0 0; color:var(--mod); visibility:hidden}
+  .undo svg{display:block; width:100%; height:100%}
+  @media (hover:hover){
+    .rk:hover{text-decoration:underline dotted; text-underline-offset:3px}
+    .rk:hover>.undo{visibility:visible}
+  }
+  @media (pointer:coarse){ .rk::before{inset:-12px -8px} }
   .fx{display:flex; flex-direction:column; gap:4px; align-items:flex-start; border-top:1px solid var(--line); padding-top:10px}
   .fx>.addwrap{margin-bottom:4px}
   /* an effect: its name, its fields, and its eye and remove button at the row's end.
@@ -409,7 +441,7 @@
     .fxname, .kv>.k, .kv>.v>.k2{font-size:14px}
     .grow>pre, .grow>textarea{font-size:15px; padding:9px 10px}
     .kv .grow>pre{max-height:calc(8 * 1.4em + 20px)}
-    .kvs>.kv>.k{padding-top:10px}
+    .kvs>.kv>.k{margin-top:10px}
   }
   /* the question before a removal, over a scrim that cancels it */
   .ask{position:fixed; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; padding:18px; background:var(--scrim)}
@@ -427,6 +459,8 @@
     html,body{height:auto}
     body{height:auto; overflow:auto; display:block; padding:12px}
     header{flex-wrap:wrap; white-space:normal}
+    /* a notice takes its own line, and the buttons stay together under it */
+    .actions .notice{flex:1 1 100%}
     .grid{display:block}
     /* dissolve the column so the sticky stage sticks against the whole page */
     .leftcol{display:contents}
@@ -453,10 +487,11 @@
   <div class="actions">
     <span class="notice bad" id="offline" hidden>server not responding</span>
     <button class="notice" id="moved" hidden title="dismiss"></button>
-    <button class="notice" id="stale" hidden title="the files this scene was built from changed on disk; reloading takes them and discards the edits made here">files changed · reload</button>
+    <button class="notice" id="stale" hidden title="a reload takes the new files and keeps the edits made here">files changed · reload</button>
+    <button class="notice" id="behind" hidden title="read the scene as it is now">this scene changed since you loaded it · reload</button>
     <button class="primary" id="apply">apply</button>
-    <button id="save">save</button>
-    <button id="reset" title="discard local edits and go back to the scene that is rendering">reset</button>
+    <button id="save" disabled>save</button>
+    <button id="reset" type="button" disabled>back to defaults</button>
     <button class="ghost" id="theme" title="toggle theme">☾</button>
   </div>
 </header>
@@ -515,8 +550,12 @@
     </div>
     <div class="inputs" id="inputs"></div>
     <div class="inputs" id="chans"></div>
+    <div class="lyrow sizerow" id="size"></div>
     <div class="layers" id="layers"></div>
-    <button class="disc shtog" id="shTog" type="button" aria-expanded="false">▸ shader</button>
+    <div class="shline" id="shLine">
+      <button class="disc shtog" id="shTog" type="button" aria-expanded="false"><span id="shCar">▸</span> shader</button>
+      <button class="disc" id="shUndo" type="button" aria-label="back to default"></button>
+    </div>
     <div class="editor" id="codeEd" hidden><pre aria-hidden="true"></pre><textarea id="code" spellcheck="false" aria-label="shader"></textarea><div class="errmark"></div></div>
     <div class="err" id="err"></div>
   </div>
@@ -553,9 +592,9 @@ const el = (tag, cls, text) => {
   if (text != null) e.textContent = text;
   return e;
 };
-const KEY = n => "ghee:scene:" + n;
-let pristine = null;   // scene as on disk
-let work = null;       // working scene (edited)
+const enc = encodeURIComponent;
+// the scene as ghee's working copy holds it, with this page's edits
+let work = null;
 let active = null;
 // the tab in the editor: a pass index, or COMMON for the scene's common block
 // (which is also what /stats reports as error_pass for an error inside it)
@@ -564,7 +603,7 @@ let curPass = 0;
 const onCommon = () => curPass === COMMON;
 const hasCommon = () => !!work && typeof work.common === "string";
 const commonCode = () => (hasCommon() ? work.common : "");
-function setCommon(code){ work.common = code; work.commonEdited = true; }
+function setCommon(code){ work.common = code; }
 // the names of the scenes that a program writes, from /scenes
 let procedural = [];
 const isProcedural = () => procedural.includes(active);
@@ -799,34 +838,128 @@ async function loadHwinfo(){
 async function jget(u){ return (await fetch(u)).json(); }
 async function jpost(u){ return (await fetch(u, {method:"POST"})).json(); }
 function clone(o){ return JSON.parse(JSON.stringify(o)); }
-// Compare against disk ignoring empties the editor adds (e.g. buildChannels sets
-// channels:[]), so a freshly-loaded scene isn't reported as edited.
-function norm(s){
-  return JSON.stringify(s, (k,v) => {
-    if ((k==="channels"||k==="arrays") && Array.isArray(v) && !v.length) return undefined;
-    if (k==="params" && v && !Array.isArray(v) && typeof v==="object" && !Object.keys(v).length) return undefined;
-    if (k==="codeEdited" || k==="commonEdited" || k==="layersEdited") return undefined;   // editor state, not a scene edit
-    return v;
-  });
+const isObj = v => !!v && typeof v === "object" && !Array.isArray(v);
+const has = (o, k) => isObj(o) && Object.prototype.hasOwnProperty.call(o, k);
+
+// ---- the working copy's edits, as GET /edits lists them, and the defaults ----
+// A host that keeps no defaults answers no edits, and this page then marks
+// nothing and saves nothing.
+const NO_EDITS = {rev: null, values: {}, items: [], unsaved: false, aside: []};
+let E = NO_EDITS, D = null;
+// rev is the revision of the scene this page last read, which every edit
+// carries. known is the last revision this page accounts for, its own edits
+// included: /stats moving past it means another client changed the scene.
+let rev = null, known = null;
+const layerEdit = n => ((E.values || {}).layers || {})[n];
+const passEdit = n => ((E.values || {}).passes || {})[n];
+const defPass = n => (D && (D.passes || []).find(p => p.name === n)) || null;
+function defLayer(n){
+  for (const p of (D && D.passes) || []) for (const d of p.layers || []) if (d.name === n) return d;
+  return null;
 }
-function dirty(){ return norm(work) !== norm(pristine); }
-// The scene without the editor's own flags, which the server refuses as keys
-// that a scene does not take.
-function sceneOnly(s){
-  const q = clone(s);
-  (q.passes || []).forEach(p => { delete p.codeEdited; delete p.layersEdited; });
-  delete q.commonEdited;
-  return q;
+const hasEdits = () => Object.keys(E.values || {}).length > 0 || (E.items || []).length > 0;
+// save lights while the working copy holds edits that the state file lacks,
+// and back to defaults while it holds any edit
+function paintStatus(){
+  $("#save").disabled = !E.unsaved;
+  $("#reset").disabled = !hasEdits();
 }
 
-// Reset is enabled only when the working scene differs from the file on disk
-// (a local copy, possibly persisted in localStorage).
-function updateStatus(){
-  const rb = $("#reset"); if (!rb) return;
-  rb.disabled = !((pristine && dirty()) || localStorage.getItem(KEY(active)) != null);
+// An edit of scene `scene`. It carries the revision this page last read and
+// the page's vid, so ghee refuses one that another client made stale. Its
+// answer, or null when the request failed, comes back, and every edit brings
+// the marks up to date.
+let inflight = 0;
+async function edit(path, scene, q, body){
+  let u = `${path}?${q}&vid=${VID}`;
+  if (rev != null && scene === active) u += `&rev=${rev}`;
+  const o = body == null ? {method: "POST"} : {method: "POST", headers: {"Content-Type": "application/json"}, body};
+  inflight++;
+  try {
+    const r = await fetch(u, o);
+    if (r.status === 409) sceneMoved(scene);
+    else if (r.status === 412) $("#behind").hidden = false;
+    return r;
+  } catch (_) {
+    return null;
+  } finally {
+    inflight--;
+    if (scene === active) editsSoon();
+  }
 }
-function markDirty(){ saveLocalIfDirty(); updateStatus(); }
-function saveLocalIfDirty(){ if(dirty()) localStorage.setItem(KEY(active), JSON.stringify(work)); }
+let editsTimer = null, editsReading = 0;
+function editsSoon(){ clearTimeout(editsTimer); editsTimer = setTimeout(readEdits, 150); }
+async function readEdits(){
+  editsTimer = null;
+  const name = active;
+  editsReading++;
+  try {
+    const r = await fetch("/edits?name=" + enc(name));
+    if (!r.ok || name !== active) return;
+    E = await r.json();
+    if (E.rev != null) known = E.rev;
+    paintMarks(); paintStatus();
+  } catch (_) {
+  } finally { editsReading--; }
+}
+// no edit of this page's on its way, nor the read of its edits
+const settled = () => !inflight && !editsTimer && !editsReading && !compileTimer;
+
+// ---- marks: a value that differs from its default shows its key in the
+// mark colour. Only a value is marked, never a name. A key registers how to
+// tell that its value differs, from GET /edits, and how to take it back to
+// the default, the one thing to do with a changed value, so a click on the
+// key does it at once. A locked key shows its mark and takes no click ----
+const MARKS = new WeakMap();
+const UNDO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
+$("#shUndo").innerHTML = UNDO;
+function markKey(key, test, reset){
+  MARKS.set(key, {test, reset});
+  key.classList.add("mark");
+  return key;
+}
+function paintMarks(){
+  document.querySelectorAll(".mark").forEach(k => {
+    const m = MARKS.get(k);
+    if (!m) return;
+    const on = !!m.test(), back = on && !k.closest(".locked");
+    k.classList.toggle("mk", on);
+    k.classList.toggle("rk", back);
+    const u = k.querySelector(":scope > .undo");
+    if (back && !u){ const i = el("i", "undo"); i.innerHTML = UNDO; k.appendChild(i); }
+    else if (!back && u) u.remove();
+  });
+  const sh = shaderEdited();
+  $("#shTog").classList.toggle("mk", sh);
+  $("#shUndo").classList.toggle("on", sh);
+}
+document.addEventListener("click", e => {
+  const k = e.target.closest && e.target.closest(".rk"), m = k && MARKS.get(k);
+  if (!m) return;
+  e.preventDefault(); e.stopPropagation();
+  m.reset();
+});
+// layer d's own setting `k`, back to the default layer's
+function markField(key, p, d, k){
+  return markKey(key, () => has(layerEdit(d.name), k), () => {
+    const e = defLayer(d.name);
+    if (!e) return;
+    const v = e[k] === undefined ? null : clone(e[k]);
+    if (k === "shape") switchShape(p, d, v); else setKey(p, d, k, v);
+    recard(p, d.name);
+  });
+}
+// field `k` of layer d's effect or border `f`, which the default layer has
+// too. `back` sets the field, null for its default.
+function markSub(key, d, f, k, back){
+  return markKey(key, () => {
+    const e = defLayer(d.name), lv = layerEdit(d.name);
+    return !!e && isObj(e[f]) && isObj(lv && lv[f]) && has(lv[f], k);
+  }, () => {
+    const e = defLayer(d.name);
+    if (e && isObj(e[f])) back(e[f][k] === undefined ? null : clone(e[f][k]));
+  });
+}
 
 // A stale scene is one the server compiled before its files changed: what is
 // rendering is older than what a reload would give. A dead server is the other
@@ -839,13 +972,13 @@ function showNotices(){
   $("#stale").hidden = !staleScene || offline();
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-// Switching to the active name is the reload: the server re-reads the scene's
-// files. The local working copy goes first, or loadScene would post it straight
-// back over what just came off disk.
+// Switching to the active name is the reload: ghee reads the scene's files
+// again and lays the working copy's edits over them. A reload that carries
+// the page's revision answers 409 once the console is on another scene.
 async function reloadScene(){
   const name = active;
-  localStorage.removeItem(KEY(name));
-  await jpost("/switch?name=" + encodeURIComponent(name));
+  const r = await edit("/switch", name, "name=" + enc(name));
+  if (!r || !r.ok) return;
   let s = null;
   for (let i = 0; i < 20; i++){          // the switch is queued for the render thread
     s = await jget("/stats").catch(()=>null);
@@ -854,14 +987,22 @@ async function reloadScene(){
   }
   staleScene = !!(s && s.stale);         // still stale: the new files did not compile
   showNotices();
-  await loadScene(name);
+  if (name === active) await refresh(true);
 }
 
 let FILTERS = {};   // name -> filter def (code + params), from /filters
+// The layer format, from GET /format: each effect's fields with their
+// defaults in draw order, the live fields of each kind of layer, what an
+// empty field takes, and the built-in fonts.
+let FORMAT = null, FX = {};
 async function boot(){
   const s = await jget("/scenes");
   procedural = s.procedural;
+  FORMAT = await jget("/format");
+  FX = FORMAT.effects;
   try { FILTERS = await jget("/filters"); } catch(e) { console.warn("/filters unavailable:", e); FILTERS = {}; }
+  // the frame's size, for the size row
+  try { lastStats = await jget("/stats"); if (lastStats.display) lastDisplay = lastStats.display; } catch (_) {}
   const sel = $("#scenes"); sel.innerHTML = "";
   s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
   sel.value = s.active;
@@ -938,82 +1079,136 @@ addEventListener("pageshow", e => { if (e.persisted) startStream(); });
 document.addEventListener("freeze", stopStream);
 document.addEventListener("resume", startStream);
 
-function mergeNewParams(pristine, work){
-  // the working copy holds the user's edits, the pristine scene holds the
-  // code's current shape: new params surface, edited values win, metadata
-  // (range/options/type) always follows the code
-  const mergeInto = (from, into) => {
-    if (!from) return into;
-    into = into || {};
-    for (const [k, d] of Object.entries(from)){
-      const w = into[k];
-      if (!w || w.type !== d.type) into[k] = clone(d);
-      else into[k] = Object.assign(clone(d), {value: w.value});
-    }
-    return into;
+// The scene, its defaults and its edits, as ghee holds them now. A host that
+// keeps no defaults answers 404 for them.
+async function readScene(name){
+  const q = "name=" + enc(name);
+  const [sr, dr, er] = await Promise.all([fetch("/scene?" + q), fetch("/scene?" + q + "&defaults=1"), fetch("/edits?" + q)]);
+  if (!sr.ok) throw new Error(await sr.text());
+  const tag = sr.headers.get("ETag");
+  return {
+    scene: await sr.json(),
+    rev: tag ? parseInt(tag.replace(/"/g, ""), 10) : null,
+    defaults: dr.ok ? await dr.json() : null,
+    edits: er.ok ? await er.json() : NO_EDITS,
   };
-  work.params = mergeInto(pristine.params, work.params);
-  // a param that moved to scene scope must leave the pass copies: the same
-  // name in both scopes is an invalid scene
-  const sceneNames = Object.keys(pristine.params || {});
-  (work.passes||[]).forEach(p => {
-    if (p.params) sceneNames.forEach(n => { delete p.params[n]; });
-  });
-  const byName = {};
-  (work.passes||[]).forEach(p => byName[p.name] = p);
-  (pristine.passes||[]).forEach(p => {
-    const wp = byName[p.name];
-    if (!wp) return;
-    wp.params = mergeInto(p.params, wp.params);
-    // a sized pass renders at the size the scene's build arguments gave it and
-    // the editor cannot change that, so the size always follows the running
-    // scene.
-    if (p.size) wp.size = clone(p.size); else delete wp.size;
-    // shader code the user never touched in the editor tracks the scene's
-    // current source, so new uniforms arrive with the code that reads them
-    if (!wp.codeEdited && typeof p.fragment === "string" && wp.fragment !== p.fragment)
-      wp.fragment = p.fragment;
-    // and so do its layers. A program keeps which layers its scene has and
-    // their order, and each keeps the settings edited here, by name.
-    if (isProcedural()){
-      const mine = new Map((wp.layers || []).map(d => [d.name, d]));
-      if (p.layers) wp.layers = p.layers.map(d => clone(mine.get(d.name) || d)); else delete wp.layers;
-    } else if (!wp.layersEdited){ if (p.layers) wp.layers = clone(p.layers); else delete wp.layers; }
-  });
-  // same for the common block: one added to the file since this copy was saved
-  // shows up, one edited here stays as the user left it
-  if (typeof pristine.common === "string" && !work.commonEdited)
-    work.common = pristine.common;
-  // a program has the common block its code declares, or none
-  else if (typeof pristine.common !== "string" && isProcedural()) delete work.common;
+}
+function take(got){
+  work = got.scene; D = got.defaults; E = got.edits;
+  rev = known = got.rev;
 }
 
-// `local` takes this browser's working copy of the scene, and posts it.
+// `local` hides the moved notice, which a load after a refused edit shows.
 async function loadScene(name, local = true){
   if (local) $("#moved").hidden = true;
+  $("#behind").hidden = true;
   active = name;
-  pristine = await jget("/scene?name=" + encodeURIComponent(name));
-  const saved = local ? localStorage.getItem(KEY(name)) : null;
-  work = saved ? JSON.parse(saved) : clone(pristine);
-  if (saved) mergeNewParams(pristine, work);
+  const got = await readScene(name);
+  if (name !== active) return;
+  take(got);
   $("#scenes").value = name;
   curPass = 0; postErr = ""; errOpen = null; layerUI.clear(); layerChanges = null;
+  paintAll();
+  askAside();
+}
+// Every part of the page drawn from the working copy.
+function paintAll(){
   if (!work.passes || !work.passes.length) {   // a scene with no passes: stream only
-    $("#tabs").innerHTML = ""; $("#inputs").innerHTML = ""; $("#chans").innerHTML = ""; $("#layers").innerHTML = "";
+    $("#tabs").innerHTML = ""; $("#inputs").innerHTML = ""; $("#chans").innerHTML = ""; $("#size").innerHTML = ""; $("#layers").innerHTML = "";
     $("#params").innerHTML = '<div class="muted">no parameters</div>';
-    $("#shTog").hidden = true; CODE.box.hidden = true;
-    CODE.ta.value = ""; CODE.sync(); showErrors(); refreshInfo(); updateStatus();
+    $("#shLine").hidden = true; CODE.box.hidden = true;
+    CODE.ta.value = ""; CODE.sync(); showErrors(); refreshInfo(); paintStatus();
     return;
   }
-  if (saved) { await postScene(); }     // re-apply working copy to the render
-  buildPass(); buildParams(); refreshInfo(); updateStatus();
+  buildPass(); buildParams(); refreshInfo(); paintStatus();
+}
+
+// The scene read again as ghee holds it, with the open pass, the open layers
+// and the shader's line left as they are. A follow leaves alone what is in
+// use: it waits while the shader, a param's field, a menu or a dialog holds
+// the page, and keeps this page's copy of a layer whose card holds the focus.
+// `force` reads it all, after this page's own reset, answer or reload.
+let reading = false;
+const inUse = () => {
+  const a = document.activeElement;
+  return !!(menuFrom || answer || named || a === CODE.ta || (a && a.closest && a.closest("#params, #size")));
+};
+async function refresh(force = false){
+  if (reading || !work || (!force && inUse())) return;
+  reading = true;
+  const name = active;
+  try {
+    const got = await readScene(name);
+    if (name !== active) return;
+    const open = onCommon() ? COMMON : ((work.passes || [])[curPass] || {}).name;
+    const busy = force ? [] : busyLayers();
+    let kept = false;
+    (got.scene.passes || []).forEach(fp => {
+      const wp = (work.passes || []).find(p => p.name === fp.name);
+      if (!wp || !fp.layers || !busy.length) return;
+      fp.layers = fp.layers.map(f => {
+        const mine = busy.includes(f.name) && (wp.layers || []).find(d => d.name === f.name);
+        if (mine) kept = true;
+        return mine || f;
+      });
+    });
+    take(got);
+    // a kept layer reads again at the next poll
+    if (kept) known = -1;
+    if (open === COMMON) curPass = hasCommon() ? COMMON : 0;
+    else curPass = Math.max(0, (work.passes || []).findIndex(p => p.name === open));
+    if (!work.passes || !work.passes.length){ paintAll(); return; }
+    buildTabs(); buildInputs(); buildChannels(); buildSize();
+    const p = onCommon() ? null : work.passes[curPass], cards = [...document.querySelectorAll("#layers .lay")];
+    const shown = cards.map(c => c.dataset.name).reverse().join("\n");
+    if (kept && p && !p.filter && shown === (p.layers || []).map(d => d.name).join("\n"))
+      cards.forEach(c => { if (!busy.includes(c.dataset.name)) recard(p, c.dataset.name); });
+    else relist();
+    loadCode(); paintShader(); showErrors(); syncAddRow(); buildParams(); refreshInfo(); paintStatus(); paintMarks();
+    askAside();
+  } catch (_) {
+  } finally { reading = false; }
+}
+
+// ---- an item set aside: its default changed since its edit, and the page
+// asks once, item by item, whether to keep the edit or take the new default.
+// Keep mine is first in focus, and Escape and the scrim do nothing, so every
+// item gets its one answer ----
+const ASIDE_TITLE = {
+  fragment: a => `Default ${a.pass} shader updated`,
+  common: () => "Default common shader updated",
+  channels: a => `Default ${a.pass} channels updated`,
+  layers: a => `Default ${a.pass} layers updated`,
+  passes: () => "Default passes updated",
+  param: a => `Default ${a.param} param updated`,
+  filters: () => "Default filters updated",
+};
+let answering = false;
+async function askAside(){
+  const list = (E.aside || []).filter(a => ASIDE_TITLE[a.item]);
+  if (answering || !list.length) return;
+  answering = true;
+  const name = active;
+  try {
+    for (const a of list){
+      const keep = await ask(ASIDE_TITLE[a.item](a), {yes: "keep mine", no: "update to default", forced: true});
+      if (name !== active) return;
+      let q = `name=${enc(name)}&item=${enc(a.item)}&answer=${keep ? "keep" : "default"}`;
+      if (a.pass != null) q += "&pass=" + enc(a.pass);
+      if (a.param != null) q += "&param=" + enc(a.param);
+      // 404: another page answered first
+      await edit("/aside", name, q);
+    }
+  } finally { answering = false; }
+  if (name === active) await refresh(true);
 }
 
 // ---- the passes card: the tab row, a pass's inputs, its channels, its layers, its shader ----
 
 function setPass(i){ curPass = i; buildPass(); }
 function buildPass(){
-  buildTabs(); buildInputs(); buildChannels(); buildLayers(); loadCode(); paintShader(); showErrors(); syncAddRow();
+  buildTabs(); buildInputs(); buildChannels(); buildSize(); buildLayers(); loadCode(); paintShader(); showErrors(); syncAddRow();
+  paintMarks();
 }
 
 const EYE = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -1127,7 +1322,7 @@ function togglePass(i){
     if (work.passes.filter(q => q.visible !== false).length <= 1) return;
     p.visible = false;
   } else delete p.visible;
-  markDirty(); postScene();
+  postScene();
   buildTabs(); buildParams(); refreshInfo();
 }
 
@@ -1206,17 +1401,73 @@ function buildChannels(){
     const wrap = el("span", "chan"), sel = el("select");
     work.passes.forEach(pp => { const o = el("option", null, pp.name + (pp.name === p.name ? " (self)" : "")); o.value = pp.name; sel.appendChild(o); });
     sel.value = ch.buffer || work.passes[0].name;
-    sel.addEventListener("change", () => { ch.buffer = sel.value; markDirty(); postScene(); });
+    sel.addEventListener("change", () => { ch.buffer = sel.value; postScene(); });
     const x = el("span", "x", "×");
-    x.addEventListener("click", () => { p.channels.splice(ci, 1); markDirty(); postScene(); buildChannels(); });
+    x.addEventListener("click", () => { p.channels.splice(ci, 1); postScene(); buildChannels(); });
     wrap.append(el("span", null, "iChannel" + ci), sel, x);
     box.appendChild(wrap);
   });
   const add = el("span", "addmini", "+ channel");
-  add.addEventListener("click", () => { p.channels.push({buffer: work.passes[0].name}); markDirty(); postScene(); buildChannels(); });
+  add.addEventListener("click", () => { p.channels.push({buffer: work.passes[0].name}); postScene(); buildChannels(); });
   row.append(box, add);
   box.scrollLeft = left;
   stripFade(box);
+}
+
+// ---- a pass's size: the frame, pixels, or a share of the frame ----
+// The frame is the render size turned by the rotation.
+function frameSize(){
+  const d = lastDisplay;
+  if (!d || !d.w || !d.h) return null;
+  return d.rotation === 90 || d.rotation === 270 ? [d.h, d.w] : [d.w, d.h];
+}
+// Why a pass's size is not the console's to change: the pass that draws last
+// takes the frame's size, and a program sizes its scene's passes.
+function sizeLocked(i){
+  if (isProcedural()) return "the program sizes its passes";
+  const last = work.passes.map(p => p.visible !== false).lastIndexOf(true);
+  if (i === last) return "the last pass takes the frame's size";
+  if (!frameSize()) return "the frame's size is not known yet";
+  return "";
+}
+// A change applies on release, since a size rebuilds.
+function buildSize(){
+  const box = $("#size"); box.innerHTML = "";
+  const p = onCommon() ? null : work.passes[curPass];
+  box.hidden = !p || !!p.filter;
+  if (box.hidden) return;
+  const key = markKey(el("span", null, "size"), () => { const v = passEdit(p.name); return has(v, "size") || has(v, "scale"); }, () => {
+    const q = defPass(p.name);
+    if (!q) return;
+    delete p.size; delete p.scale;
+    if (q.size != null) p.size = clone(q.size);
+    if (q.scale != null) p.scale = clone(q.scale);
+    postScene(); buildSize(); paintMarks();
+  });
+  const frame = frameSize(), mode = p.size ? "pixels" : p.scale != null ? "scale" : "frame";
+  const sel = pick(["frame", "pixels", "scale"], mode, m => {
+    delete p.size; delete p.scale;
+    if (m === "pixels") p.size = frame.slice();
+    else if (m === "scale") p.scale = 1;
+    postScene(); buildSize(); paintMarks();
+  });
+  sel.setAttribute("aria-label", "size");
+  box.append(key, sel);
+  const why = sizeLocked(curPass);
+  if (why){ sel.disabled = true; sel.title = why; return; }
+  if (mode === "pixels"){
+    // an empty side takes the frame's
+    const side = i => v => { p.size[i] = v == null ? frame[i] : Math.max(1, Math.round(v)); postScene(); };
+    box.append(sub("width", num(p.size[0], String(frame[0]), side(0), false, {min: 1})),
+               sub("height", num(p.size[1], String(frame[1]), side(1), false, {min: 1})));
+  } else if (mode === "scale"){
+    // one number scales both sides, and a y of its own writes [x, y]
+    const two = Array.isArray(p.scale);
+    let x = two ? p.scale[0] : p.scale, y = two ? p.scale[1] : null;
+    const write = () => { p.scale = y == null || y === x ? x : [x, y]; postScene(); };
+    box.append(sub("x", num(x, "1", v => { x = v == null ? 1 : v; write(); }, false)),
+               sub("y", num(y, "same", v => { y = v; write(); }, false)));
+  }
 }
 
 // ---- the shader: under a line on a pass, open on common and a filter ----
@@ -1229,8 +1480,8 @@ const shaderShown = () => shaderOpen || errOpen === curPass;
 function paintShader(){
   const p = onCommon() ? null : work.passes[curPass], solo = !p || !!p.filter, open = shaderShown();
   $(".shadercard").classList.toggle("solo", solo);
-  $("#shTog").hidden = solo;
-  $("#shTog").textContent = (open ? "▾" : "▸") + " shader";
+  $("#shLine").hidden = solo;
+  $("#shCar").textContent = open ? "▾" : "▸";
   $("#shTog").setAttribute("aria-expanded", String(open));
   CODE.box.hidden = !(solo || open);
   CODE.sync();
@@ -1240,6 +1491,18 @@ $("#shTog").addEventListener("click", () => {
   localStorage.setItem(SHADER_KEY, shaderOpen ? "open" : "closed");
   paintShader(); showErrors();
 });
+// the open pass's shader differs from its default
+const shaderEdited = () => {
+  const p = !work || onCommon() ? null : (work.passes || [])[curPass];
+  return !!p && !p.filter && (E.items || []).some(i => i.item === "fragment" && i.pass === p.name);
+};
+// undoing a code edit loses work, so the shader's undo icon asks once
+async function shaderBack(){
+  const p = work.passes[curPass], q = p && defPass(p.name);
+  if (!q || !await ask(`Take pass ${p.name}'s shader back to default?`, {yes: "back to default"}) || work.passes[curPass] !== p) return;
+  p.fragment = q.fragment; loadCode(); postScene();
+}
+$("#shUndo").addEventListener("click", e => { e.stopPropagation(); shaderBack(); });
 function loadCode(){
   const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass];
   ta.value = p ? (p.fragment || "") : commonCode(); ta.scrollTop = 0;
@@ -1257,28 +1520,16 @@ function syncAddRow(){
 }
 
 // ---- layers ----
-// The effects in draw order, each field with its default. A live field goes
-// to the render through /set, any other with a rebuild.
-const fxf = (key, def, live) => ({key, def, live: !!live});
-const FX = {
-  text_shadow: [fxf("x", 0.06), fxf("y", 0.08), fxf("blur", 0.15), fxf("color", "#000000", 1), fxf("strength", 0.7, 1)],
-  glow: [fxf("blur", 0.3), fxf("color", "#ffa500", 1), fxf("strength", 0.8, 1)],
-  text_stroke: [fxf("width", 0.06), fxf("color", "#000000", 1)],
-  karaoke: [fxf("sung", 0, 1), fxf("color", "#ffad2e", 1)],
-  wave: [fxf("height", 0.1), fxf("speed", 0.6, 1)],
-  scroll: [fxf("speed", 2, 1)],
-  blink: [fxf("rate", 1, 1)],
-};
 // slug draws no distance field, so these draw under mtsdf only
 const NEEDS_MTSDF = ["text_shadow", "glow", "text_stroke"];
 const BLENDS = ["normal", "add", "multiply", "screen"], RENDERS = ["mtsdf", "slug"], ALIGNS = ["left", "center", "right"];
-// a layer's own fields that change with no rebuild, and every field of a
-// shape but shape and blend
-const LIVE = ["x", "y", "color", "opacity", "visible", "image"];
-const SHAPE_LIVE = ["x", "y", "color", "opacity", "visible", "width", "height", "border_radius", "points", "stroke_width"];
-const isLive = (d, key) => (isShape(d) ? SHAPE_LIVE : LIVE).includes(key);
-// a shape field that takes no none sends its default for an empty field
-const SHAPE_DEFAULT = {border_radius: 0, stroke_width: 1};
+// a layer's kind as GET /format names it: text, image, rect or line
+const formKind = d => isImage(d) ? "image" : isShape(d) ? d.shape : "text";
+// a layer's own field that changes with no rebuild
+const isLive = (d, key) => ((FORMAT.live || {})[formKind(d)] || []).includes(key);
+// what layer d's empty field takes: a word such as fit, or a number
+const emptyOf = (d, key) => ((FORMAT.empty || {})[formKind(d)] || {})[key];
+const placeholder = (d, key) => { const v = emptyOf(d, key); return v == null ? "" : String(v); };
 
 // A layer's place in the page, open or closed, by its name: editor state. A
 // scene loads with every layer closed.
@@ -1298,29 +1549,28 @@ function setLive(d, field, value, effect){
   sendLive(q);
 }
 function sendLive(q, scene = active){
-  fetch(`/set?scene=${encodeURIComponent(scene)}&${q}`, {method:"POST"})
-    .then(r => { if (r.status === 409) sceneMoved(scene); else if (!r.ok && scene === active) rebuildSoon(); })
-    .catch(() => {});
+  edit("/set", scene, `scene=${enc(scene)}&${q}`)
+    .then(r => { if (r && !r.ok && r.status !== 409 && r.status !== 412 && scene === active) rebuildSoon(); });
 }
-function rebuildSoon(){ clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
+function rebuildSoon(){ clearTimeout(compileTimer); compileTimer = setTimeout(() => { compileTimer = null; postScene(); }, 350); }
 const liveColor = c => c == null ? "none" : isGrad(c) ? JSON.stringify(c) : Array.isArray(c) ? c.join(",") : c;
 const toHex = c => Array.isArray(c) || typeof c === "string" ? rgbToHex(c) : c;
 
-function edited(p){ p.layersEdited = true; markDirty(); }
-// Layer d's own key. null leaves the key out, for ghee's default.
+// Layer d's own key. null leaves the key out, for ghee's default. An empty
+// live field whose default is a number sends that number.
 function setKey(p, d, key, v){
   if (v == null) delete d[key]; else d[key] = v;
-  edited(p);
   if (!isLive(d, key)){ postScene(); return; }
+  const empty = emptyOf(d, key);
   const wire = key === "opacity" ? (v == null ? 1 : v) : key === "visible" ? (v !== false) : key === "color" ? liveColor(v)
-    : key === "points" ? JSON.stringify(v) : v != null ? v : key in SHAPE_DEFAULT ? SHAPE_DEFAULT[key] : "none";
+    : key === "points" ? JSON.stringify(v) : v != null ? v : typeof empty === "number" ? empty : "none";
   setLive(d, key, String(wire));
 }
 // The words, live through the layer's text field.
 function wordsTo(p, d){
   let timer = null;
   return (text, now) => {
-    d.text = text; edited(p);
+    d.text = text;
     clearTimeout(timer);
     const scene = active, q = `layer=${encodeURIComponent(d.name)}&field=text&value=${encodeURIComponent(text)}`;
     if (now) sendLive(q, scene); else timer = setTimeout(() => sendLive(q, scene), 300);
@@ -1328,6 +1578,8 @@ function wordsTo(p, d){
 }
 
 // ---- controls ----
+// a number as a field shows it, with 3 decimals at most
+const short = v => typeof v === "number" ? String(Math.round(v * 1000) / 1000) : v;
 // A number field that fits its value, with no spin buttons. A live one sends
 // every keystroke. Any other applies when it is left or Enter is pressed. An
 // empty field is null: ghee's default, which the placeholder names.
@@ -1336,7 +1588,7 @@ function num(value, ph, set, live, o = {}){
   i.type = "number"; i.step = o.step || "any";
   if (o.min != null) i.min = o.min;
   if (o.max != null) i.max = o.max;
-  i.placeholder = ph || ""; i.value = value == null ? "" : value;
+  i.placeholder = ph || ""; i.value = value == null ? "" : short(value);
   const fit = () => i.style.setProperty("--n", Math.max(i.value.length, (ph || "").length, 2));
   fit();
   const take = () => {
@@ -1416,11 +1668,12 @@ function sub(key, ctl){
 // a text layer's colour: solid, white unless set, or a gradient from, to, angle
 function colorKV(p, d){
   const {kv, v} = KV("color");
+  markField(kv.firstChild, p, d, "color");
   const grad = isGrad(d.color);
   v.appendChild(keyed(pick(["solid", "gradient"], grad ? "gradient" : "solid", m => {
     if (m === "gradient") setKey(p, d, "color", {from: toHex(d.color) || "#ffffff", to: "#000000", angle: 90});
     else { const back = toHex(d.color.from); setKey(p, d, "color", back === "#ffffff" ? null : back); }
-    kv.replaceWith(colorKV(p, d));
+    kv.replaceWith(colorKV(p, d)); paintMarks();
   }), "color"));
   if (grad){
     const g = d.color, send = () => setKey(p, d, "color", g);
@@ -1435,9 +1688,11 @@ function colorKV(p, d){
   return kv;
 }
 // two numbers on one line, each under its own key, an empty one left out
-function pairKV(p, d, a, b, ph, live){
-  const {kv, v} = KV(a);
-  v.append(keyed(num(d[a], ph, x => setKey(p, d, a, x), live), a), el("span", "k2", b), keyed(num(d[b], ph, x => setKey(p, d, b, x), live), b));
+function pairKV(p, d, a, b){
+  const {kv, v} = KV(a), kb = el("span", "k2", b);
+  markField(kv.firstChild, p, d, a); markField(kb, p, d, b);
+  const n = k => keyed(num(d[k], placeholder(d, k), x => setKey(p, d, k, x), isLive(d, k)), k);
+  v.append(n(a), kb, n(b));
   return kv;
 }
 
@@ -1455,6 +1710,7 @@ function buildLayers(){
     ["shape", () => addLayer(p, "shape")]]));
   box.appendChild(row);
   (p.layers || []).slice().reverse().forEach(d => box.appendChild(layerCard(p, d)));
+  paintMarks();
 }
 // A pass's layers paint in list order, and the card shows them front first:
 // layer k of the list is card length - 1 - k.
@@ -1470,7 +1726,7 @@ function addLayer(p, kind){
   }
   list.push(d);
   ui(d.name).open = true;
-  edited(p); postScene();
+  postScene();
   buildLayers(); buildInputs();
   cardOf(list, list.length - 1).scrollIntoView({block: "nearest", behavior: "smooth"});
 }
@@ -1481,7 +1737,7 @@ async function delLayer(p, d){
   p.layers.splice(k, 1);
   if (!p.layers.length) delete p.layers;
   layerUI.delete(d.name);
-  edited(p); postScene();
+  postScene();
   buildLayers(); buildInputs();
 }
 // by +1 brings a layer forward, -1 sends it back. The moved layer's header
@@ -1492,7 +1748,7 @@ function moveLayer(p, d, by){
   const was = cardOf(list, k);
   const before = was.getBoundingClientRect().top, sideways = was.querySelector(".lstrip").scrollLeft;
   list.splice(k, 1); list.splice(j, 0, d);
-  edited(p); postScene();
+  postScene();
   buildInputs(); buildLayers();
   const now = cardOf(list, j);
   now.querySelector(".lstrip").scrollLeft = sideways;
@@ -1505,7 +1761,7 @@ async function renameLayer(p, d){
   if (n == null || n === old || !(p.layers || []).includes(d)) return;
   d.name = n;
   layerUI.set(n, ui(old)); layerUI.delete(old);
-  edited(p); postScene();
+  postScene();
   buildLayers(); buildInputs();
 }
 
@@ -1513,6 +1769,14 @@ async function renameLayer(p, d){
 // in any other, as ghee does.
 const defaultRender = d => d.font_family === "pixel" ? "slug" : "mtsdf";
 const renderOf = d => d.render || defaultRender(d);
+// The font_family dropdown: ghee's built-in fonts, then the scene's font
+// assets. A built-in font writes its value from GET /format, null for none.
+const fontAssets = () => Object.entries(work.assets || {})
+  .filter(([, a]) => a && typeof a.file === "string" && /\.(ttf|otf)$/i.test(a.file)).map(([n]) => n);
+const fontNames = () => [...Object.keys(FORMAT.fonts || {}), ...fontAssets()];
+const fontValue = name => has(FORMAT.fonts, name) ? FORMAT.fonts[name] : name;
+const fontOf = d => d.font_family == null ? Object.keys(FORMAT.fonts || {}).find(n => FORMAT.fonts[n] == null) || ""
+  : Object.keys(FORMAT.fonts || {}).find(n => FORMAT.fonts[n] === d.font_family) || d.font_family;
 // An effect's `visible` is the user's own choice. Whether it draws also
 // depends on render: slug has no distance field for three of them.
 const slugLocked = (d, f) => renderOf(d) === "slug" && NEEDS_MTSDF.includes(f);
@@ -1523,30 +1787,33 @@ function fxRow(p, d, f, redo){
   FX[f].forEach(fd => {
     const set = x => {
       if (x == null) delete o[fd.key]; else o[fd.key] = x;
-      edited(p);
-      if (fd.live) setLive(d, fd.key, String(x == null ? fd.def : x), f); else postScene();
+      if (fd.live) setLive(d, fd.key, String(liveColor(x == null ? fd.default : x)), f); else postScene();
     };
-    fields.appendChild(sub(fd.key, fd.key === "color"
-      ? colorCtl(() => o.color == null ? fd.def : o.color, set, fd.def)
-      : num(o[fd.key] == null ? fd.def : o[fd.key], "", set, fd.live)));
+    const sb = sub(fd.key, fd.key === "color"
+      ? colorCtl(() => o.color == null ? fd.default : o.color, set, toHex(fd.default))
+      : num(o[fd.key] == null ? fd.default : o[fd.key], "", set, fd.live));
+    markSub(sb.firstChild, d, f, fd.key, x => { set(x); redo(); });
+    fields.appendChild(sb);
   });
   const acts = el("span", "fxacts");
   const eye = tbtn(off ? EYE_OFF : EYE, locked ? `${f} is not drawn under render slug` : own ? `${f} is bypassed, draw it` : `bypass ${f}`,
     "m" + (off ? " off" : ""), () => {
       if (own) delete o.visible; else o.visible = false;
-      edited(p); setLive(d, "visible", String(own), f); redo();
+      setLive(d, "visible", String(own), f); redo();
     });
   eye.disabled = locked;
-  acts.append(eye, tbtn("×", `remove ${f}`, "x", () => { delete d[f]; edited(p); postScene(); redo(); }));
+  acts.append(eye, tbtn("×", `remove ${f}`, "x", () => { delete d[f]; postScene(); redo(); }));
   row.append(v, acts);
   return row;
 }
 function fxBlock(p, d){
   const box = el("div", "fx");
-  const redo = () => box.replaceWith(fxBlock(p, d));
+  const redo = () => { box.replaceWith(fxBlock(p, d)); paintMarks(); };
   const list = Object.keys(FX), missing = list.filter(f => !d[f]);
+  // a default effect removed here comes back with the default layer's fields
+  const fresh = f => { const e = defLayer(d.name); return e && isObj(e[f]) ? clone(e[f]) : {}; };
   if (missing.length) box.appendChild(addMenu("+ effect ▾", missing.map(f => [f, () => {
-    d[f] = {}; edited(p); postScene(); redo();
+    d[f] = fresh(f); postScene(); redo();
   }, slugLocked(d, f), "needs render mtsdf"])));
   list.filter(f => d[f]).forEach(f => box.appendChild(fxRow(p, d, f, redo)));
   return box;
@@ -1605,15 +1872,17 @@ function addBtn(label, fn){
   return b;
 }
 // one number under its key
-function numKV(p, d, key, ph){
+function numKV(p, d, key){
   const {kv, v} = KV(key);
-  v.appendChild(keyed(num(d[key], ph, x => setKey(p, d, key, x), isLive(d, key)), key));
+  markField(kv.firstChild, p, d, key);
+  v.appendChild(keyed(num(d[key], placeholder(d, key), x => setKey(p, d, key, x), isLive(d, key)), key));
   return kv;
 }
 // a shape's fill: white unless set, and a rect's turns off, which writes
 // transparent
 function fillKV(p, d){
   const {kv, v} = KV("color");
+  markField(kv.firstChild, p, d, "color");
   v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff",
     d.shape === "rect" ? "transparent" : undefined), "color"));
   return kv;
@@ -1625,24 +1894,27 @@ function borderKV(p, d, redo){
   const o = d.border, u = ui(d.name);
   if (!o){
     const row = el("div", "kv");
-    row.appendChild(addBtn("+ border", () => { d.border = u.border || {}; edited(p); postScene(); redo(); }));
+    row.appendChild(addBtn("+ border", () => { d.border = u.border || {}; postScene(); redo(); }));
     return row;
   }
   const off = o.visible === false, {kv, v} = KV("border");
   if (off) kv.classList.add("off");
   const set = (field, def) => x => {
     if (x == null) delete o[field]; else o[field] = x;
-    edited(p); setLive(d, field, String(x == null ? def : x), "border");
+    setLive(d, field, String(liveColor(x == null ? def : x)), "border");
   };
-  v.append(sub("width", num(o.width == null ? BORDER.width : o.width, "", set("width", BORDER.width), true)),
-           sub("color", colorCtl(() => o.color == null ? BORDER.color : o.color, set("color", BORDER.color), BORDER.color)));
+  const sw = sub("width", num(o.width == null ? BORDER.width : o.width, "", set("width", BORDER.width), true));
+  const sc = sub("color", colorCtl(() => o.color == null ? BORDER.color : o.color, set("color", BORDER.color), BORDER.color));
+  markSub(sw.firstChild, d, "border", "width", x => { set("width", BORDER.width)(x); redo(); });
+  markSub(sc.firstChild, d, "border", "color", x => { set("color", BORDER.color)(x); redo(); });
+  v.append(sw, sc);
   const acts = el("span", "fxacts");
   acts.append(
     tbtn(off ? EYE_OFF : EYE, off ? "border is bypassed, draw it" : "bypass border", "m" + (off ? " off" : ""), () => {
       if (off) delete o.visible; else o.visible = false;
-      edited(p); setLive(d, "visible", String(off), "border"); redo();
+      setLive(d, "visible", String(off), "border"); redo();
     }),
-    tbtn("×", "remove border", "x", () => { u.border = o; delete d.border; edited(p); postScene(); redo(); }));
+    tbtn("×", "remove border", "x", () => { u.border = o; delete d.border; postScene(); redo(); }));
   kv.appendChild(acts);
   return kv;
 }
@@ -1650,6 +1922,7 @@ function borderKV(p, d, redo){
 // new point starts where the last one is.
 function pointsKV(p, d, redo){
   const {kv, v} = KV("points"), box = el("div", "pts"), pts = d.points;
+  markField(kv.firstChild, p, d, "points");
   const send = () => setKey(p, d, "points", pts);
   pts.forEach((pt, i) => {
     const row = el("span", "pt");
@@ -1675,7 +1948,7 @@ function switchShape(p, d, to){
   u.shapes[from] = keep;
   d.shape = to;
   Object.assign(d, u.shapes[to] || (to === "line" ? {points: [[0, 0], [16, 16]]} : {}));
-  edited(p); postScene();
+  postScene();
 }
 
 function layerCard(p, d){
@@ -1687,6 +1960,7 @@ function layerCard(p, d){
     const was = card.querySelector(".lstrip").scrollLeft, next = layerCard(p, d);
     card.replaceWith(next);
     next.querySelector(".lstrip").scrollLeft = was;
+    paintMarks();
   };
   const head = el("div", "lhead"), st = strip("lstrip"), tog = el("button", "tog");
   tog.type = "button"; tog.setAttribute("aria-expanded", String(u.open));
@@ -1696,7 +1970,7 @@ function layerCard(p, d){
   const hk = (key, ctl) => {
     ctl.setAttribute("aria-label", key);
     const l = el("label", "hk");
-    l.append(el("span", null, key), ctl);
+    l.append(markField(el("span", null, key), p, d, key), ctl);
     sels.appendChild(l);
   };
   hk("blend", pick(BLENDS, d.blend || "normal", x => setKey(p, d, "blend", x === "normal" ? null : x)));
@@ -1743,26 +2017,32 @@ function layerCard(p, d){
   if (shape){
     // a shape has no content: every row only changes how it draws
     const {kv, v} = KV("shape");
+    markField(kv.firstChild, p, d, "shape");
     v.appendChild(keyed(pick(Object.keys(SHAPE_KEYS), d.shape, x => { switchShape(p, d, x); redo(); }), "shape"));
     const rows = [kv, fillKV(p, d)];
-    if (d.shape === "line") rows.push(pairKV(p, d, "x", "y", "0", true), pointsKV(p, d, redo), numKV(p, d, "stroke_width", "1"));
-    else rows.push(pairKV(p, d, "x", "y", "centre", true), pairKV(p, d, "width", "height", "pass", true),
-      borderKV(p, d, redo), numKV(p, d, "border_radius", "0"));
+    if (d.shape === "line") rows.push(pairKV(p, d, "x", "y"), pointsKV(p, d, redo), numKV(p, d, "stroke_width"));
+    else rows.push(pairKV(p, d, "x", "y"), pairKV(p, d, "width", "height"), borderKV(p, d, redo), numKV(p, d, "border_radius"));
     kvs.append(...rows.map(look));
   } else if (img){
     const {kv, v} = KV("image");
+    markField(kv.firstChild, p, d, "image");
     v.appendChild(keyed(pick(images, d.image, x => setKey(p, d, "image", x)), "image"));
     const tint = KV("color");
+    markField(tint.kv.firstChild, p, d, "color");
     tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", null), "color"));
-    kvs.append(kv, look(pairKV(p, d, "x", "y", "centre", true)), look(pairKV(p, d, "width", "height", "auto", false)), look(tint.kv));
+    kvs.append(kv, look(pairKV(p, d, "x", "y")), look(pairKV(p, d, "width", "height")), look(tint.kv));
   } else {
+    // a text layer's words are content: saved, and back to defaults restores
+    // them, and never marked
     const {kv, v} = KV("text"), send = wordsTo(p, d);
     v.appendChild(words(() => d.text || "", send, "text"));
     const fam = KV("font_family");
-    fam.v.appendChild(keyed(pick(["built-in"], d.font_family || "built-in", x => setKey(p, d, "font_family", x === "built-in" ? null : x)), "font_family"));
+    markField(fam.kv.firstChild, p, d, "font_family");
+    fam.v.appendChild(keyed(pick(fontNames(), fontOf(d), x => { setKey(p, d, "font_family", fontValue(x)); redo(); }), "font_family"));
     const align = KV("text_align");
+    markField(align.kv.firstChild, p, d, "text_align");
     align.v.appendChild(keyed(pick(ALIGNS, d.text_align || "left", x => setKey(p, d, "text_align", x === "left" ? null : x)), "text_align"));
-    kvs.append(kv, look(colorKV(p, d)), look(numKV(p, d, "font_size", "fit")), look(pairKV(p, d, "x", "y", "centre", true)), fam.kv, align.kv);
+    kvs.append(kv, look(colorKV(p, d)), look(numKV(p, d, "font_size")), look(pairKV(p, d, "x", "y")), fam.kv, align.kv);
   }
   body.appendChild(kvs);
   if (kind === "text") body.appendChild(look(fxBlock(p, d)));   // an image or a shape layer takes no effects
@@ -1774,8 +2054,8 @@ function layerCard(p, d){
 // A drawing adds layers and gives them new looks, and a tick sets their
 // fields. /stats counts those changes, and the page reads the scene again
 // when the count moves. A layer that the scene changed takes the scene's
-// look, in the working copy and in the copy that edits compare with. A layer
-// whose card holds the focus or an open menu waits for the next read.
+// look, its words included. A layer whose card holds the focus or an open
+// menu waits for the next read.
 let layerChanges = null, following = false;
 // a value as JSON with its keys sorted, so two copies of it compare equal
 function canon(v){
@@ -1794,31 +2074,30 @@ async function followScene(){
     layerChanges = null;   // read again at the next poll
   } finally { following = false; }
 }
+// the layers whose card holds the focus or an open menu
+const busyLayers = () => [document.activeElement, menuFrom].map(n => n && n.closest && n.closest("#layers .lay")).filter(Boolean).map(c => c.dataset.name);
 function takeLayers(fresh){
-  const busy = [document.activeElement, menuFrom].map(n => n && n.closest && n.closest("#layers .lay")).filter(Boolean).map(c => c.dataset.name);
+  const busy = busyLayers();
   const open = onCommon() ? null : work.passes[curPass], changed = [];
   let relisted = false, waits = false;
   (fresh.passes || []).forEach(fp => {
-    const wp = work.passes.find(p => p.name === fp.name), pp = ((pristine && pristine.passes) || []).find(p => p.name === fp.name);
+    const wp = work.passes.find(p => p.name === fp.name);
     if (!wp) return;
     const mine = new Map((wp.layers || []).map(d => [d.name, d]));
-    const was = new Map(((pp && pp.layers) || []).map(d => [d.name, d]));
     const next = (fp.layers || []).map(f => {
       const d = mine.get(f.name);
       if (d && canon(d) === canon(f)) return d;
       if (d && busy.includes(f.name)){ waits = true; return d; }
       if (wp === open){ if (d) changed.push(f.name); else relisted = true; }
-      was.set(f.name, clone(f));
       return clone(f);
     });
     if (wp === open && next.map(d => d.name).join() !== (wp.layers || []).map(d => d.name).join()) relisted = true;
     if (next.length) wp.layers = next; else delete wp.layers;
-    if (pp){ if (next.length) pp.layers = next.map(d => was.get(d.name) || clone(d)); else delete pp.layers; }
   });
   if (waits) layerChanges = null;
   if (relisted) relist();
   else changed.forEach(n => recard(open, n));
-  if (relisted || changed.length){ buildInputs(); updateStatus(); }
+  if (relisted || changed.length) buildInputs();
 }
 // The layer list built again. The card under the mouse, else the card at the
 // top of the view, stays where it is, so a layer that comes in moves nothing
@@ -1849,6 +2128,7 @@ function recard(p, name){
   const left = old.querySelector(".lstrip").scrollLeft, next = layerCard(p, d);
   old.replaceWith(next);
   next.querySelector(".lstrip").scrollLeft = left;
+  paintMarks();
 }
 
 // ---- passes and the common block ----
@@ -1857,25 +2137,25 @@ async function addFilter(name){
   // name and place only: the server builds the pass from the filter
   work.passes.push({ name: uniqueName(name), fragment: "", channels: [], params: {}, filter: name });
   (work.filters = work.filters || []).push(name);  // save strips the pass, keeps this
-  curPass = work.passes.length - 1; markDirty(); await postScene();
+  curPass = work.passes.length - 1; await postScene();
   buildPass(); buildParams(); refreshInfo();
 }
 function addCommon(){
   work.common = "";
-  curPass = COMMON; markDirty(); postScene();
+  curPass = COMMON; postScene();
   buildPass(); buildParams(); refreshInfo();
 }
 async function delCommon(){
   if (!await ask("Remove the common block?") || !hasCommon()) return;
-  delete work.common; delete work.commonEdited;
+  delete work.common;
   if (onCommon()) curPass = 0;
-  markDirty(); postScene();
+  postScene();
   buildPass(); buildParams(); refreshInfo();
 }
 function addPass(){
   const name = uniqueName("pass");
   work.passes.push({ name, fragment:"void main(){\n  gl_FragColor = vec4(uv, 0.5, 1.0);\n}\n", arrays:[], channels:[], params:{} });
-  curPass = work.passes.length - 1; markDirty(); postScene();
+  curPass = work.passes.length - 1; postScene();
   buildPass(); buildParams(); refreshInfo();
 }
 async function delPass(i){
@@ -1891,26 +2171,31 @@ async function delPass(i){
   // with every pass left hidden, the last shows again: one stays visible
   if (work.passes.every(q => q.visible === false)) delete work.passes[work.passes.length - 1].visible;
   if (curPass >= work.passes.length) curPass = work.passes.length - 1;
-  markDirty(); postScene();
+  postScene();
   buildPass(); buildParams(); refreshInfo();
 }
 async function renamePass(i){
   const p = work.passes[i], old = p.name, n = await askName(`Rename pass ${old}`, old);
   if (n == null || n === old || work.passes[i] !== p) return;
   work.passes.forEach(q => (q.channels || []).forEach(c => { if (c.buffer === old) c.buffer = n; }));
-  p.name = n; markDirty(); postScene();
+  p.name = n; postScene();
   buildPass(); buildParams();
 }
 
-// A yes or no in the page's own dialog, resolved true on remove. Focus starts
-// on cancel, Escape and a tap on the scrim cancel, Enter removes, and Tab
-// stays between the two buttons.
-let answer = null, askedFrom = null;
-function ask(question){
+// A yes or no in the page's own dialog, resolved true on yes, `remove`
+// unless o.yes names it. Focus starts on cancel, Escape and a tap on the
+// scrim cancel, Enter says yes, and Tab stays between the two buttons. A
+// forced question has two answers and no cancel: focus starts on yes, Enter
+// takes the button in focus, and Escape and the scrim do nothing.
+let answer = null, askedFrom = null, forced = false;
+function ask(question, o = {}){
   $("#askText").textContent = question;
+  $("#askYes").textContent = o.yes || "remove";
+  $("#askNo").textContent = o.no || "cancel";
+  forced = !!o.forced;
   askedFrom = document.activeElement;
   $("#ask").hidden = false;
-  $("#askNo").focus();
+  (forced ? $("#askYes") : $("#askNo")).focus();
   return new Promise(done => { answer = done; });
 }
 function answered(yes){
@@ -1923,10 +2208,10 @@ function answered(yes){
 }
 $("#askNo").addEventListener("click", ()=> answered(false));
 $("#askYes").addEventListener("click", ()=> answered(true));
-$("#ask").addEventListener("click", e=>{ if (e.target === $("#ask")) answered(false); });
+$("#ask").addEventListener("click", e=>{ if (e.target === $("#ask") && !forced) answered(false); });
 $("#ask").addEventListener("keydown", e=>{
-  if (e.key === "Escape"){ e.preventDefault(); answered(false); }
-  else if (e.key === "Enter"){ e.preventDefault(); answered(true); }
+  if (e.key === "Escape"){ e.preventDefault(); if (!forced) answered(false); }
+  else if (e.key === "Enter"){ e.preventDefault(); answered(!forced || document.activeElement !== $("#askNo")); }
   else if (e.key === "Tab"){ e.preventDefault(); (document.activeElement === $("#askNo") ? $("#askYes") : $("#askNo")).focus(); }
 });
 
@@ -1996,9 +2281,9 @@ function noneBtn(title, pick){
 }
 // A param name is scene data: it only ever reaches the DOM as text or as an
 // input property, never as markup.
-function paramLabel(row, name, readout){
+function paramLabel(row, name, readout, mark){
   const lab = el("label");
-  lab.appendChild(el("span", null, name));
+  lab.appendChild(mark(el("span", null, name)));
   const val = readout == null ? null : el("span", "val", readout);
   if (val) lab.appendChild(val);
   row.appendChild(lab);
@@ -2012,16 +2297,21 @@ function slider(mn, mx, step, value){
 // One control per param, for both scopes. `pass` is the name of the pass that
 // holds the param, null for a scene param.
 function buildParamRow(box, pm, name, pass){
-  const scene = active, at = pass == null ? "" : `pass=${encodeURIComponent(pass)}&`;
-  const send = value => {
-    setParam(scene, `${at}name=${encodeURIComponent(name)}&value=${encodeURIComponent(value)}`);
-    markDirty();
-  };
+  const scene = active, at = pass == null ? "" : `pass=${enc(pass)}&`;
+  const send = value => setParam(scene, `${at}name=${enc(name)}&value=${enc(value)}`);
+  // the param's key, marked while its value differs from the default's
+  const mark = key => markKey(key, () => has(pass == null ? (E.values || {}).params : (passEdit(pass) || {}).params, name), () => {
+    const q = pass == null ? D : defPass(pass), dp = q && (q.params || {})[name];
+    if (!dp) return;
+    pm.value = clone(dp.value);
+    send(Array.isArray(pm.value) ? pm.value.join(",") : String(pm.value));
+    buildParams();
+  });
   const row = el("div", "row");
   if (pm.type === "string"){
     // host-side value (the scene controller consumes it): dropdown when the
     // param declares options, free text otherwise
-    paramLabel(row, name);
+    paramLabel(row, name, null, mark);
     const set = v => { pm.value = v; send(v); };
     if (Array.isArray(pm.options) && pm.options.length){
       const sel = el("select", "strsel");
@@ -2046,7 +2336,7 @@ function buildParamRow(box, pm, name, pass){
   if (pm.type === "bool"){
     // true/false on the wire, never 1/0: the scene model demands a real bool
     const lab = el("label", "boolrow");
-    lab.appendChild(el("span", null, name));
+    lab.appendChild(mark(el("span", null, name)));
     const inp = el("input", "boolbox");
     inp.type = "checkbox";
     inp.checked = !!pm.value;
@@ -2060,7 +2350,7 @@ function buildParamRow(box, pm, name, pass){
     return;
   }
   if (pm.type === "color"){
-    paramLabel(row, name);
+    paramLabel(row, name, null, mark);
     const inp = el("input");
     inp.type = "color"; inp.value = rgbToHex(pm.value);
     inp.setAttribute("aria-label", name);
@@ -2085,7 +2375,7 @@ function buildParamRow(box, pm, name, pass){
     const mn = pm.min!=null?pm.min:-1, mx = pm.max!=null?pm.max:1;
     const R = Math.max(Math.abs(mn), Math.abs(mx)) || 1;
     const st = pm.step!=null?pm.step:R/100;
-    const val = paramLabel(row, name, "");
+    const val = paramLabel(row, name, "", mark);
     const wrap = el("div", "vecwrap");
     const pad = el("div", "vecpad");
     pad.innerHTML =
@@ -2156,7 +2446,7 @@ function buildParamRow(box, pm, name, pass){
     const step = pm.step!=null?pm.step:(mx-mn)/200;
     for (let c=0;c<n;c++){
       const r = el("div", "row");
-      const val = paramLabel(r, name + "." + VEC_AXES[c], (+pm.value[c]).toFixed(3));
+      const val = paramLabel(r, name + "." + VEC_AXES[c], (+pm.value[c]).toFixed(3), mark);
       const inp = slider(mn, mx, step, pm.value[c]);
       inp.addEventListener("input", ()=>{
         const v = parseFloat(inp.value);
@@ -2171,7 +2461,7 @@ function buildParamRow(box, pm, name, pass){
   const mn = pm.min!=null?pm.min:0, mx = pm.max!=null?pm.max:1;
   const step = pm.type==="int" ? 1 : (pm.step!=null?pm.step:(mx-mn)/200);
   const fmt = v => pm.type==="int" ? (v|0) : (+v).toFixed(3);
-  const val = paramLabel(row, name, fmt(pm.value));
+  const val = paramLabel(row, name, fmt(pm.value), mark);
   const inp = slider(mn, mx, step, pm.value);
   inp.addEventListener("input", ()=>{
     const v = pm.type==="int" ? parseInt(inp.value,10) : parseFloat(inp.value);
@@ -2208,29 +2498,28 @@ function buildParams(){
     if (p.visible === false) [...box.children].slice(from).forEach(c => c.classList.add("off"));
   });
   if (!any){ box.innerHTML = `<div class="muted">no parameters</div>`; }
+  paintMarks();
 }
 
 // The server refuses a scene it cannot build, and the refusal shows until a
 // posted scene builds.
 let postErr = "";
+// A scene that is still loading answers 503, and the post goes again.
 async function postScene(){
   const name = active;
-  const r = await fetch("/scene?name=" + encodeURIComponent(name), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(sceneOnly(work))});
-  if (r.status === 409){ await sceneMoved(name); return; }
+  const r = await edit("/scene", name, "name=" + enc(name), JSON.stringify(work));
+  if (!r || r.status === 409 || r.status === 412) return;
+  if (r.status === 503){ rebuildSoon(); return; }
   if (r.ok){ postErr = ""; adoptFilters(await r.json()); }
   else postErr = await r.text();
   showErrors();
 }
 // A live value for scene `scene`, the one this page showed when it built the
 // control.
-function setParam(scene, q){
-  fetch(`/set?scene=${encodeURIComponent(scene)}&${q}`, {method:"POST"})
-    .then(r => { if (r.status === 409) sceneMoved(scene); }).catch(()=>{});
-}
+function setParam(scene, q){ edit("/set", scene, `scene=${enc(scene)}&${q}`); }
 // The server refuses an edit for scene `from` once the console is on another
 // scene. The page then shows that scene as it runs, and posts nothing, so it
-// overwrites no edit made elsewhere. Its own copy of `from` stays in this
-// browser.
+// overwrites no edit made elsewhere.
 let moving = false;
 async function sceneMoved(from){
   if (moving || from !== active) return;
@@ -2262,47 +2551,45 @@ function adoptFilters(doc){
 }
 
 // shader
-function liveCompile(){ markDirty(); clearTimeout(compileTimer); compileTimer = setTimeout(postScene, 350); }
-// hand-edited code: merge keeps it as it is
 CODE.ta.addEventListener("input", ()=>{
   if (onCommon()) setCommon(CODE.ta.value);
-  else {
-    work.passes[curPass].fragment = CODE.ta.value;
-    work.passes[curPass].codeEdited = true;
-  }
-  CODE.sync(); liveCompile();
+  else work.passes[curPass].fragment = CODE.ta.value;
+  CODE.sync(); rebuildSoon();
 });
 
 // top-bar actions
 $("#apply").addEventListener("click", async ()=>{
   if (onCommon()) setCommon(CODE.ta.value);
   else work.passes[curPass].fragment = CODE.ta.value;
-  await postScene(); markDirty();
+  await postScene();
   if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files
     const b = $("#apply");
     b.textContent = "files newer";
     setTimeout(()=>{ b.textContent = "apply"; }, 1400);
   }
 });
+// Save writes the working copy's edits to the scene's state file on the
+// device.
 $("#save").addEventListener("click", async ()=>{
-  const name = active;
-  localStorage.setItem(KEY(name), JSON.stringify(work));
-  const b = $("#save");
-  let label = "saved";
-  try {
-    const r = await fetch("/save", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name, scene: sceneOnly(work)})});
-    if (r.status === 409) { label = "saved locally"; await sceneMoved(name); }
-    else if (!r.ok) { console.warn("/save:", await r.text()); label = "saved locally"; }
-  } catch(e) { console.warn("/save unavailable:", e); label = "saved locally"; }
-  b.textContent = label; setTimeout(()=>{ b.textContent = "save"; }, 1200); updateStatus();
+  const name = active, b = $("#save");
+  const r = await edit("/save", name, "name=" + enc(name));
+  if (!r || !r.ok){
+    if (r && r.status !== 409 && r.status !== 412) console.warn("/save:", await r.text());
+    return;
+  }
+  b.textContent = "saved"; setTimeout(()=>{ b.textContent = "save"; }, 1200);
 });
+// back to defaults asks first, and its label never changes
 $("#reset").addEventListener("click", async ()=>{
-  localStorage.removeItem(KEY(active));
-  work = clone(pristine); await postScene(); curPass = 0;
-  buildPass(); buildParams(); refreshInfo(); updateStatus();
+  const name = active;
+  if (!hasEdits() || !await ask(`Take ${name} back to its defaults? Every edit goes.`, {yes: "back to defaults"}) || name !== active) return;
+  const r = await edit("/reset", name, "name=" + enc(name));
+  if (r && r.ok) await refresh(true);
 });
 
 $("#stale").addEventListener("click", reloadScene);
+// A tap reads the scene and its edits again, and the refused edit is gone.
+$("#behind").addEventListener("click", ()=>{ $("#behind").hidden = true; refresh(true); });
 
 // scene nav
 $("#prev").addEventListener("click", async ()=>{ const r=await jpost("/prev"); await loadScene(r.active); });
@@ -2429,7 +2716,7 @@ $("#pAdd").addEventListener("click", ()=>{
     into[name] = {type, value:parseFloat($("#pVal").value)||0, min:parseFloat($("#pMin").value)||0, max:parseFloat($("#pMax").value)||1};
   }
   $("#pName").value=""; $("#addRow").classList.remove("show");
-  buildParams(); markDirty();
+  buildParams(); postScene();
 });
 
 // A refused post shows first, then the running scene's compile error, then
@@ -2457,11 +2744,17 @@ const infoShown = () => {
   const w = $("#infoBtn").closest(".infowrap");
   return w.classList.contains("open") || w.matches(":hover");
 };
+// A poll gives up on an answer after 5 s, and the next poll always follows.
+// With no edit of this page's in flight, a revision that moved past the one
+// this page accounts for reads the scene again. The stale refusal's notice
+// holds the page as it is until its tap.
 let askedUsage = false;
+const POLL_WAIT_MS = 5000;
 async function poll(){
+  const stop = new AbortController(), t = setTimeout(() => stop.abort(), POLL_WAIT_MS);
   try{
     const asking = infoShown();
-    const s = await jget(asking ? "/stats?usage=1" : "/stats");
+    const s = await (await fetch(asking ? "/stats?usage=1" : "/stats", {signal: stop.signal})).json();
     if (asking && !askedUsage && s.gpu_busy) Object.keys(s.gpu_busy).forEach(q => { s.gpu_busy[q] = null; });
     askedUsage = asking;
     pollFails = 0;
@@ -2472,10 +2765,14 @@ async function poll(){
       layerChanges = s.layer_changes;
       if (isProcedural()) followScene();
     }
+    if (s.rev != null && known != null && s.rev !== known && s.active === active && settled() && $("#behind").hidden) refresh();
     refreshInfo(); applyRotation(); showErrors();
   }catch(_){ pollFails++; }
-  showNotices();
-  setTimeout(poll, 600);
+  finally {
+    clearTimeout(t);
+    showNotices();
+    setTimeout(poll, 600);
+  }
 }
 
 function applyTheme(t){

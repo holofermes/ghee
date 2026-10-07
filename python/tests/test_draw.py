@@ -48,6 +48,63 @@ class Fake:
         self.sent.append(("frame",))
 
 
+class Typed(Fake):
+    """A handle that takes a drawing's changed calls with no look written,
+    as the native half does, and leaves the calls of the layers named in
+    `left` to _update_layer()."""
+
+    def __init__(self, layers=(), taken=(), left=()):
+        super().__init__(layers, taken)
+        self.left = set(left)
+
+    def _draw(self, calls):
+        self.sent.append(
+            ("draw", [(kind, layer, list(vals)) for kind, layer, vals in calls])
+        )
+        return [k for k, (_, layer, _) in enumerate(calls) if layer in self.left]
+
+
+# The keywords of a text call and of a rect call, in the order of the values
+# that _draw() takes.
+TEXT_KEYS = [
+    "text",
+    "x",
+    "y",
+    "color",
+    "opacity",
+    "blend",
+    "visible",
+    "font_size",
+    "font_family",
+    "text_align",
+    "render",
+    "text_shadow",
+    "glow",
+    "text_stroke",
+    "karaoke",
+    "wave",
+    "scroll",
+    "blink",
+]
+RECT_KEYS = [
+    "x",
+    "y",
+    "width",
+    "height",
+    "color",
+    "opacity",
+    "blend",
+    "visible",
+    "border",
+    "border_radius",
+]
+
+
+def values(keys, **given):
+    """The values of a call that states `given`, in the order of `keys`."""
+    return [given.get(k) for k in keys]
+
+
 def frames(fake, draw, n):
     """Draw `n` frames on one screen, each through `draw(d, i)`, and give
     what each frame sent."""
@@ -316,6 +373,99 @@ def test_a_call_writes_the_layer_of_the_scene_format(call, look):
     assert frames(Fake(), draw, 1) == [[("add", "main", 0, look), FRAME]]
 
 
+def test_a_frame_hands_draw_the_calls_that_changed_alone_with_their_values():
+    """A handle with _draw takes each frame's changed calls of layers that
+    the screen holds in one call, each as its kind, its layer and its
+    values in the order of its keywords."""
+
+    def draw(d, i):
+        d.text(f"{min(i, 1)}", x=0, y=0, font_size=8, font_family="pixel")
+        d.rect(x=4, width=8, height=2 + (i >= 2))
+
+    text = values(TEXT_KEYS, text="1", x=0, y=0, font_size=8, font_family="pixel")
+    rect = values(RECT_KEYS, x=4, width=8, height=3)
+    assert frames(Typed(), draw, 4)[1:] == [
+        [("draw", [(0, "text", text)]), FRAME],
+        [("draw", [(1, "rect", rect)]), FRAME],
+        [FRAME],
+    ]
+
+
+def test_a_call_that_draw_leaves_goes_out_as_its_look():
+    def draw(d, i):
+        d.rect(x=i)
+        d.text("a", x=i)
+
+    sent = frames(Typed(left=["text"]), draw, 2)
+    assert sent[1] == [
+        (
+            "draw",
+            [
+                (1, "rect", values(RECT_KEYS, x=1)),
+                (0, "text", values(TEXT_KEYS, text="a", x=1)),
+            ],
+        ),
+        ("update", {"name": "text", "x": 1.0, "text": "a"}),
+        FRAME,
+    ]
+
+
+def test_a_call_that_draw_takes_writes_no_look(monkeypatch):
+    looks = []
+    look = _shim._look
+    monkeypatch.setattr(
+        _shim, "_look", lambda f, name: looks.append(name) or look(f, name)
+    )
+
+    def draw(d, i):
+        d.text(f"{i}", x=0, y=0, glow={"strength": 0.5})
+        d.rect(x=i, border={"width": 1})
+
+    frames(Typed(), draw, 3)
+    assert looks == [None, None]
+
+
+def test_the_calls_of_a_draw_that_raised_go_to_draw_again():
+    """A call that _draw may have taken before it raised goes to _draw
+    again, though its values are those of the frame before."""
+
+    class Breaks(Typed):
+        def _draw(self, calls):
+            super()._draw(calls)
+            if len(self.sent) == 1:
+                raise RuntimeError("the GPU went away")
+            return []
+
+    def draw(d, i):
+        d.rect(x=1 if i == 1 else 0)
+
+    screen = _shim._Screen()
+    fake = Breaks()
+    with _shim.Drawing(fake, screen) as d:
+        draw(d, 0)
+    fake.sent = []
+    with pytest.raises(RuntimeError), _shim.Drawing(fake, screen) as d:
+        draw(d, 1)
+    with _shim.Drawing(fake, screen) as d:
+        draw(d, 2)
+    assert fake.sent == [
+        ("draw", [(1, "rect", values(RECT_KEYS, x=1))]),
+        ("draw", [(1, "rect", values(RECT_KEYS, x=0))]),
+        FRAME,
+    ]
+
+
+def test_a_layer_whose_call_comes_back_goes_to_draw_again():
+    def draw(d, i):
+        if i != 1:
+            d.rect(x=4)
+
+    assert frames(Typed(), draw, 3)[1:] == [
+        [("set", "rect", "visible", False, None), FRAME],
+        [("draw", [(1, "rect", values(RECT_KEYS, x=4))]), FRAME],
+    ]
+
+
 # --------------------------------------------------------- a scene script
 
 
@@ -420,6 +570,76 @@ def test_a_drawing_reaches_the_screen_and_a_call_that_stops_hides():
             assert (
                 red_columns(screen) == [[0, 1, 2, 3, 4, 5, 6, 7], [], [0, 1, 2, 3]][i]
             )
+
+
+class Looks:
+    """A handle whose drawing writes the look of every changed call, and
+    counts the looks that a handle with _draw takes."""
+
+    def __init__(self, h, typed):
+        self._h = h
+        self._typed = typed
+        self.looks = 0
+
+    def _update_layer(self, layer):
+        self.looks += 1
+        return self._h._update_layer(layer)
+
+    def __getattr__(self, name):
+        if name == "_draw" and not self._typed:
+            raise AttributeError(name)
+        return getattr(self._h, name)
+
+
+COLOURS = ["red", "#20c040", (0.2, 0.4, 1.0), [1.0, 1.0, 0.0], "Navy", None]
+
+
+def busy(d, i):
+    """One frame of a drawing whose calls change their keywords from frame to
+    frame, a call that comes and goes, and a size that builds a text
+    again at frame 4."""
+    c = COLOURS[i % len(COLOURS)]
+    d.rect(color="navy")
+    d.text(f"{i % 10}", x=1, y=1, font_size=8, font_family="pixel", color=c)
+    d.text(
+        "AV",
+        font_size=12 if i < 4 else 14,
+        opacity=0.5 if i % 2 else None,
+        color=ghee.gradient("red", "yellow", angle=30 * i) if i % 3 == 0 else None,
+        glow={"strength": 0.5, "color": c or "white"} if i % 4 != 2 else None,
+    )
+    if i % 5 != 3:
+        d.text("sing", x=30, y=1, font_size=8, karaoke={"sung": i % 4})
+    d.rect(
+        x=20 + i,
+        y=20,
+        width=8,
+        height=4,
+        border={"width": 1 + i % 2, "color": "red"} if i % 3 else None,
+        border_radius=i % 3,
+    )
+    d.circle((50, 24), 3 + i % 2, color=c or "white")
+    d.line((0, 31), (i * 6, 24), stroke_width=1 + i % 2, color="lime")
+    d.lines([(10, 30), (14, 22 + i % 3), (18, 30)], x=i % 2)
+
+
+def test_a_drawing_draws_the_frames_that_its_looks_written_out_draw():
+    """A screen that takes its changed calls with no look written draws
+    each frame as a screen that writes each look out, and writes looks only
+    for the calls that build their layer again."""
+    with (
+        ghee.open(width=64, height=32, timestep=0) as typed,
+        ghee.open(width=64, height=32, timestep=0) as written,
+    ):
+        a, b = Looks(typed, True), Looks(written, False)
+        sa, sb = _shim._Screen(), _shim._Screen()
+        for i in range(12):
+            for h, s in ((a, sa), (b, sb)):
+                with _shim.Drawing(h, s) as d:
+                    busy(d, i)
+            assert typed.pixels() == written.pixels(), f"frame {i}"
+        assert a.looks == 1
+        assert b.looks > 20
 
 
 def test_an_error_of_a_call_reaches_python_and_draws_no_frame():

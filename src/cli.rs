@@ -1880,7 +1880,7 @@ mod tests {
             (
                 vec!["overlay", "st7789", "--display-opts", "widht=240"],
                 "overlay: no option widht on st7789 (takes: width, height, \
-                 x_offset, y_offset, dc, rst, backlight, baudrate, spi_bus, spi_device, \
+                 x_offset, y_offset, dc, rst, backlight, speed, spi_bus, spi_device, \
                  madctl)",
             ),
         ] {

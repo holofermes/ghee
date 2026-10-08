@@ -909,8 +909,9 @@ setups follow the kernel's drivers and bindings, and are untested on a panel.
 
 `ghee overlay st7789` needs the panel's `width` and `height`. `madctl` sets
 its rotation and mirroring, 0xC0 by default, `x_offset` and `y_offset` place
-it in the controller's memory, 0 by default, and `dc`, `rst` and `backlight`
-take its GPIOs, 25, none and 22 by default.
+it in the controller's memory, 0 by default, `dc`, `rst` and `backlight`
+take its GPIOs, 25, none and 22 by default, and `speed` its SPI clock in Hz,
+62500000 by default.
 
 Write the setup of the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
 
@@ -926,10 +927,10 @@ wrote panel.bin. Copy it to /lib/firmware/panel.bin, add the lines above to
 
 `ghee overlay ili9341` takes the same options, and its firmware replays the
 init of the kernel's own ili9341 driver. The panel is 320x240 by default, its
-`madctl` 0x28 when it is wider than tall and 0x48 otherwise, its SPI clock 32
-MHz, and `dc`, `rst` and `backlight` are 25, 27 and 18 by default, the pins of
-Adafruit's EYESPI Pi Beret. An IPS panel shows its colours inverted under that
-init, and `invert=True` turns them back.
+`madctl` 0x28 when it is wider than tall and 0x48 otherwise, its `speed`
+32000000, and `dc`, `rst` and `backlight` are 25, 27 and 18 by default, the
+pins of Adafruit's EYESPI Pi Beret. An IPS panel shows its colours inverted
+under that init, and `invert=True` turns them back.
 
 `ghee overlay ssd1306` needs the panel's `height`, 32 or 64. `address` takes
 the panel's I2C address, 0x3C by default, and `speed` the bus rate in Hz,

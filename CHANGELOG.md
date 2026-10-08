@@ -671,6 +671,9 @@ A scene written for 0.4.0 needs these changes.
   bus, 1000000 by default. `address` passes the panel's I2C address to the
   overlay, where the overlay took `addr` and refused any address but 0x3C.
   A 128x64 module takes the overlay's own wiring.
+- Set the SPI clock of `ghee overlay st7789` with `speed`, where it took
+  `baudrate`, so every panel that `ghee overlay` sets up takes its bus clock
+  as `speed`.
 - List the panels that `ghee overlay` takes when it is handed another, where
   it sent the reader to `ghee displays`.
 - Write the kernel's setup for an SH1106 with `ghee overlay sh1106` on I2C

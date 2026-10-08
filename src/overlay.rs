@@ -170,7 +170,7 @@ struct MipiDbi {
     rst: Option<i64>,
     backlight: Option<i64>,
     /// The SPI clock in Hz.
-    baudrate: i64,
+    speed: i64,
 }
 
 /// MADCTL sets row order, column order and RGB/BGR: the panel rotation and
@@ -193,7 +193,7 @@ fn mipi_dbi_spi(opts: &Opts, width: i32, height: i32, d: &MipiDbi) -> Result<Vec
     let mut lines = vec![
         format!(
             "dtoverlay=mipi-dbi-spi,spi{bus}-{device},speed={}",
-            int_opt(opts, "baudrate", d.baudrate)?
+            speed_opt(opts, d.speed)?
         ),
         format!("dtparam=width={width},height={height}"),
     ];
@@ -230,7 +230,7 @@ const MIPI_DBI_OPTIONS: &[&str] = &[
     "dc",
     "rst",
     "backlight",
-    "baudrate",
+    "speed",
     "spi_bus",
     "spi_device",
     "madctl",
@@ -242,8 +242,8 @@ const ST7789_PINS: MipiDbi = MipiDbi {
     backlight: Some(22),
     // panel-mipi-dbi renders noise at 99 MHz on a VC4-class board, and this
     // clock is clean there. A panel that takes more says so with
-    // `--display-opts baudrate=`.
-    baudrate: 62_500_000,
+    // `--display-opts speed=`.
+    speed: 62_500_000,
 };
 const ST7789_MADCTL: u8 = 0xC0;
 
@@ -311,7 +311,7 @@ const ILI9341_PINS: MipiDbi = MipiDbi {
     dc: 25,
     rst: Some(27),
     backlight: Some(18),
-    baudrate: 32_000_000,
+    speed: 32_000_000,
 };
 /// The controller's memory is 240x320. The kernel driver scans it upright
 /// with MADCTL MX|BGR, and turned a quarter for 320x240 with MV|BGR.
@@ -395,7 +395,7 @@ const ILI9341: Panel = Panel {
         "dc",
         "rst",
         "backlight",
-        "baudrate",
+        "speed",
         "spi_bus",
         "spi_device",
         "madctl",
@@ -734,6 +734,19 @@ mod tests {
         let blob = firmware_of(st7789(&bonnet()).unwrap());
         assert_eq!(hex(&blob), FIRMWARE_ON_THE_PANEL);
         assert_eq!(blob.len(), 41);
+    }
+
+    /// One option sets the bus clock of every panel, on I2C and on SPI.
+    #[test]
+    fn every_panel_takes_its_bus_clock_as_speed() {
+        for panel in PANELS {
+            assert!(panel.options.contains(&"speed"), "{}", panel.name);
+        }
+        let mut set = bonnet();
+        set.push(("speed".to_string(), json!(16_000_000)));
+        let fast = "dtoverlay=mipi-dbi-spi,spi0-0,speed=16000000";
+        assert_eq!(st7789(&set).unwrap().lines[0], fast);
+        assert_eq!(ili9341(&set).unwrap().lines[0], fast);
     }
 
     #[test]

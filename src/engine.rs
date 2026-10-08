@@ -427,10 +427,12 @@ struct AtlasSlot {
     textures: Vec<(String, bool)>,
 }
 
-/// New words of a layer that wait for the atlas to hold their glyphs.
+/// New words of a layer that wait for the atlas to hold their glyphs, or
+/// for the emoji font, before their layout.
 struct Held {
     words: String,
-    laid: Layout,
+    /// None while the words wait for the emoji font.
+    laid: Option<Layout>,
 }
 
 /// The font that an atlas generator reads, from a layer's fonts.
@@ -778,8 +780,9 @@ pub struct Renderer {
     text_errors_seq: std::cell::Cell<u64>,
     /// One atlas per font, px/em and range among the MTSDF layers drawn.
     atlases: std::cell::RefCell<Vec<AtlasSlot>>,
-    /// The new words of each MTSDF layer still waiting for their glyphs, by
-    /// the layer's name. The layer draws its last words meanwhile.
+    /// The new words of each text layer still waiting for their glyphs or
+    /// for the emoji font, by the layer's name. The layer draws its last
+    /// words meanwhile.
     held: std::cell::RefCell<HashMap<String, Held>>,
     /// The words that each text layer draws, by the layer's name.
     on_screen: std::cell::RefCell<HashMap<String, String>>,
@@ -2030,7 +2033,8 @@ impl Renderer {
     /// a texture or quads that the engine refuses.
     ///
     /// New words of an MTSDF layer whose glyphs the atlas does not hold yet
-    /// wait for them, and the layer draws its last words meanwhile. A render
+    /// wait for them, new words of any layer that need the emoji font wait
+    /// for its read, and the layer draws its last words meanwhile. A render
     /// with the time pinned by set_time() waits for them, and so does a setup.
     fn set_text(&self, name: &str, words: &str) -> Result<()> {
         let laid = self.lay_text(name, words);
@@ -2046,6 +2050,20 @@ impl Renderer {
             return Ok(false);
         };
         if self.words.borrow().get(name).is_some_and(|w| w == words) {
+            return Ok(true);
+        }
+        // Words that need the emoji font wait for its read, unless the time
+        // is pinned, and the layer draws its last words meanwhile.
+        if self.pinned.get().is_none() && layer.emoji_pending(words) {
+            let held = Held {
+                words: words.to_string(),
+                laid: None,
+            };
+            self.held.borrow_mut().insert(name.to_string(), held);
+            self.words
+                .borrow_mut()
+                .insert(name.to_string(), words.to_string());
+            self.rekeep.set(true);
             return Ok(true);
         }
         #[cfg(test)]
@@ -2068,7 +2086,7 @@ impl Renderer {
                 {
                     let held = Held {
                         words: words.to_string(),
-                        laid,
+                        laid: Some(laid),
                     };
                     self.held.borrow_mut().insert(name.to_string(), held);
                     self.words
@@ -3827,16 +3845,42 @@ impl Renderer {
         Ok(())
     }
 
-    /// Hand the engine what the atlases gained, then draw the held words
-    /// whose glyphs are all in. With `wait`, or with the time pinned, every
-    /// held text waits for its glyphs first.
+    /// Lay out the held words whose emoji font is in, hand the engine what
+    /// the atlases gained, then draw the held words whose glyphs are all in.
+    /// With `wait`, or with the time pinned, every held text waits for its
+    /// font and its glyphs first.
     fn tick_texts(&self, wait: bool) -> Result<()> {
-        if self.atlases.borrow().is_empty() {
+        if self.atlases.borrow().is_empty() && self.held.borrow().is_empty() {
             return Ok(());
         }
         let wait = wait || self.pinned.get().is_some();
+        // Words that waited for the emoji font lay out once it is in.
+        let fonts: Vec<(String, String)> = self
+            .held
+            .borrow()
+            .iter()
+            .filter(|(_, h)| h.laid.is_none())
+            .map(|(n, h)| (n.clone(), h.words.clone()))
+            .collect();
+        for (name, words) in fonts {
+            let pending = || {
+                let scene = self.scene.borrow();
+                let layer = scene.as_ref().and_then(|s| self.text_layer(s, &name));
+                layer.is_some_and(|l| l.emoji_pending(&words))
+            };
+            while wait && pending() {
+                thread::sleep(Duration::from_millis(1));
+            }
+            if !pending() {
+                self.words.borrow_mut().remove(&name);
+                self.lay_text(&name, &words)?;
+            }
+        }
         let mut ready: Vec<String> = Vec::new();
         for (name, h) in self.held.borrow().iter() {
+            if h.laid.is_none() {
+                continue;
+            }
             let Some(i) = self.atlas_of(name) else {
                 ready.push(name.clone());
                 continue;
@@ -3861,8 +3905,9 @@ impl Renderer {
                 continue;
             };
             let scene = self.scene.borrow();
-            if let Some(layer) = scene.as_ref().and_then(|s| self.text_layer(s, &name)) {
-                self.show(layer, h.laid)?;
+            let layer = scene.as_ref().and_then(|s| self.text_layer(s, &name));
+            if let (Some(layer), Some(laid)) = (layer, h.laid) {
+                self.show(layer, laid)?;
                 self.drew(&name, &h.words);
             }
         }
@@ -8204,6 +8249,67 @@ mod tests {
             assert_eq!(r.setup(&load(font, "\u{1f600}")).unwrap(), "");
             assert_eq!(drawing(&mut r), (true, true, true), "{font:?}");
         }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn live_words_that_need_the_emoji_font_draw_the_last_words_until_a_thread_reads_it() {
+        // The emoji font is a pipe, so its read waits for the writer below.
+        let dir = crate::testing::TempDir::new("engine-emoji-read");
+        let pipe = dir.join(crate::emoji::FILE);
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let mut sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "passes": [{"name": "main",
+                    "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                    "layers": [{"name": "label", "text": "AV", "x": 0, "y": 0,
+                                "font_size": 20}]}],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(&dir).unwrap();
+        let layer = sc.passes[0].layers[0].as_text_mut().unwrap();
+        layer.emoji = Some(crate::emoji::at(pipe.to_str().unwrap()));
+        let (_g, mut r) = gpu();
+        r.atlas_cache = Some(dir.join("atlas"));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let av = still(&mut r);
+        let writer = thread::spawn(move || {
+            sleep(Duration::from_millis(500));
+            let fixture = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tools/fixtures/fonts/NotoColorEmoji-Smiles.ttf"
+            );
+            fs::write(&pipe, fs::read(fixture).unwrap()).unwrap();
+        });
+        let t0 = std::time::Instant::now();
+        set_words(&r, "label", "AV\u{1f600}");
+        assert!(
+            t0.elapsed() < Duration::from_millis(400),
+            "{:?}",
+            t0.elapsed()
+        );
+        assert!(
+            still(&mut r) == av,
+            "the words switched before the font was in"
+        );
+        writer.join().unwrap();
+        let t0 = std::time::Instant::now();
+        while !still(&mut r).chunks_exact(4).any(|p| p[0] != p[2]) {
+            assert!(
+                t0.elapsed() < Duration::from_secs(20),
+                "the emoji never came in"
+            );
+            sleep(Duration::from_millis(1));
+        }
+        assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
     }
 
     #[test]

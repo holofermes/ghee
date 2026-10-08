@@ -1099,6 +1099,20 @@ impl TextLayer {
         }
     }
 
+    /// True while the emoji font that `words` need is read on a thread of
+    /// its own, which the first such call starts.
+    pub fn emoji_pending(&self, words: &str) -> bool {
+        let Some(own) = self.data.as_deref() else {
+            return false;
+        };
+        match self.emoji.as_ref() {
+            Some(emoji) if own.iter().any(Result::is_ok) && text::may_fall_back(own, words) => {
+                emoji.ready().is_none()
+            }
+            _ => false,
+        }
+    }
+
     /// The font at index `i` of the fonts that a layout of the layer draws
     /// from: the layer's own, then the emoji font. None for a font that
     /// failed to load.

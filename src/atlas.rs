@@ -8,7 +8,7 @@
 //!
 //! A [`Generator`] fills the atlas of one font at one px/em and range, and
 //! starts nothing until the caller first requests characters. The first
-//! request loads the atlas from the disk cache and starts a worker thread.
+//! request starts a worker thread, which loads the atlas from the disk cache.
 //! With no cache, the worker generates the requested glyphs and the
 //! [`preload`] set on every core, and packs the requested glyphs first and
 //! the preload into the room left. After that it generates each other
@@ -604,9 +604,9 @@ impl Generator {
     /// Ask for the glyphs of `chars`, and get back at once the characters
     /// still pending, none when every glyph is ready. A glyph that the atlas
     /// already holds, from the cache, the preload or another character, is
-    /// ready at the first request for it. A requested glyph keeps its cell
-    /// until a keep() leaves it out. The first request loads the cache and
-    /// starts the worker.
+    /// ready at the first request for it once the cache has loaded. A
+    /// requested glyph keeps its cell until a keep() leaves it out. The
+    /// first request starts the worker.
     pub fn request(&self, chars: impl IntoIterator<Item = char>) -> Vec<char> {
         let started = self.started.get_or_init(|| self.start());
         let chars: Vec<char> = chars.into_iter().collect();
@@ -716,29 +716,11 @@ impl Generator {
         lock(&self.started.get()?.shared.state).atlas.update()
     }
 
-    /// Load the atlas from the cache, so the first request finds the glyphs
-    /// that it holds, and start the worker.
+    /// Start the worker, which loads the atlas from the cache first.
     fn start(&self) -> Started {
-        let key = Key {
-            font: self.font.key(),
-            px_em: self.config.px_em,
-            range: self.config.range,
-        };
-        let file = match cache_dir(&self.config) {
-            Ok(dir) => Some(dir.join(key.file_name())),
-            Err(e) => {
-                warn_memory(e);
-                None
-            }
-        };
-        let cached = file
-            .as_deref()
-            .and_then(|f| fs::read(f).ok())
-            .and_then(|b| decode(&key, &b));
-        let preloading = cached.is_none();
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                atlas: cached.unwrap_or_default(),
+                atlas: Atlas::default(),
                 chars: HashMap::new(),
                 queue: Vec::new(),
                 kept: HashSet::new(),
@@ -754,7 +736,7 @@ impl Generator {
         let (sh, font, config) = (shared.clone(), self.font.clone(), self.config.clone());
         let worker = thread::Builder::new()
             .name("ghee-atlas".into())
-            .spawn(move || work(&sh, &*font, &config, key, file, preloading))
+            .spawn(move || work(&sh, &*font, &config))
             .expect("spawn the atlas worker");
         Started { shared, worker }
     }
@@ -775,17 +757,32 @@ impl Drop for Generator {
     }
 }
 
-/// The worker: the preload with the first batch when the cache held no
-/// atlas, then each request as it comes. It saves the atlas to `file` after
-/// every batch that adds a glyph.
-fn work(
-    shared: &Shared,
-    font: &dyn Font,
-    config: &Config,
-    key: Key,
-    mut file: Option<PathBuf>,
-    mut preloading: bool,
-) {
+/// The worker: the atlas of the cache file, which the font's key names,
+/// then the preload with the first batch when the cache held no atlas, then
+/// each request as it comes. It saves the atlas to the file after every
+/// batch that adds a glyph. A request before the atlas loads waits for it,
+/// pending.
+fn work(shared: &Shared, font: &dyn Font, config: &Config) {
+    let key = Key {
+        font: font.key(),
+        px_em: config.px_em,
+        range: config.range,
+    };
+    let mut file = match cache_dir(config) {
+        Ok(dir) => Some(dir.join(key.file_name())),
+        Err(e) => {
+            warn_memory(e);
+            None
+        }
+    };
+    let cached = file
+        .as_deref()
+        .and_then(|f| fs::read(f).ok())
+        .and_then(|b| decode(&key, &b));
+    let mut preloading = cached.is_none();
+    if let Some(atlas) = cached {
+        lock(&shared.state).atlas = atlas;
+    }
     loop {
         let batch = {
             let mut st = lock(&shared.state);
@@ -1706,17 +1703,58 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Boxes behind a gate: the font's key, which names the cache file,
+    /// waits for `open`.
+    struct Gated {
+        inner: Arc<Boxes>,
+        open: AtomicBool,
+    }
+
+    impl Font for Gated {
+        fn key(&self) -> [u8; 32] {
+            while !self.open.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            self.inner.key()
+        }
+
+        fn glyph(&self, ch: char) -> Option<u32> {
+            self.inner.glyph(ch)
+        }
+
+        fn outline(&self, gid: u32) -> Result<Vec<Vec<Curve>>> {
+            self.inner.outline(gid)
+        }
+    }
+
     #[test]
-    fn the_glyphs_of_a_cache_file_are_ready_at_the_first_request() {
+    fn the_first_request_answers_before_the_cache_loads() {
         let dir = crate::testing::TempDir::new("atlas-first");
         let config = cached(&dir.join("atlas"));
-        {
-            let g = Generator::new(Arc::new(Ttf::new()), config.clone()).unwrap();
-            wait(&g, "ghee");
-        }
+        wait(&Generator::new(boxes(9), config.clone()).unwrap(), "ghee");
+        let font = Arc::new(Gated {
+            inner: boxes(9),
+            open: AtomicBool::new(false),
+        });
+        let g = Generator::new(font.clone(), config).unwrap();
+        let opener = {
+            let font = font.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(500));
+                font.open.store(true, Ordering::SeqCst);
+            })
+        };
+        let t0 = Instant::now();
+        assert_eq!(g.request("gheexyz".chars()), ['e', 'g', 'h', 'x', 'y', 'z']);
+        assert!(
+            t0.elapsed() < Duration::from_millis(400),
+            "{:?}",
+            t0.elapsed()
+        );
+        opener.join().unwrap();
         // "ghee" was asked before, and the preload holds "xyz".
-        let g = Generator::new(Arc::new(Ttf::new()), config).unwrap();
-        assert_eq!(g.request("gheexyz".chars()), Vec::<char>::new());
+        wait(&g, "gheexyz");
+        assert_eq!(font.inner.outlines.load(Ordering::Relaxed), 0);
     }
 
     #[test]

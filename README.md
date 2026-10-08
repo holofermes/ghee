@@ -713,7 +713,8 @@ from the first file found, and with no file found, it draws the font's
 missing-glyph box. A character followed by U+FE0F, the emoji variation
 selector, draws its emoji even from a font that holds a plain glyph for it, so
 ❤️ draws in colour. ghee reads the emoji font once, when words first need it,
-and every layer shares it.
+and every layer shares it. Those words wait for the read, and the layer keeps
+its last words on screen meanwhile.
 
 An emoji draws its bitmap in its own colours, mipmapped, and moves, fades and
 hides with its layer's letters. It takes no `text_shadow`, `glow` or

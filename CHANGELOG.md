@@ -289,9 +289,10 @@ A scene written for 0.4.0 needs these changes.
   `/usr/share/fonts/truetype/noto/`, which the console reads too, and with
   no such file it draws the font's missing-glyph box. A character that
   U+FE0F follows takes its emoji even from a font that holds it. ghee reads
-  the emoji font once, at the first words that need it, and every layer of
-  every scene shares it, and the console marks a scene stale when the font
-  shows up or changes. An emoji, a glyph with a PNG bitmap in a CBDT or sbix
+  the emoji font once, at the first words that need it, which wait for the
+  read with the layer's last words on screen, and every layer of every
+  scene shares it, and the console marks a scene stale when the font shows
+  up or changes. An emoji, a glyph with a PNG bitmap in a CBDT or sbix
   table, shows the bitmap in its own colours, mipmapped, and moves, fades
   and hides with its layer's letters, with no `text_shadow`, `glow` or
   `text_stroke`. A layer's emoji draw after every layer of its pass,

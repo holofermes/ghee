@@ -6,12 +6,15 @@
 //! scene the first file found, as an EmojiFont. The process holds one
 //! EmojiFont for each file, and the EmojiFont reads its file once, when the
 //! words of a layer first need it, so every layer of every scene shares one
-//! copy of the font.
+//! copy of the font. A caller that must not wait takes ready(), which reads
+//! the file on a thread of its own.
 
 use std::fmt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 
 use ttf_parser::Face;
 
@@ -29,6 +32,8 @@ pub const NAME: &str = "Noto Color Emoji";
 pub struct EmojiFont {
     path: String,
     bytes: OnceLock<Font>,
+    /// Set by the first ready(), which starts the read.
+    reading: AtomicBool,
 }
 
 impl EmojiFont {
@@ -50,6 +55,23 @@ impl EmojiFont {
                 }
             })
             .clone()
+    }
+
+    /// The bytes of the font, or why they failed to load, once read. None
+    /// while a thread reads them, which the first call starts. A font()
+    /// meanwhile waits for that read.
+    pub fn ready(self: &Arc<Self>) -> Option<Font> {
+        if let Some(f) = self.bytes.get() {
+            return Some(f.clone());
+        }
+        if !self.reading.swap(true, Ordering::AcqRel) {
+            let font = Arc::clone(self);
+            thread::Builder::new()
+                .name("ghee-emoji".into())
+                .spawn(move || drop(font.font()))
+                .expect("spawn the emoji font's read");
+        }
+        self.bytes.get().cloned()
     }
 }
 
@@ -86,6 +108,7 @@ pub(crate) fn at(path: &str) -> Arc<EmojiFont> {
     let font = Arc::new(EmojiFont {
         path: path.to_string(),
         bytes: OnceLock::new(),
+        reading: AtomicBool::new(false),
     });
     match held {
         Some(i) => fonts[i] = (now, Arc::clone(&font)),

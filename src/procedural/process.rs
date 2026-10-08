@@ -144,6 +144,41 @@ fn where_to_run(path: &str) -> Result<(String, String)> {
     Ok((full, dir))
 }
 
+/// Why `program` did not start. For a script the OS names the wrong cause:
+/// ENOEXEC when the file has no `#!` line, ENOENT when the interpreter on
+/// its `#!` line is missing.
+fn why_not_started(program: &str, e: &std::io::Error) -> String {
+    const ENOENT: i32 = 2;
+    const ENOEXEC: i32 = 8;
+    let mut head = [0u8; 256];
+    let n = fs::File::open(program)
+        .and_then(|mut f| f.read(&mut head))
+        .unwrap_or(0);
+    let head = &head[..n];
+    match (e.raw_os_error(), head.strip_prefix(b"#!")) {
+        (Some(ENOEXEC), None) if !head.starts_with(b"\x7fELF") => {
+            "the file has no #! line".to_string()
+        }
+        (Some(ENOENT), Some(rest)) => {
+            let line = rest.split(|&b| b == b'\n').next().unwrap_or_default();
+            let line = String::from_utf8_lossy(line);
+            let interpreter = line
+                .trim_start_matches([' ', '\t'])
+                .split([' ', '\t'])
+                .next()
+                .unwrap_or_default();
+            if Path::new(interpreter).exists() {
+                return crate::scene::strerror(e);
+            }
+            format!(
+                "the interpreter '{}' on its #! line does not exist",
+                interpreter.escape_debug()
+            )
+        }
+        _ => crate::scene::strerror(e),
+    }
+}
+
 // ------------------------------------------------------- what a scene takes
 
 /// One argument declared by a process.
@@ -589,7 +624,7 @@ impl SceneProcess {
         edit: impl FnOnce(&mut Value),
     ) -> Result<(Scene, SceneProcess)> {
         let (program, dir) = where_to_run(path)?;
-        let mut cmd = Command::new(program);
+        let mut cmd = Command::new(&program);
         if let Some(size) = render_size() {
             cmd.env(SIZE, size);
         }
@@ -602,7 +637,7 @@ impl SceneProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| anyhow!("{path}: {e}"))?;
+            .map_err(|e| anyhow!("{path}: {}", why_not_started(&program, &e)))?;
         crate::sources::record(path);
         let inbox = Arc::new(Mutex::new(Inbox::default()));
         let answered = Arc::new(Condvar::new());
@@ -1731,6 +1766,28 @@ sleep 60
         assert!(!shown.contains("boom in the process"), "{shown}");
         let full = with_stderr(&e);
         assert_eq!(full, format!("{shown}\nboom in the process"));
+    }
+
+    #[test]
+    fn a_script_that_cannot_start_names_its_first_line() {
+        let d = tmpdir("nostart");
+        for (name, body, why) in [
+            ("bare", "echo hi\n", "the file has no #! line"),
+            (
+                "gone",
+                "#!/nonexistent/sh -e\necho hi\n",
+                "the interpreter '/nonexistent/sh' on its #! line does not exist",
+            ),
+            (
+                "crlf",
+                "#!/bin/sh\r\necho hi\r\n",
+                "the interpreter '/bin/sh\\r' on its #! line does not exist",
+            ),
+        ] {
+            let path = script(&d, name, body);
+            let e = failure(start_scene(&path, &no_args()));
+            assert_eq!(e.to_string(), format!("{path}: {why}"), "{name}");
+        }
     }
 
     #[test]

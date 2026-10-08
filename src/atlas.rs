@@ -12,7 +12,9 @@
 //! With no cache, the worker generates the requested glyphs and the
 //! [`preload`] set on every core, and packs the requested glyphs first and
 //! the preload into the room left. After that it generates each other
-//! requested glyph, one at a time. [`Generator::request`] answers at once
+//! requested glyph, one at a time, and a requested glyph that finds the atlas
+//! full takes the room of the cells that no request asked for, the preload's
+//! or the cache's. [`Generator::request`] answers at once
 //! with the characters whose glyphs the atlas does not hold yet, so the
 //! caller can hold new words until their glyphs are ready,
 //! [`Generator::update`] hands over the texels that changed, for the upload,
@@ -352,6 +354,45 @@ impl Atlas {
         self.shelves.last().map_or(0, |s| s.y + s.height)
     }
 
+    /// Drop every cell whose glyph `keep` refuses, and clear its texels. A
+    /// kept cell keeps its place, so a shelf's room starts after its last
+    /// kept cell, and the shelves above the last kept cell go. True when a
+    /// cell went.
+    fn free(&mut self, keep: impl Fn(u32) -> bool) -> bool {
+        let mut gone = Vec::new();
+        self.cells.retain(|gid, c| {
+            let kept = keep(*gid);
+            if !kept {
+                gone.push(c.rect);
+            }
+            kept
+        });
+        if gone.is_empty() {
+            return false;
+        }
+        let aw = self.width as usize;
+        for [x, y, w, h] in gone {
+            for row in y..y + h {
+                let at = (row as usize * aw + x as usize) * 4;
+                self.texels[at..at + w as usize * 4].fill(0);
+            }
+            self.mark(y, y + h);
+        }
+        for s in &mut self.shelves {
+            s.used = self
+                .cells
+                .values()
+                .filter(|c| c.rect[1] == s.y)
+                .map(|c| c.rect[0] + c.rect[2])
+                .max()
+                .unwrap_or(0);
+        }
+        while self.shelves.last().is_some_and(|s| s.used == 0) {
+            self.shelves.pop();
+        }
+        true
+    }
+
     /// A free corner for a w x h cell: on the shelf with the least height to
     /// spare, else on a new shelf.
     fn place(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
@@ -470,6 +511,9 @@ struct State {
     chars: HashMap<char, bool>,
     /// Requested characters the worker has yet to take.
     queue: Vec<char>,
+    /// The glyphs of every character requested so far. Their cells keep
+    /// their place.
+    asked: HashSet<u32>,
     /// Why each failed glyph took no cell, by glyph id.
     failed: HashMap<u32, String>,
     /// The glyphs without ink.
@@ -530,6 +574,7 @@ impl Generator {
         let mut st = lock(&started.shared.state);
         let mut queued = false;
         for (ch, g) in found {
+            st.asked.extend(g);
             if st.chars.contains_key(&ch) {
                 continue;
             }
@@ -597,6 +642,7 @@ impl Generator {
                 atlas: cached.unwrap_or_default(),
                 chars: HashMap::new(),
                 queue: Vec::new(),
+                asked: HashSet::new(),
                 failed: HashMap::new(),
                 blank: HashSet::new(),
             }),
@@ -726,7 +772,7 @@ fn settle(
     made: Result<Option<Field>>,
     preloaded: bool,
 ) -> bool {
-    let took = match made.and_then(|f| f.map(|f| st.atlas.insert(gid, &f)).transpose()) {
+    let took = match made.and_then(|f| f.map(|f| take_cell(st, gid, &f, preloaded)).transpose()) {
         Ok(Some(_)) => true,
         Ok(None) => {
             st.blank.insert(gid);
@@ -744,6 +790,22 @@ fn settle(
         }
     }
     took
+}
+
+/// Put `field` in a cell for glyph `gid`. An asked glyph that finds the atlas
+/// full takes the room of the cells that no request asked for.
+fn take_cell(st: &mut State, gid: u32, field: &Field, preloaded: bool) -> Result<Cell> {
+    match st.atlas.insert(gid, field) {
+        Err(e) if !preloaded && e.is::<Full>() => {
+            let asked = &st.asked;
+            if st.atlas.free(|g| asked.contains(&g)) {
+                st.atlas.insert(gid, field)
+            } else {
+                Err(e)
+            }
+        }
+        placed => placed,
+    }
 }
 
 /// One glyph's field. A panic inside fdsm fails this glyph alone.
@@ -1556,15 +1618,57 @@ mod tests {
             assert!(cells.contains_key(&u32::from(ch)), "{ch:?}");
         }
         assert!(cells.len() > 30, "{} cells", cells.len());
-        // A preload glyph left out fails once a text asks for it.
-        let left = preload()
-            .find(|c| !cells.contains_key(&u32::from(*c)))
+    }
+
+    #[test]
+    fn a_glyph_left_out_of_a_full_atlas_takes_the_room_of_glyphs_no_text_asked_for() {
+        // Each row: whether the glyph is asked in the run whose preload
+        // filled the atlas, or in the next run, which loads it full from the
+        // cache. At 512 px/em the atlas holds 35 cells, far short of the
+        // preload.
+        for next_run in [false, true] {
+            let dir = crate::testing::TempDir::new("atlas-free");
+            let config = Config {
+                px_em: 512,
+                ..cached(&dir.join("atlas"))
+            };
+            let mut g = Generator::new(boxes(8), config.clone()).unwrap();
+            let own = "\u{3042}\u{3044}";
+            wait(&g, own);
+            if next_run {
+                drop(g);
+                g = Generator::new(boxes(8), config).unwrap();
+                wait(&g, own);
+            }
+            let kept: Vec<(u32, Cell, Vec<u8>)> = g
+                .with(|a| {
+                    own.chars()
+                        .map(|ch| (u32::from(ch), a.cells[&u32::from(ch)]))
+                        .map(|(gid, c)| (gid, c, texels_of(a, &c)))
+                        .collect()
+                })
+                .unwrap();
+            let left = g
+                .with(|a| preload().find(|c| !a.cells.contains_key(&u32::from(*c))))
+                .unwrap()
+                .unwrap();
+            wait(&g, &left.to_string());
+            assert_eq!(g.failure(u32::from(left)), None, "next run: {next_run}");
+            g.with(|a| {
+                let new = a.cells[&u32::from(left)].rect;
+                for (gid, c, texels) in &kept {
+                    assert_eq!(a.cells.get(gid), Some(c));
+                    assert!(texels_of(a, c) == *texels, "{:?}", c.rect);
+                    let [x, y, w, h] = c.rect;
+                    let apart = x + w <= new[0]
+                        || new[0] + new[2] <= x
+                        || y + h <= new[1]
+                        || new[1] + new[3] <= y;
+                    assert!(apart, "{new:?} overlaps {:?}", c.rect);
+                }
+            })
             .unwrap();
-        assert_eq!(g.failure(u32::from(left)), None);
-        wait(&g, &left.to_string());
-        assert!(g
-            .failure(u32::from(left))
-            .is_some_and(|e| e.ends_with("is full")));
+        }
     }
 
     #[test]

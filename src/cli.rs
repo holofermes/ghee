@@ -1073,7 +1073,7 @@ enum Command {
 struct RenderFlags {
     #[arg(
         long,
-        value_name = "NAME",
+        value_name = "kms",
         num_args = 0..=1,
         default_missing_value = "kms",
         help = "render to the connected KMS display, HDMI or a kernel-driven \

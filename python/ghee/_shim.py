@@ -908,7 +908,7 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
         "--display",
         nargs="?",
         const="kms",
-        metavar="NAME",
+        metavar="kms",
         help="the connected KMS display: bare, or 'kms' (the default with no -o "
         "and no --serve)",
     )

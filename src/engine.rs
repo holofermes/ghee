@@ -8846,9 +8846,8 @@ mod tests {
         let (_g, mut r) = gpu();
         let f = font.clone();
         r.atlas_font = Box::new(move |_| f.clone());
-        let dir = std::env::temp_dir().join(format!("ghee-engine-{}-all-day", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        r.atlas_cache = Some(dir.clone());
+        let dir = crate::testing::TempDir::new("engine-all-day");
+        r.atlas_cache = Some(dir.join("atlas"));
         // Words of ten characters, every printable ASCII character once:
         // more glyphs in all than the atlas holds, a tenth of them at a time.
         let all: Vec<char> = ('!'..='~').collect();
@@ -8876,7 +8875,6 @@ mod tests {
             .unwrap();
         assert!(cells < all.len(), "{cells} cells");
         drop(r);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -8904,10 +8902,8 @@ mod tests {
             let (_g, mut r) = gpu();
             let f = font.clone();
             r.atlas_font = Box::new(move |_| f.clone());
-            let dir =
-                std::env::temp_dir().join(format!("ghee-engine-{}-{tag}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            r.atlas_cache = Some(dir.clone());
+            let dir = crate::testing::TempDir::new(&format!("engine-{tag}"));
+            r.atlas_cache = Some(dir.join("atlas"));
             let start = match first.0 {
                 "label" => scene(first.1, ""),
                 _ => scene("", first.1),
@@ -8930,7 +8926,6 @@ mod tests {
                 })
                 .unwrap();
             drop(r);
-            fs::remove_dir_all(&dir).unwrap();
             (pages, frame)
         };
         let (on_first, want) = run(("other", few), ("label", many), "first-page");

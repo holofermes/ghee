@@ -687,6 +687,8 @@ A scene written for 0.4.0 needs these changes.
   is compiled in, a scanned filter's resolves beside it. Only the filter's
   own pass sees them, so they never clash with a scene's names.
 - Take `frc256`'s per-pixel phase from a shipped 64x64 blue-noise mask.
+- Run `dither`, `frc` and `frc256` on one thread on VC4, where a pass on two
+  threads can draw wrong 4x4 blocks.
 
 ### Library and packages
 

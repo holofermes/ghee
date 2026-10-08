@@ -1,0 +1,11 @@
+Third-party notices
+
+The ghee command and the ghee Python package compile in the Rust crates
+listed below, each under the license that lists it.
+{{#each licenses}}
+
+--------------------------------------------------------------------------------
+{{{name}}}: {{#each used_by}}{{#unless @first}}, {{/unless}}{{{crate.name}}} {{{crate.version}}}{{/each}}
+
+{{{text}}}
+{{~/each}}

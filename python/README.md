@@ -525,4 +525,6 @@ MIT. The text shader ports Eric Lengyel's
 [Slug](https://github.com/EricLengyel/Slug), also MIT. ghee builds FreeType
 2.14.3 in under the FreeType License.
 [NOTICE](https://github.com/holofermes/ghee/blob/main/NOTICE) carries both
-notices.
+notices, and
+[THIRD-PARTY-NOTICES](https://github.com/holofermes/ghee/blob/main/THIRD-PARTY-NOTICES)
+the licenses of the Rust crates that ghee compiles in.

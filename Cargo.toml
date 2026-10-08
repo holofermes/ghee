@@ -6,6 +6,7 @@ edition = "2021"
 description = "GLSL scene renderer for headless GPUs. Renders to KMS displays (HDMI, SPI/I2C panels), files, and H264."
 license = "MIT AND FTL"
 repository = "https://github.com/holofermes/ghee"
+publish = false
 
 [package.metadata.deb]
 maintainer = "holofermes <1163915+holofermes@users.noreply.github.com>"
@@ -29,6 +30,7 @@ assets = [
     ["target/pydist/**/*", "usr/lib/python3/dist-packages/", "644"],
     ["target/pywheel/*.whl", "usr/lib/ghee/", "644"],
     ["NOTICE", "usr/share/doc/ghee/", "644"],
+    ["THIRD-PARTY-NOTICES", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-DejaVu.txt", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-PixelOperator.txt", "usr/share/doc/ghee/", "644"],
 ]

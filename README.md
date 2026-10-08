@@ -1173,6 +1173,8 @@ each frame against the pinned reference in `tools/fixtures/golden/`.
 
 MIT. The text shader ports Eric Lengyel's Slug, also MIT. ghee builds
 FreeType 2.14.3 from `vendor/freetype` under the FreeType License.
-[NOTICE](NOTICE) carries both notices.
+[NOTICE](NOTICE) carries both notices, and
+[THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) the licenses of the Rust crates
+that ghee compiles in.
 
 ![](https://fabiopiparo.com/pixel.gif?site=ghee)

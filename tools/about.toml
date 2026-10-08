@@ -1,0 +1,38 @@
+# cargo-about's settings for THIRD-PARTY-NOTICES, run over python/Cargo.toml:
+# the graph of the Python crate holds every crate of the command.
+accepted = ["MIT", "Apache-2.0"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "arm-unknown-linux-gnueabihf",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# ghee and ghee-python are unpublished, which keeps them out.
+private = { ignore = true }
+
+[jpeg-encoder]
+accepted = ["IJG"]
+
+[unicode-ident]
+accepted = ["Unicode-3.0"]
+
+# The fdsm crate ships no license file. The LICENSE of its repository, at the
+# commit that the crate was published from, carries the copyright line.
+[fdsm.clarify]
+license = "MIT"
+
+[[fdsm.clarify.git]]
+path = "LICENSE"
+checksum = "7c7708fea9bdd596c57004959f4594ae9ee2c2e2d21fadf247604ed0e934b4f6"
+
+# wide ships the text of Zlib alone, one of its three licenses.
+[wide]
+accepted = ["Zlib"]
+
+[wide.clarify]
+license = "Zlib"
+
+[[wide.clarify.files]]
+path = "LICENSE-ZLIB.md"
+checksum = "c43b9a9b1387ed53d2c49263838261129a010e280e3a174a792242c3e2c98db9"

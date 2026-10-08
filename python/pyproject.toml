@@ -7,9 +7,9 @@ name = "ghee-render"
 description = "GLSL scene renderer for headless GPUs. Renders to KMS displays (HDMI, SPI/I2C panels), files, and H264."
 readme = "README.md"
 license = "MIT AND FTL"
-# maturin takes license files from python/ only: these two link to the files
-# at the repo root.
-license-files = ["LICENSE", "NOTICE"]
+# maturin takes license files from python/ only: these link to the files at
+# the repo root.
+license-files = ["LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"]
 requires-python = ">=3.10"
 dynamic = ["version"]
 

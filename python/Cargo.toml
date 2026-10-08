@@ -7,6 +7,7 @@ edition = "2021"
 description = "Python bindings for the ghee GLSL scene renderer."
 license = "MIT AND FTL"
 repository = "https://github.com/holofermes/ghee"
+publish = false
 
 [lib]
 name = "_native"

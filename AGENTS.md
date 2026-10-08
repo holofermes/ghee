@@ -80,8 +80,10 @@ dist-packages and the second to `/usr/lib/ghee`.
 assets and PyPI.
 
 The tree carries `X.Y.Z-dev`. `tools/release.sh <version>` writes one version
-into every site. The release flip is the last commit before the tag, the tag
-builds the wheels and the debs, and the next commit flips to the next `-dev`.
+into every site, then THIRD-PARTY-NOTICES with cargo-about (`cargo install
+--locked --features cli cargo-about`) from `tools/about.toml`. The release
+flip is the last commit before the tag, the tag builds the wheels and the
+debs, and the next commit flips to the next `-dev`.
 
 ## The surface is the CLI and plain HTTP
 

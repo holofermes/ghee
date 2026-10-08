@@ -1,5 +1,5 @@
 #!/bin/bash
-# Write one version into every site.
+# Write one version into every site, and regenerate THIRD-PARTY-NOTICES.
 # The tree carries X.Y.Z-dev. The release flip is the last commit before the
 # tag, the tag builds the artifacts, and the next commit flips to the next -dev.
 # usage: tools/release.sh <version>       0.3.1, or 0.3.1-dev
@@ -40,6 +40,11 @@ for lock in "${locks[@]}"; do
         check "$lock" "$got"
     done
 done
+
+# THIRD-PARTY-NOTICES lists the crates of python/Cargo.lock, written above
+cargo about generate --locked --manifest-path "$root/python/Cargo.toml" \
+    --config "$root/tools/about.toml" --output-file "$root/THIRD-PARTY-NOTICES" \
+    "$root/tools/about.hbs"
 
 # the Debian spelling the deb build derives: 0.3.1-dev sorts after 0.3.1, and
 # 0.3.1~dev sorts before it

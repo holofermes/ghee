@@ -527,8 +527,8 @@ mod tests {
     #[test]
     fn a_posted_filter_pass_is_rebuilt_from_its_filter() {
         // The console posts what GET /scene gave it. Only the filter's place,
-        // name and param values count; the code and the asset come from the
-        // filter.
+        // name and param values count, and the code and the asset come from
+        // the filter.
         let _g = env_guard();
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}]}),

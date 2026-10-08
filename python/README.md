@@ -45,43 +45,44 @@ holds the fonts and the filters that suit a 1-bit panel.
 import ghee
 
 h = ghee.open(
-    "scene.json",      # a path, the JSON text of a scene, a dict, a ghee.Scene, or None
-    display="kms",     # the connected display, or None for headless
-    opts=None,         # {"rgb565": True} scans "kms" out in 16-bit color
-    dri=None,          # the card, as --dri takes it
-    rotate=0,          # 0, 90, 180 or 270 degrees clockwise
-    width=None, height=None,   # a headless size, a display states its own
-    fps=30,            # pace cap, None runs free
-    serve=8090,        # console port, ("0.0.0.0", 8090) binds elsewhere
-    stream_max=None,   # h264 stream cap: pixels, or a fraction of the render size
+    "scene.json",  # a path, the JSON text of a scene, a dict, a ghee.Scene, or None
+    display="kms",  # the connected display, or None for headless
+    opts=None,  # {"rgb565": True} scans "kms" out in 16-bit color
+    dri=None,  # the card, as --dri takes it
+    rotate=0,  # 0, 90, 180 or 270 degrees clockwise
+    width=None,  # a headless size, a display states its own
+    height=None,
+    fps=30,  # pace cap, None runs free
+    serve=8090,  # console port, ("0.0.0.0", 8090) binds elsewhere
+    stream_max=None,  # h264 stream cap: pixels, or a fraction of the render size
     verbose=False,
-    timestep=None,     # pin time to frame*S for a reproducible render
-    alpha=False,       # keep the output pass's alpha in pixels()
-    base_dir=None,     # where a scene given as no path finds its files
+    timestep=None,  # pin time to frame*S for a reproducible render
+    alpha=False,  # keep the output pass's alpha in pixels()
+    base_dir=None,  # where a scene given as no path finds its files
 )
 
-h.set_param("gain", 1.5)                 # a scene param
-h.set_param("snap", 1.0, pass_="hold")   # the param of one pass
-h.set_param("hold.snap", 1.0)            # the same param, dotted
-h.layers.title.text = "hello"            # the words of the text layer title
-h.layers.title.x = 10                    # a live field of a layer
-h.layers.title.karaoke.sung = 12         # a live field of one of its effects
+h.set_param("gain", 1.5)  # a scene param
+h.set_param("snap", 1.0, pass_="hold")  # the param of one pass
+h.set_param("hold.snap", 1.0)  # the same param, dotted
+h.layers.title.text = "hello"  # the words of the text layer title
+h.layers.title.x = 10  # a live field of a layer
+h.layers.title.karaoke.sung = 12  # a live field of one of its effects
 
-h.feed("level", bars)      # bytes, bytearray, memoryview, array, numpy, numbers
-tick = h.frame()           # {"frame": 12, "time": 0.4, "dt": 0.0166, "params": {}}
-tick = h.skip()            # the same tick, with no draw
+h.feed("level", bars)  # bytes, bytearray, memoryview, array, numpy, numbers
+tick = h.frame()  # {"frame": 12, "time": 0.4, "dt": 0.0166, "params": {}}
+tick = h.skip()  # the same tick, with no draw
 
-with h.draw() as d:        # one frame of words, pictures and shapes
+with h.draw() as d:  # one frame of words, pictures and shapes
     d.text("hello", x=4, y=4)
-w, ht = h.measure("hello", font_size=12)   # the block's size in pixels
-h.brightness = 0.5         # a KMS display's backlight, 0 to 1
+w, ht = h.measure("hello", font_size=12)  # the block's size in pixels
+h.brightness = 0.5  # a KMS display's backlight, 0 to 1
 
-h.size          # (width, height)
-h.components    # 3 for RGB, 4 for RGBA
-h.pixels()      # the last frame, row-major (height, width, components)
-h.image()       # the last frame as a Pillow image
-h.save("frame.####.png")   # the last frame as a .png or a .jpg file
-h.close()       # also a context manager
+h.size  # (width, height)
+h.components  # 3 for RGB, 4 for RGBA
+h.pixels()  # the last frame, row-major (height, width, components)
+h.image()  # the last frame as a Pillow image
+h.save("frame.####.png")  # the last frame as a .png or a .jpg file
+h.close()  # also a context manager
 ```
 
 ## What each call does
@@ -182,8 +183,14 @@ while True:
     with screen.draw() as d:
         d.text(time.strftime("%H:%M"), x=0, y=0, font_size=16)
         d.text(f"load {load:.0%}", x=0, y=20, font_size=8, font_family="pixel")
-        d.rect(x=64, y=20, width=64, height=8, color="transparent",
-               border={"width": 1, "color": "white"})
+        d.rect(
+            x=64,
+            y=20,
+            width=64,
+            height=8,
+            color="transparent",
+            border={"width": 1, "color": "white"},
+        )
         d.rect(x=66, y=22, width=60 * min(load, 1), height=4)
         if load > 0.9:
             d.text("HOT", x=100, y=0, font_size=12, blink={"rate": 2})
@@ -193,14 +200,14 @@ The calls, each with the layer that it writes:
 
 ```python
 d.text("hello", x=4, y=4, font_size=12, color="orange", glow={"blur": 0.25})
-d.text("hello")                                       # fitted and centred
+d.text("hello")  # fitted and centred
 d.text("hi", color=ghee.gradient("red", "yellow", angle=90))
-d.image("wifi.png", x=110, y=0, width=32, color="orange")   # an image layer
+d.image("wifi.png", x=110, y=0, width=32, color="orange")  # an image layer
 d.rect(x=0, y=20, width=91, height=9, color="white")  # a shape layer
-d.rect(color="navy")                                  # the whole screen
-d.circle((110, 14), 10, color="white")                # a box with round ends
+d.rect(color="navy")  # the whole screen
+d.circle((110, 14), 10, color="white")  # a box with round ends
 d.line((0, 31), (127, 31), color="white", stroke_width=1)
-d.lines(points, color="lime", stroke_width=1)         # a waveform
+d.lines(points, color="lime", stroke_width=1)  # a waveform
 ```
 
 A call takes the keys of its layer as keywords, the effects included, as

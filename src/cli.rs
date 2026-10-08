@@ -26,9 +26,9 @@ use clap::error::{ContextKind, ErrorKind};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Map, Value};
 
-use crate::console::examples_dir;
 use crate::console::server;
 use crate::console::store::SceneStore;
+use crate::console::{examples_dir, is_examples_dir};
 use crate::engine::{display_renders, probe_display, probe_display_device, Feed, Renderer};
 use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
@@ -789,20 +789,13 @@ fn one_scene_store(a: &Ns, path: &str) -> Result<SceneStore> {
     Ok(store)
 }
 
-/// True when a scene sits in the bundled examples directory. The comparison
-/// resolves symlinks.
+/// True when a scene sits in the bundled examples directory.
 fn in_examples(path: &str) -> bool {
     let dir = match Path::new(path).parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => std::env::current_dir().unwrap_or_default(),
     };
-    let Some(examples) = examples_dir() else {
-        return false;
-    };
-    match (dir.canonicalize(), Path::new(&examples).canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
+    is_examples_dir(&dir)
 }
 
 /// `serve` is `render --serve` over a directory of scenes.

@@ -153,6 +153,21 @@ pub fn examples_dir() -> Option<String> {
     extract_examples().ok()
 }
 
+/// True when `dir` is the bundled examples directory. The comparison resolves
+/// symlinks.
+pub fn is_examples_dir(dir: &std::path::Path) -> bool {
+    let Some(examples) = examples_dir() else {
+        return false;
+    };
+    match (
+        dir.canonicalize(),
+        std::path::Path::new(&examples).canonicalize(),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn extract_examples() -> std::io::Result<String> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)

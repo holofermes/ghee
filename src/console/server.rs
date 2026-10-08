@@ -27,9 +27,9 @@ use crate::console::core::{
     other_reload, other_scene, parse_query, Aside, ConsoleAPI, ConsoleError, ConsoleHost,
     ConsoleResult, Edit, Headers, LayerSet, Query, Response, Scope,
 };
-use crate::console::examples_dir;
 use crate::console::state::{self, Edits, Item};
 use crate::console::store::{self, Carried, Opened, SceneStore};
+use crate::console::{examples_dir, is_examples_dir};
 use crate::engine::{ErrorPass, Feed, Given, Provider, Renderer};
 use crate::feeds::demo_feed;
 use crate::h264::{
@@ -2893,6 +2893,22 @@ impl Default for Options {
     }
 }
 
+/// The store over `scenes_dir`, or over the bundled examples when it is None.
+/// The bundled examples keep their state files as demos, whichever way a
+/// caller names their directory.
+fn dir_store(scenes_dir: Option<String>, args: Vec<String>) -> Result<SceneStore> {
+    let demo = scenes_dir.is_none();
+    let dir = match scenes_dir {
+        Some(dir) => dir,
+        None => examples_dir().ok_or_else(|| {
+            anyhow!("no scenes directory (set GHEE_EXAMPLES for the bundled scenes)")
+        })?,
+    };
+    let mut store = SceneStore::new(&dir, args);
+    store.demo = demo || is_examples_dir(std::path::Path::new(&dir));
+    Ok(store)
+}
+
 /// Start the console and serve until stop() (or Ctrl-C).
 pub fn run(opts: Options) -> Result<()> {
     let Options {
@@ -2925,18 +2941,7 @@ pub fn run(opts: Options) -> Result<()> {
     } = opts;
     let mut store = match store {
         Some(store) => store,
-        None => {
-            let demo = scenes_dir.is_none();
-            let dir = match scenes_dir {
-                Some(dir) => dir,
-                None => examples_dir().ok_or_else(|| {
-                    anyhow!("no scenes directory (set GHEE_EXAMPLES for the bundled scenes)")
-                })?,
-            };
-            let mut store = SceneStore::new(&dir, scene_args);
-            store.demo = demo;
-            store
-        }
+        None => dir_store(scenes_dir, scene_args)?,
     };
     let names = store.names();
     if names.is_empty() {
@@ -4010,6 +4015,27 @@ mod tests {
         let rev = rx.recv_timeout(Duration::from_secs(5));
         drop(held);
         assert_eq!(rev, Ok(Value::from(1u64)));
+    }
+
+    /// `serve` over the bundled examples' directory keeps their state files
+    /// by name, as `serve --demo` does, and any other directory by path.
+    #[test]
+    fn the_examples_directory_keeps_its_state_files_by_name() {
+        let _e = crate::console::repo_examples();
+        let states = std::path::Path::new("/states");
+        let state_file = |dir: Option<String>, name: &str| {
+            let mut store = dir_store(dir, Vec::new()).unwrap();
+            store.state_dir = Some(states.to_path_buf());
+            store.state_file(name).unwrap().unwrap()
+        };
+        let demo = states.join("demo/bars.json");
+        assert_eq!(state_file(None, "bars"), demo);
+        assert_eq!(state_file(Some("ghee/examples".to_string()), "bars"), demo);
+        let (d, _) = tmp_console("not-examples");
+        assert_eq!(
+            state_file(Some(d.to_string()), "one"),
+            states.join(format!("scenes{d}/one.json"))
+        );
     }
 
     #[test]

@@ -2274,14 +2274,19 @@ impl Scene {
         let mut layer = Layer::from_dict(MEASURED, &Value::Object(d))?;
         // The layer's name opens each error of its fonts, and the caller
         // named no layer.
-        let own = format!("layer '{MEASURED}' ");
+        let own = |e: &str| {
+            let e = e.replacen(&format!("layer '{MEASURED}': "), "", 1);
+            e.replacen(&format!("layer '{MEASURED}' "), "", 1)
+        };
         self.load_layer(&mut layer)
-            .map_err(|e| anyhow!("{}", e.to_string().replacen(&own, "", 1)))?;
+            .map_err(|e| anyhow!("{}", own(&e.to_string())))?;
         let l = layer.as_text().expect("a layer of words is a text layer");
         if let Some(Err(why)) = l.data.iter().flatten().find(|f| f.is_err()) {
-            bail!("{}", why.replacen(&own, "", 1));
+            bail!("{}", own(why));
         }
-        let laid = l.place(words)?;
+        let laid = l
+            .place(words)
+            .map_err(|e| anyhow!("{}", own(&e.to_string())))?;
         let Some(built) = laid.built else {
             let why = laid.faults.iter().find_map(|f| match f {
                 crate::text::Fault::Layout(why) => Some(why.as_str()),
@@ -3214,6 +3219,38 @@ mod tests {
     /// The scene as to_dict serialises it, with no space after a separator.
     fn canon(s: &Scene) -> String {
         serde_json::to_string(&s.to_dict()).unwrap()
+    }
+
+    #[test]
+    fn a_measure_in_a_font_that_never_loaded_names_the_font_and_no_layer() {
+        let doc = json!({"version": 1, "assets": {"sans": {"file": "sans.ttf"}},
+            "passes": [{"name": "m", "fragment": GOOD}]});
+        let sc = Scene::from_dict(&doc, None, None).unwrap();
+        let e = sc
+            .measure([64.0, 32.0], "Hi", Some(12.0), Some("sans"))
+            .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "font 'sans' was never loaded, the scene was built without a directory"
+        );
+    }
+
+    #[test]
+    fn a_refused_layer_leaves_the_scene_as_it_was() {
+        let doc = json!({"version": 1,
+            "params": {"gain": {"type": "float", "value": 0.5}},
+            "passes": [{"name": "m", "fragment": GOOD, "layers": [
+                {"name": "title", "text": "Hi"}, {"name": "sub", "text": "there"}]}]});
+        let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+        let before = sc.clone();
+        for look in [
+            json!({"name": "title", "image": "nope"}),
+            json!({"name": "title", "text": "Hi", "font_family": "serif"}),
+        ] {
+            let layer = Layer::from_dict("the new layer", &look).unwrap();
+            sc.replace_layer(layer).unwrap_err();
+            assert_eq!(sc, before, "{look}");
+        }
     }
 
     #[test]

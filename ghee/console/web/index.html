@@ -2624,14 +2624,17 @@ $("#apply").addEventListener("click", async ()=>{
   }
 });
 // Save writes the working copy's edits to the scene's state file on the
-// device.
+// device. A save's refusal shows until a save succeeds, and saveErr holds it.
+let saveErr = "";
 $("#save").addEventListener("click", async ()=>{
   const name = active, b = $("#save");
   const r = await edit("/save", name, "name=" + enc(name));
   if (!r || !r.ok){
-    if (r && r.status !== 409 && r.status !== 412){ postErr = await r.text(); showErrors(); }
+    if (r && r.status !== 409 && r.status !== 412){ postErr = saveErr = await r.text(); showErrors(); }
     return;
   }
+  if (saveErr && postErr === saveErr){ postErr = ""; showErrors(); }
+  saveErr = "";
   b.textContent = "saved"; setTimeout(()=>{ b.textContent = "save"; }, 1200);
 });
 // back to defaults asks first, and its label never changes

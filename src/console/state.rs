@@ -17,6 +17,7 @@
 //! with each GLSL file as its text and the filters expanded.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -256,9 +257,13 @@ pub fn write(path: &Path, scene: &str, edits: &Edits) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(io)?;
     }
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(".{}.tmp", std::process::id()));
     let text = serde_json::to_string_pretty(&edits.to_file(scene)).map_err(|e| e.to_string())?;
-    fs::write(&tmp, text + "\n").map_err(io)?;
+    // The rename takes only bytes that reached the disk, so a power cut
+    // leaves the old file or the new one, whole.
+    let mut f = fs::File::create(&tmp).map_err(io)?;
+    f.write_all((text + "\n").as_bytes()).map_err(io)?;
+    f.sync_all().map_err(io)?;
     fs::rename(&tmp, path).map_err(io)
 }
 

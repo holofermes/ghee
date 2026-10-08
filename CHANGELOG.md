@@ -48,6 +48,8 @@ A scene written for 0.4.0 needs these changes.
   `Renderer::pack` and `Renderer::pack_into`, `stats::DEST_PANEL`, and
   `native_format` in the console's `server::Options`.
 - Drop the `ghee bench` command.
+- Drop the draw and readback timing of a frame, `Renderer::set_profiling`
+  and `Renderer::timings`.
 - Drop the console's `<scenes>/modified/` folder, its copies of JSON scenes
   and its `.values.json` sidecars of procedural scenes: ghee reads none of
   them. Fold a copy's changes into the scene's file by hand, or redo them in

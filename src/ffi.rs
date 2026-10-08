@@ -5,7 +5,7 @@
 //! through ghee_mp_set_array.
 #![allow(dead_code)]
 
-use core::ffi::{c_char, c_double, c_int, c_void};
+use core::ffi::{c_char, c_int, c_void};
 
 #[repr(C)]
 pub struct GheeScene {
@@ -224,12 +224,10 @@ extern "C" {
     pub fn ghee_data_texture_linear(g: *mut GheeScene) -> bool;
     pub fn ghee_mipmaps_npot(g: *mut GheeScene) -> bool;
     pub fn ghee_compiled(g: *mut GheeScene) -> c_int;
-    pub fn ghee_set_profiling(g: *mut GheeScene, on: bool);
     pub fn ghee_set_time(g: *mut GheeScene, t: f32);
     pub fn ghee_clear_time(g: *mut GheeScene);
     pub fn ghee_restart_clock(g: *mut GheeScene);
     pub fn ghee_set_dt(g: *mut GheeScene, dt: f32);
-    pub fn ghee_get_timings(g: *mut GheeScene, draw_ms: *mut c_double, read_ms: *mut c_double);
     pub fn ghee_display_vrefresh(g: *mut GheeScene) -> c_int;
     pub fn ghee_display_probe(
         dri_device: *const c_char,

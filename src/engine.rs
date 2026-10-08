@@ -32,7 +32,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::os::raw::{c_char, c_double, c_int, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Arc;
@@ -4149,13 +4149,6 @@ impl Renderer {
         unsafe { ffi::ghee_display_blanked(self.handle) != 0 }
     }
 
-    /// Enable per-frame draw and readback timing.
-    /// The timing adds a glFinish. Timing off costs nothing.
-    #[allow(dead_code)]
-    pub fn set_profiling(&self, on: bool) {
-        unsafe { ffi::ghee_set_profiling(self.handle, on) };
-    }
-
     /// Pin the `iTime` uniform to a fixed value, for a reproducible render.
     /// The default is the monotonic clock since the engine start.
     /// None returns the uniform to that clock.
@@ -4307,17 +4300,6 @@ impl Renderer {
     /// pass's, each distinct batch's, and its own.
     pub fn compiled(&self) -> i32 {
         unsafe { ffi::ghee_compiled(self.handle) }
-    }
-
-    /// The last frame's split, as (draw_ms, read_ms).
-    /// draw_ms is the GPU render of every pass.
-    /// read_ms is the glReadPixels readback.
-    /// Both stay 0 until a frame renders with profiling on.
-    #[allow(dead_code)]
-    pub fn timings(&self) -> (f64, f64) {
-        let (mut draw, mut read): (c_double, c_double) = (0.0, 0.0);
-        unsafe { ffi::ghee_get_timings(self.handle, &mut draw, &mut read) };
-        (draw, read)
     }
 
     /// The GL this renderer runs on: GL_RENDERER and GL_VERSION in one string.

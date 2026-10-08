@@ -230,8 +230,6 @@ struct GheeScene {
     GLuint black_tex;                    // bound to a channel with no source pass
 
     bool keep_alpha;                     // readbacks carry the final pass's alpha
-    bool profile;                        // when on, ghee_mp_render splits draw vs readback (adds a glFinish)
-    double prof_draw_ms, prof_read_ms;   // last frame's split (profiling mode)
 
     // display mode: scan the final buffer straight out to a KMS connector
     // (zero CPU copy), instead of reading it back. Set up by ghee_display_create.
@@ -274,10 +272,6 @@ struct GheeScene {
     int compiled;                        // programs linked since create
     char last_error[ERROR_BUFFER_SIZE];
 };
-
-static double ms_between(struct timespec a, struct timespec b) {
-    return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
-}
 
 // The vertex shader of every pass's full-screen quad, and of the present
 // blit. ghee_vflip = -1 mirrors the quad in y, for a pass that draws straight
@@ -2684,13 +2678,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (g->mp_count <= 0) { set_error(g, "render: the scene has no passes"); return; }
     make_current(g);
-    struct timespec now, t_draw, t_read;
-    clock_gettime(CLOCK_MONOTONIC, &now);
     render_passes(g, elapsed_seconds(g), false);
-
-    // Profiling: force the GPU to finish the passes so the readback timing below
-    // is pure readback.
-    if (g->profile) { glFinish(); clock_gettime(CLOCK_MONOTONIC, &t_draw); }
 
     const int last = g->mp_count - 1;
     if (buffer_rgb && pw > 0 && ph > 0) {
@@ -2708,19 +2696,11 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         }
     }
 
-    if (g->profile) {
-        clock_gettime(CLOCK_MONOTONIC, &t_read);
-        g->prof_draw_ms = ms_between(now, t_draw);   // GPU render (passes), fenced
-        g->prof_read_ms = ms_between(t_draw, t_read); // pure glReadPixels
-    }
-
     for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;  // swap all
 }
 
 // The GL this renderer runs on: GL_RENDERER and GL_VERSION in one string.
 const char *ghee_renderer(GheeScene *g) { return g ? g->renderer : ""; }
-
-void ghee_set_profiling(GheeScene *g, bool on) { g->profile = on; }
 
 void ghee_set_time(GheeScene *g, float t) { g->time_override = t; g->has_time_override = true; }
 
@@ -2795,11 +2775,6 @@ void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
 void ghee_i_keep_last(GheeScene *g, int delta) {
     g->keep_last += delta;
     if (g->keep_last < 0) g->keep_last = 0;
-}
-
-void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms) {
-    if (draw_ms) *draw_ms = g->prof_draw_ms;
-    if (read_ms) *read_ms = g->prof_read_ms;
 }
 
 // Tear down the running scene and anything pending (for switching scenes).

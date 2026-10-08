@@ -253,12 +253,10 @@ bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 bool ghee_mipmaps_npot(GheeScene *g);        // GPU mipmaps a texture of any size
 int  ghee_compiled(GheeScene *g);            // programs that the renderer linked since its create
 
-void ghee_set_profiling(GheeScene *g, bool on);
 void ghee_set_time(GheeScene *g, float t);
 void ghee_clear_time(GheeScene *g);   // back to the monotonic clock
 void ghee_restart_clock(GheeScene *g);  // the next frame is iFrame 0, and the monotonic clock counts from it
 void ghee_set_dt(GheeScene *g, float dt);  // the iTimeDelta uniform on every pass, 1/60 until set
-void ghee_get_timings(GheeScene *g, double *draw_ms, double *read_ms);
 int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display mode
 // Size of the mode that the connected display drives, without creating a scene
 // or touching GL. Needs read access to the card node only, not DRM master.

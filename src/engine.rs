@@ -6333,6 +6333,54 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_frame_of_frc_lights_a_flat_gray_in_no_stripes() {
+        // Each 16 px column holds one gray, K of 16 levels. A set of lit
+        // pixels with no pattern in it correlates near 0 with itself shifted
+        // by a few pixels, and stripes correlate along their direction.
+        let _f = crate::filters::env_guard();
+        let (w, h) = (256, 64);
+        let (_g, mut r) = gpu_at(w, h);
+        let mut sc = scene_of(json!([{"name": "main",
+            "fragment": "void main(){ gl_FragColor = vec4(vec3(floor(uv.x * 16.0) / 16.0), 1.0); }"}]));
+        crate::filters::apply_filters(&mut sc, &["frc".to_string()], None).unwrap();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let corr = |a: &[f64], b: &[f64]| {
+            let n = a.len() as f64;
+            let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+            let cov: f64 = a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+            let va: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
+            let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
+            cov / (va * vb).sqrt()
+        };
+        for frame in 0..16 {
+            let f = r.render(None).unwrap().to_vec();
+            let lit = |x: usize, y: usize| f64::from(u8::from(f[(y * w + x) * COMPONENTS] > 127));
+            for k in 1..16 {
+                for (dx, dy) in (-3i64..=3).flat_map(|dx| (0i64..=3).map(move |dy| (dx, dy))) {
+                    if dy == 0 && dx <= 0 {
+                        continue;
+                    }
+                    let (mut a, mut b) = (Vec::new(), Vec::new());
+                    for y in 0..h as i64 - dy {
+                        for x in (k * 16) as i64..(k * 16 + 16) as i64 {
+                            if (k * 16..k * 16 + 16).contains(&((x + dx) as usize)) {
+                                a.push(lit(x as usize, y as usize));
+                                b.push(lit((x + dx) as usize, (y + dy) as usize));
+                            }
+                        }
+                    }
+                    let c = corr(&a, &b);
+                    assert!(
+                        c < 0.4,
+                        "frame {frame}, gray {k}/16, shift ({dx}, {dy}): {c:.2}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_binds_16_texture_units_at_most_on_any_gpu() {
         let (_g, r) = gpu();
         let gl = unsafe { ffi::ghee_gl_texture_units(r.handle()) };

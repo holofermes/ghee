@@ -948,6 +948,9 @@ A Rust host written for 0.4.0 needs these changes.
   the Catmull-Rom kernel blurred it into its neighbours.
 - Skip a filter file that holds a key that a filter does not take, and name
   the key and the closest key that a filter takes.
+- Take `frc`'s per-pixel phase from `frc256`'s blue-noise mask, where it
+  took the noise that picks which dim pixels light, so a single frame shows
+  no diagonal stripes.
 
 ### Library and packages
 

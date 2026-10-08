@@ -56,6 +56,7 @@ pub mod h264;
 pub mod layer;
 pub mod looper;
 pub mod output;
+pub(crate) mod overlay;
 pub mod panel;
 pub mod procedural;
 pub(crate) mod report;

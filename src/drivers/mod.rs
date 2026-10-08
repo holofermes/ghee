@@ -6,88 +6,25 @@ mod gpio;
 mod ssd1306;
 mod st7789;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 
+pub(crate) use crate::overlay::{i32_opt, int_opt, pin_opt};
 pub use base::DisplayDriver;
 
 /// --display-opts sets these options. Each k=v pair parses to one value.
 pub type Opts = [(String, Value)];
 
-/// A command byte and its data, empty for a command that takes none.
-/// A delay is command 0x00 carrying the milliseconds, panel-mipi-dbi's own
-/// encoding.
-pub type Command = (u8, Vec<u8>);
-
-/// The kernel's own setup for a panel, what `ghee overlay` writes out.
-/// A panel whose driver holds its init sequence has no firmware of its own.
-#[derive(Debug)]
-pub struct Setup {
-    pub firmware: Option<Vec<u8>>,
-    /// The config.txt lines that bring the card up.
-    pub lines: Vec<String>,
-}
-
-/// panel-mipi-dbi loads this firmware file: a 15-byte magic, the format
-/// version, then each command as its byte, its parameter count and the
-/// parameters.
-pub fn firmware(init: &[Command]) -> Vec<u8> {
-    let mut out = b"MIPI DBI\0\0\0\0\0\0\0\x01".to_vec();
-    for (command, data) in init {
-        out.push(*command);
-        out.push(data.len() as u8);
-        out.extend_from_slice(data);
-    }
-    out
-}
-
-/// A delay in the init sequence, in milliseconds. A panel-mipi-dbi delay
-/// carries one byte, so 255 is the longest one.
-pub(crate) fn delay(ms: u8) -> Command {
-    (0x00, vec![ms])
-}
-
 /// A panel option and its default.
-/// --display-opts sets the option, and `ghee displays` lists the ones that
-/// the userspace driver takes.
+/// --display-opts sets the option, and `ghee displays` lists it.
 pub struct DriverOption {
     pub name: &'static str,
     pub default: Option<i64>,
-    /// The userspace driver takes it.
-    pub driver: bool,
-    /// The option describes the panel, so `ghee overlay` takes it too.
-    pub kernel: bool,
 }
 
 impl DriverOption {
     pub const fn new(name: &'static str, default: Option<i64>) -> DriverOption {
-        DriverOption {
-            name,
-            default,
-            driver: true,
-            kernel: true,
-        }
-    }
-
-    /// An option for the userspace driver alone, such as its wire format.
-    pub const fn own(name: &'static str, default: Option<i64>) -> DriverOption {
-        DriverOption {
-            name,
-            default,
-            driver: true,
-            kernel: false,
-        }
-    }
-
-    /// An option for the kernel setup alone, such as a geometry that the
-    /// userspace driver fixes.
-    pub const fn kernel(name: &'static str, default: Option<i64>) -> DriverOption {
-        DriverOption {
-            name,
-            default,
-            driver: false,
-            kernel: true,
-        }
+        DriverOption { name, default }
     }
 }
 
@@ -98,8 +35,6 @@ pub struct DriverSpec {
     /// The width and height of the frame that the driver opened with these
     /// options takes, known before it opens.
     pub size: fn(&Opts) -> Result<(i32, i32)>,
-    /// The kernel setup for this panel, for `ghee overlay`.
-    pub kernel: fn(&Opts) -> Result<Setup>,
 }
 
 const BUNDLED: [&DriverSpec; 2] = [&st7789::SPEC, &ssd1306::SPEC];
@@ -120,69 +55,12 @@ pub fn get_driver(name: &str) -> Result<&'static DriverSpec> {
 
 /// What the userspace driver's constructor takes, in declaration order.
 pub fn driver_options(spec: &DriverSpec) -> Vec<&'static DriverOption> {
-    spec.options.iter().filter(|o| o.driver).collect()
-}
-
-/// What `ghee overlay` takes for the panel, in declaration order.
-pub fn kernel_options(spec: &DriverSpec) -> Vec<&'static DriverOption> {
-    spec.options.iter().filter(|o| o.kernel).collect()
-}
-
-/// The value set for `name`. The last pair wins.
-fn opt<'a>(opts: &'a Opts, name: &str) -> Option<&'a Value> {
-    opts.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v)
-}
-
-/// True when --display-opts set this option. A driver default describes its
-/// own panel, which is the wrong answer for a kernel setup.
-pub(crate) fn given(opts: &Opts, name: &str) -> bool {
-    opt(opts, name).is_some()
-}
-
-pub(crate) fn int_opt(opts: &Opts, name: &str, default: i64) -> Result<i64> {
-    match opt(opts, name) {
-        None => Ok(default),
-        Some(v) => v
-            .as_i64()
-            .ok_or_else(|| anyhow!("{name} takes an integer, got {v}")),
-    }
-}
-
-pub(crate) fn i32_opt(opts: &Opts, name: &str, default: i64) -> Result<i32> {
-    let v = int_opt(opts, name, default)?;
-    i32::try_from(v).map_err(|_| anyhow!("{name} {v} is out of range"))
-}
-
-/// A BCM pin number. None means the panel does without the line.
-pub(crate) fn pin_opt(opts: &Opts, name: &str, default: Option<i64>) -> Result<Option<u8>> {
-    let v = match opt(opts, name) {
-        None => default,
-        Some(Value::Null) => None,
-        Some(v) => Some(
-            v.as_i64()
-                .ok_or_else(|| anyhow!("{name} takes a GPIO number, got {v}"))?,
-        ),
-    };
-    match v {
-        None => Ok(None),
-        Some(v) => match u8::try_from(v) {
-            Ok(pin) => Ok(Some(pin)),
-            Err(_) => bail!("{name} {v} is not a GPIO number"),
-        },
-    }
+    spec.options.iter().collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    fn opts(pairs: &[(&str, Value)]) -> Vec<(String, Value)> {
-        pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), v.clone()))
-            .collect()
-    }
 
     #[test]
     fn the_bundled_drivers_are_available() {
@@ -225,39 +103,5 @@ mod tests {
             .map(|o| o.name)
             .collect();
         assert_eq!(ssd, ["bus", "addr"]);
-    }
-
-    #[test]
-    fn an_unset_option_takes_the_default() {
-        let set = opts(&[("width", json!(40))]);
-        assert_eq!(int_opt(&set, "width", 135).unwrap(), 40);
-        assert_eq!(int_opt(&set, "height", 240).unwrap(), 240);
-        assert_eq!(pin_opt(&set, "backlight", Some(22)).unwrap(), Some(22));
-    }
-
-    #[test]
-    fn a_none_pin_stays_none() {
-        let set = opts(&[("backlight", Value::Null)]);
-        assert_eq!(pin_opt(&set, "backlight", Some(22)).unwrap(), None);
-        assert_eq!(pin_opt(&[], "rst", None).unwrap(), None);
-    }
-
-    #[test]
-    fn a_value_that_is_not_a_number_names_the_option() {
-        let set = opts(&[("width", json!("wide")), ("dc", json!("high"))]);
-        assert_eq!(
-            int_opt(&set, "width", 135).unwrap_err().to_string(),
-            "width takes an integer, got \"wide\""
-        );
-        assert_eq!(
-            pin_opt(&set, "dc", Some(25)).unwrap_err().to_string(),
-            "dc takes a GPIO number, got \"high\""
-        );
-        assert_eq!(
-            pin_opt(&opts(&[("dc", json!(300))]), "dc", Some(25))
-                .unwrap_err()
-                .to_string(),
-            "dc 300 is not a GPIO number"
-        );
     }
 }

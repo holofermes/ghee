@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 use rppal::i2c::I2c;
 
 use crate::drivers::base::{DisplayDriver, MONO1};
-use crate::drivers::{given, int_opt, DriverOption, DriverSpec, Opts, Setup};
+use crate::drivers::{int_opt, DriverOption, DriverSpec, Opts};
 use crate::engine::pack_frame_into;
 
 const CMD: u8 = 0x80; // control byte: one command follows
@@ -23,10 +23,6 @@ const HEIGHT: i32 = 32;
 
 const DEFAULT_BUS: i64 = 1;
 const DEFAULT_ADDR: i64 = 0x3C;
-/// The I2C bus rate in Hz that `ghee overlay` sets. A 128x32 frame takes
-/// 4.7 ms at 1 MHz. Above 1 MHz a Pi 5's controller falls back to a far
-/// slower rate.
-const DEFAULT_SPEED: i64 = 1_000_000;
 
 const INIT: [&[u8]; 18] = [
     &[DISP_ON], // on, then off again on the next command
@@ -142,12 +138,9 @@ impl DisplayDriver for Ssd1306 {
     }
 }
 
-const OPTIONS: [DriverOption; 5] = [
-    DriverOption::own("bus", Some(DEFAULT_BUS)),
-    DriverOption::own("addr", Some(DEFAULT_ADDR)),
-    DriverOption::kernel("height", None),
-    DriverOption::kernel("address", Some(DEFAULT_ADDR)),
-    DriverOption::kernel("speed", Some(DEFAULT_SPEED)),
+const OPTIONS: [DriverOption; 2] = [
+    DriverOption::new("bus", Some(DEFAULT_BUS)),
+    DriverOption::new("addr", Some(DEFAULT_ADDR)),
 ];
 
 fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver + Send>> {
@@ -162,124 +155,17 @@ fn open(opts: &Opts) -> Result<Box<dyn DisplayDriver + Send>> {
     Ok(Box::new(Ssd1306::new(bus, addr)?))
 }
 
-/// The config.txt lines that hand this panel to ssd130x on I2C bus 1. That
-/// driver holds the init sequence for the whole Solomon family, so no
-/// firmware file goes with it. The overlay's `address` sets the panel's I2C
-/// address. A 128x32 module wires its rows `inverted,sequential`, and a
-/// 128x64 module takes the overlay's own wiring. The bus rate line sets
-/// every device on the bus.
-fn kernel(opts: &Opts) -> Result<Setup> {
-    let need = "ssd1306 needs height=32 or height=64";
-    if !given(opts, "height") {
-        bail!("{need}");
-    }
-    let height = int_opt(opts, "height", 0)?;
-    let wiring = match height {
-        32 => ",inverted,sequential",
-        64 => "",
-        h => bail!("{need}, got height={h}"),
-    };
-    let address = int_opt(opts, "address", DEFAULT_ADDR)?;
-    if !(0..0x80).contains(&address) {
-        bail!("address {address} is not a 7-bit I2C address");
-    }
-    let speed = int_opt(opts, "speed", DEFAULT_SPEED)?;
-    if speed <= 0 {
-        bail!("speed {speed} is not a bus rate in Hz");
-    }
-    // the overlay's node sits at the default address
-    let address = match address {
-        DEFAULT_ADDR => String::new(),
-        a => format!(",address=0x{a:02x}"),
-    };
-    Ok(Setup {
-        firmware: None,
-        lines: vec![
-            "dtparam=i2c_arm=on".to_string(),
-            format!("dtparam=i2c_arm_baudrate={speed}"),
-            format!("dtoverlay=ssd1306,height={height}{address}{wiring}"),
-        ],
-    })
-}
-
 pub const SPEC: DriverSpec = DriverSpec {
     name: "ssd1306",
     options: &OPTIONS,
     open,
     size: |_| Ok((WIDTH, HEIGHT)),
-    kernel,
 };
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
-
     use super::*;
     use crate::engine::pack_frame_into;
-
-    fn opts(set: Value) -> Vec<(String, Value)> {
-        set.as_object().unwrap().clone().into_iter().collect()
-    }
-
-    /// The params come from the overlay's source, ssd1306-overlay.dts in
-    /// raspberrypi/linux: `address` sets the node's reg and `height` its
-    /// solomon,height. A 128x32 module takes the overlay README's typical
-    /// line for it. ssd130x holds the init sequence for the whole family, so
-    /// no firmware file goes with the lines.
-    #[test]
-    fn the_kernel_setup_is_the_bus_rate_and_the_overlay() {
-        for (set, rate, overlay) in [
-            (
-                json!({"height": 32}),
-                "dtparam=i2c_arm_baudrate=1000000",
-                "dtoverlay=ssd1306,height=32,inverted,sequential",
-            ),
-            (
-                json!({"height": 64}),
-                "dtparam=i2c_arm_baudrate=1000000",
-                "dtoverlay=ssd1306,height=64",
-            ),
-            (
-                json!({"height": 64, "address": 0x3D}),
-                "dtparam=i2c_arm_baudrate=1000000",
-                "dtoverlay=ssd1306,height=64,address=0x3d",
-            ),
-            (
-                json!({"height": 32, "address": 0x3D, "speed": 400_000}),
-                "dtparam=i2c_arm_baudrate=400000",
-                "dtoverlay=ssd1306,height=32,address=0x3d,inverted,sequential",
-            ),
-        ] {
-            let setup = kernel(&opts(set.clone())).unwrap();
-            assert!(setup.firmware.is_none(), "{set}");
-            assert_eq!(setup.lines, ["dtparam=i2c_arm=on", rate, overlay], "{set}");
-        }
-    }
-
-    #[test]
-    fn a_kernel_setup_names_what_the_overlay_cannot_take() {
-        for (set, msg) in [
-            (json!({}), "ssd1306 needs height=32 or height=64"),
-            (
-                json!({"height": 48}),
-                "ssd1306 needs height=32 or height=64, got height=48",
-            ),
-            (
-                json!({"height": 32, "address": 0x80}),
-                "address 128 is not a 7-bit I2C address",
-            ),
-            (
-                json!({"height": 32, "speed": 0}),
-                "speed 0 is not a bus rate in Hz",
-            ),
-        ] {
-            assert_eq!(
-                kernel(&opts(set.clone())).unwrap_err().to_string(),
-                msg,
-                "{set}"
-            );
-        }
-    }
 
     /// adafruit_ssd1306's command bytes for a 128x32 panel on internal Vcc.
     /// The order is poweron(), the init table, then the addressing window.

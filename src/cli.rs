@@ -33,15 +33,14 @@ use crate::bench::{self, BenchArgs};
 use crate::console::examples_dir;
 use crate::console::server;
 use crate::console::store::SceneStore;
-use crate::drivers::{
-    available_drivers, driver_options, get_driver, kernel_options, DisplayDriver,
-};
+use crate::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
 use crate::engine::{display_renders, probe_display, probe_display_device, Feed, Renderer};
 use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
 use crate::h264::H264Stream;
 use crate::looper::{ControllerSlot, Frame, Loop, Output, OwnedFrame, Pacer, SceneController};
 use crate::output::{expand_pattern, FixedPacer, ImageSequence, RawStream, Scanout};
+use crate::overlay;
 use crate::procedural::process::{self, SceneProcess};
 use crate::procedural::{load_scene, scene_name};
 use crate::report;
@@ -1168,7 +1167,7 @@ fn line(text: &str) {
 /// lines that bring the card up, and the panel's firmware file. The panel
 /// then answers `--display kms` like any other display.
 fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
-    let Ok(spec) = get_driver(&a.driver) else {
+    let Some(panel) = overlay::panel(&a.driver) else {
         return Err(exit(format!(
             "overlay: no display driver '{}' (see: ghee displays)",
             a.driver
@@ -1180,10 +1179,10 @@ fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
     };
     // Only the options that describe the panel reach a kernel setup: the
     // wire format and the update strategy are the driver's own.
-    let known = kernel_options(spec);
-    let driver = driver_options(spec);
-    let takes = || known.iter().map(|o| o.name).collect::<Vec<_>>().join(", ");
-    let takes_key = |k: &str| known.iter().any(|o| o.name == k);
+    let known = panel.options;
+    let driver = driver_options(get_driver(&a.driver)?);
+    let takes = || known.join(", ");
+    let takes_key = |k: &str| known.contains(&k);
     let own: Vec<&str> = opts
         .keys()
         .map(String::as_str)
@@ -1210,7 +1209,7 @@ fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
         )));
     }
     let pairs: Vec<(String, Value)> = opts.into_iter().collect();
-    let setup = (spec.kernel)(&pairs).map_err(|e| exit(format!("overlay: {e}")))?;
+    let setup = (panel.setup)(&pairs).map_err(|e| exit(format!("overlay: {e}")))?;
     for text in &setup.lines {
         line(text);
     }

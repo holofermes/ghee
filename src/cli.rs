@@ -73,7 +73,7 @@ fn text(v: &Option<String>) -> &str {
 fn rotation(s: &str) -> Result<i64, String> {
     match s.trim().parse::<i64>() {
         Ok(d) if crate::engine::ROTATIONS.contains(&d) => Ok(d),
-        _ => Err(format!("'{s}' is not 0, 90, 180 or 270")),
+        _ => Err("wants 0, 90, 180 or 270".to_string()),
     }
 }
 
@@ -81,12 +81,12 @@ fn rotation(s: &str) -> Result<i64, String> {
 fn level(s: &str) -> Result<f64, String> {
     match s.trim().parse::<f64>() {
         Ok(v) if (0.0..=1.0).contains(&v) => Ok(v),
-        _ => Err(format!("'{s}' is not a level from 0 to 1")),
+        _ => Err("wants a level from 0 to 1".to_string()),
     }
 }
 
 fn size(s: &str) -> Result<(i32, i32), String> {
-    let bad = || format!("'{s}' is not WxH");
+    let bad = || "wants WxH".to_string();
     let lower = s.to_lowercase();
     let mut parts = lower.split('x');
     let (Some(w), Some(h), None) = (parts.next(), parts.next(), parts.next()) else {
@@ -1604,10 +1604,6 @@ mod tests {
         let e = run(&["render", &path, "-o", "x.png", "--brightness", "0.5"]).unwrap_err();
         assert_eq!(e.to_string(), "render: --brightness needs --display kms");
         assert_eq!(
-            level("1.5").unwrap_err(),
-            "'1.5' is not a level from 0 to 1"
-        );
-        assert_eq!(
             ns(&["serve", "--demo", "--brightness", "0.25"]).brightness,
             Some(0.25)
         );
@@ -1620,7 +1616,6 @@ mod tests {
             assert_eq!(a.rotate.to_string(), d);
         }
         assert_eq!(ns(&["serve", "--demo"]).rotate, 0);
-        assert_eq!(rotation("45").unwrap_err(), "'45' is not 0, 90, 180 or 270");
     }
 
     #[test]
@@ -1705,12 +1700,37 @@ mod tests {
         assert_eq!(size("64x48"), Ok((64, 48)));
         assert_eq!(size("64X48"), Ok((64, 48)));
         assert_eq!(size("-4x9"), Ok((-4, 9)));
-        assert_eq!(size("banana").unwrap_err(), "'banana' is not WxH");
-        for bad in ["16", "0x9x2", ""] {
+        for bad in ["banana", "16", "0x9x2", ""] {
             assert!(size(bad).is_err(), "{bad}");
         }
         assert_eq!(ns(&["render", "s", "--size", "80x60"]).size, Some((80, 60)));
         assert_eq!(ns(&["render", "s"]).size, None);
+    }
+
+    #[test]
+    fn a_refused_flag_value_is_named_once() {
+        for (flag, value, said) in [
+            (
+                "--size",
+                "banana",
+                "error: invalid value 'banana' for '--size <SIZE>': wants WxH",
+            ),
+            (
+                "--rotate",
+                "45",
+                "error: invalid value '45' for '--rotate <DEGREES>': wants 0, 90, 180 or 270",
+            ),
+            (
+                "--brightness",
+                "1.5",
+                "error: invalid value '1.5' for '--brightness <LEVEL>': wants a level from 0 to 1",
+            ),
+        ] {
+            let e = Cli::try_parse_from(argv(&["ghee", "render", "s", flag, value]))
+                .err()
+                .unwrap();
+            assert_eq!(e.to_string().lines().next(), Some(said));
+        }
     }
 
     #[test]

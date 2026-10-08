@@ -513,14 +513,16 @@ mod tests {
         );
     }
 
+    /// A .scene.json and the program beside it are the members of one
+    /// package, and ghee runs the program.
     #[test]
-    fn a_scan_takes_the_json_scene_over_the_py_beside_it() {
+    fn a_scene_file_and_the_program_beside_it_list_as_one_scene() {
         let d = tmpdir("pair");
         write_text(&format!("{d}/wob{SCENE_SUFFIX}"), SCENE);
-        write_text(&format!("{d}/wob.py"), "# a scene process\n");
+        write_scene(&format!("{d}/wob.py"), "#!/bin/sh\nexit 0\n");
         let store = SceneStore::new(&d, Vec::new());
         assert_eq!(store.names(), vec!["wob".to_string()]);
-        assert_eq!(store.file("wob").unwrap(), format!("{d}/wob{SCENE_SUFFIX}"));
+        assert_eq!(store.file("wob").unwrap(), format!("{d}/wob.py"));
     }
 
     /// A procedural scene imports its own modules from beside it. A module is

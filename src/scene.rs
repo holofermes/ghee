@@ -65,8 +65,8 @@ const GLSL_FUNCTIONS: &str = "\
     smoothstep sqrt step tan texture2D texture2DLod texture2DProj \
     texture2DProjLod textureCube textureCubeLod";
 
-/// Why GLSL keeps `name` for itself, None when the name is free: a keyword or
-/// a built-in function.
+/// Why GLSL keeps `name` for itself, None when the name is free: a keyword, a
+/// built-in function, or main.
 fn glsl_word(name: &str) -> Option<String> {
     let holds = |words: &str| words.split_whitespace().any(|w| w == name);
     if holds(GLSL_KEYWORDS) {
@@ -75,7 +75,57 @@ fn glsl_word(name: &str) -> Option<String> {
     if holds(GLSL_FUNCTIONS) {
         return Some(format!("'{name}' is a GLSL function"));
     }
+    if name == "main" {
+        return Some("'main' is the entry point of every shader".to_string());
+    }
     None
+}
+
+/// The tokens of `glsl` outside its comments: each run of letters, digits and
+/// `_` whole, and every other character that is no space alone.
+fn glsl_tokens(glsl: &str) -> Vec<&str> {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    let mut rest = glsl;
+    while let Some(c) = rest.chars().next() {
+        let end = if rest.starts_with("//") {
+            rest.find('\n').unwrap_or(rest.len())
+        } else if let Some(body) = rest.strip_prefix("/*") {
+            body.find("*/").map_or(rest.len(), |k| k + 4)
+        } else if word(c) {
+            let n = rest.find(|c| !word(c)).unwrap_or(rest.len());
+            out.push(&rest[..n]);
+            n
+        } else {
+            if !c.is_whitespace() {
+                out.push(&rest[..c.len_utf8()]);
+            }
+            c.len_utf8()
+        };
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// True when `glsl` defines the function `name`: a type, the name, its
+/// parameters in parentheses, then a body.
+fn defines(glsl: &str, name: &str) -> bool {
+    let t = glsl_tokens(glsl);
+    (2..t.len()).any(|k| {
+        if !(is_ident(t[k - 2]) && t[k - 1] == name && t[k] == "(") {
+            return false;
+        }
+        let mut depth = 0;
+        let close = t[k..].iter().position(|w| {
+            match *w {
+                "(" => depth += 1,
+                ")" => depth -= 1,
+                _ => {}
+            }
+            depth == 0
+        });
+        close.and_then(|c| t.get(k + c + 1)) == Some(&"{")
+    })
 }
 
 /// True for a name that ghee declares in every pass for its author to read.
@@ -2636,6 +2686,36 @@ impl Scene {
                 return Some(format!("{kind} '{name}'{at}: {why}"));
             }
         }
+        // A param that holds no string takes no name of a function in the
+        // GLSL that it reaches, and the common block reaches every pass of
+        // the scene's own.
+        let common = self.common.as_deref().unwrap_or_default();
+        let in_common = |pass: &Pass, name: &str| pass.filter.is_empty() && defines(common, name);
+        for p in self.params.values().filter(|p| p.ty != "string") {
+            let n = p.name.as_str();
+            let why = match self.passes.iter().any(|q| in_common(q, n)) {
+                true => Some(format!("'{n}' is a function of the common block")),
+                false => self
+                    .passes
+                    .iter()
+                    .find(|q| defines(&q.fragment, n))
+                    .map(|q| format!("'{n}' is a function of pass '{}'", q.name)),
+            };
+            if let Some(why) = why {
+                return Some(format!("scene param '{n}': {why}"));
+            }
+        }
+        for pass in &self.passes {
+            for p in pass.params.values().filter(|p| p.ty != "string") {
+                let n = p.name.as_str();
+                let why = match () {
+                    _ if in_common(pass, n) => format!("'{n}' is a function of the common block"),
+                    _ if defines(&pass.fragment, n) => format!("'{n}' is a function of the pass"),
+                    _ => continue,
+                };
+                return Some(format!("param '{n}' in pass '{}': {why}", pass.name));
+            }
+        }
         if let Some(e) = self.shared_name() {
             return Some(e);
         }
@@ -4596,6 +4676,54 @@ mod tests {
         let mut d = named(extra, pass);
         d["passes"][1]["layers"][0]["name"] = json!("step");
         assert!(Scene::from_dict(&d, None, None).is_ok());
+    }
+
+    #[test]
+    fn a_param_named_as_a_function_of_its_glsl_is_refused() {
+        let f = json!({"type": "float", "value": 1.0});
+        let own = "float nebula(vec2 p) { return p.x; }\nvoid main(){ gl_FragColor = vec4(1.0); }";
+        let tint = "vec3 tint (in float t)\n{\n    return vec3(t);\n}";
+        for (extra, pass, want) in [
+            (
+                json!({"params": {"nebula": f}}),
+                json!({"fragment": own}),
+                "scene param 'nebula': 'nebula' is a function of pass 'a'",
+            ),
+            (
+                json!({}),
+                json!({"fragment": own, "params": {"nebula": f}}),
+                "param 'nebula' in pass 'a': 'nebula' is a function of the pass",
+            ),
+            (
+                json!({"common": tint, "params": {"tint": f}}),
+                json!({}),
+                "scene param 'tint': 'tint' is a function of the common block",
+            ),
+            (
+                json!({}),
+                json!({"params": {"main": f}}),
+                "param 'main' in pass 'a': 'main' is the entry point of every shader",
+            ),
+        ] {
+            assert_eq!(named_err(extra, pass), format!("scene: {want}"));
+        }
+        // A comment, a string param, and a function of another pass leave
+        // the name free.
+        let words = json!({"type": "string", "value": "w"});
+        let calls = "// float glow(vec2 p) { return 0.0; }\n\
+                     float nebula(float x) { return x; }\n\
+                     void main(){ gl_FragColor = vec4(nebula(glow + shade)); }";
+        let mut d = named(
+            json!({"params": {"nebula": words}}),
+            json!({"fragment": calls, "params": {"glow": f, "shade": f}}),
+        );
+        d["passes"][1]["fragment"] = json!(format!("float shade(float x) {{ return x; }}\n{GOOD}"));
+        assert_eq!(
+            Scene::from_dict(&d, None, None)
+                .err()
+                .map(|e| e.to_string()),
+            None
+        );
     }
 
     #[test]

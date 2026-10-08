@@ -163,9 +163,10 @@ A scene written for 0.4.0 needs these changes.
   them, since every GLSL name that it gives a pass carries a suffix. Refuse a
   scene where two declarations make one GLSL name in a pass, such as a param
   `title_size` beside a layer `title`, and name both.
-- Refuse a GLSL keyword, such as `half`, and the name of a GLSL function,
-  such as `mix`, as the name of a param that holds no string, where the
-  shader failed to compile.
+- Refuse a GLSL keyword, such as `half`, the name of a GLSL function, such
+  as `mix`, and the name of a function that the pass's GLSL or the common
+  block defines, `main` among them, as the name of a param that holds no
+  string, where the shader failed to compile.
 - Take 16 passes, filter passes included, where the engine took 8, and refuse
   a scene past them with an error of its own. Take any number of assets and
   layers, a channel or an array in each of a pass's 16 texture

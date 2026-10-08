@@ -305,8 +305,9 @@ with a letter or a digit, holds no `__`, and does not start with `gl_` or
 ghee writes these names into every shader: `iTime`, `iTimeDelta`, `iFrame`,
 `iResolution`, `uv`, and `iChannel0` and up. A param, an array or an
 asset that takes one of them fails to load. A param that holds no string
-takes no GLSL keyword, such as `half`, and no name of a GLSL function, such
-as `mix`. A layer may take any name that the rule allows.
+takes no GLSL keyword, such as `half`, no name of a GLSL function, such as
+`mix`, and no name of a function that the GLSL it reaches defines, `main`
+among them. A layer may take any name that the rule allows.
 
 Each declaration adds names to the GLSL of the passes that it reaches:
 

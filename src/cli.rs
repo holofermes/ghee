@@ -928,8 +928,9 @@ fn line(text: &str) {
 }
 
 /// `ghee overlay` writes the kernel's own setup for a panel: the config.txt
-/// lines that bring the card up, and the panel's firmware file. The panel
-/// then answers `--display kms` like any other display.
+/// lines that bring the card up, and the file that those lines need, the
+/// panel's firmware or an overlay's source. The panel then answers
+/// `--display kms` like any other display.
 fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
     let Some(panel) = overlay::panel(&a.panel) else {
         return Err(exit(format!(
@@ -960,31 +961,39 @@ fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
     for text in &setup.lines {
         line(text);
     }
-    match setup.firmware {
-        Some(blob) => {
-            let path = text(&a.output);
-            let path = match path.is_empty() {
-                true => "panel.bin",
-                false => path,
-            };
-            File::create(path)
-                .and_then(|mut f| f.write_all(&blob))
-                .with_context(|| path.to_string())?;
-            eprintln!(
-                "wrote {path}. Copy it to /lib/firmware/panel.bin, add the lines \
-                 above to /boot/firmware/config.txt, and reboot"
-            );
+    let Some(file) = setup.file else {
+        if given(&a.output) {
+            return Err(exit(format!(
+                "overlay: -o with {}, a panel that takes no file",
+                a.panel
+            )));
         }
-        None => {
-            if given(&a.output) {
-                return Err(exit(format!(
-                    "overlay: -o with {}, a panel that takes no firmware file",
-                    a.panel
-                )));
-            }
-            eprintln!("add the lines above to /boot/firmware/config.txt, and reboot");
+        eprintln!("add the lines above to /boot/firmware/config.txt, and reboot");
+        return Ok(());
+    };
+    let (bytes, default) = match &file {
+        overlay::File::Firmware(blob) => (blob.clone(), "panel.bin".to_string()),
+        overlay::File::Overlay { name, source } => {
+            (source.as_bytes().to_vec(), format!("{name}.dts"))
         }
-    }
+    };
+    let path = match given(&a.output) {
+        true => text(&a.output),
+        false => default.as_str(),
+    };
+    File::create(path)
+        .and_then(|mut f| f.write_all(&bytes))
+        .with_context(|| path.to_string())?;
+    let install = match file {
+        overlay::File::Firmware(_) => "Copy it to /lib/firmware/panel.bin".to_string(),
+        overlay::File::Overlay { name, .. } => format!(
+            "Compile it with `sudo dtc -@ -I dts -O dtb -o \
+             /boot/firmware/overlays/{name}.dtbo {path}`"
+        ),
+    };
+    eprintln!(
+        "wrote {path}. {install}, add the lines above to /boot/firmware/config.txt, and reboot"
+    );
     Ok(())
 }
 
@@ -1051,7 +1060,12 @@ enum Command {
     #[command(about = "list the cards with a connected display")]
     Displays,
 
-    #[command(about = "write the kernel's setup for a panel, so it answers --display kms")]
+    #[command(
+        about = "write the kernel's setup for a panel, so it answers --display kms",
+        after_help = "Careful: up to Linux 7.3, and in the Pi's 6.18 kernel, the ssd130x \
+                      driver leaves an SSD1322 dark. The ssd1322 overlay is for a kernel \
+                      whose ssd130x drives it"
+    )]
     Overlay(OverlayArgs),
 }
 
@@ -1319,7 +1333,8 @@ struct ServeArgs {
 struct OverlayArgs {
     #[arg(
         value_name = "PANEL",
-        help = "the panel's controller: st7789 or ssd1306"
+        help = "the panel's controller: st7789, ssd1306, sh1106 (on I2C), sh1106-spi, \
+                ssd1322 or ili9341"
     )]
     panel: String,
 
@@ -1334,7 +1349,8 @@ struct OverlayArgs {
     #[arg(
         short,
         long,
-        help = "where to write the firmware file (default panel.bin)"
+        help = "where to write the panel's file: its firmware (default panel.bin), or \
+                its overlay's source (default ghee-<panel>.dts)"
     )]
     output: Option<String>,
 }
@@ -1845,7 +1861,8 @@ mod tests {
         for (tokens, msg) in [
             (
                 vec!["overlay", "does-not-exist"],
-                "overlay: no panel 'does-not-exist' (takes: st7789, ssd1306)",
+                "overlay: no panel 'does-not-exist' (takes: st7789, ssd1306, sh1106, \
+                 sh1106-spi, ssd1322, ili9341)",
             ),
             (
                 vec![
@@ -1856,7 +1873,11 @@ mod tests {
                     "-o",
                     "panel.bin",
                 ],
-                "overlay: -o with ssd1306, a panel that takes no firmware file",
+                "overlay: -o with ssd1306, a panel that takes no file",
+            ),
+            (
+                vec!["overlay", "sh1106", "--display-opts", "dc=24"],
+                "overlay: no option dc on sh1106 (takes: address, speed)",
             ),
             (
                 vec!["overlay", "st7789", "--display-opts", "widht=240"],
@@ -1867,6 +1888,16 @@ mod tests {
         ] {
             assert_eq!(run(&tokens).unwrap_err().to_string(), msg, "{tokens:?}");
         }
+    }
+
+    /// An overlay's source lands where -o names it, ready for dtc.
+    #[test]
+    fn overlay_writes_the_overlay_source_where_o_names_it() {
+        let d = tmpdir("overlay");
+        let path = format!("{d}/oled.dts");
+        run(&["overlay", "sh1106-spi", "-o", &path]).unwrap();
+        let source = fs::read_to_string(&path).unwrap();
+        assert!(source.starts_with("/dts-v1/;\n/plugin/;\n"), "{source}");
     }
 
     #[test]

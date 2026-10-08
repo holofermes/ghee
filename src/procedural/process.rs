@@ -189,6 +189,8 @@ pub enum Takes {
     Starting,
     /// Nothing asked it.
     Unasked,
+    /// ghee could not run it to ask, for the reason held.
+    Failed(String),
 }
 
 /// A scene in the `-- --help` listing.
@@ -209,6 +211,7 @@ fn declarations(path: &str, wait: Duration) -> Takes {
         },
         Answer::Silent => Takes::PassThrough,
         Answer::Starting => Takes::Starting,
+        Answer::Failed(why) => Takes::Failed(why),
     }
 }
 
@@ -219,6 +222,8 @@ enum Answer {
     Silent,
     /// It was still running when the wait ran out, so nothing is known.
     Starting,
+    /// ghee could not run it, for the reason held.
+    Failed(String),
 }
 
 /// Run `<process> --ghee-args` and read the one line it answers with.
@@ -228,8 +233,9 @@ fn probe(path: &str, wait: Duration) -> Answer {
     };
     // The probe runs the scene as its start does: uv makes the scene's
     // environment at the first run, and every later run reuses it.
-    let Ok(uv) = crate::procedural::wheel::uv_env() else {
-        return Answer::Silent;
+    let uv = match crate::procedural::wheel::uv_env() {
+        Ok(uv) => uv,
+        Err(e) => return Answer::Failed(e.to_string()),
     };
     let Ok(mut child) = Command::new(program)
         .arg("--ghee-args")
@@ -379,6 +385,10 @@ pub fn help(scenes: &[Declared], prog: &str) -> String {
             }
             Takes::Unasked => {
                 out.push_str(&format!("\n{}: not asked\n", scene.name));
+                continue;
+            }
+            Takes::Failed(why) => {
+                out.push_str(&format!("\n{}: {why}\n", scene.name));
                 continue;
             }
         };

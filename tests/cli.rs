@@ -291,6 +291,33 @@ fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
 }
 
 #[test]
+fn the_help_says_why_a_scene_cannot_run_beside_two_wheels_of_ghees_version() {
+    let (dir, ghee, scene) = ghee_beside_lib("wheel-two");
+    let one = wheel_of_ghee(&dir);
+    let name = one.file_name().unwrap().to_string_lossy().into_owned();
+    let other = name.replace("x86_64", "aarch64");
+    fs::write(dir.join(&format!("lib/ghee/{other}")), b"").unwrap();
+    let out = Command::new(&ghee)
+        .arg("render")
+        .arg(&scene)
+        .args(["--", "--help"])
+        .env("XDG_CACHE_HOME", &dir.0)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let lib = fs::canonicalize(dir.join("lib/ghee")).unwrap();
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        format!(
+            "usage: ghee render scene -- [ARGS]\n\nscene: {} holds more than one \
+             ghee-render wheel of ghee {}: {other}, {name}\n",
+            lib.display(),
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+}
+
+#[test]
 fn an_empty_or_relative_xdg_cache_home_puts_the_wheel_index_under_home() {
     let (dir, ghee, scene) = ghee_beside_lib("wheel-home");
     wheel_of_ghee(&dir);

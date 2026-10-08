@@ -110,10 +110,14 @@ pub const FIT_MARGIN: f64 = 0.05;
 
 /// The texels per em of an MTSDF atlas, smallest first. A layer takes the
 /// first step at or above its pixels per em at build, so layers of near sizes
-/// share an atlas, and the last step at most. Text under 32 px takes 32, since
-/// an atlas at a small text's own size strays further from its outline. On a
+/// share an atlas, up to a cap. Text under 32 px takes 32, since an atlas at a
+/// small text's own size strays further from its outline. The cap is the last
+/// step whose texels per em, times one plus twice the effects' reach in em,
+/// stay at 128 or under, the first step at least: plain text stops at 128,
+/// and a cell with a glow spans no more texels than a plain cell at 128. On a
 /// Pi Zero 2 W the first render with an empty cache, which generates the
-/// preload, takes 7 s at 128 texels per em and 14 s at 192.
+/// preload, takes about 9 s for plain text at 128 texels per em and 22 s with
+/// a 0.3 em glow at 128, and about 9 s with that glow at 64, its cap.
 pub const ATLAS_STEPS: [u32; 5] = [32, 48, 64, 96, 128];
 
 /// A colour, each channel 0 to 1, its alpha, and the form that the scene
@@ -1282,13 +1286,20 @@ impl TextLayer {
     }
 
     /// The texels per em of the layer's atlas at `font_px` pixels per em: the
-    /// first of ATLAS_STEPS at or above it, the last at most.
-    pub fn atlas_px_em(font_px: f64) -> u32 {
-        let last = ATLAS_STEPS[ATLAS_STEPS.len() - 1];
+    /// first of ATLAS_STEPS at or above it, the cap that the effects' reach
+    /// sets at most.
+    pub fn atlas_px_em(&self, font_px: f64) -> u32 {
+        let last = f64::from(ATLAS_STEPS[ATLAS_STEPS.len() - 1]);
+        let wide = 1.0 + 2.0 * self.reach();
+        let cap = ATLAS_STEPS
+            .into_iter()
+            .rev()
+            .find(|s| f64::from(*s) * wide <= last)
+            .unwrap_or(ATLAS_STEPS[0]);
         ATLAS_STEPS
             .into_iter()
-            .find(|s| f64::from(*s) >= font_px)
-            .unwrap_or(last)
+            .find(|s| *s <= cap && f64::from(*s) >= font_px)
+            .unwrap_or(cap)
     }
 
     /// The atlas detail of the layer at `px_em` texels per em: a field that
@@ -3154,17 +3165,37 @@ mod tests {
 
     #[test]
     fn a_layer_takes_the_first_atlas_step_at_or_above_its_size_and_the_last_at_most() {
-        assert_eq!(TextLayer::atlas_px_em(0.0), ATLAS_STEPS[0]);
+        let plain = layer(json!({}));
+        assert_eq!(plain.atlas_px_em(0.0), ATLAS_STEPS[0]);
         let mut below = 0.0;
         for step in ATLAS_STEPS {
             let at = f64::from(step);
             for px in [below + 0.01, (below + at) / 2.0, at] {
-                assert_eq!(TextLayer::atlas_px_em(px), step, "{px} px/em");
+                assert_eq!(plain.atlas_px_em(px), step, "{px} px/em");
             }
             below = at;
         }
         for px in [below + 0.01, 4.0 * below] {
-            assert_eq!(TextLayer::atlas_px_em(px), below as u32, "{px} px/em");
+            assert_eq!(plain.atlas_px_em(px), below as u32, "{px} px/em");
+        }
+    }
+
+    #[test]
+    fn effects_that_reach_further_cap_the_atlas_at_a_lower_step() {
+        // The cap holds px/em * (1 + 2 * reach) at 128 or under: 128 / 1.6 =
+        // 80 for a 0.3 em glow, 128 / 1.3 = 98.5 for a 0.15 em shadow blur,
+        // 128 / 1.12 = 114.3 for a 0.06 em stroke, under 32 for a 2 em blur.
+        for (keys, cap) in [
+            (json!({"glow": {}}), 64),
+            (json!({"text_shadow": {}}), 96),
+            (json!({"text_stroke": {}}), 96),
+            (json!({"glow": {"blur": 2.0}}), 32),
+            (json!({"text_shadow": {}, "glow": {"blur": 0.1}}), 96),
+            (json!({"wave": {}, "karaoke": {}}), 128),
+        ] {
+            let l = layer(keys.clone());
+            assert_eq!(l.atlas_px_em(1000.0), cap, "{keys}");
+            assert_eq!(l.atlas_px_em(40.0), 48.min(cap), "{keys}");
         }
     }
 

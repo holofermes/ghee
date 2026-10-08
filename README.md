@@ -625,7 +625,9 @@ of the cell for each pixel.
 
 The atlas's detail follows the layer's size, its `font_size` or the size that
 fits its words at setup, rounded up to 32, 48, 64, 96 or 128 texels per em, so
-layers of near sizes share one atlas. Words that grow live keep the detail
+layers of near sizes share one atlas. A layer whose effects reach past its
+letters stops at a lower step, where its cells span no more texels than plain
+text's at 128: a 0.3 em glow stops at 64. Words that grow live keep the detail
 that the layer was built with. The first time a font is used at a detail, ghee
 generates the glyphs of the words, then a preload: ASCII, Latin-1, the curly
 quotes, the en and em dash, the ellipsis, the bullet and the euro sign. It

@@ -3246,7 +3246,8 @@ fn a_bypassed_effect_draws_nothing_and_leaves_the_letters_alone() {
     // A stroke within the least range draws the letters as no effect does:
     // the effects' copy of each glyph leaves the letters' edge alone. The
     // least range, 6 texels, holds a stroke of 2 texels of the layer's atlas.
-    let width = 1.5 / f64::from(TextLayer::atlas_px_em(fit.ppem));
+    let plain = TextLayer::from_dict("a layer", &json!({"name": "t", "text": ""})).unwrap();
+    let width = 1.5 / f64::from(plain.atlas_px_em(fit.ppem));
     let plain = frame(&mut r, json!({}));
     for keys in [
         json!({"text_stroke": {"visible": false, "width": width, "color": [0.0, 1.0, 0.0]}}),

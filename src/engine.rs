@@ -3295,8 +3295,7 @@ impl Renderer {
         let size = self.pass_size(pass_name);
         if let Some(b) = l.place(&l.text).ok().and_then(|laid| laid.built) {
             let px = l.font_px(size, b.size);
-            self.px_em
-                .insert(l.name.clone(), TextLayer::atlas_px_em(px));
+            self.px_em.insert(l.name.clone(), l.atlas_px_em(px));
         }
         let shaders = self.text_shaders(l, self.detail(l));
         let name = format!("layer '{}'", l.name);
@@ -3745,7 +3744,7 @@ impl Renderer {
                 let block = l.place(&l.text).ok().and_then(|laid| laid.built);
                 let Some(b) = block else { continue };
                 let px = l.font_px([w as f64, h as f64], b.size);
-                out.insert(l.name.clone(), TextLayer::atlas_px_em(px));
+                out.insert(l.name.clone(), l.atlas_px_em(px));
             }
         }
         out
@@ -8983,9 +8982,10 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn layers_of_near_sizes_share_an_atlas_and_a_far_size_takes_its_own() {
         let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
-        let near = TextLayer::atlas_px_em(40.0);
-        let far = TextLayer::atlas_px_em(100.0);
-        assert_eq!(TextLayer::atlas_px_em(44.0), near);
+        let plain = TextLayer::from_dict("a layer", &json!({"name": "t", "text": ""})).unwrap();
+        let near = plain.atlas_px_em(40.0);
+        let far = plain.atlas_px_em(100.0);
+        assert_eq!(plain.atlas_px_em(44.0), near);
         assert_ne!(far, near);
         let layer = |name: &str, px: f64, visible: bool| {
             json!({"name": name, "text": "AV", "font_family": "sans", "y": 1,

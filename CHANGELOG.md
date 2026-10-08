@@ -337,7 +337,9 @@ A Rust host written for 0.4.0 needs these changes.
 - Generate a layer's atlas at the detail of its size, its `font_size` or the
   size that fits its words at setup, rounded up to 32, 48, 64, 96 or 128
   texels per em, and 128 for larger text, so layers of near sizes share one
-  atlas.
+  atlas. A layer whose effects reach past its letters stops at a lower step,
+  where its cells span no more texels than plain text's at 128: a 0.3 em
+  glow stops at 64.
 - Read the coverage of a layer's words at any point in any pass shader,
   filter passes excepted, with `<name>_cover(p, font_size)`, and the block's
   size in em with `<name>_size`. A shader carries the coverage reader of a

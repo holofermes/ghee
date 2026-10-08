@@ -4497,14 +4497,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(ghee_display), ignore = "needs a connected display")]
     fn probe_display_device_names_a_probed_card_and_its_size() {
-        // A headless host probes to None.
-        // Any other host reports a positive width and height on a card node.
         let _g = lock();
         env::remove_var("GHEE_DRI");
-        let Some((dev, w, h)) = probe_display_device(None) else {
-            return;
-        };
+        let (dev, w, h) = probe_display_device(None).expect("no connected display");
         // The connectors do not always sit on card0. A Pi 5 puts them on card1.
         assert!(probe_dri_cards().contains(&dev));
         assert!(w > 0 && h > 0);
@@ -4512,15 +4509,17 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    #[cfg_attr(
+        any(ghee_no_gpu, not(ghee_display)),
+        ignore = "needs a GL device and a connected display"
+    )]
     fn display_create_fails_once_without_drm_master() {
         let _g = lock();
-        if fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0) {
-            return; // As root this test takes the session's card.
-        }
-        let Some((dev, w, h)) = probe_display_device(None) else {
-            return;
-        };
+        assert!(
+            !fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0),
+            "runs as a user: as root this test takes the session's card"
+        );
+        let (dev, w, h) = probe_display_device(None).expect("no connected display");
         let before_the_master_attempt = ["cannot open DRI device", "eglInitialize failed"];
         // An idle host holds no DRM master. This test takes the master itself.
         let holder = Renderer::new(w, h, 4, Some(&dev), true, false);
@@ -4531,9 +4530,10 @@ mod tests {
                 Ok(_) => panic!("{dev}: two display renderers at once"),
             },
         };
-        if before_the_master_attempt.iter().any(|s| msg.contains(s)) {
-            return;
-        }
+        assert!(
+            !before_the_master_attempt.iter().any(|s| msg.contains(s)),
+            "{dev} failed before it asked for the DRM master: {msg}"
+        );
         assert!(msg.contains("DRM master"), "{msg}");
     }
 

@@ -774,8 +774,13 @@ mod tests {
         );
     }
 
-    fn have_ffmpeg() -> bool {
-        on_path("ffmpeg") && on_path("ffprobe")
+    /// Fails the test where ffmpeg or ffprobe is missing.
+    fn need_ffmpeg() {
+        assert!(
+            on_path("ffmpeg") && on_path("ffprobe"),
+            "needs ffmpeg and ffprobe on PATH. A host without them runs the tests \
+             under RUSTFLAGS=\"--cfg ghee_no_ffmpeg\", which reports these as ignored"
+        );
     }
 
     #[test]
@@ -962,10 +967,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_ffmpeg, ignore = "needs ffmpeg")]
     fn software_roundtrip_decodes() {
-        if !have_ffmpeg() {
-            return;
-        }
+        need_ffmpeg();
         let (w, h, n) = (160, 120, 30);
         let mut enc = SoftwareH264::new(w, h, 30, 1_000_000, 4).unwrap();
         let mut aus: Vec<Vec<u8>> = Vec::new();
@@ -994,10 +998,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_ffmpeg, ignore = "needs ffmpeg")]
     fn software_stream_is_tagged() {
-        if !have_ffmpeg() {
-            return;
-        }
+        need_ffmpeg();
         let mut enc = SoftwareH264::new(160, 120, 30, 1_000_000, 4).unwrap();
         let mut f = vec![0u8; 160 * 120 * 4];
         for px in f.chunks_mut(4) {
@@ -1015,10 +1018,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_ffmpeg, ignore = "needs ffmpeg")]
     fn software_red_stays_red() {
-        if !have_ffmpeg() {
-            return;
-        }
+        need_ffmpeg();
         // green hides channel swaps and matrix errors, red catches them
         let (w, h) = (160usize, 120usize);
         let mut enc = SoftwareH264::new(w as i32, h as i32, 30, 2_000_000, 4).unwrap();
@@ -1065,10 +1067,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(ghee_no_ffmpeg, ignore = "needs ffmpeg")]
     fn software_content_survives() {
-        if !have_ffmpeg() {
-            return;
-        }
+        need_ffmpeg();
         // a brightness ramp in and a brightness ramp out: the pixels reach
         // the codec
         let (w, h, n) = (160usize, 120usize, 20usize);
@@ -1108,11 +1109,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    #[cfg_attr(
+        any(ghee_no_gpu, not(ghee_hw_h264)),
+        ignore = "needs a GL device and a hardware H264 encoder"
+    )]
     fn a_tiny_frame_reaches_the_hardware_encoder_scaled_up() {
-        if !Path::new("/dev/video11").exists() {
-            return; // no hardware encoder on this board
-        }
+        assert!(Path::new("/dev/video11").exists(), "needs /dev/video11");
         let (_g, mut r) = gpu();
         let scene = crate::scene::Scene::from_dict(
             &serde_json::json!({"version": 1, "passes": [{"name": "main",
@@ -1142,17 +1144,21 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    #[cfg_attr(
+        any(ghee_no_gpu, ghee_no_ffmpeg, ghee_hw_h264),
+        ignore = "needs a GL device, ffmpeg and a host with no hardware H264 encoder"
+    )]
     fn hardware_unavailable_falls_back() {
-        if Path::new("/dev/video11").exists() {
-            return; // this board has a hardware encoder, so nothing falls back
-        }
+        assert!(
+            !Path::new("/dev/video11").exists(),
+            "this host has /dev/video11, so it runs the tests under \
+             RUSTFLAGS=\"--cfg ghee_hw_h264\""
+        );
+        need_ffmpeg();
         let (_g, r) = gpu();
         assert!(HardwareH264::new(&r, 64, 64, 30, 4_000_000).is_err());
-        if on_path("ffmpeg") {
-            let mut enc = make_encoder(&r, 64, 64, 30, 4_000_000, 4).unwrap();
-            assert!(matches!(enc, Encoder::Software(_)));
-            enc.close().unwrap();
-        }
+        let mut enc = make_encoder(&r, 64, 64, 30, 4_000_000, 4).unwrap();
+        assert!(matches!(enc, Encoder::Software(_)));
+        enc.close().unwrap();
     }
 }

@@ -18,12 +18,13 @@ jobs:
       - run: cargo clippy --release --all-targets -- -D warnings
       - run: cargo fmt --check --manifest-path python/Cargo.toml
       - run: cargo clippy --release --manifest-path python/Cargo.toml -- -D warnings
-      # A GitHub runner exposes no /dev/dri, and --cfg ghee_no_gpu reports
-      # every test that needs a GL device as ignored. Hardware gates the render
-      # itself, through the golden check.
+      # A GitHub runner exposes no /dev/dri and carries no ffmpeg, and
+      # --cfg ghee_no_gpu and --cfg ghee_no_ffmpeg report every test that needs
+      # them as ignored. Hardware gates the render itself, through the golden
+      # check.
       - run: cargo test --release
         env:
-          RUSTFLAGS: --cfg ghee_no_gpu
+          RUSTFLAGS: --cfg ghee_no_gpu --cfg ghee_no_ffmpeg
       - name: uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - run: uvx ruff check python

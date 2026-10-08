@@ -61,9 +61,17 @@ ttf-parser = { path = "vendor/ttf-parser", default-features = false, features = 
 cc = "1"
 
 [lints.rust]
-# A host without a GL device builds the tests with `--cfg ghee_no_gpu`, which
-# reports every test that needs one as ignored.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ghee_no_gpu)"] }
+# A host without a GL device builds the tests with `--cfg ghee_no_gpu`, and a
+# host without ffmpeg with `--cfg ghee_no_ffmpeg`, which report every test that
+# needs one as ignored. A host with a connected display builds them with
+# `--cfg ghee_display`, and one with a hardware H264 encoder with
+# `--cfg ghee_hw_h264`, which run the tests that need them.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(ghee_no_gpu)",
+    "cfg(ghee_no_ffmpeg)",
+    "cfg(ghee_display)",
+    "cfg(ghee_hw_h264)",
+] }
 
 [profile.release]
 lto = "thin"

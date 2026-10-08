@@ -12,12 +12,12 @@
 //! [`Pass::glsl`] writes the fragment shader of a pass in three parts: the
 //! preamble, the scene's common block, then the pass's own GLSL, its
 //! `fragment`. The preamble declares what every pass reads, the varying `uv`
-//! and the uniforms `iTime`, `iTimeDelta`, `iFrame`, `iResolution` and
-//! `iChannel0` and up, then the samplers and the reader functions of each
-//! array, asset and text layer, then one uniform for each param under the
-//! param's name. The C engine sets each uniform by looking up that same name
-//! in the compiled program, so a name that the preamble writes is the
-//! contract between the two.
+//! and the uniforms `iTime`, `iTimeDelta`, `iFrame`, `iResolution`,
+//! `iChannel0` and up and `iChannelResolution`, then the samplers and the
+//! reader functions of each array, asset and text layer, then one uniform for
+//! each param under the param's name. The C engine sets each uniform by
+//! looking up that same name in the compiled program, so a name that the
+//! preamble writes is the contract between the two.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -40,7 +40,14 @@ pub const PREFIX: &str = "ghee_";
 
 /// The uniforms and the varying that ghee declares in every pass for its
 /// author to read, beside iChannel0 and up.
-const BUILT_INS: [&str; 5] = ["iTime", "iTimeDelta", "iFrame", "iResolution", "uv"];
+const BUILT_INS: [&str; 6] = [
+    "iTime",
+    "iTimeDelta",
+    "iFrame",
+    "iResolution",
+    "iChannelResolution",
+    "uv",
+];
 
 /// The keywords of GLSL ES 1.00 and the keywords that it reserves for future
 /// use, as its specification lists them in section 3.7.
@@ -1834,6 +1841,12 @@ impl Pass {
         for i in 0..self.channels.len() {
             l.push(format!("uniform sampler2D iChannel{i};"));
         }
+        // Shadertoy declares four, and a pass with more channels takes a size
+        // for each.
+        l.push(format!(
+            "uniform vec3 iChannelResolution[{}];",
+            self.channels.len().max(4)
+        ));
         let own: Vec<&Asset> = assets
             .iter()
             .filter(|a| a.from_filter == self.filter && !a.is_font())
@@ -3354,6 +3367,7 @@ mod tests {
             "uniform float iTime;",
             "uniform float iTimeDelta;",
             "uniform int iFrame;",
+            "uniform vec3 iChannelResolution[4];",
             "uniform float gain;",
             "uniform int n;",
             "uniform bool on;",
@@ -4623,6 +4637,7 @@ mod tests {
             "iTimeDelta",
             "iFrame",
             "iResolution",
+            "iChannelResolution",
             "uv",
             "iChannel0",
             "iChannel12",

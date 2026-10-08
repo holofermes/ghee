@@ -6102,6 +6102,30 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn i_channel_resolution_holds_the_size_that_each_channel_reads() {
+        // main reads the 8x4 pass `a`, nothing, then its own last frame, and
+        // writes the entry of channel i in the ith quarter of the frame: red
+        // and green the size, blue the third value.
+        let (_g, mut r) = gpu();
+        let sc = scene_of(json!([
+            {"name": "a", "size": [8, 4], "fragment": FLAT},
+            {"name": "main",
+             "channels": [{"buffer": "a"}, {"buffer": null}, {"buffer": "main"}],
+             "fragment": "void main(){ vec3 s = iChannelResolution[0]; \
+                          if (uv.x > 0.25) s = iChannelResolution[1]; \
+                          if (uv.x > 0.5) s = iChannelResolution[2]; \
+                          gl_FragColor = vec4(s.xy / 255.0, s.z, 1.0); }"},
+        ]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let f = r.render(None).unwrap().to_vec();
+        let rgb = |x| [0, 1, 2].map(|c| px(&f, W, x, H / 2, c));
+        assert_eq!(rgb(W / 8), [8.0, 4.0, 255.0]);
+        assert_eq!(rgb(3 * W / 8), [0.0, 0.0, 0.0]);
+        assert_eq!(rgb(5 * W / 8), [W as f64, H as f64, 255.0]);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_scaled_pass_renders_at_its_share_of_the_turned_frame_rounded_and_1_at_least() {
         // The frame turns a quarter, so the scene renders at 48x64. Pass `a`
         // writes its iResolution, and main shows it over the whole frame.

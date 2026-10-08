@@ -226,6 +226,7 @@ uniform float iTime;                // seconds since start
 uniform float iTimeDelta;           // seconds the last frame took
 uniform int   iFrame;               // frame number, 0 first, wraps at 2^20
 uniform vec3  iResolution;          // buffer size in pixels, z = 1.0
+uniform vec3  iChannelResolution[4]; // each channel's buffer size, z = 1.0
 varying vec2  uv;                   // 0..1 across the buffer, y = 0 at the top
 // gl_FragCoord maps to the varying, so its y = 0 is at the
 // top too, where Shadertoy has y = 0 at the bottom
@@ -311,11 +312,11 @@ with a letter or a digit, holds no `__`, and does not start with `gl_` or
 `ghee`.
 
 ghee writes these names into every shader: `iTime`, `iTimeDelta`, `iFrame`,
-`iResolution`, `uv`, and `iChannel0` and up. A param, an array or an
-asset that takes one of them fails to load. A param that holds no string
-takes no GLSL keyword, such as `half`, no name of a GLSL function, such as
-`mix`, and no name of a function that the GLSL it reaches defines, `main`
-among them. A layer may take any name that the rule allows.
+`iResolution`, `iChannelResolution`, `uv`, and `iChannel0` and up. A param,
+an array or an asset that takes one of them fails to load. A param that holds
+no string takes no GLSL keyword, such as `half`, no name of a GLSL function,
+such as `mix`, and no name of a function that the GLSL it reaches defines,
+`main` among them. A layer may take any name that the rule allows.
 
 Each declaration adds names to the GLSL of the passes that it reaches:
 

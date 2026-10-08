@@ -78,6 +78,7 @@ struct mp_use {
 struct mp_locs {
     GLint res;                           // iResolution, which a draw sets: a batch's program may serve passes of two sizes
     GLint time, dt, frame;
+    GLint chan_res;                      // iChannelResolution, the size of each channel's source, which a draw sets
     GLint vflip;                         // ghee_vflip of vertex_shader_source, -1 to draw into the window surface
     GLint chan[MP_MAX_CHANNELS];
     GLint data[MP_MAX_DATATEX];
@@ -1438,7 +1439,7 @@ static void mp_forget_asset(struct mp_locs *loc, int a) {
 // and set its iResolution and an unflipped vflip. Program 0, a pass with no
 // quad, has no uniforms.
 static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *loc) {
-    loc->res = loc->time = loc->dt = loc->frame = loc->vflip = -1;
+    loc->res = loc->time = loc->dt = loc->frame = loc->chan_res = loc->vflip = -1;
     for (int c = 0; c < MP_MAX_CHANNELS; c++) loc->chan[c] = -1;
     for (int i = 0; i < MP_MAX_DATATEX; i++) loc->data[i] = -1;
     loc->uses = NULL;
@@ -1450,6 +1451,7 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
     loc->time = glGetUniformLocation(prog, "iTime");
     loc->dt = glGetUniformLocation(prog, "iTimeDelta");
     loc->frame = glGetUniformLocation(prog, "iFrame");
+    loc->chan_res = glGetUniformLocation(prog, "iChannelResolution");
     for (int c = 0; c < MP_MAX_CHANNELS; c++) {
         char nm[16];
         snprintf(nm, sizeof(nm), "iChannel%d", c);
@@ -2293,6 +2295,19 @@ static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, float vflip,
     if (loc->time >= 0) glUniform1f(loc->time, elapsed);
     if (loc->dt >= 0) glUniform1f(loc->dt, g->dt);
     if (loc->frame >= 0) glUniform1i(loc->frame, g->frame);
+    if (loc->chan_res >= 0) {
+        // An unbound channel reads (0, 0, 0), as on Shadertoy. GL drops the
+        // values past the array's length.
+        float res[MP_MAX_CHANNELS][3] = {{0.0f}};
+        for (int c = 0; c < g->mp_nchan[p]; c++) {
+            const int src = g->mp_chan_src[p][c];
+            if (src < 0) continue;
+            res[c][0] = (float)g->mp_w[src];
+            res[c][1] = (float)g->mp_h[src];
+            res[c][2] = 1.0f;
+        }
+        glUniform3fv(loc->chan_res, MP_MAX_CHANNELS, &res[0][0]);
+    }
     for (int c = 0; c < g->mp_nchan[p]; c++) {
         if (bind) {
             const int src = g->mp_chan_src[p][c];

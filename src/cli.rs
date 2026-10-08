@@ -267,7 +267,9 @@ fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
     report::detail("scene", &path);
     let (mut scene, mut process) = match process::executable(&path) {
         Some(exe) => {
-            let (scene, fed) = SceneProcess::start(&exe, &a.scene_args, Reach::Any, |_| {})?;
+            let turned = a.rotate == 90 || a.rotate == 270;
+            let size = prospective_size(a).map(|(w, h)| if turned { (h, w) } else { (w, h) });
+            let (scene, fed) = SceneProcess::start(&exe, &a.scene_args, Reach::Any, size, |_| {})?;
             (scene, Some(fed))
         }
         None => (load_scene(&path, &a.scene_args, true)?, None),
@@ -567,12 +569,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     }
     report::apply(a);
     // the scene loads first: it owns the tokens after `--` and their --help. A
-    // rejected scene fails before a display opens. It builds its own buffers as
-    // it loads, so it learns the render size before that.
-    if let Some((w, h)) = prospective_size(a) {
-        let turned = a.rotate == 90 || a.rotate == 270;
-        crate::procedural::process::set_render_size(if turned { (h, w) } else { (w, h) });
-    }
+    // rejected scene fails before a display opens.
     let scene = if a.serve { None } else { Some(scene_of(a)?) };
     let panel = panel_of(a)?;
     let kms = matches!(panel, Panel::Kms);

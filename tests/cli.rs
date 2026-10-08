@@ -131,6 +131,36 @@ fn decode(path: &Path) -> ((u32, u32), Vec<u8>) {
     ((info.width, info.height), buf)
 }
 
+/// A scene process that writes the $GHEE_SIZE that it starts with into
+/// `size`, beside it, and draws black.
+const SIZE_SCRIPT: &str = "#!/bin/sh\nprintf '%s' \"$GHEE_SIZE\" > size\n\
+    printf '%s\\n' '{\"version\": 1, \"passes\": [{\"name\": \"main\", \
+    \"fragment\": \"void main(){ gl_FragColor = vec4(0.0); }\"}]}'\n\
+    while read -r l; do :; done\n";
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_scene_process_starts_with_the_size_that_it_renders_at_turned_by_rotate() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Dir::new("size");
+    let path = dir.join("sized");
+    fs::write(&path, SIZE_SCRIPT).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    for (rotate, want) in [("0", "32x24"), ("90", "24x32")] {
+        let out = Command::new(env!("CARGO_BIN_EXE_ghee"))
+            .arg("render")
+            .arg(&path)
+            .args(["-o", &dir.join("out.png").to_string_lossy()])
+            .args(["--size", "32x24", "--rotate", rotate, "--frames", "1"])
+            .env("GHEE_ASSETS", "")
+            .env("XDG_CACHE_HOME", &dir.0)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(fs::read_to_string(dir.join("size")).unwrap(), want);
+    }
+}
+
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn rotate_turns_the_written_frame_and_keeps_its_size() {

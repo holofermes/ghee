@@ -38,6 +38,9 @@ pub struct SceneStore {
     /// whose panel needs one (a 1-bit panel needs the dither) sets them here
     /// instead of writing them into every scene.
     pub filters: Vec<String>,
+    /// The size that the scenes render at, which each scene process starts
+    /// with. The console sets it from its own render.
+    pub size: Option<(i32, i32)>,
 }
 
 /// What a load carries from the working copy that a scene had before: its
@@ -69,6 +72,7 @@ impl SceneStore {
             args,
             scenes,
             filters: Vec::new(),
+            size: None,
         }
     }
 
@@ -186,7 +190,7 @@ impl SceneStore {
         let (mut scene, mut process) = match process::executable(&path) {
             // the console error state reaches a browser, so it carries the
             // stderr of a dead process
-            Some(exe) => SceneProcess::start(&exe, &self.args, Reach::Inside, |_| {})
+            Some(exe) => SceneProcess::start(&exe, &self.args, Reach::Inside, self.size, |_| {})
                 .map(|(scene, fed)| (scene, Some(fed)))
                 .map_err(|e| ConsoleError::server_error(process::with_stderr(&e)))?,
             None => (

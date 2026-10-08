@@ -16,7 +16,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -74,20 +74,6 @@ const LOCKSTEP: &str = "GHEE_LOCKSTEP";
 /// A scene sizes its own buffers against it, so `half` and `quarter` mean
 /// something before a single pass is built.
 const SIZE: &str = "GHEE_SIZE";
-
-/// The render size, set once the command line and the display agree on it and
-/// read at every scene spawn. A scene builds before the panel opens, so ghee
-/// passes the size here rather than through the wire handshake.
-static RENDER_SIZE: RwLock<Option<(i32, i32)>> = RwLock::new(None);
-
-pub fn set_render_size(size: (i32, i32)) {
-    *RENDER_SIZE.write().unwrap() = Some(size);
-}
-
-/// WxH for the scene environment, or None before anything set it.
-fn render_size() -> Option<String> {
-    RENDER_SIZE.read().unwrap().map(|(w, h)| format!("{w}x{h}"))
-}
 
 // The kind of a message from the scene process, its first byte, numbered as
 // docs/procedural.md lists them: kind 5 is END_TICK.
@@ -238,11 +224,7 @@ fn probe(path: &str, wait: Duration) -> Answer {
     let Ok((program, dir)) = where_to_run(path) else {
         return Answer::Silent;
     };
-    let mut cmd = Command::new(program);
-    if let Some(size) = render_size() {
-        cmd.env(SIZE, size);
-    }
-    let Ok(mut child) = cmd
+    let Ok(mut child) = Command::new(program)
         .arg("--ghee-args")
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -615,19 +597,22 @@ impl SceneProcess {
     /// `args` are the tokens after `--`, as they came. The process parses them,
     /// and a process that refuses one dies with its own message on stderr.
     /// The scene's files resolve beside the executable, as far as `reach`
-    /// allows. `edit` changes the scene document that the process wrote
+    /// allows. `size` is the size that the scene renders at, which the
+    /// process reads before it writes its scene, None when no display tells
+    /// it yet. `edit` changes the scene document that the process wrote
     /// before ghee builds it, and a scene that the edit breaks runs as the
     /// process wrote it, with a warning.
     pub fn start(
         path: &str,
         args: &[String],
         reach: Reach,
+        size: Option<(i32, i32)>,
         edit: impl FnOnce(&mut Value),
     ) -> Result<(Scene, SceneProcess)> {
         let (program, dir) = where_to_run(path)?;
         let mut cmd = Command::new(&program);
-        if let Some(size) = render_size() {
-            cmd.env(SIZE, size);
+        if let Some((w, h)) = size {
+            cmd.env(SIZE, format!("{w}x{h}"));
         }
         let mut child = cmd
             .args(args)
@@ -1495,7 +1480,7 @@ sleep 60
 
     fn start_scene(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
         let _spawn = SCRIPTS.read().unwrap();
-        SceneProcess::start(path, args, Reach::Any, |_| {})
+        SceneProcess::start(path, args, Reach::Any, None, |_| {})
     }
 
     /// declarations(), spawn-locked like start_scene.
@@ -1754,7 +1739,8 @@ sleep 60
              sleep 5\n"
         );
         let (_scene, mut f) =
-            SceneProcess::start("/bin/sh", &args(&["-c", &body]), Reach::Any, |_| {}).unwrap();
+            SceneProcess::start("/bin/sh", &args(&["-c", &body]), Reach::Any, None, |_| {})
+                .unwrap();
         (f.term_after, f.kill_after) = (SOON, SOON);
         assert!(wait_until(SETTLE, || fs::read_to_string(&mark).is_ok()));
         assert_eq!(fs::read_to_string(&mark).unwrap(), "1 1");

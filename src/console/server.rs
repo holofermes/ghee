@@ -2944,6 +2944,8 @@ pub fn run(opts: Options) -> Result<()> {
         bail!("no .scene.json in {}", store.dir);
     }
     store.filters = filters;
+    let turned = rotate == 90 || rotate == 270;
+    store.size = Some(if turned { (size.1, size.0) } else { size });
     store.state_dir = state_dir
         .or_else(|| store.state_dir.take())
         .or_else(state::default_dir);
@@ -4660,6 +4662,32 @@ mod tests {
         assert_eq!(ask(&api, "POST", "/scene", "name=count", count).0, 200);
         drain(&console, &renderer, &st, &ctrl);
         assert_eq!(frame(), 1.0, "an apply keeps the clock running");
+    }
+
+    /// A scene process that writes the $GHEE_SIZE that it starts with into
+    /// `size`, beside it, and draws black.
+    const SIZE_SCRIPT: &str = "#!/bin/sh\nprintf '%s' \"$GHEE_SIZE\" > size\n\
+        printf '%s\\n' '{\"version\": 1, \"passes\": [{\"name\": \"main\", \
+        \"fragment\": \"void main(){ gl_FragColor = vec4(0.0); }\"}]}'\n\
+        while read -r l; do :; done\n";
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_scene_process_starts_with_the_size_that_the_console_renders_it_at() {
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
+        let d = crate::testing::TempDir::new("console-size");
+        crate::testing::script(&d, "sized", SIZE_SCRIPT);
+        let ran = run(Options {
+            store: Some(SceneStore::new(&d, Vec::new())),
+            port: free_port(),
+            size: (32, 24),
+            rotate: 90,
+            frames: 1,
+            sinks: vec![Box::new(Bound(Rc::new(Cell::new(0))))],
+            ..Options::default()
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        assert_eq!(fs::read_to_string(d.join("size")).unwrap(), "24x32");
     }
 
     #[test]

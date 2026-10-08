@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 from conftest import BROKEN, RED, REPO, scene_file
@@ -313,28 +314,30 @@ def test_a_call_from_another_thread():
         h.frame()
 
 
-def test_a_drawing_from_another_thread_while_a_frame_renders():
+def test_a_drawing_from_another_thread_during_a_frame_raises_runtime_error():
     with ghee.open(RED, width=8, height=8) as h:
         h.feed("level", [1.0] * 8)
         stop = threading.Event()
 
         def draw():
-            refused = 0
+            # A drawing that meets no frame is refused as thread-affine.
             while not stop.is_set():
                 try:
                     h.draw()
-                except RuntimeError:
-                    refused += 1
-            return refused
+                except RuntimeError as e:
+                    if "thread-affine" not in str(e):
+                        return e
+            return None
 
         with concurrent.futures.ThreadPoolExecutor(1) as pool:
             drawing = pool.submit(draw)
+            deadline = time.monotonic() + 10
             try:
-                for _ in range(20):
+                while not drawing.done() and time.monotonic() < deadline:
                     h.frame()
             finally:
                 stop.set()
-            assert drawing.result() > 0
+            assert isinstance(drawing.result(), RuntimeError)
 
 
 def test_a_closed_handle_says_so():

@@ -1037,8 +1037,8 @@ shown:
   `pass 'a' size needs two positive ints [w, h] up to 16384, got [20000, 8]`,
   `pass 'a' is 32000x240, over the 16384 pixel cap of a side`,
   `pass 'a' is 8192x4096, over the 16777216 pixel cap`.
-- The GPU's own texture size, 2048 pixels on a side on a VC4, for a pass, an
-  array and an image:
+- The GPU's own texture size, 2048 pixels on a side on a VC4, for an array
+  and an image:
   `array 'a' is 4096x1, over this GPU's 2048 pixel cap of a side`,
   `asset 'sky' is 4096x1024, over this GPU's 2048 pixel cap of a side`,
   `layer 'pic': 'sky.png' is 4096x1024, over this GPU's 2048 pixel cap of a side`.

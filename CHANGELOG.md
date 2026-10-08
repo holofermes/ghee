@@ -825,10 +825,11 @@ A scene written for 0.4.0 needs these changes.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
 - Report the tests that need ffmpeg as ignored under `--cfg ghee_no_ffmpeg`,
-  as `--cfg ghee_no_gpu` reports those that need a GL device, and run the
-  tests of a connected display and of the hardware H264 encoder under
-  `--cfg ghee_display` and `--cfg ghee_hw_h264`, where each returned early
-  and passed.
+  and the test that reads the GL driver's buffer memory under
+  `--cfg ghee_no_gpu_memory`, as `--cfg ghee_no_gpu` reports those that need
+  a GL device, and run the tests of a connected display and of the hardware
+  H264 encoder under `--cfg ghee_display` and `--cfg ghee_hw_h264`, where
+  each returned early and passed.
 - Keep the library's `assets`, `atlas`, `colour`, `cparam`, `feeds`,
   `report` and `sources` modules inside the crate.
 - Ship NOTICE and the licenses of DejaVu Sans and Pixel Operator 8 in the deb

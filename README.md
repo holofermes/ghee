@@ -1109,12 +1109,13 @@ uv run --no-cache --with python/target/wheels/ghee_render-*.whl --with pytest \
 
 The render tests need a GL device, and they fail on a host where none opens.
 On such a host, `RUSTFLAGS="--cfg ghee_no_gpu" cargo test --release` reports
-them as ignored, and `--cfg ghee_no_ffmpeg` does the same for the tests that
-need ffmpeg. The tests of a connected display and of the hardware H264
-encoder run on a host that has one, under `--cfg ghee_display` and
-`--cfg ghee_hw_h264`. The golden check renders every scene in the manifest, and
-compares the sha256 of each frame against the pinned reference in
-`tools/fixtures/golden/`.
+them as ignored, `--cfg ghee_no_ffmpeg` does the same for the tests that
+need ffmpeg, and `--cfg ghee_no_gpu_memory` for the test that reads the GL
+driver's buffer memory, which NVIDIA's driver does not report. The tests of
+a connected display and of the hardware H264 encoder run on a host that has
+one, under `--cfg ghee_display` and `--cfg ghee_hw_h264`. The golden check
+renders every scene in the manifest, and compares the sha256 of each frame
+against the pinned reference in `tools/fixtures/golden/`.
 
 ## License
 

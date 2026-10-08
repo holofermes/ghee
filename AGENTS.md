@@ -146,7 +146,9 @@ GPU output:
   `#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]` and fails where no
   device opens. A host without one runs the tests with
   `RUSTFLAGS="--cfg ghee_no_gpu"`, which reports them as ignored, never as
-  passed. A test that needs ffmpeg takes `ghee_no_ffmpeg` the same way.
+  passed. A test that needs ffmpeg takes `ghee_no_ffmpeg` the same way, and
+  a test that reads the GL driver's buffer memory takes
+  `ghee_no_gpu_memory`.
 - A test that needs a connected display or a hardware H264 encoder carries
   `#[cfg_attr(not(ghee_display), ignore = "needs a connected display")]` or
   `not(ghee_hw_h264)`, and fails where the host lacks it. A host that has

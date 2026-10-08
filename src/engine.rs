@@ -5152,40 +5152,58 @@ mod tests {
         crate::usage::client(&text).memory
     }
 
-    #[test]
-    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn setups_in_a_row_hold_what_one_setup_holds_on_the_gpu() {
-        // Each scene draws frames that nothing reads before the next setup
-        // replaces it, as a console does between switches. A driver that
-        // reports no buffer memory leaves the GL objects to check.
-        let (_g, mut r) = gpu_at(640, 480);
+    /// Run `n` rounds of setups on `r`, each of two scenes that draw frames
+    /// that nothing reads before the next setup replaces them, as a console
+    /// does between switches.
+    fn setup_rounds(r: &mut Renderer, n: usize) {
         let fed = scene_of(json!([
             {"name": "buf", "fragment": FLAT},
             {"name": "main", "channels": [{"buffer": "buf"}],
              "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
         ]));
         let flat = flat_scene();
-        let round = |r: &mut Renderer| {
+        for _ in 0..n {
             for scene in [&fed, &flat] {
                 assert_eq!(r.setup(scene).unwrap(), "");
                 r.draw(None).unwrap();
                 r.draw(None).unwrap();
             }
-        };
-        round(&mut r);
-        let (objects, bytes) = (gl_objects(), gpu_bytes(&r));
-        for _ in 0..40 {
-            round(&mut r);
         }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn setups_in_a_row_hold_the_gl_objects_that_one_setup_holds() {
+        let (_g, mut r) = gpu_at(640, 480);
+        setup_rounds(&mut r, 1);
+        let objects = gl_objects();
+        setup_rounds(&mut r, 40);
         assert_eq!(gl_objects(), objects);
-        if let (Some(before), Some(after)) = (bytes, gpu_bytes(&r)) {
-            assert!(
-                after <= 2 * before,
-                "the GPU held {} MiB after one round of setups and {} MiB after 40 more",
-                before >> 20,
-                after >> 20
-            );
-        }
+    }
+
+    /// The memory is the sum of the `drm-total-*` keys in the fdinfo of the
+    /// GL's DRM descriptor. NVIDIA's driver writes none, and a host on it
+    /// runs the tests under `--cfg ghee_no_gpu_memory`, which reports this
+    /// one as ignored.
+    #[test]
+    #[cfg_attr(
+        any(ghee_no_gpu, ghee_no_gpu_memory),
+        ignore = "needs a GL driver that reports its buffer memory"
+    )]
+    fn setups_in_a_row_hold_the_gpu_memory_that_one_setup_holds() {
+        let none = "this GL driver reports no buffer memory in fdinfo, so this host \
+                    runs the tests under RUSTFLAGS=\"--cfg ghee_no_gpu_memory\"";
+        let (_g, mut r) = gpu_at(640, 480);
+        setup_rounds(&mut r, 1);
+        let before = gpu_bytes(&r).expect(none);
+        setup_rounds(&mut r, 40);
+        let after = gpu_bytes(&r).expect(none);
+        assert!(
+            after <= 2 * before,
+            "the GPU held {} MiB after one round of setups and {} MiB after 40 more",
+            before >> 20,
+            after >> 20
+        );
     }
 
     #[test]

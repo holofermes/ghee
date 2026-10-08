@@ -246,7 +246,7 @@ def test_rgb565_scans_the_display_out_in_16_bit_color_as_ghee_render_does(
 @pytest.mark.parametrize(
     "argv,error",
     [
-        (["--rotate", "45"],"argument --rotate: '45' is not 0, 90, 180 or 270"),
+        (["--rotate", "45"], "argument --rotate: '45' is not 0, 90, 180 or 270"),
         (
             ["--brightness", "2"],
             "argument --brightness: '2' is not a level from 0 to 1",

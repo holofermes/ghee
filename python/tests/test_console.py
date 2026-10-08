@@ -99,17 +99,6 @@ def watching(h, read, limit=30.0, step=None):
             pytest.fail(f"the stream gave nothing in {limit}s")
 
 
-def scene_when(h, port, ready, limit=5.0):
-    """GET /scene once `ready` holds for it. The host skips frames meanwhile,
-    and each publishes the changes that the host made to its layers."""
-    end = time.monotonic() + limit
-    while True:
-        doc = json_of(port, "/scene")
-        if ready(doc) or time.monotonic() > end:
-            return doc
-        h.skip()
-
-
 @pytest.fixture
 def served():
     port = free_port()
@@ -332,8 +321,7 @@ def test_the_console_shows_the_layers_that_a_drawing_adds_and_changes():
             with h.draw() as d:
                 d.rect(x=1, y=2, width=width, height=3)
                 d.text("hi", name="label", font_size=8)
-            doc = scene_when(h, port, lambda s, w=width: first_width(s) == w)
-            layers = doc["passes"][0]["layers"]
+            layers = json_of(port, "/scene")["passes"][0]["layers"]
             drawn.append([(d["name"], d.get("width")) for d in layers])
             counts.append(json_of(port, "/stats")["layer_changes"])
         assert drawn == [[("rect", 4), ("label", None)], [("rect", 9), ("label", None)]]

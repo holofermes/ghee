@@ -677,7 +677,11 @@ impl Session {
                 out.insert(k.clone(), v.clone());
             }
         }
-        self.sent.clone_from(&self.values);
+        // `sent` holds no key that `values` lacks, so the changed values
+        // bring it level.
+        for (k, v) in &out {
+            self.sent.insert(k.clone(), v.clone());
+        }
         out
     }
 

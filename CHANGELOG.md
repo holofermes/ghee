@@ -943,6 +943,7 @@ A Rust host written for 0.4.0 needs these changes.
 - Ship NOTICE and the licenses of DejaVu Sans and Pixel Operator 8 in the deb
   under `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
   LICENSE and NOTICE in the wheel.
+- Name holofermes as the copyright holder in the deb's copyright file.
 - Ship the arch's ghee-render wheel in the deb under `/usr/lib/ghee/`, which
   ghee hands to a scene script.
 - Tag the 32-bit wheel `linux_armv6l.linux_armv7l`, where it was

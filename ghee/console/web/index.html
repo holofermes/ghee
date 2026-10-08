@@ -1142,9 +1142,15 @@ function paintAll(){
 // the page, and keeps this page's copy of a layer whose card holds the focus.
 // `force` reads it all, after this page's own reset, answer or reload.
 let reading = false;
+// A slider and a switch keep the focus after their drag or tap, so they count
+// as in use only while a pointer is down on the params.
+let pressing = false;
+$("#params").addEventListener("pointerdown", () => { pressing = true; });
+addEventListener("pointerup", () => { pressing = false; }, true);
+addEventListener("pointercancel", () => { pressing = false; }, true);
 const inUse = () => {
-  const a = document.activeElement;
-  return !!(menuFrom || answer || named || a === CODE.ta || (a && a.closest && a.closest("#params, #size, #chans")));
+  const a = document.activeElement, held = a && a.matches && a.matches("input[type=range], input[type=checkbox]");
+  return !!(menuFrom || answer || named || pressing || a === CODE.ta || (!held && a && a.closest && a.closest("#params, #size, #chans")));
 };
 async function refresh(force = false){
   if (reading || !work || (!force && inUse())) return;

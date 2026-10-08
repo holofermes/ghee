@@ -31,9 +31,63 @@ A scene written for 0.4.0 needs these changes.
   a layer that the scene lacks read as Python's errors for them, which list
   the names that the scene takes.
 
+### Rust API
+
+A Rust host written for 0.4.0 needs these changes.
+
+- Start a scene process with the size that it renders at, the required
+  `size` of `SceneProcess::start`, where `set_render_size` set one size for
+  every process and `ghee render` alone called it. `SceneProcess::start`
+  also takes `reach`, how far beside the executable the scene's files
+  resolve, and `edit`, a change to the scene document that the process
+  writes. `SceneStore::start`, `open` and `resolve` take the size too, and
+  `render_loop` hands each process its renderer's `scene_size()`, so a
+  procedural scene under any host of the console reads `GHEE_SIZE`.
+- Hand `render_loop` the renderer, made on the thread that calls it, and a
+  `Pacer` or None, where it made its own renderer.
+- Implement `ConsoleHost::set_layer`, which sets a live field of a layer for
+  a `/set`, and `ConsoleHost::save`, which writes the working copy that the
+  host holds, where `writable` said that a host saves and `save_scene` wrote
+  the scene that a page posted.
+- Build a `SceneStore` with `SceneStore::new(dir, args)` and
+  `SceneStore::one(path, args)`, where both took `read_only`, and give it
+  the directory of its state files in `state_dir`. `SceneStore::save`
+  writes a scene's `Edits` to its state file, where it took a scene,
+  `SceneStore::file` takes the place of `path`, and `store::apply_values`
+  is gone with the `.values.json` sidecars.
+- Return a `ConsoleResult` from `parse_query`, which holds the 400 of a
+  malformed percent escape. `parse_scope` is gone, since `pass=` names the
+  pass.
+- Hand `server::coerce` the param's name first, which its error names.
+- End an H264 stream for every viewer with `H264Fanout::fail(why)`, and
+  read the reason with `H264Fanout::failure`, where `fail` took no reason
+  and `is_dead` said that the stream failed.
+- Hand `looper::should_draw` whether anyone takes the frames, as
+  `watched`, which a `Loop` reads from `Loop::watched`: while nobody
+  watches, a frame draws for a queued command and as the first frame alone.
+- Hand `SceneController::on_param` the pass of the param that a host set and
+  its value as a `ParamValue`, for a param of any type, where it took a
+  string param's name and words, and hand `SceneController::on_layer` each
+  live field of a layer that a host sets.
+- Read a renderer's scene through `Renderer::with_scene`, where
+  `Renderer::scene` was a public field.
+- Hand `Scene::new` the scene's `assets`, `Pass::glsl` the scene's `assets`
+  and the names of its text layers, and `Channel::from_dict` the name of the
+  channel for its errors. A pass holds its GLSL in `Pass::fragment`, where
+  `Pass::code` held it, and a color param's value is
+  `ParamValue::Color(Rgb)`, where it held three numbers.
+- Read the host's hardware with `console::feeds::hwinfo`, where it was
+  `default_hwinfo`.
+- Match `ghee::ffi` to the engine's header: `ghee_mp_add_pass` takes the
+  pass's name and whether its buffer holds alpha, `Parameter` points at its
+  name, and `ghee_get_timings`, `ghee_set_profiling` and `ghee_pack_frame`
+  are gone.
+- Keep the library's `assets`, `atlas`, `colour`, `cparam`, `feeds`,
+  `report` and `sources` modules inside the crate.
+
 ### Removed
 
-- Drop the `ghee isf import` command.
+- Drop the `ghee isf import` command and `ghee::isf`.
 - Drop ghee's own panel drivers, `st7789` and `ssd1306`. A panel takes
   `ghee overlay`, and the kernel then drives it on `--display kms`.
   `--display` takes `kms` alone, `ghee render` and `ghee serve` take no
@@ -44,8 +98,8 @@ A scene written for 0.4.0 needs these changes.
 - Drop `ghee::drivers` from the library, with the frame packers
   `engine::pack_frame`, `pack_frame_into` and `packed_size`,
   `Renderer::pack` and `Renderer::pack_into`, `stats::DEST_PANEL`, and
-  `native_format` in the console's `server::Options`.
-- Drop the `ghee bench` command.
+  `native_format` and `hwinfo` in the console's `server::Options`.
+- Drop the `ghee bench` command and `ghee::bench`.
 - Drop the draw and readback timing of a frame, `Renderer::set_profiling`
   and `Renderer::timings`.
 - Drop the console's `<scenes>/modified/` folder, its copies of JSON scenes
@@ -385,13 +439,9 @@ A scene written for 0.4.0 needs these changes.
   them all, as a scene script's tick does under ghee, and a set from the host
   itself stays out.
 - Hand the time since the tick before as the `dt` of a tick from
-  `h.frame()` or `h.skip()`, in a direct run's and on the wire, a quarter
-  second at most and 1/60 for the first tick, so the ticks' `dt` add up to
-  the time passed while each tick follows the one before within a quarter
-  second, and a frame drawn after a drawn frame takes it as its iTimeDelta,
-  where the tick held the period of the frame before and a direct run's
-  first tick held 0. A pinned timestep is the tick's `dt` as
-  given, where a quarter second capped it.
+  `h.frame()` or `h.skip()` and of a direct run's tick, as a scene process
+  takes it on the wire, where the tick held the period of the frame before
+  and a direct run's first tick held 0.
 - Name the display of `ghee.open` with `display=` and the console's port
   with `serve=`, the words of `ghee render`'s flags, in place of `output=`
   and `stats=`, which now raise TypeError. `dri=` picks the card, and
@@ -458,6 +508,12 @@ A scene written for 0.4.0 needs these changes.
 - Count a scene process's ticks from 0 at its first tick, `frame` and
   `time` alike, where they counted from ghee's first frame. The console
   starts a new process at each switch, so the ticks start again there.
+- Hand the time since the tick before as a tick's `dt`, a quarter second at
+  most and 1/60 for the first tick, so the ticks' `dt` add up to the time
+  passed, skipped frames included, while each tick follows the one before
+  within a quarter second, and a frame drawn after a drawn frame takes it as
+  its iTimeDelta, where `dt` held the period of the frame before. A pinned
+  timestep is the tick's `dt` as given, where a quarter second capped it.
 - Set a live field of a layer from a scene process. Kind 1 takes
   `layer.field` and `layer.effect.field`, such as `title.x` and
   `title.karaoke.sung`, with one value, 0 or 1 for `visible`, three for a
@@ -801,24 +857,9 @@ A scene written for 0.4.0 needs these changes.
 
 ### Library and packages
 
-- Start a scene process with the size that it renders at, the required
-  `size` of `SceneProcess::start`, where `set_render_size` set one size for
-  every process and `ghee render` alone called it. `SceneStore::start`,
-  `open` and `resolve` take the size too, and `render_loop` hands each
-  process its renderer's `scene_size()`, so a procedural scene under any
-  host of the console reads `GHEE_SIZE`.
-- Return a `ConsoleResult` from `parse_query`, which holds the 400 of a
-  malformed percent escape.
 - Read a POST body with `ConsoleAPI::read_body`, which refuses a body past
   the cap with the 413 that `precheck` gives a long Content-Length, and a
   body whose read fails with a 400.
-- Tell a `Loop` whether anyone takes its frames with `Loop::watched`, which
-  `looper::should_draw` takes as `watched`: while nobody watches, a frame
-  draws for a queued command and as the first frame alone.
-- Hand `SceneController::on_param` the pass of the param that a host set and
-  its value as a `ParamValue`, for a param of any type, where it took a
-  string param's name and words, and hand `SceneController::on_layer` each
-  live field of a layer that a host sets.
 - Restart a renderer's clock with `Renderer::restart_clock`, so the next
   frame draws as the first one does, as `iFrame` 0 at `iTime` 0 with
   `iTimeDelta` at 1/60.
@@ -861,6 +902,14 @@ A scene written for 0.4.0 needs these changes.
   `update_layer` gives the same look written out, and the calls that build
   their layer again, give an image layer another image or hold a value that
   the scene refuses come back for `update_layer`.
+- Write the look that a call gives its layer, as a scene declares the
+  layer, with `ghee::draw::look_of`, and read a look back as its call with
+  `draw::call_of`. `draw::live_of` gives a layer with the look of a call
+  when the call changes the layer's live fields alone. `Arg::of_json` and
+  `Arg::to_json` read and write a keyword's value as a look written as JSON
+  holds it. `RenderTarget::update_calls` gives the layers of a target the
+  looks of calls, as `Renderer::update_calls` does, and by default leaves
+  every call for `update_layer`.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
 - Report the tests that need ffmpeg as ignored under `--cfg ghee_no_ffmpeg`,
@@ -869,8 +918,6 @@ A scene written for 0.4.0 needs these changes.
   a GL device, and run the tests of a connected display and of the hardware
   H264 encoder under `--cfg ghee_display` and `--cfg ghee_hw_h264`, where
   each returned early and passed.
-- Keep the library's `assets`, `atlas`, `colour`, `cparam`, `feeds`,
-  `report` and `sources` modules inside the crate.
 - Ship NOTICE and the licenses of DejaVu Sans and Pixel Operator 8 in the deb
   under `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
   LICENSE and NOTICE in the wheel.

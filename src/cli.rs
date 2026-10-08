@@ -26,7 +26,6 @@ use clap::error::{ContextKind, ErrorKind};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Map, Value};
 
-use crate::bench::{self, BenchArgs};
 use crate::console::examples_dir;
 use crate::console::server;
 use crate::console::store::SceneStore;
@@ -1033,11 +1032,6 @@ enum Command {
 
     #[command(about = "write the kernel's setup for a panel, so it answers --display kms")]
     Overlay(OverlayArgs),
-
-    /// The benchmark suite is a development tool, so it stays out of
-    /// `ghee --help`.
-    #[command(hide = true, about = "run the benchmark suite")]
-    Bench(BenchArgs),
 }
 
 /// What every render takes, whichever command asks for it.
@@ -1451,7 +1445,6 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
         Command::Serve(_) => "serve",
         Command::Displays => "displays",
         Command::Overlay(_) => "overlay",
-        Command::Bench(_) => "bench",
     };
     if !scene_args.is_empty() && !matches!(cli.cmd, Command::Render(_) | Command::Serve(_)) {
         return (
@@ -1464,7 +1457,6 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
         Command::Serve(a) => cmd_serve(&a.ns(scene_args)),
         Command::Displays => cmd_displays(),
         Command::Overlay(a) => cmd_overlay(&a),
-        Command::Bench(a) => bench::run(&a),
     };
     (cmd, ran)
 }

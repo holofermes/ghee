@@ -47,6 +47,7 @@ A scene written for 0.4.0 needs these changes.
   `engine::pack_frame`, `pack_frame_into` and `packed_size`,
   `Renderer::pack` and `Renderer::pack_into`, `stats::DEST_PANEL`, and
   `native_format` in the console's `server::Options`.
+- Drop the `ghee bench` command.
 - Drop the console's `<scenes>/modified/` folder, its copies of JSON scenes
   and its `.values.json` sidecars of procedural scenes: ghee reads none of
   them. Fold a copy's changes into the scene's file by hand, or redo them in
@@ -729,8 +730,8 @@ A scene written for 0.4.0 needs these changes.
   the scene refuses come back for `update_layer`.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
-- Keep the library's `assets`, `atlas`, `bench`, `colour`, `cparam`,
-  `feeds`, `report` and `sources` modules inside the crate.
+- Keep the library's `assets`, `atlas`, `colour`, `cparam`, `feeds`,
+  `report` and `sources` modules inside the crate.
 - Ship NOTICE and the licenses of DejaVu Sans and Pixel Operator 8 in the deb
   under `/usr/share/doc/ghee/`, with ghee's license in its copyright file, and
   LICENSE and NOTICE in the wheel.

@@ -38,7 +38,6 @@
 
 pub(crate) mod assets;
 pub(crate) mod atlas;
-pub(crate) mod bench;
 pub mod cli;
 pub(crate) mod colour;
 pub mod console;

@@ -20,7 +20,7 @@
 //! contract between the two.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use anyhow::{anyhow, bail, Result};
@@ -206,15 +206,25 @@ pub(crate) fn name_fault(name: &str) -> Option<&'static str> {
 /// The error for the first name of `names` that an earlier one holds, each
 /// name with its declaration, and `at` where they sit.
 fn first_shared(names: &[(&str, String)], at: &str) -> Option<String> {
-    let (i, (n, owner)) = names
-        .iter()
-        .enumerate()
-        .find(|(i, (n, _))| names[..*i].iter().any(|(m, _)| m == n))?;
-    let (_, first) = names[..i].iter().find(|(m, _)| m == n)?;
+    let (f, i) = first_repeat(names.iter().map(|(n, _)| *n))?;
+    let (first, owner) = (&names[f].1, &names[i].1);
     Some(match first == owner {
         true => format!("{owner}{at} is declared twice"),
         false => format!("{first} and {owner}{at} share a name"),
     })
+}
+
+/// The first name of `names` that an earlier one repeats, as the place of
+/// the earliest of them and its own.
+fn first_repeat<'a>(names: impl Iterator<Item = &'a str>) -> Option<(usize, usize)> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for (i, n) in names.enumerate() {
+        if let Some(&first) = seen.get(n) {
+            return Some((first, i));
+        }
+        seen.insert(n, i);
+    }
+    None
 }
 
 /// A JSON size is an int or a whole float. Any other value passes through
@@ -2155,17 +2165,57 @@ impl Scene {
         if let Some(e) = scene.name_clash() {
             bail!("{e}");
         }
-        for l in scene.text_layers() {
-            if let Some(e) = l.font_family.as_deref().and_then(|f| scene.font_fault(f)) {
-                bail!("layer '{}' {e}", l.name);
-            }
+        for l in scene.layers().filter(|l| l.as_text().is_some()) {
+            scene.check_file(l)?;
         }
-        for l in scene.layers().filter_map(Layer::as_image) {
-            if let Some(e) = scene.image_fault(&l.image) {
-                bail!("layer '{}' {e}", l.name);
-            }
+        for l in scene.layers().filter(|l| l.as_image().is_some()) {
+            scene.check_file(l)?;
         }
         Ok(())
+    }
+
+    /// The error for the font of text layer `l` or the image of image layer
+    /// `l`, when it names no asset of the right kind.
+    fn check_file(&self, l: &Layer) -> Result<()> {
+        let fault = match l {
+            Layer::Text(t) => t.font_family.as_deref().and_then(|f| self.font_fault(f)),
+            Layer::Image(i) => self.image_fault(&i.image),
+            Layer::Shape(_) => None,
+        };
+        match fault {
+            Some(e) => bail!("layer '{}' {e}", l.name()),
+            None => Ok(()),
+        }
+    }
+
+    /// True when `layer`, a layer about to join the scene, may give
+    /// name_clash() something to find: its name breaks the name rule, or
+    /// equals another declared name, or is another and a part after a `_`,
+    /// or another is it and such a part. Every name that ghee derives from a
+    /// declared name is that name and a part after a `_`. Otherwise a scene
+    /// that took every check takes `layer` with no check but that of its
+    /// font or its image.
+    fn may_clash(&self, layer: &Layer) -> bool {
+        let n = layer.name();
+        if name_fault(n).is_some() {
+            return true;
+        }
+        let near = |m: &str| {
+            m.strip_prefix(n)
+                .is_some_and(|r| r.is_empty() || r.starts_with('_'))
+                || n.strip_prefix(m).is_some_and(|r| r.starts_with('_'))
+        };
+        let params = |ps: &ParamMap| ps.values().any(|p| near(&p.name));
+        self.passes.iter().any(|p| {
+            near(&p.name)
+                || p.layers.iter().any(|l| near(l.name()))
+                || params(&p.params)
+                || p.arrays.iter().any(|a| near(&a.name))
+        }) || params(&self.params)
+            || self
+                .assets
+                .iter()
+                .any(|a| near(&a.name) || near(a.local_name()))
     }
 
     /// Why an image layer of the scene cannot take `image`, or None when it
@@ -2318,8 +2368,13 @@ impl Scene {
         if index > n {
             bail!("pass '{pass}' holds {n} layers, so a layer goes in at 0 to {n}, got {index}");
         }
+        let whole = self.may_clash(&layer);
         self.passes[at].layers.insert(index, layer);
-        if let Err(e) = self.check_layers() {
+        let checked = match whole {
+            true => self.check_layers(),
+            false => self.check_file(&self.passes[at].layers[index]),
+        };
+        if let Err(e) = checked {
             self.passes[at].layers.remove(index);
             return Err(e);
         }
@@ -2630,10 +2685,8 @@ impl Scene {
                     names.push((n, owner.clone()));
                 }
             }
-            for (i, (n, owner)) in names.iter().enumerate() {
-                let Some((_, first)) = names[..i].iter().find(|(m, _)| m == n) else {
-                    continue;
-                };
+            if let Some((f, i)) = first_repeat(names.iter().map(|(n, _)| n.as_str())) {
+                let ((n, owner), first) = (&names[i], &names[f].1);
                 if first == owner {
                     return Some(format!("{owner} is declared twice"));
                 }
@@ -4465,6 +4518,76 @@ mod tests {
             ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));
+        }
+    }
+
+    #[test]
+    fn a_layer_added_under_a_name_that_meets_another_is_refused_as_a_scene_declaring_it() {
+        // Each scene loads without its last layer of pass 'b', and adding
+        // that layer there fails as loading the scene with it fails.
+        let f = json!({"type": "float", "value": 1.0});
+        let c = json!({"type": "color", "value": [1.0, 0.0, 0.0]});
+        let label = json!({"name": "label", "text": "hi", "font_family": "sans"});
+        for (extra, pass, layer) in [
+            (
+                json!({"params": {"label_cover": c}}),
+                json!({}),
+                label.clone(),
+            ),
+            (
+                json!({}),
+                json!({"params": {"label_size": f}}),
+                label.clone(),
+            ),
+            (json!({}), json!({}), json!({"name": "a", "shape": "rect"})),
+            (
+                json!({}),
+                json!({"params": {"spot": f}}),
+                json!({"name": "spot", "shape": "rect"}),
+            ),
+            (
+                json!({"params": {"gain": f}}),
+                json!({}),
+                json!({"name": "gain", "image": "g.png"}),
+            ),
+            (
+                json!({}),
+                json!({}),
+                json!({"name": "sans", "image": "g.png"}),
+            ),
+            (
+                json!({}),
+                json!({}),
+                json!({"name": "2bad", "shape": "rect"}),
+            ),
+            (
+                json!({}),
+                json!({}),
+                json!({"name": "pic", "image": "sans"}),
+            ),
+        ] {
+            let mut whole = named(extra, pass);
+            let layers = whole["passes"][1]["layers"].as_array_mut().unwrap();
+            if layer["name"] != "label" {
+                layers.push(layer.clone());
+            }
+            let mut without = whole.clone();
+            without["passes"][1]["layers"].as_array_mut().unwrap().pop();
+            let want = Scene::from_dict(&whole, None, None)
+                .unwrap_err()
+                .to_string();
+            let mut sc = Scene::from_dict(&without, None, None).unwrap();
+            let at = sc.passes[1].layers.len();
+            let new = Layer::from_dict("a layer", &layer).unwrap();
+            let e = sc.insert_layer("b", at, new).unwrap_err().to_string();
+            assert_eq!(format!("scene: {e}"), want);
+            assert_eq!(sc.passes[1].layers.len(), at, "{want}");
+        }
+        // Names that only start like another, which no derived name meets.
+        let mut sc = Scene::from_dict(&named(json!({}), json!({})), None, None).unwrap();
+        for name in ["label2", "labels", "b2"] {
+            let new = Layer::from_dict("a layer", &json!({"name": name, "text": "hi"})).unwrap();
+            sc.insert_layer("b", 0, new).unwrap();
         }
     }
 

@@ -1226,16 +1226,7 @@ impl Renderer {
                 .map(|l| {
                     let l = l.as_text()?;
                     let px_em = sizes.get(&l.name).copied().unwrap_or(atlas::PX_EM);
-                    let sh = l.shaders(l.detail(px_em));
-                    #[cfg(test)]
-                    let sh = match self.glyphs_fragment {
-                        Some(fs) => crate::layer::Shaders {
-                            glyphs: (sh.glyphs.0, fs.to_string()),
-                            ..sh
-                        },
-                        None => sh,
-                    };
-                    Some(sh)
+                    Some(self.text_shaders(l, l.detail(px_em)))
                 })
                 .collect();
             let size = p
@@ -2364,7 +2355,9 @@ impl Renderer {
     /// change.
     ///
     /// A layer that the scene refuses in that place, or a name that names no
-    /// layer, fails with a Refused error and changes nothing.
+    /// layer, fails with a Refused error and changes nothing. A layer that
+    /// fails to draw fails with the error, and the old layer draws again in
+    /// its place.
     pub fn replace_layer(&mut self, layer: &Value) -> Result<()> {
         let mut new = Layer::from_dict("the new layer", layer).map_err(refused)?;
         let name = new.name().to_string();
@@ -2380,32 +2373,68 @@ impl Renderer {
             }
         };
         let drawn = self.admit(&pass, &mut new)?;
-        self.scene
-            .borrow_mut()
-            .as_mut()
-            .expect("admit() found the scene")
-            .replace_layer(new.clone())
-            .map_err(refused)?;
+        let old = {
+            let mut scene = self.scene.borrow_mut();
+            let scene = scene.as_mut().expect("admit() found the scene");
+            let old = scene
+                .layer(&name)
+                .cloned()
+                .expect("the layer was just found");
+            scene.replace_layer(new.clone()).map_err(refused)?;
+            old
+        };
         self.moved();
         if !drawn {
             return Ok(());
         }
         let phases = self.drop_drawn(&name)?;
         if let Err(e) = self.draw_new(&pass, index, &new) {
-            self.unwind(&name);
+            if self.put_back(&pass, index, &old, &phases).is_err() {
+                self.unwind(&name);
+            }
             return Err(e);
         }
-        if let (Some(l), Some(dl)) = (new.as_text(), self.drawn(&name)) {
-            let mut carried = Vec::new();
-            for (kind, uniform, _) in l.paces() {
-                if let Some((_, phase)) = phases.iter().find(|(k, _)| *k == kind) {
-                    self.set_layer_uniform(dl, &uniform, "float", Value::from(*phase))?;
-                    carried.push((kind, *phase));
-                }
-            }
-            *dl.phases.borrow_mut() = carried;
-        }
+        self.carry(&new, &phases)?;
         self.refresh()
+    }
+
+    /// Draw `old` again at `index` of drawn pass `pass`, in place of the
+    /// layer of its name, which failed to draw, with the phases `phases` of
+    /// its moving effects.
+    fn put_back(
+        &mut self,
+        pass: &str,
+        index: usize,
+        old: &Layer,
+        phases: &[(Kind, f64)],
+    ) -> Result<()> {
+        self.drop_drawn(old.name())?;
+        self.scene
+            .borrow_mut()
+            .as_mut()
+            .expect("the scene holds the layer")
+            .replace_layer(old.clone())?;
+        self.moved();
+        self.draw_new(pass, index, old)?;
+        self.carry(old, phases)?;
+        self.refresh()
+    }
+
+    /// Carry the phases `phases` on to the moving effects of drawn layer
+    /// `layer`.
+    fn carry(&self, layer: &Layer, phases: &[(Kind, f64)]) -> Result<()> {
+        let (Some(l), Some(dl)) = (layer.as_text(), self.drawn(layer.name())) else {
+            return Ok(());
+        };
+        let mut carried = Vec::new();
+        for (kind, uniform, _) in l.paces() {
+            if let Some((_, phase)) = phases.iter().find(|(k, _)| *k == kind) {
+                self.set_layer_uniform(dl, &uniform, "float", Value::from(*phase))?;
+                carried.push((kind, *phase));
+            }
+        }
+        *dl.phases.borrow_mut() = carried;
+        Ok(())
     }
 
     /// Give the layer of the name of `layer` the look of `layer`, a layer as
@@ -3213,7 +3242,7 @@ impl Renderer {
             self.px_em
                 .insert(l.name.clone(), TextLayer::atlas_px_em(px));
         }
-        let shaders = l.shaders(self.detail(l));
+        let shaders = self.text_shaders(l, self.detail(l));
         let name = format!("layer '{}'", l.name);
         match joins_runs(&Layer::Text(l.clone())) {
             true => {
@@ -3634,6 +3663,19 @@ impl Renderer {
     fn detail(&self, layer: &TextLayer) -> Detail {
         let px_em = self.px_em.get(&layer.name).copied();
         layer.detail(px_em.unwrap_or(atlas::PX_EM))
+    }
+
+    /// The shaders of the batches of text layer `l` at `detail`.
+    fn text_shaders(&self, l: &TextLayer, detail: Detail) -> crate::layer::Shaders {
+        let sh = l.shaders(detail);
+        #[cfg(test)]
+        if let Some(fs) = self.glyphs_fragment {
+            return crate::layer::Shaders {
+                glyphs: (sh.glyphs.0, fs.to_string()),
+                ..sh
+            };
+        }
+        sh
     }
 
     /// The texels per em of the atlas of each layer of `drawn`, by its
@@ -6879,6 +6921,29 @@ mod tests {
             r.replace_layer(&words(px)).unwrap();
         }
         assert_eq!(held(&r), first);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_layer_that_the_gl_fails_to_build_again_keeps_its_look_and_the_error_says_why() {
+        // The glyphs of the new text fail to compile, so the rect stays, in
+        // the scene and in the frame.
+        let (_g, mut r) = gpu();
+        let before = first_frames(
+            &mut r,
+            &run_scene(&[rect("c", [4.0, 4.0, 20.0, 12.0], "red")]),
+            1,
+        );
+        let scene = r.with_scene(Scene::to_dict);
+        r.glyphs_fragment = Some(BROKEN);
+        let err = r
+            .replace_layer(&words("c", "C", 30.0, 0.0, 8.0))
+            .unwrap_err();
+        assert!(err.downcast_ref::<Refused>().is_none(), "{err}");
+        assert!(err.to_string().starts_with("layer 'c': "), "{err}");
+        assert_eq!(r.with_scene(Scene::to_dict), scene);
+        r.set_time(Some(0.0));
+        assert!(still(&mut r) == before);
     }
 
     #[test]

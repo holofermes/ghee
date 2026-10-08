@@ -813,7 +813,8 @@ A scene written for 0.4.0 needs these changes.
   the look leaves out takes its default, and an effect that it leaves out
   stays, bypassed. Every other layer keeps its program, its atlas, its
   phases and its quads, the layer's moving effects carry their phases on,
-  and a layer that the scene refuses changes nothing.
+  a layer that the scene refuses changes nothing, and a layer that fails to
+  draw leaves the old one drawing in its place.
 - Measure words with `Scene::measure` and `Renderer::measure`: the width and
   height in pixels of the block that a text layer of a pass lays them out
   in, at a `font_size` or at the size that fits the pass.

@@ -931,6 +931,8 @@ A Rust host written for 0.4.0 needs these changes.
   LICENSE and NOTICE in the wheel.
 - Ship the arch's ghee-render wheel in the deb under `/usr/lib/ghee/`, which
   ghee hands to a scene script.
+- Tag the 32-bit wheel `linux_armv6l.linux_armv7l`, where it was
+  `linux_armv6l` alone, so uv takes it on a 32-bit OS on a Pi 2 or newer too.
 
 ## 0.4.0 - 2026-08-06
 

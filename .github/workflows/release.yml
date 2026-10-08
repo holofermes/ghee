@@ -113,8 +113,8 @@ jobs:
       - name: armhf deb (ARMv6, one deb for every 32-bit Pi)
         run: |
           rm -rf target/pydist target/pywheel && mkdir -p target/pydist target/pywheel
-          unzip -q wheels/*linux_armv6l.whl -d target/pydist
-          cp wheels/*linux_armv6l.whl target/pywheel/
+          unzip -q wheels/*linux_armv6l.linux_armv7l.whl -d target/pydist
+          cp wheels/*linux_armv6l.linux_armv7l.whl target/pywheel/
           GHEE_SYSROOT="$PWD/sysroots/armv6" \
             CFLAGS_arm_unknown_linux_gnueabihf=-mcpu=arm1176jzf_s \
             cargo zigbuild --release --target arm-unknown-linux-gnueabihf.2.38

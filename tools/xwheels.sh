@@ -44,9 +44,11 @@ if not m:
     sys.exit("not a wheel name: %s" % name)
 distver, pytag, plat = m.groups()
 
+# ARMv6 code runs on every 32-bit Pi, and on a Pi 2 or newer uv takes only
+# linux_armv7l wheels, so the 32-bit wheel carries both platform tags.
 targets = [
     ("aarch64-unknown-linux-gnu", "linux_aarch64", 183),
-    ("arm-unknown-linux-gnueabihf", "linux_armv6l", 40),
+    ("arm-unknown-linux-gnueabihf", "linux_armv6l.linux_armv7l", 40),
 ]
 
 def digest(data):
@@ -70,7 +72,9 @@ for triple, newplat, e_machine in targets:
                 data = blob
                 swapped[info.filename] = data
             elif info.filename.endswith(".dist-info/WHEEL"):
-                data = data.replace(plat.encode(), newplat.encode())
+                # the file name takes the tag set, WHEEL a line per tag
+                tags = "".join("Tag: %s-%s\n" % (pytag, p) for p in newplat.split("."))
+                data = data.replace(("Tag: %s-%s\n" % (pytag, plat)).encode(), tags.encode())
                 swapped[info.filename] = data
             elif info.filename.endswith(".dist-info/RECORD"):
                 record = info

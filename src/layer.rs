@@ -109,8 +109,9 @@ const GRADIENT_ANGLE: f64 = 180.0;
 pub const FIT_MARGIN: f64 = 0.05;
 
 /// The texels per em of an MTSDF atlas, smallest first. A layer takes the
-/// first step at or above its pixels per em at build, so layers of near sizes
-/// share an atlas, up to a cap. Text under 32 px takes 32, since an atlas at a
+/// first step at or above its pixels per em at build, and a layer with no
+/// `font_size` the step of the largest size at which a line fits its pass,
+/// so layers of near sizes share an atlas, up to a cap. Text under 32 px takes 32, since an atlas at a
 /// small text's own size strays further from its outline. The cap is the last
 /// step whose texels per em, times one plus twice the effects' reach in em,
 /// stay at 128 or under, the first step at least: plain text stops at 128,
@@ -1337,6 +1338,20 @@ impl TextLayer {
     /// land on whole pixels.
     pub(crate) fn grid(&self) -> Option<f64> {
         (self.font_family.as_deref() == Some(text::PIXEL)).then_some(text::PIXEL_EM)
+    }
+
+    /// The texels per em of the layer's atlas in a pass of `pass` pixels, its
+    /// words a block of `block` em: atlas_px_em() at its `font_size`, or with
+    /// none at the largest size at which a line of words fits the pass, which
+    /// shorter words and a move reach with no rebuild.
+    pub fn atlas_px_em_in(&self, pass: [f64; 2], block: [f64; 2]) -> u32 {
+        let px = self.font_px(pass, block);
+        if self.font_size.is_some() {
+            return self.atlas_px_em(px);
+        }
+        let (_, line) = text::line_metrics(self.data.as_deref().unwrap_or_default());
+        let room = pass[1] - FIT_MARGIN * pass[0].min(pass[1]);
+        self.atlas_px_em(px.max(room / line))
     }
 
     /// The texels per em of the layer's atlas at `font_px` pixels per em: the

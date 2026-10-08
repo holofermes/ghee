@@ -3338,7 +3338,8 @@ impl Renderer {
         self.renders.remove(&l.name);
         if let Some(b) = l.place(&l.text).ok().and_then(|laid| laid.built) {
             let px = l.font_px(size, b.size);
-            self.px_em.insert(l.name.clone(), l.atlas_px_em(px));
+            self.px_em
+                .insert(l.name.clone(), l.atlas_px_em_in(size, b.size));
             if l.render == Render::Auto {
                 self.renders.insert(l.name.clone(), l.render.at(px));
             }
@@ -3911,10 +3912,10 @@ impl Renderer {
     }
 
     /// The texels per em of the atlas of each layer of `drawn`, by its
-    /// name: the step at or above its font_size, or the size at which its
-    /// words fit its pass, laid out on the CPU. A layer whose words lay out
-    /// in no font takes atlas::PX_EM. Also the render that each layer of
-    /// render auto takes at that size.
+    /// name, as TextLayer::atlas_px_em_in() gives it for the words laid out
+    /// on the CPU. A layer whose words lay out in no font takes
+    /// atlas::PX_EM. Also the render that each layer of render auto takes at
+    /// the size at which its words draw.
     fn text_sizes(&self, drawn: &[Pass]) -> (HashMap<String, u32>, HashMap<String, Render>) {
         let mut out = HashMap::new();
         let mut renders = HashMap::new();
@@ -3922,11 +3923,12 @@ impl Renderer {
         let frame = (i64::from(sw), i64::from(sh));
         for p in drawn {
             let (w, h) = p.size_in(frame).unwrap_or(frame);
+            let size = [w as f64, h as f64];
             for l in p.layers.iter().filter_map(Layer::as_text) {
                 let block = l.place(&l.text).ok().and_then(|laid| laid.built);
                 let Some(b) = block else { continue };
-                let px = l.font_px([w as f64, h as f64], b.size);
-                out.insert(l.name.clone(), l.atlas_px_em(px));
+                let px = l.font_px(size, b.size);
+                out.insert(l.name.clone(), l.atlas_px_em_in(size, b.size));
                 if l.render == Render::Auto {
                     renders.insert(l.name.clone(), l.render.at(px));
                 }
@@ -9264,6 +9266,43 @@ mod tests {
         let mut want = vec![(near, vec![tex("a"), tex("b")]), (far, vec![tex("c")])];
         want.sort();
         assert_eq!(slots, want);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn shorter_words_that_grow_a_fitted_size_live_draw_as_the_words_built_at_that_size() {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let scene = |words: &str| {
+            let mut sc = Scene::from_dict(
+                &json!({
+                    "version": 1,
+                    "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+                    "passes": [{"name": "main",
+                        "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                        "layers": [{"name": "label", "text": words, "font_family": "sans",
+                                    "render": "mtsdf"}]}],
+                }),
+                None,
+                None,
+            )
+            .unwrap();
+            sc.load_assets(fonts).unwrap();
+            sc
+        };
+        let cache = crate::testing::TempDir::new("engine-grown");
+        let (_g, mut r) = gpu_at(160, 120);
+        r.atlas_cache = Some(cache.join("atlas"));
+        let frame = |r: &mut Renderer, words: Option<&str>| {
+            if let Some(words) = words {
+                set_words(r, "label", words);
+            }
+            r.set_time(Some(0.0));
+            r.render(None).unwrap().to_vec()
+        };
+        assert_eq!(r.setup(&scene("a long line of small words")).unwrap(), "");
+        let grown = frame(&mut r, Some("AV"));
+        assert_eq!(r.setup(&scene("AV")).unwrap(), "");
+        assert!(grown == frame(&mut r, None), "the grown words draw apart");
     }
 
     /// Each pixel of the scene holds its column in red and its row from the

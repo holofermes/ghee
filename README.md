@@ -643,20 +643,20 @@ corners sharp. Alpha holds the true distance, which rounds the corners, and
 the shadow, the glow and the stroke read it. A layer reads one bilinear sample
 of the cell for each pixel.
 
-The atlas's detail follows the layer's size, its `font_size` or the size that
-fits its words at setup, rounded up to 32, 48, 64, 96 or 128 texels per em, so
-layers of near sizes share one atlas. A layer whose effects reach past its
-letters stops at a lower step, where its cells span no more texels than plain
-text's at 128: a 0.3 em glow stops at 64. Words that grow live keep the detail
-that the layer was built with. The first time a font is used at a detail, ghee
-generates the glyphs of the words, then a preload: ASCII, Latin-1, the curly
-quotes, the en and em dash, the ellipsis, the bullet and the euro sign. It
-generates them on every core, and caches the atlas in
+The atlas's detail follows the layer's size, rounded up to 32, 48, 64, 96 or
+128 texels per em, so layers of near sizes share one atlas. The size is the
+layer's `font_size`, or with none the largest size at which a line of words
+fits its pass, so shorter words keep their detail. A layer whose effects reach
+past its letters stops at a lower step, where its cells span no more texels
+than plain text's at 128: a 0.3 em glow stops at 64. The first time a font is
+used at a detail, ghee generates the glyphs of the words, then a preload:
+ASCII, Latin-1, the curly quotes, the en and em dash, the ellipsis, the bullet
+and the euro sign. It generates them on every core, and caches the atlas in
 `$XDG_CACHE_HOME/ghee/atlas`, else `~/.cache/ghee/atlas`. Any other character
-follows when words first need it. New words show in their first frame when
-the atlas already holds all their glyphs. Other new words wait for their
-glyphs, and the layer keeps its last words on screen meanwhile. A setup waits
-for them, and so does a render with `--timestep`.
+follows when words first need it. New words show in their first frame when the
+atlas already holds all their glyphs. Other new words wait for their glyphs,
+and the layer keeps its last words on screen meanwhile. A setup waits for them,
+and so does a render with `--timestep`.
 
 `slug` reads no atlas. Each pixel of a glyph's quad casts one ray along x and
 one along y, and the curves crossed by the rays give the pixel's coverage.

@@ -81,7 +81,7 @@ A Rust host written for 0.4.0 needs these changes.
 - Match `ghee::ffi` to the engine's header: `ghee_mp_add_pass` takes the
   pass's name and whether its buffer holds alpha, `Parameter` points at its
   name, and `ghee_get_timings`, `ghee_set_profiling` and `ghee_pack_frame`
-  are gone.
+  are gone. `ghee::ffi` binds every call that the engine added.
 - Keep the library's `assets`, `atlas`, `colour`, `cparam`, `feeds`,
   `report` and `sources` modules inside the crate.
 
@@ -941,6 +941,64 @@ A Rust host written for 0.4.0 needs these changes.
   holds it. `RenderTarget::update_calls` gives the layers of a target the
   looks of calls, as `Renderer::update_calls` does, and by default leaves
   every call for `update_layer`.
+- Add a layer, set a live field of a layer and give a layer a new look on
+  any `RenderTarget` with `RenderTarget::add_layer`, `set_layer` and
+  `update_layer`, as the `Renderer` methods of those names do, and by
+  default a target refuses each. A target's `RenderTarget::clock_restarted`
+  is true once after its clock restarted, and the loop then draws the next
+  frame as its first.
+- Reach a scene's layers through `ghee::layer`, the layout of their words
+  through `ghee::text`, the shape layers through `ghee::shape`, the batches
+  that draw consecutive shapes and texts in one draw through `ghee::run`,
+  the emoji font through `ghee::emoji`, CSS's colour names through
+  `ghee::css`, and a KMS display's backlight through `ghee::panel`.
+- Ask a `Renderer` for the longest texture side of its GPU with
+  `max_texture_size`, and whether the GPU mipmaps a buffer of any size with
+  `mipmaps_npot`. `Renderer::set_asset` hands the engine one image asset,
+  `set_alpha` keeps the output pass's alpha, `with_layer` reads one layer of
+  the scene, and `text_errors_seq` changes whenever `text_errors` does.
+  `engine::display_renders` says whether GL on a card runs on the GPU, and
+  `engine::quarter_turns` gives the quarter turns of a rotation in degrees.
+- Build a scene whose files resolve in a directory of its own with
+  `Scene::from_dict_in` and `Scene::load_in`, read its asset files with
+  `Scene::load_assets` and `load_assets_in`, put a layer into a pass through
+  the checks of a scene file with `Scene::insert_layer` and hand it its files
+  with `Scene::load_layer`. `Scene::text_layer`, `text_layers` and
+  `text_names` read its text layers, and `Scene::taken_names` the names that
+  an added pass may not take. `Asset::decode` decodes an asset's bytes,
+  `Asset::to_dict` writes it as a scene declares it, `is_font` tells a font
+  and `local_name` gives its name in the code that declares it.
+  `Pass::size_in` gives the size of a pass in a frame, and
+  `Pass::has_fragment` is false for a pass of layers alone.
+  `scene::no_param` and `no_layer` write the error for a name that the scene
+  lacks, and `scene::short_floats` writes each float in its shortest 32-bit
+  form.
+- Write a console host with the `ConsoleHost` methods `scene_doc`,
+  `live_doc`, `switch_by`, `edit_scene` and `procedural_names`, each with a
+  default. `core::param_of` and `core::live_value` check a /set against the
+  scene document, `core::other_scene` and `other_reload` give the 409 of a
+  page left open on another scene, and `ConsoleError::conflict`, `stale` and
+  `unavailable` give a 409, a 412 and a 503.
+- Read and write a scene's state file through `console::state`: an `Edits`
+  reads and writes the file with `from_file` and `to_file`, `state::diff`
+  takes a scene's defaults to its working copy and `state::fold` applies
+  edits over a document, `file_of` and `default_dir` place the file,
+  `base_of`, `hash_json` and `hash_text` hash the items that an edit
+  changes, and `move_unreadable` moves aside a file that the read refused.
+  `SceneStore::state_file` names a scene's state file,
+  `SceneStore::procedural_names` the scenes that a program writes, and
+  `store::scene_of` builds the scene of a document.
+- Serve one /h264 viewer from an `H264Fanout` with `server::serve_h264`,
+  push an access unit of one stream with `H264Fanout::push_to`, and read
+  `H264Fanout::began`, true once an access unit reached a viewer.
+  `h264::hw_size` gives the size that the hardware encoder takes a frame at,
+  and `h264::no_encoder` the reason that a stream has no encoder.
+- Tell the bundled examples' directory with `console::is_examples_dir`, list
+  the filters as the console's picker shows them with `filters::filter_defs`,
+  build the filters of a posted scene with `filters::rebuild_filters`, and
+  tell an image file's name with `output::is_image_name`.
+  `SceneProcess::pin` tells a scene process that the loop pins time, and a
+  lockstep process then answers each tick before the tick's frame draws.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
 - Report the tests that need ffmpeg as ignored under `--cfg ghee_no_ffmpeg`,

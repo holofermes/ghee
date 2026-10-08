@@ -5093,14 +5093,18 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_setup_frees_the_slots_of_the_last_scenes_image_assets() {
-        // The engine binds 16 assets at a time, so each setup hands back the
-        // slots of the image assets that its scene no longer declares. An
+    fn a_setup_frees_the_textures_of_the_last_scenes_assets_and_layers() {
+        // Each scene of a row names its image asset, or its text layer read
+        // by the pass, apart from every other scene's, so a setup that kept
+        // the last scene's textures would hold one more at each scene. An
         // asset set by the host stays.
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let cache = crate::testing::TempDir::new("engine-frees");
         let (_g, mut r) = gpu();
+        r.atlas_cache = Some(cache.join("atlas"));
         r.set_asset("host", 1, 1, 1, false, AssetData::U8(&[200u8]))
             .unwrap();
-        for i in 0..20u8 {
+        let image = |i: u8| {
             let name = format!("img{i}");
             let code = format!(
                 "uniform sampler2D host_tex; void main(){{ \
@@ -5120,10 +5124,45 @@ mod tests {
                 components: 1,
                 pixels: Pixels::U8(vec![i * 12]),
             });
-            assert_eq!(r.setup(&sc).unwrap(), "", "{name}");
-            r.set_time(Some(0.0));
-            let f = r.render(None).unwrap();
-            assert_eq!((f[0], f[1]), (i * 12, 200), "{name}");
+            (sc, Some(i * 12))
+        };
+        let text = |i: u8| {
+            let name = format!("t{i}");
+            let code = format!(
+                "uniform sampler2D host_tex; void main(){{ \
+                 gl_FragColor = vec4({name}_cover(uv * {name}_size, 48.0), \
+                 texture2D(host_tex, vec2(0.5)).r, 0.0, 1.0); }}"
+            );
+            let mut sc = Scene::from_dict(
+                &json!({"version": 1, "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+                        "passes": [{"name": "main", "fragment": code,
+                                    "layers": [{"name": name, "text": "I",
+                                                "font_family": "sans", "visible": false}]}]}),
+                None,
+                None,
+            )
+            .unwrap();
+            sc.load_assets(fonts).unwrap();
+            (sc, None)
+        };
+        for kind in ["image", "text"] {
+            let mut held = None;
+            for i in 0..20u8 {
+                let (sc, own) = match kind {
+                    "image" => image(i),
+                    _ => text(i),
+                };
+                assert_eq!(r.setup(&sc).unwrap(), "", "{kind} {i}");
+                r.set_time(Some(0.0));
+                let f = r.render(None).unwrap();
+                assert_eq!(f[1], 200, "{kind} {i}");
+                match own {
+                    Some(v) => assert_eq!(f[0], v, "{kind} {i}"),
+                    None => assert!(f.chunks_exact(4).any(|p| p[0] == 255), "{kind} {i}"),
+                }
+                let textures = gl_objects()[0];
+                assert_eq!(*held.get_or_insert(textures), textures, "{kind} {i}");
+            }
         }
     }
 

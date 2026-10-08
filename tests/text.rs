@@ -1856,30 +1856,6 @@ fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-fn a_setup_frees_the_asset_slots_of_the_last_scenes_layers() {
-    // The engine binds 16 assets at a time, so each setup has to hand back
-    // the slots of the layers that its scene no longer declares.
-    let laid = lay(SANS, "I", Align::Left);
-    let fit = Fit::of(laid.width, laid.height, W, H);
-    let (_g, mut r) = gpu(W, H);
-    for i in 0..20 {
-        let name = format!("t{i}");
-        let doc = json!({
-            "version": 1,
-            "assets": font_assets(),
-            "passes": [{"name": "main", "fragment": format!(
-                "void main(){{ float c = {}; gl_FragColor = vec4(c, c, c, 1.0); }}",
-                fit.cover(&name)),
-                "layers": [{"name": name, "text": "I", "font_family": "sans",
-                            "visible": false}]}],
-        });
-        let frame = render(&mut r, &loaded(&doc));
-        assert_draws(&frame, W, 0, &laid, fit, &name);
-    }
-}
-
-#[test]
-#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_filter_after_a_layer_compiles() {
     let laid = lay(SANS, "I", Align::Left);
     let fit = Fit::of(laid.width, laid.height, W, H);

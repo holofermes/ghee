@@ -190,6 +190,9 @@ A scene written for 0.4.0 needs these changes.
   punctuation. ghee declares a scene string param under each layer's name,
   which holds the words, and new words from `set_param`, `/set`, the console
   or a procedural scene lay out again with no recompile.
+- Space a layer's glyphs by their advances and the font's pair kerning, the
+  pair adjustments of the `kern` feature in its GPOS table, as HarfBuzz
+  applies them, or, in a font without that feature, its `kern` table.
 - Place a layer's words with `x` and `y`, the pass pixel of the block's top
   left, y down, and `font_size`, their pixels per em. An axis left out
   centres the block on it. A layer with no `font_size` takes the largest size

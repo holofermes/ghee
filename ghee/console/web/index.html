@@ -2589,7 +2589,7 @@ $("#save").addEventListener("click", async ()=>{
   const name = active, b = $("#save");
   const r = await edit("/save", name, "name=" + enc(name));
   if (!r || !r.ok){
-    if (r && r.status !== 409 && r.status !== 412) console.warn("/save:", await r.text());
+    if (r && r.status !== 409 && r.status !== 412){ postErr = await r.text(); showErrors(); }
     return;
   }
   b.textContent = "saved"; setTimeout(()=>{ b.textContent = "save"; }, 1200);
@@ -2600,6 +2600,7 @@ $("#reset").addEventListener("click", async ()=>{
   if (!hasEdits() || !await ask(`Take ${name} back to its defaults? Every edit goes.`, {yes: "back to defaults"}) || name !== active) return;
   const r = await edit("/reset", name, "name=" + enc(name));
   if (r && r.ok) await refresh(true);
+  else if (r && r.status !== 409 && r.status !== 412){ postErr = await r.text(); showErrors(); }
 });
 
 $("#stale").addEventListener("click", reloadScene);

@@ -7230,6 +7230,46 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn quads_replaced_in_part_after_as_many_quads_of_wider_vertices_all_show() {
+        // A run that a text joins takes as many quads as before, each vertex
+        // twice as wide, and then a quad changes in part.
+        let (_g, mut r) = gpu();
+        let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
+        assert_eq!(
+            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
+                .unwrap(),
+            ""
+        );
+        let q = W / 2;
+        let half =
+            |k: usize, c: [f32; 4]| quad((k * q) as f32, 0.0, ((k + 1) * q) as f32, H as f32, c);
+        let wide = |v: Vec<f32>| -> Vec<f32> {
+            v.chunks(8)
+                .flat_map(|vertex| vertex.iter().copied().chain([0.0; 8]))
+                .collect()
+        };
+        let [red, green, blue] = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ];
+        let part = |r: &Renderer, data: &[f32]| unsafe {
+            ffi::ghee_mp_set_batch_quads_at(r.handle, r.batches[0], 1, data.as_ptr(), 1)
+        };
+        r.set_batch_quads(0, &[half(0, red), half(1, red)].concat(), 2)
+            .unwrap();
+        assert!(part(&r, &half(1, green)), "{}", r.last_error());
+        r.render(None).unwrap();
+        r.set_batch_quads(0, &wide([half(0, blue), half(1, blue)].concat()), 4)
+            .unwrap();
+        assert!(part(&r, &wide(half(1, green))), "{}", r.last_error());
+        let f = r.render(None).unwrap().to_vec();
+        assert!(near3(rgb_at(&f, q / 2, H / 2), [0.0, 0.0, 255.0]));
+        assert!(near3(rgb_at(&f, q + q / 2, H / 2), [0.0, 255.0, 0.0]));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_reads_scene_params_in_both_stages_and_its_pass_inputs() {
         // The vertex stage shifts the quad by `shift` pixels once `level` is
         // set, and the fragment stage writes `level`, an array texel, an asset

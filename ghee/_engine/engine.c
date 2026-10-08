@@ -132,7 +132,7 @@ struct mp_batch {
     // last drew from. `copy` holds every quad, and the quads that `spare`
     // lacks start at stale_first.
     GLuint spare;
-    int spare_quads;                     // the quads that `spare` has room for
+    size_t spare_bytes;                  // the bytes that `spare` has room for
     float *copy;
     int stale_first, stale_quads;
     struct mp_locs loc;
@@ -1587,18 +1587,17 @@ bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float 
     memcpy(l->copy + (size_t)first * quad_floats, data, (size_t)quads * quad_bytes);
     make_current(g);
     while (glGetError() != GL_NO_ERROR) { }
-    if (first == 0 && quads == l->quads) {
+    const bool whole = first == 0 && quads == l->quads;
+    const size_t bytes = (size_t)l->quads * quad_bytes;
+    if (whole) {
         // A write of the whole buffer takes a fresh one from the driver.
         glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)quads * quad_bytes), l->copy);
-        l->stale_first = 0;
-        l->stale_quads = quads;
+        glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, l->copy);
     } else {
         if (!l->spare) glGenBuffers(1, &l->spare);
         glBindBuffer(GL_ARRAY_BUFFER, l->spare);
-        if (l->spare_quads != l->quads) {
-            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)l->quads * quad_bytes), l->copy,
-                         GL_DYNAMIC_DRAW);
+        if (l->spare_bytes != bytes) {
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, l->copy, GL_DYNAMIC_DRAW);
         } else {
             int lo = first, hi = first + quads;
             if (l->stale_quads > 0) {
@@ -1608,18 +1607,26 @@ bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float 
             glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)((size_t)lo * quad_bytes),
                             (GLsizeiptr)((size_t)(hi - lo) * quad_bytes), l->copy + (size_t)lo * quad_floats);
         }
-        const GLuint drawn = l->vbo;
-        l->vbo = l->spare;
-        l->spare = drawn;
-        l->spare_quads = l->quads;
-        l->stale_first = first;
-        l->stale_quads = quads;
     }
     const GLenum err = glGetError();
     glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
     if (err != GL_NO_ERROR) {
+        // The batch draws from `vbo` as it was, and the next write in part
+        // gives `spare` all of `copy`.
+        l->spare_bytes = 0;
         set_error(g, "%s: the upload of %d quads failed: GL 0x%X", l->name, quads, err);
         return false;
+    }
+    if (whole) {
+        l->stale_first = 0;
+        l->stale_quads = quads;
+    } else {
+        const GLuint drawn = l->vbo;
+        l->vbo = l->spare;
+        l->spare = drawn;
+        l->spare_bytes = bytes;
+        l->stale_first = first;
+        l->stale_quads = quads;
     }
     return true;
 }

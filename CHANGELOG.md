@@ -879,6 +879,9 @@ A Rust host written for 0.4.0 needs these changes.
   shades, its per-pixel phase from a shipped 64x64 blue-noise mask.
 - Run `dither`, `frc` and `frc256` on one thread on VC4, where a pass on two
   threads can draw wrong 4x4 blocks.
+- Resample the source in `frc256` only when it is larger than the output, so
+  each pixel of a source at the output's size reaches the panel alone, where
+  the Catmull-Rom kernel blurred it into its neighbours.
 - Skip a filter file that holds a key that a filter does not take, and name
   the key and the closest key that a filter takes.
 

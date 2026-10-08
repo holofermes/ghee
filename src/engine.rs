@@ -6126,6 +6126,39 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn frc256_keeps_a_one_pixel_line_one_pixel_wide_at_its_grey_over_its_cycle() {
+        // Column 8 is white and column 20 grey 128. Over the sixteen frames
+        // of its cycle, frc256 holds column 8 at level 15, and column 20 at
+        // level 7 for eight frames and level 8 for the other eight: 255 and
+        // 127.5 on average, at 17 a level.
+        let _f = crate::filters::env_guard();
+        let (_g, mut r) = gpu();
+        let mut sc = scene_of(json!([{"name": "main",
+            "fragment": "void main(){ float x = floor(gl_FragCoord.x); \
+                         float g = x == 8.0 ? 1.0 : (x == 20.0 ? 128.0 / 255.0 : 0.0); \
+                         gl_FragColor = vec4(vec3(g), 1.0); }"}]));
+        crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        let mut avg = vec![0.0; W * H];
+        for _ in 0..16 {
+            let f = r.render(None).unwrap().to_vec();
+            for (a, v) in avg.iter_mut().zip(channel(&f, 0)) {
+                *a += v / 16.0;
+            }
+        }
+        for (i, a) in avg.iter().enumerate() {
+            let want = match i % W {
+                8 => 255.0,
+                20 => 127.5,
+                _ => 0.0,
+            };
+            assert_eq!(*a, want, "({}, {})", i % W, i / W);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_scaled_pass_renders_at_its_share_of_the_turned_frame_rounded_and_1_at_least() {
         // The frame turns a quarter, so the scene renders at 48x64. Pass `a`
         // writes its iResolution, and main shows it over the whole frame.

@@ -63,7 +63,9 @@ use std::sync::{Arc, Weak};
 
 use anyhow::{anyhow, bail, Result};
 use sha2::{Digest, Sha256};
-use ttf_parser::{Face, GlyphId};
+use ttf_parser::gpos::{PairAdjustment, PositioningSubtable};
+use ttf_parser::opentype_layout::Lookup;
+use ttf_parser::{Face, GlyphId, Tag};
 
 use crate::atlas::{self, Cell};
 use crate::colour;
@@ -798,8 +800,31 @@ struct Placed {
     span: [f64; 2],
 }
 
+/// The GPOS feature that holds a font's pair kerning.
+const KERN: Tag = Tag::from_bytes(b"kern");
+
+/// The kerning of the pair `l` then `r`, in font units, as HarfBuzz gives
+/// it. A font whose GPOS lists the `kern` feature kerns through its pair
+/// adjustments alone, every other font through its `kern` table.
 fn kerning(face: &Face, l: GlyphId, r: GlyphId) -> f64 {
-    let Some(kern) = face.tables().kern else {
+    let tables = face.tables();
+    if let Some(gpos) = tables.gpos.filter(|g| g.features.find(KERN).is_some()) {
+        let mut lookups: Vec<u16> = gpos
+            .features
+            .into_iter()
+            .filter(|f| f.tag == KERN)
+            .flat_map(|f| f.lookup_indices)
+            .collect();
+        lookups.sort_unstable();
+        lookups.dedup();
+        return lookups
+            .into_iter()
+            .filter_map(|i| gpos.lookups.get(i))
+            .filter_map(|lookup| pair_advance(lookup, l, r))
+            .map(f64::from)
+            .sum();
+    }
+    let Some(kern) = tables.kern else {
         return 0.0;
     };
     kern.subtables
@@ -808,6 +833,29 @@ fn kerning(face: &Face, l: GlyphId, r: GlyphId) -> f64 {
         .filter_map(|s| s.glyphs_kerning(l, r))
         .map(f64::from)
         .sum()
+}
+
+/// The x advance that a GPOS lookup adds to `l` before `r`, in font units.
+/// The first pair adjustment that covers `l` and holds a value for the pair
+/// applies, and the lookup's later subtables are skipped. A class pair
+/// adjustment holds a value for every second glyph, class 0 included.
+fn pair_advance(lookup: Lookup, l: GlyphId, r: GlyphId) -> Option<i16> {
+    lookup
+        .subtables
+        .into_iter::<PositioningSubtable>()
+        .find_map(|s| {
+            let PositioningSubtable::Pair(pair) = s else {
+                return None;
+            };
+            let i = pair.coverage().get(l)?;
+            let (first, _) = match pair {
+                PairAdjustment::Format1 { sets, .. } => sets.get(i)?.get(r)?,
+                PairAdjustment::Format2 {
+                    classes, matrix, ..
+                } => matrix.get((classes.0.get(l), classes.1.get(r)))?,
+            };
+            Some(first.x_advance)
+        })
 }
 
 /// The block holds the lines top to bottom. Glyph origins are in em from the

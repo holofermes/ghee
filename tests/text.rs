@@ -19,6 +19,11 @@ use ghee::text::{self, Align};
 const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
 /// DejaVu Sans cut to printable ASCII, TrueType outlines, a kern table.
 const SANS: &str = "DejaVuSans-ASCII.ttf";
+/// Inter 4.001 cut by fontTools' subset to A, V, T, o, 7 and 5 and the GPOS
+/// `kern` feature: a class pair adjustment in an extension lookup, then a
+/// lookup of a glyph pair adjustment and a class pair adjustment. Inter has
+/// no `kern` table.
+const GPOS_KERN: &str = "Inter-AVTo75.ttf";
 /// Noto Sans CJK JP cut to I and O, CFF outlines.
 const CFF: &str = "NotoSansCJKjp-IO.otf";
 /// CFF converted to CFF2 by fontTools' cffLib.CFFToCFF2, with no variation
@@ -542,6 +547,31 @@ fn a_kerned_pair_draws_closer_than_its_advances() {
         + f64::from(face.glyph_hor_advance(v).unwrap());
     let (w, _) = built(SANS, "AV", Align::Left);
     assert!((w - (advances + kern) / upem).abs() < 1e-9, "{w}");
+}
+
+#[test]
+fn a_font_that_kerns_through_gpos_alone_kerns_each_pair_as_harfbuzz_does() {
+    let data = font(GPOS_KERN);
+    let face = Face::parse(&data, 0).unwrap();
+    assert!(face.tables().kern.is_none());
+    let upem = f64::from(face.units_per_em());
+    // HarfBuzz's kerning of each pair, in font units. AV and To kern through
+    // the extension lookup, 75 through the glyph pair adjustment, and 77,
+    // which the glyph pair adjustment lacks, through the class pair
+    // adjustment after it.
+    for (pair, kern) in [("AV", -140.0), ("To", -160.0), ("75", -20.0), ("77", 40.0)] {
+        let advances: f64 = pair
+            .chars()
+            .map(|c| {
+                f64::from(
+                    face.glyph_hor_advance(face.glyph_index(c).unwrap())
+                        .unwrap(),
+                )
+            })
+            .sum();
+        let (w, _) = built(GPOS_KERN, pair, Align::Left);
+        assert!((w - (advances + kern) / upem).abs() < 1e-9, "{pair}: {w}");
+    }
 }
 
 #[test]

@@ -49,12 +49,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 tiny_http = "0.12"
-# ttf-parser reads the outlines and the metrics of a text's font. A text lays
-# out with the kern table alone, so the default features stay off, except
-# variable-fonts: ttf-parser reads CFF2 outlines only with it. vendor/ holds
-# harfbuzz/ttf-parser main at 0c72912, because release 0.25.1 outlines no
-# glyph of a CFF2 font without a variation store (harfbuzz/ttf-parser#239).
-ttf-parser = { path = "vendor/ttf-parser", default-features = false, features = ["std", "variable-fonts"] }
+# ttf-parser reads the outlines, the metrics and the pair kerning of a text's
+# font. The default features stay off, except opentype-layout, which reads
+# GPOS, and variable-fonts: ttf-parser reads CFF2 outlines only with it.
+# vendor/ holds harfbuzz/ttf-parser main at 0c72912, because release 0.25.1
+# outlines no glyph of a CFF2 font without a variation store
+# (harfbuzz/ttf-parser#239).
+ttf-parser = { path = "vendor/ttf-parser", default-features = false, features = ["std", "opentype-layout", "variable-fonts"] }
 
 [build-dependencies]
 cc = "1"

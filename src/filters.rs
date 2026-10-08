@@ -1,6 +1,7 @@
 //! ghee ships named post-process passes, such as dither.
 //!
-//! A filter file (`<name>.filter.json`) holds one pass: a name, code and params.
+//! A filter file (`<name>.filter.json`) holds one pass: a name, its fragment
+//! and its params, channels and assets.
 //! The pass reads iChannel0, the frame so far, and writes the result. ghee
 //! appends a filter as a pass that reads the pass before it. The last filter
 //! reaches the display.
@@ -10,7 +11,7 @@
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
 
-use crate::scene::{inside, join, normpath, strerror, Asset, Pass, RawLayout, Scene};
+use crate::scene::{inside, join, known_keys, normpath, strerror, Asset, Pass, RawLayout, Scene};
 
 /// The shipped filters. A binary carries no package directory, so the build
 /// compiles them in.
@@ -35,6 +36,16 @@ const BUILTIN_ASSETS: [(&str, &[u8]); 1] = [(
     include_bytes!("../ghee/filters/bluenoise.png"),
 )];
 
+/// The keys of a filter file. `description` is for its reader alone.
+const FILTER_KEYS: [&str; 6] = [
+    "name",
+    "description",
+    "fragment",
+    "params",
+    "channels",
+    "assets",
+];
+
 /// The directory a scanned filter came from, kept on its definition so its
 /// assets resolve beside it. A shipped filter has none.
 const DIR_KEY: &str = "_dir";
@@ -57,6 +68,12 @@ fn accept(out: &mut Map<String, Value>, path: &str, text: &str) -> Option<String
         return None;
     }
     let name = fd["name"].as_str().unwrap_or_default().to_string();
+    if let Some(o) = fd.as_object() {
+        if let Err(e) = known_keys(o, &format!("filter '{name}'"), &FILTER_KEYS, &[]) {
+            eprintln!("filter {path}: skipped ({e})");
+            return None;
+        }
+    }
     out.insert(name.clone(), fd);
     Some(name)
 }
@@ -913,6 +930,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            format!("{dir}/typo.filter.json"),
+            json!({"name": "typo", "fragment": GOOD, "parms": {}}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
             format!("{dir}/invert.filter.json"),
             json!({"name": "invert", "fragment": GOOD}).to_string(),
         )
@@ -920,7 +942,7 @@ mod tests {
 
         let reg = load_filters(&[&dir]);
         assert!(reg.contains_key("dither") && reg.contains_key("invert"));
-        assert!(!reg.contains_key("nameless"));
+        assert!(!reg.contains_key("nameless") && !reg.contains_key("typo"));
 
         let prev = std::env::var("GHEE_FILTERS").ok();
         std::env::set_var("GHEE_FILTERS", &dir);

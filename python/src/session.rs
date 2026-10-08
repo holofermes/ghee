@@ -3,7 +3,7 @@
 //! The scene loading and the pacing are ghee's own.
 //! A frame follows ghee::looper: `t` is the wall clock since the first frame,
 //! iTimeDelta is the period since the last frame drawn, and MAX_DT caps it.
-//! The tick of a frame carries the iTimeDelta that the frame draws with.
+//! A tick's dt is the time since the tick before, which MAX_DT caps too.
 //!
 //! The engine is thread-affine, so a Session belongs to the thread that built
 //! it.
@@ -322,6 +322,8 @@ pub struct Session {
     started: Option<f64>,
     prev: Option<f64>,
     period: Option<f64>,
+    /// The clock of the last tick, of a frame or of a skip.
+    ticked: Option<f64>,
     frame: u64,
     /// The tick of the frame drawn last, None before the first.
     drawn: Option<u64>,
@@ -600,6 +602,7 @@ impl Session {
             started: None,
             prev: None,
             period: None,
+            ticked: None,
             frame: 0,
             drawn: None,
             text_errors: u64::MAX,
@@ -627,9 +630,9 @@ impl Session {
 
     /// Open this iteration, once: apply the console's sets, and give the tick
     /// that the next frame() or skip() takes and returns. Its dt is the
-    /// iTimeDelta that the frame draws with: the pinned step, else the period
-    /// since the last frame drawn, which MAX_DT caps, else the engine's first
-    /// 1/60.
+    /// pinned step, else the time since the tick before, which MAX_DT caps,
+    /// else the engine's first 1/60, so the ticks' dt add up to the time
+    /// passed. A frame drawn after a drawn one draws with that dt.
     pub fn begin(&mut self) -> Outcome<Tick> {
         if let Some(o) = &self.opened {
             return Ok(o.tick.clone());
@@ -639,12 +642,13 @@ impl Session {
         let t0 = monotonic();
         let t = self.clock(t0);
         let period = self.prev.map(|prev| t0 - prev);
+        let since = self.ticked.replace(t0).map(|ticked| t0 - ticked);
         let tick = Tick {
             frame: self.frame,
             time: t,
             dt: match self.timestep {
                 Some(step) => step,
-                None => period.map_or(1.0 / 60.0, |p| p.min(MAX_DT)),
+                None => since.map_or(1.0 / 60.0, |s| s.min(MAX_DT)),
             },
             params,
         };

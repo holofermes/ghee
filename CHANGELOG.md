@@ -379,12 +379,13 @@ A scene written for 0.4.0 needs these changes.
   `@ghee.tick`, where that tick's `params` stayed empty. The first tick holds
   them all, as a scene script's tick does under ghee, and a set from the host
   itself stays out.
-- Hand the iTimeDelta that a frame draws with in the tick that `h.frame()`
-  returns, in a direct run's and on the wire: the time since the frame before,
-  a quarter second at most, and 1/60 for the first frame, where the tick held
-  the period of the frame before and a direct run's first tick held 0. A
-  pinned timestep is the tick's `dt` as given, where a quarter second capped
-  it.
+- Hand the time since the tick before as the `dt` of a tick from
+  `h.frame()` or `h.skip()`, in a direct run's and on the wire, a quarter
+  second at most and 1/60 for the first tick, so the ticks' `dt` add up to
+  the time passed, and a frame drawn after a drawn frame takes it as its
+  iTimeDelta, where the tick held the period of the frame before and a
+  direct run's first tick held 0. A pinned timestep is the tick's `dt` as
+  given, where a quarter second capped it.
 - Name the display of `ghee.open` with `display=` and the console's port
   with `serve=`, the words of `ghee render`'s flags, in place of `output=`
   and `stats=`, which now raise TypeError. `dri=` picks the card, and

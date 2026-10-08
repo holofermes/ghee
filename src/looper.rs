@@ -439,6 +439,8 @@ pub struct Loop<'a> {
     /// measured frame period, the iTimeDelta fed to a scene
     pub period: Option<f64>,
     prev: Option<f64>,
+    /// the clock of the last tick, drawn or skipped
+    ticked: Option<f64>,
     buf: Vec<u8>,
     buf_shape: (i32, i32, i32),
 }
@@ -466,6 +468,7 @@ impl<'a> Loop<'a> {
             elapsed: 0.0,
             period: None,
             prev: None,
+            ticked: None,
             buf: Vec::new(),
             buf_shape: (0, 0, 0),
         }
@@ -556,13 +559,15 @@ impl<'a> Loop<'a> {
         if self.renderer.clock_restarted() {
             self.prev = None;
             self.period = None;
+            self.ticked = None;
         }
         // The period since the last frame drawn, which iTimeDelta takes when
         // this iteration draws.
         let period = self.prev.map(|prev| t0 - prev);
+        let since = self.ticked.replace(t0).map(|ticked| t0 - ticked);
         // before the skip decision: a scene fed from outside says whether this
         // tick needs a frame
-        self.tick_controller(t, period)?;
+        self.tick_controller(t, since)?;
         if skippable && !self.should_draw_now(forced, t) {
             self.frame += 1;
             let idle = self.idle();
@@ -613,17 +618,17 @@ impl<'a> Loop<'a> {
     }
 
     /// Hand the controller this iteration, drawn or skipped. Its dt is the
-    /// iTimeDelta that the frame draws with: the pinned step, else `period`,
-    /// the time since the last frame drawn, which MAX_DT caps, else the
-    /// engine's first 1/60.
-    fn tick_controller(&mut self, t: f64, period: Option<f64>) -> Result<()> {
+    /// pinned step, else `since`, the time since the last tick, which MAX_DT
+    /// caps, else the engine's first 1/60, so the ticks' dt add up to the
+    /// time passed. A frame drawn after a drawn one draws with that dt.
+    fn tick_controller(&mut self, t: f64, since: Option<f64>) -> Result<()> {
         let Some(cell) = self.controller else {
             return Ok(());
         };
         let frame = self.frame;
         let dt = match self.timestep {
             Some(step) => step,
-            None => period.map_or(1.0 / 60.0, |p| p.min(MAX_DT)),
+            None => since.map_or(1.0 / 60.0, |s| s.min(MAX_DT)),
         };
         let mut slot = cell.borrow_mut();
         match (*slot).as_mut() {
@@ -1326,8 +1331,8 @@ mod tests {
         }
     }
 
-    /// A scene fed from outside reads in its tick the iTimeDelta that the
-    /// tick's frame draws with.
+    /// A scene fed from outside, whose every tick draws, reads in its tick
+    /// the iTimeDelta that the tick's frame draws with.
     #[test]
     fn a_tick_carries_the_dt_that_its_frame_draws_with() {
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1719,6 +1724,42 @@ mod tests {
             seen.iter().map(|(f, _)| *f).collect::<Vec<u64>>(),
             (0..frame).collect::<Vec<u64>>()
         );
+    }
+
+    /// A clean scene draws its first frame alone, and the dt of the ticks
+    /// after it add up to the time from its tick to the last.
+    #[test]
+    fn the_ticks_dt_add_up_to_the_time_passed_over_skipped_frames() {
+        struct Clean(Arc<Mutex<Vec<(f64, f64)>>>);
+
+        impl SceneController for Clean {
+            fn tick(&mut self, _frame: u64, t: f64, dt: f64) -> Result<()> {
+                self.0.lock().unwrap().push((t, dt));
+                Ok(())
+            }
+
+            fn dirty(&mut self, _frame: u64, _t: f64) -> bool {
+                false
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut r = Recorder::default();
+        let mut s = Sink::new();
+        s.persists = true;
+        let ctrl = slot(Clean(seen.clone()));
+        {
+            let mut lp = Loop::new(&mut r, vec![&mut s]);
+            lp.controller = Some(&ctrl);
+            lp.stopping = Some(Box::new(after(5)));
+            lp.idle_hook = Some(Box::new(|_| 0.002));
+            lp.run().unwrap();
+            assert_eq!(lp.drawn, 1);
+        }
+        let seen = seen.lock().unwrap();
+        let summed: f64 = seen[1..].iter().map(|(_, dt)| dt).sum();
+        let passed = seen[seen.len() - 1].0 - seen[0].0;
+        assert!((summed - passed).abs() < 1e-9, "{seen:?}");
     }
 
     #[test]

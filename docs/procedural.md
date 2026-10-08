@@ -116,10 +116,11 @@ ghee writes one JSON line to the process's stdin for each render tick:
 
     {"frame": N, "time": T, "dt": D, "params": {...}}
 
-`N` and `T` count from 0 at the process's first tick. `D` is the
-`iTimeDelta` that the tick's frame draws with: the time since the frame
-before, a quarter second at most, 1/60 for the first frame, or the fixed
-`--timestep`. `params` holds the params that changed by their bare names,
+`N` and `T` count from 0 at the process's first tick. `D` is the time
+since the tick before, a quarter second at most, 1/60 for the first tick,
+or the fixed `--timestep`, so the ticks' `D` add up to the time passed,
+skipped frames included. A frame drawn after a drawn frame takes `D` as its
+`iTimeDelta`. `params` holds the params that changed by their bare names,
 each value as a scene file writes it, and a text layer's words as its `text`,
 such as `title.text`. The first tick holds them all, and a value that the
 process set itself stays out.

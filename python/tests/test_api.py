@@ -188,6 +188,13 @@ def test_an_unpinned_tick_reads_the_wall_clock():
     assert 0.0 < third["dt"] <= 0.25
 
 
+def test_the_ticks_dt_add_up_to_the_time_passed_over_skips():
+    with ghee.open(RED, width=8, height=8) as h:
+        ticks = [h.frame(), h.skip(), h.skip(), h.frame()]
+    passed = ticks[-1]["time"] - ticks[0]["time"]
+    assert sum(t["dt"] for t in ticks[1:]) == pytest.approx(passed, abs=1e-9)
+
+
 def test_a_pinned_timestep_repeats_a_render_bit_for_bit():
     def run():
         with ghee.open(RED, width=32, height=32, timestep=1 / 30) as h:

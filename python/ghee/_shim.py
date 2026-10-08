@@ -989,8 +989,8 @@ class Tick:
     """One render tick.
 
     `frame` counts the ticks, and `time` and `dt` are in seconds: `dt` is
-    the iTimeDelta that the tick's frame draws with, 1/60 for the first frame
-    unless a timestep pins it.
+    the time since the tick before, 1/60 for the first tick unless a timestep
+    pins it.
     `params` holds the params that changed, each value as a scene file
     writes it, and a text layer's words as its `text`, such as `title.text`.
     The first tick holds them all.
@@ -1523,7 +1523,7 @@ def _direct(scene: Scene) -> None:
 
     The tick keeps its wire shape: `params` holds the params that the
     console changed, and the first tick holds every param. Its `dt`
-    is the iTimeDelta that its frame draws with, as under ghee.
+    is the time since the tick before, as under ghee.
     """
     global _CLEAN, _HANDLE
     a = _HOST if _HOST is not None else _host_args()

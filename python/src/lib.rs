@@ -456,7 +456,7 @@ impl Handle {
     /// Draw one frame and hand it to the output.
     ///
     /// Returns this tick: {"frame", "time", "dt", "params"}. `dt` is the
-    /// iTimeDelta that the frame draws with, and `params` holds the params
+    /// time since the tick before, and `params` holds the params
     /// that changed since the last tick, a text layer's words as its `text`,
     /// the first tick all of them.
     fn frame<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {

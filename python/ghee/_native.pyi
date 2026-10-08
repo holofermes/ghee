@@ -14,8 +14,8 @@ __version__: str
 _Display: TypeAlias = Literal["kms"]
 
 class _Tick(TypedDict):
-    """One tick: the frame's number, its time, the iTimeDelta that it draws
-    with, and the params that changed since the last tick, a text layer's
+    """One tick: the frame's number, its time, the time since the tick
+    before, and the params that changed since the last tick, a text layer's
     words as its `text`."""
 
     frame: int

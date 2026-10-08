@@ -1976,6 +1976,8 @@ impl Renderer {
                 AssetData::U8(&c.texels),
             )?;
             self.scene_asset(GLYPHS);
+            // A run's batch takes the new height as it settles.
+            self.unsettled.set(true);
             for d in self.layers.iter().filter(|d| d.shared.get()) {
                 for (suffix, v) in text::Glyphs::uniforms(c.height) {
                     let own = text::internal(GLSL_NAME, suffix);
@@ -7710,6 +7712,28 @@ mod tests {
             assert!(still(&mut r) == built, "{what}");
             assert_eq!(runs_of(&r), grouped, "{what}");
         }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_run_draws_as_set_up_after_a_text_outside_it_grows_the_texture_of_curves() {
+        // The texts of a run read the texture of curves at its height, and
+        // the new words of a text with an effect grow it.
+        let mut wave = words("w", "w", 24.0, 30.0, 8.0);
+        wave["wave"] = json!({"height": 0.2});
+        let from = with(&members(), Some(3), &wave);
+        let many = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let mut grown = wave.clone();
+        grown["text"] = json!(many);
+        let want = with(&from, None, &grown);
+        let (_g, mut r) = gpu_at(128, 64);
+        first_frames(&mut r, &run_scene(&from), 1);
+        let rows = r.glyphs.borrow().rows();
+        assert!(r.set_text("w", many).unwrap());
+        assert!(r.glyphs.borrow().rows() > rows);
+        r.set_time(Some(0.0));
+        let changed = still(&mut r);
+        assert!(changed == first_frames(&mut r, &run_scene(&want), 1));
     }
 
     #[test]

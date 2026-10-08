@@ -57,6 +57,7 @@ A scene written for 0.4.0 needs these changes.
 - Drop the console page's working copy in the browser's localStorage, which
   the page posted over the scene at each load, and the scene that its save
   posted. The page reads no edit that a browser kept there.
+- Drop `ghee::output::AdaptivePacer`.
 
 ### Scenes
 
@@ -174,8 +175,8 @@ A scene written for 0.4.0 needs these changes.
 - Name the pass and the line of the author's GLSL in a compile error, as
   `pass 'main', line 2 of its code:` or `line 2 of the common block`, ahead of
   the GL's own message, on Mesa's GL and on NVIDIA's alike, and print the
-  error once, where it printed the GL's log twice with a line number in the
-  assembled shader.
+  error once, with no blank line after it, where it printed the GL's log
+  twice with a line number in the assembled shader.
 
 ### Text
 
@@ -294,6 +295,8 @@ A scene written for 0.4.0 needs these changes.
   A font that fails to load draws an error box for each character, a glyph
   that ghee cannot draw shows an error box in its place, and words that do
   not fit leave the last words that did.
+- Draw text in a CFF2 font that holds no variation store. ghee builds
+  ttf-parser from its main branch, vendored in `vendor/ttf-parser`.
 - Add `--demo lettering`, `--demo karaoke` and `--demo lens`, and rename
   `--demo text`, which rasterizes its words in Pillow, to `--demo marquee`.
   Add `ghee/examples/nowplaying.py`, an artist and a title that fit a 128x32
@@ -423,6 +426,10 @@ A scene written for 0.4.0 needs these changes.
 
 ### Procedural scenes
 
+- Name the cause when a scene's script cannot start, `the file has no #!
+  line` or `the interpreter '/usr/bin/python9' on its #! line does not
+  exist`, where the system's error read `Exec format error` or `No such file
+  or directory`.
 - Count a scene process's ticks from 0 at its first tick, `frame` and
   `time` alike, where they counted from ghee's first frame. The console
   starts a new process at each switch, so the ticks start again there.
@@ -462,6 +469,9 @@ A scene written for 0.4.0 needs these changes.
 
 ### Console
 
+- Print the console's address once its renderer starts, and end `ghee serve`
+  with the renderer's error, printed once, when it cannot start, where the
+  address printed first and the error twice.
 - Show what ghee uses in the console's render info while it is open: the
   process's resident set, its GPU memory and how busy it keeps each queue
   of the GPU, the machine's free memory and a Pi's SoC temperature.
@@ -675,6 +685,17 @@ A scene written for 0.4.0 needs these changes.
 - Encode a frame under 16384 pixels in hardware, scaled up by the smallest
   whole factor that reaches 16384 with each pixel a square block, where the
   encoder refused it. A 128x32 panel streams at 256x64.
+- Refuse `--display kms` on a card whose GL runs in software, `GL on
+  /dev/dri/card1 runs in software; no hardware render node pairs with this
+  card`, where ghee rendered through llvmpipe.
+- Name the size to render at when a display has no scaler for `--size`,
+  `this display is fixed at 1920x1080 with no scaler, so 640x480 does not
+  fit. Render at 1920x1080`.
+- Refuse an `-o` that names no `.png` or `.jpg` file before anything loads,
+  `-o wants an image pattern such as frame.####.png, or '-', got 'kms'; a
+  display takes --display`, and `--alpha` with a `.jpg`. A `.jpg` takes an
+  RGBA frame and drops its alpha, where `-o x.jpg` failed at its first frame
+  with the default `--components 4`.
 
 ### Filters
 
@@ -686,9 +707,17 @@ A scene written for 0.4.0 needs these changes.
 - Declare `assets` in a filter the way a scene does. A shipped filter's file
   is compiled in, a scanned filter's resolves beside it. Only the filter's
   own pass sees them, so they never clash with a scene's names.
-- Take `frc256`'s per-pixel phase from a shipped 64x64 blue-noise mask.
+- Ship `frc`, a temporal dither for a 1-bit panel: each pixel blinks on a
+  16-frame cycle, lit for a share of the frames that matches its grey, for
+  up to 16 shades at about 200 fps. Its `coarse` and `calm` params trade
+  shades for stillness at a lower rate.
+- Ship `frc256`, which does the same on a 16-level panel such as the
+  SSD1322, each pixel blinking between two neighbouring levels for about 256
+  shades, its per-pixel phase from a shipped 64x64 blue-noise mask.
 - Run `dither`, `frc` and `frc256` on one thread on VC4, where a pass on two
   threads can draw wrong 4x4 blocks.
+- Skip a filter file that holds a key that a filter does not take, and name
+  the key and the closest key that a filter takes.
 
 ### Library and packages
 
@@ -734,6 +763,11 @@ A scene written for 0.4.0 needs these changes.
   the scene refuses come back for `update_layer`.
 - Take either rounding of v × 255 for a channel value v read back in the
   tests, since GLs round 0.5 apart: Mesa to 128, NVIDIA to 127.
+- Report the tests that need ffmpeg as ignored under `--cfg ghee_no_ffmpeg`,
+  as `--cfg ghee_no_gpu` reports those that need a GL device, and run the
+  tests of a connected display and of the hardware H264 encoder under
+  `--cfg ghee_display` and `--cfg ghee_hw_h264`, where each returned early
+  and passed.
 - Keep the library's `assets`, `atlas`, `colour`, `cparam`, `feeds`,
   `report` and `sources` modules inside the crate.
 - Ship NOTICE and the licenses of DejaVu Sans and Pixel Operator 8 in the deb

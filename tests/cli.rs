@@ -161,6 +161,107 @@ fn a_scene_process_starts_with_the_size_that_it_renders_at_turned_by_rotate() {
     }
 }
 
+/// A scene process that writes the uv variables that it starts with into
+/// `uv`, beside it, one `NAME=value` line each, and takes no arguments.
+const UV_SCRIPT: &str = r#"#!/bin/sh
+{
+    echo "UV_INDEX=$UV_INDEX"
+    echo "UV_INDEX_STRATEGY=$UV_INDEX_STRATEGY"
+    echo "UV_NO_BINARY_PACKAGE=$UV_NO_BINARY_PACKAGE"
+    echo "UV_NO_BUILD_PACKAGE=$UV_NO_BUILD_PACKAGE"
+} > uv
+echo '{"args": []}'
+"#;
+
+#[test]
+fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
+    use std::collections::HashMap;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Dir::new("wheel");
+    fs::create_dir_all(dir.join("bin")).unwrap();
+    fs::create_dir_all(dir.join("lib/ghee")).unwrap();
+    let ghee = dir.join("bin/ghee");
+    fs::copy(env!("CARGO_BIN_EXE_ghee"), &ghee).unwrap();
+    let scene = dir.join("scene.sh");
+    fs::write(&scene, UV_SCRIPT).unwrap();
+    fs::set_permissions(&scene, fs::Permissions::from_mode(0o755)).unwrap();
+    // `ghee render <scene> -- --help` runs the scene to ask what it takes
+    let probe = || {
+        let out = Command::new(&ghee)
+            .arg("render")
+            .arg(&scene)
+            .args(["--", "--help"])
+            .env("XDG_CACHE_HOME", &dir.0)
+            .env_remove("UV_INDEX")
+            .env_remove("UV_INDEX_STRATEGY")
+            .env_remove("UV_NO_BINARY_PACKAGE")
+            .env_remove("UV_NO_BUILD_PACKAGE")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let vars: HashMap<String, String> = fs::read_to_string(dir.join("uv"))
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        (vars, String::from_utf8(out.stderr).unwrap())
+    };
+    // maturin writes the version's `-dev` as `.dev0` in the wheel's name
+    let version = env!("CARGO_PKG_VERSION").replace("-dev", ".dev0");
+    let wheel = dir.join(&format!(
+        "lib/ghee/ghee_render-{version}-cp310-abi3-linux_x86_64.whl"
+    ));
+
+    // the wheel of ghee's version: an index that lists it alone, ahead of
+    // every other index
+    fs::write(&wheel, b"").unwrap();
+    let (uv, _) = probe();
+    let index = uv["UV_INDEX"]
+        .strip_prefix("file://")
+        .unwrap_or_else(|| panic!("{uv:?}"));
+    let page = fs::read_to_string(Path::new(index).join("ghee-render/index.html")).unwrap();
+    let links: Vec<&str> = page
+        .split("href=\"")
+        .skip(1)
+        .filter_map(|s| s.split('"').next())
+        .collect();
+    let wheel = fs::canonicalize(&wheel).unwrap();
+    assert_eq!(links, [format!("file://{}", wheel.display())]);
+    assert_eq!(uv["UV_INDEX_STRATEGY"], "first-index");
+
+    // a wheel of another version alone: a dev build refuses every
+    // ghee-render, which PyPI has only older, and a release leaves uv alone
+    fs::remove_file(&wheel).unwrap();
+    fs::write(
+        dir.join("lib/ghee/ghee_render-0.0.1-cp310-abi3-linux_x86_64.whl"),
+        b"",
+    )
+    .unwrap();
+    let (uv, err) = probe();
+    assert_eq!(
+        (uv["UV_INDEX"].as_str(), uv["UV_INDEX_STRATEGY"].as_str()),
+        ("", "")
+    );
+    if env!("CARGO_PKG_VERSION").contains('-') {
+        assert_eq!(uv["UV_NO_BINARY_PACKAGE"], "ghee-render");
+        assert_eq!(uv["UV_NO_BUILD_PACKAGE"], "ghee-render");
+        let lib = fs::canonicalize(dir.join("lib/ghee")).unwrap();
+        assert_eq!(
+            err,
+            format!(
+                "  careful  {} holds no ghee-render wheel of ghee {}, so uv refuses a scene \
+                 that declares ghee-render\n",
+                lib.display(),
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    } else {
+        assert_eq!(uv["UV_NO_BINARY_PACKAGE"], "");
+        assert_eq!(uv["UV_NO_BUILD_PACKAGE"], "");
+    }
+}
+
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn rotate_turns_the_written_frame_and_keeps_its_size() {

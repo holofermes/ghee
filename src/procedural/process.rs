@@ -224,9 +224,15 @@ fn probe(path: &str, wait: Duration) -> Answer {
     let Ok((program, dir)) = where_to_run(path) else {
         return Answer::Silent;
     };
+    // The probe runs the scene as its start does: uv makes the scene's
+    // environment at the first run, and every later run reuses it.
+    let Ok(uv) = crate::procedural::wheel::uv_env() else {
+        return Answer::Silent;
+    };
     let Ok(mut child) = Command::new(program)
         .arg("--ghee-args")
         .current_dir(dir)
+        .envs(uv)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -609,9 +615,11 @@ impl SceneProcess {
         edit: impl FnOnce(&mut Value),
     ) -> Result<(Scene, SceneProcess)> {
         let (program, dir) = where_to_run(path)?;
+        let uv = crate::procedural::wheel::uv_env().map_err(|e| anyhow!("{path}: {e}"))?;
         let mut child = Command::new(&program)
             .args(args)
             .current_dir(&dir)
+            .envs(uv)
             .env(SIZE, format!("{w}x{h}"))
             .env(WIRE, "1")
             .env(LOCKSTEP, "1")

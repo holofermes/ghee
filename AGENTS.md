@@ -63,6 +63,12 @@ uv run --no-cache --with python/target/wheels/ghee_render-*.whl --with pytest \
 is where the deb takes them from. `--no-cache` is what makes uv read the wheel
 it was handed: uv keys a local wheel by its name, and a rebuild keeps that name.
 
+`ghee` hands a scene script the wheel in `lib/ghee` beside its own `bin`
+directory (`src/procedural/wheel.rs`). Before a `cargo build` runs the bundled
+Python demos, `maturin build --release --compatibility linux -o
+../target/lib/ghee` in `python/` puts the wheel there, and with no wheel there
+uv refuses them.
+
 The Pi wheels come from `tools/xwheels.sh`: cargo-zigbuild with the glibc
 pins, then a repack of the native wheel. `tools/mksysroot.sh` makes the
 sysroots it needs from the boards' own apt repositories. The deb carries the

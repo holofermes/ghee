@@ -459,6 +459,15 @@ A scene written for 0.4.0 needs these changes.
   an image asset or an image file. A message whose first part names no
   layer sets a param, and a field that the scene refuses logs once.
 - Set a string param from a scene process with message kind 3.
+- Hand a scene script the ghee-render wheel that sits beside the `ghee`
+  command, in `lib/ghee` next to its `bin` directory, where uv took the
+  newest ghee-render on PyPI, older than a dev build: ghee puts an index of
+  that wheel alone first on the scene's `UV_INDEX` and sets
+  `UV_INDEX_STRATEGY=first-index`, and numpy and the rest still come from
+  PyPI. A dev build with no wheel there makes uv refuse every ghee-render,
+  and says once where it looked, and two wheels of ghee's version there keep
+  the scene from starting. The bundled examples extract to a directory named
+  after the wheel, so uv resolves them again for each wheel.
 - Take a colour as text in message kind 3, `#rrggbb` or a CSS colour name,
   for a color param and a layer's colour, and a text layer's gradient as its
   JSON object, so a name keeps its form and `transparent` its alpha. The

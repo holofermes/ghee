@@ -55,8 +55,8 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 }
 
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
-/// extracts this set to a content-keyed cache directory first. A procedural
-/// example imports ghee from the ghee-render package, which pip installs.
+/// extracts this set to a cache directory first. A procedural example imports
+/// ghee from the ghee-render package, which uv installs.
 pub const EXAMPLES: [(&str, &[u8]); 26] = [
     ("bars.glsl", include_bytes!("../../ghee/examples/bars.glsl")),
     (
@@ -168,29 +168,33 @@ pub fn is_examples_dir(dir: &std::path::Path) -> bool {
     }
 }
 
-fn extract_examples() -> std::io::Result<String> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
+/// $XDG_CACHE_HOME, else ~/.cache, else the temp directory.
+pub(crate) fn cache_home() -> std::path::PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
-    extract_examples_in(&base)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
-/// extract_examples() under the cache directory `base`.
-fn extract_examples_in(base: &std::path::Path) -> std::io::Result<String> {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
+fn extract_examples() -> std::io::Result<String> {
+    extract_examples_in(&cache_home(), &crate::procedural::wheel::identity())
+}
+
+/// extract_examples() under the cache directory `base`. The directory's name
+/// comes from the examples, ghee's version and `wheel`, the identity of the
+/// ghee-render wheel that ghee hands a scene: uv keeps one environment per
+/// script path, and a new path makes it resolve each example again.
+fn extract_examples_in(base: &std::path::Path, wheel: &str) -> std::io::Result<String> {
+    let mut key = Vec::new();
     for (name, body) in &EXAMPLES {
-        h.update(name.as_bytes());
-        h.update([0]);
-        h.update(body);
+        key.extend_from_slice(name.as_bytes());
+        key.push(0);
+        key.extend_from_slice(body);
     }
-    let tag: String = h
-        .finalize()
-        .iter()
-        .take(6)
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    key.extend_from_slice(env!("CARGO_PKG_VERSION").as_bytes());
+    key.push(0);
+    key.extend_from_slice(wheel.as_bytes());
+    let tag = crate::procedural::wheel::tag(&key);
     let dir = base.join("ghee").join(format!("examples-{tag}"));
     let done = dir.join(".complete");
     if !done.exists() {
@@ -256,7 +260,7 @@ mod tests {
     fn the_embedded_examples_extract_and_resolve() {
         let cache = std::env::temp_dir().join(format!("ghee-examples-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cache);
-        let out = extract_examples_in(&cache).unwrap();
+        let out = extract_examples_in(&cache, "").unwrap();
         let out = std::path::Path::new(&out);
         assert!(out.join("bars.scene.json").is_file());
         assert!(out.join("lib/look.py").is_file());
@@ -273,5 +277,15 @@ mod tests {
         let scene = crate::scene::Scene::load(out.join("bars.scene.json").to_str().unwrap());
         assert!(scene.is_ok());
         std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn a_wheel_built_again_extracts_the_examples_to_a_new_directory() {
+        let cache = crate::testing::TempDir::new("examples-wheel");
+        let base = std::path::Path::new(&*cache);
+        let wheel = "/usr/lib/ghee/ghee_render-0.5.0-cp310-abi3-linux_aarch64.whl:4096";
+        let first = extract_examples_in(base, &format!("{wheel}:1")).unwrap();
+        let again = extract_examples_in(base, &format!("{wheel}:2")).unwrap();
+        assert_ne!(first, again);
     }
 }

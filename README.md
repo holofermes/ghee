@@ -65,6 +65,13 @@ sudo apt install libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev
 cargo build --release
 ```
 
+A Python scene that this build runs takes the ghee-render wheel built from
+the same tree, from `target/lib/ghee`:
+
+```
+cd python && maturin build --release --compatibility linux -o ../target/lib/ghee
+```
+
 ## Run it
 
 With `--demo`, ghee takes the scene from its bundled [examples](#scenes).
@@ -759,6 +766,16 @@ set the layers' live fields, `ghee.draw` to draw words, pictures and shapes
 from a tick, and `ghee.run` for the loop. A PEP 723 scene declares
 `ghee-render` inline, under `#!/usr/bin/env -S uv run --script`, as the
 bundled examples do.
+
+ghee hands such a scene the ghee-render wheel that sits beside the `ghee`
+command, in `lib/ghee` next to its `bin` directory, `/usr/lib/ghee` for the
+deb: uv takes ghee-render from that wheel alone, and every other package from
+its indexes. ghee puts the wheel's index first on the scene's `UV_INDEX` and
+sets `UV_INDEX_STRATEGY=first-index`. A dev build with no wheel there makes uv
+refuse the scene, and a release with none lets uv take the release from PyPI.
+uv keeps a scene's environment while it satisfies the scene's dependencies,
+so a scene of yours keeps the ghee-render of its first run until
+`uv cache clean`.
 
 A Python scene also renders on its own, with no `ghee` command:
 `./scene.py --display --frames 300`. [python/README.md](python/README.md)

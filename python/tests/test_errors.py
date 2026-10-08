@@ -104,7 +104,7 @@ def test_a_font_that_is_nowhere_draws_error_boxes(tmp_path, monkeypatch, capfd):
     with ghee.open(doc, width=32, height=24, timestep=0) as h:
         h.frame()
         assert max(h.pixels()[0::4]) == 255  # a stripe of a box
-        h.set_param("words", "ho")
+        h.layers.words.text = "ho"
         h.frame()
     # the first path tried is the working directory's
     assert (
@@ -125,7 +125,7 @@ CODE = (
 @ghee.tick
 def hook(t):
     if t.frame:
-        ghee.set_param("words", "I" * 400_000)
+        ghee.layers.words.text = "I" * 400_000
 
 
 LAYER = ghee.Layer("words", "ab", visible=False, font_family="sans")

@@ -549,7 +549,7 @@ CODE = (
 def hook(t):
     if t.frame:
         print(hashlib.sha256(_shim._HANDLE.pixels()).hexdigest())
-    ghee.set_param("words", ("ab", "cd")[t.frame % 2])
+    ghee.layers.words.text = ("ab", "cd")[t.frame % 2]
 
 
 LAYER = ghee.Layer("words", "ab", visible=False, font_family="sans")

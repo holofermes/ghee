@@ -581,8 +581,8 @@ pub struct SceneProcess {
     /// The names of the scene's layers, which address their live fields as
     /// `layer.field` and `layer.effect.field`, each true for a text layer.
     layers: HashMap<String, bool>,
-    /// The string params as they stand, and the last values read by the
-    /// process.
+    /// The string params as they stand, a text layer's words under its name
+    /// too, and the last values read by the process.
     strings: HashMap<String, String>,
     sent: HashMap<String, String>,
     /// Clean ticks from the process, not yet spent on a skip.
@@ -804,8 +804,8 @@ impl SceneProcess {
     }
 
     /// Index `layer`, a layer that the renderer took from the process: its
-    /// live fields, and the words param of a text layer, its words the
-    /// process's own, which no tick carries back.
+    /// live fields, and the words of a text layer, the process's own, which
+    /// no tick carries back.
     fn took(&mut self, layer: &Value) {
         let Ok(layer) = Layer::from_dict("the layer", layer) else {
             return;
@@ -814,13 +814,10 @@ impl SceneProcess {
         let was_text = self.layers.insert(name.clone(), layer.as_text().is_some());
         match layer.as_text() {
             Some(l) => {
-                self.params
-                    .insert(name.clone(), (None, "string".to_string()));
                 self.strings.insert(name.clone(), l.text.clone());
                 self.sent.insert(name, l.text.clone());
             }
             None if was_text == Some(true) => {
-                self.params.remove(&name);
                 self.strings.remove(&name);
                 self.sent.remove(&name);
             }
@@ -831,7 +828,8 @@ impl SceneProcess {
     /// Index the params of the compiled scene.
     /// The set holds the handshake params, plus any param added by a filter
     /// or a saved value.
-    /// The first tick carries every string param.
+    /// The first tick carries every string param, and the words of each text
+    /// layer under its name.
     pub fn bind(&mut self, scene: &Scene) {
         self.params.clear();
         self.layers = scene
@@ -851,6 +849,13 @@ impl SceneProcess {
                 .collect();
         for (pass, params) in scoped {
             for (name, p) in params.iter() {
+                // A text layer's words take `layer.text` alone.
+                if p.of_text {
+                    if let ParamValue::Str(s) = &p.value {
+                        self.strings.insert(name.clone(), s.clone());
+                    }
+                    continue;
+                }
                 // "pass.param" addresses one pass
                 // a bare name goes to the first pass that declares it
                 if let Some(pass) = pass {
@@ -1025,7 +1030,7 @@ impl SceneController for SceneProcess {
     }
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
-        for (mut name, set) in std::mem::take(&mut self.incoming) {
+        for (name, set) in std::mem::take(&mut self.incoming) {
             let data = match set {
                 Set::Layer(text) => {
                     self.add_layer(renderer, &name, &text)?;
@@ -1037,12 +1042,26 @@ impl SceneController for SceneProcess {
                 }
                 Set::Param(data) => data,
             };
-            // The `text` of a text layer is its words, the scene param of the
-            // layer's name.
-            if let Some(layer) = name.strip_suffix(".text") {
-                if self.layers.get(layer) == Some(&true) {
-                    name = layer.to_string();
+            // The `text` of a text layer is its words, which the renderer
+            // holds in the scene string param of the layer's name.
+            if let Some(layer) = name
+                .strip_suffix(".text")
+                .filter(|l| self.layers.get(*l) == Some(&true))
+            {
+                let ParamData::Str(text) = data else {
+                    let why =
+                        format!("layer '{layer}' text takes text in message kind 3, got numbers");
+                    self.refuse(&name, &why);
+                    continue;
+                };
+                renderer.set_param(None, layer, "string", &ParamValue::Str(text.clone()))?;
+                // The process wrote these words itself, so no tick carries
+                // them back.
+                if let Some(held) = self.strings.get_mut(layer) {
+                    held.clone_from(&text);
+                    self.sent.insert(layer.to_string(), text);
                 }
+                continue;
             }
             // A first part that names a layer addresses a live field of it.
             // Names are unique across the scene, so no pass has that name.
@@ -2482,7 +2501,7 @@ while IFS= read -r line; do :; done
     }
 
     #[test]
-    fn a_text_layers_text_sets_the_words_param_of_its_name() {
+    fn a_text_layers_text_sets_its_words() {
         let d = tmpdir("words");
         let doc = serde_json::json!({
             "version": 1,

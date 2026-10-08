@@ -291,9 +291,14 @@ impl ConsoleHost for Host {
                     .as_str(),
             ),
         };
-        let p = index
-            .param(pass, name)
-            .map_err(|e| ConsoleError::bad_request(e.message))?;
+        // The console hands over a text layer's `text` as the scene param of
+        // the layer's name.
+        let p = match (pass, index.words_of(name)) {
+            (None, Some(p)) => p,
+            _ => index
+                .param(pass, name)
+                .map_err(|e| ConsoleError::bad_request(e.message))?,
+        };
         let coerced =
             coerce(&p.wire, &p.ty, &value).map_err(|e| ConsoleError::bad_request(e.to_string()))?;
         lock(&self.0.queue).push((p.pass.clone(), p.uniform.clone(), p.ty.clone(), coerced));

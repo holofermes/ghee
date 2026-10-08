@@ -79,8 +79,8 @@ After the handshake, stdout carries binary messages:
   `height`, back to its default.
 - Kind 2 marks the tick clean: it needs no render, and the display keeps the
   last frame. The message is the kind byte alone, with no name and no values.
-- Kind 3 sets the named string param. The name of a text layer, or
-  `layer.text` such as `title.text`, sets its words, and a name of the form
+- Kind 3 sets the named string param. A name of the form `layer.text`, such
+  as `title.text`, sets that text layer's words, and a name of the form
   `layer.image`, such as `icon.image`, sets that image layer's `image` to the
   image asset or the `.png` or `.jpg` file that the text names. A color param
   and a layer's colour, such as `title.color` or `title.glow.color`, take the

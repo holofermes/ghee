@@ -1846,6 +1846,15 @@ pub fn no_layer<'a>(name: &str, layers: impl IntoIterator<Item = &'a str>) -> St
     )
 }
 
+/// The error for `value`, given as the `text` of text layer `layer`, when it
+/// holds no string. Python's set_layer gives this text.
+pub fn not_words(layer: &str, value: &Value) -> String {
+    format!(
+        "layer '{layer}' text needs words in a string, got {}",
+        py_repr(value)
+    )
+}
+
 /// `names` joined by commas, or "none".
 fn listed<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
     let all: Vec<&str> = names.into_iter().collect();

@@ -63,7 +63,7 @@ h = ghee.open(
 h.set_param("gain", 1.5)                 # a scene param
 h.set_param("snap", 1.0, pass_="hold")   # the param of one pass
 h.set_param("hold.snap", 1.0)            # the same param, dotted
-h.set_param("title", "hello")            # the words of the text layer title
+h.layers.title.text = "hello"            # the words of the text layer title
 h.layers.title.x = 10                    # a live field of a layer
 h.layers.title.karaoke.sung = 12         # a live field of one of its effects
 
@@ -86,9 +86,7 @@ h.close()       # also a context manager
 ## What each call does
 
 `set_param` sets a live param, with no recompile. A bare name sets the scene
-param, else the param of the first pass that declares it. A text layer's
-words are the string param of the layer's name, and ghee lays new words out
-again, also with no recompile.
+param, else the param of the first pass that declares it.
 
 `layers` sets a live field of a layer, by attribute or by key:
 `h.layers.title.x = 10`, `h.layers["title"]["karaoke"]["sung"] = 12`.
@@ -389,8 +387,9 @@ scene = ghee.Scene(
 A pass of layers alone, `ghee.Pass("words", layers=[...])`, starts each frame
 transparent, for a later pass to read through a channel.
 
-A text problem leaves the scene running, and `set_param` raises nothing for
-it. ghee prints it once on stderr, and the console shows it.
+A text problem leaves the scene running, and a set of the layer's `text`
+raises nothing for it. ghee prints it once on stderr, and the console shows
+it.
 
 ## Coverage in a shader
 

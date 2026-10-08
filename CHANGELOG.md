@@ -29,9 +29,7 @@ A scene written for 0.4.0 needs these changes.
   pass that declares the name, as Python's `set_param` takes a name, where
   `pass=scene` named the scene's params. A name that no param answers to and
   a layer that the scene lacks read as Python's errors for them, which list
-  the names that the scene takes. A text layer's words take
-  `/set?layer=<name>&field=text` alone, where `pass=scene&name=<name>` set
-  them too.
+  the names that the scene takes.
 
 ### Removed
 
@@ -187,9 +185,9 @@ A scene written for 0.4.0 needs these changes.
   `font_size`, `font_family`, a `.ttf` or `.otf` file or the name of a font
   asset, and `text_align`. A layer with no `font_family` draws from the
   built-in font, DejaVu Sans cut to ASCII, Latin-1 and the common
-  punctuation. ghee declares a scene string param under each layer's name,
-  which holds the words, and new words from `set_param`, `/set`, the console
-  or a procedural scene lay out again with no recompile.
+  punctuation. New words in a layer's live `text`, from Python's `layers`,
+  `/set`, the console or a procedural scene, lay out again with no
+  recompile.
 - Space a layer's glyphs by their advances and the font's pair kerning, the
   pair adjustments of the `kern` feature in its GPOS table, as HarfBuzz
   applies them, or, in a font without that feature, its `kern` table.
@@ -435,8 +433,7 @@ A scene written for 0.4.0 needs these changes.
   `title.text` with a text layer's words and `icon.image` with the name of
   an image asset or an image file. A message whose first part names no
   layer sets a param, and a field that the scene refuses logs once.
-- Set a string param, and so a text layer's words, from a scene process with
-  message kind 3.
+- Set a string param from a scene process with message kind 3.
 - Take a colour as text in message kind 3, `#rrggbb` or a CSS colour name,
   for a color param and a layer's colour, and a text layer's gradient as its
   JSON object, so a name keeps its form and `transparent` its alpha. The

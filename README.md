@@ -416,9 +416,9 @@ A text layer's `color` also takes a gradient, `{"from", "to", "angle"}`, with
 CSS's angle in degrees: 0 runs up, 90 right, and 180, the default, down. The
 gradient spans the block and moves with it.
 
-ghee declares a scene string param under each text layer's name, which holds
-the words. `set_param`, `/set`, the console and a procedural scene set new
-words through it, and ghee lays them out again with no rebuild.
+A text layer's `text` is a live field: Python's `layers`, `/set`, the console
+and a procedural scene set new words through it, and ghee lays them out again
+with no rebuild.
 
 ### Effects
 

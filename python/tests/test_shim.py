@@ -847,21 +847,6 @@ def test_a_filter_param_goes_out_unchecked(monkeypatch):
     assert messages(rest) == [(1, "dither.levels", [4.0]), (1, "levels", [2.0]), END]
 
 
-def test_a_layer_takes_its_words_through_set_param(monkeypatch):
-    """ghee declares the string param of a text layer's name."""
-    shim = load()
-
-    @shim.tick
-    def hook(tick):
-        shim.set_param("title", "ho")
-
-    scene = scene_of(shim)
-    scene.passes[0].layers = [shim.Layer("title", "hi", font_family="sans.ttf")]
-    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
-    _, rest = drive(shim, scene, ticks, monkeypatch)
-    assert messages(rest) == [(3, "title", "ho"), END]
-
-
 # set_param's refusals, each the same under ghee and in direct mode
 REFUSED = [
     (
@@ -953,7 +938,7 @@ def test_a_layer_set_goes_out_in_the_form_of_its_field(monkeypatch):
         (3, "title.color", "#ff0000"),
         (3, "title.color", "Transparent"),
         (3, "title.color", '{"from":[0,0,1],"to":"navy"}'),
-        (3, "title", "ho"),
+        (3, "title.text", "ho"),
         (3, "icon.image", "b"),
         END,
     ]

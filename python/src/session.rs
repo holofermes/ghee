@@ -22,7 +22,7 @@ use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{no_layer, no_param, short_floats, ArraySize, ParamValue, Scene};
+use ghee::scene::{no_layer, no_param, not_words, short_floats, ArraySize, ParamValue, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
@@ -122,6 +122,7 @@ pub fn array_count(size: ArraySize) -> usize {
 }
 
 /// One live param, as a host addresses it.
+#[derive(Clone)]
 pub struct ParamRef {
     /// the name on the wire: `pass.name`, or `name`
     pub wire: String,
@@ -130,6 +131,9 @@ pub struct ParamRef {
     /// the uniform itself, without the pass
     pub uniform: String,
     pub ty: String,
+    /// The scene string param that holds the words of the text layer of its
+    /// name. A host sets the words through the layer's `text` alone.
+    pub words: bool,
 }
 
 /// What the scene declares. A host feeds the arrays, sets the params and the
@@ -161,6 +165,11 @@ impl Index {
                 }
             }
         }
+        let layers: Vec<(String, bool)> = scene
+            .layers()
+            .map(|l| (l.name().to_string(), l.as_text().is_some()))
+            .collect();
+        let texts: HashMap<String, bool> = layers.iter().cloned().collect();
         let mut params: Vec<ParamRef> = Vec::new();
         let scoped = std::iter::once((None, &scene.params)).chain(
             scene
@@ -176,6 +185,7 @@ impl Index {
                         pass: Some(pass.to_string()),
                         uniform: name.clone(),
                         ty: p.ty.clone(),
+                        words: false,
                     });
                 }
                 if params.iter().any(|r| r.wire == *name) {
@@ -186,20 +196,17 @@ impl Index {
                     pass: pass.map(str::to_string),
                     uniform: name.clone(),
                     ty: p.ty.clone(),
+                    words: pass.is_none() && texts.get(name) == Some(&true),
                 });
             }
         }
-        let layers: Vec<(String, bool)> = scene
-            .layers()
-            .map(|l| (l.name().to_string(), l.as_text().is_some()))
-            .collect();
         Index {
             wires: params
                 .iter()
                 .enumerate()
                 .map(|(k, r)| (r.wire.clone(), k))
                 .collect(),
-            texts: layers.iter().cloned().collect(),
+            texts,
             arrays,
             params,
             passes: scene.passes.iter().map(|p| p.name.clone()).collect(),
@@ -238,9 +245,15 @@ impl Index {
             Some(pass) => format!("{pass}.{name}"),
             None => name.to_string(),
         };
-        self.wired(&wire).ok_or_else(|| {
-            Fault::scene(no_param(&wire, self.params.iter().map(|r| r.wire.as_str())))
+        self.wired(&wire).filter(|r| !r.words).ok_or_else(|| {
+            let wires = self.params.iter().filter(|r| !r.words);
+            Fault::scene(no_param(&wire, wires.map(|r| r.wire.as_str())))
         })
+    }
+
+    /// The param that holds the words of text layer `layer`.
+    pub fn words_of(&self, layer: &str) -> Option<&ParamRef> {
+        self.wired(layer).filter(|r| r.words)
     }
 
     fn array(&self, name: &str) -> Outcome<ArraySize> {
@@ -912,10 +925,15 @@ impl Session {
         std::fs::write(&path, bytes).map_err(|e| Fault::system(format!("{path}: {e}")))
     }
 
-    /// Set one live param, with no recompile. A string param of a text
-    /// layer's name lays the layer's words out again.
+    /// Set one live param, with no recompile.
     pub fn set_param(&mut self, pass: Option<&str>, name: &str, value: &Value) -> Outcome<()> {
-        let p = self.index.param(pass, name)?;
+        let p = self.index.param(pass, name)?.clone();
+        self.set_ref(&p, value)
+    }
+
+    /// Set the param `p` to `value`. The words param of a text layer lays
+    /// the layer's words out again.
+    fn set_ref(&mut self, p: &ParamRef, value: &Value) -> Outcome<()> {
         let v = coerce(&p.wire, &p.ty, value).map_err(scene_fault)?;
         // New words fail when the engine cannot lay them out, a fault of
         // the scene's.
@@ -938,8 +956,8 @@ impl Session {
 
     /// Set the live field `field` of layer `layer`, or of its effect
     /// `effect`, with no rebuild. The field `text` of a text layer sets its
-    /// words through its string param. A layer, a field or a value that the
-    /// scene refuses is a fault of the caller's.
+    /// words. A layer, a field or a value that the scene refuses is a fault
+    /// of the caller's.
     pub fn set_layer(
         &mut self,
         layer: &str,
@@ -948,7 +966,11 @@ impl Session {
         value: &Value,
     ) -> Outcome<()> {
         if self.index.words(layer, effect, field)? {
-            return self.set_param(None, layer, value);
+            if !value.is_string() {
+                return Err(Fault::scene(not_words(layer, value)));
+            }
+            let p = self.index.words_of(layer).cloned();
+            return self.set_ref(&p.expect("a text layer holds a words param"), value);
         }
         let at = Address {
             layer,

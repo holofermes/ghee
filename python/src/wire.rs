@@ -7,9 +7,8 @@
 //! scene process, as it does on a handle, and the scene there grows as the
 //! scene in ghee does.
 
-use ghee::console::server::coerce;
 use ghee::layer::{Address, Form, Layer, Rgb};
-use ghee::scene::{ParamValue, Scene};
+use ghee::scene::{not_words, Scene};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString};
 use serde_json::Value;
@@ -60,10 +59,9 @@ impl LayerWire {
         value: &Value,
     ) -> Outcome<(String, Body)> {
         if self.index.words(layer, effect, field)? {
-            let p = self.index.param(None, layer)?;
-            return match coerce(&p.wire, &p.ty, value).map_err(scene_fault)? {
-                ParamValue::Str(words) => Ok((p.wire.clone(), Body::Text(words))),
-                _ => unreachable!("the words param of a text layer is a string"),
+            return match value {
+                Value::String(words) => Ok((format!("{layer}.text"), Body::Text(words.clone()))),
+                v => Err(Fault::scene(not_words(layer, v))),
             };
         }
         let at = Address {

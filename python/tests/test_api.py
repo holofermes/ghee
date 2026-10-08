@@ -328,10 +328,10 @@ def test_new_words_lay_out_on_the_next_frame(monkeypatch):
         h.frame()
         ghee_drawn = h.pixels()
         assert max(ghee_drawn[0::4]) == 255  # full cover inside a stroke
-        h.set_param("words", "lettering")
+        h.layers.words.text = "lettering"
         h.frame()
         assert h.pixels() != ghee_drawn
-        h.set_param("words", "ghee")
+        h.layers.words.text = "ghee"
         h.frame()
         assert h.pixels() == ghee_drawn
 

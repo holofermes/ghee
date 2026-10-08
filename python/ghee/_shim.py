@@ -106,8 +106,7 @@ class Param:
     A color is "#rrggbb", a CSS colour name or [r, g, b] in 0..1.
     A vecK is K numbers.
     A string never reaches a shader: the scene process reads it in the tick
-    line. ghee declares the string param of each text layer's name itself,
-    and a Param under that name fails the scene.
+    line. A scene Param that shares its name with a layer fails the scene.
     """
 
     name: str
@@ -191,8 +190,8 @@ class Layer:
     `blend` paints the layer over the pass as "normal", "add", "multiply" or
     "screen".
 
-    A text layer draws `text`, and ghee declares the string param of its
-    name, which holds the words, live. Every pass reads them with
+    A text layer draws `text`, which ghee.layers sets live. Every pass reads
+    the words with
     float <name>_cover(vec2 p, float font_size) and vec2 <name>_size.
     `font_size` is the pixels per em, and without it the block takes the
     largest size that fits its room. Its `color` takes a gradient too,
@@ -1046,9 +1045,7 @@ def set_param(
     """Set a live param for this tick.
 
     A float takes one number, a color takes "#rrggbb", a CSS colour name or
-    three numbers, and a vecN takes N.
-    A string takes words, and the string param of a text layer's name holds
-    the layer's words.
+    three numbers, a vecN takes N, and a string takes text.
     `pass_` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
 
@@ -1129,9 +1126,6 @@ def _param_types(scene: Scene) -> dict:
     before it holds that name.
     """
     types = {n: p.type for n, p in scene.params.items()}
-    for ps in scene.passes:
-        for layer in ps.layers:
-            types[layer.name] = "string"
     for ps in scene.passes:
         for n, p in ps.params.items():
             types[f"{ps.name}.{n}"] = p.type

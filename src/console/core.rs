@@ -698,10 +698,13 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
 
     /// The body of a POST that precheck() let through, read from `r` up to
     /// the body cap. A longer body answers the 413 of precheck(), which a
-    /// chunked body, sent with no Content-Length, meets only here.
+    /// chunked body, sent with no Content-Length, meets only here, and a
+    /// read that fails answers 400 with the reason.
     pub fn read_body(&self, r: &mut dyn Read) -> Result<Vec<u8>, Response> {
         let mut body = Vec::new();
-        let _ = r.take(self.max_body as u64 + 1).read_to_end(&mut body);
+        if let Err(e) = r.take(self.max_body as u64 + 1).read_to_end(&mut body) {
+            return Err(Response::text(400, &format!("bad body: {e}")));
+        }
         if body.len() > self.max_body {
             return Err(self.too_large());
         }
@@ -2446,6 +2449,23 @@ mod tests {
             let got = parse_param_value(ty, raw);
             assert_eq!(got, want.map_err(str::to_string), "{ty} {raw:?}");
         }
+    }
+
+    #[test]
+    fn a_body_whose_read_fails_answers_400_with_the_reason() {
+        struct Cut(bool);
+        impl Read for Cut {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::replace(&mut self.0, true) {
+                    return Err(std::io::Error::other("the client hung up"));
+                }
+                buf[..2].copy_from_slice(b"{\"");
+                Ok(2)
+            }
+        }
+        let refused = api().read_body(&mut Cut(false)).unwrap_err();
+        assert_eq!(refused.status, 400);
+        assert_eq!(refused.body, b"bad body: the client hung up");
     }
 
     #[test]

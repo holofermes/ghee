@@ -859,8 +859,12 @@ let E = NO_EDITS, D = null;
 // rev is the revision of the scene this page last read, which every edit
 // carries. ghee counts each edit that it takes, so known, the revision that
 // this page accounts for, is rev plus this page's edits taken since. A /stats
-// rev that differs from known means another client changed the scene.
-let rev = null, known = null;
+// rev that differs from known means another client changed the scene. An
+// edit counts in known only when no read was taken while it was out, since
+// that read may hold it already: a known behind ghee's rev costs one more
+// read, and one ahead misses another client's edit. reads counts the reads
+// taken.
+let rev = null, known = null, reads = 0;
 const layerEdit = n => ((E.values || {}).layers || {})[n];
 const passEdit = n => ((E.values || {}).passes || {})[n];
 const defPass = n => (D && (D.passes || []).find(p => p.name === n)) || null;
@@ -886,9 +890,10 @@ async function edit(path, scene, q, body){
   if (rev != null && scene === active) u += `&rev=${rev}`;
   const o = body == null ? {method: "POST"} : {method: "POST", headers: {"Content-Type": "application/json"}, body};
   inflight++;
+  const seen = reads;
   try {
     const r = await fetch(u, o);
-    if (r.ok && scene === active && known != null) known++;
+    if (r.ok && scene === active && known != null && seen === reads) known++;
     if (r.status === 409) sceneMoved(scene);
     else if (r.status === 412) $("#behind").hidden = false;
     return r;
@@ -1109,6 +1114,7 @@ async function readScene(name){
 function take(got){
   work = got.scene; D = got.defaults; E = got.edits;
   rev = known = got.rev;
+  reads++;
 }
 
 // `own`, a load that this page asked for, hides the moved notice, which a

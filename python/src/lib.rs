@@ -594,7 +594,11 @@ fn open(
         None => Vec::new(),
         Some(d) => match to_json(d)? {
             Value::Object(map) => map.into_iter().collect(),
-            _ => return Err(PyValueError::new_err("opts takes a dict of display options")),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "opts takes a dict of display options",
+                ))
+            }
         },
     };
     let size = match (width, height) {

@@ -756,7 +756,9 @@ A scene written for 0.4.0 needs these changes.
   ghee yields the CPU after each flip to start that work. On a Pi Zero 2 W,
   whose kernel queues that work on the CPU that submits the flip, a 128x32
   SSD1306 with 4 ms of work between frames draws at 199 fps, where it drew
-  at 161.
+  at 161. With no work between frames it draws at 193.5 fps, where it drew
+  at 197, and a Python screen that draws 200 calls a frame on it draws at
+  179 fps on 102% of a core, where it drew at 128 fps on 72%.
 - Encode a frame under 16384 pixels in hardware, scaled up by the smallest
   whole factor that reaches 16384 with each pixel a square block, where the
   encoder refused it. A 128x32 panel streams at 256x64.

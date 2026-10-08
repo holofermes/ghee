@@ -78,9 +78,11 @@ describes.
   `fonts` maps a `font_family` to its render, and every other font takes
   `default`.
 - `GET /filters`: the filter registry, `{name: filter def}`
-- `GET /hwinfo`: the host's hardware: `model`, the board as the device tree
-  names it, `gpu`, `ram`, `ram_free`, and on a Raspberry Pi `gpu_mem` and
-  `temp`. A fact that the host cannot read is absent.
+- `GET /hwinfo`: the host's hardware, each fact as text: `model`, the board
+  as the device tree names it, or the kernel's name and release on a host
+  with no device tree, `gpu`, `n/a` off a Raspberry Pi, `ram` and
+  `ram_free`, such as `408 MB`, and on a Raspberry Pi `gpu_mem` and `temp`.
+  A fact that the host cannot read is absent.
 - `GET /frame.png`: one lossless PNG of the next frame, at the render size.
   The request goes on the command queue, so the frame carries every `/set`
   that returned before it. It answers 409 while the scene holds an error, and
@@ -91,7 +93,8 @@ describes.
 An edit names the scene that it edits: `/set` in `scene=`, every other edit
 in `name=`. An edit for a scene other than the active one answers 409 and
 changes nothing. An edit without a name edits the active scene. While the
-active scene loads, an edit answers 503, `scene 'clocks' is loading`.
+active scene loads, an edit answers 503, `scene 'clocks' is loading`, and
+once a load of it fails, 500 with the load's error.
 
 Every change applied through the API gives the scene a new revision: a set,
 an apply, a save, a reset, an answer and a switch. An edit takes `rev=`,

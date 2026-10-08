@@ -23,7 +23,9 @@
 //!
 //! A host that keeps each scene's working copy and its defaults says so
 //! through scene_doc(), edits(), save(), reset() and answer(). The defaults of
-//! those refuse, for a host whose scene is written in code.
+//! those suit a host whose scene is written in code: scene_doc() serves
+//! scene_def() and refuses the defaults, edits() answers no edit, and the
+//! others refuse.
 //!
 //! An API holds no mutable state, so any number of threads may call it at once.
 //! A host states its own thread contract for set_param, switch and apply_scene.
@@ -404,7 +406,7 @@ pub trait ConsoleHost {
     }
 
     /// {fps, frame_ms, stream_fps, out, error, error_line, error_pass,
-    /// text_errors, active, display, stale, layer_changes}.
+    /// text_errors, active, display, stale, layer_changes, rev}.
     ///
     /// fps counts completed render-loop frames per elapsed second, over a
     /// trailing window (stats::FrameRate). frame_ms is one loop iteration, with
@@ -417,7 +419,8 @@ pub trait ConsoleHost {
     /// the active scene changed since the compile. A host whose scenes have no
     /// files answers false for stale. layer_changes counts the changes that
     /// the program behind the scene made to its layers in scene_def(), so a
-    /// page reads the scene again when it moves.
+    /// page reads the scene again when it moves. rev is the active scene's
+    /// revision, in a host that keeps one.
     ///
     /// A poll loop in the browser reads this, so it must not block.
     fn stats(&self) -> ConsoleResult<Value>;

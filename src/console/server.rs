@@ -2795,7 +2795,8 @@ pub struct Options {
     /// The array sources the scenes read per frame.
     pub arrays: Vec<(String, ArraySource)>,
     pub scenes_dir: Option<String>,
-    /// Where the scenes' state files live. None takes state::default_dir().
+    /// Where the scenes' state files live. None takes the store's own, else
+    /// state::default_dir().
     pub state_dir: Option<std::path::PathBuf>,
     pub size: (i32, i32),
     pub port: u16,

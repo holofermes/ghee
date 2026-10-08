@@ -216,7 +216,7 @@ impl Shared {
     }
 }
 
-/// The console API runs on this read-only host.
+/// The console API runs on this host.
 struct Host(Arc<Shared>);
 
 impl ConsoleHost for Host {

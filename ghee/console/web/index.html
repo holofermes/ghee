@@ -1144,7 +1144,7 @@ function paintAll(){
 let reading = false;
 const inUse = () => {
   const a = document.activeElement;
-  return !!(menuFrom || answer || named || a === CODE.ta || (a && a.closest && a.closest("#params, #size")));
+  return !!(menuFrom || answer || named || a === CODE.ta || (a && a.closest && a.closest("#params, #size, #chans")));
 };
 async function refresh(force = false){
   if (reading || !work || (!force && inUse())) return;

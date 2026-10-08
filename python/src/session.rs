@@ -886,20 +886,12 @@ impl Session {
                 components,
             })
         } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-            let rgb: Vec<u8> = match components {
-                4 => data
-                    .chunks_exact(4)
-                    .flat_map(|p| &p[..3])
-                    .copied()
-                    .collect(),
-                _ => data.to_vec(),
-            };
             encode_jpeg(
                 Frame {
-                    data: &rgb,
+                    data,
                     width,
                     height,
-                    components: 3,
+                    components,
                 },
                 JPEG_QUALITY,
             )

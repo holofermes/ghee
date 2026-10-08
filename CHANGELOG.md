@@ -494,7 +494,8 @@ A Rust host written for 0.4.0 needs these changes.
   hides instead, a layer moves to the place of its call among the frame's
   calls, and an effect that a call stops naming is bypassed. A path and a
   numpy number or array draw as the str and the values that they hold. Two
-  calls that draw one layer in a frame raise ValueError. On a
+  calls that draw one layer in a frame raise ValueError, and a `name` that
+  is no str raises TypeError. On a
   Pi Zero 2 W, with rects and two-digit words in the pixel font and half of
   the calls changed each frame, a frame of 50 calls draws at 193 fps on a
   128x32 SSD1306, and a frame of 200 calls at 181 fps, after a first frame

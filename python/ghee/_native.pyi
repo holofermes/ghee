@@ -92,7 +92,8 @@ class Drawing:
     of code that makes it and its count from that line in the frame, or by
     its `name`, which names the layer too. A call with no name names its
     layer after its kind: text, text2, image, rect, line. Two calls that draw
-    one layer in a frame raise ValueError.
+    one layer in a frame raise ValueError, and a `name` that is no str raises
+    TypeError.
 
     Leaving the block sends ghee what changed: a live field changes live,
     any other change builds that layer alone again, a call that runs for the

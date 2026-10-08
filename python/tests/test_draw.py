@@ -529,6 +529,22 @@ def test_the_calls_of_a_draw_that_raised_go_to_draw_again():
     ]
 
 
+@pytest.mark.parametrize(
+    "call,error",
+    [
+        (lambda d: d.text("a", name=3), "name needs a string, got int"),
+        (lambda d: d.circle((1, 1), 1, name=b"c"), "name needs a string, got bytes"),
+    ],
+    ids=["text", "circle"],
+)
+def test_a_name_that_is_no_string_raises_type_error(call, error):
+    fake = Fake()
+    with pytest.raises(TypeError) as raised, _shim.Drawing(fake, _shim._Screen()) as d:
+        call(d)
+    assert str(raised.value) == error
+    assert fake.sent == []
+
+
 # --------------------------------------------------------- a scene script
 
 

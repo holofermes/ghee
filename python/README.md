@@ -228,7 +228,8 @@ call that comes and goes above another leaves the other's layer alone.
 place of the line, and when the scene holds a layer of that name, the call
 draws it. A call with no name names its layer after its kind, `text`,
 `text2`, `image`, `rect`, `line`, past every name of the scene. Two calls
-that draw one layer in a frame raise ValueError.
+that draw one layer in a frame raise ValueError, and a `name` that is no
+str raises TypeError.
 
 Leaving the block sends ghee what changed. A live field changes live. Any
 other change builds that layer alone again, and a new size of an effect,

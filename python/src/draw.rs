@@ -27,7 +27,7 @@
 use std::collections::{HashMap, HashSet};
 
 use ghee::draw::{Arg, Call, CallKind};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
@@ -160,6 +160,21 @@ fn wire_of<'py>(handle: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, LayerW
         return Ok(None);
     };
     Ok(live.call0()?.cast_into::<LayerWire>().ok())
+}
+
+/// The words of `name`, a call's name, None for None. Raises TypeError for
+/// a value of another type than str.
+fn name_of<'a>(name: &'a Option<Bound<'_, PyAny>>) -> PyResult<Option<&'a str>> {
+    let Some(v) = name.as_ref().filter(|v| !v.is_none()) else {
+        return Ok(None);
+    };
+    match v.cast::<PyString>() {
+        Ok(s) => Ok(Some(s.to_str()?)),
+        Err(_) => Err(PyTypeError::new_err(format!(
+            "name needs a string, got {}",
+            v.get_type().name()?
+        ))),
+    }
 }
 
 /// The shim's number for a kind of call.
@@ -383,7 +398,8 @@ struct Changed {
 /// of code that makes it and its count from that line in the frame, or by
 /// its `name`, which names the layer too. A call with no name names its
 /// layer after its kind: text, text2, image, rect, line. Two calls that draw
-/// one layer in a frame raise ValueError.
+/// one layer in a frame raise ValueError, and a `name` that is no str raises
+/// TypeError.
 ///
 /// Leaving the block sends ghee what changed: a live field changes live,
 /// any other change builds that layer alone again, a call that runs for the
@@ -984,7 +1000,7 @@ impl Drawing {
         &mut self,
         py: Python<'py>,
         words: Bound<'py, PyAny>,
-        name: Option<&str>,
+        name: Option<Bound<'py, PyAny>>,
         x: Option<Bound<'py, PyAny>>,
         y: Option<Bound<'py, PyAny>>,
         color: Option<Bound<'py, PyAny>>,
@@ -1007,7 +1023,7 @@ impl Drawing {
         self.put(
             py,
             CallKind::Text,
-            name,
+            name_of(&name)?,
             &[
                 words,
                 x,
@@ -1040,7 +1056,7 @@ impl Drawing {
         &mut self,
         py: Python<'py>,
         image: Bound<'py, PyAny>,
-        name: Option<&str>,
+        name: Option<Bound<'py, PyAny>>,
         x: Option<Bound<'py, PyAny>>,
         y: Option<Bound<'py, PyAny>>,
         width: Option<Bound<'py, PyAny>>,
@@ -1054,7 +1070,7 @@ impl Drawing {
         self.put(
             py,
             CallKind::Image,
-            name,
+            name_of(&name)?,
             &[image, x, y, width, height, color, opacity, blend, visible],
         )
     }
@@ -1067,7 +1083,7 @@ impl Drawing {
     fn rect<'py>(
         &mut self,
         py: Python<'py>,
-        name: Option<&str>,
+        name: Option<Bound<'py, PyAny>>,
         x: Option<Bound<'py, PyAny>>,
         y: Option<Bound<'py, PyAny>>,
         width: Option<Bound<'py, PyAny>>,
@@ -1082,7 +1098,7 @@ impl Drawing {
         self.put(
             py,
             CallKind::Rect,
-            name,
+            name_of(&name)?,
             &[
                 x,
                 y,
@@ -1108,7 +1124,7 @@ impl Drawing {
         py: Python<'py>,
         centre: Bound<'py, PyAny>,
         radius: Bound<'py, PyAny>,
-        name: Option<&str>,
+        name: Option<Bound<'py, PyAny>>,
         color: Option<Bound<'py, PyAny>>,
         opacity: Option<Bound<'py, PyAny>>,
         blend: Option<Bound<'py, PyAny>>,
@@ -1127,7 +1143,7 @@ impl Drawing {
             py,
             site,
             CallKind::Rect,
-            name,
+            name_of(&name)?,
             &[x, y, w, h, color, opacity, blend, visible, border, r],
         )
     }
@@ -1141,7 +1157,7 @@ impl Drawing {
         py: Python<'py>,
         a: Bound<'py, PyAny>,
         b: Bound<'py, PyAny>,
-        name: Option<&str>,
+        name: Option<Bound<'py, PyAny>>,
         x: Option<Bound<'py, PyAny>>,
         y: Option<Bound<'py, PyAny>>,
         color: Option<Bound<'py, PyAny>>,
@@ -1154,7 +1170,7 @@ impl Drawing {
         self.put(
             py,
             CallKind::Line,
-            name,
+            name_of(&name)?,
             &[
                 Some(points),
                 x,
@@ -1177,7 +1193,7 @@ impl Drawing {
         &mut self,
         py: Python<'py>,
         points: Bound<'py, PyAny>,
-        name: Option<&str>,
+        name: Option<Bound<'py, PyAny>>,
         x: Option<Bound<'py, PyAny>>,
         y: Option<Bound<'py, PyAny>>,
         color: Option<Bound<'py, PyAny>>,
@@ -1190,7 +1206,7 @@ impl Drawing {
         self.put(
             py,
             CallKind::Line,
-            name,
+            name_of(&name)?,
             &[points, x, y, color, opacity, blend, visible, stroke_width],
         )
     }

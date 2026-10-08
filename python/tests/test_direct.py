@@ -259,7 +259,7 @@ def test_rotate_and_brightness_take_the_values_of_ghee_render(
     shim, _, _ = host(monkeypatch, argv)
     with pytest.raises(SystemExit):
         shim.args([])
-    assert error in capsys.readouterr().err
+    assert capsys.readouterr().err.splitlines()[-1] == f"feeder.py: error: {error}"
 
 
 def test_a_share_of_the_render_size_turns_with_a_quarter_rotate(monkeypatch):

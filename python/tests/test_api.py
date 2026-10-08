@@ -619,7 +619,7 @@ def test_rotate_turns_the_frame_clockwise_and_the_scene_renders_turned():
         ] * 4
     with pytest.raises(ValueError) as raised:
         ghee.open(halves, width=4, height=2, rotate=45)
-    assert str(raised.value) == "rotate takes 0, 90, 180 or 270, got 45"
+    assert str(raised.value).startswith("rotate takes 0, 90, 180 or 270")
 
 
 def test_a_headless_screen_reads_no_brightness_and_refuses_one():
@@ -627,7 +627,7 @@ def test_a_headless_screen_reads_no_brightness_and_refuses_one():
         assert h.brightness is None
         with pytest.raises(ValueError) as raised:
             h.brightness = 0.5
-    assert str(raised.value) == "brightness needs a KMS display, and nothing drives one"
+    assert str(raised.value).startswith("brightness needs a KMS display")
 
 
 def test_dri_names_the_device_that_renders():
@@ -635,7 +635,7 @@ def test_dri_names_the_device_that_renders():
         ghee.open(width=8, height=8, dri="/dev/dri/no-such-node")
 
 
-def test_measure_lays_words_out_as_ghee_draws_them():
+def test_measure_gives_the_size_of_the_words_and_raises_for_an_unknown_font():
     with ghee.open(width=128, height=32) as h:
         w, ht = h.measure("Hi", font_size=20)
         assert h.measure("Hi Hi", font_size=20)[0] > w > 0

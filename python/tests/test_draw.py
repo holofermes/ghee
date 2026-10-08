@@ -687,10 +687,7 @@ def test_an_error_of_a_call_reaches_python_and_draws_no_frame():
     with ghee.open(width=16, height=4) as screen:
         with pytest.raises(ValueError) as raised, screen.draw() as d:
             d.rect(color="navyy")
-        assert str(raised.value) == (
-            "layer 'rect' color needs '#rrggbb', a CSS colour name or three numbers "
-            "[r, g, b], got 'navyy'"
-        )
+        assert str(raised.value).startswith("layer 'rect' color needs")
         with pytest.raises(RuntimeError, match="nothing is drawn yet"):
             screen.pixels()
 

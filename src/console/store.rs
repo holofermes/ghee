@@ -139,14 +139,24 @@ impl SceneStore {
         Ok(Some(state::file_of(dir, &file, self.demo.then_some(name))))
     }
 
-    /// The edits that the scene's state file holds. An unreadable file logs
-    /// one line and holds none.
+    /// The edits that the scene's state file holds. An unreadable file holds
+    /// none: it moves aside before a save can replace it, and logs one line.
     fn read_state(&self, name: &str) -> Option<Edits> {
         let path = self.state_file(name).ok().flatten()?;
         match state::read(&path) {
             Ok(edits) => edits,
             Err(e) => {
-                eprintln!("{name}: its state file is unreadable, so none of it applies: {e}");
+                match state::move_unreadable(&path) {
+                    Ok(to) => eprintln!(
+                        "{name}: its state file is unreadable, so none of it applies, \
+                         and it moved to {}: {e}",
+                        to.display()
+                    ),
+                    Err(why) => eprintln!(
+                        "{name}: its state file is unreadable, so none of it applies: {e}. \
+                         It could not move aside, so the next save replaces it: {why}"
+                    ),
+                }
                 None
             }
         }
@@ -569,6 +579,34 @@ mod tests {
         // a save with no edit left removes the file
         store.save("one", &Edits::default()).unwrap();
         assert!(!Path::new(&file).exists());
+    }
+
+    /// A state file that does not read moves aside at the load, whole, so a
+    /// save leaves it, and a second one takes the next free name.
+    #[test]
+    fn an_unreadable_state_file_moves_aside_and_outlives_the_next_save() {
+        let (_d, _states, store) = kept("unreadable");
+        let file = store.state_file("one").unwrap().unwrap();
+        let aside = |n: &str| PathBuf::from(format!("{}.unreadable{n}", file.display()));
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "{\"version\": 1, \"values\": ").unwrap();
+        let (opened, _) = store.open("one", None, (32, 24)).unwrap();
+        assert!(opened.saved.is_none());
+        assert!(!file.exists());
+        let mut edits = Edits::default();
+        edits.values.insert("params".to_string(), json!({"x": 1}));
+        store.save("one", &edits).unwrap();
+        assert_eq!(
+            fs::read_to_string(aside("")).unwrap(),
+            "{\"version\": 1, \"values\": "
+        );
+        fs::write(&file, "{\"version\": 9}").unwrap();
+        store.open("one", None, (32, 24)).unwrap();
+        assert_eq!(fs::read_to_string(aside(".2")).unwrap(), "{\"version\": 9}");
+        assert_eq!(
+            fs::read_to_string(aside("")).unwrap(),
+            "{\"version\": 1, \"values\": "
+        );
     }
 
     #[test]

@@ -243,6 +243,27 @@ pub fn read(path: &Path) -> Result<Option<Edits>, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Move the state file `path`, which read() refused, to `<path>.unreadable`
+/// beside it, or to `<path>.unreadable.2` and on when that name is taken, so
+/// the next write leaves it whole. Returns where it went.
+pub fn move_unreadable(path: &Path) -> Result<PathBuf, String> {
+    let mut n = 1;
+    let to = loop {
+        let mut to = path.as_os_str().to_owned();
+        to.push(".unreadable");
+        if n > 1 {
+            to.push(format!(".{n}"));
+        }
+        let to = PathBuf::from(to);
+        if fs::symlink_metadata(&to).is_err() {
+            break to;
+        }
+        n += 1;
+    };
+    fs::rename(path, &to).map_err(|e| format!("{}: {e}", to.display()))?;
+    Ok(to)
+}
+
 /// Write `edits` of the scene file `scene` to the state file `path`, whole,
 /// through a temporary file and a rename. No edit removes the file.
 pub fn write(path: &Path, scene: &str, edits: &Edits) -> Result<(), String> {

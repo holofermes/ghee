@@ -574,7 +574,8 @@ A scene written for 0.4.0 needs these changes.
   /aside` answers keep or default. `GET /edits` gives the working copy's
   edits and whether they are saved, and `POST /reset` takes the working copy
   back to the files. Every console that ghee runs saves, `--demo` included,
-  and a console hosted by Python saves nothing.
+  and a console hosted by Python saves nothing. A state file that ghee
+  cannot read moves to `<file>.unreadable` beside it, with a log line.
 - Lay a procedural scene's saved values, GLSL, channels and filter list over
   the scene that its process writes, at each start. The process keeps which
   passes, layers and params exist and their order, and a value that it sets

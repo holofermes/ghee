@@ -851,7 +851,9 @@ against: a pass's `fragment`, `channels` and `layers`, the `common` block, the
 A value whose pass, layer or param is gone is skipped, with one line in the
 log, and the next save drops it. An item whose `base` no longer matches the
 files is set aside: the files' version runs, and the console asks once, keep
-mine or update to default.
+mine or update to default. A state file that ghee cannot read, such as one
+with broken JSON, moves to `clocks.json.unreadable` beside it, with one line
+in the log, and the scene loads without its edits.
 
 ## Filters
 

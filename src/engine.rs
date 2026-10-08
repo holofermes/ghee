@@ -5871,10 +5871,8 @@ mod tests {
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
-        // A GPU node can refuse a second renderer. The test then stops.
-        let Ok(mut other) = Renderer::new(16, 16, COMPONENTS as i32, None, false, false) else {
-            return;
-        };
+        let mut other = Renderer::new(16, 16, COMPONENTS as i32, None, false, false)
+            .expect("a second renderer on the GPU");
         assert_eq!(other.setup(&sc).unwrap(), "");
         other.render(None).unwrap();
         other.close();

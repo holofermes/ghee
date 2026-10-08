@@ -569,23 +569,55 @@ impl Effect {
         }
         let mut values = Vec::with_capacity(fields.len());
         for f in fields {
-            let v = draw::get(m, f.name);
-            if *v == Arg::None {
-                values.push(f.default);
-                continue;
-            }
-            values.push(match f.takes {
-                Takes::Colour => FieldValue::Rgb(draw::rgb(v)?),
-                Takes::Em | Takes::Rate(_) => FieldValue::Num(draw::number(v, |n| n >= 0.0)??),
-                Takes::Number(_) => FieldValue::Num(draw::number(v, |_| true)??),
-                Takes::Unit => FieldValue::Num(draw::number(v, |n| (0.0..=1.0).contains(&n))??),
-            });
+            values.push(Effect::field_of(f, draw::get(m, f.name))?);
         }
         Some(Effect {
             kind,
             visible: draw::flag(draw::get(m, "visible"), true)?,
             values,
         })
+    }
+
+    /// The value of field `f` that a drawing's call gives as `v`, its
+    /// default for None, as from_dict() reads the same value. None for a
+    /// value that from_dict() refuses.
+    fn field_of(f: &Field, v: &Arg) -> Option<FieldValue> {
+        if *v == Arg::None {
+            return Some(f.default);
+        }
+        Some(match f.takes {
+            Takes::Colour => FieldValue::Rgb(draw::rgb(v)?),
+            Takes::Em | Takes::Rate(_) => FieldValue::Num(draw::number(v, |n| n >= 0.0)??),
+            Takes::Number(_) => FieldValue::Num(draw::number(v, |_| true)??),
+            Takes::Unit => FieldValue::Num(draw::number(v, |n| (0.0..=1.0).contains(&n))??),
+        })
+    }
+
+    /// Set field `field` to `v`, read as field_of() reads it, or the
+    /// effect's `visible`. False for a field that changes with a rebuild or
+    /// moves a phase, and for a value that field_of() refuses, which leave
+    /// the effect as it was.
+    fn set_uniform(&mut self, field: &str, v: &Arg) -> bool {
+        if field == "visible" {
+            return match draw::flag(v, true) {
+                Some(b) => {
+                    self.visible = b;
+                    true
+                }
+                None => false,
+            };
+        }
+        let fields = self.kind.fields();
+        let Some(k) = fields.iter().position(|f| f.name == field) else {
+            return false;
+        };
+        match (fields[k].change, Effect::field_of(&fields[k], v)) {
+            (Change::Uniform, Some(value)) => {
+                self.values[k] = value;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The effect as a layer holds it, a field at its default left out.
@@ -940,22 +972,7 @@ impl TextLayer {
         };
         let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
         let Arg::Str(words) = words else { return None };
-        let color = match color {
-            Arg::None => Color::Solid(Rgb::WHITE),
-            Arg::Map(_) => {
-                let m = draw::map(color, &GRADIENT_KEYS)?;
-                let end = |k: &str| match draw::get(m, k) {
-                    Arg::None => None,
-                    v => draw::rgb(v),
-                };
-                Color::Gradient {
-                    from: end("from")?,
-                    to: end("to")?,
-                    angle: draw::number(draw::get(m, "angle"), |_| true)?.unwrap_or(GRADIENT_ANGLE),
-                }
-            }
-            c => Color::Solid(draw::rgb(c)?),
-        };
+        let color = TextLayer::color_of(color)?;
         let font_family = match font_family {
             Arg::None => None,
             Arg::Str(s) if !s.is_empty() => Some(s.clone()),
@@ -1002,6 +1019,27 @@ impl TextLayer {
             effects: kept,
             data: old.data.clone(),
             emoji: old.emoji.clone(),
+        })
+    }
+
+    /// The colour that a drawing's call gives a text as `color`, white for
+    /// None. None for a value that from_dict() refuses.
+    fn color_of(color: &Arg) -> Option<Color> {
+        Some(match color {
+            Arg::None => Color::Solid(Rgb::WHITE),
+            Arg::Map(_) => {
+                let m = draw::map(color, &GRADIENT_KEYS)?;
+                let end = |k: &str| match draw::get(m, k) {
+                    Arg::None => None,
+                    v => draw::rgb(v),
+                };
+                Color::Gradient {
+                    from: end("from")?,
+                    to: end("to")?,
+                    angle: draw::number(draw::get(m, "angle"), |_| true)?.unwrap_or(GRADIENT_ANGLE),
+                }
+            }
+            c => Color::Solid(draw::rgb(c)?),
         })
     }
 
@@ -1278,8 +1316,17 @@ impl TextLayer {
     /// Each uniform of the layer's own at its value from the scene, as its
     /// name, its type as a param takes it, and its value.
     pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
-        let (from, to, angle) = self.color.ends();
         let mut out = placing(self.x, self.y, self.visible, self.opacity);
+        self.colour_uniforms(&mut out);
+        for e in self.drawn() {
+            self.effect_uniforms(e, &mut out);
+        }
+        out
+    }
+
+    /// The uniforms of the layer's colour, into `out`.
+    fn colour_uniforms(&self, out: &mut Vec<(String, &'static str, Value)>) {
+        let (from, to, angle) = self.color.ends();
         out.extend([
             (
                 self.uniform("color"),
@@ -1295,29 +1342,30 @@ impl TextLayer {
             (self.uniform("alpha"), "float", Value::from(from.alpha)),
             (self.uniform("alphato"), "float", Value::from(to.alpha)),
         ]);
-        for e in self.drawn() {
-            let token = e.kind.token();
-            out.push((
-                self.uniform(&format!("{token}visible")),
-                "float",
-                flag(e.visible),
-            ));
-            for (f, v) in e.kind.fields().iter().zip(&e.values) {
-                let name = self.uniform(&format!("{token}{}", f.name));
-                match (f.change, v) {
-                    (Change::Rebuild | Change::Phase, _) => {}
-                    (Change::Uniform, FieldValue::Num(n)) => {
-                        out.push((name, "float", Value::from(*n)));
-                    }
-                    (Change::Uniform, FieldValue::Rgb(c)) => {
-                        out.push((name, "vec3", Value::from(c.rgb.to_vec())));
-                        let alpha = self.uniform(&format!("{token}alpha"));
-                        out.push((alpha, "float", Value::from(c.alpha)));
-                    }
+    }
+
+    /// The uniforms of `e`, an effect that the layer draws, into `out`.
+    fn effect_uniforms(&self, e: &Effect, out: &mut Vec<(String, &'static str, Value)>) {
+        let token = e.kind.token();
+        out.push((
+            self.uniform(&format!("{token}visible")),
+            "float",
+            flag(e.visible),
+        ));
+        for (f, v) in e.kind.fields().iter().zip(&e.values) {
+            let name = self.uniform(&format!("{token}{}", f.name));
+            match (f.change, v) {
+                (Change::Rebuild | Change::Phase, _) => {}
+                (Change::Uniform, FieldValue::Num(n)) => {
+                    out.push((name, "float", Value::from(*n)));
+                }
+                (Change::Uniform, FieldValue::Rgb(c)) => {
+                    out.push((name, "vec3", Value::from(c.rgb.to_vec())));
+                    let alpha = self.uniform(&format!("{token}alpha"));
+                    out.push((alpha, "float", Value::from(c.alpha)));
                 }
             }
         }
-        out
     }
 
     /// Each effect that the layer draws and that moves by a phase, with the
@@ -1983,21 +2031,45 @@ impl Layer {
     /// Each uniform of `new`, a new look of this layer, whose value differs
     /// from this layer's, as uniforms() lists them.
     pub fn uniforms_changed(&self, new: &Layer) -> Vec<(String, &'static str, Value)> {
+        let differ = |before: Vec<(String, &'static str, Value)>,
+                      after: Vec<(String, &'static str, Value)>| {
+            after
+                .into_iter()
+                .filter(|(n, _, v)| !before.iter().any(|(m, _, w)| m == n && w == v))
+                .collect::<Vec<_>>()
+        };
+        // A text whose effects keep their kinds compares its colour and each
+        // effect apart.
+        let mut parts = Vec::new();
         let placed_alone = match (self, new) {
-            (Layer::Text(a), Layer::Text(b)) => {
-                a.color == b.color && a.effects == b.effects && a.render == b.render
+            (Layer::Text(a), Layer::Text(b))
+                if a.render == b.render
+                    && a.effects.len() == b.effects.len()
+                    && a.effects
+                        .iter()
+                        .zip(&b.effects)
+                        .all(|(x, y)| x.kind == y.kind) =>
+            {
+                if a.color != b.color {
+                    let (mut was, mut will) = (Vec::new(), Vec::new());
+                    a.colour_uniforms(&mut was);
+                    b.colour_uniforms(&mut will);
+                    parts.extend(differ(was, will));
+                }
+                for (x, y) in a.drawn().zip(b.drawn()).filter(|(x, y)| x != y) {
+                    let (mut was, mut will) = (Vec::new(), Vec::new());
+                    a.effect_uniforms(x, &mut was);
+                    b.effect_uniforms(y, &mut will);
+                    parts.extend(differ(was, will));
+                }
+                true
             }
             (Layer::Image(a), Layer::Image(b)) => a.color == b.color,
             (Layer::Shape(_), Layer::Shape(_)) => return Vec::new(),
             _ => false,
         };
         if !placed_alone {
-            let before = self.uniforms();
-            return new
-                .uniforms()
-                .into_iter()
-                .filter(|(n, _, v)| !before.iter().any(|(m, _, w)| m == n && w == v))
-                .collect();
+            return differ(self.uniforms(), new.uniforms());
         }
         let placed = |l: &Layer| match l {
             Layer::Text(l) => (l.x, l.y, l.visible, l.opacity),
@@ -2027,6 +2099,7 @@ impl Layer {
                 Value::from(nopacity),
             ));
         }
+        out.extend(parts);
         out
     }
 
@@ -2438,6 +2511,9 @@ impl Layer {
         if value.is_null() && !live.form.takes_none() {
             bail!("{} needs {}, got None", live.what, live.form.needs());
         }
+        if self.set_uniform(effect, field, &Arg::of_json(value)) {
+            return Ok(());
+        }
         let at = format!("layer '{}'", self.name());
         let mut d = match self {
             Layer::Text(l) => l.to_dict(),
@@ -2465,6 +2541,114 @@ impl Layer {
             Layer::Shape(_) => unreachable!("a shape layer sets its own fields"),
         }
         Ok(())
+    }
+
+    /// Set a field of a text or an image layer that sets a uniform alone, or
+    /// a live field of a text's effect, to `v`, read as a drawing's call
+    /// reads its keyword. False for any other field, and for a value that
+    /// the call refuses, which leave the layer as it was: from_dict() then
+    /// takes the value, or says why it refuses it.
+    fn set_uniform(&mut self, effect: Option<&str>, field: &str, v: &Arg) -> bool {
+        let (visible, x, y, opacity) = match self {
+            Layer::Text(l) => (&mut l.visible, &mut l.x, &mut l.y, &mut l.opacity),
+            Layer::Image(l) => (&mut l.visible, &mut l.x, &mut l.y, &mut l.opacity),
+            Layer::Shape(_) => return false,
+        };
+        let set = |slot: &mut Option<f64>| match draw::number(v, |_| true) {
+            Some(n) => {
+                *slot = n;
+                true
+            }
+            None => false,
+        };
+        match (effect, field) {
+            (Some(key), _) => match self {
+                Layer::Text(l) => l
+                    .effects
+                    .iter_mut()
+                    .find(|e| e.kind.key() == key)
+                    .is_some_and(|e| e.set_uniform(field, v)),
+                _ => false,
+            },
+            (None, "x") => set(x),
+            (None, "y") => set(y),
+            (None, "visible") => match draw::flag(v, true) {
+                Some(b) => {
+                    *visible = b;
+                    true
+                }
+                None => false,
+            },
+            (None, "opacity") => match draw::number(v, |f| (0.0..=1.0).contains(&f)) {
+                Some(n) => {
+                    *opacity = n.unwrap_or(1.0);
+                    true
+                }
+                None => false,
+            },
+            (None, "color") => match self {
+                Layer::Text(l) => match TextLayer::color_of(v) {
+                    Some(c) => {
+                        l.color = c;
+                        true
+                    }
+                    None => false,
+                },
+                Layer::Image(l) => match v {
+                    Arg::None => {
+                        l.color = None;
+                        true
+                    }
+                    c => match draw::rgb(c) {
+                        Some(c) => {
+                            l.color = Some(c);
+                            true
+                        }
+                        None => false,
+                    },
+                },
+                Layer::Shape(_) => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The layer with no fonts and no pixels, which compares its uniforms
+    /// as the layer does.
+    pub(crate) fn lean(&self) -> Layer {
+        match self {
+            Layer::Text(l) => Layer::Text(TextLayer {
+                name: l.name.clone(),
+                visible: l.visible,
+                x: l.x,
+                y: l.y,
+                color: l.color,
+                opacity: l.opacity,
+                blend: l.blend,
+                text: String::new(),
+                font_size: l.font_size,
+                font_family: None,
+                text_align: l.text_align,
+                render: l.render,
+                effects: l.effects.clone(),
+                data: None,
+                emoji: None,
+            }),
+            Layer::Image(l) => Layer::Image(ImageLayer {
+                name: l.name.clone(),
+                visible: l.visible,
+                x: l.x,
+                y: l.y,
+                color: l.color,
+                opacity: l.opacity,
+                blend: l.blend,
+                image: l.image.clone(),
+                width: l.width,
+                height: l.height,
+                data: None,
+            }),
+            Layer::Shape(l) => Layer::Shape(l.clone()),
+        }
     }
 }
 
@@ -3441,6 +3625,19 @@ mod tests {
                 json!(2.0),
                 json!({"wave": {"speed": 2.0}}),
             ),
+            ("t", None, "y", json!(3), json!({"y": 3.0})),
+            ("t", None, "opacity", json!(0.5), json!({"opacity": 0.5})),
+            ("t", None, "color", json!("navy"), json!({"color": "navy"})),
+            ("t", None, "color", json!(null), json!({})),
+            ("i", None, "x", json!(-2.5), json!({"x": -2.5})),
+            ("i", None, "opacity", json!(0.25), json!({"opacity": 0.25})),
+            (
+                "i",
+                None,
+                "visible",
+                json!(false),
+                json!({"visible": false}),
+            ),
             ("i", None, "image", json!("pic2"), json!({"image": "pic2"})),
             (
                 "i",
@@ -3469,6 +3666,14 @@ mod tests {
         }
         text.set_live(None, "text", &json!(" la la ")).unwrap();
         assert_eq!(text.to_dict()["text"], " la la ");
+        let glow = |look: Value| {
+            let d = json!({"name": "g", "text": "I", "glow": look});
+            Layer::from_dict("a layer", &d).unwrap()
+        };
+        let mut lit = glow(json!({}));
+        lit.set_live(Some("glow"), "color", &json!([0.0, 1.0, 0.5]))
+            .unwrap();
+        assert_eq!(lit, glow(json!({"color": [0.0, 1.0, 0.5]})));
         let err = |l: &mut Layer, field: &str, value: Value| {
             l.set_live(None, field, &value).unwrap_err().to_string()
         };

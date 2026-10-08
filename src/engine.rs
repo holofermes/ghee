@@ -2155,7 +2155,7 @@ impl Renderer {
             };
             let shown = layer.as_text().is_some_and(|l| l.visible);
             let image = layer.as_image().map(|l| l.image.clone());
-            (layer.uniforms(), shown, image, value)
+            (layer.lean(), shown, image, value)
         };
         if let (Some(_), Some(file)) = (&image, value.as_str().filter(|v| is_image_file(v))) {
             if self.layers.iter().any(|d| d.name == at.layer) {
@@ -2176,10 +2176,8 @@ impl Renderer {
             let Some(layer) = scene.as_ref().and_then(|s| s.layer(at.layer)) else {
                 return Ok(());
             };
-            for (name, ty, value) in layer.uniforms() {
-                if !before.iter().any(|(n, _, v)| *n == name && *v == value) {
-                    self.set_layer_uniform(dl, &name, ty, value)?;
-                }
+            for (name, ty, value) in before.uniforms_changed(layer) {
+                self.set_layer_uniform(dl, &name, ty, value)?;
             }
             if let Layer::Image(l) = layer {
                 if image.as_ref() != Some(&l.image) {

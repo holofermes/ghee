@@ -4213,6 +4213,54 @@ mod tests {
         assert!(frame() == o, "the relayed words drew another frame");
     }
 
+    /// A controller that records each set that the console hands it.
+    struct Told(Rc<RefCell<Vec<String>>>);
+
+    impl SceneController for Told {
+        fn on_param(&mut self, pass: Option<&str>, name: &str, value: &ParamValue) {
+            let told = format!("param {pass:?} {name} {value:?}");
+            self.0.borrow_mut().push(told);
+        }
+
+        fn on_layer(&mut self, at: &Address, value: &Value) {
+            let told = format!("layer {}.{} {value}", at.layer, at.field);
+            self.0.borrow_mut().push(told);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn the_scenes_process_hears_of_each_param_and_each_text_that_the_console_sets() {
+        let renderer = RefCell::new(gpu(32, 24));
+        let (_d, console) = tmp_console("told");
+        let st = RefCell::new(Running::default());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let ctrl: ControllerSlot = RefCell::new(Some(Box::new(Told(Rc::clone(&seen)))));
+        let mut sc = text_scene("I");
+        sc.params
+            .insert("gain".to_string(), Param::float("gain", 0.0));
+        sc.passes[0]
+            .params
+            .insert("amt".to_string(), Param::float("amt", 0.0));
+        assert_eq!(set_scene(&console, &renderer, &st, sc.clone(), 0, None), "");
+        opened(&console, "one", sc);
+        let host = RenderLoopHost::new(Arc::clone(&console));
+        host.set_param(Scope::Scene, "gain", Value::from(0.5))
+            .unwrap();
+        host.set_param(Scope::Pass(0), "amt", Value::from(0.25))
+            .unwrap();
+        host.set_layer(text_set("O")).unwrap();
+        assert!(drain(&console, &renderer, &st, &ctrl));
+        assert_eq!(
+            *seen.borrow(),
+            [
+                "param None gain Float(0.5)",
+                "param Some(\"main\") amt Float(0.25)",
+                "layer label.text \"O\"",
+            ]
+        );
+    }
+
     /// A scene of the layer `label`, "I" in the fixture font, at x.
     fn placed_scene(x: f64) -> Scene {
         let mut doc = text_scene("I").to_dict();

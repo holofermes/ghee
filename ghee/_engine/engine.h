@@ -62,6 +62,9 @@ const char *ghee_renderer(GheeScene *g);
 
 // Last error message for this instance ("" if none). Cleared on read.
 const char *ghee_last_error(GheeScene *g);
+// Whether the last error set on this instance is the GL's log of a GLSL
+// compile or link. A read of ghee_last_error leaves it.
+bool ghee_last_error_is_compile(GheeScene *g);
 
 void ghee_destroy(GheeScene *g);
 

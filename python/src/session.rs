@@ -546,7 +546,12 @@ impl Session {
         let err = renderer.setup(&scene).map_err(system_fault)?;
         if !err.is_empty() {
             // the command's own line, without the engine's trailing newline
-            return Err(Fault::scene(format!("compile error: {}", err.trim_end())));
+            let kind = if renderer.compile_error {
+                "compile error: "
+            } else {
+                ""
+            };
+            return Err(Fault::scene(format!("{kind}{}", err.trim_end())));
         }
         let index = Arc::new(Index::of(&scene));
         let strings = string_params(&scene, &index);

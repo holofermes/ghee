@@ -271,6 +271,7 @@ struct GheeScene {
     char renderer[160];                  // GL_RENDERER and GL_VERSION, captured at create
     int compiled;                        // programs linked since create
     char last_error[ERROR_BUFFER_SIZE];
+    bool error_is_compile;               // last_error is a GLSL compile or link log
 };
 
 // The vertex shader of every pass's full-screen quad, and of the present
@@ -338,6 +339,7 @@ static void set_error(GheeScene *g, const char *fmt, ...) {
     va_start(ap, fmt);
     keep_error(g, fmt, ap);
     va_end(ap);
+    g->error_is_compile = false;
     fprintf(stderr, "ghee: %s\n", g->last_error);
 }
 
@@ -351,6 +353,7 @@ static void set_shader_error(GheeScene *g, const char *fmt, ...) {
     va_end(ap);
     size_t n = strlen(g->last_error);
     while (n > 0 && strchr(" \t\r\n", g->last_error[n - 1])) g->last_error[--n] = '\0';
+    g->error_is_compile = true;
 }
 
 // Make this instance's GL context current. Required at the top of every public
@@ -369,6 +372,8 @@ const char *ghee_last_error(GheeScene *g) {
     g->last_error[0] = '\0';
     return err;
 }
+
+bool ghee_last_error_is_compile(GheeScene *g) { return g && g->error_is_compile; }
 
 // ---- shader compilation ---------------------------------------------------
 

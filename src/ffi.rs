@@ -77,6 +77,7 @@ extern "C" {
     pub fn ghee_set_verbosity(level: c_int);
     pub fn ghee_renderer(g: *mut GheeScene) -> *const c_char;
     pub fn ghee_last_error(g: *mut GheeScene) -> *const c_char;
+    pub fn ghee_last_error_is_compile(g: *mut GheeScene) -> bool;
     pub fn ghee_destroy(g: *mut GheeScene);
     pub fn ghee_mp_add_pass(
         g: *mut GheeScene,

@@ -618,7 +618,12 @@ fn cmd_render(a: &Ns) -> Result<()> {
     }
     let err = r.setup(&scene)?;
     if !err.is_empty() {
-        return Err(exit(format!("compile error: {err}")));
+        let kind = if r.compile_error {
+            "compile error: "
+        } else {
+            ""
+        };
+        return Err(exit(format!("{kind}{err}")));
     }
     let mut h264 = None;
     if given(&a.h264) {

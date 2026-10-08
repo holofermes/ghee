@@ -38,6 +38,24 @@ def test_bad_glsl_reads_the_same_as_the_command_line(tmp_path):
     assert ran.stderr.strip().endswith(message)
 
 
+def test_a_refusal_other_than_a_compile_error_reads_alone():
+    scene = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "channels": [{"buffer": "typo"}],
+                "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
+            }
+        ],
+    }
+    with pytest.raises(ValueError) as raised:
+        ghee.open(scene, width=8, height=8)
+    assert str(raised.value) == (
+        "pass 'main': channel 0 binds to buffer 'typo', which is not a pass in this scene"
+    )
+
+
 def test_a_scene_that_is_no_scene(tmp_path):
     for source, why in [
         ("{not json", "invalid JSON"),

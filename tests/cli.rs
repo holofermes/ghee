@@ -78,6 +78,20 @@ fn a_compile_error_prints_once_naming_the_pass_and_the_authors_line() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_refusal_other_than_a_compile_error_prints_alone() {
+    let dir = Dir::new("refusal");
+    let scene = r#"{"passes": [{"name": "main", "channels": [{"buffer": "typo"}],
+        "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
+    let out = render(&dir.0, scene, &[]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "pass 'main': channel 0 binds to buffer 'typo', which is not a pass in this scene\n"
+    );
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_sized_output_pass_says_once_that_it_renders_at_the_screen_size_and_quiet_says_nothing() {
     let dir = Dir::new("sized");
     let scene = r#"{"passes": [{"name": "main", "size": [1024, 256],

@@ -728,8 +728,10 @@ pub struct Renderer {
     pub components: i32,
     /// The scene of the last setup, with the live values set since.
     scene: std::cell::RefCell<Option<Scene>>,
-    /// The last setup() compile error text. "" means the setup succeeded.
+    /// The last setup() error text. "" means the setup succeeded.
     pub error: String,
+    /// The last setup() error is the GL's log of a GLSL compile or link.
+    pub compile_error: bool,
     /// The user-code line of the last setup() compile error.
     pub error_line: Option<i64>,
     /// The pass holding the error. Common is the scene's common block.
@@ -867,6 +869,7 @@ impl Renderer {
             components,
             scene: std::cell::RefCell::new(None),
             error: String::new(),
+            compile_error: false,
             error_line: None,
             error_pass: None,
             display,
@@ -979,13 +982,15 @@ impl Renderer {
     ///
     /// Returns "" on success. Returns an error string for a compile error, or
     /// for a scene the engine refuses.
-    /// A compile error sets error_line and error_pass to the user-code line.
+    /// A compile error sets compile_error, and error_line and error_pass to
+    /// the user-code line.
     /// An error in the scene's common block sets error_pass to Common.
     /// error_line then counts from the start of that block.
     pub fn setup(&mut self, scene: &Scene) -> Result<String> {
         #[cfg(test)]
         let batches = std::mem::take(&mut self.test_batches);
         self.error = String::new();
+        self.compile_error = false;
         self.error_line = None;
         self.error_pass = None;
         if scene.passes.is_empty() {
@@ -1339,6 +1344,7 @@ impl Renderer {
                 };
                 if batch_ix[k] < 0 {
                     let err = or_else(self.last_error(), "compile error");
+                    self.compile_error = unsafe { ffi::ghee_last_error_is_compile(self.handle) };
                     unsafe { ffi::ghee_mp_abort(self.handle) };
                     self.error = format!("{name}: {err}");
                     self.error_pass = Some(ErrorPass::Index(i));
@@ -1372,6 +1378,7 @@ impl Renderer {
             }
             if idx < 0 {
                 let err = or_else(self.last_error(), "compile error");
+                self.compile_error = unsafe { ffi::ghee_last_error_is_compile(self.handle) };
                 unsafe { ffi::ghee_mp_abort(self.handle) };
                 let (line, in_common) =
                     user_line(&err, &glsl, &p.fragment, scene.common.as_deref());
@@ -4107,6 +4114,7 @@ impl Renderer {
     /// pass at index `pass` of the drawn passes, and return the error.
     fn batch_refused(&mut self, name: &str, pass: usize) -> Result<String> {
         let err = or_else(self.last_error(), "compile error");
+        self.compile_error = unsafe { ffi::ghee_last_error_is_compile(self.handle) };
         unsafe { ffi::ghee_mp_abort(self.handle) };
         self.error = format!("{name}: {err}");
         self.error_pass = Some(ErrorPass::Index(pass));
@@ -4802,6 +4810,29 @@ mod tests {
         assert!(r.last_error().contains("pass buffer failed"));
         unsafe { ffi::ghee_mp_abort(r.handle()) };
         assert_eq!(r.render(None).unwrap(), before);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_glsl_compile_error_alone_reads_as_a_compile_error() {
+        let (_g, mut r) = gpu();
+        let broken = scene_of(json!([{"name": "main", "fragment": BROKEN}]));
+        assert!(!r.setup(&broken).unwrap().is_empty());
+        assert!(r.compile_error);
+        // A pass buffer that the GL refuses, after the compile error.
+        let (name, raw) = (
+            CString::new("pass 'raw'").unwrap(),
+            CString::new(RAW).unwrap(),
+        );
+        let idx = unsafe { ffi::ghee_mp_add_pass(r.handle(), name.as_ptr(), raw.as_ptr(), 1) };
+        assert!(!unsafe { ffi::ghee_mp_set_pass_size(r.handle(), idx, 1 << 17, 1 << 17) });
+        assert!(!unsafe { ffi::ghee_last_error_is_compile(r.handle()) });
+        unsafe { ffi::ghee_mp_abort(r.handle()) };
+        let typo = scene_of(json!([
+            {"name": "main", "channels": [{"buffer": "typo"}], "fragment": FLAT},
+        ]));
+        assert!(!r.setup(&typo).unwrap().is_empty());
+        assert!(!r.compile_error);
     }
 
     #[test]

@@ -487,6 +487,9 @@ pub struct Console {
     /// The times that the scene's own code changed its layers in the
     /// document: a layer added or given a new look, or a field set.
     layer_changes: AtomicU64,
+    /// The scene_size() of the renderer that render_loop draws with, from the
+    /// start of the loop.
+    scene_size: Mutex<Option<(i32, i32)>>,
     /// The files the running scene was built from. Only a load off disk replaces
     /// this. An applied working copy leaves the scene stale when its files moved
     /// on.
@@ -555,6 +558,7 @@ impl Console {
             revs: Mutex::new(HashMap::new()),
             running: Mutex::new(None),
             layer_changes: AtomicU64::new(0),
+            scene_size: Mutex::new(None),
             sources: Mutex::new(None),
             raw: Mutex::new(Raw::default()),
             raw_ready: Condvar::new(),
@@ -751,11 +755,12 @@ impl Console {
         if let Some(copy) = lock(&self.copies).get(&name) {
             return Ok(f(&name, copy));
         }
-        // the scene_size() of the renderer that make_renderer() builds
-        let size = match self.rotate {
+        // before the render loop starts, the scene_size() of the renderer that
+        // make_renderer() builds
+        let size = lock(&self.scene_size).unwrap_or(match self.rotate {
             90 | 270 => (self.h, self.w),
             _ => (self.w, self.h),
-        };
+        });
         let (opened, _) = self
             .store
             .open(&name, None, size)
@@ -2103,6 +2108,7 @@ pub fn render_loop(
     } else {
         0
     };
+    *lock(&console.scene_size) = Some(renderer.borrow().scene_size());
     let st = Rc::new(RefCell::new(Running::default()));
     // what feeds the running scene, when the scene brings something
     let ctrl: ControllerSlot = RefCell::new(None);
@@ -4879,6 +4885,7 @@ mod tests {
     fn a_scene_process_starts_with_the_size_that_the_console_renders_it_at() {
         let d = crate::testing::TempDir::new("console-size");
         crate::testing::script(&d, "sized", SIZE_SCRIPT);
+        crate::testing::script(&d, "unloaded", SIZE_SCRIPT);
         // The console's own size stays at its default, so the process takes
         // the renderer's.
         let mut console = Console::new(SceneStore::new(&d, Vec::new()));
@@ -4889,6 +4896,11 @@ mod tests {
         renderer.set_rotate(90).unwrap();
         let sinks: Vec<Box<dyn Output>> = vec![Box::new(Bound(Rc::new(Cell::new(0))))];
         render_loop(&console, Rc::new(RefCell::new(renderer)), sinks, None, None);
+        assert_eq!(fs::read_to_string(d.join("size")).unwrap(), "24x32");
+        // a scene that the console never loaded, read through GET /scene
+        fs::remove_file(d.join("size")).unwrap();
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        assert_eq!(ask(&api, "GET", "/scene", "name=unloaded", "").0, 200);
         assert_eq!(fs::read_to_string(d.join("size")).unwrap(), "24x32");
     }
 

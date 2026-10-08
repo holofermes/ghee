@@ -781,6 +781,11 @@ pub struct Renderer {
     /// The new words of each MTSDF layer still waiting for their glyphs, by
     /// the layer's name. The layer draws its last words meanwhile.
     held: std::cell::RefCell<HashMap<String, Held>>,
+    /// The words that each text layer draws, by the layer's name.
+    on_screen: std::cell::RefCell<HashMap<String, String>>,
+    /// True when the words that a layer draws or holds changed since the
+    /// atlases last heard which characters to keep.
+    rekeep: std::cell::Cell<bool>,
     /// The words that set_text last took for each layer, shown or held, by
     /// the layer's name. The same words again lay out nothing.
     words: std::cell::RefCell<HashMap<String, String>>,
@@ -900,6 +905,8 @@ impl Renderer {
             text_errors_seq: std::cell::Cell::new(0),
             atlases: std::cell::RefCell::new(Vec::new()),
             held: std::cell::RefCell::new(HashMap::new()),
+            on_screen: std::cell::RefCell::new(HashMap::new()),
+            rekeep: std::cell::Cell::new(false),
             words: std::cell::RefCell::new(HashMap::new()),
             files: std::cell::RefCell::new(Vec::new()),
             file_count: std::cell::Cell::new(0),
@@ -1442,6 +1449,8 @@ impl Renderer {
         }
         self.held.borrow_mut().clear();
         self.words.borrow_mut().clear();
+        self.on_screen.borrow_mut().clear();
+        self.rekeep.set(true);
         self.curves.clear();
         self.covered.clear();
         *self.glyphs.borrow_mut() = glyphs;
@@ -2065,11 +2074,16 @@ impl Renderer {
                     self.words
                         .borrow_mut()
                         .insert(name.to_string(), words.to_string());
+                    self.rekeep.set(true);
                     return Ok(true);
                 }
             }
         }
+        let drew = laid.built.is_some();
         self.show(layer, laid)?;
+        if drew {
+            self.drew(name, words);
+        }
         self.words
             .borrow_mut()
             .insert(name.to_string(), words.to_string());
@@ -2641,6 +2655,8 @@ impl Renderer {
         self.px_em.remove(name);
         self.words.borrow_mut().remove(name);
         self.held.borrow_mut().remove(name);
+        self.on_screen.borrow_mut().remove(name);
+        self.rekeep.set(true);
         self.colours.borrow_mut().remove(name);
         if self.text_errors.borrow_mut().remove(name).is_some() {
             self.text_errors_seq.set(self.text_errors_seq.get() + 1);
@@ -3847,9 +3863,41 @@ impl Renderer {
             let scene = self.scene.borrow();
             if let Some(layer) = scene.as_ref().and_then(|s| self.text_layer(s, &name)) {
                 self.show(layer, h.laid)?;
+                self.drew(&name, &h.words);
             }
         }
+        self.keep_glyphs();
         Ok(())
+    }
+
+    /// Record that text layer `name` draws `words` from now on.
+    fn drew(&self, name: &str, words: &str) {
+        self.on_screen
+            .borrow_mut()
+            .insert(name.to_string(), words.to_string());
+        self.rekeep.set(true);
+    }
+
+    /// Name to each atlas the characters of the words drawn from it, shown
+    /// or held, once they changed, so a full atlas takes back the room of
+    /// every other glyph.
+    fn keep_glyphs(&self) {
+        if !self.rekeep.replace(false) {
+            return;
+        }
+        let (shown, held) = (self.on_screen.borrow(), self.held.borrow());
+        for slot in self.atlases.borrow().iter() {
+            let mut chars: Vec<char> = Vec::new();
+            for (tex, _) in &slot.textures {
+                let layer = tex
+                    .strip_prefix(crate::scene::PREFIX)
+                    .and_then(|t| t.strip_suffix("_atlas"));
+                let Some(name) = layer else { continue };
+                chars.extend(shown.get(name).into_iter().flat_map(|w| w.chars()));
+                chars.extend(held.get(name).into_iter().flat_map(|h| h.words.chars()));
+            }
+            slot.gen.keep(chars);
+        }
     }
 
     /// Upload the texels that each atlas gained: all of it to a texture new to
@@ -4436,6 +4484,7 @@ impl Renderer {
         self.feeds = Vec::new();
         self.held.borrow_mut().clear();
         self.words.borrow_mut().clear();
+        self.on_screen.borrow_mut().clear();
         self.atlases.borrow_mut().clear();
         self.colours.borrow_mut().clear();
         *self.glyphs.borrow_mut() = text::Glyphs::default();
@@ -8474,6 +8523,69 @@ mod tests {
         set_words(&r, "label", "AVQ");
         let f = still(&mut r);
         assert!(worst(&f, &want) <= 1, "{}", worst(&f, &want));
+        drop(r);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The fixture font for an atlas, each glyph drawn eight times its size,
+    /// so a 2048x2048 atlas holds fewer than the font's 94 glyphs.
+    struct Huge(text::AtlasFont);
+
+    impl atlas::Font for Huge {
+        fn key(&self) -> [u8; 32] {
+            self.0.key()
+        }
+
+        fn glyph(&self, ch: char) -> Option<u32> {
+            self.0.glyph(ch)
+        }
+
+        fn outline(&self, gid: u32) -> Result<Vec<Vec<atlas::Curve>>> {
+            let scale = |c: Vec<atlas::Curve>| c.into_iter().map(|q| q.map(|p| p.map(|v| v * 8.0)));
+            Ok(self
+                .0
+                .outline(gid)?
+                .into_iter()
+                .map(|c| scale(c).collect())
+                .collect())
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn words_that_change_all_day_take_the_room_of_glyphs_gone_from_the_screen() {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let bytes = fs::read(format!("{fonts}/DejaVuSans-ASCII.ttf")).unwrap();
+        let font = Arc::new(Huge(text::AtlasFont(vec![Ok(Arc::new(bytes))])));
+        let (_g, mut r) = gpu();
+        let f = font.clone();
+        r.atlas_font = Box::new(move |_| f.clone());
+        let dir = std::env::temp_dir().join(format!("ghee-engine-{}-all-day", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        r.atlas_cache = Some(dir.clone());
+        // Words of ten characters, every printable ASCII character once:
+        // more glyphs in all than the atlas holds, a tenth of them at a time.
+        let all: Vec<char> = ('!'..='~').collect();
+        let words: Vec<String> = all.chunks(10).map(|c| c.iter().collect()).collect();
+        assert_eq!(r.setup(&mtsdf_scene(&words[0])).unwrap(), "");
+        r.set_time(Some(0.0));
+        for (i, w) in words.iter().enumerate() {
+            set_words(&r, "label", w);
+            still(&mut r);
+            assert_eq!(r.text_errors(), Vec::<String>::new(), "words {i}, {w:?}");
+            let held = r.atlases.borrow()[0]
+                .gen
+                .with(|a| {
+                    w.chars().all(|c| {
+                        a.cells
+                            .contains_key(&atlas::Font::glyph(&*font, c).unwrap())
+                    })
+                })
+                .unwrap();
+            assert!(held, "words {i}, {w:?}");
+        }
+        let cells = r.atlases.borrow()[0].gen.with(|a| a.cells.len()).unwrap();
+        assert!(cells < all.len(), "{cells} cells");
         drop(r);
         fs::remove_dir_all(&dir).unwrap();
     }

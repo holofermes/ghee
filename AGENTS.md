@@ -64,18 +64,20 @@ is where the deb takes them from. `--no-cache` is what makes uv read the wheel
 it was handed: uv keys a local wheel by its name, and a rebuild keeps that name.
 
 `ghee` hands a scene script the wheel in `lib/ghee` beside its own `bin`
-directory (`src/procedural/wheel.rs`). Before a `cargo build` runs the bundled
-Python demos, `maturin build --release --compatibility linux -o
-../target/lib/ghee` in `python/` puts the wheel there, and with no wheel there
-uv refuses them.
+directory (`src/procedural/wheel.rs`). Before the binary of a `cargo build`
+runs a bundled Python demo, `maturin build --release --compatibility linux -o
+../target/lib/ghee` in `python/` puts the wheel there. With no wheel there, uv
+refuses the demos.
 
 The Pi wheels come from `tools/xwheels.sh`: cargo-zigbuild with the glibc
 pins, then a repack of the native wheel. `tools/mksysroot.sh` makes the
 sysroots it needs from the boards' own apt repositories. The deb carries the
-`ghee` command and the Python package in one: the release workflow unpacks
-the arch's wheel into `target/pydist`, and the cargo-deb asset list ships it
-to dist-packages. `.github/workflows/release.yml` runs the whole chain,
-wheels, debs, release assets and PyPI.
+`ghee` command, the Python package and its wheel: the release workflow
+unpacks the arch's wheel into `target/pydist` and copies it into
+`target/pywheel`, and the cargo-deb asset list ships the first to
+dist-packages and the second to `/usr/lib/ghee`.
+`.github/workflows/release.yml` runs the whole chain, wheels, debs, release
+assets and PyPI.
 
 The tree carries `X.Y.Z-dev`. `tools/release.sh <version>` writes one version
 into every site. The release flip is the last commit before the tag, the tag
@@ -269,9 +271,9 @@ lands.
 - A control on a touch screen is at least 40 px tall. The page scrolls, and
   nothing is cut off at phone width.
 - A setting shows its key and its value, with no grey hint text, no
-  description under a field and no helper or warning line beside it. An empty field's placeholder names ghee's
-  default in one word, such as `fit` or `auto`. A key that needs a sentence
-  to explain it needs a better name.
+  description under a field and no helper or warning line beside it. An
+  empty field's placeholder names ghee's default in one word, such as `fit`
+  or `auto`. A key that needs a sentence to explain it needs a better name.
 - Nothing moves under the cursor. A tab keeps its width and its place, open
   or closed. Actions sit at fixed spots at the end of their row, and a click
   never shifts another control.

@@ -80,9 +80,9 @@ describes.
 - `GET /filters`: the filter registry, `{name: filter def}`
 - `GET /hwinfo`: the host's hardware, each fact as text: `model`, the board
   as the device tree names it, or the kernel's name and release on a host
-  with no device tree, `gpu`, `n/a` off a Raspberry Pi, `ram` and
-  `ram_free`, such as `408 MB`, and on a Raspberry Pi `gpu_mem` and `temp`.
-  A fact that the host cannot read is absent.
+  with no device tree, `gpu`, which reads `n/a` off a Raspberry Pi, `ram`
+  and `ram_free`, such as `408 MB`, and on a Raspberry Pi `gpu_mem` and
+  `temp`. A fact that the host cannot read is absent.
 - `GET /frame.png`: one lossless PNG of the next frame, at the render size.
   The request goes on the command queue, so the frame carries every `/set`
   that returned before it. It answers 409 while the scene holds an error, and

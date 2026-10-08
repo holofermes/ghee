@@ -115,9 +115,10 @@ feed changes it.
 
 `frame` draws and hands the frame to the output. `time` is the wall clock
 since the first frame, and `dt` is the time since the tick before, of a
-frame or a skip, a quarter second at most, and 1/60 for the first frame, so
-the ticks' `dt` add up to the time passed. A frame drawn after a drawn frame
-takes `dt` as its `iTimeDelta`. `timestep` pins `time` to `frame * S` and
+frame or a skip, a quarter second at most, and 1/60 for the first tick, so
+the ticks' `dt` add up to the time passed while each tick follows the one
+before within a quarter second. A frame drawn after a drawn frame takes `dt`
+as its `iTimeDelta`. `timestep` pins `time` to `frame * S` and
 `dt` to S. `params` holds the params that the console changed since the last
 tick, with their values as a scene file writes them, and a text layer's
 words as its `text`, such as `title.text`. The first tick holds them all,
@@ -267,9 +268,9 @@ The shim gives:
 - `ghee.run(scene)` for the handshake, then the tick loop.
 
 A `ghee.Tick` holds `frame`, the tick's number, `time` and `dt` in seconds,
-`dt` the time since the tick before, and `params`, the params
-that changed, by name, and a text layer's words as its `text`, such as
-`title.text`. The first tick's `params` holds them all.
+`dt` the time since the tick before, and `params`, the params that changed,
+by name, and a text layer's words as its `text`, such as `title.text`. The
+first tick's `params` holds them all.
 
 This scene is the clock above, written as a procedural scene. With no scene,
 `ghee.run()` starts from one pass, `main`, that clears to black, and the
@@ -453,9 +454,9 @@ The scene takes its own arguments first, then these flags of `ghee render`:
 The feeds, the hooks, `ghee.layers`, `ghee.draw()` and `ghee.skip()` work the
 same. The tick keeps its wire shape: `dt` is the time since the tick before,
 `params` holds the params that the console changed, and the first tick holds
-every param. A scene or a display that ghee refuses
-stops the run with ghee's one line and exit status 1. If one of your own
-arguments collides with these names, argparse says so.
+every param. A scene or a display that ghee refuses stops the run with ghee's
+one line and exit status 1. If one of your own arguments collides with these
+names, argparse says so.
 
 ## What the wire carries
 

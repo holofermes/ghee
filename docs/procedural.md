@@ -37,8 +37,12 @@ runs in its own directory, with these variables in its environment:
 - `GHEE_WIRE=1` marks a process that ghee started.
 - `GHEE_LOCKSTEP=1` says that ghee reads kind 5 and the handshake's
   `"lockstep"`. A process that finds no `GHEE_LOCKSTEP` sends neither.
-- `GHEE_SIZE` holds ghee's render size as WxH, so the scene can size its
-  buffers before it writes its scene.
+- `GHEE_SIZE` holds the size of the frame, ghee's render size turned by
+  `--rotate`, as WxH, so the scene can size its buffers before it writes
+  its scene.
+- `UV_INDEX` and `UV_INDEX_STRATEGY`, or `UV_NO_BINARY_PACKAGE` and
+  `UV_NO_BUILD_PACKAGE`, hand uv the ghee-render wheel beside the `ghee`
+  command, as [Procedural scenes](../README.md#procedural-scenes) describes.
 
 ## Handshake
 
@@ -124,7 +128,8 @@ ghee writes one JSON line to the process's stdin for each render tick:
 `N` and `T` count from 0 at the process's first tick. `D` is the time
 since the tick before, a quarter second at most, 1/60 for the first tick,
 or the fixed `--timestep`, so the ticks' `D` add up to the time passed,
-skipped frames included. A frame drawn after a drawn frame takes `D` as its
+skipped frames included, while each tick follows the one before within a
+quarter second. A frame drawn after a drawn frame takes `D` as its
 `iTimeDelta`. `params` holds the params that changed by their bare names,
 each value as a scene file writes it, and a text layer's words as its `text`,
 such as `title.text`. The first tick holds them all, and a value that the

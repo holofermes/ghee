@@ -1051,8 +1051,8 @@ shown:
 - 16 textures in one pass, fewer on a GPU with fewer texture units. A pass
   counts its channels and arrays, each asset that its GLSL samples, and the
   curves of each text layer whose `_cover` it reads. A layer counts its pass's
-  channels and arrays, plus a texture of its own: its atlas, its curves under
-  `"render": "slug"`, or its image:
+  channels and arrays, plus its own textures: the two pages of its atlas, its
+  curves under `"render": "slug"`, or its image:
   `pass 'main' needs 17 texture units, a pass binds at most 16`, or
   `layer 'title' needs 17 texture units, a pass binds at most 16`.
 - 16 passes, filter passes included: `17 passes, over the cap of 16`.
@@ -1080,11 +1080,12 @@ problem once, and the console shows it:
   many as 64 strips across and 64 down, fewer when the words crowd it. A glyph
   past the cap draws an error box:
   `layer 'title': 'X' has more than 64 curves in one band`.
-- Two pages of 2048x2048 hold the MTSDF fields of a font at one detail, and
-  an atlas of 2048x2048 holds the emoji of a layer, with room for 132 emoji
-  of Noto Color Emoji. A glyph past them draws an error box, once the glyphs
-  that no words on screen draw have given up their room:
+- Two pages of 2048x2048 hold the MTSDF fields of a font at one detail. A
+  glyph past them draws an error box, once the glyphs that no words on screen
+  draw have given up their room:
   `layer 'title': 'A' has no field in the atlas: the 2 pages of the atlas, 2048x2048 each, are full`.
+- An atlas of 2048x2048 holds the emoji of a layer, with room for 132 emoji of
+  Noto Color Emoji, and an emoji past it draws an error box.
 
 The wire of a [procedural scene](#procedural-scenes) names an array or a param
 in 255 bytes at most, and the Python shim raises ValueError past it.
@@ -1131,11 +1132,11 @@ The render tests need a GL device, and they fail on a host where none opens.
 On such a host, `RUSTFLAGS="--cfg ghee_no_gpu" cargo test --release` reports
 them as ignored, `--cfg ghee_no_ffmpeg` does the same for the tests that
 need ffmpeg, and `--cfg ghee_no_gpu_memory` for the test that reads the GL
-driver's buffer memory, which NVIDIA's driver does not report. The tests of
-a connected display and of the hardware H264 encoder run on a host that has
-one, under `--cfg ghee_display` and `--cfg ghee_hw_h264`. The golden check
-renders every scene in the manifest, and compares the sha256 of each frame
-against the pinned reference in `tools/fixtures/golden/`.
+driver's buffer memory, which vc4 and NVIDIA's driver do not report. The
+tests of a connected display and of the hardware H264 encoder run on a host
+that has one, under `--cfg ghee_display` and `--cfg ghee_hw_h264`. The
+golden check renders every scene in the manifest, and compares the sha256 of
+each frame against the pinned reference in `tools/fixtures/golden/`.
 
 ## License
 

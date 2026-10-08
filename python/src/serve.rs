@@ -137,7 +137,8 @@ pub struct Shared {
     layer_changes: AtomicU64,
     /// The new looks of layers, from applies, for the next frame.
     looks: Mutex<Vec<Value>>,
-    /// Why the last look that an apply gave a layer failed, "" when it took.
+    /// Why the looks of the last apply failed, joined by newlines, "" when
+    /// every look took.
     look_error: Mutex<String>,
     display: Value,
     out: Vec<String>,
@@ -520,7 +521,8 @@ impl Console {
         std::mem::take(&mut lock(&self.shared.looks))
     }
 
-    /// Why a look from an apply failed, for /stats, or "" when it took.
+    /// Why the looks of an apply failed, joined by newlines, for /stats, or
+    /// "" when every look took.
     pub fn look_error(&self, why: &str) {
         *lock(&self.shared.look_error) = why.to_string();
     }

@@ -1132,17 +1132,16 @@ impl Session {
                 self.held_words(&set.layer, set.value.clone(), false);
             }
         }
+        let applied = !looks.is_empty();
+        let mut failed = Vec::new();
         for look in looks {
-            let why = match self.renderer.replace_layer(&look) {
-                Ok(()) => {
-                    self.took(&look);
-                    String::new()
-                }
-                Err(e) => e.to_string(),
-            };
-            if let Some(c) = self.console.as_ref() {
-                c.look_error(&why);
+            match self.renderer.replace_layer(&look) {
+                Ok(()) => self.took(&look),
+                Err(e) => failed.push(e.to_string()),
             }
+        }
+        if let (true, Some(c)) = (applied, self.console.as_ref()) {
+            c.look_error(&failed.join("\n"));
         }
         let by_host = self.grown || !(self.changed.is_empty() && self.set.is_empty());
         let (changed, set) = (

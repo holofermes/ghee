@@ -404,6 +404,34 @@ def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():
         )
 
 
+def test_an_apply_reports_the_error_of_every_look_that_fails(tmp_path):
+    rect = {"shape": "rect", "width": 4, "height": 4}
+    doc = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "layers": [{"name": "a", **rect}, {"name": "b", **rect}],
+            }
+        ],
+    }
+    port = free_port()
+    with ghee.open(doc, width=8, height=8, serve=port, base_dir=tmp_path) as h:
+        h.frame()
+        looked = json_of(port, "/scene")
+        looked["passes"][0]["layers"] = [
+            {"name": "a", "image": "one.png"},
+            {"name": "b", "image": "two.png"},
+        ]
+        assert post_json(port, "/scene", looked)[0] == 200
+        h.frame()
+        error = json_of(port, "/stats")["error"]
+    a, b = error.split("\n")
+    assert a.startswith("layer 'a' image 'one.png'"), error
+    assert b.startswith("layer 'b' image 'two.png'"), error
+
+
 def test_a_set_the_scene_refuses_reads_as_set_param_reads(served):
     h, port = served
     with pytest.raises(ValueError) as python:

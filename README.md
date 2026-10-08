@@ -547,9 +547,11 @@ Under `--timestep` the phase starts at 0 with the scene.
 
 ### Text on 1-bit and 16-level panels
 
-A 1-bit panel such as the SSD1306 lights a pixel or leaves it dark. A letter
-keeps its shape, since a pixel at its edge lights when the pixel's centre lies
-inside the outline. A glow, a soft shadow and every other dim pixel go dark.
+A 1-bit panel such as the SSD1306 lights a pixel or leaves it dark. The
+kernel's ssd130x driver lights a pixel whose luma, by BT.601's weights, is 128
+of 255 or more. A letter keeps its shape, since a pixel at its edge lights when
+the pixel's centre lies inside the outline. A glow, a soft shadow and every
+other dim pixel go dark.
 
 With no filter, an outline font below about 12 pixels per em loses strokes
 thinner than a pixel, such as the bar of a small e, where Pillow's hinted

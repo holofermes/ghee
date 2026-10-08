@@ -9,7 +9,7 @@
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 
-/// --display-opts sets these options. Each k=v pair parses to one value.
+/// --opts sets these options. Each k=v pair parses to one value.
 pub type Opts = [(String, Value)];
 
 /// A command byte and its data, empty for a command that takes none.
@@ -39,7 +39,7 @@ pub struct Setup {
 /// A panel that `ghee overlay` sets up.
 pub struct Panel {
     pub name: &'static str,
-    /// What --display-opts sets for this panel, in declaration order.
+    /// What --opts sets for this panel, in declaration order.
     pub options: &'static [&'static str],
     pub setup: fn(&Opts) -> Result<Setup>,
 }
@@ -80,7 +80,7 @@ fn opt<'a>(opts: &'a Opts, name: &str) -> Option<&'a Value> {
     opts.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v)
 }
 
-/// True when --display-opts set this option.
+/// True when --opts set this option.
 fn given(opts: &Opts, name: &str) -> bool {
     opt(opts, name).is_some()
 }
@@ -164,7 +164,7 @@ const DISPON: u8 = 0x29;
 const MADCTL: u8 = 0x36;
 const COLMOD: u8 = 0x3A;
 
-/// What a panel on panel-mipi-dbi takes when --display-opts leaves it out.
+/// What a panel on panel-mipi-dbi takes when --opts leaves it out.
 struct MipiDbi {
     dc: i64,
     rst: Option<i64>,
@@ -221,7 +221,7 @@ fn mipi_dbi_spi(opts: &Opts, width: i32, height: i32, d: &MipiDbi) -> Result<Vec
     Ok(lines)
 }
 
-/// What --display-opts sets on a panel under panel-mipi-dbi.
+/// What --opts sets on a panel under panel-mipi-dbi.
 const MIPI_DBI_OPTIONS: &[&str] = &[
     "width",
     "height",
@@ -242,7 +242,7 @@ const ST7789_PINS: MipiDbi = MipiDbi {
     backlight: Some(22),
     // panel-mipi-dbi renders noise at 99 MHz on a VC4-class board, and this
     // clock is clean there. A panel that takes more says so with
-    // `--display-opts speed=`.
+    // `--opts speed=`.
     speed: 62_500_000,
 };
 const ST7789_MADCTL: u8 = 0xC0;

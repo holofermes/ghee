@@ -938,8 +938,8 @@ fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
             overlay::panels().join(", ")
         )));
     };
-    let opts = match given(&a.display_opts) {
-        true => parse_kv(text(&a.display_opts), "overlay: --display-opts")?,
+    let opts = match given(&a.opts) {
+        true => parse_kv(text(&a.opts), "overlay: --opts")?,
         false => Map::new(),
     };
     let unknown: Vec<&str> = opts
@@ -1343,7 +1343,7 @@ struct OverlayArgs {
         help = "the panel's options, e.g. width=240,height=240,backlight=26. \
                 A wrong one lists what the panel takes"
     )]
-    display_opts: Option<String>,
+    opts: Option<String>,
 
     #[arg(
         short,
@@ -1642,7 +1642,7 @@ mod tests {
     fn parse_kv_malformed_exits_naming_the_flag_that_took_it() {
         for (s, what) in [
             ("quality=90,nope", "render: --save-opts"),
-            ("width=240,nope", "overlay: --display-opts"),
+            ("width=240,nope", "overlay: --opts"),
         ] {
             let e = parse_kv(s, what).unwrap_err();
             assert_eq!(e.to_string(), format!("{what} wants k=v pairs, got 'nope'"));
@@ -1868,7 +1868,7 @@ mod tests {
                 vec![
                     "overlay",
                     "ssd1306",
-                    "--display-opts",
+                    "--opts",
                     "height=32",
                     "-o",
                     "panel.bin",
@@ -1876,11 +1876,11 @@ mod tests {
                 "overlay: -o with ssd1306, a panel that takes no file",
             ),
             (
-                vec!["overlay", "sh1106", "--display-opts", "dc=24"],
+                vec!["overlay", "sh1106", "--opts", "dc=24"],
                 "overlay: no option dc on sh1106 (takes: address, speed)",
             ),
             (
-                vec!["overlay", "st7789", "--display-opts", "widht=240"],
+                vec!["overlay", "st7789", "--opts", "widht=240"],
                 "overlay: no option widht on st7789 (takes: width, height, \
                  x_offset, y_offset, dc, rst, backlight, speed, spi_bus, spi_device, \
                  madctl)",

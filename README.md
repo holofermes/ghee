@@ -923,7 +923,7 @@ take its GPIOs, 25, none and 22 by default, and `speed` its SPI clock in Hz,
 Write the setup of the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
 
 ```
-$ ghee overlay st7789 --display-opts width=240,height=240,madctl=0x00,backlight=26
+$ ghee overlay st7789 --opts width=240,height=240,madctl=0x00,backlight=26
 dtoverlay=mipi-dbi-spi,spi0-0,speed=62500000
 dtparam=width=240,height=240
 dtparam=dc-gpio=25,backlight-gpio=26
@@ -949,7 +949,7 @@ to about 43.
 Write the setup of a 128x32 SSD1306 at the default address:
 
 ```
-$ ghee overlay ssd1306 --display-opts height=32
+$ ghee overlay ssd1306 --opts height=32
 dtparam=i2c_arm=on
 dtparam=i2c_arm_baudrate=1000000
 dtoverlay=ssd1306,height=32,inverted,sequential

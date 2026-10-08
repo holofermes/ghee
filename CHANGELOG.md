@@ -686,6 +686,8 @@ A scene written for 0.4.0 needs these changes.
 - Set the SPI clock of `ghee overlay st7789` with `speed`, where it took
   `baudrate`, so every panel that `ghee overlay` sets up takes its bus clock
   as `speed`.
+- Pass a panel's options to `ghee overlay` with `--opts`, where it took
+  `--display-opts`.
 - List the panels that `ghee overlay` takes when it is handed another, where
   it sent the reader to `ghee displays`.
 - Write the kernel's setup for an SH1106 with `ghee overlay sh1106` on I2C

@@ -36,6 +36,17 @@ A scene written for 0.4.0 needs these changes.
 ### Removed
 
 - Drop the `ghee isf import` command.
+- Drop ghee's own panel drivers, `st7789` and `ssd1306`. A panel takes
+  `ghee overlay`, and the kernel then drives it on `--display kms`.
+  `--display` takes `kms` alone, `ghee render` and `ghee serve` take no
+  `--display-opts`, and `ghee displays` lists the cards with a connected
+  display.
+- Take `"kms"` or None alone as the display of `ghee.open`, and `rgb565`
+  alone in its `opts`.
+- Drop `ghee::drivers` from the library, with the frame packers
+  `engine::pack_frame`, `pack_frame_into` and `packed_size`,
+  `Renderer::pack` and `Renderer::pack_into`, `stats::DEST_PANEL`, and
+  `native_format` in the console's `server::Options`.
 - Drop the console's `<scenes>/modified/` folder, its copies of JSON scenes
   and its `.values.json` sidecars of procedural scenes: ghee reads none of
   them. Fold a copy's changes into the scene's file by hand, or redo them in
@@ -339,8 +350,8 @@ A scene written for 0.4.0 needs these changes.
   numbered by its tick through a run of `#` as `ghee render -o` numbers its
   files.
 - Take the flags of `ghee render` in a direct run of a Python scene: `-o`
-  for image files or raw frames on stdout, `--display` and
-  `--display-opts`, `--serve`, `--port` and `--host` for the console,
+  for image files or raw frames on stdout, `--display`, `--serve`,
+  `--port` and `--host` for the console,
   `--stats` for the timing summary, and `--rotate`, `--brightness` and
   `--dri`, where `--output` named the display and `--stats` the console's
   port. With no `--frames`, `-o` renders one frame,
@@ -627,9 +638,10 @@ A scene written for 0.4.0 needs these changes.
   which needs `height=32` or `height=64`, where it wrote a 128x32 setup with
   no options. `speed` sets `dtparam=i2c_arm_baudrate`, the rate of the whole
   bus, 1000000 by default. `address` passes the panel's I2C address to the
-  overlay, where the overlay took `addr` and refused any address but 0x3C,
-  and `addr` stays the userspace driver's. A 128x64 module takes the
-  overlay's own wiring.
+  overlay, where the overlay took `addr` and refused any address but 0x3C.
+  A 128x64 module takes the overlay's own wiring.
+- List the panels that `ghee overlay` takes when it is handed another, where
+  it sent the reader to `ghee displays`.
 - Turn the frame clockwise on its way to every output with `--rotate 90`,
   `180` or `270` on `ghee render` and `ghee serve`, and
   `Renderer::set_rotate` in Rust: the display, the files, the raw frames

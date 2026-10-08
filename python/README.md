@@ -46,11 +46,11 @@ import ghee
 
 h = ghee.open(
     "scene.json",      # a path, the JSON text of a scene, a dict, a ghee.Scene, or None
-    display="st7789",  # a driver name, "kms", or None for headless
-    opts={"width": 240, "height": 240, "backlight": 26},
+    display="kms",     # the connected display, or None for headless
+    opts=None,         # {"rgb565": True} scans "kms" out in 16-bit color
     dri=None,          # the card, as --dri takes it
     rotate=0,          # 0, 90, 180 or 270 degrees clockwise
-    width=None, height=None,   # a headless size, a panel states its own
+    width=None, height=None,   # a headless size, a display states its own
     fps=30,            # pace cap, None runs free
     serve=8090,        # console port, ("0.0.0.0", 8090) binds elsewhere
     stream_max=None,   # h264 stream cap: pixels, or a fraction of the render size
@@ -231,8 +231,8 @@ at the size that fits the screen when `font_size` is None.
 ghee is thread-affine: open a handle on one thread and use it on that same
 thread. A call from another thread raises RuntimeError.
 
-A scene, GLSL or param error raises ValueError, and a driver or system error
-raises RuntimeError.
+A scene, GLSL or param error raises ValueError, and a system error raises
+RuntimeError.
 
 `frame()` releases the GIL, so the host's other threads run while it renders.
 
@@ -429,14 +429,13 @@ The scene takes its own arguments first, then these flags of `ghee render`:
 - `-o PATTERN`: image files, as `frame.####.png`, or `-` for raw RGBA frames
   on stdout. Files and the pipe take every frame, a skipped one too, and
   more than one frame takes a pattern that numbers them.
-- `--display [NAME]`: a driver name, or bare or `kms` for the connected
-  display. It is the default with no `-o` and no `--serve`.
-- `--display-opts K=V,...`: the options of the display driver.
+- `--display [kms]`: the connected display, bare or `kms`. It is the default
+  with no `-o` and no `--serve`.
 - `--serve`, `--port PORT`, `--host HOST`: the console.
-- `--size WxH`: the render size. With no `--size`, a display or a panel
-  states its own, which `ghee.render_size()` and a size arg given as a
-  share, such as `half`, take too, turned by `--rotate`. A run with no
-  display renders at 320x240.
+- `--size WxH`: the render size. With no `--size`, a display states its
+  own, which `ghee.render_size()` and a size arg given as a share, such as
+  `half`, take too, turned by `--rotate`. A run with no display renders at
+  320x240.
 - `--rotate DEGREES`: 0, 90, 180 or 270, the frame turned clockwise on its
   way to every output.
 - `--brightness LEVEL`: the backlight of the `kms` display, 0 to 1.

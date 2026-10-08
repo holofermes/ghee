@@ -16,7 +16,7 @@ through `ghee.layers`, and ghee lays out each new entry with no recompile.
 Words set in the console end the steps.
 
     ghee render --demo lettering -o out.####.png --frames 60 --timestep 0.1
-    ghee render --demo lettering --display st7789
+    ghee render --demo lettering --display kms
     ghee render --demo lettering --serve            # type the words live
 """
 

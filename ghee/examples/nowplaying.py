@@ -17,7 +17,6 @@ The tick hook stands in for a music player. It steps through PLAYLIST and
 sets the words of both layers through `ghee.layers`, and ghee lays them out
 again with no recompile. Put a player's own track change in now_playing().
 
-    ghee render --demo nowplaying --display ssd1306    # the 128x32 I2C OLED
     ghee render --demo nowplaying --display kms        # a panel with a kernel driver
     ./nowplaying.py -o np.####.png --size 256x64 --frames 300 --timestep 0.05
 """

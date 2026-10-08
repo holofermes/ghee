@@ -29,8 +29,8 @@ uv add ghee-render                # or, in a venv: pip install ghee-render
 ```
 
 The Python package holds the library and the shim. `ghee.open` runs the
-renderer inside your Python process, with the panel drivers and the console,
-and the shim writes [procedural scenes](#procedural-scenes). The package
+renderer inside your Python process, with the display and the console, and
+the shim writes [procedural scenes](#procedural-scenes). The package
 installs no `ghee` command. That command comes from the deb, or from a [source
 build](#build).
 
@@ -97,17 +97,11 @@ mpv:
 ghee render --demo trail --h264 - --fps 30 | mpv -
 ```
 
-Or scan it straight out to the HDMI display, as [Hardware
-displays](#hardware-displays) describes:
+Or scan it straight out to the connected display, HDMI or an SPI or I2C
+panel, as [Hardware displays](#hardware-displays) describes:
 
 ```
 ghee render --demo trail --display kms
-```
-
-Or drive an SPI or I2C panel:
-
-```
-ghee render --demo trail --display st7789
 ```
 
 Or serve the web [console](#the-console), to preview and author every demo
@@ -122,9 +116,8 @@ H264 at the same time, and `--serve` attaches the console to preview and
 author the scene:
 
 ```
-ghee render --demo bars --display st7789 -o frame.####.png      # panel and a contact sheet
-ghee render --demo bars --display st7789 --serve                 # panel, and edit it live
-ghee render --demo bars --display kms --serve --host 0.0.0.0     # HDMI, edit from a laptop
+ghee render --demo bars --display kms -o frame.####.png          # panel and a contact sheet
+ghee render --demo bars --display kms --serve --host 0.0.0.0     # panel, edit it from a laptop
 ```
 
 ## Scenes
@@ -554,9 +547,8 @@ Under `--timestep` the phase starts at 0 with the scene.
 
 ### Text on 1-bit and 16-level panels
 
-A 1-bit panel such as the SSD1306 lights a pixel or leaves it dark. ghee's
-`ssd1306` driver lights a pixel whose grey is above 128 of 255. A letter keeps
-its shape, since a pixel at its edge lights when the pixel's centre lies
+A 1-bit panel such as the SSD1306 lights a pixel or leaves it dark. A letter
+keeps its shape, since a pixel at its edge lights when the pixel's centre lies
 inside the outline. A glow, a soft shadow and every other dim pixel go dark.
 
 With no filter, an outline font below about 12 pixels per em loses strokes
@@ -862,7 +854,7 @@ with its pass hidden.
 The command line adds filters in order, after the scene's own:
 
 ```
-ghee render --demo bars --filters dither --display ssd1306
+ghee render --demo bars --filters dither --display kms
 ```
 
 ghee ships `dither`, `frc` and `frc256`, which [Text on 1-bit and 16-level
@@ -874,11 +866,10 @@ resolves the asset's file beside the filter.
 ## Hardware displays
 
 ```
-ghee displays                      # cards, drivers, their options, what works here
+ghee displays                         # the cards with a connected display
 ghee render scene.json --display kms
-ghee render scene.json --display st7789
-ghee serve scenes/ --display st7789   # the console, driving the panel
-ghee overlay st7789                   # take the kernel route instead
+ghee serve scenes/ --display kms      # the console, driving the display
+ghee overlay st7789                   # hand an SPI panel to the kernel
 ```
 
 `kms` is any connected KMS display: HDMI, or an SPI/I2C panel with a kernel
@@ -898,12 +889,16 @@ Show the `stats` demo on a panel mounted upside down, its backlight at 0.5:
 ghee render --demo stats --display kms --rotate 180 --brightness 0.5
 ```
 
-Take the kernel route for a panel where you can. On a Pi Zero W at 240x240,
-the `hero` demo renders 44% more fps through the kernel than through the
-userspace `st7789` driver, at 40% less CPU. The kernel drives a range of SPI
-and I2C panels, each set up with a device-tree overlay. `ghee overlay` writes
-what the panel needs and says how to install it. From then on, the panel
-belongs to the kernel driver:
+The kernel drives a range of SPI and I2C panels, each set up with a
+device-tree overlay. `ghee overlay` writes what an ST7789 or an SSD1306 needs
+and says how to install it, and the panel then answers `--display kms`.
+
+`ghee overlay st7789` needs the panel's `width` and `height`. `madctl` sets
+its rotation and mirroring, 0xC0 by default, `x_offset` and `y_offset` place
+it in the controller's memory, 0 by default, and `dc`, `rst` and `backlight`
+take its GPIOs, 25, none and 22 by default.
+
+Write the setup of the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
 
 ```
 $ ghee overlay st7789 --display-opts width=240,height=240,madctl=0x00,backlight=26
@@ -930,17 +925,6 @@ dtparam=i2c_arm=on
 dtparam=i2c_arm_baudrate=1000000
 dtoverlay=ssd1306,height=32,inverted,sequential
 add the lines above to /boot/firmware/config.txt, and reboot
-```
-
-ghee also carries two userspace panel drivers: `st7789`, for a 135x240 SPI
-LCD, and `ssd1306`, for a 128x32 I2C 1-bit OLED. They need no overlay and no
-reboot, they can be hot swapped 😬, and they take their settings at runtime.
-`--display-opts` sets a driver's own options, which fits either driver to your
-own panel. This runs the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
-
-```
-ghee render --demo bars --display st7789 \
-  --display-opts width=240,height=240,x_offset=0,y_offset=0,madctl=0x00,backlight=26
 ```
 
 ## From Rust
@@ -1032,13 +1016,13 @@ in 255 bytes at most, and the Python shim raises ValueError past it.
   more CPU.
 - `--display kms` needs its own card: if a compositor holds it, ghee cannot
   take DRM master.
-- The bundled panel drivers cover two controllers, `st7789` and `ssd1306`.
+- `ghee overlay` sets up two controllers, `st7789` and `ssd1306`.
 
 ## FAQ
 
 **`ghee render` says there is no GL device.** Point the engine at the right
 node with `--dri` or `$GHEE_DRI`, and add your user to the `video` group, plus
-`render` on a desktop. `ghee displays` reports what works on the host.
+`render` on a desktop.
 
 **`--h264` or the console stream says there is no ffmpeg on PATH.** That board
 has no Broadcom encoder, so ghee encodes with ffmpeg and libx264:

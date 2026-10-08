@@ -1928,13 +1928,18 @@ function fillKV(p, d){
   return kv;
 }
 // A rect's border, an object like an effect: its fields, an eye and a ×. A
-// removed border comes back as it was. Its fields' defaults come from GET /format.
+// border removed here comes back as it was, and else as the default layer's.
+// Its fields' defaults come from GET /format.
 const borderDefault = k => FORMAT.border.find(f => f.key === k).default;
 function borderKV(p, d, redo){
   const o = d.border, u = ui(d.name);
   if (!o){
     const row = el("div", "kv");
-    row.appendChild(addBtn("+ border", () => { d.border = u.border || {}; postScene(); redo(); }));
+    row.appendChild(addBtn("+ border", () => {
+      const e = defLayer(d.name);
+      d.border = u.border || (e && isObj(e.border) ? clone(e.border) : {});
+      postScene(); redo();
+    }));
     return row;
   }
   const off = o.visible === false, {kv, v} = KV("border");

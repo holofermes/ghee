@@ -4364,7 +4364,7 @@ mod tests {
     fn a_saved_layer_field_starts_a_procedural_scene_and_a_tick_sets_it_over() {
         // The code of proc places the layer title at x 1, its state file at
         // x 8, and each answer of the process at x 20.
-        let d = crate::testing::TempDir::new("console-sidecar");
+        let d = crate::testing::TempDir::new("console-proc");
         let doc = |x: f64| {
             serde_json::json!({"version": 1, "passes": [{"name": "main",
                 "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",

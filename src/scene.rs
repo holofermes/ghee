@@ -3032,7 +3032,7 @@ fn asset_dirs() -> Vec<String> {
 }
 
 /// Chained construction on a Pass constructor's Result:
-/// `Pass::of(name, code).array("level", 8).param(Param::float("gain", 1.0))?`.
+/// `Pass::of(name, fragment).array("level", 8).param(Param::float("gain", 1.0))?`.
 /// The first error stops the chain, and `?` returns it.
 pub trait PassBuilder {
     /// Declare an array for the host to fill every frame. `8` is a 1x8 linear

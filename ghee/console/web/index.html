@@ -997,7 +997,7 @@ async function reloadScene(){
   if (name === active) await refresh(true);
 }
 
-let FILTERS = {};   // name -> filter def (code + params), from /filters
+let FILTERS = {};   // name -> filter def (fragment + params), from /filters
 // The layer format, from GET /format: each effect's fields with their
 // defaults in draw order, the live fields of each kind of layer, what an
 // empty field takes, and the built-in fonts.
@@ -1025,7 +1025,7 @@ async function boot(){
 // the vid groups this page's streams on the server, and the ping keeps them alive
 const VID = "v" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 const PING_MS = 3000;
-const STREAM_KEY = "ghee:ui:stream";   // UI state, never the scene working copy
+const STREAM_KEY = "ghee:ui:stream";
 const PLAY = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
 const PAUSE = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>';
 let previewWhy = "";
@@ -1105,9 +1105,10 @@ function take(got){
   rev = known = got.rev;
 }
 
-// `local` hides the moved notice, which a load after a refused edit shows.
-async function loadScene(name, local = true){
-  if (local) $("#moved").hidden = true;
+// `own`, a load that this page asked for, hides the moved notice, which a
+// load after a refused edit shows.
+async function loadScene(name, own = true){
+  if (own) $("#moved").hidden = true;
   $("#behind").hidden = true;
   active = name;
   const got = await readScene(name);
@@ -1389,7 +1390,9 @@ function buildInputs(){
     imageAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s picture`));
   }
   (p.arrays || []).forEach(a => {
-    chip(a.name, `uniform float ${a.name}[${a.size}];\n${a.name}_at(i) reads element i (loop-safe on VC4)\n${a.name}_count is ${a.size}`, "arr");
+    chip(a.name, Array.isArray(a.size)
+      ? `float ${a.name}_sample2(vec2 uv);  array ${a.name}, ${a.size[0]} × ${a.size[1]}`
+      : `const int ${a.name}_count = ${a.size};\nfloat ${a.name}_at(int i);\nfloat ${a.name}_sample(float t);  array ${a.name}`, "arr");
   });
   row.appendChild(box);
   box.scrollLeft = left;

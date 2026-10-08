@@ -63,9 +63,7 @@ DSPAN = 0.25
 JUMP = 0.1
 
 SCENE_COMMON = (
-    """
-"""
-    + look.WAVE
+    look.WAVE
     + """
 // Everything downstream works in [0, 1] uv, so the flow and the particles look
 // the same at every render size.

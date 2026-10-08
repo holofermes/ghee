@@ -38,7 +38,7 @@ void main() {
     // VC4 interpolates uv up to 0.04 px off the pixel centre.
     vec2 px = floor(uv * iResolution.xy) + 0.5;
 
-    // Row k spans grow^(k + time * zoom) to grow^(k + 1 + time * zoom) of
+    // Row k spans grow^(k + iTime * zoom) to grow^(k + 1 + iTime * zoom) of
     // the frame height. rise is this pixel's height over its row's top.
     float lg = log(grow);
     float u = log(px.y / iResolution.y) / lg - iTime * zoom;

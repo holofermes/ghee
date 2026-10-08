@@ -295,6 +295,7 @@ def test_a_share_of_the_render_size_is_a_share_of_the_display(monkeypatch):
     "argv,size",
     [
         (["-o", "f.png"], (320, 240)),
+        (["-of.png"], (320, 240)),
         (["--serve"], (320, 240)),
         (["--size", "128x32"], (128, 32)),
         (["--size", "128x32", "--rotate", "270"], (32, 128)),

@@ -733,7 +733,8 @@ def _direct_size(argv: tuple[str, ...]) -> tuple[int, int] | None:
 
 def _flag(argv: tuple[str, ...], *names: str) -> str | None:
     """The value of the last of the flags `names` in `argv`, given as
-    `--name value` or `--name=value`, or None."""
+    `--name value` or `--name=value`, or a one-dash flag's `-nvalue`, as
+    argparse reads them, or None."""
     got = None
     for i, a in enumerate(argv):
         for n in names:
@@ -741,6 +742,8 @@ def _flag(argv: tuple[str, ...], *names: str) -> str | None:
                 got = argv[i + 1]
             elif a.startswith(n + "="):
                 got = a[len(n) + 1 :]
+            elif not n.startswith("--") and a.startswith(n) and a != n:
+                got = a[len(n) :]
     return got
 
 

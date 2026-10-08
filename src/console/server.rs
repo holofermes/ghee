@@ -621,12 +621,11 @@ impl Console {
                 stat.error_pass.map_or(Value::Null, ErrorPass::to_json),
             );
         }
+        // `rev` is the revision of the scene that `active` names.
+        let active = lock(&self.active).name.clone();
         d.insert(
             "active".to_string(),
-            lock(&self.active)
-                .name
-                .clone()
-                .map_or(Value::Null, Value::from),
+            active.clone().map_or(Value::Null, Value::from),
         );
         let stale = lock(&self.sources).as_mut().is_some_and(Snapshot::stale);
         d.insert(
@@ -643,7 +642,6 @@ impl Console {
             "layer_changes".to_string(),
             Value::from(self.layer_changes.load(Ordering::SeqCst)),
         );
-        let active = lock(&self.active).name.clone();
         let rev = active.and_then(|name| lock(&self.copies).get(&name).map(|c| c.rev));
         d.insert("rev".to_string(), rev.map_or(Value::Null, Value::from));
         Value::Object(d)

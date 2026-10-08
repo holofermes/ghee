@@ -3208,7 +3208,7 @@ mod tests {
             "items": [{"item": "fragment", "pass": "main", "base": "0123456789abcdef",
                        "value": mine}]});
         fs::write(&file, saved.to_string()).unwrap();
-        let (opened, _) = console.store.open("clocks", None).unwrap();
+        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
         ready(&console, "clocks", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let mut doc = json_of(&ask(&api, "GET", "/scene", "", "").1);

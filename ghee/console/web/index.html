@@ -1562,9 +1562,9 @@ function syncAddRow(){
 }
 
 // ---- layers ----
-// slug draws no distance field, so these draw under mtsdf only
+// slug draws no distance field, so these draw under every render but slug
 const NEEDS_MTSDF = ["text_shadow", "glow", "text_stroke"];
-const BLENDS = ["normal", "add", "multiply", "screen"], RENDERS = ["mtsdf", "slug"], ALIGNS = ["left", "center", "right"];
+const BLENDS = ["normal", "add", "multiply", "screen"], RENDERS = ["auto", "hinted", "mono", "mtsdf", "slug"], ALIGNS = ["left", "center", "right"];
 // a layer's kind as GET /format names it: text, image, rect or line
 const formKind = d => isImage(d) ? "image" : isShape(d) ? d.shape : "text";
 // a layer's own field that changes with no rebuild
@@ -1863,7 +1863,7 @@ function fxBlock(p, d){
   const fresh = f => { const e = defLayer(d.name); return e && isObj(e[f]) ? clone(e[f]) : {}; };
   if (missing.length) box.appendChild(addMenu("+ effect ▾", missing.map(f => [f, () => {
     d[f] = fresh(f); postScene(); redo();
-  }, slugLocked(d, f), "needs render mtsdf"])));
+  }, slugLocked(d, f), "not drawn under render slug"])));
   list.filter(f => d[f]).forEach(f => box.appendChild(fxRow(p, d, f, redo)));
   return box;
 }

@@ -1610,7 +1610,7 @@ mod tests {
         );
         assert_eq!(
             f["render"],
-            json!({"default": "mtsdf", "fonts": {"pixel": "slug"}})
+            json!({"default": "auto", "fonts": {"pixel": "slug"}})
         );
     }
 

@@ -298,10 +298,24 @@ A Rust host written for 0.4.0 needs these changes.
   layer and advances each frame by the effect's `speed` or `rate` times the
   frame's time step, so a new speed carries the motion on from where it is.
   Under `--timestep` the phase runs from 0 at the scene's start.
-- Draw a layer's glyphs from an MTSDF atlas by default, one texture read a
-  pixel. `"render": "slug"` computes Slug's exact coverage from the font's
-  curves instead, at any size and with no atlas. The slug layers that no
-  pass reads through `<name>_cover` share one texture of curves, which
+- Draw small text as Pillow draws it. `"render": "hinted"` hints each glyph at
+  the layer's size with FreeType 2.14.3, the version in Pillow's wheels, by
+  the font's own instructions or FreeType's autohinter, rasterizes it there,
+  and lands its pen on a whole pixel and its baseline on a whole row, as
+  Pillow does, so the layer lights the pixels that Pillow lights for the same
+  words, font and size. `"render": "mono"` draws the glyphs that FreeType
+  hints and draws for Pillow's 1-bit images, for an on/off panel such as the
+  SSD1306. `auto`, the default outside the pixel font, never picks it: it
+  takes `hinted` below 128 pixels per em, where a hinted bitmap outgrows its
+  MTSDF cell, and `mtsdf` from there, by the layer's size when it builds. A
+  hinted layer's shadow, glow and stroke draw from its MTSDF atlas, and a
+  fitted hinted size rounds down to a whole pixel. The built-in DejaVu Sans
+  carries its TrueType instructions. ghee builds FreeType from
+  `vendor/freetype`, and its license reads `MIT AND FTL`.
+- Draw a layer's glyphs from an MTSDF atlas under `"render": "mtsdf"`, one
+  texture read a pixel. `"render": "slug"` computes Slug's exact coverage from
+  the font's curves instead, at any size and with no atlas. The slug layers
+  that no pass reads through `<name>_cover` share one texture of curves, which
   takes a glyph at the first words that draw it, so new words of glyphs
   already drawn upload nothing, and a layer in the pixel font takes new
   two-digit words in 0.35 ms on a Pi Zero 2 W.

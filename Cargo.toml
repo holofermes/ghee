@@ -3,7 +3,7 @@ name = "ghee"
 version = "0.4.1-dev"
 edition = "2021"
 description = "GLSL scene renderer for headless GPUs. Renders to KMS displays (HDMI, SPI/I2C panels), files, and H264."
-license = "MIT"
+license = "MIT AND FTL"
 repository = "https://github.com/holofermes/ghee"
 
 [package.metadata.deb]

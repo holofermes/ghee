@@ -401,7 +401,7 @@ A text layer takes these keys on top of every layer's:
 | `font_size` | pixels per em | the largest size that fits |
 | `font_family` | a font asset's name, a `.ttf` or `.otf` file, or `pixel` | DejaVu Sans, built in |
 | `text_align` | `left`, `center` or `right` | `left` |
-| `render` | `mtsdf` or `slug`, as [Render](#render) describes | `mtsdf`, `slug` in `pixel` |
+| `render` | `auto`, `hinted`, `mono`, `mtsdf` or `slug`, as [Render](#render) describes | `auto`, `slug` in `pixel` |
 
 The words lay out into a block, as wide as the longest line, with one line
 height for each line, and `text_align` puts each line within the block. A
@@ -563,22 +563,26 @@ Under `--timestep` the phase starts at 0 with the scene.
 
 A 1-bit panel such as the SSD1306 lights a pixel or leaves it dark. The
 kernel's ssd130x driver lights a pixel whose luma, by BT.601's weights, is 128
-of 255 or more. A letter keeps its shape, since a pixel at its edge lights when
-the pixel's centre lies inside the outline. A glow, a soft shadow and every
-other dim pixel go dark.
+of 255 or more. A glow, a soft shadow and every other dim pixel go dark.
 
-With no filter, an outline font below about 12 pixels per em loses strokes
-thinner than a pixel, such as the bar of a small e, where Pillow's hinted
-rendering keeps them. `font_family: "pixel"` keeps every stroke: at 8 pixels
-per em it lights exactly the pixels that Pillow lights from the same font. An
-outline font keeps such strokes with a `text_stroke` in the letters' colour,
-0.01 em wide, which grows the letters by a tenth of a pixel at 11 pixels per
-em:
+Careful: give the text layers of an on/off panel such as the SSD1306
+`"render": "mono"`, since `auto` never picks it. `mono` lights the pixels that
+Pillow lights on a 1-bit image, which luma.oled shows on such a panel:
+FreeType hints each glyph for one bit and draws it fully on or off, so every
+stroke keeps its pixels at any size. Under `auto` the panel cuts FreeType's
+grey letters at 128, and a thin stroke that falls across two pixels can lose
+both. `font_family: "pixel"` lights the font's own pixels at 8 pixels per em
+under its default render. This status line draws as luma.oled draws it on a
+128x32 SSD1306:
 
 ```json
-{ "name": "title", "text": "hello", "font_size": 11,
-  "text_stroke": { "width": 0.01, "color": "#ffffff" } }
+{ "name": "cpu", "text": "cpu 42% ping 12ms", "font_size": 10, "x": 1, "y": 1,
+  "render": "mono" }
 ```
+
+On a 16-level panel such as the SSD1322, text below 128 pixels per em under
+`auto` shows the levels that luma.oled shows for Pillow's text in the same
+font.
 
 Three filters bring grey back. A scene names them in `filters`, or `--filters`
 adds them on the command line:
@@ -612,8 +616,23 @@ text of 10 and breaks text of 8.
 
 ### Render
 
-A text layer's `render` sets how it finds the coverage of each pixel: `mtsdf`,
-the default outside the pixel font, or `slug`.
+A text layer's `render` sets how it finds the coverage of each pixel: `auto`,
+the default outside the pixel font, `hinted`, `mono`, `mtsdf` or `slug`.
+
+`hinted` draws each glyph as FreeType 2.14.3 draws it for Pillow: hinted at
+the layer's size by the font's own instructions, or by FreeType's autohinter
+in a font that has none, and rasterized there into a bitmap that the layer
+reads one texel a pixel. Each glyph's pen lands on the nearest whole pixel and
+its baseline on a whole row, after the glyph's motion, so the layer lights the
+pixels that Pillow lights for the same words, font and size. `mono` draws the
+glyphs that FreeType hints and draws for Pillow's 1-bit images, each pixel
+fully on or off, for an on/off panel, and `auto` never picks it. A hinted
+layer's fitted size rounds down to a whole pixel, and its shadow, glow and
+stroke draw from an MTSDF atlas, as under `mtsdf`, moved with their letters.
+
+`auto` draws `hinted` below 128 pixels per em and `mtsdf` from 128 up, by the
+layer's size when it builds: its `font_size`, or the size that fits its words
+then. New words that fit another size keep the render that the layer took.
 
 `mtsdf` reads an atlas that holds an MTSDF, a multi-channel signed distance
 field, for each glyph. Each texel of a glyph's cell holds distances to the
@@ -645,13 +664,17 @@ That coverage is exact at any size. This is Eric Lengyel's
 A slug layer has no distance to the letters, so it skips `text_shadow`, `glow`
 and `text_stroke` and draws its other effects.
 
-Take `mtsdf` for most words, and for the shadow, the glow and the stroke. It
-costs one texture read a pixel. Take `slug` when new words must show in their
-first frame, whatever characters they hold, and when the frame has time for a
-loop over the curves at every pixel of every glyph. On a Pi Zero 2 W, seven
-lines of 216 characters at 46 pixels per em, in a 1280x800 frame, draw in 3.3
-ms with `mtsdf` and in 22.0 ms with `slug`. The background pass takes 2.1 ms
-of each.
+Take `auto` for most words. A hinted layer reads one texel a pixel, as an
+MTSDF layer does, and one with no shadow, glow or stroke shows new words in
+their first frame, whatever characters they hold, since FreeType draws a glyph
+when words first need it. On a Pi Zero 2 W, a 10 px status line in a 128x32
+frame sets up in 297 ms hinted and in 399 ms under `mtsdf` with its atlas
+cached, 885 ms without, and draws in 0.60 ms and 0.63 ms a frame. Take `mtsdf`
+for letters that move by less than a pixel. Take `slug` for exact edges at any
+size with no atlas, when the frame has time for a loop over the curves at
+every pixel of every glyph. On a Pi Zero 2 W, seven lines of 216 characters at
+46 pixels per em, in a 1280x800 frame, draw in 3.3 ms with `mtsdf` and in 22.0
+ms with `slug`. The background pass takes 2.1 ms of each.
 
 ### Coverage in a shader
 
@@ -700,7 +723,8 @@ shader that needs exact centres, like the one above, samples at
 
 A font is a TrueType or OpenType font with outlines. A text layer with no
 `font_family` draws from the built-in font: DejaVu Sans, cut to ASCII,
-Latin-1, the common punctuation, the euro sign and the trade mark sign.
+Latin-1, the common punctuation, the euro sign and the trade mark sign, with
+its own hinting.
 `font_family` takes a `.ttf` or `.otf` file, which resolves as an asset file
 does, or the name of a font asset, which several layers can share.
 
@@ -1058,7 +1082,8 @@ shown:
   counts its channels and arrays, each asset that its GLSL samples, and the
   curves of each text layer whose `_cover` it reads. A layer counts its pass's
   channels and arrays, plus its own textures: the two pages of its atlas, its
-  curves under `"render": "slug"`, or its image:
+  bitmaps under a hinted render, and the pages too there with a shadow, a
+  glow or a stroke, its curves under `"render": "slug"`, or its image:
   `pass 'main' needs 17 texture units, a pass binds at most 16`, or
   `layer 'title' needs 17 texture units, a pass binds at most 16`.
 - 16 passes, filter passes included: `17 passes, over the cap of 16`.
@@ -1146,7 +1171,8 @@ each frame against the pinned reference in `tools/fixtures/golden/`.
 
 ## License
 
-MIT. The text shader ports Eric Lengyel's Slug, also MIT, and [NOTICE](NOTICE)
-carries its copyright notice.
+MIT. The text shader ports Eric Lengyel's Slug, also MIT. ghee builds
+FreeType 2.14.3 from `vendor/freetype` under the FreeType License.
+[NOTICE](NOTICE) carries both notices.
 
 ![](https://fabiopiparo.com/pixel.gif?site=ghee)

@@ -5,7 +5,7 @@ name = "ghee-python"
 version = "0.4.1-dev"
 edition = "2021"
 description = "Python bindings for the ghee GLSL scene renderer."
-license = "MIT"
+license = "MIT AND FTL"
 repository = "https://github.com/holofermes/ghee"
 
 [lib]

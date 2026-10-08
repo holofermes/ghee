@@ -35,8 +35,8 @@ fn gpu() -> Renderer {
     );
 }
 
-/// The lyrics centred at 46 px/em in layer `t`, shown or hidden, in a pass
-/// of `code`.
+/// The lyrics centred at 46 px/em in layer `t`, drawn from the MTSDF atlas,
+/// shown or hidden, in a pass of `code`.
 fn frame(r: &mut Renderer, code: &str, visible: bool) -> Vec<u8> {
     let doc = json!({
         "version": 1,
@@ -44,7 +44,7 @@ fn frame(r: &mut Renderer, code: &str, visible: bool) -> Vec<u8> {
         "passes": [{"name": "main", "fragment": code,
                     "layers": [{"name": "t", "visible": visible, "text": LYRICS,
                                 "font_size": 46, "font_family": "font",
-                                "text_align": "center"}]}],
+                                "text_align": "center", "render": "mtsdf"}]}],
     });
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     sc.load_assets(FONTS).unwrap();

@@ -55,3 +55,9 @@ with the bundled examples. Its license is ghee/examples/fonts/LICENSE-DejaVu.txt
 ghee/examples/fonts/PixelOperator8.ttf, Pixel Operator 8 by Jayvee Enaguas,
 travels with the bundled examples, under CC0 1.0 Universal. Its text is
 ghee/examples/fonts/LICENSE-PixelOperator.txt.
+
+vendor/freetype holds FreeType 2.14.3, which ghee builds in, under the
+FreeType License, vendor/freetype/docs/FTL.TXT:
+
+Portions of this software are copyright © 2026 The FreeType Project
+(https://freetype.org). All rights reserved.

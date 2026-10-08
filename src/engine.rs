@@ -28,6 +28,7 @@
 //! with no effect draw as runs, one batch each, as `crate::run` groups
 //! them, and a change to a run's layers groups their pass again.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{CStr, CString};
@@ -47,6 +48,7 @@ use crate::atlas;
 use crate::cparam::create_c_parameter;
 use crate::draw::{self, Call};
 use crate::ffi;
+use crate::hinted;
 use crate::layer::{
     is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer, GLSL_NAME,
 };
@@ -361,6 +363,27 @@ fn text_class(l: &TextLayer, quads: &[f32], size: [f64; 2], shared: bool, pass: 
     match !shared || crate::run::glyph_pixels(quads, fs) > crate::run::GLYPH_PIXELS {
         true => Class::Alone,
         false => Class::Joins,
+    }
+}
+
+/// `l` as it draws, with the render of `renders` that a layer of render
+/// auto took at its build. One with none draws as MTSDF.
+fn concrete_in<'a>(l: &'a TextLayer, renders: &HashMap<String, Render>) -> Cow<'a, TextLayer> {
+    match l.render {
+        Render::Auto => Cow::Owned(TextLayer {
+            render: renders.get(&l.name).copied().unwrap_or(Render::Mtsdf),
+            ..l.clone()
+        }),
+        _ => Cow::Borrowed(l),
+    }
+}
+
+/// True for a layer, as it draws, that reads an MTSDF atlas: an MTSDF layer,
+/// or a hinted layer for its shadow, its glow and its stroke.
+fn reads_field(l: &TextLayer) -> bool {
+    match l.render {
+        Render::Mtsdf => true,
+        r => r.hinted() && l.doubled(),
     }
 }
 
@@ -852,6 +875,11 @@ pub struct Renderer {
     pub(crate) restarted: std::cell::Cell<bool>,
     /// The texels per em of each drawn layer's atlas, by the layer's name.
     px_em: HashMap<String, u32>,
+    /// The render that each drawn text layer of render auto took at its
+    /// build, by the layer's name.
+    renders: HashMap<String, Render>,
+    /// The glyph bitmaps of each drawn hinted layer, by the layer's name.
+    hinted: std::cell::RefCell<HashMap<String, hinted::Bitmaps>>,
     /// The font of an atlas generator.
     atlas_font: AtlasFont,
     /// The atlas cache directory. None takes the generator's own.
@@ -942,6 +970,8 @@ impl Renderer {
             dt: std::cell::Cell::new(DT),
             restarted: std::cell::Cell::new(false),
             px_em: HashMap::new(),
+            renders: HashMap::new(),
+            hinted: std::cell::RefCell::new(HashMap::new()),
             atlas_font: Box::new(|fonts| Arc::new(text::AtlasFont(fonts.to_vec()))),
             atlas_cache: None,
             #[cfg(test)]
@@ -1160,6 +1190,7 @@ impl Renderer {
             );
             return Ok(self.error.clone());
         }
+        let (sizes, renders) = self.text_sizes(&drawn);
         // The engine counts the assets and the layers' textures that each
         // program samples once it compiles. These counts come first, and a
         // scene that they refuse leaves the running scene in place.
@@ -1171,11 +1202,19 @@ impl Renderer {
             let mut over = self.units_error(&format!("pass '{}'", p.name), want);
             // A layer samples its own textures on top of its pass's channels
             // and arrays, which stay bound for it: the two pages of an MTSDF
-            // atlas, or one texture, its words' or its image. A shape samples
-            // none.
+            // atlas, those and its bitmaps for a hinted layer with effects, or
+            // one texture, its bitmaps', its words' or its image. A shape
+            // samples none.
             let units = |l: &Layer| match l {
                 Layer::Shape(_) => 0,
-                Layer::Text(t) if t.render == Render::Mtsdf => 2,
+                Layer::Text(t) => {
+                    let t = concrete_in(t, &renders);
+                    match t.render {
+                        Render::Mtsdf => 2,
+                        r if r.hinted() && t.doubled() => 3,
+                        _ => 1,
+                    }
+                }
                 _ => 1,
             };
             let mut sampling: Option<(&Layer, usize)> = None;
@@ -1203,7 +1242,6 @@ impl Renderer {
         let mut runs: Vec<Run> = Vec::new();
         let mut glyphs = text::Glyphs::default();
         let hw_linear = self.data_texture_linear();
-        let sizes = self.atlas_sizes(&drawn);
         #[cfg(test)]
         let hw_linear = hw_linear && !self.shader_lerp;
         let total = drawn.len();
@@ -1260,9 +1298,9 @@ impl Renderer {
                 .layers
                 .iter()
                 .map(|l| {
-                    let l = l.as_text()?;
+                    let l = concrete_in(l.as_text()?, &renders);
                     let px_em = sizes.get(&l.name).copied().unwrap_or(atlas::PX_EM);
-                    Some(self.text_shaders(l, l.detail(px_em)))
+                    Some(self.text_shaders(&l, l.detail(px_em)))
                 })
                 .collect();
             let size = p
@@ -1471,6 +1509,7 @@ impl Renderer {
         self.moved();
         self.drawn_at.set(0.0);
         self.px_em = sizes;
+        self.renders = renders;
         // A new scene logs its text problems afresh.
         self.reported.borrow_mut().clear();
         if !self.text_errors.borrow().is_empty() {
@@ -1495,8 +1534,10 @@ impl Renderer {
                 self.curves.insert(l.name.clone());
             }
         }
-        // A colour atlas starts again with the words that need it.
+        // A colour atlas and a hinted layer's bitmaps start again with the
+        // words that need them.
         self.colours.borrow_mut().clear();
+        self.hinted.borrow_mut().clear();
         self.set_atlases(&drawn)?;
         // The engine assets of the old scene that the new one does not declare
         // go, and their slots come back.
@@ -2697,6 +2738,7 @@ impl Renderer {
         self.on_screen.borrow_mut().remove(name);
         self.rekeep.set(true);
         self.colours.borrow_mut().remove(name);
+        self.hinted.borrow_mut().remove(name);
         if self.text_errors.borrow_mut().remove(name).is_some() {
             self.text_errors_seq.set(self.text_errors_seq.get() + 1);
         }
@@ -3293,11 +3335,17 @@ impl Renderer {
         l: &TextLayer,
     ) -> Result<()> {
         let size = self.pass_size(pass_name);
+        self.renders.remove(&l.name);
         if let Some(b) = l.place(&l.text).ok().and_then(|laid| laid.built) {
             let px = l.font_px(size, b.size);
             self.px_em.insert(l.name.clone(), l.atlas_px_em(px));
+            if l.render == Render::Auto {
+                self.renders.insert(l.name.clone(), l.render.at(px));
+            }
         }
-        let shaders = self.text_shaders(l, self.detail(l));
+        self.hinted.borrow_mut().remove(&l.name);
+        let concrete = self.concrete(l);
+        let shaders = self.text_shaders(&concrete, self.detail(&concrete));
         let name = format!("layer '{}'", l.name);
         match joins_runs(&Layer::Text(l.clone())) {
             true => {
@@ -3310,7 +3358,7 @@ impl Renderer {
                 let batch = self.insert_batch(pass, after, &name, Some(shaders.glyphs), l.blend)?;
                 let dl = LayerBatches {
                     batch,
-                    fades: l.fades_as_one(),
+                    fades: concrete.fades_as_one(),
                     ..Self::undrawn(&l.name)
                 };
                 self.put_drawn(pass_name, index, dl);
@@ -3437,6 +3485,7 @@ impl Renderer {
     /// Draw `laid`, new words of `layer`, from now on, and log their problems.
     /// Words that did not lay out leave the last words drawn.
     fn show(&self, layer: &TextLayer, laid: Layout) -> Result<()> {
+        let layer = &*self.concrete(layer);
         let name = &layer.name;
         let Layout { built, mut faults } = laid;
         let Some(built) = built else {
@@ -3446,41 +3495,27 @@ impl Renderer {
         // The quads of the layer's render, and under MTSDF an error box for
         // each glyph that the atlas holds no field for. An MTSDF layer with no
         // atlas is hidden or has no font with outlines left, and still draws
-        // its colour glyphs.
+        // its colour glyphs. A hinted layer draws an error box for each glyph
+        // that FreeType fails.
         let mut boxes = built.boxes.floats.clone();
         let quads = match layer.render {
             Render::Slug => layer.copies(&built.quads.floats),
-            Render::Mtsdf => {
-                let atlases = self.atlases.borrow();
-                let slot = self.atlas_of(name).map(|i| &atlases[i]);
-                let made = slot.and_then(|s| {
-                    s.gen.with(|pages| {
-                        text::atlas_quads(&built.glyphs, |p| {
-                            let id = text::atlas_id(p.font, p.gid);
-                            let cell = pages.iter().find_map(|a| a.cells.get(&id));
-                            Some((*cell?, f64::from(s.px_em)))
-                        })
-                    })
-                });
-                match (slot, made) {
-                    (Some(slot), Some((quads, more, missing))) => {
-                        boxes.extend(&more.floats);
-                        let mut told: Vec<char> = Vec::new();
-                        for p in missing {
-                            if told.contains(&p.ch) {
-                                continue;
-                            }
-                            told.push(p.ch);
-                            let why = match slot.gen.failure(text::atlas_id(p.font, p.gid)) {
-                                Some(e) => format!("has no field in the atlas: {e}"),
-                                None => "has no field in the atlas".to_string(),
-                            };
-                            faults.push(Fault::Glyph(p.ch, why));
-                        }
-                        layer.copies(&quads.floats)
-                    }
-                    _ => Vec::new(),
-                }
+            r if r.hinted() => {
+                let px = layer.font_px(self.layer_pass_size(name), built.size);
+                let (letters, pens) =
+                    self.hinted_quads(layer, &built, px, &mut boxes, &mut faults)?;
+                let effects = match layer.doubled() {
+                    true => self.field_quads(layer, &built.glyphs, &mut boxes, &mut faults, |k| {
+                        pens[k].unwrap_or(built.glyphs[k].span[0] * px)
+                    }),
+                    false => Vec::new(),
+                };
+                layer.hinted_copies(&effects, &letters)
+            }
+            _ => {
+                let quads =
+                    self.field_quads(layer, &built.glyphs, &mut boxes, &mut faults, |_| 0.0);
+                layer.copies(&quads)
             }
         };
         let colour = self.colour_quads(layer, &built.colour, &mut faults)?;
@@ -3575,6 +3610,144 @@ impl Renderer {
             self.reclassed.set(true);
         }
         Ok(())
+    }
+
+    /// The quads of `glyphs`, glyphs of `layer`, drawn from its MTSDF atlas,
+    /// with an error box in `boxes` and a fault in `faults` for each glyph
+    /// that the atlas holds no field for. None when the layer has no atlas.
+    /// A hinted layer's quad holds the pen of its letter, `pen` of the
+    /// glyph's index in `glyphs`, in the w of ghee_a2.
+    fn field_quads(
+        &self,
+        layer: &TextLayer,
+        glyphs: &[text::Placement],
+        boxes: &mut Vec<f32>,
+        faults: &mut Vec<Fault>,
+        pen: impl Fn(usize) -> f64,
+    ) -> Vec<f32> {
+        let atlases = self.atlases.borrow();
+        let Some(slot) = self.atlas_of(&layer.name).map(|i| &atlases[i]) else {
+            return Vec::new();
+        };
+        let mut drawn: Vec<usize> = Vec::new();
+        let made = slot.gen.with(|pages| {
+            let mut k = 0;
+            text::atlas_quads(glyphs, |p| {
+                let id = text::atlas_id(p.font, p.gid);
+                let cell = pages.iter().find_map(|a| a.cells.get(&id)).copied();
+                if cell.is_some() {
+                    drawn.push(k);
+                }
+                k += 1;
+                Some((cell?, f64::from(slot.px_em)))
+            })
+        });
+        let Some((mut quads, more, missing)) = made else {
+            return Vec::new();
+        };
+        boxes.extend(&more.floats);
+        let mut told: Vec<char> = Vec::new();
+        for p in missing {
+            if told.contains(&p.ch) {
+                continue;
+            }
+            told.push(p.ch);
+            let why = match slot.gen.failure(text::atlas_id(p.font, p.gid)) {
+                Some(e) => format!("has no field in the atlas: {e}"),
+                None => "has no field in the atlas".to_string(),
+            };
+            faults.push(Fault::Glyph(p.ch, why));
+        }
+        if layer.render.hinted() {
+            for (q, k) in quads
+                .floats
+                .chunks_exact_mut(4 * text::QUAD_FLOATS)
+                .zip(drawn)
+            {
+                for v in q.chunks_exact_mut(text::QUAD_FLOATS) {
+                    v[11] = pen(k) as f32;
+                }
+            }
+        }
+        quads.floats
+    }
+
+    /// The letters' quads of `built`, words of the hinted layer `layer` at
+    /// `px` pixels per em, from its bitmaps, which take the glyphs new to
+    /// them and upload, and each glyph's pen in pixels. A glyph that FreeType
+    /// fails takes an error box in `boxes` and a fault in `faults`.
+    fn hinted_quads(
+        &self,
+        layer: &TextLayer,
+        built: &text::Built,
+        px: f64,
+        boxes: &mut Vec<f32>,
+        faults: &mut Vec<Fault>,
+    ) -> Result<(Vec<f32>, Vec<Option<f64>>)> {
+        let name = &layer.name;
+        let Some(drawn) = self.drawn(name) else {
+            return Ok((Vec::new(), Vec::new()));
+        };
+        let fonts: Vec<text::Font> = (0..=built.glyphs.iter().map(|p| p.font).max().unwrap_or(0))
+            .map(|i| layer.font(i).ok_or_else(|| layer.font_name(i)))
+            .collect();
+        let mut all = self.hinted.borrow_mut();
+        if all.get(name).is_some_and(|b| !b.holds(&fonts)) {
+            all.remove(name);
+        }
+        let bitmaps = all
+            .entry(name.clone())
+            .or_insert_with(|| hinted::Bitmaps::new(&fonts));
+        let mono = layer.render == Render::Mono;
+        let (quads, pens) = bitmaps.quads(&built.glyphs, &built.pens, px, mono);
+        let failed: Vec<text::Placement> = built
+            .glyphs
+            .iter()
+            .zip(&pens)
+            .filter(|(_, pen)| pen.is_none())
+            .map(|(p, _)| p.clone())
+            .collect();
+        let mut told: Vec<char> = Vec::new();
+        for p in &failed {
+            if !told.contains(&p.ch) {
+                told.push(p.ch);
+                let why = bitmaps
+                    .failed
+                    .get(&text::atlas_id(p.font, p.gid))
+                    .map_or("has no bitmap", String::as_str);
+                faults.push(Fault::Glyph(p.ch, format!("has no hinted bitmap: {why}")));
+            }
+        }
+        boxes.extend(text::atlas_quads(&failed, |_| None).1.floats);
+        if let Some(up) = bitmaps.atlas.update() {
+            let tex = text::internal(name, "_hinted");
+            if up.resized {
+                let a = &bitmaps.atlas;
+                self.set_asset(&tex, a.width, a.height, 4, false, AssetData::U8(&a.texels))?;
+                self.scene_asset(&tex);
+                self.bind_asset(drawn.batch, &text::internal(GLSL_NAME, "_hinted"), &tex)?;
+            } else {
+                for rows in &up.rows {
+                    self.set_asset_rows(&tex, rows.y, up.width, &rows.texels)?;
+                }
+            }
+        }
+        Ok((quads.floats, pens))
+    }
+
+    /// The pixels of the pass that draws layer `name`.
+    fn layer_pass_size(&self, name: &str) -> [f64; 2] {
+        let pass = self.places().scene.get(name).copied().and_then(|(p, _)| {
+            let scene = self.scene.borrow();
+            Some(scene.as_ref()?.passes.get(p)?.name.clone())
+        });
+        match pass {
+            Some(pass) => self.pass_size(&pass),
+            None => {
+                let (sw, sh) = self.scene_size();
+                [f64::from(sw), f64::from(sh)]
+            }
+        }
     }
 
     /// Hand the engine batch `batch` of text layer `name` its quads, the
@@ -3699,7 +3872,8 @@ impl Renderer {
     /// Compile the program of the colour batch of `layer`, drawn as `dl`,
     /// and hand it the layer's uniforms.
     fn build_colour(&self, layer: &TextLayer, dl: &LayerBatches) -> Result<()> {
-        let (vs, fs) = layer.shaders(self.detail(layer)).colour;
+        let layer = self.concrete(layer);
+        let (vs, fs) = layer.shaders(self.detail(&layer)).colour;
         let (cvs, cfs) = (CString::new(vs)?, CString::new(fs)?);
         if !unsafe {
             ffi::ghee_mp_set_batch_program(self.handle, dl.colour, cvs.as_ptr(), cfs.as_ptr())
@@ -3709,6 +3883,12 @@ impl Renderer {
         }
         dl.coloured.set(true);
         Ok(())
+    }
+
+    /// `l` as it draws: under render auto, with the render that it took at
+    /// its build.
+    fn concrete<'a>(&self, l: &'a TextLayer) -> Cow<'a, TextLayer> {
+        concrete_in(l, &self.renders)
     }
 
     /// The atlas detail of `layer`, as setup() worked it out.
@@ -3733,9 +3913,11 @@ impl Renderer {
     /// The texels per em of the atlas of each layer of `drawn`, by its
     /// name: the step at or above its font_size, or the size at which its
     /// words fit its pass, laid out on the CPU. A layer whose words lay out
-    /// in no font takes atlas::PX_EM.
-    fn atlas_sizes(&self, drawn: &[Pass]) -> HashMap<String, u32> {
+    /// in no font takes atlas::PX_EM. Also the render that each layer of
+    /// render auto takes at that size.
+    fn text_sizes(&self, drawn: &[Pass]) -> (HashMap<String, u32>, HashMap<String, Render>) {
         let mut out = HashMap::new();
+        let mut renders = HashMap::new();
         let (sw, sh) = self.scene_size();
         let frame = (i64::from(sw), i64::from(sh));
         for p in drawn {
@@ -3745,9 +3927,12 @@ impl Renderer {
                 let Some(b) = block else { continue };
                 let px = l.font_px([w as f64, h as f64], b.size);
                 out.insert(l.name.clone(), l.atlas_px_em(px));
+                if l.render == Render::Auto {
+                    renders.insert(l.name.clone(), l.render.at(px));
+                }
             }
         }
-        out
+        (out, renders)
     }
 
     /// Set up the atlases of the layers of `drawn`: one generator per font,
@@ -3781,10 +3966,11 @@ impl Renderer {
         let Some(fonts) = &l.data else {
             return Ok(());
         };
-        if l.render != Render::Mtsdf || !l.visible || !l.has_outlines() {
+        let l = self.concrete(l);
+        if !reads_field(&l) || !l.visible || !l.has_outlines() {
             return Ok(());
         }
-        let Detail { px_em, range } = self.detail(l);
+        let Detail { px_em, range } = self.detail(&l);
         let same = |s: &AtlasSlot| s.px_em == px_em && s.range == range && s.fonts == *fonts;
         let i = match slots.iter().position(same) {
             Some(i) => i,
@@ -4605,6 +4791,7 @@ impl Renderer {
         self.on_screen.borrow_mut().clear();
         self.atlases.borrow_mut().clear();
         self.colours.borrow_mut().clear();
+        self.hinted.borrow_mut().clear();
         *self.glyphs.borrow_mut() = text::Glyphs::default();
         self.pass_shown.borrow_mut().clear();
     }
@@ -8672,7 +8859,7 @@ mod tests {
                 "passes": [{"name": "main",
                     "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
                     "layers": [{"name": "label", "text": words, "font_family": "sans",
-                                "x": 2, "y": 1, "font_size": 40}]}],
+                                "x": 2, "y": 1, "font_size": 40, "render": "mtsdf"}]}],
             }),
             None,
             None,
@@ -8989,7 +9176,7 @@ mod tests {
         assert_ne!(far, near);
         let layer = |name: &str, px: f64, visible: bool| {
             json!({"name": name, "text": "AV", "font_family": "sans", "y": 1,
-                   "font_size": px, "visible": visible})
+                   "font_size": px, "visible": visible, "render": "mtsdf"})
         };
         let mut sc = Scene::from_dict(
             &json!({

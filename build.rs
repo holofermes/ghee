@@ -2,6 +2,7 @@ use std::env;
 
 fn main() {
     println!("cargo:rerun-if-changed=ghee/_engine");
+    println!("cargo:rerun-if-changed=ghee/_freetype");
     println!("cargo:rerun-if-env-changed=GHEE_SYSROOT");
     let mut b = cc::Build::new();
     b.file("ghee/_engine/engine.c")
@@ -31,7 +32,47 @@ fn main() {
         b.flag("-isystem/usr/include/libdrm");
     }
     b.compile("ghee_engine");
+    freetype(&arch);
     for lib in ["drm", "gbm", "EGL", "GLESv2"] {
         println!("cargo:rustc-link-lib={lib}");
     }
+}
+
+/// FreeType 2.14.3 in vendor/freetype, the version that Pillow's wheels carry,
+/// with the modules and options of ghee/_freetype, and ghee's calls into it.
+fn freetype(arch: &str) {
+    let mut b = cc::Build::new();
+    let src = "vendor/freetype/src";
+    for f in [
+        "base/ftsystem.c",
+        "base/ftinit.c",
+        "base/ftdebug.c",
+        "base/ftbase.c",
+        "base/ftbitmap.c",
+        "base/ftmm.c",
+        "autofit/autofit.c",
+        "truetype/truetype.c",
+        "sfnt/sfnt.c",
+        "smooth/smooth.c",
+        "raster/raster.c",
+        "psnames/psnames.c",
+        "cff/cff.c",
+        "psaux/psaux.c",
+        "pshinter/pshinter.c",
+    ] {
+        b.file(format!("{src}/{f}"));
+    }
+    b.file("ghee/_freetype/glyphs.c")
+        .include("ghee/_freetype")
+        .include("vendor/freetype/include")
+        .define("FT2_BUILD_LIBRARY", None)
+        .define("FT_CONFIG_OPTIONS_H", "<ghee_ftoption.h>")
+        .define("FT_CONFIG_MODULES_H", "<ghee_ftmodule.h>")
+        .opt_level(2)
+        .warnings(false);
+    if arch == "arm" {
+        b.flag_if_supported("-mcpu=arm1176jzf_s");
+        b.flag_if_supported("-mcpu=arm1176jzf-s");
+    }
+    b.compile("ghee_freetype");
 }

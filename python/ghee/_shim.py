@@ -55,7 +55,7 @@ _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 
 ParamType = Literal["float", "int", "bool", "color", "string", "vec2", "vec3", "vec4"]
 TextAlign = Literal["left", "center", "right"]
-Render = Literal["mtsdf", "slug"]
+Render = Literal["auto", "hinted", "mono", "mtsdf", "slug"]
 Shape = Literal["rect", "line"]
 Blend = Literal["normal", "add", "multiply", "screen"]
 ArgType = Literal["string", "int", "float", "size", "bool"]
@@ -199,8 +199,8 @@ class Layer:
     `font_family` is a font file (.ttf or .otf), the name of a font Asset,
     or "pixel" for the Pixel Operator 8 that ghee carries, and None draws
     from the DejaVu Sans Latin that ghee carries.
-    `text_align` is "left", "center" or "right", and `render` is "mtsdf" or
-    "slug".
+    `text_align` is "left", "center" or "right", and `render` is "auto",
+    "hinted", "mono", "mtsdf" or "slug".
 
     Each effect of a text layer is a dict of its fields, {} for every
     default, and None leaves it off. Its sizes are in em, and `visible`

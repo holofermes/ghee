@@ -767,6 +767,9 @@ fn layers_round_trip_and_leave_their_defaults_out() {
         {"name": "i", "color": {"from": "lime", "to": "Transparent", "angle": 90.0},
          "text": "I"},
         {"name": "j", "text": "I", "font_family": "pixel", "render": "mtsdf"},
+        {"name": "k", "text": "I", "render": "hinted"},
+        {"name": "l", "text": "I", "render": "mono"},
+        {"name": "m", "text": "I", "render": "mtsdf"},
     ]));
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     assert_eq!(sc.to_dict(), doc);
@@ -775,7 +778,7 @@ fn layers_round_trip_and_leave_their_defaults_out() {
     let defaults = layers_scene(json!([{
         "name": "a", "visible": true, "x": null, "y": null, "color": "#ffffff",
         "opacity": 1, "blend": "normal", "text": "I", "font_size": null,
-        "font_family": null, "text_align": "left", "render": "mtsdf",
+        "font_family": null, "text_align": "left", "render": "auto",
     }, {
         "name": "b", "color": {"from": [1, 0, 0], "to": [0, 0, 1], "angle": 180},
         "text": "I",
@@ -919,7 +922,8 @@ fn a_layer_declaration_names_what_it_lacks() {
         ),
         (
             t(json!({"render": "msdf"})),
-            "layer 't' render needs 'mtsdf' or 'slug', got 'msdf'".to_string(),
+            "layer 't' render needs 'auto', 'hinted', 'mono', 'mtsdf' or 'slug', got 'msdf'"
+                .to_string(),
         ),
         (
             t(json!({"glow": true})),
@@ -3535,7 +3539,7 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
     ];
     let mut rows = Vec::new();
     for e in effects {
-        for render in ["mtsdf", "slug"] {
+        for render in ["mtsdf", "slug", "hinted", "mono"] {
             let mut keys = json!({"name": "t", "text": "A", "render": render});
             keys.as_object_mut()
                 .unwrap()
@@ -4012,5 +4016,92 @@ fn an_emoji_takes_no_shadow_glow_or_stroke_beside_letters_that_do() {
                 .collect()
         };
         assert!(worst(&left(&frame), &left(&plain)) <= 1, "{keys}");
+    }
+}
+
+// The hinted renders
+
+/// The PNG `file` of tools/fixtures/hinted, one grey byte a pixel, and its
+/// width.
+fn pillow_png(file: &str) -> (usize, Vec<u8>) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/hinted");
+    let reader = png::Decoder::new(fs::File::open(format!("{dir}/{file}")).unwrap());
+    let mut reader = reader.read_info().unwrap();
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Grayscale, "{file}");
+    buf.truncate(info.buffer_size());
+    (info.width as usize, buf)
+}
+
+/// One black pass of a text layer in the built-in font: the words of
+/// tools/fixtures/hinted/pillow.py at `size` px, from x 1 with the baseline
+/// on row 18, and `keys` on top.
+fn hinted_scene(size: f64, keys: Value) -> Scene {
+    let data = font(LATIN);
+    let face = Face::parse(&data, 0).unwrap();
+    let ascent = f64::from(face.ascender()) / f64::from(face.units_per_em());
+    let mut layer = json!({"name": "t", "text": "cpu 42% ping 12ms", "font_size": size,
+                           "x": 1.0, "y": 18.0 - ascent * size});
+    layer
+        .as_object_mut()
+        .unwrap()
+        .extend(keys.as_object().unwrap().clone());
+    loaded(&json!({"version": 1, "passes": [{"name": "main",
+        "fragment": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+        "layers": [layer]}]}))
+}
+
+/// A hinted layer of the built-in font lights the pixels that Pillow lights
+/// with the same font: FreeType's grey coverage under `hinted`, its 1-bit
+/// render under `mono`, each glyph at Pillow's pen and on its baseline.
+/// tools/fixtures/hinted/pillow.py drew the references with Pillow 12.3.0,
+/// whose FreeType is ghee's, 2.14.3. A black shadow under the letters leaves
+/// their pixels as they are, so a layer with effects draws its letters from
+/// the same bitmaps.
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_hinted_layer_lights_the_pixels_that_pillow_lights() {
+    let (_g, mut r) = gpu(192, 24);
+    let shadow = json!({"text_shadow": {"x": 0, "y": 0, "blur": 0, "color": "black",
+                                        "strength": 1}});
+    for (size, kind, file) in [
+        (8.0, "hinted", "dejavu-8-grey.png"),
+        (12.0, "hinted", "dejavu-12-grey.png"),
+        (10.0, "mono", "dejavu-10-mono.png"),
+        (16.0, "mono", "dejavu-16-mono.png"),
+    ] {
+        let (w, want) = pillow_png(file);
+        assert_eq!(w, 192);
+        let mut shadowed = shadow.clone();
+        shadowed["render"] = json!(kind);
+        for keys in [json!({"render": kind}), shadowed] {
+            let frame = render(&mut r, &hinted_scene(size, keys.clone()));
+            let got: Vec<u8> = frame.chunks_exact(4).map(|p| p[0]).collect();
+            let differ = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+            assert_eq!(
+                differ, 0,
+                "{file} {keys}: {differ} pixels differ from Pillow's"
+            );
+        }
+    }
+}
+
+/// `auto`, the default, draws a text below HINTED_BELOW px as `hinted` does,
+/// and from it as `mtsdf` does.
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn auto_draws_hinted_below_the_switch_and_mtsdf_from_it() {
+    let (_g, mut r) = gpu(192, 24);
+    let below = ghee::layer::HINTED_BELOW - 1.0;
+    let at = ghee::layer::HINTED_BELOW;
+    for (size, same) in [(below, "hinted"), (at, "mtsdf")] {
+        let auto = render(&mut r, &hinted_scene(size, json!({})));
+        let named = render(&mut r, &hinted_scene(size, json!({"render": same})));
+        assert!(auto == named, "auto at {size} px draws unlike {same}");
+        assert!(
+            auto.chunks_exact(4).any(|p| p[0] > 0),
+            "{size} px draws nothing"
+        );
     }
 }

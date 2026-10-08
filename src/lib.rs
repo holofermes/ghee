@@ -51,6 +51,7 @@ pub mod ffi;
 pub mod filters;
 pub mod golden;
 pub mod h264;
+pub(crate) mod hinted;
 pub mod layer;
 pub mod looper;
 pub mod output;

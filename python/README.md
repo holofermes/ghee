@@ -37,7 +37,7 @@ while True:
 
 [Drawing](#drawing) holds every call, and [Text on 1-bit and 16-level
 panels](https://github.com/holofermes/ghee#text-on-1-bit-and-16-level-panels)
-holds the fonts and the filters that suit a 1-bit panel.
+holds the render, the fonts and the filters that suit a 1-bit panel.
 
 ## ghee.open
 
@@ -257,6 +257,7 @@ counterpart:
 | `with canvas(device) as draw:` | `with screen.draw() as d:` |
 | `font = ImageFont.truetype("DejaVuSans.ttf", 12)` | `font_family="DejaVuSans.ttf", font_size=12` on the call |
 | `draw.text((x, y), "hi", font=font, fill="orange")` | `d.text("hi", x=x, y=y, font_size=12, color="orange")` |
+| `draw.text(...)` on a 1-bit device such as the `ssd1306` | `d.text(..., render="mono")`, which lights the pixels that Pillow lights |
 | `draw.textlength("hi", font=font)`, `draw.textbbox(...)` | `screen.measure("hi", font_size=12)` |
 | `draw.rectangle(box, fill="white")` | `d.rect(x=x0, y=y0, width=w, height=h)` |
 | `draw.rectangle(box, outline="white", width=1)` | `d.rect(..., color="transparent", border={"width": 1, "color": "white"})` |
@@ -521,6 +522,7 @@ renderer in the same process, with no pipe.
 ## License
 
 MIT. The text shader ports Eric Lengyel's
-[Slug](https://github.com/EricLengyel/Slug), also MIT, and
-[NOTICE](https://github.com/holofermes/ghee/blob/main/NOTICE) carries its
-copyright notice.
+[Slug](https://github.com/EricLengyel/Slug), also MIT. ghee builds FreeType
+2.14.3 in under the FreeType License.
+[NOTICE](https://github.com/holofermes/ghee/blob/main/NOTICE) carries both
+notices.

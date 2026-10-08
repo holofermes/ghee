@@ -274,6 +274,14 @@ impl Color {
 /// How a layer finds the coverage of each pixel of a glyph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Render {
+    /// Hinted below HINTED_BELOW pixels per em, MTSDF from it, picked when
+    /// the layer builds.
+    Auto,
+    /// Each glyph hinted at the layer's size and drawn as its bitmap, grey
+    /// levels at its edges, through crate::hinted.
+    Hinted,
+    /// The same, each pixel fully on or off, FreeType's mono target.
+    Mono,
     /// One read of the glyph's MTSDF in an atlas a pixel, with the distance
     /// to the outline.
     Mtsdf,
@@ -282,22 +290,59 @@ pub enum Render {
     Slug,
 }
 
+/// The pixels per em below which `auto` draws a text hinted. From here a
+/// hinted glyph's bitmap outgrows its MTSDF cell, whose detail stops at the
+/// last of ATLAS_STEPS.
+pub const HINTED_BELOW: f64 = 128.0;
+
 impl Render {
+    /// Every render as a scene writes it, in the order an error lists them.
+    pub const ALL: [Render; 5] = [
+        Render::Auto,
+        Render::Hinted,
+        Render::Mono,
+        Render::Mtsdf,
+        Render::Slug,
+    ];
+
     /// The render of a text layer in `font_family` that names none: slug
-    /// for the pixel font, whose square edges it draws exactly, and mtsdf
+    /// for the pixel font, whose square edges it draws exactly, and auto
     /// for any other.
     pub fn default_for(font_family: Option<&str>) -> Render {
         match font_family {
             Some(text::PIXEL) => Render::Slug,
-            _ => Render::Mtsdf,
+            _ => Render::Auto,
         }
     }
 
     /// The render as a scene writes it.
     pub fn as_str(self) -> &'static str {
         match self {
+            Render::Auto => "auto",
+            Render::Hinted => "hinted",
+            Render::Mono => "mono",
             Render::Mtsdf => "mtsdf",
             Render::Slug => "slug",
+        }
+    }
+
+    /// The render that a scene writes as `s`.
+    pub fn of(s: &str) -> Option<Render> {
+        Render::ALL.into_iter().find(|r| r.as_str() == s)
+    }
+
+    /// True for a render that draws each glyph's hinted bitmap.
+    pub fn hinted(self) -> bool {
+        matches!(self, Render::Hinted | Render::Mono)
+    }
+
+    /// The render that a layer of this render draws at `px` pixels per em:
+    /// auto's pick, or the render itself.
+    pub fn at(self, px: f64) -> Render {
+        match self {
+            Render::Auto if px < HINTED_BELOW => Render::Hinted,
+            Render::Auto => Render::Mtsdf,
+            r => r,
         }
     }
 }
@@ -926,12 +971,11 @@ impl TextLayer {
                 ),
             },
         };
-        let render = match given("render").map(Value::as_str) {
+        let render = match given("render").map(|v| v.as_str().and_then(Render::of)) {
             None => Render::default_for(font_family.as_deref()),
-            Some(Some("mtsdf")) => Render::Mtsdf,
-            Some(Some("slug")) => Render::Slug,
-            Some(_) => bail!(
-                "{what} render needs 'mtsdf' or 'slug', got {}",
+            Some(Some(r)) => r,
+            Some(None) => bail!(
+                "{what} render needs 'auto', 'hinted', 'mono', 'mtsdf' or 'slug', got {}",
                 py_repr(&o["render"])
             ),
         };
@@ -989,8 +1033,7 @@ impl TextLayer {
         };
         let render = match render {
             Arg::None => Render::default_for(font_family.as_deref()),
-            Arg::Str(s) if s == "mtsdf" => Render::Mtsdf,
-            Arg::Str(s) if s == "slug" => Render::Slug,
+            Arg::Str(s) => Render::of(s)?,
             _ => return None,
         };
         let mut kept = Vec::new();
@@ -1271,9 +1314,20 @@ impl TextLayer {
         }
         let s = [0, 1].map(|a| fit[a] / block[a].max(1.0e-6));
         let px = s[0].min(s[1]).max(0.0);
-        match self.grid() {
+        match self.fit_step() {
             Some(g) => ((px / g).floor() * g).max(g),
             None => px,
+        }
+    }
+
+    /// The pixels per em that a fitted size rounds down to a whole multiple
+    /// of, one at the least: the pixel font's grid, and a whole pixel for a
+    /// hinted render, since TrueType hinting rounds most fonts' sizes to
+    /// whole pixels per em.
+    fn fit_step(&self) -> Option<f64> {
+        match self.render.hinted() {
+            true => Some(1.0),
+            false => self.grid(),
         }
     }
 
@@ -1325,6 +1379,23 @@ impl TextLayer {
         let mut out = quads.to_vec();
         let at = out.len();
         out.extend_from_slice(quads);
+        for v in out[at..].chunks_exact_mut(text::QUAD_FLOATS) {
+            v[text::QUAD_FLOATS - 1] = 1.0;
+        }
+        out
+    }
+
+    /// The quads of a hinted layer's glyph batch: under doubled(), the
+    /// effects' quads `effects` first, then the letters' quads `letters`,
+    /// which the copy marks with 1 in the w of ghee_a3, else the letters'
+    /// alone.
+    pub fn hinted_copies(&self, effects: &[f32], letters: &[f32]) -> Vec<f32> {
+        if !self.doubled() {
+            return letters.to_vec();
+        }
+        let mut out = effects.to_vec();
+        let at = out.len();
+        out.extend_from_slice(letters);
         for v in out[at..].chunks_exact_mut(text::QUAD_FLOATS) {
             v[text::QUAD_FLOATS - 1] = 1.0;
         }
@@ -1413,14 +1484,20 @@ impl TextLayer {
         }
     }
 
-    /// The shaders of the layer's batches, for an MTSDF layer at `detail`.
+    /// The shaders of the layer's batches, at `detail` for the MTSDF atlas of
+    /// an MTSDF layer and of a hinted layer's effects. The engine hands in a
+    /// layer of render auto with its pick, and auto itself draws as MTSDF.
     pub fn shaders(&self, detail: Detail) -> Shaders {
         let glyphs = match self.render {
-            Render::Mtsdf => (
-                self.vertex(Batch::Glyphs, detail),
-                self.glsl(&self.mtsdf_fragment(detail)),
-            ),
             Render::Slug => (self.vertex(Batch::Glyphs, detail), self.slug_fragment()),
+            r if r.hinted() => (
+                self.vertex(Batch::Glyphs, detail),
+                self.glsl(&self.mtsdf_fragment(detail, true)),
+            ),
+            _ => (
+                self.vertex(Batch::Glyphs, detail),
+                self.glsl(&self.mtsdf_fragment(detail, false)),
+            ),
         };
         let boxes = [PRECISION.join("\n"), text::box_fragment().join("\n")].join("\n");
         Shaders {
@@ -1438,10 +1515,8 @@ impl TextLayer {
     fn vertex(&self, batch: Batch, detail: Detail) -> String {
         let mut decls: Vec<String> = Vec::new();
         let mut main: Vec<String> = Vec::new();
-        let wave = self.draws(Kind::Wave);
         let scroll = self.draws(Kind::Scroll);
         let blink = self.draws(Kind::Blink);
-        let karaoke = self.draws(Kind::Karaoke);
         // The motion effects' numbers and phases reach the vertex stage, and
         // every colour the fragment stage.
         for e in self.drawn().filter(|e| !e.kind.reads_distance()) {
@@ -1469,7 +1544,7 @@ impl TextLayer {
                         "    ghee_s.x = mix(ghee_s.x, 1.0e6, ghee_NAME_scrollvisible);".to_string(),
                     );
                 }
-                main.push(format!("    float ghee_fs = {};", fitted(self.grid())));
+                main.push(format!("    float ghee_fs = {};", fitted(self.fit_step())));
             }
         }
         main.push(PLACE.to_string());
@@ -1479,42 +1554,39 @@ impl TextLayer {
         if scroll.is_some() {
             main.push(SCROLL_LINES.to_string());
         }
-        let grow = match (batch, self.render) {
-            (Batch::Glyphs, Render::Mtsdf) if self.doubled() => format!(
-                "mix(min(0.625 / ghee_ppe, {:?}), {:?} + 1.5 / ghee_ppe, 1.0 - ghee_a3.w)",
-                detail.reach(),
-                self.pad()
-            ),
-            (Batch::Glyphs, Render::Mtsdf) => {
-                format!("min(0.625 / ghee_ppe, {:?})", detail.reach())
+        let hinted = batch == Batch::Glyphs && self.render.hinted();
+        if hinted {
+            main.push("    vec2 ghee_xy;".to_string());
+            let letters = self.hinted_letters(&mut decls);
+            match self.doubled() {
+                true => {
+                    let (own, effects) = self.hinted_effects(detail);
+                    decls.push(own);
+                    main.push(format!(
+                        "    if (ghee_a3.w > 0.5) {{\n{}\n    }} else {{\n{}\n    }}",
+                        indented(&letters),
+                        indented(&effects)
+                    ));
+                }
+                false => main.push(letters),
             }
-            (Batch::Colour, _) => {
-                format!("min(0.625 / ghee_ppe, {:?} / ghee_a2.z)", colour::REACH)
+        } else {
+            main.push(self.corner(batch, detail));
+            main.push(self.motion());
+            let (own, lines) = match (batch, self.render) {
+                (Batch::Glyphs, Render::Slug) => {
+                    slug_varyings(true, self.draws(Kind::Karaoke).is_some())
+                }
+                (Batch::Glyphs, _) => self.mtsdf_varyings(detail),
+                (Batch::Boxes, _) => slug_varyings(false, false),
+                (Batch::Colour, _) => colour_varyings(),
+            };
+            decls.push(own);
+            main.push(lines);
+            if self.grid().is_some() {
+                main.push(pen(self.data.as_deref().unwrap_or_default()));
             }
-            _ => "0.625 / ghee_ppe".to_string(),
-        };
-        main.push(CORNER.replace("GROW", &grow));
-        if let Some(w) = wave {
-            main.push(format!(
-                "    // Each letter trails the one before it by a tenth of a wave.\n    \
-                 ghee_mv.y += {:?} * sin(6.2831853 * (ghee_NAME_wavephase - 0.1 * ghee_a0.z))\n    \
-                 \x20         * ghee_NAME_wavevisible;",
-                w.num("height")
-            ));
-        }
-        if karaoke.is_some() {
-            main.push(KARAOKE_LINES.to_string());
-        }
-        let (own, lines) = match (batch, self.render) {
-            (Batch::Glyphs, Render::Mtsdf) => self.mtsdf_varyings(detail),
-            (Batch::Glyphs, Render::Slug) => slug_varyings(true, karaoke.is_some()),
-            (Batch::Boxes, _) => slug_varyings(false, false),
-            (Batch::Colour, _) => colour_varyings(),
-        };
-        decls.push(own);
-        main.push(lines);
-        if self.grid().is_some() {
-            main.push(pen(self.data.as_deref().unwrap_or_default()));
+            main.push("    vec2 ghee_xy = ghee_org + (ghee_e + ghee_mv) * ghee_fs;".to_string());
         }
         let mut hide = "ghee_NAME_visible < 0.5".to_string();
         if blink.is_some() {
@@ -1527,6 +1599,110 @@ impl TextLayer {
             .replace("DECLS", &decls.join("\n"))
             .replace("MAIN", &main.join("\n"));
         self.glsl(&v)
+    }
+
+    /// The lines that set ghee_e and ghee_mv for a quad of `batch`, CORNER
+    /// with the quad's reach past its glyph's box.
+    fn corner(&self, batch: Batch, detail: Detail) -> String {
+        let grow = match (batch, self.render) {
+            (Batch::Glyphs, Render::Slug) => "0.625 / ghee_ppe".to_string(),
+            (Batch::Glyphs, _) if self.doubled() => format!(
+                "mix(min(0.625 / ghee_ppe, {:?}), {:?} + 1.5 / ghee_ppe, 1.0 - ghee_a3.w)",
+                detail.reach(),
+                self.pad()
+            ),
+            (Batch::Glyphs, _) => format!("min(0.625 / ghee_ppe, {:?})", detail.reach()),
+            (Batch::Colour, _) => {
+                format!("min(0.625 / ghee_ppe, {:?} / ghee_a2.z)", colour::REACH)
+            }
+            (Batch::Boxes, _) => "0.625 / ghee_ppe".to_string(),
+        };
+        CORNER.replace("GROW", &grow)
+    }
+
+    /// The lines that add the wave and the karaoke hop to ghee_mv, and set
+    /// karaoke's ghee_kf, from ghee_e.
+    fn motion(&self) -> String {
+        let mut lines = Vec::new();
+        if let Some(w) = self.draws(Kind::Wave) {
+            lines.push(format!(
+                "    // Each letter trails the one before it by a tenth of a wave.\n    \
+                 ghee_mv.y += {:?} * sin(6.2831853 * (ghee_NAME_wavephase - 0.1 * ghee_a0.z))\n    \
+                 \x20         * ghee_NAME_wavevisible;",
+                w.num("height")
+            ));
+        }
+        if self.draws(Kind::Karaoke).is_some() {
+            lines.push(KARAOKE_LINES.to_string());
+        }
+        lines.join("\n")
+    }
+
+    /// The lines that place a hinted layer's letter, crate::hinted's quad,
+    /// in ghee_xy, and set its varyings: the texel of the atlas under the
+    /// vertex, then the point on the gradient, the karaoke fill and the
+    /// copy. Declares the varyings into `decls`.
+    fn hinted_letters(&self, decls: &mut Vec<String>) -> String {
+        let (ascent, line) = text::line_metrics(self.data.as_deref().unwrap_or_default());
+        decls.extend(
+            [
+                "uniform float ghee_NAME_angle;",
+                "varying vec4 ghee_v0;",
+                "varying vec4 ghee_v1;",
+            ]
+            .map(str::to_string),
+        );
+        let kf = match self.draws(Kind::Karaoke) {
+            Some(_) => "ghee_kf",
+            None => "0.0",
+        };
+        let mut lines = format!(
+            "    // The line's baseline in pixels from the block's top, and the em of\n    \
+             // the vertex before its motion.\n    \
+             float ghee_base = ({ascent:?} + ghee_a3.x * {line:?}) * ghee_fs;\n    \
+             vec2 ghee_e = (vec2(ghee_a1.x + ghee_a1.y, ghee_base - ghee_a1.z)\n    \
+             \x20             + ghee_a0.xy * ghee_a2.zw) / ghee_ppe;\n    \
+             vec2 ghee_mv = vec2(0.0);\n{}\n    \
+             // The pen and the baseline, after the motion, land on whole pixels,\n    \
+             // and the bitmap spans one pixel a texel from there.\n    \
+             vec2 ghee_pen = ghee_org + vec2(ghee_a1.x, ghee_base) + ghee_mv * ghee_fs;\n    \
+             ghee_xy = floor(ghee_pen + 0.5) + vec2(ghee_a1.y, -ghee_a1.z) + ghee_a0.xy * ghee_a2.zw;\n\
+             {GRADIENT}    ghee_v0 = vec4(ghee_a2.xy + ghee_a0.xy * ghee_a2.zw, 0.0, 0.0);\n    \
+             ghee_v1 = vec4(ghee_t, {kf}, ghee_a3.w, 0.0);",
+            self.motion()
+        );
+        if self.doubled() {
+            lines.push_str(
+                "\n    ghee_v2 = vec4(0.0);\n    ghee_v3 = vec4(0.0);\n    ghee_v4 = vec4(0.0);",
+            );
+        }
+        lines
+    }
+
+    /// The declarations and the lines that place a hinted layer's effects, an
+    /// MTSDF quad each whose ghee_a2.w holds the pen of its letter in pixels,
+    /// in ghee_xy, moved with the letter onto its whole pixel.
+    fn hinted_effects(&self, detail: Detail) -> (String, String) {
+        let (ascent, line) = text::line_metrics(self.data.as_deref().unwrap_or_default());
+        let (own, varyings) = self.mtsdf_varyings(detail);
+        let own: Vec<&str> = own
+            .lines()
+            .filter(|l| {
+                !l.contains("ghee_NAME_angle") && !l.contains("ghee_v0;") && !l.contains("ghee_v1;")
+            })
+            .collect();
+        let varyings = varyings.replace("ghee_a2.zw", "vec2(ghee_a2.z, -ghee_a2.z)");
+        let lines = format!(
+            "{}\n{}\n{varyings}    \
+             // The effects follow their letter's pen onto its whole pixel.\n    \
+             float ghee_base = ({ascent:?} + ghee_a3.x * {line:?}) * ghee_fs;\n    \
+             vec2 ghee_pen = ghee_org + vec2(ghee_a2.w, ghee_base) + ghee_mv * ghee_fs;\n    \
+             vec2 ghee_snap = floor(ghee_pen + 0.5) - ghee_pen + vec2(ghee_a2.w - ghee_a3.y * ghee_fs, 0.0);\n    \
+             ghee_xy = ghee_org + (ghee_e + ghee_mv) * ghee_fs + ghee_snap;",
+            self.corner(Batch::Glyphs, detail),
+            self.motion(),
+        );
+        (own.join("\n"), lines)
     }
 
     /// The varyings of an MTSDF layer's glyphs, and the lines that declare
@@ -1587,13 +1763,24 @@ impl TextLayer {
         (decls.join("\n"), lines)
     }
 
-    /// The fragment shader of an MTSDF layer's glyphs. A doubled layer draws
-    /// its effects for a quad whose copy is 0, and its letters for 1.
-    fn mtsdf_fragment(&self, detail: Detail) -> String {
+    /// The fragment shader of an MTSDF layer's glyphs, or with `hinted` of a
+    /// hinted layer's, whose letters read their bitmaps. A doubled layer draws
+    /// its effects from the field for a quad whose copy is 0, and its letters
+    /// for 1.
+    fn mtsdf_fragment(&self, detail: Detail, hinted: bool) -> String {
         let range_em = f64::from(detail.range) / f64::from(detail.px_em);
-        let mut decls: Vec<String> = vec![
-            "uniform sampler2D ghee_NAME_atlas_tex;".to_string(),
-            "uniform sampler2D ghee_NAME_atlas2_tex;".to_string(),
+        let mut decls: Vec<String> = Vec::new();
+        // A hinted layer reads the field for its effects alone.
+        if !hinted || self.doubled() {
+            decls.extend(
+                [
+                    "uniform sampler2D ghee_NAME_atlas_tex;",
+                    "uniform sampler2D ghee_NAME_atlas2_tex;",
+                ]
+                .map(str::to_string),
+            );
+        }
+        decls.extend([
             "uniform vec3 ghee_NAME_color;".to_string(),
             "uniform vec3 ghee_NAME_colorto;".to_string(),
             "uniform float ghee_NAME_alpha;".to_string(),
@@ -1601,7 +1788,7 @@ impl TextLayer {
             "uniform float ghee_NAME_opacity;".to_string(),
             "varying vec4 ghee_v0;".to_string(),
             "varying vec4 ghee_v1;".to_string(),
-        ];
+        ]);
         for e in self.drawn() {
             let token = e.kind.token();
             if !matches!(
@@ -1617,20 +1804,37 @@ impl TextLayer {
                 decls.push(format!("uniform float ghee_NAME_{token}strength;"));
             }
         }
-        let letters = format!(
-            "        // The median of red, green and blue is the distance to the outline,\n        \
-             // 0.5 on it and growing inward over the range.\n        \
-             float ghee_d = max(min(ghee_t.r, ghee_t.g), min(max(ghee_t.r, ghee_t.g), ghee_t.b)) - 0.5;\n        \
-             float ghee_c = clamp(ghee_v0.z * ghee_d + 0.5, 0.0, 1.0);\n{}        \
-             ghee_o = vec4(ghee_rgb, ghee_al) * ghee_c;",
-            self.letter_colour("        ", "ghee_v1.x", "ghee_v1.y")
-        );
+        let colour = self.letter_colour("        ", "ghee_v1.x", "ghee_v1.y");
+        let letters = match hinted {
+            true => format!("{colour}        ghee_o = vec4(ghee_rgb, ghee_al) * ghee_h.a;"),
+            false => format!(
+                "        // The median of red, green and blue is the distance to the outline,\n        \
+                 // 0.5 on it and growing inward over the range.\n        \
+                 float ghee_d = max(min(ghee_t.r, ghee_t.g), min(max(ghee_t.r, ghee_t.g), ghee_t.b)) - 0.5;\n        \
+                 float ghee_c = clamp(ghee_v0.z * ghee_d + 0.5, 0.0, 1.0);\n{colour}        \
+                 ghee_o = vec4(ghee_rgb, ghee_al) * ghee_c;"
+            ),
+        };
         let mut main = vec![
             "    vec4 ghee_t = vec4(0.0);".to_string(),
             "    vec4 ghee_o = vec4(0.0);".to_string(),
         ];
+        if hinted {
+            decls.extend(
+                [
+                    "uniform vec3 iResolution;",
+                    "uniform sampler2D ghee_NAME_hinted_tex;",
+                    "uniform vec2 ghee_NAME_hinted_size;",
+                    "varying vec2 uv;",
+                ]
+                .map(str::to_string),
+            );
+            main.push(HINTED_READ.to_string());
+        }
         if !self.doubled() {
-            main.push(GUARDED_READ.replace("UV", "ghee_v0.xy"));
+            if !hinted {
+                main.push(GUARDED_READ.replace("UV", "ghee_v0.xy"));
+            }
             main.push("    {".to_string());
             main.push(letters);
             main.push("    }".to_string());
@@ -1799,6 +2003,7 @@ pub(crate) fn run_glyph(fs: &str, grid: &str) -> (String, String) {
         CORNER.replace("GROW", "0.625 / ghee_ppe"),
         slug_varyings(true, false).1.trim_end().to_string(),
         format!("    if ({grid}) {{\n{}\n    }}", pen(&[pixel])),
+        "    vec2 ghee_xy = ghee_org + (ghee_e + ghee_mv) * ghee_fs;".to_string(),
         POSITION.replace("HIDE", "ghee_NAME_visible < 0.5"),
     ];
     let fragment = SLUG_BODY.replace("COLOUR\n", &gradient_colour("    ", "ghee_v1.w"));
@@ -2676,7 +2881,7 @@ pub fn uniform(layer: &str, token: &str) -> String {
 }
 
 /// The batches of a layer.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Batch {
     Glyphs,
     Boxes,
@@ -2767,12 +2972,24 @@ const CORNER: &str = r#"    // A quad reaches half a pixel past its glyph's box 
     vec2 ghee_e = ghee_corner + (ghee_a0.xy * 2.0 - 1.0) * ghee_g;
     vec2 ghee_mv = vec2(0.0);"#;
 
-/// The lines that place a vertex, and HIDE, the condition that takes its
-/// quad out of the pass.
-const POSITION: &str = r#"    uv = (ghee_org + (ghee_e + ghee_mv) * ghee_fs) / iResolution.xy;
+/// The lines that place a vertex at ghee_xy, its pass pixel, and HIDE, the
+/// condition that takes its quad out of the pass.
+const POSITION: &str = r#"    uv = ghee_xy / iResolution.xy;
     gl_Position = vec4((uv * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
     // A hidden glyph's quad lies outside the pass.
     if (HIDE) gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);"#;
+
+/// `lines` four spaces further in.
+fn indented(lines: &str) -> String {
+    lines
+        .lines()
+        .map(|l| match l.is_empty() {
+            true => String::new(),
+            false => format!("    {l}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// The pixels per em that fit the block to its room, from ghee_s, a whole
 /// multiple of `grid` pixels per em, one at the least, when given.
@@ -2867,6 +3084,16 @@ GUARD    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_image_tex, ghee
     gl_FragColor = vec4(ghee_t.rgb * ghee_NAME_color * ghee_t.a, ghee_t.a) * ghee_NAME_opacity
                  * ghee_NAME_alpha;
 }"#;
+
+/// The read of a hinted layer's letter: the texel of its bitmap under the
+/// pixel, into ghee_h.
+const HINTED_READ: &str = r#"    // VC4 lands a vertex up to 1/16 px off the position set by the vertex
+    // shader, and the varyings follow the vertex, so the read moves to the
+    // texel under the pixel centre given by uv, one texel a pixel.
+    vec2 ghee_p = uv * iResolution.xy;
+    vec2 ghee_tc = (ghee_v0.xy + floor(ghee_p) + 0.5 - ghee_p) / ghee_NAME_hinted_size;
+    vec4 ghee_h = vec4(0.0);
+    if (gl_FragCoord.x >= 0.0) ghee_h = texture2D(ghee_NAME_hinted_tex, ghee_tc);"#;
 
 /// A read of the layer's atlas at UV, from the page of the quad.
 const GUARDED_READ: &str = "    if (ghee_v1.w < 0.5) ghee_t = texture2D(ghee_NAME_atlas_tex, UV); \
@@ -2967,7 +3194,7 @@ mod tests {
     /// layer, each with the sampler and the size that a program reads.
     fn written(name: &str) -> Vec<String> {
         let mut out: Vec<String> = text::template_names(name);
-        for suffix in ["_curves", "_atlas", "_atlas2", "_emoji", "_file"] {
+        for suffix in ["_curves", "_atlas", "_atlas2", "_emoji", "_hinted", "_file"] {
             let asset = text::internal(name, suffix);
             out.extend([format!("{asset}_tex"), format!("{asset}_size"), asset]);
         }
@@ -2978,11 +3205,11 @@ mod tests {
     }
 
     /// Every name with ghee's prefix in the shaders and the uniforms of the
-    /// layers' own batches: text layers with every effect in either render,
+    /// layers' own batches: text layers with every effect in each render,
     /// and an image layer.
     fn own() -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for render in ["mtsdf", "slug"] {
+        for render in ["mtsdf", "slug", "hinted", "mono"] {
             let mut d = json!({"name": "t", "text": "", "render": render});
             for kind in Kind::ALL {
                 d[kind.key()] = json!({});
@@ -3034,6 +3261,7 @@ mod tests {
             "a_atlas2",
             "a_atlas2_size",
             "a_emoji",
+            "a_hinted",
             "a_image",
             "a_file",
             "a_cover",

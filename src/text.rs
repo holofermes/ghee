@@ -281,6 +281,27 @@ pub struct Built {
     /// True when the glyph data that the quads name lies in the texture of
     /// a Glyphs, and this Built holds no texels.
     pub shared: bool,
+    /// The pen of each placed character, in the order of the words, for a
+    /// render that lays the pen out at its own size. A layout's clones share
+    /// them.
+    pub pens: Arc<[Pen]>,
+}
+
+/// The step of a line's pen that a placed character takes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pen {
+    pub line: usize,
+    /// The glyph whose advance moves the pen: the index of its font in the
+    /// text's fonts, and its glyph id. None for a character that moves it by
+    /// `advance` alone, an error box's or none.
+    pub glyph: Option<(usize, u16)>,
+    /// The kerning between the glyph before and this one, in their font's
+    /// units.
+    pub kern: i32,
+    /// The advance in em.
+    pub advance: f64,
+    /// The x in em at which the line starts, from the block's left.
+    pub start: f64,
 }
 
 /// A glyph of a font, placed in the block.
@@ -299,6 +320,8 @@ pub struct Placement {
     pub line: usize,
     /// Its advance from start to end x, in em.
     pub span: [f64; 2],
+    /// The index of its pen in the Built's pens.
+    pub pen: usize,
 }
 
 /// The floats of one quad vertex: the attributes ghee_a0 to ghee_a3, a vec4
@@ -798,6 +821,12 @@ struct Placed {
     line: usize,
     /// Its advance from start to end x, in em.
     span: [f64; 2],
+    /// The glyph whose advance it takes, and the kerning before it, as a Pen
+    /// holds them.
+    glyph: Option<(usize, u16)>,
+    kern: i32,
+    /// The x in em at which its line starts.
+    start: f64,
 }
 
 /// The GPOS feature that holds a font's pair kerning.
@@ -897,6 +926,7 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
             if ch.is_control() {
                 continue;
             }
+            let (mut glyph, mut kern) = (None, 0);
             let (ink, origin, advance) = match pick_before(faces, ch, chars.get(i + 1).copied()) {
                 // A default ignorable that no font has takes no room.
                 Some((_, _, None)) if ignorable(ch) => (None, x, 0.0),
@@ -907,9 +937,12 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
                     let upem = f64::from(face.units_per_em());
                     let gid = found.unwrap_or(GlyphId(0));
                     if let Some((_, p)) = prev.filter(|(pf, _)| *pf == f) {
-                        x += kerning(face, p, gid) / upem;
+                        let k = kerning(face, p, gid);
+                        kern = k as i32;
+                        x += k / upem;
                     }
                     prev = Some((f, gid));
+                    glyph = Some((f, gid.0));
                     let advance = f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
                     (ink_glyph(found, ch).map(|g| Ink::Glyph(f, g)), x, advance)
                 }
@@ -930,6 +963,9 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
                 word,
                 line: k,
                 span: [x, x + advance],
+                glyph,
+                kern,
+                start: 0.0,
             });
             x += advance;
         }
@@ -947,6 +983,7 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
         for p in &mut placed[from..to] {
             p.x += shift;
             p.span = p.span.map(|v| v + shift);
+            p.start = shift;
         }
     }
     (placed, width, height)
@@ -1217,7 +1254,18 @@ fn finish(
     let built = match packed {
         Ok(mut built) => {
             built.size = [width, height];
-            let placement = |p: &Placed, font: usize, gid: u16| Placement {
+            built.pens = placed
+                .iter()
+                .map(|p| Pen {
+                    line: p.line,
+                    glyph: p.glyph,
+                    kern: p.kern,
+                    advance: p.span[1] - p.span[0],
+                    start: p.start,
+                })
+                .collect::<Vec<_>>()
+                .into();
+            let placement = |pen: usize, p: &Placed, font: usize, gid: u16| Placement {
                 font,
                 gid,
                 ch: p.ch,
@@ -1226,11 +1274,12 @@ fn finish(
                 word: p.word,
                 line: p.line,
                 span: p.span,
+                pen,
             };
-            for p in placed {
+            for (pen, p) in placed.iter().enumerate() {
                 match p.ink {
-                    Some(Ink::Glyph(f, gid)) => built.glyphs.push(placement(p, f, gid)),
-                    Some(Ink::Colour(f, gid)) => built.colour.push(placement(p, f, gid)),
+                    Some(Ink::Glyph(f, gid)) => built.glyphs.push(placement(pen, p, f, gid)),
+                    Some(Ink::Colour(f, gid)) => built.colour.push(placement(pen, p, f, gid)),
                     _ => {}
                 }
             }
@@ -1258,6 +1307,7 @@ fn boxes_alone(placed: &[Placed], glyphs: &HashMap<Ink, Glyph>, height: f64) -> 
         glyphs: Vec::new(),
         colour: Vec::new(),
         shared: false,
+        pens: Arc::from([]),
     }
 }
 
@@ -1442,6 +1492,7 @@ impl Glyphs {
             glyphs: Vec::new(),
             colour: Vec::new(),
             shared: true,
+            pens: Arc::from([]),
         })
     }
 
@@ -1888,6 +1939,7 @@ fn pack(
         glyphs: Vec::new(),
         colour: Vec::new(),
         shared: false,
+        pens: Arc::from([]),
         texels,
         size: [0.0; 2],
         uniforms: vec![
@@ -2331,6 +2383,9 @@ mod tests {
             word: 0,
             line: 0,
             span: [0.0, 0.5],
+            glyph: Some((0, gid)),
+            kern: 0,
+            start: 0.0,
         }
     }
 

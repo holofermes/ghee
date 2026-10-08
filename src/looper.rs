@@ -335,6 +335,11 @@ pub trait SceneController {
     /// next tick carries it.
     fn on_param(&mut self, _pass: Option<&str>, _name: &str, _value: &ParamValue) {}
 
+    /// A host set the live field `at` of a layer to `value`, written as the
+    /// scene format writes the key. The next tick carries a text layer's
+    /// `text`.
+    fn on_layer(&mut self, _at: &Address, _value: &Value) {}
+
     /// Per-frame hook before the draw (e.g. set live params).
     fn update(&mut self, _renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
         Ok(())

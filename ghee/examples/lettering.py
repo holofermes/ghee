@@ -93,7 +93,7 @@ def step(tick):
 
     The first tick carries the words as the scene declares them.
     """
-    given = tick.params.get("words")
+    given = tick.params.get("words.text")
     if given is not None and given != _steps["words"]:
         _steps["on"] = False
     if not _steps["on"]:

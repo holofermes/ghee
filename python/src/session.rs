@@ -22,7 +22,7 @@ use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{no_layer, no_param, not_words, short_floats, ArraySize, Scene};
+use ghee::scene::{no_layer, no_param, short_floats, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
@@ -131,9 +131,6 @@ pub struct ParamRef {
     /// the uniform itself, without the pass
     pub uniform: String,
     pub ty: String,
-    /// The scene string param that holds the words of the text layer of its
-    /// name. A host sets the words through the layer's `text` alone.
-    pub words: bool,
 }
 
 /// What the scene declares. A host feeds the arrays, sets the params and the
@@ -185,7 +182,6 @@ impl Index {
                         pass: Some(pass.to_string()),
                         uniform: name.clone(),
                         ty: p.ty.clone(),
-                        words: false,
                     });
                 }
                 if params.iter().any(|r| r.wire == *name) {
@@ -196,7 +192,6 @@ impl Index {
                     pass: pass.map(str::to_string),
                     uniform: name.clone(),
                     ty: p.ty.clone(),
-                    words: pass.is_none() && texts.get(name) == Some(&true),
                 });
             }
         }
@@ -225,17 +220,12 @@ impl Index {
         self.wires.get(wire).map(|&k| &self.params[k])
     }
 
-    /// True when a host's live set of `field` on layer `layer` sets the words
-    /// of a text layer, which its string param holds. A layer that the scene
-    /// lacks is a fault of the caller's.
-    pub fn words(&self, layer: &str, effect: Option<&str>, field: &str) -> Outcome<bool> {
-        match self.text(layer) {
-            Some(text) => Ok(text && effect.is_none() && field == "text"),
-            None => Err(Fault::scene(no_layer(
-                layer,
-                self.layers.iter().map(|(n, _)| n.as_str()),
-            ))),
-        }
+    /// True for a text layer named `name`, false for a layer of another
+    /// kind. A layer that the scene lacks is a fault of the caller's.
+    pub fn layer(&self, name: &str) -> Outcome<bool> {
+        self.text(name).ok_or_else(|| {
+            Fault::scene(no_layer(name, self.layers.iter().map(|(n, _)| n.as_str())))
+        })
     }
 
     /// The param named by a host. `pass` addresses one pass, and a dotted name
@@ -245,15 +235,9 @@ impl Index {
             Some(pass) => format!("{pass}.{name}"),
             None => name.to_string(),
         };
-        self.wired(&wire).filter(|r| !r.words).ok_or_else(|| {
-            let wires = self.params.iter().filter(|r| !r.words);
-            Fault::scene(no_param(&wire, wires.map(|r| r.wire.as_str())))
+        self.wired(&wire).ok_or_else(|| {
+            Fault::scene(no_param(&wire, self.params.iter().map(|r| r.wire.as_str())))
         })
-    }
-
-    /// The param that holds the words of text layer `layer`.
-    pub fn words_of(&self, layer: &str) -> Option<&ParamRef> {
-        self.wired(layer).filter(|r| r.words)
     }
 
     fn array(&self, name: &str) -> Outcome<ArraySize> {
@@ -344,9 +328,10 @@ pub struct Session {
     /// The renderer's text_errors_seq() at the console's last look.
     text_errors: u64,
     /// The value of each param, by the bare name that the wire gives it, as
-    /// a scene file writes it.
+    /// a scene file writes it, and the words of each text layer as its
+    /// `text`, such as `title.text`.
     values: Map<String, Value>,
-    /// The value of each param at the last tick.
+    /// Each value at the last tick.
     sent: Map<String, Value>,
     /// The iteration that begin() opened, for the next frame() or skip().
     opened: Option<Opened>,
@@ -362,9 +347,12 @@ pub struct Session {
 }
 
 /// The value of each param of `scene`, by the bare name that `index` gives
-/// it.
+/// it, and the words of each text layer as its `text`.
 fn param_values(scene: &Scene, index: &Index) -> Map<String, Value> {
     let mut out = Map::new();
+    for l in scene.text_layers() {
+        out.insert(format!("{}.text", l.name), Value::from(l.text.clone()));
+    }
     for r in index.params.iter().filter(|r| r.wire == r.uniform) {
         let params = match &r.pass {
             None => Some(&scene.params),
@@ -676,8 +664,8 @@ impl Session {
         Ok(self.opened.take().expect("begin() opened the iteration"))
     }
 
-    /// The string params that changed since the last tick, by their bare
-    /// names, with their words. The first tick holds every string param.
+    /// The values that changed since the last tick. The first tick holds
+    /// every value.
     fn changed(&mut self) -> Map<String, Value> {
         let mut out = Map::new();
         for (k, v) in &self.values {
@@ -927,21 +915,9 @@ impl Session {
     /// Set one live param, with no recompile.
     pub fn set_param(&mut self, pass: Option<&str>, name: &str, value: &Value) -> Outcome<()> {
         let p = self.index.param(pass, name)?.clone();
-        self.set_ref(&p, value)
-    }
-
-    /// Set the param `p` to `value`. The words param of a text layer lays
-    /// the layer's words out again.
-    fn set_ref(&mut self, p: &ParamRef, value: &Value) -> Outcome<()> {
         let v = coerce(&p.wire, &p.ty, value).map_err(scene_fault)?;
-        // New words fail when the engine cannot lay them out, a fault of
-        // the scene's.
-        let fault = match p.ty.as_str() {
-            "string" => scene_fault,
-            _ => system_fault,
-        };
         RenderTarget::set_param(&self.renderer, p.pass.as_deref(), &p.uniform, &p.ty, &v)
-            .map_err(fault)?;
+            .map_err(system_fault)?;
         let (pass, uniform) = (p.pass.clone(), p.uniform.clone());
         // The host set this value itself, so no tick reports it.
         self.held(pass.as_deref(), &uniform, v.to_json(), true);
@@ -962,13 +938,7 @@ impl Session {
         field: &str,
         value: &Value,
     ) -> Outcome<()> {
-        if self.index.words(layer, effect, field)? {
-            if !value.is_string() {
-                return Err(Fault::scene(not_words(layer, value)));
-            }
-            let p = self.index.words_of(layer).cloned();
-            return self.set_ref(&p.expect("a text layer holds a words param"), value);
-        }
+        let text = self.index.layer(layer)?;
         let at = Address {
             layer,
             effect,
@@ -977,6 +947,10 @@ impl Session {
         self.renderer
             .set_layer(&at, Given::Json(value))
             .map_err(refusal)?;
+        // The host set these words itself, so no tick reports them.
+        if let (true, None, "text") = (text, effect, field) {
+            self.held_words(layer, value.clone(), true);
+        }
         self.note(layer);
         Ok(())
     }
@@ -1014,7 +988,7 @@ impl Session {
         let taken = self.renderer.update_calls(calls).map_err(refusal)?;
         for call in taken.changed.iter().map(|&k| &calls[k]) {
             if let (CallKind::Text, Some(Arg::Str(words))) = (call.kind, call.args.first()) {
-                self.held(None, &call.layer, Value::from(words.as_str()), true);
+                self.held_words(&call.layer, Value::from(words.as_str()), true);
             }
         }
         for &k in &taken.changed {
@@ -1044,15 +1018,15 @@ impl Session {
             }
             self.grown = true;
         }
-        let words = self.renderer.with_layer(name, |s, l| {
-            l.as_text()
-                .map(|l| s.words(name).unwrap_or(&l.text).to_string())
-        });
+        let words = self
+            .renderer
+            .with_layer(name, |_, l| l.as_text().map(|l| l.text.clone()));
         match words.flatten() {
-            Some(words) => self.held(None, name, Value::from(words), true),
+            Some(words) => self.held_words(name, Value::from(words), true),
             None => {
-                self.values.remove(name);
-                self.sent.remove(name);
+                let text = format!("{name}.text");
+                self.values.remove(&text);
+                self.sent.remove(&text);
             }
         }
     }
@@ -1111,6 +1085,16 @@ impl Session {
         }
     }
 
+    /// Hold `words` as the words of text layer `layer`, under its `text`, and
+    /// as already handed out when `sent`.
+    fn held_words(&mut self, layer: &str, words: Value, sent: bool) {
+        let text = format!("{layer}.text");
+        if sent {
+            self.sent.insert(text.clone(), words.clone());
+        }
+        self.values.insert(text, words);
+    }
+
     /// Hold data for the next frame. That frame consumes it once.
     pub fn feed(&mut self, name: &str, data: Fed) -> Outcome<()> {
         let want = array_count(self.index.array(name)?);
@@ -1147,6 +1131,10 @@ impl Session {
             self.renderer
                 .set_layer(&set.at(), Given::Json(&set.value))
                 .map_err(system_fault)?;
+            // A text layer alone takes a `text`.
+            if let (None, "text") = (set.effect.as_deref(), set.field.as_str()) {
+                self.held_words(&set.layer, set.value.clone(), false);
+            }
         }
         for look in looks {
             let why = match self.renderer.replace_layer(&look) {
@@ -1167,8 +1155,7 @@ impl Session {
         );
         if edited || self.grown {
             let scene = self.renderer.with_scene(Scene::to_dict);
-            if let (Some(c), Some(mut scene)) = (self.console.as_ref(), scene) {
-                words_into(&mut scene, &self.values);
+            if let (Some(c), Some(scene)) = (self.console.as_ref(), scene) {
                 c.publish_scene(scene, Arc::clone(&self.index), by_host);
             }
             self.grown = false;
@@ -1182,8 +1169,7 @@ impl Session {
     }
 
     /// The layers named `changed`, whole, and the values of the params of
-    /// `set`, as the renderer's scene holds them. The scene param of a text
-    /// layer's name gives the layer, with its words.
+    /// `set`, as the renderer's scene holds them.
     fn changes(
         &self,
         mut changed: Vec<String>,
@@ -1191,10 +1177,6 @@ impl Session {
     ) -> (Vec<Value>, Vec<ParamSet>) {
         let mut params = Vec::new();
         for (pass, name) in set {
-            if pass.is_none() && self.renderer.with_layer(&name, |_, _| ()).is_some() {
-                changed.push(name);
-                continue;
-            }
             let value = self.renderer.with_scene(|s| {
                 let params = match pass.as_deref() {
                     Some(p) => &s.passes.iter().find(|q| q.name == p)?.params,
@@ -1212,9 +1194,8 @@ impl Session {
         let layers = changed
             .iter()
             .filter_map(|name| {
-                self.renderer.with_layer(name, |s, l| {
-                    let text = l.as_text().map_or("", |t| t.text.as_str());
-                    let mut doc = l.to_dict(s.words(name).unwrap_or(text));
+                self.renderer.with_layer(name, |_, l| {
+                    let mut doc = l.to_dict();
                     short_floats(&mut doc);
                     doc
                 })
@@ -1234,32 +1215,6 @@ impl Session {
         }
         self.sink = Sink::None;
         self.renderer.close();
-    }
-}
-
-/// Give each text layer of the scene document `doc` its words as they
-/// stand, from `values`, the value of each param by its bare name, which
-/// holds a text layer's words under the layer's name. The renderer lays new
-/// words out without writing them into its scene.
-fn words_into(doc: &mut Value, values: &Map<String, Value>) {
-    let layers = doc
-        .get_mut("passes")
-        .and_then(Value::as_array_mut)
-        .into_iter()
-        .flatten()
-        .filter_map(|p| p.get_mut("layers")?.as_array_mut())
-        .flatten();
-    for l in layers.filter_map(Value::as_object_mut) {
-        if l.contains_key("image") || l.contains_key("shape") {
-            continue;
-        }
-        let words = l
-            .get("name")
-            .and_then(Value::as_str)
-            .and_then(|n| values.get(n));
-        if let Some(words) = words.cloned() {
-            l.insert("text".to_string(), words);
-        }
     }
 }
 

@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde_json::{json, Value};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
-use ghee::engine::{probe_dri_devices, Renderer};
+use ghee::engine::{probe_dri_devices, Given, Renderer};
 use ghee::filters::apply_filters;
-use ghee::layer::{Detail, Layer, TextLayer};
+use ghee::layer::{Address, Detail, Layer, TextLayer};
 use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
 use ghee::text::{self, Align};
 
@@ -489,6 +489,20 @@ fn loaded(doc: &Value) -> Scene {
     sc
 }
 
+/// The live `text` of layer `layer`.
+fn text_of(layer: &str) -> Address<'_> {
+    Address {
+        layer,
+        effect: None,
+        field: "text",
+    }
+}
+
+/// Give text layer `layer` of `r` the words `words` through its live `text`.
+fn set_words(r: &Renderer, layer: &str, words: &str) {
+    r.set_layer(&text_of(layer), Given::Text(words)).unwrap();
+}
+
 fn render(r: &mut Renderer, sc: &Scene) -> Vec<u8> {
     assert_eq!(r.setup(sc).unwrap(), "");
     r.set_time(Some(0.0));
@@ -790,35 +804,6 @@ fn layers_round_trip_and_leave_their_defaults_out() {
                {"name": "d", "text": "I", "text_shadow": {}, "glow": {}},
                {"name": "e", "text": "I", "font_family": "pixel"}])
     );
-}
-
-#[test]
-fn a_layer_declares_the_string_param_of_its_name_which_holds_its_words() {
-    let mut doc = layers_scene(json!([
-        {"name": "label", "text": "hi", "font_family": "sans"},
-        {"name": "title", "text": "", "font_family": "sans"},
-    ]));
-    doc["params"] = json!({"gain": {"type": "float", "value": 1.0}});
-    let sc = Scene::from_dict(&doc, None, None).unwrap();
-    let words = |sc: &Scene, n: &str| sc.params.get(n).map(|p| p.value.clone());
-    let str = |w: &str| Some(ParamValue::Str(w.to_string()));
-    assert_eq!(words(&sc, "label"), str("hi"));
-    assert_eq!(words(&sc, "title"), str(""));
-    // A save leaves the param out and writes the words as they stand into the
-    // layer, and a scene built again keeps them.
-    let mut sc = Ok(sc).param(Param::float("k", 0.5)).unwrap();
-    sc.params.get_mut("label").unwrap().value = ParamValue::Str("ho".to_string());
-    let sc = Ok(sc).param(Param::float("j", 0.5)).unwrap();
-    let back = sc.to_dict();
-    assert_eq!(back["params"].as_object().unwrap().len(), 3);
-    let layers = &back["passes"][0]["layers"];
-    assert_eq!(
-        (&layers[0]["text"], &layers[1]["text"]),
-        (&json!("ho"), &json!(""))
-    );
-    assert_eq!(Scene::from_dict(&back, None, None).unwrap(), sc);
-    let none = Scene::from_dict(&layers_scene(json!([])), None, None);
-    assert!(none.unwrap().to_dict().get("params").is_none());
 }
 
 #[test]
@@ -1728,19 +1713,13 @@ fn a_string_param_relays_the_text_live() {
     assert!(r
         .set_scene_param("gain", "float", &ParamValue::Float(1.0))
         .unwrap());
-    assert!(r
-        .set_scene_param("label", "string", &ParamValue::Str("O".to_string()))
-        .unwrap());
+    set_words(&r, "label", "O");
     let f = r.render(None).unwrap().to_vec();
     assert_draws(&f, W, 0, &o, fit, "O");
     assert!(f.iter().skip(1).step_by(4).all(|g| *g == 255));
-    assert!(r.set_text("label", "").unwrap());
+    set_words(&r, "label", "");
     assert!(blank(r.render(None).unwrap(), 0));
     assert_eq!(r.text_errors(), [] as [String; 0]);
-    // A string param of no layer's name draws nothing.
-    assert!(!r
-        .set_scene_param("ghost", "string", &ParamValue::Str("O".to_string()))
-        .unwrap());
 }
 
 #[test]
@@ -1764,9 +1743,7 @@ fn a_text_reaches_every_pass() {
     let f = render(&mut r, &loaded(&doc));
     assert_draws(&f, W, 0, &laid, fit, "pass a");
     assert_draws(&f, W, 1, &laid, fit, "pass main");
-    assert!(r
-        .set_scene_param("label", "string", &ParamValue::Str("To".to_string()))
-        .unwrap());
+    set_words(&r, "label", "To");
     let to = lay(SANS, "To", Align::Left);
     let f = r.render(None).unwrap().to_vec();
     assert_draws(&f, W, 0, &to, fit, "pass a, live");
@@ -1824,7 +1801,7 @@ fn a_later_setup_draws_its_own_text() {
     });
     let f = render(&mut r, &loaded(&title));
     assert_draws(&f, W, 0, &laid[0], fit, "title");
-    assert!(!r.set_text("label", "O").unwrap());
+    assert!(r.set_layer(&text_of("label"), Given::Text("O")).is_err());
     // A scene with no layer, then a layer again.
     let flat = Scene::of(vec![Pass::of(
         "main",
@@ -2005,7 +1982,7 @@ fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
         let layered = render(&mut r, &loaded(&doc));
         assert_hazard(&layered, W, fit, &rects, &format!("{how} layer"));
         // New words lay out in boxes too.
-        assert!(r.set_text("label", "I").unwrap());
+        set_words(&r, "label", "I");
         r.set_time(Some(0.0));
         let one = r.render(None).unwrap().to_vec();
         assert_hazard(&one, W, fit, &rects[..1], &format!("{how} one box"));
@@ -2163,12 +2140,12 @@ fn words_that_fit_no_texture_draw_nothing_at_setup_keep_the_last_words_later_and
     ] {
         assert!(blank(&render(&mut r, &loaded(&doc)), 0), "{what}");
         why(&r);
-        assert!(r.set_text("label", "I").unwrap());
+        set_words(&r, "label", "I");
         r.set_time(Some(0.0));
         let last = r.render(None).unwrap().to_vec();
         assert!(!blank(&last, 0), "{what}");
         assert_eq!(r.text_errors(), [] as [String; 0], "{what}");
-        assert!(r.set_text("label", &past).unwrap());
+        set_words(&r, "label", &past);
         r.set_time(Some(0.0));
         assert!(r.render(None).unwrap() == last.as_slice(), "{what}");
         why(&r);
@@ -2205,7 +2182,7 @@ fn slug_words_changed_many_times_draw_what_a_scene_built_with_them_draws() {
         .unwrap();
     render(&mut r, &pixel_pair("AV 42", "x"));
     for words in &steps {
-        assert!(r.set_text("b", words).unwrap());
+        set_words(&r, "b", words);
         r.set_time(Some(0.0));
         let changed = r.render(None).unwrap().to_vec();
         let built = render(&mut fresh, &pixel_pair("AV 42", words));
@@ -2424,9 +2401,7 @@ fn a_layer_follows_its_words_live() {
         &loaded(&label_scene(SANS, "ghee", Align::Left, fit)),
     );
     let before = render(&mut r, &loaded(&layer_scene(SANS, "I", Align::Left, fit)));
-    assert!(r
-        .set_scene_param("label", "string", &ParamValue::Str("ghee".into()))
-        .unwrap());
+    set_words(&r, "label", "ghee");
     r.set_time(Some(0.0));
     let after = r.render(None).unwrap().to_vec();
     assert!(after != before, "the layer kept the old words");
@@ -2453,9 +2428,7 @@ fn new_words_whose_glyphs_the_atlas_holds_draw_in_the_frame_they_arrive() {
     );
     // Time runs free, so the render waits for no glyph.
     r.set_time(None);
-    assert!(r
-        .set_scene_param("label", "string", &ParamValue::Str("AV To".into()))
-        .unwrap());
+    set_words(&r, "label", "AV To");
     let frame = r.render(None).unwrap().to_vec();
     assert_draws(
         &frame,
@@ -2977,7 +2950,7 @@ fn a_text_set_after_a_reset_reaches_no_layer_of_the_dropped_scene() {
     let (_g, mut r) = gpu(64, 48);
     render(&mut r, &loaded(&layer_scene(SANS, "I", Align::Left, fit)));
     r.reset();
-    assert!(r.set_text("label", "O").unwrap());
+    set_words(&r, "label", "O");
 }
 
 // Effects

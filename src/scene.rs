@@ -709,10 +709,6 @@ pub struct Param {
     /// A string param offers these choices. The console renders them as a
     /// dropdown. Without them it renders a text input.
     pub options: Option<Vec<String>>,
-    /// ghee declares this string param for the text layer of its name, and
-    /// the param holds the layer's words. A save writes them into the layer's
-    /// `text`.
-    pub(crate) of_text: bool,
 }
 
 impl Param {
@@ -806,7 +802,6 @@ impl Param {
             max: max.filter(|v| !v.is_null()),
             step: step.filter(|v| !v.is_null()),
             options,
-            of_text: false,
         })
     }
 
@@ -820,7 +815,6 @@ impl Param {
             max: None,
             step: None,
             options: None,
-            of_text: false,
         }
     }
 
@@ -856,15 +850,6 @@ impl Param {
     /// `options` for the choices in the console's dropdown.
     pub fn string(name: &str, value: &str) -> Param {
         Param::plain(name, "string", ParamValue::Str(value.to_string()))
-    }
-
-    /// The string param that ghee declares for a text layer, holding
-    /// `words`.
-    fn words(name: &str, words: &str) -> Param {
-        Param {
-            of_text: true,
-            ..Param::string(name, words)
-        }
     }
 
     /// The GLSL type of the param's uniform. A color is a vec3.
@@ -957,11 +942,6 @@ impl ParamMap {
         self.0.iter_mut().find(|(n, _)| n == name).map(|(_, p)| p)
     }
 
-    /// The param at place `k` in the order of the map.
-    pub(crate) fn at_mut(&mut self, k: usize) -> Option<&mut Param> {
-        self.0.get_mut(k).map(|(_, p)| p)
-    }
-
     pub fn insert(&mut self, name: String, param: Param) {
         match self.0.iter_mut().find(|(n, _)| *n == name) {
             Some(slot) => slot.1 = param,
@@ -992,10 +972,6 @@ impl ParamMap {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-
-    fn retain(&mut self, keep: impl Fn(&Param) -> bool) {
-        self.0.retain(|(_, p)| keep(p));
     }
 }
 
@@ -1713,12 +1689,6 @@ impl Pass {
     }
 
     pub fn to_dict(&self) -> Value {
-        self.dict(&|l| l.text.clone())
-    }
-
-    /// The pass as a scene holds it, with `words` of each text layer in its
-    /// `text`.
-    fn dict(&self, words: &dyn Fn(&TextLayer) -> String) -> Value {
         let mut out = Map::new();
         out.insert("name".to_string(), Value::from(self.name.clone()));
         if !self.visible {
@@ -1775,14 +1745,7 @@ impl Pass {
             out.insert("filter".to_string(), Value::from(self.filter.clone()));
         }
         if !self.layers.is_empty() {
-            let layers: Vec<Value> = self
-                .layers
-                .iter()
-                .map(|l| match l {
-                    Layer::Text(t) => t.to_dict(&words(t)),
-                    l => l.to_dict(""),
-                })
-                .collect();
+            let layers: Vec<Value> = self.layers.iter().map(Layer::to_dict).collect();
             out.insert("layers".to_string(), Value::from(layers));
         }
         Value::Object(out)
@@ -1947,15 +1910,6 @@ pub fn no_layer<'a>(name: &str, layers: impl IntoIterator<Item = &'a str>) -> St
     )
 }
 
-/// The error for `value`, given as the `text` of text layer `layer`, when it
-/// holds no string. Python's set_layer gives this text.
-pub fn not_words(layer: &str, value: &Value) -> String {
-    format!(
-        "layer '{layer}' text needs words in a string, got {}",
-        py_repr(value)
-    )
-}
-
 /// `names` joined by commas, or "none".
 fn listed<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
     let all: Vec<&str> = names.into_iter().collect();
@@ -1976,13 +1930,11 @@ pub(crate) fn not_an_image(what: &str, value: &Value) -> String {
 
 /// A new look of a layer of the scene, as Scene::look() finds it.
 pub struct Look {
-    /// The layer as the scene holds it, and its words.
+    /// The layer as the scene holds it.
     pub old: Layer,
-    pub old_words: String,
-    /// The layer in its new look, and its words. With `rebuild` false, it
-    /// holds the fonts and the file of `old`.
+    /// The layer in its new look. With `rebuild` false, it holds the fonts
+    /// and the file of `old`.
     pub new: Layer,
-    pub new_words: String,
     /// The new look as a scene declares it, with the effects that it leaves
     /// out bypassed.
     pub look: Value,
@@ -2007,7 +1959,7 @@ fn kind_of(layer: &Layer) -> &'static str {
 /// its values.
 fn keep_bypassed(old: &Layer, look: &Value) -> Value {
     let mut look = look.clone();
-    let (Some(o), Value::Object(was)) = (look.as_object_mut(), old.to_dict("")) else {
+    let (Some(o), Value::Object(was)) = (look.as_object_mut(), old.to_dict()) else {
         return look;
     };
     for (key, mut v) in was {
@@ -2054,8 +2006,7 @@ pub struct Scene {
     /// filters puts the eye on each filter's pass and empties this list.
     pub hidden_filters: Vec<String>,
     /// The scene params. Every pass preamble declares them, and one set reaches
-    /// every pass at once. They take the shape of a pass param. They hold the
-    /// string param of each text layer too, which ghee declares.
+    /// every pass at once. They take the shape of a pass param.
     pub params: ParamMap,
     /// The GLSL every scene pass shares, such as a function or a constant. It
     /// follows the preamble. None is no common block. A filter pass never sees
@@ -2141,10 +2092,10 @@ impl Root {
 
 impl Scene {
     pub fn new(
-        mut passes: Vec<Pass>,
+        passes: Vec<Pass>,
         version: Value,
         filters: Vec<String>,
-        mut params: ParamMap,
+        params: ParamMap,
         common: Option<String>,
         assets: Vec<Asset>,
     ) -> Result<Scene> {
@@ -2179,29 +2130,6 @@ impl Scene {
                 }
                 seen.push(&a.name);
             }
-        }
-        // ghee declares the string param of each text layer, which holds its
-        // words, after the scene's own params. A param that ghee declared
-        // before keeps its words, and a param of the scene's own under a
-        // layer's name stays for name_clash() to refuse.
-        let held: Vec<Param> = params.values().filter(|p| p.of_text).cloned().collect();
-        params.retain(|p| !p.of_text);
-        for l in passes
-            .iter_mut()
-            .flat_map(|p| &mut p.layers)
-            .filter_map(Layer::as_text_mut)
-        {
-            if params.contains_key(&l.name) {
-                continue;
-            }
-            if let Some(Param {
-                value: ParamValue::Str(w),
-                ..
-            }) = held.iter().find(|p| p.name == l.name)
-            {
-                l.text = w.clone();
-            }
-            params.insert(l.name.clone(), Param::words(&l.name, &l.text));
         }
         let scene = Scene {
             passes,
@@ -2259,7 +2187,7 @@ impl Scene {
 
     /// Put `layer` in the place of the layer of its name, which it differs
     /// from in live fields alone, through the checks of a live set: an image
-    /// layer's image. The words param of a text layer takes its words.
+    /// layer's image.
     pub(crate) fn swap_live(&mut self, layer: Layer) -> Result<()> {
         let name = layer.name().to_string();
         let Some((at, index)) = self.place_of(&name) else {
@@ -2268,40 +2196,26 @@ impl Scene {
         if let Some(e) = layer.as_image().and_then(|l| self.image_fault(&l.image)) {
             bail!("layer '{name}' {e}");
         }
-        if let (Some(l), Some(p)) = (layer.as_text(), self.params.get_mut(&name)) {
-            if p.of_text {
-                p.value = ParamValue::Str(l.text.clone());
-            }
-        }
         self.passes[at].layers[index] = layer;
         Ok(())
     }
 
     /// Put `layer` in the place of layer `i` of pass `p`, which it differs
     /// from in live fields alone and which keeps its image, as swap_live()
-    /// does, with `param` the place of the scene param of its name. Returns
-    /// the layer that it replaced, and the words of `layer` when they differ
-    /// from the words that the layer held, as look() tells them apart.
+    /// does. Returns the layer that it replaced, and the words of `layer`
+    /// when they differ from the words that the layer held.
     pub(crate) fn swap_live_at(
         &mut self,
         p: usize,
         i: usize,
-        param: Option<usize>,
         layer: Layer,
     ) -> (Layer, Option<String>) {
-        let param = param.and_then(|k| self.params.at_mut(k));
         let old = std::mem::replace(&mut self.passes[p].layers[i], layer);
         let Some(t) = self.passes[p].layers[i].as_text() else {
             return (old, None);
         };
-        let held = match param.as_ref().map(|p| &p.value) {
-            Some(ParamValue::Str(w)) => w.as_str(),
-            _ => old.as_text().map_or("", |o| o.text.as_str()),
-        };
+        let held = old.as_text().map_or("", |o| o.text.as_str());
         let words = (held != t.text).then(|| t.text.clone());
-        if let Some(param) = param.filter(|p| p.of_text) {
-            param.value = ParamValue::Str(t.text.clone());
-        }
         (old, words)
     }
 
@@ -2380,8 +2294,8 @@ impl Scene {
     }
 
     /// Put `layer` into pass `pass` at `index` among its layers, through the
-    /// checks of a scene that declares it there, and declare the words param
-    /// of a text layer. A layer that the scene refuses leaves it as it was.
+    /// checks of a scene that declares it there. A layer that the scene
+    /// refuses leaves it as it was.
     pub fn insert_layer(&mut self, pass: &str, index: usize, layer: Layer) -> Result<()> {
         let Some(at) = self.passes.iter().position(|p| p.name == pass) else {
             bail!("the scene has no pass '{pass}'");
@@ -2397,51 +2311,25 @@ impl Scene {
         if index > n {
             bail!("pass '{pass}' holds {n} layers, so a layer goes in at 0 to {n}, got {index}");
         }
-        let words = layer.as_text().map(|l| Param::words(&l.name, &l.text));
-        let name = layer.name().to_string();
         self.passes[at].layers.insert(index, layer);
-        let declared = match words {
-            Some(w) if !self.params.contains_key(&name) => {
-                self.params.insert(name.clone(), w);
-                true
-            }
-            _ => false,
-        };
         if let Err(e) = self.check_layers() {
             self.passes[at].layers.remove(index);
-            if declared {
-                self.params.retain(|p| p.name != name);
-            }
             return Err(e);
         }
         Ok(())
     }
 
     /// Put `layer` in the place of the layer of its name, through the checks
-    /// of a scene that declares it there. The words param of a text layer
-    /// takes its words, and a layer of another kind leaves no words param. A
-    /// layer that the scene refuses leaves it as it was.
+    /// of a scene that declares it there. A layer that the scene refuses
+    /// leaves it as it was.
     pub fn replace_layer(&mut self, layer: Layer) -> Result<()> {
         let name = layer.name().to_string();
         let Some((at, index)) = self.place_of(&name) else {
             bail!("the scene has no layer '{name}'");
         };
-        let held = self.params.get(&name).filter(|p| p.of_text).cloned();
-        let words = layer.as_text().map(|l| Param::words(&name, &l.text));
         let old = std::mem::replace(&mut self.passes[at].layers[index], layer);
-        match words {
-            Some(w) if held.is_some() || !self.params.contains_key(&name) => {
-                self.params.insert(name.clone(), w);
-            }
-            Some(_) => {}
-            None => self.params.retain(|p| !(p.of_text && p.name == name)),
-        }
         if let Err(e) = self.check_layers() {
             self.passes[at].layers[index] = old;
-            self.params.retain(|p| !(p.of_text && p.name == name));
-            if let Some(p) = held {
-                self.params.insert(name, p);
-            }
             return Err(e);
         }
         Ok(())
@@ -2464,12 +2352,7 @@ impl Scene {
             false => look.clone(),
         };
         let mut new = Layer::from_dict("the new layer", &look)?;
-        let old_words = match self.words(&name) {
-            Some(w) => w.to_string(),
-            None => old.as_text().map_or(String::new(), |l| l.text.clone()),
-        };
-        let new_words = new.as_text().map_or(String::new(), |l| l.text.clone());
-        let (was, will) = (old.to_dict(&old_words), new.to_dict(&new_words));
+        let (was, will) = (old.to_dict(), new.to_dict());
         if was == will {
             return Ok(None);
         }
@@ -2489,9 +2372,7 @@ impl Scene {
         }
         Ok(Some(Look {
             old: old.clone(),
-            old_words,
             new,
-            new_words,
             look,
             rebuild,
         }))
@@ -2523,18 +2404,10 @@ impl Scene {
         })
     }
 
-    /// Take layer `name` out of the scene, with the words param of a text
-    /// layer.
+    /// Take layer `name` out of the scene.
     pub(crate) fn remove_layer(&mut self, name: &str) {
-        let mut text = false;
         for p in &mut self.passes {
-            p.layers.retain(|l| {
-                text |= l.name() == name && l.as_text().is_some();
-                l.name() != name
-            });
-        }
-        if text {
-            self.params.retain(|p| !(p.of_text && p.name == name));
+            p.layers.retain(|l| l.name() != name);
         }
     }
 
@@ -2617,14 +2490,6 @@ impl Scene {
         self.text_layers().map(|l| l.name.as_str()).collect()
     }
 
-    /// The words of text layer `name` as they stand: its string param's.
-    pub fn words(&self, name: &str) -> Option<&str> {
-        match self.params.get(name).map(|p| &p.value) {
-            Some(ParamValue::Str(w)) => Some(w),
-            _ => None,
-        }
-    }
-
     /// The error for the first declared name that the scene cannot take: a
     /// name that breaks the name rule, a built-in name, a name that two
     /// declarations share, or one GLSL name that two declarations make in one
@@ -2650,7 +2515,7 @@ impl Scene {
         for l in self.layers() {
             kinds.push(("layer", l.name(), String::new(), false, false));
         }
-        for p in self.params.values().filter(|p| !p.of_text) {
+        for p in self.params.values() {
             let bare = p.ty != "string";
             kinds.push(("scene param", &p.name, String::new(), true, bare));
         }
@@ -2782,7 +2647,7 @@ impl Scene {
         for a in self.assets.iter().filter(|a| a.from_filter.is_empty()) {
             wide.push((&a.name, format!("asset '{}'", a.name)));
         }
-        for p in self.params.values().filter(|p| !p.of_text) {
+        for p in self.params.values() {
             wide.push((&p.name, format!("scene param '{}'", p.name)));
         }
         wide
@@ -2955,17 +2820,9 @@ impl Scene {
     pub fn to_dict(&self) -> Value {
         let mut out = Map::new();
         out.insert("version".to_string(), self.version.clone());
-        // Each layer holds its words as they stand, which an edit of its
-        // param changes.
-        let words = |l: &TextLayer| self.words(&l.name).unwrap_or(&l.text).to_string();
         out.insert(
             "passes".to_string(),
-            Value::from(
-                self.passes
-                    .iter()
-                    .map(|p| p.dict(&words))
-                    .collect::<Vec<_>>(),
-            ),
+            Value::from(self.passes.iter().map(Pass::to_dict).collect::<Vec<_>>()),
         );
         // "" is a common block the console can fill.
         if let Some(c) = &self.common {
@@ -2986,10 +2843,9 @@ impl Scene {
                 self.filters.iter().map(entry).collect(),
             );
         }
-        let own: Vec<&Param> = self.params.values().filter(|p| !p.of_text).collect();
-        if !own.is_empty() {
+        if !self.params.is_empty() {
             let mut m = Map::new();
-            for p in own {
+            for p in self.params.values() {
                 m.insert(p.name.clone(), p.to_dict());
             }
             out.insert("params".to_string(), Value::Object(m));

@@ -798,15 +798,16 @@ impl SceneProcess {
         };
         let name = layer.name().to_string();
         let was_text = self.layers.insert(name.clone(), layer.as_text().is_some());
+        let text = format!("{name}.text");
         match layer.as_text() {
             Some(l) => {
                 self.values
-                    .insert(name.clone(), Value::from(l.text.clone()));
-                self.sent.insert(name, Value::from(l.text.clone()));
+                    .insert(text.clone(), Value::from(l.text.clone()));
+                self.sent.insert(text, Value::from(l.text.clone()));
             }
             None if was_text == Some(true) => {
-                self.values.remove(&name);
-                self.sent.remove(&name);
+                self.values.remove(&text);
+                self.sent.remove(&text);
             }
             None => {}
         }
@@ -816,7 +817,7 @@ impl SceneProcess {
     /// The set holds the handshake params, plus any param added by a filter
     /// or a saved value.
     /// The first tick carries every param that a bare name addresses, and the
-    /// words of each text layer under its name.
+    /// words of each text layer as its `text`.
     pub fn bind(&mut self, scene: &Scene) {
         self.params.clear();
         self.layers = scene
@@ -825,6 +826,10 @@ impl SceneProcess {
             .collect();
         self.values.clear();
         self.sent.clear();
+        for l in scene.text_layers() {
+            self.values
+                .insert(format!("{}.text", l.name), Value::from(l.text.clone()));
+        }
         let scoped: Vec<(Option<&str>, &crate::scene::ParamMap)> =
             std::iter::once((None, &scene.params))
                 .chain(
@@ -836,11 +841,6 @@ impl SceneProcess {
                 .collect();
         for (pass, params) in scoped {
             for (name, p) in params.iter() {
-                // A text layer's words take `layer.text` alone.
-                if p.of_text {
-                    self.values.insert(name.clone(), p.value.to_json());
-                    continue;
-                }
                 // "pass.param" addresses one pass
                 // a bare name goes to the first pass that declares it
                 if let Some(pass) = pass {
@@ -1025,27 +1025,6 @@ impl SceneController for SceneProcess {
                 }
                 Set::Param(data) => data,
             };
-            // The `text` of a text layer is its words, which the renderer
-            // holds in the scene string param of the layer's name.
-            if let Some(layer) = name
-                .strip_suffix(".text")
-                .filter(|l| self.layers.get(*l) == Some(&true))
-            {
-                let ParamData::Str(text) = data else {
-                    let why =
-                        format!("layer '{layer}' text takes text in message kind 3, got numbers");
-                    self.refuse(&name, &why);
-                    continue;
-                };
-                renderer.set_param(None, layer, "string", &ParamValue::Str(text.clone()))?;
-                // The process wrote these words itself, so no tick carries
-                // them back.
-                if let Some(held) = self.values.get_mut(layer) {
-                    *held = Value::from(text);
-                    self.sent.insert(layer.to_string(), held.clone());
-                }
-                continue;
-            }
             // A first part that names a layer addresses a live field of it.
             // Names are unique across the scene, so no pass has that name.
             let layer = Address::dotted(&name).filter(|at| self.layers.contains_key(at.layer));
@@ -1056,6 +1035,13 @@ impl SceneController for SceneProcess {
                 };
                 if let Err(e) = renderer.set_layer(&at, given) {
                     self.refuse_or_fail(&name, e)?;
+                    continue;
+                }
+                // The process wrote these words itself, so no tick carries
+                // them back.
+                if let (Some(held), ParamData::Str(text)) = (self.values.get_mut(&name), data) {
+                    *held = Value::from(text);
+                    self.sent.insert(name, held.clone());
                 }
                 continue;
             }
@@ -1144,14 +1130,21 @@ impl SceneController for SceneProcess {
     }
 
     fn on_param(&mut self, pass: Option<&str>, name: &str, value: &ParamValue) {
-        // A tick names the one param that the bare name addresses, and a text
-        // layer's words under the layer's name.
+        // A tick names the one param that the bare name addresses.
         let bare = self
             .params
             .get(name)
-            .map_or(pass.is_none(), |(at, _)| at.as_deref() == pass);
+            .is_some_and(|(at, _)| at.as_deref() == pass);
         if let (true, Some(held)) = (bare, self.values.get_mut(name)) {
             *held = value.to_json();
+        }
+    }
+
+    fn on_layer(&mut self, at: &Address, value: &Value) {
+        if let (None, "text") = (at.effect, at.field) {
+            if let Some(held) = self.values.get_mut(&format!("{}.text", at.layer)) {
+                held.clone_from(value);
+            }
         }
     }
 }
@@ -2509,7 +2502,7 @@ while IFS= read -r line; do :; done
     }
 
     #[test]
-    fn a_text_layers_text_sets_its_words() {
+    fn a_text_layers_words_are_its_text_on_the_wire_both_ways() {
         let d = tmpdir("words");
         let doc = serde_json::json!({
             "version": 1,
@@ -2520,25 +2513,49 @@ while IFS= read -r line; do :; done
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
             message(3, "title.text", 5, b"la la"),
-            "while IFS= read -r line; do :; done\n".to_string(),
+            "while IFS= read -r line; do printf '%s\\n' \"$line\" >> ticks.jsonl; done\n"
+                .to_string(),
         ]
         .concat();
         let path = script(&d, "feed", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        assert!(pump(&mut f, |f| !f.incoming.is_empty()));
+        f.tick(0, 0.0, 1.0 / 60.0).unwrap();
+        ticks(&d, 1);
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            !f.incoming.is_empty()
+        }));
         let mut stub = Stub::default();
         f.update(&mut stub, 0, 0.0).unwrap();
-        assert!(stub.layers.borrow().is_empty());
+        assert!(stub.set.borrow().is_empty());
         assert_eq!(
-            *stub.set.borrow(),
-            [(
-                None,
-                "title".to_string(),
-                ParamValue::Str("la la".to_string())
-            )]
+            *stub.layers.borrow(),
+            [("title.text".to_string(), "Text(\"la la\")".to_string())]
         );
         assert!(f.refused.is_empty());
+        // the process's own words stay with it, and the console's reach it
+        f.tick(1, 0.0, 1.0 / 60.0).unwrap();
+        ticks(&d, 2);
+        let at = Address {
+            layer: "title",
+            effect: None,
+            field: "text",
+        };
+        f.on_layer(&at, &Value::from("from the console"));
+        f.tick(2, 0.0, 1.0 / 60.0).unwrap();
+        let seen: Vec<Value> = ticks(&d, 3)
+            .into_iter()
+            .map(|t| t["params"].clone())
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                serde_json::json!({"title.text": "hi"}),
+                serde_json::json!({}),
+                serde_json::json!({"title.text": "from the console"}),
+            ]
+        );
     }
 
     /// A process that adds the text layer `title` to pass `main`, sets its
@@ -2595,7 +2612,7 @@ while IFS= read -r line; do :; done
             *stub.log.borrow(),
             [
                 format!("add main 1 {title}"),
-                "param title Str(\"ho\")".to_string(),
+                "set title.text Text(\"ho\")".to_string(),
                 "set title.x Numbers([4.0])".to_string(),
                 format!("look {look}"),
                 format!("add main 2 {scope}"),
@@ -2607,16 +2624,17 @@ while IFS= read -r line; do :; done
         assert_eq!(refused, ["main", "refused"]);
         // the console's words for the added layer reach the process, and
         // the process's own words stay with it
-        f.on_param(
-            None,
-            "title",
-            &ParamValue::Str("from the console".to_string()),
-        );
+        let at = Address {
+            layer: "title",
+            effect: None,
+            field: "text",
+        };
+        f.on_layer(&at, &Value::from("from the console"));
         f.tick(0, 0.0, 1.0 / 60.0).unwrap();
         let seen = ticks(&d, 1);
         assert_eq!(
             seen[0]["params"],
-            serde_json::json!({"title": "from the console"})
+            serde_json::json!({"title.text": "from the console"})
         );
     }
 

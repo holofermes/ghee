@@ -118,8 +118,9 @@ since the first frame, and `dt` is the `iTimeDelta` that the frame draws with:
 the time since the frame before, a quarter second at most, and 1/60 for the
 first frame. `timestep` pins `time` to `frame * S` and `dt` to S. `params`
 holds the params that the console changed since the last tick, with their
-values as a scene file writes them, and the first tick holds every param. A
-set from the host itself stays out.
+values as a scene file writes them, and a text layer's words as its `text`,
+such as `title.text`. The first tick holds them all, and a set from the host
+itself stays out.
 
 `pixels` reads alpha 255 in every pixel, unless `alpha=True` keeps the alpha
 that the output pass wrote, with the colour premultiplied by it.
@@ -266,7 +267,8 @@ The shim gives:
 
 A `ghee.Tick` holds `frame`, the tick's number, `time` and `dt` in seconds,
 `dt` the `iTimeDelta` that its frame draws with, and `params`, the params
-that changed, by name. The first tick's `params` holds every param.
+that changed, by name, and a text layer's words as its `text`, such as
+`title.text`. The first tick's `params` holds them all.
 
 This scene is the clock above, written as a procedural scene. With no scene,
 `ghee.run()` starts from one pass, `main`, that clears to black, and the

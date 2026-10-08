@@ -2,10 +2,9 @@
 //! after its own shader, in the order of its `layers`. `crate::shape`
 //! describes shape layers.
 //!
-//! A text layer owns its words, its font and its look. ghee declares a scene
-//! string param under the layer's name, which holds the words, live, and
-//! every pass of the scene except a filter pass reads them with
-//! `<name>_cover` and `<name>_size`, whether the layer shows or not. The
+//! A text layer owns its words, its font and its look. Its `text` holds the
+//! words, live, and every pass of the scene except a filter pass reads them
+//! with `<name>_cover` and `<name>_size`, whether the layer shows or not. The
 //! layer draws one quad over each inked glyph through shaders that ghee
 //! writes from its settings, [`TextLayer::shaders`], and a slug layer with
 //! no effect draws in one batch with the shapes and the slug layers beside
@@ -810,8 +809,7 @@ pub struct TextLayer {
     pub color: Color,
     pub opacity: f64,
     pub blend: Blend,
-    /// The words that the layer starts with. The scene string param of the
-    /// layer's name holds them from then on, live.
+    /// The words, a live field.
     pub text: String,
     /// The pixels per em. None fits the block to its room.
     pub font_size: Option<f64>,
@@ -1007,9 +1005,8 @@ impl TextLayer {
         })
     }
 
-    /// The layer as a scene holds it, a key at its default left out, with
-    /// `words` in `text`.
-    pub fn to_dict(&self, words: &str) -> Value {
+    /// The layer as a scene holds it, a key at its default left out.
+    pub fn to_dict(&self) -> Value {
         let white = matches!(self.color, Color::Solid(c) if c.same(Rgb::WHITE));
         let mut d = every_dict(
             &self.name,
@@ -1020,7 +1017,7 @@ impl TextLayer {
             self.opacity,
             self.blend,
         );
-        d.insert("text".to_string(), Value::from(words));
+        d.insert("text".to_string(), Value::from(self.text.clone()));
         if let Some(px) = self.font_size {
             d.insert("font_size".to_string(), Value::from(px));
         }
@@ -1925,10 +1922,10 @@ impl Layer {
         }
     }
 
-    /// The layer as a scene holds it, `words` in a text layer's `text`.
-    pub fn to_dict(&self, words: &str) -> Value {
+    /// The layer as a scene holds it.
+    pub fn to_dict(&self) -> Value {
         match self {
-            Layer::Text(l) => l.to_dict(words),
+            Layer::Text(l) => l.to_dict(),
             Layer::Image(l) => l.to_dict(),
             Layer::Shape(l) => l.to_dict(),
         }
@@ -2118,6 +2115,8 @@ pub enum Form {
     Image,
     /// A line's points, each [x, y], two or more.
     Points,
+    /// A text layer's words.
+    Words,
 }
 
 impl Form {
@@ -2137,6 +2136,7 @@ impl Form {
             Form::Colour { .. } => COLOUR_FORMS,
             Form::Image => "the name of an image asset",
             Form::Points => "two points or more, each [x, y]",
+            Form::Words => "words in a string",
         }
     }
 }
@@ -2169,6 +2169,7 @@ impl Live {
                 Value::Object(d)
             }
             (Form::Image, _) => bail!("{what} takes the name of an image asset, got numbers"),
+            (Form::Words, _) => bail!("{what} takes text, got numbers"),
             (Form::Points, n) if n.len() >= 4 && n.len() % 2 == 0 => {
                 Value::from(n.chunks_exact(2).map(<[f64]>::to_vec).collect::<Vec<_>>())
             }
@@ -2194,14 +2195,14 @@ impl Live {
     }
 
     /// The value of the text `text` that the wire gives the field: the name
-    /// of an image asset, or a colour, `#rrggbb` or a CSS colour name, or a
-    /// text layer's gradient as its JSON object.
+    /// of an image asset, a text layer's words, or a colour, `#rrggbb` or a
+    /// CSS colour name, or a text layer's gradient as its JSON object.
     pub fn of_text(&self, text: &str) -> Result<Value> {
         match self.form {
             Form::Colour { gradient: true, .. } if text.trim_start().starts_with('{') => {
                 Ok(serde_json::from_str(text).unwrap_or_else(|_| Value::from(text)))
             }
-            Form::Image | Form::Colour { .. } => Ok(Value::from(text)),
+            Form::Image | Form::Colour { .. } | Form::Words => Ok(Value::from(text)),
             _ => bail!("{} takes numbers, got text", self.what),
         }
     }
@@ -2247,10 +2248,6 @@ pub fn format() -> Value {
             if key != "name" && !keys.contains(&key) && layer.live(None, key).is_ok() {
                 keys.push(key);
             }
-        }
-        // the words of a text layer change through their param, live
-        if layer.as_text().is_some() {
-            keys.push("text");
         }
         live.insert(kind.to_string(), Value::from(keys));
     }
@@ -2383,9 +2380,7 @@ impl Layer {
         }
         let image = self.as_image().is_some();
         let mut live = LIVE_KEYS.to_vec();
-        if image {
-            live.push("image");
-        }
+        live.push(if image { "image" } else { "text" });
         let form = match field {
             "x" | "y" => Form::Number { none: true },
             "opacity" => Form::Number { none: false },
@@ -2395,7 +2390,7 @@ impl Layer {
                 none: true,
             },
             "image" if image => Form::Image,
-            "text" if !image => bail!("{layer} holds its words in the scene param '{name}'"),
+            "text" if !image => Form::Words,
             _ if EVERY_KEYS.contains(&field) || own.contains(&field) => bail!(
                 "{layer} {field} changes with a rebuild, and the live fields of {kind} are {}",
                 spoken(&live)
@@ -2423,7 +2418,7 @@ impl Layer {
         }
         let at = format!("layer '{}'", self.name());
         let mut d = match self {
-            Layer::Text(l) => l.to_dict(&l.text),
+            Layer::Text(l) => l.to_dict(),
             Layer::Image(l) => l.to_dict(),
             Layer::Shape(l) => return l.set_live(effect, field, value),
         };
@@ -3104,7 +3099,8 @@ mod tests {
         let glow = glow.unwrap();
         let bare = Layer::from_dict("a layer", &json!({"name": "b", "text": "I"})).unwrap();
         let rebuild = "changes with a rebuild, and the live fields";
-        let text_live = "and the live fields of a text layer are x, y, color, opacity and visible";
+        let text_live =
+            "and the live fields of a text layer are x, y, color, opacity, visible and text";
         let rect = Layer::from_dict("a layer", &json!({"name": "r", "shape": "rect"})).unwrap();
         let line = json!({"name": "l", "shape": "line", "points": [[0, 0], [1, 1]]});
         let line = Layer::from_dict("a layer", &line).unwrap();
@@ -3161,7 +3157,10 @@ mod tests {
                 &text,
                 None,
                 "font_size",
-                format!("layer 't' font_size {rebuild} of a text layer are x, y, color, opacity and visible"),
+                format!(
+                    "layer 't' font_size {rebuild} of a text layer are x, y, color, opacity, \
+                     visible and text"
+                ),
             ),
             (
                 &image,
@@ -3183,12 +3182,6 @@ mod tests {
                 Some("wave"),
                 "height",
                 format!("layer 't' wave height {rebuild} of wave are speed and visible"),
-            ),
-            (
-                &text,
-                None,
-                "text",
-                "layer 't' holds its words in the scene param 't'".to_string(),
             ),
             (
                 &text,
@@ -3346,6 +3339,13 @@ mod tests {
                 "layer 'i' image takes the name of an image asset, got numbers",
             ),
             (
+                &text,
+                None,
+                "text",
+                vec![1.0],
+                "layer 't' text takes text, got numbers",
+            ),
+            (
                 &line,
                 None,
                 "points",
@@ -3366,6 +3366,8 @@ mod tests {
         }
         let live = image.live(None, "image").unwrap();
         assert_eq!(live.of_text("wifi").unwrap(), json!("wifi"));
+        let live = text.live(None, "text").unwrap();
+        assert_eq!(live.of_text(" la la ").unwrap(), json!(" la la "));
         let live = text.live(None, "color").unwrap();
         assert_eq!(live.of_text("Navy").unwrap(), json!("Navy"));
         let gradient = r#"{"from": "red", "to": "transparent"}"#;
@@ -3427,7 +3429,7 @@ mod tests {
         ];
         for (name, effect, field, value, keys) in rows {
             let l = if name == "t" { &mut text } else { &mut image };
-            let mut want = l.to_dict("I");
+            let mut want = l.to_dict();
             match effect {
                 Some(e) => want[e] = json!({}),
                 None => {
@@ -3438,9 +3440,11 @@ mod tests {
                 .unwrap()
                 .extend(keys.as_object().unwrap().clone());
             l.set_live(effect, field, &value).unwrap();
-            let got = l.to_dict("I");
+            let got = l.to_dict();
             assert_eq!(got, want, "{field} = {value}");
         }
+        text.set_live(None, "text", &json!(" la la ")).unwrap();
+        assert_eq!(text.to_dict()["text"], " la la ");
         let err = |l: &mut Layer, field: &str, value: Value| {
             l.set_live(None, field, &value).unwrap_err().to_string()
         };
@@ -3451,6 +3455,10 @@ mod tests {
         assert_eq!(
             err(&mut text, "opacity", json!(2)),
             "layer 't' opacity needs a number from 0 to 1, got 2"
+        );
+        assert_eq!(
+            err(&mut text, "text", json!(null)),
+            "layer 't' text needs words in a string, got None"
         );
     }
 }

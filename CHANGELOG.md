@@ -228,10 +228,11 @@ A scene written for 0.4.0 needs these changes.
   and ghee works out how far a layer's quads and its atlas's field reach
   from its effects, and fades the effects out at the edge of their quads.
 - Set a layer's live fields with no rebuild, `Renderer::set_layer` in the
-  library: `x`, `y`, `color`, `opacity` and `visible`, an image layer's
-  `image`, which takes another image asset of the scene, or an image file that
-  loads once and stays until the next setup, at that image's size, and an
-  effect's `visible`, `color`, `strength`, `sung`, `speed` and `rate`. None
+  library: `x`, `y`, `color`, `opacity` and `visible`, a text layer's
+  `text`, its words, an image layer's `image`, which takes another image
+  asset of the scene, or an image file that loads once and stays until the
+  next setup, at that image's size, and an effect's `visible`, `color`,
+  `strength`, `sung`, `speed` and `rate`. None
   takes `x`, `y` and `color` back to their defaults. Every other field changes
   with a rebuild, so a live set of one is refused with the live fields named,
   and a set that names an effect or a field that the layer lacks is refused
@@ -439,6 +440,9 @@ A scene written for 0.4.0 needs these changes.
   writes it, where a tick carried the string params alone, so a float that
   the console sets reaches the scene's process. The first tick holds every
   param, and a direct run's tick and `h.frame()`'s do the same.
+- Carry a text layer's words in a tick's `params` as its `text`, such as
+  `title.text`, the name that sets them in message kind 3, and so do a
+  direct run's tick and `h.frame()`'s.
 - Name the cause when a scene's script cannot start, `the file has no #!
   line` or `the interpreter '/usr/bin/python9' on its #! line does not
   exist`, where the system's error read `Exec format error` or `No such file

@@ -992,7 +992,8 @@ class Tick:
     the iTimeDelta that the tick's frame draws with, 1/60 for the first frame
     unless a timestep pins it.
     `params` holds the params that changed, each value as a scene file
-    writes it. The first tick holds every param.
+    writes it, and a text layer's words as its `text`, such as `title.text`.
+    The first tick holds them all.
     """
 
     frame: int

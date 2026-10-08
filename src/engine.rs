@@ -209,8 +209,6 @@ struct Places {
     scene: HashMap<String, (usize, usize)>,
     drawn: HashMap<String, usize>,
     runs: HashMap<String, (usize, usize)>,
-    /// The place of each scene param in the scene's params, by its name.
-    params: HashMap<String, usize>,
 }
 
 /// What update_calls() did with each call, by its index.
@@ -1169,7 +1167,7 @@ impl Renderer {
         let mut runs: Vec<Run> = Vec::new();
         let mut glyphs = text::Glyphs::default();
         let hw_linear = self.data_texture_linear();
-        let sizes = self.atlas_sizes(scene, &drawn);
+        let sizes = self.atlas_sizes(&drawn);
         #[cfg(test)]
         let hw_linear = hw_linear && !self.shader_lerp;
         let total = drawn.len();
@@ -1257,8 +1255,7 @@ impl Renderer {
                     let class = match l {
                         Layer::Shape(s) => shape_class(s, size),
                         Layer::Text(t) => {
-                            let words = scene.words(&t.name).unwrap_or(&t.text);
-                            match t.lay_out(words, text::Curves::Shared, &mut glyphs) {
+                            match t.lay_out(&t.text, text::Curves::Shared, &mut glyphs) {
                                 Ok(Layout { built: Some(b), .. }) => {
                                     text_class(t, &b.quads.floats, b.size, b.shared, size)
                                 }
@@ -1543,8 +1540,8 @@ impl Renderer {
                 return Ok(self.error.clone());
             }
         }
-        // A layer builds from the scene's string param of its name, through
-        // set_text below, and it looks itself up in self.scene.
+        // A layer lays its words out below, and it looks itself up in
+        // self.scene.
         *self.scene.borrow_mut() = Some(scene.clone());
         self.moved();
         for (dl, l) in self.layers.iter().zip(drawn.iter().flat_map(|p| &p.layers)) {
@@ -1586,18 +1583,17 @@ impl Renderer {
                 self.set_param(&p.name, nm, &pm.ty, &pm.value)?;
             }
         }
-        // A scene param sits in every preamble, so it reaches every pass. A
-        // layer's words that the engine refuses, or a layer whose font was
-        // never loaded, refuse the scene, as an asset does.
+        // A scene param sits in every preamble, so it reaches every pass.
         for (nm, pm) in scene.params.iter() {
-            if let ParamValue::Str(words) = &pm.value {
-                if let Err(e) = self.lay_text(nm, words) {
-                    self.error = e.to_string();
-                    return Ok(self.error.clone());
-                }
-                continue;
-            }
             self.set_scene_param(nm, &pm.ty, &pm.value)?;
+        }
+        // A layer's words that the engine refuses, or a layer whose font was
+        // never loaded, refuse the scene, as an asset does.
+        for l in scene.text_layers() {
+            if let Err(e) = self.lay_text(&l.name, &l.text) {
+                self.error = e.to_string();
+                return Ok(self.error.clone());
+            }
         }
         // The first frame draws the words: they wait here for their glyphs.
         if let Err(e) = self
@@ -2002,7 +1998,7 @@ impl Renderer {
     /// scene holds the value, as with_scene() gives it.
     pub fn set_scene_param(&self, name: &str, ptype: &str, value: &ParamValue) -> Result<bool> {
         let set = match value {
-            ParamValue::Str(words) => self.set_text(name, words)?,
+            ParamValue::Str(_) => false,
             _ => {
                 let oks = self
                     .mp
@@ -2016,9 +2012,9 @@ impl Renderer {
         Ok(set)
     }
 
-    /// Lay out new words for the text layer `name` and upload them, with no
-    /// recompile. Returns false when the scene holds no layer of that name.
-    /// The words that the layer already holds return at once.
+    /// Lay out `words`, the new words of the text layer `name`, and upload
+    /// them, with no recompile. The words that the layer already shows
+    /// return at once.
     ///
     /// A text problem fails nothing: the layer draws an error box for each
     /// character that it cannot draw, and words that fit no texture leave
@@ -2029,12 +2025,11 @@ impl Renderer {
     /// New words of an MTSDF layer whose glyphs the atlas does not hold yet
     /// wait for them, and the layer draws its last words meanwhile. A render
     /// with the time pinned by set_time() waits for them, and so does a setup.
-    pub fn set_text(&self, name: &str, words: &str) -> Result<bool> {
+    fn set_text(&self, name: &str, words: &str) -> Result<()> {
         let laid = self.lay_text(name, words);
         let settled = self.settle();
-        let laid = laid?;
-        settled?;
-        Ok(laid)
+        laid?;
+        settled
     }
 
     /// set_text() with the runs left to the next settle().
@@ -2085,8 +2080,9 @@ impl Renderer {
 
     /// Set the live field at `at` to `given`, with no rebuild. The layer's
     /// uniforms that change take their new values, a new image binds in
-    /// place of the last, and a text layer that shows for the first time
-    /// since the setup builds its atlas and lays its words out on it. A
+    /// place of the last, new words in a text layer's `text` lay out as
+    /// set_text() lays them out, and a text layer that shows for the first
+    /// time since the setup builds its atlas and lays its words out on it. A
     /// layer of a hidden pass takes the value and draws nothing.
     ///
     /// The scene's checks of the field and the value fail with a Refused
@@ -2115,6 +2111,9 @@ impl Renderer {
         }
         if let Some(scene) = self.scene.borrow_mut().as_mut() {
             scene.set_layer(at, &value).map_err(refused)?;
+        }
+        if let (None, "text", Some(words)) = (at.effect, at.field, value.as_str()) {
+            return self.set_text(at.layer, words);
         }
         let Some(dl) = self.drawn(at.layer) else {
             return Ok(());
@@ -2420,9 +2419,7 @@ impl Renderer {
         };
         let Some(Look {
             old,
-            old_words,
             new,
-            new_words,
             look,
             rebuild,
         }) = found
@@ -2446,7 +2443,10 @@ impl Renderer {
             .expect("the layer was just found")
             .swap_live(new.clone())
             .map_err(refused)?;
-        let words = (new_words != old_words).then_some(new_words.as_str());
+        let words = match (&new, &old) {
+            (Layer::Text(n), Layer::Text(o)) if n.text != o.text => Some(n.text.as_str()),
+            _ => None,
+        };
         let shown = self.show_live(&old, &new, words);
         self.refresh()?;
         shown?;
@@ -2518,12 +2518,12 @@ impl Renderer {
                 match draw::layer_of(call, old) {
                     Some(new) if new == *old => continue,
                     Some(new) if old.builds_as(&new) && !other_image(old, &new) => {
-                        Some((p, i, new, places.params.get(&call.layer).copied()))
+                        Some((p, i, new))
                     }
                     _ => None,
                 }
             };
-            let Some((p, i, new, param)) = found else {
+            let Some((p, i, new)) = found else {
                 taken.left.push(k);
                 continue;
             };
@@ -2532,7 +2532,7 @@ impl Renderer {
                 .borrow_mut()
                 .as_mut()
                 .expect("the layer was just found")
-                .swap_live_at(p, i, param, new);
+                .swap_live_at(p, i, new);
             taken.changed.push(k);
             let scene = self.scene.borrow();
             let new = &scene.as_ref().expect("the layer was just found").passes[p].layers[i];
@@ -2679,9 +2679,6 @@ impl Renderer {
                 for (i, l) in pass.layers.iter().enumerate() {
                     places.scene.insert(l.name().to_string(), (p, i));
                 }
-            }
-            for (k, (name, _)) in scene.params.iter().enumerate() {
-                places.params.insert(name.clone(), k);
             }
         }
         for (k, d) in self.layers.iter().enumerate() {
@@ -3326,7 +3323,7 @@ impl Renderer {
                 return Ok(());
             };
             self.add_atlas(&mut self.atlases.borrow_mut(), &mut Vec::new(), layer)?;
-            scene.words(name).unwrap_or(&layer.text).to_string()
+            layer.text.clone()
         };
         if self.atlas_of(name).is_none() {
             return Ok(());
@@ -3636,15 +3633,14 @@ impl Renderer {
     /// name: the step at or above its font_size, or the size at which its
     /// words fit its pass, laid out on the CPU. A layer whose words lay out
     /// in no font takes atlas::PX_EM.
-    fn atlas_sizes(&self, scene: &Scene, drawn: &[Pass]) -> HashMap<String, u32> {
+    fn atlas_sizes(&self, drawn: &[Pass]) -> HashMap<String, u32> {
         let mut out = HashMap::new();
         let (sw, sh) = self.scene_size();
         let frame = (i64::from(sw), i64::from(sh));
         for p in drawn {
             let (w, h) = p.size_in(frame).unwrap_or(frame);
             for l in p.layers.iter().filter_map(Layer::as_text) {
-                let words = scene.words(&l.name).unwrap_or(&l.text);
-                let block = l.place(words).ok().and_then(|laid| laid.built);
+                let block = l.place(&l.text).ok().and_then(|laid| laid.built);
                 let Some(b) = block else { continue };
                 let px = l.font_px([w as f64, h as f64], b.size);
                 out.insert(l.name.clone(), TextLayer::atlas_px_em(px));
@@ -5824,8 +5820,7 @@ mod tests {
             .unwrap();
         r.set_scene_param("speed", "float", &ParamValue::Float(2.0))
             .unwrap();
-        r.set_scene_param("title", "string", &ParamValue::Str("ho".into()))
-            .unwrap();
+        set_words(&r, "title", "ho");
         let doc = r.with_scene(Scene::to_dict).unwrap();
         let main = &doc["passes"][0];
         assert_eq!(main["params"]["gain"]["value"], json!(0.25));
@@ -7266,12 +7261,12 @@ mod tests {
         assert_eq!(r.setup(&cover_scene(&words, "left")).unwrap(), "");
         r.set_time(Some(0.0));
         let left = still(&mut r);
-        assert!(r.set_text("label", "other words").unwrap());
-        assert!(r.set_text("label", &words).unwrap());
+        set_words(&r, "label", "other words");
+        set_words(&r, "label", &words);
         assert!(still(&mut r) == left);
         let laid = r.layouts.get();
         for _ in 0..100 {
-            assert!(r.set_text("label", &words).unwrap());
+            set_words(&r, "label", &words);
         }
         assert_eq!(r.layouts.get(), laid);
         assert!(still(&mut r) == left);
@@ -7294,11 +7289,11 @@ mod tests {
         let (sent, read) = held();
         assert!(sent > 0 && read == 10, "{sent} bytes, {read} outlines");
         for k in 0..100 {
-            assert!(r.set_text("t", &format!("{:02}", k * 37 % 100)).unwrap());
+            set_words(&r, "t", &format!("{:02}", k * 37 % 100));
         }
         assert_eq!(held(), (sent, read));
         // New glyphs read their outlines and upload their rows.
-        assert!(r.set_text("t", "AB").unwrap());
+        set_words(&r, "t", "AB");
         assert!(r.glyph_bytes.get() > sent);
         assert_eq!(r.glyphs.borrow().reads, read + 2);
     }
@@ -7334,7 +7329,7 @@ mod tests {
         for ((look, rebuild), built) in rows.iter().zip(&built) {
             match rebuild {
                 true => assert!(r.update_layer(look).unwrap()),
-                false => assert!(r.set_text("t", look["text"].as_str().unwrap()).unwrap()),
+                false => set_words(&r, "t", look["text"].as_str().unwrap()),
             }
             r.set_time(Some(0.0));
             assert!(still(&mut r) == *built, "{look}");
@@ -7477,6 +7472,17 @@ mod tests {
     fn rect(name: &str, at: [f64; 4], color: &str) -> Value {
         json!({"name": name, "shape": "rect", "x": at[0], "y": at[1], "width": at[2],
                "height": at[3], "color": color, "opacity": 0.6})
+    }
+
+    /// Give text layer `layer` of `r` the words `words` through its live
+    /// `text`.
+    fn set_words(r: &Renderer, layer: &str, words: &str) {
+        let at = Address {
+            layer,
+            effect: None,
+            field: "text",
+        };
+        r.set_layer(&at, Given::Text(words)).unwrap();
     }
 
     /// Words in the pixel font at `x`, `y` and `px` pixels per em.
@@ -7698,7 +7704,7 @@ mod tests {
                     };
                     r.set_layer(&at, Given::Json(&value)).unwrap();
                 }
-                Op::Words(layer, words) => assert!(r.set_text(layer, words).unwrap()),
+                Op::Words(layer, words) => set_words(&r, layer, words),
             }
             r.set_time(Some(0.0));
             assert!(still(&mut r) == built, "{what}");
@@ -7947,14 +7953,10 @@ mod tests {
                 }),
                 4 * quad,
             ),
-            (
-                "t1 words",
-                Box::new(|r| assert!(r.set_text("t1", "Cd").unwrap())),
-                2 * quad,
-            ),
+            ("t1 words", Box::new(|r| set_words(r, "t1", "Cd")), 2 * quad),
             (
                 "t1 more words",
-                Box::new(|r| assert!(r.set_text("t1", "Cde").unwrap())),
+                Box::new(|r| set_words(r, "t1", "Cde")),
                 5 * quad,
             ),
         ];
@@ -8022,11 +8024,11 @@ mod tests {
             assert_eq!(r.setup(&load(font, " ")).unwrap(), "");
             assert_eq!(drawing(&mut r), (false, false, false), "{font:?}");
             // Live words build it with no new setup.
-            assert!(r.set_text("label", "\u{1f600}").unwrap());
+            set_words(&r, "label", "\u{1f600}");
             assert_eq!(drawing(&mut r), (true, true, true), "{font:?}");
             assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
             // Words that drop the colour glyph keep the drawing and show none.
-            assert!(r.set_text("label", " ").unwrap());
+            set_words(&r, "label", " ");
             assert_eq!(drawing(&mut r), (true, true, false), "{font:?}");
             // A new setup builds it again only for words that need it.
             assert_eq!(r.setup(&load(font, " ")).unwrap(), "");
@@ -8088,7 +8090,7 @@ mod tests {
                 let slot = colours.entry(name.clone()).or_default();
                 slot.atlas.insert(u32::MAX, &blank).unwrap();
                 drop(colours);
-                assert!(r.set_text(name, words).unwrap());
+                set_words(r, name, words);
             }
         };
         let size = |r: &Renderer| {
@@ -8098,7 +8100,7 @@ mod tests {
         start(&mut r, "\u{1f600}");
         let first = size(&r);
         for name in &names {
-            assert!(r.set_text(name, "\u{1f600}\u{1f642}").unwrap());
+            set_words(&r, name, "\u{1f600}\u{1f642}");
         }
         assert_eq!(size(&r), first);
         r.set_time(Some(0.0));
@@ -8257,7 +8259,7 @@ mod tests {
         assert!(worst(&av, &want_av) <= 1);
         font.set(&font.visible, true);
         font.set(&font.open, false);
-        assert!(r.set_text("label", "AVZ").unwrap());
+        set_words(&r, "label", "AVZ");
         for _ in 0..5 {
             sleep(Duration::from_millis(20));
             assert!(still(&mut r) == av, "the words switched before Z was in");
@@ -8294,7 +8296,7 @@ mod tests {
         let av = still(&mut r);
         font.set(&font.visible, true);
         font.set(&font.open, false);
-        assert!(r.set_text("label", "AVQ").unwrap());
+        set_words(&r, "label", "AVQ");
         let opener = {
             let font = font.clone();
             thread::spawn(move || {
@@ -8350,7 +8352,7 @@ mod tests {
         assert!(still(&mut r) == av, "the grown atlas moved the glyphs");
         // New words after the growth take their glyphs from the new texture.
         font.set(&font.visible, true);
-        assert!(r.set_text("label", "AVQ").unwrap());
+        set_words(&r, "label", "AVQ");
         let f = still(&mut r);
         assert!(worst(&f, &want) <= 1, "{}", worst(&f, &want));
         drop(r);

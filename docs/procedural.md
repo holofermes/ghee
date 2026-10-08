@@ -120,9 +120,9 @@ ghee writes one JSON line to the process's stdin for each render tick:
 `iTimeDelta` that the tick's frame draws with: the time since the frame
 before, a quarter second at most, 1/60 for the first frame, or the fixed
 `--timestep`. `params` holds the params that changed by their bare names,
-each value as a scene file writes it, and a text layer's words under the
-layer's name. The first tick holds them all, and a value that the process
-set itself stays out.
+each value as a scene file writes it, and a text layer's words as its `text`,
+such as `title.text`. The first tick holds them all, and a value that the
+process set itself stays out.
 
 Reading stdin paces your process to the render, sleeping when it sleeps.
 Ignoring stdin lets it run free, but it then gets no ticks, no params, no

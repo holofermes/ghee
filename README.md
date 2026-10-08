@@ -520,7 +520,7 @@ hides compiles nothing.
 ### Live fields
 
 Some fields change with no rebuild: a layer's `x`, `y`, `color`, `opacity` and
-`visible`, a text layer's words, an image layer's `image`, which takes another
+`visible`, a text layer's `text`, an image layer's `image`, which takes another
 image asset of the scene or an image file, which loads once and stays until
 the next setup, an effect's `visible`, `color`, `strength`, `sung`, `speed`
 and `rate`, and every field of a shape layer but `shape` and `blend`, its

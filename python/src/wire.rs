@@ -8,7 +8,7 @@
 //! scene in ghee does.
 
 use ghee::layer::{Address, Form, Layer, Rgb};
-use ghee::scene::{not_words, Scene};
+use ghee::scene::Scene;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString};
 use serde_json::Value;
@@ -58,12 +58,7 @@ impl LayerWire {
         field: &str,
         value: &Value,
     ) -> Outcome<(String, Body)> {
-        if self.index.words(layer, effect, field)? {
-            return match value {
-                Value::String(words) => Ok((format!("{layer}.text"), Body::Text(words.clone()))),
-                v => Err(Fault::scene(not_words(layer, v))),
-            };
-        }
+        self.index.layer(layer)?;
         let at = Address {
             layer,
             effect,
@@ -78,7 +73,7 @@ impl LayerWire {
         };
         let floats = match (live.form, value) {
             // A colour's text keeps its form, and transparent its alpha.
-            (Form::Image | Form::Colour { .. }, Value::String(text)) => {
+            (Form::Image | Form::Colour { .. } | Form::Words, Value::String(text)) => {
                 return Ok((wire, Body::Text(text.clone())))
             }
             // A gradient goes as its JSON, so its ends keep theirs.

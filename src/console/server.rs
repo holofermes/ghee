@@ -1569,58 +1569,32 @@ struct SharedRenderer {
 
 impl SharedRenderer {
     /// Copy layer `name`, with its place, from the renderer's scene into the
-    /// running document, and its words with `words`. The renderer lays new
-    /// words from a param out without writing them into its scene, so a
-    /// live field leaves the words of the running document alone.
-    fn mirror(&self, name: &str, words: bool) {
+    /// running document.
+    fn mirror(&self, name: &str) {
         let found = self.renderer.borrow().with_scene(|s| {
             let (p, i) = s.place_of(name)?;
             let pass = &s.passes[p];
-            let words = s.words(name).map(str::to_string);
-            Some((pass.name.clone(), i, pass.layers[i].clone(), words))
+            Some((pass.name.clone(), i, pass.layers[i].clone()))
         });
-        let Some((pass, index, layer, said)) = found.flatten() else {
+        let Some((pass, index, layer)) = found.flatten() else {
             return;
         };
         let mut held = self.running.borrow_mut();
         let Some(scene) = held.scene.as_mut() else {
             return;
         };
-        let text = layer.as_text().is_some();
         let kept = match scene.place_of(name) {
-            // The same kind keeps its words param, so the layer swaps in.
-            Some((p, i)) if scene.passes[p].layers[i].as_text().is_some() == text => {
+            Some((p, i)) => {
                 scene.passes[p].layers[i] = layer;
                 Ok(())
             }
-            Some(_) => scene.replace_layer(layer),
             None => scene.insert_layer(&pass, index, layer),
         };
         if let Err(e) = kept {
             eprintln!("ghee console: layer {name}: {e}");
             return;
         }
-        if let (true, Some(said), Some(p)) = (words, said, scene.params.get_mut(name)) {
-            if p.of_text {
-                p.value = ParamValue::Str(said);
-            }
-        }
         held.changed = true;
-    }
-
-    /// Copy the words of text layer `name` into the running document.
-    fn mirror_words(&self, name: &str, words: &str) {
-        let mut held = self.running.borrow_mut();
-        let Some(scene) = held.scene.as_mut() else {
-            return;
-        };
-        if scene.text_layer(name).is_none() {
-            return;
-        }
-        if let Some(p) = scene.params.get_mut(name) {
-            p.value = ParamValue::Str(words.to_string());
-            held.changed = true;
-        }
     }
 }
 
@@ -1656,23 +1630,19 @@ impl RenderTarget for SharedRenderer {
         ty: &str,
         value: &ParamValue,
     ) -> Result<bool> {
-        let set = RenderTarget::set_param(&*self.renderer.borrow(), pass, name, ty, value)?;
-        if let (None, ParamValue::Str(words)) = (pass, value) {
-            self.mirror_words(name, words);
-        }
-        Ok(set)
+        RenderTarget::set_param(&*self.renderer.borrow(), pass, name, ty, value)
     }
 
     fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
         self.renderer.borrow().set_layer(at, given)?;
-        self.mirror(at.layer, false);
+        self.mirror(at.layer);
         Ok(())
     }
 
     fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Result<()> {
         self.renderer.borrow_mut().add_layer(pass, index, layer)?;
         if let Some(name) = layer.get("name").and_then(Value::as_str) {
-            self.mirror(name, true);
+            self.mirror(name);
         }
         Ok(())
     }
@@ -1680,7 +1650,7 @@ impl RenderTarget for SharedRenderer {
     fn update_layer(&mut self, layer: &Value) -> Result<bool> {
         let changed = self.renderer.borrow_mut().update_layer(layer)?;
         if let (true, Some(name)) = (changed, layer.get("name").and_then(Value::as_str)) {
-            self.mirror(name, true);
+            self.mirror(name);
         }
         Ok(changed)
     }
@@ -1902,7 +1872,7 @@ fn drain(
                 }
             }
             Command::Layer(set) => {
-                if set_layer(renderer, st, &set) {
+                if set_layer(renderer, st, ctrl, &set) {
                     edited = true;
                 }
             }
@@ -1954,11 +1924,6 @@ fn keep_layers(posted: &mut Scene, running: &Scene) -> bool {
             if let Err(e) = posted.insert_layer(&pass.name, index, layer.clone()) {
                 eprintln!("ghee console: apply: layer {name}: {e}");
                 continue;
-            }
-            if let (Some(words), Some(p)) = (running.words(name), posted.params.get_mut(name)) {
-                if p.of_text {
-                    p.value = ParamValue::Str(words.to_string());
-                }
             }
             kept = true;
         }
@@ -2039,7 +2004,6 @@ fn set_scene_param(
         let missing = || anyhow!("the scene has no param '{name}'");
         let ty = scene.params.get(name).ok_or_else(missing)?.ty.clone();
         let v = coerce(name, &ty, value)?;
-        // A string param of a text's name lays the text out again.
         renderer.borrow().set_scene_param(name, &ty, &v)?;
         told(ctrl, None, name, &v);
         scene.params.get_mut(name).ok_or_else(missing)?.value = v;
@@ -2054,8 +2018,14 @@ fn set_scene_param(
     }
 }
 
-/// Set a live field of a layer on the renderer and in the running document.
-fn set_layer(renderer: &RefCell<Renderer>, st: &RefCell<Running>, set: &LayerSet) -> bool {
+/// Set a live field of a layer on the renderer and in the running document,
+/// and tell the scene's process.
+fn set_layer(
+    renderer: &RefCell<Renderer>,
+    st: &RefCell<Running>,
+    ctrl: &ControllerSlot,
+    set: &LayerSet,
+) -> bool {
     let mut held = st.borrow_mut();
     let Some(scene) = held.scene.as_mut() else {
         return false;
@@ -2066,7 +2036,12 @@ fn set_layer(renderer: &RefCell<Renderer>, st: &RefCell<Running>, set: &LayerSet
         .set_layer(&at, Given::Json(&set.value))
         .and_then(|()| scene.set_layer(&at, &set.value));
     match applied {
-        Ok(()) => true,
+        Ok(()) => {
+            if let Some(c) = ctrl.borrow_mut().as_mut() {
+                c.on_layer(&at, &set.value);
+            }
+            true
+        }
         Err(e) => {
             eprintln!("set layer {}: {e}", set.layer);
             false
@@ -4190,18 +4165,28 @@ mod tests {
         opened(&console, "one", text_scene("I"));
         assert_eq!(set("layer=label&field=text&value=hello").status, 200);
         match console.q.take() {
-            Some(Command::SceneParam(name, v)) => {
-                assert_eq!((name.as_str(), v), ("label", Value::from("hello")));
+            Some(Command::Layer(set)) => {
+                assert_eq!(set, text_set("hello"));
             }
-            _ => panic!("no scene param queued"),
+            _ => panic!("no layer set queued"),
         }
         assert_eq!(set("name=nope&value=1").status, 400);
         assert!(console.q.take().is_none());
     }
 
+    /// The set of the `text` of layer `label` to `words`.
+    fn text_set(words: &str) -> LayerSet {
+        LayerSet {
+            layer: "label".to_string(),
+            effect: None,
+            field: "text".to_string(),
+            value: Value::from(words),
+        }
+    }
+
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_posted_string_param_relays_its_text() {
+    fn a_posted_text_relays_its_words() {
         let renderer = RefCell::new(gpu(32, 24));
         let (_d, console) = tmp_console("text");
         let st = RefCell::new(Running::default());
@@ -4216,8 +4201,7 @@ mod tests {
         opened(&console, "one", text_scene("I"));
         // what a POST /set queues
         let host = RenderLoopHost::new(Arc::clone(&console));
-        host.set_param(Scope::Scene, "label", Value::from("O"))
-            .unwrap();
+        host.set_layer(text_set("O")).unwrap();
         assert!(drain(&console, &renderer, &st, &ctrl));
         let o = frame();
         assert!(o != i, "the frame kept the old words");
@@ -4380,8 +4364,7 @@ mod tests {
         opened(&console, "one", text_scene("O"));
         let host = RenderLoopHost::new(Arc::clone(&console));
         let long = "I".repeat(400_000);
-        host.set_param(Scope::Scene, "label", Value::from(long.as_str()))
-            .unwrap();
+        host.set_layer(text_set(&long)).unwrap();
         assert!(drain(&console, &renderer, &st, &ctrl));
         assert!(frame() == o, "the last words went");
         let (error, texts) = errors();
@@ -4391,8 +4374,7 @@ mod tests {
         // The document holds the words posted.
         let running = running_doc(&console);
         assert_eq!(running["passes"][0]["layers"][0]["text"], long.as_str());
-        host.set_param(Scope::Scene, "label", Value::from("I"))
-            .unwrap();
+        host.set_layer(text_set("I")).unwrap();
         assert!(drain(&console, &renderer, &st, &ctrl));
         assert_eq!(errors(), (Value::from(""), serde_json::json!([])));
     }
@@ -4477,8 +4459,12 @@ mod tests {
             (
                 "new words",
                 Box::new(|t| {
-                    let ho = ParamValue::Str("ho".to_string());
-                    t.set_param(None, "label", "string", &ho).unwrap();
+                    let at = Address {
+                        layer: "label",
+                        effect: None,
+                        field: "text",
+                    };
+                    t.set_layer(&at, Given::Text("ho")).unwrap();
                 }),
                 serde_json::json!([
                     {"name": "bar", "visible": false, "shape": "rect", "width": 9},

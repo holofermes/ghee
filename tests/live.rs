@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use ghee::engine::{probe_dri_devices, Given, Refused, Renderer};
 use ghee::layer::Address;
-use ghee::scene::{ParamValue, Scene};
+use ghee::scene::Scene;
 
 /// A Renderer opens a GL device, and load_assets reads $GHEE_ASSETS. A test
 /// that does either holds this, so no variable changes under a device or a
@@ -342,7 +342,7 @@ fn a_colour_glyph_drawn_after_a_live_set_takes_the_live_values() {
         .unwrap();
     r.set_layer(&at("t", None, "opacity"), Given::Json(&json!(0.5)))
         .unwrap();
-    r.set_scene_param("t", "string", &ParamValue::Str(words.to_string()))
+    r.set_layer(&at("t", None, "text"), Given::Text(words))
         .unwrap();
     let live = again(&mut r);
     assert_ne!(live, letters, "the emoji draws");

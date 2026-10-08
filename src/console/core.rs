@@ -861,9 +861,8 @@ fn parse_aside(query: &Query) -> Result<(Aside, bool), String> {
 
 /// What a /set changes, or the first thing wrong with it. A query that names
 /// a `layer` sets one of its live fields, and its value parses by the field.
-/// The `text` of a text layer is its words, the scene string param of the
-/// layer's name. Any other query sets the param that param_of() finds, and
-/// its value parses by the param's type. The outer error is the host's own.
+/// Any other query sets the param that param_of() finds, and its value
+/// parses by the param's type. The outer error is the host's own.
 fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set, String>> {
     if let Some(layer) = query.get("layer") {
         let parts = || -> Result<(&String, &String), String> {
@@ -882,13 +881,6 @@ fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set
             field,
         };
         let doc = host.live_doc()?;
-        if effect.is_none() && field == "text" && text_layer(&doc, layer) {
-            return Ok(Ok(Set::Param(
-                Scope::Scene,
-                layer.clone(),
-                Value::from(raw.as_str()),
-            )));
-        }
         return Ok(live_value(&doc, &at, raw).map(|value| {
             Set::Layer(LayerSet {
                 layer: layer.clone(),
@@ -979,15 +971,6 @@ fn doc_passes(doc: &Value) -> &[Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// True when the scene document `doc` holds a text layer named `name`.
-fn text_layer(doc: &Value, name: &str) -> bool {
-    let named = Value::from(name);
-    doc_layers(doc).any(|l| {
-        l.get("name") == Some(&named)
-            && Layer::from_dict("a layer", l).is_ok_and(|l| l.as_text().is_some())
-    })
-}
-
 /// The value of `raw`, a /set value, for the live field `at` of the scene
 /// document `doc`, checked as the scene checks a live value, or why the scene
 /// takes none.
@@ -1018,9 +1001,9 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
 
 /// `raw`, a /set value, as the live field `live` takes it: a number, true or
 /// false, a colour as `#rrggbb`, a CSS colour name, three comma-separated
-/// floats or a gradient object in JSON, the name of an image asset, a line's
-/// points as a JSON list, or `none` for the default of a field that takes
-/// none.
+/// floats or a gradient object in JSON, the name of an image asset, a text
+/// layer's words, a line's points as a JSON list, or `none` for the default
+/// of a field that takes none.
 fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
     let what = &live.what;
     let s = raw.trim();
@@ -1062,7 +1045,7 @@ fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
             };
             Err(format!("{what} needs {forms}, got {got}"))
         }
-        Form::Image => Ok(Value::from(raw)),
+        Form::Image | Form::Words => Ok(Value::from(raw)),
         Form::Points => match serde_json::from_str::<Value>(s) {
             Ok(v @ Value::Array(_)) => Ok(v),
             _ => Err(format!(
@@ -1695,6 +1678,7 @@ mod tests {
             ),
             ("frame", Some("border"), "color", "Red", Value::from("Red")),
             ("frame", None, "width", "none", Value::Null),
+            ("words", None, "text", " la la ", Value::from(" la la ")),
         ] {
             let api = api();
             let r = post(&api, "/set", &layer_query(layer, effect, field, raw));
@@ -1707,21 +1691,6 @@ mod tests {
             };
             assert_eq!(api.host.calls.borrow().last(), Some(&Call::SetLayer(set)));
         }
-    }
-
-    #[test]
-    fn a_text_layers_text_sets_the_words_param_of_its_name() {
-        let api = api();
-        let r = post(&api, "/set", &layer_query("words", None, "text", "la la"));
-        assert_eq!((r.status, body(&r).as_str()), (200, "ok"));
-        assert_eq!(
-            api.host.calls.borrow().last(),
-            Some(&Call::SetParam(
-                Scope::Scene,
-                "words".to_string(),
-                Value::from("la la")
-            ))
-        );
     }
 
     #[test]

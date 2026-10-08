@@ -737,6 +737,8 @@ A scene written for 0.4.0 needs these changes.
   display takes --display`, and `--alpha` with a `.jpg`. A `.jpg` takes an
   RGBA frame and drops its alpha, where `-o x.jpg` failed at its first frame
   with the default `--components 4`.
+- Refuse a `--size` that is not WxH with `'banana' is not WxH`, where the
+  error read `invalid _size value: 'banana'`.
 
 ### Filters
 

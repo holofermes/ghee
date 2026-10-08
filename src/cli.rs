@@ -86,7 +86,7 @@ fn level(s: &str) -> Result<f64, String> {
 }
 
 fn size(s: &str) -> Result<(i32, i32), String> {
-    let bad = || format!("invalid _size value: '{s}'");
+    let bad = || format!("'{s}' is not WxH");
     let lower = s.to_lowercase();
     let mut parts = lower.split('x');
     let (Some(w), Some(h), None) = (parts.next(), parts.next(), parts.next()) else {
@@ -1705,7 +1705,8 @@ mod tests {
         assert_eq!(size("64x48"), Ok((64, 48)));
         assert_eq!(size("64X48"), Ok((64, 48)));
         assert_eq!(size("-4x9"), Ok((-4, 9)));
-        for bad in ["banana", "16", "0x9x2", ""] {
+        assert_eq!(size("banana").unwrap_err(), "'banana' is not WxH");
+        for bad in ["16", "0x9x2", ""] {
             assert!(size(bad).is_err(), "{bad}");
         }
         assert_eq!(ns(&["render", "s", "--size", "80x60"]).size, Some((80, 60)));

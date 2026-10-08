@@ -232,11 +232,11 @@ A scene written for 0.4.0 needs these changes.
   `text`, its words, an image layer's `image`, which takes another image
   asset of the scene, or an image file that loads once and stays until the
   next setup, at that image's size, and an effect's `visible`, `color`,
-  `strength`, `sung`, `speed` and `rate`. None
-  takes `x`, `y` and `color` back to their defaults. Every other field changes
-  with a rebuild, so a live set of one is refused with the live fields named,
-  and a set that names an effect or a field that the layer lacks is refused
-  with the layer's effects or its live fields named.
+  `strength`, `sung`, `speed` and `rate`. None takes `x`, `y` and `color`
+  back to their defaults. Every other field changes with a rebuild, so a live
+  set of one is refused with the live fields named, and a set that names an
+  effect or a field that the layer lacks is refused with the layer's effects
+  or its live fields named.
 - Move `wave`, `scroll` and `blink` by a phase that ghee keeps for each
   layer and advances each frame by the effect's `speed` or `rate` times the
   frame's time step, so a new speed carries the motion on from where it is.
@@ -373,11 +373,12 @@ A scene written for 0.4.0 needs these changes.
   as `ghee render` does, and a display or the console runs until stopped.
 - Scan a direct run's display out in 16-bit color with `--rgb565`, as
   `ghee render --rgb565` does.
-- Return the string params that the console changed since the last tick, with
-  their words, in the tick's `params`: from `h.frame()` and `h.skip()`, and in
-  a direct run's `@ghee.tick`, where that tick's `params` stayed empty. The
-  first tick holds every string param, as a scene script's tick does under
-  ghee, and a set from the host itself stays out.
+- Return the params that the console changed since the last tick, each value
+  as a scene file writes it and a text layer's words as its `text`, in the
+  tick's `params`: from `h.frame()` and `h.skip()`, and in a direct run's
+  `@ghee.tick`, where that tick's `params` stayed empty. The first tick holds
+  them all, as a scene script's tick does under ghee, and a set from the host
+  itself stays out.
 - Hand the iTimeDelta that a frame draws with in the tick that `h.frame()`
   returns, in a direct run's and on the wire: the time since the frame before,
   a quarter second at most, and 1/60 for the first frame, where the tick held
@@ -439,10 +440,9 @@ A scene written for 0.4.0 needs these changes.
 - Carry every param that changed in a tick, each value as a scene file
   writes it, where a tick carried the string params alone, so a float that
   the console sets reaches the scene's process. The first tick holds every
-  param, and a direct run's tick and `h.frame()`'s do the same.
+  param.
 - Carry a text layer's words in a tick's `params` as its `text`, such as
-  `title.text`, the name that sets them in message kind 3, and so do a
-  direct run's tick and `h.frame()`'s.
+  `title.text`, the name that sets them in message kind 3.
 - Name the cause when a scene's script cannot start, `the file has no #!
   line` or `the interpreter '/usr/bin/python9' on its #! line does not
   exist`, where the system's error read `Exec format error` or `No such file
@@ -764,6 +764,10 @@ A scene written for 0.4.0 needs these changes.
 - Tell a `Loop` whether anyone takes its frames with `Loop::watched`, which
   `looper::should_draw` takes as `watched`: while nobody watches, a frame
   draws for a queued command and as the first frame alone.
+- Hand `SceneController::on_param` the pass of the param that a host set and
+  its value as a `ParamValue`, for a param of any type, where it took a
+  string param's name and words, and hand `SceneController::on_layer` each
+  live field of a layer that a host sets.
 - Restart a renderer's clock with `Renderer::restart_clock`, so the next
   frame draws as the first one does, as `iFrame` 0 at `iTime` 0 with
   `iTimeDelta` at 1/60.

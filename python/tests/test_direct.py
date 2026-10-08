@@ -227,9 +227,26 @@ def test_brightness_with_no_kms_display_stops_the_run_as_ghee_render_stops(
 
 
 @pytest.mark.parametrize(
+    "argv,opts",
+    [
+        (["--display", "kms", "--rgb565"], {"rgb565": True}),
+        (["--rgb565"], {"rgb565": True}),
+        (["--display", "kms"], None),
+        (["-o", "f.png", "--rgb565"], None),
+    ],
+)
+def test_rgb565_scans_the_display_out_in_16_bit_color_as_ghee_render_does(
+    argv, opts, monkeypatch
+):
+    shim, _, opened = host(monkeypatch, [*argv, "--frames", "1"])
+    shim.run(scene_of(shim))
+    assert opened["opts"] == opts
+
+
+@pytest.mark.parametrize(
     "argv,error",
     [
-        (["--rotate", "45"], "argument --rotate: '45' is not 0, 90, 180 or 270"),
+        (["--rotate", "45"],"argument --rotate: '45' is not 0, 90, 180 or 270"),
         (
             ["--brightness", "2"],
             "argument --brightness: '2' is not a level from 0 to 1",

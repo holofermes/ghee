@@ -913,6 +913,12 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
         "and no --serve)",
     )
     p.add_argument(
+        "--rgb565",
+        action="store_true",
+        help="display scanout in 16-bit color: halves the GPU store and scanout "
+        "bandwidth (worth it on VC4-class boards), slight banding in gradients",
+    )
+    p.add_argument(
         "--serve", action="store_true", help="also run the console on this render"
     )
     p.add_argument(
@@ -1447,10 +1453,13 @@ def _open(scene: Scene, a):
     if a.brightness is not None and _display(a) != "kms":
         _refuse("--brightness needs --display kms")
     doc = scene.to_dict()
+    display = _display(a)
     try:
         handle = open_scene(
             doc,
-            display=_display(a),
+            display=display,
+            # ghee.open takes opts with a display alone
+            opts={"rgb565": True} if a.rgb565 and display else None,
             dri=a.dri,
             rotate=a.rotate,
             width=w,

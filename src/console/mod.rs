@@ -153,16 +153,28 @@ pub fn examples_dir() -> Option<String> {
     extract_examples().ok()
 }
 
-/// True when `dir` is the bundled examples directory. The comparison resolves
-/// symlinks.
+/// True when `dir` is the bundled examples directory, $GHEE_EXAMPLES or the
+/// directory that examples_dir() extracts them to. The comparison resolves
+/// symlinks, and extracts nothing.
 pub fn is_examples_dir(dir: &std::path::Path) -> bool {
-    let Some(examples) = examples_dir() else {
-        return false;
+    let given = std::env::var("GHEE_EXAMPLES").ok();
+    let wheel = crate::procedural::wheel::identity();
+    is_examples_in(dir, given.as_deref(), &cache_home(), &wheel)
+}
+
+/// is_examples_dir() with `given` for $GHEE_EXAMPLES, and the examples of
+/// `wheel` under the cache directory `base`.
+fn is_examples_in(
+    dir: &std::path::Path,
+    given: Option<&str>,
+    base: &std::path::Path,
+    wheel: &str,
+) -> bool {
+    let examples = match given.filter(|d| std::path::Path::new(d).is_dir()) {
+        Some(d) => std::path::PathBuf::from(d),
+        None => examples_in(base, wheel),
     };
-    match (
-        dir.canonicalize(),
-        std::path::Path::new(&examples).canonicalize(),
-    ) {
+    match (dir.canonicalize(), examples.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
@@ -180,11 +192,11 @@ fn extract_examples() -> std::io::Result<String> {
     extract_examples_in(&cache_home(), &crate::procedural::wheel::identity())
 }
 
-/// extract_examples() under the cache directory `base`. The directory's name
+/// The directory of the examples under the cache directory `base`. Its name
 /// comes from the examples, ghee's version and `wheel`, the identity of the
 /// ghee-render wheel that ghee hands a scene: uv keeps one environment per
 /// script path, and a new path makes it resolve each example again.
-fn extract_examples_in(base: &std::path::Path, wheel: &str) -> std::io::Result<String> {
+fn examples_in(base: &std::path::Path, wheel: &str) -> std::path::PathBuf {
     let mut key = Vec::new();
     for (name, body) in &EXAMPLES {
         key.extend_from_slice(name.as_bytes());
@@ -195,7 +207,12 @@ fn extract_examples_in(base: &std::path::Path, wheel: &str) -> std::io::Result<S
     key.push(0);
     key.extend_from_slice(wheel.as_bytes());
     let tag = crate::procedural::wheel::tag(&key);
-    let dir = base.join("ghee").join(format!("examples-{tag}"));
+    base.join("ghee").join(format!("examples-{tag}"))
+}
+
+/// extract_examples() under the cache directory `base`, into examples_in().
+fn extract_examples_in(base: &std::path::Path, wheel: &str) -> std::io::Result<String> {
+    let dir = examples_in(base, wheel);
     let done = dir.join(".complete");
     if !done.exists() {
         // Once per build, and it lands on whoever runs --demo first.
@@ -277,6 +294,19 @@ mod tests {
         let scene = crate::scene::Scene::load(out.join("bars.scene.json").to_str().unwrap());
         assert!(scene.is_ok());
         std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn a_directory_of_scenes_is_told_from_the_examples_with_nothing_extracted() {
+        let cache = crate::testing::TempDir::new("examples-told");
+        let base = std::path::Path::new(&*cache);
+        let scenes = crate::testing::TempDir::new("examples-scenes");
+        let dir = std::path::Path::new(&*scenes);
+        assert!(!is_examples_in(dir, None, base, "w"));
+        assert_eq!(std::fs::read_dir(base).unwrap().count(), 0);
+        let out = extract_examples_in(base, "w").unwrap();
+        assert!(is_examples_in(std::path::Path::new(&out), None, base, "w"));
+        assert!(is_examples_in(dir, Some(&scenes), base, "w"));
     }
 
     #[test]

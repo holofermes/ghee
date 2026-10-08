@@ -2089,6 +2089,7 @@ mod tests {
     fn serve_mounts_the_directory_it_was_given() {
         // the console reports an empty directory before it binds anything.
         // main() puts the command name in front.
+        let _e = crate::console::repo_examples();
         let d = tmpdir("serve-dir");
         assert_eq!(
             failure(run(&["serve", &d])),

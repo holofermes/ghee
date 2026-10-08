@@ -129,10 +129,10 @@ slider's sets, sent before the last one answers, all land. An edit with no
   of `[x, y]` for a line's `points`, or `none`, which takes `x`, `y`, `color`
   or a rect's `width` or `height` back to its default.
 - `POST /switch?name=`: switches to a named scene, and `iFrame` and `iTime`
-  start at 0. Switching to the active name reloads its files, keeps the
-  working copy's edits and checks its items as a start does. A switch that
-  carries `rev=` is a page's reload, and answers 409 when the console is on
-  another scene.
+  start at 0, with `iTimeDelta` at 1/60 on the first frame. Switching to the
+  active name reloads its files, keeps the working copy's edits and checks
+  its items as a start does. A switch that carries `rev=` is a page's
+  reload, and answers 409 when the console is on another scene.
 - `POST /next`, `POST /prev`: step through the scene list.
 - `POST /scene?name=`: takes the full scene JSON in the body, applies it to
   the working copy, and recompiles. `iFrame` and `iTime` keep running. A

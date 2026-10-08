@@ -579,8 +579,9 @@ A scene written for 0.4.0 needs these changes.
   answers 503, `scene 'clocks' is loading`, where `/set` answered 404.
 - Name the request once in a refusal, `bad /scene: pass 'main' ...`, where it
   read `bad /scene: scene: ...`.
-- Start `iFrame` and `iTime` at 0 at each switch, reloads included, and keep
-  them running through an apply.
+- Start `iFrame` and `iTime` at 0 at each switch, reloads included, with
+  `iTimeDelta` at 1/60 on the first frame, and keep them running through an
+  apply.
 - Cap the render loop's frame rate with `--fps` on `ghee serve`, and keep the
   cap that `ghee render --serve --fps` takes, where it ran uncapped.
 - Serve the layer format at `GET /format`: each effect's fields with their
@@ -742,7 +743,8 @@ A scene written for 0.4.0 needs these changes.
   `looper::should_draw` takes as `watched`: while nobody watches, a frame
   draws for a queued command and as the first frame alone.
 - Restart a renderer's clock with `Renderer::restart_clock`, so the next
-  frame draws as `iFrame` 0 at `iTime` 0.
+  frame draws as the first one does, as `iFrame` 0 at `iTime` 0 with
+  `iTimeDelta` at 1/60.
 - Flush the GL work before a setup deletes the last scene's pass buffers.
   Mesa's v3d and vc4 keep the draws into a buffer as a job until a read of
   the buffer or a flush submits it, and the job holds every buffer it draws

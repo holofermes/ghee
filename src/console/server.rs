@@ -1647,6 +1647,10 @@ impl RenderTarget for SharedRenderer {
         self.renderer.borrow().set_time(Some(t));
     }
 
+    fn clock_restarted(&self) -> bool {
+        RenderTarget::clock_restarted(&*self.renderer.borrow())
+    }
+
     fn set_param(
         &self,
         pass: Option<&str>,

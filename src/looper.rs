@@ -86,6 +86,12 @@ pub trait RenderTarget {
         preview: Option<(&mut [u8], (i32, i32))>,
     ) -> Result<()>;
 
+    /// True once after the target's clock restarted: the loop then draws
+    /// the next frame as its first, with no period measured before it.
+    fn clock_restarted(&self) -> bool {
+        false
+    }
+
     /// Blank the display, or light it again. A target that drives no display
     /// takes it as a no-op, so a sink can gate on an idle host either way.
     fn blank(&self, _on: bool) -> Result<()> {
@@ -112,6 +118,10 @@ impl RenderTarget for Renderer {
 
     fn set_time(&self, t: f64) {
         Renderer::set_time(self, Some(t));
+    }
+
+    fn clock_restarted(&self) -> bool {
+        self.restarted.replace(false)
     }
 
     fn set_param(
@@ -534,6 +544,10 @@ impl<'a> Loop<'a> {
             Some(step) => self.frame as f64 * step,
             None => t0 - started,
         };
+        if self.renderer.clock_restarted() {
+            self.prev = None;
+            self.period = None;
+        }
         // The period since the last frame drawn, which iTimeDelta takes when
         // this iteration draws.
         let period = self.prev.map(|prev| t0 - prev);
@@ -778,6 +792,7 @@ fn pool_index(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::rc::Rc;
 
     use super::*;
     use crate::stats::{DEST_FILE, DEST_H264, DEST_KMS};
@@ -798,6 +813,8 @@ mod tests {
         dts: RefCell<Vec<f64>>,
         times: RefCell<Vec<f64>>,
         fed: Vec<Vec<f32>>,
+        /// True when the clock restarted since the loop last asked.
+        restart: Rc<Cell<bool>>,
     }
 
     impl Recorder {
@@ -848,6 +865,10 @@ mod tests {
 
         fn set_time(&self, t: f64) {
             self.times.borrow_mut().push(t);
+        }
+
+        fn clock_restarted(&self) -> bool {
+            self.restart.replace(false)
         }
 
         fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
@@ -1287,19 +1308,20 @@ mod tests {
         assert_eq!(*r.times.borrow(), vec![0.0, 0.5, 1.0]);
     }
 
+    /// A controller that records the dt of each tick.
+    struct Ticker(Arc<Mutex<Vec<f64>>>);
+
+    impl SceneController for Ticker {
+        fn tick(&mut self, _frame: u64, _t: f64, dt: f64) -> Result<()> {
+            self.0.lock().unwrap().push(dt);
+            Ok(())
+        }
+    }
+
     /// A scene fed from outside reads in its tick the iTimeDelta that the
     /// tick's frame draws with.
     #[test]
     fn a_tick_carries_the_dt_that_its_frame_draws_with() {
-        struct Ticker(Arc<Mutex<Vec<f64>>>);
-
-        impl SceneController for Ticker {
-            fn tick(&mut self, _frame: u64, _t: f64, dt: f64) -> Result<()> {
-                self.0.lock().unwrap().push(dt);
-                Ok(())
-            }
-        }
-
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut r = Recorder::default();
         let mut s = Sink::new();
@@ -1316,6 +1338,35 @@ mod tests {
         // frame 0 draws with the engine's own 1/60
         assert_eq!(seen[0], 1.0 / 60.0);
         assert_eq!(seen[1..], dts[..]);
+    }
+
+    /// The host restarts the clock in the poll of the third iteration, and
+    /// that frame draws as the first one: its tick carries 1/60, and the
+    /// loop feeds no period.
+    #[test]
+    fn a_frame_after_a_restarted_clock_draws_with_the_first_dt() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut r = Recorder::default();
+        let restart = Rc::clone(&r.restart);
+        let mut s = Sink::new();
+        let ctrl = slot(Ticker(seen.clone()));
+        let mut polls = 0;
+        {
+            let mut lp = Loop::new(&mut r, vec![&mut s]);
+            lp.controller = Some(&ctrl);
+            lp.frames = 4;
+            lp.rest = 0.01;
+            lp.poll = Some(Box::new(|| {
+                polls += 1;
+                restart.set(polls == 3);
+                false
+            }));
+            lp.run().unwrap();
+        }
+        let seen = seen.lock().unwrap();
+        let dts = r.dts.borrow();
+        assert_eq!(dts.len(), 2);
+        assert_eq!(*seen, [1.0 / 60.0, dts[0], 1.0 / 60.0, dts[1]]);
     }
 
     #[test]

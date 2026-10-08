@@ -668,6 +668,8 @@ A scene written for 0.4.0 needs these changes.
 - Open a tab with a tap anywhere on it, keep each tab's width and place, and
   ask before a pass, a layer or the common block goes, in the console's
   dialog, where Escape cancels and Enter removes.
+- Answer 400 to a query with a malformed percent escape, `bad query: '%zz'
+  is not a percent escape`, where ghee kept the escape as text.
 
 ### Displays and H264
 
@@ -763,6 +765,8 @@ A scene written for 0.4.0 needs these changes.
   `open` and `resolve` take the size too, and `render_loop` hands each
   process its renderer's `scene_size()`, so a procedural scene under any
   host of the console reads `GHEE_SIZE`.
+- Take a `ConsoleResult` from `parse_query`, the 400 for a malformed
+  percent escape.
 - Tell a `Loop` whether anyone takes its frames with `Loop::watched`, which
   `looper::should_draw` takes as `watched`: while nobody watches, a frame
   draws for a queued command and as the first frame alone.

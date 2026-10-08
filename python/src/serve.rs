@@ -738,7 +738,10 @@ fn handle(shared: &Arc<Shared>, api: &ConsoleAPI<Host>, mut request: Request) {
     if let Some(resp) = api.precheck(&method, path, &headers) {
         return send(request, &resp);
     }
-    let query: Query = parse_query(qs);
+    let query: Query = match parse_query(qs) {
+        Ok(q) => q,
+        Err(e) => return send(request, &Response::text(e.status, &e.message)),
+    };
     if method == "GET" {
         match path {
             "/stream" => return stream(shared, request),

@@ -2609,7 +2609,10 @@ fn handle(console: &Arc<Console>, api: &ConsoleAPI<RenderLoopHost>, mut request:
     if let Some(resp) = api.precheck(&method, path, &headers) {
         return send(request, &resp);
     }
-    let query = parse_query(qs);
+    let query = match parse_query(qs) {
+        Ok(q) => q,
+        Err(e) => return send(request, &Response::text(e.status, &e.message)),
+    };
     if method == "GET" {
         match path {
             "/stream" => return stream(console, request, &query),
@@ -3098,7 +3101,13 @@ mod tests {
         body: &str,
     ) -> (u16, String, Option<String>) {
         let headers = Headers::from([("Content-Type", "application/json")]);
-        let r = api.dispatch(method, path, &parse_query(q), &headers, body.as_bytes());
+        let r = api.dispatch(
+            method,
+            path,
+            &parse_query(q).unwrap(),
+            &headers,
+            body.as_bytes(),
+        );
         let etag = r
             .headers
             .iter()
@@ -3785,6 +3794,36 @@ mod tests {
         (out, false)
     }
 
+    /// One raw request through handle(), and the raw answer.
+    fn exchange(raw: &'static [u8]) -> String {
+        use std::io::Read;
+        use std::net::TcpStream;
+        let (_d, console) = tmp_console("transport");
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let client = thread::spawn(move || {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            s.write_all(raw).unwrap();
+            let mut out = Vec::new();
+            let _ = s.read_to_end(&mut out); // the server closes the connection
+            out
+        });
+        handle(&console, &api, server.recv().unwrap());
+        String::from_utf8_lossy(&client.join().unwrap()).into_owned()
+    }
+
+    #[test]
+    fn a_query_with_a_malformed_percent_escape_answers_400() {
+        let out = exchange(b"GET /stats?a=%zz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        assert!(out.starts_with("HTTP/1.1 400"), "{out}");
+        assert!(
+            out.ends_with("bad query: '%zz' is not a percent escape"),
+            "{out}"
+        );
+    }
+
     fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         hay.get(from..)?
             .windows(needle.len())
@@ -4126,7 +4165,7 @@ mod tests {
         let set = api.dispatch(
             "POST",
             "/set",
-            &parse_query("scene=one&name=k&value=1"),
+            &parse_query("scene=one&name=k&value=1").unwrap(),
             &Headers::new(),
             b"",
         );
@@ -4134,7 +4173,7 @@ mod tests {
         let apply = api.dispatch(
             "POST",
             "/scene",
-            &parse_query("name=one"),
+            &parse_query("name=one").unwrap(),
             &json,
             SCENE.as_bytes(),
         );
@@ -4189,7 +4228,7 @@ mod tests {
         let set = api.dispatch(
             "POST",
             "/set",
-            &parse_query("scene=bad&name=k&value=1"),
+            &parse_query("scene=bad&name=k&value=1").unwrap(),
             &Headers::new(),
             b"",
         );
@@ -4210,7 +4249,7 @@ mod tests {
         let r = api.dispatch(
             "POST",
             "/scene",
-            &parse_query("name=bad"),
+            &parse_query("name=bad").unwrap(),
             &json,
             fix.as_bytes(),
         );
@@ -4252,7 +4291,15 @@ mod tests {
     fn a_set_takes_its_type_from_the_running_scene() {
         let (_d, console) = tmp_console("settype");
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
-        let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
+        let set = |q: &str| {
+            api.dispatch(
+                "POST",
+                "/set",
+                &parse_query(q).unwrap(),
+                &Headers::new(),
+                b"",
+            )
+        };
         let r = set("layer=label&field=text&value=O");
         assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
         opened(&console, "one", text_scene("I"));
@@ -4378,7 +4425,15 @@ mod tests {
     fn a_layer_set_takes_its_field_from_the_running_scene() {
         let (_d, console) = tmp_console("setlayer");
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
-        let set = |q: &str| api.dispatch("POST", "/set", &parse_query(q), &Headers::new(), b"");
+        let set = |q: &str| {
+            api.dispatch(
+                "POST",
+                "/set",
+                &parse_query(q).unwrap(),
+                &Headers::new(),
+                b"",
+            )
+        };
         let r = set("layer=label&field=x&value=4");
         assert_eq!((r.status, r.body.as_slice()), (404, b"no scene".as_slice()));
         opened(&console, "one", placed_scene(2.0));

@@ -11,7 +11,8 @@
 //! ```
 //!
 //! query maps a name to its first value, and parse_query() builds one from a raw
-//! query string. A headers lookup ignores case.
+//! query string, or the 400 for a malformed percent escape. A headers lookup
+//! ignores case.
 //!
 //! The transport keeps the streams (/stream, /h264) and its own routes. Route
 //! them before dispatch reaches the static-file fallback.
@@ -261,8 +262,9 @@ fn is_scheme(s: &str) -> bool {
 /// A raw query string, as a name to its first value. The console never repeats a
 /// key.
 ///
-/// A field with a blank value is dropped, so `?value=` carries no value.
-pub fn parse_query(qs: &str) -> Query {
+/// A field with a blank value is dropped, so `?value=` carries no value. A `%`
+/// that two hex digits do not follow is a 400.
+pub fn parse_query(qs: &str) -> ConsoleResult<Query> {
     let mut out = Query::new();
     for field in qs.split('&').filter(|f| !f.is_empty()) {
         let Some((name, value)) = field.split_once('=') else {
@@ -271,16 +273,17 @@ pub fn parse_query(qs: &str) -> Query {
         if value.is_empty() {
             continue;
         }
-        out.entry(unquote_plus(name))
-            .or_insert_with(|| unquote_plus(value));
+        let name = unquote_plus(name)?;
+        let value = unquote_plus(value)?;
+        out.entry(name).or_insert(value);
     }
-    out
+    Ok(out)
 }
 
-/// Decode a query field. "+" is a space and %XX is a byte. An invalid escape
-/// stays as it is.
-fn unquote_plus(s: &str) -> String {
+/// Decode a query field. "+" is a space and %XX is a byte.
+fn unquote_plus(s: &str) -> ConsoleResult<String> {
     let bytes = s.as_bytes();
+    let hex = |at: usize| bytes.get(at).and_then(|b| char::from(*b).to_digit(16));
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -289,23 +292,24 @@ fn unquote_plus(s: &str) -> String {
                 out.push(b' ');
                 i += 1;
             }
-            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                Ok(b) => {
-                    out.push(b);
-                    i += 3;
-                }
-                Err(_) => {
-                    out.push(b'%');
-                    i += 1;
-                }
-            },
+            b'%' => {
+                let (Some(hi), Some(lo)) = (hex(i + 1), hex(i + 2)) else {
+                    let escape: String = s[i..].chars().take(3).collect();
+                    return Err(ConsoleError::bad_request(format!(
+                        "bad query: {} is not a percent escape",
+                        py_repr(&Value::from(escape))
+                    )));
+                };
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+            }
             b => {
                 out.push(b);
                 i += 1;
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// Parse a float. Whitespace around the number is fine. Any other text fails.
@@ -2319,8 +2323,29 @@ mod tests {
 
     #[test]
     fn parse_query_takes_the_first_value() {
-        assert_eq!(parse_query("a=1&b=x&a=2"), query(&[("a", "1"), ("b", "x")]));
-        assert_eq!(parse_query(""), Query::new());
+        assert_eq!(
+            parse_query("a=1&b=x&a=2").unwrap(),
+            query(&[("a", "1"), ("b", "x")])
+        );
+        assert_eq!(parse_query("").unwrap(), Query::new());
+        assert_eq!(
+            parse_query("a=%41+b%2b%c3%a9").unwrap(),
+            query(&[("a", "A b+é")])
+        );
+    }
+
+    #[test]
+    fn a_malformed_percent_escape_is_400() {
+        let e = parse_query("a=%1é").unwrap_err();
+        assert_eq!(e.status, 400);
+        assert_eq!(e.message, "bad query: '%1é' is not a percent escape");
+        for (qs, escape) in [("a=%zz", "'%zz'"), ("a=1%", "'%'"), ("%4=1", "'%4'")] {
+            let e = parse_query(qs).unwrap_err();
+            assert!(
+                e.message.starts_with(&format!("bad query: {escape} ")),
+                "{qs}"
+            );
+        }
     }
 
     #[test]

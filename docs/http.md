@@ -15,6 +15,12 @@ switch away and back. `/save` writes what differs from the defaults to the
 scene's state file, as [Saved edits](../README.md#saved-edits) in the README
 describes.
 
+A query with a malformed percent escape answers 400, `bad query: '%zz' is
+not a percent escape`. A POST body over 1 MiB answers 413, `body over the
+limit of 1048576 bytes`, with its length in `Content-Length` or sent
+chunked, and a body whose read fails answers 400, `bad body:` and the
+error.
+
 ## Read
 
 - `GET /stats`: `{fps, frame_ms, stream_fps, out, error, error_line,

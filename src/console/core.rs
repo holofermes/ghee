@@ -1359,11 +1359,28 @@ mod tests {
         for key in ["rss_mib", "machine_free_mib"] {
             assert!(d.remove(key).unwrap().as_f64().unwrap() > 0.0, "{key}");
         }
-        for key in ["gpu_mib", "gpu_busy", "soc_celsius"] {
+        for key in ["gpu_mib", "soc_celsius"] {
             let v = d.remove(key).unwrap();
-            assert!(v.is_null() || v.is_number() || v.is_object(), "{key}: {v}");
+            assert!(v.is_null() || v.is_number(), "{key}: {v}");
         }
+        // the first answer holds no share yet for any queue
+        let busy = d.remove("gpu_busy").unwrap();
+        assert!(
+            busy.is_null() || busy.as_object().unwrap().values().all(Value::is_null),
+            "{busy}"
+        );
         assert_eq!(got, api.host.stats().unwrap());
+        let again = as_json(&get(&api, "/stats", &[("usage", "1")]));
+        let busy = &again["gpu_busy"];
+        assert!(
+            busy.is_null()
+                || busy
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(|v| v.is_null() || v.as_f64().is_some_and(|p| p >= 0.0)),
+            "{busy}"
+        );
     }
 
     #[test]

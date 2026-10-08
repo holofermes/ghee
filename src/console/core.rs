@@ -1159,6 +1159,7 @@ mod tests {
         Switch(String),
         ApplyScene(Scene),
         Save(Option<String>),
+        Reset(Option<String>),
         Answer(Aside, bool),
     }
 
@@ -1261,6 +1262,13 @@ mod tests {
             self.calls
                 .borrow_mut()
                 .push(Call::Save(name.map(str::to_string)));
+            Ok(())
+        }
+
+        fn reset(&self, name: Option<&str>) -> ConsoleResult<()> {
+            self.calls
+                .borrow_mut()
+                .push(Call::Reset(name.map(str::to_string)));
             Ok(())
         }
 
@@ -2080,8 +2088,8 @@ mod tests {
     }
 
     /// Each request that edits a scene, naming scene `name`: a /set, a posted
-    /// scene, a save and an answer.
-    fn edits(api: &ConsoleAPI<FakeHost>, name: &str) -> [Response; 4] {
+    /// scene, a save, a reset and an answer.
+    fn edits(api: &ConsoleAPI<FakeHost>, name: &str) -> [Response; 5] {
         [
             post(
                 api,
@@ -2096,6 +2104,7 @@ mod tests {
                 SCENE.as_bytes(),
             ),
             post(api, "/save", &[("name", name)]),
+            post(api, "/reset", &[("name", name)]),
             post(
                 api,
                 "/aside",
@@ -2116,7 +2125,7 @@ mod tests {
                 )
             );
         }
-        // A scene def is a read, and none of the three edits lands.
+        // A scene def is a read, and none of the edits lands.
         assert!(api
             .host
             .calls
@@ -2133,7 +2142,7 @@ mod tests {
             .iter()
             .filter(|c| !matches!(c, Call::SceneDef(_)))
             .count();
-        assert_eq!(landed, 4);
+        assert_eq!(landed, 5);
     }
 
     // refusals: precheck decides them, dispatch enforces them again

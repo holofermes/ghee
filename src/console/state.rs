@@ -282,10 +282,16 @@ pub fn write(path: &Path, scene: &str, edits: &Edits) -> Result<(), String> {
     let text = serde_json::to_string_pretty(&edits.to_file(scene)).map_err(|e| e.to_string())?;
     // The rename takes only bytes that reached the disk, so a power cut
     // leaves the old file or the new one, whole.
-    let mut f = fs::File::create(&tmp).map_err(io)?;
-    f.write_all((text + "\n").as_bytes()).map_err(io)?;
-    f.sync_all().map_err(io)?;
-    fs::rename(&tmp, path).map_err(io)
+    let wrote = fs::File::create(&tmp)
+        .and_then(|mut f| {
+            f.write_all((text + "\n").as_bytes())?;
+            f.sync_all()
+        })
+        .and_then(|()| fs::rename(&tmp, path));
+    if wrote.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    wrote.map_err(io)
 }
 
 // ---------------------------------------------------------------- the doc
@@ -942,6 +948,22 @@ mod tests {
         let loaded = apply(&clocks(), &Edits::from_file(&file).unwrap(), "clocks");
         assert_eq!(loaded.doc, moved);
         assert!(loaded.notes.is_empty() && loaded.aside.is_empty());
+    }
+
+    #[test]
+    fn a_state_file_that_cannot_be_written_leaves_no_temporary_file() {
+        let dir = crate::testing::TempDir::new("state-unwritten");
+        let path = dir.join("clocks.json");
+        fs::create_dir(&path).unwrap();
+        let file = json!({"version": 1,
+            "values": {"passes": {"main": {"params": {"cols": 5}}}}});
+        let edits = Edits::from_file(&file).unwrap();
+        write(&path, "/s/clocks/clocks.scene.json", &edits).unwrap_err();
+        let left: Vec<_> = fs::read_dir(&*dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["clocks.json"]);
     }
 
     #[test]

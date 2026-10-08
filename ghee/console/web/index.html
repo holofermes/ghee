@@ -857,8 +857,9 @@ const has = (o, k) => isObj(o) && Object.prototype.hasOwnProperty.call(o, k);
 const NO_EDITS = {rev: null, values: {}, items: [], unsaved: false, aside: []};
 let E = NO_EDITS, D = null;
 // rev is the revision of the scene this page last read, which every edit
-// carries. known is the last revision this page accounts for, its own edits
-// included: /stats moving past it means another client changed the scene.
+// carries. ghee counts each edit that it takes, so known, the revision that
+// this page accounts for, is rev plus this page's edits taken since. A /stats
+// rev that differs from known means another client changed the scene.
 let rev = null, known = null;
 const layerEdit = n => ((E.values || {}).layers || {})[n];
 const passEdit = n => ((E.values || {}).passes || {})[n];
@@ -887,6 +888,7 @@ async function edit(path, scene, q, body){
   inflight++;
   try {
     const r = await fetch(u, o);
+    if (r.ok && scene === active && known != null) known++;
     if (r.status === 409) sceneMoved(scene);
     else if (r.status === 412) $("#behind").hidden = false;
     return r;
@@ -909,7 +911,6 @@ async function readEdits(){
     const got = await r.json();
     if (name !== active) return;
     E = got;
-    if (E.rev != null) known = E.rev;
     paintMarks(); paintStatus();
   } catch (_) {
   } finally { editsReading--; }

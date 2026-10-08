@@ -363,6 +363,8 @@ A scene written for 0.4.0 needs these changes.
   `--dri`, where `--output` named the display and `--stats` the console's
   port. With no `--frames`, `-o` renders one frame,
   as `ghee render` does, and a display or the console runs until stopped.
+- Scan a direct run's display out in 16-bit color with `--rgb565`, as
+  `ghee render --rgb565` does.
 - Return the string params that the console changed since the last tick, with
   their words, in the tick's `params`: from `h.frame()` and `h.skip()`, and in
   a direct run's `@ghee.tick`, where that tick's `params` stayed empty. The

@@ -233,6 +233,10 @@ fn edits(a: &str, b: &str) -> usize {
 /// likely means.
 const MEANS: [(&str, &str); 1] = [("font", "font_family")];
 
+/// The keys that ghee writes itself, which no hint names: a pass's `filter`
+/// marks a filter's own pass.
+const UNNAMED: [&str; 1] = ["filter"];
+
 /// The edits from `typed` to `key` when `key` is a likely meaning of it: a
 /// third of the longer name or fewer, or the first four characters shared.
 fn near(typed: &str, key: &str) -> Option<usize> {
@@ -252,6 +256,7 @@ fn near(typed: &str, key: &str) -> Option<usize> {
 /// with the object that takes it, and a key that sits there, or comes close
 /// to one, names that object. A key one edit from a key that `what` takes
 /// names that key, even when another object takes the key as it is written.
+/// A key of UNNAMED is taken and never named.
 pub(crate) fn known_keys(
     o: &Map<String, Value>,
     what: &str,
@@ -261,6 +266,15 @@ pub(crate) fn known_keys(
     let Some(key) = o.keys().find(|k| !takes.contains(&k.as_str())) else {
         return Ok(());
     };
+    let takes: Vec<&str> = takes
+        .iter()
+        .copied()
+        .filter(|k| !UNNAMED.contains(k))
+        .collect();
+    let elsewhere: Vec<&(&str, String)> = elsewhere
+        .iter()
+        .filter(|(k, _)| !UNNAMED.contains(k))
+        .collect();
     if let Some(k) = takes.iter().find(|k| edits(key, k) == 1) {
         bail!("{what} takes no '{key}', the closest key is '{k}'");
     }
@@ -3782,9 +3796,10 @@ mod tests {
                 json!({"version": 1, "filter": "dither", "passes": [pass(json!({}))]}),
                 "scene: the scene takes no 'filter', the closest key is 'filters'",
             ),
+            // A pass's `filter`, which ghee writes, is never named.
             (
                 json!({"version": 1, "passes": [pass(json!({"filters": ["dither"]}))]}),
-                "scene: pass 'main' takes no 'filters', the closest key is 'filter'",
+                "scene: pass 'main' takes no 'filters', which sits on the scene",
             ),
             (
                 json!({"version": 1, "params": {"g": {"type": "float", "value": 1, "mni": 0}},

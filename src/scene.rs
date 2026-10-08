@@ -41,6 +41,43 @@ pub const PREFIX: &str = "ghee_";
 /// author to read, beside iChannel0 and up.
 const BUILT_INS: [&str; 5] = ["iTime", "iTimeDelta", "iFrame", "iResolution", "uv"];
 
+/// The keywords of GLSL ES 1.00 and the keywords that it reserves for future
+/// use, as its specification lists them in section 3.7.
+const GLSL_KEYWORDS: &str = "\
+    attribute const uniform varying break continue do for while if else in \
+    out inout float int void bool true false lowp mediump highp precision \
+    invariant discard return mat2 mat3 mat4 vec2 vec3 vec4 ivec2 ivec3 ivec4 \
+    bvec2 bvec3 bvec4 sampler2D samplerCube struct asm class union enum \
+    typedef template this packed goto switch default inline noinline volatile \
+    public static extern external interface flat long short double half fixed \
+    unsigned superp input output hvec2 hvec3 hvec4 dvec2 dvec3 dvec4 fvec2 \
+    fvec3 fvec4 sampler1D sampler3D sampler1DShadow sampler2DShadow \
+    sampler2DRect sampler3DRect sampler2DRectShadow sizeof cast namespace \
+    using";
+
+/// The built-in functions of GLSL ES 1.00, as its specification lists them in
+/// section 8. A uniform of that name hides the function from the shader.
+const GLSL_FUNCTIONS: &str = "\
+    abs acos all any asin atan ceil clamp cos cross degrees distance dot \
+    equal exp exp2 faceforward floor fract greaterThan greaterThanEqual \
+    inversesqrt length lessThan lessThanEqual log log2 matrixCompMult max min \
+    mix mod normalize not notEqual pow radians reflect refract sign sin \
+    smoothstep sqrt step tan texture2D texture2DLod texture2DProj \
+    texture2DProjLod textureCube textureCubeLod";
+
+/// Why GLSL keeps `name` for itself, None when the name is free: a keyword or
+/// a built-in function.
+fn glsl_word(name: &str) -> Option<String> {
+    let holds = |words: &str| words.split_whitespace().any(|w| w == name);
+    if holds(GLSL_KEYWORDS) {
+        return Some(format!("'{name}' is a GLSL keyword"));
+    }
+    if holds(GLSL_FUNCTIONS) {
+        return Some(format!("'{name}' is a GLSL function"));
+    }
+    None
+}
+
 /// True for a name that ghee declares in every pass for its author to read.
 fn built_in(name: &str) -> bool {
     BUILT_INS.contains(&name)
@@ -2551,41 +2588,52 @@ impl Scene {
     /// pass of the scene's own, a filter's asset the passes of its filter, and
     /// a pass param or an array its own pass.
     pub(crate) fn name_clash(&self) -> Option<String> {
-        // Each declaration as its kind, its name, where it is declared, and
-        // whether the built-in names are closed to it. A pass name never
-        // reaches GLSL, and a layer's reaches it with a suffix, so both may
-        // take a built-in name.
-        let mut kinds: Vec<(&str, &str, String, bool)> = Vec::new();
+        // Each declaration as its kind, its name, where it is declared,
+        // whether the built-in names are closed to it, and whether GLSL takes
+        // its name as it is. A pass name never reaches GLSL, and a layer's
+        // reaches it with a suffix, so both may take a built-in name. A param
+        // that holds no string is a uniform of its own name.
+        let mut kinds: Vec<(&str, &str, String, bool, bool)> = Vec::new();
         for p in &self.passes {
-            kinds.push(("pass", &p.name, String::new(), false));
+            kinds.push(("pass", &p.name, String::new(), false, false));
         }
         for l in self.layers() {
-            kinds.push(("layer", l.name(), String::new(), false));
+            kinds.push(("layer", l.name(), String::new(), false, false));
         }
         for p in self.params.values().filter(|p| !p.of_text) {
-            kinds.push(("scene param", &p.name, String::new(), true));
+            let bare = p.ty != "string";
+            kinds.push(("scene param", &p.name, String::new(), true, bare));
         }
         for a in &self.assets {
             match a.from_filter.as_str() {
-                "" => kinds.push(("asset", &a.name, String::new(), true)),
-                f => kinds.push(("asset", a.local_name(), format!(" of filter '{f}'"), true)),
+                "" => kinds.push(("asset", &a.name, String::new(), true, false)),
+                f => kinds.push((
+                    "asset",
+                    a.local_name(),
+                    format!(" of filter '{f}'"),
+                    true,
+                    false,
+                )),
             }
         }
         for pass in &self.passes {
             let at = format!(" in pass '{}'", pass.name);
             for p in pass.params.values() {
-                kinds.push(("param", &p.name, at.clone(), true));
+                kinds.push(("param", &p.name, at.clone(), true, p.ty != "string"));
             }
             for a in &pass.arrays {
-                kinds.push(("array", &a.name, at.clone(), true));
+                kinds.push(("array", &a.name, at.clone(), true, false));
             }
         }
-        for (kind, name, at, closed) in &kinds {
+        for (kind, name, at, closed, bare) in &kinds {
             if let Some(why) = name_fault(name) {
                 return Some(format!("{kind} name {}{at} {why}", py_str_repr(name)));
             }
             if *closed && built_in(name) {
                 return Some(format!("{kind} '{name}'{at}: '{name}' is built in"));
+            }
+            if let Some(why) = glsl_word(name).filter(|_| *bare) {
+                return Some(format!("{kind} '{name}'{at}: {why}"));
             }
         }
         if let Some(e) = self.shared_name() {
@@ -4510,6 +4558,44 @@ mod tests {
             d["passes"][1]["layers"][0]["name"] = json!(name);
             assert!(Scene::from_dict(&d, None, None).is_ok(), "layer {name}");
         }
+    }
+
+    #[test]
+    fn a_param_named_as_a_glsl_keyword_or_function_is_refused() {
+        let f = json!({"type": "float", "value": 1.0});
+        let c = json!({"type": "color", "value": [1.0, 0.0, 0.0]});
+        for (extra, pass, want) in [
+            (
+                json!({"params": {"mix": f}}),
+                json!({}),
+                "scene param 'mix': 'mix' is a GLSL function",
+            ),
+            (
+                json!({}),
+                json!({"params": {"half": c}}),
+                "param 'half' in pass 'a': 'half' is a GLSL keyword",
+            ),
+            (
+                json!({}),
+                json!({"params": {"texture2D": f}}),
+                "param 'texture2D' in pass 'a': 'texture2D' is a GLSL function",
+            ),
+            (
+                json!({"params": {"float": f}}),
+                json!({}),
+                "scene param 'float': 'float' is a GLSL keyword",
+            ),
+        ] {
+            assert_eq!(named_err(extra, pass), format!("scene: {want}"));
+        }
+        // GLSL takes the names of a string param, an array, an asset and a
+        // layer with a suffix or not at all.
+        let extra = json!({"params": {"mix": {"type": "string", "value": "w"}},
+                           "assets": {"half": {"file": "h.png"}}});
+        let pass = json!({"arrays": [{"name": "min", "size": 4}]});
+        let mut d = named(extra, pass);
+        d["passes"][1]["layers"][0]["name"] = json!("step");
+        assert!(Scene::from_dict(&d, None, None).is_ok());
     }
 
     #[test]

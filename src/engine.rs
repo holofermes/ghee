@@ -839,6 +839,10 @@ pub struct Renderer {
     /// shader, on a GL that filters a float texture itself.
     #[cfg(test)]
     shader_lerp: bool,
+    /// A test sets it to give the glyphs of every text layer this fragment
+    /// shader.
+    #[cfg(test)]
+    glyphs_fragment: Option<&'static str>,
     /// The layouts run by set_text, for a test to count.
     #[cfg(test)]
     layouts: std::cell::Cell<usize>,
@@ -919,6 +923,8 @@ impl Renderer {
             atlas_cache: None,
             #[cfg(test)]
             shader_lerp: false,
+            #[cfg(test)]
+            glyphs_fragment: None,
             #[cfg(test)]
             layouts: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -1222,7 +1228,16 @@ impl Renderer {
                 .map(|l| {
                     let l = l.as_text()?;
                     let px_em = sizes.get(&l.name).copied().unwrap_or(atlas::PX_EM);
-                    Some(l.shaders(l.detail(px_em)))
+                    let sh = l.shaders(l.detail(px_em));
+                    #[cfg(test)]
+                    let sh = match self.glyphs_fragment {
+                        Some(fs) => crate::layer::Shaders {
+                            glyphs: (sh.glyphs.0, fs.to_string()),
+                            ..sh
+                        },
+                        None => sh,
+                    };
+                    Some(sh)
                 })
                 .collect();
             let size = p
@@ -1281,7 +1296,7 @@ impl Renderer {
                                     let what = format!("layer '{}'", t.name);
                                     match Hold::keep(self.handle, &what, &sh.glyphs) {
                                         Ok(own) => Member::text(t, class, own),
-                                        Err(_) => return self.batch_refused(&what, i),
+                                        Err(e) => return self.staged_refused(e.to_string(), i),
                                     }
                                 }
                                 _ => unreachable!("a run holds shapes and texts"),
@@ -4126,9 +4141,16 @@ impl Renderer {
     /// pass at index `pass` of the drawn passes, and return the error.
     fn batch_refused(&mut self, name: &str, pass: usize) -> Result<String> {
         let err = or_else(self.last_error(), "compile error");
+        self.staged_refused(format!("{name}: {err}"), pass)
+    }
+
+    /// Drop the staged scene after the engine refused a program of the pass
+    /// at index `pass` of the drawn passes, and return `error`, which names
+    /// the program and holds the engine's error.
+    fn staged_refused(&mut self, error: String, pass: usize) -> Result<String> {
         self.compile_error = unsafe { ffi::ghee_last_error_is_compile(self.handle) };
         unsafe { ffi::ghee_mp_abort(self.handle) };
-        self.error = format!("{name}: {err}");
+        self.error = error;
         self.error_pass = Some(ErrorPass::Index(pass));
         crate::report::progress_done();
         Ok(self.error.clone())
@@ -4854,6 +4876,26 @@ mod tests {
         ]));
         assert!(!r.setup(&typo).unwrap().is_empty());
         assert!(!r.compile_error);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_text_layer_that_fails_to_compile_gives_the_gls_message() {
+        let (_g, mut r) = gpu();
+        r.glyphs_fragment = Some(BROKEN);
+        let scene = run_scene(&[words("t", "A", 0.0, 0.0, 8.0)]);
+        let err = r.setup(&scene).unwrap();
+        // The fragment shader fails before a link, so its log alone is the
+        // GL's message, whatever vertex shader comes with it.
+        let vertex = CString::new(crate::shape::program().0).unwrap();
+        let broken = CString::new(BROKEN).unwrap();
+        assert!(!unsafe {
+            ffi::ghee_mp_keep_program(r.handle(), vertex.as_ptr(), broken.as_ptr())
+        });
+        let log = r.last_error();
+        assert!(!log.is_empty());
+        assert_eq!(err, format!("layer 't': {log}"));
+        assert!(r.compile_error);
     }
 
     #[test]

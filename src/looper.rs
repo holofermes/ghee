@@ -19,7 +19,8 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 
-use crate::engine::{Feed, Given, Provider, Refused, Renderer};
+use crate::draw::Call;
+use crate::engine::{Feed, Given, Provider, Refused, Renderer, Taken};
 use crate::layer::Address;
 use crate::scene::{ArraySize, ParamValue};
 use crate::stats::{monotonic, FrameRate};
@@ -71,6 +72,16 @@ pub trait RenderTarget {
             .and_then(Value::as_str)
             .unwrap_or_default();
         Err(Refused(format!("this renderer draws no layer '{name}'")).into())
+    }
+
+    /// Give the layers of `calls` their looks, as Renderer::update_calls()
+    /// does. A target that draws no layers leaves every call for
+    /// update_layer().
+    fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {
+        Ok(Taken {
+            left: (0..calls.len()).collect(),
+            changed: Vec::new(),
+        })
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()>;
@@ -147,6 +158,10 @@ impl RenderTarget for Renderer {
 
     fn update_layer(&mut self, layer: &Value) -> Result<bool> {
         Renderer::update_layer(self, layer)
+    }
+
+    fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {
+        Renderer::update_calls(self, calls)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {

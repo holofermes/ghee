@@ -494,7 +494,12 @@ A scene written for 0.4.0 needs these changes.
   with their programs, arrays and moving effects, a look that changes live
   fields alone sets them live, and a layer that a scene file would refuse
   there logs once. ghee applies the sets of a process in the order that they
-  arrive, and a message kind past 7 ends the scene.
+  arrive, and a message kind past 8 ends the scene.
+- Give several layers new looks in one message, kind 8, its name empty and
+  its payload the UTF-8 JSON list of the layers. `ghee.draw` in a scene
+  that ghee runs sends a frame's looks that change live fields alone as one
+  kind 8, which ghee applies as a Python screen applies its drawing, where
+  it sent a kind 7 for each changed call.
 
 ### Console
 

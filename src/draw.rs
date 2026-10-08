@@ -8,6 +8,11 @@
 //! A value that the scene format refuses, and a value of a kind that a Call
 //! holds no form for, make no layer here: the host then writes the look and
 //! hands it to Renderer::update_layer(), which says what it refuses.
+//!
+//! A scene process sends the calls of a drawing as looks, look_of() writes
+//! one, and call_of() reads one back.
+
+use serde_json::{Map, Number, Value};
 
 use crate::engine::Blend;
 use crate::layer::{ImageLayer, Layer, Rgb, TextLayer};
@@ -33,6 +38,34 @@ impl Arg {
         match f.is_finite() {
             true => Arg::Num(f),
             false => Arg::None,
+        }
+    }
+
+    /// `v`, a value of a look written as JSON, as an arg.
+    pub fn of_json(v: &Value) -> Arg {
+        match v {
+            Value::Null => Arg::None,
+            Value::Bool(b) => Arg::Bool(*b),
+            Value::Number(n) => n.as_f64().map_or(Arg::None, Arg::num),
+            Value::String(s) => Arg::Str(s.clone()),
+            Value::Array(items) => Arg::List(items.iter().map(Arg::of_json).collect()),
+            Value::Object(m) => Arg::Map(
+                m.iter()
+                    .map(|(k, v)| (k.clone(), Arg::of_json(v)))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The arg as a look written as JSON holds it.
+    pub fn to_json(&self) -> Value {
+        match self {
+            Arg::None => Value::Null,
+            Arg::Bool(b) => Value::Bool(*b),
+            Arg::Num(f) => Number::from_f64(*f).map_or(Value::Null, Value::Number),
+            Arg::Str(s) => Value::String(s.clone()),
+            Arg::List(items) => Value::Array(items.iter().map(Arg::to_json).collect()),
+            Arg::Map(m) => Value::Object(m.iter().map(|(k, a)| (k.clone(), a.to_json())).collect()),
         }
     }
 }
@@ -146,6 +179,67 @@ pub fn layer_of(call: &Call, old: &Layer) -> Option<Layer> {
         }
         _ => None,
     }
+}
+
+/// The layer that `call` gives `old`, the layer of its name, when the two
+/// differ in live fields alone and an image layer keeps its image, None in
+/// the place of the layer when `old` has that look already. None for a call
+/// that layer_of() makes no layer of, and for a look that builds the layer
+/// again or gives an image layer another image: Scene::update_layer() takes
+/// those as looks.
+pub fn live_of(call: &Call, old: &Layer) -> Option<Option<Layer>> {
+    let new = layer_of(call, old)?;
+    if new == *old {
+        return Some(None);
+    }
+    let other_image =
+        matches!((old, &new), (Layer::Image(o), Layer::Image(n)) if o.image != n.image);
+    (old.builds_as(&new) && !other_image).then_some(Some(new))
+}
+
+/// The look that `call` gives its layer, written as a scene declares the
+/// layer: the name, a shape's `shape`, and each keyword that the call gives.
+pub fn look_of(call: &Call) -> Value {
+    let mut look = Map::new();
+    look.insert("name".to_string(), Value::from(call.layer.as_str()));
+    match call.kind {
+        CallKind::Rect => look.insert("shape".to_string(), Value::from("rect")),
+        CallKind::Line => look.insert("shape".to_string(), Value::from("line")),
+        CallKind::Text | CallKind::Image => None,
+    };
+    for (k, a) in call.kind.keys().iter().zip(&call.args) {
+        if *a != Arg::None {
+            look.insert(k.to_string(), a.to_json());
+        }
+    }
+    Value::Object(look)
+}
+
+/// The call that gives the layer named in `look` that look, a layer as a
+/// scene declares it. A `shape` makes a rect or a line, an `image` an image,
+/// and any other look a text. None for a look with no name, and for a look
+/// that holds a key that no call of its kind takes.
+pub fn call_of(look: &Value) -> Option<Call> {
+    let m = look.as_object()?;
+    let layer = m.get("name")?.as_str()?.to_string();
+    let kind = match (m.get("shape").map(Value::as_str), m.contains_key("image")) {
+        (Some(Some("rect")), _) => CallKind::Rect,
+        (Some(Some("line")), _) => CallKind::Line,
+        (Some(_), _) => return None,
+        (None, true) => CallKind::Image,
+        (None, false) => CallKind::Text,
+    };
+    let keys = kind.keys();
+    if m.keys()
+        .any(|k| k != "name" && k != "shape" && !keys.contains(&k.as_str()))
+    {
+        return None;
+    }
+    let args = keys
+        .iter()
+        .map(|k| m.get(*k).map_or(Arg::None, Arg::of_json))
+        .collect();
+    Some(Call { kind, layer, args })
 }
 
 /// `a` as a flag, `default` for None. None for any other value.

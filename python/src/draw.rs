@@ -12,12 +12,13 @@
 //! drawing draws on. A call new to the screen adds its layer, written as the
 //! scene format writes it by the shim's `_call_look`. The changed calls of
 //! the layers that the screen holds go out at once, typed: to the session
-//! itself on a native handle, through `_draw()` on a handle that has one, and
-//! as looks through `_update_layer()` on any other, which also takes the
-//! calls that the typed path leaves. A layer whose call did not run hides
-//! through its live eye. `_draw()` is the tests' hook into the typed path:
-//! a fake handle takes the calls there, and raises there to reach flush()'s
-//! error path.
+//! itself on a native handle, to the scene check that `_live()` gives on the
+//! shim's wire, which writes them as one kind 8 message and hands it to
+//! `_send()`, through `_draw()` on a handle that has one, and as looks
+//! through `_update_layer()` on any other, which also takes the calls that
+//! the typed path leaves. A layer whose call did not run hides through its
+//! live eye. `_draw()` is the tests' hook into the typed path: a fake handle
+//! takes the calls there, and raises there to reach flush()'s error path.
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,6 +28,7 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
+use crate::wire::LayerWire;
 use crate::Handle;
 
 /// `v` as an arg. None for a value of a type that a look writes in another
@@ -111,6 +113,15 @@ fn same(a: &Arg, v: &Bound<'_, PyAny>) -> bool {
                 })
         }
     }
+}
+
+/// The scene check of the shim's wire, which `handle._live()` gives when
+/// `handle` is the scene that ghee runs.
+fn wire_of<'py>(handle: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, LayerWire>>> {
+    let Some(live) = handle.getattr_opt("_live")? else {
+        return Ok(None);
+    };
+    Ok(live.call0()?.cast_into::<LayerWire>().ok())
 }
 
 /// The shim's number for a kind of call.
@@ -444,11 +455,15 @@ impl Drawing {
             s.pass = Some(pass);
         }
         let native = handle.cast::<Handle>().is_ok();
-        let draw = match native {
+        let wire = match native {
+            true => None,
+            false => wire_of(&handle)?,
+        };
+        let draw = match native || wire.is_some() {
             true => None,
             false => handle.getattr_opt("_draw")?,
         };
-        let typed = native || draw.is_some();
+        let typed = native || wire.is_some() || draw.is_some();
         let changed = std::mem::take(&mut self.changed);
         let mut batch = Vec::new();
         for c in changed {
@@ -466,7 +481,7 @@ impl Drawing {
             }
         }
         if !batch.is_empty() {
-            self.flush(py, &handle, draw.as_ref(), batch)?;
+            self.flush(py, &handle, wire.as_ref(), draw.as_ref(), batch)?;
         }
         self.hide(py, &handle)
     }
@@ -575,16 +590,17 @@ impl Drawing {
     }
 
     /// Give the layers of the calls of `batch` their looks typed, through
-    /// the session of a native handle or the handle's `draw`, and through
-    /// update() the calls that the typed path leaves.
+    /// the session of a native handle, the shim's `wire` or the handle's
+    /// `draw`, and through update() the calls that the typed path leaves.
     fn flush(
         &mut self,
         py: Python<'_>,
         handle: &Bound<'_, PyAny>,
+        wire: Option<&Bound<'_, LayerWire>>,
         draw: Option<&Bound<'_, PyAny>>,
         mut batch: Vec<Changed>,
     ) -> PyResult<()> {
-        let left = match self.take_typed(py, handle, draw, &mut batch) {
+        let left = match self.take_typed(py, handle, wire, draw, &mut batch) {
             Ok(left) => left,
             Err(e) => {
                 // The handle may have taken a call before it failed, so each
@@ -615,6 +631,7 @@ impl Drawing {
         &self,
         py: Python<'_>,
         handle: &Bound<'_, PyAny>,
+        wire: Option<&Bound<'_, LayerWire>>,
         draw: Option<&Bound<'_, PyAny>>,
         batch: &mut [Changed],
     ) -> PyResult<Vec<usize>> {
@@ -648,10 +665,19 @@ impl Drawing {
             }
         }
         drop(s);
-        let rest = handle
-            .cast::<Handle>()?
-            .try_borrow_mut()?
-            .update_calls(&calls);
+        let rest = match wire {
+            Some(wire) => {
+                let (message, rest) = wire.try_borrow_mut()?.draw(&calls);
+                if let Some(message) = message {
+                    handle.call_method1("_send", message)?;
+                }
+                Ok(rest)
+            }
+            None => handle
+                .cast::<Handle>()?
+                .try_borrow_mut()?
+                .update_calls(&calls),
+        };
         for (call, &k) in calls.into_iter().zip(&at) {
             batch[k].args = Some(call.args);
         }

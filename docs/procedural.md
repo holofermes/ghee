@@ -103,6 +103,11 @@ After the handshake, stdout carries binary messages:
   name, every key that it leaves out at its default. A look that differs in
   live fields alone sets them live, any other difference builds that layer
   alone again, and an effect that the look leaves out stays, bypassed.
+- Kind 8 gives several layers new looks in one message. The name is empty,
+  and the payload is count bytes of UTF-8 JSON, a list of layers, each a
+  look as kind 7 takes it, and each layer named once. ghee gives each layer
+  its look as kind 7 does. The shim's `ghee.draw` sends a frame's looks that
+  differ in live fields alone this way.
 
 ghee reads without blocking and applies the newest data, the sets in the
 order that they arrive. Arrays and params keep their values until a message

@@ -647,11 +647,18 @@ def draw() -> Drawing:
 
 class _Wire:
     """The scene that ghee runs, as a drawing reaches it: each layer that the
-    drawing adds or gives a new look goes out with the tick's answer, kind 6
-    or kind 7, and a hidden one as a live set."""
+    drawing adds goes out with the tick's answer as kind 6, the new looks
+    that differ in live fields alone as one kind 8, any other new look as
+    kind 7, and a hidden layer as a live set."""
 
     def _drawing(self) -> dict:
         return _live().drawing()
+
+    def _live(self):
+        return _live()
+
+    def _send(self, kind: int, wire: str, text: str) -> None:
+        _send(kind, wire, text)
 
     def _add_layer(self, pass_: str, index: int, layer: dict) -> None:
         _send(*_live().add(pass_, index, layer))

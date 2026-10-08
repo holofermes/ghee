@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
+use crate::draw::{self, Arg, Call, CallKind};
 use crate::engine::{Feed, Given, Refused};
 use crate::layer::{Address, Layer, Rgb};
 use crate::looper::{RenderTarget, SceneController};
@@ -85,6 +86,7 @@ const SET_ARRAY_U8: u8 = 4;
 const END_TICK: u8 = 5;
 const ADD_LAYER: u8 = 6;
 const UPDATE_LAYER: u8 = 7;
+const UPDATE_LAYERS: u8 = 8;
 
 const SIGTERM: c_int = 15;
 
@@ -422,12 +424,13 @@ enum ParamData {
 
 /// One message that sets something by name: a param or a live field of a
 /// layer (kinds 1 and 3), a layer added to the pass of that name (kind 6),
-/// or the new look of the layer of that name (kind 7), each of the last two
-/// as its JSON text.
+/// the new look of the layer of that name (kind 7), or the new looks of
+/// several layers (kind 8), each of the last three as its JSON text.
 enum Set {
     Param(ParamData),
     Layer(String),
     Look(String),
+    Looks(String),
 }
 
 impl Set {
@@ -778,19 +781,83 @@ impl SceneProcess {
         name: &str,
         text: &str,
     ) -> Result<()> {
-        let look = match look_of(name, text) {
-            Ok(look) => look,
+        match look_of(name, text) {
+            Ok(look) => self.give_look(renderer, name, &look),
             Err(why) => {
                 self.refuse(name, &why);
-                return Ok(());
+                Ok(())
             }
-        };
-        match renderer.update_layer(&look) {
-            Ok(true) => self.took(&look),
+        }
+    }
+
+    /// Give layer `name` the look `look`.
+    fn give_look(
+        &mut self,
+        renderer: &mut dyn RenderTarget,
+        name: &str,
+        look: &Value,
+    ) -> Result<()> {
+        match renderer.update_layer(look) {
+            Ok(true) => self.took(look),
             Ok(false) => {}
             Err(e) => self.refuse_or_fail(name, e)?,
         }
         Ok(())
+    }
+
+    /// Give the layers of a kind 8 message their looks, `text` its JSON. The
+    /// looks that draw::call_of() reads go to the renderer as calls, at
+    /// once, and the renderer gives each call that it leaves, and each
+    /// other look, its look as kind 7 does.
+    fn update_layers(&mut self, renderer: &mut dyn RenderTarget, text: &str) -> Result<()> {
+        let looks = match looks_of(text) {
+            Ok(looks) => looks,
+            Err(why) => {
+                self.refuse("kind 8", &why);
+                return Ok(());
+            }
+        };
+        let mut calls = Vec::with_capacity(looks.len());
+        let mut at = Vec::with_capacity(looks.len());
+        let mut slow = Vec::new();
+        for (k, look) in looks.iter().enumerate() {
+            match draw::call_of(look) {
+                Some(call) => {
+                    calls.push(call);
+                    at.push(k);
+                }
+                None => slow.push(k),
+            }
+        }
+        if !calls.is_empty() {
+            match renderer.update_calls(&calls) {
+                Ok(taken) => {
+                    for &k in &taken.changed {
+                        self.took_call(&calls[k]);
+                    }
+                    slow.extend(taken.left.iter().map(|&i| at[i]));
+                }
+                Err(e) => return self.refuse_or_fail("kind 8", e),
+            }
+        }
+        slow.sort_unstable();
+        for k in slow {
+            let name = looks[k]["name"].as_str().unwrap_or_default().to_string();
+            self.give_look(renderer, &name, &looks[k])?;
+        }
+        Ok(())
+    }
+
+    /// Hold the words of `call`, a call that the renderer took, as the
+    /// process's own, which no tick carries back.
+    fn took_call(&mut self, call: &Call) {
+        let (CallKind::Text, Some(Arg::Str(words))) = (call.kind, call.args.first()) else {
+            return;
+        };
+        let text = format!("{}.text", call.layer);
+        self.values
+            .insert(text.clone(), Value::from(words.as_str()));
+        self.sent.insert(text, Value::from(words.as_str()));
     }
 
     /// Index `layer`, a layer that the renderer took from the process: its
@@ -1027,6 +1094,10 @@ impl SceneController for SceneProcess {
                     self.update_layer(renderer, &name, &text)?;
                     continue;
                 }
+                Set::Looks(text) => {
+                    self.update_layers(renderer, &text)?;
+                    continue;
+                }
                 Set::Param(data) => data,
             };
             // A first part that names a layer addresses a live field of it.
@@ -1212,6 +1283,22 @@ fn look_of(layer: &str, text: &str) -> Result<Value, String> {
     }
 }
 
+/// The looks of a kind 8 message, read from `text`, its JSON, or why the
+/// message carries none.
+fn looks_of(text: &str) -> Result<Vec<Value>, String> {
+    let doc: Value = serde_json::from_str(text).map_err(|e| format!("kind 8 is no JSON: {e}"))?;
+    match doc {
+        Value::Array(looks)
+            if looks
+                .iter()
+                .all(|l| l.get("name").is_some_and(Value::is_string)) =>
+        {
+            Ok(looks)
+        }
+        _ => Err("kind 8 needs a list of layers, each with its name".to_string()),
+    }
+}
+
 /// Poll until the condition holds or the patience runs out.
 fn wait_until(patience: Duration, mut done: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + patience;
@@ -1307,7 +1394,7 @@ fn read_stream(
 
 /// kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE.
 /// Kind 4 carries count u8 bytes instead, and the value is byte / 255.
-/// Kinds 3, 6 and 7 carry count bytes of UTF-8 text.
+/// Kinds 3, 6, 7 and 8 carry count bytes of UTF-8 text.
 /// Kind 2 (clean) and kind 5 (the end of a tick's answer) are the single byte.
 fn messages(
     out: &mut impl BufRead,
@@ -1329,8 +1416,8 @@ fn messages(
             answered.notify_all();
             continue;
         }
-        if kind[0] > UPDATE_LAYER {
-            return Err(format!("wrote message kind {} (0 to 7 only)", kind[0]));
+        if kind[0] > UPDATE_LAYERS {
+            return Err(format!("wrote message kind {} (0 to 8 only)", kind[0]));
         }
         let mut len = [0u8; 1];
         let mut count = [0u8; 4];
@@ -1360,11 +1447,15 @@ fn messages(
             newest(&mut lock(inbox).arrays, name, ArrayData::U8(body));
             continue;
         }
-        if matches!(kind[0], SET_STRING | ADD_LAYER | UPDATE_LAYER) {
+        if matches!(
+            kind[0],
+            SET_STRING | ADD_LAYER | UPDATE_LAYER | UPDATE_LAYERS
+        ) {
             let text = String::from_utf8_lossy(&body).into_owned();
             let set = match kind[0] {
                 ADD_LAYER => Set::Layer(text),
                 UPDATE_LAYER => Set::Look(text),
+                UPDATE_LAYERS => Set::Looks(text),
                 _ => Set::Param(ParamData::Str(text)),
             };
             latest(&mut lock(inbox).params, name, set);
@@ -1601,6 +1692,17 @@ sleep 60
         fn update_layer(&mut self, layer: &Value) -> Result<bool> {
             self.log.borrow_mut().push(format!("look {layer}"));
             Ok(true)
+        }
+
+        /// Records the layers of the calls, and leaves a call to a layer
+        /// whose name starts with `slow`.
+        fn update_calls(&mut self, calls: &[Call]) -> Result<crate::engine::Taken> {
+            let names: Vec<&str> = calls.iter().map(|c| c.layer.as_str()).collect();
+            self.log
+                .borrow_mut()
+                .push(format!("calls {}", names.join(" ")));
+            let (left, changed) = (0..calls.len()).partition(|&k| names[k].starts_with("slow"));
+            Ok(crate::engine::Taken { left, changed })
         }
 
         /// Records the field and the value, and refuses a font_size as the
@@ -2338,7 +2440,7 @@ done
             &d,
             "garbage",
             "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"fragment\":\"void main(){}\"}]}\\n'\n\
-             printf '\\010'\nsleep 5\n",
+             printf '\\011'\nsleep 5\n",
         );
         let (_scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         let mut last = Ok(());
@@ -2350,7 +2452,7 @@ done
             thread::sleep(Duration::from_millis(10));
         }
         let e = last.unwrap_err().to_string();
-        assert!(e.contains("wrote message kind 8 (0 to 7 only)"), "{e}");
+        assert!(e.contains("wrote message kind 9 (0 to 8 only)"), "{e}");
     }
 
     const DOTTED_SCRIPT: &str = r#"#!/bin/sh
@@ -2675,6 +2777,68 @@ while IFS= read -r line; do :; done
             e.starts_with("kind 7 to layer 'title' holds no layer"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn a_kind_8_message_gives_each_layer_its_look_and_the_calls_go_at_once() {
+        // title's look reads as a call, the renderer leaves slow's call,
+        // and odd's width is no key of a text call: the last two go as
+        // looks, in the order of the list.
+        let d = tmpdir("looks");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "fragment": "void main(){}",
+                        "layers": [{"name": "title", "text": "hi"},
+                                   {"name": "slow", "shape": "rect"},
+                                   {"name": "odd", "text": "o"}]}],
+        });
+        let looks = r#"[{"name": "title", "text": "ho", "x": 4},
+            {"name": "slow", "shape": "rect", "x": 2},
+            {"name": "odd", "text": "o", "width": 3}]"#;
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            message(8, "", looks.len() as u32, looks.as_bytes()),
+            numbers("title.y", &[1.0]),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "looks", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            f.incoming.iter().any(|(n, _)| n == "title.y")
+        }));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert_eq!(
+            *stub.log.borrow(),
+            [
+                "calls title slow".to_string(),
+                r#"look {"name":"slow","shape":"rect","x":2}"#.to_string(),
+                r#"look {"name":"odd","text":"o","width":3}"#.to_string(),
+                "set title.y Numbers([1.0])".to_string(),
+            ]
+        );
+        // the process's own words, which no tick carries back
+        assert_eq!(f.sent.get("title.text"), Some(&Value::from("ho")));
+    }
+
+    #[test]
+    fn a_kind_8_message_that_holds_no_list_of_layers_says_what_it_needs() {
+        let e = looks_of("nope").unwrap_err();
+        assert!(e.starts_with("kind 8 is no JSON: "), "{e}");
+        for text in [
+            r#"{"name": "t"}"#,
+            r#"[{"text": "hi"}]"#,
+            r#"[{"name": 1}]"#,
+        ] {
+            assert_eq!(
+                looks_of(text),
+                Err("kind 8 needs a list of layers, each with its name".to_string())
+            );
+        }
     }
 
     #[test]

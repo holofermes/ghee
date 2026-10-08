@@ -507,11 +507,6 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-/// True when `new`, a look of image layer `old`, draws another image.
-fn other_image(old: &Layer, new: &Layer) -> bool {
-    matches!((old, new), (Layer::Image(o), Layer::Image(n)) if o.image != n.image)
-}
-
 /// A fault of the caller's in a layer or a value, as a Refused error.
 fn refused(e: anyhow::Error) -> anyhow::Error {
     anyhow::Error::new(Refused(format!("{e:#}")))
@@ -2610,13 +2605,10 @@ impl Renderer {
                     taken.left.push(k);
                     continue;
                 };
-                let old = &scene.passes[p].layers[i];
-                match draw::layer_of(call, old) {
-                    Some(new) if new == *old => continue,
-                    Some(new) if old.builds_as(&new) && !other_image(old, &new) => {
-                        Some((p, i, new))
-                    }
-                    _ => None,
+                match draw::live_of(call, &scene.passes[p].layers[i]) {
+                    Some(None) => continue,
+                    Some(Some(new)) => Some((p, i, new)),
+                    None => None,
                 }
             };
             let Some((p, i, new)) = found else {

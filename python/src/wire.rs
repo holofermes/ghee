@@ -7,6 +7,9 @@
 //! scene process, as it does on a handle, and the scene there grows as the
 //! scene in ghee does.
 
+use std::collections::HashMap;
+
+use ghee::draw::{self, Call};
 use ghee::layer::{Address, Form, Layer, Rgb};
 use ghee::scene::Scene;
 use pyo3::prelude::*;
@@ -27,6 +30,22 @@ pub struct LayerWire {
     handed: Scene,
     /// `handed` with its files loaded, once measure() first asks.
     loaded: Option<Scene>,
+    /// The pass and the place among its layers of each layer of `scene`.
+    places: HashMap<String, (usize, usize)>,
+}
+
+/// The kind of the message that gives several layers their looks.
+const UPDATE_LAYERS: u8 = 8;
+
+/// The pass and the place among its layers of each layer of `scene`.
+fn places(scene: &Scene) -> HashMap<String, (usize, usize)> {
+    let mut at = HashMap::new();
+    for (p, pass) in scene.passes.iter().enumerate() {
+        for (i, layer) in pass.layers.iter().enumerate() {
+            at.insert(layer.name().to_string(), (p, i));
+        }
+    }
+    at
 }
 
 /// True for a CSS colour name, in any case, `transparent` too.
@@ -108,6 +127,39 @@ impl LayerWire {
             self.index = Index::of(&self.scene);
         }
     }
+
+    /// The kind 8 message that gives the layers of `calls` the looks of the
+    /// calls whose looks differ in live fields alone, as Session gives them
+    /// to the renderer: the kind, no name and the JSON text of the looks,
+    /// None when no such call changes its layer. The scene takes those
+    /// looks. Returns the indexes of the other calls too, for update(),
+    /// which says why the scene refuses one.
+    pub(crate) fn draw(&mut self, calls: &[Call]) -> (Option<(u8, String, String)>, Vec<usize>) {
+        let mut looks = Vec::new();
+        let mut left = Vec::new();
+        for (k, call) in calls.iter().enumerate() {
+            let Some(&(p, i)) = self.places.get(&call.layer) else {
+                left.push(k);
+                continue;
+            };
+            match draw::live_of(call, &self.scene.passes[p].layers[i]) {
+                Some(None) => {}
+                Some(Some(new)) => {
+                    self.scene.passes[p].layers[i] = new;
+                    looks.push(draw::look_of(call));
+                }
+                None => left.push(k),
+            }
+        }
+        let message = (!looks.is_empty()).then(|| {
+            (
+                UPDATE_LAYERS,
+                String::new(),
+                Value::Array(looks).to_string(),
+            )
+        });
+        (message, left)
+    }
 }
 
 #[pymethods]
@@ -121,6 +173,7 @@ impl LayerWire {
         let index = Index::of(&scene);
         Ok(LayerWire {
             handed: scene.clone(),
+            places: places(&scene),
             scene,
             index,
             loaded: None,
@@ -181,6 +234,7 @@ impl LayerWire {
             .insert_layer(pass, index, new)
             .map_err(scene_fault)
             .map_err(fault)?;
+        self.places = places(&self.scene);
         self.took(&name);
         let text = serde_json::json!({"index": index, "layer": layer}).to_string();
         Ok((6, pass.to_string(), text))

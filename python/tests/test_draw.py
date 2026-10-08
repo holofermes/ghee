@@ -4,6 +4,7 @@ A fake handle records what a drawing hands it, and a scene script's drawing
 writes the wire, bar the tests at the end, which draw on the renderer.
 """
 
+import inspect
 import os
 import runpy
 import subprocess
@@ -526,29 +527,37 @@ def answers(buf):
 
 
 def test_a_drawing_in_a_tick_goes_out_with_the_ticks_answer(monkeypatch):
-    """A call that runs for the first time adds its layer, kind 6, a call
-    whose look changes gives its layer the new look, kind 7, a layer whose
-    call did not run hides through its live eye, and a tick whose calls
-    changed nothing sends nothing."""
+    """A call that runs for the first time adds its layer, kind 6, the calls
+    whose looks change in live fields alone give their layers the new looks
+    in one kind 8, a call that builds its layer again gives it the new look
+    as kind 7, a layer whose call did not run hides through its live eye,
+    and a tick whose calls changed nothing sends nothing."""
     shim = load()
 
     @shim.tick
     def show(tick):
         with shim.draw() as d:
             d.text(f"t{min(tick.frame, 1)}", x=0, y=0)
+            d.text("big", y=8, font_size=8 if tick.frame == 0 else 9)
             if tick.frame == 0:
                 d.rect(x=2, width=4, height=4)
 
     hello, out = drive(shim, None, ticks(3), monkeypatch)
     assert [p["name"] for p in hello["passes"]] == ["main"]
     text = {"name": "text", "x": 0.0, "y": 0.0}
+    big = {"name": "text2", "text": "big", "y": 8.0}
     rect = {"name": "rect", "x": 2.0, "shape": "rect", "width": 4.0, "height": 4.0}
     assert answers(out) == [
         [
             (6, "main", {"index": 0, "layer": {**text, "text": "t0"}}),
-            (6, "main", {"index": 1, "layer": rect}),
+            (6, "main", {"index": 1, "layer": {**big, "font_size": 8.0}}),
+            (6, "main", {"index": 2, "layer": rect}),
         ],
-        [(7, "text", {**text, "text": "t1"}), (1, "rect.visible", [0.0])],
+        [
+            (8, "", [{**text, "text": "t1"}]),
+            (7, "text2", {**big, "font_size": 9.0}),
+            (1, "rect.visible", [0.0]),
+        ],
         [],
     ]
 
@@ -777,6 +786,58 @@ def test_a_scene_script_with_no_scene_draws_on_black_in_its_own_frames(tmp_path)
         assert rgb(frame, 11, 2) == [0, 0, 0]
     assert rgb(first, 8, 2) == [255, 0, 0]
     assert rgb(second, 8, 2) == [0, 0, 0]
+
+
+# A scene script with no scene of its own whose tick draws busy() above.
+BUSY = """#!{python}
+import ghee
+
+COLOURS = {colours!r}
+
+
+{busy}
+
+@ghee.tick
+def show(tick):
+    with ghee.draw() as d:
+        busy(d, tick.frame)
+
+
+ghee.run()
+"""
+
+
+def test_a_scene_script_under_ghee_draws_the_frames_that_a_screen_draws(tmp_path):
+    """The script's drawing reaches ghee as its looks, kinds 6, 7 and 8, and
+    live sets, and ghee draws each frame as a screen's drawing does."""
+    if not CLI.exists():
+        pytest.skip(f"no {CLI} to run the scene")
+    path = tmp_path / "busy.py"
+    path.write_text(
+        BUSY.format(
+            python=sys.executable, colours=COLOURS, busy=inspect.getsource(busy)
+        )
+    )
+    path.chmod(0o755)
+    frames = 12
+    ran = subprocess.run(
+        [str(CLI), "render", str(path), "-o", "-", "--size", "64x32"]
+        + ["--frames", str(frames), "--timestep", "0"],
+        env={**os.environ, "XDG_CACHE_HOME": str(tmp_path)},
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert ran.returncode == 0, ran.stderr
+    assert b"changes nothing" not in ran.stderr, ran.stderr
+    size = 64 * 32 * 4
+    assert len(ran.stdout) == frames * size
+    with ghee.open(width=64, height=32, timestep=0) as screen:
+        for i in range(frames):
+            with screen.draw() as d:
+                busy(d, i)
+            got = ran.stdout[i * size : (i + 1) * size]
+            assert got == screen.pixels(), f"frame {i}"
 
 
 def test_ghee_render_demo_stats_draws_the_time_and_the_load(tmp_path):

@@ -30,7 +30,8 @@ use crate::console::core::{
 use crate::console::state::{self, Edits, Item};
 use crate::console::store::{self, Carried, Opened, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
-use crate::engine::{ErrorPass, Feed, Given, Provider, Renderer};
+use crate::draw::Call;
+use crate::engine::{ErrorPass, Feed, Given, Provider, Renderer, Taken};
 use crate::feeds::demo_feed;
 use crate::h264::{
     avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
@@ -1668,6 +1669,14 @@ impl RenderTarget for SharedRenderer {
             self.mirror(name);
         }
         Ok(changed)
+    }
+
+    fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {
+        let taken = self.renderer.borrow_mut().update_calls(calls)?;
+        for &k in &taken.changed {
+            self.mirror(&calls[k].layer);
+        }
+        Ok(taken)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {

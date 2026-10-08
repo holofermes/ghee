@@ -89,6 +89,11 @@ def numpy():
     return pytest.importorskip("numpy")
 
 
+def pillow():
+    """Pillow's Image module, or a skip of the test that asks for it."""
+    return pytest.importorskip("PIL.Image")
+
+
 @pytest.fixture
 def red():
     return dict(RED)

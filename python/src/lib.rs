@@ -21,7 +21,7 @@ mod wire;
 use std::path::PathBuf;
 use std::thread::{self, ThreadId};
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyImportError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyString, PyTuple};
 use serde_json::{Map, Value};
@@ -478,6 +478,31 @@ impl Handle {
     fn pixels<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let data = self.held.get()?.pixels().map_err(fault)?;
         Ok(PyBytes::new(py, data))
+    }
+
+    /// The last frame as an RGBA Pillow image, its colour straight as in a
+    /// saved .png. Pillow is an optional dependency of the package, and
+    /// without it image() raises ImportError.
+    fn image<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let pil = py.import("PIL.Image").map_err(|e| {
+            let err = PyImportError::new_err(
+                "image() needs Pillow, an optional dependency of ghee-render",
+            );
+            err.set_cause(py, Some(e));
+            err
+        })?;
+        let session = self.held.get()?;
+        let data = session.pixels().map_err(fault)?;
+        // Pillow's "RGBa" holds colour premultiplied by alpha, and its
+        // unpacker divides it out.
+        let (mode, raw) = match session.components() {
+            3 => ("RGB", "RGB"),
+            _ => ("RGBA", "RGBa"),
+        };
+        pil.call_method1(
+            "frombytes",
+            (mode, self.size, PyBytes::new(py, data), "raw", raw),
+        )
     }
 
     /// Write the last frame to an image file: a .png, or a .jpg, which holds

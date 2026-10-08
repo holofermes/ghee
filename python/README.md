@@ -79,6 +79,7 @@ h.brightness = 0.5         # a KMS display's backlight, 0 to 1
 h.size          # (width, height)
 h.components    # 3 for RGB, 4 for RGBA
 h.pixels()      # the last frame, row-major (height, width, components)
+h.image()       # the last frame as a Pillow image
 h.save("frame.####.png")   # the last frame as a .png or a .jpg file
 h.close()       # also a context manager
 ```
@@ -128,6 +129,10 @@ and a set from the host itself stays out.
 that the output pass wrote, with the colour premultiplied by it.
 
 `skip` takes the tick and draws nothing, and the panel keeps its last frame.
+
+`image` gives the last frame as an RGBA Pillow image, its colour straight as
+in a saved `.png`. Pillow stays out of ghee-render's dependencies, and
+`image` raises ImportError without it.
 
 `save` writes the last frame to a `.png` file, or to a `.jpg`, which holds no
 alpha. A run of `#` in the name takes the number of the frame's tick, as
@@ -227,6 +232,47 @@ calls changed nothing sends nothing.
 `screen.measure(words, font_size=None, font_family=None)` gives the width
 and height in pixels of the block that a drawing's text lays `words` out in,
 at the size that fits the screen when `font_size` is None.
+
+## ghee for luma.oled and Pillow users
+
+A luma.oled loop draws each frame with Pillow on the CPU and sends it to the
+panel. A ghee loop keeps that shape: the GPU draws the frame, and the
+kernel's driver of the panel shows it, set up as
+[Hardware displays](https://github.com/holofermes/ghee#hardware-displays)
+describes. A Pillow box `(x0, y0, x1, y1)`
+holds both corner pixels, so its ghee box takes `x=x0`, `y=y0`, and `w` and
+`h` of `x1 - x0 + 1` and `y1 - y0 + 1`. Each call maps to its ghee
+counterpart:
+
+| luma.oled and Pillow | ghee |
+| --- | --- |
+| `device = ssd1306(i2c(port=1, address=0x3C))` | `screen = ghee.open(display="kms")` |
+| `with canvas(device) as draw:` | `with screen.draw() as d:` |
+| `font = ImageFont.truetype("DejaVuSans.ttf", 12)` | `font_family="DejaVuSans.ttf", font_size=12` on the call |
+| `draw.text((x, y), "hi", font=font, fill="orange")` | `d.text("hi", x=x, y=y, font_size=12, color="orange")` |
+| `draw.textlength("hi", font=font)`, `draw.textbbox(...)` | `screen.measure("hi", font_size=12)` |
+| `draw.rectangle(box, fill="white")` | `d.rect(x=x0, y=y0, width=w, height=h)` |
+| `draw.rectangle(box, outline="white", width=1)` | `d.rect(..., color="transparent", border={"width": 1, "color": "white"})` |
+| `draw.rounded_rectangle(box, radius=3, fill="white")` | `d.rect(..., border_radius=3)` |
+| `draw.ellipse(box, fill="white")`, a circle | `d.circle((x0 + w / 2, y0 + w / 2), w / 2)` |
+| `draw.line((x0, y0, x1, y1), fill="white", width=1)` | `d.line((x0, y0), (x1, y1), stroke_width=1)` |
+| `draw.line(points, fill="lime")` | `d.lines(points, color="lime")` |
+| `image.paste(icon, (x, y), icon)` | `d.image("icon.png", x=x, y=y)` |
+| `draw.text(..., stroke_width=1, stroke_fill="black")` | `d.text(..., text_stroke={"width": 1 / 12, "color": "black"})`, in em at `font_size=12` |
+| `ssd1306(serial, rotate=2)` | `ghee.open(display="kms", rotate=180)` |
+| `device.contrast(128)` | `screen.brightness = 0.5` |
+
+Code that keeps luma for the panel takes ghee's frame as a Pillow image.
+This loop draws the time in a glow, headless at the panel's size, and hands
+each frame to the luma device:
+
+```python
+screen = ghee.open(width=device.width, height=device.height)
+while True:
+    with screen.draw() as d:
+        d.text(time.strftime("%H:%M"), glow={})
+    device.display(screen.image().convert(device.mode))
+```
 
 ## Rules
 

@@ -5,12 +5,13 @@ import json
 import pathlib
 import shutil
 import struct
+import sys
 import threading
 import time
 import zlib
 
 import pytest
-from conftest import RED, REPO, VECS, near, numpy, quarters, scene_file
+from conftest import RED, REPO, VECS, near, numpy, pillow, quarters, scene_file
 
 import ghee
 
@@ -459,6 +460,34 @@ def test_a_frame_is_opaque_unless_open_keeps_the_alpha():
     with ghee.open(HALF, width=8, height=8, alpha=True) as h:
         h.frame()
         assert reads_back(pixel(h), (0.25, 0.5, 0.0, 0.5))
+
+
+def test_image_is_the_last_frame_as_a_pillow_image_with_straight_colour():
+    image = pillow()
+    with ghee.open(HALF, width=8, height=4) as h:
+        h.frame()
+        got = h.image()
+        assert isinstance(got, image.Image)
+        assert (got.mode, got.size) == ("RGBA", (8, 4))
+        assert got.tobytes() == h.pixels()
+    # The kept alpha holds the colour premultiplied, (0.25, 0.5, 0) at 0.5,
+    # and Pillow holds it straight.
+    with ghee.open(HALF, width=8, height=4, alpha=True) as h:
+        h.frame()
+        want = (0.5, 1.0, 0.0, 0.5)
+        px = h.image().getpixel((0, 0))
+        assert all(abs(p - v * 255) <= 2 for p, v in zip(px, want)), px
+
+
+def test_image_without_pillow_says_that_it_needs_pillow(monkeypatch):
+    monkeypatch.setitem(sys.modules, "PIL.Image", None)
+    with ghee.open(HALF, width=8, height=4) as h:
+        h.frame()
+        with pytest.raises(ImportError) as raised:
+            h.image()
+    assert str(raised.value) == (
+        "image() needs Pillow, an optional dependency of ghee-render"
+    )
 
 
 def test_a_layer_draws_its_words_in_its_color(monkeypatch):

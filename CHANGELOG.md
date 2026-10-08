@@ -369,6 +369,9 @@ A Rust host written for 0.4.0 needs these changes.
 
 ### Python
 
+- Hand the last frame to Pillow with `h.image()`, an RGBA image with
+  straight colour. Pillow stays an optional dependency, and `image()`
+  raises ImportError without it.
 - Read the size that a scene renders at, as `(w, h)`, with
   `ghee.render_size()`: ghee's render size, or in a direct run its
   `--size`, else the size of the display that it drives, turned by its

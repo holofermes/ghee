@@ -1,10 +1,11 @@
-//! The host facts that the console's render info reads. crate::feeds::demo_feed
-//! fills in array data the same way.
+//! The facts about the host that GET /hwinfo serves to the console's render
+//! info.
 //!
-//! The device tree names a board, and a Raspberry Pi's board names its GPU.
-//! /proc holds the memory, and vcgencmd the GPU's share of it and the SoC's
-//! temperature. A host without a device tree names its kernel and no GPU, and
-//! a host without vcgencmd gives the /proc facts alone.
+//! The device tree names the board, and a Raspberry Pi's board name gives its
+//! GPU. /proc/meminfo gives the memory, and on a Raspberry Pi vcgencmd gives
+//! the GPU's share of it and the SoC's temperature. Any other board gives n/a
+//! for the GPU, and a host with no device tree gives its kernel's name and
+//! release in place of the board.
 
 use std::fs;
 use std::process::{Child, Command, Stdio};

@@ -1,8 +1,7 @@
 //! Decode an asset file's bytes into pixels for the engine.
 //!
 //! scene.rs resolves and reads the file. This module turns the bytes into
-//! (width, height, components, pixels), and encoding stays hand-rolled in
-//! output.rs.
+//! (width, height, components, pixels).
 
 use anyhow::{bail, Result};
 

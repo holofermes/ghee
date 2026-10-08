@@ -1,13 +1,14 @@
-//! A console shows, edits and saves these scenes.
+//! The scenes that a console shows, edits and saves.
 //!
-//! A store holds a directory of .scene.json and executable scenes, and the
-//! state directory that keeps their edits. A load builds a scene's working
-//! copy: its defaults, as its file or its program writes them, with the edits
-//! of its state file applied (crate::console::state). A save writes the
-//! working copy's edits to the state file, and never touches the scene.
+//! A store holds a directory of scenes, each a .scene.json file or an
+//! executable, and the state directory that keeps their edits. A load builds
+//! a scene's working copy from its defaults, the scene that its file or its
+//! program writes, and applies the edits of its state file
+//! (crate::console::state). A save writes the working copy's edits to the
+//! state file and leaves the scene's own files alone.
 //!
-//! A host whose scenes live elsewhere fills `scenes` of its own, by name and
-//! path, and hands the store to its ConsoleHost.
+//! A host whose scenes live outside one directory fills the store's `scenes`
+//! with its own, by name and path, and hands the store to its ConsoleHost.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};

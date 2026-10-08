@@ -11,14 +11,13 @@
 //!
 //! [`Pass::glsl`] writes the fragment shader of a pass in three parts: the
 //! preamble, the scene's common block, then the pass's own GLSL, its
-//! `fragment`. The preamble
-//! declares what every pass reads, the varying `uv` and the uniforms `iTime`,
-//! `iTimeDelta`, `iFrame`, `iResolution` and `iChannel0` and up, then one
-//! uniform for each param
-//! under the param's name, and the samplers and the reader functions of each
-//! array, asset and text layer. The C engine sets each uniform by looking up
-//! that same name in the compiled program, so a name that the preamble writes
-//! is the contract between the two.
+//! `fragment`. The preamble declares what every pass reads, the varying `uv`
+//! and the uniforms `iTime`, `iTimeDelta`, `iFrame`, `iResolution` and
+//! `iChannel0` and up, then the samplers and the reader functions of each
+//! array, asset and text layer, then one uniform for each param under the
+//! param's name. The C engine sets each uniform by looking up that same name
+//! in the compiled program, so a name that the preamble writes is the
+//! contract between the two.
 
 use std::borrow::Cow;
 use std::fs;

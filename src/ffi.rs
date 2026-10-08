@@ -1,8 +1,6 @@
 //! Bindings for the C engine (ghee/_engine/engine.h).
 //!
 //! Each item matches one header declaration, in header order.
-//! ghee_mp_set_float_array has no binding: ghee binds its arrays as textures,
-//! through ghee_mp_set_array.
 #![allow(dead_code)]
 
 use core::ffi::{c_char, c_int, c_void};

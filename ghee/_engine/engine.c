@@ -1625,17 +1625,6 @@ bool ghee_mp_set_pass_uniform(GheeScene *g, int pass, const parameter_t *param) 
     return program_uniform(g->mp_program[pass], param);
 }
 
-// Set the uniform float array `name` of a committed pass. A scene's arrays
-// are textures, filled by ghee_mp_set_array, since VC4 caps the size of a
-// uniform array that a shader indexes with a variable.
-void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count) {
-    if (pass < 0 || pass >= g->mp_count || !g->mp_program[pass]) return;
-    make_current(g);
-    glUseProgram(g->mp_program[pass]);
-    const GLint loc = glGetUniformLocation(g->mp_program[pass], name);
-    if (loc >= 0) glUniform1fv(loc, count, data);
-}
-
 // Find a declared array by its "<name>_tex" sampler name. -1 = not declared.
 static int mp_array_index(GheeScene *g, const char *uni) {
     for (int i = 0; i < g->mp_narray; i++)

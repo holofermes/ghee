@@ -1,8 +1,11 @@
-//! The console modules.
+//! The console: the web page and the HTTP API that show and edit a running
+//! scene.
 //!
-//! core is the API. store holds the scenes, and state the edits that a
-//! scene's state file keeps. feeds fills in the host info. server mounts them
-//! on a render loop.
+//! core is the API, with no transport under it. server serves the API and the
+//! page over HTTP, and hands each edit to a render loop. store holds a
+//! directory of scenes and the working copy of each. state holds the edits of
+//! one scene and reads and writes its state file. feeds reads the facts about
+//! the host for the page's render info.
 
 pub mod core;
 pub mod feeds;

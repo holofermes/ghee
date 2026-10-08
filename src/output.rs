@@ -1,7 +1,7 @@
 //! The sinks themselves. The Output and Pacer traits live in ghee::looper,
 //! beside the loop that drives them.
 //!
-//! ImageSequence encodes PNG and JPEG itself. ghee links no image library.
+//! ImageSequence encodes PNG itself and JPEG through the jpeg-encoder crate.
 //! `quality` in save_opts reaches the JPEG encoder. The encoder ignores an
 //! option it has no use for.
 

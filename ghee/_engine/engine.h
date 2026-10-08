@@ -90,11 +90,6 @@ bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param);
 // Set the uniform `param` on the program of committed pass `pass` alone, and
 // on none of its batches. false when that program does not read it.
 bool ghee_mp_set_pass_uniform(GheeScene *g, int pass, const parameter_t *param);
-// Set the uniform float array `name` of a committed pass. ghee binds no
-// uniform array of its own: VC4 caps the size of a uniform array that a
-// shader indexes with a variable, so a scene's arrays are textures, filled by
-// ghee_mp_set_array.
-void ghee_mp_set_float_array(GheeScene *g, int pass, const char *name, const float *data, int count);
 // An array: a luminance texture of count x rows values, sampled as
 // <name>_tex. With rows = 1 a shader reads it at a computed index, and with
 // more rows it samples it as a 2D input at a normalized uv. The scene holds one

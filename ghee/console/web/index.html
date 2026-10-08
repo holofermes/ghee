@@ -1207,7 +1207,11 @@ async function askAside(){
       if (a.pass != null) q += "&pass=" + enc(a.pass);
       if (a.param != null) q += "&param=" + enc(a.param);
       // 404: another page answered first
-      await edit("/aside", name, q);
+      const r = await edit("/aside", name, q);
+      if (r && !r.ok && ![404, 409, 412].includes(r.status)){
+        postErr = await r.text(); showErrors();
+        return;
+      }
     }
   } finally { answering = false; }
   if (name === active) await refresh(true);

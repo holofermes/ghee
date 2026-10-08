@@ -98,7 +98,8 @@ fn find(dir: &Path, version: &str) -> Result<Option<Wheel>> {
             );
         }
     };
-    let meta = fs::metadata(&path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
+    let meta = fs::metadata(&path)
+        .map_err(|e| anyhow!("{}: {}", path.display(), crate::scene::strerror(&e)))?;
     let mtime = meta
         .modified()
         .ok()

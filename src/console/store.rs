@@ -148,8 +148,8 @@ impl SceneStore {
             Err(e) => {
                 match state::move_unreadable(&path) {
                     Ok(to) => eprintln!(
-                        "{name}: its state file is unreadable, so none of it applies, \
-                         and it moved to {}: {e}",
+                        "{name}: its state file is unreadable, so none of it applies: {e}. \
+                         It moved to {}",
                         to.display()
                     ),
                     Err(why) => eprintln!(
@@ -592,7 +592,7 @@ mod tests {
         let aside = |n: &str| PathBuf::from(format!("{}.unreadable{n}", file.display()));
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, "{\"version\": 1, \"values\": ").unwrap();
-        let (opened, _) = store.open("one", None, (32, 24)).unwrap();
+        let (opened, _) = store.open("one", None, SIZE).unwrap();
         assert!(opened.saved.is_none());
         assert!(!file.exists());
         let mut edits = Edits::default();
@@ -603,7 +603,7 @@ mod tests {
             "{\"version\": 1, \"values\": "
         );
         fs::write(&file, "{\"version\": 9}").unwrap();
-        store.open("one", None, (32, 24)).unwrap();
+        store.open("one", None, SIZE).unwrap();
         assert_eq!(fs::read_to_string(aside(".2")).unwrap(), "{\"version\": 9}");
         assert_eq!(
             fs::read_to_string(aside("")).unwrap(),

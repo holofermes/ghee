@@ -1099,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_panel_names_the_option_that_it_cannot_take() {
+    fn a_panel_names_the_option_that_it_cannot_take() {
         for (name, set, msg) in [
             (
                 "sh1106-spi",

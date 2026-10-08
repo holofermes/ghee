@@ -5,10 +5,11 @@
 # ///
 """Now playing on a small panel: the artist on top, the title scrolling below.
 
-The artist takes the top ARTIST of the panel and the title the rest, so the
+The artist takes the top ARTIST of the frame and the title the rest, so the
 same scene fills a 128x32 SSD1306 and a 256x64 SSD1322. The pass `top` is as
-wide as the panel and as tall as the artist's share, and its text layer
-`artist` fits the words to it, so a long name shrinks to the panel's width.
+wide as the frame and as tall as the artist's share, both from
+ghee.render_size(), and its text layer `artist` fits the words to it, so a
+long name shrinks to the frame's width.
 The pass `main` copies `top` into its top rows, pixel for pixel. Its text
 layer `title` fits the rows below them, and the scroll effect moves it right
 to left by whole pixels, so on a 1-bit panel its letters keep their pixels.
@@ -23,16 +24,7 @@ again with no recompile. Put a player's own track change in now_playing().
 
 import ghee
 
-args = ghee.args(
-    [
-        ghee.Arg(
-            "panel",
-            "size",
-            default="full",
-            help="the size that the artist and the title share",
-        )
-    ]
-)
+ghee.args()  # the probe, this scene takes no arguments
 
 PLAYLIST = [
     ("Zoë Quartet", "Slow Rivers"),
@@ -40,7 +32,7 @@ PLAYLIST = [
     ("Mira & the Late Hours", "Café at Six"),
 ]
 TRACK_SECONDS = 12.0  # how long each entry of PLAYLIST plays
-ARTIST = 0.4  # the artist's share of the panel height, from the top
+ARTIST = 0.4  # the artist's share of the frame's height, from the top
 
 # A 1-bit panel lights a pixel above half grey, and a stroke thinner than a
 # pixel, such as the bar of a small e, can fall under it. A white text_stroke
@@ -79,7 +71,7 @@ def track(tick):
 
 
 def build():
-    width, height = args.panel
+    width, height = ghee.render_size()
     rows = round(ARTIST * height)
     artist, title = PLAYLIST[0]
     return ghee.Scene(

@@ -369,8 +369,8 @@ A Rust host written for 0.4.0 needs these changes.
   ttf-parser from its main branch, vendored in `vendor/ttf-parser`.
 - Add `--demo lettering`, `--demo karaoke` and `--demo lens`, and rename
   `--demo text`, which rasterizes its words in Pillow, to `--demo marquee`.
-  Add `ghee/examples/nowplaying.py`, an artist and a title that fit a 128x32
-  or a 256x64 panel.
+  Add `ghee/examples/nowplaying.py`, an artist and a title laid out from
+  `ghee.render_size()`, so one scene fits a 128x32 and a 256x64 panel.
 
 ### Python
 

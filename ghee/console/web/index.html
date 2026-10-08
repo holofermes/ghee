@@ -1111,18 +1111,24 @@ function take(got){
 }
 
 // `own`, a load that this page asked for, hides the moved notice, which a
-// load after a refused edit shows.
+// load after a refused edit shows. A scene that the page cannot read leaves
+// the page empty with ghee's refusal, so no edit carries the scene before, and
+// the poll reads it again once ghee holds a revision of it.
+let unread = null;
 async function loadScene(name, own = true){
   if (own) $("#moved").hidden = true;
   $("#behind").hidden = true;
   // a rebuild still to post holds the copy of the scene before
   clearTimeout(compileTimer); compileTimer = null;
-  active = name;
-  const got = await readScene(name);
+  active = name; unread = null;
+  let got, err = "";
+  try { got = await readScene(name); }
+  catch (e) { err = e.message; got = {scene: {}, rev: null, defaults: null, edits: NO_EDITS}; }
   if (name !== active) return;
   take(got);
+  if (err) unread = name;
   $("#scenes").value = name;
-  curPass = 0; postErr = ""; errOpen = null; layerUI.clear(); layerChanges = null;
+  curPass = 0; postErr = err; errOpen = null; layerUI.clear(); layerChanges = null;
   paintAll();
   askAside();
 }
@@ -2796,6 +2802,7 @@ async function poll(){
     staleScene = !!s.stale;
     lastStats = s;
     if (s.display) lastDisplay = s.display;
+    if (unread && s.active === unread && s.rev != null) loadScene(unread, false);
     if (s.layer_changes !== layerChanges){
       layerChanges = s.layer_changes;
       if (isProcedural()) followScene();

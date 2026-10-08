@@ -4879,8 +4879,10 @@ mod tests {
     fn a_scene_process_starts_with_the_size_that_the_console_renders_it_at() {
         let d = crate::testing::TempDir::new("console-size");
         crate::testing::script(&d, "sized", SIZE_SCRIPT);
+        // The console's own size stays at its default, so the process takes
+        // the renderer's.
         let mut console = Console::new(SceneStore::new(&d, Vec::new()));
-        (console.w, console.h, console.rotate, console.frames) = (32, 24, 90, 1);
+        console.frames = 1;
         let console = Arc::new(console);
         console.ask("sized");
         let mut renderer = gpu(32, 24);

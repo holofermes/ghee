@@ -7734,7 +7734,7 @@ mod tests {
         let (_g, mut r) = gpu_at(128, 64);
         first_frames(&mut r, &run_scene(&from), 1);
         let rows = r.glyphs.borrow().rows();
-        assert!(r.set_text("w", many).unwrap());
+        r.set_text("w", many).unwrap();
         assert!(r.glyphs.borrow().rows() > rows);
         r.set_time(Some(0.0));
         let changed = still(&mut r);

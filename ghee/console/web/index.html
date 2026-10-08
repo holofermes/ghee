@@ -1092,10 +1092,11 @@ async function readScene(name){
   const q = "name=" + enc(name);
   const [sr, dr, er] = await Promise.all([fetch("/scene?" + q), fetch("/scene?" + q + "&defaults=1"), fetch("/edits?" + q)]);
   if (!sr.ok) throw new Error(await sr.text());
-  const tag = sr.headers.get("ETag");
+  // a proxy that compresses the answer marks the tag weak, W/"7"
+  const tag = (sr.headers.get("ETag") || "").match(/\d+/);
   return {
     scene: await sr.json(),
-    rev: tag ? parseInt(tag.replace(/"/g, ""), 10) : null,
+    rev: tag ? parseInt(tag[0], 10) : null,
     defaults: dr.ok ? await dr.json() : null,
     edits: er.ok ? await er.json() : NO_EDITS,
   };

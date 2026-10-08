@@ -428,6 +428,8 @@ pub struct Loop<'a> {
     /// iterations, skipped ones included
     pub frame: u64,
     pub drawn: u64,
+    /// seconds from the start of run() to the end of its last iteration,
+    /// skipped ones included
     pub elapsed: f64,
     /// measured frame period, the iTimeDelta fed to a scene
     pub period: Option<f64>,
@@ -497,6 +499,7 @@ impl<'a> Loop<'a> {
         let mut lit = false;
         let started = monotonic();
         let ran = self.pump(scanout, skippable, &mut lit, started);
+        self.elapsed = monotonic() - started;
         let shut = self.shutdown();
         shut.and(ran)
     }
@@ -586,7 +589,6 @@ impl<'a> Loop<'a> {
         self.frame += 1;
         self.drawn += 1;
         let end = monotonic();
-        self.elapsed = end - started;
         if let Some(rate) = self.rate.as_ref() {
             rate.lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1491,6 +1493,25 @@ mod tests {
             }
             assert_eq!(drawn, if watched { 6 } else { 2 }, "watched {watched}");
         }
+    }
+
+    #[test]
+    fn elapsed_spans_the_whole_run_past_the_last_frame_drawn() {
+        let mut r = Recorder::default();
+        let mut s = Sink::new();
+        s.persists = true;
+        let (drawn, elapsed);
+        {
+            let mut lp = Loop::new(&mut r, vec![&mut s]);
+            lp.stopping = Some(Box::new(after(6)));
+            lp.idle_hook = Some(Box::new(|_| 0.01));
+            lp.watched = Some(Box::new(|| false));
+            lp.run().unwrap();
+            (drawn, elapsed) = (lp.drawn, lp.elapsed);
+        }
+        // the first iteration draws, and each of the five after it sleeps 10 ms
+        assert_eq!(drawn, 1);
+        assert!(elapsed >= 0.05, "elapsed {elapsed}");
     }
 
     #[test]

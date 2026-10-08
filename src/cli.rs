@@ -820,8 +820,9 @@ fn cmd_serve(a: &Ns) -> Result<()> {
 }
 
 /// --stats: one summary line after a render. ms/frame is the per-frame cost
-/// without the paced sleeps. fps is frames over elapsed time, and the console
-/// publishes the same number.
+/// without the paced sleeps. fps is the frames drawn over the whole run, the
+/// stretches that drew nothing included, and the console publishes the same
+/// number.
 fn stats_line(times: &[f64], wall: f64, out: &[String]) -> String {
     let n = times.len();
     let total: f64 = times.iter().sum();

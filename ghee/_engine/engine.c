@@ -124,6 +124,15 @@ struct mp_batch {
     int blend;                           // GHEE_BLEND_*
     GLuint vbo, vao;
     int quads, nattr;                    // nattr vec4 attributes a vertex
+    // A batch whose quads change in part draws from two buffers in turn:
+    // vc4 maps a buffer for a write only once the GPU is done reading it, so
+    // the next frame's change goes into `spare`, which the frame before the
+    // last drew from. `copy` holds every quad, and the quads that `spare`
+    // lacks start at stale_first.
+    GLuint spare;
+    int spare_quads;                     // the quads that `spare` has room for
+    float *copy;
+    int stale_first, stale_quads;
     struct mp_locs loc;
     struct mp_value *values;
     int nvalues, values_cap;
@@ -1182,6 +1191,8 @@ static void mp_free_batches(GheeScene *g, struct mp_batch *ls, int *n) {
         program_drop(g, ls[i].program);
         mp_free_values(&ls[i]);
         if (ls[i].vbo) glDeleteBuffers(1, &ls[i].vbo);
+        if (ls[i].spare) glDeleteBuffers(1, &ls[i].spare);
+        free(ls[i].copy);
         if (ls[i].vao) glDeleteVertexArrays(1, &ls[i].vao);
         mp_free_uses(&ls[i].loc);
     }
@@ -1497,6 +1508,16 @@ bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int qua
         return false;
     }
     const size_t bytes = (size_t)quads * quad_bytes;
+    float *copy = bytes ? realloc(l->copy, bytes) : NULL;
+    if (bytes && !copy) {
+        set_error(g, "%s: no memory for a copy of %d quads", l->name, quads);
+        return false;
+    }
+    if (!bytes) free(l->copy);
+    l->copy = copy;
+    if (bytes) memcpy(copy, data, bytes);
+    l->stale_first = 0;
+    l->stale_quads = quads;
     make_current(g);
     glBindVertexArray(l->vao);
     if (!g->quad_ibo && !make_quad_indices(g)) { glBindVertexArray(g->VAO); return false; }
@@ -1535,12 +1556,39 @@ bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float 
                   first + quads, l->quads);
         return false;
     }
-    const size_t quad_bytes = 4 * (size_t)l->nattr * 4 * sizeof(GLfloat);
+    const size_t quad_floats = 4 * (size_t)l->nattr * 4;
+    const size_t quad_bytes = quad_floats * sizeof(GLfloat);
+    memcpy(l->copy + (size_t)first * quad_floats, data, (size_t)quads * quad_bytes);
     make_current(g);
-    glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
     while (glGetError() != GL_NO_ERROR) { }
-    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)((size_t)first * quad_bytes),
-                    (GLsizeiptr)((size_t)quads * quad_bytes), data);
+    if (first == 0 && quads == l->quads) {
+        // A write of the whole buffer takes a fresh one from the driver.
+        glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)quads * quad_bytes), l->copy);
+        l->stale_first = 0;
+        l->stale_quads = quads;
+    } else {
+        if (!l->spare) glGenBuffers(1, &l->spare);
+        glBindBuffer(GL_ARRAY_BUFFER, l->spare);
+        if (l->spare_quads != l->quads) {
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)l->quads * quad_bytes), l->copy,
+                         GL_DYNAMIC_DRAW);
+        } else {
+            int lo = first, hi = first + quads;
+            if (l->stale_quads > 0) {
+                if (l->stale_first < lo) lo = l->stale_first;
+                if (l->stale_first + l->stale_quads > hi) hi = l->stale_first + l->stale_quads;
+            }
+            glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)((size_t)lo * quad_bytes),
+                            (GLsizeiptr)((size_t)(hi - lo) * quad_bytes), l->copy + (size_t)lo * quad_floats);
+        }
+        const GLuint drawn = l->vbo;
+        l->vbo = l->spare;
+        l->spare = drawn;
+        l->spare_quads = l->quads;
+        l->stale_first = first;
+        l->stale_quads = quads;
+    }
     const GLenum err = glGetError();
     glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
     if (err != GL_NO_ERROR) {
@@ -1980,6 +2028,8 @@ bool ghee_mp_remove_batch(GheeScene *g, int batch) {
     program_drop(g, l->program);
     mp_free_values(l);
     if (l->vbo) glDeleteBuffers(1, &l->vbo);
+    if (l->spare) glDeleteBuffers(1, &l->spare);
+    free(l->copy);
     if (l->vao) glDeleteVertexArrays(1, &l->vao);
     mp_free_uses(&l->loc);
     memset(l, 0, sizeof *l);

@@ -7147,6 +7147,74 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn quads_replaced_in_part_frame_after_frame_all_show() {
+        // Four quads, each a quarter of the frame from the left. A batch
+        // replaced in part draws from two buffers in turn, so every frame
+        // checks every quarter, the ones replaced frames before too.
+        let (_g, mut r) = gpu();
+        let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
+        assert_eq!(
+            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
+                .unwrap(),
+            ""
+        );
+        let q = W / 4;
+        let quarter =
+            |k: usize, c: [f32; 4]| quad((k * q) as f32, 0.0, ((k + 1) * q) as f32, H as f32, c);
+        let [red, green, blue, white] = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ];
+        let mut want = [red; 4];
+        let all: Vec<f32> = want
+            .iter()
+            .enumerate()
+            .flat_map(|(k, &c)| quarter(k, c))
+            .collect();
+        r.set_batch_quads(0, &all, 2).unwrap();
+        // The fourth step replaces every quad in place.
+        let steps: [(usize, &[[f32; 4]]); 7] = [
+            (0, &[green]),
+            (2, &[blue]),
+            (3, &[white]),
+            (0, &[blue, blue, blue, blue]),
+            (1, &[green, red]),
+            (3, &[green]),
+            (0, &[white]),
+        ];
+        for (first, colors) in steps {
+            let data: Vec<f32> = colors
+                .iter()
+                .enumerate()
+                .flat_map(|(i, &c)| quarter(first + i, c))
+                .collect();
+            let replaced = unsafe {
+                ffi::ghee_mp_set_batch_quads_at(
+                    r.handle,
+                    r.batches[0],
+                    first as c_int,
+                    data.as_ptr(),
+                    colors.len() as c_int,
+                )
+            };
+            assert!(replaced, "{}", r.last_error());
+            want[first..first + colors.len()].copy_from_slice(colors);
+            let f = r.render(None).unwrap().to_vec();
+            for (k, c) in want.iter().enumerate() {
+                let got = rgb_at(&f, k * q + q / 2, H / 2);
+                let level = [c[0], c[1], c[2]].map(|v| f64::from(v) * 255.0);
+                assert!(
+                    near3(got, level),
+                    "quarter {k} after quads from {first}: {got:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_reads_scene_params_in_both_stages_and_its_pass_inputs() {
         // The vertex stage shifts the quad by `shift` pixels once `level` is
         // set, and the fragment stage writes `level`, an array texel, an asset

@@ -837,7 +837,7 @@ impl Session {
     /// This tick needs no render. The display keeps its last frame. A console
     /// reader still gets one: while a viewer wants a frame, the skip draws, as
     /// the CLI queues a preview for its console. A preview draw that fails
-    /// falls back to a plain skip; the host's own frame() reports it.
+    /// falls back to a plain skip, and the host's own frame() reports it.
     pub fn skip(&mut self) -> Outcome<Tick> {
         let tick = self.begin()?;
         if self.console.as_ref().is_some_and(Console::wants_draw) && self.frame().is_ok() {
@@ -989,7 +989,7 @@ impl Session {
         Ok(taken.left)
     }
 
-    /// Note that the host changed layer `name`, for a console to take.
+    /// Record that the host changed layer `name`, for a console to take.
     fn note(&mut self, name: &str) {
         if self.console.is_some() {
             self.changed.push(name.to_string());

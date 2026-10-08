@@ -122,18 +122,18 @@ A scene written for 0.4.0 needs these changes.
   as the same 32-bit float, so a drawn width reads `2.5804138` in `GET
   /scene`, where it read `2.580413818359375`.
 - Draw rects and lines with shape layers, which hold `"shape": "rect"` or
-  `"line"` and take no effects. A rect fills `width` by `height` pass
-  pixels, the pass's own by default, with its `color`, white by default,
-  draws its `border`, `{"width", "color", "visible"}`, inside its edge, and
-  rounds its corners by `border_radius`. A line runs through `points`, each `[x, y]` a pixel as
-  Pillow counts them, `stroke_width` pixels thick, and its `x` and `y` shift
-  every point. Every edge is antialiased from the distance to the shape. One
-  shader draws every shape, consecutive shape layers of one blend in one
-  draw, so a shape layer that changes or hides compiles nothing. Every field
-  but `shape` and `blend` is live, none takes a rect's `width` or `height`
-  back to the pass's own, and a rect's border takes an effect's place:
-  `/set?layer=frame&effect=border&field=color`, `frame.border.color` on the
-  wire, and a line's points as an array in message kind 0, `scope.points`,
+  `"line"` and take no effects. A rect fills `width` by `height` pass pixels,
+  the pass's own by default, with its `color`, white by default, draws its
+  `border`, `{"width", "color", "visible"}`, inside its edge, and rounds its
+  corners by `border_radius`. A line runs through `points`, each `[x, y]` a
+  pixel as Pillow counts them, `stroke_width` pixels thick, and its `x` and
+  `y` shift every point. Every edge is antialiased from the distance to the
+  shape. One shader draws every shape, consecutive shape layers of one blend
+  in one draw, so a shape layer that changes or hides compiles nothing. Every
+  field but `shape` and `blend` is live, none takes a rect's `width` or
+  `height` back to the pass's own, and a rect's border takes an effect's
+  place: `/set?layer=frame&effect=border&field=color`, `frame.border.color` on
+  the wire, and a line's points as an array in message kind 0, `scope.points`,
   x and y in turn.
 - Take CSS's colour names wherever a scene takes a colour, a layer's and an
   effect's `color`, a gradient's `from` and `to`, and a color param: the 148

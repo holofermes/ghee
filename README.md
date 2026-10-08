@@ -558,9 +558,10 @@ other dim pixel go dark.
 With no filter, an outline font below about 12 pixels per em loses strokes
 thinner than a pixel, such as the bar of a small e, where Pillow's hinted
 rendering keeps them. `font_family: "pixel"` keeps every stroke: at 8 pixels
-per em it lights exactly the pixels that Pillow lights from the same font. An outline font keeps such strokes with a `text_stroke` in the letters'
-colour, 0.01 em wide, which grows the letters by a tenth of a pixel at 11
-pixels per em:
+per em it lights exactly the pixels that Pillow lights from the same font. An
+outline font keeps such strokes with a `text_stroke` in the letters' colour,
+0.01 em wide, which grows the letters by a tenth of a pixel at 11 pixels per
+em:
 
 ```json
 { "name": "title", "text": "hello", "font_size": 11,

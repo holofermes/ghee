@@ -903,8 +903,10 @@ async function readEdits(){
   editsReading++;
   try {
     const r = await fetch("/edits?name=" + enc(name));
-    if (!r.ok || name !== active) return;
-    E = await r.json();
+    if (!r.ok) return;
+    const got = await r.json();
+    if (name !== active) return;
+    E = got;
     if (E.rev != null) known = E.rev;
     paintMarks(); paintStatus();
   } catch (_) {

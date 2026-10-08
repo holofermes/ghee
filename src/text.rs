@@ -1907,8 +1907,10 @@ fn pack(
 
 /// The quads over `glyphs` that read an atlas, the MTSDF atlas or the colour
 /// atlas, each from its glyph's cell and the cell's texels per em, as `cell`
-/// gives them, and an error box for each glyph that has none. Returns the
-/// glyph quads, the error boxes, and the glyphs with no cell.
+/// gives them, and an error box for each glyph that has none. A cell on the
+/// second page of the atlas carries its texel x past atlas::MAX_SIZE, where
+/// the shaders read the page from. Returns the glyph quads, the error boxes,
+/// and the glyphs with no cell.
 pub fn atlas_quads(
     glyphs: &[Placement],
     mut cell: impl FnMut(&Placement) -> Option<(Cell, f64)>,
@@ -1923,7 +1925,7 @@ pub fn atlas_quads(
                 // The texel coordinate of the box's top left: y runs up the
                 // atlas and down the block.
                 let t = [
-                    f64::from(c.rect[0]) + c.pad,
+                    f64::from(c.page * atlas::MAX_SIZE + c.rect[0]) + c.pad,
                     f64::from(c.rect[1]) + c.pad + (y1 - y0) * s,
                 ];
                 (

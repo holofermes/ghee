@@ -22,7 +22,12 @@
 //! that no kept character draws, the preload's, the cache's, or those of
 //! words gone from the screen.
 //!
-//! The cache keeps one file per font key, px/em and range in
+//! The atlas holds up to PAGES pages, each an RGBA8 texture of MAX_SIZE a
+//! side at most. A requested glyph goes to a second page when the first
+//! holds no room for it once every cell that no kept character draws is
+//! gone.
+//!
+//! The cache keeps the first page, one file per font key, px/em and range in
 //! `$XDG_CACHE_HOME/ghee/atlas/`, else `~/.cache/ghee/atlas/`.
 
 use std::collections::{HashMap, HashSet};
@@ -53,6 +58,9 @@ pub const RANGE: u32 = 6;
 /// VC4's GL_MAX_TEXTURE_SIZE. An atlas grows to this on each side and no
 /// further.
 pub const MAX_SIZE: u32 = 2048;
+/// The pages of a generator's atlas. GLES2 has no texture arrays, so each
+/// page is a texture of its own, and a glyph's quad names its page.
+pub const PAGES: usize = 2;
 /// An atlas starts this size on each side, and doubles its shorter side as it
 /// fills.
 const MIN_SIZE: u32 = 128;
@@ -179,11 +187,13 @@ pub fn field(contours: &[Vec<Curve>], px_em: u32, range: u32) -> Result<Option<F
 
 /// Where a glyph's field sits in the atlas.
 ///
-/// A point p in em from the glyph's origin samples the atlas at texel
+/// A point p in em from the glyph's origin samples the cell's page at texel
 /// coordinate `rect.xy + pad + (p - ink.xy) * px_em`, where texel i spans
 /// i to i + 1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cell {
+    /// The page that holds the cell.
+    pub page: u32,
     /// x, y, width and height, in texels.
     pub rect: [u32; 4],
     /// The ink box in em from the glyph's origin, y up: x0, y0, x1, y1.
@@ -212,22 +222,34 @@ struct Shelf {
     used: u32,
 }
 
-/// The error of an insert into an atlas with no room left at MAX_SIZE, which
-/// a caller tells from the others with `downcast_ref`.
+/// The error of an insert into an atlas with no room left at MAX_SIZE on
+/// any of its `pages`, which a caller tells from the others with
+/// `downcast_ref`.
 #[derive(Debug)]
-pub struct Full;
+pub struct Full {
+    pub pages: usize,
+}
 
 impl Display for Full {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the {MAX_SIZE}x{MAX_SIZE} atlas is full")
+        match self.pages {
+            1 => write!(f, "the {MAX_SIZE}x{MAX_SIZE} atlas is full"),
+            n => write!(
+                f,
+                "the {n} pages of the atlas, {MAX_SIZE}x{MAX_SIZE} each, are full"
+            ),
+        }
     }
 }
 
 impl std::error::Error for Full {}
 
-/// Glyph cells packed on shelves into one RGBA8 texture.
+/// Glyph cells packed on shelves into one RGBA8 texture, a page of a
+/// generator's atlas.
 #[derive(Debug)]
 pub struct Atlas {
+    /// The page that the atlas is, which its cells name.
+    pub page: u32,
     pub width: u32,
     pub height: u32,
     /// RGBA8, row-major, row 0 at texture coordinate v = 0.
@@ -246,6 +268,7 @@ impl Default for Atlas {
     /// An empty MIN_SIZE x MIN_SIZE atlas, whose first update holds all of it.
     fn default() -> Atlas {
         Atlas {
+            page: 0,
             width: MIN_SIZE,
             height: MIN_SIZE,
             texels: vec![0; (MIN_SIZE * MIN_SIZE * 4) as usize],
@@ -260,6 +283,8 @@ impl Default for Atlas {
 /// Texels for the GPU copy of an atlas.
 #[derive(Debug)]
 pub struct Update {
+    /// The page that changed.
+    pub page: u32,
     pub width: u32,
     pub height: u32,
     /// The atlas changed size. `rows` holds all of it, for a new texture, and
@@ -296,7 +321,7 @@ impl Atlas {
                 break at;
             }
             if !self.grow() {
-                return Err(Full.into());
+                return Err(Full { pages: 1 }.into());
             }
         };
         let (aw, fw) = (self.width as usize, w as usize * 4);
@@ -306,6 +331,7 @@ impl Atlas {
         }
         self.mark(y, y + h);
         let cell = Cell {
+            page: self.page,
             rect: [x, y, w, h],
             ink: field.ink,
             pad: field.pad,
@@ -328,6 +354,7 @@ impl Atlas {
         }
         let row = self.width as usize * 4;
         Some(Update {
+            page: self.page,
             width: self.width,
             height: self.height,
             resized,
@@ -536,7 +563,9 @@ struct Shared {
 }
 
 struct State {
-    atlas: Atlas,
+    /// The first page, then a second once the first holds no room for the
+    /// glyphs kept.
+    pages: Vec<Atlas>,
     /// Every character requested since its glyph last left the atlas: its
     /// glyph, and true once the glyph is in the atlas, failed, or draws
     /// nothing.
@@ -562,7 +591,7 @@ struct State {
 impl State {
     /// True when glyph `gid` is in the atlas, failed, or draws nothing.
     fn made(&self, gid: u32) -> bool {
-        self.atlas.cells.contains_key(&gid)
+        self.pages.iter().any(|a| a.cells.contains_key(&gid))
             || self.blank.contains(&gid)
             || self.failed.contains_key(&gid)
     }
@@ -704,23 +733,27 @@ impl Generator {
         lock(&s.shared.state).failed.get(&gid).cloned()
     }
 
-    /// `f` on the atlas as it stands, None before the first request. The
-    /// worker waits meanwhile.
-    pub fn with<R>(&self, f: impl FnOnce(&Atlas) -> R) -> Option<R> {
+    /// `f` on the pages of the atlas as they stand, None before the first
+    /// request. The worker waits meanwhile.
+    pub fn with<R>(&self, f: impl FnOnce(&[Atlas]) -> R) -> Option<R> {
         let s = self.started.get()?;
-        Some(f(&lock(&s.shared.state).atlas))
+        Some(f(&lock(&s.shared.state).pages))
     }
 
-    /// The texels that changed since the last call, None when nothing did.
-    pub fn update(&self) -> Option<Update> {
-        lock(&self.started.get()?.shared.state).atlas.update()
+    /// The texels that changed on each page since the last call.
+    pub fn update(&self) -> Vec<Update> {
+        let Some(s) = self.started.get() else {
+            return Vec::new();
+        };
+        let mut st = lock(&s.shared.state);
+        st.pages.iter_mut().filter_map(Atlas::update).collect()
     }
 
     /// Start the worker, which loads the atlas from the cache first.
     fn start(&self) -> Started {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                atlas: Atlas::default(),
+                pages: vec![Atlas::default()],
                 chars: HashMap::new(),
                 queue: Vec::new(),
                 kept: HashSet::new(),
@@ -781,7 +814,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
         .and_then(|b| decode(&key, &b));
     let mut preloading = cached.is_none();
     if let Some(atlas) = cached {
-        lock(&shared.state).atlas = atlas;
+        lock(&shared.state).pages[0] = atlas;
     }
     loop {
         let batch = {
@@ -850,7 +883,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
             }
         }
         if let (true, Some(path)) = (added, &file) {
-            let bytes = encode(&key, &lock(&shared.state).atlas);
+            let bytes = encode(&key, &lock(&shared.state).pages[0]);
             if let Err(e) = save(path, &bytes) {
                 let dir = path.parent().unwrap_or(path).display();
                 warn_memory(format!("cannot write the atlas cache in {dir}: {e}"));
@@ -894,30 +927,52 @@ fn settle(
     took
 }
 
-/// Put `field` in a cell for glyph `gid`. An asked glyph that finds the atlas
-/// full takes the room of the cells that no kept glyph holds, one cell at a
-/// time, the glyph named longest ago first, until it fits.
+/// Put `field` in a cell for glyph `gid`, on the first page with room. An
+/// asked glyph that finds every page full takes the room of the cells that no
+/// kept glyph holds, one cell at a time, the glyph named longest ago first,
+/// until it fits, and then a new page, up to PAGES.
 fn take_cell(st: &mut State, gid: u32, field: &Field, preloaded: bool) -> Result<Cell> {
-    let full = match st.atlas.insert(gid, field) {
+    let full = match put(&mut st.pages, gid, field) {
         Err(e) if !preloaded && e.is::<Full>() => e,
         placed => return placed,
     };
-    let mut spare: Vec<(u64, u32)> = st
-        .atlas
-        .cells
-        .keys()
-        .filter(|g| !st.kept.contains(g))
-        .map(|g| (st.seen.get(g).copied().unwrap_or(0), *g))
+    let mut spare: Vec<(u64, u32, usize)> = st
+        .pages
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| a.cells.keys().map(move |g| (*g, i)))
+        .filter(|(g, _)| !st.kept.contains(g))
+        .map(|(g, i)| (st.seen.get(&g).copied().unwrap_or(0), g, i))
         .collect();
     spare.sort_unstable();
-    for (_, g) in spare {
-        st.atlas.remove(g);
+    for (_, g, i) in spare {
+        st.pages[i].remove(g);
         st.forget(g);
-        if let Ok(cell) = st.atlas.insert(gid, field) {
+        if let Ok(cell) = put(&mut st.pages, gid, field) {
             return Ok(cell);
         }
     }
+    if st.pages.len() < PAGES {
+        let page = Atlas {
+            page: st.pages.len() as u32,
+            ..Atlas::default()
+        };
+        st.pages.push(page);
+        return put(&mut st.pages, gid, field);
+    }
     Err(full)
+}
+
+/// Put `field` in a cell for glyph `gid` on the first of `pages` with room.
+/// The error is Full, naming every page, when none has room.
+fn put(pages: &mut [Atlas], gid: u32, field: &Field) -> Result<Cell> {
+    for a in pages.iter_mut() {
+        match a.insert(gid, field) {
+            Err(e) if e.is::<Full>() => continue,
+            placed => return placed,
+        }
+    }
+    Err(Full { pages: pages.len() }.into())
 }
 
 /// One glyph's field. A panic inside fdsm fails this glyph alone.
@@ -1109,7 +1164,13 @@ fn decode(key: &Key, bytes: &[u8]) -> Option<Atlas> {
         let inside =
             rect[0].checked_add(rect[2])? <= width && rect[1].checked_add(rect[3])? <= rows;
         let finite = ink.iter().chain([&pad]).all(|v| v.is_finite());
-        if !inside || !finite || cells.insert(gid, Cell { rect, ink, pad }).is_some() {
+        let cell = Cell {
+            page: 0,
+            rect,
+            ink,
+            pad,
+        };
+        if !inside || !finite || cells.insert(gid, cell).is_some() {
             return None;
         }
     }
@@ -1120,6 +1181,7 @@ fn decode(key: &Key, bytes: &[u8]) -> Option<Atlas> {
     let mut texels = vec![0; width as usize * height as usize * 4];
     texels[..used.len()].copy_from_slice(used);
     Some(Atlas {
+        page: 0,
         width,
         height,
         texels,
@@ -1307,6 +1369,11 @@ mod tests {
                 _ => rect(0.05, 0.0, 0.55, 0.7),
             })
         }
+    }
+
+    /// `f` on the first page of the atlas of `g`.
+    fn first<R>(g: &Generator, f: impl FnOnce(&Atlas) -> R) -> Option<R> {
+        g.with(|p| f(&p[0]))
     }
 
     /// Request `chars` until every glyph is ready.
@@ -1647,7 +1714,7 @@ mod tests {
         let font = boxes(1);
         let g = Generator::new(font.clone(), cached(&dir)).unwrap();
         assert!(g.started.get().is_none());
-        assert!(g.with(|_| ()).is_none() && g.update().is_none() && g.failure(97).is_none());
+        assert!(g.with(|_| ()).is_none() && g.update().is_empty() && g.failure(97).is_none());
         assert!(!dir.exists());
         assert_eq!(font.outlines.load(Ordering::Relaxed), 0);
         assert_eq!(g.request("baab".chars()), ['a', 'b']);
@@ -1671,17 +1738,17 @@ mod tests {
         wait(&g, words);
         let gid = |ch| font.glyph(ch).unwrap();
         assert!(words.chars().all(|ch| g.failure(gid(ch)).is_none()));
-        g.with(|a| {
+        first(&g, |a| {
             assert!(!a.cells.contains_key(&gid(' ')));
             for ch in ('!'..='~').chain(words.chars().filter(|c| *c != ' ')) {
                 assert!(a.cells.contains_key(&gid(ch)), "{ch:?}");
             }
         })
         .unwrap();
-        let u = g.update().unwrap();
+        let u = g.update().remove(0);
         assert!(u.resized);
         assert_eq!(u.rows[0].texels.len() as u32, u.width * u.height * 4);
-        assert!(g.update().is_none());
+        assert!(g.update().is_empty());
         drop(g);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1692,13 +1759,13 @@ mod tests {
         let made = {
             let g = Generator::new(Arc::new(Ttf::new()), cached(&dir)).unwrap();
             wait(&g, "ghee");
-            g.with(|a| (a.cells.clone(), a.texels.clone())).unwrap()
+            first(&g, |a| (a.cells.clone(), a.texels.clone())).unwrap()
         };
         let font = Arc::new(Ttf::new());
         let g = Generator::new(font.clone(), cached(&dir)).unwrap();
         wait(&g, "ghee");
         assert_eq!(font.outlines.load(Ordering::Relaxed), 0);
-        assert!(g.with(|a| (a.cells.clone(), a.texels.clone())).unwrap() == made);
+        assert!(first(&g, |a| (a.cells.clone(), a.texels.clone())).unwrap() == made);
         drop(g);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1776,7 +1843,7 @@ mod tests {
             font.outlines.store(0, Ordering::Relaxed);
             let g = Generator::new(font.clone(), cached(&dir)).unwrap();
             wait(&g, "abc");
-            assert!(g.with(|a| a.cells.len()).unwrap() > 190);
+            assert!(first(&g, |a| a.cells.len()).unwrap() > 190);
             drop(g);
             assert!(font.outlines.load(Ordering::Relaxed) >= 3);
             assert!(decode(&k, &fs::read(&path).unwrap()).is_some());
@@ -1795,7 +1862,7 @@ mod tests {
             Some("its 3208x31 cell is larger than the 2048x2048 atlas")
         );
         assert!(g.failure(u32::from('A')).is_none() && g.failure(u32::from(' ')).is_none());
-        g.with(|a| {
+        first(&g, |a| {
             assert!(
                 a.cells.contains_key(&(u32::from('A'))) && a.cells.contains_key(&(u32::from('B')))
             );
@@ -1819,7 +1886,7 @@ mod tests {
         // Past the preload, and past every preload glyph in id order.
         let own = "\u{3042}\u{3044}";
         wait(&g, own);
-        let cells = g.with(|a| a.cells.clone()).unwrap();
+        let cells = first(&g, |a| a.cells.clone()).unwrap();
         for ch in own.chars() {
             assert!(cells.contains_key(&u32::from(ch)), "{ch:?}");
         }
@@ -1846,21 +1913,21 @@ mod tests {
                 g = Generator::new(boxes(8), config).unwrap();
                 wait(&g, own);
             }
-            let kept: Vec<(u32, Cell, Vec<u8>)> = g
-                .with(|a| {
-                    own.chars()
-                        .map(|ch| (u32::from(ch), a.cells[&u32::from(ch)]))
-                        .map(|(gid, c)| (gid, c, texels_of(a, &c)))
-                        .collect()
-                })
-                .unwrap();
-            let left = g
-                .with(|a| preload().find(|c| !a.cells.contains_key(&u32::from(*c))))
-                .unwrap()
-                .unwrap();
+            let kept: Vec<(u32, Cell, Vec<u8>)> = first(&g, |a| {
+                own.chars()
+                    .map(|ch| (u32::from(ch), a.cells[&u32::from(ch)]))
+                    .map(|(gid, c)| (gid, c, texels_of(a, &c)))
+                    .collect()
+            })
+            .unwrap();
+            let left = first(&g, |a| {
+                preload().find(|c| !a.cells.contains_key(&u32::from(*c)))
+            })
+            .unwrap()
+            .unwrap();
             wait(&g, &left.to_string());
             assert_eq!(g.failure(u32::from(left)), None, "next run: {next_run}");
-            g.with(|a| {
+            first(&g, |a| {
                 let new = a.cells[&u32::from(left)].rect;
                 for (gid, c, texels) in &kept {
                     assert_eq!(a.cells.get(gid), Some(c));
@@ -1919,7 +1986,8 @@ mod tests {
     }
 
     fn holds(g: &Generator, i: u32) -> bool {
-        g.with(|a| a.cells.contains_key(&u32::from(k(i)))).unwrap()
+        g.with(|p| p.iter().any(|a| a.cells.contains_key(&u32::from(k(i)))))
+            .unwrap()
     }
 
     #[test]
@@ -1930,7 +1998,7 @@ mod tests {
         for i in 0..35 {
             wait(&g, &k(i).to_string());
         }
-        assert_eq!(g.with(|a| a.cells.len()).unwrap(), 35);
+        assert_eq!(first(&g, |a| a.cells.len()).unwrap(), 35);
         let on: String = (5..35).map(k).collect();
         g.keep(on.chars());
         wait(&g, &k(35).to_string());
@@ -1941,28 +2009,59 @@ mod tests {
         wait(&g, &k(0).to_string());
         assert!(holds(&g, 0) && !holds(&g, 1) && holds(&g, 2));
         assert_eq!(font.outlines.load(Ordering::Relaxed), made + 1);
-        assert_eq!(g.with(|a| a.cells.len()).unwrap(), 35);
+        assert_eq!(first(&g, |a| a.cells.len()).unwrap(), 35);
+    }
+
+    #[test]
+    fn glyphs_past_the_room_of_a_page_take_a_second_page() {
+        let dir = crate::testing::TempDir::new("atlas-pages");
+        let (_font, g) = kana(&dir.join("atlas"), 3);
+        let words: String = (0..50).map(k).collect();
+        wait(&g, &words);
+        let pages = g
+            .with(|p| {
+                p.iter()
+                    .map(|a| {
+                        assert!(a.cells.values().all(|c| c.page == a.page));
+                        a.cells.len()
+                    })
+                    .collect::<Vec<usize>>()
+            })
+            .unwrap();
+        assert_eq!(pages, [35, 15]);
+        assert!(words.chars().all(|c| g.failure(u32::from(c)).is_none()));
+        let u = g.update();
+        assert_eq!(u.iter().map(|u| u.page).collect::<Vec<u32>>(), [0, 1]);
+        assert!(u.iter().all(|u| u.resized));
     }
 
     #[test]
     fn a_glyph_that_found_the_atlas_full_tries_again_once_no_word_draws_it() {
         let dir = crate::testing::TempDir::new("atlas-retry");
         let (_font, g) = kana(&dir.join("atlas"), 2);
-        let on: String = (0..35).map(k).collect();
+        // Both pages full of kept glyphs.
+        let on: String = (0..70).map(k).collect();
         wait(&g, &on);
         g.keep(on.chars());
-        wait(&g, &k(35).to_string());
-        let full = Some("the 2048x2048 atlas is full");
-        assert_eq!(g.failure(u32::from(k(35))).as_deref(), full);
+        wait(&g, &k(70).to_string());
+        let full = Some("the 2 pages of the atlas, 2048x2048 each, are full");
+        assert_eq!(g.failure(u32::from(k(70))).as_deref(), full);
         // Words that draw it keep its failure.
-        g.keep(on.chars().chain([k(35)]));
-        assert_eq!(g.request([k(35)]), Vec::<char>::new());
-        assert_eq!(g.failure(u32::from(k(35))).as_deref(), full);
+        g.keep(on.chars().chain([k(70)]));
+        assert_eq!(g.request([k(70)]), Vec::<char>::new());
+        assert_eq!(g.failure(u32::from(k(70))).as_deref(), full);
         g.keep(on.chars().skip(1));
-        assert_eq!(g.request([k(35)]), [k(35)]);
-        wait(&g, &k(35).to_string());
-        assert_eq!(g.failure(u32::from(k(35))), None);
-        assert!(holds(&g, 35) && !holds(&g, 0));
+        assert_eq!(g.request([k(70)]), [k(70)]);
+        wait(&g, &k(70).to_string());
+        assert_eq!(g.failure(u32::from(k(70))), None);
+        assert!(!holds(&g, 0));
+        let page = g
+            .with(|p| {
+                p.iter()
+                    .find_map(|a| a.cells.get(&u32::from(k(70))).map(|c| c.page))
+            })
+            .unwrap();
+        assert_eq!(page, Some(0));
     }
 
     #[test]
@@ -1975,8 +2074,8 @@ mod tests {
         assert_eq!(g.request("a\u{3042}".chars()), ['\u{3042}']);
         wait(&g, "\u{3042}");
         assert_eq!(font.outlines.load(Ordering::Relaxed), before + 1);
-        assert!(g.with(|a| a.cells.contains_key(&0x3042)).unwrap());
-        let u = g.update().unwrap();
+        assert!(first(&g, |a| a.cells.contains_key(&0x3042)).unwrap());
+        let u = g.update().remove(0);
         assert!(u.rows.iter().map(|r| r.texels.len()).sum::<usize>() > 0);
         drop(g);
         fs::remove_dir_all(&dir).unwrap();
@@ -1990,7 +2089,7 @@ mod tests {
         wait(&g, "abc");
         wait(&g, "\u{3042}");
         assert!(g.failure(0x3042).is_none());
-        assert!(g.with(|a| a.cells.len()).unwrap() > 190);
+        assert!(first(&g, |a| a.cells.len()).unwrap() > 190);
         drop(g);
         fs::remove_file(&file).unwrap();
     }

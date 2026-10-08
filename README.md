@@ -1080,10 +1080,11 @@ problem once, and the console shows it:
   many as 64 strips across and 64 down, fewer when the words crowd it. A glyph
   past the cap draws an error box:
   `layer 'title': 'X' has more than 64 curves in one band`.
-- A 2048x2048 atlas holds the MTSDF fields of a font at one detail, and
-  another holds the emoji of a layer, with room for 132 emoji of Noto Color
-  Emoji. A glyph past either draws an error box:
-  `layer 'title': 'A' has no field in the atlas: the 2048x2048 atlas is full`.
+- Two pages of 2048x2048 hold the MTSDF fields of a font at one detail, and
+  an atlas of 2048x2048 holds the emoji of a layer, with room for 132 emoji
+  of Noto Color Emoji. A glyph past them draws an error box, once the glyphs
+  that no words on screen draw have given up their room:
+  `layer 'title': 'A' has no field in the atlas: the 2 pages of the atlas, 2048x2048 each, are full`.
 
 The wire of a [procedural scene](#procedural-scenes) names an array or a param
 in 255 bytes at most, and the Python shim raises ValueError past it.

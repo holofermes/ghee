@@ -3433,7 +3433,8 @@ fn guarded(line: &str) -> bool {
     let l = line.trim_start();
     let read = l.contains("texture2D(");
     read && (l.starts_with("if (gl_FragCoord.x < 0.0) ")
-        || l.starts_with("if (gl_FragCoord.x >= 0.0) "))
+        || l.starts_with("if (gl_FragCoord.x >= 0.0) ")
+        || l.starts_with("if (ghee_v1.w < 0.5) "))
 }
 
 #[test]

@@ -421,10 +421,27 @@ struct AtlasSlot {
     px_em: u32,
     range: u32,
     gen: atlas::Generator,
-    /// The engine asset `ghee_<name>_atlas` of each layer drawn from this
-    /// atlas, and whether it still waits for its first upload, which takes all
-    /// of it.
-    textures: Vec<(String, bool)>,
+    /// The textures of each layer drawn from this atlas.
+    textures: Vec<AtlasTextures>,
+}
+
+/// One layer's textures of an atlas: the engine assets `ghee_<name>_atlas`
+/// for the first page and `ghee_<name>_atlas2` for the second.
+struct AtlasTextures {
+    /// The layer's name.
+    layer: String,
+    /// True until the first upload, which takes every page whole.
+    fresh: bool,
+    /// The pages that the engine holds.
+    pages: usize,
+}
+
+impl AtlasTextures {
+    /// The engine asset of page `page`.
+    fn asset(&self, page: usize) -> String {
+        let suffix = ["_atlas", "_atlas2"][page];
+        text::internal(&self.layer, suffix)
+    }
 }
 
 /// New words of a layer that wait for the atlas to hold their glyphs, or
@@ -1154,12 +1171,23 @@ impl Renderer {
             used.dedup();
             let want = p.channels.len() + used.len();
             let mut over = self.units_error(&format!("pass '{}'", p.name), want);
-            // A layer samples its own texture, its words' or its image, on
-            // top of its pass's channels and arrays, which stay bound for it.
-            // A shape samples none.
-            let sampling = p.layers.iter().find(|l| l.as_shape().is_none());
-            if let (None, Some(l)) = (&over, sampling) {
-                over = self.units_error(&format!("layer '{}'", l.name()), want + 1);
+            // A layer samples its own textures on top of its pass's channels
+            // and arrays, which stay bound for it: the two pages of an MTSDF
+            // atlas, or one texture, its words' or its image. A shape samples
+            // none.
+            let units = |l: &Layer| match l {
+                Layer::Shape(_) => 0,
+                Layer::Text(t) if t.render == Render::Mtsdf => 2,
+                _ => 1,
+            };
+            let mut sampling: Option<(&Layer, usize)> = None;
+            for l in &p.layers {
+                if units(l) > sampling.map_or(0, |s| s.1) {
+                    sampling = Some((l, units(l)));
+                }
+            }
+            if let (None, Some((l, n))) = (&over, sampling) {
+                over = self.units_error(&format!("layer '{}'", l.name()), want + n);
             }
             if let Some(e) = over {
                 self.error = e;
@@ -1477,7 +1505,7 @@ impl Renderer {
             .atlases
             .borrow()
             .iter()
-            .flat_map(|s| s.textures.iter().map(|t| t.0.clone()))
+            .flat_map(|s| s.textures.iter().flat_map(|t| [t.asset(0), t.asset(1)]))
             .collect();
         let keep: Vec<String> = scene
             .assets
@@ -2666,9 +2694,8 @@ impl Renderer {
         }
         // An atlas that no layer draws from stays, for a layer of the same
         // font and detail to take with its glyphs.
-        let atlas = text::internal(name, "_atlas");
         for slot in self.atlases.borrow_mut().iter_mut() {
-            slot.textures.retain(|t| t.0 != atlas);
+            slot.textures.retain(|t| t.layer != name);
         }
         self.px_em.remove(name);
         self.words.borrow_mut().remove(name);
@@ -3406,15 +3433,10 @@ impl Renderer {
     /// The index in `atlases` of the atlas that layer `name` reads, None for a
     /// layer that reads none.
     fn atlas_of(&self, name: &str) -> Option<usize> {
-        let tex = |t: &str| {
-            t.strip_prefix(crate::scene::PREFIX)
-                .and_then(|t| t.strip_suffix("_atlas"))
-                == Some(name)
-        };
         self.atlases
             .borrow()
             .iter()
-            .position(|s| s.textures.iter().any(|t| tex(&t.0)))
+            .position(|s| s.textures.iter().any(|t| t.layer == name))
     }
 
     /// Draw `laid`, new words of `layer`, from now on, and log their problems.
@@ -3437,9 +3459,10 @@ impl Renderer {
                 let atlases = self.atlases.borrow();
                 let slot = self.atlas_of(name).map(|i| &atlases[i]);
                 let made = slot.and_then(|s| {
-                    s.gen.with(|a| {
+                    s.gen.with(|pages| {
                         text::atlas_quads(&built.glyphs, |p| {
-                            let cell = a.cells.get(&text::atlas_id(p.font, p.gid));
+                            let id = text::atlas_id(p.font, p.gid);
+                            let cell = pages.iter().find_map(|a| a.cells.get(&id));
                             Some((*cell?, f64::from(s.px_em)))
                         })
                     })
@@ -3796,9 +3819,11 @@ impl Renderer {
                 slots.len() - 1
             }
         };
-        slots[i]
-            .textures
-            .push((text::internal(&l.name, "_atlas"), true));
+        slots[i].textures.push(AtlasTextures {
+            layer: l.name.clone(),
+            fresh: true,
+            pages: 0,
+        });
         Ok(())
     }
 
@@ -3933,11 +3958,8 @@ impl Renderer {
         let (shown, held) = (self.on_screen.borrow(), self.held.borrow());
         for slot in self.atlases.borrow().iter() {
             let mut chars: Vec<char> = Vec::new();
-            for (tex, _) in &slot.textures {
-                let layer = tex
-                    .strip_prefix(crate::scene::PREFIX)
-                    .and_then(|t| t.strip_suffix("_atlas"));
-                let Some(name) = layer else { continue };
+            for t in &slot.textures {
+                let name = t.layer.as_str();
                 chars.extend(shown.get(name).into_iter().flat_map(|w| w.chars()));
                 chars.extend(held.get(name).into_iter().flat_map(|h| h.words.chars()));
             }
@@ -3945,42 +3967,75 @@ impl Renderer {
         }
     }
 
-    /// Upload the texels that each atlas gained: all of it to a texture new to
-    /// the atlas, and to the others the rows that changed, or all of it again
-    /// when the atlas grew.
+    /// Upload the texels that each atlas gained: every page whole to the
+    /// textures of a layer new to the atlas, and to the others the rows of
+    /// each page that changed, or the whole page when it is new or grew.
     fn upload_atlases(&self) -> Result<()> {
         let mut atlases = self.atlases.borrow_mut();
         for slot in atlases.iter_mut() {
-            let update = slot.gen.update();
-            for (tex, fresh) in slot.textures.iter_mut() {
-                if *fresh {
-                    let up = slot.gen.with(|a| {
-                        let data = AssetData::U8(&a.texels);
-                        self.put_asset(tex, a.width, a.height, 4, ffi::GHEE_FILTER_LINEAR, data)
+            let updates = slot.gen.update();
+            for t in slot.textures.iter_mut() {
+                let before = t.pages;
+                if t.fresh {
+                    let up = slot.gen.with(|pages| -> Result<usize> {
+                        for a in pages {
+                            let data = AssetData::U8(&a.texels);
+                            let asset = t.asset(a.page as usize);
+                            self.put_asset(
+                                &asset,
+                                a.width,
+                                a.height,
+                                4,
+                                ffi::GHEE_FILTER_LINEAR,
+                                data,
+                            )?;
+                        }
+                        Ok(pages.len())
                     });
                     let Some(up) = up else { continue };
-                    up?;
-                    *fresh = false;
-                    self.scene_asset(tex);
-                    let layer = tex
-                        .strip_prefix(crate::scene::PREFIX)
-                        .and_then(|t| t.strip_suffix("_atlas"));
-                    if let Some(d) = self.layers.iter().find(|d| Some(d.name.as_str()) == layer) {
-                        self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_atlas"), tex)?;
+                    t.pages = up?;
+                    t.fresh = false;
+                } else {
+                    for u in &updates {
+                        let asset = t.asset(u.page as usize);
+                        if u.resized {
+                            let data = AssetData::U8(&u.rows[0].texels);
+                            self.put_asset(
+                                &asset,
+                                u.width,
+                                u.height,
+                                4,
+                                ffi::GHEE_FILTER_LINEAR,
+                                data,
+                            )?;
+                            t.pages = t.pages.max(u.page as usize + 1);
+                            continue;
+                        }
+                        for r in &u.rows {
+                            self.set_asset_rows(&asset, r.y, u.width, &r.texels)?;
+                        }
                     }
-                    continue;
                 }
-                let Some(u) = &update else { continue };
-                if u.resized {
-                    let data = AssetData::U8(&u.rows[0].texels);
-                    self.put_asset(tex, u.width, u.height, 4, ffi::GHEE_FILTER_LINEAR, data)?;
-                    continue;
-                }
-                for r in &u.rows {
-                    self.set_asset_rows(tex, r.y, u.width, &r.texels)?;
+                if t.pages != before {
+                    self.bind_atlas(t)?;
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Bind the pages of `t` to the glyph batch of its layer, the first page
+    /// in place of a second that the atlas lacks so far.
+    fn bind_atlas(&self, t: &AtlasTextures) -> Result<()> {
+        for page in 0..t.pages {
+            self.scene_asset(&t.asset(page));
+        }
+        let Some(d) = self.layers.iter().find(|d| d.name == t.layer) else {
+            return Ok(());
+        };
+        let second = t.asset(t.pages.saturating_sub(1).min(1));
+        self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_atlas"), &t.asset(0))?;
+        self.bind_asset(d.batch, &text::internal(GLSL_NAME, "_atlas2"), &second)?;
         Ok(())
     }
 
@@ -8525,7 +8580,7 @@ mod tests {
         let size = |r: &Renderer| {
             r.atlases.borrow()[0]
                 .gen
-                .with(|a| (a.width, a.height))
+                .with(|p| (p[0].width, p[0].height))
                 .unwrap()
         };
         let before = size(&r);
@@ -8603,7 +8658,7 @@ mod tests {
         let size = |r: &Renderer| {
             r.atlases.borrow()[0]
                 .gen
-                .with(|a| (a.width, a.height))
+                .with(|p| (p[0].width, p[0].height))
                 .unwrap()
         };
         let before = size(&r);
@@ -8633,8 +8688,9 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The fixture font for an atlas, each glyph drawn eight times its size,
-    /// so a 2048x2048 atlas holds fewer than the font's 94 glyphs.
+    /// The fixture font for an atlas, each glyph drawn twelve times its size,
+    /// so the two pages of a 2048x2048 atlas hold fewer than the font's 94
+    /// glyphs.
     struct Huge(text::AtlasFont);
 
     impl atlas::Font for Huge {
@@ -8647,7 +8703,8 @@ mod tests {
         }
 
         fn outline(&self, gid: u32) -> Result<Vec<Vec<atlas::Curve>>> {
-            let scale = |c: Vec<atlas::Curve>| c.into_iter().map(|q| q.map(|p| p.map(|v| v * 8.0)));
+            let scale =
+                |c: Vec<atlas::Curve>| c.into_iter().map(|q| q.map(|p| p.map(|v| v * 12.0)));
             Ok(self
                 .0
                 .outline(gid)?
@@ -8681,19 +8738,83 @@ mod tests {
             assert_eq!(r.text_errors(), Vec::<String>::new(), "words {i}, {w:?}");
             let held = r.atlases.borrow()[0]
                 .gen
-                .with(|a| {
+                .with(|p| {
                     w.chars().all(|c| {
-                        a.cells
-                            .contains_key(&atlas::Font::glyph(&*font, c).unwrap())
+                        let id = atlas::Font::glyph(&*font, c).unwrap();
+                        p.iter().any(|a| a.cells.contains_key(&id))
                     })
                 })
                 .unwrap();
             assert!(held, "words {i}, {w:?}");
         }
-        let cells = r.atlases.borrow()[0].gen.with(|a| a.cells.len()).unwrap();
+        let cells = r.atlases.borrow()[0]
+            .gen
+            .with(|p| p.iter().map(|a| a.cells.len()).sum::<usize>())
+            .unwrap();
         assert!(cells < all.len(), "{cells} cells");
         drop(r);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn glyphs_on_the_second_page_draw_as_on_the_first() {
+        let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+        let bytes = fs::read(format!("{fonts}/DejaVuSans-ASCII.ttf")).unwrap();
+        let font = Arc::new(Huge(text::AtlasFont(vec![Ok(Arc::new(bytes))])));
+        // Two layers of one font and size share an atlas. The glyphs of
+        // `many` fill its first page and spill onto the second.
+        let (many, few) = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "xyz");
+        let scene = |a: &str, b: &str| {
+            let mut sc = mtsdf_scene(a);
+            let mut l = sc.passes[0].layers[0].clone();
+            let t = l.as_text_mut().unwrap();
+            t.name = "other".into();
+            t.text = b.into();
+            t.y = Some(20.0);
+            sc.passes[0].layers.push(l);
+            sc
+        };
+        // The pages of the glyphs of `few`, and the frame, once layer
+        // `first` shows its words and then `second` its words.
+        let run = |first: (&str, &str), second: (&str, &str), tag: &str| {
+            let (_g, mut r) = gpu();
+            let f = font.clone();
+            r.atlas_font = Box::new(move |_| f.clone());
+            let dir =
+                std::env::temp_dir().join(format!("ghee-engine-{}-{tag}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            r.atlas_cache = Some(dir.clone());
+            let start = match first.0 {
+                "label" => scene(first.1, ""),
+                _ => scene("", first.1),
+            };
+            assert_eq!(r.setup(&start).unwrap(), "");
+            r.set_time(Some(0.0));
+            still(&mut r);
+            set_words(&r, second.0, second.1);
+            let frame = still(&mut r);
+            assert_eq!(r.text_errors(), Vec::<String>::new(), "{tag}");
+            let pages: Vec<Option<u32>> = r.atlases.borrow()[0]
+                .gen
+                .with(|p| {
+                    few.chars()
+                        .map(|c| {
+                            let id = atlas::Font::glyph(&*font, c).unwrap();
+                            p.iter().find_map(|a| a.cells.get(&id).map(|c| c.page))
+                        })
+                        .collect()
+                })
+                .unwrap();
+            drop(r);
+            fs::remove_dir_all(&dir).unwrap();
+            (pages, frame)
+        };
+        let (on_first, want) = run(("other", few), ("label", many), "first-page");
+        let (on_second, got) = run(("label", many), ("other", few), "second-page");
+        assert_eq!(on_first, [Some(0); 3]);
+        assert_eq!(on_second, [Some(1); 3]);
+        assert!(worst(&got, &want) <= 1, "{}", worst(&got, &want));
     }
 
     #[test]
@@ -8745,7 +8866,7 @@ mod tests {
             .atlases
             .borrow()
             .iter()
-            .map(|s| (s.px_em, s.textures.iter().map(|t| t.0.clone()).collect()))
+            .map(|s| (s.px_em, s.textures.iter().map(|t| t.asset(0)).collect()))
             .collect();
         slots.sort();
         let tex = |name: &str| text::internal(name, "_atlas");

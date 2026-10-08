@@ -1466,7 +1466,7 @@ impl TextLayer {
     /// The varyings of an MTSDF layer's glyphs, and the lines that declare
     /// them: the atlas coordinate, the field's range in screen pixels, which
     /// msdfgen holds at 1 or more, the pixels per em, the point on the
-    /// gradient, the karaoke fill, and which copy the quad is. A doubled
+    /// gradient, the karaoke fill, which copy the quad is, and its page. A doubled
     /// layer's quads also carry the box of the glyph's cell, the atlas
     /// coordinate of the shadow, and the pixels to each edge of the quad.
     fn mtsdf_varyings(&self, detail: Detail) -> (String, String) {
@@ -1474,6 +1474,7 @@ impl TextLayer {
         let mut decls = vec![
             "uniform float ghee_NAME_angle;",
             "uniform vec2 ghee_NAME_atlas_size;",
+            "uniform vec2 ghee_NAME_atlas2_size;",
             "varying vec4 ghee_v0;",
             "varying vec4 ghee_v1;",
         ];
@@ -1481,11 +1482,17 @@ impl TextLayer {
             Some(_) => "ghee_kf",
             None => "0.0",
         };
+        let page = f64::from(atlas::MAX_SIZE);
         let mut lines = format!(
-            "    vec2 ghee_tc = ghee_a2.xy + (ghee_e - ghee_a1.xy) * ghee_a2.zw;\n\
-             {GRADIENT}    ghee_v0 = vec4(ghee_tc / ghee_NAME_atlas_size, \
+            "    // A glyph on the second page carries its texel x past the first\n    \
+             // page's last texel.\n    \
+             float ghee_pg = step({page:?}, ghee_a2.x);\n    \
+             vec2 ghee_at = mix(ghee_NAME_atlas_size, ghee_NAME_atlas2_size, ghee_pg);\n    \
+             vec2 ghee_ap = vec2(ghee_a2.x - {page:?} * ghee_pg, ghee_a2.y);\n    \
+             vec2 ghee_tc = ghee_ap + (ghee_e - ghee_a1.xy) * ghee_a2.zw;\n\
+             {GRADIENT}    ghee_v0 = vec4(ghee_tc / ghee_at, \
              max({range_em:?} * ghee_fs, 1.0), ghee_fs);\n    \
-             ghee_v1 = vec4(ghee_t, {kf}, ghee_a3.w, 0.0);\n"
+             ghee_v1 = vec4(ghee_t, {kf}, ghee_a3.w, ghee_pg);\n"
         );
         if self.doubled() {
             decls.extend([
@@ -1501,11 +1508,11 @@ impl TextLayer {
             lines.push_str(&format!(
                 "    // A read stays inside the glyph's cell, which holds the field half\n    \
                  // the range past the ink and a texel more.\n    \
-                 vec2 ghee_t1 = ghee_a2.xy + (ghee_a1.zw - ghee_a1.xy) * ghee_a2.zw;\n    \
-                 ghee_v2 = vec4(min(ghee_a2.xy, ghee_t1) - {half:?}, max(ghee_a2.xy, ghee_t1) + {half:?})\n    \
-                 \x20         / ghee_NAME_atlas_size.xyxy;\n    \
+                 vec2 ghee_t1 = ghee_ap + (ghee_a1.zw - ghee_a1.xy) * ghee_a2.zw;\n    \
+                 ghee_v2 = vec4(min(ghee_ap, ghee_t1) - {half:?}, max(ghee_ap, ghee_t1) + {half:?})\n    \
+                 \x20         / ghee_at.xyxy;\n    \
                  // The shadow shows the letters' shape at the point less its offset.\n    \
-                 ghee_v3 = vec4((ghee_tc - vec2({sx:?}, {sy:?}) * ghee_a2.zw) / ghee_NAME_atlas_size, \
+                 ghee_v3 = vec4((ghee_tc - vec2({sx:?}, {sy:?}) * ghee_a2.zw) / ghee_at, \
                  0.0, 0.0);\n    \
                  vec2 ghee_q = (ghee_a1.zw - ghee_a1.xy + 2.0 * ghee_g) * ghee_fs;\n    \
                  ghee_v4 = vec4(ghee_a0.xy * ghee_q, (1.0 - ghee_a0.xy) * ghee_q);\n"
@@ -1520,6 +1527,7 @@ impl TextLayer {
         let range_em = f64::from(detail.range) / f64::from(detail.px_em);
         let mut decls: Vec<String> = vec![
             "uniform sampler2D ghee_NAME_atlas_tex;".to_string(),
+            "uniform sampler2D ghee_NAME_atlas2_tex;".to_string(),
             "uniform vec3 ghee_NAME_color;".to_string(),
             "uniform vec3 ghee_NAME_colorto;".to_string(),
             "uniform float ghee_NAME_alpha;".to_string(),
@@ -2658,9 +2666,9 @@ GUARD    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_image_tex, ghee
                  * ghee_NAME_alpha;
 }"#;
 
-/// A read of the layer's atlas at UV.
-const GUARDED_READ: &str =
-    "    if (gl_FragCoord.x >= 0.0) ghee_t = texture2D(ghee_NAME_atlas_tex, UV);";
+/// A read of the layer's atlas at UV, from the page of the quad.
+const GUARDED_READ: &str = "    if (ghee_v1.w < 0.5) ghee_t = texture2D(ghee_NAME_atlas_tex, UV); \
+     else ghee_t = texture2D(ghee_NAME_atlas2_tex, UV);";
 
 /// The varyings of a slug layer's glyphs, with the point on the gradient and
 /// the karaoke fill, or of its error boxes, without, and the lines that
@@ -2757,7 +2765,7 @@ mod tests {
     /// layer, each with the sampler and the size that a program reads.
     fn written(name: &str) -> Vec<String> {
         let mut out: Vec<String> = text::template_names(name);
-        for suffix in ["_curves", "_atlas", "_emoji", "_file"] {
+        for suffix in ["_curves", "_atlas", "_atlas2", "_emoji", "_file"] {
             let asset = text::internal(name, suffix);
             out.extend([format!("{asset}_tex"), format!("{asset}_size"), asset]);
         }
@@ -2821,6 +2829,8 @@ mod tests {
             "a_curves_tex",
             "a_atlas",
             "a_atlas_size",
+            "a_atlas2",
+            "a_atlas2_size",
             "a_emoji",
             "a_image",
             "a_file",

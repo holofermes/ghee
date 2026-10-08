@@ -272,9 +272,10 @@ A scene written for 0.4.0 needs these changes.
   the layer keeps its last words on screen until every glyph of the new ones
   is in. A setup and a render with `--timestep` wait for them. A glyph of
   new words that finds the atlas full takes the room of the glyphs that no
-  words on screen draw, the longest unused first, and an atlas full of the
-  glyphs on screen draws an error box with an error of its own. A hidden
-  layer builds its atlas when it first shows.
+  words on screen draw, the longest unused first, then a second page of the
+  atlas, and an atlas whose two pages are full of the glyphs on screen draws
+  an error box with an error of its own. A hidden layer builds its atlas
+  when it first shows.
 - Generate a layer's atlas at the detail of its size, its `font_size` or the
   size that fits its words at setup, rounded up to 32, 48, 64, 96 or 128
   texels per em, and 128 for larger text, so layers of near sizes share one

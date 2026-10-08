@@ -1110,6 +1110,8 @@ function take(got){
 async function loadScene(name, own = true){
   if (own) $("#moved").hidden = true;
   $("#behind").hidden = true;
+  // a rebuild still to post holds the copy of the scene before
+  clearTimeout(compileTimer); compileTimer = null;
   active = name;
   const got = await readScene(name);
   if (name !== active) return;

@@ -475,6 +475,10 @@ pub struct Console {
     /// The working copy of each scene that the console loaded since it
     /// started, by name.
     copies: Mutex<HashMap<String, WorkingCopy>>,
+    /// The `rev` of each working copy in `copies`. /stats reads it here,
+    /// since an apply loads its assets and a save writes its file with
+    /// `copies` held.
+    revs: Mutex<HashMap<String, u64>>,
     /// The document of the active scene as the render thread last set it,
     /// under the scene's name. A scene that failed to compile is published
     /// too, while the renderer keeps drawing the last one that compiled.
@@ -547,6 +551,7 @@ impl Console {
             editing: Mutex::new(()),
             loaded: Condvar::new(),
             copies: Mutex::new(HashMap::new()),
+            revs: Mutex::new(HashMap::new()),
             running: Mutex::new(None),
             layer_changes: AtomicU64::new(0),
             sources: Mutex::new(None),
@@ -642,7 +647,7 @@ impl Console {
             "layer_changes".to_string(),
             Value::from(self.layer_changes.load(Ordering::SeqCst)),
         );
-        let rev = active.and_then(|name| lock(&self.copies).get(&name).map(|c| c.rev));
+        let rev = active.and_then(|name| lock(&self.revs).get(&name).copied());
         d.insert("rev".to_string(), rev.map_or(Value::Null, Value::from));
         Value::Object(d)
     }
@@ -680,11 +685,18 @@ impl Console {
             (copy.rev, copy.by, copy.before) = (old.rev, old.by.clone(), old.before);
             copy.generation = old.generation;
         }
-        copy.bump(vid);
+        self.bump(name, &mut copy, vid);
         copy.generation += 1;
         let generation = copy.generation;
         copies.insert(name.to_string(), copy);
         generation
+    }
+
+    /// Count a change to `copy`, the working copy of scene `name`, made by
+    /// the page `vid`.
+    fn bump(&self, name: &str, copy: &mut WorkingCopy, vid: &str) {
+        copy.bump(vid);
+        lock(&self.revs).insert(name.to_string(), copy.rev);
     }
 
     /// Run `f` on the working copy of the active scene, or say why no edit
@@ -2347,7 +2359,7 @@ impl ConsoleHost for RenderLoopHost {
         }
         edit()?;
         if let Some(copy) = lock(&self.console.copies).get_mut(&name) {
-            copy.bump(at.vid);
+            self.console.bump(&name, copy, at.vid);
         }
         Ok(())
     }
@@ -3982,6 +3994,22 @@ mod tests {
         }
         assert_eq!(stats["stale"], Value::from(false));
         assert_eq!(stats["out"], serde_json::json!([]));
+    }
+
+    /// An apply loads its assets and a save writes its file with the working
+    /// copies held, and a poll of /stats answers through either.
+    #[test]
+    fn stats_answers_while_the_working_copies_are_held() {
+        let (_d, console) = tmp_console("stats-held");
+        let scene = console.store.resolve("one", (32, 24)).unwrap();
+        opened(&console, "one", scene);
+        let held = lock(&console.copies);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let polled = Arc::clone(&console);
+        thread::spawn(move || tx.send(polled.stats()["rev"].clone()));
+        let rev = rx.recv_timeout(Duration::from_secs(5));
+        drop(held);
+        assert_eq!(rev, Ok(Value::from(1u64)));
     }
 
     #[test]

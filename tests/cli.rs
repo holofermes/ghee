@@ -162,7 +162,8 @@ fn a_scene_process_starts_with_the_size_that_it_renders_at_turned_by_rotate() {
 }
 
 /// A scene process that writes the uv variables that it starts with into
-/// `uv`, beside it, one `NAME=value` line each, and takes no arguments.
+/// `uv`, beside it, one `NAME=value` line each, takes no arguments, and
+/// draws black.
 const UV_SCRIPT: &str = r#"#!/bin/sh
 {
     echo "UV_INDEX=$UV_INDEX"
@@ -170,14 +171,19 @@ const UV_SCRIPT: &str = r#"#!/bin/sh
     echo "UV_NO_BINARY_PACKAGE=$UV_NO_BINARY_PACKAGE"
     echo "UV_NO_BUILD_PACKAGE=$UV_NO_BUILD_PACKAGE"
 } > uv
-echo '{"args": []}'
+if [ "$1" = --ghee-args ]; then
+    echo '{"args": []}'
+    exit 0
+fi
+printf '%s\n' '{"version": 1, "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(0.0); }"}]}'
+while read -r l; do :; done
 "#;
 
-#[test]
-fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
-    use std::collections::HashMap;
+/// A copy of ghee in `bin/` of a new directory, with `lib/ghee/` beside it
+/// and UV_SCRIPT as `scene.sh`: the directory, ghee and the scene.
+fn ghee_beside_lib(tag: &str) -> (Dir, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
-    let dir = Dir::new("wheel");
+    let dir = Dir::new(tag);
     fs::create_dir_all(dir.join("bin")).unwrap();
     fs::create_dir_all(dir.join("lib/ghee")).unwrap();
     let ghee = dir.join("bin/ghee");
@@ -185,6 +191,46 @@ fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
     let scene = dir.join("scene.sh");
     fs::write(&scene, UV_SCRIPT).unwrap();
     fs::set_permissions(&scene, fs::Permissions::from_mode(0o755)).unwrap();
+    (dir, ghee, scene)
+}
+
+/// The wheel of ghee's version in `lib/ghee/` of `dir`, empty. maturin
+/// writes the version's `-dev` as `.dev0` in the wheel's name.
+fn wheel_of_ghee(dir: &Dir) -> PathBuf {
+    let version = env!("CARGO_PKG_VERSION").replace("-dev", ".dev0");
+    let wheel = dir.join(&format!(
+        "lib/ghee/ghee_render-{version}-cp310-abi3-linux_x86_64.whl"
+    ));
+    fs::write(&wheel, b"").unwrap();
+    wheel
+}
+
+/// The variables that UV_SCRIPT wrote in `dir`, by name.
+fn uv_vars(dir: &Dir) -> std::collections::HashMap<String, String> {
+    fs::read_to_string(dir.join("uv"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// The links of the ghee-render page of the index at `url`, a file URL.
+fn index_links(url: &str) -> Vec<String> {
+    let index = url
+        .strip_prefix("file://")
+        .unwrap_or_else(|| panic!("{url}"));
+    let page = fs::read_to_string(Path::new(index).join("ghee-render/index.html")).unwrap();
+    page.split("href=\"")
+        .skip(1)
+        .filter_map(|s| s.split('"').next())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
+    let (dir, ghee, scene) = ghee_beside_lib("wheel");
     // `ghee render <scene> -- --help` runs the scene to ask what it takes
     let probe = || {
         let out = Command::new(&ghee)
@@ -199,35 +245,17 @@ fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
             .output()
             .unwrap();
         assert!(out.status.success(), "{out:?}");
-        let vars: HashMap<String, String> = fs::read_to_string(dir.join("uv"))
-            .unwrap()
-            .lines()
-            .filter_map(|l| l.split_once('='))
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        (vars, String::from_utf8(out.stderr).unwrap())
+        (uv_vars(&dir), String::from_utf8(out.stderr).unwrap())
     };
-    // maturin writes the version's `-dev` as `.dev0` in the wheel's name
-    let version = env!("CARGO_PKG_VERSION").replace("-dev", ".dev0");
-    let wheel = dir.join(&format!(
-        "lib/ghee/ghee_render-{version}-cp310-abi3-linux_x86_64.whl"
-    ));
 
-    // the wheel of ghee's version: an index that lists it alone, ahead of
-    // every other index
-    fs::write(&wheel, b"").unwrap();
+    // the wheel of ghee's version: an index that lists it alone
+    let wheel = wheel_of_ghee(&dir);
     let (uv, _) = probe();
-    let index = uv["UV_INDEX"]
-        .strip_prefix("file://")
-        .unwrap_or_else(|| panic!("{uv:?}"));
-    let page = fs::read_to_string(Path::new(index).join("ghee-render/index.html")).unwrap();
-    let links: Vec<&str> = page
-        .split("href=\"")
-        .skip(1)
-        .filter_map(|s| s.split('"').next())
-        .collect();
     let wheel = fs::canonicalize(&wheel).unwrap();
-    assert_eq!(links, [format!("file://{}", wheel.display())]);
+    assert_eq!(
+        index_links(&uv["UV_INDEX"]),
+        [format!("file://{}", wheel.display())]
+    );
     assert_eq!(uv["UV_INDEX_STRATEGY"], "first-index");
 
     // a wheel of another version alone: a dev build refuses every
@@ -260,6 +288,32 @@ fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
         assert_eq!(uv["UV_NO_BINARY_PACKAGE"], "");
         assert_eq!(uv["UV_NO_BUILD_PACKAGE"], "");
     }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_started_scene_takes_the_index_of_the_wheel_beside_ghee_ahead_of_its_own() {
+    let (dir, ghee, scene) = ghee_beside_lib("wheel-start");
+    let wheel = fs::canonicalize(wheel_of_ghee(&dir)).unwrap();
+    let out = Command::new(&ghee)
+        .arg("render")
+        .arg(&scene)
+        .args(["-o", &dir.join("out.png").to_string_lossy()])
+        .args(["--size", "8x8", "--frames", "1"])
+        .env("GHEE_ASSETS", "")
+        .env("XDG_CACHE_HOME", &dir.0)
+        .env("UV_INDEX", "file:///elsewhere")
+        .env_remove("UV_INDEX_STRATEGY")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let uv = uv_vars(&dir);
+    let (first, rest) = uv["UV_INDEX"]
+        .split_once(' ')
+        .unwrap_or_else(|| panic!("{uv:?}"));
+    assert_eq!(index_links(first), [format!("file://{}", wheel.display())]);
+    assert_eq!(rest, "file:///elsewhere");
+    assert_eq!(uv["UV_INDEX_STRATEGY"], "first-index");
 }
 
 #[test]

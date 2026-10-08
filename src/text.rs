@@ -2011,33 +2011,46 @@ pub fn internal(name: &str, suffix: &str) -> String {
 /// `name`, with the `<asset>_size` set by the engine beside each sampler
 /// `<asset>_tex`.
 pub(crate) fn template_names(name: &str) -> Vec<String> {
-    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut out: Vec<String> = Vec::new();
-    for t in [CURVES, COVER] {
-        for (i, _) in t.match_indices("NAME_") {
-            let (head, prefixed) = match t[..i].strip_suffix(crate::scene::PREFIX) {
-                Some(head) => (head, true),
-                None => (&t[..i], false),
-            };
-            if head.ends_with(ident) {
-                continue;
-            }
-            let rest = &t[i + "NAME".len()..];
-            let suffix = &rest[..rest.find(|c| !ident(c)).unwrap_or(rest.len())];
-            let made = match prefixed {
-                true => internal(name, suffix),
-                false => format!("{name}{suffix}"),
-            };
-            if let Some(asset) = made
-                .strip_suffix("_tex")
-                .filter(|_| head.ends_with("uniform sampler2D "))
-            {
-                out.push(format!("{asset}_size"));
-            }
-            out.push(made);
+    for (prefixed, suffix, sampler) in template_parts() {
+        let made = match prefixed {
+            true => internal(name, suffix),
+            false => format!("{name}{suffix}"),
+        };
+        if *sampler {
+            out.push(format!("{}_size", &made[..made.len() - "_tex".len()]));
         }
+        out.push(made);
     }
     out
+}
+
+/// Each name that the templates of a layer's readers make from NAME, in
+/// their order: true when ghee's prefix goes before it, the suffix that
+/// follows NAME, and true for a sampler `_tex`, which the engine sizes in
+/// `_size`.
+fn template_parts() -> &'static [(bool, String, bool)] {
+    static PARTS: std::sync::OnceLock<Vec<(bool, String, bool)>> = std::sync::OnceLock::new();
+    PARTS.get_or_init(|| {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        let mut out = Vec::new();
+        for t in [CURVES, COVER] {
+            for (i, _) in t.match_indices("NAME_") {
+                let (head, prefixed) = match t[..i].strip_suffix(crate::scene::PREFIX) {
+                    Some(head) => (head, true),
+                    None => (&t[..i], false),
+                };
+                if head.ends_with(ident) {
+                    continue;
+                }
+                let rest = &t[i + "NAME".len()..];
+                let suffix = &rest[..rest.find(|c| !ident(c)).unwrap_or(rest.len())];
+                let sampler = suffix.ends_with("_tex") && head.ends_with("uniform sampler2D ");
+                out.push((prefixed, suffix.to_string(), sampler));
+            }
+        }
+        out
+    })
 }
 
 /// The lines of a GLSL template, with the constants of this module written in

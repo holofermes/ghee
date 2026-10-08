@@ -3,14 +3,14 @@
 //! ```text
 //! ghee render scene.json -o frame.####.jpg --frames 500  # image sequence
 //! ghee render scene.json -o - --frames 300 | ffmpeg ...  # raw frames to a pipe
-//! ghee render scene.json --display st7789                # to a panel, until Ctrl-C
+//! ghee render scene.json --display kms                   # to the connected display, until Ctrl-C
 //! ghee render scene.json --h264 - | mpv -                # H264 to a pipe
-//! ghee render scene.json --display st7789 --serve        # panel plus the console
+//! ghee render scene.json --display kms --serve           # the display plus the console
 //! ghee serve scenes/                                     # editor console
 //! ghee serve --demo                                      # console on the bundled examples
 //! ghee render --demo bars -o frame.png                   # a bundled example by name
-//! ghee displays                                          # list display drivers
-//! ghee overlay st7789                                     # kernel setup for a panel
+//! ghee displays                                          # list the connected displays
+//! ghee overlay st7789                                    # kernel setup for a panel
 //! ```
 
 use std::cell::RefCell;
@@ -20,11 +20,8 @@ use std::fs::File;
 use std::io::{stdout, Stdout, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::error::{ContextKind, ErrorKind};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Map, Value};
@@ -33,12 +30,11 @@ use crate::bench::{self, BenchArgs};
 use crate::console::examples_dir;
 use crate::console::server;
 use crate::console::store::SceneStore;
-use crate::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
 use crate::engine::{display_renders, probe_display, probe_display_device, Feed, Renderer};
 use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
 use crate::h264::H264Stream;
-use crate::looper::{ControllerSlot, Frame, Loop, Output, OwnedFrame, Pacer, SceneController};
+use crate::looper::{ControllerSlot, Loop, Output, Pacer, SceneController};
 use crate::output::{expand_pattern, FixedPacer, ImageSequence, RawStream, Scanout};
 use crate::overlay;
 use crate::procedural::process::{self, SceneProcess};
@@ -315,12 +311,10 @@ fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
     Ok((scene, process))
 }
 
-/// What --display names: the KMS scanout, or the driver instance.
-/// --display-opts builds the driver.
+/// What --display names: the KMS scanout, or nothing.
 enum Panel {
     None,
     Kms,
-    Driver(Box<dyn DisplayDriver + Send>),
 }
 
 /// Panel::Kms, after checking GL on the card runs on hardware. A display-only
@@ -344,84 +338,45 @@ fn kms_panel(a: &Ns) -> Result<Panel> {
 
 fn panel_of(a: &Ns) -> Result<Panel> {
     if !given(&a.display) {
-        if given(&a.display_opts) {
-            return Err(exit(format!("{}: --display-opts without --display", a.cmd)));
-        }
         return Ok(Panel::None);
     }
     let name = text(&a.display);
     if name == "kms" {
-        if given(&a.display_opts) {
-            return Err(exit(format!(
-                "{}: --display-opts with --display kms; kms has no driver",
-                a.cmd
-            )));
-        }
         return kms_panel(a);
     }
-    let Ok(spec) = get_driver(name) else {
-        // --display takes an optional value, so it reads a path after it as a
-        // driver name
-        let hint = if Path::new(name).is_dir() {
-            ", and a scenes directory goes before it"
-        } else {
-            ""
-        };
-        return Err(exit(format!(
-            "{}: no display driver '{name}' (see: ghee displays){hint}",
-            a.cmd
-        )));
+    // --display takes an optional value, so it reads a path after it as a
+    // display name
+    let hint = if Path::new(name).is_dir() {
+        ", and a scenes directory goes before it"
+    } else {
+        ""
     };
-    if !given(&a.display_opts) {
-        return Ok(Panel::Driver((spec.open)(&[])?));
-    }
-    let opts = parse_kv(text(&a.display_opts), &format!("{}: --display-opts", a.cmd))?;
-    // check before the driver runs: a constructor claims the GPIO lines and
-    // the SPI bus first. It reaches a keyword it does not take after that.
-    let known = driver_options(spec);
-    let unknown: Vec<&str> = opts
-        .keys()
-        .filter(|k| !known.iter().any(|o| o.name == k.as_str()))
-        .map(String::as_str)
-        .collect();
-    if !unknown.is_empty() {
-        return Err(exit(format!(
-            "{}: --display-opts: {name} has no option {} (takes: {})",
-            a.cmd,
-            unknown.join(", "),
-            known.iter().map(|o| o.name).collect::<Vec<_>>().join(", ")
-        )));
-    }
-    let pairs: Vec<(String, Value)> = opts.into_iter().collect();
-    Ok(Panel::Driver((spec.open)(&pairs)?))
+    Err(exit(format!(
+        "{}: no display '{name}' (takes: kms){hint}",
+        a.cmd
+    )))
 }
 
 /// A scene builds against this size, worked out before any device opens.
-/// geometry() gives the same answer once the panel is up, and a scene needs it
+/// geometry() gives the same answer once the display is up, and a scene needs it
 /// earlier than that: it sizes its own buffers as it builds, so `half` and
-/// `quarter` have to mean something already. Reading a mode or a driver's
-/// declared width costs nothing and takes no DRM master, so asking early is
-/// free. None where the size cannot be known without opening the device, and a
-/// scene that wanted a fraction then says so itself.
+/// `quarter` have to mean something already. Reading a mode costs nothing and
+/// takes no DRM master, so asking early is free. None where the size cannot be
+/// known without opening the device, and a scene that wanted a fraction then
+/// says so itself.
 fn prospective_size(a: &Ns) -> Option<(i32, i32)> {
     if !given(&a.display) {
         return Some(a.size.unwrap_or(DEFAULT_SIZE));
     }
-    let name = text(&a.display);
-    if name == "kms" {
-        return a.size.or_else(|| probe_display(a.dri.as_deref()));
+    match text(&a.display) {
+        "kms" => a.size.or_else(|| probe_display(a.dri.as_deref())),
+        _ => None,
     }
-    let spec = get_driver(name).ok()?;
-    let opts = parse_kv(text(&a.display_opts), "--display-opts").unwrap_or_default();
-    let pairs: Vec<(String, Value)> = opts.into_iter().collect();
-    (spec.size)(&pairs).ok()
 }
 
 /// (size, components) of the render.
 /// A scanout takes --size and scales it across the mode on the way out, or the
-/// mode itself when there is no --size. A panel takes its own geometry and
-/// pixel layout, and its wire carries no scaler, so --size means nothing there.
-/// Everything else takes --size.
+/// mode itself when there is no --size. Everything else takes --size.
 fn geometry(a: &Ns, panel: &Panel) -> Result<((i32, i32), i32)> {
     match panel {
         // ghee_display_create renders RGBA whatever --components asks for, so
@@ -432,16 +387,6 @@ fn geometry(a: &Ns, panel: &Panel) -> Result<((i32, i32), i32)> {
                 "{}: no connected display to size from, pass --size WxH",
                 a.cmd
             ))),
-        },
-        Panel::Driver(d) => match a.size {
-            Some(_) => Err(exit(format!(
-                "{}: --display {} is fixed at {}x{}, drop --size",
-                a.cmd,
-                text(&a.display),
-                d.width(),
-                d.height()
-            ))),
-            None => Ok(((d.width(), d.height()), d.components())),
         },
         Panel::None => Ok((a.size.unwrap_or(DEFAULT_SIZE), a.components)),
     }
@@ -484,16 +429,15 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
 }
 
 /// Nothing paces a file or a pipe: that render runs as fast as it draws. A
-/// panel sink blocks acquire() when the wire is a frame behind, so the bus
-/// paces an unpaced loop. A KMS present waits out the display refresh. An
-/// H264 stream holds a fixed rate for its timestamps.
+/// KMS present waits out the display refresh. An H264 stream holds a fixed
+/// rate for its timestamps.
 fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
     let fixed = a
         .fps
         .filter(|f| *f != 0.0)
         .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
     match panel {
-        Panel::Kms | Panel::Driver(_) => fixed,
+        Panel::Kms => fixed,
         Panel::None if given(&a.h264) => Some(Box::new(FixedPacer::new(f64::from(h264_fps(a))))),
         Panel::None => None,
     }
@@ -515,203 +459,14 @@ fn frames_of(a: &Ns) -> i64 {
     }
 }
 
-enum PanelJob {
-    Frame(OwnedFrame),
-    On,
-    Off,
-    Clear,
-    Stop,
-}
-
-/// A driver writes to a physical panel (drivers::base) over a bus that takes
-/// milliseconds a frame. The loop reaches a driver through this Output. The
-/// bus write runs on the sink's own thread, so the loop renders frame N+1
-/// while the wire carries frame N.
-///
-/// The pool holds two buffers: one on the wire, one under the render.
-/// acquire() blocks when the wire is a full frame behind, so an unpaced loop
-/// settles at the bus rate, and no frame is dropped.
-struct PanelSink {
-    dest: &'static str,
-    persists: bool,
-    native_format: &'static str,
-    allocated: usize,
-    jobs: Sender<PanelJob>,
-    free: Receiver<OwnedFrame>,
-    recycle: Sender<OwnedFrame>,
-    err: Arc<Mutex<Option<String>>>,
-    worker: Option<JoinHandle<()>>,
-}
-
-impl PanelSink {
-    fn new(driver: Box<dyn DisplayDriver + Send>) -> PanelSink {
-        let (jobs, inbox) = channel::<PanelJob>();
-        let (recycle, free) = channel::<OwnedFrame>();
-        let err = Arc::new(Mutex::new(None));
-        let (dest, persists, native_format) =
-            (driver.dest(), driver.persists(), driver.native_format());
-        let worker = {
-            let (recycle, err) = (recycle.clone(), Arc::clone(&err));
-            std::thread::spawn(move || run_panel(driver, &inbox, &recycle, &err))
-        };
-        PanelSink {
-            dest,
-            persists,
-            native_format,
-            allocated: 0,
-            jobs,
-            free,
-            recycle,
-            err,
-            worker: Some(worker),
-        }
-    }
-
-    fn failure(&self) -> Option<String> {
-        self.err.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Stop the writer once it drains. Report the failure it holds.
-    fn finish(&mut self) -> Result<()> {
-        let _ = self.jobs.send(PanelJob::Stop);
-        if let Some(worker) = self.worker.take() {
-            if worker.join().is_err() {
-                bail!("the panel writer thread died");
-            }
-        }
-        match self.failure() {
-            Some(e) => bail!(e),
-            None => Ok(()),
-        }
-    }
-}
-
-/// The panel thread: write, recycle. The buffer belongs to the worker alone
-/// between submit and recycle, so the driver reads it in place. After a
-/// failure the worker keeps draining and recycling, so a blocked acquire()
-/// never starves. The error reaches the caller on the next acquire(), the
-/// next submit(), or on close().
-fn run_panel(
-    mut driver: Box<dyn DisplayDriver + Send>,
-    inbox: &Receiver<PanelJob>,
-    recycle: &Sender<OwnedFrame>,
-    err: &Arc<Mutex<Option<String>>>,
-) {
-    let note = |r: Result<()>| {
-        if let Err(e) = r {
-            let mut slot = err.lock().unwrap_or_else(|e| e.into_inner());
-            if slot.is_none() {
-                *slot = Some(format!("{e:#}"));
-            }
-        }
-    };
-    loop {
-        match inbox.recv() {
-            Ok(PanelJob::Frame(buf)) => {
-                // the write never holds the lock, because acquire() reads it
-                // every frame from the render thread
-                let failed = err.lock().unwrap_or_else(|e| e.into_inner()).is_some();
-                if !failed {
-                    note(driver.write(&buf.data));
-                }
-                let _ = recycle.send(buf);
-            }
-            Ok(PanelJob::On) => note(driver.turn_on()),
-            Ok(PanelJob::Off) => note(driver.turn_off()),
-            Ok(PanelJob::Clear) => note(driver.clear()),
-            Ok(PanelJob::Stop) | Err(_) => break,
-        }
-    }
-    note(driver.close());
-}
-
-impl Output for PanelSink {
-    fn dest(&self) -> &str {
-        self.dest
-    }
-
-    fn persists(&self) -> bool {
-        self.persists
-    }
-
-    fn pooled(&self) -> bool {
-        true
-    }
-
-    /// A buffer of `shape` to render into. It takes the recycled buffer
-    /// first. It grows the pool to two next. It blocks for the recycled
-    /// buffer last, which is the render's only wait. Single-producer: only
-    /// the render loop calls it.
-    fn acquire(&mut self, shape: (i32, i32, i32)) -> Result<OwnedFrame> {
-        if let Some(e) = self.failure() {
-            bail!(e);
-        }
-        if let Ok(buf) = self.free.try_recv() {
-            return Ok(buf);
-        }
-        if self.allocated < 2 {
-            self.allocated += 1;
-            return Ok(OwnedFrame::of(shape));
-        }
-        Ok(self.free.recv()?)
-    }
-
-    /// Queue a filled buffer for the wire.
-    fn submit(&mut self, buf: OwnedFrame) -> Result<()> {
-        if let Some(e) = self.failure() {
-            let _ = self.recycle.send(buf);
-            bail!(e);
-        }
-        // after close() no worker is left, so the frame goes nowhere
-        let _ = self.jobs.send(PanelJob::Frame(buf));
-        Ok(())
-    }
-
-    /// Copy a caller-owned frame into a pooled buffer and submit it.
-    fn write(&mut self, frame: Frame<'_>) -> Result<()> {
-        let mut buf = self.acquire((frame.height, frame.width, frame.components))?;
-        buf.data.copy_from_slice(frame.data);
-        self.submit(buf)
-    }
-
-    fn turn_on(&mut self) -> Result<()> {
-        let _ = self.jobs.send(PanelJob::On);
-        Ok(())
-    }
-
-    fn turn_off(&mut self) -> Result<()> {
-        let _ = self.jobs.send(PanelJob::Off);
-        Ok(())
-    }
-
-    fn clear(&mut self) -> Result<()> {
-        let _ = self.jobs.send(PanelJob::Clear);
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<()> {
-        self.finish()
-    }
-}
-
-impl Drop for PanelSink {
-    fn drop(&mut self) {
-        let _ = self.finish();
-    }
-}
-
 /// The sinks in flag order: the display, then -o, then --h264.
 fn sink_list<'a>(
     scanout: &'a mut Option<Scanout>,
-    panel: &'a mut Option<PanelSink>,
     file: &'a mut FileSink,
     h264: &'a mut Option<H264Stream>,
 ) -> Vec<&'a mut dyn Output> {
     let mut sinks: Vec<&mut dyn Output> = Vec::new();
     if let Some(s) = scanout.as_mut() {
-        sinks.push(s);
-    }
-    if let Some(s) = panel.as_mut() {
         sinks.push(s);
     }
     match file {
@@ -797,7 +552,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     }
     report::apply(a);
     // the scene loads first: it owns the tokens after `--` and their --help. A
-    // rejected scene fails before a panel opens. It builds its own buffers as
+    // rejected scene fails before a display opens. It builds its own buffers as
     // it loads, so it learns the render size before that.
     if let Some((w, h)) = prospective_size(a) {
         let turned = a.rotate == 90 || a.rotate == 270;
@@ -811,7 +566,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     }
     if matches!(panel, Panel::None) && !given(&a.output) && !given(&a.h264) && !a.serve {
         return Err(exit(format!(
-            "{}: pass -o PATTERN, --display NAME, --h264 PATH or --serve",
+            "{}: pass -o PATTERN, --display, --h264 PATH or --serve",
             a.cmd
         )));
     }
@@ -819,27 +574,18 @@ fn cmd_render(a: &Ns) -> Result<()> {
     let ((w, h), components) = geometry(a, &panel)?;
     let pace = pacer(a, &panel);
     let mut scanout = kms.then_some(Scanout);
-    let mut sink = match panel {
-        Panel::Driver(d) => Some(PanelSink::new(d)),
-        _ => None,
-    };
     let mut file = file_sink(a)?;
     if a.serve {
         // The console draws on this thread, so it takes the sinks as they are.
-        // A panel driver's bus handles live on the sink's writer thread. The
-        // scanout is never a sink here. It is a mode of the Renderer itself.
+        // The scanout is never a sink here. It is a mode of the Renderer
+        // itself.
         let mut sinks: Vec<Box<dyn Output>> = Vec::new();
-        let mut native_format = None;
-        if let Some(panel) = sink {
-            native_format = Some(panel.native_format.to_string());
-            sinks.push(Box::new(panel));
-        }
         match file {
             FileSink::Raw(s) => sinks.push(Box::new(s)),
             FileSink::Images(s) => sinks.push(Box::new(s)),
             FileSink::None => {}
         }
-        return serve(a, sinks, native_format, (w, h), components, kms, dri);
+        return serve(a, sinks, (w, h), components, kms, dri);
     }
     let Some((scene, process)) = scene else {
         unreachable!("loaded above for every render that is not --serve")
@@ -887,7 +633,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     let engines = keep.then(usage::Engines::read).flatten();
     let want = frames_of(a);
     let (ran, drawn, elapsed, out) = {
-        let sinks = sink_list(&mut scanout, &mut sink, &mut file, &mut h264);
+        let sinks = sink_list(&mut scanout, &mut file, &mut h264);
         let mut lp = Loop::new(&mut r, sinks);
         lp.controller = Some(&controller);
         lp.provider = Some(Box::new(|name, size, frame| {
@@ -929,7 +675,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
         other => other,
     };
     let mut closed = Ok(());
-    for s in sink_list(&mut scanout, &mut sink, &mut file, &mut h264) {
+    for s in sink_list(&mut scanout, &mut file, &mut h264) {
         closed = closed.and(s.close());
     }
     r.close();
@@ -956,7 +702,6 @@ fn cmd_render(a: &Ns) -> Result<()> {
 fn serve(
     a: &Ns,
     sinks: Vec<Box<dyn Output>>,
-    native_format: Option<String>,
     size: (i32, i32),
     components: i32,
     kms: bool,
@@ -979,7 +724,6 @@ fn serve(
         components,
         alpha: a.alpha,
         sinks,
-        native_format,
         display: kms,
         rgb565: a.rgb565,
         rotate: a.rotate,
@@ -1134,7 +878,7 @@ fn print_stats(times: &[f64], wall: f64, out: &[String], used: &Usage) {
     report::summary(usage_line(used));
 }
 
-/// Where a serve run's frames go. A console with no panel and no file is still
+/// Where a serve run's frames go. A console with no display and no file is still
 /// a destination.
 fn serve_out(out: &[String]) -> Vec<String> {
     if out.is_empty() {
@@ -1167,45 +911,28 @@ fn line(text: &str) {
 /// lines that bring the card up, and the panel's firmware file. The panel
 /// then answers `--display kms` like any other display.
 fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
-    let Some(panel) = overlay::panel(&a.driver) else {
+    let Some(panel) = overlay::panel(&a.panel) else {
         return Err(exit(format!(
-            "overlay: no display driver '{}' (see: ghee displays)",
-            a.driver
+            "overlay: no panel '{}' (takes: {})",
+            a.panel,
+            overlay::panels().join(", ")
         )));
     };
     let opts = match given(&a.display_opts) {
         true => parse_kv(text(&a.display_opts), "overlay: --display-opts")?,
         false => Map::new(),
     };
-    // Only the options that describe the panel reach a kernel setup: the
-    // wire format and the update strategy are the driver's own.
-    let known = panel.options;
-    let driver = driver_options(get_driver(&a.driver)?);
-    let takes = || known.join(", ");
-    let takes_key = |k: &str| known.contains(&k);
-    let own: Vec<&str> = opts
-        .keys()
-        .map(String::as_str)
-        .filter(|k| !takes_key(k) && driver.iter().any(|o| o.name == *k))
-        .collect();
-    if !own.is_empty() {
-        return Err(exit(format!(
-            "overlay: the userspace driver alone acts on {} (the kernel setup takes: {})",
-            own.join(", "),
-            takes()
-        )));
-    }
     let unknown: Vec<&str> = opts
         .keys()
         .map(String::as_str)
-        .filter(|k| !takes_key(k) && !driver.iter().any(|o| o.name == *k))
+        .filter(|k| !panel.options.contains(k))
         .collect();
     if !unknown.is_empty() {
         return Err(exit(format!(
             "overlay: no option {} on {} (takes: {})",
             unknown.join(", "),
-            a.driver,
-            takes()
+            a.panel,
+            panel.options.join(", ")
         )));
     }
     let pairs: Vec<(String, Value)> = opts.into_iter().collect();
@@ -1232,7 +959,7 @@ fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
             if given(&a.output) {
                 return Err(exit(format!(
                     "overlay: -o with {}, a panel that takes no firmware file",
-                    a.driver
+                    a.panel
                 )));
             }
             eprintln!("add the lines above to /boot/firmware/config.txt, and reboot");
@@ -1253,24 +980,6 @@ fn cmd_displays() -> Result<()> {
     }
     if connected == 0 {
         line(&format!("{:12} no connected display", "kms"));
-    }
-    for name in available_drivers() {
-        line(&format!("{name:12} ok"));
-        let opts: Vec<String> = driver_options(get_driver(name)?)
-            .iter()
-            .map(|o| match o.default {
-                Some(v) => format!("{}={v}", o.name),
-                None => format!("{}=None", o.name),
-            })
-            .collect();
-        if !opts.is_empty() {
-            // a driver's own defaults: an SPI or I2C panel answers no probe
-            line(&format!(
-                "{:12} defaults: --display-opts {}",
-                "",
-                opts.join(",")
-            ));
-        }
     }
     Ok(())
 }
@@ -1319,14 +1028,10 @@ enum Command {
     )]
     Serve(ServeArgs),
 
-    #[command(about = "list connected cards, display drivers, and their options")]
+    #[command(about = "list the cards with a connected display")]
     Displays,
 
-    #[command(
-        about = "write the kernel's setup for a panel, so it answers --display kms",
-        after_help = "the panel then belongs to the kernel driver, and --display <NAME> \
-                      no longer reaches it"
-    )]
+    #[command(about = "write the kernel's setup for a panel, so it answers --display kms")]
     Overlay(OverlayArgs),
 
     /// The benchmark suite is a development tool, so it stays out of
@@ -1343,19 +1048,10 @@ struct RenderFlags {
         value_name = "NAME",
         num_args = 0..=1,
         default_missing_value = "kms",
-        help = "render to a hardware display: an SPI/I2C driver name, or bare \
-                (or 'kms') for the connected KMS display, HDMI or a kernel-driven \
-                panel (zero-copy scanout, needs DRM master)"
+        help = "render to the connected KMS display, HDMI or a kernel-driven \
+                panel: bare, or 'kms' (zero-copy scanout, needs DRM master)"
     )]
     display: Option<String>,
-
-    #[arg(
-        long,
-        value_name = "K=V,...",
-        help = "options for the --display driver, e.g. width=240,height=240,\
-                y_offset=80,backlight=26. `ghee displays` lists what each one takes"
-    )]
-    display_opts: Option<String>,
 
     #[arg(
         long,
@@ -1414,7 +1110,7 @@ struct RenderFlags {
     #[arg(
         long,
         value_parser = size,
-        help = "WxH to render at, a display or panel sets its own (default 320x240)"
+        help = "WxH to render at (default: the display's mode, else 320x240)"
     )]
     size: Option<(i32, i32)>,
 
@@ -1543,7 +1239,7 @@ struct RenderArgs {
 
     #[arg(
         long,
-        help = "fixed display frame rate (default: adapt to the panel's own speed)"
+        help = "fixed display frame rate (default: the display's own refresh)"
     )]
     fps: Option<f64>,
 
@@ -1606,13 +1302,17 @@ struct ServeArgs {
 
 #[derive(Args)]
 struct OverlayArgs {
-    #[arg(help = "display driver name (see: ghee displays)")]
-    driver: String,
+    #[arg(
+        value_name = "PANEL",
+        help = "the panel's controller: st7789 or ssd1306"
+    )]
+    panel: String,
 
     #[arg(
         long,
         value_name = "K=V,...",
-        help = "the panel's options, as `ghee render --display-opts` takes them"
+        help = "the panel's options, e.g. width=240,height=240,backlight=26. \
+                A wrong one lists what the panel takes"
     )]
     display_opts: Option<String>,
 
@@ -1642,7 +1342,6 @@ pub struct Ns {
     filters: Option<String>,
     stats: bool,
     display: Option<String>,
-    display_opts: Option<String>,
     rgb565: bool,
     rotate: i64,
     brightness: Option<f64>,
@@ -1684,7 +1383,6 @@ impl RenderArgs {
             quiet: self.render.quiet,
             verbose: self.render.verbose,
             display: self.render.display,
-            display_opts: self.render.display_opts,
             rgb565: self.render.rgb565,
             rotate: self.render.rotate,
             brightness: self.render.brightness,
@@ -1726,7 +1424,6 @@ impl ServeArgs {
             filters: None,
             stats: false,
             display: self.render.display,
-            display_opts: self.render.display_opts,
             rgb565: self.render.rgb565,
             rotate: self.render.rotate,
             brightness: self.render.brightness,
@@ -1917,7 +1614,7 @@ mod tests {
     fn parse_kv_malformed_exits_naming_the_flag_that_took_it() {
         for (s, what) in [
             ("quality=90,nope", "render: --save-opts"),
-            ("width=240,nope", "serve: --display-opts"),
+            ("width=240,nope", "overlay: --display-opts"),
         ] {
             let e = parse_kv(s, what).unwrap_err();
             assert_eq!(e.to_string(), format!("{what} wants k=v pairs, got 'nope'"));
@@ -1988,70 +1685,31 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_render_loops_until_stopped_and_an_image_render_is_one_frame() {
+    fn a_display_render_loops_until_stopped_and_an_image_render_is_one_frame() {
         assert_eq!(frames_of(&ns(&["render", "s", "-o", "x.png"])), 1);
         for endless in [
-            vec!["render", "s", "--display", "st7789"],
+            vec!["render", "s", "--display", "kms"],
             vec!["render", "s", "--h264", "out.h264"],
             vec!["render", "s", "--serve"],
         ] {
             assert_eq!(frames_of(&ns(&endless)), 0, "{endless:?}");
         }
         assert_eq!(
-            frames_of(&ns(&[
-                "render",
-                "s",
-                "--display",
-                "st7789",
-                "--frames",
-                "9"
-            ])),
+            frames_of(&ns(&["render", "s", "--display", "kms", "--frames", "9"])),
             9
         );
     }
 
     #[test]
-    fn display_opts_belong_to_a_panel_driver() {
-        for (extra, msg) in [
-            (vec![], "render: --display-opts without --display"),
-            (
-                vec!["--display", "kms"],
-                "render: --display-opts with --display kms; kms has no driver",
-            ),
-        ] {
-            let mut tokens = vec!["render", "s", "-o", "x.png", "--display-opts", "width=40"];
-            tokens.extend(extra);
-            assert_eq!(failure(panel_of(&ns(&tokens))), msg);
-        }
-    }
-
-    #[test]
-    fn an_unknown_display_opt_names_the_drivers_own_options() {
-        let a = ns(&[
-            "render",
-            "s",
-            "--display",
-            "st7789",
-            "--display-opts",
-            "widht=40",
-        ]);
-        let e = failure(panel_of(&a));
-        assert!(
-            e.starts_with("render: --display-opts: st7789 has no option widht"),
-            "{e}"
-        );
-        assert!(e.contains("(takes: width, height, x_offset"), "{e}");
-    }
-
-    #[test]
-    fn a_display_that_is_a_directory_says_where_the_directory_goes() {
+    fn a_display_other_than_kms_is_refused_and_a_directory_says_where_it_goes() {
         let d = tmpdir("dir-display");
         assert_eq!(
+            failure(panel_of(&ns(&["render", "s", "--display", "hdmi"]))),
+            "render: no display 'hdmi' (takes: kms)"
+        );
+        assert_eq!(
             failure(panel_of(&ns(&["serve", "--display", &d]))),
-            format!(
-                "serve: no display driver '{d}' (see: ghee displays), \
-                 and a scenes directory goes before it"
-            )
+            format!("serve: no display '{d}' (takes: kms), and a scenes directory goes before it")
         );
     }
 
@@ -2075,7 +1733,7 @@ mod tests {
         let (_d, path) = scene_file("nowhere");
         assert_eq!(
             run(&["render", &path]).unwrap_err().to_string(),
-            "render: pass -o PATTERN, --display NAME, --h264 PATH or --serve"
+            "render: pass -o PATTERN, --display, --h264 PATH or --serve"
         );
     }
 
@@ -2155,7 +1813,7 @@ mod tests {
         for (tokens, msg) in [
             (
                 vec!["overlay", "does-not-exist"],
-                "overlay: no display driver 'does-not-exist' (see: ghee displays)",
+                "overlay: no panel 'does-not-exist' (takes: st7789, ssd1306)",
             ),
             (
                 vec![
@@ -2174,23 +1832,6 @@ mod tests {
                  x_offset, y_offset, dc, rst, backlight, baudrate, spi_bus, spi_device, \
                  madctl)",
             ),
-            // the wire format and the update strategy never reach a kernel setup
-            (
-                vec![
-                    "overlay",
-                    "st7789",
-                    "--display-opts",
-                    "color_bits=12,partial=0",
-                ],
-                "overlay: the userspace driver alone acts on color_bits, partial (the \
-                 kernel setup takes: width, height, x_offset, y_offset, dc, rst, \
-                 backlight, baudrate, spi_bus, spi_device, madctl)",
-            ),
-            (
-                vec!["overlay", "ssd1306", "--display-opts", "bus=0"],
-                "overlay: the userspace driver alone acts on bus (the kernel setup takes: \
-                 height, address, speed)",
-            ),
         ] {
             assert_eq!(run(&tokens).unwrap_err().to_string(), msg, "{tokens:?}");
         }
@@ -2198,11 +1839,11 @@ mod tests {
 
     #[test]
     fn the_stats_line_names_every_destination() {
-        let out = ["panel".to_string(), "file".to_string()];
+        let out = ["kms".to_string(), "file".to_string()];
         assert_eq!(
             stats_line(&[0.010, 0.030, 0.020], 2.0, &out),
             "stats: 3 frame(s) in 2.00s, 20.00 ms/frame \
-             (min 10.00, max 30.00), 1.5 fps -> panel+file"
+             (min 10.00, max 30.00), 1.5 fps -> kms+file"
         );
     }
 
@@ -2238,8 +1879,8 @@ mod tests {
     #[test]
     fn a_serve_run_names_the_console_when_nothing_else_took_the_frames() {
         assert_eq!(serve_out(&[]), ["console"]);
-        let panel = ["panel".to_string()];
-        assert_eq!(serve_out(&panel), panel);
+        let file = ["file".to_string()];
+        assert_eq!(serve_out(&file), file);
     }
 
     #[test]
@@ -2271,7 +1912,7 @@ mod tests {
     }
 
     #[test]
-    fn geometry_takes_size_then_the_panels_own() {
+    fn geometry_takes_size_or_the_default() {
         assert_eq!(
             geometry(&ns(&["render", "s"]), &Panel::None).unwrap(),
             ((320, 240), 4)
@@ -2344,20 +1985,6 @@ mod tests {
         let a = ns(&["render", "s", "--display"]);
         assert_eq!(a.display.as_deref(), Some("kms"));
         assert!(matches!(panel_of(&a).unwrap(), Panel::Kms));
-        assert_eq!(
-            ns(&["render", "s", "--display", "st7789"])
-                .display
-                .as_deref(),
-            Some("st7789")
-        );
-    }
-
-    #[test]
-    fn a_panel_gives_a_scene_its_size_before_it_opens() {
-        let ssd1306 = get_driver("ssd1306").unwrap();
-        let a = ns(&["render", "s.py", "--display", "ssd1306"]);
-        assert_eq!(prospective_size(&a), (ssd1306.size)(&[]).ok());
-        assert!(prospective_size(&a).is_some());
     }
 
     #[test]

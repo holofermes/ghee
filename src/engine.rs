@@ -637,57 +637,6 @@ pub fn quarter_turns(degrees: i64) -> Result<c_int> {
     }
 }
 
-/// The size of a packed frame in bytes.
-/// bw packs 1bpp. Otherwise the frame packs RGB565.
-pub fn packed_size(width: i32, height: i32, bw: bool) -> usize {
-    let (w, h) = (i64::from(width), i64::from(height));
-    (if bw { w * ((h + 7) / 8) } else { w * h * 2 }) as usize
-}
-
-/// Pack an RGB(A) frame to 1bpp (bw) or RGB565 without a Renderer.
-/// An output sink that holds a frame and no engine calls this.
-#[allow(dead_code)]
-pub fn pack_frame(rgb: &[u8], width: i32, height: i32, components: i32, bw: bool) -> Vec<u8> {
-    let mut out = vec![0u8; packed_size(width, height, bw)];
-    pack_frame_into(rgb, width, height, components, bw, &mut out);
-    out
-}
-
-/// pack_frame into a caller-held buffer. The call zeros the buffer first.
-pub fn pack_frame_into(
-    rgb: &[u8],
-    width: i32,
-    height: i32,
-    components: i32,
-    bw: bool,
-    out: &mut [u8],
-) {
-    let frame = (i64::from(width) * i64::from(height) * i64::from(components)) as usize;
-    let packed = packed_size(width, height, bw);
-    // The packer reads three channels of every pixel. Fewer than 3 components
-    // reads outside the span checked below.
-    assert!(
-        components >= 3,
-        "packing needs 3+ components, got {components}"
-    );
-    // The C side reads and writes these spans. It carries no length of its own.
-    assert!(
-        rgb.len() >= frame && out.len() >= packed,
-        "packing {width}x{height}x{components} reads {frame} bytes and writes {packed}"
-    );
-    out.fill(0);
-    unsafe {
-        ffi::ghee_pack_frame(
-            width,
-            height,
-            components,
-            c_int::from(bw),
-            rgb.as_ptr(),
-            out.as_mut_ptr(),
-        );
-    }
-}
-
 pub(crate) fn err_text(err: *mut c_char) -> String {
     if err.is_null() {
         "unknown".to_string()
@@ -4176,18 +4125,6 @@ impl Renderer {
         })
     }
 
-    /// Pack an RGB(A) frame to 1bpp (bw) or RGB565.
-    #[allow(dead_code)]
-    pub fn pack(&self, rgb: &[u8], bw: bool) -> Vec<u8> {
-        pack_frame(rgb, self.width, self.height, self.components, bw)
-    }
-
-    /// pack() into a caller-held buffer. The call zeros the buffer first.
-    #[allow(dead_code)]
-    pub fn pack_into(&self, rgb: &[u8], bw: bool, out: &mut [u8]) {
-        pack_frame_into(rgb, self.width, self.height, self.components, bw, out);
-    }
-
     /// The refresh rate of the connected display mode, in Hz.
     /// A renderer outside display mode returns 0.
     pub fn display_vrefresh(&self) -> i32 {
@@ -4666,13 +4603,6 @@ mod tests {
         ] {
             assert_eq!(error_line_number(log), Some(line), "{log}");
         }
-    }
-
-    #[test]
-    fn packed_size_is_1bpp_by_column_or_rgb565() {
-        assert_eq!(packed_size(128, 32, true), 128 * 4);
-        assert_eq!(packed_size(128, 33, true), 128 * 5); // A 33rd row fills a partial byte column.
-        assert_eq!(packed_size(128, 32, false), 128 * 32 * 2);
     }
 
     #[test]

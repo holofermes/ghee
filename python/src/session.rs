@@ -1,6 +1,6 @@
 //! One scene, one renderer, one output. The host asks for each frame.
 //!
-//! The scene loading, the driver construction and the pacing are ghee's own.
+//! The scene loading and the pacing are ghee's own.
 //! A frame follows ghee::looper: `t` is the wall clock since the first frame,
 //! iTimeDelta is the period since the last frame drawn, and MAX_DT caps it.
 //! The tick of a frame carries the iTimeDelta that the frame draws with.
@@ -15,7 +15,6 @@ use std::time::Duration;
 
 use ghee::console::server::{coerce, H264_FPS};
 use ghee::draw::{Arg, Call, CallKind};
-use ghee::drivers::{available_drivers, driver_options, get_driver, DisplayDriver};
 use ghee::engine::{probe_display, quarter_turns, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
 use ghee::h264::{HardwareH264, HW_COLOR};
@@ -29,7 +28,7 @@ use serde_json::{Map, Value};
 
 use crate::serve::{encode_bitrate, encode_size, Console, ParamSet};
 
-/// A render with no panel and no display takes this size, as in the CLI.
+/// A render with no display takes this size, as in the CLI.
 pub const DEFAULT_SIZE: (i32, i32) = (320, 240);
 
 /// The KMS scanout, as `--display` names it.
@@ -39,8 +38,7 @@ pub const KMS: &str = "kms";
 const JPEG_QUALITY: u8 = 75;
 
 /// A failure reported to a host. `scene` marks what the caller wrote: the
-/// scene, the GLSL, a param name, a feed. Anything else is the driver or the
-/// system.
+/// scene, the GLSL, a param name, a feed. Anything else is the system.
 pub struct Fault {
     pub scene: bool,
     pub message: String,
@@ -269,7 +267,6 @@ enum Sink {
     None,
     /// The renderer scans out to the connected display itself.
     Kms,
-    Panel(Box<dyn DisplayDriver>),
 }
 
 /// The scene named by a host: a path, or a JSON document. A document's files
@@ -290,7 +287,7 @@ pub enum StreamMax {
 /// What open() takes, once the host's own values are parsed.
 pub struct Opening {
     pub source: Source,
-    /// A display driver, or KMS.
+    /// KMS, or None for headless.
     pub display: Option<String>,
     pub opts: Vec<(String, Value)>,
     /// The DRI card or render node.
@@ -331,7 +328,6 @@ pub struct Session {
     frame: u64,
     /// The tick of the frame drawn last, None before the first.
     drawn: Option<u64>,
-    lit: bool,
     /// The renderer's text_errors_seq() at the console's last look.
     text_errors: u64,
     /// The words of each string param, by the bare name that the wire gives
@@ -415,7 +411,7 @@ fn load(source: Source) -> Outcome<(Scene, String)> {
     Ok((scene, name))
 }
 
-/// The driver named by `display`, built from `opts` as --display-opts does.
+/// The output named by `display`, with the options in `opts`.
 fn open_sink(display: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
     let Some(name) = display else {
         if !opts.is_empty() {
@@ -423,58 +419,20 @@ fn open_sink(display: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
         }
         return Ok(Sink::None);
     };
-    if name == KMS {
-        if let Some((k, _)) = opts.iter().find(|(k, _)| k != "rgb565") {
-            return Err(Fault::scene(format!(
-                "opts: kms has no option {k} (takes: rgb565)"
-            )));
-        }
-        return Ok(Sink::Kms);
+    if name != KMS {
+        return Err(Fault::scene(format!("no display '{name}' (takes: kms)")));
     }
-    let Ok(spec) = get_driver(name) else {
-        let have: Vec<&str> = available_drivers();
+    if let Some((k, _)) = opts.iter().find(|(k, _)| k != "rgb565") {
         return Err(Fault::scene(format!(
-            "no display driver '{name}' (this build has {}, and kms)",
-            have.join(", ")
-        )));
-    };
-    // check before the driver runs: a constructor claims the GPIO lines and the
-    // SPI bus first
-    let known = driver_options(spec);
-    let unknown: Vec<&str> = opts
-        .iter()
-        .map(|(k, _)| k.as_str())
-        .filter(|k| !known.iter().any(|o| o.name == *k))
-        .collect();
-    if !unknown.is_empty() {
-        return Err(Fault::scene(format!(
-            "opts: {name} has no option {} (takes: {})",
-            unknown.join(", "),
-            known.iter().map(|o| o.name).collect::<Vec<_>>().join(", ")
+            "opts: kms has no option {k} (takes: rgb565)"
         )));
     }
-    Ok(Sink::Panel((spec.open)(opts).map_err(system_fault)?))
+    Ok(Sink::Kms)
 }
 
-/// The size of the frame on `display`, a driver's name or "kms", worked out
-/// before anything opens it: a driver's own size with `opts`, or the mode
-/// of the connected display on card `dri`, else on the first card with one.
-/// None for a driver that is not in this build or options that it refuses,
-/// and for no connected display.
-pub fn display_size(
-    display: &str,
-    opts: &[(String, Value)],
-    dri: Option<&str>,
-) -> Option<(i32, i32)> {
-    match display {
-        KMS => probe_display(dri),
-        name => (get_driver(name).ok()?.size)(opts).ok(),
-    }
-}
-
-/// (size, components) of the frame. A panel states its own geometry and pixel
-/// layout, and a connected display on card `dri`, else on the first card
-/// with one, states its mode. Both win over the host's own size.
+/// (size, components) of the frame. A connected display on card `dri`, else
+/// on the first card with one, states its mode, which wins over the host's own
+/// size.
 fn geometry(
     sink: &Sink,
     size: Option<(i32, i32)>,
@@ -487,7 +445,6 @@ fn geometry(
                 "no connected display to size from; pass width and height",
             )),
         },
-        Sink::Panel(d) => Ok(((d.width(), d.height()), d.components())),
         Sink::None => Ok((size.unwrap_or(DEFAULT_SIZE), 4)),
     }
 }
@@ -583,10 +540,8 @@ impl Session {
         let out = match &sink {
             Sink::None => Vec::new(),
             Sink::Kms => vec![DEST_KMS.to_string()],
-            Sink::Panel(d) => vec![d.dest().to_string()],
         };
         let format = match &sink {
-            Sink::Panel(d) => d.native_format().to_string(),
             _ if rgb565 => "rgb565".to_string(),
             _ if components == 3 => "rgb".to_string(),
             _ => "rgba".to_string(),
@@ -647,7 +602,6 @@ impl Session {
             period: None,
             frame: 0,
             drawn: None,
-            lit: false,
             text_errors: u64::MAX,
             strings,
             sent: Map::new(),
@@ -766,13 +720,6 @@ impl Session {
         let want = self.console.as_ref().is_some_and(Console::wants_frame);
         let drew = self.draw(want)?;
         self.mirror();
-        if !self.lit {
-            // the panel now holds a frame to light
-            self.lit = true;
-            if let Sink::Panel(d) = &mut self.sink {
-                d.turn_on().map_err(system_fault)?;
-            }
-        }
         self.drawn = Some(self.frame);
         self.frame += 1;
         let end = monotonic();
@@ -796,7 +743,7 @@ impl Session {
     }
 
     /// Render the passes and hand the frame to the output. Returns the clock at
-    /// the end of the render, before the panel write.
+    /// the end of the render.
     fn draw(&mut self, want: bool) -> Outcome<f64> {
         let Session {
             renderer,
@@ -826,14 +773,6 @@ impl Session {
                     .present(Some(&mut provider), preview)
                     .map_err(system_fault)?;
                 Ok(monotonic())
-            }
-            Sink::Panel(d) => {
-                renderer
-                    .render_into(Some(&mut provider), buf, None)
-                    .map_err(system_fault)?;
-                let drew = monotonic();
-                d.write(buf).map_err(system_fault)?;
-                Ok(drew)
             }
             Sink::None => {
                 renderer
@@ -895,7 +834,7 @@ impl Session {
         }
     }
 
-    /// This tick needs no render. The panel keeps its last frame. A console
+    /// This tick needs no render. The display keeps its last frame. A console
     /// reader still gets one: while a viewer wants a frame, the skip draws, as
     /// the CLI queues a preview for its console. A preview draw that fails
     /// falls back to a plain skip; the host's own frame() reports it.
@@ -1267,8 +1206,8 @@ impl Session {
         (layers, params)
     }
 
-    /// Blank the panel, turn it off, and drop everything the session holds.
-    pub fn close(&mut self) -> Outcome<()> {
+    /// Drop everything the session holds.
+    pub fn close(&mut self) {
         if let Some(c) = self.console.take() {
             c.stop();
         }
@@ -1276,21 +1215,8 @@ impl Session {
         if let Some(mut enc) = self.h264.take() {
             enc.close();
         }
-        let mut closing = Ok(());
-        if let Sink::Panel(d) = &mut self.sink {
-            for step in [
-                DisplayDriver::clear,
-                DisplayDriver::turn_off,
-                DisplayDriver::close,
-            ] {
-                if let Err(e) = step(d.as_mut()) {
-                    closing = Err(system_fault(e));
-                }
-            }
-        }
         self.sink = Sink::None;
         self.renderer.close();
-        closing
     }
 }
 
@@ -1327,6 +1253,6 @@ fn nap(seconds: f64) {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.close();
+        self.close();
     }
 }

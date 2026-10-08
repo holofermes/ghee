@@ -295,7 +295,4 @@ void ghee_encoder_force_keyframe(GheeEncoder *e);   // instant join for a new vi
 int  ghee_encoder_flush(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);
 void ghee_encoder_destroy(GheeScene *g, GheeEncoder *e);
 
-void ghee_pack_frame(int width, int height, int components, int bw,
-                    const uint8_t *rgb, uint8_t *packed);
-
 #endif // GHEE_ENGINE_H

@@ -5,7 +5,6 @@ use std::time::Instant;
 
 /// /stats "out" entries.
 pub const DEST_KMS: &str = "kms";
-pub const DEST_PANEL: &str = "panel";
 pub const DEST_FILE: &str = "file";
 pub const DEST_PIPE: &str = "pipe";
 pub const DEST_H264: &str = "h264";

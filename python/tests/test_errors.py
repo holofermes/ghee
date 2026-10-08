@@ -254,17 +254,13 @@ def test_a_feed_that_carries_no_numbers():
     assert str(raised.value).startswith("feed 'level' takes")
 
 
-def test_a_display_no_driver_answers_to():
+def test_a_display_other_than_kms():
     with pytest.raises(ValueError) as raised:
-        ghee.open(RED, display="nosuchpanel")
-    assert "no display driver 'nosuchpanel'" in str(raised.value)
-    assert "st7789" in str(raised.value)
+        ghee.open(RED, display="hdmi")
+    assert str(raised.value) == "no display 'hdmi' (takes: kms)"
 
 
-def test_an_option_the_driver_does_not_take():
-    with pytest.raises(ValueError) as raised:
-        ghee.open(RED, display="st7789", opts={"widht": 240})
-    assert str(raised.value).startswith("opts: st7789 has no option widht")
+def test_an_option_the_display_does_not_take():
     with pytest.raises(ValueError) as raised:
         ghee.open(RED, display="kms", opts={"width": 240})
     assert str(raised.value) == "opts: kms has no option width (takes: rgb565)"

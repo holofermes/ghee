@@ -203,8 +203,8 @@ struct GheeScene {
     GLuint quad_ibo;                     // QUAD_CHUNK quads of indices, shared by every batch
 
     // GLES2 promises RGBA readback and nothing else. vc4 reads RGB too, v3d
-    // hands back nothing for it, so a panel there would pack an all-black
-    // frame. Where RGB is missing the readback takes RGBA into scratch and
+    // hands back nothing for it, so an RGB frame there would come back all
+    // black. Where RGB is missing the readback takes RGBA into scratch and
     // drops the alpha, which costs nothing on the boards that read RGB.
     bool reads_rgb;
     uint8_t *rgba_scratch;
@@ -2849,31 +2849,4 @@ out:
     if (gbm) gbm_device_destroy(gbm);
     close(fd);
     return hw;
-}
-
-// Pack an RGB(A) frame into a compact output format: 1-bit column-major (bw)
-// or RGB565 big-endian (color). Standalone so the host can pack the output
-// buffer after a multipass render.
-void ghee_pack_frame(int width, int height, int components, int bw,
-                    const uint8_t *rgb, uint8_t *packed) {
-    if (bw) {
-        for (size_t row = 0; row < (size_t)height; row++) {
-            const size_t row_offset = (row >> 3) * (size_t)width;
-            const uint8_t bit_mask = 1 << (row & 7);
-            for (size_t col = 0; col < (size_t)width; col++) {
-                const size_t pi = (row * width + col) * components;
-                const uint8_t gray = (rgb[pi] * 30 + rgb[pi + 1] * 59 + rgb[pi + 2] * 11) / 100;
-                if (gray > 128) packed[row_offset + col] |= bit_mask;
-            }
-        }
-    } else {
-        for (size_t i = 0; i < (size_t)width * height; i++) {
-            const uint16_t r = rgb[i * components + 0];
-            const uint16_t gg = rgb[i * components + 1];
-            const uint16_t b = rgb[i * components + 2];
-            const uint16_t v = ((r & 0xF8) << 8) | ((gg & 0xFC) << 3) | (b >> 3);
-            packed[i * 2 + 0] = (v >> 8) & 0xFF;
-            packed[i * 2 + 1] = v & 0xFF;
-        }
-    }
 }

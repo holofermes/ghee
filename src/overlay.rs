@@ -39,6 +39,11 @@ pub fn panel(name: &str) -> Option<&'static Panel> {
     PANELS.iter().copied().find(|p| p.name == name)
 }
 
+/// Every panel, in table order.
+pub fn panels() -> Vec<&'static str> {
+    PANELS.iter().map(|p| p.name).collect()
+}
+
 /// panel-mipi-dbi loads this firmware file: a 15-byte magic, the format
 /// version, then each command as its byte, its parameter count and the
 /// parameters.
@@ -68,7 +73,7 @@ fn given(opts: &Opts, name: &str) -> bool {
     opt(opts, name).is_some()
 }
 
-pub(crate) fn int_opt(opts: &Opts, name: &str, default: i64) -> Result<i64> {
+fn int_opt(opts: &Opts, name: &str, default: i64) -> Result<i64> {
     match opt(opts, name) {
         None => Ok(default),
         Some(v) => v
@@ -77,13 +82,13 @@ pub(crate) fn int_opt(opts: &Opts, name: &str, default: i64) -> Result<i64> {
     }
 }
 
-pub(crate) fn i32_opt(opts: &Opts, name: &str, default: i64) -> Result<i32> {
+fn i32_opt(opts: &Opts, name: &str, default: i64) -> Result<i32> {
     let v = int_opt(opts, name, default)?;
     i32::try_from(v).map_err(|_| anyhow!("{name} {v} is out of range"))
 }
 
 /// A BCM pin number. None means the panel does without the line.
-pub(crate) fn pin_opt(opts: &Opts, name: &str, default: Option<i64>) -> Result<Option<u8>> {
+fn pin_opt(opts: &Opts, name: &str, default: Option<i64>) -> Result<Option<u8>> {
     let v = match opt(opts, name) {
         None => default,
         Some(Value::Null) => None,

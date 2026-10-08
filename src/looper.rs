@@ -775,7 +775,7 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
-    use crate::stats::{DEST_FILE, DEST_KMS, DEST_PANEL};
+    use crate::stats::{DEST_FILE, DEST_H264, DEST_KMS};
 
     const W: i32 = 64;
     const H: i32 = 48;
@@ -1450,14 +1450,14 @@ mod tests {
     #[test]
     fn out_names_every_sinks_destination_and_skips_a_nameless_one() {
         let mut r = Recorder::default();
-        let (mut k, mut p, mut f) = (
+        let (mut k, mut f, mut h) = (
             Sink::scanout(),
-            Sink::named(DEST_PANEL),
             Sink::named(DEST_FILE),
+            Sink::named(DEST_H264),
         );
         {
-            let lp = Loop::new(&mut r, vec![&mut k, &mut p, &mut f]);
-            assert_eq!(lp.out(), vec![DEST_KMS, DEST_PANEL, DEST_FILE]);
+            let lp = Loop::new(&mut r, vec![&mut k, &mut f, &mut h]);
+            assert_eq!(lp.out(), vec![DEST_KMS, DEST_FILE, DEST_H264]);
         }
         let mut nameless = Sink::named("");
         let lp = Loop::new(&mut r, vec![&mut nameless]);

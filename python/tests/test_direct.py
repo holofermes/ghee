@@ -105,7 +105,7 @@ def host(monkeypatch, argv, on_frame=None):
 
 
 def test_the_loop_runs_the_hooks_then_the_feeds_then_the_frame(monkeypatch):
-    shim, fake, _ = host(monkeypatch, ["--display", "st7789", "--frames", "3"])
+    shim, fake, _ = host(monkeypatch, ["--display", "kms", "--frames", "3"])
     seen = []
 
     @shim.tick
@@ -143,7 +143,7 @@ def test_the_loop_runs_the_hooks_then_the_feeds_then_the_frame(monkeypatch):
 
 @pytest.mark.parametrize("call,error", REFUSED)
 def test_a_param_the_scene_cannot_take_raises_as_on_the_wire(call, error, monkeypatch):
-    shim, fake, _ = host(monkeypatch, ["--display", "st7789", "--frames", "1"])
+    shim, fake, _ = host(monkeypatch, ["--display", "kms", "--frames", "1"])
 
     @shim.tick
     def hook(t):
@@ -155,7 +155,7 @@ def test_a_param_the_scene_cannot_take_raises_as_on_the_wire(call, error, monkey
 
 
 def test_a_layer_set_reaches_the_handle(monkeypatch):
-    shim, fake, _ = host(monkeypatch, ["--display", "st7789", "--frames", "1"])
+    shim, fake, _ = host(monkeypatch, ["--display", "kms", "--frames", "1"])
 
     @shim.tick
     def hook(t):
@@ -174,9 +174,7 @@ def test_the_host_flags_reach_the_bindings(monkeypatch):
         monkeypatch,
         [
             "--display",
-            "st7789",
-            "--display-opts",
-            "width=240,backlight=26,madctl=0x00,bus=spi0",
+            "kms",
             "--size",
             "64x48",
             "--fps",
@@ -198,8 +196,7 @@ def test_the_host_flags_reach_the_bindings(monkeypatch):
     )
     shim.run(scene_of(shim))
     assert opened["scene"] == scene_of(shim).to_dict()
-    assert opened["display"] == "st7789"
-    assert opened["opts"] == {"width": 240, "backlight": 26, "madctl": 0, "bus": "spi0"}
+    assert opened["display"] == "kms"
     assert (opened["width"], opened["height"]) == (64, 48)
     assert (opened["fps"], opened["serve"], opened["timestep"]) == (
         30.0,
@@ -254,13 +251,29 @@ def test_a_share_of_the_render_size_turns_with_a_quarter_rotate(monkeypatch):
     assert got.bar == (16, 64)
 
 
+def connected(monkeypatch, mode):
+    """A connected display of `mode` on every card, as ghee's probe finds it,
+    -> the cards that the probe was asked about."""
+    from ghee import _native
+
+    asked = []
+
+    def probe(dri=None):
+        asked.append(dri)
+        return mode
+
+    monkeypatch.setattr(_native, "_display_size", probe)
+    return asked
+
+
 def test_a_share_of_the_render_size_is_a_share_of_the_display(monkeypatch):
-    shim, _, _ = host(monkeypatch, ["--display", "ssd1306"])
+    asked = connected(monkeypatch, (128, 32))
+    shim, _, _ = host(monkeypatch, ["--display", "--dri", "/dev/dri/card1"])
     got = shim.args([shim.Arg("bar", "size", default="half")])
     assert got.bar == (64, 16)
+    assert asked == ["/dev/dri/card1"]
 
 
-# An SSD1306 module of ghee's driver is 128x32.
 @pytest.mark.parametrize(
     "argv,size",
     [
@@ -268,12 +281,13 @@ def test_a_share_of_the_render_size_is_a_share_of_the_display(monkeypatch):
         (["--serve"], (320, 240)),
         (["--size", "128x32"], (128, 32)),
         (["--size", "128x32", "--rotate", "270"], (32, 128)),
-        (["--display", "ssd1306"], (128, 32)),
-        (["--display=ssd1306", "--rotate", "90"], (32, 128)),
-        (["--display", "st7789", "--display-opts", "width=240,height=135"], (240, 135)),
+        ([], (128, 32)),
+        (["--display"], (128, 32)),
+        (["--display=kms", "--rotate", "90"], (32, 128)),
     ],
 )
 def test_a_direct_run_renders_at_its_size_turned_by_its_rotate(argv, size, monkeypatch):
+    connected(monkeypatch, (128, 32))
     shim, _, _ = host(monkeypatch, argv)
     monkeypatch.delenv(shim.SIZE, raising=False)
     shim.args([])
@@ -287,7 +301,7 @@ def test_a_direct_run_renders_at_its_size_turned_by_its_rotate(argv, size, monke
         (["--display"], "kms", None),
         (["-o", "f.png"], None, None),
         (["--serve"], None, ("127.0.0.1", 8090)),
-        (["-o", "-", "--display", "st7789"], "st7789", None),
+        (["-o", "-", "--display", "kms"], "kms", None),
     ],
 )
 def test_a_run_with_no_output_goes_to_the_display(argv, display, serve, monkeypatch):
@@ -347,17 +361,17 @@ def test_o_takes_an_image_pattern_or_a_pipe(monkeypatch, capsys):
 
 def test_a_scene_takes_its_own_args_beside_the_host_flags(monkeypatch):
     shim, _, opened = host(
-        monkeypatch, ["--bins", "8", "--display", "st7789", "--frames", "1"]
+        monkeypatch, ["--bins", "8", "--display", "kms", "--frames", "1"]
     )
     got = shim.args([shim.Arg("bins", "int", default=4)])
     assert got.bins == 8
     shim.run(scene_of(shim))
-    assert opened["display"] == "st7789"
+    assert opened["display"] == "kms"
 
 
 def test_a_wire_run_refuses_the_host_flags(monkeypatch):
     """ghee owns the render under the wire, so the scene takes its args alone."""
-    shim, _, _ = host(monkeypatch, ["--display", "st7789"])
+    shim, _, _ = host(monkeypatch, ["--display", "kms"])
     monkeypatch.setenv(shim.WIRE, "1")
     monkeypatch.setattr(sys, "stderr", io.StringIO())
     with pytest.raises(SystemExit):
@@ -365,7 +379,7 @@ def test_a_wire_run_refuses_the_host_flags(monkeypatch):
 
 
 def test_a_feed_the_scene_never_declared_stops_before_the_render(monkeypatch):
-    shim, fake, opened = host(monkeypatch, ["--display", "st7789", "--frames", "1"])
+    shim, fake, opened = host(monkeypatch, ["--display", "kms", "--frames", "1"])
 
     @shim.feed("nope")
     def nope(t):
@@ -409,7 +423,7 @@ def test_a_run_that_ghee_refuses_stops_with_its_one_line(error, monkeypatch, cap
 
 
 def test_an_exception_of_the_script_keeps_its_traceback(monkeypatch):
-    shim, _, _ = host(monkeypatch, ["--display", "st7789", "--frames", "1"])
+    shim, _, _ = host(monkeypatch, ["--display", "kms", "--frames", "1"])
 
     @shim.tick
     def hook(t):
@@ -427,7 +441,7 @@ def test_an_exception_of_the_script_keeps_its_traceback(monkeypatch):
         (["-o", "f.####.png", "--frames", "2"], 2),
         (["-o", "f.####.png", "--frames", "-1"], 0),
         (["-o", "f.####.png", "--frames", "0"], 4),
-        (["-o", "f.####.png", "--display", "st7789"], 4),
+        (["-o", "f.####.png", "--display", "kms"], 4),
         (["-o", "f.####.png", "--serve"], 4),
         ([], 4),
     ],
@@ -453,7 +467,7 @@ def test_an_endless_run_ends_on_a_sigterm(monkeypatch):
         if drawn == 2:
             signal.raise_signal(signal.SIGTERM)
 
-    shim, fake, _ = host(monkeypatch, ["--display", "st7789"], on_frame)
+    shim, fake, _ = host(monkeypatch, ["--display", "kms"], on_frame)
     held = signal.getsignal(signal.SIGTERM)
     shim.run(scene_of(shim))
     assert [c[0] for c in fake.calls] == ["frame", "frame", "close"]

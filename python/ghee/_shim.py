@@ -720,14 +720,10 @@ def _direct_size(argv: tuple[str, ...]) -> tuple[int, int] | None:
         if display is None and _flag(argv, "-o", "--output") is None:
             display = None if "--serve" in argv else "kms"
         found = None
-        if display is not None:
+        if display == "kms":
             from ghee import _ext
 
-            try:
-                opts = _display_opts(_flag(argv, "--display-opts") or "")
-            except argparse.ArgumentTypeError:
-                opts = {}
-            found = _ext()._display_size(display, opts, _flag(argv, "--dri"))
+            found = _ext()._display_size(_flag(argv, "--dri"))
         size = found or (320, 240)
     # A run turned a quarter renders its scene at the size turned.
     turn = _flag(argv, "--rotate") or ""
@@ -862,26 +858,6 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
     return _HOST
 
 
-def _display_opts(s: str) -> dict:
-    """K=V,... as `ghee render --display-opts` takes it: each value a Python
-    literal, else its text."""
-    import ast
-
-    opts = {}
-    for pair in s.split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
-        k, eq, v = pair.partition("=")
-        if not eq:
-            raise argparse.ArgumentTypeError(f"wants k=v pairs, got '{pair}'")
-        try:
-            opts[k.strip()] = ast.literal_eval(v.strip())
-        except (ValueError, SyntaxError):
-            opts[k.strip()] = v.strip()
-    return opts
-
-
 def _rotation(s: str) -> int:
     """A --rotate value: 0, 90, 180 or 270."""
     try:
@@ -934,15 +910,8 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
         nargs="?",
         const="kms",
         metavar="NAME",
-        help="a display driver name, or bare or 'kms' for the connected KMS "
-        "display (the default with no -o and no --serve)",
-    )
-    p.add_argument(
-        "--display-opts",
-        type=_display_opts,
-        default={},
-        metavar="K=V,...",
-        help="options for the --display driver",
+        help="the connected KMS display: bare, or 'kms' (the default with no -o "
+        "and no --serve)",
     )
     p.add_argument(
         "--serve", action="store_true", help="also run the console on this render"
@@ -964,7 +933,7 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
         "--size",
         type=_size,
         metavar="WxH",
-        help="WxH to render at; a display or a panel states its own",
+        help="WxH to render at; a display states its own",
     )
     p.add_argument("--fps", type=float, metavar="N", help="frame rate cap")
     p.add_argument(
@@ -1488,7 +1457,6 @@ def _open(scene: Scene, a):
         handle = open_scene(
             doc,
             display=_display(a),
-            opts=a.display_opts or None,
             dri=a.dri,
             rotate=a.rotate,
             width=w,
@@ -1523,7 +1491,7 @@ def _destinations(a) -> str:
     out = []
     display = _display(a)
     if display is not None:
-        out.append("kms" if display == "kms" else "panel")
+        out.append("kms")
     if a.output is not None:
         out.append("pipe" if a.output == "-" else "file")
     if not out:

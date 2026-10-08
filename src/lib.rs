@@ -45,7 +45,6 @@ pub mod console;
 pub(crate) mod cparam;
 pub mod css;
 pub mod draw;
-pub mod drivers;
 pub mod emoji;
 pub mod engine;
 pub(crate) mod feeds;

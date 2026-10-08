@@ -263,12 +263,4 @@ extern "C" {
         is_key: *mut c_int,
     ) -> c_int;
     pub fn ghee_encoder_destroy(g: *mut GheeScene, e: *mut GheeEncoder);
-    pub fn ghee_pack_frame(
-        width: c_int,
-        height: c_int,
-        components: c_int,
-        bw: c_int,
-        rgb: *const u8,
-        packed: *mut u8,
-    );
 }

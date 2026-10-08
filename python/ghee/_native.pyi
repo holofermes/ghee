@@ -10,8 +10,8 @@ from ._shim import Blend, Layers, Render, Scene, TextAlign
 
 __version__: str
 
-# A display driver of this build, or "kms" for the connected KMS display.
-_Display: TypeAlias = Literal["kms", "st7789", "ssd1306"]
+# The connected KMS display.
+_Display: TypeAlias = Literal["kms"]
 
 class _Tick(TypedDict):
     """One tick: the frame's number, its time, the iTimeDelta that it draws
@@ -240,12 +240,11 @@ def _numbered(pattern: str) -> bool:
     """True when the image file name `pattern` numbers its frames."""
 
 def _display_size(
-    display: str,
-    opts: dict[str, Any] | None = None,
     dri: str | os.PathLike[str] | None = None,
 ) -> tuple[int, int] | None:
-    """The width and height of the frame on `display`, worked out before
-    anything opens it. None when no size can be known."""
+    """The mode of the connected display on card `dri`, else on the first
+    card with one, worked out before anything opens it. None for no
+    connected display."""
 
 def open(
     scene: str | os.PathLike[str] | dict[str, Any] | Scene | None = None,

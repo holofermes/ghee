@@ -3,7 +3,7 @@
 //! ```python
 //! import ghee
 //!
-//! with ghee.open("scene.json", display="st7789", fps=30) as h:
+//! with ghee.open("scene.json", display="kms", fps=30) as h:
 //!     while playing:
 //!         h.set_param("gain", 1.5)
 //!         h.feed("level", bars)
@@ -28,8 +28,8 @@ use serde_json::{Map, Value};
 
 use session::{Fault, Fed, Opening, Session, Source, StreamMax, Tick};
 
-/// A scene error is the caller's text: ValueError. A driver or system error is
-/// the host's: RuntimeError.
+/// A scene error is the caller's text: ValueError. A system error is the
+/// host's: RuntimeError.
 fn fault(f: Fault) -> PyErr {
     match f.scene {
         true => PyValueError::new_err(f.message),
@@ -39,9 +39,8 @@ fn fault(f: Fault) -> PyErr {
 
 /// A value that belongs to one thread.
 ///
-/// The engine makes its GL context current on the thread that built it, and a
-/// panel driver binds its SPI and GPIO handles to that thread. Neither closes
-/// anywhere else.
+/// The engine makes its GL context current on the thread that built it, and
+/// the context closes nowhere else.
 struct Affine<T> {
     owner: ThreadId,
     held: Option<T>,
@@ -84,8 +83,8 @@ impl<T> Affine<T> {
 impl<T> Drop for Affine<T> {
     fn drop(&mut self) {
         if thread::current().id() != self.owner {
-            // The GL context and the panel handles are this thread's to close.
-            // A drop anywhere else leaks them instead.
+            // The GL context is this thread's to close. A drop anywhere else
+            // leaks it instead.
             std::mem::forget(self.held.take());
         }
     }
@@ -465,7 +464,7 @@ impl Handle {
         tick_dict(py, tick)
     }
 
-    /// Take this tick with no draw. The panel keeps its last frame.
+    /// Take this tick with no draw. The display keeps its last frame.
     ///
     /// Returns the same tick as frame().
     fn skip<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -501,13 +500,12 @@ impl Handle {
         Ok(self.held.get()?.gl())
     }
 
-    /// Blank the panel and drop everything the handle holds. A second call is
-    /// no error.
+    /// Drop everything the handle holds. A second call is no error.
     fn close(&mut self) -> PyResult<()> {
-        match self.held.take()? {
-            Some(mut session) => session.close().map_err(fault),
-            None => Ok(()),
+        if let Some(mut session) = self.held.take()? {
+            session.close();
         }
+        Ok(())
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -537,16 +535,16 @@ impl Handle {
 ///
 /// `scene` is a path to a .scene.json, the JSON text of a scene, a dict, or a
 /// ghee.Scene. None makes one pass, `main`, that clears to black.
-/// `display` names a display driver as `ghee render --display` takes it, or
-/// "kms" for the connected display. None renders headless, and pixels() reads
-/// the frame back.
-/// `opts` holds the driver options, as `--display-opts` takes them.
+/// `display` is "kms" for the connected display. None renders headless, and
+/// pixels() reads the frame back.
+/// `opts` holds the display's options: {"rgb565": True} scans out in 16-bit
+/// color, as `ghee render --rgb565` does.
 /// `dri` is the card, as `--dri` takes it: with "kms", the card whose display
 /// shows the frames, the first card with a display when None.
 /// `rotate` turns the frame clockwise on its way out, 0, 90, 180 or 270
 /// degrees, and at 90 and 270 the scene renders at the frame's size turned.
-/// `width` and `height` size a headless frame. A panel or a display states its
-/// own size.
+/// `width` and `height` size a headless frame. A display states its own
+/// size.
 /// `fps` caps the pace. None runs free.
 /// `timestep` pins time to frame*S, so a render repeats bit for bit.
 /// `alpha` keeps the output pass's alpha in pixels(), opaque without it.
@@ -596,7 +594,7 @@ fn open(
         None => Vec::new(),
         Some(d) => match to_json(d)? {
             Value::Object(map) => map.into_iter().collect(),
-            _ => return Err(PyValueError::new_err("opts takes a dict of driver options")),
+            _ => return Err(PyValueError::new_err("opts takes a dict of display options")),
         },
     };
     let size = match (width, height) {
@@ -630,23 +628,14 @@ fn open(
     })
 }
 
-/// The width and height of the frame on `display`, as open() takes it with
-/// `opts` and `dri`, worked out before anything opens it. None when no size
-/// can be known: no such driver, options that it refuses, or no connected
-/// display.
+/// The mode of the connected display on card `dri`, else on the first card
+/// with one, as open() takes it with display="kms", worked out before
+/// anything opens it. None for no connected display.
 #[pyfunction]
-#[pyo3(signature = (display, opts=None, dri=None))]
-fn _display_size(
-    display: &str,
-    opts: Option<&Bound<'_, PyAny>>,
-    dri: Option<PathBuf>,
-) -> PyResult<Option<(i32, i32)>> {
-    let opts: Vec<(String, Value)> = match opts.map(to_json).transpose()? {
-        Some(Value::Object(map)) => map.into_iter().collect(),
-        _ => Vec::new(),
-    };
+#[pyo3(signature = (dri=None))]
+fn _display_size(dri: Option<PathBuf>) -> PyResult<Option<(i32, i32)>> {
     let dri = dri.map(|d| d.to_string_lossy().into_owned());
-    Ok(session::display_size(display, &opts, dri.as_deref()))
+    Ok(ghee::engine::probe_display(dri.as_deref()))
 }
 
 /// True when the image file name `pattern` numbers its frames: a run of `#`

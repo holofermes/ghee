@@ -41,7 +41,7 @@ use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, RenderTarget, Sc
 use crate::output::{encode_jpeg, encode_png, Scanout};
 use crate::scene::{ArraySize, Param, ParamValue, Reach, Scene};
 use crate::sources::{collect, Snapshot};
-use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG, DEST_PANEL};
+use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG};
 
 /// JPEG quality for the MJPEG preview
 pub const PREVIEW_QUALITY: u8 = 75;
@@ -461,8 +461,6 @@ pub struct Console {
     /// The /stats destinations of the caller's sinks. A sink itself belongs to
     /// the render thread.
     pub sink_dests: Vec<String>,
-    /// A panel's own pixel format. None takes the readback's.
-    pub native_format: Option<String>,
     /// The interval a stale check reads disk at. None takes the default window.
     pub stale_interval: Option<f64>,
     arrays: Vec<(String, ArraySource)>,
@@ -541,7 +539,6 @@ impl Console {
             timestep: None,
             dri: None,
             sink_dests: Vec::new(),
-            native_format: None,
             stale_interval: None,
             arrays: Vec::new(),
             stat: Mutex::new(Stat {
@@ -605,14 +602,6 @@ impl Console {
             out.push(DEST_MJPEG.to_string());
         }
         out
-    }
-
-    /// The pixel format the frames end in. A panel's own wins over the
-    /// readback's.
-    fn format(&self) -> String {
-        self.native_format
-            .clone()
-            .unwrap_or_else(|| "rgba".to_string())
     }
 
     /// The /stats payload. Each rate computes on read, so an idle loop's number
@@ -2139,7 +2128,6 @@ pub fn render_loop(
     let text_errors = Cell::new(renderer.borrow().text_errors_seq());
     let published = Cell::new(f64::NEG_INFINITY);
     let timed = on_stats.is_some();
-    let paced_by_panel = sinks.iter().any(|s| s.dest() == DEST_PANEL);
     let (elapsed, out): (f64, Vec<String>);
     {
         let mut refs: Vec<&mut dyn Output> = Vec::new();
@@ -2154,9 +2142,8 @@ pub fn render_loop(
         render.timestep = console.timestep;
         render.rate = Some(Arc::clone(&console.frame_rate));
         render.pacer = pacer;
-        // A panel sink blocks acquire() at its bus rate, and that wait is the
-        // yield. Any other loop rests so the handler and encoder threads run.
-        render.rest = if paced_by_panel { 0.0 } else { 0.003 };
+        // the loop rests so the handler and encoder threads run
+        render.rest = 0.003;
         let feed = provider(console);
         render.provider = Some(Box::new(feed));
         render.controller = Some(&ctrl);
@@ -2848,16 +2835,13 @@ pub struct Options {
     /// Filters every scene ends with, after its own. A host whose panel needs
     /// one sets them here.
     pub filters: Vec<String>,
-    /// The output sinks the frames also reach, so a console drives a panel or
-    /// writes files. `display` covers the KMS scanout instead, because that one
+    /// The output sinks the frames also reach, so a console writes files. `display` covers the KMS scanout instead, because that one
     /// is a mode the renderer is created in. run() writes these from its own
     /// thread, so a sink bound to the thread that built it belongs here.
     pub sinks: Vec<Box<dyn Output>>,
     /// Paces the render loop, as a display's fixed rate does. None draws as
     /// fast as the sinks and the viewers take frames.
     pub pacer: Option<Box<dyn Pacer>>,
-    /// The pixel format a panel sink packs to, for /stats.
-    pub native_format: Option<String>,
     pub components: i32,
     /// Keep the output pass's alpha in 4-component frames.
     pub alpha: bool,
@@ -2893,8 +2877,6 @@ impl Default for Options {
             filters: Vec::new(),
             sinks: Vec::new(),
             pacer: None,
-
-            native_format: None,
             components: 4,
             alpha: false,
             frames: 0,
@@ -2927,7 +2909,6 @@ pub fn run(opts: Options) -> Result<()> {
         store,
         sinks,
         pacer,
-        native_format,
         components,
         alpha,
         frames,
@@ -2981,11 +2962,9 @@ pub fn run(opts: Options) -> Result<()> {
         .map(|s| s.dest().to_string())
         .filter(|d| !d.is_empty())
         .collect();
-    console.native_format = native_format;
     console.arrays = arrays;
-    let format = console.format();
     lock(&console.stat).display =
-        serde_json::json!({"w": size.0, "h": size.1, "format": format, "rotation": 0});
+        serde_json::json!({"w": size.0, "h": size.1, "format": "rgba", "rotation": 0});
     console.ask(&names[0]);
     let console = Arc::new(console);
     console.reset_stats();
@@ -3013,7 +2992,7 @@ pub fn run(opts: Options) -> Result<()> {
     match make_renderer(&console) {
         Ok(r) => {
             println!(
-                "ghee console: {} scenes [{}] on {host}:{port} (scenes={}, preview {}x{} {format})",
+                "ghee console: {} scenes [{}] on {host}:{port} (scenes={}, preview {}x{} rgba)",
                 names.len(),
                 names
                     .iter()
@@ -4583,13 +4562,12 @@ mod tests {
 
     // run()'s own loop
 
-    /// A sink that never leaves the thread that built it. A panel driver's SPI
-    /// and GPIO handles work the same way.
+    /// A sink that never leaves the thread that built it.
     struct Bound(Rc<Cell<u32>>);
 
     impl Output for Bound {
         fn dest(&self) -> &str {
-            crate::stats::DEST_PANEL
+            "bound"
         }
 
         fn persists(&self) -> bool {
@@ -4614,7 +4592,6 @@ mod tests {
             size: (32, 24),
             frames: 3,
             sinks: vec![Box::new(Bound(Rc::clone(&drawn)))],
-            native_format: Some("rgb565".to_string()),
             ..Options::default()
         });
         assert!(ran.is_ok(), "{:?}", ran.err());
@@ -4647,7 +4624,7 @@ mod tests {
         let (n, wall, out) = summary.borrow().clone().expect("no summary");
         assert_eq!(n, 3);
         assert!(wall > 0.0);
-        assert_eq!(out, [crate::stats::DEST_PANEL]);
+        assert_eq!(out, ["bound"]);
     }
 
     #[test]

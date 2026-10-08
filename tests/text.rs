@@ -3532,6 +3532,27 @@ fn every_layer_shader_that_ghee_writes_runs_on_one_thread_on_vc4() {
     }
 }
 
+#[test]
+fn every_filter_that_ghee_ships_runs_on_one_thread_on_vc4() {
+    // Each filter that ghee ships reads its last texture in an if that the
+    // compiler cannot drop, so VC4 runs it on one thread.
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ghee/filters");
+    let mut files: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().ends_with(".filter.json"))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no filter in {dir}");
+    for path in files {
+        let fd: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let fragment = fd["fragment"].as_str().unwrap();
+        if let Some(last) = fragment.lines().rfind(|l| l.contains("texture2D(")) {
+            assert!(guarded(last), "{}: {last}", path.display());
+        }
+    }
+}
+
 // Colour glyphs
 
 /// A colour bitmap of a fixture font, at its largest strike.

@@ -1163,6 +1163,8 @@ async function refresh(force = false){
       });
     });
     take(got);
+    // a read that this page asked for is the scene as it is now
+    if (force){ postErr = ""; $("#behind").hidden = true; }
     // a kept layer reads again at the next poll
     if (kept) known = -1;
     if (open === COMMON) curPass = hasCommon() ? COMMON : 0;

@@ -897,8 +897,10 @@ ghee render --demo stats --display kms --rotate 180 --brightness 0.5
 ```
 
 The kernel drives a range of SPI and I2C panels, each set up with a
-device-tree overlay. `ghee overlay` writes what an ST7789 or an SSD1306 needs
-and says how to install it, and the panel then answers `--display kms`.
+device-tree overlay. `ghee overlay` writes what an ST7789, an ILI9341, an
+SSD1306, an SH1106 or an SSD1322 needs and says how to install it, and the
+panel then answers `--display kms`. Careful: the ILI9341, SH1106 and SSD1322
+setups follow the kernel's drivers and bindings, and are untested on a panel.
 
 `ghee overlay st7789` needs the panel's `width` and `height`. `madctl` sets
 its rotation and mirroring, 0xC0 by default, `x_offset` and `y_offset` place
@@ -917,6 +919,13 @@ wrote panel.bin. Copy it to /lib/firmware/panel.bin, add the lines above to
 /boot/firmware/config.txt, and reboot
 ```
 
+`ghee overlay ili9341` takes the same options, and its firmware replays the
+init of the kernel's own ili9341 driver. The panel is 320x240 by default, its
+`madctl` 0x28 when it is wider than tall and 0x48 otherwise, its SPI clock 32
+MHz, and `dc`, `rst` and `backlight` are 25, 27 and 18 by default, the pins of
+Adafruit's EYESPI Pi Beret. An IPS panel shows its colours inverted under that
+init, and `invert=True` turns them back.
+
 `ghee overlay ssd1306` needs the panel's `height`, 32 or 64. `address` takes
 the panel's I2C address, 0x3C by default, and `speed` the bus rate in Hz,
 1000000 by default. The rate line sets the whole of I2C bus 1, every device
@@ -933,6 +942,39 @@ dtparam=i2c_arm_baudrate=1000000
 dtoverlay=ssd1306,height=32,inverted,sequential
 add the lines above to /boot/firmware/config.txt, and reboot
 ```
+
+`ghee overlay sh1106` sets up a 1.3" 128x64 SH1106 on I2C bus 1, and `ghee
+overlay sh1106-spi` one on SPI bus 0. The Pi ships no overlay that fits this
+panel to the kernel's ssd130x driver, so each writes one of its own,
+`ghee-sh1106.dts` or `ghee-sh1106-spi.dts`, and dtc on the Pi compiles it into
+/boot/firmware/overlays. `sh1106` takes `address`, 0x3C by default, and
+`speed`, 400000 by default, the SH1106's I2C fast mode. `sh1106-spi` takes
+`spi_device`, the chip select, 0 by default, `speed`, 4000000 by default, and
+`dc` and `rst`, 24 and 25 by default, the pins of the Pi's own SPI OLED
+overlays and of Waveshare's 1.3inch OLED HAT.
+
+Write the setup of an SH1106 on I2C at the default address:
+
+```
+$ ghee overlay sh1106
+dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=400000
+dtoverlay=ghee-sh1106
+wrote ghee-sh1106.dts. Compile it with `sudo dtc -@ -I dts -O dtb -o
+/boot/firmware/overlays/ghee-sh1106.dtbo ghee-sh1106.dts`, add the lines
+above to /boot/firmware/config.txt, and reboot
+```
+
+Careful: up to Linux 7.3, and in the Pi's 6.18 kernel, the ssd130x driver
+leaves an SSD1322 dark. `ghee overlay ssd1322` writes its overlay,
+`ghee-ssd1322.dts`, for a kernel whose ssd130x drives it. The overlay fits a
+256x64 module by default, its glass from `col_offset` 28, counted in column
+addresses of 4 pixels, and `width`, `height` and `col_offset` fit another.
+`spi_device`, `dc` and `rst` take the defaults of `sh1106-spi`, and `speed` is
+10000000, the SSD1322's datasheet clock. On a Pi 5 a 256x64 SSD1322 draws
+about 145 fps at 10 MHz, and 206 at 16 MHz on short wires. The overlay divides
+the panel's display clock by 1, so the glass redraws as fast as `frc256`
+needs.
 
 ## From Rust
 
@@ -1023,7 +1065,8 @@ in 255 bytes at most, and the Python shim raises ValueError past it.
   more CPU.
 - `--display kms` needs its own card: if a compositor holds it, ghee cannot
   take DRM master.
-- `ghee overlay` sets up two controllers, `st7789` and `ssd1306`.
+- `ghee overlay` sets up the ST7789, the ILI9341, the SSD1306, the SH1106
+  and the SSD1322.
 
 ## FAQ
 

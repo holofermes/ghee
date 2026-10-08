@@ -665,6 +665,13 @@ A scene written for 0.4.0 needs these changes.
   A 128x64 module takes the overlay's own wiring.
 - List the panels that `ghee overlay` takes when it is handed another, where
   it sent the reader to `ghee displays`.
+- Write the kernel's setup for an SH1106 with `ghee overlay sh1106` on I2C
+  and `ghee overlay sh1106-spi` on SPI, for an SSD1322 with `ghee overlay
+  ssd1322`, and for an ILI9341 with `ghee overlay ili9341`. The SH1106 and the
+  SSD1322 take an overlay of ghee's own, written as `ghee-<panel>.dts` for
+  dtc, and the ILI9341 takes panel-mipi-dbi's firmware, as the ST7789 does.
+  `-o` names either file, and a panel that takes neither refuses it with
+  `a panel that takes no file`.
 - Turn the frame clockwise on its way to every output with `--rotate 90`,
   `180` or `270` on `ghee render` and `ghee serve`, and
   `Renderer::set_rotate` in Rust: the display, the files, the raw frames

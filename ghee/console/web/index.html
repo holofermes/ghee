@@ -1129,7 +1129,7 @@ async function loadScene(name, own = true){
   take(got);
   if (err) unread = name;
   $("#scenes").value = name;
-  curPass = 0; postErr = err; errOpen = null; layerUI.clear(); layerChanges = null;
+  curPass = 0; postErr = err; errOpen = null; layerUI.clear(); layerChanges = null; waiting = [];
   paintAll();
   askAside();
 }
@@ -1170,28 +1170,27 @@ async function refresh(force = false){
     if (name !== active) return;
     const open = onCommon() ? COMMON : ((work.passes || [])[curPass] || {}).name;
     const busy = force ? [] : busyLayers();
-    let kept = false;
+    const kept = [];
     (got.scene.passes || []).forEach(fp => {
       const wp = (work.passes || []).find(p => p.name === fp.name);
       if (!wp || !fp.layers || !busy.length) return;
       fp.layers = fp.layers.map(f => {
         const mine = busy.includes(f.name) && (wp.layers || []).find(d => d.name === f.name);
-        if (mine) kept = true;
+        if (mine) kept.push(f.name);
         return mine || f;
       });
     });
     take(got);
     // a read that this page asked for is the scene as it is now
     if (force){ postErr = ""; $("#behind").hidden = true; }
-    // a kept layer reads again at the next poll
-    if (kept) known = -1;
+    waiting = kept;
     if (open === COMMON) curPass = hasCommon() ? COMMON : 0;
     else curPass = Math.max(0, (work.passes || []).findIndex(p => p.name === open));
     if (!work.passes || !work.passes.length){ paintAll(); return; }
     buildTabs(); buildInputs(); buildChannels(); buildSize();
     const p = onCommon() ? null : work.passes[curPass], cards = [...document.querySelectorAll("#layers .lay")];
     const shown = cards.map(c => c.dataset.name).reverse().join("\n");
-    if (kept && p && !p.filter && shown === (p.layers || []).map(d => d.name).join("\n"))
+    if (kept.length && p && !p.filter && shown === (p.layers || []).map(d => d.name).join("\n"))
       cards.forEach(c => { if (!busy.includes(c.dataset.name)) recard(p, c.dataset.name); });
     else relist();
     loadCode(); paintShader(); showErrors(); syncAddRow(); buildParams(); refreshInfo(); paintStatus(); paintMarks();
@@ -2096,8 +2095,12 @@ function layerCard(p, d){
 // fields. /stats counts those changes, and the page reads the scene again
 // when the count moves. A layer that the scene changed takes the scene's
 // look, its words included. A layer whose card holds the focus or an open
-// menu waits for the next read.
+// menu keeps this page's copy until the card lets go, and the poll then
+// follows the scene again, a refresh's kept layer too.
 let layerChanges = null, following = false;
+// the names of the layers that the last read kept as this page holds them
+let waiting = [];
+const letGo = () => waiting.length > 0 && settled() && !inUse() && !waiting.some(n => busyLayers().includes(n));
 // a value as JSON with its keys sorted, so two copies of it compare equal
 function canon(v){
   if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
@@ -2120,7 +2123,8 @@ const busyLayers = () => [document.activeElement, menuFrom].map(n => n && n.clos
 function takeLayers(fresh){
   const busy = busyLayers();
   const open = onCommon() ? null : work.passes[curPass], changed = [];
-  let relisted = false, waits = false;
+  let relisted = false;
+  const waits = [];
   (fresh.passes || []).forEach(fp => {
     const wp = work.passes.find(p => p.name === fp.name);
     if (!wp) return;
@@ -2128,14 +2132,14 @@ function takeLayers(fresh){
     const next = (fp.layers || []).map(f => {
       const d = mine.get(f.name);
       if (d && canon(d) === canon(f)) return d;
-      if (d && busy.includes(f.name)){ waits = true; return d; }
+      if (d && busy.includes(f.name)){ waits.push(f.name); return d; }
       if (wp === open){ if (d) changed.push(f.name); else relisted = true; }
       return clone(f);
     });
     if (wp === open && next.map(d => d.name).join() !== (wp.layers || []).map(d => d.name).join()) relisted = true;
     if (next.length) wp.layers = next; else delete wp.layers;
   });
-  if (waits) layerChanges = null;
+  waiting = waits;
   if (relisted) relist();
   else changed.forEach(n => recard(open, n));
   if (relisted || changed.length) buildInputs();
@@ -2807,7 +2811,7 @@ async function poll(){
     if (s.layer_changes !== layerChanges){
       layerChanges = s.layer_changes;
       if (isProcedural()) followScene();
-    }
+    } else if (letGo()) followScene();
     if (s.rev != null && known != null && s.rev !== known && s.active === active && settled() && $("#behind").hidden) refresh();
     refreshInfo(); applyRotation(); showErrors();
   }catch(_){ pollFails++; }

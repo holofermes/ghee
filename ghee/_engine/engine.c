@@ -172,6 +172,7 @@ struct GheeScene {
     struct mp_locs mp_loc[MP_MAX_PASSES];
     GLint gl_units;                      // GL_MAX_TEXTURE_IMAGE_UNITS, 16 on VC4
     GLint max_units;                     // min(MP_MAX_UNITS, gl_units)
+    GLint max_tex;                       // GL_MAX_TEXTURE_SIZE, 2048 on VC4
 
     // pending scene: passes compiled and allocated beside the running ones and
     // made the scene by ghee_mp_commit, so a compile error leaves the running
@@ -774,6 +775,8 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &g->gl_units);
     if (g->gl_units < 1) g->gl_units = 8;   // the GLES2 minimum
     g->max_units = g->gl_units < MP_MAX_UNITS ? g->gl_units : MP_MAX_UNITS;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &g->max_tex);
+    if (g->max_tex < 64) g->max_tex = 64;   // the GLES2 minimum
 
     // GL_IMPLEMENTATION_COLOR_READ_FORMAT answers RGBA on hardware that reads
     // RGB perfectly well, so the probe reads a known pixel instead: a driver
@@ -2751,6 +2754,8 @@ bool ghee_set_rotate(GheeScene *g, int quarter_turns) {
 int ghee_max_texture_units(GheeScene *g) { return g ? (int)g->max_units : 0; }
 
 int ghee_gl_texture_units(GheeScene *g) { return g ? (int)g->gl_units : 0; }
+
+int ghee_max_texture_size(GheeScene *g) { return g ? (int)g->max_tex : 0; }
 
 int ghee_gl_fd(GheeScene *g) {
     if (!g) return -1;

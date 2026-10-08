@@ -1076,6 +1076,16 @@ impl Renderer {
                 }
             }
         }
+        for (name, size) in &seen {
+            let (w, h) = match *size {
+                ArraySize::Linear(n) => (n, 1),
+                ArraySize::Grid(w, h) => (w, h),
+            };
+            if let Some(e) = self.past_max(&format!("array '{name}'"), w, h) {
+                self.error = e;
+                return Ok(self.error.clone());
+            }
+        }
         // The engine draws the hidden passes as copies, and the passes after
         // the last visible one not at all.
         let mut drawn = scene.drawn_passes();
@@ -1104,6 +1114,23 @@ impl Renderer {
             (out.size, out.scale) = (None, None);
         }
         if let Some(e) = drawn.iter().find_map(|p| p.scale_refusal(frame)) {
+            self.error = e;
+            return Ok(self.error.clone());
+        }
+        let assets = scene
+            .assets
+            .iter()
+            .filter_map(|a| Some((format!("asset '{}'", a.name), a.image.as_ref()?)));
+        let files = drawn_files(&drawn).filter_map(|l| {
+            Some((
+                format!("layer '{}': '{}'", l.name, l.image),
+                l.data.as_ref()?,
+            ))
+        });
+        let mut images = assets.chain(files);
+        if let Some(e) = images.find_map(|(what, img)| {
+            self.past_max(&what, i64::from(img.width), i64::from(img.height))
+        }) {
             self.error = e;
             return Ok(self.error.clone());
         }
@@ -1533,7 +1560,7 @@ impl Renderer {
                 );
                 return Ok(self.error.clone());
             };
-            if let Err(e) = self.file_asset(&l.image, img) {
+            if let Err(e) = self.file_asset(&l.name, &l.image, img) {
                 self.error = e.to_string();
                 return Ok(self.error.clone());
             }
@@ -1822,6 +1849,10 @@ impl Renderer {
             "asset '{name}' at {width}x{height}x{components} needs {want} values, \
              the data holds {len}"
         );
+        let (w, h) = (i64::from(width), i64::from(height));
+        if let Some(e) = self.past_max(&format!("asset '{name}'"), w, h) {
+            bail!("{e}");
+        }
         let cname = CString::new(name)?;
         let ok = unsafe {
             ffi::ghee_mp_set_asset(
@@ -2200,14 +2231,18 @@ impl Renderer {
                 ),
             }
         };
-        self.file_asset(file, &img)
+        self.file_asset(layer, file, &img)
     }
 
-    /// Hand the engine the pixels `img` of the image file `file` as an
-    /// asset, once, and return the asset's name.
-    fn file_asset(&self, file: &str, img: &crate::assets::Image) -> Result<String> {
+    /// Hand the engine the pixels `img` of the image file `file` of layer
+    /// `layer` as an asset, once, and return the asset's name.
+    fn file_asset(&self, layer: &str, file: &str, img: &crate::assets::Image) -> Result<String> {
         if let Some((_, asset)) = self.files.borrow().iter().find(|(f, _)| f == file) {
             return Ok(asset.clone());
+        }
+        let (w, h) = (i64::from(img.width), i64::from(img.height));
+        if let Some(e) = self.past_max(&format!("layer '{layer}': '{file}'"), w, h) {
+            bail!("{e}");
         }
         let n = self.file_count.get();
         self.file_count.set(n + 1);
@@ -2321,7 +2356,7 @@ impl Renderer {
         if let Layer::Image(l) = &*new {
             if drawn && l.is_file() {
                 let img = l.data.as_ref().expect("load_layer read the file");
-                self.file_asset(&l.image, img)?;
+                self.file_asset(&l.name, &l.image, img).map_err(refused)?;
             }
         }
         Ok(drawn)
@@ -4228,6 +4263,21 @@ impl Renderer {
         unsafe { ffi::ghee_max_texture_units(self.handle) }
     }
 
+    /// The most pixels that a texture of this GPU holds on a side,
+    /// GL_MAX_TEXTURE_SIZE.
+    pub fn max_texture_size(&self) -> i64 {
+        i64::from(unsafe { ffi::ghee_max_texture_size(self.handle) })
+    }
+
+    /// The error for `what`, an array or an image of `w` x `h` pixels, when a
+    /// side is past max_texture_size(). GL refuses a texture past it, and a
+    /// pass then samples black.
+    fn past_max(&self, what: &str, w: i64, h: i64) -> Option<String> {
+        let max = self.max_texture_size();
+        (w.max(h) > max)
+            .then(|| format!("{what} is {w}x{h}, over this GPU's {max} pixel cap of a side"))
+    }
+
     /// The error for `what`, a pass or a layer, when `want` texture units are
     /// past max_texture_units(). The engine words its own the same way.
     fn units_error(&self, what: &str, want: usize) -> Option<String> {
@@ -5613,6 +5663,97 @@ mod tests {
             assert_eq!(r.setup(&sc).unwrap(), want);
             assert_eq!(r.render(None).unwrap(), before);
         }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn an_array_or_an_image_past_the_gpus_texture_size_is_refused_and_the_scene_runs_on() {
+        let (_g, mut r) = gpu();
+        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        let before = r.render(None).unwrap().to_vec();
+        let max = r.max_texture_size();
+        let over = max + 1;
+        // A gray PNG one pixel past the GPU's size on a side.
+        let dir = crate::testing::TempDir::new("engine-max-size");
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, over as u32, 1);
+        enc.set_color(png::ColorType::Grayscale);
+        let row = vec![128u8; over as usize];
+        enc.write_header().unwrap().write_image_data(&row).unwrap();
+        std::fs::write(dir.join("wide.png"), png).unwrap();
+        let cap = format!("over this GPU's {max} pixel cap of a side");
+        // White, where the running scene draws FLAT.
+        let white = "void main(){ gl_FragColor = vec4(1.0); }";
+        // The scene caps an array at 16384 on a side, at or below a desktop
+        // GPU's size, so the rows set the array's size past the parse.
+        let arrays = [ArraySize::Linear(over), ArraySize::Grid(1, over)];
+        let mut rows: Vec<(Scene, String)> = arrays
+            .into_iter()
+            .map(|size| {
+                let mut sc = scene_of(json!([
+                    {"name": "main", "arrays": [{"name": "a", "size": 4}], "fragment": white},
+                ]));
+                sc.passes[0].arrays[0].size = size;
+                let (w, h) = match size {
+                    ArraySize::Linear(n) => (n, 1),
+                    ArraySize::Grid(w, h) => (w, h),
+                };
+                (sc, format!("array 'a' is {w}x{h}, {cap}"))
+            })
+            .collect();
+        for (doc, want) in [
+            (
+                json!({"version": 1, "assets": {"sky": {"file": "wide.png"}},
+                       "passes": [{"name": "main", "fragment": white}]}),
+                format!("asset 'sky' is {over}x1, {cap}"),
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "main", "fragment": white,
+                       "layers": [{"name": "pic", "image": "wide.png"}]}]}),
+                format!("layer 'pic': 'wide.png' is {over}x1, {cap}"),
+            ),
+        ] {
+            let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+            sc.load_assets(&dir).unwrap();
+            rows.push((sc, want));
+        }
+        for (sc, want) in rows {
+            assert_eq!(r.setup(&sc).unwrap(), want);
+            assert_eq!(r.render(None).unwrap(), before, "{want}");
+        }
+        // A host's asset, and a file set live as a layer's image.
+        let e = r.set_asset("sky", over as u32, 1, 1, false, AssetData::U8(&row));
+        assert_eq!(
+            e.unwrap_err().to_string(),
+            format!("asset 'sky' is {over}x1, {cap}")
+        );
+        let mut enc = png::Encoder::new(std::fs::File::create(dir.join("dot.png")).unwrap(), 1, 1);
+        enc.set_color(png::ColorType::Grayscale);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&[255])
+            .unwrap();
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [{"name": "main", "fragment": FLAT,
+                    "layers": [{"name": "pic", "image": "dot.png"}]}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(&dir).unwrap();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let shown = r.render(None).unwrap().to_vec();
+        let at = Address {
+            layer: "pic",
+            effect: None,
+            field: "image",
+        };
+        let e = r.set_layer(&at, Given::Text("wide.png")).unwrap_err();
+        assert_eq!(
+            e.downcast_ref::<Refused>().unwrap().0,
+            format!("layer 'pic': 'wide.png' is {over}x1, {cap}")
+        );
+        assert_eq!(r.render(None).unwrap(), shown);
     }
 
     #[test]

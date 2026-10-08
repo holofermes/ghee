@@ -219,6 +219,7 @@ extern "C" {
     pub fn ghee_set_rotate(g: *mut GheeScene, quarter_turns: c_int) -> bool;
     pub fn ghee_max_texture_units(g: *mut GheeScene) -> c_int;
     pub fn ghee_gl_texture_units(g: *mut GheeScene) -> c_int;
+    pub fn ghee_max_texture_size(g: *mut GheeScene) -> c_int;
     pub fn ghee_gl_fd(g: *mut GheeScene) -> c_int;
     pub fn ghee_data_texture_linear(g: *mut GheeScene) -> bool;
     pub fn ghee_mipmaps_npot(g: *mut GheeScene) -> bool;

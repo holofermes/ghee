@@ -247,6 +247,7 @@ bool ghee_set_rotate(GheeScene *g, int quarter_turns);
 // has 16, so a pass that fits one Pi fits them all.
 int  ghee_max_texture_units(GheeScene *g);
 int  ghee_gl_texture_units(GheeScene *g);    // GL_MAX_TEXTURE_IMAGE_UNITS itself
+int  ghee_max_texture_size(GheeScene *g);    // GL_MAX_TEXTURE_SIZE, the most pixels on a side
 int  ghee_gl_fd(GheeScene *g);               // the DRM descriptor that GL renders through
 bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 bool ghee_mipmaps_npot(GheeScene *g);        // GPU mipmaps a texture of any size

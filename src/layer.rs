@@ -1421,6 +1421,9 @@ impl TextLayer {
     /// name, its type as a param takes it, and its value.
     pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
         let mut out = placing(self.x, self.y, self.visible, self.opacity);
+        if let Some(px) = self.font_size {
+            out.push((self.uniform("fontsize"), "float", Value::from(px)));
+        }
         self.colour_uniforms(&mut out);
         for e in self.drawn() {
             self.effect_uniforms(e, &mut out);
@@ -1550,7 +1553,12 @@ impl TextLayer {
             }
         }
         match self.font_size {
-            Some(px) => main.push(format!("    float ghee_fs = {};", py_float(px))),
+            // A uniform, so a layer that changes its size draws through the
+            // program that it drew through.
+            Some(_) => {
+                decls.push("uniform float ghee_NAME_fontsize;".to_string());
+                main.push("    float ghee_fs = ghee_NAME_fontsize;".to_string());
+            }
             None => {
                 main.push(FIT.replace("FIT_MARGIN", &py_float(FIT_MARGIN)));
                 // A scrolling block fits its room on y alone.
@@ -3221,11 +3229,15 @@ mod tests {
 
     /// Every name with ghee's prefix in the shaders and the uniforms of the
     /// layers' own batches: text layers with every effect in each render,
-    /// and an image layer.
+    /// fitted and at a size, and an image layer.
     fn own() -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for render in ["mtsdf", "slug", "hinted", "mono"] {
+        let renders = ["mtsdf", "slug", "hinted", "mono"];
+        for (render, size) in renders.iter().flat_map(|r| [(r, None), (r, Some(12))]) {
             let mut d = json!({"name": "t", "text": "", "render": render});
+            if let Some(px) = size {
+                d["font_size"] = json!(px);
+            }
             for kind in Kind::ALL {
                 d[kind.key()] = json!({});
             }

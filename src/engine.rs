@@ -2573,6 +2573,9 @@ impl Renderer {
             }
         };
         let drawn = self.admit(&pass, &mut new)?;
+        // A new look whose shaders come out the same draws through the
+        // programs of the old one.
+        let held = self.hold_programs(&name)?;
         let old = {
             let mut scene = self.scene.borrow_mut();
             let scene = scene.as_mut().expect("admit() found the scene");
@@ -2595,7 +2598,9 @@ impl Renderer {
             return Err(e);
         }
         self.carry(&new, &phases)?;
-        self.refresh()
+        let settled = self.refresh();
+        drop(held);
+        settled
     }
 
     /// Draw `old` again at `index` of drawn pass `pass`, in place of the
@@ -8277,13 +8282,15 @@ mod tests {
         // with the layers that the change leaves: a layer added into a run,
         // or splitting one, a member built again, replaced or leaving its
         // run, a layer between runs that leaves them to join, and the live
-        // fields of members, a layer that leaves, and a layer that moves,
-        // which compiles nothing. An image ahead of a run leaves its picture
-        // on the texture unit that a run's texts read their curves from.
+        // fields of members, a layer that leaves, and a layer that moves or
+        // takes another font size, which compiles nothing. An image ahead of
+        // a run leaves its picture on the texture unit that a run's texts
+        // read their curves from.
         enum Op {
             Add(usize, Value),
             Replace(Value),
             Update(Value),
+            Resize(Value),
             Set(&'static str, &'static str, Value),
             Words(&'static str, &'static str),
             Remove(&'static str),
@@ -8321,6 +8328,8 @@ mod tests {
         let s = rect("s", [12.0, 10.0, 6.0, 6.0], "yellow");
         let hinted = json!({"name": "h", "text": "Hi", "font_size": 12, "x": 4, "y": 40,
                             "glow": {}});
+        let mut hinted_big = hinted.clone();
+        hinted_big["font_size"] = json!(14.5);
         let without = |layers: &[Value], name: &str| -> Vec<Value> {
             layers
                 .iter()
@@ -8398,7 +8407,7 @@ mod tests {
             (
                 "a member takes a size",
                 base.clone(),
-                Op::Update(t2_small.clone()),
+                Op::Resize(t2_small.clone()),
                 with(&base, None, &t2_small),
             ),
             (
@@ -8485,6 +8494,12 @@ mod tests {
                 Op::Move("h", 1),
                 moved(&with(&base, Some(7), &hinted), "h", 1),
             ),
+            (
+                "a hinted text takes a size",
+                with(&base, Some(7), &hinted),
+                Op::Resize(hinted_big.clone()),
+                with(&base, Some(7), &hinted_big),
+            ),
         ];
         let (_g, mut r) = gpu_at(128, 64);
         for (what, from, op, want) in rows {
@@ -8492,11 +8507,11 @@ mod tests {
             let grouped = runs_of(&r);
             first_frames(&mut r, &run_scene(&from), 1);
             let compiled = r.compiled();
-            let quiet = matches!(op, Op::Move(..));
+            let quiet = matches!(op, Op::Move(..) | Op::Resize(_));
             match op {
                 Op::Add(k, l) => r.add_layer("main", k, &l).unwrap(),
                 Op::Replace(l) => r.replace_layer(&l).unwrap(),
-                Op::Update(l) => assert!(r.update_layer(&l).unwrap(), "{what}"),
+                Op::Update(l) | Op::Resize(l) => assert!(r.update_layer(&l).unwrap(), "{what}"),
                 Op::Set(layer, field, value) => {
                     let at = Address {
                         layer,

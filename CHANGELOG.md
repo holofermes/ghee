@@ -932,7 +932,11 @@ A Rust host written for 0.4.0 needs these changes.
   stays, bypassed. Every other layer keeps its program, its atlas, its
   phases and its quads, the layer's moving effects carry their phases on,
   a layer that the scene refuses changes nothing, and a layer that fails to
-  draw leaves the old one drawing in its place.
+  draw leaves the old one drawing in its place. A text's `font_size` reaches
+  its shaders as a uniform, so texts that differ in size alone draw through
+  one program, and a text built again at another size compiles nothing,
+  unless the size takes it to another atlas or, under `auto`, to another
+  render.
 - Take a layer out of a running scene with `Renderer::remove_layer`, and
   put one at another index among the layers of its pass with
   `Renderer::move_layer`, where it keeps its look, its atlas and its phases

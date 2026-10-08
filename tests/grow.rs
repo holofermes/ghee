@@ -230,13 +230,15 @@ fn a_layer_added_to_a_running_scene_draws_as_a_scene_built_with_it() {
             0,
         ),
         // A text layer builds its own shaders, glyphs and error boxes, and
-        // its atlas, or shares the shaders of a layer with its settings.
+        // its atlas, or shares the shaders of a layer with its settings, its
+        // size aside. Error boxes take no setting but a text's motion, so
+        // these share the title's.
         (
             "main",
             4,
             json!({"name": "s", "text": "Ok", "font_family": "sans", "font_size": 30,
                    "x": 60, "y": 40, "color": "yellow"}),
-            2,
+            1,
         ),
         (
             "main",
@@ -257,14 +259,14 @@ fn a_layer_added_to_a_running_scene_draws_as_a_scene_built_with_it() {
             0,
             json!({"name": "s", "text": "Ab", "font_family": "sans", "font_size": 24,
                    "x": 60, "y": 70, "render": "slug", "text_shadow": {}}),
-            2,
+            1,
         ),
         (
             "small",
             1,
             json!({"name": "s", "text": "go", "font_family": "sans", "font_size": 14,
                    "x": 30, "y": 2}),
-            2,
+            1,
         ),
     ];
     let (_g, mut r) = gpu(160, 96);

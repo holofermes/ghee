@@ -230,9 +230,10 @@ draws it. A call with no name names its layer after its kind, `text`,
 that draw one layer in a frame raise ValueError.
 
 Leaving the block sends ghee what changed. A live field changes live. Any
-other change builds that layer alone again, so an animated `font_size`
-builds its layer every frame. A call that runs for the first time adds its
-layer after the layer of the call before it, a layer
+other change builds that layer alone again, and a new size of an effect,
+such as a glow's `blur`, also compiles the layer's shaders, so an effect
+size that changes every frame slows every frame. A call that runs for the
+first time adds its layer after the layer of the call before it, a layer
 under the layer of a call before its own moves after that layer, and an
 effect that a call stops naming is bypassed. The layer of a call that did
 not run leaves the scene, and a layer of the scene's own hides instead. A

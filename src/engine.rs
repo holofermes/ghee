@@ -4215,10 +4215,16 @@ impl Renderer {
     /// Restart the clock: the next frame draws as the first one does, as
     /// iFrame 0 at iTime 0 with iTimeDelta at 1/60 until set_dt() sets
     /// another. The monotonic clock counts from that frame. With the time
-    /// pinned, the next pin reads 0, and later pins count from it.
+    /// pinned, the pin goes to 0, the next pin reads 0, and later pins count
+    /// from it.
     pub fn restart_clock(&self) {
         unsafe { ffi::ghee_restart_clock(self.handle) };
-        self.time_base.set((0.0, self.pinned.get().is_some()));
+        let pinned = self.pinned.get().is_some();
+        if pinned {
+            self.pinned.set(Some(0.0));
+            unsafe { ffi::ghee_set_time(self.handle, 0.0) };
+        }
+        self.time_base.set((0.0, pinned));
         self.drawn_at.set(0.0);
         self.set_dt(DT);
         self.restarted.set(true);
@@ -5888,10 +5894,11 @@ mod tests {
         r.set_time(Some(4.0));
         assert_eq!(drawn(&mut r), [2.0, 204.0, 153.0]);
         r.restart_clock();
-        r.set_time(Some(5.5));
         assert_eq!(drawn(&mut r), [0.0, 0.0, 51.0]);
+        r.set_time(Some(5.5));
+        assert_eq!(drawn(&mut r), [1.0, 0.0, 51.0]);
         r.set_time(Some(6.5));
-        assert_eq!(drawn(&mut r), [1.0, 51.0, 51.0]);
+        assert_eq!(drawn(&mut r), [2.0, 51.0, 51.0]);
     }
 
     #[test]

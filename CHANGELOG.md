@@ -274,8 +274,9 @@ A scene written for 0.4.0 needs these changes.
   new words that finds the atlas full takes the room of the glyphs that no
   words on screen draw, the longest unused first, then a second page of the
   atlas, and an atlas whose two pages are full of the glyphs on screen draws
-  an error box with an error of its own. A hidden layer builds its atlas
-  when it first shows.
+  an error box with an error of its own. An MTSDF layer binds both pages,
+  two of its pass's texture units. A hidden layer builds its atlas when it
+  first shows.
 - Generate a layer's atlas at the detail of its size, its `font_size` or the
   size that fits its words at setup, rounded up to 32, 48, 64, 96 or 128
   texels per em, and 128 for larger text, so layers of near sizes share one
@@ -386,9 +387,10 @@ A scene written for 0.4.0 needs these changes.
 - Hand the time since the tick before as the `dt` of a tick from
   `h.frame()` or `h.skip()`, in a direct run's and on the wire, a quarter
   second at most and 1/60 for the first tick, so the ticks' `dt` add up to
-  the time passed, and a frame drawn after a drawn frame takes it as its
-  iTimeDelta, where the tick held the period of the frame before and a
-  direct run's first tick held 0. A pinned timestep is the tick's `dt` as
+  the time passed while each tick follows the one before within a quarter
+  second, and a frame drawn after a drawn frame takes it as its iTimeDelta,
+  where the tick held the period of the frame before and a direct run's
+  first tick held 0. A pinned timestep is the tick's `dt` as
   given, where a quarter second capped it.
 - Name the display of `ghee.open` with `display=` and the console's port
   with `serve=`, the words of `ghee render`'s flags, in place of `output=`
@@ -466,13 +468,13 @@ A scene written for 0.4.0 needs these changes.
 - Set a string param from a scene process with message kind 3.
 - Hand a scene script the ghee-render wheel that sits beside the `ghee`
   command, in `lib/ghee` next to its `bin` directory, where uv took the
-  newest ghee-render on PyPI, older than a dev build: ghee puts an index of
-  that wheel alone first on the scene's `UV_INDEX` and sets
+  newest ghee-render on PyPI, which a dev build outdates: ghee puts an index
+  of that wheel alone first on the scene's `UV_INDEX` and sets
   `UV_INDEX_STRATEGY=first-index`, and numpy and the rest still come from
   PyPI. A dev build with no wheel there makes uv refuse every ghee-render,
-  and says once where it looked, and two wheels of ghee's version there keep
-  the scene from starting. The bundled examples extract to a directory named
-  after the wheel, so uv resolves them again for each wheel.
+  and ghee says once which directory lacks the wheel. Two wheels of ghee's
+  version there keep the scene from starting. The bundled examples extract
+  to a new directory for each wheel, so uv resolves them again.
 - Take a colour as text in message kind 3, `#rrggbb` or a CSS colour name,
   for a color param and a layer's colour, and a text layer's gradient as its
   JSON object, so a name keeps its form and `transparent` its alpha. The
@@ -693,9 +695,11 @@ A scene written for 0.4.0 needs these changes.
   dialog, where Escape cancels and Enter removes.
 - Answer 400 to a query with a malformed percent escape, `bad query: '%zz'
   is not a percent escape`, where ghee kept the escape as text.
-- Cap a chunked POST body at the limit of one with a Content-Length, with
-  the same 413, `body over the limit of 1048576 bytes`, where ghee read a
-  chunked body whole.
+- Cap a chunked POST body at 1 MiB, as a body with a Content-Length is
+  capped, with the same 413, `body over the limit of 1048576 bytes`, where
+  ghee read a chunked body whole.
+- Answer 400 with `bad body:` and the error when the read of a POST body
+  fails, where ghee handled the part that it had read.
 
 ### Displays and H264
 
@@ -800,10 +804,11 @@ A scene written for 0.4.0 needs these changes.
   `open` and `resolve` take the size too, and `render_loop` hands each
   process its renderer's `scene_size()`, so a procedural scene under any
   host of the console reads `GHEE_SIZE`.
-- Take a `ConsoleResult` from `parse_query`, the 400 for a malformed
-  percent escape.
-- Read a POST body with `ConsoleAPI::read_body`, which answers the 413 of
-  `precheck` past the body cap.
+- Return a `ConsoleResult` from `parse_query`, which holds the 400 of a
+  malformed percent escape.
+- Read a POST body with `ConsoleAPI::read_body`, which refuses a body past
+  the cap with the 413 that `precheck` gives a long Content-Length, and a
+  body whose read fails with a 400.
 - Tell a `Loop` whether anyone takes its frames with `Loop::watched`, which
   `looper::should_draw` takes as `watched`: while nobody watches, a frame
   draws for a queued command and as the first frame alone.

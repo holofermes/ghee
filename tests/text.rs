@@ -3328,7 +3328,8 @@ fn karaoke_fills_the_letters_up_to_the_sung_point_and_lifts_the_letter_being_sun
 fn a_scroll_moves_the_block_right_to_left_by_whole_pixels_and_fits_it_on_y() {
     // At each time, the scrolling block draws as a still one at the whole
     // pixel that the scroll gives: right of the pass at the start, then
-    // speed em a second to the left, around again once it has left.
+    // speed em a second to the left, around again once it has left, and
+    // still on its pixel days in.
     let words = "AV To ghee";
     let laid = lay(SANS, words, Align::Left);
     let (w, h) = (192, 64);
@@ -3343,7 +3344,7 @@ fn a_scroll_moves_the_block_right_to_left_by_whole_pixels_and_fits_it_on_y() {
         (json!({"font_size": 40, "y": 8, "x": 50}), 40.0, 8.0),
         (json!({}), fitted, (fh - laid.height * fitted) / 2.0),
     ] {
-        for t in [0.0, 0.51, 2.03] {
+        for t in [0.0, 0.51, 2.03, 1.0e6 + 0.51] {
             let trip = fw + laid.width * ppem;
             let x = (fw - (t * speed * ppem).rem_euclid(trip)).floor();
             let fit = Fit { x, y, ppem };

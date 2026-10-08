@@ -497,12 +497,6 @@ impl Kind {
             .find(|f| f.change == Change::Phase)
             .map(|f| f.name)
     }
-
-    /// True for an effect that draws the same at a phase and at the phase
-    /// one higher: a wave and a blink.
-    pub fn cycles(self) -> bool {
-        matches!(self, Kind::Wave | Kind::Blink)
-    }
 }
 
 /// An effect of a text layer, with a value for each of its fields.
@@ -1325,6 +1319,21 @@ impl TextLayer {
                 Some((e.kind, self.uniform(&token), pace))
             })
             .collect()
+    }
+
+    /// The phase at which effect `kind` draws as it does at 0, its words a
+    /// block of `block` em in a pass of `pass` pixels: one wave, one blink,
+    /// or one trip of the scroll, the pass's width and the block's in em.
+    pub fn cycle(&self, kind: Kind, pass: [f64; 2], block: Option<[f64; 2]>) -> Option<f64> {
+        match kind {
+            Kind::Wave | Kind::Blink => Some(1.0),
+            Kind::Scroll => {
+                let block = block?;
+                let trip = pass[0] / self.font_px(pass, block) + block[0];
+                (trip.is_finite() && trip > 0.0).then_some(trip)
+            }
+            _ => None,
+        }
     }
 
     /// The shaders of the layer's batches, for an MTSDF layer at `detail`.

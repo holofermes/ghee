@@ -3716,27 +3716,32 @@ impl Renderer {
         let Some(scene) = scene.as_ref() else {
             return Ok(());
         };
-        for layer in scene.text_layers().filter(|l| !l.effects.is_empty()) {
-            let Some(dl) = self.drawn(&layer.name) else {
-                continue;
-            };
-            let mut phases = dl.phases.borrow_mut();
-            for (kind, uniform, pace) in layer.paces() {
-                let i = match phases.iter().position(|(k, _)| *k == kind) {
-                    Some(i) => i,
-                    None => {
-                        phases.push((kind, 0.0));
-                        phases.len() - 1
-                    }
+        for pass in &scene.passes {
+            let size = self.pass_size(&pass.name);
+            let texts = pass.layers.iter().filter_map(Layer::as_text);
+            for layer in texts.filter(|l| !l.effects.is_empty()) {
+                let Some(dl) = self.drawn(&layer.name) else {
+                    continue;
                 };
-                let mut phase = phases[i].1 + pace * step;
-                // A phase that cycles stays under 1, so its float uniform
-                // keeps its precision however long the scene runs.
-                if kind.cycles() {
-                    phase = phase.rem_euclid(1.0);
+                let block = dl.shown.borrow().as_ref().map(|s| s.1);
+                let mut phases = dl.phases.borrow_mut();
+                for (kind, uniform, pace) in layer.paces() {
+                    let i = match phases.iter().position(|(k, _)| *k == kind) {
+                        Some(i) => i,
+                        None => {
+                            phases.push((kind, 0.0));
+                            phases.len() - 1
+                        }
+                    };
+                    let mut phase = phases[i].1 + pace * step;
+                    // A phase stays under its cycle, so its float uniform
+                    // keeps its precision however long the scene runs.
+                    if let Some(cycle) = layer.cycle(kind, size, block) {
+                        phase = phase.rem_euclid(cycle);
+                    }
+                    phases[i].1 = phase;
+                    self.set_layer_uniform(dl, &uniform, "float", Value::from(phase))?;
                 }
-                phases[i].1 = phase;
-                self.set_layer_uniform(dl, &uniform, "float", Value::from(phase))?;
             }
         }
         Ok(())

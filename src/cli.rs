@@ -1234,7 +1234,7 @@ struct RenderArgs {
         long,
         default_value_t = 4,
         value_parser = clap::value_parser!(i32).range(3..=4),
-        help = "3=RGB, 4=RGBA (desktop Mesa can only read back RGBA)"
+        help = "3=RGB, 4=RGBA"
     )]
     components: i32,
 

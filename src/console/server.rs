@@ -1714,9 +1714,7 @@ impl RenderTarget for SharedRenderer {
 }
 
 /// Create the render-thread Renderer. It probes the DRI devices, so the console
-/// runs on a Pi (card0) and on desktop Mesa (renderD128). components defaults to
-/// 4, because desktop Mesa refuses an RGB glReadPixels. A panel sink asks for 3,
-/// which is what it packs from.
+/// runs on a Pi (card0) and on desktop Mesa (renderD128).
 fn make_renderer(console: &Console) -> Result<Renderer> {
     let mut r = open_renderer(console)?;
     r.set_alpha(console.alpha);

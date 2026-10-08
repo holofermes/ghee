@@ -129,7 +129,8 @@ Ignoring stdin lets it run free, but it then gets no ticks, no params, no
 skip. ghee never blocks on a full stdin pipe.
 
 A console that nobody watches sleeps between edits and sends no ticks, and
-its next tick's `T` counts the time slept.
+its next tick's `T` counts the time slept. With a fixed `--timestep`, `T` is
+`N` steps, however long the console slept.
 
 A frame takes the messages that arrived before it starts, so the answer to a
 tick lands one frame later at the earliest, and later still when the process

@@ -196,6 +196,9 @@ struct LayerBatches {
     /// The uniforms and the size of the words that show() last set on the
     /// batches, None before the first.
     shown: std::cell::RefCell<Option<Shown>>,
+    /// True when the glyph batch takes the layer's opacity as one picture,
+    /// as TextLayer::fades_as_one() says.
+    fades: bool,
 }
 
 /// A layout's float uniforms and its block's size, as show() sets them.
@@ -1366,6 +1369,7 @@ impl Renderer {
                     phases: std::cell::RefCell::new(Vec::new()),
                     shared: std::cell::Cell::new(false),
                     shown: std::cell::RefCell::new(None),
+                    fades: l.as_text().is_some_and(TextLayer::fades_as_one),
                 });
             }
             // A test's batches draw after the layers of their pass.
@@ -3241,6 +3245,7 @@ impl Renderer {
             phases: std::cell::RefCell::new(Vec::new()),
             shared: std::cell::Cell::new(false),
             shown: std::cell::RefCell::new(None),
+            fades: false,
         }
     }
 
@@ -3306,6 +3311,7 @@ impl Renderer {
                 let batch = self.insert_batch(pass, after, &name, Some(shaders.glyphs), l.blend)?;
                 let dl = LayerBatches {
                     batch,
+                    fades: l.fades_as_one(),
                     ..Self::undrawn(&l.name)
                 };
                 self.put_drawn(pass_name, index, dl);
@@ -4260,10 +4266,33 @@ impl Renderer {
                 self.unsettled.set(true);
             }
         }
+        let opacity = dl.fades && name == crate::layer::uniform(GLSL_NAME, "opacity");
         for batch in [dl.batch, dl.colour, dl.boxes] {
             if batch >= 0 && (own || batch != dl.batch) {
+                if opacity && batch == dl.batch {
+                    // The glyphs draw opaque, and the engine lays them on at
+                    // the opacity.
+                    let at = value.as_f64().unwrap_or(1.0);
+                    self.set_batch_opacity(batch, at)?;
+                    self.set_batch_uniform(batch, name, ptype, Value::from(1.0))?;
+                    continue;
+                }
                 self.set_batch_uniform(batch, name, ptype, value.clone())?;
             }
+        }
+        Ok(())
+    }
+
+    /// Lay batch `batch` on its pass at `opacity`, as one picture below 1.
+    fn set_batch_opacity(&self, batch: c_int, opacity: f64) -> Result<()> {
+        if !unsafe { ffi::ghee_mp_set_batch_opacity(self.handle, batch, opacity as f32) } {
+            bail!(
+                "{}",
+                or_else(
+                    self.last_error(),
+                    &format!("batch {batch} refused its opacity")
+                )
+            );
         }
         Ok(())
     }

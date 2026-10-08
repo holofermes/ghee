@@ -182,6 +182,14 @@ void ghee_mp_let_go_program(GheeScene *g, const char *vertex_source, const char 
 // ghee_mp_set_batch_program gives the batch. false with ghee_last_error set
 // for a batch that is not committed.
 bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param);
+// Lay committed batch `batch` on its pass at `opacity`, 0 to 1, as one
+// picture. Below 1 the batch draws into a transparent buffer of its pass's
+// size, each quad over the ones before it, and that buffer then lands on the
+// pass at `opacity` by the batch's blend, so a later quad covers an earlier
+// one where they overlap, as at 1. 1, the default, draws the batch straight
+// into the pass, and 0 draws nothing. false with ghee_last_error set for a
+// batch that is not committed.
+bool ghee_mp_set_batch_opacity(GheeScene *g, int batch, float opacity);
 // Add a batch to committed pass `pass` of the running scene, drawn right
 // after its batch `after`, or ahead of every batch of the pass for -1, with
 // the sources and the blend that ghee_mp_add_batch takes, and its program

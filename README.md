@@ -470,9 +470,13 @@ on an effect bypasses it and keeps its values. ghee works out how far a
 layer's effects reach past its letters, and fades them out at the edge of
 that reach.
 
-Careful: `opacity` applies to the effects and to the letters each, so below 1
-the shadow and the glow show through the letters. The effects draw with the
-layer's `blend` too, so under `add` a black shadow adds nothing.
+A text layer of the `normal` blend fades as one: below an `opacity` of 1, its
+letters draw over their effects first, and the result lands on the pass at
+that opacity, so the shadow and the glow never show through the letters.
+
+Careful: under the other blends, the effects and the letters each take the
+layer's `opacity` and `blend`, so below an opacity of 1 the effects show
+through the letters, and under `add` a black shadow adds nothing.
 
 ### Image layers
 

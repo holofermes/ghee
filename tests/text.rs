@@ -3117,6 +3117,81 @@ fn the_effects_draw_by_the_distance_to_the_letters_in_their_order() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_text_layer_below_opacity_1_fades_its_letters_and_effects_as_one() {
+    // Red letters over a green glow and a blue shadow, an I at 64 px/em, at
+    // opacity 0.5 over grey. The reference composes the layer at opacity 1
+    // from the true distance to the outline, as the effects test above does,
+    // and lays it over the grey at half, so inside the letters the effects
+    // take no part.
+    let words = "I";
+    let laid = lay(SANS, words, Align::Left);
+    let fit = Fit {
+        x: 48.0,
+        y: 16.0,
+        ppem: 64.0,
+    };
+    let (w, h) = (160, 128);
+    let px = 1.0 / fit.ppem;
+    let (off, opacity, grey) = ([0.2, 0.0], 0.5, 0.5);
+    let mut doc = effect_scene(
+        words,
+        fit,
+        json!({"color": [1.0, 0.0, 0.0], "opacity": opacity,
+               "text_shadow": {"x": off[0], "y": off[1], "blur": 0.15,
+                               "color": [0.0, 0.0, 1.0], "strength": 0.8},
+               "glow": {"blur": 0.3, "color": [0.0, 1.0, 0.0], "strength": 0.5}}),
+    );
+    doc["passes"][0]["fragment"] = json!("void main(){ gl_FragColor = vec4(0.5, 0.5, 0.5, 1.0); }");
+    let want = |d: f64, ds: f64| -> [f64; 3] {
+        let (c, a) = match d < 0.0 {
+            true => ([1.0, 0.0, 0.0], 1.0),
+            false => {
+                let b = 0.15_f64.max(0.5 * px);
+                let s = ([0.0, 0.0, 1.0], smoothstep(-b, b, -ds) * 0.8);
+                let f = (1.0 - d / 0.3).clamp(0.0, 1.0);
+                over(([0.0, 1.0, 0.0], f * f * 0.5), over(s, ([0.0; 3], 0.0)))
+            }
+        };
+        c.map(|c| opacity * c + (1.0 - opacity * a) * grey)
+    };
+    let (_g, mut r) = gpu(w, h);
+    let frame = render(&mut r, &loaded(&doc));
+    let (mut inside, mut seen, mut off_px) = (0, 0, Vec::new());
+    for y in 0..h {
+        for x in 0..w {
+            let p = fit.em(x, y);
+            let d = laid.distance(p);
+            let ds = laid.distance([p[0] - off[0], p[1] - off[1]]);
+            if d.abs() < EDGE * px || ds.abs() < EDGE * px {
+                continue;
+            }
+            let q = 0.5 * px;
+            let (a, b) = (want(d - q, ds - q), want(d + q, ds + q));
+            seen += 1;
+            inside += usize::from(d < 0.0);
+            for k in 0..3 {
+                let got = f64::from(frame[(y * w + x) * 4 + k]);
+                let (lo, hi) = (255.0 * a[k].min(b[k]), 255.0 * a[k].max(b[k]));
+                if got < lo - 3.0 || got > hi + 3.0 {
+                    off_px.push((x, y, k, got, lo.round(), hi.round()));
+                }
+            }
+        }
+    }
+    assert!(
+        seen > 10_000 && inside > 100,
+        "{seen} seen, {inside} inside"
+    );
+    assert!(
+        off_px.is_empty(),
+        "{} off, (x, y, channel, got, least, most) {:?}",
+        off_px.len(),
+        &off_px[..off_px.len().min(8)]
+    );
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn the_slug_render_draws_no_effect_that_reads_the_distance() {
     let fit = Fit {
         x: 8.0,

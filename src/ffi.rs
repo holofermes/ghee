@@ -174,6 +174,7 @@ extern "C" {
         batch: c_int,
         param: *const Parameter,
     ) -> bool;
+    pub fn ghee_mp_set_batch_opacity(g: *mut GheeScene, batch: c_int, opacity: f32) -> bool;
     pub fn ghee_mp_insert_batch(
         g: *mut GheeScene,
         pass: c_int,

@@ -139,6 +139,7 @@ struct mp_batch {
     struct mp_value *values;
     int nvalues, values_cap;
     bool dirty;                          // a value changed since the batch last set them
+    float opacity;                       // below 1 the batch draws through the fade buffer
 };
 
 struct GheeScene {
@@ -294,6 +295,13 @@ struct GheeScene {
     GLint blit_sampler, blit_flip, blit_opaque, blit_turn, blit_shift;
     GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
     int preview_w, preview_h;
+    // A batch below opacity 1 draws into the fade buffer, as large as the
+    // largest pass that needed it, and fade_prog lays the buffer on its pass.
+    GLuint fade_fbo, fade_tex;
+    int fade_w, fade_h;
+    GLuint fade_prog;
+    GLint fade_sampler, fade_scale, fade_opacity, fade_vflip;
+    bool fade_failed;                  // a fade buffer that GL refused, reported once
     int keep_last;                     // >0: an encoder samples the final pass, never draw it direct
 
     char renderer[160];                  // GL_RENDERER and GL_VERSION, captured at create
@@ -335,6 +343,17 @@ static const char *blit_fragment_source =
     "void main() { vec2 at = vec2(uv.x, mix(uv.y, 1.0 - uv.y, flipY));"
     " vec4 c = texture2D(tex, turn * at + shift);"
     " gl_FragColor = vec4(c.rgb, max(c.a, opaque)); }";
+
+// Lay the fade buffer on a pass at `opacity`: `scale` maps the pass's uv
+// into the corner of the buffer that the batch drew in.
+static const char *fade_fragment_source =
+    "#version 100\n"
+    "precision mediump float;"
+    "varying vec2 uv;"
+    "uniform sampler2D tex;"
+    "uniform vec2 scale;"
+    "uniform float opacity;"
+    "void main() { gl_FragColor = texture2D(tex, uv * scale) * opacity; }";
 
 // Each quarter turn clockwise as the blit's `turn`, column-major, then its
 // `shift`: the target's uv o samples the frame at turn * o + shift, both with
@@ -1093,6 +1112,8 @@ void ghee_destroy(GheeScene *g) {
         }
         if (g->preview_fbo) { glDeleteFramebuffers(1, &g->preview_fbo); glDeleteTextures(1, &g->preview_tex); }
         if (g->blit_prog) glDeleteProgram(g->blit_prog);
+        if (g->fade_fbo) { glDeleteFramebuffers(1, &g->fade_fbo); glDeleteTextures(1, &g->fade_tex); }
+        if (g->fade_prog) glDeleteProgram(g->fade_prog);
         if (g->VBO) glDeleteBuffers(1, &g->VBO);
         if (g->VAO) glDeleteVertexArrays(1, &g->VAO);
         ghee_mp_reset(g);   // all pass programs/buffers + the pending scene
@@ -1340,6 +1361,7 @@ int ghee_mp_add_batch(GheeScene *g, int pass, const char *name, const char *vert
     snprintf(l->name, sizeof l->name, "%s", name);
     l->program = prog;
     l->blend = blend;
+    l->opacity = 1.0f;
     glGenBuffers(1, &l->vbo);
     glGenVertexArrays(1, &l->vao);
     return g->stage_nbatch++;
@@ -1977,6 +1999,13 @@ bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param
     return true;
 }
 
+bool ghee_mp_set_batch_opacity(GheeScene *g, int batch, float opacity) {
+    struct mp_batch *l = running_batch(g, batch);
+    if (!l) return false;
+    l->opacity = opacity < 0.0f ? 0.0f : opacity > 1.0f ? 1.0f : opacity;
+    return true;
+}
+
 int ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name, const char *vertex_source,
                          const char *fragment_source, int blend) {
     if (pass < 0 || pass >= g->mp_count) { set_error(g, "no pass %d in the scene", pass); return -1; }
@@ -2019,6 +2048,7 @@ int ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name, co
     snprintf(l->name, sizeof l->name, "%s", name);
     l->program = prog;
     l->blend = blend;
+    l->opacity = 1.0f;
     mp_resolve(g, prog, g->mp_w[pass], g->mp_h[pass], &l->loc);
     for (int i = 0; prog && i < g->mp_ndatatex[pass]; i++)
         l->loc.data[i] = glGetUniformLocation(prog, g->mp_array_name[g->mp_datatex[pass][i]]);
@@ -2301,7 +2331,6 @@ static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, float vflip,
     }
 }
 
-// Draw the batches of pass p into the bound target, after the pass's quad.
 // Set the values of batch `l` on its program, in use, unless the program
 // holds them already.
 static void mp_load_values(GheeScene *g, struct mp_batch *l) {
@@ -2328,31 +2357,127 @@ static void mp_load_values(GheeScene *g, struct mp_batch *l) {
     l->dirty = false;
 }
 
-static void mp_draw_batches(GheeScene *g, int p, float vflip, float elapsed) {
+static void mp_blend(int blend) {
+    switch (blend) {
+    case GHEE_BLEND_ADD: glBlendFunc(GL_ONE, GL_ONE); break;
+    case GHEE_BLEND_MULTIPLY: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
+    case GHEE_BLEND_SCREEN: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
+    default: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
+    }
+}
+
+static void mp_draw_quads(const struct mp_batch *l) {
+    glBindVertexArray(l->vao);
+    glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
+    const GLsizei stride = l->nattr * 4 * (GLsizei)sizeof(GLfloat);
+    for (int at = 0; at < l->quads; at += QUAD_CHUNK) {
+        const int n = l->quads - at < QUAD_CHUNK ? l->quads - at : QUAD_CHUNK;
+        const size_t base = (size_t)at * 4 * (size_t)stride;
+        for (int k = 0; k < l->nattr; k++)
+            glVertexAttribPointer(k, 4, GL_FLOAT, GL_FALSE, stride,
+                                  (const GLvoid *)(base + (size_t)k * 4 * sizeof(GLfloat)));
+        glDrawElements(GL_TRIANGLES, n * 6, GL_UNSIGNED_SHORT, (const GLvoid *)0);
+    }
+}
+
+// Make the fade buffer hold a w x h pass, and fade_prog ready. false with
+// the error set when GL refuses either.
+static bool ensure_fade(GheeScene *g, int w, int h) {
+    if (!g->fade_prog) {
+        g->fade_prog = create_shader_program(g, fade_fragment_source);
+        if (!g->fade_prog) return false;
+        g->fade_sampler = glGetUniformLocation(g->fade_prog, "tex");
+        g->fade_scale = glGetUniformLocation(g->fade_prog, "scale");
+        g->fade_opacity = glGetUniformLocation(g->fade_prog, "opacity");
+        g->fade_vflip = glGetUniformLocation(g->fade_prog, "ghee_vflip");
+    }
+    if (g->fade_fbo && g->fade_w >= w && g->fade_h >= h) return true;
+    const int fw = w > g->fade_w ? w : g->fade_w, fh = h > g->fade_h ? h : g->fade_h;
+    if (g->fade_fbo) {
+        glDeleteFramebuffers(1, &g->fade_fbo);
+        glDeleteTextures(1, &g->fade_tex);
+        g->fade_fbo = g->fade_tex = 0;
+        g->fade_w = g->fade_h = 0;
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+    glGenFramebuffers(1, &g->fade_fbo);
+    glGenTextures(1, &g->fade_tex);
+    glBindTexture(GL_TEXTURE_2D, g->fade_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fw, fh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, g->fade_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g->fade_tex, 0);
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    const GLenum err = glGetError();
+    if (status != GL_FRAMEBUFFER_COMPLETE || err != GL_NO_ERROR) {
+        set_error(g, "%dx%d fade buffer failed: framebuffer 0x%X, GL 0x%X", fw, fh, status, err);
+        glDeleteFramebuffers(1, &g->fade_fbo);
+        glDeleteTextures(1, &g->fade_tex);
+        g->fade_fbo = g->fade_tex = 0;
+        return false;
+    }
+    g->fade_w = fw;
+    g->fade_h = fh;
+    return true;
+}
+
+// Draw the batches of pass p into `target`, its bound buffer, after the
+// pass's quad. A batch below opacity 1 draws into the fade buffer, each
+// quad over the ones before it, and the buffer then lands on the target at
+// the batch's opacity by its blend.
+static void mp_draw_batches(GheeScene *g, int p, GLuint target, float vflip, float elapsed) {
     bool drew = false;
     for (int k = 0; k < g->mp_nbatch; k++) {
         struct mp_batch *l = &g->mp_batch[g->mp_order[k]];
-        if (l->pass != p || l->quads <= 0 || !l->program) continue;
+        if (l->pass != p || l->quads <= 0 || !l->program || l->opacity <= 0.0f) continue;
+        // Texture unit 0 holds what the pass bound there for its batches,
+        // which the fade buffer takes for a while.
+        GLint unit0 = 0;
+        bool alone = false;
+        if (l->opacity < 1.0f) {
+            glActiveTexture(GL_TEXTURE0);
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &unit0);
+            alone = ensure_fade(g, g->mp_w[p], g->mp_h[p]);
+            glBindTexture(GL_TEXTURE_2D, (GLuint)unit0);
+            if (!alone && !g->fade_failed) {
+                fprintf(stderr, "ghee: %s draws at full opacity: %s\n", l->name, g->last_error);
+                g->fade_failed = true;
+            }
+        }
         glUseProgram(l->program);
         mp_load_values(g, l);
-        mp_bind(g, p, &l->loc, vflip, elapsed, false);
         glEnable(GL_BLEND);
-        switch (l->blend) {
-        case GHEE_BLEND_ADD: glBlendFunc(GL_ONE, GL_ONE); break;
-        case GHEE_BLEND_MULTIPLY: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
-        case GHEE_BLEND_SCREEN: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
-        default: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
+        if (alone) {
+            glBindFramebuffer(GL_FRAMEBUFFER, g->fade_fbo);
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            // The fade buffer keeps GL's row order, as a pass's buffer does.
+            mp_bind(g, p, &l->loc, 1.0f, elapsed, false);
+            mp_blend(GHEE_BLEND_NORMAL);
+        } else {
+            mp_bind(g, p, &l->loc, vflip, elapsed, false);
+            mp_blend(l->blend);
         }
-        glBindVertexArray(l->vao);
-        glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
-        const GLsizei stride = l->nattr * 4 * (GLsizei)sizeof(GLfloat);
-        for (int at = 0; at < l->quads; at += QUAD_CHUNK) {
-            const int n = l->quads - at < QUAD_CHUNK ? l->quads - at : QUAD_CHUNK;
-            const size_t base = (size_t)at * 4 * (size_t)stride;
-            for (int k = 0; k < l->nattr; k++)
-                glVertexAttribPointer(k, 4, GL_FLOAT, GL_FALSE, stride,
-                                      (const GLvoid *)(base + (size_t)k * 4 * sizeof(GLfloat)));
-            glDrawElements(GL_TRIANGLES, n * 6, GL_UNSIGNED_SHORT, (const GLvoid *)0);
+        mp_draw_quads(l);
+        if (alone) {
+            glBindFramebuffer(GL_FRAMEBUFFER, target);
+            glUseProgram(g->fade_prog);
+            glUniform1f(g->fade_vflip, vflip);
+            glUniform2f(g->fade_scale, (float)g->mp_w[p] / (float)g->fade_w,
+                        (float)g->mp_h[p] / (float)g->fade_h);
+            glUniform1f(g->fade_opacity, l->opacity);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g->fade_tex);
+            glUniform1i(g->fade_sampler, 0);
+            mp_blend(l->blend);
+            glBindVertexArray(g->VAO);
+            glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glBindTexture(GL_TEXTURE_2D, (GLuint)unit0);
         }
         drew = true;
     }
@@ -2371,7 +2496,8 @@ static void mp_draw_batches(GheeScene *g, int p, float vflip, float elapsed) {
 static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     for (int p = 0; p < g->mp_count; p++) {
         const bool direct = direct_last && p == g->mp_count - 1;
-        glBindFramebuffer(GL_FRAMEBUFFER, direct ? g->scan_fbo : g->mp_fbo[p][g->mp_write[p]]);
+        const GLuint target = direct ? g->scan_fbo : g->mp_fbo[p][g->mp_write[p]];
+        glBindFramebuffer(GL_FRAMEBUFFER, target);
         // The per-pass buffer size. The output pass is always full-size (the caller
         // enforces that), so the direct scanout draw still gets the display
         // viewport.
@@ -2393,7 +2519,7 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             mp_bind(g, p, &g->mp_loc[p], vflip, elapsed, true);
         }
-        mp_draw_batches(g, p, vflip, elapsed);
+        mp_draw_batches(g, p, target, vflip, elapsed);
         if (g->mp_mip[p] && !direct) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, g->mp_tex[p][g->mp_write[p]]);

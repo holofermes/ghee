@@ -277,7 +277,10 @@ A Rust host written for 0.4.0 needs these changes.
   point and lifts the letter being sung, and `wave` (`height`, `speed`),
   `scroll` (`speed`) and `blink` (`rate`), which move the letters and their
   effects together. Every glyph's effects draw before any letter, so a glow
-  never covers the next letter. `"visible": false` bypasses an effect and
+  never covers the next letter. Below an `opacity` of 1, a layer of the
+  `normal` blend draws its letters over their effects first and lays the
+  result on the pass at that opacity, so the effects never show through the
+  letters. `"visible": false` bypasses an effect and
   keeps its values, the slug render skips the three that read the distance,
   and ghee works out how far a layer's quads and its atlas's field reach
   from its effects, and fades the effects out at the edge of their quads.

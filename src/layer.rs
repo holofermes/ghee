@@ -1210,6 +1210,13 @@ impl TextLayer {
         self.drawn().any(|e| e.kind.reads_distance())
     }
 
+    /// True when the layer's glyphs draw their letters over their effects
+    /// as one picture, which then lands on the pass at the layer's opacity,
+    /// so below 1 the effects never show through the letters.
+    pub fn fades_as_one(&self) -> bool {
+        self.doubled() && self.blend == Blend::Normal
+    }
+
     /// How far past the letters the field of the atlas must reach for the
     /// drawn effects, in em: the shadow's blur, the glow's blur, the stroke's
     /// width. A bypassed effect counts, so its eye needs no new atlas.

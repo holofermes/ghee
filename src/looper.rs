@@ -84,6 +84,20 @@ pub trait RenderTarget {
         })
     }
 
+    /// Take layer `name` out of the running scene, as
+    /// Renderer::remove_layer() does. A target that draws no layers refuses
+    /// every name.
+    fn remove_layer(&mut self, name: &str) -> Result<()> {
+        Err(Refused(format!("this renderer draws no layer '{name}'")).into())
+    }
+
+    /// Put layer `name` at `index` among the layers of its pass, as
+    /// Renderer::move_layer() does. A target that draws no layers refuses
+    /// every name.
+    fn move_layer(&mut self, name: &str, _index: usize) -> Result<()> {
+        Err(Refused(format!("this renderer draws no layer '{name}'")).into())
+    }
+
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()>;
     fn render_into(
         &mut self,
@@ -162,6 +176,14 @@ impl RenderTarget for Renderer {
 
     fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {
         Renderer::update_calls(self, calls)
+    }
+
+    fn remove_layer(&mut self, name: &str) -> Result<()> {
+        Renderer::remove_layer(self, name)
+    }
+
+    fn move_layer(&mut self, name: &str, index: usize) -> Result<()> {
+        Renderer::move_layer(self, name, index)
     }
 
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {

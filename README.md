@@ -550,9 +550,10 @@ describes, a procedural scene through its messages, as
 `Renderer::set_layer`.
 
 A running scene also takes a new layer and builds that layer alone, while
-the other layers and passes carry on. A handle's `draw()` in Python adds one
-for each call that runs for the first time, a procedural scene sends one in
-message kind 6, and Rust calls `Renderer::add_layer`, as [From
+the other layers and passes carry on, and it takes a layer out or moves one
+among the layers of its pass the same way. A handle's `draw()` in Python adds
+a layer for each call that runs for the first time, a procedural scene sends
+message kinds 6, 9 and 10, and Rust calls `Renderer::add_layer`, as [From
 Rust](#from-rust) shows.
 
 `wave`, `scroll` and `blink` move by a phase that ghee keeps for each layer.
@@ -1071,6 +1072,15 @@ another layer's draws through the same program:
 ```rust
 r.add_layer("main", 0, &serde_json::json!(
     {"name": "bar", "shape": "rect", "x": 0, "y": 28, "width": 64, "height": 4}))?;
+```
+
+`remove_layer` takes a layer out the same way, and `move_layer` puts one at
+another index among the layers of its pass, where it keeps its look and its
+phases and compiles nothing:
+
+```rust
+r.move_layer("bar", 1)?;
+r.remove_layer("bar")?;
 ```
 
 ## Limits

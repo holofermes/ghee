@@ -2393,10 +2393,112 @@ impl Renderer {
         // the caller holds says why.
         let _ = self.drop_drawn(name);
         if let Some(scene) = self.scene.borrow_mut().as_mut() {
-            scene.remove_layer(name);
+            let _ = scene.remove_layer(name);
         }
         self.moved();
         let _ = self.refresh();
+    }
+
+    /// Take layer `name` out of the running scene, with no rebuild. Every
+    /// other layer keeps its program, its atlas, its phases and its quads,
+    /// and every pass keeps its program, its arrays and its buffers. A name
+    /// that names no layer fails with a Refused error and changes nothing.
+    pub fn remove_layer(&mut self, name: &str) -> Result<()> {
+        let pass = self.scene.borrow().as_ref().and_then(|s| {
+            let (p, _) = s.place_of(name)?;
+            Some(s.passes[p].name.clone())
+        });
+        let Some(pass) = pass else {
+            return Err(Refused(format!("the scene has no layer '{name}'")).into());
+        };
+        self.drop_drawn(name)?;
+        self.scene
+            .borrow_mut()
+            .as_mut()
+            .expect("the scene holds the layer")
+            .remove_layer(name)?;
+        self.renders.remove(name);
+        self.moved();
+        // The runs on either side of the layer join.
+        self.rerun(&pass, Vec::new())?;
+        self.refresh()
+    }
+
+    /// Put layer `name` at `index` among the layers of its pass, with no
+    /// rebuild. The layer keeps its look, its atlas and the phases of its
+    /// moving effects, and compiles nothing, and every other layer and every
+    /// pass keep what they have. A name that names no layer, and an index
+    /// past the last layer of the pass, fail with a Refused error and change
+    /// nothing.
+    pub fn move_layer(&mut self, name: &str, index: usize) -> Result<()> {
+        let place = self.scene.borrow().as_ref().and_then(|s| {
+            let (p, i) = s.place_of(name)?;
+            Some((s.passes[p].name.clone(), i))
+        });
+        let Some((pass, from)) = place else {
+            return Err(Refused(format!("the scene has no layer '{name}'")).into());
+        };
+        let held = self.hold_programs(name)?;
+        let layer = {
+            let mut scene = self.scene.borrow_mut();
+            let scene = scene.as_mut().expect("the scene holds the layer");
+            scene.move_layer(name, index).map_err(refused)?;
+            scene.layer(name).cloned().expect("the layer moved")
+        };
+        self.moved();
+        if index == from || self.drawn(name).is_none() {
+            return Ok(());
+        }
+        let phases = self.drop_drawn(name)?;
+        if let Err(e) = self.draw_new(&pass, index, &layer) {
+            // Back to its old place, or out of the scene when it cannot draw
+            // there either, and the error says why.
+            let _ = self.drop_drawn(name);
+            if let Some(scene) = self.scene.borrow_mut().as_mut() {
+                let _ = scene.move_layer(name, from);
+            }
+            self.moved();
+            let back = self.draw_new(&pass, from, &layer);
+            if back.and_then(|()| self.carry(&layer, &phases)).is_err() {
+                self.unwind(name);
+            }
+            let _ = self.refresh();
+            return Err(e);
+        }
+        self.carry(&layer, &phases)?;
+        let settled = self.refresh();
+        drop(held);
+        settled
+    }
+
+    /// Hold the programs that drawn layer `name` draws with while the holds
+    /// live, so the layer drawn again with them compiles nothing. A shape
+    /// layer holds none: the engine keeps the shapes' program.
+    fn hold_programs(&self, name: &str) -> Result<Vec<Hold>> {
+        let Some(dl) = self.drawn(name) else {
+            return Ok(Vec::new());
+        };
+        let programs = {
+            let scene = self.scene.borrow();
+            match scene.as_ref().and_then(|s| s.layer(name)) {
+                Some(Layer::Image(l)) => vec![l.shaders()],
+                Some(Layer::Text(l)) => {
+                    let l = self.concrete(l);
+                    let sh = self.text_shaders(&l, self.detail(&l));
+                    let mut out = vec![sh.glyphs, sh.boxes];
+                    if dl.coloured.get() {
+                        out.push(sh.colour);
+                    }
+                    out
+                }
+                Some(Layer::Shape(_)) | None => Vec::new(),
+            }
+        };
+        let what = format!("layer '{name}'");
+        programs
+            .iter()
+            .map(|p| Hold::keep(self.handle, &what, p))
+            .collect()
     }
 
     /// Ready `new`, a layer that joins pass `pass`, as the scene's load
@@ -8175,14 +8277,17 @@ mod tests {
         // with the layers that the change leaves: a layer added into a run,
         // or splitting one, a member built again, replaced or leaving its
         // run, a layer between runs that leaves them to join, and the live
-        // fields of members. An image ahead of a run leaves its picture on
-        // the texture unit that a run's texts read their curves from.
+        // fields of members, a layer that leaves, and a layer that moves,
+        // which compiles nothing. An image ahead of a run leaves its picture
+        // on the texture unit that a run's texts read their curves from.
         enum Op {
             Add(usize, Value),
             Replace(Value),
             Update(Value),
             Set(&'static str, &'static str, Value),
             Words(&'static str, &'static str),
+            Remove(&'static str),
+            Move(&'static str, usize),
         }
         let base = members();
         let shapes: Vec<Value> = base
@@ -8214,6 +8319,21 @@ mod tests {
         };
         let gradient = json!({"from": "yellow", "to": "purple", "angle": 30});
         let s = rect("s", [12.0, 10.0, 6.0, 6.0], "yellow");
+        let hinted = json!({"name": "h", "text": "Hi", "font_size": 12, "x": 4, "y": 40,
+                            "glow": {}});
+        let without = |layers: &[Value], name: &str| -> Vec<Value> {
+            layers
+                .iter()
+                .filter(|l| l["name"] != name)
+                .cloned()
+                .collect()
+        };
+        let moved = |layers: &[Value], name: &str, k: usize| -> Vec<Value> {
+            let mut out = without(layers, name);
+            let l = layers.iter().find(|l| l["name"] == name).unwrap();
+            out.insert(k, l.clone());
+            out
+        };
         let image = json!({"name": "img", "image": "pic", "x": 20, "y": 4, "width": 8});
         let add = {
             let mut l = rect("plus", [18.0, 4.0, 10.0, 10.0], "white");
@@ -8329,12 +8449,50 @@ mod tests {
                 Op::Words("t3", "fits"),
                 with(&base, None, &t3_fits),
             ),
+            (
+                "a member leaves",
+                base.clone(),
+                Op::Remove("t2"),
+                without(&base, "t2"),
+            ),
+            (
+                "a layer between runs leaves them to join",
+                with(&base, Some(3), &image),
+                Op::Remove("img"),
+                base.clone(),
+            ),
+            (
+                "a member moves to the end",
+                base.clone(),
+                Op::Move("a", 6),
+                moved(&base, "a", 6),
+            ),
+            (
+                "an image moves into a run",
+                with(&base, Some(0), &image),
+                Op::Move("img", 4),
+                moved(&with(&base, Some(0), &image), "img", 4),
+            ),
+            (
+                "a text alone moves ahead",
+                between.clone(),
+                Op::Move("w", 0),
+                moved(&between, "w", 0),
+            ),
+            (
+                "a hinted text moves",
+                with(&base, Some(7), &hinted),
+                Op::Move("h", 1),
+                moved(&with(&base, Some(7), &hinted), "h", 1),
+            ),
         ];
         let (_g, mut r) = gpu_at(128, 64);
         for (what, from, op, want) in rows {
             let built = first_frames(&mut r, &run_scene(&want), 1);
             let grouped = runs_of(&r);
             first_frames(&mut r, &run_scene(&from), 1);
+            let compiled = r.compiled();
+            let quiet = matches!(op, Op::Move(..));
             match op {
                 Op::Add(k, l) => r.add_layer("main", k, &l).unwrap(),
                 Op::Replace(l) => r.replace_layer(&l).unwrap(),
@@ -8348,10 +8506,15 @@ mod tests {
                     r.set_layer(&at, Given::Json(&value)).unwrap();
                 }
                 Op::Words(layer, words) => set_words(&r, layer, words),
+                Op::Remove(layer) => r.remove_layer(layer).unwrap(),
+                Op::Move(layer, k) => r.move_layer(layer, k).unwrap(),
             }
             r.set_time(Some(0.0));
             assert!(still(&mut r) == built, "{what}");
             assert_eq!(runs_of(&r), grouped, "{what}");
+            if quiet {
+                assert_eq!(r.compiled(), compiled, "{what} compiles nothing");
+            }
         }
     }
 

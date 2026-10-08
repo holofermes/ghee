@@ -2479,11 +2479,34 @@ impl Scene {
         })
     }
 
-    /// Take layer `name` out of the scene.
-    pub(crate) fn remove_layer(&mut self, name: &str) {
-        for p in &mut self.passes {
-            p.layers.retain(|l| l.name() != name);
+    /// Take layer `name` out of the scene. A name that names no layer fails.
+    pub fn remove_layer(&mut self, name: &str) -> Result<()> {
+        let Some((p, i)) = self.place_of(name) else {
+            bail!("the scene has no layer '{name}'");
+        };
+        self.passes[p].layers.remove(i);
+        Ok(())
+    }
+
+    /// Put layer `name` at `index` among the layers of its pass. A name that
+    /// names no layer, and an index past the last layer of the pass, fail and
+    /// leave the scene as it was.
+    pub fn move_layer(&mut self, name: &str, index: usize) -> Result<()> {
+        let Some((p, i)) = self.place_of(name) else {
+            bail!("the scene has no layer '{name}'");
+        };
+        let pass = &mut self.passes[p];
+        let n = pass.layers.len();
+        if index >= n {
+            bail!(
+                "pass '{}' holds {n} layers, so a layer moves to 0 to {}, got {index}",
+                pass.name,
+                n - 1
+            );
         }
+        let layer = pass.layers.remove(i);
+        pass.layers.insert(index, layer);
+        Ok(())
     }
 
     /// Hand `layer`, which joins the scene, its fonts or its image file as
@@ -3321,6 +3344,24 @@ mod tests {
             sc.replace_layer(layer).unwrap_err();
             assert_eq!(sc, before, "{look}");
         }
+    }
+
+    #[test]
+    fn a_move_or_a_removal_that_the_scene_refuses_says_why_and_leaves_it_as_it_was() {
+        let doc = json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD, "layers": [
+            {"name": "title", "text": "Hi"}, {"name": "sub", "text": "there"}]}]});
+        let mut sc = Scene::from_dict(&doc, None, None).unwrap();
+        let before = sc.clone();
+        let e = sc.move_layer("title", 2).unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "pass 'm' holds 2 layers, so a layer moves to 0 to 1, got 2"
+        );
+        assert_eq!(sc, before);
+        let e = sc.move_layer("nope", 0).unwrap_err().to_string();
+        assert_eq!(e, "the scene has no layer 'nope'");
+        assert!(sc.remove_layer("nope").is_err());
+        assert_eq!(sc, before);
     }
 
     #[test]

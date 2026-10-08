@@ -112,6 +112,13 @@ After the handshake, stdout carries binary messages:
   look as kind 7 takes it, and each layer named once. ghee gives each layer
   its look as kind 7 does. The shim's `ghee.draw` sends a frame's looks that
   differ in live fields alone this way.
+- Kind 9 takes a layer out of the running scene. The name is the layer, and
+  the count is 0. Every other layer and every pass keep their programs,
+  their arrays and their moving effects.
+- Kind 10 moves a layer among the layers of its pass. The name is the layer,
+  and the payload is count bytes of UTF-8 JSON, `{"index": <its place among
+  the pass's layers after the move>}`. The layer keeps its look and its
+  moving effects, and compiles nothing.
 
 ghee reads without blocking and applies the newest data, the sets in the
 order that they arrive. Arrays and params keep their values until a message

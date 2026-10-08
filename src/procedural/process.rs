@@ -87,6 +87,8 @@ const END_TICK: u8 = 5;
 const ADD_LAYER: u8 = 6;
 const UPDATE_LAYER: u8 = 7;
 const UPDATE_LAYERS: u8 = 8;
+const REMOVE_LAYER: u8 = 9;
+const MOVE_LAYER: u8 = 10;
 
 const SIGTERM: c_int = 15;
 
@@ -434,13 +436,17 @@ enum ParamData {
 
 /// One message that sets something by name: a param or a live field of a
 /// layer (kinds 1 and 3), a layer added to the pass of that name (kind 6),
-/// the new look of the layer of that name (kind 7), or the new looks of
-/// several layers (kind 8), each of the last three as its JSON text.
+/// the new look of the layer of that name (kind 7), the new looks of
+/// several layers (kind 8), each of those three as its JSON text, the layer
+/// of that name taken out (kind 9), or the layer of that name moved, as the
+/// JSON text of its new place (kind 10).
 enum Set {
     Param(ParamData),
     Layer(String),
     Look(String),
     Looks(String),
+    Remove,
+    Move(String),
 }
 
 impl Set {
@@ -858,6 +864,37 @@ impl SceneProcess {
         Ok(())
     }
 
+    /// Take layer `name` out of the scene, for a kind 9 message.
+    fn remove_layer(&mut self, renderer: &mut dyn RenderTarget, name: &str) -> Result<()> {
+        if let Err(e) = renderer.remove_layer(name) {
+            return self.refuse_or_fail(name, e);
+        }
+        self.layers.remove(name);
+        let text = format!("{name}.text");
+        self.values.remove(&text);
+        self.sent.remove(&text);
+        Ok(())
+    }
+
+    /// Put layer `name` in the place of a kind 10 message, `text` its JSON.
+    fn move_layer(
+        &mut self,
+        renderer: &mut dyn RenderTarget,
+        name: &str,
+        text: &str,
+    ) -> Result<()> {
+        match place_of(name, text) {
+            Ok(index) => match renderer.move_layer(name, index) {
+                Ok(()) => Ok(()),
+                Err(e) => self.refuse_or_fail(name, e),
+            },
+            Err(why) => {
+                self.refuse(name, &why);
+                Ok(())
+            }
+        }
+    }
+
     /// Hold the words of `call`, a call that the renderer took, as the
     /// process's own, which no tick carries back.
     fn took_call(&mut self, call: &Call) {
@@ -1123,6 +1160,14 @@ impl SceneController for SceneProcess {
                     self.update_layers(renderer, &text)?;
                     continue;
                 }
+                Set::Remove => {
+                    self.remove_layer(renderer, &name)?;
+                    continue;
+                }
+                Set::Move(text) => {
+                    self.move_layer(renderer, &name, &text)?;
+                    continue;
+                }
                 Set::Param(data) => data,
             };
             // A first part that names a layer addresses a live field of it.
@@ -1293,6 +1338,23 @@ fn added(pass: &str, text: &str) -> Result<(usize, Value), String> {
     }
 }
 
+/// The place of a kind 10 message to layer `layer`, read from `text`, its
+/// JSON, or why the message carries none.
+fn place_of(layer: &str, text: &str) -> Result<usize, String> {
+    let doc: Value = serde_json::from_str(text)
+        .map_err(|e| format!("kind 10 to layer '{layer}' is no JSON: {e}"))?;
+    let index = doc
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|i| usize::try_from(i).ok());
+    match (index, doc.as_object().map(Map::len)) {
+        (Some(index), Some(1)) => Ok(index),
+        _ => Err(format!(
+            "kind 10 to layer '{layer}' needs {{\"index\": n}}, n a whole number from 0"
+        )),
+    }
+}
+
 /// The look of a kind 7 message to layer `layer`, read from `text`, its
 /// JSON, or why the message carries none.
 fn look_of(layer: &str, text: &str) -> Result<Value, String> {
@@ -1417,7 +1479,7 @@ fn read_stream(
 
 /// kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE.
 /// Kind 4 carries count u8 bytes instead, and the value is byte / 255.
-/// Kinds 3, 6, 7 and 8 carry count bytes of UTF-8 text.
+/// Kinds 3 and 6 to 10 carry count bytes of UTF-8 text.
 /// Kind 2 (clean) and kind 5 (the end of a tick's answer) are the single byte.
 fn messages(
     out: &mut impl BufRead,
@@ -1439,8 +1501,8 @@ fn messages(
             answered.notify_all();
             continue;
         }
-        if kind[0] > UPDATE_LAYERS {
-            return Err(format!("wrote message kind {} (0 to 8 only)", kind[0]));
+        if kind[0] > MOVE_LAYER {
+            return Err(format!("wrote message kind {} (0 to 10 only)", kind[0]));
         }
         let mut len = [0u8; 1];
         let mut count = [0u8; 4];
@@ -1472,13 +1534,15 @@ fn messages(
         }
         if matches!(
             kind[0],
-            SET_STRING | ADD_LAYER | UPDATE_LAYER | UPDATE_LAYERS
+            SET_STRING | ADD_LAYER | UPDATE_LAYER | UPDATE_LAYERS | REMOVE_LAYER | MOVE_LAYER
         ) {
             let text = String::from_utf8_lossy(&body).into_owned();
             let set = match kind[0] {
                 ADD_LAYER => Set::Layer(text),
                 UPDATE_LAYER => Set::Look(text),
                 UPDATE_LAYERS => Set::Looks(text),
+                REMOVE_LAYER => Set::Remove,
+                MOVE_LAYER => Set::Move(text),
                 _ => Set::Param(ParamData::Str(text)),
             };
             latest(&mut lock(inbox).params, name, set);
@@ -1635,7 +1699,8 @@ sleep 60
         feeds: Vec<(String, ArraySize)>,
         bytes: std::cell::RefCell<Vec<(String, Vec<u8>)>>,
         floats: std::cell::RefCell<Vec<(String, Vec<f32>)>>,
-        /// Every param set, live set, layer added and look given, in order.
+        /// Every param set, live set, layer added, look given, layer taken out
+        /// and layer moved, in order.
         log: std::cell::RefCell<Vec<String>>,
     }
 
@@ -1715,6 +1780,20 @@ sleep 60
         fn update_layer(&mut self, layer: &Value) -> Result<bool> {
             self.log.borrow_mut().push(format!("look {layer}"));
             Ok(true)
+        }
+
+        fn remove_layer(&mut self, name: &str) -> Result<()> {
+            self.log.borrow_mut().push(format!("remove {name}"));
+            Ok(())
+        }
+
+        /// Records the move, and refuses a place past 2.
+        fn move_layer(&mut self, name: &str, index: usize) -> Result<()> {
+            if index > 2 {
+                return Err(Refused("a place past the pass's layers".to_string()).into());
+            }
+            self.log.borrow_mut().push(format!("move {name} {index}"));
+            Ok(())
         }
 
         /// Records the layers of the calls, and leaves a call to a layer
@@ -2488,7 +2567,7 @@ done
             &d,
             "garbage",
             "#!/bin/sh\nprintf '{\"passes\":[{\"name\":\"main\",\"fragment\":\"void main(){}\"}]}\\n'\n\
-             printf '\\011'\nsleep 5\n",
+             printf '\\013'\nsleep 5\n",
         );
         let (_scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         let mut last = Ok(());
@@ -2500,7 +2579,7 @@ done
             thread::sleep(Duration::from_millis(10));
         }
         let e = last.unwrap_err().to_string();
-        assert!(e.contains("wrote message kind 9 (0 to 8 only)"), "{e}");
+        assert!(e.contains("wrote message kind 11 (0 to 10 only)"), "{e}");
     }
 
     const DOTTED_SCRIPT: &str = r#"#!/bin/sh
@@ -2825,6 +2904,65 @@ while IFS= read -r line; do :; done
             e.starts_with("kind 7 to layer 'title' holds no layer"),
             "{e}"
         );
+        assert_eq!(
+            place_of("title", r#"{"index": -1}"#),
+            Err(
+                "kind 10 to layer 'title' needs {\"index\": n}, n a whole number from 0"
+                    .to_string()
+            )
+        );
+        for text in [r#"{}"#, r#"{"index": 0, "more": 1}"#] {
+            let e = place_of("title", text).unwrap_err();
+            assert!(e.starts_with("kind 10 to layer 'title' needs"), "{e}");
+        }
+        let e = place_of("title", "nope").unwrap_err();
+        assert!(
+            e.starts_with("kind 10 to layer 'title' is no JSON: "),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_kind_9_message_takes_a_layer_out_and_a_kind_10_message_moves_one() {
+        let d = tmpdir("place");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "fragment": "void main(){}",
+                        "layers": [{"name": "dot", "shape": "rect"},
+                                   {"name": "bar", "shape": "rect"},
+                                   {"name": "title", "text": "hi"}]}],
+        });
+        let (first, past) = (r#"{"index": 0}"#, r#"{"index": 3}"#);
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            message(10, "bar", first.len() as u32, first.as_bytes()),
+            message(9, "title", 0, b""),
+            message(10, "dot", past.len() as u32, past.as_bytes()),
+            numbers("bar.x", &[1.0]),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "place", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            f.incoming.iter().any(|(n, _)| n == "bar.x")
+        }));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert_eq!(
+            *stub.log.borrow(),
+            [
+                "move bar 0".to_string(),
+                "remove title".to_string(),
+                "set bar.x Numbers([1.0])".to_string(),
+            ]
+        );
+        assert_eq!(f.refused.iter().collect::<Vec<_>>(), ["dot"]);
+        // the words of the layer that left go out with no tick
+        assert!(!f.values.contains_key("title.text"));
     }
 
     #[test]

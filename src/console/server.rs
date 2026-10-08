@@ -1684,6 +1684,30 @@ impl RenderTarget for SharedRenderer {
         Ok(taken)
     }
 
+    fn remove_layer(&mut self, name: &str) -> Result<()> {
+        self.renderer.borrow_mut().remove_layer(name)?;
+        let mut held = self.running.borrow_mut();
+        if let Some(scene) = held.scene.as_mut() {
+            if scene.remove_layer(name).is_ok() {
+                held.changed = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn move_layer(&mut self, name: &str, index: usize) -> Result<()> {
+        self.renderer.borrow_mut().move_layer(name, index)?;
+        let mut held = self.running.borrow_mut();
+        let Some(scene) = held.scene.as_mut() else {
+            return Ok(());
+        };
+        match scene.move_layer(name, index) {
+            Ok(()) => held.changed = true,
+            Err(e) => eprintln!("ghee console: layer {name}: {e}"),
+        }
+        Ok(())
+    }
+
     fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
         self.renderer.borrow_mut().draw(provider)
     }

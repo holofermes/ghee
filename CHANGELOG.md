@@ -584,7 +584,7 @@ A Rust host written for 0.4.0 needs these changes.
   with their programs, arrays and moving effects, a look that changes live
   fields alone sets them live, and a layer that a scene file would refuse
   there logs once. ghee applies the sets of a process in the order that they
-  arrive, and a message kind past 8 ends the scene.
+  arrive, and a message kind past 10 ends the scene.
 - Give several layers new looks in one message, kind 8, its name empty and
   its payload the UTF-8 JSON list of the layers. `ghee.draw` in a scene
   that ghee runs sends a frame's looks that change live fields alone as one
@@ -593,6 +593,10 @@ A Rust host written for 0.4.0 needs these changes.
   SSD1306, a script that draws 200 calls under `ghee render`, rects and
   two-digit words with half of them changed each frame, draws at 166 fps,
   where it drew at 27.
+- Take a layer out of the running scene with message kind 9, named for the
+  layer, with no payload, and move a layer among the layers of its pass
+  with kind 10, named for the layer, its payload the UTF-8 JSON `{"index":
+  n}` of its place after the move.
 
 ### Console
 
@@ -925,6 +929,12 @@ A Rust host written for 0.4.0 needs these changes.
   phases and its quads, the layer's moving effects carry their phases on,
   a layer that the scene refuses changes nothing, and a layer that fails to
   draw leaves the old one drawing in its place.
+- Take a layer out of a running scene with `Renderer::remove_layer`, and
+  put one at another index among the layers of its pass with
+  `Renderer::move_layer`, where it keeps its look, its atlas and its phases
+  and compiles nothing. Every other layer and every pass keep what they
+  hold. `Scene::remove_layer` and `Scene::move_layer` do the same to a scene,
+  and `RenderTarget` takes both, refusing every name by default.
 - Measure words with `Scene::measure` and `Renderer::measure`: the width and
   height in pixels of the block that a text layer of a pass lays them out
   in, at a `font_size` or at the size that fits the pass.

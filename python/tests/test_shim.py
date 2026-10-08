@@ -1153,8 +1153,9 @@ def test_the_package_is_the_shim_plus_the_native_half():
 
 
 def test_the_stubs_name_what_the_native_module_takes():
-    """The wheel marks itself typed, and _native.pyi gives open and each
-    Handle method the parameters that the module itself takes."""
+    """The wheel marks itself typed, and _native.pyi gives open, each Handle
+    method and each Drawing call the parameters that the module itself
+    takes."""
     import ast
     import inspect
     import pathlib
@@ -1182,6 +1183,14 @@ def test_the_stubs_name_what_the_native_module_takes():
     assert {n for n in methods if not n.startswith("_")} == public
     for name in public - {"size", "components", "layers", "brightness"}:
         assert params(methods[name]) == runtime(getattr(native.Handle, name)), name
+    (drawing,) = [
+        c for c in stub.body if isinstance(c, ast.ClassDef) and c.name == "Drawing"
+    ]
+    calls = {f.name: f for f in drawing.body if isinstance(f, ast.FunctionDef)}
+    public = {n for n in dir(native.Drawing) if not n.startswith("_")}
+    assert {n for n in calls if not n.startswith("_")} == public
+    for name in public:
+        assert params(calls[name]) == runtime(getattr(native.Drawing, name)), name
 
 
 def test_open_without_the_native_module_names_it(monkeypatch):

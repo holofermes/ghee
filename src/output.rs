@@ -420,15 +420,21 @@ fn encode(path: &str, frame: Frame<'_>, opts: &Map<String, Value>) -> Result<Vec
             let quality = opts.get("quality").and_then(Value::as_u64).unwrap_or(75);
             encode_jpeg(frame, quality as u8)
         }
-        ext => bail!("unknown file extension: {ext}"),
+        _ => bail!("wants a .png or .jpg file name, got '{path}'"),
     }
 }
 
-/// A frame as baseline JPEG. JPEG holds no alpha channel, so RGBA fails.
+/// True when the extension of `path` picks an image format.
+pub fn is_image_name(path: &str) -> bool {
+    matches!(suffix(path).as_str(), ".png" | ".jpg" | ".jpeg")
+}
+
+/// A frame as baseline JPEG. JPEG holds no alpha channel, so an RGBA frame
+/// loses its alpha.
 pub fn encode_jpeg(frame: Frame<'_>, quality: u8) -> Result<Vec<u8>> {
     let color = match frame.components {
         3 => ColorType::Rgb,
-        4 => bail!("cannot write mode RGBA as JPEG"),
+        4 => ColorType::Rgba,
         n => bail!("a {n}-component frame is neither RGB nor RGBA"),
     };
     let mut out = Vec::new();
@@ -777,8 +783,8 @@ mod tests {
         let frame = OwnedFrame::of((2, 2, 3));
         let opts = Map::new();
         for (path, msg) in [
-            ("out.tiff", "unknown file extension: .tiff"),
-            ("out", "unknown file extension: "),
+            ("out.tiff", "wants a .png or .jpg file name, got 'out.tiff'"),
+            ("out", "wants a .png or .jpg file name, got 'out'"),
         ] {
             let e = encode(path, frame.view(), &opts).unwrap_err().to_string();
             assert_eq!(e, msg);
@@ -786,18 +792,28 @@ mod tests {
     }
 
     #[test]
-    fn a_jpeg_takes_its_quality_and_refuses_an_alpha_channel() {
-        let rgb = OwnedFrame::of((16, 16, 3));
+    fn a_jpeg_takes_its_quality_and_drops_the_alpha_channel() {
+        let mut rgb = OwnedFrame::of((16, 16, 3));
+        let mut rgba = OwnedFrame::of((16, 16, 4));
+        for (i, (c, p)) in rgb
+            .data
+            .chunks_exact_mut(3)
+            .zip(rgba.data.chunks_exact_mut(4))
+            .enumerate()
+        {
+            let v = [(i * 7) as u8, (i * 13) as u8, (i * 29) as u8];
+            c.copy_from_slice(&v);
+            p[..3].copy_from_slice(&v);
+            p[3] = (i * 31) as u8;
+        }
         let mut opts = Map::new();
         opts.insert("quality".to_string(), Value::from(20));
         let small = encode("f.jpg", rgb.view(), &opts).unwrap();
+        assert_eq!(encode("f.jpg", rgba.view(), &opts).unwrap(), small);
         opts.insert("quality".to_string(), Value::from(95));
         let large = encode("f.jpeg", rgb.view(), &opts).unwrap();
         assert!(small.len() < large.len());
         assert_eq!(&small[..2], &[0xff, 0xd8]); // SOI
-        let rgba = OwnedFrame::of((16, 16, 4));
-        let e = encode("f.jpg", rgba.view(), &opts).unwrap_err().to_string();
-        assert_eq!(e, "cannot write mode RGBA as JPEG");
     }
 
     #[test]

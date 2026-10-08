@@ -34,7 +34,7 @@ use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
 use crate::h264::H264Stream;
 use crate::looper::{ControllerSlot, Loop, Output, Pacer, SceneController};
-use crate::output::{expand_pattern, FixedPacer, ImageSequence, RawStream, Scanout};
+use crate::output::{expand_pattern, is_image_name, FixedPacer, ImageSequence, RawStream, Scanout};
 use crate::overlay;
 use crate::procedural::process::{self, SceneProcess};
 use crate::procedural::{load_scene, scene_name};
@@ -548,6 +548,22 @@ fn cmd_render(a: &Ns) -> Result<()> {
             "{}: --alpha with --components 3; an RGB frame holds no alpha",
             a.cmd
         )));
+    }
+    let pattern = text(&a.output);
+    if given(&a.output) && pattern != "-" {
+        if !is_image_name(pattern) {
+            return Err(exit(format!(
+                "{}: -o wants an image pattern such as frame.####.png, or '-', \
+                 got '{pattern}'; a display takes --display",
+                a.cmd
+            )));
+        }
+        if a.alpha && !pattern.to_lowercase().ends_with(".png") {
+            return Err(exit(format!(
+                "{}: --alpha with a .jpg; a JPEG holds no alpha",
+                a.cmd
+            )));
+        }
     }
     report::apply(a);
     // the scene loads first: it owns the tokens after `--` and their --help. A
@@ -1717,6 +1733,25 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "render: --alpha with --components 3; an RGB frame holds no alpha"
+        );
+    }
+
+    #[test]
+    fn an_output_that_names_no_image_file_is_refused() {
+        let e = run(&["render", "s", "-o", "kms"]).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "render: -o wants an image pattern such as frame.####.png, or '-', \
+             got 'kms'; a display takes --display"
+        );
+    }
+
+    #[test]
+    fn alpha_is_refused_with_a_jpeg() {
+        let e = run(&["render", "s", "-o", "f.####.JPG", "--alpha"]).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "render: --alpha with a .jpg; a JPEG holds no alpha"
         );
     }
 

@@ -333,6 +333,8 @@ A scene written for 0.4.0 needs these changes.
   `color` back to its default. A field that changes with a rebuild, an
   unknown layer, effect or field, and a value that the field does not take
   raise ValueError, and an unknown layer's error names the scene's layers.
+  On a Pi Zero 2 W a set of `x` takes 20 us, a colour 59 us and a karaoke's
+  `sung` 39 us.
 - Set the layers of a scene script from a tick or a feed with
   `ghee.layers`, as on a handle. Under ghee, each set goes out with the
   tick's answer, checked against the scene first, so a set that ghee would
@@ -411,8 +413,9 @@ A scene written for 0.4.0 needs these changes.
   layer whose call stops hides, and an effect that a call stops naming is
   bypassed. Two calls that draw one layer in a frame raise ValueError. On a
   Pi Zero 2 W, with rects and two-digit words in the pixel font and half of
-  the calls changed each frame, a frame of 50 calls draws at 196 fps on a
-  128x32 SSD1306, and a frame of 200 calls at 128 fps.
+  the calls changed each frame, a frame of 50 calls draws at 193 fps on a
+  128x32 SSD1306, and a frame of 200 calls at 181 fps, after a first frame
+  of 1.3 s that adds the 200 layers.
 - Measure words with `h.measure(words, font_size=None, font_family=None)`,
   and with `ghee.measure` in a scene script: the width and height in pixels
   of the block that ghee lays them out in, at the size that fits the pass
@@ -499,7 +502,10 @@ A scene written for 0.4.0 needs these changes.
   its payload the UTF-8 JSON list of the layers. `ghee.draw` in a scene
   that ghee runs sends a frame's looks that change live fields alone as one
   kind 8, which ghee applies as a Python screen applies its drawing, where
-  it sent a kind 7 for each changed call.
+  it sent a kind 7 for each changed call. On a Pi Zero 2 W's 128x32
+  SSD1306, a script that draws 200 calls under `ghee render`, rects and
+  two-digit words with half of them changed each frame, draws at 166 fps,
+  where it drew at 27.
 
 ### Console
 
@@ -738,10 +744,15 @@ A scene written for 0.4.0 needs these changes.
   Pi 5 it showed stale fragments of earlier frames.
 - Keep the picture on a KMS display whole when the display refuses a page
   flip, where the next frame drew into the buffer still on screen.
-- Start the kernel's work for a page flip on a KMS display at once, where a
-  host busy with its next frame held it back. On a Pi Zero 2 W, whose kernel
-  queues that work on the host's CPU, a 128x32 SSD1306 with 4 ms of work
-  between frames draws at 200 fps, where it drew at 161.
+- Submit each page flip on a KMS display from a thread of its own on a host
+  with more than one CPU, and draw the next frame while the last waits on
+  the GPU and the flip, so a frame reaches the glass one frame later. The
+  kernel's work for a flip then starts at once on the thread's CPU, where a
+  host busy with its next frame held it back, and on a host with one CPU
+  ghee yields the CPU after each flip to start that work. On a Pi Zero 2 W,
+  whose kernel queues that work on the CPU that submits the flip, a 128x32
+  SSD1306 with 4 ms of work between frames draws at 199 fps, where it drew
+  at 161.
 - Encode a frame under 16384 pixels in hardware, scaled up by the smallest
   whole factor that reaches 16384 with each pixel a square block, where the
   encoder refused it. A 128x32 panel streams at 256x64.

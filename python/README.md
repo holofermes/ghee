@@ -212,9 +212,10 @@ d.lines(points, color="lime", stroke_width=1)  # a waveform
 ```
 
 A call takes the keys of its layer as keywords, the effects included, as
-`ghee.Layer` takes them, and `name`. Positions and box sizes are pixels from
-the top left, y down, on the scene's last pass before its filters, where the
-drawing paints over the scene's own layers in the order of the calls.
+`ghee.Layer` takes them, and `name`. A path and a numpy number or array draw
+as the str and the values that they hold. Positions and box sizes are pixels
+from the top left, y down, on the scene's last pass before its filters, where
+the drawing paints over the scene's own layers in the order of the calls.
 `d.circle(centre, radius)` writes a box of `2 * radius` with `border_radius`
 at `radius`, and `d.line(a, b)` is `d.lines([a, b])`, whose points stand
 where they say: `x` and `y` shift a line, and no line is centred.

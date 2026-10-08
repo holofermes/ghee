@@ -30,13 +30,14 @@ use ghee::draw::{Arg, Call, CallKind};
 use pyo3::exceptions::PyValueError;
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use crate::wire::LayerWire;
 use crate::Handle;
 
-/// `v` as an arg. None for a value of a type that a look writes in another
-/// form, such as a path or a numpy array, or that it refuses.
+/// `v` as an arg, a path as its str and a numpy number or array as its
+/// Python value, as the shim's `_plain` writes them in a look. None for a
+/// value that a look writes in another form, or that it refuses.
 pub fn arg(v: &Bound<'_, PyAny>) -> Option<Arg> {
     if v.is_none() {
         return Some(Arg::None);
@@ -75,11 +76,44 @@ pub fn arg(v: &Bound<'_, PyAny>) -> Option<Arg> {
         });
         return pairs.collect::<Option<_>>().map(Arg::Map);
     }
-    None
+    arg(&plain(v)?)
 }
 
-/// True when arg() makes `a` of `v`, with no arg made.
+/// `v`, a value of none of the types that arg() reads as they are, as the
+/// shim's `_plain` writes it: a path as its str, an object with `tolist()`,
+/// such as a numpy number or array, as what that gives. None for any other
+/// value.
+fn plain<'py>(v: &Bound<'py, PyAny>) -> Option<Bound<'py, PyAny>> {
+    if native(v) {
+        return None;
+    }
+    let py = v.py();
+    let p = match v.hasattr(pyo3::intern!(py, "__fspath__")).ok()? {
+        true => v.call_method0(pyo3::intern!(py, "__fspath__")).ok()?,
+        false => v.call_method0(pyo3::intern!(py, "tolist")).ok()?,
+    };
+    native(&p).then_some(p)
+}
+
+/// True for None, a number, a str, bytes, a tuple, a list and a dict.
+fn native(v: &Bound<'_, PyAny>) -> bool {
+    v.is_none()
+        || v.cast::<PyFloat>().is_ok()
+        || v.cast::<PyInt>().is_ok()
+        || v.cast::<PyString>().is_ok()
+        || v.cast::<PyBytes>().is_ok()
+        || v.cast::<PyTuple>().is_ok()
+        || v.cast::<PyList>().is_ok()
+        || v.cast::<PyDict>().is_ok()
+}
+
+/// True when arg() makes `a` of `v`, with no arg made where `v` is of a type
+/// that arg() reads as it is.
 fn same(a: &Arg, v: &Bound<'_, PyAny>) -> bool {
+    same_as(a, v) || plain(v).is_some_and(|p| same_as(a, &p))
+}
+
+fn same_as(a: &Arg, v: &Bound<'_, PyAny>) -> bool {
     match a {
         Arg::None => v.is_none() || v.cast::<PyFloat>().is_ok_and(|f| !f.value().is_finite()),
         Arg::Bool(b) => v.cast::<PyBool>().is_ok_and(|x| x.is_true() == *b),

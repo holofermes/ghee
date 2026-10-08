@@ -6,6 +6,7 @@ writes the wire, bar the tests at the end, which draw on the renderer.
 
 import inspect
 import os
+import pathlib
 import runpy
 import subprocess
 import sys
@@ -593,6 +594,28 @@ def test_a_drawing_in_a_tick_moves_a_layer_into_the_order_of_the_calls(monkeypat
 
     _, out = drive(shim, None, ticks(2), monkeypatch)
     assert answers(out)[1] == [(10, "b", {"index": 0})]
+
+
+def test_numpy_values_and_paths_go_out_as_the_values_that_they_hold(monkeypatch):
+    """A numpy array, a numpy number and a path draw as the list, the number
+    and the str that they hold: a change in live fields alone goes out in
+    kind 8, and the same values again send nothing."""
+    np = numpy()
+    shim = load()
+
+    @shim.tick
+    def show(tick):
+        i = min(tick.frame, 1)
+        with shim.draw() as d:
+            d.lines(np.array([[0.0, 0.0], [4.0, 4.0 + i]]), x=np.float32(1))
+            d.image(pathlib.Path("wifi.png"), x=np.int64(i))
+
+    _, out = drive(shim, None, ticks(3), monkeypatch)
+    sent = answers(out)
+    line = {"name": "line", "shape": "line", "points": [[0.0, 0.0], [4.0, 5.0]], "x": 1.0}
+    image = {"name": "image", "image": "wifi.png", "x": 1.0}
+    assert [m[0] for m in sent[0]] == [6, 6]
+    assert sent[1:] == [[(8, "", [line, image])], []]
 
 
 @pytest.mark.parametrize("bad", [0, 1])

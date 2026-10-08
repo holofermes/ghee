@@ -581,10 +581,11 @@ pub struct SceneProcess {
     /// The names of the scene's layers, which address their live fields as
     /// `layer.field` and `layer.effect.field`, each true for a text layer.
     layers: HashMap<String, bool>,
-    /// The string params as they stand, a text layer's words under its name
-    /// too, and the last values read by the process.
-    strings: HashMap<String, String>,
-    sent: HashMap<String, String>,
+    /// The params as they stand, by the bare name that the wire gives each,
+    /// a text layer's words under its name too, each value as a scene file
+    /// writes it, and the last values read by the process.
+    values: HashMap<String, Value>,
+    sent: HashMap<String, Value>,
     /// Clean ticks from the process, not yet spent on a skip.
     clean: u32,
     /// The process died. The scene stays in this error state.
@@ -666,7 +667,7 @@ impl SceneProcess {
             incoming: Vec::new(),
             params: HashMap::new(),
             layers: HashMap::new(),
-            strings: HashMap::new(),
+            values: HashMap::new(),
             sent: HashMap::new(),
             clean: 0,
             dead: None,
@@ -814,11 +815,12 @@ impl SceneProcess {
         let was_text = self.layers.insert(name.clone(), layer.as_text().is_some());
         match layer.as_text() {
             Some(l) => {
-                self.strings.insert(name.clone(), l.text.clone());
-                self.sent.insert(name, l.text.clone());
+                self.values
+                    .insert(name.clone(), Value::from(l.text.clone()));
+                self.sent.insert(name, Value::from(l.text.clone()));
             }
             None if was_text == Some(true) => {
-                self.strings.remove(&name);
+                self.values.remove(&name);
                 self.sent.remove(&name);
             }
             None => {}
@@ -828,15 +830,15 @@ impl SceneProcess {
     /// Index the params of the compiled scene.
     /// The set holds the handshake params, plus any param added by a filter
     /// or a saved value.
-    /// The first tick carries every string param, and the words of each text
-    /// layer under its name.
+    /// The first tick carries every param that a bare name addresses, and the
+    /// words of each text layer under its name.
     pub fn bind(&mut self, scene: &Scene) {
         self.params.clear();
         self.layers = scene
             .layers()
             .map(|l| (l.name().to_string(), l.as_text().is_some()))
             .collect();
-        self.strings.clear();
+        self.values.clear();
         self.sent.clear();
         let scoped: Vec<(Option<&str>, &crate::scene::ParamMap)> =
             std::iter::once((None, &scene.params))
@@ -851,9 +853,7 @@ impl SceneProcess {
             for (name, p) in params.iter() {
                 // A text layer's words take `layer.text` alone.
                 if p.of_text {
-                    if let ParamValue::Str(s) = &p.value {
-                        self.strings.insert(name.clone(), s.clone());
-                    }
+                    self.values.insert(name.clone(), p.value.to_json());
                     continue;
                 }
                 // "pass.param" addresses one pass
@@ -869,9 +869,7 @@ impl SceneProcess {
                 }
                 self.params
                     .insert(name.clone(), (pass.map(str::to_string), p.ty.clone()));
-                if let ParamValue::Str(s) = &p.value {
-                    self.strings.insert(name.clone(), s.clone());
-                }
+                self.values.insert(name.clone(), p.value.to_json());
             }
         }
     }
@@ -917,16 +915,16 @@ impl SceneProcess {
         }
     }
 
-    /// One JSON line for this tick, carrying the string params that changed.
+    /// One JSON line for this tick, carrying the params that changed.
     fn offer(&mut self, frame: u64, time: f64, dt: f64) {
         let mut params = Map::new();
-        for (name, value) in &self.strings {
-            if self.sent.get(name).is_some_and(|s| s == value) {
+        for (name, value) in &self.values {
+            if self.sent.get(name) == Some(value) {
                 continue;
             }
-            params.insert(name.clone(), Value::from(value.clone()));
+            params.insert(name.clone(), value.clone());
         }
-        self.sent.clone_from(&self.strings);
+        self.sent.clone_from(&self.values);
         let (slot, wake) = &*self.outbox;
         let mut out = lock(slot);
         if out.closed {
@@ -1057,9 +1055,9 @@ impl SceneController for SceneProcess {
                 renderer.set_param(None, layer, "string", &ParamValue::Str(text.clone()))?;
                 // The process wrote these words itself, so no tick carries
                 // them back.
-                if let Some(held) = self.strings.get_mut(layer) {
-                    held.clone_from(&text);
-                    self.sent.insert(layer.to_string(), text);
+                if let Some(held) = self.values.get_mut(layer) {
+                    *held = Value::from(text);
+                    self.sent.insert(layer.to_string(), held.clone());
                 }
                 continue;
             }
@@ -1115,10 +1113,10 @@ impl SceneController for SceneProcess {
             // a dotted name carries its pass, and the uniform is the tail
             let param = name.rsplit_once('.').map_or(name.as_str(), |(_, p)| p);
             renderer.set_param(pass.as_deref(), param, &ty, &value)?;
-            // The process wrote this text itself, so no tick carries it back.
-            if let (ParamValue::Str(text), Some(held)) = (&value, self.strings.get_mut(&name)) {
-                held.clone_from(text);
-                self.sent.insert(name, text.clone());
+            // The process set this value itself, so no tick carries it back.
+            if let Some(held) = self.values.get_mut(&name) {
+                *held = value.to_json();
+                self.sent.insert(name, held.clone());
             }
         }
         // An array message whose name addresses a layer, such as
@@ -1160,9 +1158,15 @@ impl SceneController for SceneProcess {
         }
     }
 
-    fn on_param(&mut self, name: &str, value: &str) {
-        if self.strings.contains_key(name) {
-            self.strings.insert(name.to_string(), value.to_string());
+    fn on_param(&mut self, pass: Option<&str>, name: &str, value: &ParamValue) {
+        // A tick names the one param that the bare name addresses, and a text
+        // layer's words under the layer's name.
+        let bare = self
+            .params
+            .get(name)
+            .map_or(pass.is_none(), |(at, _)| at.as_deref() == pass);
+        if let (true, Some(held)) = (bare, self.values.get_mut(name)) {
+            *held = value.to_json();
         }
     }
 }
@@ -1868,8 +1872,11 @@ sleep 60
         assert_eq!(first["frame"], Value::from(0));
         assert_eq!(first["dt"], Value::from(1.0 / 60.0));
         assert_eq!(first["time"], Value::from(0.0));
-        // the first tick carries every string param
-        assert_eq!(first["params"]["text"], Value::from("GHEE"));
+        // the first tick carries every param
+        assert_eq!(
+            first["params"],
+            serde_json::json!({"text": "GHEE", "amt": 0.0})
+        );
         f.tick(1, 0.5, 0.5).unwrap();
         let second = ticks(&d, 2).remove(1);
         assert_eq!(second["frame"], Value::from(1));
@@ -1903,18 +1910,24 @@ sleep 60
     }
 
     #[test]
-    fn a_changed_string_param_reaches_the_next_tick() {
+    fn a_param_that_the_console_changed_reaches_the_next_tick() {
         let d = tmpdir("onparam");
         let path = script(&d, "feed", SCENE_SCRIPT);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         f.tick(0, 0.0, 0.016).unwrap();
         ticks(&d, 1);
-        f.on_param("text", "WOW");
-        f.on_param("nosuch", "x"); // not a param of this scene
+        f.on_param(None, "text", &ParamValue::Str("WOW".to_string()));
+        f.on_param(Some("main"), "amt", &ParamValue::Float(0.5));
+        // not a param of this scene, and no scene param amt
+        f.on_param(None, "nosuch", &ParamValue::Str("x".to_string()));
+        f.on_param(None, "amt", &ParamValue::Float(0.7));
         f.tick(1, 0.016, 0.016).unwrap();
         let second = ticks(&d, 2).remove(1);
-        assert_eq!(second["params"], serde_json::json!({"text": "WOW"}));
+        assert_eq!(
+            second["params"],
+            serde_json::json!({"text": "WOW", "amt": 0.5})
+        );
     }
 
     #[test]
@@ -1966,11 +1979,14 @@ sleep 60
     }
 
     /// A process that sets its string param as kind 3 text, after a kind 1
-    /// message to the same name, and sends kind 3 text to a float param.
+    /// message to the same name, sets its float param `amp`, and sends kind 3
+    /// text to the float param `gain`.
     const STRING_SCRIPT: &str = r#"#!/bin/sh
-printf '%s\n' '{"version": 1, "params": {"words": {"type": "string", "value": "GHEE"}, "gain": {"type": "float", "value": 0.0}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
+printf '%s\n' '{"version": 1, "params": {"words": {"type": "string", "value": "GHEE"}, "gain": {"type": "float", "value": 0.0}, "amp": {"type": "float", "value": 0.0}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
 # kind 1, words, the float 1.0
 printf '\001\005words\001\000\000\000\000\000\200\077'
+# kind 1, amp, the float 0.5
+printf '\001\003amp\001\000\000\000\000\000\000\077'
 # kind 3, gain, the text "x"
 printf '\003\004gain\001\000\000\000x'
 # kind 3, words, the text "hi"
@@ -1979,7 +1995,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
 "#;
 
     #[test]
-    fn a_kind_3_message_sets_a_string_param_that_no_tick_carries_back() {
+    fn a_param_that_the_process_sets_reaches_no_tick() {
         let d = tmpdir("string");
         let path = script(&d, "words", STRING_SCRIPT);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
@@ -2000,15 +2016,21 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
         // the newest message for a name wins, and text sets no float param
         assert_eq!(
             stub.set.borrow().as_slice(),
-            [(None, "words".to_string(), ParamValue::Str("hi".to_string()))]
+            [
+                (None, "amp".to_string(), ParamValue::Float(0.5)),
+                (None, "words".to_string(), ParamValue::Str("hi".to_string()))
+            ]
         );
         assert_eq!(f.refused, HashSet::from(["gain".to_string()]));
         f.tick(1, 0.0, 1.0 / 60.0).unwrap();
         ticks(&d, 2);
-        f.on_param("words", "GHEE");
+        f.on_param(None, "words", &ParamValue::Str("GHEE".to_string()));
         f.tick(2, 0.0, 1.0 / 60.0).unwrap();
         let seen = ticks(&d, 3);
-        assert_eq!(seen[0]["params"], serde_json::json!({"words": "GHEE"}));
+        assert_eq!(
+            seen[0]["params"],
+            serde_json::json!({"words": "GHEE", "gain": 0.0, "amp": 0.0})
+        );
         assert_eq!(seen[1]["params"], serde_json::json!({}));
         assert_eq!(seen[2]["params"], serde_json::json!({"words": "GHEE"}));
     }
@@ -2599,7 +2621,11 @@ while IFS= read -r line; do :; done
         assert_eq!(refused, ["main", "refused"]);
         // the console's words for the added layer reach the process, and
         // the process's own words stay with it
-        f.on_param("title", "from the console");
+        f.on_param(
+            None,
+            "title",
+            &ParamValue::Str("from the console".to_string()),
+        );
         f.tick(0, 0.0, 1.0 / 60.0).unwrap();
         let seen = ticks(&d, 1);
         assert_eq!(

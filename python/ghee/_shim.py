@@ -991,14 +991,14 @@ class Tick:
     `frame` counts the ticks, and `time` and `dt` are in seconds: `dt` is
     the iTimeDelta that the tick's frame draws with, 1/60 for the first frame
     unless a timestep pins it.
-    `params` holds the string params that changed.
-    The first tick holds every string param.
+    `params` holds the params that changed, each value as a scene file
+    writes it. The first tick holds every param.
     """
 
     frame: int
     time: float
     dt: float
-    params: dict[str, str]
+    params: dict[str, object]
 
 
 _FEEDS: dict = {}
@@ -1520,8 +1520,8 @@ def _stop(sig, _frame) -> None:
 def _direct(scene: Scene) -> None:
     """Drive the scene from the wire's own hooks and feeds.
 
-    The tick keeps its wire shape: `params` holds the string params that the
-    console changed, and the first tick holds every string param. Its `dt`
+    The tick keeps its wire shape: `params` holds the params that the
+    console changed, and the first tick holds every param. Its `dt`
     is the iTimeDelta that its frame draws with, as under ghee.
     """
     global _CLEAN, _HANDLE

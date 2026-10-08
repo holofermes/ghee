@@ -22,7 +22,7 @@ use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{no_layer, no_param, not_words, short_floats, ArraySize, ParamValue, Scene};
+use ghee::scene::{no_layer, no_param, not_words, short_floats, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
@@ -80,8 +80,8 @@ fn refusal(e: anyhow::Error) -> Fault {
 }
 
 /// What one frame or one skip reports: what the loop hands a scene each
-/// tick. `params` holds the string params that changed since the last tick,
-/// and the first tick holds every string param.
+/// tick. `params` holds the params that changed since the last tick, and the
+/// first tick holds every param.
 #[derive(Clone)]
 pub struct Tick {
     pub frame: u64,
@@ -343,10 +343,10 @@ pub struct Session {
     drawn: Option<u64>,
     /// The renderer's text_errors_seq() at the console's last look.
     text_errors: u64,
-    /// The words of each string param, by the bare name that the wire gives
-    /// it.
-    strings: Map<String, Value>,
-    /// The words of each string param at the last tick.
+    /// The value of each param, by the bare name that the wire gives it, as
+    /// a scene file writes it.
+    values: Map<String, Value>,
+    /// The value of each param at the last tick.
     sent: Map<String, Value>,
     /// The iteration that begin() opened, for the next frame() or skip().
     opened: Option<Opened>,
@@ -361,15 +361,11 @@ pub struct Session {
     grown: bool,
 }
 
-/// The words of each string param of `scene`, by the bare name that `index`
-/// gives it.
-fn string_params(scene: &Scene, index: &Index) -> Map<String, Value> {
+/// The value of each param of `scene`, by the bare name that `index` gives
+/// it.
+fn param_values(scene: &Scene, index: &Index) -> Map<String, Value> {
     let mut out = Map::new();
-    for r in index
-        .params
-        .iter()
-        .filter(|r| r.ty == "string" && r.wire == r.uniform)
-    {
+    for r in index.params.iter().filter(|r| r.wire == r.uniform) {
         let params = match &r.pass {
             None => Some(&scene.params),
             Some(p) => scene
@@ -378,10 +374,8 @@ fn string_params(scene: &Scene, index: &Index) -> Map<String, Value> {
                 .find(|x| x.name == *p)
                 .map(|x| &x.params),
         };
-        if let Some(ParamValue::Str(words)) =
-            params.and_then(|ps| ps.get(&r.uniform)).map(|p| &p.value)
-        {
-            out.insert(r.wire.clone(), Value::from(words.clone()));
+        if let Some(p) = params.and_then(|ps| ps.get(&r.uniform)) {
+            out.insert(r.wire.clone(), p.value.to_json());
         }
     }
     out
@@ -554,7 +548,7 @@ impl Session {
             return Err(Fault::scene(format!("{kind}{}", err.trim_end())));
         }
         let index = Arc::new(Index::of(&scene));
-        let strings = string_params(&scene, &index);
+        let values = param_values(&scene, &index);
         let out = match &sink {
             Sink::None => Vec::new(),
             Sink::Kms => vec![DEST_KMS.to_string()],
@@ -621,7 +615,7 @@ impl Session {
             frame: 0,
             drawn: None,
             text_errors: u64::MAX,
-            strings,
+            values,
             sent: Map::new(),
             opened: None,
             changed: Vec::new(),
@@ -686,12 +680,12 @@ impl Session {
     /// names, with their words. The first tick holds every string param.
     fn changed(&mut self) -> Map<String, Value> {
         let mut out = Map::new();
-        for (k, v) in &self.strings {
+        for (k, v) in &self.values {
             if self.sent.get(k) != Some(v) {
                 out.insert(k.clone(), v.clone());
             }
         }
-        self.sent.clone_from(&self.strings);
+        self.sent.clone_from(&self.values);
         out
     }
 
@@ -949,10 +943,8 @@ impl Session {
         RenderTarget::set_param(&self.renderer, p.pass.as_deref(), &p.uniform, &p.ty, &v)
             .map_err(fault)?;
         let (pass, uniform) = (p.pass.clone(), p.uniform.clone());
-        // The host wrote these words itself, so no tick reports them.
-        if let ParamValue::Str(words) = &v {
-            self.held_string(pass.as_deref(), &uniform, words, true);
-        }
+        // The host set this value itself, so no tick reports it.
+        self.held(pass.as_deref(), &uniform, v.to_json(), true);
         if self.console.is_some() {
             self.set.push((pass, uniform));
         }
@@ -1022,7 +1014,7 @@ impl Session {
         let taken = self.renderer.update_calls(calls).map_err(refusal)?;
         for call in taken.changed.iter().map(|&k| &calls[k]) {
             if let (CallKind::Text, Some(Arg::Str(words))) = (call.kind, call.args.first()) {
-                self.held_string(None, &call.layer, words, true);
+                self.held(None, &call.layer, Value::from(words.as_str()), true);
             }
         }
         for &k in &taken.changed {
@@ -1057,9 +1049,9 @@ impl Session {
                 .map(|l| s.words(name).unwrap_or(&l.text).to_string())
         });
         match words.flatten() {
-            Some(words) => self.held_string(None, name, &words, true),
+            Some(words) => self.held(None, name, Value::from(words), true),
             None => {
-                self.strings.remove(name);
+                self.values.remove(name);
                 self.sent.remove(name);
             }
         }
@@ -1104,18 +1096,18 @@ impl Session {
         self.renderer.set_brightness(level).map_err(refusal)
     }
 
-    /// Hold `words` for the string param `name` of `pass`, under its bare
-    /// name when it has one, and as already handed out when `sent`.
-    fn held_string(&mut self, pass: Option<&str>, name: &str, words: &str, sent: bool) {
+    /// Hold `value` for the param `name` of `pass`, under its bare name when
+    /// it has one, and as already handed out when `sent`.
+    fn held(&mut self, pass: Option<&str>, name: &str, value: Value, sent: bool) {
         let bare = self
             .index
             .wired(name)
             .is_some_and(|r| r.pass.as_deref() == pass);
         if bare {
-            self.strings.insert(name.to_string(), Value::from(words));
             if sent {
-                self.sent.insert(name.to_string(), Value::from(words));
+                self.sent.insert(name.to_string(), value.clone());
             }
+            self.values.insert(name.to_string(), value);
         }
     }
 
@@ -1149,9 +1141,7 @@ impl Session {
         for (pass, name, ty, value) in params {
             RenderTarget::set_param(&self.renderer, pass.as_deref(), &name, &ty, &value)
                 .map_err(system_fault)?;
-            if let ParamValue::Str(words) = &value {
-                self.held_string(pass.as_deref(), &name, words, false);
-            }
+            self.held(pass.as_deref(), &name, value.to_json(), false);
         }
         for set in layers {
             self.renderer
@@ -1178,7 +1168,7 @@ impl Session {
         if edited || self.grown {
             let scene = self.renderer.with_scene(Scene::to_dict);
             if let (Some(c), Some(mut scene)) = (self.console.as_ref(), scene) {
-                words_into(&mut scene, &self.strings);
+                words_into(&mut scene, &self.values);
                 c.publish_scene(scene, Arc::clone(&self.index), by_host);
             }
             self.grown = false;
@@ -1248,9 +1238,10 @@ impl Session {
 }
 
 /// Give each text layer of the scene document `doc` its words as they
-/// stand, from `strings`, the words of each string param by its bare name.
-/// The renderer lays new words out without writing them into its scene.
-fn words_into(doc: &mut Value, strings: &Map<String, Value>) {
+/// stand, from `values`, the value of each param by its bare name, which
+/// holds a text layer's words under the layer's name. The renderer lays new
+/// words out without writing them into its scene.
+fn words_into(doc: &mut Value, values: &Map<String, Value>) {
     let layers = doc
         .get_mut("passes")
         .and_then(Value::as_array_mut)
@@ -1265,7 +1256,7 @@ fn words_into(doc: &mut Value, strings: &Map<String, Value>) {
         let words = l
             .get("name")
             .and_then(Value::as_str)
-            .and_then(|n| strings.get(n));
+            .and_then(|n| values.get(n));
         if let Some(words) = words.cloned() {
             l.insert("text".to_string(), words);
         }

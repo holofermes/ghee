@@ -15,12 +15,12 @@ _Display: TypeAlias = Literal["kms"]
 
 class _Tick(TypedDict):
     """One tick: the frame's number, its time, the iTimeDelta that it draws
-    with, and the string params that changed since the last tick."""
+    with, and the params that changed since the last tick."""
 
     frame: int
     time: float
     dt: float
-    params: dict[str, str]
+    params: dict[str, object]
 
 class Handle:
     """A rendering scene, and the output it draws to."""

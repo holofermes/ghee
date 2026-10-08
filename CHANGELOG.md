@@ -431,6 +431,10 @@ A scene written for 0.4.0 needs these changes.
 
 ### Procedural scenes
 
+- Carry every param that changed in a tick, each value as a scene file
+  writes it, where a tick carried the string params alone, so a float that
+  the console sets reaches the scene's process. The first tick holds every
+  param, and a direct run's tick and `h.frame()`'s do the same.
 - Name the cause when a scene's script cannot start, `the file has no #!
   line` or `the interpreter '/usr/bin/python9' on its #! line does not
   exist`, where the system's error read `Exec format error` or `No such file

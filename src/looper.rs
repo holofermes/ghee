@@ -331,8 +331,9 @@ pub trait SceneController {
         None
     }
 
-    /// A host-side (string) param changes. The next tick carries it.
-    fn on_param(&mut self, _name: &str, _value: &str) {}
+    /// A host set the param `name` of pass `pass`, None for the scene's. The
+    /// next tick carries it.
+    fn on_param(&mut self, _pass: Option<&str>, _name: &str, _value: &ParamValue) {}
 
     /// Per-frame hook before the draw (e.g. set live params).
     fn update(&mut self, _renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {

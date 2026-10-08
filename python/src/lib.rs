@@ -187,10 +187,12 @@ fn tick_dict(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyDict>> {
     d.set_item("frame", tick.frame)?;
     d.set_item("time", tick.time)?;
     d.set_item("dt", tick.dt)?;
-    let params = PyDict::new(py);
-    for (k, v) in tick.params {
-        params.set_item(k, v.as_str().unwrap_or_default())?;
-    }
+    let params = match tick.params.is_empty() {
+        true => PyDict::new(py).into_any(),
+        false => py
+            .import("json")?
+            .call_method1("loads", (Value::Object(tick.params).to_string(),))?,
+    };
     d.set_item("params", params)?;
     Ok(d)
 }
@@ -454,9 +456,8 @@ impl Handle {
     /// Draw one frame and hand it to the output.
     ///
     /// Returns this tick: {"frame", "time", "dt", "params"}. `dt` is the
-    /// iTimeDelta that the frame draws with, and `params` holds the string
-    /// params that changed since the last tick, the first tick every string
-    /// param.
+    /// iTimeDelta that the frame draws with, and `params` holds the params
+    /// that changed since the last tick, the first tick every param.
     fn frame<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let mut held = Held(self.held.get()?);
         let tick = py.detach(move || held.frame()).map_err(fault)?;

@@ -2004,7 +2004,7 @@ fn set_pass_param(
         if ty != "string" {
             renderer.borrow().set_param(&pass.name, name, &ty, &v)?;
         }
-        told(ctrl, name, &v);
+        told(ctrl, Some(&pass.name), name, &v);
         let gone = || anyhow!("pass '{}' has no param '{name}'", pass.name);
         pass.params.get_mut(name).ok_or_else(gone)?.value = v;
         Ok(())
@@ -2018,14 +2018,11 @@ fn set_pass_param(
     }
 }
 
-/// Tell the scene's process about a string param the console changed. The
-/// process reads it on the next tick.
-fn told(ctrl: &ControllerSlot, name: &str, value: &ParamValue) {
-    let ParamValue::Str(text) = value else {
-        return;
-    };
+/// Tell the scene's process about a param of pass `pass`, None for the
+/// scene's, that the console changed. The process reads it on the next tick.
+fn told(ctrl: &ControllerSlot, pass: Option<&str>, name: &str, value: &ParamValue) {
     if let Some(c) = ctrl.borrow_mut().as_mut() {
-        c.on_param(name, text);
+        c.on_param(pass, name, value);
     }
 }
 
@@ -2046,7 +2043,7 @@ fn set_scene_param(
         let v = coerce(name, &ty, value)?;
         // A string param of a text's name lays the text out again.
         renderer.borrow().set_scene_param(name, &ty, &v)?;
-        told(ctrl, name, &v);
+        told(ctrl, None, name, &v);
         scene.params.get_mut(name).ok_or_else(missing)?.value = v;
         Ok(())
     }();

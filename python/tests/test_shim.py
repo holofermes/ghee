@@ -1097,7 +1097,7 @@ def test_measure_under_ghee_lays_words_out_in_the_render_size(monkeypatch):
     assert refused.startswith("font_family 'serif' is no asset of the scene")
 
 
-def test_the_tick_line_carries_the_string_params(monkeypatch):
+def test_the_tick_line_carries_the_params(monkeypatch):
     shim = load()
     seen = []
 
@@ -1105,12 +1105,13 @@ def test_the_tick_line_carries_the_string_params(monkeypatch):
     def hook(tick):
         seen.append((tick.frame, tick.time, tick.dt, tick.params))
 
+    params = {"text": "GHEE", "gain": 0.5, "tint": [1.0, 0.0, 0.5]}
     ticks = [
-        {"frame": 3, "time": 0.25, "dt": 0.016, "params": {"text": "GHEE"}},
+        {"frame": 3, "time": 0.25, "dt": 0.016, "params": params},
         {"frame": 4, "time": 0.5, "dt": 0.016},
     ]
     drive(shim, scene_of(shim), ticks, monkeypatch)
-    assert seen == [(3, 0.25, 0.016, {"text": "GHEE"}), (4, 0.5, 0.016, {})]
+    assert seen == [(3, 0.25, 0.016, params), (4, 0.5, 0.016, {})]
 
 
 # --------------------------------------------------------------- the package

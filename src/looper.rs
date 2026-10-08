@@ -346,19 +346,20 @@ pub type ControllerSlot = RefCell<Option<Box<dyn SceneController>>>;
 /// The loop draws on any of four demands. The demands are a queued command, the
 /// first frame, a scene with no controller, and a controller that reports
 /// dirty. A sink has to show something once, so the first frame always draws.
+/// While nobody watches, the last two drop out, and every scene draws as a
+/// clean one.
 pub fn should_draw(
     forced: bool,
+    watched: bool,
     controller: Option<&mut dyn SceneController>,
     frame: u64,
     t: f64,
 ) -> bool {
-    let Some(controller) = controller else {
-        return true;
-    };
     if forced || frame == 0 {
         return true;
     }
-    controller.dirty(frame, t)
+    let dirty = controller.is_none_or(|c| c.dirty(frame, t));
+    dirty && watched
 }
 
 fn sleep(seconds: f64) {
@@ -411,6 +412,8 @@ pub struct Loop<'a> {
     pub on_error: Option<OnError<'a>>,
     /// how long a skipped frame waits, given the measured period
     pub idle_hook: Option<Box<dyn FnMut(Option<f64>) -> f64 + 'a>>,
+    /// -> false while nobody takes the frames, see should_draw
+    pub watched: Option<Box<dyn FnMut() -> bool + 'a>>,
     /// iterations, skipped ones included
     pub frame: u64,
     pub drawn: u64,
@@ -439,6 +442,7 @@ impl<'a> Loop<'a> {
             on_frame: None,
             on_error: None,
             idle_hook: None,
+            watched: None,
             frame: 0,
             drawn: 0,
             elapsed: 0.0,
@@ -608,15 +612,16 @@ impl<'a> Loop<'a> {
 
     fn should_draw_now(&mut self, forced: bool, t: f64) -> bool {
         let frame = self.frame;
+        let watched = self.watched.as_mut().is_none_or(|w| w());
         match self.controller {
-            None => should_draw(forced, None, frame, t),
+            None => should_draw(forced, watched, None, frame, t),
             Some(cell) => {
                 let mut slot = cell.borrow_mut();
                 let ctrl: Option<&mut dyn SceneController> = match (*slot).as_mut() {
                     Some(c) => Some(&mut **c),
                     None => None,
                 };
-                should_draw(forced, ctrl, frame, t)
+                should_draw(forced, watched, ctrl, frame, t)
             }
         }
     }
@@ -1413,6 +1418,30 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_that_nobody_watches_draws_the_first_frame_and_each_command() {
+        for watched in [false, true] {
+            let mut r = Recorder::default();
+            let mut s = Sink::new();
+            s.persists = true;
+            let drawn;
+            {
+                let mut lp = Loop::new(&mut r, vec![&mut s]);
+                lp.stopping = Some(Box::new(after(6)));
+                lp.idle_hook = Some(Box::new(|_| 0.0));
+                lp.watched = Some(Box::new(move || watched));
+                let mut polls = 0;
+                lp.poll = Some(Box::new(move || {
+                    polls += 1;
+                    polls == 4
+                }));
+                lp.run().unwrap();
+                drawn = lp.drawn;
+            }
+            assert_eq!(drawn, if watched { 6 } else { 2 }, "watched {watched}");
+        }
+    }
+
+    #[test]
     fn the_idle_wait_falls_back_to_the_measured_period() {
         // A scanout render with no --fps has no pacer and no host interval.
         // idle() still answers.
@@ -1722,9 +1751,13 @@ mod tests {
     #[test]
     fn should_draw_is_the_one_rule_for_it() {
         let mut clean = Clean;
-        assert!(should_draw(true, Some(&mut clean), 5, 0.1)); // a queued command
-        assert!(should_draw(false, Some(&mut clean), 0, 0.0)); // the first frame
-        assert!(should_draw(false, None, 5, 0.1)); // no controller
-        assert!(!should_draw(false, Some(&mut clean), 5, 0.1));
+        assert!(should_draw(true, true, Some(&mut clean), 5, 0.1)); // a queued command
+        assert!(should_draw(false, true, Some(&mut clean), 0, 0.0)); // the first frame
+        assert!(should_draw(false, true, None, 5, 0.1)); // no controller
+        assert!(!should_draw(false, true, Some(&mut clean), 5, 0.1));
+        // nobody watches
+        assert!(should_draw(true, false, None, 5, 0.1));
+        assert!(should_draw(false, false, None, 0, 0.0));
+        assert!(!should_draw(false, false, None, 5, 0.1));
     }
 }

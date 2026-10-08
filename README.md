@@ -780,6 +780,12 @@ and Save keeps its edits in the scene's [state file](#saved-edits).
 
 `--fps N` caps the frame rate of `ghee serve` and of `ghee render --serve`.
 
+The console draws while someone watches it: a page's preview, a viewer of
+`/stream` or `/h264`, or a `GET /frame.png`. A console that drives a display
+or a panel draws every frame. While nobody watches, the console draws once
+for each edit and sleeps in between, and the scene's time keeps to the wall
+clock, so the next frame draws at the time that the clock reached.
+
 The console reads files from its scenes directory, the `$GHEE_ASSETS`
 directories and the system's emoji font alone, so a scene that it serves
 fails to load a path that is absolute or climbs out with `..`.

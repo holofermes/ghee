@@ -2128,6 +2128,9 @@ pub fn render_loop(
     let text_errors = Cell::new(renderer.borrow().text_errors_seq());
     let published = Cell::new(f64::NEG_INFINITY);
     let timed = on_stats.is_some();
+    // A display or a sink of the caller's takes every frame. Without one, the
+    // frames reach the viewers alone.
+    let drives = console.display || !sinks.is_empty();
     let (elapsed, out): (f64, Vec<String>);
     {
         let mut refs: Vec<&mut dyn Output> = Vec::new();
@@ -2162,6 +2165,9 @@ pub fn render_loop(
                 }
                 Some(interval) => interval,
             }
+        }));
+        render.watched = Some(Box::new(move || {
+            drives || console.nclients() > 0 || console.fanout.nclients() > 0
         }));
         render.stopping = Some(Box::new(|| console.stopping()));
         render.on_frame = Some(Box::new(|_loop, cost| {
@@ -4653,6 +4659,46 @@ mod tests {
         assert_eq!(ask(&api, "POST", "/scene", "name=count", count).0, 200);
         drain(&console, &renderer, &st, &ctrl);
         assert_eq!(frame(), 1.0, "an apply keeps the clock running");
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_console_that_nobody_watches_draws_its_first_frame_alone() {
+        for viewers in [0, 1] {
+            let d = crate::testing::TempDir::new("console-watched");
+            fs::write(d.join("one.scene.json"), SCENE).unwrap();
+            let mut console = Console::new(SceneStore::new(&d, Vec::new()));
+            (console.w, console.h) = (8, 8);
+            let console = Arc::new(console);
+            console.ask("one");
+            console.count_clients(viewers);
+            let summary: Summary = Rc::new(RefCell::new(None));
+            let got = Rc::clone(&summary);
+            let stopper = {
+                let console = Arc::clone(&console);
+                thread::spawn(move || {
+                    // the first frame, then time for many more
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while lock(&console.stat).frame_ms == 0.0 && Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    thread::sleep(Duration::from_millis(200));
+                    console.stop();
+                })
+            };
+            let renderer = Rc::new(RefCell::new(gpu(8, 8)));
+            let hook: StatsHook = Box::new(move |times, wall, out| {
+                *got.borrow_mut() = Some((times.len(), wall, out.to_vec()));
+            });
+            render_loop(&console, renderer, Vec::new(), None, Some(hook));
+            stopper.join().unwrap();
+            let (n, _, _) = summary.borrow().clone().expect("no summary");
+            if viewers == 0 {
+                assert_eq!(n, 1);
+            } else {
+                assert!(n > 1, "{n} frames with a viewer");
+            }
+        }
     }
 
     #[test]

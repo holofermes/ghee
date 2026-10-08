@@ -472,6 +472,11 @@ A scene written for 0.4.0 needs these changes.
 - Print the console's address once its renderer starts, and end `ghee serve`
   with the renderer's error, printed once, when it cannot start, where the
   address printed first and the error twice.
+- Draw only while someone watches the console: a page's preview, a viewer
+  of `/stream` or `/h264`, or a `GET /frame.png`. While nobody watches, a
+  console draws once for each edit and sleeps in between, where one with no
+  display drew as fast as it could. A console that drives a display draws
+  every frame.
 - Show what ghee uses in the console's render info while it is open: the
   process's resident set, its GPU memory and how busy it keeps each queue
   of the GPU, the machine's free memory and a Pi's SoC temperature.
@@ -721,6 +726,9 @@ A scene written for 0.4.0 needs these changes.
 
 ### Library and packages
 
+- Tell a `Loop` whether anyone takes its frames with `Loop::watched`, which
+  `looper::should_draw` takes as `watched`: while nobody watches, a frame
+  draws for a queued command and as the first frame alone.
 - Restart a renderer's clock with `Renderer::restart_clock`, so the next
   frame draws as `iFrame` 0 at `iTime` 0.
 - Flush the GL work before a setup deletes the last scene's pass buffers.

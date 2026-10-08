@@ -1757,11 +1757,15 @@ function addLayer(p, kind){
   buildLayers(); buildInputs();
   cardOf(list, list.length - 1).scrollIntoView({block: "nearest", behavior: "smooth"});
 }
+// The pass that holds layer d now. A refresh that keeps a layer's card moves
+// the layer into the passes that it read, and the card's actions still hold
+// the pass from before the read.
+const passOf = d => (work.passes || []).find(q => (q.layers || []).includes(d));
 async function delLayer(p, d){
   if (!await ask(`Remove layer ${p.name} › ${d.name}?`)) return;
-  const k = (p.layers || []).indexOf(d);
-  if (k < 0) return;
-  p.layers.splice(k, 1);
+  p = passOf(d);
+  if (!p) return;
+  p.layers.splice(p.layers.indexOf(d), 1);
   if (!p.layers.length) delete p.layers;
   layerUI.delete(d.name);
   postScene();
@@ -1769,9 +1773,11 @@ async function delLayer(p, d){
 }
 // by +1 brings a layer forward, -1 sends it back. The moved layer's header
 // stays under the pointer: the page scrolls by as much as the layer moved.
-function moveLayer(p, d, by){
+function moveLayer(d, by){
+  const p = passOf(d);
+  if (!p) return;
   const list = p.layers, k = list.indexOf(d), j = k + by;
-  if (k < 0 || j < 0 || j >= list.length) return;
+  if (j < 0 || j >= list.length) return;
   const was = cardOf(list, k);
   const before = was.getBoundingClientRect().top, sideways = was.querySelector(".lstrip").scrollLeft;
   list.splice(k, 1); list.splice(j, 0, d);
@@ -1785,7 +1791,7 @@ function moveLayer(p, d, by){
 }
 async function renameLayer(p, d){
   const old = d.name, n = await askName(`Rename layer ${p.name} › ${old}`, old);
-  if (n == null || n === old || !(p.layers || []).includes(d)) return;
+  if (n == null || n === old || !passOf(d)) return;
   d.name = n;
   layerUI.set(n, ui(old)); layerUI.delete(old);
   postScene();
@@ -2030,8 +2036,8 @@ function layerCard(p, d){
   st.append(look(sels), el("span", "lsp"));
   if (!proc){
     const list = p.layers, k = list.indexOf(d), mv = el("span", "lmv");
-    const up = tbtn("↑", `move layer ${d.name} up`, "", () => moveLayer(p, d, 1));
-    const down = tbtn("↓", `move layer ${d.name} down`, "", () => moveLayer(p, d, -1));
+    const up = tbtn("↑", `move layer ${d.name} up`, "", () => moveLayer(d, 1));
+    const down = tbtn("↓", `move layer ${d.name} down`, "", () => moveLayer(d, -1));
     up.disabled = k === list.length - 1; down.disabled = k === 0;
     mv.append(up, down);
     st.appendChild(mv);

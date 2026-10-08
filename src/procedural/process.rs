@@ -598,25 +598,21 @@ impl SceneProcess {
     /// and a process that refuses one dies with its own message on stderr.
     /// The scene's files resolve beside the executable, as far as `reach`
     /// allows. `size` is the size that the scene renders at, which the
-    /// process reads before it writes its scene, None when no display tells
-    /// it yet. `edit` changes the scene document that the process wrote
-    /// before ghee builds it, and a scene that the edit breaks runs as the
-    /// process wrote it, with a warning.
+    /// process reads before it writes its scene. `edit` changes the scene
+    /// document that the process wrote before ghee builds it, and a scene
+    /// that the edit breaks runs as the process wrote it, with a warning.
     pub fn start(
         path: &str,
         args: &[String],
         reach: Reach,
-        size: Option<(i32, i32)>,
+        (w, h): (i32, i32),
         edit: impl FnOnce(&mut Value),
     ) -> Result<(Scene, SceneProcess)> {
         let (program, dir) = where_to_run(path)?;
-        let mut cmd = Command::new(&program);
-        if let Some((w, h)) = size {
-            cmd.env(SIZE, format!("{w}x{h}"));
-        }
-        let mut child = cmd
+        let mut child = Command::new(&program)
             .args(args)
             .current_dir(&dir)
+            .env(SIZE, format!("{w}x{h}"))
             .env(WIRE, "1")
             .env(LOCKSTEP, "1")
             .stdin(Stdio::piped())
@@ -1473,7 +1469,7 @@ sleep 60
 
     fn start_scene(path: &str, args: &[String]) -> Result<(Scene, SceneProcess)> {
         let _spawn = SCRIPTS.read().unwrap();
-        SceneProcess::start(path, args, Reach::Any, None, |_| {})
+        SceneProcess::start(path, args, Reach::Any, (32, 24), |_| {})
     }
 
     /// declarations(), spawn-locked like start_scene.
@@ -1731,9 +1727,14 @@ sleep 60
              printf '{{\"passes\":[{{\"name\":\"main\",\"fragment\":\"void main(){{}}\"}}]}}\\n'\n\
              sleep 5\n"
         );
-        let (_scene, mut f) =
-            SceneProcess::start("/bin/sh", &args(&["-c", &body]), Reach::Any, None, |_| {})
-                .unwrap();
+        let (_scene, mut f) = SceneProcess::start(
+            "/bin/sh",
+            &args(&["-c", &body]),
+            Reach::Any,
+            (32, 24),
+            |_| {},
+        )
+        .unwrap();
         (f.term_after, f.kill_after) = (SOON, SOON);
         assert!(wait_until(SETTLE, || fs::read_to_string(&mark).is_ok()));
         assert_eq!(fs::read_to_string(&mark).unwrap(), "1 1");

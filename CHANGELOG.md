@@ -756,11 +756,12 @@ A scene written for 0.4.0 needs these changes.
 
 ### Library and packages
 
-- Start a scene process with the size that it renders at, the `size` of
-  `SceneProcess::start`, where `set_render_size` set one size for every
-  process and `ghee render` alone called it. The console hands each process
-  the size of its own render, so a procedural scene under a host that runs
-  the console reads `GHEE_SIZE` too.
+- Start a scene process with the size that it renders at, the required
+  `size` of `SceneProcess::start`, where `set_render_size` set one size for
+  every process and `ghee render` alone called it. `SceneStore::start`,
+  `open` and `resolve` take the size too, and `render_loop` hands each
+  process its renderer's `scene_size()`, so a procedural scene under any
+  host of the console reads `GHEE_SIZE`.
 - Tell a `Loop` whether anyone takes its frames with `Loop::watched`, which
   `looper::should_draw` takes as `watched`: while nobody watches, a frame
   draws for a queued command and as the first frame alone.

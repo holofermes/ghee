@@ -738,9 +738,14 @@ impl Console {
         if let Some(copy) = lock(&self.copies).get(&name) {
             return Ok(f(&name, copy));
         }
+        // the scene_size() of the renderer that make_renderer() builds
+        let size = match self.rotate {
+            90 | 270 => (self.h, self.w),
+            _ => (self.w, self.h),
+        };
         let (opened, _) = self
             .store
-            .open(&name, None)
+            .open(&name, None, size)
             .map_err(|e| ConsoleError::server_error(format!("build {name}: {e}")))?;
         Ok(f(&name, &WorkingCopy::new(opened, 0, 0)))
     }
@@ -1807,7 +1812,8 @@ fn load(
     // A switch away and back, and a reload, keep the edits made since the
     // last save, and check them against the files as they are now.
     let carried = lock(&console.copies).get(name).map(WorkingCopy::carried);
-    let (built, read) = collect(|| console.store.open(name, carried));
+    let size = renderer.borrow().scene_size();
+    let (built, read) = collect(|| console.store.open(name, carried, size));
     let failed = match built {
         Ok((opened, mut process)) => {
             let snap = console.snapshot(read);
@@ -2925,8 +2931,6 @@ pub fn run(opts: Options) -> Result<()> {
         bail!("no .scene.json in {}", store.dir);
     }
     store.filters = filters;
-    let turned = rotate == 90 || rotate == 270;
-    store.size = Some(if turned { (size.1, size.0) } else { size });
     store.state_dir = state_dir
         .or_else(|| store.state_dir.take())
         .or_else(state::default_dir);
@@ -3097,7 +3101,7 @@ mod tests {
     #[test]
     fn two_params_save_alone_and_back_to_defaults_removes_the_state_file() {
         let (d, states, console) = clocks("two-params");
-        let (opened, _) = console.store.open("clocks", None).unwrap();
+        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
         ready(&console, "clocks", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let (_, _, first) = ask(&api, "GET", "/scene", "", "");
@@ -3153,7 +3157,7 @@ mod tests {
                 "items": [{"item": "fragment", "pass": "main", "base": "0123456789abcdef",
                            "value": mine}]});
             fs::write(&file, saved.to_string()).unwrap();
-            let (opened, _) = console.store.open("clocks", None).unwrap();
+            let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
             ready(&console, "clocks", opened);
             let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
             let fragment = |api: &ConsoleAPI<RenderLoopHost>| {
@@ -3229,7 +3233,7 @@ mod tests {
     #[test]
     fn an_edit_that_another_client_made_stale_answers_412_and_a_pages_own_never_do() {
         let (_d, _states, console) = clocks("stale");
-        let (opened, _) = console.store.open("clocks", None).unwrap();
+        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
         ready(&console, "clocks", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let read = rev_of(&api);
@@ -4741,19 +4745,16 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_scene_process_starts_with_the_size_that_the_console_renders_it_at() {
-        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
         let d = crate::testing::TempDir::new("console-size");
         crate::testing::script(&d, "sized", SIZE_SCRIPT);
-        let ran = run(Options {
-            store: Some(SceneStore::new(&d, Vec::new())),
-            port: free_port(),
-            size: (32, 24),
-            rotate: 90,
-            frames: 1,
-            sinks: vec![Box::new(Bound(Rc::new(Cell::new(0))))],
-            ..Options::default()
-        });
-        assert!(ran.is_ok(), "{:?}", ran.err());
+        let mut console = Console::new(SceneStore::new(&d, Vec::new()));
+        (console.w, console.h, console.rotate, console.frames) = (32, 24, 90, 1);
+        let console = Arc::new(console);
+        console.ask("sized");
+        let mut renderer = gpu(32, 24);
+        renderer.set_rotate(90).unwrap();
+        let sinks: Vec<Box<dyn Output>> = vec![Box::new(Bound(Rc::new(Cell::new(0))))];
+        render_loop(&console, Rc::new(RefCell::new(renderer)), sinks, None, None);
         assert_eq!(fs::read_to_string(d.join("size")).unwrap(), "24x32");
     }
 

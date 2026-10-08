@@ -38,9 +38,6 @@ pub struct SceneStore {
     /// whose panel needs one (a 1-bit panel needs the dither) sets them here
     /// instead of writing them into every scene.
     pub filters: Vec<String>,
-    /// The size that the scenes render at, which each scene process starts
-    /// with. The console sets it from its own render.
-    pub size: Option<(i32, i32)>,
 }
 
 /// What a load carries from the working copy that a scene had before: its
@@ -72,7 +69,6 @@ impl SceneStore {
             args,
             scenes,
             filters: Vec::new(),
-            size: None,
         }
     }
 
@@ -169,28 +165,34 @@ impl SceneStore {
     }
 
     /// The defaults of a scene: its files as they are, or the scene that its
-    /// program writes at start, with the store's filters after its own.
+    /// program writes at start, with the store's filters after its own. `size`
+    /// is the size that the scene renders at, which a program reads before it
+    /// writes its scene.
     ///
     /// The store hands the session's scene args to every scene it loads. A scene
     /// keeps what it declares and ignores the rest.
     ///
     /// Every read goes through sources::record, so a caller that wraps this in
     /// collect() gets the files behind the result.
-    pub fn resolve(&self, name: &str) -> ConsoleResult<Scene> {
-        self.start(name).map(|(scene, _)| scene)
+    pub fn resolve(&self, name: &str, size: (i32, i32)) -> ConsoleResult<Scene> {
+        self.start(name, size).map(|(scene, _)| scene)
     }
 
     /// resolve(), plus the process when the scene is procedural. The process runs
     /// from here on. A caller that wants the document only drops it, which stops
     /// it.
-    pub fn start(&self, name: &str) -> ConsoleResult<(Scene, Option<SceneProcess>)> {
+    pub fn start(
+        &self,
+        name: &str,
+        size: (i32, i32),
+    ) -> ConsoleResult<(Scene, Option<SceneProcess>)> {
         let path = self.file(name)?;
         // Anyone who reaches the console posts the scenes that it loads, so
         // their files stay inside the scene's directory.
         let (mut scene, mut process) = match process::executable(&path) {
             // the console error state reaches a browser, so it carries the
             // stderr of a dead process
-            Some(exe) => SceneProcess::start(&exe, &self.args, Reach::Inside, self.size, |_| {})
+            Some(exe) => SceneProcess::start(&exe, &self.args, Reach::Inside, size, |_| {})
                 .map(|(scene, fed)| (scene, Some(fed)))
                 .map_err(|e| ConsoleError::server_error(process::with_stderr(&e)))?,
             None => (
@@ -222,8 +224,9 @@ impl SceneStore {
         &self,
         name: &str,
         carried: Option<Carried>,
+        size: (i32, i32),
     ) -> ConsoleResult<(Opened, Option<SceneProcess>)> {
-        let (defaults, mut process) = self.start(name)?;
+        let (defaults, mut process) = self.start(name, size)?;
         let (edits, saved) = match carried {
             Some(c) => (c.edits, c.saved),
             None => {
@@ -354,6 +357,9 @@ mod tests {
     const SCENE: &str = r#"{"version": 1,
         "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
 
+    /// The size that a test's scenes render at.
+    const SIZE: (i32, i32) = (32, 24);
+
     fn tmpdir(tag: &str) -> crate::testing::TempDir {
         crate::testing::TempDir::new(&format!("store-{tag}"))
     }
@@ -377,11 +383,11 @@ mod tests {
         let d = tmpdir("host-filters");
         write_text(&format!("{d}/plain.scene.json"), SCENE);
         let mut store = SceneStore::new(&d, Vec::new());
-        let (plain, _) = store.start("plain").unwrap();
+        let (plain, _) = store.start("plain", SIZE).unwrap();
         assert_eq!(plain.passes.len(), 1, "no filter yet");
 
         store.filters = vec!["dither".to_string()];
-        let (dithered, _) = store.start("plain").unwrap();
+        let (dithered, _) = store.start("plain", SIZE).unwrap();
         assert_eq!(dithered.passes.len(), 2);
         assert_eq!(dithered.passes[1].name, "dither");
 
@@ -390,7 +396,7 @@ mod tests {
              "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
         write_text(&format!("{d}/own.scene.json"), own);
         store.scenes = scan(&store.dir);
-        let (once, _) = store.start("own").unwrap();
+        let (once, _) = store.start("own", SIZE).unwrap();
         assert_eq!(once.passes.len(), 2, "the dither is not applied twice");
     }
 
@@ -423,7 +429,7 @@ mod tests {
     #[test]
     fn the_store_resolves_a_scene() {
         let (_d, store) = scenes("resolve");
-        assert_eq!(store.resolve("one").unwrap().passes[0].name, "main");
+        assert_eq!(store.resolve("one", SIZE).unwrap().passes[0].name, "main");
     }
 
     #[test]
@@ -456,7 +462,7 @@ mod tests {
             store.file("clocks").unwrap(),
             format!("{d}/clocks/clocks.scene.json")
         );
-        let scene = store.resolve("clocks").unwrap();
+        let scene = store.resolve("clocks", SIZE).unwrap();
         assert!(scene.passes[0].fragment.contains("0.5"));
     }
 
@@ -471,7 +477,7 @@ mod tests {
             json!({"d": {"file": "../out.raw", "width": 2, "height": 2, "format": "u8"}});
         write_text(&format!("{d}/two{SCENE_SUFFIX}"), &doc.to_string());
         let store = SceneStore::new(&d, Vec::new());
-        let e = store.resolve("two").unwrap_err();
+        let e = store.resolve("two", SIZE).unwrap_err();
         assert!(
             e.message.contains("outside the scene directory"),
             "{}",
@@ -486,7 +492,7 @@ mod tests {
         doc["filters"] = json!(["dither"]);
         write_text(&format!("{d}/f{SCENE_SUFFIX}"), &doc.to_string());
         let store = SceneStore::new(&d, Vec::new());
-        let scene = store.resolve("f").unwrap();
+        let scene = store.resolve("f", SIZE).unwrap();
         assert_eq!(
             scene
                 .passes
@@ -542,9 +548,13 @@ mod tests {
     fn a_save_writes_the_state_file_and_leaves_the_scene_alone() {
         let (d, states, store) = kept("save");
         let before = fs::read_to_string(format!("{d}/one{SCENE_SUFFIX}")).unwrap();
-        let mut edited = store.resolve("one").unwrap().to_dict();
+        let mut edited = store.resolve("one", SIZE).unwrap().to_dict();
         edited["passes"][0]["fragment"] = json!("void main(){ discard; }");
-        let edits = state::diff(&store.resolve("one").unwrap().to_dict(), &edited, false);
+        let edits = state::diff(
+            &store.resolve("one", SIZE).unwrap().to_dict(),
+            &edited,
+            false,
+        );
         store.save("one", &edits).unwrap();
         assert_eq!(
             fs::read_to_string(format!("{d}/one{SCENE_SUFFIX}")).unwrap(),
@@ -553,7 +563,7 @@ mod tests {
         let file = format!("{states}/scenes{d}/one.json");
         let written: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(written["scene"], format!("{d}/one{SCENE_SUFFIX}"));
-        let (opened, _) = store.open("one", None).unwrap();
+        let (opened, _) = store.open("one", None, SIZE).unwrap();
         assert!(opened.working.passes[0].fragment.contains("discard"));
         assert!(opened.defaults.passes[0].fragment.contains("vec4(1.0)"));
         // a save with no edit left removes the file

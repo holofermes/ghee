@@ -268,7 +268,8 @@ fn scene_of(a: &Ns) -> Result<(Scene, Option<SceneProcess>)> {
     let (mut scene, mut process) = match process::executable(&path) {
         Some(exe) => {
             let turned = a.rotate == 90 || a.rotate == 270;
-            let size = prospective_size(a).map(|(w, h)| if turned { (h, w) } else { (w, h) });
+            let (w, h) = prospective_size(a)?;
+            let size = if turned { (h, w) } else { (w, h) };
             let (scene, fed) = SceneProcess::start(&exe, &a.scene_args, Reach::Any, size, |_| {})?;
             (scene, Some(fed))
         }
@@ -341,9 +342,15 @@ fn panel_of(a: &Ns) -> Result<Panel> {
     if !given(&a.display) {
         return Ok(Panel::None);
     }
+    kms_named(a)?;
+    kms_panel(a)
+}
+
+/// Err unless the given --display names kms.
+fn kms_named(a: &Ns) -> Result<()> {
     let name = text(&a.display);
     if name == "kms" {
-        return kms_panel(a);
+        return Ok(());
     }
     // --display takes an optional value, so it reads a path after it as a
     // display name
@@ -359,20 +366,20 @@ fn panel_of(a: &Ns) -> Result<Panel> {
 }
 
 /// A scene builds against this size, worked out before any device opens.
-/// geometry() gives the same answer once the display is up, and a scene needs it
-/// earlier than that: it sizes its own buffers as it builds, so `half` and
-/// `quarter` have to mean something already. Reading a mode costs nothing and
-/// takes no DRM master, so asking early is free. None where the size cannot be
-/// known without opening the device, and a scene that wanted a fraction then
-/// says so itself.
-fn prospective_size(a: &Ns) -> Option<(i32, i32)> {
-    if !given(&a.display) {
-        return Some(a.size.unwrap_or(DEFAULT_SIZE));
-    }
-    match text(&a.display) {
-        "kms" => a.size.or_else(|| probe_display(a.dri.as_deref())),
-        _ => None,
-    }
+/// geometry() gives the same answer once the display is up, and a scene
+/// process needs it earlier than that, before it writes its scene. Reading a
+/// mode costs nothing and takes no DRM master, so asking early is free. A
+/// --display other than kms, and kms with no --size and no connected display,
+/// fail here with the run's own errors.
+fn prospective_size(a: &Ns) -> Result<(i32, i32)> {
+    let panel = match given(&a.display) {
+        true => {
+            kms_named(a)?;
+            Panel::Kms
+        }
+        false => Panel::None,
+    };
+    Ok(geometry(a, &panel)?.0)
 }
 
 /// (size, components) of the render.

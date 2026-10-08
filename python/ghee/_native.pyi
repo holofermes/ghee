@@ -97,8 +97,10 @@ class Drawing:
     Leaving the block sends ghee what changed: a live field changes live,
     any other change builds that layer alone again, a call that runs for the
     first time adds its layer after the layer of the call before it, a layer
-    whose call did not run hides, and an effect that a call stops naming is
-    bypassed. A frame whose calls changed nothing sends nothing, and draws.
+    under the layer of a call before its own moves after that layer, and an
+    effect that a call stops naming is bypassed. The layer of a call that did
+    not run leaves the scene, and a layer of the scene's own hides instead. A
+    frame whose calls changed nothing sends nothing, and draws.
     """
 
     def __init__(

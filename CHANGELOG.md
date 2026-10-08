@@ -489,9 +489,11 @@ A Rust host written for 0.4.0 needs these changes.
   it and its count from that line in the frame, or by its `name`, which
   names the layer, and a call with no name takes the console's naming,
   `text`, `text2`. A live field changes live, any other change builds that
-  layer alone again, a call that runs for the first time adds its layer, a
-  layer whose call stops hides, and an effect that a call stops naming is
-  bypassed. Two calls that draw one layer in a frame raise ValueError. On a
+  layer alone again, a call that runs for the first time adds its layer, the
+  layer of a call that stops leaves the scene, a layer of the scene's own
+  hides instead, a layer moves to the place of its call among the frame's
+  calls, and an effect that a call stops naming is bypassed. Two calls that
+  draw one layer in a frame raise ValueError. On a
   Pi Zero 2 W, with rects and two-digit words in the pixel font and half of
   the calls changed each frame, a frame of 50 calls draws at 193 fps on a
   128x32 SSD1306, and a frame of 200 calls at 181 fps, after a first frame
@@ -596,7 +598,9 @@ A Rust host written for 0.4.0 needs these changes.
 - Take a layer out of the running scene with message kind 9, named for the
   layer, with no payload, and move a layer among the layers of its pass
   with kind 10, named for the layer, its payload the UTF-8 JSON `{"index":
-  n}` of its place after the move.
+  n}` of its place after the move. `ghee.draw` sends both, for the layer of
+  a call that stops and for a layer that paints under the layer of a call
+  before its own.
 
 ### Console
 

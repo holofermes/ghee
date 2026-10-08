@@ -232,10 +232,13 @@ that draw one layer in a frame raise ValueError.
 Leaving the block sends ghee what changed. A live field changes live. Any
 other change builds that layer alone again, so an animated `font_size`
 builds its layer every frame. A call that runs for the first time adds its
-layer after the layer of the call before it, a layer whose call did not run
-hides, and an effect that a call stops naming is bypassed. A layer keeps its
-place once added, and stays, hidden, after its call stops. A frame whose
-calls changed nothing sends nothing.
+layer after the layer of the call before it, a layer
+under the layer of a call before its own moves after that layer, and an
+effect that a call stops naming is bypassed. The layer of a call that did
+not run leaves the scene, and a layer of the scene's own hides instead. A
+call that comes and goes adds its layer each time that it comes back, and a
+call that keeps running with `visible=False` hides its layer for free. A
+frame whose calls changed nothing sends nothing.
 
 `screen.measure(words, font_size=None, font_family=None)` gives the width
 and height in pixels of the block that a drawing's text lays `words` out in,

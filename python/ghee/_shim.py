@@ -649,7 +649,8 @@ class _Wire:
     """The scene that ghee runs, as a drawing reaches it: each layer that the
     drawing adds goes out with the tick's answer as kind 6, the new looks
     that differ in live fields alone as one kind 8, any other new look as
-    kind 7, and a hidden layer as a live set."""
+    kind 7, a layer taken out as kind 9, a layer moved as kind 10, and a
+    hidden layer as a live set."""
 
     def _drawing(self) -> dict:
         return _live().drawing()
@@ -667,6 +668,12 @@ class _Wire:
         message = _live().update(layer)
         if message is not None:
             _send(*message)
+
+    def _remove_layer(self, name: str) -> None:
+        _send(*_live().remove(name))
+
+    def _move_layer(self, name: str, index: int) -> None:
+        _send(*_live().move(name, index))
 
     def set_layer(self, name, field, value, effect=None) -> None:
         _set_layer(name, field, value, effect)
@@ -1121,8 +1128,8 @@ def _live():
 
 
 def _send(kind: int, wire: str, body, what: str = "") -> None:
-    """Queue one message for the tick's answer: `body` the text of kinds 3,
-    6, 7 and 8, or the numbers of kinds 0 and 1, which `what` names in an
+    """Queue one message for the tick's answer: `body` the text of kinds 3
+    and 6 to 10, or the numbers of kinds 0 and 1, which `what` names in an
     error."""
     if isinstance(body, str):
         text = body.encode("utf-8")

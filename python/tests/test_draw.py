@@ -46,6 +46,12 @@ class Fake:
     def set_layer(self, name, field, value, effect=None):
         self.sent.append(("set", name, field, value, effect))
 
+    def _remove_layer(self, name):
+        self.sent.append(("remove", name))
+
+    def _move_layer(self, name, index):
+        self.sent.append(("move", name, index))
+
     def frame(self):
         self.sent.append(("frame",))
 
@@ -142,11 +148,7 @@ def test_a_call_keeps_its_layer_by_its_line_whatever_runs_above_it():
     assert frames(Fake(), draw, 3) == [
         [("add", "main", 0, title), FRAME],
         [("add", "main", 0, alarm), ("add", "main", 2, bar), FRAME],
-        [
-            ("add", "main", 3, bar2),
-            ("set", "text2", "visible", False, None),
-            FRAME,
-        ],
+        [("remove", "text2"), ("add", "main", 2, bar2), FRAME],
     ]
 
 
@@ -169,7 +171,7 @@ def test_a_frame_whose_calls_changed_nothing_sends_nothing():
 
     sent = frames(Fake(), draw, 4)
     assert len(sent[0]) == 4
-    assert sent[1] == [("set", "rect2", "visible", False, None), FRAME]
+    assert sent[1] == [("remove", "rect2"), FRAME]
     assert sent[2] == sent[3] == [FRAME]
 
 
@@ -240,7 +242,7 @@ def test_each_frame_states_the_whole_look_of_a_call():
     ]
 
 
-def test_a_layer_whose_call_comes_back_takes_its_look_again():
+def test_the_layer_of_a_call_that_stops_leaves_and_comes_back_with_the_call():
     def draw(d, i):
         if i != 1:
             d.image("wifi.png", x=110, y=0)
@@ -248,8 +250,37 @@ def test_a_layer_whose_call_comes_back_takes_its_look_again():
     icon = {"name": "image", "x": 110.0, "y": 0.0, "image": "wifi.png"}
     assert frames(Fake(), draw, 4) == [
         [("add", "main", 0, icon), FRAME],
-        [("set", "image", "visible", False, None), FRAME],
-        [("update", icon), FRAME],
+        [("remove", "image"), FRAME],
+        [("add", "main", 0, icon), FRAME],
+        [FRAME],
+    ]
+
+
+def test_a_layer_of_the_scenes_own_whose_call_stops_hides():
+    """A call that names a layer of the scene draws it, and the layer stays
+    with the scene after the call stops."""
+
+    def draw(d, i):
+        if i == 0:
+            d.text("12:00", name="clock")
+
+    assert frames(Fake(layers=["clock"]), draw, 2)[1] == [
+        ("set", "clock", "visible", False, None),
+        FRAME,
+    ]
+
+
+def test_layers_paint_in_the_order_of_the_frames_calls():
+    """The fewest layers move: the one call that comes first, then last
+    again."""
+
+    def draw(d, i):
+        for name in ("c", "a", "b") if i == 1 else ("a", "b", "c"):
+            d.rect(name=name)
+
+    assert frames(Fake(), draw, 4)[1:] == [
+        [("move", "c", 0), FRAME],
+        [("move", "c", 2), FRAME],
         [FRAME],
     ]
 
@@ -291,8 +322,8 @@ def test_a_call_that_takes_another_name_draws_the_layer_of_that_name():
 
     sent = frames(Fake(), draw, 2)
     assert sent[1] == [
+        ("remove", "title"),
         ("add", "main", 0, {"name": "banner", "text": "hi"}),
-        ("set", "title", "visible", False, None),
         FRAME,
     ]
 
@@ -427,8 +458,8 @@ def test_calls_on_one_line_of_two_files_draw_two_layers(tmp_path):
         made["one.py" if i == 0 else "two.py"](d)
 
     assert frames(Fake(), draw, 2)[1] == [
-        ("add", "main", 0, {"name": "rect2", "x": 2.0, "shape": "rect"}),
-        ("set", "rect", "visible", False, None),
+        ("remove", "rect"),
+        ("add", "main", 0, {"name": "rect", "x": 2.0, "shape": "rect"}),
         FRAME,
     ]
 
@@ -497,17 +528,6 @@ def test_the_calls_of_a_draw_that_raised_go_to_draw_again():
     ]
 
 
-def test_a_layer_whose_call_comes_back_goes_to_draw_again():
-    def draw(d, i):
-        if i != 1:
-            d.rect(x=4)
-
-    assert frames(Typed(), draw, 3)[1:] == [
-        [("set", "rect", "visible", False, None), FRAME],
-        [("draw", [(1, "rect", values(RECT_KEYS, x=4))]), FRAME],
-    ]
-
-
 # --------------------------------------------------------- a scene script
 
 
@@ -527,11 +547,11 @@ def answers(buf):
 
 
 def test_a_drawing_in_a_tick_goes_out_with_the_ticks_answer(monkeypatch):
-    """A call that runs for the first time adds its layer, kind 6, the calls
-    whose looks change in live fields alone give their layers the new looks
-    in one kind 8, a call that builds its layer again gives it the new look
-    as kind 7, a layer whose call did not run hides through its live eye,
-    and a tick whose calls changed nothing sends nothing."""
+    """A call that runs for the first time adds its layer, kind 6, the layer
+    of a call that did not run leaves, kind 9, the calls whose looks change
+    in live fields alone give their layers the new looks in one kind 8, a
+    call that builds its layer again gives it the new look as kind 7, and a
+    tick whose calls changed nothing sends nothing."""
     shim = load()
 
     @shim.tick
@@ -554,12 +574,25 @@ def test_a_drawing_in_a_tick_goes_out_with_the_ticks_answer(monkeypatch):
             (6, "main", {"index": 2, "layer": rect}),
         ],
         [
+            (9, "rect", ""),
             (8, "", [{**text, "text": "t1"}]),
             (7, "text2", {**big, "font_size": 9.0}),
-            (1, "rect.visible", [0.0]),
         ],
         [],
     ]
+
+
+def test_a_drawing_in_a_tick_moves_a_layer_into_the_order_of_the_calls(monkeypatch):
+    shim = load()
+
+    @shim.tick
+    def show(tick):
+        with shim.draw() as d:
+            for name in ("b", "a") if tick.frame == 1 else ("a", "b"):
+                d.rect(name=name)
+
+    _, out = drive(shim, None, ticks(2), monkeypatch)
+    assert answers(out)[1] == [(10, "b", {"index": 0})]
 
 
 @pytest.mark.parametrize("bad", [0, 1])
@@ -611,7 +644,7 @@ def red_columns(h):
     return [x for x in range(w) if px[4 * x] > 127]
 
 
-def test_a_drawing_reaches_the_screen_and_a_call_that_stops_hides():
+def test_a_drawing_reaches_the_screen_and_a_call_that_stops_takes_its_layer_out():
     with ghee.open(width=16, height=4, timestep=0) as screen:
         for i in range(3):
             with screen.draw() as d:
@@ -620,6 +653,17 @@ def test_a_drawing_reaches_the_screen_and_a_call_that_stops_hides():
             assert (
                 red_columns(screen) == [[0, 1, 2, 3, 4, 5, 6, 7], [], [0, 1, 2, 3]][i]
             )
+            assert screen._drawing()["layers"] == [["rect"], [], ["rect"]][i]
+
+
+def test_the_last_call_paints_on_top_whichever_came_last_before():
+    with ghee.open(width=4, height=4, timestep=0) as screen:
+        for top in ("red", "lime", "red"):
+            with screen.draw() as d:
+                for color in ("lime", "red") if top == "red" else ("red", "lime"):
+                    d.rect(name=color, color=color)
+            want = (255, 0, 0) if top == "red" else (0, 255, 0)
+            assert tuple(screen.pixels()[:3]) == want, top
 
 
 class Looks:

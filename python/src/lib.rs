@@ -444,6 +444,17 @@ impl Handle {
         self.held.get()?.update_layer(&layer).map_err(fault)
     }
 
+    /// Take layer `name` out of the scene, with no rebuild.
+    fn _remove_layer(&mut self, name: &str) -> PyResult<()> {
+        self.held.get()?.remove_layer(name).map_err(fault)
+    }
+
+    /// Put layer `name` at `index` among the layers of its pass, with no
+    /// rebuild.
+    fn _move_layer(&mut self, name: &str, index: usize) -> PyResult<()> {
+        self.held.get()?.move_layer(name, index).map_err(fault)
+    }
+
     /// Hold data for one declared array. The next frame consumes it once.
     ///
     /// `data` is a uint8 buffer, read as byte / 255, or any other buffer or

@@ -259,6 +259,33 @@ impl LayerWire {
         Ok(Some((7, name, look.to_string())))
     }
 
+    /// The message that takes layer `name` out of the scene: kind 9, the
+    /// layer's name, and no text. Raises ValueError for a name that names
+    /// no layer.
+    fn remove(&mut self, name: &str) -> PyResult<(u8, String, String)> {
+        self.scene
+            .remove_layer(name)
+            .map_err(scene_fault)
+            .map_err(fault)?;
+        self.places = places(&self.scene);
+        self.index = Index::of(&self.scene);
+        Ok((9, name.to_string(), String::new()))
+    }
+
+    /// The message that puts layer `name` at `index` among the layers of
+    /// its pass: kind 10, the layer's name, and the JSON text of its place.
+    /// Raises ValueError as Handle._move_layer() does.
+    #[pyo3(name = "move")]
+    fn move_layer(&mut self, name: &str, index: usize) -> PyResult<(u8, String, String)> {
+        self.scene
+            .move_layer(name, index)
+            .map_err(scene_fault)
+            .map_err(fault)?;
+        self.places = places(&self.scene);
+        let text = serde_json::json!({ "index": index }).to_string();
+        Ok((10, name.to_string(), text))
+    }
+
     /// The message of a live set of `field` of layer `name`, or of its
     /// effect `effect`: its kind, its wire name, and its floats for kind 0
     /// or 1, or its text for kind 3. Raises ValueError as Handle.set_layer

@@ -552,9 +552,10 @@ describes, a procedural scene through its messages, as
 A running scene also takes a new layer and builds that layer alone, while
 the other layers and passes carry on, and it takes a layer out or moves one
 among the layers of its pass the same way. A handle's `draw()` in Python adds
-a layer for each call that runs for the first time, a procedural scene sends
-message kinds 6, 9 and 10, and Rust calls `Renderer::add_layer`, as [From
-Rust](#from-rust) shows.
+a layer for each call that runs for the first time, takes out the layer of a
+call that stops, and moves a layer to the place of its call. A procedural
+scene sends message kinds 6, 9 and 10, and Rust calls `Renderer::add_layer`,
+as [From Rust](#from-rust) shows.
 
 `wave`, `scroll` and `blink` move by a phase that ghee keeps for each layer.
 Each frame advances the phase by the effect's `speed` or `rate` times the

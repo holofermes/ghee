@@ -9,16 +9,20 @@
 //! call whose values are those that its layer shows holds nothing more.
 //!
 //! Leaving the block sends ghee what changed through the handle that the
-//! drawing draws on. A call new to the screen adds its layer, written as the
-//! scene format writes it by the shim's `_call_look`. The changed calls of
-//! the layers that the screen holds go out at once, typed: to the session
-//! itself on a native handle, to the scene check that `_live()` gives on the
-//! shim's wire, which writes them as one kind 8 message and hands it to
-//! `_send()`, through `_draw()` on a handle that has one, and as looks
-//! through `_update_layer()` on any other, which also takes the calls that
-//! the typed path leaves. A layer whose call did not run hides through its
-//! live eye. `_draw()` is the tests' hook into the typed path: a fake handle
-//! takes the calls there, and raises there to reach flush()'s error path.
+//! drawing draws on. A layer that the drawing added and whose call did not
+//! run goes out through `_remove_layer()`, and a layer of the scene's own
+//! whose call did not run hides through its live eye. A call new to the
+//! screen adds its layer, written as the scene format writes it by the
+//! shim's `_call_look`. The changed calls of the layers that the screen holds
+//! go out at once, typed: to the session itself on a native handle, to the
+//! scene check that `_live()` gives on the shim's wire, which writes them as
+//! one kind 8 message and hands it to `_send()`, through `_draw()` on a
+//! handle that has one, and as looks through `_update_layer()` on any other,
+//! which also takes the calls that the typed path leaves. A layer that sits
+//! under the layer of a call before its own moves after it through
+//! `_move_layer()`. `_draw()` is the tests' hook into the typed path: a fake
+//! handle takes the calls there, and raises there to reach flush()'s error
+//! path.
 
 use std::collections::{HashMap, HashSet};
 
@@ -155,6 +159,30 @@ fn visible_at(kind: CallKind) -> usize {
 /// A call by its line and its count from that line in the frame.
 type Key = (u32, u32);
 
+/// The indexes of a longest run of rising values of `pos`, in order.
+fn rising(pos: &[usize]) -> Vec<usize> {
+    // tails[k] ends the run of k + 1 values that ends lowest so far, and
+    // back[i] is the value before value i in its run.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut back: Vec<Option<usize>> = vec![None; pos.len()];
+    for (i, &p) in pos.iter().enumerate() {
+        let k = tails.partition_point(|&t| pos[t] < p);
+        back[i] = k.checked_sub(1).map(|j| tails[j]);
+        match k == tails.len() {
+            true => tails.push(i),
+            false => tails[k] = i,
+        }
+    }
+    let mut run = Vec::with_capacity(tails.len());
+    let mut i = tails.last().copied();
+    while let Some(k) = i {
+        run.push(k);
+        i = back[k];
+    }
+    run.reverse();
+    run
+}
+
 /// The values that a layer shows from the call that drew it: None when a
 /// later frame cannot compare its own with them.
 struct Last {
@@ -176,6 +204,8 @@ struct Held {
     name: String,
     /// The call whose values the layer shows.
     owner: Option<Key>,
+    /// The call that named the layer after its kind.
+    named_by: Option<Key>,
     /// True once the drawing drew the layer.
     drawn: bool,
     /// True while the layer shows, as the last call that drew it says.
@@ -204,7 +234,8 @@ pub struct Screen {
     /// Each layer by its number, and the number of each name.
     held: Vec<Held>,
     numbers: HashMap<String, u32>,
-    /// Every layer that the drawing drew, in the order of its first frame.
+    /// Every layer that the drawing drew and holds, in the order of its
+    /// first frame.
     order: Vec<u32>,
     /// The count of the drawings made.
     frame: u64,
@@ -323,8 +354,10 @@ struct Changed {
 /// Leaving the block sends ghee what changed: a live field changes live,
 /// any other change builds that layer alone again, a call that runs for the
 /// first time adds its layer after the layer of the call before it, a layer
-/// whose call did not run hides, and an effect that a call stops naming is
-/// bypassed. A frame whose calls changed nothing sends nothing, and draws.
+/// under the layer of a call before its own moves after that layer, and an
+/// effect that a call stops naming is bypassed. The layer of a call that did
+/// not run leaves the scene, and a layer of the scene's own hides instead. A
+/// frame whose calls changed nothing sends nothing, and draws.
 #[pyclass(module = "ghee")]
 pub struct Drawing {
     handle: Py<PyAny>,
@@ -464,6 +497,7 @@ impl Drawing {
             false => handle.getattr_opt("_draw")?,
         };
         let typed = native || wire.is_some() || draw.is_some();
+        self.gone(py, &handle)?;
         let changed = std::mem::take(&mut self.changed);
         let mut batch = Vec::new();
         for c in changed {
@@ -483,7 +517,7 @@ impl Drawing {
         if !batch.is_empty() {
             self.flush(py, &handle, wire.as_ref(), draw.as_ref(), batch)?;
         }
-        self.hide(py, &handle)
+        self.order(py, &handle)
     }
 
     /// Add the layer of `c`, a call new to the screen, after the layer of
@@ -540,6 +574,7 @@ impl Drawing {
         let mut s = self.screen.bind(py).borrow_mut();
         if c.layer.is_none() {
             s.slot(c.key).named = Some(n);
+            s.held[n as usize].named_by = Some(c.key);
             self.layers[c.pos] = Some(n);
         }
         s.placed.insert(index, n);
@@ -722,19 +757,25 @@ impl Drawing {
         Ok(())
     }
 
-    /// Hide each layer that shows and whose call did not run, through its
-    /// live eye.
-    fn hide(&mut self, py: Python<'_>, handle: &Bound<'_, PyAny>) -> PyResult<()> {
-        let gone: Vec<(u32, String)> = {
+    /// Take out each layer that the drawing added and whose call did not
+    /// run, and hide each layer of the scene's own that shows and whose call
+    /// did not run, through its live eye.
+    fn gone(&mut self, py: Python<'_>, handle: &Bound<'_, PyAny>) -> PyResult<()> {
+        let gone: Vec<(u32, String, bool)> = {
             let s = self.screen.bind(py).borrow();
             s.order
                 .iter()
                 .map(|&n| (n, &s.held[n as usize]))
-                .filter(|(_, h)| h.visible && h.frame != s.frame)
-                .map(|(n, h)| (n, h.name.clone()))
+                .filter(|(_, h)| h.frame != s.frame && (h.visible || !h.in_scene))
+                .map(|(n, h)| (n, h.name.clone(), h.in_scene))
                 .collect()
         };
-        for (n, name) in gone {
+        for (n, name, own) in gone {
+            if !own {
+                handle.call_method1("_remove_layer", (&name,))?;
+                self.forget(py, n);
+                continue;
+            }
             handle.call_method1("set_layer", (&name, "visible", false))?;
             let look = self.screen.bind(py).borrow().held[n as usize]
                 .look
@@ -762,6 +803,103 @@ impl Drawing {
             }
         }
         Ok(())
+    }
+
+    /// Let go of layer `n`, which left the scene: its name is free again,
+    /// and a call that draws it again adds it.
+    fn forget(&mut self, py: Python<'_>, n: u32) {
+        let mut s = self.screen.bind(py).borrow_mut();
+        let held = std::mem::take(&mut s.held[n as usize]);
+        for key in [held.owner, held.named_by].into_iter().flatten() {
+            let slot = s.slot(key);
+            if slot.last.as_ref().is_some_and(|l| l.layer == n) {
+                slot.last = None;
+            }
+            if slot.named == Some(n) {
+                slot.named = None;
+            }
+        }
+        s.taken.remove(&held.name);
+        s.placed.retain(|&p| p != n);
+        s.order.retain(|&p| p != n);
+        s.held[n as usize] = Held {
+            name: held.name,
+            ..Held::default()
+        };
+    }
+
+    /// Move layers of the frame's calls among the layers of the drawing's
+    /// pass so that they paint in the order of the calls. The layers of the
+    /// longest run of calls already in order stay, and each other layer
+    /// goes right after the layer of the call before it, or right before
+    /// the first layer that stays.
+    fn order(&mut self, py: Python<'_>, handle: &Bound<'_, PyAny>) -> PyResult<()> {
+        let at = self.places(py);
+        let calls: Vec<u32> = self
+            .layers
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&n| at[n as usize].is_some())
+            .collect();
+        let pos: Vec<usize> = calls.iter().filter_map(|&n| at[n as usize]).collect();
+        if pos.windows(2).all(|w| w[0] < w[1]) {
+            return Ok(());
+        }
+        let keep = rising(&pos);
+        let mut stays = vec![false; calls.len()];
+        for &k in &keep {
+            stays[k] = true;
+        }
+        let first = calls[keep[0]];
+        let mut before: Option<u32> = None;
+        for (j, &n) in calls.iter().enumerate() {
+            if !stays[j] {
+                let (name, from, to) = {
+                    let s = self.screen.bind(py).borrow();
+                    let place = |m: u32| s.placed.iter().position(|&p| p == m);
+                    let from = place(n).expect("the layer sits in the pass");
+                    // Taking the layer out first moves each layer past it
+                    // down by one.
+                    let to = match before {
+                        Some(b) => {
+                            let b = place(b).expect("the layer sits in the pass");
+                            if from < b {
+                                b
+                            } else {
+                                b + 1
+                            }
+                        }
+                        None => {
+                            let f = place(first).expect("the layer sits in the pass");
+                            if from < f {
+                                f - 1
+                            } else {
+                                f
+                            }
+                        }
+                    };
+                    (s.held[n as usize].name.clone(), from, to)
+                };
+                handle.call_method1("_move_layer", (&name, to))?;
+                let mut s = self.screen.bind(py).borrow_mut();
+                let moved = s.placed.remove(from);
+                s.placed.insert(to, moved);
+            }
+            before = Some(n);
+        }
+        Ok(())
+    }
+
+    /// The place of each layer among the layers of the drawing's pass, by
+    /// its number, None for a layer of another pass or of none.
+    fn places(&self, py: Python<'_>) -> Vec<Option<usize>> {
+        let s = self.screen.bind(py).borrow();
+        let mut at = vec![None; s.held.len()];
+        for (k, &n) in s.placed.iter().enumerate() {
+            at[n as usize] = Some(k);
+        }
+        at
     }
 }
 

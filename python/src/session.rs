@@ -985,6 +985,27 @@ impl Session {
         Ok(())
     }
 
+    /// Take layer `name` out of the scene, with no rebuild.
+    pub fn remove_layer(&mut self, name: &str) -> Outcome<()> {
+        self.renderer.remove_layer(name).map_err(refusal)?;
+        if let Some(index) = self.renderer.with_scene(Index::of) {
+            self.index = Arc::new(index);
+        }
+        let text = format!("{name}.text");
+        self.values.remove(&text);
+        self.sent.remove(&text);
+        self.grown = true;
+        Ok(())
+    }
+
+    /// Put layer `name` at `index` among the layers of its pass, with no
+    /// rebuild.
+    pub fn move_layer(&mut self, name: &str, index: usize) -> Outcome<()> {
+        self.renderer.move_layer(name, index).map_err(refusal)?;
+        self.grown = true;
+        Ok(())
+    }
+
     /// Give the layer of the name of `layer` its look, as
     /// Renderer::update_layer() does. False when the layer had it already.
     pub fn update_layer(&mut self, layer: &Value) -> Outcome<bool> {

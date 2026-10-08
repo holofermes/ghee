@@ -224,7 +224,7 @@ impl OwnedFrame {
 }
 
 /// A sink takes an RGB(A) frame and puts it somewhere: an image file, a
-/// hardware panel, a byte stream. Each sink declares what it needs from a
+/// display, a byte stream. Each sink declares what it needs from a
 /// frame, through the flags and wants()/readback() below.
 pub trait Output {
     /// what a host publishes as this sink's /stats destination

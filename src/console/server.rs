@@ -2815,9 +2815,10 @@ pub struct Options {
     /// Filters every scene ends with, after its own. A host whose panel needs
     /// one sets them here.
     pub filters: Vec<String>,
-    /// The output sinks the frames also reach, so a console writes files. `display` covers the KMS scanout instead, because that one
-    /// is a mode the renderer is created in. run() writes these from its own
-    /// thread, so a sink bound to the thread that built it belongs here.
+    /// The output sinks the frames also reach, so a console writes files.
+    /// `display` covers the KMS scanout instead, because that one is a mode
+    /// the renderer is created in. run() writes these from its own thread, so
+    /// a sink bound to the thread that built it belongs here.
     pub sinks: Vec<Box<dyn Output>>,
     /// Paces the render loop, as a display's fixed rate does. None draws as
     /// fast as the sinks and the viewers take frames.

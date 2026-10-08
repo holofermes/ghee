@@ -268,8 +268,8 @@ lands.
 
 - A control on a touch screen is at least 40 px tall. The page scrolls, and
   nothing is cut off at phone width.
-- A setting shows its key and its value, with no grey hint text and no
-  description under a field. An empty field's placeholder names ghee's
+- A setting shows its key and its value, with no grey hint text, no
+  description under a field and no helper or warning line beside it. An empty field's placeholder names ghee's
   default in one word, such as `fit` or `auto`. A key that needs a sentence
   to explain it needs a better name.
 - Nothing moves under the cursor. A tab keeps its width and its place, open

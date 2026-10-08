@@ -696,7 +696,8 @@ A scene written for 0.4.0 needs these changes.
   kernel registered under the card's device, scaled onto its
   `max_brightness`: under ssd130x, the panel's contrast. A display with no
   backlight device refuses a set and reads None. `Renderer::close`, which
-  ghee runs as it exits, puts the earlier level back.
+  ghee runs as it exits, puts the earlier level back. A `--brightness` that
+  the display refuses prints its error once, and the render goes on.
 - Find a KMS display for `ghee displays` and `--display kms` in the
   kernel's cached connector state, and probe a connector, which rereads an
   HDMI display's EDID, only when that state lists no modes.

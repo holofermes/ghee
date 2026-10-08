@@ -1720,7 +1720,9 @@ fn make_renderer(console: &Console) -> Result<Renderer> {
     r.set_alpha(console.alpha);
     r.set_rotate(console.rotate)?;
     if let Some(level) = console.brightness {
-        r.set_brightness(level)?;
+        if let Err(e) = r.set_brightness(level) {
+            eprintln!("ghee console: {e:#}");
+        }
     }
     Ok(r)
 }

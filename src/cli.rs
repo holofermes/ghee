@@ -608,10 +608,10 @@ fn cmd_render(a: &Ns) -> Result<()> {
     r.set_alpha(a.alpha);
     r.set_rotate(a.rotate)?;
     if let Some(level) = a.brightness {
-        let took = r
-            .set_brightness(level)
-            .map_err(|e| exit(format!("{}: {e:#}", a.cmd)))?;
-        report::detail("backlight", format!("{took:.3}"));
+        match r.set_brightness(level) {
+            Ok(took) => report::detail("backlight", format!("{took:.3}")),
+            Err(e) => report::error(format!("{}: {e:#}", a.cmd)),
+        }
     }
     let err = r.setup(&scene)?;
     if !err.is_empty() {

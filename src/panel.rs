@@ -67,21 +67,22 @@ impl Backlight {
 
     /// Write `brightness`, `level` from 0 to 1 scaled onto `max_brightness`,
     /// and give back the level that the device then reads. The first write
-    /// puts the value before it into `earlier`.
+    /// that the device takes puts the value before it into `earlier`.
     pub fn set_level(&self, level: f64, earlier: &mut Option<Earlier>) -> Result<f64> {
         if !(0.0..=1.0).contains(&level) {
             return Err(Refused(format!("brightness takes 0 to 1, got {level}")).into());
         }
-        if earlier.is_none() {
-            *earlier = Some(Earlier {
-                brightness: self.read("brightness")?,
-                dir: self.dir.clone(),
-            });
-        }
+        let before = self.read("brightness")?;
         let max = self.read("max_brightness")?;
         let path = self.dir.join("brightness");
         let value = (level * max as f64).round() as u64;
         fs::write(&path, format!("{value}\n")).with_context(|| path.display().to_string())?;
+        if earlier.is_none() {
+            *earlier = Some(Earlier {
+                brightness: before,
+                dir: self.dir.clone(),
+            });
+        }
         self.level()
     }
 }
@@ -213,5 +214,26 @@ mod tests {
         assert!(earlier.is_none());
         let file = sys.join("class/drm/card7/device/backlight/7-003c/brightness");
         assert_eq!(fs::read_to_string(file).unwrap().trim(), "127");
+    }
+
+    /// A refused write leaves no earlier value, so the close writes nothing
+    /// and reports no second error. The fixture's `brightness` is
+    /// /proc/sys/kernel/ngroups_max, which reads a number and refuses every
+    /// write, root's too, as the backlight of a panel that answers nothing
+    /// on its bus refuses one.
+    #[test]
+    fn a_refused_write_leaves_nothing_to_put_back() {
+        let sys = sys_with_backlight(127, 255);
+        let file = sys.join("class/drm/card7/device/backlight/7-003c/brightness");
+        fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink("/proc/sys/kernel/ngroups_max", &file).unwrap();
+        let mut earlier = None;
+        let e =
+            set_brightness(sys.as_ref(), Some("/dev/dri/card7"), 0.5, &mut earlier).unwrap_err();
+        assert!(
+            format!("{e:#}").starts_with(&format!("{}: ", file.display())),
+            "{e:#}"
+        );
+        assert!(earlier.is_none());
     }
 }

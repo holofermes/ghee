@@ -1446,7 +1446,8 @@ def _refuse(why: str):
 
 def _open(scene: Scene, a):
     """Open the scene on the bindings. A scene or a display that ghee
-    refuses stops the run."""
+    refuses stops the run, and a --brightness that the display refuses is
+    reported and the run goes on."""
     from ghee import open as open_scene
 
     w, h = a.size or (None, None)
@@ -1475,8 +1476,7 @@ def _open(scene: Scene, a):
         try:
             handle.brightness = a.brightness
         except (ValueError, RuntimeError) as e:
-            handle.close()
-            _refuse(str(e))
+            print(f"{os.path.basename(sys.argv[0])}: {e}", file=sys.stderr)
     return handle
 
 

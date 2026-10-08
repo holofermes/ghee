@@ -437,7 +437,8 @@ The scene takes its own arguments first, then these flags of `ghee render`:
   320x240.
 - `--rotate DEGREES`: 0, 90, 180 or 270, the frame turned clockwise on its
   way to every output.
-- `--brightness LEVEL`: the backlight of the `kms` display, 0 to 1.
+- `--brightness LEVEL`: the backlight of the `kms` display, 0 to 1. A
+  display that refuses it prints the error once, and the run goes on.
 - `--rgb565`: the `kms` display scanned out in 16-bit color.
 - `--dri DEVICE`: the DRI device, and with `--display` the card whose
   display it drives.

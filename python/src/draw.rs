@@ -15,7 +15,9 @@
 //! itself on a native handle, through `_draw()` on a handle that has one, and
 //! as looks through `_update_layer()` on any other, which also takes the
 //! calls that the typed path leaves. A layer whose call did not run hides
-//! through its live eye.
+//! through its live eye. `_draw()` is the tests' hook into the typed path:
+//! a fake handle takes the calls there, and raises there to reach flush()'s
+//! error path.
 
 use std::collections::{HashMap, HashSet};
 

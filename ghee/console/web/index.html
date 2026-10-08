@@ -378,6 +378,8 @@
      to the control after the key. */
   .rk{position:relative; cursor:pointer}
   .rk::before{content:""; position:absolute; inset:-8px -6px}
+  /* a control paints over the tap area of the key next to it */
+  input, select, textarea, button{position:relative}
   .undo{display:none}
   .undo svg{position:absolute; right:0; top:50%; width:.6em; height:.6em; margin-top:-.3em; color:var(--mod); visibility:hidden}
   .mark{white-space:nowrap}

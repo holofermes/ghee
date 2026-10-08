@@ -389,7 +389,7 @@ A scene written for 0.4.0 needs these changes.
 - Read and set a KMS display's backlight through `h.brightness`, 0 to 1, as
   `--brightness` sets it. It reads None for a display with no backlight
   device, and a set raises ValueError there and on a screen with no KMS
-  display.
+  display. Closing the screen puts the earlier level back.
 - Draw words, pictures, boxes, circles and lines on a screen from Python,
   with no GLSL: `with h.draw() as d:` opens one frame, `d.text`, `d.image`,
   `d.rect`, `d.circle`, `d.line` and `d.lines` each write a layer from the
@@ -685,7 +685,8 @@ A scene written for 0.4.0 needs these changes.
   `Renderer::brightness` does. ghee writes the backlight device that the
   kernel registered under the card's device, scaled onto its
   `max_brightness`: under ssd130x, the panel's contrast. A display with no
-  backlight device refuses a set and reads None.
+  backlight device refuses a set and reads None. `Renderer::close`, which
+  ghee runs as it exits, puts the earlier level back.
 - Find a KMS display for `ghee displays` and `--display kms` in the
   kernel's cached connector state, and probe a connector, which rereads an
   HDMI display's EDID, only when that state lists no modes.

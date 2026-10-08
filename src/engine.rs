@@ -740,6 +740,9 @@ pub struct Renderer {
     pub display: bool,
     /// The card node that the display mode scans out on.
     card: Option<String>,
+    /// The display's backlight before the first set_brightness(), which
+    /// close() puts back.
+    backlight: std::cell::RefCell<Option<crate::panel::Earlier>>,
     /// The readbacks keep the output pass's alpha. set_alpha() sets it.
     alpha: bool,
     /// The quarter turns clockwise that set_rotate() set.
@@ -876,6 +879,7 @@ impl Renderer {
             error_pass: None,
             display,
             card: None,
+            backlight: std::cell::RefCell::new(None),
             alpha: false,
             turns: 0,
             mp: Vec::new(),
@@ -4262,9 +4266,15 @@ impl Renderer {
 
     /// Set the backlight of the display, 0 to 1, through the backlight
     /// device that the kernel registered under the card's device, and give
-    /// back the level that it then reads.
+    /// back the level that it then reads. close() puts back the level from
+    /// before the first set.
     pub fn set_brightness(&self, level: f64) -> Result<f64> {
-        crate::panel::set_brightness(Path::new(crate::panel::SYS), self.card.as_deref(), level)
+        crate::panel::set_brightness(
+            Path::new(crate::panel::SYS),
+            self.card.as_deref(),
+            level,
+            &mut self.backlight.borrow_mut(),
+        )
     }
 
     /// The size that the scene renders at: the frame's size, turned at 90
@@ -4360,6 +4370,7 @@ impl Renderer {
     }
 
     pub fn close(&mut self) {
+        self.backlight.get_mut().take();
         // The runs let go of their texts' programs while the engine lives.
         self.runs.clear();
         if !self.handle.is_null() {

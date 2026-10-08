@@ -889,8 +889,10 @@ on its way to every output: the display, the files, the raw frames and the
 console's video. At 90 and 270 the scene renders at the output's size turned,
 so a 128x32 panel gives the scene 32x128. `--brightness` sets a KMS display's
 backlight from 0 to 1, through the backlight device that the kernel
-registered for it, and a display with no backlight device refuses it. On a panel under the
-kernel's ssd130x driver, the backlight sets the panel's contrast.
+registered for it, and a display with no backlight device refuses it. ghee
+puts the earlier level back when it exits, and a crash leaves the set level
+on the display. On a panel under the kernel's ssd130x driver, the backlight
+sets the panel's contrast.
 
 Show the `stats` demo on a panel mounted upside down, its backlight at 0.5:
 

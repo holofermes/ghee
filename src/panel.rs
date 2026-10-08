@@ -66,10 +66,17 @@ impl Backlight {
     }
 
     /// Write `brightness`, `level` from 0 to 1 scaled onto `max_brightness`,
-    /// and give back the level that the device then reads.
-    pub fn set_level(&self, level: f64) -> Result<f64> {
+    /// and give back the level that the device then reads. The first write
+    /// puts the value before it into `earlier`.
+    pub fn set_level(&self, level: f64, earlier: &mut Option<Earlier>) -> Result<f64> {
         if !(0.0..=1.0).contains(&level) {
             return Err(Refused(format!("brightness takes 0 to 1, got {level}")).into());
+        }
+        if earlier.is_none() {
+            *earlier = Some(Earlier {
+                brightness: self.read("brightness")?,
+                dir: self.dir.clone(),
+            });
         }
         let max = self.read("max_brightness")?;
         let path = self.dir.join("brightness");
@@ -88,17 +95,40 @@ pub fn brightness(sys: &Path, card: Option<&str>) -> Result<Option<f64>> {
     }
 }
 
+/// A backlight device and the `brightness` that it held before ghee's first
+/// set. A drop writes that value back.
+#[derive(Debug)]
+pub struct Earlier {
+    dir: PathBuf,
+    brightness: u64,
+}
+
+impl Drop for Earlier {
+    fn drop(&mut self) {
+        let path = self.dir.join("brightness");
+        if let Err(e) = fs::write(&path, format!("{}\n", self.brightness)) {
+            eprintln!("ghee: put the backlight back: {}: {e}", path.display());
+        }
+    }
+}
+
 /// Set the backlight of the display on the card node `card`, 0 to 1, and
-/// give back the level that it then reads. A level out of range and a
-/// display with no backlight device fail with a Refused error.
-pub fn set_brightness(sys: &Path, card: Option<&str>, level: f64) -> Result<f64> {
+/// give back the level that it then reads. The first set puts the value
+/// before it into `earlier`. A level out of range and a display with no
+/// backlight device fail with a Refused error.
+pub fn set_brightness(
+    sys: &Path,
+    card: Option<&str>,
+    level: f64,
+    earlier: &mut Option<Earlier>,
+) -> Result<f64> {
     let Some(card) = card else {
         return Err(
             Refused("brightness needs a KMS display, and nothing drives one".into()).into(),
         );
     };
     match Backlight::of_card(sys, card) {
-        Some(b) => b.set_level(level),
+        Some(b) => b.set_level(level, earlier),
         None => Err(Refused(format!("the display on {card} has no backlight device")).into()),
     }
 }
@@ -130,11 +160,26 @@ mod tests {
     fn a_level_writes_brightness_scaled_onto_its_maximum() {
         for (level, written) in [(0.0, "0"), (0.5, "128"), (1.0, "255"), (0.2, "51")] {
             let sys = sys_with_backlight(127, 255);
-            let back = set_brightness(sys.as_ref(), Some("/dev/dri/card7"), level).unwrap();
+            let mut earlier = None;
+            let card = Some("/dev/dri/card7");
+            let back = set_brightness(sys.as_ref(), card, level, &mut earlier).unwrap();
             let file = sys.join("class/drm/card7/device/backlight/7-003c/brightness");
             assert_eq!(fs::read_to_string(file).unwrap().trim(), written, "{level}");
             assert_eq!(back, written.parse::<f64>().unwrap() / 255.0, "{level}");
         }
+    }
+
+    #[test]
+    fn a_dropped_earlier_puts_back_the_value_from_before_the_first_set() {
+        let sys = sys_with_backlight(127, 255);
+        let file = sys.join("class/drm/card7/device/backlight/7-003c/brightness");
+        let mut earlier = None;
+        for level in [0.2, 0.5] {
+            set_brightness(sys.as_ref(), Some("/dev/dri/card7"), level, &mut earlier).unwrap();
+        }
+        assert_eq!(fs::read_to_string(&file).unwrap().trim(), "128");
+        drop(earlier);
+        assert_eq!(fs::read_to_string(&file).unwrap().trim(), "127");
     }
 
     #[test]
@@ -144,14 +189,14 @@ mod tests {
         let card = Some("/dev/dri/card1");
         assert_eq!(brightness(sys.as_ref(), card).unwrap(), None);
         assert_eq!(
-            set_brightness(sys.as_ref(), card, 0.5)
+            set_brightness(sys.as_ref(), card, 0.5, &mut None)
                 .unwrap_err()
                 .to_string(),
             "the display on /dev/dri/card1 has no backlight device"
         );
         assert_eq!(brightness(sys.as_ref(), None).unwrap(), None);
         assert_eq!(
-            set_brightness(sys.as_ref(), None, 0.5)
+            set_brightness(sys.as_ref(), None, 0.5, &mut None)
                 .unwrap_err()
                 .to_string(),
             "brightness needs a KMS display, and nothing drives one"
@@ -161,8 +206,11 @@ mod tests {
     #[test]
     fn a_level_outside_0_to_1_is_refused_and_writes_nothing() {
         let sys = sys_with_backlight(127, 255);
-        let e = set_brightness(sys.as_ref(), Some("/dev/dri/card7"), 1.5).unwrap_err();
+        let mut earlier = None;
+        let e =
+            set_brightness(sys.as_ref(), Some("/dev/dri/card7"), 1.5, &mut earlier).unwrap_err();
         assert_eq!(e.to_string(), "brightness takes 0 to 1, got 1.5");
+        assert!(earlier.is_none());
         let file = sys.join("class/drm/card7/device/backlight/7-003c/brightness");
         assert_eq!(fs::read_to_string(file).unwrap().trim(), "127");
     }

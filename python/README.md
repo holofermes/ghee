@@ -149,7 +149,8 @@ scene renders at the frame's size turned, so a 128x32 panel gives the scene
 `brightness` reads and sets the backlight of a KMS display, 0 to 1, through
 the backlight device that the kernel registered for it, such as a panel's
 contrast. It reads None for a display with no backlight device, and a set
-raises ValueError there and on a screen with no KMS display.
+raises ValueError there and on a screen with no KMS display. Closing the
+screen puts the earlier level back.
 
 ## Drawing
 

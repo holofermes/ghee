@@ -180,10 +180,12 @@ fn is_examples_in(
     }
 }
 
-/// $XDG_CACHE_HOME, else ~/.cache, else the temp directory.
+/// $XDG_CACHE_HOME, else ~/.cache, else the temp directory. An empty or
+/// relative $XDG_CACHE_HOME counts as unset, as the XDG spec says.
 pub(crate) fn cache_home() -> std::path::PathBuf {
     std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir)
 }

@@ -291,6 +291,28 @@ fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
 }
 
 #[test]
+fn an_empty_or_relative_xdg_cache_home_puts_the_wheel_index_under_home() {
+    let (dir, ghee, scene) = ghee_beside_lib("wheel-home");
+    wheel_of_ghee(&dir);
+    for xdg in ["", "cache"] {
+        let out = Command::new(&ghee)
+            .arg("render")
+            .arg(&scene)
+            .args(["--", "--help"])
+            .current_dir(&dir.0)
+            .env("XDG_CACHE_HOME", xdg)
+            .env("HOME", &dir.0)
+            .env_remove("UV_INDEX")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let uv = uv_vars(&dir);
+        let under = format!("file://{}/.cache/ghee/index-", dir.0.display());
+        assert!(uv["UV_INDEX"].starts_with(&under), "{xdg:?}: {uv:?}");
+    }
+}
+
+#[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_started_scene_takes_the_index_of_the_wheel_beside_ghee_ahead_of_its_own() {
     let (dir, ghee, scene) = ghee_beside_lib("wheel-start");

@@ -1302,11 +1302,16 @@ impl Renderer {
                         let texts = members.iter().filter(|m| m.text.is_some()).count();
                         let mode = Mode::of(members.len(), texts);
                         let program = match (mode, sh) {
-                            (Mode::Shapes, _) => self.shape_program()?,
-                            (Mode::Mixed, _) => self.run_program()?,
-                            (Mode::Alone, Some(sh)) => sh.glyphs.clone(),
+                            (Mode::Shapes, _) => self.shape_program(),
+                            (Mode::Mixed, _) => self.run_program(),
+                            (Mode::Alone, Some(sh)) => Ok(sh.glyphs.clone()),
                             (Mode::Alone, None) => unreachable!("a text layer has shaders"),
                         };
+                        // The passes staged so far go, so no later commit
+                        // runs them.
+                        let program = program.inspect_err(|_| unsafe {
+                            ffi::ghee_mp_abort(self.handle);
+                        })?;
                         let b = self.add_batch(idx, &name, &program, l.blend())?;
                         runs.push(Run {
                             batch: b,

@@ -49,6 +49,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+ghee encodes JPEG with the jpeg-encoder crate, which carries code ported from
+the Independent JPEG Group's software. This software is based in part on the
+work of the Independent JPEG Group.
+
 ghee/examples/fonts/DejaVuSans-Latin.ttf, a subset of DejaVu Sans, travels
 with the bundled examples. Its license is ghee/examples/fonts/LICENSE-DejaVu.txt.
 

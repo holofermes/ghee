@@ -136,17 +136,20 @@ impl Edits {
         self.values.is_empty() && self.items.is_empty()
     }
 
-    /// The same edits as `other`, with numbers compared as 32-bit floats,
-    /// which is how a scene holds them.
+    /// The same edits as `other`, the items in any order, with numbers
+    /// compared as 32-bit floats, which is how a scene holds them. No two
+    /// items of one Edits are the same item.
     pub fn same(&self, other: &Edits) -> bool {
         same(
             &Value::Object(self.values.clone()),
             &Value::Object(other.values.clone()),
         ) && self.items.len() == other.items.len()
-            && self.items.iter().zip(&other.items).all(|(a, b)| {
-                a.is(&b.item, b.pass.as_deref(), b.param.as_deref())
-                    && a.base == b.base
-                    && same(&a.value, &b.value)
+            && self.items.iter().all(|a| {
+                other.items.iter().any(|b| {
+                    a.is(&b.item, b.pass.as_deref(), b.param.as_deref())
+                        && a.base == b.base
+                        && same(&a.value, &b.value)
+                })
             })
     }
 
@@ -878,6 +881,25 @@ mod tests {
         ] {
             assert_eq!(file_of(dir, scene, demo), dir.join(want), "{scene}");
         }
+    }
+
+    #[test]
+    fn edits_of_the_same_items_in_another_order_are_the_same_edits() {
+        let fragment = |pass: &str, base: &str| {
+            Item::new(
+                "fragment",
+                Some(pass),
+                Some(base.to_string()),
+                json!("void main(){}"),
+            )
+        };
+        let edits = |items: Vec<Item>| Edits {
+            values: Map::new(),
+            items,
+        };
+        let one = edits(vec![fragment("a", "1"), fragment("b", "2")]);
+        assert!(one.same(&edits(vec![fragment("b", "2"), fragment("a", "1")])));
+        assert!(!one.same(&edits(vec![fragment("b", "1"), fragment("a", "2")])));
     }
 
     #[test]

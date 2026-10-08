@@ -1001,9 +1001,10 @@ class Tick:
     `frame` counts the ticks, and `time` and `dt` are in seconds: `dt` is
     the time since the tick before, 1/60 for the first tick unless a timestep
     pins it.
-    `params` holds the params that changed, each value as a scene file
-    writes it, and a text layer's words as its `text`, such as `title.text`.
-    The first tick holds them all.
+    `params` holds the params that changed, each under its bare name, or as
+    `pass.name` when the bare name sets another param, each value as a scene
+    file writes it, and a text layer's words as its `text`, such as
+    `title.text`. The first tick holds them all.
     """
 
     frame: int

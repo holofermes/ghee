@@ -130,9 +130,10 @@ since the tick before, a quarter second at most, 1/60 for the first tick,
 or the fixed `--timestep`, so the ticks' `D` add up to the time passed,
 skipped frames included, while each tick follows the one before within a
 quarter second. A frame drawn after a drawn frame takes `D` as its
-`iTimeDelta`. `params` holds the params that changed by their bare names,
-each value as a scene file writes it, and a text layer's words as its `text`,
-such as `title.text`. The first tick holds them all, and a value that the
+`iTimeDelta`. `params` holds the params that changed, each under its bare
+name, or as `pass.param` when the bare name sets another param, each value
+as a scene file writes it, and a text layer's words as its `text`, such as
+`title.text`. The first tick holds them all, and a value that the
 process set itself stays out.
 
 Reading stdin paces your process to the render, sleeping when it sleeps.

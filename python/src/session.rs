@@ -220,6 +220,19 @@ impl Index {
         self.wires.get(wire).map(|&k| &self.params[k])
     }
 
+    /// The name that a tick gives the param `name` of pass `pass`, None for
+    /// the scene's: the bare name when it addresses that param, else
+    /// `pass.name`.
+    fn ticked(&self, pass: Option<&str>, name: &str) -> Option<&str> {
+        match (self.wired(name), pass) {
+            (Some(r), _) if r.pass.as_deref() == pass => Some(&r.wire),
+            (_, Some(pass)) => self
+                .wired(&format!("{pass}.{name}"))
+                .map(|r| r.wire.as_str()),
+            _ => None,
+        }
+    }
+
     /// True for a text layer named `name`, false for a layer of another
     /// kind. A layer that the scene lacks is a fault of the caller's.
     pub fn layer(&self, name: &str) -> Outcome<bool> {
@@ -329,9 +342,9 @@ pub struct Session {
     drawn: Option<u64>,
     /// The renderer's text_errors_seq() at the console's last look.
     text_errors: u64,
-    /// The value of each param, by the bare name that the wire gives it, as
-    /// a scene file writes it, and the words of each text layer as its
-    /// `text`, such as `title.text`.
+    /// The value of each param, by the name that a tick gives it, as a scene
+    /// file writes it, and the words of each text layer as its `text`, such
+    /// as `title.text`.
     values: Map<String, Value>,
     /// Each value at the last tick.
     sent: Map<String, Value>,
@@ -348,14 +361,18 @@ pub struct Session {
     grown: bool,
 }
 
-/// The value of each param of `scene`, by the bare name that `index` gives
-/// it, and the words of each text layer as its `text`.
+/// The value of each param of `scene`, by the name that a tick gives it, and
+/// the words of each text layer as its `text`.
 fn param_values(scene: &Scene, index: &Index) -> Map<String, Value> {
     let mut out = Map::new();
     for l in scene.text_layers() {
         out.insert(format!("{}.text", l.name), Value::from(l.text.clone()));
     }
-    for r in index.params.iter().filter(|r| r.wire == r.uniform) {
+    for r in index
+        .params
+        .iter()
+        .filter(|r| index.ticked(r.pass.as_deref(), &r.uniform) == Some(&r.wire))
+    {
         let params = match &r.pass {
             None => Some(&scene.params),
             Some(p) => scene
@@ -1071,18 +1088,14 @@ impl Session {
         self.renderer.set_brightness(level).map_err(refusal)
     }
 
-    /// Hold `value` for the param `name` of `pass`, under its bare name when
-    /// it has one, and as already handed out when `sent`.
+    /// Hold `value` for the param `name` of `pass`, under the name that a
+    /// tick gives it, and as already handed out when `sent`.
     fn held(&mut self, pass: Option<&str>, name: &str, value: Value, sent: bool) {
-        let bare = self
-            .index
-            .wired(name)
-            .is_some_and(|r| r.pass.as_deref() == pass);
-        if bare {
+        if let Some(ticked) = self.index.ticked(pass, name).map(str::to_string) {
             if sent {
-                self.sent.insert(name.to_string(), value.clone());
+                self.sent.insert(ticked.clone(), value.clone());
             }
-            self.values.insert(name.to_string(), value);
+            self.values.insert(ticked, value);
         }
     }
 

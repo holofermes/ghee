@@ -143,20 +143,39 @@ def test_a_tick_hands_the_host_the_params_the_console_set():
             {
                 "name": "main",
                 "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
+                "params": {"tone": {"type": "float", "value": 0.0}},
                 "layers": [{"name": "title", "text": "hi"}],
-            }
+            },
+            {
+                "name": "glow",
+                "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
+                "params": {"tone": {"type": "float", "value": 0.0}},
+            },
         ],
     }
     with ghee.open(doc, width=8, height=8, serve=port) as h:
-        first = {"mood": "calm", "gain": 0.0, "title.text": "hi"}
+        first = {
+            "mood": "calm",
+            "gain": 0.0,
+            "tone": 0.0,
+            "glow.tone": 0.0,
+            "title.text": "hi",
+        }
         assert h.frame()["params"] == first
         assert h.skip()["params"] == {}
         post(port, "/set?name=mood&value=wild")
         post(port, "/set?name=gain&value=0.5")
+        post(port, "/set?pass=glow&name=tone&value=0.75")
         post(port, "/set?layer=title&field=text&value=ho")
-        assert h.frame()["params"] == {"mood": "wild", "gain": 0.5, "title.text": "ho"}
+        assert h.frame()["params"] == {
+            "mood": "wild",
+            "gain": 0.5,
+            "glow.tone": 0.75,
+            "title.text": "ho",
+        }
         h.set_param("mood", "own")
         h.set_param("gain", 0.25)
+        h.set_param("tone", 0.1, pass_="glow")
         h.layers.title.text = "own"
         assert h.frame()["params"] == {}
 

@@ -122,9 +122,10 @@ the ticks' `dt` add up to the time passed while each tick follows the one
 before within a quarter second. A frame drawn after a drawn frame takes `dt`
 as its `iTimeDelta`. `timestep` pins `time` to `frame * S` and
 `dt` to S. `params` holds the params that the console changed since the last
-tick, with their values as a scene file writes them, and a text layer's
-words as its `text`, such as `title.text`. The first tick holds them all,
-and a set from the host itself stays out.
+tick, each under its bare name, or as `pass.name` when the bare name sets
+another param, with their values as a scene file writes them, and a text
+layer's words as its `text`, such as `title.text`. The first tick holds them
+all, and a set from the host itself stays out.
 
 `pixels` reads alpha 255 in every pixel, unless `alpha=True` keeps the alpha
 that the output pass wrote, with the colour premultiplied by it.

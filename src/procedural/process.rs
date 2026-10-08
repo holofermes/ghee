@@ -582,9 +582,9 @@ pub struct SceneProcess {
     /// The names of the scene's layers, which address their live fields as
     /// `layer.field` and `layer.effect.field`, each true for a text layer.
     layers: HashMap<String, bool>,
-    /// The params as they stand, by the bare name that the wire gives each,
-    /// a text layer's words under its name too, each value as a scene file
-    /// writes it, and the last values read by the process.
+    /// The params as they stand, by the name that a tick gives each, a text
+    /// layer's words as its `text` too, each value as a scene file writes
+    /// it, and the last values read by the process.
     values: HashMap<String, Value>,
     sent: HashMap<String, Value>,
     /// Clean ticks from the process, not yet spent on a skip.
@@ -897,8 +897,8 @@ impl SceneProcess {
     /// Index the params of the compiled scene.
     /// The set holds the handshake params, plus any param added by a filter
     /// or a saved value.
-    /// The first tick carries every param that a bare name addresses, and the
-    /// words of each text layer as its `text`.
+    /// The first tick carries every param, and the words of each text layer
+    /// as its `text`.
     pub fn bind(&mut self, scene: &Scene) {
         self.params.clear();
         self.layers = scene
@@ -931,12 +931,27 @@ impl SceneProcess {
                     );
                 }
                 if self.params.contains_key(name) {
+                    if let Some(pass) = pass {
+                        self.values
+                            .insert(format!("{pass}.{name}"), p.value.to_json());
+                    }
                     continue;
                 }
                 self.params
                     .insert(name.clone(), (pass.map(str::to_string), p.ty.clone()));
                 self.values.insert(name.clone(), p.value.to_json());
             }
+        }
+    }
+
+    /// The name that a tick gives the param `name` of pass `pass`, None for
+    /// the scene's: the bare name when it addresses that param, else
+    /// `pass.name`.
+    fn tick_name(&self, pass: Option<&str>, name: &str) -> Option<String> {
+        match (self.params.get(name), pass) {
+            (Some((at, _)), _) if at.as_deref() == pass => Some(name.to_string()),
+            (_, Some(pass)) => Some(format!("{pass}.{name}")),
+            _ => None,
         }
     }
 
@@ -1170,9 +1185,11 @@ impl SceneController for SceneProcess {
             let param = name.rsplit_once('.').map_or(name.as_str(), |(_, p)| p);
             renderer.set_param(pass.as_deref(), param, &ty, &value)?;
             // The process set this value itself, so no tick carries it back.
-            if let Some(held) = self.values.get_mut(&name) {
-                *held = value.to_json();
-                self.sent.insert(name, held.clone());
+            if let Some(ticked) = self.tick_name(pass.as_deref(), param) {
+                if let Some(held) = self.values.get_mut(&ticked) {
+                    *held = value.to_json();
+                    self.sent.insert(ticked, held.clone());
+                }
             }
         }
         // An array message whose name addresses a layer, such as
@@ -1215,12 +1232,8 @@ impl SceneController for SceneProcess {
     }
 
     fn on_param(&mut self, pass: Option<&str>, name: &str, value: &ParamValue) {
-        // A tick names the one param that the bare name addresses.
-        let bare = self
-            .params
-            .get(name)
-            .is_some_and(|(at, _)| at.as_deref() == pass);
-        if let (true, Some(held)) = (bare, self.values.get_mut(name)) {
+        let ticked = self.tick_name(pass, name);
+        if let Some(held) = ticked.and_then(|t| self.values.get_mut(&t)) {
             *held = value.to_json();
         }
     }
@@ -2028,6 +2041,31 @@ sleep 60
             second["params"],
             serde_json::json!({"text": "WOW", "amt": 0.5})
         );
+    }
+
+    /// A process with two passes that each declare the float param `amt`,
+    /// which writes each tick that it reads into ticks.jsonl.
+    const SHARED_NAME: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "passes": [{"name": "first", "params": {"amt": {"type": "float", "value": 0.0}}, "fragment": "void main(){}"}, {"name": "second", "params": {"amt": {"type": "float", "value": 0.25}}, "fragment": "void main(){}"}]}'
+while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
+"#;
+
+    #[test]
+    fn a_tick_names_the_param_of_a_second_pass_that_shares_its_name_as_pass_param() {
+        let d = tmpdir("shared");
+        let path = script(&d, "shared", SHARED_NAME);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        f.tick(0, 0.0, 0.016).unwrap();
+        ticks(&d, 1);
+        f.on_param(Some("second"), "amt", &ParamValue::Float(0.5));
+        f.tick(1, 0.016, 0.016).unwrap();
+        let seen = ticks(&d, 2);
+        assert_eq!(
+            seen[0]["params"],
+            serde_json::json!({"amt": 0.0, "second.amt": 0.25})
+        );
+        assert_eq!(seen[1]["params"], serde_json::json!({"second.amt": 0.5}));
     }
 
     #[test]

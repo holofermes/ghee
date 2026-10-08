@@ -524,8 +524,9 @@ A Rust host written for 0.4.0 needs these changes.
 
 - Carry every param that changed in a tick, each value as a scene file
   writes it, where a tick carried the string params alone, so a float that
-  the console sets reaches the scene's process. The first tick holds every
-  param.
+  the console sets reaches the scene's process. A param goes under its bare
+  name, or as `pass.param` when the bare name sets another param. The first
+  tick holds every param.
 - Carry a text layer's words in a tick's `params` as its `text`, such as
   `title.text`, the name that sets them in message kind 3.
 - Name the cause when a scene's script cannot start, `the file has no #!

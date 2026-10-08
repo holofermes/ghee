@@ -20,6 +20,7 @@
 //! contract between the two.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fs;
 
 use anyhow::{anyhow, bail, Result};
@@ -107,14 +108,11 @@ fn glsl_tokens(glsl: &str) -> Vec<&str> {
     out
 }
 
-/// True when `glsl` defines the function `name`: a type, the name, its
+/// The names of the functions that `glsl` defines: a type, the name, its
 /// parameters in parentheses, then a body.
-fn defines(glsl: &str, name: &str) -> bool {
+fn functions(glsl: &str) -> HashSet<&str> {
     let t = glsl_tokens(glsl);
-    (2..t.len()).any(|k| {
-        if !(is_ident(t[k - 2]) && t[k - 1] == name && t[k] == "(") {
-            return false;
-        }
+    let body = |k: usize| {
         let mut depth = 0;
         let close = t[k..].iter().position(|w| {
             match *w {
@@ -125,7 +123,11 @@ fn defines(glsl: &str, name: &str) -> bool {
             depth == 0
         });
         close.and_then(|c| t.get(k + c + 1)) == Some(&"{")
-    })
+    };
+    (2..t.len())
+        .filter(|&k| is_ident(t[k - 2]) && is_ident(t[k - 1]) && t[k] == "(" && body(k))
+        .map(|k| t[k - 1])
+        .collect()
 }
 
 /// True for a name that ghee declares in every pass for its author to read.
@@ -2559,8 +2561,9 @@ impl Scene {
         // A param that holds no string takes no name of a function in the
         // GLSL that it reaches, and the common block reaches every pass of
         // the scene's own.
-        let common = self.common.as_deref().unwrap_or_default();
-        let in_common = |pass: &Pass, name: &str| pass.filter.is_empty() && defines(common, name);
+        let common = functions(self.common.as_deref().unwrap_or_default());
+        let own: Vec<HashSet<&str>> = self.passes.iter().map(|q| functions(&q.fragment)).collect();
+        let in_common = |pass: &Pass, name: &str| pass.filter.is_empty() && common.contains(name);
         for p in self.params.values().filter(|p| p.ty != "string") {
             let n = p.name.as_str();
             let why = match self.passes.iter().any(|q| in_common(q, n)) {
@@ -2568,19 +2571,20 @@ impl Scene {
                 false => self
                     .passes
                     .iter()
-                    .find(|q| defines(&q.fragment, n))
-                    .map(|q| format!("'{n}' is a function of pass '{}'", q.name)),
+                    .zip(&own)
+                    .find(|(_, f)| f.contains(n))
+                    .map(|(q, _)| format!("'{n}' is a function of pass '{}'", q.name)),
             };
             if let Some(why) = why {
                 return Some(format!("scene param '{n}': {why}"));
             }
         }
-        for pass in &self.passes {
+        for (pass, fns) in self.passes.iter().zip(&own) {
             for p in pass.params.values().filter(|p| p.ty != "string") {
                 let n = p.name.as_str();
                 let why = match () {
                     _ if in_common(pass, n) => format!("'{n}' is a function of the common block"),
-                    _ if defines(&pass.fragment, n) => format!("'{n}' is a function of the pass"),
+                    _ if fns.contains(n) => format!("'{n}' is a function of the pass"),
                     _ => continue,
                 };
                 return Some(format!("param '{n}' in pass '{}': {why}", pass.name));

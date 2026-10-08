@@ -124,6 +124,15 @@ impl Engines {
         (!ns.is_empty()).then_some(Engines { at, ns })
     }
 
+    /// The reading now of a process whose DRM clients open later, with no
+    /// time on any queue.
+    pub fn none_yet() -> Engines {
+        Engines {
+            at: Instant::now(),
+            ns: BTreeMap::new(),
+        }
+    }
+
     /// The queues that ran by this reading.
     pub fn ran(&self) -> impl Iterator<Item = &str> {
         self.ns
@@ -249,6 +258,19 @@ mod tests {
         ] {
             assert_eq!(size(text), bytes, "{text:?}");
         }
+    }
+
+    #[test]
+    fn a_gpu_that_opens_after_the_first_reading_is_busy_from_that_reading() {
+        let start = Engines::none_yet();
+        let now = Engines {
+            at: start.at + std::time::Duration::from_millis(1),
+            ns: BTreeMap::from([("render".to_string(), 250_000)]),
+        };
+        assert_eq!(
+            now.busy_since(&start),
+            BTreeMap::from([("render".to_string(), 25.0)])
+        );
     }
 
     #[test]

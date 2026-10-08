@@ -907,9 +907,10 @@ fn serve_out(out: &[String]) -> Vec<String> {
 
 /// The same summary line, for the end of the console's render.
 fn serve_stats() -> server::StatsHook {
-    let start = usage::Engines::read();
+    // The console opens its GL after this, so its queues start at 0 here.
+    let start = usage::Engines::read().unwrap_or_else(usage::Engines::none_yet);
     Box::new(move |times, wall, out| {
-        print_stats(times, wall, &serve_out(out), &usage_now(start.as_ref()))
+        print_stats(times, wall, &serve_out(out), &usage_now(Some(&start)))
     })
 }
 

@@ -265,7 +265,7 @@ fn is_scheme(s: &str) -> bool {
 /// key.
 ///
 /// A field with a blank value is dropped, so `?value=` carries no value. A `%`
-/// that two hex digits do not follow is a 400.
+/// without two hex digits after it answers 400.
 pub fn parse_query(qs: &str) -> ConsoleResult<Query> {
     let mut out = Query::new();
     for field in qs.split('&').filter(|f| !f.is_empty()) {

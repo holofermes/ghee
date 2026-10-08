@@ -635,7 +635,8 @@ impl<'a> Loop<'a> {
     /// Hand the controller this iteration, drawn or skipped. Its dt is the
     /// pinned step, else `since`, the time since the last tick, which MAX_DT
     /// caps, else the engine's first 1/60, so the ticks' dt add up to the
-    /// time passed. A frame drawn after a drawn one draws with that dt.
+    /// time passed while no gap passes MAX_DT. A frame drawn after a drawn
+    /// one draws with that dt.
     fn tick_controller(&mut self, t: f64, since: Option<f64>) -> Result<()> {
         let Some(cell) = self.controller else {
             return Ok(());

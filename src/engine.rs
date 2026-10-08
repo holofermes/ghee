@@ -5394,9 +5394,9 @@ mod tests {
     }
 
     /// The memory is the sum of the `drm-total-*` keys in the fdinfo of the
-    /// GL's DRM descriptor. NVIDIA's driver writes none, and a host on it
-    /// runs the tests under `--cfg ghee_no_gpu_memory`, which reports this
-    /// one as ignored.
+    /// GL's DRM descriptor. vc4 and NVIDIA's driver write none, and a host on
+    /// either runs the tests under `--cfg ghee_no_gpu_memory`, which reports
+    /// this one as ignored.
     #[test]
     #[cfg_attr(
         any(ghee_no_gpu, ghee_no_gpu_memory),

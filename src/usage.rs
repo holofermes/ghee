@@ -124,8 +124,8 @@ impl Engines {
         (!ns.is_empty()).then_some(Engines { at, ns })
     }
 
-    /// The reading now of a process whose DRM clients open later, with no
-    /// time on any queue.
+    /// A reading with no time on any queue, for a process whose GL opens
+    /// later.
     pub fn none_yet() -> Engines {
         Engines {
             at: Instant::now(),

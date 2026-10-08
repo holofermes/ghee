@@ -1121,7 +1121,7 @@ def _live():
 
 def _send(kind: int, wire: str, body, what: str = "") -> None:
     """Queue one message for the tick's answer: `body` the text of kinds 3,
-    6 and 7, or the numbers of kinds 0 and 1, which `what` names in an
+    6, 7 and 8, or the numbers of kinds 0 and 1, which `what` names in an
     error."""
     if isinstance(body, str):
         text = body.encode("utf-8")

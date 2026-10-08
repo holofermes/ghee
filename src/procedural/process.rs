@@ -807,8 +807,8 @@ impl SceneProcess {
 
     /// Give the layers of a kind 8 message their looks, `text` its JSON. The
     /// looks that draw::call_of() reads go to the renderer as calls, at
-    /// once, and the renderer gives each call that it leaves, and each
-    /// other look, its look as kind 7 does.
+    /// once, and each call that the renderer leaves, and each other look,
+    /// takes its look as kind 7 gives it, in the order of the list.
     fn update_layers(&mut self, renderer: &mut dyn RenderTarget, text: &str) -> Result<()> {
         let looks = match looks_of(text) {
             Ok(looks) => looks,

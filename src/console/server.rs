@@ -2375,6 +2375,14 @@ impl ConsoleHost for RenderLoopHost {
             } else {
                 copy.opened.working = scene.clone();
             }
+            // A new edit of an item set aside answers it, so a save writes
+            // the new edit alone.
+            let edited = copy.edits().items;
+            copy.opened.aside.retain(|a| {
+                !edited
+                    .iter()
+                    .any(|i| i.is(&a.item, a.pass.as_deref(), a.param.as_deref()))
+            });
             copy.generation += 1;
             self.console
                 .command(Command::SceneObj(Box::new(scene), copy.generation));
@@ -3184,6 +3192,33 @@ mod tests {
                 (404, "no such item is set aside".to_string(), None)
             );
         }
+    }
+
+    #[test]
+    fn a_new_edit_of_a_shader_set_aside_answers_it_and_saves_alone() {
+        let mine = "void main(){ gl_FragColor = vec4(0.5); }";
+        let newer = "void main(){ gl_FragColor = vec4(0.25); }";
+        let (d, states, console) = clocks("newer");
+        let file = clocks_file(&d, &states);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let saved = serde_json::json!({"version": 1,
+            "items": [{"item": "fragment", "pass": "main", "base": "0123456789abcdef",
+                       "value": mine}]});
+        fs::write(&file, saved.to_string()).unwrap();
+        let (opened, _) = console.store.open("clocks", None).unwrap();
+        ready(&console, "clocks", opened);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let mut doc = json_of(&ask(&api, "GET", "/scene", "", "").1);
+        doc["passes"][0]["fragment"] = Value::from(newer);
+        let posted = ask(&api, "POST", "/scene", "name=clocks", &doc.to_string());
+        assert_eq!(posted.0, 200, "{}", posted.1);
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(edits["aside"], serde_json::json!([]));
+        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        let written = json_of(&fs::read_to_string(&file).unwrap());
+        let items = written["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{written}");
+        assert_eq!(items[0]["value"], newer);
     }
 
     /// The revision of the scene that a GET /scene answers, from its ETag.

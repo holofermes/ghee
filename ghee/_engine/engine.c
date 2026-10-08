@@ -35,6 +35,7 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <poll.h>
+#include <pthread.h>
 #include <errno.h>
 #include <limits.h>
 #include <sys/mman.h>
@@ -54,8 +55,9 @@
 // Each pass declares MP_MAX_DATATEX array names at most.
 #define MP_MAX_ARRAYS (MP_MAX_PASSES * MP_MAX_DATATEX)
 #define FLIP_STUCK_MS 5000
-// One buffer on the screen, one waiting on a page flip, and one to draw into.
-#define LENT_BUFFERS 3
+// One buffer on the screen, one waiting on a page flip, one waiting for the
+// flip thread, and one to draw into. Without a flip thread, three.
+#define LENT_BUFFERS 4
 // GLES2 guarantees 8 vertex attributes, and VC4 holds no more.
 #define MP_BATCH_ATTRIBS 8
 // GLES2 guarantees 16-bit indices alone, and a quad takes 4 vertices, so a
@@ -271,6 +273,23 @@ struct GheeScene {
     bool disp_blanked;           // the CRTC drives nothing: ghee_mp_present draws nothing
     bool flip_pending;           // a submitted page flip whose event hasn't been reaped
     bool flip_failed;            // a refused flip, reported once instead of every frame
+    // On a host with more than one CPU, the flip thread submits each page
+    // flip and reaps its event, and present queues a frame for it and
+    // returns. A kernel can run a flip's work on the CPU that submitted it,
+    // so the work then waits behind no drawing, and the next frame draws
+    // while the last one waits on the GPU. The thread makes no GL call.
+    // flip_mu guards disp_prev, disp_shown, flip_pending, flip_failed and
+    // everything below while the thread runs.
+    bool flipper;                // the flip thread runs
+    pthread_t flip_thread;
+    pthread_mutex_t flip_mu;
+    pthread_cond_t flip_cv;
+    struct gbm_bo *flip_queued;  // a drawn frame that waits for its flip, NULL for none
+    uint32_t flip_queued_fb;
+    bool flip_stop;
+    struct gbm_bo *flip_freed[LENT_BUFFERS];   // off the glass, for present to release
+    int flip_nfreed;
+    char flip_error[ERROR_BUFFER_SIZE];        // the thread's error, for present to report
     GLuint blit_prog;
     GLint blit_sampler, blit_flip, blit_opaque, blit_turn, blit_shift;
     GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
@@ -333,7 +352,9 @@ void ghee_set_verbosity(int level) { say_level = level; }
 #define SAY(at, ...) do { if (say_level >= (at)) fprintf(stderr, __VA_ARGS__); } while (0)
 
 // Defined further down, beside the present path that they serve.
-static bool wait_flip(GheeScene *g);
+static void settle_flips(GheeScene *g);
+static void stop_flipper(GheeScene *g);
+static bool start_flipper(GheeScene *g, char *eb, size_t n);
 static uint32_t primary_plane(int fd, uint32_t crtc_id);
 static bool plane_scales(GheeScene *g, int width, int height);
 static bool ensure_blit(GheeScene *g);
@@ -865,7 +886,8 @@ static bool lend_buffers(GheeScene *g, char *eb, size_t n) {
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_target =
         (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
     if (!create_image || !image_target) { snprintf(eb, n, "EGL on the GPU cannot import a dma-buf"); return false; }
-    for (int i = 0; i < LENT_BUFFERS; i++) {
+    const int count = g->flipper ? LENT_BUFFERS : LENT_BUFFERS - 1;
+    for (int i = 0; i < count; i++) {
         // The card's driver reads a buffer row by row and knows nothing of the
         // GPU's tiling, so every lent buffer is linear.
         struct gbm_bo *bo = gbm_bo_create(g->gbm, g->out_w, g->out_h, GBM_FORMAT_XRGB8888,
@@ -1024,9 +1046,13 @@ GheeScene *ghee_display_create(int width, int height, const char *dri_device, in
                 width, height, g->disp_mode.hdisplay, g->disp_mode.vdisplay, g->disp_plane);
     }
 
+    // The scaling plane paces on the vblank, with no page flip. On one CPU
+    // a flip's work runs on the drawing CPU wherever it is submitted.
+    g->flipper = !g->disp_plane && sysconf(_SC_NPROCESSORS_ONLN) > 1;
     make_current(g);
     if (g->gpu_fd >= 0 && !lend_buffers(g, eb, sizeof eb)) { if (err) *err = eb; ghee_destroy(g); return NULL; }
     if (!ensure_blit(g)) { if (err) *err = "blit shader failed"; ghee_destroy(g); return NULL; }
+    if (g->flipper && !start_flipper(g, eb, sizeof eb)) { if (err) *err = eb; ghee_destroy(g); return NULL; }
     g->display_mode = true;
     g->disp_first = true;
     return g;
@@ -1039,7 +1065,7 @@ void ghee_destroy(GheeScene *g) {
     const bool have_gl = g->display != EGL_NO_DISPLAY && g->context != EGL_NO_CONTEXT;
     if (have_gl) make_current(g);
     if (g->display_mode) {
-        wait_flip(g);   // reap any in-flight flip before tearing the CRTC down
+        stop_flipper(g);   // reap any in-flight flip before tearing the CRTC down
         if (g->disp_plane && g->disp_saved) {
             // The scaled path set no mode, so destroy puts none back. The plane
             // still points at a buffer about to be freed, so hand it the old
@@ -2491,22 +2517,131 @@ struct gbm_bo *ghee_flip_rotate(struct gbm_bo **prev, struct gbm_bo **shown,
     return freed;
 }
 
-static bool wait_flip(GheeScene *g) {
-    if (!g->flip_pending) return true;
+// Wait for the event of the page flip in flight on `fd`, and reap it. false
+// leaves the reason in err.
+static bool await_flip(int fd, char *err, size_t n) {
     drmEventContext ev = { .version = 2 };
-    struct pollfd pfd = { .fd = g->drm_fd, .events = POLLIN };
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
     for (;;) {
         const int r = poll(&pfd, 1, FLIP_STUCK_MS);
         if (r > 0) {
-            drmHandleEvent(g->drm_fd, &ev);
-            g->flip_pending = false;
+            drmHandleEvent(fd, &ev);
             return true;
         }
-        if (r == 0) { set_error(g, "page flip still not complete after %d ms", FLIP_STUCK_MS); return false; }
+        if (r == 0) { snprintf(err, n, "page flip still not complete after %d ms", FLIP_STUCK_MS); return false; }
         if (errno == EINTR || errno == EAGAIN) continue;
-        set_error(g, "page flip poll failed: %s", strerror(errno));
+        snprintf(err, n, "page flip poll failed: %s", strerror(errno));
         return false;
     }
+}
+
+static bool wait_flip(GheeScene *g) {
+    if (!g->flip_pending) return true;
+    char err[ERROR_BUFFER_SIZE];
+    if (!await_flip(g->drm_fd, err, sizeof err)) {
+        set_error(g, "%s", err);
+        return false;
+    }
+    g->flip_pending = false;
+    return true;
+}
+
+static void flip_lock(GheeScene *g) { if (g->flipper) pthread_mutex_lock(&g->flip_mu); }
+static void flip_unlock(GheeScene *g) { if (g->flipper) pthread_mutex_unlock(&g->flip_mu); }
+
+// Release the buffers that the flip thread took off the glass, and report its
+// error. A window surface's buffers go back on the thread that draws into
+// them. flip_mu held.
+static void take_freed(GheeScene *g) {
+    for (int i = 0; i < g->flip_nfreed; i++) release_bo(g, g->flip_freed[i]);
+    g->flip_nfreed = 0;
+    if (g->flip_error[0]) {
+        set_error(g, "%s", g->flip_error);
+        g->flip_error[0] = '\0';
+    }
+}
+
+static void *flip_main(void *arg) {
+    GheeScene *g = arg;
+    char err[ERROR_BUFFER_SIZE];
+    pthread_mutex_lock(&g->flip_mu);
+    for (;;) {
+        while (!g->flip_queued && !g->flip_pending && !g->flip_stop)
+            pthread_cond_wait(&g->flip_cv, &g->flip_mu);
+        if (g->flip_pending) {
+            pthread_mutex_unlock(&g->flip_mu);
+            const bool reaped = await_flip(g->drm_fd, err, sizeof err);
+            pthread_mutex_lock(&g->flip_mu);
+            g->flip_pending = false;
+            if (!reaped) snprintf(g->flip_error, sizeof g->flip_error, "%s", err);
+            pthread_cond_broadcast(&g->flip_cv);
+            continue;
+        }
+        if (!g->flip_queued) break;
+        struct gbm_bo *bo = g->flip_queued;
+        const uint32_t fb = g->flip_queued_fb;
+        pthread_mutex_unlock(&g->flip_mu);
+        const bool flipped = !drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL);
+        const int e = errno;
+        pthread_mutex_lock(&g->flip_mu);
+        struct gbm_bo *freed = ghee_flip_rotate(&g->disp_prev, &g->disp_shown, bo, flipped);
+        if (freed && g->flip_nfreed < LENT_BUFFERS) g->flip_freed[g->flip_nfreed++] = freed;
+        g->flip_queued = NULL;
+        g->flip_pending = flipped;
+        if (flipped) {
+            g->flip_failed = false;
+        } else if (!g->flip_failed) {   // a refused flip leaves disp_prev on the screen
+            g->flip_failed = true;
+            snprintf(g->flip_error, sizeof g->flip_error, "drmModePageFlip failed: %s%s", strerror(e),
+                     e == EACCES ? ". DRM master went to another process" : "");
+        }
+        pthread_cond_broadcast(&g->flip_cv);
+    }
+    pthread_mutex_unlock(&g->flip_mu);
+    return NULL;
+}
+
+static bool start_flipper(GheeScene *g, char *eb, size_t n) {
+    pthread_mutex_init(&g->flip_mu, NULL);
+    pthread_cond_init(&g->flip_cv, NULL);
+    const int e = pthread_create(&g->flip_thread, NULL, flip_main, g);
+    if (e) {
+        pthread_cond_destroy(&g->flip_cv);
+        pthread_mutex_destroy(&g->flip_mu);
+        g->flipper = false;
+        snprintf(eb, n, "cannot start the flip thread: %s", strerror(e));
+        return false;
+    }
+    return true;
+}
+
+// Wait until no frame waits for its page flip and no flip is in flight.
+static void settle_flips(GheeScene *g) {
+    if (!g->flipper) {
+        wait_flip(g);
+        return;
+    }
+    pthread_mutex_lock(&g->flip_mu);
+    while (g->flip_queued || g->flip_pending) pthread_cond_wait(&g->flip_cv, &g->flip_mu);
+    take_freed(g);
+    pthread_mutex_unlock(&g->flip_mu);
+}
+
+// Flip the queued frame, reap the last flip and end the flip thread.
+static void stop_flipper(GheeScene *g) {
+    if (!g->flipper) {
+        wait_flip(g);
+        return;
+    }
+    pthread_mutex_lock(&g->flip_mu);
+    g->flip_stop = true;
+    pthread_cond_broadcast(&g->flip_cv);
+    pthread_mutex_unlock(&g->flip_mu);
+    pthread_join(g->flip_thread, NULL);
+    take_freed(g);
+    g->flipper = false;
+    pthread_cond_destroy(&g->flip_cv);
+    pthread_mutex_destroy(&g->flip_mu);
 }
 
 // The blit program (present, preview readback, encoder), built on first use.
@@ -2611,7 +2746,7 @@ int ghee_display_blank(GheeScene *g, int blank) {
         g->disp_first = true;
         return 0;
     }
-    wait_flip(g);
+    settle_flips(g);
     if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, 0, 0, 0, NULL, 0, NULL)) {
         set_error(g, "cannot blank the display: %s", strerror(errno));
         return -1;
@@ -2649,11 +2784,15 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         for (int c = 0; c < g->mp_nchan[p]; c++)
             if (g->mp_chan_src[p][c] == last) { direct = false; break; }
     struct gbm_bo *bo = NULL;
+    flip_lock(g);
+    take_freed(g);
     for (int i = 0; i < g->lent_count && !bo; i++)
-        if (g->lent[i].bo != g->disp_prev && g->lent[i].bo != g->disp_shown) {
+        if (g->lent[i].bo != g->disp_prev && g->lent[i].bo != g->disp_shown &&
+            g->lent[i].bo != g->flip_queued) {
             bo = g->lent[i].bo;
             g->scan_fbo = g->lent[i].fbo;
         }
+    flip_unlock(g);
     if (g->lent_count && !bo) { set_error(g, "present: every lent scanout buffer is still on the display"); return; }
     render_passes(g, elapsed_seconds(g), direct);
 
@@ -2696,6 +2835,15 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));
         g->disp_first = false;
         g->disp_prev = bo;               // on the screen now (SetCrtc is immediate)
+    } else if (g->flipper) {
+        // The frame before waits for the flip in flight, and this one waits
+        // for it.
+        pthread_mutex_lock(&g->flip_mu);
+        while (g->flip_queued) pthread_cond_wait(&g->flip_cv, &g->flip_mu);
+        g->flip_queued = bo;
+        g->flip_queued_fb = fb;
+        pthread_cond_broadcast(&g->flip_cv);
+        pthread_mutex_unlock(&g->flip_mu);
     } else {
         const bool waited = wait_flip(g);
         const bool flipped =
@@ -2705,10 +2853,10 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         if (flipped) {
             g->flip_pending = true;
             g->flip_failed = false;
-            // The kernel can queue the flip's work on this CPU, where it
-            // waits until this thread blocks, and a host busy with its next
-            // frame holds the CPU for milliseconds. A yield starts that
-            // work now.
+            // The kernel queues the flip's work on this CPU, the only one,
+            // where it waits until this thread blocks, and a host busy with
+            // its next frame holds the CPU for milliseconds. A yield starts
+            // that work now.
             sched_yield();
         } else if (waited && !g->flip_failed) {  // a refused flip leaves disp_prev on the screen
             g->flip_failed = true;

@@ -4789,6 +4789,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        any(ghee_no_gpu, not(ghee_display)),
+        ignore = "needs a GL device and a connected display"
+    )]
+    fn a_display_presents_frames_back_to_back_through_a_blank_with_no_error() {
+        let _g = lock();
+        let (dev, w, h) = probe_display_device(None).expect("no connected display");
+        let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
+        assert_eq!(
+            r.setup(&scene_of(json!([{"name": "main", "fragment": FLAT}])))
+                .unwrap(),
+            ""
+        );
+        for _ in 0..30 {
+            r.present(None, None).unwrap();
+        }
+        r.blank(true).unwrap();
+        r.blank(false).unwrap();
+        for _ in 0..30 {
+            r.present(None, None).unwrap();
+        }
+        assert_eq!(r.last_error(), "");
+    }
+
+    #[test]
     fn a_present_frees_the_buffer_that_an_accepted_flip_takes_off_the_glass() {
         let [a, b, c] = [1, 2, 3].map(ptr::without_provenance_mut::<c_void>);
         let (mut prev, mut shown) = (a, b);

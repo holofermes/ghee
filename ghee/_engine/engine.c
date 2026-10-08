@@ -342,12 +342,15 @@ static void set_error(GheeScene *g, const char *fmt, ...) {
 }
 
 // A compile or link log goes to the caller unprinted: the caller names the
-// pass and the author's line in it, and reports it once.
+// pass and the author's line in it, and reports it once. A GL log ends with
+// a newline, which the error drops.
 static void set_shader_error(GheeScene *g, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     keep_error(g, fmt, ap);
     va_end(ap);
+    size_t n = strlen(g->last_error);
+    while (n > 0 && strchr(" \t\r\n", g->last_error[n - 1])) g->last_error[--n] = '\0';
 }
 
 // Make this instance's GL context current. Required at the top of every public

@@ -73,6 +73,7 @@ fn a_compile_error_prints_once_naming_the_pass_and_the_authors_line() {
         .strip_prefix("compile error: pass 'main', line 3 of its code: ")
         .unwrap_or_else(|| panic!("{err}"));
     assert!(!log.contains("compile error"), "{err}");
+    assert_eq!(log, format!("{}\n", log.trim_end()), "{err:?}");
 }
 
 #[test]

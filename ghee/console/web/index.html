@@ -2531,7 +2531,7 @@ async function sceneMoved(from){
   if (moving || from !== active) return;
   moving = true;
   try {
-    clearTimeout(compileTimer);
+    clearTimeout(compileTimer); compileTimer = null;
     const s = await jget("/scenes");
     procedural = s.procedural;
     await loadScene(s.active, false);

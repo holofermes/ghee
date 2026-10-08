@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ghee-render"
-description = "GLSL scene renderer for headless GPUs. Renders to SPI/I2C panels, KMS scanout, files, and H264."
+description = "GLSL scene renderer for headless GPUs. Renders to KMS displays (HDMI, SPI/I2C panels), files, and H264."
 readme = "README.md"
 license = "MIT"
 # maturin takes license files from python/ only: these two link to the files

@@ -106,8 +106,8 @@ impl Held<'_> {
     }
 }
 
-/// A Python value as JSON. A param value and the driver options travel this
-/// way.
+/// A Python value as JSON. A param value and the display options travel
+/// this way.
 fn to_json(v: &Bound<'_, PyAny>) -> PyResult<Value> {
     if v.is_none() {
         return Ok(Value::Null);

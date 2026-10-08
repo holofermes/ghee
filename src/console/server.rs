@@ -3,7 +3,7 @@
 //! A host is the program that runs the renderer: the `ghee` command, or a
 //! program that embedded it. The host runs a render loop (looper), one
 //! thread that draws every frame and hands it to the host's sinks: the
-//! display, a panel, files. This module attaches the console to that loop.
+//! display, files, a pipe. This module attaches the console to that loop.
 //!
 //! The console serves the HTTP API (`docs/http.md`) and the web page on a
 //! thread of its own. A request handler never touches the renderer: it
@@ -440,15 +440,13 @@ pub struct Console {
     pub brightness: Option<f64>,
     /// The longest side of the browser preview. The encoder thread downscales it.
     pub preview_max: i32,
-    /// The browser preview refresh cap. The display and the panel stay at full
-    /// speed.
+    /// The browser preview refresh cap. The display stays at full speed.
     pub preview_fps: f64,
     /// The cap on the h264 stream's longest side. 0 means full size.
     pub stream_max: i32,
     pub stream_hz: i32,
     pub bitrate: i64,
-    /// The frame components the renderer reads back. A panel that packs RGB asks
-    /// for 3.
+    /// The frame components the renderer reads back: 3 for RGB, 4 for RGBA.
     pub components: i32,
     /// The readback keeps the output pass's alpha.
     pub alpha: bool,
@@ -833,8 +831,8 @@ pub fn stop() {
 
 /// Encode the preview JPEGs, off the render thread. The render loop drops its
 /// readback here. This downscales only a frame another consumer sized, so the
-/// display and the panel never wait. Raw frames also feed the h264 path, but a
-/// JPEG needs an attached viewer.
+/// display never waits. Raw frames also feed the h264 path, but a JPEG needs
+/// an attached viewer.
 pub fn encoder_loop(console: &Console) {
     let mut last_seq = u64::MAX;
     while !console.stopping() {
@@ -1440,7 +1438,7 @@ impl Output for ConsoleSink {
 
     fn wants(&self, _frame: u64) -> bool {
         // Refresh the browser preview at preview_fps at most, and only while a
-        // viewer watches. The display and the panel still render every frame.
+        // viewer watches. The display still renders every frame.
         // The software encoder has its own cadence (H264_FPS). The fastest
         // active consumer wins.
         if self.console.shot.wants() {
@@ -2092,7 +2090,7 @@ fn publish_text_errors(console: &Console, renderer: &Renderer, seen: &Cell<u64>)
 ///
 /// GL is thread-affine, so the caller creates the Renderer on the thread that
 /// calls this. The sinks belong to the caller, and this draws to them from
-/// here. A driver bound to the calling thread works as a sink.
+/// here.
 pub fn render_loop(
     console: &Arc<Console>,
     renderer: Rc<RefCell<Renderer>>,

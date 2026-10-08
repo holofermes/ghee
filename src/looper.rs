@@ -1,6 +1,6 @@
 //! One loop for everything ghee renders. It draws a frame and hands it to
-//! its sinks: an image file, a pipe, a panel, KMS scanout, H264, the
-//! browser console, several at once. Each sink declares what it needs from
+//! its sinks: an image file, a pipe, KMS scanout, H264, the browser
+//! console, several at once. Each sink declares what it needs from
 //! a frame (Output).
 //!
 //! GL is thread-affine, so the renderer belongs to the thread that runs the
@@ -577,7 +577,7 @@ impl<'a> Loop<'a> {
         }
         let drew = self.draw_frame(scanout, t)?;
         if !*lit {
-            // the panel now holds a frame to light
+            // the display now holds a frame to light
             *lit = true;
             for s in self.sinks.iter_mut() {
                 s.turn_on()?;

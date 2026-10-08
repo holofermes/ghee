@@ -2,7 +2,7 @@
 name = "ghee"
 version = "0.4.1-dev"
 edition = "2021"
-description = "GLSL scene renderer for headless GPUs. Renders to SPI/I2C panels, KMS scanout, files, and H264."
+description = "GLSL scene renderer for headless GPUs. Renders to KMS displays (HDMI, SPI/I2C panels), files, and H264."
 license = "MIT"
 repository = "https://github.com/holofermes/ghee"
 

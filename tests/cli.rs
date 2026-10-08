@@ -70,7 +70,7 @@ fn a_compile_error_prints_once_naming_the_pass_and_the_authors_line() {
     let err = String::from_utf8(out.stderr).unwrap();
     // Nothing ahead of it, and one copy of the GL's log.
     let log = err
-        .strip_prefix("compile error: pass 'main', line 3 of its code: ")
+        .strip_prefix("compile error: pass 'main', line 3 of its fragment: ")
         .unwrap_or_else(|| panic!("{err}"));
     assert!(!log.contains("compile error"), "{err}");
     assert_eq!(log, format!("{}\n", log.trim_end()), "{err:?}");

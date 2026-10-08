@@ -1409,7 +1409,7 @@ impl Renderer {
                 let pass = format!("pass '{}'", p.name);
                 self.error = match (line, in_common) {
                     (Some(n), true) => format!("{pass}, line {n} of the common block: {err}"),
-                    (Some(n), false) => format!("{pass}, line {n} of its code: {err}"),
+                    (Some(n), false) => format!("{pass}, line {n} of its fragment: {err}"),
                     // The engine's own errors about a pass open with its name.
                     (None, _) if err.starts_with(&pass) => err,
                     (None, _) => format!("{pass}: {err}"),
@@ -6031,7 +6031,7 @@ mod tests {
         let e = r.setup(&sc).unwrap();
         // The GL's own log follows, once.
         let log = e
-            .strip_prefix("pass 'b', line 3 of its code: ")
+            .strip_prefix("pass 'b', line 3 of its fragment: ")
             .unwrap_or_else(|| panic!("{e}"));
         assert!(log.contains("nope") && !log.contains("pass '"), "{e}");
         assert_eq!(r.error_pass, Some(ErrorPass::Index(1)));

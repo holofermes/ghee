@@ -177,10 +177,10 @@ A scene written for 0.4.0 needs these changes.
   a side on a VC4, with an error that names it, its size and the GPU's,
   where the GPU took no texture and the pass read black.
 - Name the pass and the line of the author's GLSL in a compile error, as
-  `pass 'main', line 2 of its code:` or `line 2 of the common block`, ahead of
-  the GL's own message, on Mesa's GL and on NVIDIA's alike, and print the
-  error once, with no blank line after it, where it printed the GL's log
-  twice with a line number in the assembled shader.
+  `pass 'main', line 2 of its fragment:` or `line 2 of the common block`,
+  ahead of the GL's own message, on Mesa's GL and on NVIDIA's alike, and
+  print the error once, with no blank line after it, where it printed the
+  GL's log twice with a line number in the assembled shader.
 - Put `compile error:` ahead of a GLSL compile or link error alone, in
   `ghee render` and `ghee.open`, where every scene that ghee refused carried
   it, and mark such an error with `Renderer::compile_error` in Rust.

@@ -166,8 +166,8 @@ points to its pass. A key one edit from a key of its own object points there
 first, so a scene's `"filter"` points to `filters`.
 
 When GLSL fails to compile, `ghee render` stops with an error. The error opens
-with the pass and the line of its code that holds the mistake, as in
-`pass 'main', line 2 of its code:`, and the GL's own message follows. A
+with the pass and the line of its fragment that holds the mistake, as in
+`pass 'main', line 2 of its fragment:`, and the GL's own message follows. A
 mistake in the common block reads `line 2 of the common block`.
 
 ghee also looks a scene name up in the directories on `$GHEE_SCENES`, a

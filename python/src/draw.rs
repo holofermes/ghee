@@ -646,7 +646,10 @@ impl Drawing {
             }
         }
         drop(s);
-        let rest = handle.cast::<Handle>()?.borrow_mut().update_calls(&calls);
+        let rest = handle
+            .cast::<Handle>()?
+            .try_borrow_mut()?
+            .update_calls(&calls);
         for (call, &k) in calls.into_iter().zip(&at) {
             batch[k].args = Some(call.args);
         }

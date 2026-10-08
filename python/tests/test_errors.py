@@ -9,6 +9,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 
 import pytest
 from conftest import BROKEN, RED, REPO, scene_file
@@ -310,6 +311,30 @@ def test_a_call_from_another_thread():
         # the handle still works on its own thread
         h.feed("level", [1.0] * 8)
         h.frame()
+
+
+def test_a_drawing_from_another_thread_while_a_frame_renders():
+    with ghee.open(RED, width=8, height=8) as h:
+        h.feed("level", [1.0] * 8)
+        stop = threading.Event()
+
+        def draw():
+            refused = 0
+            while not stop.is_set():
+                try:
+                    h.draw()
+                except RuntimeError:
+                    refused += 1
+            return refused
+
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            drawing = pool.submit(draw)
+            try:
+                for _ in range(20):
+                    h.frame()
+            finally:
+                stop.set()
+            assert drawing.result() > 0
 
 
 def test_a_closed_handle_says_so():

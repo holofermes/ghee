@@ -367,7 +367,7 @@ impl Handle {
     fn draw<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, draw::Drawing>> {
         let py = slf.py();
         let screen = {
-            let mut h = slf.borrow_mut();
+            let mut h = slf.try_borrow_mut()?;
             h.held.get()?;
             match &h.screen {
                 Some(s) => s.clone_ref(py),

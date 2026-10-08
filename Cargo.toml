@@ -20,11 +20,13 @@ depends = "libdrm2, libgbm1, libegl1, libgles2, python3 (>= 3.10)"
 conflicts = "python3-ghee"
 replaces = "python3-ghee"
 # The deb ships the command and the Python package in one. target/pydist
-# holds the unpacked wheel for the target arch, and the release workflow
-# fills it before cargo-deb runs.
+# holds the unpacked wheel for the target arch, target/pywheel the wheel
+# itself, which ghee hands to a scene script from /usr/lib/ghee, and the
+# release workflow fills both before cargo-deb runs.
 assets = [
     ["target/release/ghee", "usr/bin/", "755"],
     ["target/pydist/**/*", "usr/lib/python3/dist-packages/", "644"],
+    ["target/pywheel/*.whl", "usr/lib/ghee/", "644"],
     ["NOTICE", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-DejaVu.txt", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-PixelOperator.txt", "usr/share/doc/ghee/", "644"],

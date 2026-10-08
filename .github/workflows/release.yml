@@ -108,11 +108,13 @@ jobs:
           tools/mksysroot.sh http://deb.debian.org/debian bookworm arm64 sysroots/aarch64
       # Each deb ships the command and the Python package in one:
       # target/pydist holds the unpacked wheel for the arch being built,
-      # and the Cargo.toml asset list sends it to dist-packages.
+      # target/pywheel the wheel itself, and the Cargo.toml asset list sends
+      # them to dist-packages and /usr/lib/ghee.
       - name: armhf deb (ARMv6, one deb for every 32-bit Pi)
         run: |
-          rm -rf target/pydist && mkdir -p target/pydist
+          rm -rf target/pydist target/pywheel && mkdir -p target/pydist target/pywheel
           unzip -q wheels/*linux_armv6l.whl -d target/pydist
+          cp wheels/*linux_armv6l.whl target/pywheel/
           GHEE_SYSROOT="$PWD/sysroots/armv6" \
             CFLAGS_arm_unknown_linux_gnueabihf=-mcpu=arm1176jzf_s \
             cargo zigbuild --release --target arm-unknown-linux-gnueabihf.2.38
@@ -121,17 +123,19 @@ jobs:
           cargo deb --deb-version "$DEB_VERSION" --target arm-unknown-linux-gnueabihf --no-build --no-strip
       - name: arm64 deb
         run: |
-          rm -rf target/pydist && mkdir -p target/pydist
+          rm -rf target/pydist target/pywheel && mkdir -p target/pydist target/pywheel
           unzip -q wheels/*linux_aarch64.whl -d target/pydist
+          cp wheels/*linux_aarch64.whl target/pywheel/
           GHEE_SYSROOT="$PWD/sysroots/aarch64" \
             cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.36
           cargo deb --deb-version "$DEB_VERSION" --target aarch64-unknown-linux-gnu --no-build --no-strip
-      - name: each deb holds the command and the module
+      - name: each deb holds the command, the module and the wheel
         run: |
           for deb in target/*/debian/*.deb; do
             dpkg-deb -c "$deb" | grep -q 'usr/bin/ghee'
             dpkg-deb -c "$deb" | grep -q 'dist-packages/ghee/__init__.py'
             dpkg-deb -c "$deb" | grep -q 'dist-packages/ghee/_native'
+            dpkg-deb -c "$deb" | grep -q 'usr/lib/ghee/ghee_render-'
           done
       - uses: actions/upload-artifact@v4
         with:

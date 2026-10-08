@@ -15,7 +15,8 @@ of Shaders](https://thebookofshaders.com) and
 
 On a Pi, take the deb from the [releases
 page](https://github.com/holofermes/ghee/releases). It installs the `ghee`
-command, and the Python package for the system Python. The deb is the only
+command, the Python package for the system Python, and the package's wheel,
+which ghee hands to a [Python scene](#procedural-scenes). The deb is the only
 install for the 32-bit Pis:
 
 ```

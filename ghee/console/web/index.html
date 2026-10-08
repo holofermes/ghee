@@ -2108,7 +2108,9 @@ function canon(v){
   return JSON.stringify(v);
 }
 async function followScene(){
-  if (following || !work || !work.passes) return;
+  if (!work || !work.passes) return;
+  // the read on its way may predate the change, so the next poll asks again
+  if (following){ layerChanges = null; return; }
   following = true;
   const name = active;
   try {

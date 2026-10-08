@@ -243,9 +243,11 @@ A scene written for 0.4.0 needs these changes.
   the room left. Cache the atlas in `$XDG_CACHE_HOME/ghee/atlas`. New words
   show in their first frame when the atlas holds their glyphs, and otherwise
   the layer keeps its last words on screen until every glyph of the new ones
-  is in. A setup and a render with `--timestep` wait for them. A full atlas
-  draws an error box with an error of its own. A hidden layer builds its
-  atlas when it first shows.
+  is in. A setup and a render with `--timestep` wait for them. A glyph of
+  new words that finds the atlas full takes the room of the glyphs that no
+  words asked for, the preload's or the cache's, and an atlas full of asked
+  glyphs draws an error box with an error of its own. A hidden layer builds
+  its atlas when it first shows.
 - Generate a layer's atlas at the detail of its size, its `font_size` or the
   size that fits its words at setup, rounded up to 32, 48, 64, 96 or 128
   texels per em, and 128 for larger text, so layers of near sizes share one

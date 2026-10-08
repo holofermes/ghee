@@ -670,6 +670,9 @@ A scene written for 0.4.0 needs these changes.
   dialog, where Escape cancels and Enter removes.
 - Answer 400 to a query with a malformed percent escape, `bad query: '%zz'
   is not a percent escape`, where ghee kept the escape as text.
+- Cap a chunked POST body at the limit of one with a Content-Length, with
+  the same 413, `body over the limit of 1048576 bytes`, where ghee read a
+  chunked body whole.
 
 ### Displays and H264
 
@@ -767,6 +770,8 @@ A scene written for 0.4.0 needs these changes.
   host of the console reads `GHEE_SIZE`.
 - Take a `ConsoleResult` from `parse_query`, the 400 for a malformed
   percent escape.
+- Read a POST body with `ConsoleAPI::read_body`, which answers the 413 of
+  `precheck` past the body cap.
 - Tell a `Loop` whether anyone takes its frames with `Loop::watched`, which
   `looper::should_draw` takes as `watched`: while nobody watches, a frame
   draws for a queued command and as the first frame alone.

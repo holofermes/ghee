@@ -753,7 +753,10 @@ fn handle(shared: &Arc<Shared>, api: &ConsoleAPI<Host>, mut request: Request) {
     }
     let mut body: Vec<u8> = Vec::new();
     if method == "POST" {
-        let _ = request.as_reader().read_to_end(&mut body);
+        body = match api.read_body(request.as_reader()) {
+            Ok(body) => body,
+            Err(refused) => return send(request, &refused),
+        };
         if path == "/ping" {
             shared.watchers.ping(query.get("vid").map(String::as_str));
             return send(request, &Response::text(200, "ok"));

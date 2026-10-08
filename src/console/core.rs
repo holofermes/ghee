@@ -7,6 +7,7 @@
 //! ```text
 //! let api = ConsoleAPI::new(MyHost::new()).with_web(true);
 //! let refused = api.precheck(method, path, headers);  // before reading a body
+//! let body = api.read_body(reader)?;                   // a 413 past the cap
 //! let resp = api.dispatch(method, path, query, headers, body);
 //! ```
 //!
@@ -33,6 +34,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::Read;
 use std::sync::Mutex;
 
 use serde_json::{Map, Value};
@@ -685,16 +687,32 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             }
             let n = raw.parse::<u128>().unwrap_or(u128::MAX);
             if n > self.max_body as u128 {
-                return Some(Response::text(
-                    413,
-                    &format!("body of {n} bytes, limit is {}", self.max_body),
-                ));
+                return Some(self.too_large());
             }
         }
         if method == "GET" && self.post_only.iter().any(|p| p == path) {
             return Some(Response::text(405, &format!("{path} is POST only")));
         }
         None
+    }
+
+    /// The body of a POST that precheck() let through, read from `r` up to
+    /// the body cap. A longer body answers the 413 of precheck(), which a
+    /// chunked body, sent with no Content-Length, meets only here.
+    pub fn read_body(&self, r: &mut dyn Read) -> Result<Vec<u8>, Response> {
+        let mut body = Vec::new();
+        let _ = r.take(self.max_body as u64 + 1).read_to_end(&mut body);
+        if body.len() > self.max_body {
+            return Err(self.too_large());
+        }
+        Ok(body)
+    }
+
+    fn too_large(&self) -> Response {
+        Response::text(
+            413,
+            &format!("body over the limit of {} bytes", self.max_body),
+        )
     }
 
     pub fn dispatch(
@@ -2254,7 +2272,7 @@ mod tests {
         ]);
         let r = api.precheck("POST", "/scene", &headers).unwrap();
         assert_eq!(r.status, 413);
-        assert!(body(&r).contains(&MAX_BODY.to_string()));
+        assert_eq!(body(&r), "body over the limit of 1048576 bytes");
         assert_eq!(
             api.dispatch("POST", "/scene", &Query::new(), &headers, b"{}")
                 .status,

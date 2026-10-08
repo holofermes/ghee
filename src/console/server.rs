@@ -2625,7 +2625,10 @@ fn handle(console: &Arc<Console>, api: &ConsoleAPI<RenderLoopHost>, mut request:
     }
     let mut body: Vec<u8> = Vec::new();
     if method == "POST" {
-        let _ = request.as_reader().read_to_end(&mut body);
+        body = match api.read_body(request.as_reader()) {
+            Ok(body) => body,
+            Err(refused) => return send(request, &refused),
+        };
         if path == "/ping" {
             console.viewers.ping(query.get("vid").map(String::as_str));
             return send(request, &Response::text(200, "ok"));
@@ -3794,12 +3797,13 @@ mod tests {
         (out, false)
     }
 
-    /// One raw request through handle(), and the raw answer.
+    /// One raw request through handle(), with a body cap of 10 bytes, and
+    /// the raw answer.
     fn exchange(raw: &'static [u8]) -> String {
         use std::io::Read;
         use std::net::TcpStream;
         let (_d, console) = tmp_console("transport");
-        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console))).with_max_body(10);
         let server = Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         let client = thread::spawn(move || {
@@ -3822,6 +3826,16 @@ mod tests {
             out.ends_with("bad query: '%zz' is not a percent escape"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_chunked_body_past_the_cap_answers_413() {
+        let out = exchange(
+            b"POST /ping HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\
+              Transfer-Encoding: chunked\r\n\r\n6\r\n012345\r\n5\r\n67890\r\n0\r\n\r\n",
+        );
+        assert!(out.starts_with("HTTP/1.1 413"), "{out}");
+        assert!(out.ends_with("body over the limit of 10 bytes"), "{out}");
     }
 
     fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {

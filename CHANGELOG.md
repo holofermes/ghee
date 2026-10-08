@@ -156,6 +156,9 @@ A scene written for 0.4.0 needs these changes.
   units, and names of any length, where the engine took 16 arrays in a scene
   and 8 channels and 4 arrays in a pass, and cut a name past 63 bytes. The
   README states every cap and its error.
+- Refuse an array or an image past the GPU's own texture size, 2048 pixels on
+  a side on a VC4, with an error that names it, its size and the GPU's,
+  where the GPU took no texture and the pass read black.
 - Name the pass and the line of the author's GLSL in a compile error, as
   `pass 'main', line 2 of its code:` or `line 2 of the common block`, ahead of
   the GL's own message, on Mesa's GL and on NVIDIA's alike, and print the

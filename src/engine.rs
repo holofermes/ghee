@@ -53,7 +53,7 @@ use crate::layer::{
     is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer, GLSL_NAME,
 };
 use crate::run::{Candidate, Class, Mode};
-use crate::scene::{ArraySize, Look, ParamValue, Pass, Scene};
+use crate::scene::{ArraySize, Look, ParamValue, Pass, Sampling, Scene};
 use crate::shape::ShapeLayer;
 use crate::text::{self, Fault, Layout};
 
@@ -827,13 +827,16 @@ fn user_line(err: &str, glsl: &str, code: &str, common: Option<&str>) -> (Option
     (Some((line - at).max(1)), false)
 }
 
-/// The refusal of pass `name` with mipmaps at `w` x `h`, on a GPU that
-/// mipmaps a texture of any size when `npot`, and a power-of-two size alone
-/// otherwise.
-fn mip_refusal(name: &str, w: i64, h: i64, npot: bool) -> Option<String> {
+/// The refusal of pass `name` sampled trilinearly at `w` x `h`, on a GPU
+/// that builds a mip chain at any size when `npot`, and at a power-of-two
+/// size alone otherwise.
+fn trilinear_refusal(name: &str, w: i64, h: i64, npot: bool) -> Option<String> {
     let pot = |n: i64| n > 0 && n & (n - 1) == 0;
     (!(npot || pot(w) && pot(h))).then(|| {
-        format!("pass '{name}' takes mipmaps at {w}x{h}, and this GPU mipmaps a power-of-two size alone")
+        format!(
+            "pass '{name}' samples trilinearly at {w}x{h}, and this GPU builds a mip chain \
+             at a power-of-two size alone"
+        )
     })
 }
 
@@ -1161,7 +1164,7 @@ impl Renderer {
 
     /// setup() for an edit of the scene that runs. A pass that same_pass()
     /// finds in the running scene goes on from that pass's buffers, when the
-    /// two have the same size, format and mipmaps.
+    /// two have the same size and format.
     pub(crate) fn rebuild(&mut self, scene: &Scene) -> Result<String> {
         self.build(scene, true)
     }
@@ -1270,10 +1273,10 @@ impl Renderer {
             return Ok(self.error.clone());
         }
         let last = &drawn[n - 1];
-        let npot = self.mipmaps_npot();
-        for p in drawn.iter().filter(|p| p.mipmaps) {
+        let npot = self.trilinear_npot();
+        for p in drawn.iter().filter(|p| p.sampling == Sampling::Trilinear) {
             let (w, h) = p.size_in(frame).unwrap_or(frame);
-            if let Some(e) = mip_refusal(&p.name, w, h, npot) {
+            if let Some(e) = trilinear_refusal(&p.name, w, h, npot) {
                 self.error = e;
                 return Ok(self.error.clone());
             }
@@ -1405,7 +1408,14 @@ impl Renderer {
                     }
                 }
             }
-            if idx >= 0 && p.mipmaps && !unsafe { ffi::ghee_mp_set_pass_mipmaps(self.handle, idx) }
+            let filter = match p.sampling {
+                Sampling::Nearest => ffi::GHEE_FILTER_NEAREST,
+                Sampling::Linear => ffi::GHEE_FILTER_LINEAR,
+                Sampling::Trilinear => ffi::GHEE_FILTER_MIPMAP,
+            };
+            if idx >= 0
+                && filter != ffi::GHEE_FILTER_LINEAR
+                && !unsafe { ffi::ghee_mp_set_pass_sampling(self.handle, idx, filter) }
             {
                 idx = -1;
             }
@@ -4984,9 +4994,9 @@ impl Renderer {
         unsafe { ffi::ghee_data_texture_linear(self.handle) }
     }
 
-    /// True when the GPU mipmaps a pass buffer of any size, false when it
-    /// mipmaps a power-of-two size alone.
-    pub fn mipmaps_npot(&self) -> bool {
+    /// True when the GPU samples a pass buffer of any size trilinearly, false
+    /// when it builds a mip chain at a power-of-two size alone.
+    pub fn trilinear_npot(&self) -> bool {
         unsafe { ffi::ghee_mipmaps_npot(self.handle) }
     }
 
@@ -5761,7 +5771,7 @@ mod tests {
         // what runs after three frames of base, each step a scene and whether
         // it rebuilds, and the frame after the last step
         type Row = (&'static str, Vec<(Value, bool)>, [u8; 3]);
-        let rows: [Row; 9] = [
+        let rows: [Row; 10] = [
             (
                 "a rebuild of the scene as it runs",
                 vec![(base(), true)],
@@ -5793,9 +5803,14 @@ mod tests {
                 [1, 8, 51],
             ),
             (
-                "a rebuild that gives acc mipmaps",
-                vec![(with(0, "mipmaps", true.into()), true)],
-                [1, 8, 51],
+                "a rebuild that samples acc trilinearly",
+                vec![(with(0, "sampling", "trilinear".into()), true)],
+                [4, 8, 51],
+            ),
+            (
+                "a rebuild that samples acc nearest",
+                vec![(with(0, "sampling", "nearest".into()), true)],
+                [4, 8, 51],
             ),
             (
                 "a rebuild without acc, then one with it",
@@ -7374,26 +7389,82 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_takes_mipmaps_at_a_size_that_the_gpu_mipmaps() {
-        assert_eq!(mip_refusal("words", 1024, 512, false), None);
-        assert_eq!(mip_refusal("words", 1, 1, false), None);
-        assert_eq!(mip_refusal("words", 1280, 800, true), None);
+    fn a_pass_samples_trilinearly_at_a_size_that_the_gpu_builds_a_mip_chain_at() {
+        assert_eq!(trilinear_refusal("words", 1024, 512, false), None);
+        assert_eq!(trilinear_refusal("words", 1, 1, false), None);
+        assert_eq!(trilinear_refusal("words", 1280, 800, true), None);
         assert_eq!(
-            mip_refusal("words", 1280, 800, false).as_deref(),
+            trilinear_refusal("words", 1280, 800, false).as_deref(),
             Some(
-                "pass 'words' takes mipmaps at 1280x800, and this GPU mipmaps a \
-                 power-of-two size alone"
+                "pass 'words' samples trilinearly at 1280x800, and this GPU builds a mip \
+                 chain at a power-of-two size alone"
             )
         );
-        assert!(mip_refusal("words", 1024, 800, false).is_some());
+        assert!(trilinear_refusal("words", 1024, 800, false).is_some());
+    }
+
+    /// A 2x1 pass `edge`, a black texel and a white one, sampled by
+    /// `sampling`, and the output pass, which reads it across 4x1 pixels.
+    fn edge_scene(sampling: &str) -> Scene {
+        scene_of(json!([
+            {"name": "edge", "size": [2, 1], "sampling": sampling,
+             "fragment": "void main(){ gl_FragColor = vec4(vec3(step(1.0, gl_FragCoord.x)), 1.0); }"},
+            {"name": "main", "channels": [{"buffer": "edge"}],
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
+        ]))
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_pass_with_nearest_sampling_reads_whole_texels() {
+        let (_g, mut r) = gpu_at(4, 1);
+        let reds = |r: &mut Renderer| {
+            r.set_time(Some(0.0));
+            let f = r.render(None).unwrap().to_vec();
+            (0..4).map(|i| f[i * COMPONENTS]).collect::<Vec<_>>()
+        };
+        // The pixels' centres sit a quarter texel either side of the texels'.
+        assert_eq!(r.setup(&edge_scene("nearest")).unwrap(), "");
+        assert_eq!(reds(&mut r), [0, 0, 255, 255]);
+        // A rebuild hands the pass its buffers, and they sample linearly again.
+        assert_eq!(r.rebuild(&edge_scene("linear")).unwrap(), "");
+        let got = reds(&mut r);
+        assert!(
+            got.iter()
+                .zip([0, 64, 191, 255])
+                .all(|(g, w)| g.abs_diff(w) <= 2),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_last_pass_with_nearest_sampling_keeps_it_through_a_readback_at_twice_its_size() {
+        // main draws a black pixel pair and a white one, then shows big,
+        // which reads main's last frame at twice its width.
+        let sc = scene_of(json!([
+            {"name": "big", "size": [8, 1], "channels": [{"buffer": "main"}],
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
+            {"name": "main", "sampling": "nearest", "channels": [{"buffer": "big"}],
+             "fragment": "void main(){ gl_FragColor = iFrame == 0 \
+                 ? vec4(vec3(step(2.0, gl_FragCoord.x)), 1.0) : texture2D(iChannel0, uv); }"},
+        ]));
+        let (_g, mut r) = gpu_at(4, 1);
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.set_time(Some(0.0));
+        let mut twice = vec![0u8; 8 * 2 * COMPONENTS];
+        r.render_into(None, &mut twice, Some((8, 2))).unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        let reds: Vec<u8> = (0..4).map(|i| f[i * COMPONENTS]).collect();
+        assert_eq!(reds, [0, 0, 255, 255]);
     }
 
     /// A 256x256 pass `check` of one-pixel black and white squares, times
     /// the param `level`, and the output pass, which reads it a quarter
     /// size at the texel centres through `main`'s code.
-    fn checker_scene(mipmaps: bool, main: &str) -> Scene {
+    fn checker_scene(sampling: &str, main: &str) -> Scene {
         scene_of(json!([
-            {"name": "check", "size": [256, 256], "mipmaps": mipmaps,
+            {"name": "check", "size": [256, 256], "sampling": sampling,
              "params": {"level": {"type": "float", "value": 1.0}},
              "fragment": "void main(){ vec2 t = floor(uv * 256.0); \
                       gl_FragColor = vec4(vec3(mod(t.x + t.y, 2.0) * level), 1.0); }"},
@@ -7403,7 +7474,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_pass_with_mipmaps_read_small_reads_its_average() {
+    fn a_pass_sampled_trilinearly_read_small_reads_its_average() {
         let (_g, mut r) = gpu_at(64, 64);
         let read = "void main(){ gl_FragColor = texture2D(iChannel0, uv + 0.5 / 256.0); }";
         let reds = |f: &[u8]| {
@@ -7412,13 +7483,13 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         // Read at a texel centre with no mip chain, the checker gives black.
-        assert_eq!(r.setup(&checker_scene(false, read)).unwrap(), "");
+        assert_eq!(r.setup(&checker_scene("linear", read)).unwrap(), "");
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
         assert!(reds(&f).iter().all(|v| *v == 0.0), "{:?}", &reds(&f)[..8]);
         // Four texels a pixel read from level 2, where each texel averages
         // 16 of the checker's.
-        assert_eq!(r.setup(&checker_scene(true, read)).unwrap(), "");
+        assert_eq!(r.setup(&checker_scene("trilinear", read)).unwrap(), "");
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
         assert!(
@@ -7439,7 +7510,7 @@ mod tests {
                   void main(){ gl_FragColor = texture2D(iChannel0, v_px / iResolution.xy + 0.5 / 256.0); }";
         let batches = [batch("main", fs, Blend::Normal)];
         assert_eq!(
-            r.setup_batches(&checker_scene(true, red), &batches)
+            r.setup_batches(&checker_scene("trilinear", red), &batches)
                 .unwrap(),
             ""
         );

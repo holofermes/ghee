@@ -563,10 +563,18 @@ pub fn diff(defaults: &Value, working: &Value, procedural: bool) -> Edits {
         if !changed.is_empty() {
             values.insert("params".to_string(), Value::Object(changed));
         }
-        for (key, absent) in [("visible", true), ("mipmaps", false)] {
-            let flag = |p: &Value| p.get(key).and_then(Value::as_bool).unwrap_or(absent);
-            if flag(dp) != flag(wp) {
-                values.insert(key.to_string(), Value::from(flag(wp)));
+        for (key, absent) in [
+            ("visible", Value::from(true)),
+            ("sampling", Value::from("linear")),
+        ] {
+            let value = |p: &Value| {
+                p.get(key)
+                    .filter(|v| !v.is_null())
+                    .unwrap_or(&absent)
+                    .clone()
+            };
+            if value(dp) != value(wp) {
+                values.insert(key.to_string(), value(wp));
             }
         }
         for key in ["size", "scale"] {
@@ -838,7 +846,7 @@ fn put_pass(doc: &mut Value, name: &str, v: &Value) -> Vec<String> {
         .as_object()
         .into_iter()
         .flatten()
-        .filter(|(k, _)| ["visible", "size", "scale", "mipmaps"].contains(&k.as_str()))
+        .filter(|(k, _)| ["visible", "size", "scale", "sampling"].contains(&k.as_str()))
         .collect();
     if let (false, Some(p)) = (keys.is_empty(), pass_mut(doc, name)) {
         let mut next = Value::Object(p.clone());
@@ -1063,26 +1071,32 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_s_mipmaps_save_as_true_or_false_and_load_back() {
-        let with = |m: Option<bool>| {
+    fn a_pass_s_sampling_saves_and_loads_back() {
+        let with = |v: Option<&str>| {
             let mut s = clocks();
-            if let Some(m) = m {
-                s["passes"][0]["mipmaps"] = json!(m);
+            if let Some(v) = v {
+                s["passes"][0]["sampling"] = json!(v);
             }
             s
         };
-        let saved = |m: bool| json!({"passes": {"main": {"mipmaps": m}}});
-        // the default's mipmaps, the working copy's, and the saved values
+        let saved = |v: &str| json!({"passes": {"main": {"sampling": v}}});
+        // the default's sampling, the working copy's, and the saved values
         for (d, w, want) in [
-            (None, Some(true), saved(true)),
-            (Some(true), None, saved(false)),
-            (None, Some(false), json!({})),
+            (None, Some("nearest"), saved("nearest")),
+            (None, Some("trilinear"), saved("trilinear")),
+            (Some("trilinear"), None, saved("linear")),
+            (Some("nearest"), Some("trilinear"), saved("trilinear")),
+            (None, Some("linear"), json!({})),
         ] {
             let edits = diff(&with(d), &with(w), false);
             assert_eq!(Value::Object(edits.values.clone()), want, "{d:?} {w:?}");
             let loaded = apply(&with(d), &edits, "clocks").doc;
-            let on = loaded["passes"][0].get("mipmaps").and_then(Value::as_bool);
-            assert_eq!(on.unwrap_or(false), w.unwrap_or(false), "{d:?} {w:?}");
+            let got = loaded["passes"][0].get("sampling").and_then(Value::as_str);
+            assert_eq!(
+                got.unwrap_or("linear"),
+                w.unwrap_or("linear"),
+                "{d:?} {w:?}"
+            );
         }
     }
 }

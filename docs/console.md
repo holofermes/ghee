@@ -13,8 +13,8 @@ holds its API.
 An edit goes into the working copy of the scene that ghee holds, which every
 open page shows. A live field applies as it changes, and every other edit
 reloads into the running renderer. A reload keeps the buffers of a pass that
-keeps its name, size and mipmaps, so a pass that reads itself goes on from its
-last frame, and back to defaults and a switch start every pass from black. The
+keeps its name and size, so a pass that reads itself goes on from its last
+frame, and back to defaults and a switch start every pass from black. The
 working copy lasts until ghee stops, and Save keeps its edits in the scene's
 [state file](#saved-edits).
 
@@ -83,7 +83,7 @@ GLSL:
 
 `values` is a JSON merge patch over the scene by name: `params` holds the
 scene params' values, `passes` each pass's `params`, `visible`, `size`,
-`scale` and `mipmaps`, and `layers` each layer's settings and effects, as a
+`scale` and `sampling`, and `layers` each layer's settings and effects, as a
 layer's JSON holds them. `null` removes a key. `items` holds each edit of code
 or structure whole, with `base`, the hash of the same item in the files that it
 was made against: a pass's `fragment`, `channels` and `layers`, the `common`

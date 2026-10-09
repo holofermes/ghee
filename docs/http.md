@@ -44,9 +44,9 @@ error.
   live field of a layer as `layer.field` or `layer.effect.field`, and
   `layers`, each layer that the program added or gave a look. `gpu` holds
   what the GPU can do, and is empty until the renderer starts:
-  `mipmaps_npot` is true when the GPU mipmaps a pass of any size, and false
-  when a pass with `mipmaps` takes a power-of-two size alone, as on the vc4
-  of a Pi 1 to a Pi 3 and a Zero 2 W.
+  `trilinear_npot` is true when the GPU samples a pass of any size
+  trilinearly, and false when a pass with `"sampling": "trilinear"` takes a
+  power-of-two size alone, as on the vc4 of a Pi 1 to a Pi 3 and a Zero 2 W.
 - `GET /stats?usage=1`: the same, with what the ghee process uses, read
   from files that it may read without root, at this request alone:
   - `rss_mib`: the process's resident set, in MiB.

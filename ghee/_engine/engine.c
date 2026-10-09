@@ -179,7 +179,7 @@ struct GheeScene {
     GLuint mp_tex[MP_MAX_PASSES][2];
     int mp_w[MP_MAX_PASSES], mp_h[MP_MAX_PASSES];   // per-pass buffer size, W,H until set
     int mp_write[MP_MAX_PASSES];
-    bool mp_mip[MP_MAX_PASSES];          // the buffer holds a mip chain, built after each render
+    int mp_filter[MP_MAX_PASSES];        // GHEE_FILTER_*
     int mp_chan_src[MP_MAX_PASSES][MP_MAX_CHANNELS];  // channel -> source pass index, -1 = none
     int mp_nchan[MP_MAX_PASSES];
     struct mp_locs mp_loc[MP_MAX_PASSES];
@@ -197,7 +197,7 @@ struct GheeScene {
     int stage_w[MP_MAX_PASSES], stage_h[MP_MAX_PASSES];
     char stage_name[MP_MAX_PASSES][96];
     bool stage_alpha[MP_MAX_PASSES];
-    bool stage_mip[MP_MAX_PASSES];
+    int stage_filter[MP_MAX_PASSES];
     int stage_from[MP_MAX_PASSES];
 
     // Batches, staged with the passes and committed with them.
@@ -1211,14 +1211,17 @@ static GLuint make_black_texture(void) {
     return tex;
 }
 
-// Sample both buffers of a pass trilinearly, and fill their levels below 0
-// from what they hold, so a read before the pass first renders finds a
-// complete texture.
-static void mp_mip_buffers(GLuint tex[2]) {
+// Sample both buffers of a pass with `filter`, a GHEE_FILTER_*. A mip chain
+// fills its levels below 0 from what the buffers hold, so a read before the
+// pass first renders finds a complete texture.
+static void mp_sample_buffers(GLuint tex[2], int filter) {
+    const GLint mag = filter == GHEE_FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
+    const GLint min = filter == GHEE_FILTER_MIPMAP ? GL_LINEAR_MIPMAP_LINEAR : mag;
     for (int i = 0; i < 2; i++) {
         glBindTexture(GL_TEXTURE_2D, tex[i]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag);
+        if (filter == GHEE_FILTER_MIPMAP) glGenerateMipmap(GL_TEXTURE_2D);
     }
 }
 
@@ -1287,7 +1290,7 @@ int ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, in
     }
     snprintf(g->stage_name[idx], sizeof g->stage_name[idx], "%s", name ? name : "a pass");
     g->stage_alpha[idx] = alpha;
-    g->stage_mip[idx] = false;
+    g->stage_filter[idx] = GHEE_FILTER_LINEAR;
     g->stage_from[idx] = -1;
     g->stage_program[idx] = prog;
     g->stage_w[idx] = g->width;
@@ -1300,8 +1303,8 @@ int ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, in
 // set when it cannot.
 static bool mips_fit(GheeScene *g, int pass, int w, int h) {
     if (g->has_npot || (!(w & (w - 1)) && !(h & (h - 1)))) return true;
-    set_error(g, "%s takes mipmaps at %dx%d, and this GPU mipmaps a power-of-two size alone",
-              g->stage_name[pass], w, h);
+    set_error(g, "%s samples trilinearly at %dx%d, and this GPU builds a mip chain at a "
+              "power-of-two size alone", g->stage_name[pass], w, h);
     return false;
 }
 
@@ -1314,7 +1317,7 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
         set_error(g, "pass %d is not pending, or %dx%d is not a positive size", pass, w, h);
         return false;
     }
-    if (g->stage_mip[pass] && !mips_fit(g, pass, w, h)) return false;
+    if (g->stage_filter[pass] == GHEE_FILTER_MIPMAP && !mips_fit(g, pass, w, h)) return false;
     make_current(g);
     GLuint fbo[2], tex[2];
     if (!mp_make_buffers(g, fbo, tex, w, h, g->stage_alpha[pass], g->stage_program[pass] != 0))
@@ -1324,19 +1327,21 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h) {
     memcpy(g->stage_tex[pass], tex, sizeof tex);
     g->stage_w[pass] = w;
     g->stage_h[pass] = h;
-    if (g->stage_mip[pass]) mp_mip_buffers(tex);
+    mp_sample_buffers(tex, g->stage_filter[pass]);
     return true;
 }
 
-bool ghee_mp_set_pass_mipmaps(GheeScene *g, int pass) {
-    if (pass < 0 || pass >= g->stage_count) {
-        set_error(g, "pass %d is not pending", pass);
+bool ghee_mp_set_pass_sampling(GheeScene *g, int pass, int filter) {
+    if (pass < 0 || pass >= g->stage_count || filter < GHEE_FILTER_NEAREST
+        || filter > GHEE_FILTER_MIPMAP) {
+        set_error(g, "pass %d is not pending, or %d is not a GHEE_FILTER", pass, filter);
         return false;
     }
-    if (!mips_fit(g, pass, g->stage_w[pass], g->stage_h[pass])) return false;
+    if (filter == GHEE_FILTER_MIPMAP && !mips_fit(g, pass, g->stage_w[pass], g->stage_h[pass]))
+        return false;
     make_current(g);
-    mp_mip_buffers(g->stage_tex[pass]);
-    g->stage_mip[pass] = true;
+    mp_sample_buffers(g->stage_tex[pass], filter);
+    g->stage_filter[pass] = filter;
     return true;
 }
 
@@ -1486,12 +1491,13 @@ int ghee_mp_commit(GheeScene *g) {
     for (int p = 0; p < g->stage_count; p++) {
         const int q = g->stage_from[p];
         if (q < 0 || q >= g->mp_count || !g->mp_tex[q][0] || g->mp_w[q] != g->stage_w[p]
-            || g->mp_h[q] != g->stage_h[p] || g->mp_alpha[q] != g->stage_alpha[p]
-            || g->mp_mip[q] != g->stage_mip[p])
+            || g->mp_h[q] != g->stage_h[p] || g->mp_alpha[q] != g->stage_alpha[p])
             continue;
         mp_free_buffers(g->stage_fbo[p], g->stage_tex[p]);
         memcpy(g->stage_fbo[p], g->mp_fbo[q], sizeof g->stage_fbo[p]);
         memcpy(g->stage_tex[p], g->mp_tex[q], sizeof g->stage_tex[p]);
+        if (g->mp_filter[q] != g->stage_filter[p])
+            mp_sample_buffers(g->stage_tex[p], g->stage_filter[p]);
         memset(g->mp_fbo[q], 0, sizeof g->mp_fbo[q]);
         memset(g->mp_tex[q], 0, sizeof g->mp_tex[q]);
         write[p] = g->mp_write[q];
@@ -1507,7 +1513,7 @@ int ghee_mp_commit(GheeScene *g) {
         g->mp_h[p] = g->stage_h[p];
         memcpy(g->mp_name[p], g->stage_name[p], sizeof g->mp_name[p]);
         g->mp_alpha[p] = g->stage_alpha[p];
-        g->mp_mip[p] = g->stage_mip[p];
+        g->mp_filter[p] = g->stage_filter[p];
         g->mp_write[p] = write[p];
         g->mp_nchan[p] = 0;
         g->mp_ndatatex[p] = 0;
@@ -2563,7 +2569,7 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
             mp_bind(g, p, &g->mp_loc[p], vflip, elapsed, true);
         }
         mp_draw_batches(g, p, target, vflip, elapsed);
-        if (g->mp_mip[p] && !direct) {
+        if (g->mp_filter[p] == GHEE_FILTER_MIPMAP && !direct) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, g->mp_tex[p][g->mp_write[p]]);
             glGenerateMipmap(GL_TEXTURE_2D);
@@ -2866,9 +2872,13 @@ static void draw_blit(GheeScene *g, int w, int h) {
     const int ow = g->out_w, oh = g->out_h;
     const bool blocks = ow > 0 && oh > 0 && w >= ow && w % ow == 0 && h % oh == 0 &&
                         w / ow == h / oh;
-    if (blocks) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    GLint mag = GL_LINEAR;
+    if (blocks) {
+        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &mag);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    if (blocks) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    if (blocks) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag);
 }
 
 // Scale the final pass into a small FBO on the GPU. The FBO is kept until the

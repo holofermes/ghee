@@ -81,15 +81,18 @@ int  ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, i
 // size (it feeds readback/scanout), consumers sample any pass through normalized
 // UVs.
 bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h);
-// Give a pending pass a mip chain: after the pass renders each frame, the
-// engine builds the levels below its buffer, and every read of the buffer
-// samples with GL_LINEAR_MIPMAP_LINEAR. A GPU without ghee_mipmaps_npot
-// takes a power-of-two size alone. false with ghee_last_error set on refusal.
-bool ghee_mp_set_pass_mipmaps(GheeScene *g, int pass);
+// Sample a pending pass's buffer with `filter`, a GHEE_FILTER_*, in every
+// read of it, GHEE_FILTER_LINEAR by default. GHEE_FILTER_MIPMAP gives the
+// buffer a mip chain: after the pass renders each frame, the engine builds
+// the levels below it, and a read samples with GL_LINEAR_MIPMAP_LINEAR. A GPU
+// without ghee_mipmaps_npot takes a power-of-two size alone. false with
+// ghee_last_error set on refusal.
+bool ghee_mp_set_pass_sampling(GheeScene *g, int pass, int filter);
 // Hand pending pass `pass` the two buffers of running pass `from` at the
 // commit, with the one that it draws into next, when the two passes have the
-// same size, format and mip chain. The commit frees the pending pass's own.
-// false with ghee_last_error set for an index that names no such pass.
+// same size and format. The buffers take the pending pass's sampling, and the
+// commit frees the pending pass's own. false with ghee_last_error set for an
+// index that names no such pass.
 bool ghee_mp_carry(GheeScene *g, int pass, int from);
 int  ghee_mp_commit(GheeScene *g);   // -> pass count, -1 = nothing pending
 void ghee_mp_abort(GheeScene *g);

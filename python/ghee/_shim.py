@@ -306,8 +306,9 @@ class Pass:
     `size` renders the pass at its own [w, h], and `scale` at a share of the
     frame, one number for both sides or (x, y). A pass takes one of the two.
     The last pass leaves both None, because it feeds the display.
-    `mipmaps` builds the mip chain of the pass's buffer after each frame, so
-    a pass that reads it far smaller than its size samples it smooth.
+    `sampling` reads the pass's buffer "linear", by default, "nearest", or
+    "trilinear", which builds its mip chain after each frame, so a pass that
+    reads it far smaller than its size samples it smooth.
     `fragment` is the pass's GLSL. `layers` paint over the pass's buffer
     after it, in list order. A pass with layers and no fragment starts each
     frame transparent.
@@ -326,7 +327,7 @@ class Pass:
     filter: str = ""
     size: tuple[int, int] | None = None
     layers: list[Layer] = field(default_factory=list)
-    mipmaps: bool = False
+    sampling: Literal["nearest", "linear", "trilinear"] | None = None
     visible: bool = True
     scale: float | tuple[float, float] | None = None
 
@@ -346,8 +347,8 @@ class Pass:
             out["size"] = _plain(self.size)
         if self.scale is not None:
             out["scale"] = _plain(self.scale)
-        if self.mipmaps is not False:
-            out["mipmaps"] = _plain(self.mipmaps)
+        if self.sampling is not None:
+            out["sampling"] = _plain(self.sampling)
         if self.arrays:
             out["arrays"] = [a.to_dict() for a in self.arrays]
         if self.channels:

@@ -1520,7 +1520,7 @@ function passPixels(i){
   const s = Array.isArray(p.scale) ? p.scale : [p.scale, p.scale];
   return f.map((n, k) => Math.max(1, Math.round(n * s[k])));
 }
-const mipsAt = n => ((lastStats || {}).gpu || {}).mipmaps_npot !== false || n.every(v => v > 0 && (v & (v - 1)) === 0);
+const trilinearAt = n => ((lastStats || {}).gpu || {}).trilinear_npot !== false || n.every(v => v > 0 && (v & (v - 1)) === 0);
 let setPop = null, setFrom = null;
 function closeSettings(){
   if (setPop) setPop.remove();
@@ -1570,7 +1570,7 @@ function buildSettings(){
   const px = el("span", "ctl px"), shown = () => {
     const n = passPixels(i);
     px.textContent = n ? n.join("×") : "-";
-    if (tri) tri.disabled = !mipsAt(n);
+    if (tri) tri.disabled = !trilinearAt(n);
   };
   shown();
   size.v.classList.add("col");
@@ -1603,20 +1603,21 @@ function buildSettings(){
     }
     if (fields.childNodes.length) size.v.appendChild(fields);
     const smp = KV("sampling");
-    markKey(smp.kv.firstChild, () => has(passEdit(p.name), "mipmaps"), () => {
+    const sample = m => { if (m && m !== "linear") p.sampling = m; else delete p.sampling; };
+    markKey(smp.kv.firstChild, () => has(passEdit(p.name), "sampling"), () => {
       const q = defPass(p.name);
       if (!q) return;
-      if (q.mipmaps) p.mipmaps = true; else delete p.mipmaps;
+      sample(q.sampling);
       postScene(); buildSettings();
     });
-    const mip = pick(["bilinear", "trilinear"], p.mipmaps ? "trilinear" : "bilinear", m => {
-      if (m === "trilinear") p.mipmaps = true; else delete p.mipmaps;
+    const how = pick(["nearest", "linear", "trilinear"], p.sampling || "linear", m => {
+      sample(m);
       postScene(); buildSettings();
     });
-    mip.setAttribute("aria-label", "sampling");
-    tri = mip.querySelector('option[value="trilinear"]');
+    how.setAttribute("aria-label", "sampling");
+    tri = how.querySelector('option[value="trilinear"]');
     shown();
-    smp.v.appendChild(mip);
+    smp.v.appendChild(how);
     kvs.appendChild(smp.kv);
   }
   paintMarks();

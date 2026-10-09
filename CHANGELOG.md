@@ -140,10 +140,12 @@ A Rust host written for 0.4.0 needs these changes.
   for each.
 - Read the frame's size in `uniform vec3 iOutputResolution` in every pass,
   the size that the last pass renders at, with 1.0 in `z`.
-- Build the mip chain of a pass's buffer after each frame with
-  `"mipmaps": true`, and sample it trilinearly through every channel that
-  reads it, so a buffer read far away and minified stays calm. On a GPU
-  without OES_texture_npot, a pass with mipmaps takes a power-of-two size
+- Pick how every channel that reads a pass samples it with `"sampling"` on
+  the pass: `"nearest"` hands each the nearest pixel whole, `"linear"`, the
+  default, blends the four around the point, and `"trilinear"` builds the
+  mip chain of the pass's buffer after each frame and blends across it, so
+  a buffer read far away and minified stays calm. On a GPU without
+  OES_texture_npot, a pass sampled trilinearly takes a power-of-two size
   alone.
 - Hide a pass with `"visible": false`, which a save keeps. A hidden pass
   draws a copy of the pass before it, or black as the first pass, its layers
@@ -444,7 +446,7 @@ A Rust host written for 0.4.0 needs these changes.
   `height`, or a shape layer with `shape`, `width`, `height`, `border`,
   `border_radius`, `points` and `stroke_width`, in `Scene(assets=...)` and
   `Pass(layers=...)`. A keyword left at None leaves its key to ghee's
-  default. `mipmaps=True` on `ghee.Pass` builds its mip chain, and
+  default. `sampling=` on `ghee.Pass` picks how its readers sample it, and
   `visible=False` hides the pass.
 - Take a scene's and a pass's `params` as a list of `ghee.Param`. Raise
   ValueError for a dict key that differs from its param's name, where the
@@ -767,9 +769,9 @@ A Rust host written for 0.4.0 needs these changes.
   `files changed` keeps the edits.
 - Size a pass in the settings that its gear opens, beside its pencil: the
   size it renders at in pixels, then `output`, pixels or a scale of the
-  frame, applied on release, and its sampling, `bilinear`, or `trilinear`
-  for the pass's `mipmaps`. The settings show the size alone on the last
-  pass, on a filter and on a procedural scene.
+  frame, applied on release, and its `sampling`, `nearest`, `linear` or
+  `trilinear`. The settings show the size alone on the last pass, on a
+  filter and on a procedural scene.
 - Take the effects' fields and defaults, a border's defaults, the live
   fields, what an empty field takes, each shape's keys, the built-in fonts
   and each font's render from `GET /format`, and the device's rows of
@@ -819,9 +821,9 @@ A Rust host written for 0.4.0 needs these changes.
   fails, where ghee handled the part that it had read.
 - Keep the buffers of a pass through a rebuild of the running scene, an
   apply, a hide or a show, a kept edit and a failed compile, while the pass
-  keeps its name, size and mipmaps, so a pass that reads itself goes on from
-  its last frame, where every rebuild started every pass from black. Back to
-  defaults and a switch start every pass from black.
+  keeps its name and size, so a pass that reads itself goes on from its last
+  frame, where every rebuild started every pass from black. Back to defaults
+  and a switch start every pass from black.
 - Lock each param and each live field of a layer in the console from the
   first time that a scene process sets it, and every field of a layer that
   the process adds or gives a look, until the process ends: the page greys
@@ -836,9 +838,9 @@ A Rust host written for 0.4.0 needs these changes.
   down. A tap on a notice or anywhere outside the stack puts it away, and
   `files newer` shows in the stack for 1.4 s after an apply, where it
   replaced apply's label.
-- Say whether the GPU mipmaps a size that is not a power of two in
-  `mipmaps_npot` under `gpu` on `GET /stats`, and grey out `trilinear` in a
-  pass's settings at a size that the GPU cannot mipmap.
+- Say whether the GPU samples a pass trilinearly at a size that is not a
+  power of two in `trilinear_npot` under `gpu` on `GET /stats`, and grey out
+  `trilinear` in a pass's settings at a size where the GPU cannot.
 - Give the degrees of `--rotate` in `rotation` under `display` on
   `GET /stats`, where it read 0 and a pass's settings showed its size in
   pixels with the sides swapped at 90 and 270.
@@ -1026,8 +1028,8 @@ A Rust host written for 0.4.0 needs these changes.
   the emoji font through `ghee::emoji`, CSS's colour names through
   `ghee::css`, and a KMS display's backlight through `ghee::panel`.
 - Ask a `Renderer` for the longest texture side of its GPU with
-  `max_texture_size`, and whether the GPU mipmaps a buffer of any size with
-  `mipmaps_npot`. `Renderer::set_asset` hands the engine one image asset,
+  `max_texture_size`, and whether the GPU samples a pass of any size
+  trilinearly with `trilinear_npot`. `Renderer::set_asset` hands the engine one image asset,
   `set_alpha` keeps the output pass's alpha, `with_layer` reads one layer of
   the scene, and `text_errors_seq` changes whenever `text_errors` does.
   `engine::display_renders` says whether GL on a card runs on the GPU, and
@@ -1041,8 +1043,9 @@ A Rust host written for 0.4.0 needs these changes.
   an added pass may not take. `Asset::decode` decodes an asset's bytes,
   `Asset::to_dict` writes it as a scene declares it, `is_font` tells a font
   and `local_name` gives its name in the code that declares it.
-  `Pass::size_in` gives the size of a pass in a frame, and
-  `Pass::has_fragment` is false for a pass of layers alone.
+  `Pass::size_in` gives the size of a pass in a frame,
+  `Pass::has_fragment` is false for a pass of layers alone, and
+  `Pass::sampling` holds a `scene::Sampling`.
   `scene::no_param` and `no_layer` write the error for a name that the scene
   lacks, and `scene::short_floats` writes each float in its shortest 32-bit
   form.

@@ -75,9 +75,11 @@ this pass blurs at half the frame's size on every screen:
 ```
 
 The last pass ignores a size or a scale, with a warning. A pass samples other
-passes in normalized coordinates. A pass with `"mipmaps": true` builds the mip
-chain of its buffer after each frame, and every channel that reads the buffer
-samples it trilinearly. A buffer drawn small and far away, such as words in
+passes in normalized coordinates, and `"sampling"` on a pass picks how every
+channel that reads it samples it: `"nearest"` hands each the nearest pixel
+whole, `"linear"`, the default, blends the four around the point, and
+`"trilinear"` builds the mip chain of the pass's buffer after each frame and
+blends across it. A buffer drawn small and far away, such as words in
 perspective, then stays calm.
 
 A pass with `"visible": false` is hidden. It draws a copy of the pass before

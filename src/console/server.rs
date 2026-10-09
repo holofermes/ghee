@@ -267,7 +267,7 @@ struct Stat {
 
 /// The /stats `gpu` object: what the renderer's GPU can do.
 pub fn gpu_caps(renderer: &Renderer) -> Value {
-    serde_json::json!({"mipmaps_npot": renderer.mipmaps_npot()})
+    serde_json::json!({"trilinear_npot": renderer.trilinear_npot()})
 }
 
 /// The active scene: the one that the last switch asked for, which an edit
@@ -5557,7 +5557,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn stats_say_whether_the_gpu_mipmaps_a_size_that_is_not_a_power_of_two() {
+    fn stats_say_whether_the_gpu_samples_a_size_that_is_not_a_power_of_two_trilinearly() {
         let d = crate::testing::TempDir::new("console-gpu");
         fs::write(d.join("one.scene.json"), SCENE).unwrap();
         let mut console = Console::new(SceneStore::new(&d, Vec::new()));
@@ -5565,12 +5565,12 @@ mod tests {
         let console = Arc::new(console);
         console.ask("one");
         let renderer = gpu(8, 8);
-        let npot = renderer.mipmaps_npot();
+        let npot = renderer.trilinear_npot();
         let sinks: Vec<Box<dyn Output>> = vec![Box::new(Bound(Rc::new(Cell::new(0))))];
         render_loop(&console, Rc::new(RefCell::new(renderer)), sinks, None, None);
         assert_eq!(
             console.stats()["gpu"],
-            serde_json::json!({"mipmaps_npot": npot})
+            serde_json::json!({"trilinear_npot": npot})
         );
     }
 

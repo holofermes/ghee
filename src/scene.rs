@@ -289,7 +289,7 @@ const SCENE_KEYS: [&str; 6] = ["version", "passes", "filters", "params", "common
 
 /// The keys of a pass.
 pub(crate) const PASS_KEYS: [&str; 11] = [
-    "name", "fragment", "arrays", "channels", "params", "filter", "size", "scale", "mipmaps",
+    "name", "fragment", "arrays", "channels", "params", "filter", "size", "scale", "sampling",
     "layers", "visible",
 ];
 
@@ -1466,6 +1466,30 @@ fn layer_at(pass: &str, k: usize) -> String {
     format!("the {n}{th} layer of pass '{pass}'")
 }
 
+/// How every channel that reads a pass's buffer samples it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sampling {
+    /// The nearest pixel whole.
+    Nearest,
+    /// The four pixels around the point, blended.
+    #[default]
+    Linear,
+    /// The buffer's mip chain, built after the pass renders each frame, blended
+    /// across its two levels nearest the size that the channel reads.
+    Trilinear,
+}
+
+impl Sampling {
+    /// The value of a pass's `sampling` key.
+    pub fn name(self) -> &'static str {
+        match self {
+            Sampling::Nearest => "nearest",
+            Sampling::Linear => "linear",
+            Sampling::Trilinear => "trilinear",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pass {
     pub name: String,
@@ -1486,9 +1510,7 @@ pub struct Pass {
     /// The share of the frame that this pass renders at, as (x, y), None
     /// with a size. size_in() gives the pixels.
     pub scale: Option<(f64, f64)>,
-    /// The pass's buffer holds a mip chain, built after the pass renders each
-    /// frame, and every channel that reads it samples trilinearly.
-    pub mipmaps: bool,
+    pub sampling: Sampling,
     /// Layers drawn into this pass's buffer after its quad, in order.
     pub layers: Vec<Layer>,
     /// False hides the pass: it draws a copy of the pass before it, or black
@@ -1534,7 +1556,7 @@ impl Pass {
             filter: filter.to_string(),
             size,
             scale: None,
-            mipmaps: false,
+            sampling: Sampling::Linear,
             layers: Vec::new(),
             visible: true,
         })
@@ -1672,13 +1694,16 @@ impl Pass {
                 })?)
             }
         };
-        pass.mipmaps = match o.get("mipmaps").filter(|v| !v.is_null()) {
-            None => false,
-            Some(Value::Bool(b)) => *b,
-            Some(v) => bail!(
-                "pass '{name}' mipmaps needs true or false, got {}",
-                py_repr(v)
-            ),
+        let samplings = [Sampling::Nearest, Sampling::Linear, Sampling::Trilinear];
+        pass.sampling = match o.get("sampling").filter(|v| !v.is_null()) {
+            None => Sampling::Linear,
+            Some(v) => match samplings.into_iter().find(|s| v.as_str() == Some(s.name())) {
+                Some(s) => s,
+                None => bail!(
+                    "pass '{name}' sampling needs 'nearest', 'linear' or 'trilinear', got {}",
+                    py_repr(v)
+                ),
+            },
         };
         pass.visible = match o.get("visible").filter(|v| !v.is_null()) {
             None => true,
@@ -1729,8 +1754,8 @@ impl Pass {
             }
             None => {}
         }
-        if self.mipmaps {
-            out.insert("mipmaps".to_string(), Value::from(true));
+        if self.sampling != Sampling::Linear {
+            out.insert("sampling".to_string(), Value::from(self.sampling.name()));
         }
         if !self.arrays.is_empty() {
             out.insert(
@@ -3186,7 +3211,7 @@ impl PassBuilder for Result<Pass> {
             &p.filter,
             Some(Value::from(vec![width, height])),
         )?;
-        sized.mipmaps = p.mipmaps;
+        sized.sampling = p.sampling;
         sized.layers = p.layers;
         Ok(sized)
     }
@@ -3376,15 +3401,17 @@ mod tests {
     }
 
     #[test]
-    fn a_sized_pass_keeps_its_layers_and_mipmaps() {
+    fn a_sized_pass_keeps_its_layers_and_sampling() {
         let mut p = Pass::of("a", GOOD).unwrap();
         p.layers =
             vec![Layer::from_dict("a layer", &json!({"name": "t", "text": "words"})).unwrap()];
-        p.mipmaps = true;
-        let sized = Ok::<Pass, anyhow::Error>(p.clone()).size(8, 4).unwrap();
-        assert_eq!(sized.size, Some((8, 4)));
-        assert_eq!(sized.layers, p.layers);
-        assert!(sized.mipmaps);
+        for sampling in [Sampling::Nearest, Sampling::Trilinear] {
+            p.sampling = sampling;
+            let sized = Ok::<Pass, anyhow::Error>(p.clone()).size(8, 4).unwrap();
+            assert_eq!(sized.size, Some((8, 4)));
+            assert_eq!(sized.layers, p.layers);
+            assert_eq!(sized.sampling, sampling);
+        }
     }
 
     #[test]
@@ -3714,8 +3741,9 @@ mod tests {
                 format!("pass 'm' {scale}, got True"),
             ),
             (
-                pass(json!({"mipmaps": "yes"})),
-                "pass 'm' mipmaps needs true or false, got 'yes'".to_string(),
+                pass(json!({"sampling": "bilinear"})),
+                "pass 'm' sampling needs 'nearest', 'linear' or 'trilinear', got 'bilinear'"
+                    .to_string(),
             ),
             (
                 pass(json!({"visible": "no"})),
@@ -5146,8 +5174,8 @@ mod tests {
         let d = json!({
             "version": 2,
             "passes": [
-                {"name": "a", "fragment": "x", "size": [8, 8], "mipmaps": true},
-                {"name": "b", "fragment": "y", "scale": [1, 0.25],
+                {"name": "a", "fragment": "x", "size": [8, 8], "sampling": "trilinear"},
+                {"name": "b", "fragment": "y", "scale": [1, 0.25], "sampling": "nearest",
                  "arrays": [{"name": "v", "size": 4}, {"name": "m", "size": [3, 5]}],
                  "channels": [{"buffer": "a"}, {"buffer": null}],
                  "params": {"g": {"type": "float", "value": 1, "min": 0, "max": 2, "step": 0.5},
@@ -5170,13 +5198,13 @@ mod tests {
         });
         assert_eq!(
             canon(&Scene::from_dict(&d, None, None).unwrap()),
-            r#"{"version":2,"passes":[{"name":"a","fragment":"x","size":[8,8],"mipmaps":true},{"name":"b","fragment":"y","scale":[1.0,0.25],"arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"on":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v3":{"type":"vec3","value":[1.0,2.0,3.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":"float f(){ return 1.0; }","filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}},"assets":{"stbn":{"file":"stbn.raw","width":64,"height":32,"format":"f32"},"mask":{"file":"mask.raw","width":8,"height":8,"format":"u8","components":4},"logo":{"file":"logo.png","sampling":"linear"},"photo":{"file":"photo.jpg"}}}"#
+            r#"{"version":2,"passes":[{"name":"a","fragment":"x","size":[8,8],"sampling":"trilinear"},{"name":"b","fragment":"y","scale":[1.0,0.25],"sampling":"nearest","arrays":[{"name":"v","size":4},{"name":"m","size":[3,5]}],"channels":[{"buffer":"a"},{"buffer":null}],"params":{"g":{"type":"float","value":1.0,"min":0,"max":2,"step":0.5},"n":{"type":"int","value":3},"on":{"type":"bool","value":true},"c":{"type":"color","value":[1.0,0.0,0.5]},"v2":{"type":"vec2","value":[1.0,2.0]},"v3":{"type":"vec3","value":[1.0,2.0,3.0]},"v4":{"type":"vec4","value":[1.0,2.0,3.0,4.0]},"s":{"type":"string","value":"hi","options":["hi","bye"]}},"filter":"dither"}],"common":"float f(){ return 1.0; }","filters":["dither","dither"],"params":{"S":{"type":"float","value":0.5}},"assets":{"stbn":{"file":"stbn.raw","width":64,"height":32,"format":"f32"},"mask":{"file":"mask.raw","width":8,"height":8,"format":"u8","components":4},"logo":{"file":"logo.png","sampling":"linear"},"photo":{"file":"photo.jpg"}}}"#
         );
         // A null range or option list is no range or option list. to_dict drops
-        // an empty filter mark and a false mipmaps. An absent version takes the
+        // an empty filter mark and linear sampling. An absent version takes the
         // default.
         let sparse = json!({
-            "passes": [{"name": "m", "fragment": "x", "filter": "", "mipmaps": false,
+            "passes": [{"name": "m", "fragment": "x", "filter": "", "sampling": "linear",
                         "params": {"g": {"type": "int", "value": 2.0, "min": null,
                                          "max": null, "step": null, "options": null}}}],
         });

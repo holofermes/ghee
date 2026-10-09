@@ -122,7 +122,7 @@ RECORDED = {
             "visible": False,
             "fragment": "void main(){}",
             "size": [64, 32],
-            "mipmaps": True,
+            "sampling": "trilinear",
             "arrays": [{"name": "bins", "size": 16}, {"name": "mask", "size": [8, 4]}],
         },
         {
@@ -160,7 +160,7 @@ def test_the_scene_json_is_the_recorded_json():
                 name="grid",
                 fragment="void main(){}",
                 size=(64, 32),
-                mipmaps=True,
+                sampling="trilinear",
                 visible=False,
                 arrays=[shim.ArrayInput("bins", 16), shim.ArrayInput("mask", (8, 4))],
             ),

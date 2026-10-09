@@ -186,7 +186,7 @@ def test_the_console_publishes_the_render(served):
     assert stats["active"] == "scene"
     assert stats["error"] == ""
     assert stats["display"] == {"w": 32, "h": 32, "format": "rgba", "rotation": 0}
-    assert isinstance(stats["gpu"]["mipmaps_npot"], bool)
+    assert isinstance(stats["gpu"]["trilinear_npot"], bool)
     assert stats["out"] == []
     assert stats["frames"] == 1
     assert stats["frame_ms"] > 0.0
@@ -235,7 +235,7 @@ def test_the_console_serves_a_shim_scene_as_the_shim_wrote_it(monkeypatch):
             ghee.Pass(
                 "ink",
                 size=(64, 32),
-                mipmaps=True,
+                sampling="trilinear",
                 arrays=[ghee.ArrayInput("level", 4), ghee.ArrayInput("mask", (4, 2))],
                 layers=[
                     ghee.Layer(

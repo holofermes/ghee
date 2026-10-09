@@ -307,13 +307,13 @@
   /* a row that does not fit scrolls sideways, a swipe on touch and a drag
      with the mouse, and fades out at a side where it goes on */
   .strip{min-width:0; display:flex; align-items:center; overflow-x:auto; overflow-y:hidden;
-    scrollbar-width:none; overscroll-behavior-x:contain}
+    scrollbar-width:none; overscroll-behavior-x:contain; --fade:36px}
   .strip::-webkit-scrollbar{display:none}
   .strip>*{flex:none}
   .strip.drag{cursor:grabbing; user-select:none}
-  .strip.mr{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent); mask-image:linear-gradient(to right,#000 calc(100% - 36px),transparent)}
-  .strip.ml{-webkit-mask-image:linear-gradient(to right,transparent,#000 36px); mask-image:linear-gradient(to right,transparent,#000 36px)}
-  .strip.ml.mr{-webkit-mask-image:linear-gradient(to right,transparent,#000 36px,#000 calc(100% - 36px),transparent); mask-image:linear-gradient(to right,transparent,#000 36px,#000 calc(100% - 36px),transparent)}
+  .strip.mr{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - var(--fade)),transparent); mask-image:linear-gradient(to right,#000 calc(100% - var(--fade)),transparent)}
+  .strip.ml{-webkit-mask-image:linear-gradient(to right,transparent,#000 var(--fade)); mask-image:linear-gradient(to right,transparent,#000 var(--fade))}
+  .strip.ml.mr{-webkit-mask-image:linear-gradient(to right,transparent,#000 var(--fade),#000 calc(100% - var(--fade)),transparent); mask-image:linear-gradient(to right,transparent,#000 var(--fade),#000 calc(100% - var(--fade)),transparent)}
   .lstrip{flex:1 1 auto; gap:12px}
   .lstrip .lsp{flex:1 0 0}
   .lhead .tog{display:flex; align-items:baseline; gap:8px; padding:6px 0; background:none; border:0; box-shadow:none; text-align:left; transition:none}
@@ -1354,6 +1354,11 @@ function buildTabs(){
   // the strip's width, and so the scroll it takes, is final once the actions are in
   row.appendChild(acts);
   t.scrollLeft = left;
+  const on = t.querySelector(".tab.active"), a = on && on.getBoundingClientRect(), s = t.getBoundingClientRect();
+  if (a && (a.left < s.left - 1 || a.right > s.right + 1)){
+    const fade = parseFloat(getComputedStyle(t).getPropertyValue("--fade"));
+    t.scrollLeft += a.left < s.left ? a.left - s.left - fade : a.right - s.right + fade;
+  }
   stripFade(t);
 }
 

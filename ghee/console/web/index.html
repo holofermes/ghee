@@ -907,7 +907,7 @@ async function edit(path, scene, q, body){
     const r = await fetch(u, o);
     if (r.ok && scene === active && known != null && seen === reads) known++;
     if (r.status === 409) sceneMoved(scene);
-    else if (r.status === 412){ behind = true; popUp($("#behind")); }
+    else if (r.status === 412) popUp($("#behind"));
     return r;
   } catch (_) {
     return null;
@@ -1006,7 +1006,6 @@ TOASTS.addEventListener("click", e => {
   const n = e.target.closest(".toast");
   if (n && !e.target.closest("button")) putAway(n);
 });
-let behind = false;
 
 // A stale scene is one the server compiled before its files changed: what is
 // rendering is older than what a reload would give. A dead server is the other
@@ -1154,7 +1153,7 @@ function take(got){
 let unread = null;
 async function loadScene(name, own = true){
   if (own) toast($("#moved"), false);
-  behind = false; toast($("#behind"), false);
+  toast($("#behind"), false);
   // a rebuild still to post holds the copy of the scene before
   clearTimeout(compileTimer); compileTimer = null;
   active = name; unread = null;
@@ -1219,7 +1218,7 @@ async function refresh(force = false){
     });
     take(got);
     // a read that this page asked for is the scene as it is now
-    if (force){ postErr = ""; behind = false; toast($("#behind"), false); }
+    if (force){ postErr = ""; toast($("#behind"), false); }
     waiting = kept;
     if (open === COMMON) curPass = hasCommon() ? COMMON : 0;
     else curPass = Math.max(0, (work.passes || []).findIndex(p => p.name === open));
@@ -2801,7 +2800,7 @@ $("#reset").addEventListener("click", async ()=>{
 
 $("#stale button").addEventListener("click", reloadScene);
 // A tap reads the scene and its edits again, and the refused edit is gone.
-$("#behind button").addEventListener("click", ()=>{ behind = false; toast($("#behind"), false); refresh(true); });
+$("#behind button").addEventListener("click", ()=>{ toast($("#behind"), false); refresh(true); });
 
 // scene nav
 $("#prev").addEventListener("click", async ()=>{ const r=await jpost("/prev"); await loadScene(r.active); });
@@ -2958,8 +2957,8 @@ const infoShown = () => {
 };
 // A poll gives up on an answer after 5 s, and the next poll always follows.
 // With no edit of this page's in flight, a revision that moved past the one
-// this page accounts for reads the scene again, unless a stale refusal holds
-// the page.
+// this page accounts for reads the scene again. The stale refusal's notice
+// holds the page as it is while it shows.
 let askedUsage = false;
 const POLL_WAIT_MS = 5000;
 async function poll(){
@@ -2980,7 +2979,7 @@ async function poll(){
     } else if (letGo()) followScene();
     LOCKS = locksOf(s);
     if (canon(LOCKS) !== shownLocks && !inUse() && !busyLayers().length) paintLocks();
-    if (s.rev != null && known != null && s.rev !== known && s.active === active && settled() && !behind) refresh();
+    if (s.rev != null && known != null && s.rev !== known && s.active === active && settled() && $("#behind").hidden) refresh();
     refreshInfo(); applyRotation(); showErrors();
   }catch(_){ pollFails++; }
   finally {

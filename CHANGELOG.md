@@ -750,9 +750,9 @@ A Rust host written for 0.4.0 needs these changes.
   do nothing.
 - Show `this scene changed since you loaded it` when ghee refuses a stale
   edit, and read the scene and its edits again at its `reload`. With no edit
-  in flight, the page reads the scene again when `rev` on `/stats` moves, and
-  leaves alone the layer in use. The `reload` of `files changed` keeps the
-  edits.
+  in flight and that notice put away, the page reads the scene again when
+  `rev` on `/stats` moves, and leaves alone the layer in use. The `reload` of
+  `files changed` keeps the edits.
 - Size a pass in the settings that its gear opens, beside its pencil: the
   size it renders at in pixels, then `output`, pixels or a scale of the
   frame, applied on release, and its sampling, `bilinear`, or `trilinear`

@@ -547,6 +547,32 @@ fn drawn_files(drawn: &[Pass]) -> impl Iterator<Item = &ImageLayer> {
         .filter(|l| l.is_file())
 }
 
+/// Whether a pass whose fragment an edit changed goes on from its buffers.
+const EDITED_FRAGMENT_KEEPS_BUFFERS: bool = true;
+
+/// Whether `now`, the pass of `scene` under the name of `was`, is `was`, the
+/// pass of the running scene `ran` that `scene` edits. A pass that turns into
+/// a filter or out of one is another pass, and so is a pass that took the
+/// fragment of another pass of `ran` that gave it up, as a rename of A to B
+/// and of C to A leaves A.
+fn same_pass(ran: &Scene, was: &Pass, scene: &Scene, now: &Pass) -> bool {
+    if was.filter != now.filter {
+        return false;
+    }
+    if was.fragment == now.fragment {
+        return true;
+    }
+    let gave_up = |o: &Pass| {
+        o.name != was.name
+            && o.fragment == now.fragment
+            && !scene
+                .passes
+                .iter()
+                .any(|p| p.name == o.name && p.fragment == o.fragment)
+    };
+    EDITED_FRAGMENT_KEEPS_BUFFERS && !ran.passes.iter().any(gave_up)
+}
+
 /// The (width, rows) of one array upload, and its data.
 ///
 /// A 1xN array uploads as many values as the feed holds, N at most. A 2D
@@ -1044,6 +1070,19 @@ impl Renderer {
         self.mp.iter().find(|(n, _)| n == name).map(|(_, i)| *i)
     }
 
+    /// The engine index of the running pass that pass `name` of `scene` goes
+    /// on from in a rebuild, None for a pass that starts from black.
+    fn running_pass(&self, scene: &Scene, name: &str) -> Option<c_int> {
+        let ran = self.scene.borrow();
+        let ran = ran.as_ref()?;
+        let was = ran.passes.iter().find(|p| p.name == name)?;
+        let now = scene.passes.iter().find(|p| p.name == name)?;
+        if !same_pass(ran, was, scene, now) {
+            return None;
+        }
+        self.pass_index(name)
+    }
+
     /// Build the scene's passes.
     ///
     /// Returns "" on success. Returns an error string for a compile error, or
@@ -1053,6 +1092,17 @@ impl Renderer {
     /// An error in the scene's common block sets error_pass to Common.
     /// error_line then counts from the start of that block.
     pub fn setup(&mut self, scene: &Scene) -> Result<String> {
+        self.build(scene, false)
+    }
+
+    /// setup() for an edit of the scene that runs. A pass that same_pass()
+    /// finds in the running scene goes on from that pass's buffers, when the
+    /// two have the same size, format and mipmaps.
+    pub(crate) fn rebuild(&mut self, scene: &Scene) -> Result<String> {
+        self.build(scene, true)
+    }
+
+    fn build(&mut self, scene: &Scene, keep: bool) -> Result<String> {
         #[cfg(test)]
         let batches = std::mem::take(&mut self.test_batches);
         self.error = String::new();
@@ -1294,6 +1344,13 @@ impl Renderer {
             if idx >= 0 && p.mipmaps && !unsafe { ffi::ghee_mp_set_pass_mipmaps(self.handle, idx) }
             {
                 idx = -1;
+            }
+            if idx >= 0 && keep {
+                if let Some(from) = self.running_pass(scene, &p.name) {
+                    if !unsafe { ffi::ghee_mp_carry(self.handle, idx, from) } {
+                        idx = -1;
+                    }
+                }
             }
             let shaders: Vec<Option<crate::layer::Shaders>> = p
                 .layers
@@ -5599,6 +5656,123 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_rebuild_goes_on_from_the_last_frame_of_each_pass_that_it_keeps() {
+        // acc adds 1 to its red each frame and two adds 2, so main shows the
+        // frames since each one's buffers were new, acc's in red and two's in
+        // green, and post shows main's alpha, 0.2, in blue.
+        let count = |by: u8| {
+            format!(
+                "void main(){{ gl_FragColor = texture2D(iChannel0, uv) \
+                 + vec4({by}.0 / 255.0, 0.0, 0.0, 0.0); }}"
+            )
+        };
+        let counter = |name: &str, by: u8| {
+            json!({"name": name, "channels": [{"buffer": name}],
+                   "fragment": count(by)})
+        };
+        let main = |a: &str, b: &str| {
+            json!({"name": "main", "channels": [{"buffer": a}, {"buffer": b}],
+                   "fragment": "void main(){ gl_FragColor = vec4(texture2D(iChannel0, uv).r, \
+                                texture2D(iChannel1, uv).r, 0.0, 0.2); }"})
+        };
+        let post = json!({"name": "post", "channels": [{"buffer": "main"}],
+            "fragment": "void main(){ vec4 c = texture2D(iChannel0, uv); \
+                         gl_FragColor = vec4(c.rg, c.a, 1.0); }"});
+        let base = || {
+            json!([
+                counter("acc", 1),
+                counter("two", 2),
+                main("acc", "two"),
+                post
+            ])
+        };
+        let with = |pass: usize, key: &str, value: Value| {
+            let mut d = base();
+            d[pass][key] = value;
+            d
+        };
+        let edited = with(0, "fragment", format!("{} // edited", count(1)).into());
+        let without = json!([counter("two", 2), main("two", "two"), post]);
+        let renamed = json!([
+            counter("was", 1),
+            counter("acc", 2),
+            main("was", "acc"),
+            post
+        ]);
+        // what runs after three frames of base, each step a scene and whether
+        // it rebuilds, and the frame after the last step
+        type Row = (&'static str, Vec<(Value, bool)>, [u8; 3]);
+        let rows: [Row; 9] = [
+            (
+                "a rebuild of the scene as it runs",
+                vec![(base(), true)],
+                [4, 8, 51],
+            ),
+            (
+                "a rebuild that edits acc's fragment",
+                vec![(edited, true)],
+                [4, 8, 51],
+            ),
+            (
+                "a rebuild that hides post, then one that shows it",
+                vec![(with(3, "visible", false.into()), true), (base(), true)],
+                [5, 10, 51],
+            ),
+            (
+                "a setup of the scene as it runs",
+                vec![(base(), false)],
+                [1, 2, 51],
+            ),
+            (
+                "a setup that hides post, then a rebuild that shows it",
+                vec![(with(3, "visible", false.into()), false), (base(), true)],
+                [2, 4, 51],
+            ),
+            (
+                "a rebuild that sizes acc",
+                vec![(with(0, "size", json!([16, 8])), true)],
+                [1, 8, 51],
+            ),
+            (
+                "a rebuild that gives acc mipmaps",
+                vec![(with(0, "mipmaps", true.into()), true)],
+                [1, 8, 51],
+            ),
+            (
+                "a rebuild without acc, then one with it",
+                vec![(without, true), (base(), true)],
+                [1, 10, 51],
+            ),
+            (
+                "a rebuild that renames acc to was and two to acc",
+                vec![(renamed, true)],
+                [1, 2, 51],
+            ),
+        ];
+        let (_g, mut r) = gpu_at(32, 16);
+        let mut wrong = Vec::new();
+        for (what, steps, want) in rows {
+            assert_eq!(r.setup(&scene_of(base())).unwrap(), "");
+            for _ in 0..3 {
+                r.draw(None).unwrap();
+            }
+            let mut frame = Vec::new();
+            for (doc, keep) in steps {
+                let sc = scene_of(doc);
+                let built = if keep { r.rebuild(&sc) } else { r.setup(&sc) };
+                assert_eq!(built.unwrap(), "", "{what}");
+                frame = r.render(None).unwrap().to_vec();
+            }
+            let got = [frame[0], frame[1], frame[2]];
+            if got.iter().zip(want).any(|(g, w)| g.abs_diff(w) > 1) {
+                wrong.push(format!("{what}: drew {got:?} for {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn one_upload_per_array_name() {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([
@@ -5707,7 +5881,7 @@ mod tests {
 
     /// Run `n` rounds of setups on `r`, each of two scenes that draw frames
     /// that nothing reads before the next setup replaces them, as a console
-    /// does between switches.
+    /// does between switches, and of rebuilds, as its edits make them.
     fn setup_rounds(r: &mut Renderer, n: usize) {
         let fed = scene_of(json!([
             {"name": "buf", "fragment": FLAT},
@@ -5716,8 +5890,13 @@ mod tests {
         ]));
         let flat = flat_scene();
         for _ in 0..n {
-            for scene in [&fed, &flat] {
-                assert_eq!(r.setup(scene).unwrap(), "");
+            for (scene, keep) in [(&fed, false), (&fed, true), (&flat, true), (&flat, false)] {
+                let built = if keep {
+                    r.rebuild(scene)
+                } else {
+                    r.setup(scene)
+                };
+                assert_eq!(built.unwrap(), "");
                 r.draw(None).unwrap();
                 r.draw(None).unwrap();
             }

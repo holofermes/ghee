@@ -169,8 +169,8 @@ pub enum Command {
     /// GET /frame.png: arm the still where this item lands in queue order.
     Shot,
     /// A working copy to compile onto the running renderer, with its
-    /// generation.
-    SceneObj(Box<Scene>, u64),
+    /// generation, and true when its passes start from black, as on a reset.
+    SceneObj(Box<Scene>, u64, bool),
     /// Draw one frame, for a stream that just opened or closed.
     Preview,
     Stop,
@@ -1808,7 +1808,10 @@ struct Running {
 
 /// Set `scene`, the scene of the last load, on the renderer. Returns the
 /// compile error, or "" when this scene renders now. A scene that fails to
-/// compile is published all the same, so a page opens it to fix it.
+/// compile is published all the same, so a page opens it to fix it. `keep`
+/// makes `scene` an edit of the running scene: its passes go on from the
+/// running passes' buffers, as the last good scene does when a failure sets it
+/// again.
 fn set_scene(
     console: &Console,
     renderer: &RefCell<Renderer>,
@@ -1816,8 +1819,13 @@ fn set_scene(
     scene: Scene,
     generation: u64,
     snap: Option<Snapshot>,
+    keep: bool,
 ) -> String {
-    let err = match renderer.borrow_mut().setup(&scene) {
+    let built = match keep {
+        true => renderer.borrow_mut().rebuild(&scene),
+        false => renderer.borrow_mut().setup(&scene),
+    };
+    let err = match built {
         Ok(err) => err,
         Err(e) => e.to_string(),
     };
@@ -1835,7 +1843,7 @@ fn set_scene(
             stat.error_pass = renderer.borrow().error_pass;
         }
         if let Some(last) = st.borrow().scene.as_ref() {
-            let _ = renderer.borrow_mut().setup(last); // keep the last good scene rendering
+            let _ = renderer.borrow_mut().rebuild(last); // keep the last good scene rendering
         }
         console.publish(name.as_deref(), generation, &scene);
         return err;
@@ -1873,7 +1881,15 @@ fn load(
             let snap = console.snapshot(read);
             let working = opened.working.clone();
             let generation = console.install(name, opened, vid);
-            let err = set_scene(console, renderer, st, working, generation, Some(snap));
+            let err = set_scene(
+                console,
+                renderer,
+                st,
+                working,
+                generation,
+                Some(snap),
+                false,
+            );
             renderer.borrow().restart_clock();
             if let (Some(f), Some(_)) = (process.as_mut(), console.timestep) {
                 f.pin();
@@ -1936,7 +1952,7 @@ fn drain(
             }
             // in queue order, so the armed frame carries a /set ahead of it
             Command::Shot => console.shot.arm(),
-            Command::SceneObj(scene, generation) => {
+            Command::SceneObj(scene, generation, fresh) => {
                 let mut scene = *scene;
                 // A procedural scene's code owns which layers exist, so an
                 // apply keeps a layer that the code added after the page
@@ -1947,7 +1963,8 @@ fn drain(
                         .scene
                         .as_ref()
                         .is_some_and(|running| keep_layers(&mut scene, running));
-                let built = set_scene(console, renderer, st, scene, generation, None).is_empty();
+                let built =
+                    set_scene(console, renderer, st, scene, generation, None, !fresh).is_empty();
                 // a failed setup sets the last scene up again
                 if let Some(c) = ctrl.borrow_mut().as_mut() {
                     c.rebuilt();
@@ -2449,7 +2466,7 @@ impl ConsoleHost for RenderLoopHost {
             });
             copy.generation += 1;
             self.console
-                .command(Command::SceneObj(Box::new(scene), copy.generation));
+                .command(Command::SceneObj(Box::new(scene), copy.generation, false));
             Ok(())
         })
     }
@@ -2470,7 +2487,7 @@ impl ConsoleHost for RenderLoopHost {
             copy.generation += 1;
             let defaults = Box::new(copy.opened.defaults.clone());
             self.console
-                .command(Command::SceneObj(defaults, copy.generation));
+                .command(Command::SceneObj(defaults, copy.generation, true));
             Ok(())
         })
     }
@@ -2516,7 +2533,7 @@ impl ConsoleHost for RenderLoopHost {
                 copy.generation += 1;
                 let scene = Box::new(copy.opened.working.clone());
                 self.console
-                    .command(Command::SceneObj(scene, copy.generation));
+                    .command(Command::SceneObj(scene, copy.generation, false));
             }
             Ok(())
         })
@@ -4397,7 +4414,7 @@ mod tests {
             renderer.borrow().set_time(Some(0.0));
             renderer.borrow_mut().render(None).unwrap().to_vec()
         };
-        let set = |sc| set_scene(&console, &renderer, &st, sc, 0, None);
+        let set = |sc| set_scene(&console, &renderer, &st, sc, 0, None, false);
         assert_eq!(set(text_scene("I")), "");
         let i = frame();
         opened(&console, "one", text_scene("I"));
@@ -4443,7 +4460,10 @@ mod tests {
         sc.passes[0]
             .params
             .insert("amt".to_string(), Param::float("amt", 0.0));
-        assert_eq!(set_scene(&console, &renderer, &st, sc.clone(), 0, None), "");
+        assert_eq!(
+            set_scene(&console, &renderer, &st, sc.clone(), 0, None, false),
+            ""
+        );
         opened(&console, "one", sc);
         let host = RenderLoopHost::new(Arc::clone(&console));
         host.set_param(Scope::Scene, "gain", Value::from(0.5))
@@ -4519,7 +4539,7 @@ mod tests {
             renderer.borrow().set_time(Some(0.0));
             renderer.borrow_mut().render(None).unwrap().to_vec()
         };
-        let set = |sc| set_scene(&console, &renderer, &st, sc, 0, None);
+        let set = |sc| set_scene(&console, &renderer, &st, sc, 0, None, false);
         assert_eq!(set(placed_scene(2.0)), "");
         let before = frame();
         opened(&console, "one", placed_scene(2.0));
@@ -4789,6 +4809,122 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_feedback_pass_counts_on_through_each_rebuild_and_starts_over_on_a_reset_or_a_switch() {
+        // acc adds 1 to its red each frame, so the red of the frame counts the
+        // frames since acc's buffers were new.
+        let d = crate::testing::TempDir::new("console-count");
+        let copy = "void main(){ gl_FragColor = texture2D(iChannel0, uv); }";
+        let doc = serde_json::json!({"version": 1, "passes": [
+            {"name": "acc", "channels": [{"buffer": "acc"}],
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
+                          + vec4(1.0 / 255.0, 0.0, 0.0, 0.0); }"},
+            {"name": "post", "channels": [{"buffer": "acc"}], "fragment": copy}]});
+        fs::write(d.join("count.scene.json"), doc.to_string()).unwrap();
+        fs::write(d.join("other.scene.json"), SCENE).unwrap();
+        let states = crate::testing::TempDir::new("console-count-states");
+        let mut store = SceneStore::new(&d, Vec::new());
+        store.state_dir = Some(std::path::PathBuf::from(&*states));
+        // a saved edit of post's fragment, made over another default, which
+        // waits for an answer
+        let file = store.state_file("count").unwrap().unwrap();
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let saved = serde_json::json!({"version": 1, "items": [{"item": "fragment",
+            "pass": "post", "base": "0123456789abcdef", "value": format!("{copy} // kept")}]});
+        fs::write(&file, saved.to_string()).unwrap();
+        let console = Arc::new(Console::new(store));
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let renderer = Rc::new(RefCell::new(gpu(16, 8)));
+        let st = Rc::new(RefCell::new(Running::default()));
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let got = Rc::new(RefCell::new(Vec::new()));
+        // One iteration of the console's loop, and the red of its frame.
+        let frame = || {
+            let mut shared = SharedRenderer {
+                renderer: Rc::clone(&renderer),
+                running: Rc::clone(&st),
+            };
+            let mut grab = Grab(Rc::clone(&got));
+            let mut lp = Loop::new(&mut shared, vec![&mut grab]);
+            lp.frames = 1;
+            lp.controller = Some(&ctrl);
+            lp.poll = Some(Box::new(|| drain(&console, &renderer, &st, &ctrl)));
+            lp.run().unwrap();
+            drop(lp);
+            got.borrow()[0]
+        };
+        let doc = || json_of(&ask(&api, "GET", "/scene", "name=count", "").1);
+        let post = |doc: &Value| {
+            let posted = ask(&api, "POST", "/scene", "name=count", &doc.to_string());
+            assert_eq!(posted.0, 200, "{}", posted.1);
+        };
+        let with = |pass: usize, key: &str, value: Value| {
+            let mut d = doc();
+            d["passes"][pass][key] = value;
+            d
+        };
+        api.host.switch(Some("count")).unwrap();
+        let mut count = frame();
+        assert_eq!(count, 1, "the first frame");
+        // what each operation does, and whether acc counts on through it
+        type Counts<'a> = (&'static str, Box<dyn Fn() + 'a>, bool);
+        let ops: Vec<Counts> = vec![
+            (
+                "an apply of the scene as it runs",
+                Box::new(|| post(&doc())),
+                true,
+            ),
+            (
+                "a kept edit that waited for its answer",
+                Box::new(|| {
+                    let q = "name=count&item=fragment&pass=post&answer=keep";
+                    assert_eq!(ask(&api, "POST", "/aside", q, "").0, 200);
+                }),
+                true,
+            ),
+            (
+                "an apply that hides post",
+                Box::new(|| post(&with(1, "visible", false.into()))),
+                true,
+            ),
+            (
+                "an apply that shows post again",
+                Box::new(|| post(&with(1, "visible", true.into()))),
+                true,
+            ),
+            (
+                "an apply that fails to compile",
+                Box::new(|| post(&with(0, "fragment", "void main(){ nope; }".into()))),
+                true,
+            ),
+            (
+                "a reset to the defaults",
+                Box::new(|| assert_eq!(ask(&api, "POST", "/reset", "name=count", "").0, 200)),
+                false,
+            ),
+            (
+                "a switch away and back",
+                Box::new(|| {
+                    api.host.switch(Some("other")).unwrap();
+                    frame();
+                    api.host.switch(Some("count")).unwrap();
+                }),
+                false,
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (op, run, counts_on) in &ops {
+            run();
+            let want = if *counts_on { count + 1 } else { 1 };
+            count = frame();
+            if count != want {
+                wrong.push(format!("{op}: counted {count} for {want}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn posted_words_past_the_texture_keep_the_last_words_and_show_why() {
         let renderer = RefCell::new(gpu(32, 24));
         let (_d, console) = tmp_console("toolong");
@@ -4806,7 +4942,7 @@ mod tests {
             (stats["error"].clone(), stats["text_errors"].clone())
         };
         assert_eq!(
-            set_scene(&console, &renderer, &st, text_scene("O"), 0, None),
+            set_scene(&console, &renderer, &st, text_scene("O"), 0, None, false),
             ""
         );
         let o = frame();
@@ -4864,7 +5000,10 @@ mod tests {
         let (_d, console) = tmp_console("drawn");
         let st = Rc::new(RefCell::new(Running::default()));
         let scene = Scene::from_dict(&serde_json::from_str(SCENE).unwrap(), None, None).unwrap();
-        assert_eq!(set_scene(&console, &renderer, &st, scene, 0, None), "");
+        assert_eq!(
+            set_scene(&console, &renderer, &st, scene, 0, None, false),
+            ""
+        );
         // what a procedural scene's drawing and ticks hand the loop's target
         let mut target = SharedRenderer {
             renderer: Rc::clone(&renderer),
@@ -4975,7 +5114,10 @@ mod tests {
             let st = RefCell::new(Running::default());
             let ctrl: ControllerSlot = RefCell::new(None);
             let running = doc(serde_json::json!([a, b, c]));
-            assert_eq!(set_scene(&console, &renderer, &st, running, 0, None), "");
+            assert_eq!(
+                set_scene(&console, &renderer, &st, running, 0, None, false),
+                ""
+            );
             if code {
                 *ctrl.borrow_mut() = Some(Box::new(Code));
             }
@@ -4983,6 +5125,7 @@ mod tests {
             console.command(Command::SceneObj(
                 Box::new(doc(serde_json::json!([posted]))),
                 0,
+                false,
             ));
             assert!(drain(&console, &renderer, &st, &ctrl));
             assert_eq!(running_layers(&console), floats(&kept), "code {code}");

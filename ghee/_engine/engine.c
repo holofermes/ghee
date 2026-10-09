@@ -198,6 +198,7 @@ struct GheeScene {
     char stage_name[MP_MAX_PASSES][96];
     bool stage_alpha[MP_MAX_PASSES];
     bool stage_mip[MP_MAX_PASSES];
+    int stage_from[MP_MAX_PASSES];
 
     // Batches, staged with the passes and committed with them.
     int mp_nbatch, stage_nbatch;
@@ -1287,6 +1288,7 @@ int ghee_mp_add_pass(GheeScene *g, const char *name, const char *glsl_source, in
     snprintf(g->stage_name[idx], sizeof g->stage_name[idx], "%s", name ? name : "a pass");
     g->stage_alpha[idx] = alpha;
     g->stage_mip[idx] = false;
+    g->stage_from[idx] = -1;
     g->stage_program[idx] = prog;
     g->stage_w[idx] = g->width;
     g->stage_h[idx] = g->height;
@@ -1335,6 +1337,15 @@ bool ghee_mp_set_pass_mipmaps(GheeScene *g, int pass) {
     make_current(g);
     mp_mip_buffers(g->stage_tex[pass]);
     g->stage_mip[pass] = true;
+    return true;
+}
+
+bool ghee_mp_carry(GheeScene *g, int pass, int from) {
+    if (pass < 0 || pass >= g->stage_count || from < 0 || from >= g->mp_count) {
+        set_error(g, "pass %d is not pending, or pass %d is not running", pass, from);
+        return false;
+    }
+    g->stage_from[pass] = from;
     return true;
 }
 
@@ -1465,11 +1476,26 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
 }
 
 // Make the pending passes the scene: the running one is freed and replaced in a
-// single step. Returns the pass count, -1 if nothing was pending (in which case
-// the running scene is left alone).
+// single step, all but the buffers that ghee_mp_carry hands on. Returns the
+// pass count, -1 if nothing was pending (in which case the running scene is
+// left alone).
 int ghee_mp_commit(GheeScene *g) {
     if (g->stage_count <= 0) { set_error(g, "no pending passes to commit"); return -1; }
     make_current(g);
+    int write[MP_MAX_PASSES] = { 0 };
+    for (int p = 0; p < g->stage_count; p++) {
+        const int q = g->stage_from[p];
+        if (q < 0 || q >= g->mp_count || !g->mp_tex[q][0] || g->mp_w[q] != g->stage_w[p]
+            || g->mp_h[q] != g->stage_h[p] || g->mp_alpha[q] != g->stage_alpha[p]
+            || g->mp_mip[q] != g->stage_mip[p])
+            continue;
+        mp_free_buffers(g->stage_fbo[p], g->stage_tex[p]);
+        memcpy(g->stage_fbo[p], g->mp_fbo[q], sizeof g->stage_fbo[p]);
+        memcpy(g->stage_tex[p], g->mp_tex[q], sizeof g->stage_tex[p]);
+        memset(g->mp_fbo[q], 0, sizeof g->mp_fbo[q]);
+        memset(g->mp_tex[q], 0, sizeof g->mp_tex[q]);
+        write[p] = g->mp_write[q];
+    }
     mp_free_passes(g);
     g->black_tex = make_black_texture();
     for (int p = 0; p < g->stage_count; p++) {
@@ -1482,7 +1508,7 @@ int ghee_mp_commit(GheeScene *g) {
         memcpy(g->mp_name[p], g->stage_name[p], sizeof g->mp_name[p]);
         g->mp_alpha[p] = g->stage_alpha[p];
         g->mp_mip[p] = g->stage_mip[p];
-        g->mp_write[p] = 0;
+        g->mp_write[p] = write[p];
         g->mp_nchan[p] = 0;
         g->mp_ndatatex[p] = 0;
         for (int c = 0; c < MP_MAX_CHANNELS; c++) g->mp_chan_src[p][c] = -1;

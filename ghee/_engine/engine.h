@@ -86,6 +86,11 @@ bool ghee_mp_set_pass_size(GheeScene *g, int pass, int w, int h);
 // samples with GL_LINEAR_MIPMAP_LINEAR. A GPU without ghee_mipmaps_npot
 // takes a power-of-two size alone. false with ghee_last_error set on refusal.
 bool ghee_mp_set_pass_mipmaps(GheeScene *g, int pass);
+// Hand pending pass `pass` the two buffers of running pass `from` at the
+// commit, with the one that it draws into next, when the two passes have the
+// same size, format and mip chain. The commit frees the pending pass's own.
+// false with ghee_last_error set for an index that names no such pass.
+bool ghee_mp_carry(GheeScene *g, int pass, int from);
 int  ghee_mp_commit(GheeScene *g);   // -> pass count, -1 = nothing pending
 void ghee_mp_abort(GheeScene *g);
 bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass);

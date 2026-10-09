@@ -805,6 +805,11 @@ A Rust host written for 0.4.0 needs these changes.
   ghee read a chunked body whole.
 - Answer 400 with `bad body:` and the error when the read of a POST body
   fails, where ghee handled the part that it had read.
+- Keep the buffers of a pass through a rebuild of the running scene, an
+  apply, a hide or a show, a kept edit and a failed compile, while the pass
+  keeps its name, size and mipmaps, so a pass that reads itself goes on from
+  its last frame, where every rebuild started every pass from black. Back to
+  defaults and a switch start every pass from black.
 
 ### Displays and H264
 

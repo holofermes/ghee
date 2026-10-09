@@ -87,6 +87,7 @@ extern "C" {
     ) -> c_int;
     pub fn ghee_mp_set_pass_size(g: *mut GheeScene, pass: c_int, w: c_int, h: c_int) -> bool;
     pub fn ghee_mp_set_pass_mipmaps(g: *mut GheeScene, pass: c_int) -> bool;
+    pub fn ghee_mp_carry(g: *mut GheeScene, pass: c_int, from: c_int) -> bool;
     pub fn ghee_mp_commit(g: *mut GheeScene) -> c_int;
     pub fn ghee_mp_abort(g: *mut GheeScene);
     pub fn ghee_mp_set_channel(

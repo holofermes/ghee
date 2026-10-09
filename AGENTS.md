@@ -91,7 +91,7 @@ debs, and the next commit flips to the next `-dev`.
 scene. The console is JSON over HTTP, and `docs/http.md` holds the API.
 
 A Python host takes the third surface: `ghee.open(scene, ...)`, then `feed`,
-`set_param`, `frame` and `skip`. `python/README.md` holds it.
+`set_param`, `frame` and `skip`. `docs/python.md` holds it.
 
 A procedural scene you start yourself hosts itself on that same surface:
 `./scene.py --display --frames 300`. `docs/procedural.md` holds it.

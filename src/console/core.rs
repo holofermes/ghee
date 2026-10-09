@@ -1491,8 +1491,8 @@ mod tests {
         assert!(Bare.filters().unwrap().is_object()); // ghee's own filter registry
     }
 
-    /// The effects and their defaults as the README's table gives them, and
-    /// the live fields as docs/http.md lists them for /set.
+    /// The effects and their defaults as docs/layers.md's table gives them,
+    /// and the live fields as docs/http.md lists them for /set.
     #[test]
     fn format_serves_the_effects_and_the_live_fields_that_ghee_draws() {
         let r = get(&api(), "/format", &[]);
@@ -1593,7 +1593,7 @@ mod tests {
     }
 
     /// A rect's border, the keys of each shape and the render of a text
-    /// layer that names none, as the README's tables give them.
+    /// layer that names none, as docs/layers.md's tables give them.
     #[test]
     fn format_serves_the_border_the_keys_of_each_shape_and_the_render_of_each_font() {
         use serde_json::json;

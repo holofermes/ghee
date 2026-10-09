@@ -3,7 +3,7 @@
 A procedural scene is an executable that supplies its own scene and data.
 ghee starts the executable when the scene becomes active, and talks to it
 over stdin and stdout. A scene written in Python takes the
-[shim](../python/README.md), which handles all of this.
+[shim](python.md#python-scenes), which handles all of this.
 
 ## Scene shapes
 
@@ -42,7 +42,7 @@ runs in its own directory, with these variables in its environment:
   its scene.
 - `UV_INDEX` and `UV_INDEX_STRATEGY`, or `UV_NO_BINARY_PACKAGE` and
   `UV_NO_BUILD_PACKAGE`, hand uv the ghee-render wheel beside the `ghee`
-  command, as [Procedural scenes](../README.md#procedural-scenes) describes.
+  command, as [Procedural scenes](scenes.md#procedural-scenes) describes.
 
 ## Handshake
 

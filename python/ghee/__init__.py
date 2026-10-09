@@ -7,7 +7,7 @@ which is Python alone until a scene that ghee runs sets a layer through
 name, or measures words with `ghee.measure`: the native half then checks
 each set and each drawn layer against the scene, holds the names, and lays
 the words out.
-python/README.md and docs/procedural.md hold them.
+docs/python.md and docs/procedural.md hold them.
 """
 
 from __future__ import annotations

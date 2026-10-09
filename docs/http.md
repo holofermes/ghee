@@ -12,8 +12,7 @@ defaults are the scene's files, or the scene that a procedural scene's program
 writes at its start. Every page reads the same working copy, and every edit
 applies to it at once. ghee keeps the working copy until it stops, through a
 switch away and back. `/save` writes what differs from the defaults to the
-scene's state file, as [Saved edits](../README.md#saved-edits) in the README
-describes.
+scene's state file, as [Saved edits](console.md#saved-edits) describes.
 
 A query with a malformed percent escape answers 400, `bad query: '%zz' is
 not a percent escape`. A POST body over 1 MiB answers 413, `body over the

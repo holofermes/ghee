@@ -230,8 +230,8 @@ A Rust host written for 0.4.0 needs these changes.
   a scene past them with an error of its own. Take any number of assets and
   layers, a channel or an array in each of a pass's 16 texture
   units, and names of any length, where the engine took 16 arrays in a scene
-  and 8 channels and 4 arrays in a pass, and cut a name past 63 bytes. The
-  README states every cap and its error.
+  and 8 channels and 4 arrays in a pass, and cut a name past 63 bytes.
+  `docs/scenes.md` states every cap and its error.
 - Refuse an array or an image past the GPU's own texture size, 2048 pixels on
   a side on a VC4, with an error that names it, its size and the GPU's,
   where the GPU took no texture and the pass read black.

@@ -1,17 +1,17 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ghee-render", "pillow"]
+# dependencies = ["ghee-render"]
 # ///
-"""A word that Pillow draws, scrolled by the shader over a wave.
+"""A word from a hidden text layer, scrolled by the shader over a wave.
 
-Pillow draws the word once into a mask, and the scene sends the mask as the
-2D array `mask`. The shader scrolls the mask, then thresholds it and tints it
-over a wave.
+The text layer `word` is hidden, so the pass shader alone shows its words: it
+reads them with `word_cover`, scrolls them, then thresholds them and tints
+them over a wave.
 
-`--text` is build time, because the mask is a fixed-size array. Motion,
-crispness and color stay live. Line art needs no dither. The wave behind the
-text stays under the threshold of a 1-bit panel while `glow` stays under it.
+The words, motion, crispness and color stay live. Line art needs no dither.
+The wave behind the text stays under the threshold of a 1-bit panel while
+`glow` stays under it.
 
     ghee render --demo marquee -o out.####.png --frames 60
     ghee render --demo marquee --display kms           # to a panel, no dither
@@ -21,24 +21,28 @@ text stays under the threshold of a 1-bit panel while `glow` stays under it.
 import ghee
 
 args = ghee.args(
-    [ghee.Arg("text", "string", default="GHEE", help="the word that Pillow draws")]
+    [ghee.Arg("text", "string", default="GHEE", help="the words that scroll")]
 )
 
 # Slow imports come after the parse: the probe must answer inside its window.
-from array import array  # noqa: E402
-
 from lib import look  # noqa: E402
-from PIL import Image, ImageDraw, ImageFont  # noqa: E402
-
-FONT_SIZE = 28
 
 SHADER = """
+// The room left and right of the words, in em. The block's line height
+// holds the room over and under them.
+const float PAD = 0.2;
+// Each edge ramps over 1/RAMP em at the least.
+const float RAMP = 28.0;
+
 void main() {
+    vec2 box = word_size + vec2(2.0 * PAD, 0.0);
+    float mask_aspect = box.x / box.y;
     float aspect = iResolution.x / iResolution.y;
     float across = max(1.0, aspect / mask_aspect);
     float down = max(1.0, mask_aspect / aspect);
     float v = (uv.y - 0.5) * down + 0.5;
-    float m = mask_sample2(vec2(fract(uv.x * across - iTime * speed), v));
+    vec2 p = vec2(fract(uv.x * across - iTime * speed), v) * box - vec2(PAD, 0.0);
+    float m = word_cover(p, min(RAMP, iResolution.y / (down * box.y)));
     m *= step(0.0, v) * step(v, 1.0);
     float g = smoothstep(threshold - 0.08, threshold + 0.08, m);
 
@@ -49,72 +53,14 @@ void main() {
 """
 
 
-def _scratch():
-    return ImageDraw.Draw(Image.new("L", (1, 1)))
-
-
-def _raster(text, font):
-    """One draw at a readable size. The mask lands near 1:1 on a small panel."""
-    pad = FONT_SIZE // 5
-    bb = _scratch().textbbox((0, 0), text, font=font)
-    img = Image.new("L", (bb[2] - bb[0] + 2 * pad, bb[3] - bb[1] + 2 * pad), 0)
-    ImageDraw.Draw(img).text((pad - bb[0], pad - bb[1]), text, fill=255, font=font)
-    return img
-
-
-def _raster_bitmap(text):
-    """The 10px font, with the letters spaced by hand.
-
-    The mask zooms for hard edges. The result stays small and soft, so this path
-    serves a Pillow build with no sized load_default() alone.
-    """
-    pad, gap, zoom = 2, 2, 4
-    font = ImageFont.load_default()
-    scratch = _scratch()
-    bb = scratch.textbbox((0, 0), text, font=font)
-    advances = [scratch.textlength(c, font=font) for c in text]
-    w = int(sum(advances)) + gap * (len(text) - 1) + 2 * pad
-    h = bb[3] - bb[1] + 2 * pad
-    img = Image.new("L", (w, h), 0)
-    draw, x = ImageDraw.Draw(img), float(pad)
-    for c, adv in zip(text, advances, strict=True):
-        draw.text((x, pad - bb[1]), c, fill=255, font=font)
-        x += adv + gap
-    return img.resize((w * zoom, h * zoom), Image.NEAREST)
-
-
-def _bake(text):
-    try:
-        font = ImageFont.load_default(size=FONT_SIZE)
-    except TypeError:  # Pillow < 10.1 takes no size here
-        img = _raster_bitmap(text)
-    else:
-        img = _raster(text, font)
-    return array("f", [v / 255.0 for v in img.getdata()]), img.size
-
-
-MASK, (W, H) = _bake(args.text)
-
-_sent = {"done": False}
-
-
-@ghee.feed("mask")
-def mask(tick):
-    """The mask holds in the engine texture after one send."""
-    if _sent["done"]:
-        return None
-    _sent["done"] = True
-    return MASK
-
-
 def build():
     return ghee.Scene(
         common=look.PALETTE + look.WAVE + look.TONE,
         passes=[
             ghee.Pass(
                 name="main",
-                fragment=f"const float mask_aspect = {W / H:.6f};\n{SHADER}",
-                arrays=[ghee.ArrayInput("mask", (W, H))],
+                fragment=SHADER,
+                layers=[ghee.Layer("word", args.text, visible=False)],
                 params={
                     "speed": ghee.Param(
                         "speed", "float", 0.1, min=-0.6, max=0.6, step=0.01

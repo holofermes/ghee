@@ -425,11 +425,10 @@ advances and the font's pair kerning space the glyphs: the pair adjustments
 of the `kern` feature in its GPOS table, as HarfBuzz applies them, or, in a
 font without that feature, its `kern` table. Since each character draws as
 one glyph, ghee cannot lay out scripts that need shaping, such as Arabic and
-the Indic scripts. Such words go in as a 2D input drawn by the host, the way
-the `marquee` example draws its words in Pillow. An emoji sequence draws one
-code point at a time: a flag shows its two regional-indicator letters, a
-sequence joined by U+200D shows each of its emoji, and variation selectors
-and the joiner take no room.
+the Indic scripts. Such words go in as a 2D input drawn by the host. An emoji
+sequence draws one code point at a time: a flag shows its two
+regional-indicator letters, a sequence joined by U+200D shows each of its
+emoji, and variation selectors and the joiner take no room.
 
 A text problem leaves the scene running, and `ghee render` still exits 0. ghee
 prints the problem once as an error, under `--quiet` too, and the console

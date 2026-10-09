@@ -249,7 +249,8 @@ finding. A comment never argues that a change is correct. A comment never names
 what it replaced. The commit message holds that.
 
 Prose, comments, docs and commit messages alike, matches the voice this repo
-already writes in: read the README and a few module docs before writing any.
+already writes in: read the README, a few pages of docs/ and some module docs
+before writing any.
 The mechanics that are rules, not accidents: no em dashes, no "not X but Y"
 constructions, no filler (simply, robust, powerful, "note that"), semicolons
 rarely, no "we", plain words, one term for one thing, an actor introduced

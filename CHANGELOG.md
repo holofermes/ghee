@@ -748,10 +748,11 @@ A Rust host written for 0.4.0 needs these changes.
   console's dialog, titled with the item, as `Default post shader updated`:
   `keep mine`, first in focus, or `update to default`. Escape and the scrim
   do nothing.
-- Show `this scene changed since you loaded it · reload` when ghee refuses a
-  stale edit, and read the scene and its edits again at a tap. With no edit
+- Show `this scene changed since you loaded it` when ghee refuses a stale
+  edit, and read the scene and its edits again at its `reload`. With no edit
   in flight, the page reads the scene again when `rev` on `/stats` moves, and
-  leaves alone the layer in use. `files changed · reload` keeps the edits.
+  leaves alone the layer in use. The `reload` of `files changed` keeps the
+  edits.
 - Size a pass in the settings that its gear opens, beside its pencil: the
   size it renders at in pixels, then `output`, pixels or a scale of the
   frame, applied on release, and its sampling, `bilinear`, or `trilinear`
@@ -818,6 +819,11 @@ A Rust host written for 0.4.0 needs these changes.
 - Fold a filter pass's shader under the same shader line as every other
   pass's, greyed and read-only, where a filter's shader showed open with no
   line.
+- Pop the console's notices up in a stack at the bottom of the screen, over
+  the page, where they sat in the top bar and a long one pushed the page
+  down. A tap on a notice or anywhere outside the stack puts it away, and
+  `files newer` shows in the stack for 1.4 s after an apply, where it
+  replaced apply's label.
 
 ### Displays and H264
 

@@ -1595,7 +1595,7 @@ const SHADER_KEY = "ghee:shader";
 let shaderOpen = localStorage.getItem(SHADER_KEY) === "open", errOpen = null;
 const shaderShown = () => shaderOpen || errOpen === curPass;
 function paintShader(){
-  const p = onCommon() ? null : work.passes[curPass], solo = !p || !!p.filter, open = shaderShown();
+  const p = onCommon() ? null : work.passes[curPass], solo = !p, open = shaderShown();
   $(".shadercard").classList.toggle("solo", solo);
   $("#shLine").hidden = solo;
   $("#shCar").textContent = open ? "▾" : "▸";

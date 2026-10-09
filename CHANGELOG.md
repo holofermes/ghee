@@ -815,6 +815,9 @@ A Rust host written for 0.4.0 needs these changes.
   their controls out, `/set` answers 403, and an apply and a save leave
   their values out, where the console and the process both set them and the
   last one won. `GET /stats` lists them under `locked`.
+- Fold a filter pass's shader under the same shader line as every other
+  pass's, greyed and read-only, where a filter's shader showed open with no
+  line.
 
 ### Displays and H264
 

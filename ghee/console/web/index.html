@@ -1331,8 +1331,6 @@ function buildTabs(){
   t.appendChild(addMenu("+", items, "tab add", proc ? "add a filter" : "add a pass or a filter"));
   row.innerHTML = "";
   row.appendChild(t);
-  t.scrollLeft = left;
-  stripFade(t);
   const acts = el("span", "passacts");
   if (onCommon()){
     const ren = tbtn(PENCIL, "rename", "", () => {}), eye = tbtn(EYE, "hide", "m", () => {});
@@ -1352,7 +1350,10 @@ function buildTabs(){
     del.disabled = work.passes.length <= 1 || (proc && !p.filter);
     acts.append(ren, eye, del);
   }
+  // the strip's width, and so the scroll it takes, is final once the actions are in
   row.appendChild(acts);
+  t.scrollLeft = left;
+  stripFade(t);
 }
 
 // The pass eye is the pass's `visible`, and a change to it rebuilds.

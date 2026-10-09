@@ -27,7 +27,7 @@
 //! holds no room for it once every cell that no kept character draws is
 //! gone.
 //!
-//! The cache keeps the first page, one file per font key, px/em and range in
+//! The cache keeps every page, one file per font key, px/em and range in
 //! `$XDG_CACHE_HOME/ghee/atlas/`, else `~/.cache/ghee/atlas/`.
 
 use std::collections::{HashMap, HashSet};
@@ -71,7 +71,7 @@ const SIN_CORNER: f64 = 0.03;
 const COLOR_SEED: u64 = 69_441_337_420;
 /// The cache file's layout. A change to the layout or to the generation takes
 /// the next number.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 const MAGIC: &[u8; 8] = b"gheemsdf";
 
 /// The characters a generator makes at first use: printable ASCII, Latin-1,
@@ -813,8 +813,8 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
         .and_then(|f| fs::read(f).ok())
         .and_then(|b| decode(&key, &b));
     let mut preloading = cached.is_none();
-    if let Some(atlas) = cached {
-        lock(&shared.state).pages[0] = atlas;
+    if let Some(pages) = cached {
+        lock(&shared.state).pages = pages;
     }
     loop {
         let batch = {
@@ -883,7 +883,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
             }
         }
         if let (true, Some(path)) = (added, &file) {
-            let bytes = encode(&key, &lock(&shared.state).pages[0]);
+            let bytes = encode(&key, &lock(&shared.state).pages);
             if let Err(e) = save(path, &bytes) {
                 let dir = path.parent().unwrap_or(path).display();
                 warn_memory(format!("cannot write the atlas cache in {dir}: {e}"));
@@ -1083,40 +1083,44 @@ fn put_u32(b: &mut Vec<u8>, v: u32) {
 }
 
 /// The cache file, little-endian: MAGIC, FORMAT, px/em, range, the font's
-/// sha256, the atlas width and height, the rows under the top shelf, the
-/// shelves (a count, then y, height and used width each), the cells (a count,
-/// then gid, rect, ink and pad each), the texels of those rows, and the sha256
-/// of everything before it.
-fn encode(key: &Key, a: &Atlas) -> Vec<u8> {
-    let rows = a.top();
-    let used = rows as usize * a.width as usize * 4;
-    let mut b = Vec::with_capacity(used + 64 * a.cells.len() + 1024);
+/// sha256, the number of pages, then for each page the atlas width and
+/// height, the rows under the top shelf, the shelves (a count, then y, height
+/// and used width each), the cells (a count, then gid, rect, ink and pad
+/// each) and the texels of those rows, and last the sha256 of everything
+/// before it.
+fn encode(key: &Key, pages: &[Atlas]) -> Vec<u8> {
+    let used = |a: &Atlas| a.top() as usize * a.width as usize * 4;
+    let size: usize = pages.iter().map(|a| used(a) + 64 * a.cells.len()).sum();
+    let mut b = Vec::with_capacity(size + 1024);
     b.extend_from_slice(MAGIC);
     for v in [FORMAT, key.px_em, key.range] {
         put_u32(&mut b, v);
     }
     b.extend_from_slice(&key.font);
-    for v in [a.width, a.height, rows, a.shelves.len() as u32] {
-        put_u32(&mut b, v);
-    }
-    for s in &a.shelves {
-        for v in [s.y, s.height, s.used] {
+    put_u32(&mut b, pages.len() as u32);
+    for a in pages {
+        for v in [a.width, a.height, a.top(), a.shelves.len() as u32] {
             put_u32(&mut b, v);
         }
-    }
-    let mut cells: Vec<_> = a.cells.iter().collect();
-    cells.sort_unstable_by_key(|(gid, _)| **gid);
-    put_u32(&mut b, cells.len() as u32);
-    for (gid, c) in cells {
-        put_u32(&mut b, *gid);
-        for v in c.rect {
-            put_u32(&mut b, v);
+        for s in &a.shelves {
+            for v in [s.y, s.height, s.used] {
+                put_u32(&mut b, v);
+            }
         }
-        for v in c.ink.iter().chain([&c.pad]) {
-            b.extend_from_slice(&v.to_le_bytes());
+        let mut cells: Vec<_> = a.cells.iter().collect();
+        cells.sort_unstable_by_key(|(gid, _)| **gid);
+        put_u32(&mut b, cells.len() as u32);
+        for (gid, c) in cells {
+            put_u32(&mut b, *gid);
+            for v in c.rect {
+                put_u32(&mut b, v);
+            }
+            for v in c.ink.iter().chain([&c.pad]) {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
         }
+        b.extend_from_slice(&a.texels[..used(a)]);
     }
-    b.extend_from_slice(&a.texels[..used]);
     let digest = Sha256::digest(&b);
     b.extend_from_slice(&digest);
     b
@@ -1143,9 +1147,9 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The atlas in a cache file, None for a file that is torn, corrupt, or holds
-/// another key.
-fn decode(key: &Key, bytes: &[u8]) -> Option<Atlas> {
+/// The pages of the atlas in a cache file, None for a file that is torn,
+/// corrupt, or holds another key.
+fn decode(key: &Key, bytes: &[u8]) -> Option<Vec<Atlas>> {
     let (body, digest) = bytes.split_at(bytes.len().checked_sub(32)?);
     if Sha256::digest(body).as_slice() != digest {
         return None;
@@ -1156,9 +1160,30 @@ fn decode(key: &Key, bytes: &[u8]) -> Option<Atlas> {
         && r.u32()? == key.px_em
         && r.u32()? == key.range
         && r.take(32)? == key.font;
+    let count = r.u32()? as usize;
+    if !ours || !(1..=PAGES).contains(&count) {
+        return None;
+    }
+    let mut pages: Vec<Atlas> = Vec::with_capacity(count);
+    for page in 0..count as u32 {
+        let a = decode_page(&mut r, page)?;
+        if a.cells
+            .keys()
+            .any(|g| pages.iter().any(|p| p.cells.contains_key(g)))
+        {
+            return None;
+        }
+        pages.push(a);
+    }
+    r.0.is_empty().then_some(pages)
+}
+
+/// Page `page` of a cache file, read from `r`. None when it does not hold
+/// together.
+fn decode_page(r: &mut Reader, page: u32) -> Option<Atlas> {
     let (width, height, rows) = (r.u32()?, r.u32()?, r.u32()?);
     let side = |v: u32| v.is_power_of_two() && (MIN_SIZE..=MAX_SIZE).contains(&v);
-    if !ours || !side(width) || !side(height) || rows > height {
+    if !side(width) || !side(height) || rows > height {
         return None;
     }
     let mut shelves = Vec::new();
@@ -1188,7 +1213,7 @@ fn decode(key: &Key, bytes: &[u8]) -> Option<Atlas> {
             rect[0].checked_add(rect[2])? <= width && rect[1].checked_add(rect[3])? <= rows;
         let finite = ink.iter().chain([&pad]).all(|v| v.is_finite());
         let cell = Cell {
-            page: 0,
+            page,
             rect,
             ink,
             pad,
@@ -1198,13 +1223,10 @@ fn decode(key: &Key, bytes: &[u8]) -> Option<Atlas> {
         }
     }
     let used = r.take(rows as usize * width as usize * 4)?;
-    if !r.0.is_empty() {
-        return None;
-    }
     let mut texels = vec![0; width as usize * height as usize * 4];
     texels[..used.len()].copy_from_slice(used);
     Some(Atlas {
-        page: 0,
+        page,
         width,
         height,
         texels,
@@ -1641,15 +1663,25 @@ mod tests {
 
     #[test]
     fn the_cache_round_trips_and_packing_carries_on() {
-        let mut a = filled(120);
-        let bytes = encode(&KEY, &a);
-        let mut b = decode(&KEY, &bytes).unwrap();
-        assert_eq!((b.width, b.height), (a.width, a.height));
-        assert!(b.texels == a.texels);
-        assert_eq!((&b.cells, &b.shelves), (&a.cells, &a.shelves));
-        assert!(b.update().unwrap().resized);
-        let next = pattern(999, 17, 15);
-        assert_eq!(a.insert(999, &next).unwrap(), b.insert(999, &next).unwrap());
+        let mut second = Atlas {
+            page: 1,
+            ..Atlas::default()
+        };
+        for gid in 0..7 {
+            second.insert(1000 + gid, &pattern(gid, 30, 20)).unwrap();
+        }
+        let mut pages = [filled(120), second];
+        let bytes = encode(&KEY, &pages);
+        let mut read = decode(&KEY, &bytes).unwrap();
+        assert_eq!(read.len(), 2);
+        for (a, b) in pages.iter_mut().zip(&mut read) {
+            assert_eq!((b.page, b.width, b.height), (a.page, a.width, a.height));
+            assert!(b.texels == a.texels);
+            assert_eq!((&b.cells, &b.shelves), (&a.cells, &a.shelves));
+            assert!(b.update().unwrap().resized);
+            let next = pattern(999, 17, 15);
+            assert_eq!(a.insert(999, &next).unwrap(), b.insert(999, &next).unwrap());
+        }
         assert_eq!(
             KEY.file_name(),
             format!("{}-32-6-{FORMAT}.mtsdf", "07".repeat(32))
@@ -1658,7 +1690,7 @@ mod tests {
 
     #[test]
     fn a_cache_file_for_another_key_or_torn_or_flipped_reads_as_none() {
-        let bytes = encode(&KEY, &filled(40));
+        let bytes = encode(&KEY, &[filled(40)]);
         for other in [
             Key {
                 font: [8; 32],
@@ -1681,10 +1713,10 @@ mod tests {
     fn a_cache_write_is_whole_to_every_reader() {
         let dir = tmp("atomic");
         let path = dir.join(KEY.file_name());
-        let small = encode(&KEY, &filled(10));
+        let small = encode(&KEY, &[filled(10)]);
         let mut big = Atlas::default();
         big.insert(0, &pattern(0, 300, 300)).unwrap();
-        let big = encode(&KEY, &big);
+        let big = encode(&KEY, &[big]);
         assert!(big.len() > 500_000);
         save(&path, &small).unwrap();
         // The writers save until the reader has read READS times, so every
@@ -1859,7 +1891,7 @@ mod tests {
                 range: 4,
                 ..k.clone()
             },
-            &filled(5),
+            &[filled(5)],
         );
         for junk in [b"not an atlas".to_vec(), foreign] {
             fs::write(&path, junk).unwrap();
@@ -2056,6 +2088,26 @@ mod tests {
         let u = g.update();
         assert_eq!(u.iter().map(|u| u.page).collect::<Vec<u32>>(), [0, 1]);
         assert!(u.iter().all(|u| u.resized));
+    }
+
+    #[test]
+    fn the_next_run_reads_both_pages_of_the_atlas_from_the_cache() {
+        let dir = crate::testing::TempDir::new("atlas-pages-cache");
+        let words: String = (0..50).map(k).collect();
+        let cells = |g: &Generator| {
+            g.with(|p| p.iter().map(|a| a.cells.clone()).collect::<Vec<_>>())
+                .unwrap()
+        };
+        let made = {
+            let (_font, g) = kana(&dir.join("atlas"), 4);
+            wait(&g, &words);
+            cells(&g)
+        };
+        assert_eq!(made.len(), 2);
+        let (font, g) = kana(&dir.join("atlas"), 4);
+        wait(&g, &words);
+        assert_eq!(font.outlines.load(Ordering::Relaxed), 0);
+        assert!(cells(&g) == made);
     }
 
     #[test]

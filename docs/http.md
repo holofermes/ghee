@@ -24,7 +24,7 @@ error.
 
 - `GET /stats`: `{fps, frame_ms, stream_fps, out, error, error_line,
   error_pass, text_errors, active, display, stale, layer_changes, rev,
-  locked}`.
+  locked, gpu}`.
   `active` is the scene of the last switch, even one that failed to compile,
   and `rev` is its revision. While the active scene fails to compile, ghee
   keeps drawing the last program that compiled. On a compile error,
@@ -40,7 +40,11 @@ error.
   the active scene set since it started, each in a list: `params`, a scene
   param by its name and a param of a pass as `pass.name`, `fields`, each
   live field of a layer as `layer.field` or `layer.effect.field`, and
-  `layers`, each layer that the program added or gave a look.
+  `layers`, each layer that the program added or gave a look. `gpu` holds
+  what the GPU can do, and is empty until the renderer starts:
+  `mipmaps_npot` is true when the GPU mipmaps a pass of any size, and false
+  when a pass with `mipmaps` takes a power-of-two size alone, as on the vc4
+  of a Pi 1 to a Pi 3 and a Zero 2 W.
 - `GET /stats?usage=1`: the same, with what the ghee process uses, read
   from files that it may read without root, at this request alone:
   - `rss_mib`: the process's resident set, in MiB.

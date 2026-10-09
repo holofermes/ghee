@@ -262,6 +262,12 @@ struct Stat {
     display: Value,
     error_line: Option<i64>,
     error_pass: Option<ErrorPass>,
+    gpu: Value,
+}
+
+/// The /stats `gpu` object: what the renderer's GPU can do.
+pub fn gpu_caps(renderer: &Renderer) -> Value {
+    serde_json::json!({"mipmaps_npot": renderer.mipmaps_npot()})
 }
 
 /// The active scene: the one that the last switch asked for, which an edit
@@ -621,6 +627,7 @@ impl Console {
             arrays: Vec::new(),
             stat: Mutex::new(Stat {
                 display: Value::Object(Map::new()),
+                gpu: Value::Object(Map::new()),
                 ..Stat::default()
             }),
             active: Mutex::new(Active::default()),
@@ -703,6 +710,7 @@ impl Console {
                 "error_pass".to_string(),
                 stat.error_pass.map_or(Value::Null, ErrorPass::to_json),
             );
+            d.insert("gpu".to_string(), stat.gpu.clone());
         }
         // `rev` is the revision of the scene that `active` names.
         let active = lock(&self.active).name.clone();
@@ -2255,6 +2263,7 @@ pub fn render_loop(
         0
     };
     *lock(&console.scene_size) = Some(renderer.borrow().scene_size());
+    lock(&console.stat).gpu = gpu_caps(&renderer.borrow());
     let st = Rc::new(RefCell::new(Running::default()));
     // what feeds the running scene, when the scene brings something
     let ctrl: ControllerSlot = RefCell::new(None);
@@ -4246,6 +4255,7 @@ mod tests {
             "layer_changes",
             "rev",
             "locked",
+            "gpu",
         ] {
             assert!(stats.get(key).is_some(), "{key}");
         }
@@ -5501,6 +5511,25 @@ mod tests {
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         assert_eq!(ask(&api, "GET", "/scene", "name=unloaded", "").0, 200);
         assert_eq!(fs::read_to_string(d.join("size")).unwrap(), "24x32");
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn stats_say_whether_the_gpu_mipmaps_a_size_that_is_not_a_power_of_two() {
+        let d = crate::testing::TempDir::new("console-gpu");
+        fs::write(d.join("one.scene.json"), SCENE).unwrap();
+        let mut console = Console::new(SceneStore::new(&d, Vec::new()));
+        console.frames = 1;
+        let console = Arc::new(console);
+        console.ask("one");
+        let renderer = gpu(8, 8);
+        let npot = renderer.mipmaps_npot();
+        let sinks: Vec<Box<dyn Output>> = vec![Box::new(Bound(Rc::new(Cell::new(0))))];
+        render_loop(&console, Rc::new(RefCell::new(renderer)), sinks, None, None);
+        assert_eq!(
+            console.stats()["gpu"],
+            serde_json::json!({"mipmaps_npot": npot})
+        );
     }
 
     #[test]

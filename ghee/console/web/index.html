@@ -1519,6 +1519,7 @@ function passPixels(i){
   const s = Array.isArray(p.scale) ? p.scale : [p.scale, p.scale];
   return f.map((n, k) => Math.max(1, Math.round(n * s[k])));
 }
+const mipsAt = n => ((lastStats || {}).gpu || {}).mipmaps_npot !== false || n.every(v => v > 0 && (v & (v - 1)) === 0);
 let setPop = null, setFrom = null;
 function closeSettings(){
   if (setPop) setPop.remove();
@@ -1564,7 +1565,12 @@ function buildSettings(){
     if (q.scale != null) p.scale = clone(q.scale);
     postScene(); buildSettings();
   });
-  const px = el("span", "ctl px"), shown = () => { const n = passPixels(i); px.textContent = n ? n.join("×") : "-"; };
+  let tri = null;
+  const px = el("span", "ctl px"), shown = () => {
+    const n = passPixels(i);
+    px.textContent = n ? n.join("×") : "-";
+    if (tri) tri.disabled = !mipsAt(n);
+  };
   shown();
   size.v.classList.add("col");
   size.v.appendChild(px);
@@ -1607,6 +1613,8 @@ function buildSettings(){
       postScene(); buildSettings();
     });
     mip.setAttribute("aria-label", "sampling");
+    tri = mip.querySelector('option[value="trilinear"]');
+    shown();
     smp.v.appendChild(mip);
     kvs.appendChild(smp.kv);
   }

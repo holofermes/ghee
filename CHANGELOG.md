@@ -824,6 +824,9 @@ A Rust host written for 0.4.0 needs these changes.
   down. A tap on a notice or anywhere outside the stack puts it away, and
   `files newer` shows in the stack for 1.4 s after an apply, where it
   replaced apply's label.
+- Say whether the GPU mipmaps a size that is not a power of two in
+  `mipmaps_npot` under `gpu` on `GET /stats`, and grey out `trilinear` in a
+  pass's settings at a size that the GPU cannot mipmap.
 
 ### Displays and H264
 

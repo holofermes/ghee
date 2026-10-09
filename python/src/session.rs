@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
-use ghee::console::server::{coerce, H264_FPS};
+use ghee::console::server::{coerce, gpu_caps, H264_FPS};
 use ghee::draw::{Arg, Call, CallKind};
 use ghee::engine::{probe_display, quarter_turns, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
@@ -591,6 +591,7 @@ impl Session {
                     Arc::clone(&index),
                     (w, h),
                     &format,
+                    gpu_caps(&renderer),
                     out,
                     longest,
                     verbose,

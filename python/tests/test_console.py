@@ -186,6 +186,7 @@ def test_the_console_publishes_the_render(served):
     assert stats["active"] == "scene"
     assert stats["error"] == ""
     assert stats["display"] == {"w": 32, "h": 32, "format": "rgba", "rotation": 0}
+    assert isinstance(stats["gpu"]["mipmaps_npot"], bool)
     assert stats["out"] == []
     assert stats["frames"] == 1
     assert stats["frame_ms"] > 0.0

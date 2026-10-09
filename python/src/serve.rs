@@ -141,6 +141,7 @@ pub struct Shared {
     /// every look took.
     look_error: Mutex<String>,
     display: Value,
+    gpu: Value,
     out: Vec<String>,
     queue: Mutex<Vec<Queued>>,
     /// The live fields of layers queued by requests for the next frame.
@@ -244,6 +245,7 @@ impl ConsoleHost for Host {
         d.insert("error_pass".to_string(), Value::Null);
         d.insert("active".to_string(), Value::from(s.name.clone()));
         d.insert("display".to_string(), s.display.clone());
+        d.insert("gpu".to_string(), s.gpu.clone());
         d.insert("stale".to_string(), Value::from(false));
         d.insert(
             "frames".to_string(),
@@ -358,6 +360,7 @@ impl Console {
         index: Arc<Index>,
         size: (i32, i32),
         format: &str,
+        gpu: Value,
         out: Vec<String>,
         stream_longest: i32,
         verbose: bool,
@@ -375,6 +378,7 @@ impl Console {
             display: serde_json::json!({
                 "w": size.0, "h": size.1, "format": format, "rotation": 0
             }),
+            gpu,
             out,
             queue: Mutex::new(Vec::new()),
             layers: Mutex::new(Vec::new()),

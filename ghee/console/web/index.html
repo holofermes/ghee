@@ -1322,8 +1322,7 @@ function buildTabs(){
   // pinned ahead of every pass: it compiles into all of them
   if (hasCommon()) tab("common", ["cm"], onCommon(), () => setPass(COMMON), "GLSL prepended to every pass in this scene");
   work.passes.forEach((p, i) => tab((p.filter ? "ƒ " : "") + p.name,
-    [p.visible === false ? "off" : "", p.filter ? "filt" : ""], i === curPass, () => setPass(i),
-    p.filter ? `filter: ${p.filter} (read-only, tweak params)` : ""));
+    [p.visible === false ? "off" : "", p.filter ? "filt" : ""], i === curPass, () => setPass(i)));
   const proc = isProcedural();
   const items = proc ? [] : [["empty pass", addPass]];
   if (!proc && !hasCommon()) items.push(["common", addCommon]);   // one per scene

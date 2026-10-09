@@ -1754,7 +1754,15 @@ fn fits(
             }
         }
     }
-    grid(&inked(placed, glyphs, |_| 0), len).is_ok()
+    let boxes = ink_boxes(&inked(placed, glyphs, |_| 0));
+    let Ok(plan) = Plan::of(&boxes, len) else {
+        return false;
+    };
+    let mut ok = true;
+    for ((_, lo, _), b) in &boxes {
+        plan.each_cell(b, |k| ok &= plan.corner_in(k, *lo).is_ok());
+    }
+    ok
 }
 
 /// Why pack() refused the words.
@@ -1778,14 +1786,7 @@ fn tex_rows(texels: usize) -> usize {
 /// The grid over the ink of every glyph of `inked`, in a texture whose
 /// glyph data ends at texel `len`.
 struct Grid {
-    /// Its corner in em, on the 1/ORIGIN_SCALE em lattice, as the origins
-    /// are.
-    gx: f64,
-    gy: f64,
-    cols: usize,
-    rows: usize,
-    /// The side of a cell in em.
-    cell: f64,
+    plan: Plan,
     /// The slots of each cell, row by row: for each glyph that the cell
     /// lists, the texel where its data starts, the top bit marking the
     /// cell's last, and the corner of its box from the cell's.
@@ -1796,7 +1797,29 @@ struct Grid {
 /// texel `len`. Each cell lists the glyphs whose box, grown by INK_MARGIN,
 /// reaches into it.
 fn grid(inked: &[(&Placed, Packed)], len: usize) -> std::result::Result<Grid, Unpacked> {
-    let boxes: Vec<(Packed, [f64; 4])> = inked
+    let boxes = ink_boxes(inked);
+    let plan = Plan::of(&boxes, len)?;
+    let mut lists: Vec<Vec<Packed>> = vec![Vec::new(); plan.cols * plan.rows];
+    for (g, b) in &boxes {
+        plan.each_cell(b, |k| lists[k].push(*g));
+    }
+    let mut slots = Vec::with_capacity(lists.len());
+    for (k, list) in lists.iter().enumerate() {
+        let mut cell_slots = Vec::with_capacity(list.len());
+        for (i, (h, lo, _)) in list.iter().enumerate() {
+            let (bx, by) = plan.corner_in(k, *lo)?;
+            let last = if i + 1 == list.len() { LAST_GLYPH } else { 0 };
+            cell_slots.push([u24u8(h | last, 0), u16x2(bx, by)]);
+        }
+        slots.push(cell_slots);
+    }
+    Ok(Grid { plan, slots })
+}
+
+/// Each glyph of `inked` with its box grown by INK_MARGIN, as x0, y0, x1, y1
+/// in em.
+fn ink_boxes(inked: &[(&Placed, Packed)]) -> Vec<(Packed, [f64; 4])> {
+    inked
         .iter()
         .map(|&(_, (at, lo, size))| {
             (
@@ -1809,81 +1832,105 @@ fn grid(inked: &[(&Placed, Packed)], len: usize) -> std::result::Result<Grid, Un
                 ],
             )
         })
-        .collect();
-    let (mut gx, mut gy, mut gx1, mut gy1) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
-    for (_, b) in &boxes {
-        gx = gx.min(b[0]);
-        gy = gy.min(b[1]);
-        gx1 = gx1.max(b[2]);
-        gy1 = gy1.max(b[3]);
-    }
-    let (gx, gy) = (
-        (gx * ORIGIN_SCALE).floor() / ORIGIN_SCALE,
-        (gy * ORIGIN_SCALE).floor() / ORIGIN_SCALE,
-    );
-    let mut cell = 0.5;
-    let (cols, rows, grid) = loop {
-        let cols = ((gx1 - gx) / cell).ceil().max(0.0) as usize;
-        let rows = ((gy1 - gy) / cell).ceil().max(0.0) as usize;
-        // A grid grows with the block's area, so words past the texture fail
-        // before their grid takes memory.
-        let need = tex_rows(
-            len.next_multiple_of(CELL_K * SLOT)
-                + cols.saturating_mul(rows).saturating_mul(CELL_K * SLOT),
+        .collect()
+}
+
+/// The cells of a grid.
+struct Plan {
+    /// Its corner in em, on the 1/ORIGIN_SCALE em lattice, as the origins
+    /// are.
+    gx: f64,
+    gy: f64,
+    cols: usize,
+    rows: usize,
+    /// The side of a cell in em.
+    cell: f64,
+}
+
+impl Plan {
+    /// The cells over `boxes`, each a glyph's box grown by INK_MARGIN, in a
+    /// texture whose glyph data ends at texel `len`: cells of half an em,
+    /// halved until no cell lists more than CELL_K glyphs.
+    fn of(boxes: &[(Packed, [f64; 4])], len: usize) -> std::result::Result<Plan, Unpacked> {
+        let (mut gx, mut gy, mut gx1, mut gy1) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (_, b) in boxes {
+            gx = gx.min(b[0]);
+            gy = gy.min(b[1]);
+            gx1 = gx1.max(b[2]);
+            gy1 = gy1.max(b[3]);
+        }
+        let (gx, gy) = (
+            (gx * ORIGIN_SCALE).floor() / ORIGIN_SCALE,
+            (gy * ORIGIN_SCALE).floor() / ORIGIN_SCALE,
         );
-        if need > MAX_TEX_H {
-            return Err(Unpacked::TooTall(need));
-        }
-        let mut grid: Vec<Vec<Packed>> = vec![Vec::new(); cols * rows];
-        for (g, b) in &boxes {
-            let c0 = (((b[0] - gx) / cell).floor().max(0.0) as usize).min(cols.saturating_sub(1));
-            let c1 = (((b[2] - gx) / cell).floor().max(0.0) as usize).min(cols.saturating_sub(1));
-            let r0 = (((b[1] - gy) / cell).floor().max(0.0) as usize).min(rows.saturating_sub(1));
-            let r1 = (((b[3] - gy) / cell).floor().max(0.0) as usize).min(rows.saturating_sub(1));
-            for r in r0..=r1 {
-                for c in c0..=c1 {
-                    grid[r * cols + c].push(*g);
-                }
+        let mut cell = 0.5;
+        let mut counts: Vec<usize> = Vec::new();
+        loop {
+            let cols = ((gx1 - gx) / cell).ceil().max(0.0) as usize;
+            let rows = ((gy1 - gy) / cell).ceil().max(0.0) as usize;
+            // A grid grows with the block's area, so words past the texture
+            // fail before their grid takes memory.
+            let need = tex_rows(
+                len.next_multiple_of(CELL_K * SLOT)
+                    + cols.saturating_mul(rows).saturating_mul(CELL_K * SLOT),
+            );
+            if need > MAX_TEX_H {
+                return Err(Unpacked::TooTall(need));
             }
-        }
-        let fullest = grid.iter().map(Vec::len).max().unwrap_or(0);
-        if fullest <= CELL_K {
-            break (cols, rows, grid);
-        }
-        if cell <= 1.0 / 16.0 {
-            return Err(Unpacked::Fail(anyhow!(
-                "more than {CELL_K} glyphs overlap at one spot"
-            )));
-        }
-        cell /= 2.0;
-    };
-    let mut slots = Vec::with_capacity(cols * rows);
-    for r in 0..rows {
-        for c in 0..cols {
-            let corner = [gx + c as f64 * cell, gy + r as f64 * cell];
-            let list = &grid[r * cols + c];
-            let mut cell_slots = Vec::with_capacity(list.len());
-            for (k, (h, lo, _)) in list.iter().enumerate() {
-                let rel = |a: usize| fixed(lo[a] - corner[a], CORNER_OFFSET, BOX_SCALE);
-                let (Some(bx), Some(by)) = (rel(0), rel(1)) else {
-                    return Err(Unpacked::Fail(anyhow!(
-                        "a glyph box sits past {CORNER_OFFSET} em from its grid cell"
-                    )));
-                };
-                let last = if k + 1 == list.len() { LAST_GLYPH } else { 0 };
-                cell_slots.push([u24u8(h | last, 0), u16x2(bx, by)]);
+            let plan = Plan {
+                gx,
+                gy,
+                cols,
+                rows,
+                cell,
+            };
+            counts.clear();
+            counts.resize(cols * rows, 0);
+            for (_, b) in boxes {
+                plan.each_cell(b, |k| counts[k] += 1);
             }
-            slots.push(cell_slots);
+            if counts.iter().all(|n| *n <= CELL_K) {
+                return Ok(plan);
+            }
+            if cell <= 1.0 / 16.0 {
+                return Err(Unpacked::Fail(anyhow!(
+                    "more than {CELL_K} glyphs overlap at one spot"
+                )));
+            }
+            cell /= 2.0;
         }
     }
-    Ok(Grid {
-        gx,
-        gy,
-        cols,
-        rows,
-        cell,
-        slots,
-    })
+
+    /// Call `f` with the index of each cell that box `b` reaches into, row
+    /// by row.
+    fn each_cell(&self, b: &[f64; 4], mut f: impl FnMut(usize)) {
+        let (cols, rows, cell) = (self.cols, self.rows, self.cell);
+        let c0 = (((b[0] - self.gx) / cell).floor().max(0.0) as usize).min(cols.saturating_sub(1));
+        let c1 = (((b[2] - self.gx) / cell).floor().max(0.0) as usize).min(cols.saturating_sub(1));
+        let r0 = (((b[1] - self.gy) / cell).floor().max(0.0) as usize).min(rows.saturating_sub(1));
+        let r1 = (((b[3] - self.gy) / cell).floor().max(0.0) as usize).min(rows.saturating_sub(1));
+        for r in r0..=r1 {
+            for c in c0..=c1 {
+                f(r * cols + c);
+            }
+        }
+    }
+
+    /// The corner `lo` of a glyph's box from the corner of cell `k`, as a
+    /// slot holds it.
+    fn corner_in(&self, k: usize, lo: [f64; 2]) -> std::result::Result<(u16, u16), Unpacked> {
+        let corner = [
+            self.gx + (k % self.cols) as f64 * self.cell,
+            self.gy + (k / self.cols) as f64 * self.cell,
+        ];
+        let rel = |a: usize| fixed(lo[a] - corner[a], CORNER_OFFSET, BOX_SCALE);
+        match (rel(0), rel(1)) {
+            (Some(bx), Some(by)) => Ok((bx, by)),
+            _ => Err(Unpacked::Fail(anyhow!(
+                "a glyph box sits past {CORNER_OFFSET} em from its grid cell"
+            ))),
+        }
+    }
 }
 
 /// Pack the glyphs, `nb` bands to an axis, `blocks` the data of each, and
@@ -1910,17 +1957,10 @@ fn pack(
         starts.insert(ink, block.put(&mut tex));
     }
     let inked = inked(placed, glyphs, |ink| starts[&ink]);
-    let Grid {
-        gx,
-        gy,
-        cols,
-        rows,
-        cell,
-        slots,
-    } = grid(&inked, tex.len())?;
+    let Grid { plan, slots } = grid(&inked, tex.len())?;
     tex.resize(tex.len().next_multiple_of(CELL_K * SLOT), [0; 4]);
     let cells = tex.len();
-    tex.resize(cells + cols * rows * CELL_K * SLOT, [0; 4]);
+    tex.resize(cells + plan.cols * plan.rows * CELL_K * SLOT, [0; 4]);
     for (i, list) in slots.iter().enumerate() {
         let at = cells + i * CELL_K * SLOT;
         for (k, slot) in list.iter().enumerate() {
@@ -1946,11 +1986,11 @@ fn pack(
             ("_tw", TEX_W as f64),
             ("_itw", 1.0 / TEX_W as f64),
             ("_ith", 1.0 / tex_h as f64),
-            ("_gx", gx),
-            ("_gy", gy),
-            ("_cols", cols as f64),
-            ("_rows", rows as f64),
-            ("_cell", cell),
+            ("_gx", plan.gx),
+            ("_gy", plan.gy),
+            ("_cols", plan.cols as f64),
+            ("_rows", plan.rows as f64),
+            ("_cell", plan.cell),
             ("_cells", cells as f64),
             ("_nb", nb as f64),
         ],

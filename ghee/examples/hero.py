@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ghee-render", "numpy", "pillow"]
+# dependencies = ["ghee-render"]
 # ///
 """A word slides over water, and particles stream under the surface.
 
@@ -41,19 +41,16 @@ ARGS = [
 args = ghee.args(ARGS)
 
 # Slow imports come after the parse: the probe must answer inside its window.
-import numpy as np  # noqa: E402
 from lib import look  # noqa: E402
-from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 # The dither filter defaults to 1-bit black and white, these give it partial
 # colour on a coarse grid. It costs one full-res pass, which --no-dither drops.
 DITHER_PARAMS = {"amount": 1.0, "levels": 2.0, "color": 0.65, "scale": 4.0}
 
-# The text canvas. Fixed, because an array size cannot change after setup.
-CANVAS = (768, 192)
+# The buffer of the pass `canvas`, which the word fits in.
+CANVAS = (480, 192)
 GAP = 0.6  # trailing gap between repeats, as a fraction of the word width
-PROBE = 100  # font size for the fit measurement
-STROKE = 22  # font size over stroke width: a display face's weight
+STROKE = 1 / 22  # the stroke's width in em: a display face's weight
 
 # A motion delta packs into a byte per axis over this span.
 DSPAN = 0.25
@@ -283,7 +280,8 @@ void main() {
 # hard edges, and the particles arrive magnified.
 SHADER_MAIN = (
     f"""
-const float TEXT_ASPECT = {CANVAS[0] / CANVAS[1]:.4f};
+const float TEXT_ASPECT = {CANVAS[0] * (1 + GAP) / CANVAS[1]:.4f};
+const float GAP = {GAP};
 """
     + """
 void main() {
@@ -292,9 +290,10 @@ void main() {
     // them, VC4 reads it back wrong in 4x4 blocks and the glyph body goes dry
     // in patches under the wave.
     float v = (uv.y - text_y + text_height * 0.5) / text_height;
-    float u = fract(uv.x * ASPECT / (text_height * TEXT_ASPECT) - iTime * text_speed);
+    float u = fract(uv.x * ASPECT / (text_height * TEXT_ASPECT) - iTime * text_speed)
+            * (1.0 + GAP);
     float glow = texture2D(iChannel0, uv).r;
-    float m = canvas_sample2(vec2(u, v)) * step(0.0, v) * step(v, 1.0);
+    float m = texture2D(iChannel1, vec2(u, v)).a * step(0.0, v) * step(v, 1.0) * step(u, 1.0);
     m = smoothstep(0.35, 0.55, m);
 
     float wet = step(waterline(uv.x), uv.y);
@@ -308,49 +307,6 @@ void main() {
 
 def knob(name, val, lo, hi, step):
     return ghee.Param(name, "float", val, min=lo, max=hi, step=step)
-
-
-def _draw(text, font, stroke):
-    """The word on a canvas of its own.
-
-    The stroke gives the weight. No host is guaranteed a display face, and a
-    stroke fattens any face.
-    """
-    bb = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox(
-        (0, 0), text, font=font, stroke_width=stroke
-    )
-    img = Image.new("L", (max(bb[2] - bb[0], 1), max(bb[3] - bb[1], 1)), 0)
-    ImageDraw.Draw(img).text(
-        (-bb[0], -bb[1]),
-        text,
-        fill=255,
-        font=font,
-        stroke_width=stroke,
-        stroke_fill=255,
-    )
-    return img
-
-
-def _raster(text):
-    """The word fitted into the fixed canvas.
-
-    A long word rasterizes smaller, and never overflows. GAP holds the right
-    side clear, so a repeat keeps its distance from the word before it.
-    """
-    box = (CANVAS[0] / (1.0 + GAP), float(CANVAS[1]))
-    try:
-        probe = ImageFont.load_default(size=PROBE)
-    except TypeError:  # Pillow < 10.1 takes no size here
-        word = _draw(text, ImageFont.load_default(), 0)
-    else:
-        w, h = _draw(text, probe, PROBE // STROKE).size
-        size = max(int(PROBE * min(box[0] / w, box[1] / h)), 8)
-        word = _draw(text, ImageFont.load_default(size=size), max(size // STROKE, 1))
-    k = min(box[0] / word.width, box[1] / word.height)
-    word = word.resize((max(int(word.width * k), 1), max(int(word.height * k), 1)))
-    img = Image.new("L", CANVAS, 0)
-    img.paste(word, (0, (CANVAS[1] - word.height) // 2))
-    return np.asarray(img, np.float32).reshape(-1) / 255.0
 
 
 def build(a):
@@ -427,15 +383,22 @@ def build(a):
                 },
             ),
             ghee.Pass(
+                name="canvas",
+                size=CANVAS,
+                layers=[
+                    ghee.Layer(
+                        "word", "GHEE", text_stroke={"width": STROKE, "color": "white"}
+                    )
+                ],
+            ),
+            ghee.Pass(
                 name="main",
                 fragment=SHADER_MAIN,
-                arrays=[ghee.ArrayInput("canvas", CANVAS)],
-                channels=[ghee.Channel(buffer="glow")],
+                channels=[ghee.Channel(buffer="glow"), ghee.Channel(buffer="canvas")],
                 params={
-                    "text": ghee.Param("text", "string", "GHEE"),
                     "text_speed": knob("text_speed", 0.115, -0.5, 0.5, 0.005),
                     "text_y": knob("text_y", 0.47, 0.0, 1.0, 0.01),
-                    "text_height": knob("text_height", 0.5, 0.05, 1.5, 0.01),
+                    "text_height": knob("text_height", 0.57, 0.05, 1.5, 0.01),
                     "background": ghee.Param(
                         "background", "color", [0.855, 0.859, 0.502]
                     ),
@@ -454,7 +417,7 @@ def build(a):
     )
 
 
-_state = {"word": "GHEE", "mask": None, "first": True}
+_state = {"first": True}
 
 
 @ghee.tick
@@ -470,22 +433,6 @@ def start(tick):
     if args.dither:
         for name, value in DITHER_PARAMS.items():
             ghee.set_param(name, value, pass_="dither")
-
-
-@ghee.feed("canvas")
-def canvas(tick):
-    """The word holds in the engine texture.
-
-    This feed sends the word once, and again on each change of the text param.
-    """
-    word = tick.params.get("text")
-    if word is not None and word != _state["word"]:
-        _state["word"] = word
-        _state["mask"] = None
-    if _state["mask"] is not None:
-        return None
-    _state["mask"] = _raster(_state["word"] or " ")
-    return _state["mask"]
 
 
 ghee.run(build(args))

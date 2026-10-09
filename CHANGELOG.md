@@ -397,6 +397,10 @@ A Rust host written for 0.4.0 needs these changes.
   where words set in the console ended the steps.
 - Read `--demo marquee`'s words from the hidden text layer `word`, where
   Pillow drew them into an array, so the console sets them live.
+- Draw `--demo hero`'s word with the text layer `word`, in the pass
+  `canvas` that `main` reads, where Pillow drew it into an array. The
+  layer's `text` sets the word, where the param `text` set it, and
+  `text_height` starts at 0.57, which draws the word as tall as Pillow did.
 
 ### Python
 

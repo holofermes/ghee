@@ -603,6 +603,12 @@ A Rust host written for 0.4.0 needs these changes.
   n}` of its place after the move. `ghee.draw` sends both, for the layer of
   a call that stops and for a layer that paints under the layer of a call
   before its own.
+- Keep the arrays and the param values that a scene process sent through
+  each rebuild of its scene in the console, an apply, a pass hidden or
+  shown, a reset to the defaults and an apply that fails to compile, where
+  the arrays came back empty and the params at the scene's values until the
+  process sent them again. A param that the console set after the process
+  keeps the console's value.
 
 ### Console
 
@@ -970,6 +976,11 @@ A Rust host written for 0.4.0 needs these changes.
   default a target refuses each. A target's `RenderTarget::clock_restarted`
   is true once after its clock restarted, and the loop then draws the next
   frame as its first.
+- Upload an array's data at once with `Renderer::set_array`, which
+  `RenderTarget::set_array` hands on, and a `SceneProcess` hands its target
+  its arrays through it, where a provider handed them at a render. A target
+  holds no array by default. A host that sets the running scene up again
+  under the same `SceneController` calls `SceneController::rebuilt`.
 - Reach a scene's layers through `ghee::layer`, the layout of their words
   through `ghee::text`, the shape layers through `ghee::shape`, the batches
   that draw consecutive shapes and texts in one draw through `ghee::run`,

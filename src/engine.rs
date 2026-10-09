@@ -552,17 +552,17 @@ fn drawn_files(drawn: &[Pass]) -> impl Iterator<Item = &ImageLayer> {
 /// A 1xN array uploads as many values as the feed holds, N at most. A 2D
 /// array whose feed falls short pads with zeros to w x h, so each row starts
 /// where the shader reads it.
-fn shape<T: Copy + Default>(size: ArraySize, data: Vec<T>) -> (c_int, c_int, Vec<T>) {
+fn shape<T: Copy + Default>(size: ArraySize, data: &[T]) -> (c_int, c_int, Cow<'_, [T]>) {
     match size {
-        ArraySize::Linear(n) => (data.len().min(n as usize) as c_int, 1, data),
+        ArraySize::Linear(n) => (data.len().min(n as usize) as c_int, 1, Cow::Borrowed(data)),
         ArraySize::Grid(w, h) => {
             let want = (w * h) as usize;
             let data = if data.len() < want {
                 let mut buf = vec![T::default(); want];
-                buf[..data.len()].copy_from_slice(&data);
-                buf
+                buf[..data.len()].copy_from_slice(data);
+                Cow::Owned(buf)
             } else {
-                data
+                Cow::Borrowed(data)
             };
             (w as c_int, h as c_int, data)
         }
@@ -1833,25 +1833,40 @@ impl Renderer {
             return Ok(());
         };
         for (name, size) in &self.feeds {
-            match provider(name, *size) {
-                Feed::Unchanged => {}
-                Feed::Data(data) => {
-                    let (w, h, data) = shape(*size, data);
-                    let cname = CString::new(name.as_str())?;
-                    unsafe {
-                        ffi::ghee_mp_set_array(self.handle, cname.as_ptr(), data.as_ptr(), w, h);
-                    }
+            self.upload(name, *size, &provider(name, *size))?;
+        }
+        Ok(())
+    }
+
+    fn upload(&self, name: &str, size: ArraySize, data: &Feed) -> Result<()> {
+        match data {
+            Feed::Unchanged => {}
+            Feed::Data(data) => {
+                let (w, h, data) = shape(size, data);
+                let cname = CString::new(name)?;
+                unsafe {
+                    ffi::ghee_mp_set_array(self.handle, cname.as_ptr(), data.as_ptr(), w, h);
                 }
-                Feed::DataU8(data) => {
-                    let (w, h, data) = shape(*size, data);
-                    let cname = CString::new(name.as_str())?;
-                    unsafe {
-                        ffi::ghee_mp_set_array_u8(self.handle, cname.as_ptr(), data.as_ptr(), w, h);
-                    }
+            }
+            Feed::DataU8(data) => {
+                let (w, h, data) = shape(size, data);
+                let cname = CString::new(name)?;
+                unsafe {
+                    ffi::ghee_mp_set_array_u8(self.handle, cname.as_ptr(), data.as_ptr(), w, h);
                 }
             }
         }
         Ok(())
+    }
+
+    /// Upload `data` to the declared array `name` now, as a provider's
+    /// answer does at a render. False when no pass declares `name`.
+    pub fn set_array(&self, name: &str, data: &Feed) -> Result<bool> {
+        let Some(&(_, size)) = self.feeds.iter().find(|(n, _)| n == name) else {
+            return Ok(false);
+        };
+        self.upload(name, size, data)?;
+        Ok(true)
     }
 
     /// Hand one named image asset to the engine.

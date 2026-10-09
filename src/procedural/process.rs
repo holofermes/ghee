@@ -421,13 +421,6 @@ pub fn wants_help(tokens: &[String]) -> bool {
 
 // ------------------------------------------------------------- the mailboxes
 
-/// One array message, in the process's own form.
-/// The bytes reach the engine as bytes, so a mask pays for no conversion.
-enum ArrayData {
-    F32(Vec<f32>),
-    U8(Vec<u8>),
-}
-
 /// One param message: the numbers of kind 1, or the text of kind 3.
 enum ParamData {
     F32(Vec<f32>),
@@ -460,10 +453,25 @@ impl Set {
     }
 }
 
+/// A param value that the process set: the name that its message gave the
+/// param, the param's pass, None for the scene's, its type and the value.
+struct Kept {
+    name: String,
+    pass: Option<String>,
+    ty: String,
+    value: ParamValue,
+}
+
+/// The uniform of the param `name`: a dotted name carries its pass, and the
+/// uniform is the tail.
+fn uniform(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, p)| p)
+}
+
 /// What the reader thread takes off stdout between two drains.
 #[derive(Default)]
 struct Inbox {
-    arrays: Vec<(String, ArrayData)>,
+    arrays: Vec<(String, Feed)>,
     /// The sets in the order of arrival, as latest() queues them.
     params: Vec<(String, Set)>,
     /// The process calls these ticks clean.
@@ -579,8 +587,10 @@ pub struct SceneProcess {
     /// The tick writer. It holds the process stdin, so it ends the run.
     writer: Option<JoinHandle<()>>,
     threads: Vec<JoinHandle<()>>,
-    /// Array data still waiting for a frame, newest for each name.
-    data: HashMap<String, ArrayData>,
+    /// The last data of each array, and whether it waits for its upload.
+    data: HashMap<String, (Feed, bool)>,
+    /// An array of `data` waits for its upload.
+    unsent: bool,
     /// The sets that wait for a renderer, in the order of arrival.
     incoming: Vec<(String, Set)>,
     /// param name -> (the pass that holds it, its type). None is scene scope.
@@ -593,6 +603,11 @@ pub struct SceneProcess {
     /// it, and the last values read by the process.
     values: HashMap<String, Value>,
     sent: HashMap<String, Value>,
+    /// The last value that the process set of each param, by the name that
+    /// a tick gives the param, until the console sets that param.
+    kept: HashMap<String, Kept>,
+    /// The scene was set up again, so update() sets every kept value again.
+    rebuilt: bool,
     /// Clean ticks from the process, not yet spent on a skip.
     clean: u32,
     /// The process died. The scene stays in this error state.
@@ -672,11 +687,14 @@ impl SceneProcess {
             writer: None,
             threads,
             data: HashMap::new(),
+            unsent: false,
             incoming: Vec::new(),
             params: HashMap::new(),
             layers: HashMap::new(),
             values: HashMap::new(),
             sent: HashMap::new(),
+            kept: HashMap::new(),
+            rebuilt: false,
             clean: 0,
             dead: None,
             lockstep: false,
@@ -1005,7 +1023,8 @@ impl SceneProcess {
             )
         };
         for (name, values) in arrays {
-            self.data.insert(name, values);
+            self.data.insert(name, (values, true));
+            self.unsent = true;
         }
         for (name, set) in params {
             latest(&mut self.incoming, name, set);
@@ -1017,6 +1036,23 @@ impl SceneProcess {
                 false => fault,
             };
             self.dead = Some(self.epitaph(&why));
+        }
+    }
+
+    /// Set every kept param value again. A value that the scene no longer
+    /// takes is logged and dropped.
+    fn set_kept(&mut self, renderer: &mut dyn RenderTarget) {
+        let mut refused = Vec::new();
+        for (ticked, k) in &self.kept {
+            if let Err(e) = renderer.set_param(k.pass.as_deref(), uniform(&k.name), &k.ty, &k.value)
+            {
+                refused.push((ticked.clone(), format!("{e:#}")));
+            }
+        }
+        for (ticked, why) in refused {
+            if let Some(k) = self.kept.remove(&ticked) {
+                self.refuse(&k.name, &why);
+            }
         }
     }
 
@@ -1134,18 +1170,16 @@ impl SceneController for SceneProcess {
         Ok(())
     }
 
-    /// Data reaches the engine texture once.
-    /// An array keeps its texture data until a message changes it.
-    /// A process that sends a mask once pays for one upload.
-    fn provide(&mut self, name: &str, _size: ArraySize, _frame: u64) -> Option<Feed> {
-        Some(match self.data.remove(name) {
-            Some(ArrayData::F32(values)) => Feed::Data(values),
-            Some(ArrayData::U8(values)) => Feed::DataU8(values),
-            None => Feed::Unchanged,
-        })
+    /// update() hands the renderer each array, once for each message and
+    /// again after each setup.
+    fn provide(&mut self, _name: &str, _size: ArraySize, _frame: u64) -> Option<Feed> {
+        Some(Feed::Unchanged)
     }
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
+        if std::mem::take(&mut self.rebuilt) {
+            self.set_kept(renderer);
+        }
         for (name, set) in std::mem::take(&mut self.incoming) {
             let data = match set {
                 Set::Layer(text) => {
@@ -1226,16 +1260,30 @@ impl SceneController for SceneProcess {
                     continue;
                 }
             };
-            // a dotted name carries its pass, and the uniform is the tail
-            let param = name.rsplit_once('.').map_or(name.as_str(), |(_, p)| p);
-            renderer.set_param(pass.as_deref(), param, &ty, &value)?;
+            renderer.set_param(pass.as_deref(), uniform(&name), &ty, &value)?;
+            let Some(ticked) = self.tick_name(pass.as_deref(), uniform(&name)) else {
+                continue;
+            };
             // The process set this value itself, so no tick carries it back.
-            if let Some(ticked) = self.tick_name(pass.as_deref(), param) {
-                if let Some(held) = self.values.get_mut(&ticked) {
-                    *held = value.to_json();
-                    self.sent.insert(ticked, held.clone());
+            if let Some(held) = self.values.get_mut(&ticked) {
+                *held = value.to_json();
+                match self.sent.get_mut(&ticked) {
+                    Some(sent) => sent.clone_from(held),
+                    None => {
+                        self.sent.insert(ticked.clone(), held.clone());
+                    }
                 }
             }
+            let kept = Kept {
+                name,
+                pass,
+                ty,
+                value,
+            };
+            self.kept.insert(ticked, kept);
+        }
+        if !std::mem::take(&mut self.unsent) {
+            return Ok(());
         }
         // An array message whose name addresses a layer, such as
         // `scope.points`, sets that live field of the layer.
@@ -1248,19 +1296,24 @@ impl SceneController for SceneProcess {
         for name in fields {
             let at = Address::dotted(&name).expect("the name was just matched");
             match self.data.remove(&name) {
-                Some(ArrayData::F32(values)) => {
+                Some((Feed::Data(values), _)) => {
                     if let Err(e) = renderer.set_layer(&at, Given::Numbers(&values)) {
                         self.refuse_or_fail(&name, e)?;
                     }
                 }
-                Some(ArrayData::U8(_)) => {
+                Some((Feed::DataU8(_), _)) => {
                     let why = format!(
                         "layer '{}' {} takes floats in message kind 0, got bytes",
                         at.layer, at.field
                     );
                     self.refuse(&name, &why);
                 }
-                None => {}
+                Some((Feed::Unchanged, _)) | None => {}
+            }
+        }
+        for (name, (data, unsent)) in &mut self.data {
+            if std::mem::take(unsent) {
+                renderer.set_array(name, data)?;
             }
         }
         Ok(())
@@ -1277,10 +1330,21 @@ impl SceneController for SceneProcess {
     }
 
     fn on_param(&mut self, pass: Option<&str>, name: &str, value: &ParamValue) {
-        let ticked = self.tick_name(pass, name);
-        if let Some(held) = ticked.and_then(|t| self.values.get_mut(&t)) {
+        let Some(ticked) = self.tick_name(pass, name) else {
+            return;
+        };
+        self.kept.remove(&ticked);
+        if let Some(held) = self.values.get_mut(&ticked) {
             *held = value.to_json();
         }
+    }
+
+    fn rebuilt(&mut self) {
+        for (_, unsent) in self.data.values_mut() {
+            *unsent = true;
+        }
+        self.unsent = !self.data.is_empty();
+        self.rebuilt = !self.kept.is_empty();
     }
 
     fn on_layer(&mut self, at: &Address, value: &Value) {
@@ -1529,7 +1593,7 @@ fn messages(
         }
         let name = String::from_utf8_lossy(&name).into_owned();
         if kind[0] == SET_ARRAY_U8 {
-            newest(&mut lock(inbox).arrays, name, ArrayData::U8(body));
+            newest(&mut lock(inbox).arrays, name, Feed::DataU8(body));
             continue;
         }
         if matches!(
@@ -1554,7 +1618,7 @@ fn messages(
             .collect();
         let mut held = lock(inbox);
         match kind[0] {
-            SET_ARRAY => newest(&mut held.arrays, name, ArrayData::F32(values)),
+            SET_ARRAY => newest(&mut held.arrays, name, Feed::Data(values)),
             _ => latest(&mut held.params, name, Set::Param(ParamData::F32(values))),
         }
     }
@@ -1690,7 +1754,7 @@ sleep 60
     }
 
     /// A renderer stand-in that records the params set by a process, and the
-    /// arrays from a provider. `feeds` names what render_into asks for.
+    /// arrays that it uploads. `feeds` names the arrays that it declares.
     #[derive(Default)]
     struct Stub {
         set: std::cell::RefCell<Vec<(Option<String>, String, ParamValue)>>,
@@ -1727,19 +1791,23 @@ sleep 60
 
         fn render_into(
             &mut self,
-            provider: Option<crate::engine::Provider<'_>>,
+            _provider: Option<crate::engine::Provider<'_>>,
             _out: &mut [u8],
             _out_size: Option<(i32, i32)>,
         ) -> Result<()> {
-            let Some(p) = provider else { return Ok(()) };
-            for (name, size) in &self.feeds {
-                match p(name, *size) {
-                    Feed::DataU8(v) => self.bytes.borrow_mut().push((name.clone(), v)),
-                    Feed::Data(v) => self.floats.borrow_mut().push((name.clone(), v)),
-                    Feed::Unchanged => {}
-                }
-            }
             Ok(())
+        }
+
+        fn set_array(&self, name: &str, data: &Feed) -> Result<bool> {
+            if !self.feeds.iter().any(|(n, _)| n == name) {
+                return Ok(false);
+            }
+            match data {
+                Feed::DataU8(v) => self.bytes.borrow_mut().push((name.to_string(), v.clone())),
+                Feed::Data(v) => self.floats.borrow_mut().push((name.to_string(), v.clone())),
+                Feed::Unchanged => {}
+            }
+            Ok(true)
         }
 
         fn present(
@@ -2012,23 +2080,28 @@ sleep 60
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.data.contains_key("level")));
-        let Some(Feed::Data(values)) = f.provide("level", ArraySize::Linear(4), 0) else {
-            panic!("no data for the declared array");
+        assert!(!f.incoming.is_empty(), "no param message");
+        let mut stub = Stub {
+            feeds: vec![("level".to_string(), ArraySize::Linear(4))],
+            ..Stub::default()
         };
-        assert_eq!(values.len(), 4);
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert!(f.incoming.is_empty());
+        let floats = stub.floats.borrow().clone();
+        let [(name, values)] = floats.as_slice() else {
+            panic!("no data for the declared array: {floats:?}");
+        };
+        assert_eq!((name.as_str(), values.len()), ("level", 4));
         assert_eq!(values[1] - values[0], 1.0);
-        // an unset name keeps what the texture holds
-        // the engine never uploads the same data twice
+        // the texture holds the array, so the engine never uploads it again
         for name in ["other", "level"] {
             assert!(matches!(
                 f.provide(name, ArraySize::Linear(4), 0),
                 Some(Feed::Unchanged)
             ));
         }
-        assert!(!f.incoming.is_empty(), "no param message");
-        let mut stub = Stub::default();
-        f.update(&mut stub, 0, 0.0).unwrap();
-        assert!(f.incoming.is_empty());
+        f.update(&mut stub, 1, 0.0).unwrap();
+        assert_eq!(stub.floats.borrow().len(), 1);
         let set = stub.set.borrow();
         let (pass, name, _) = set.first().expect("no param reached the renderer");
         assert_eq!((pass.as_deref(), name.as_str()), (Some("main"), "amt"));
@@ -2154,10 +2227,15 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
         let (scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.data.contains_key("level")));
-        let Some(Feed::Data(values)) = f.provide("level", ArraySize::Linear(2), 0) else {
-            panic!("no data");
+        let mut stub = Stub {
+            feeds: vec![("level".to_string(), ArraySize::Linear(2))],
+            ..Stub::default()
         };
-        assert_eq!(values, vec![7.0, 8.0]);
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert_eq!(
+            stub.floats.borrow().as_slice(),
+            [("level".to_string(), vec![7.0f32, 8.0])]
+        );
     }
 
     #[test]
@@ -2174,11 +2252,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
             ],
             ..Stub::default()
         };
-        let mut frame = [0u8; 8 * 8 * 4];
-        {
-            let mut feed = |name: &str, size: ArraySize| f.provide(name, size, 0).unwrap();
-            stub.render_into(Some(&mut feed), &mut frame, None).unwrap();
-        }
+        f.update(&mut stub, 0, 0.0).unwrap();
         // the bytes reach the target as bytes, and the floats stay floats
         assert_eq!(
             stub.bytes.borrow().as_slice(),
@@ -2188,11 +2262,14 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
             stub.floats.borrow().as_slice(),
             [("state".to_string(), vec![0.25f32, 1.0])]
         );
-        // the texture holds the mask now, so the next frame uploads nothing
-        assert!(matches!(
-            f.provide("mask", ArraySize::Grid(2, 2), 1),
-            Some(Feed::Unchanged)
-        ));
+        // the texture holds the mask now, so the next frame uploads nothing,
+        // and a setup empties it, so the frame after one uploads it again
+        f.update(&mut stub, 1, 0.0).unwrap();
+        assert_eq!(stub.bytes.borrow().len(), 1);
+        f.rebuilt();
+        f.update(&mut stub, 2, 0.0).unwrap();
+        assert_eq!(stub.bytes.borrow().len(), 2);
+        assert_eq!(stub.floats.borrow().len(), 2);
     }
 
     /// A process that sets its string param as kind 3 text, after a kind 1
@@ -2722,7 +2799,10 @@ while IFS= read -r line; do :; done
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.data.len() >= 3));
-        let mut stub = Stub::default();
+        let mut stub = Stub {
+            feeds: vec![("level".to_string(), ArraySize::Linear(2))],
+            ..Stub::default()
+        };
         f.update(&mut stub, 0, 0.0).unwrap();
         assert_eq!(
             *stub.layers.borrow(),
@@ -2733,10 +2813,10 @@ while IFS= read -r line; do :; done
         );
         assert_eq!(f.refused, HashSet::from(["wave.points".to_string()]));
         // A declared array stays an array.
-        assert!(matches!(
-            f.provide("level", ArraySize::Linear(2), 0),
-            Some(Feed::Data(v)) if v == [0.5, 1.0]
-        ));
+        assert_eq!(
+            stub.floats.borrow().as_slice(),
+            [("level".to_string(), vec![0.5f32, 1.0])]
+        );
     }
 
     #[test]

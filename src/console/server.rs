@@ -1654,6 +1654,10 @@ impl RenderTarget for SharedRenderer {
         RenderTarget::set_param(&*self.renderer.borrow(), pass, name, ty, value)
     }
 
+    fn set_array(&self, name: &str, data: &Feed) -> Result<bool> {
+        self.renderer.borrow().set_array(name, data)
+    }
+
     fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
         self.renderer.borrow().set_layer(at, given)?;
         self.mirror(at.layer);
@@ -1943,7 +1947,12 @@ fn drain(
                         .scene
                         .as_ref()
                         .is_some_and(|running| keep_layers(&mut scene, running));
-                if set_scene(console, renderer, st, scene, generation, None).is_empty() && kept {
+                let built = set_scene(console, renderer, st, scene, generation, None).is_empty();
+                // a failed setup sets the last scene up again
+                if let Some(c) = ctrl.borrow_mut().as_mut() {
+                    c.rebuilt();
+                }
+                if built && kept {
                     st.borrow_mut().changed = true;
                     publish_changes(console, st);
                 }
@@ -4584,6 +4593,198 @@ mod tests {
             }
         }
         assert!(frame() == at20, "the tick's x places the layer");
+    }
+
+    /// A sink that keeps the last frame that it takes.
+    struct Grab(Rc<RefCell<Vec<u8>>>);
+
+    impl Output for Grab {
+        fn write(&mut self, frame: Frame<'_>) -> Result<()> {
+            let mut held = self.0.borrow_mut();
+            held.clear();
+            held.extend_from_slice(frame.data);
+            Ok(())
+        }
+    }
+
+    /// One wire message as the octal escapes of a script's printf.
+    fn wire(kind: u8, name: &str, count: usize, payload: &[u8]) -> String {
+        let mut bytes = vec![kind, name.len() as u8];
+        bytes.extend(name.as_bytes());
+        bytes.extend((count as u32).to_le_bytes());
+        bytes.extend(payload);
+        bytes.iter().map(|b| format!("\\{b:03o}")).collect()
+    }
+
+    /// The red and the green of a pixel of a frame, and whether a pixel of it
+    /// is blue.
+    type Drawn = (u8, u8, bool);
+
+    /// A console operation: what it is, what runs it and the frame after it.
+    type Op<'a> = (&'static str, Box<dyn Fn() + 'a>, Drawn);
+
+    /// The fragment of pass tint, which draws main with the param `amt` in
+    /// green.
+    const TINT: &str =
+        "void main(){ vec4 c = texture2D(iChannel0, uv); gl_FragColor = vec4(c.r, amt, c.b, 1.0); }";
+
+    /// A lockstep scene process whose pass main draws its array `level` in
+    /// red, under its pass tint. It answers its first tick alone: `level` as
+    /// the byte 128, `amt` at 0.75, and the blue rect `dot` added to main.
+    fn sent_once_script() -> String {
+        let doc = serde_json::json!({"version": 1, "lockstep": true, "passes": [
+            {"name": "main", "arrays": [{"name": "level", "size": 1}],
+             "fragment": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }"},
+            {"name": "tint", "channels": [{"buffer": "main"}],
+             "params": {"amt": {"type": "float", "value": 0.0}}, "fragment": TINT}]});
+        let dot = r#"{"index": 0, "layer": {"name": "dot", "shape": "rect", "x": 0, "y": 0, "width": 4, "height": 4, "color": "blue"}}"#;
+        let answer = [
+            wire(4, "level", 1, &[128]),
+            wire(1, "amt", 1, &0.75f32.to_le_bytes()),
+            wire(6, "main", dot.len(), dot.as_bytes()),
+        ]
+        .concat();
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' '{doc}'\nread -r l\nprintf '{answer}\\005'\n\
+             while read -r l; do printf '\\005'; done\n"
+        )
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn every_console_rebuild_keeps_what_a_scene_process_sent_once() {
+        let d = crate::testing::TempDir::new("console-sent");
+        let path = crate::testing::script(&d, "proc", &sent_once_script());
+        fs::write(d.join("other.scene.json"), SCENE).unwrap();
+        // a saved edit of tint's fragment, made over another default, which
+        // waits for an answer
+        let states = crate::testing::TempDir::new("console-sent-states");
+        let file = state::file_of(std::path::Path::new(&*states), &path, None);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let saved = serde_json::json!({"version": 1, "items": [{"item": "fragment",
+            "pass": "tint", "base": "0123456789abcdef", "value": format!("{TINT} // kept")}]});
+        fs::write(&file, saved.to_string()).unwrap();
+        let mut store = SceneStore::new(&d, Vec::new());
+        store.state_dir = Some(std::path::PathBuf::from(&*states));
+        let console = Arc::new(Console::new(store));
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let renderer = Rc::new(RefCell::new(gpu(16, 8)));
+        let st = Rc::new(RefCell::new(Running::default()));
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let got = Rc::new(RefCell::new(Vec::new()));
+        // One iteration of the console's loop. Its frame as the red and the
+        // green of a pixel right of dot, and whether a pixel is dot's blue.
+        let frame = || {
+            let _spawn = crate::testing::SCRIPTS.read().unwrap();
+            let mut shared = SharedRenderer {
+                renderer: Rc::clone(&renderer),
+                running: Rc::clone(&st),
+            };
+            let mut grab = Grab(Rc::clone(&got));
+            let mut lp = Loop::new(&mut shared, vec![&mut grab]);
+            lp.frames = 1;
+            lp.controller = Some(&ctrl);
+            lp.poll = Some(Box::new(|| drain(&console, &renderer, &st, &ctrl)));
+            lp.run().unwrap();
+            drop(lp);
+            publish_changes(&console, &st);
+            let px = got.borrow();
+            let blue = px.chunks_exact(4).any(|p| p[2] > 200);
+            (px[12 * 4], px[12 * 4 + 1], blue)
+        };
+        let doc = || json_of(&ask(&api, "GET", "/scene", "name=proc", "").1);
+        let post = |doc: &Value| {
+            let posted = ask(&api, "POST", "/scene", "name=proc", &doc.to_string());
+            assert_eq!(posted.0, 200, "{}", posted.1);
+        };
+        let with = |pass: usize, key: &str, value: Value| {
+            let mut d = doc();
+            d["passes"][pass][key] = value;
+            d
+        };
+        let near = |(r, g, blue): Drawn, want: Drawn| {
+            r.abs_diff(want.0) <= 2 && g.abs_diff(want.1) <= 2 && blue == want.2
+        };
+        let sent = (128, 191, true);
+        api.host.switch(Some("proc")).unwrap();
+        let first = frame();
+        assert!(near(first, sent), "the process's first answer: {first:?}");
+        let ops: Vec<Op> = vec![
+            (
+                "an apply of the scene as it runs",
+                Box::new(|| post(&doc())),
+                sent,
+            ),
+            (
+                "a kept edit that waited for its answer",
+                Box::new(|| {
+                    let q = "name=proc&item=fragment&pass=tint&answer=keep";
+                    assert_eq!(ask(&api, "POST", "/aside", q, "").0, 200);
+                }),
+                sent,
+            ),
+            (
+                "an apply that hides tint",
+                Box::new(|| post(&with(1, "visible", false.into()))),
+                (128, 0, true),
+            ),
+            (
+                "an apply that shows tint again",
+                Box::new(|| post(&with(1, "visible", true.into()))),
+                sent,
+            ),
+            (
+                "an apply that fails to compile",
+                Box::new(|| post(&with(0, "fragment", "void main(){ nope; }".into()))),
+                sent,
+            ),
+            (
+                "a reset to the defaults",
+                Box::new(|| assert_eq!(ask(&api, "POST", "/reset", "name=proc", "").0, 200)),
+                sent,
+            ),
+            (
+                "a switch away and back",
+                Box::new(|| {
+                    api.host.switch(Some("other")).unwrap();
+                    frame();
+                    api.host.switch(Some("proc")).unwrap();
+                }),
+                sent,
+            ),
+        ];
+        let mut lost = Vec::new();
+        for (op, run, want) in &ops {
+            run();
+            let drawn = frame();
+            let layers = doc()["passes"][0]["layers"].clone();
+            let dot = layers
+                .as_array()
+                .is_some_and(|l| l.iter().any(|l| l["name"] == "dot"));
+            if !near(drawn, *want) || !dot {
+                lost.push(format!(
+                    "{op}: drew {drawn:?} for {want:?}, layers {layers}"
+                ));
+            }
+        }
+        assert!(lost.is_empty(), "{}", lost.join("\n"));
+        // A console set after the process's set wins through a rebuild.
+        let set = ask(
+            &api,
+            "POST",
+            "/set",
+            "scene=proc&pass=tint&name=amt&value=0.25",
+            "",
+        );
+        assert_eq!(set.0, 200, "{}", set.1);
+        let drawn = frame();
+        assert!(near(drawn, (128, 64, true)), "the console's set: {drawn:?}");
+        post(&doc());
+        let drawn = frame();
+        assert!(
+            near(drawn, (128, 64, true)),
+            "the apply after it: {drawn:?}"
+        );
     }
 
     #[test]

@@ -49,6 +49,13 @@ pub trait RenderTarget {
         value: &ParamValue,
     ) -> Result<bool>;
 
+    /// Upload the data of the declared array `name` now, as
+    /// Renderer::set_array() does. False when no pass declares `name`, as a
+    /// target that holds no arrays says of every name.
+    fn set_array(&self, _name: &str, _data: &Feed) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Set one live field of a layer, as Renderer::set_layer() does. A
     /// target that draws no layers refuses every field.
     fn set_layer(&self, at: &Address, _given: Given) -> Result<()> {
@@ -160,6 +167,10 @@ impl RenderTarget for Renderer {
             Some(pass) => Renderer::set_param(self, pass, name, ty, value),
             None => Renderer::set_scene_param(self, name, ty, value),
         }
+    }
+
+    fn set_array(&self, name: &str, data: &Feed) -> Result<bool> {
+        Renderer::set_array(self, name, data)
     }
 
     fn set_layer(&self, at: &Address, given: Given) -> Result<()> {
@@ -371,6 +382,12 @@ pub trait SceneController {
     /// A host set the param `name` of pass `pass`, None for the scene's. The
     /// next tick carries it.
     fn on_param(&mut self, _pass: Option<&str>, _name: &str, _value: &ParamValue) {}
+
+    /// The host set the scene up again under this controller. The setup
+    /// emptied every array and gave every param the value in the scene, so
+    /// the next update() hands the renderer again the arrays and the param
+    /// values that the controller set.
+    fn rebuilt(&mut self) {}
 
     /// A host set the live field `at` of a layer to `value`, written as the
     /// scene format writes the key. The next tick carries a text layer's

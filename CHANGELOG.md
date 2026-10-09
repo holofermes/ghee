@@ -378,7 +378,9 @@ A Rust host written for 0.4.0 needs these changes.
   and hides with its layer's letters, with no `text_shadow`, `glow` or
   `text_stroke`. A layer's emoji draw after every layer of its pass,
   `<name>_cover` reads them as no ink, and a layer compiles their shader at
-  the first words that hold one, live words too, with no new setup.
+  the first words that hold one, live words too, with no new setup. An
+  emoji of new words that finds the layer's atlas full takes the room of the
+  emoji that no words on screen draw, the longest unused first.
 - Keep the scene running through a text problem, print it once as an error,
   which `--quiet` keeps, and show it in the console and in `/stats` as
   `text_errors`, a line for each problem that names its layer or its font.

@@ -491,6 +491,70 @@ struct ColourAtlas {
     scale: HashMap<u32, f64>,
     /// Why each glyph that failed took no cell, by atlas id.
     failed: HashMap<u32, String>,
+    /// The failed glyphs that found the atlas full.
+    full: HashSet<u32>,
+    /// The calls to take() so far.
+    calls: u64,
+    /// The call that last drew each glyph.
+    seen: HashMap<u32, u64>,
+}
+
+impl ColourAtlas {
+    /// Give a cell to each glyph of `ids` that the atlas lacks, with the
+    /// bitmap and the texels per em that `make` returns for it. `ids` holds
+    /// the colour glyphs of the words that the layer draws from now on. A
+    /// glyph that finds the atlas full takes the room of the glyphs outside
+    /// `ids`, the one drawn longest ago first, and a glyph that found it full
+    /// tries again once words leave it out. Returns the rects whose texels
+    /// changed.
+    fn take(
+        &mut self,
+        ids: &[u32],
+        mut make: impl FnMut(u32) -> Result<(atlas::Field, f64)>,
+    ) -> Vec<crate::colour::Rect> {
+        self.calls += 1;
+        let kept: HashSet<u32> = ids.iter().copied().collect();
+        self.full.retain(|id| {
+            let on = kept.contains(id);
+            if !on {
+                self.failed.remove(id);
+            }
+            on
+        });
+        for &id in ids {
+            self.seen.insert(id, self.calls);
+        }
+        let mut rects = Vec::new();
+        for &id in ids {
+            if self.atlas.cells.contains_key(&id) || self.failed.contains_key(&id) {
+                continue;
+            }
+            let placed = make(id).and_then(|(f, s)| {
+                let pages = std::slice::from_mut(&mut self.atlas);
+                let (cell, gone) = atlas::put_freeing(pages, id, &f, &kept, &self.seen);
+                for (g, c) in gone {
+                    self.scale.remove(&g);
+                    rects.push(c.rect);
+                }
+                Ok((cell?, s))
+            });
+            match placed {
+                Ok((cell, s)) => {
+                    self.scale.insert(id, s);
+                    rects.push(cell.rect);
+                }
+                Err(e) => {
+                    if e.is::<atlas::Full>() {
+                        self.full.insert(id);
+                    }
+                    self.failed.insert(id, format!("{e:#}"));
+                }
+            }
+        }
+        rects.sort_unstable();
+        rects.dedup();
+        rects
+    }
 }
 
 /// The problems of one text layer, a line each.
@@ -3975,33 +4039,28 @@ impl Renderer {
         }
         let mut colours = self.colours.borrow_mut();
         let slot = colours.entry(name.clone()).or_default();
-        let mut cells: Vec<crate::colour::Rect> = Vec::new();
-        for p in glyphs {
-            let id = text::atlas_id(p.font, p.gid);
-            if slot.atlas.cells.contains_key(&id) || slot.failed.contains_key(&id) {
-                continue;
-            }
+        let mut at: HashMap<u32, &text::Placement> = HashMap::new();
+        let ids: Vec<u32> = glyphs
+            .iter()
+            .filter_map(|p| {
+                let id = text::atlas_id(p.font, p.gid);
+                at.insert(id, p).is_none().then_some(id)
+            })
+            .collect();
+        let cells = slot.take(&ids, |id| {
+            let p = at[&id];
             let font = layer.font(p.font);
             let face = font
                 .as_deref()
                 .and_then(|d| ttf_parser::Face::parse(d, 0).ok());
-            let made = match face {
+            match face {
                 Some(face) => crate::colour::field(&face, p.gid),
                 None => Err(anyhow!("its font is unreadable")),
-            };
-            match made.and_then(|(f, s)| Ok((slot.atlas.insert(id, &f)?, s))) {
-                Ok((cell, s)) => {
-                    slot.scale.insert(id, s);
-                    cells.push(cell.rect);
-                }
-                Err(e) => {
-                    slot.failed.insert(id, format!("{e:#}"));
-                }
             }
-        }
+        });
         // A new atlas's first update holds all of it, as does a grown one's,
-        // and uploads every level whole. Otherwise the new cells upload the
-        // rects that they changed in each level.
+        // and uploads every level whole. Otherwise the new cells and the
+        // freed ones upload the rects that they changed in each level.
         if let Some(resized) = slot.atlas.take_change() {
             let tex = text::internal(name, "_emoji");
             let (w, h) = (slot.atlas.width, slot.atlas.height);
@@ -9237,6 +9296,110 @@ mod tests {
             "no emoji drawn"
         );
         assert!(cell == whole);
+    }
+
+    /// A field of the size of a cell of Noto Color Emoji, 176 x 160 texels,
+    /// opaque white in all of it.
+    fn white_cell() -> atlas::Field {
+        atlas::Field {
+            width: 176,
+            height: 160,
+            texels: vec![255; 176 * 160 * 4],
+            ink: [0.0; 4],
+            pad: 16.0,
+        }
+    }
+
+    #[test]
+    fn a_full_colour_atlas_takes_the_room_of_the_emoji_drawn_longest_ago() {
+        fn emoji(_: u32) -> Result<(atlas::Field, f64)> {
+            Ok((white_cell(), 109.0))
+        }
+        let mut c = ColourAtlas::default();
+        // Words that add one emoji at a time, until one finds every cell on
+        // screen.
+        let n = (0..1000)
+            .find(|&n| {
+                c.take(&(0..=n).collect::<Vec<u32>>(), emoji);
+                c.failed.contains_key(&n)
+            })
+            .expect("the atlas never filled");
+        assert!(c.failed[&n].ends_with("is full"), "{}", c.failed[&n]);
+        assert_eq!(c.atlas.cells.len(), n as usize);
+        // Words that leave out emoji 1 and the failed one, then words that
+        // draw the failed one again and leave out 0 and 1.
+        let rect = |c: &ColourAtlas, id: u32| c.atlas.cells[&id].rect;
+        let (was0, was1) = (rect(&c, 0), rect(&c, 1));
+        let words: Vec<u32> = std::iter::once(0).chain(2..n).collect();
+        assert!(c.take(&words, emoji).is_empty());
+        let changed = c.take(&(2..=n).collect::<Vec<u32>>(), emoji);
+        assert!(!c.failed.contains_key(&n));
+        assert_eq!(rect(&c, n), was1);
+        assert_eq!(rect(&c, 0), was0);
+        assert!(!c.atlas.cells.contains_key(&1) && !c.scale.contains_key(&1));
+        assert_eq!(changed, [was1]);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn an_emoji_draws_in_the_room_of_a_cell_that_no_words_draw_in_a_full_colour_atlas() {
+        // The emoji at 1 and 1/8 of the bitmaps' 109 pixels per em, read
+        // from mip levels 0 and 3.
+        let layers: Vec<Value> = [(0, 109.0), (1, 109.0 / 8.0)]
+            .iter()
+            .map(|(k, s)| {
+                json!({"name": format!("l{k}"), "text": " ", "font_family": "emoji",
+                       "render": "slug", "x": 4 + 150 * k, "y": 4, "font_size": s})
+            })
+            .collect();
+        let mut sc = Scene::from_dict(
+            &json!({
+                "version": 1,
+                "assets": {"emoji": {"file": "NotoColorEmoji-Smiles.ttf"}},
+                "passes": [{"name": "main",
+                    "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                    "layers": layers}],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts"))
+            .unwrap();
+        let (_g, mut r) = gpu_at(200, 160);
+        // The frame of one emoji after another, in a fresh atlas or in one
+        // filled with the white cells of glyphs that no words draw.
+        let frame = |r: &mut Renderer, full: bool| {
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            for name in ["l0", "l1"] {
+                if full {
+                    let mut colours = r.colours.borrow_mut();
+                    let slot = colours.entry(name.into()).or_default();
+                    let mut id = u32::MAX;
+                    while slot.atlas.insert(id, &white_cell()).is_ok() {
+                        id -= 1;
+                    }
+                }
+                set_words(r, name, "\u{1f600}");
+                set_words(r, name, "\u{1f642}");
+            }
+            r.set_time(Some(0.0));
+            let f = still(r);
+            assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
+            f
+        };
+        let want = frame(&mut r, false);
+        let got = frame(&mut r, true);
+        assert!(want.chunks_exact(4).any(|p| p[0] != p[2]), "no emoji drawn");
+        assert!(worst(&got, &want) <= 1, "{}", worst(&got, &want));
+        // The fillers gave their room, and the first emoji kept its cell.
+        let first = r.colours.borrow()["l0"]
+            .atlas
+            .cells
+            .keys()
+            .filter(|id| **id < 1 << 16)
+            .count();
+        assert_eq!(first, 2);
     }
 
     // The MTSDF fill's atlas

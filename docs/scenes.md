@@ -281,7 +281,8 @@ problem once, and the console shows it:
   draw have given up their room:
   `layer 'title': 'A' has no field in the atlas: the 2 pages of the atlas, 2048x2048 each, are full`.
 - An atlas of 2048x2048 holds the emoji of a layer, with room for 132 emoji of
-  Noto Color Emoji, and an emoji past it draws an error box.
+  Noto Color Emoji. An emoji past it draws an error box, once the emoji that
+  no words on screen draw have given up their room.
 
 The wire of a [procedural scene](#procedural-scenes) names an array or a param
 in 255 bytes at most, and the Python shim raises ValueError past it.

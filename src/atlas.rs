@@ -929,38 +929,61 @@ fn settle(
 
 /// Put `field` in a cell for glyph `gid`, on the first page with room. An
 /// asked glyph that finds every page full takes the room of the cells that no
-/// kept glyph holds, one cell at a time, the glyph named longest ago first,
-/// until it fits, and then a new page, up to PAGES.
+/// kept glyph holds, as put_freeing() gives it, and then a new page, up to
+/// PAGES.
 fn take_cell(st: &mut State, gid: u32, field: &Field, preloaded: bool) -> Result<Cell> {
-    let full = match put(&mut st.pages, gid, field) {
-        Err(e) if !preloaded && e.is::<Full>() => e,
-        placed => return placed,
+    if preloaded {
+        return put(&mut st.pages, gid, field);
+    }
+    let (placed, gone) = put_freeing(&mut st.pages, gid, field, &st.kept, &st.seen);
+    for (g, _) in gone {
+        st.forget(g);
+    }
+    match placed {
+        Err(e) if e.is::<Full>() && st.pages.len() < PAGES => {
+            let page = Atlas {
+                page: st.pages.len() as u32,
+                ..Atlas::default()
+            };
+            st.pages.push(page);
+            put(&mut st.pages, gid, field)
+        }
+        placed => placed,
+    }
+}
+
+/// Put `field` in a cell for glyph `gid` on the first of `pages` with room.
+/// When none has room, the cells of the glyphs outside `kept` give theirs up
+/// one at a time, the glyph with the oldest stamp in `seen` first and a
+/// glyph with none before it, until the field fits. Returns the cell, or Full
+/// once no cell is left to give, and the glyphs whose cells went.
+pub fn put_freeing(
+    pages: &mut [Atlas],
+    gid: u32,
+    field: &Field,
+    kept: &HashSet<u32>,
+    seen: &HashMap<u32, u64>,
+) -> (Result<Cell>, Vec<(u32, Cell)>) {
+    let full = match put(pages, gid, field) {
+        Err(e) if e.is::<Full>() => e,
+        placed => return (placed, Vec::new()),
     };
-    let mut spare: Vec<(u64, u32, usize)> = st
-        .pages
+    let mut spare: Vec<(u64, u32, usize)> = pages
         .iter()
         .enumerate()
         .flat_map(|(i, a)| a.cells.keys().map(move |g| (*g, i)))
-        .filter(|(g, _)| !st.kept.contains(g))
-        .map(|(g, i)| (st.seen.get(&g).copied().unwrap_or(0), g, i))
+        .filter(|(g, _)| !kept.contains(g))
+        .map(|(g, i)| (seen.get(&g).copied().unwrap_or(0), g, i))
         .collect();
     spare.sort_unstable();
+    let mut gone = Vec::new();
     for (_, g, i) in spare {
-        st.pages[i].remove(g);
-        st.forget(g);
-        if let Ok(cell) = put(&mut st.pages, gid, field) {
-            return Ok(cell);
+        gone.extend(pages[i].remove(g).map(|c| (g, c)));
+        if let Ok(cell) = put(pages, gid, field) {
+            return (Ok(cell), gone);
         }
     }
-    if st.pages.len() < PAGES {
-        let page = Atlas {
-            page: st.pages.len() as u32,
-            ..Atlas::default()
-        };
-        st.pages.push(page);
-        return put(&mut st.pages, gid, field);
-    }
-    Err(full)
+    (Err(full), gone)
 }
 
 /// Put `field` in a cell for glyph `gid` on the first of `pages` with room.

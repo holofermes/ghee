@@ -609,8 +609,7 @@ A Rust host written for 0.4.0 needs these changes.
   each rebuild of its scene in the console, an apply, a pass hidden or
   shown, a reset to the defaults and an apply that fails to compile, where
   the arrays came back empty and the params at the scene's values until the
-  process sent them again. A param that the console set after the process
-  keeps the console's value.
+  process sent them again.
 
 ### Console
 
@@ -810,6 +809,12 @@ A Rust host written for 0.4.0 needs these changes.
   keeps its name, size and mipmaps, so a pass that reads itself goes on from
   its last frame, where every rebuild started every pass from black. Back to
   defaults and a switch start every pass from black.
+- Lock each param and each live field of a layer in the console from the
+  first time that a scene process sets it, and every field of a layer that
+  the process adds or gives a look, until the process ends: the page greys
+  their controls out, `/set` answers 403, and an apply and a save leave
+  their values out, where the console and the process both set them and the
+  last one won. `GET /stats` lists them under `locked`.
 
 ### Displays and H264
 

@@ -426,7 +426,9 @@ pub trait ConsoleHost {
     /// files answers false for stale. layer_changes counts the changes that
     /// the program behind the scene made to its layers in scene_def(), so a
     /// page reads the scene again when it moves. rev is the active scene's
-    /// revision, in a host that keeps one.
+    /// revision, in a host that keeps one. locked, in a host whose scene's
+    /// program runs apart, holds `{params, fields, layers}`, what that
+    /// program set and the host refuses to set.
     ///
     /// A poll loop in the browser reads this, so it must not block.
     fn stats(&self) -> ConsoleResult<Value>;

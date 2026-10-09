@@ -60,8 +60,7 @@ The process keeps which passes, layers and params exist, and their order. A
 value that the process sets after the start replaces the saved one, and the
 console saves none of them. A layer that the process adds after the start
 takes no saved value. An apply, a pass hidden or shown and a reset build the
-scene again and keep the arrays and the param values that the process sent,
-except a param that the console set after the process.
+scene again and keep the arrays and the param values that the process sent.
 
 ## Messages, scene to ghee
 

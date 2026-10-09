@@ -40,6 +40,7 @@ use crate::h264::{
 use crate::layer::Address;
 use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
+use crate::procedural::process::{dotted, Locks};
 use crate::scene::{ArraySize, Param, ParamValue, Reach, Scene};
 use crate::sources::{collect, Snapshot};
 use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG};
@@ -353,24 +354,28 @@ impl WorkingCopy {
         self.opened.working.to_dict()
     }
 
-    /// The working copy's edits.
-    fn edits(&self) -> Edits {
-        state::diff(
+    /// The working copy's edits, with no value of what `locks` holds.
+    fn edits(&self, locks: Option<&Locks>) -> Edits {
+        let mut edits = state::diff(
             &self.defaults_doc,
             &self.working_doc(),
             self.opened.procedural,
-        )
+        );
+        if let Some(locks) = locks {
+            leave_out(&mut edits.values, locks);
+        }
+        edits
     }
 
     /// What a save writes: the working copy's edits and the items set aside.
-    fn to_save(&self) -> Edits {
-        let mut edits = self.edits();
+    fn to_save(&self, locks: Option<&Locks>) -> Edits {
+        let mut edits = self.edits(locks);
         edits.items.extend(self.opened.aside.iter().cloned());
         edits
     }
 
-    fn unsaved(&self) -> bool {
-        let edits = self.to_save();
+    fn unsaved(&self, locks: Option<&Locks>) -> bool {
+        let edits = self.to_save(locks);
         match &self.opened.saved {
             Some(saved) => !edits.same(saved),
             None => !edits.is_empty(),
@@ -379,19 +384,19 @@ impl WorkingCopy {
 
     fn carried(&self) -> Carried {
         Carried {
-            edits: self.to_save(),
+            edits: self.to_save(None),
             saved: self.opened.saved.clone(),
         }
     }
 
     /// GET /edits.
-    fn edits_json(&self) -> Value {
-        let edits = self.edits();
+    fn edits_json(&self, locks: Option<&Locks>) -> Value {
+        let edits = self.edits(locks);
         serde_json::json!({
             "rev": self.rev,
             "values": edits.values,
             "items": edits.items.iter().map(Item::to_json).collect::<Vec<_>>(),
-            "unsaved": self.unsaved(),
+            "unsaved": self.unsaved(locks),
             "aside": self.opened.aside.iter().map(Item::key).collect::<Vec<_>>(),
         })
     }
@@ -409,6 +414,71 @@ impl WorkingCopy {
                 p.doc.clone()
             }
             _ => self.working_doc(),
+        }
+    }
+}
+
+/// Take out of `values`, the values of a scene's edits, each param, layer
+/// and live field that `locks` holds, and the removal of an effect that
+/// holds such a field.
+fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
+    fn take(map: &mut Map<String, Value>, mut out: impl FnMut(&str, &mut Value) -> bool) -> bool {
+        let had = map.len();
+        map.retain(|k, v| !out(k, v));
+        had > 0 && map.is_empty()
+    }
+    if let Some(Value::Object(params)) = values.get_mut("params") {
+        if take(params, |name, _| locks.param(None, name)) {
+            values.remove("params");
+        }
+    }
+    if let Some(Value::Object(passes)) = values.get_mut("passes") {
+        let gone = take(passes, |pass, v| {
+            let Some(Value::Object(params)) = v.get_mut("params") else {
+                return false;
+            };
+            if !take(params, |name, _| locks.param(Some(pass), name)) {
+                return false;
+            }
+            let Value::Object(fields) = v else {
+                return false;
+            };
+            fields.remove("params");
+            fields.is_empty()
+        });
+        if gone {
+            values.remove("passes");
+        }
+    }
+    if let Some(Value::Object(layers)) = values.get_mut("layers") {
+        let gone = take(layers, |layer, v| {
+            let Value::Object(fields) = v else {
+                return locks.layer(layer);
+            };
+            locks.layer(layer)
+                || take(fields, |key, value| {
+                    let own = Address {
+                        layer,
+                        effect: None,
+                        field: key,
+                    };
+                    match value {
+                        _ if locks.field(&own) => true,
+                        Value::Null => locks.effect(layer, key),
+                        Value::Object(sub) => take(sub, |field, _| {
+                            let at = Address {
+                                layer,
+                                effect: Some(key),
+                                field,
+                            };
+                            locks.field(&at)
+                        }),
+                        _ => false,
+                    }
+                })
+        });
+        if gone {
+            values.remove("layers");
         }
     }
 }
@@ -480,6 +550,8 @@ pub struct Console {
     /// since an apply loads its assets and a save writes its file with
     /// `copies` held.
     revs: Mutex<HashMap<String, u64>>,
+    /// What the process of the scene named beside it set, while it runs.
+    locks: Mutex<Option<(String, Arc<Mutex<Locks>>)>>,
     /// The document of the active scene as the render thread last set it,
     /// under the scene's name. A scene that failed to compile is published
     /// too, while the renderer keeps drawing the last one that compiled.
@@ -556,6 +628,7 @@ impl Console {
             loaded: Condvar::new(),
             copies: Mutex::new(HashMap::new()),
             revs: Mutex::new(HashMap::new()),
+            locks: Mutex::new(None),
             running: Mutex::new(None),
             layer_changes: AtomicU64::new(0),
             scene_size: Mutex::new(None),
@@ -651,6 +724,13 @@ impl Console {
         d.insert(
             "layer_changes".to_string(),
             Value::from(self.layer_changes.load(Ordering::SeqCst)),
+        );
+        let locked = active
+            .as_deref()
+            .and_then(|name| self.with_locks(name, |locks| locks.map(Locks::to_json)));
+        d.insert(
+            "locked".to_string(),
+            locked.unwrap_or_else(|| Locks::default().to_json()),
         );
         let rev = active.and_then(|name| lock(&self.revs).get(&name).copied());
         d.insert("rev".to_string(), rev.map_or(Value::Null, Value::from));
@@ -766,6 +846,16 @@ impl Console {
             .open(&name, None, size)
             .map_err(|e| ConsoleError::server_error(format!("build {name}: {e}")))?;
         Ok(f(&name, &WorkingCopy::new(opened, 0, 0)))
+    }
+
+    /// Run `f` on what the process of scene `name` set, None when no
+    /// process of that scene runs.
+    fn with_locks<T>(&self, name: &str, f: impl FnOnce(Option<&Locks>) -> T) -> T {
+        let slot = lock(&self.locks);
+        match slot.as_ref() {
+            Some((at, locks)) if at == name => f(Some(&lock(locks))),
+            _ => f(None),
+        }
     }
 
     /// Make `name` the active scene, and number the switch for the load
@@ -1870,6 +1960,7 @@ fn load(
     vid: &str,
 ) {
     *ctrl.borrow_mut() = None;
+    *lock(&console.locks) = None;
     st.borrow_mut().loaded = Some(name.to_string());
     // A switch away and back, and a reload, keep the edits made since the
     // last save, and check them against the files as they are now.
@@ -1895,6 +1986,11 @@ fn load(
                 f.pin();
             }
             if err.is_empty() {
+                if let Some(f) = process.as_mut() {
+                    let locks = Arc::new(Mutex::new(Locks::default()));
+                    f.lock_into(Arc::clone(&locks));
+                    *lock(&console.locks) = Some((name.to_string(), locks));
+                }
                 *ctrl.borrow_mut() = process.map(|f| Box::new(f) as Box<dyn SceneController>);
             }
             None
@@ -2334,12 +2430,31 @@ impl ConsoleHost for RenderLoopHost {
     }
 
     fn edits(&self, name: Option<&str>) -> ConsoleResult<Value> {
-        self.console.with_copy(name, |_, copy| copy.edits_json())
+        let console = &self.console;
+        console.with_copy(name, |name, copy| {
+            console.with_locks(name, |locks| copy.edits_json(locks))
+        })
     }
 
+    /// A param that the scene's program set answers 403.
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()> {
-        self.console.with_active(|_, copy| {
+        let console = &self.console;
+        console.with_active(|scene, copy| {
             let working = &mut copy.opened.working;
+            let set = |pass| console.with_locks(scene, |l| l.is_some_and(|l| l.param(pass, name)));
+            let held = match scope {
+                Scope::Scene => set(None).then(|| name.to_string()),
+                Scope::Pass(i) => working
+                    .passes
+                    .get(usize::try_from(i).unwrap_or(usize::MAX))
+                    .filter(|p| set(Some(&p.name)))
+                    .map(|p| format!("{}.{name}", p.name)),
+            };
+            if let Some(wire) = held {
+                return Err(ConsoleError::read_only(format!(
+                    "the scene's program sets param '{wire}'"
+                )));
+            }
             let params = match scope {
                 Scope::Scene => Some(&mut working.params),
                 Scope::Pass(i) => working
@@ -2357,8 +2472,21 @@ impl ConsoleHost for RenderLoopHost {
         Ok(())
     }
 
+    /// A field that the scene's program set answers 403, and so does every
+    /// field of a layer that it added or gave a look.
     fn set_layer(&self, set: LayerSet) -> ConsoleResult<()> {
-        self.console.with_active(|_, copy| {
+        let console = &self.console;
+        console.with_active(|scene, copy| {
+            let at = set.at();
+            let locked = console.with_locks(scene, |l| {
+                l.filter(|l| l.field(&at)).map(|l| match l.layer(at.layer) {
+                    true => format!("the scene's program sets layer '{}'", at.layer),
+                    false => format!("the scene's program sets layer field '{}'", dotted(&at)),
+                })
+            });
+            if let Some(why) = locked {
+                return Err(ConsoleError::read_only(why));
+            }
             let working = &mut copy.opened.working;
             // A layer that a procedural scene's program drew is the program's.
             if working.layer(&set.layer).is_some() {
@@ -2444,8 +2572,13 @@ impl ConsoleHost for RenderLoopHost {
             if copy.opened.procedural {
                 // The program's own drawings and sets stay its own: the
                 // working copy takes what the page changed in what runs.
-                let changed =
+                let mut changed =
                     state::diff(&copy.live_doc(name, &lock(running)), &scene.to_dict(), true);
+                self.console.with_locks(name, |locks| {
+                    if let Some(locks) = locks {
+                        leave_out(&mut changed.values, locks);
+                    }
+                });
                 let doc = state::fold(&copy.defaults_doc, &copy.working_doc(), &changed);
                 match store::scene_of(&copy.opened.defaults, &doc, name) {
                     Ok(working) => copy.opened.working = working,
@@ -2458,7 +2591,7 @@ impl ConsoleHost for RenderLoopHost {
             }
             // A new edit of an item set aside answers it, so a save writes
             // the new edit alone.
-            let edited = copy.edits().items;
+            let edited = copy.edits(None).items;
             copy.opened.aside.retain(|a| {
                 !edited
                     .iter()
@@ -2472,10 +2605,10 @@ impl ConsoleHost for RenderLoopHost {
     }
 
     fn save(&self, _name: Option<&str>) -> ConsoleResult<()> {
-        let store = &self.console.store;
-        self.console.with_active(|name, copy| {
-            let edits = copy.to_save();
-            store.save(name, &edits)?;
+        let console = &self.console;
+        console.with_active(|name, copy| {
+            let edits = console.with_locks(name, |locks| copy.to_save(locks));
+            console.store.save(name, &edits)?;
             copy.opened.saved = (!edits.is_empty()).then_some(edits);
             Ok(())
         })
@@ -4112,6 +4245,7 @@ mod tests {
             "stale",
             "layer_changes",
             "rev",
+            "locked",
         ] {
             assert!(stats.get(key).is_some(), "{key}");
         }
@@ -4788,23 +4922,120 @@ mod tests {
             }
         }
         assert!(lost.is_empty(), "{}", lost.join("\n"));
-        // A console set after the process's set wins through a rebuild.
-        let set = ask(
-            &api,
-            "POST",
-            "/set",
-            "scene=proc&pass=tint&name=amt&value=0.25",
-            "",
+    }
+
+    /// A lockstep scene process with the param `amt` and the text layer
+    /// `title` in its pass main. It answers its first tick with nothing, and
+    /// its second with `amt` at 0.75, `title.x` at 20 and the rect `dot`
+    /// added to main.
+    fn sets_later_script() -> String {
+        let doc = serde_json::json!({"version": 1, "lockstep": true, "passes": [
+            {"name": "main", "params": {"amt": {"type": "float", "value": 0.0}},
+             "fragment": "void main(){ gl_FragColor = vec4(amt, 0.0, 0.0, 1.0); }",
+             "layers": [{"name": "title", "text": "I", "font_size": 8, "x": 1, "y": 1}]}]});
+        let dot =
+            r#"{"index": 1, "layer": {"name": "dot", "shape": "rect", "width": 2, "height": 2}}"#;
+        let answer = [
+            wire(1, "amt", 1, &0.75f32.to_le_bytes()),
+            wire(1, "title.x", 1, &20.0f32.to_le_bytes()),
+            wire(6, "main", dot.len(), dot.as_bytes()),
+        ]
+        .concat();
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' '{doc}'\nread -r l\nprintf '\\005'\nread -r l\n\
+             printf '{answer}\\005'\nwhile read -r l; do printf '\\005'; done\n"
+        )
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn what_a_scene_process_sets_locks_from_its_first_set_until_the_process_ends() {
+        let d = crate::testing::TempDir::new("console-locks");
+        let path = crate::testing::script(&d, "proc", &sets_later_script());
+        fs::write(d.join("other.scene.json"), SCENE).unwrap();
+        let states = crate::testing::TempDir::new("console-locks-states");
+        let mut store = SceneStore::new(&d, Vec::new());
+        store.state_dir = Some(std::path::PathBuf::from(&*states));
+        let console = Arc::new(Console::new(store));
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let renderer = Rc::new(RefCell::new(gpu(16, 8)));
+        let st = Rc::new(RefCell::new(Running::default()));
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let got = Rc::new(RefCell::new(Vec::new()));
+        let frame = || {
+            let _spawn = crate::testing::SCRIPTS.read().unwrap();
+            let mut shared = SharedRenderer {
+                renderer: Rc::clone(&renderer),
+                running: Rc::clone(&st),
+            };
+            let mut grab = Grab(Rc::clone(&got));
+            let mut lp = Loop::new(&mut shared, vec![&mut grab]);
+            lp.frames = 1;
+            lp.controller = Some(&ctrl);
+            lp.poll = Some(Box::new(|| drain(&console, &renderer, &st, &ctrl)));
+            lp.run().unwrap();
+            drop(lp);
+            publish_changes(&console, &st);
+        };
+        let locked = || console.stats()["locked"].clone();
+        let none = serde_json::json!({"params": [], "fields": [], "layers": []});
+        let set = |q: &str| {
+            let (status, body, _) = ask(&api, "POST", "/set", &format!("scene=proc&{q}"), "");
+            (status, body)
+        };
+        api.host.switch(Some("proc")).unwrap();
+        frame();
+        assert_eq!(locked(), none, "before the process sets anything");
+        assert_eq!(set("pass=main&name=amt&value=0.25").0, 200);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while locked() == none && Instant::now() < deadline {
+            frame();
+        }
+        let all =
+            serde_json::json!({"params": ["main.amt"], "fields": ["title.x"], "layers": ["dot"]});
+        assert_eq!(locked(), all);
+        assert_eq!(
+            set("pass=main&name=amt&value=0.5"),
+            (403, "the scene's program sets param 'main.amt'".to_string())
         );
-        assert_eq!(set.0, 200, "{}", set.1);
-        let drawn = frame();
-        assert!(near(drawn, (128, 64, true)), "the console's set: {drawn:?}");
-        post(&doc());
-        let drawn = frame();
-        assert!(
-            near(drawn, (128, 64, true)),
-            "the apply after it: {drawn:?}"
+        assert_eq!(
+            set("layer=title&field=x&value=3"),
+            (
+                403,
+                "the scene's program sets layer field 'title.x'".to_string()
+            )
         );
+        assert_eq!(
+            set("layer=dot&field=x&value=3"),
+            (403, "the scene's program sets layer 'dot'".to_string())
+        );
+        assert_eq!(set("layer=title&field=y&value=3").0, 200);
+        // a page one step behind posts the values from before the sets
+        let mut stale = json_of(&ask(&api, "GET", "/scene", "name=proc", "").1);
+        stale["passes"][0]["params"]["amt"]["value"] = Value::from(0.9);
+        for layer in stale["passes"][0]["layers"].as_array_mut().unwrap() {
+            layer["x"] = Value::from(9);
+            if layer["name"] == "title" {
+                layer["y"] = Value::from(6);
+            }
+        }
+        let posted = ask(&api, "POST", "/scene", "name=proc", &stale.to_string());
+        assert_eq!(posted.0, 200, "{}", posted.1);
+        let only_y = serde_json::json!({"layers": {"title": {"y": 6.0}}});
+        let edits = json_of(&ask(&api, "GET", "/edits", "name=proc", "").1);
+        assert_eq!(edits["values"], only_y);
+        assert_eq!(ask(&api, "POST", "/save", "name=proc", "").0, 200);
+        let file = state::file_of(std::path::Path::new(&*states), &path, None);
+        let saved = json_of(&fs::read_to_string(&file).unwrap());
+        assert_eq!(saved["values"], only_y);
+        assert_eq!(ask(&api, "POST", "/reset", "name=proc", "").0, 200);
+        frame();
+        assert_eq!(locked(), all, "back to the defaults");
+        api.host.switch(Some("other")).unwrap();
+        frame();
+        api.host.switch(Some("proc")).unwrap();
+        frame();
+        assert_eq!(locked(), none, "a new process");
     }
 
     #[test]

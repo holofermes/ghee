@@ -18,6 +18,12 @@ last frame, and back to defaults and a switch start every pass from black. The
 working copy lasts until ghee stops, and Save keeps its edits in the scene's
 [state file](#saved-edits).
 
+A param or a layer field locks from the moment that a procedural scene's
+program first sets it, and a layer that the program adds locks whole: its
+controls grey out, and the console keeps none of its edits. The locks last
+while the program runs, back to defaults included, and a switch away and
+back starts the program again with nothing locked.
+
 `--fps N` caps the frame rate of `ghee serve` and of `ghee render --serve`.
 
 The console draws while someone watches it: a page's preview, a viewer of

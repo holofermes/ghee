@@ -145,6 +145,7 @@
           border:1px solid var(--line); position:relative; touch-action:none;
           flex:none; cursor:crosshair}
   .vecpad svg{position:absolute; inset:0; pointer-events:none}
+  .locked .vecpad{pointer-events:none}
   .veccol{flex:1; display:flex; flex-direction:column; gap:6px; min-width:0}
   .vnums{display:flex; gap:6px}
   .vnums input{width:100%; min-width:0; background:var(--well);
@@ -257,6 +258,7 @@
   .tbtn.m.off{color:var(--ink)}
   /* a hidden pass, a hidden layer and a bypassed effect dim the same way */
   .tab.off .lbl, .lay.hid .tog, .locked, .fxrow.off>.strip, .pgroup.off, .row.off{opacity:.4}
+  .locked .locked{opacity:1}
   .pgroup{font:10px ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:14px 0 2px}
   .pgroup:first-child{margin-top:2px}
   .addwrap{display:inline-flex}
@@ -1136,6 +1138,7 @@ async function loadScene(name, own = true){
   if (err) unread = name;
   $("#scenes").value = name;
   curPass = 0; postErr = err; errOpen = null; layerUI.clear(); layerChanges = null; waiting = [];
+  LOCKS = locksOf(lastStats); shownLocks = canon(LOCKS);
   paintAll();
   askAside();
 }
@@ -1663,8 +1666,10 @@ function setLive(d, field, value, effect){
   sendLive(q);
 }
 function sendLive(q, scene = active){
-  edit("/set", scene, `scene=${enc(scene)}&${q}`)
-    .then(r => { if (r && !r.ok && r.status !== 409 && r.status !== 412 && scene === active) rebuildSoon(); });
+  edit("/set", scene, `scene=${enc(scene)}&${q}`).then(r => {
+    if (!r || r.ok || r.status === 409 || r.status === 412 || scene !== active) return;
+    if (r.status === 403) refresh(true); else rebuildSoon();
+  });
 }
 function rebuildSoon(){ clearTimeout(compileTimer); compileTimer = setTimeout(() => { compileTimer = null; postScene(); }, 350); }
 const liveColor = c => c == null ? "none" : isGrad(c) ? JSON.stringify(c) : Array.isArray(c) ? c.join(",") : c;
@@ -1801,14 +1806,15 @@ function colorKV(p, d){
   } else {
     v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff"), "color"));
   }
-  return kv;
+  return lockIf(kv, lockedField(d, "color"));
 }
 // two numbers on one line, each under its own key, an empty one left out
 function pairKV(p, d, a, b){
   const {kv, v} = KV(a), kb = el("span", "k2", b);
   markField(kv.firstChild, p, d, a); markField(kb, p, d, b);
   const n = k => keyed(num(d[k], placeholder(d, k), x => setKey(p, d, k, x), isLive(d, k)), k);
-  v.append(n(a), kb, n(b));
+  v.append(lockIf(n(a), lockedField(d, a)), lockIf(kb, lockedField(d, b)), lockIf(n(b), lockedField(d, b)));
+  lockIf(kv.firstChild, lockedField(d, a));
   return kv;
 }
 
@@ -1914,7 +1920,7 @@ function fxRow(p, d, f, redo){
       ? colorCtl(() => o.color == null ? fd.default : o.color, set, toHex(fd.default))
       : num(o[fd.key] == null ? fd.default : o[fd.key], "", set, fd.live));
     markSub(sb.firstChild, d, f, fd.key, x => { set(x); redo(); });
-    fields.appendChild(sb);
+    fields.appendChild(lockIf(sb, lockedField(d, fd.key, f)));
   });
   const acts = el("span", "fxacts");
   const eye = tbtn(off ? EYE_OFF : EYE, locked ? `${f} is not drawn under render slug` : own ? `${f} is bypassed, draw it` : `bypass ${f}`,
@@ -1923,7 +1929,7 @@ function fxRow(p, d, f, redo){
       setLive(d, "visible", String(own), f); redo();
     });
   eye.disabled = locked;
-  acts.append(eye, tbtn("×", `remove ${f}`, "x", () => { delete d[f]; postScene(); redo(); }));
+  acts.append(lockIf(eye, lockedField(d, "visible", f)), lockIf(tbtn("×", `remove ${f}`, "x", () => { delete d[f]; postScene(); redo(); }), lockedSub(d, f)));
   row.append(v, acts);
   return row;
 }
@@ -1987,9 +1993,26 @@ function strip(cls){
 // the layer draws: shown dimmed, every control in it disabled.
 function locked(node){
   node.classList.add("locked");
+  if (node.matches("input, select, textarea, button")) node.disabled = true;
   node.querySelectorAll("input, select, textarea, button").forEach(c => { c.disabled = true; });
   node.querySelectorAll("[role=button]").forEach(c => { c.setAttribute("aria-disabled", "true"); c.tabIndex = -1; });
   return node;
+}
+// ---- what the scene's program set, as /stats lists it under locked: each
+// param, each live field of a layer and each layer that it added or gave a
+// look locks the same way, until the program ends ----
+const NO_LOCKS = {params: [], fields: [], layers: []};
+let LOCKS = NO_LOCKS, shownLocks = canon(NO_LOCKS);
+const locksOf = s => (s && s.active === active && s.locked) || NO_LOCKS;
+const lockedParam = (pass, name) => LOCKS.params.includes(pass == null ? name : pass + "." + name);
+const lockedLayer = d => LOCKS.layers.includes(d.name);
+const lockedField = (d, field, effect) => lockedLayer(d) || LOCKS.fields.includes(d.name + "." + (effect ? effect + "." : "") + field);
+const lockedSub = (d, f) => lockedLayer(d) || LOCKS.fields.some(k => k.startsWith(d.name + "." + f + "."));
+const lockIf = (node, on) => on ? locked(node) : node;
+function paintLocks(){
+  shownLocks = canon(LOCKS);
+  if (!work || !work.passes || !work.passes.length) return;
+  buildParams(); relist();
 }
 // a closed text layer's words on one line: a newline shows as ↵
 const oneLine = t => t.split("\n").join("↵"), fromOneLine = t => t.split("↵").join("\n");
@@ -2008,7 +2031,7 @@ function numKV(p, d, key){
   const {kv, v} = KV(key);
   markField(kv.firstChild, p, d, key);
   v.appendChild(keyed(num(d[key], placeholder(d, key), x => setKey(p, d, key, x), isLive(d, key)), key));
-  return kv;
+  return lockIf(kv, lockedField(d, key));
 }
 // a shape's fill: white unless set, and a rect's turns off, which writes
 // transparent
@@ -2017,7 +2040,7 @@ function fillKV(p, d){
   markField(kv.firstChild, p, d, "color");
   v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff",
     d.shape === "rect" ? "transparent" : undefined), "color"));
-  return kv;
+  return lockIf(kv, lockedField(d, "color"));
 }
 // A rect's border, an object like an effect: its fields, an eye and a ×. A
 // border removed here comes back as it was, and else as the default layer's.
@@ -2045,14 +2068,14 @@ function borderKV(p, d, redo){
   const sc = sub("color", colorCtl(() => o.color == null ? bc : o.color, set("color", bc), bc));
   markSub(sw.firstChild, d, "border", "width", x => { set("width", bw)(x); redo(); });
   markSub(sc.firstChild, d, "border", "color", x => { set("color", bc)(x); redo(); });
-  v.append(sw, sc);
+  v.append(lockIf(sw, lockedField(d, "width", "border")), lockIf(sc, lockedField(d, "color", "border")));
   const acts = el("span", "fxacts");
   acts.append(
-    tbtn(off ? EYE_OFF : EYE, off ? "border is bypassed, draw it" : "bypass border", "m" + (off ? " off" : ""), () => {
+    lockIf(tbtn(off ? EYE_OFF : EYE, off ? "border is bypassed, draw it" : "bypass border", "m" + (off ? " off" : ""), () => {
       if (off) delete o.visible; else o.visible = false;
       setLive(d, "visible", String(off), "border"); redo();
-    }),
-    tbtn("×", "remove border", "x", () => { u.border = o; delete d.border; postScene(); redo(); }));
+    }), lockedField(d, "visible", "border")),
+    lockIf(tbtn("×", "remove border", "x", () => { u.border = o; delete d.border; postScene(); redo(); }), lockedSub(d, "border")));
   kv.appendChild(acts);
   return kv;
 }
@@ -2073,7 +2096,7 @@ function pointsKV(p, d, redo){
   });
   box.appendChild(addBtn("+ point", () => { pts.push(pts[pts.length - 1].slice()); send(); redo(); }));
   v.appendChild(box);
-  return kv;
+  return lockIf(kv, lockedField(d, "points"));
 }
 // Switching shape puts the old shape's own keys aside and brings the new
 // one's back, as GET /format lists each shape's keys. A line needs two points.
@@ -2109,26 +2132,26 @@ function layerCard(p, d){
     ctl.setAttribute("aria-label", key);
     const l = el("label", "hk");
     l.append(markField(el("span", null, key), p, d, key), ctl);
-    sels.appendChild(l);
+    sels.appendChild(lockIf(l, lockedField(d, key)));
   };
   hk("blend", pick(BLENDS, d.blend || "normal", x => setKey(p, d, "blend", x === "normal" ? null : x)));
   if (kind === "text") hk("render", pick(RENDERS, renderOf(d), x => { setKey(p, d, "render", x === defaultRender(d) ? null : x); redo(); }));
   hk("opacity", num(d.opacity == null ? 1 : d.opacity, "", x => setKey(p, d, "opacity", x == null || x === 1 ? null : x), true, {min: 0, max: 1, step: 0.05}));
   const acts = el("span", "lacts");
   if (!proc) acts.appendChild(tbtn(PENCIL, "rename", "", () => renameLayer(p, d)));
-  acts.appendChild(tbtn(hidden ? EYE_OFF : EYE, hidden ? `layer ${d.name} is hidden, show it` : `hide layer ${d.name}`, "m" + (hidden ? " off" : ""), () => {
+  acts.appendChild(lockIf(tbtn(hidden ? EYE_OFF : EYE, hidden ? `layer ${d.name} is hidden, show it` : `hide layer ${d.name}`, "m" + (hidden ? " off" : ""), () => {
     setKey(p, d, "visible", hidden ? null : false); redo();
-  }));
+  }), lockedField(d, "visible")));
   if (!proc) acts.appendChild(tbtn("×", `remove layer ${p.name} › ${d.name}`, "x", () => delLayer(p, d)));
   st.appendChild(tog);
   const images = imageAssets(), look = n => hidden ? locked(n) : n;
   if (!u.open){
     // a closed shape shows its colour, the one control that fits beside its name on a phone
-    if (shape) st.appendChild(look(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff"), "color")));
+    if (shape) st.appendChild(lockIf(look(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff"), "color")), lockedField(d, "color")));
     else if (img){
       const s = pick(images, d.image, x => setKey(p, d, "image", x));
       s.setAttribute("aria-label", "image");
-      st.appendChild(s);
+      st.appendChild(lockIf(s, lockedField(d, "image")));
     } else {
       const send = wordsTo(p, d), w = el("input", "ctl hword");
       w.type = "text"; w.spellcheck = false; w.value = oneLine(d.text || ""); w.setAttribute("aria-label", "text");
@@ -2136,7 +2159,7 @@ function layerCard(p, d){
       w.addEventListener("change", () => send(fromOneLine(w.value), true));
       // focus scrolls the strip to the field, and done editing, the name shows again
       w.addEventListener("blur", () => st.scrollTo({left: 0, behavior: "smooth"}));
-      st.appendChild(w);
+      st.appendChild(lockIf(w, lockedField(d, "text")));
     }
   }
   st.append(look(sels), el("span", "lsp"));
@@ -2149,7 +2172,8 @@ function layerCard(p, d){
     st.appendChild(mv);
   }
   head.append(st, acts); card.appendChild(head);
-  if (!u.open) return card;
+  const whole = () => lockedLayer(d) && [...st.children].filter(c => c !== tog).concat(card.querySelector(".lbody") || []).forEach(locked);
+  if (!u.open){ whole(); return card; }
 
   const body = el("div", "lbody"), kvs = el("div", "kvs");
   if (shape){
@@ -2168,12 +2192,14 @@ function layerCard(p, d){
     const tint = KV("color");
     markField(tint.kv.firstChild, p, d, "color");
     tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", null), "color"));
-    kvs.append(kv, look(pairKV(p, d, "x", "y")), look(pairKV(p, d, "width", "height")), look(tint.kv));
+    kvs.append(lockIf(kv, lockedField(d, "image")), look(pairKV(p, d, "x", "y")), look(pairKV(p, d, "width", "height")),
+      look(lockIf(tint.kv, lockedField(d, "color"))));
   } else {
     // a text layer's words are content: saved, and back to defaults restores
     // them, and never marked
     const {kv, v} = KV("text"), send = wordsTo(p, d);
     v.appendChild(words(() => d.text || "", send, "text"));
+    lockIf(kv, lockedField(d, "text"));
     const fam = KV("font_family");
     markField(fam.kv.firstChild, p, d, "font_family");
     fam.v.appendChild(keyed(pick(fontNames(), fontOf(d), x => { setKey(p, d, "font_family", fontValue(x)); redo(); }), "font_family"));
@@ -2185,6 +2211,7 @@ function layerCard(p, d){
   body.appendChild(kvs);
   if (kind === "text") body.appendChild(look(fxBlock(p, d)));   // an image or a shape layer takes no effects
   card.appendChild(body);
+  whole();
   return card;
 }
 
@@ -2631,14 +2658,22 @@ function buildParams(){
   const grouped = (sceneNames.length ? 1 : 0) + passGroups > 1;
   if (sceneNames.length){
     if (grouped) box.appendChild(el("div", "pgroup", "scene"));
-    sceneNames.forEach(name=>{ buildParamRow(box, sceneParams[name], name, null); any = true; });
+    sceneNames.forEach(name=>{
+      const from = box.children.length;
+      buildParamRow(box, sceneParams[name], name, null); any = true;
+      if (lockedParam(null, name)) [...box.children].slice(from).forEach(locked);
+    });
   }
   work.passes.forEach(p=>{
     const names = paramNames(p.params);
     if (!names.length) return;
     const from = box.children.length;
     if (grouped) box.appendChild(el("div", "pgroup", (p.filter ? "ƒ " : "") + p.name));
-    names.forEach(name=>{ buildParamRow(box, p.params[name], name, p.name); any = true; });
+    names.forEach(name=>{
+      const at = box.children.length;
+      buildParamRow(box, p.params[name], name, p.name); any = true;
+      if (lockedParam(p.name, name)) [...box.children].slice(at).forEach(locked);
+    });
     // a hidden pass keeps its params, dimmed as its tab is
     if (p.visible === false) [...box.children].slice(from).forEach(c => c.classList.add("off"));
   });
@@ -2661,7 +2696,9 @@ async function postScene(){
 }
 // A live value for scene `scene`, the one this page showed when it built the
 // control.
-function setParam(scene, q){ edit("/set", scene, `scene=${enc(scene)}&${q}`); }
+function setParam(scene, q){
+  edit("/set", scene, `scene=${enc(scene)}&${q}`).then(r => { if (r && r.status === 403 && scene === active) refresh(true); });
+}
 // The server refuses an edit for scene `from` once the console is on another
 // scene. The page then shows that scene as it runs, and posts nothing, so it
 // overwrites no edit made elsewhere.
@@ -2915,6 +2952,8 @@ async function poll(){
       layerChanges = s.layer_changes;
       if (isProcedural()) followScene();
     } else if (letGo()) followScene();
+    LOCKS = locksOf(s);
+    if (canon(LOCKS) !== shownLocks && !inUse() && !busyLayers().length) paintLocks();
     if (s.rev != null && known != null && s.rev !== known && s.active === active && settled() && $("#behind").hidden) refresh();
     refreshInfo(); applyRotation(); showErrors();
   }catch(_){ pollFails++; }

@@ -23,7 +23,8 @@ error.
 ## Read
 
 - `GET /stats`: `{fps, frame_ms, stream_fps, out, error, error_line,
-  error_pass, text_errors, active, display, stale, layer_changes, rev}`.
+  error_pass, text_errors, active, display, stale, layer_changes, rev,
+  locked}`.
   `active` is the scene of the last switch, even one that failed to compile,
   and `rev` is its revision. While the active scene fails to compile, ghee
   keeps drawing the last program that compiled. On a compile error,
@@ -35,7 +36,11 @@ error.
   changes that the program behind the scene made to its layers: a drawing
   that added a layer or gave one a new look, or a field that a tick or the
   Python host set. A client that shows the layers reads `GET /scene` again
-  when the count or `rev` moves.
+  when the count or `rev` moves. `locked` holds what the program behind
+  the active scene set since it started, each in a list: `params`, a scene
+  param by its name and a param of a pass as `pass.name`, `fields`, each
+  live field of a layer as `layer.field` or `layer.effect.field`, and
+  `layers`, each layer that the program added or gave a look.
 - `GET /stats?usage=1`: the same, with what the ghee process uses, read
   from files that it may read without root, at this request alone:
   - `rss_mib`: the process's resident set, in MiB.
@@ -109,6 +114,11 @@ changed after `rev` answers 412, `this scene changed since you loaded it`,
 and changes nothing. A page's own changes never make its `rev` stale, so a
 slider's sets, sent before the last one answers, all land. An edit with no
 `rev` is never refused this way.
+
+A param, a live field or a layer that `locked` in `GET /stats` lists stays
+the program's while it runs: a `/set` of it answers 403, `the scene's
+program sets param 'main.amt'`, and an apply and a save leave its value out
+of the working copy's edits.
 
 - `POST /set?scene=&pass=&name=&value=`: sets a live param, with no recompile.
   `pass=` names the pass that holds the param. With no `pass=`, `name` is the

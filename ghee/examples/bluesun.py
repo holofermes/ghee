@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ghee-render", "numpy", "pillow"]
+# dependencies = ["ghee-render"]
 # ///
 """Blue Sun: a wall of light pipes, and the wall that the pipes light.
 
@@ -10,14 +10,13 @@ surface near it. It costs two atan for each pixel. The integral gives a pool
 that is sharp under a tube and soft far away. The scene needs no blur radius and
 no falloff curve, and `standoff` moves the pool.
 
-Lengths are in wall units, where the frame is 1.0 tall.
+Lengths are in wall units, where the frame is 1.0 tall. The image layer
+`picture` holds the wall's picture, and its `image` takes another .png or .jpg
+live.
 
     ghee render --demo bluesun -o out.####.png --frames 60
     ghee render --demo bluesun --display kms -- --emit 480x300
 """
-
-import os
-import sys
 
 import ghee
 
@@ -50,13 +49,9 @@ ARGS = [
 
 args = ghee.args(ARGS)
 
-# Slow imports come after the parse: the probe must answer inside its window.
-import numpy as np  # noqa: E402
-from PIL import Image  # noqa: E402
-
 SEG = (72, 128)  # segment table: columns are segments, rows are rays, twice over
 
-WALL = (256, 256)  # the wall texture, one mono float per texel
+WALL = (256, 256)  # the buffer of the pass `wall`, which the picture fills
 
 
 # an RGBA8 buffer clips at 1.0, so the wall stores the form factor E/(pi L),
@@ -396,11 +391,12 @@ SHADER_MAIN = """
 void main() {
     vec4 s = texture2D(iChannel0, uv);          // wall form factor, a = openness
     s.rgb *= s.rgb;                             // undo the wash's sqrt encode
-    // the wall itself: a mono texture riding the albedo, sampled in wall
+    // the wall itself: the picture's luma riding the albedo, sampled in wall
     // coordinates so it stays put under zoom and pan
     float zm = max(zoom, 0.05);
     vec2 Pw = (uv - 0.5) * vec2(ASPECT, 1.0) / zm + pan;
-    float wt = wall_sample2(fract(Pw * wall_scale + 0.5));
+    float wt = dot(texture2D(iChannel2, fract(Pw * wall_scale + 0.5)).rgb,
+                   vec3(0.299, 0.587, 0.114));
     vec3 alb = albedo * mix(1.0, wt, wall_mix);
     vec3 t = texture2D(iChannel1, uv).rgb * GAIN_MAX;
 
@@ -460,13 +456,24 @@ def build(a):
                 },
             ),
             ghee.Pass(
+                name="wall",
+                size=WALL,
+                layers=[
+                    ghee.Layer(
+                        "picture", image="plaster.png", width=WALL[0], height=WALL[1]
+                    )
+                ],
+            ),
+            ghee.Pass(
                 name="main",
                 fragment=SHADER_MAIN,
-                channels=[ghee.Channel(buffer="wash"), ghee.Channel(buffer="tube")],
-                arrays=[ghee.ArrayInput("wall", WALL)],
+                channels=[
+                    ghee.Channel(buffer="wash"),
+                    ghee.Channel(buffer="tube"),
+                    ghee.Channel(buffer="wall"),
+                ],
                 params={
                     "albedo": ghee.Param("albedo", "color", [0.7098, 0.7098, 0.7098]),
-                    "wall_img": ghee.Param("wall_img", "string", ""),
                     "wall_mix": p("wall_mix", 1.0, 0.0, 1.0, 0.01),
                     "wall_scale": p("wall_scale", 0.45, 0.1, 8.0, 0.05),
                     "ambient": p("ambient", 0.085, 0.0, 0.5, 0.005),
@@ -525,50 +532,6 @@ def build(a):
             "pan": ghee.Param("pan", "vec2", [0.0, 0.0], min=-1.0, max=1.0, step=0.002),
         },
     )
-
-
-def _texture(size, path):
-    """The wall surface.
-
-    `path` names an image, and an unreadable one gives a soft plaster noise
-    instead. The values are mono floats, and multiply into the albedo.
-    """
-    w, h = size
-    if path:
-        try:
-            img = Image.open(os.path.expanduser(path)).convert("L")
-            a = np.asarray(img.resize((w, h)), np.float32) / 255.0
-            return a.reshape(-1)
-        except OSError as e:
-            # stdout belongs to the wire, so anything for a human goes to stderr
-            print(f"wall_img {path!r}: {e}", file=sys.stderr)
-    rng = np.random.default_rng(7)
-    base = rng.random((24, 24)).astype(np.float32)
-    soft = np.asarray(
-        Image.fromarray(base, "F").resize((w, h), Image.BILINEAR), np.float32
-    )
-    grain = rng.random((h, w)).astype(np.float32)
-    a = 0.75 + (soft - 0.5) * 0.4 + (grain - 0.5) * 0.06
-    return np.clip(a, 0.0, 1.0).reshape(-1)
-
-
-_wall = {"img": "", "pending": True}
-
-
-@ghee.feed("wall")
-def wall(tick):
-    """The texture holds until wall_img names another file.
-
-    This feed sends the texture once, and again on each change.
-    """
-    img = tick.params.get("wall_img")
-    if img is not None and img != _wall["img"]:
-        _wall["img"] = img
-        _wall["pending"] = True
-    if not _wall["pending"]:
-        return None
-    _wall["pending"] = False
-    return _texture(WALL, _wall["img"])
 
 
 ghee.run(build(args))

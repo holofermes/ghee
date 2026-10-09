@@ -401,6 +401,10 @@ A Rust host written for 0.4.0 needs these changes.
   `canvas` that `main` reads, where Pillow drew it into an array. The
   layer's `text` sets the word, where the param `text` set it, and
   `text_height` starts at 0.57, which draws the word as tall as Pillow did.
+- Draw `--demo bluesun`'s wall with the image layer `picture`, from
+  `plaster.png` in the pass `wall` that `main` reads, where Pillow made the
+  plaster. The layer's `image` takes another picture, where the param
+  `wall_img` named one.
 
 ### Python
 

@@ -745,9 +745,11 @@ A Rust host written for 0.4.0 needs these changes.
   stale edit, and read the scene and its edits again at a tap. With no edit
   in flight, the page reads the scene again when `rev` on `/stats` moves, and
   leaves alone the layer in use. `files changed · reload` keeps the edits.
-- Size a pass in its size row: the frame, pixels, or a scale of the frame,
-  applied on release. The row is locked on the pass that draws last and on
-  a procedural scene.
+- Size a pass in the settings that its gear opens, beside its pencil: the
+  size it renders at in pixels, then `output`, pixels or a scale of the
+  frame, applied on release, and its sampling, `bilinear`, or `trilinear`
+  for the pass's `mipmaps`. The settings show the size alone on the last
+  pass, on a filter and on a procedural scene.
 - Take the effects' fields and defaults, a border's defaults, the live
   fields, what an empty field takes, each shape's keys, the built-in fonts
   and each font's render from `GET /format`, and the device's rows of

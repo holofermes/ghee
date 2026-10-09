@@ -360,6 +360,7 @@ impl Console {
         index: Arc<Index>,
         size: (i32, i32),
         format: &str,
+        rotate: i64,
         gpu: Value,
         out: Vec<String>,
         stream_longest: i32,
@@ -376,7 +377,7 @@ impl Console {
             looks: Mutex::new(Vec::new()),
             look_error: Mutex::new(String::new()),
             display: serde_json::json!({
-                "w": size.0, "h": size.1, "format": format, "rotation": 0
+                "w": size.0, "h": size.1, "format": format, "rotation": rotate
             }),
             gpu,
             out,

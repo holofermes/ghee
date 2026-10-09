@@ -3188,7 +3188,7 @@ pub fn run(opts: Options) -> Result<()> {
         .collect();
     console.arrays = arrays;
     lock(&console.stat).display =
-        serde_json::json!({"w": size.0, "h": size.1, "format": "rgba", "rotation": 0});
+        serde_json::json!({"w": size.0, "h": size.1, "format": "rgba", "rotation": rotate});
     console.ask(&names[0]);
     let console = Arc::new(console);
     console.reset_stats();
@@ -5452,6 +5452,48 @@ mod tests {
         assert_eq!(n, 3);
         assert!(wall > 0.0);
         assert_eq!(out, ["bound"]);
+    }
+
+    /// A sink that reads GET /stats from the console on `port` at the first
+    /// frame that it takes.
+    struct StatsAt(u16, Rc<RefCell<Value>>);
+
+    impl Output for StatsAt {
+        fn write(&mut self, _frame: Frame<'_>) -> Result<()> {
+            use std::io::Read;
+            if self.1.borrow().is_null() {
+                let mut s = std::net::TcpStream::connect(("127.0.0.1", self.0))?;
+                s.write_all(b"GET /stats HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")?;
+                let mut out = String::new();
+                s.read_to_string(&mut out)?;
+                let body = out.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+                *self.1.borrow_mut() = serde_json::from_str(body)?;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn stats_say_how_far_the_console_turns_the_frame() {
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
+        let (_d, console) = tmp_console("rotate");
+        let port = free_port();
+        let stats = Rc::new(RefCell::new(Value::Null));
+        let ran = run(Options {
+            store: Some(SceneStore::new(&console.store.dir, Vec::new())),
+            port,
+            size: (32, 24),
+            rotate: 90,
+            frames: 1,
+            sinks: vec![Box::new(StatsAt(port, Rc::clone(&stats)))],
+            ..Options::default()
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        assert_eq!(
+            stats.borrow()["display"],
+            serde_json::json!({"w": 32, "h": 24, "format": "rgba", "rotation": 90})
+        );
     }
 
     #[test]

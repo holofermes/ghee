@@ -829,6 +829,9 @@ A Rust host written for 0.4.0 needs these changes.
 - Say whether the GPU mipmaps a size that is not a power of two in
   `mipmaps_npot` under `gpu` on `GET /stats`, and grey out `trilinear` in a
   pass's settings at a size that the GPU cannot mipmap.
+- Give the degrees of `--rotate` in `rotation` under `display` on
+  `GET /stats`, where it read 0 and a pass's settings showed its size in
+  pixels with the sides swapped at 90 and 270.
 
 ### Displays and H264
 

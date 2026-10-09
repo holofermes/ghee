@@ -194,6 +194,18 @@ def test_the_console_publishes_the_render(served):
     assert json_of(port, "/stats")["skipped"] == 1
 
 
+def test_the_console_gives_the_turn_of_the_frame():
+    port = free_port()
+    with ghee.open(RED, width=32, height=24, rotate=90, serve=port) as h:
+        h.frame()
+        assert json_of(port, "/stats")["display"] == {
+            "w": 32,
+            "h": 24,
+            "format": "rgba",
+            "rotation": 90,
+        }
+
+
 def test_the_console_serves_the_scene_it_renders(served):
     _, port = served
     assert json_of(port, "/scenes") == {

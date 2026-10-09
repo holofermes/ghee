@@ -30,7 +30,9 @@ error.
   keeps drawing the last program that compiled. On a compile error,
   `error_pass` is the index of the pass that holds the error, or `"common"`
   for the common block, and `error_line` counts from the first line of that
-  GLSL. `text_errors` lists the problems of the scene's text layers, one
+  GLSL. `display` holds the frame as the outputs take it: `w` and `h` in
+  pixels, `format`, and `rotation`, the degrees clockwise of `--rotate`.
+  `text_errors` lists the problems of the scene's text layers, one
   line each, such as `layer 'title': 'X' has more than 64 curves in one
   band`. A text problem leaves the scene running. `layer_changes` counts the
   changes that the program behind the scene made to its layers: a drawing

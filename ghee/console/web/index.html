@@ -737,10 +737,11 @@ function refreshInfo(){
   if (s && s.soc_celsius != null) row(dev, "soc", statNum(s.soc_celsius, 1, " °C"));
 }
 
+// The preview arrives turned by the display's rotation, and this turns it
+// again in this browser alone.
 function effectiveRotation(){
   const o = localStorage.getItem("ghee:rotation");
-  if (o !== null) return ((parseInt(o,10)%360)+360)%360;
-  return (lastDisplay && lastDisplay.rotation) ? lastDisplay.rotation : 0;
+  return o === null ? 0 : ((parseInt(o,10)%360)+360)%360;
 }
 function inlineBox(){
   const stage = SCREEN.parentElement, sc = getComputedStyle(stage), bc = getComputedStyle(SCREEN);

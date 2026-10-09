@@ -591,6 +591,7 @@ impl Session {
                     Arc::clone(&index),
                     (w, h),
                     &format,
+                    rotate,
                     gpu_caps(&renderer),
                     out,
                     longest,

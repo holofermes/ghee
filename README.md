@@ -896,12 +896,12 @@ GLSL:
 ```
 
 `values` is a JSON merge patch over the scene by name: `params` holds the
-scene params' values, `passes` each pass's `params`, `visible`, `size` and
-`scale`, and `layers` each layer's settings and effects, as a layer's JSON
-holds them. `null` removes a key. `items` holds each edit of code or structure
-whole, with `base`, the hash of the same item in the files that it was made
-against: a pass's `fragment`, `channels` and `layers`, the `common` block, the
-`passes`, an added `param`, and the `filters`.
+scene params' values, `passes` each pass's `params`, `visible`, `size`,
+`scale` and `mipmaps`, and `layers` each layer's settings and effects, as a
+layer's JSON holds them. `null` removes a key. `items` holds each edit of code
+or structure whole, with `base`, the hash of the same item in the files that it
+was made against: a pass's `fragment`, `channels` and `layers`, the `common`
+block, the `passes`, an added `param`, and the `filters`.
 
 A value whose pass, layer or param is gone is skipped, with one line in the
 log, and the next save drops it. An item whose `base` no longer matches the

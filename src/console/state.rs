@@ -563,9 +563,11 @@ pub fn diff(defaults: &Value, working: &Value, procedural: bool) -> Edits {
         if !changed.is_empty() {
             values.insert("params".to_string(), Value::Object(changed));
         }
-        let visible = |p: &Value| p.get("visible").and_then(Value::as_bool).unwrap_or(true);
-        if visible(dp) != visible(wp) {
-            values.insert("visible".to_string(), Value::from(visible(wp)));
+        for (key, absent) in [("visible", true), ("mipmaps", false)] {
+            let flag = |p: &Value| p.get(key).and_then(Value::as_bool).unwrap_or(absent);
+            if flag(dp) != flag(wp) {
+                values.insert(key.to_string(), Value::from(flag(wp)));
+            }
         }
         for key in ["size", "scale"] {
             if !same_opt(dp.get(key), wp.get(key)) {
@@ -836,7 +838,7 @@ fn put_pass(doc: &mut Value, name: &str, v: &Value) -> Vec<String> {
         .as_object()
         .into_iter()
         .flatten()
-        .filter(|(k, _)| ["visible", "size", "scale"].contains(&k.as_str()))
+        .filter(|(k, _)| ["visible", "size", "scale", "mipmaps"].contains(&k.as_str()))
         .collect();
     if let (false, Some(p)) = (keys.is_empty(), pass_mut(doc, name)) {
         let mut next = Value::Object(p.clone());
@@ -1058,5 +1060,29 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(apply(&d, &edits, "clocks").doc, w);
+    }
+
+    #[test]
+    fn a_pass_s_mipmaps_save_as_true_or_false_and_load_back() {
+        let with = |m: Option<bool>| {
+            let mut s = clocks();
+            if let Some(m) = m {
+                s["passes"][0]["mipmaps"] = json!(m);
+            }
+            s
+        };
+        let saved = |m: bool| json!({"passes": {"main": {"mipmaps": m}}});
+        // the default's mipmaps, the working copy's, and the saved values
+        for (d, w, want) in [
+            (None, Some(true), saved(true)),
+            (Some(true), None, saved(false)),
+            (None, Some(false), json!({})),
+        ] {
+            let edits = diff(&with(d), &with(w), false);
+            assert_eq!(Value::Object(edits.values.clone()), want, "{d:?} {w:?}");
+            let loaded = apply(&with(d), &edits, "clocks").doc;
+            let on = loaded["passes"][0].get("mipmaps").and_then(Value::as_bool);
+            assert_eq!(on.unwrap_or(false), w.unwrap_or(false), "{d:?} {w:?}");
+        }
     }
 }

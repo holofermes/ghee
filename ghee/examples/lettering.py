@@ -13,11 +13,10 @@ size of each row, and an edge stays one pixel wide at any size.
 
 The tick hook steps the words through WORDS: it sets the layer's text
 through `ghee.layers`, and ghee lays out each new entry with no recompile.
-Words set in the console end the steps.
 
     ghee render --demo lettering -o out.####.png --frames 60 --timestep 0.1
     ghee render --demo lettering --display kms
-    ghee render --demo lettering --serve            # type the words live
+    ghee render --demo lettering --serve
 """
 
 import ghee
@@ -84,20 +83,12 @@ def build():
     )
 
 
-_steps = {"words": WORDS[0], "on": True}
+_steps = {"words": WORDS[0]}
 
 
 @ghee.tick
 def step(tick):
-    """Step `words` through WORDS until the console sets words of its own.
-
-    The first tick carries the words as the scene declares them.
-    """
-    given = tick.params.get("words.text")
-    if given is not None and given != _steps["words"]:
-        _steps["on"] = False
-    if not _steps["on"]:
-        return
+    """Step `words` through WORDS."""
     word = WORDS[int(tick.time / HOLD) % len(WORDS)]
     if word != _steps["words"]:
         _steps["words"] = word

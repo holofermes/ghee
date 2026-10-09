@@ -391,6 +391,8 @@ A Rust host written for 0.4.0 needs these changes.
   `--demo text`, which rasterizes its words in Pillow, to `--demo marquee`.
   Add `ghee/examples/nowplaying.py`, an artist and a title laid out from
   `ghee.render_size()`, so one scene fits a 128x32 and a 256x64 panel.
+- Step `--demo lettering` through its words whatever the console sets,
+  where words set in the console ended the steps.
 
 ### Python
 

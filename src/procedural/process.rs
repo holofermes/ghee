@@ -683,7 +683,8 @@ pub struct SceneProcess {
     /// messages, and the layers that it added or gave a look.
     fields: HashSet<String>,
     whole: HashSet<String>,
-    /// Where each first set lands, for a console that locks them.
+    /// Where each first set lands, for a console that locks them, emptied
+    /// when the process ends.
     locks: Option<Arc<Mutex<Locks>>>,
     /// The scene was set up again, so update() sets every kept value again.
     rebuilt: bool,
@@ -832,7 +833,8 @@ impl SceneProcess {
     }
 
     /// Record in `locks` each param, live field and layer that the process
-    /// sets from now on, once, at its first set.
+    /// sets from now on, once, at its first set, and empty `locks` when the
+    /// process ends.
     pub(crate) fn lock_into(&mut self, locks: Arc<Mutex<Locks>>) {
         self.locks = Some(locks);
     }
@@ -1162,6 +1164,9 @@ impl SceneProcess {
                 false => fault,
             };
             self.dead = Some(self.epitaph(&why));
+            if let Some(locks) = self.locks.take() {
+                *lock(&locks) = Locks::default();
+            }
         }
     }
 
@@ -3236,6 +3241,35 @@ while IFS= read -r line; do :; done
         for name in ["title", "slow", "odd", "same"] {
             assert!(lock(&locks).layer(name), "{name}");
         }
+    }
+
+    #[test]
+    fn the_locks_of_a_scene_process_end_when_it_exits() {
+        let d = tmpdir("locks");
+        let doc = r#"{"version": 1, "params": {"amt": {"type": "float", "value": 0}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}"#;
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            numbers("amt", &[0.5]),
+            "read -r line\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "locks", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        let locks = Arc::new(Mutex::new(Locks::default()));
+        f.lock_into(Arc::clone(&locks));
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            f.incoming.iter().any(|(n, _)| n == "amt")
+        }));
+        f.update(&mut Stub::default(), 0, 0.0).unwrap();
+        assert!(lock(&locks).param(None, "amt"));
+        // the script exits once it reads a tick
+        assert!(wait_until(Duration::from_secs(5), || f
+            .tick(1, 0.0, 1.0 / 60.0)
+            .is_err()));
+        assert_eq!(*lock(&locks), Locks::default());
     }
 
     #[test]

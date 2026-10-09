@@ -3507,7 +3507,8 @@ mod tests {
         // NotoColorEmoji-Smiles U+1F600 and U+1F642 in colour. Each row is the
         // layer's font, the emoji font, the words, and the characters drawn
         // as glyphs and as colour glyphs, with the index of their font: the
-        // layer's own, then the emoji font.
+        // layer's own, then the emoji font. The words lay out alone, and
+        // through the measures that one Glyphs keeps of the fonts.
         let dir = crate::testing::TempDir::new("layer-emoji");
         let smiles = Some("NotoColorEmoji-Smiles.ttf");
         let heart = Some("DejaVuSans-Heart.ttf");
@@ -3536,18 +3537,21 @@ mod tests {
             (heart, smiles, "\u{2764}\u{fe0f}", &[('\u{2764}', 0)], &[]),
             (None, smiles, "A", &[('A', 0)], &[]),
         ];
+        let mut kept = text::Glyphs::default();
         for (own, emoji, words, glyphs, colour) in rows {
             let l = falling_back(&dir, own, emoji, words);
-            let laid = l.build(words).unwrap();
-            assert_eq!(laid.faults, [], "{words:?}");
-            let built = laid.built.unwrap();
-            let of = |ps: &[text::Placement]| -> Vec<(char, usize)> {
-                ps.iter().map(|p| (p.ch, p.font)).collect()
-            };
-            assert_eq!(of(&built.glyphs), glyphs, "{words:?} with {emoji:?}");
-            assert_eq!(of(&built.colour), colour, "{words:?} with {emoji:?}");
-            if emoji.is_none() {
-                assert_eq!(built.glyphs[1].gid, 0);
+            let through = l.lay_out(words, text::Curves::Own, &mut kept);
+            for laid in [l.build(words).unwrap(), through.unwrap()] {
+                assert_eq!(laid.faults, [], "{words:?}");
+                let built = laid.built.unwrap();
+                let of = |ps: &[text::Placement]| -> Vec<(char, usize)> {
+                    ps.iter().map(|p| (p.ch, p.font)).collect()
+                };
+                assert_eq!(of(&built.glyphs), glyphs, "{words:?} with {emoji:?}");
+                assert_eq!(of(&built.colour), colour, "{words:?} with {emoji:?}");
+                if emoji.is_none() {
+                    assert_eq!(built.glyphs[1].gid, 0);
+                }
             }
         }
         // A layer whose font failed to load draws an error box for each

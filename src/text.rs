@@ -474,7 +474,7 @@ struct Glyph {
     min: [f64; 2],
     size: [f64; 2],
     /// p2 lies within OFFSET_MAX steps of p3 on both axes.
-    curves: Vec<Curve>,
+    curves: Arc<[Curve]>,
 }
 
 /// The closed contours of glyph `gid` in em, y up, none for a glyph with no
@@ -525,7 +525,7 @@ fn glyph(face: &Face, gid: GlyphId) -> std::result::Result<Option<Glyph>, String
             return Err(format!("spans more than {} em", CORNER_OFFSET - INK_MARGIN));
         }
     }
-    let curves = on_lattice(&quads, min, size);
+    let curves = on_lattice(&quads, min, size).into();
     Ok(Some(Glyph { min, size, curves }))
 }
 
@@ -746,7 +746,7 @@ fn error_box() -> Glyph {
     Glyph {
         min: [0.0; 2],
         size: ERROR_BOX,
-        curves: on_lattice(&quads, [0.0; 2], ERROR_BOX),
+        curves: on_lattice(&quads, [0.0; 2], ERROR_BOX).into(),
     }
 }
 
@@ -887,6 +887,148 @@ fn pair_advance(lookup: Lookup, l: GlyphId, r: GlyphId) -> Option<i16> {
         })
 }
 
+/// The font that draws a character, as pick_before() finds it: its index,
+/// its units per em, and its glyph for the character.
+type Pick = Option<(usize, f64, Option<GlyphId>)>;
+
+/// What a layout reads of a text's fonts.
+trait Measures {
+    /// The first baseline below the top of a block and the height of a
+    /// line, in em, as face_lines() gives them.
+    fn lines(&mut self) -> (f64, f64);
+    /// The font that draws `ch` with `next` after it.
+    fn pick(&mut self, ch: char, next: Option<char>) -> Pick;
+    /// The advance of glyph `gid` of font `f`, in the font's units.
+    fn advance(&mut self, f: usize, gid: GlyphId) -> f64;
+    /// The kerning of glyph `l` then glyph `r` of font `f`, in the font's
+    /// units.
+    fn kern(&mut self, f: usize, l: GlyphId, r: GlyphId) -> f64;
+}
+
+impl Measures for &Faces<'_> {
+    fn lines(&mut self) -> (f64, f64) {
+        face_lines(self)
+    }
+
+    fn pick(&mut self, ch: char, next: Option<char>) -> Pick {
+        pick_before(self, ch, next).map(|(f, face, g)| (f, f64::from(face.units_per_em()), g))
+    }
+
+    fn advance(&mut self, f: usize, gid: GlyphId) -> f64 {
+        self[f].as_ref().map_or(0.0, |face| {
+            f64::from(face.glyph_hor_advance(gid).unwrap_or(0))
+        })
+    }
+
+    fn kern(&mut self, f: usize, l: GlyphId, r: GlyphId) -> f64 {
+        self[f].as_ref().map_or(0.0, |face| kerning(face, l, r))
+    }
+}
+
+/// The measures that a Glyphs keeps of a list of fonts that all parse, as
+/// layouts read them: the lines, and by each character, glyph and pair of
+/// glyphs, what the fonts gave for it. Each map holds METRICS_KEEP entries
+/// at most: the next one starts it again.
+struct Metrics {
+    lines: (f64, f64),
+    /// True for each font that kerns, through GPOS or its `kern` table.
+    kerns_any: Vec<bool>,
+    /// By the character, and true when U+FE0F follows it.
+    picks: HashMap<(char, bool), Pick>,
+    /// By the index of the font and the glyph id.
+    advances: HashMap<(usize, u16), f64>,
+    /// By the index of the font and the two glyph ids.
+    kerns: HashMap<(usize, u16, u16), f64>,
+}
+
+/// The most entries that each map of a Metrics holds.
+const METRICS_KEEP: usize = 4096;
+
+impl Metrics {
+    /// The measures of `faces`, None when one of them did not parse.
+    fn of(faces: &Faces) -> Option<Metrics> {
+        let kerns_any = faces
+            .iter()
+            .map(|face| {
+                let t = face.as_ref()?.tables();
+                Some(t.kern.is_some() || t.gpos.is_some_and(|g| g.features.find(KERN).is_some()))
+            })
+            .collect::<Option<Vec<bool>>>()?;
+        Some(Metrics {
+            lines: face_lines(faces),
+            kerns_any,
+            picks: HashMap::new(),
+            advances: HashMap::new(),
+            kerns: HashMap::new(),
+        })
+    }
+}
+
+/// `v`, kept in `map` under `k` when not there yet, and `map` started again
+/// once it holds METRICS_KEEP entries.
+fn kept<K: std::hash::Hash + Eq, V: Copy>(
+    map: &mut HashMap<K, V>,
+    k: K,
+    v: impl FnOnce() -> V,
+) -> V {
+    if let Some(v) = map.get(&k) {
+        return *v;
+    }
+    if map.len() >= METRICS_KEEP {
+        map.clear();
+    }
+    *map.entry(k).or_insert_with(v)
+}
+
+/// The measures of a layout through the Metrics of its fonts, read from
+/// the fonts, parsed once, for what the Metrics lacks.
+struct Kept<'m, 'f> {
+    metrics: &'m mut Metrics,
+    fonts: &'f [Font],
+    faces: &'m std::cell::OnceCell<Vec<Option<Face<'f>>>>,
+}
+
+impl Measures for Kept<'_, '_> {
+    fn lines(&mut self) -> (f64, f64) {
+        self.metrics.lines
+    }
+
+    fn pick(&mut self, ch: char, next: Option<char>) -> Pick {
+        let k = (ch, next == Some(EMOJI_SELECTOR));
+        let faces = self.faces;
+        let fonts = self.fonts;
+        kept(&mut self.metrics.picks, k, || {
+            faces
+                .get_or_init(|| self::faces(fonts))
+                .as_slice()
+                .pick(ch, next)
+        })
+    }
+
+    fn advance(&mut self, f: usize, gid: GlyphId) -> f64 {
+        let (faces, fonts) = (self.faces, self.fonts);
+        kept(&mut self.metrics.advances, (f, gid.0), || {
+            faces
+                .get_or_init(|| self::faces(fonts))
+                .as_slice()
+                .advance(f, gid)
+        })
+    }
+
+    fn kern(&mut self, f: usize, l: GlyphId, r: GlyphId) -> f64 {
+        if !self.metrics.kerns_any[f] {
+            return 0.0;
+        }
+        let (faces, fonts) = (self.faces, self.fonts);
+        kept(&mut self.metrics.kerns, (f, l.0, r.0), || {
+            faces
+                .get_or_init(|| self::faces(fonts))
+                .as_slice()
+                .kern(f, l, r)
+        })
+    }
+}
+
 /// The block holds the lines top to bottom. Glyph origins are in em from the
 /// block's bottom left, y up like the font's own units, and the shader turns
 /// the y-down points of its callers y up. Returns the placed glyphs and the
@@ -896,8 +1038,8 @@ fn pair_advance(lookup: Lookup, l: GlyphId, r: GlyphId) -> Option<i16> {
 /// glyph's advance and kerning from its own font. Two glyphs of two fonts
 /// do not kern. With no font in `faces`, every character that needs ink takes
 /// an error box, ERROR_ADVANCE wide.
-fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
-    let (ascent, line) = face_lines(faces);
+fn layout(fonts: &mut impl Measures, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
+    let (ascent, line) = fonts.lines();
     let lines: Vec<&str> = words.split('\n').collect();
     let height = line * lines.len() as f64;
     let mut placed = Vec::new();
@@ -927,23 +1069,22 @@ fn layout(faces: &Faces, words: &str, align: Align) -> (Vec<Placed>, f64, f64) {
                 continue;
             }
             let (mut glyph, mut kern) = (None, 0);
-            let (ink, origin, advance) = match pick_before(faces, ch, chars.get(i + 1).copied()) {
+            let (ink, origin, advance) = match fonts.pick(ch, chars.get(i + 1).copied()) {
                 // A default ignorable that no font has takes no room.
                 Some((_, _, None)) if ignorable(ch) => (None, x, 0.0),
-                Some((f, face, found)) => {
+                Some((f, upem, found)) => {
                     // A character that no font has draws glyph 0 of the
                     // first, the missing-glyph box, and whitespace leaves the
                     // box out.
-                    let upem = f64::from(face.units_per_em());
                     let gid = found.unwrap_or(GlyphId(0));
                     if let Some((_, p)) = prev.filter(|(pf, _)| *pf == f) {
-                        let k = kerning(face, p, gid);
+                        let k = fonts.kern(f, p, gid);
                         kern = k as i32;
                         x += k / upem;
                     }
                     prev = Some((f, gid));
                     glyph = Some((f, gid.0));
-                    let advance = f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / upem;
+                    let advance = fonts.advance(f, gid) / upem;
                     (ink_glyph(found, ch).map(|g| Ink::Glyph(f, g)), x, advance)
                 }
                 None if ignorable(ch) => (None, x, 0.0),
@@ -1085,14 +1226,27 @@ fn lay(
     curves: Curves,
     mut glyphs: Option<&mut Glyphs>,
 ) -> Layout {
-    let faces = faces(fonts);
-    let (mut placed, width, height) = layout(&faces, words, align);
+    let parsed = std::cell::OnceCell::new();
+    let faces = || parsed.get_or_init(|| faces(fonts));
     let keys: Vec<Option<usize>> = match glyphs.as_deref_mut() {
         Some(g) => fonts.iter().map(|f| g.font_key(f)).collect(),
         None => vec![None; fonts.len()],
     };
+    let metrics = glyphs.as_deref_mut().and_then(|g| g.metrics(&keys, faces));
+    let kept = metrics.is_some();
+    let (mut placed, width, height) = match metrics {
+        Some(metrics) => {
+            let mut m = Kept {
+                metrics,
+                fonts,
+                faces: &parsed,
+            };
+            layout(&mut m, words, align)
+        }
+        None => layout(&mut faces().as_slice(), words, align),
+    };
     let read = |f: usize, gid: u16| -> Read {
-        faces[f]
+        faces()[f]
             .as_ref()
             .map_or(Ok(None), |face| glyph(face, GlyphId(gid)))
     };
@@ -1107,20 +1261,25 @@ fn lay(
             _ => read(f, gid),
         },
         |f, gid| {
-            faces[f]
+            faces()[f]
                 .as_ref()
                 .is_some_and(|face| colour::bitmap(face, GlyphId(gid)).is_some())
         },
     );
-    let failed = fonts
-        .iter()
-        .zip(&faces)
-        .filter_map(|(f, face)| match (f, face) {
-            (Err(why), _) => Some(why.clone()),
-            (Ok(d), None) => Some(format!("unreadable font: {}", Face::parse(d, 0).err()?)),
-            _ => None,
-        });
-    let failed: Vec<Fault> = failed.map(Fault::Font).collect();
+    // Kept measures are of fonts that all parse.
+    let failed: Vec<Fault> = match kept {
+        true => Vec::new(),
+        false => fonts
+            .iter()
+            .zip(faces())
+            .filter_map(|(f, face)| match (f, face) {
+                (Err(why), _) => Some(why.clone()),
+                (Ok(d), None) => Some(format!("unreadable font: {}", Face::parse(d, 0).err()?)),
+                _ => None,
+            })
+            .map(Fault::Font)
+            .collect(),
+    };
     faults.splice(0..0, failed);
     // A glyph's key in `glyphs`: the index of its font's content and its
     // glyph id, None for the error box.
@@ -1342,6 +1501,10 @@ pub struct Glyphs {
     /// layouts at most: the next one starts the store again.
     laid: HashMap<(Vec<usize>, Align, Curves), HashMap<String, Layout>>,
     laid_count: usize,
+    /// The measures of each list of fonts that a layout drew from, by the
+    /// content of its fonts, None for a list with a font that does not
+    /// parse.
+    metrics: HashMap<Vec<usize>, Option<Metrics>>,
     /// The outlines read from the fonts, for a test to count.
     #[cfg(test)]
     pub(crate) reads: usize,
@@ -1401,6 +1564,21 @@ impl Glyphs {
             self.lays += 1;
         }
         lay(fonts, words, align, curves, Some(self))
+    }
+
+    /// The measures of the fonts of `keys`, each the key of a font as
+    /// font_key() gives it, made from the fonts parsed by `faces` the first
+    /// time. None when a font failed to load or does not parse.
+    fn metrics<'a>(
+        &mut self,
+        keys: &[Option<usize>],
+        faces: impl FnOnce() -> &'a Vec<Option<Face<'a>>>,
+    ) -> Option<&mut Metrics> {
+        let keys: Vec<usize> = keys.iter().copied().collect::<Option<_>>()?;
+        self.metrics
+            .entry(keys)
+            .or_insert_with(|| Metrics::of(faces()))
+            .as_mut()
     }
 
     /// The index of the content of `font` among the fonts, None for a font
@@ -2382,7 +2560,7 @@ mod tests {
         );
         let data = std::fs::read(path).unwrap();
         let faces = [Some(Face::parse(&data, 0).unwrap())];
-        let (placed, width, _) = layout(&faces, words, align);
+        let (placed, width, _) = layout(&mut faces.as_slice(), words, align);
         (placed, width)
     }
 
@@ -2501,7 +2679,7 @@ mod tests {
 
     #[test]
     fn a_font_that_failed_to_load_takes_a_box_a_character() {
-        let (placed, width, height) = layout(&[None], "ab c\u{200b}d\ne", Align::Left);
+        let (placed, width, height) = layout(&mut &[None][..], "ab c\u{200b}d\ne", Align::Left);
         let inks: Vec<(char, bool)> = placed
             .iter()
             .map(|p| (p.ch, p.ink == Some(Ink::Box)))

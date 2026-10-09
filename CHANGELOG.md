@@ -844,6 +844,9 @@ A Rust host written for 0.4.0 needs these changes.
 - Give the degrees of `--rotate` in `rotation` under `display` on
   `GET /stats`, where it read 0 and a pass's settings showed its size in
   pixels with the sides swapped at 90 and 270.
+- Give the memory that a scene's setup freed back to the system after each
+  switch and each edit that rebuilds the scene, where glibc kept it, and a
+  console at 256x64 on a Pi 5 rested about 25 MiB higher.
 
 ### Displays and H264
 

@@ -12,6 +12,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
+use std::ffi::c_int;
 use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -89,6 +90,16 @@ static CONSOLE: Mutex<Option<Arc<Console>>> = Mutex::new(None);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+extern "C" {
+    fn malloc_trim(pad: usize) -> c_int;
+}
+
+/// Give the heap that a scene setup freed back to the system. glibc keeps
+/// freed memory in the process until a trim.
+fn trim_heap() {
+    unsafe { malloc_trim(0) };
 }
 
 /// The render-queue item for a /set. Scope::Scene targets the scene's shared
@@ -1944,6 +1955,7 @@ fn set_scene(
             let _ = renderer.borrow_mut().rebuild(last); // keep the last good scene rendering
         }
         console.publish(name.as_deref(), generation, &scene);
+        trim_heap();
         return err;
     }
     console.reset_stats();
@@ -1952,6 +1964,7 @@ fn set_scene(
     held.scene = Some(scene);
     held.name = name;
     held.generation = generation;
+    trim_heap();
     String::new()
 }
 

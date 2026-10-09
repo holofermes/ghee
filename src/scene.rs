@@ -13,11 +13,11 @@
 //! preamble, the scene's common block, then the pass's own GLSL, its
 //! `fragment`. The preamble declares what every pass reads, the varying `uv`
 //! and the uniforms `iTime`, `iTimeDelta`, `iFrame`, `iResolution`,
-//! `iChannel0` and up and `iChannelResolution`, then the samplers and the
-//! reader functions of each array, asset and text layer, then one uniform for
-//! each param under the param's name. The C engine sets each uniform by
-//! looking up that same name in the compiled program, so a name that the
-//! preamble writes is the contract between the two.
+//! `iOutputResolution`, `iChannel0` and up and `iChannelResolution`, then the
+//! samplers and the reader functions of each array, asset and text layer,
+//! then one uniform for each param under the param's name. The C engine sets
+//! each uniform by looking up that same name in the compiled program, so a
+//! name that the preamble writes is the contract between the two.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -40,11 +40,12 @@ pub const PREFIX: &str = "ghee_";
 
 /// The uniforms and the varying that ghee declares in every pass for its
 /// author to read, beside iChannel0 and up.
-const BUILT_INS: [&str; 6] = [
+const BUILT_INS: [&str; 7] = [
     "iTime",
     "iTimeDelta",
     "iFrame",
     "iResolution",
+    "iOutputResolution",
     "iChannelResolution",
     "uv",
 ];
@@ -1820,6 +1821,7 @@ impl Pass {
             [
                 "varying vec2 uv;",
                 "uniform vec3 iResolution;",
+                "uniform vec3 iOutputResolution;",
                 "uniform float iTime;",
                 "uniform float iTimeDelta;",
                 "uniform int iFrame;",
@@ -3414,6 +3416,7 @@ mod tests {
         let every = [
             "varying vec2 uv;",
             "uniform vec3 iResolution;",
+            "uniform vec3 iOutputResolution;",
             "uniform float iTime;",
             "uniform float iTimeDelta;",
             "uniform int iFrame;",
@@ -4725,6 +4728,7 @@ mod tests {
             "iTimeDelta",
             "iFrame",
             "iResolution",
+            "iOutputResolution",
             "iChannelResolution",
             "uv",
             "iChannel0",

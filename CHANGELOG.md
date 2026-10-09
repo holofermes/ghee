@@ -12,9 +12,8 @@ A scene written for 0.4.0 needs these changes.
   aspect, 1.0, in `z`. The varying `v_texCoord` is `uv`, with the same
   values. The old names are free for a param, an array or an asset.
 - Set no param named `aspect` to the output's aspect. A pass reads
-  `iResolution.x / iResolution.y`, and a pass with a size of its own takes
-  the frame's shape from its scene: a Python scene reads the size that it
-  renders at with `ghee.render_size()`.
+  `iResolution.x / iResolution.y`, and a pass with a size of its own reads
+  the frame's shape from `iOutputResolution`.
 - Give a pass its GLSL in `fragment`, as the text, where `code` held it, or as
   `{"file": <path>}`, a file beside the scene, where `shader` named it. The
   scene's `common` takes the same two forms, the text where
@@ -139,6 +138,8 @@ A Rust host written for 0.4.0 needs these changes.
   `uniform vec3 iChannelResolution[4]`, as in Shadertoy: the width and height
   in `xy`, 1.0 in `z`, and a pass with more than four channels takes an entry
   for each.
+- Read the frame's size in `uniform vec3 iOutputResolution` in every pass,
+  the size that the last pass renders at, with 1.0 in `z`.
 - Build the mip chain of a pass's buffer after each frame with
   `"mipmaps": true`, and sample it trilinearly through every channel that
   reads it, so a buffer read far away and minified stays calm. On a GPU
@@ -215,12 +216,12 @@ A Rust host written for 0.4.0 needs these changes.
   and arrays take names unique in the pass and outside that set, so two
   passes may each declare a param `gain`. A filter's pass takes a name that
   nothing in the scene holds, as `dither1` beside a pass `dither`.
-- Refuse `iTime`, `iTimeDelta`, `iFrame`, `iResolution`, `iChannelResolution`,
-  `uv` and `iChannel0` and up as the name of a param, an array or an asset. A
-  layer may take any of them, since every GLSL name that it gives a pass
-  carries a suffix. Refuse a scene where two declarations make one GLSL name
-  in a pass, such as a param `title_size` beside a layer `title`, and name
-  both.
+- Refuse `iTime`, `iTimeDelta`, `iFrame`, `iResolution`, `iOutputResolution`,
+  `iChannelResolution`, `uv` and `iChannel0` and up as the name of a param, an
+  array or an asset. A layer may take any of them, since every GLSL name that
+  it gives a pass carries a suffix. Refuse a scene where two declarations make
+  one GLSL name in a pass, such as a param `title_size` beside a layer
+  `title`, and name both.
 - Refuse a GLSL keyword, such as `half`, the name of a GLSL function, such
   as `mix`, and the name of a function that the pass's GLSL or the common
   block defines, `main` among them, as the name of a param that holds no

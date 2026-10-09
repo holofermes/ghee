@@ -1417,6 +1417,7 @@ function buildInputs(){
   const chip = (label, title, cls) => { const s = el("span", "chip" + (cls ? " " + cls : ""), label); s.title = title; box.appendChild(s); };
   chip("iTime", "uniform float iTime;  seconds since start");
   chip("iResolution", "uniform vec3 iResolution;  render size in pixels");
+  chip("iOutputResolution", "uniform vec3 iOutputResolution;  frame size in pixels");
   if (!p.filter){
     textLayers().forEach(d => chip(d.name + "_cover", `float ${d.name}_cover(vec2 p, float font_size);  layer ${d.name}'s words`));
     imageAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s picture`));

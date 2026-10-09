@@ -6237,6 +6237,29 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn i_output_resolution_holds_the_turned_frame_in_a_scaled_pass() {
+        // The frame turns a quarter, so the scene renders at 48x64 and pass
+        // `a` at 24x32. `a` writes its iOutputResolution, red and green the
+        // size and blue the third value, and main shows it over the frame.
+        let (_g, mut r) = gpu();
+        r.set_rotate(90).unwrap();
+        let sc = scene_of(json!([
+            {"name": "a", "scale": 0.5,
+             "fragment": "void main(){ vec3 s = iOutputResolution; \
+                          gl_FragColor = vec4(s.xy / 255.0, s.z, 1.0); }"},
+            {"name": "main", "channels": [{"buffer": "a"}],
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
+        ]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let f = r.render(None).unwrap().to_vec();
+        assert_eq!(
+            [0, 1, 2].map(|c| px(&f, W, W / 2, H / 2, c)),
+            [H as f64, W as f64, 255.0]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn frc256_keeps_a_one_pixel_line_one_pixel_wide_at_its_grey_over_its_cycle() {
         // Column 8 is white and column 20 grey 128. Over the sixteen frames
         // of its cycle, frc256 holds column 8 at level 15, and column 20 at

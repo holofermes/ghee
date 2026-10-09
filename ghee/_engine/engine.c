@@ -1436,8 +1436,8 @@ static void mp_forget_asset(struct mp_locs *loc, int a) {
 }
 
 // Resolve the locations of a committed program that draws into a w x h buffer,
-// and set its iResolution and an unflipped vflip. Program 0, a pass with no
-// quad, has no uniforms.
+// and set its iResolution, its iOutputResolution and an unflipped vflip.
+// Program 0, a pass with no quad, has no uniforms.
 static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *loc) {
     loc->res = loc->time = loc->dt = loc->frame = loc->chan_res = loc->vflip = -1;
     for (int c = 0; c < MP_MAX_CHANNELS; c++) loc->chan[c] = -1;
@@ -1448,6 +1448,8 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
     glUseProgram(prog);
     loc->res = glGetUniformLocation(prog, "iResolution");
     if (loc->res >= 0) glUniform3f(loc->res, (float)w, (float)h, 1.0f);
+    const GLint out_res = glGetUniformLocation(prog, "iOutputResolution");
+    if (out_res >= 0) glUniform3f(out_res, (float)g->width, (float)g->height, 1.0f);
     loc->time = glGetUniformLocation(prog, "iTime");
     loc->dt = glGetUniformLocation(prog, "iTimeDelta");
     loc->frame = glGetUniformLocation(prog, "iFrame");

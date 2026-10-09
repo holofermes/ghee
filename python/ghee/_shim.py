@@ -696,8 +696,8 @@ def render_size() -> tuple[int, int]:
     Under ghee it is ghee's render size. A direct run takes its --size, else
     the size of the display that it drives, else 320x240, the size of
     `ghee render` with no display, and a --rotate of 90 or 270 turns it. A
-    pass with a size of its own reads that size in iResolution, so a scene
-    that needs the frame's shape in such a pass writes it from here.
+    pass with a size of its own reads that size in iResolution, and every
+    pass reads this size in iOutputResolution.
 
     Raises RuntimeError when ghee gives no WxH size.
     """

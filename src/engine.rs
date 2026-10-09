@@ -2706,7 +2706,12 @@ impl Renderer {
     /// fails to draw fails with the error, and the old layer draws again in
     /// its place.
     pub fn replace_layer(&mut self, layer: &Value) -> Result<()> {
-        let mut new = Layer::from_dict("the new layer", layer).map_err(refused)?;
+        let new = Layer::from_dict("the new layer", layer).map_err(refused)?;
+        self.replace_with(new)
+    }
+
+    /// replace_layer() with `new`, the layer that its look makes.
+    fn replace_with(&mut self, mut new: Layer) -> Result<()> {
         let name = new.name().to_string();
         let (pass, index) = {
             let scene = self.scene.borrow();
@@ -2805,17 +2810,11 @@ impl Renderer {
             Some(scene) => scene.look(layer).map_err(refused)?,
             None => return Err(Refused("the renderer holds no scene".to_string()).into()),
         };
-        let Some(Look {
-            old,
-            new,
-            look,
-            rebuild,
-        }) = found
-        else {
+        let Some(Look { old, new, rebuild }) = found else {
             return Ok(false);
         };
         if rebuild {
-            self.replace_layer(&look)?;
+            self.replace_with(new)?;
             return Ok(true);
         }
         let name = new.name().to_string();

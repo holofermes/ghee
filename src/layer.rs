@@ -2350,9 +2350,7 @@ impl Layer {
     }
 
     /// True when `other`, a new look of this layer, differs from it in live
-    /// fields alone, as Scene::look() tells a live change from one that
-    /// builds the layer again: the words and an image layer's image are
-    /// live.
+    /// fields alone: the words and an image layer's image are live.
     pub(crate) fn builds_as(&self, other: &Layer) -> bool {
         if self.blend() != other.blend() {
             return false;

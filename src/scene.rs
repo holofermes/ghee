@@ -1984,12 +1984,10 @@ pub(crate) fn not_an_image(what: &str, value: &Value) -> String {
 pub struct Look {
     /// The layer as the scene holds it.
     pub old: Layer,
-    /// The layer in its new look. With `rebuild` false, it holds the fonts
-    /// and the file of `old`.
+    /// The layer in its new look, with the effects that the look leaves out
+    /// bypassed. With `rebuild` false, it holds the fonts and the file of
+    /// `old`.
     pub new: Layer,
-    /// The new look as a scene declares it, with the effects that it leaves
-    /// out bypassed.
-    pub look: Value,
     /// True when a field that changes with a rebuild differs.
     pub rebuild: bool,
 }
@@ -2008,42 +2006,22 @@ fn kind_of(layer: &Layer) -> &'static str {
 
 /// `look`, a layer of the kind of `old` as a scene declares it, with each
 /// effect of `old` that it leaves out, and a rect's border, bypassed with
-/// its values.
-fn keep_bypassed(old: &Layer, look: &Value) -> Value {
-    let mut look = look.clone();
-    let (Some(o), Value::Object(was)) = (look.as_object_mut(), old.to_dict()) else {
-        return look;
+/// its values, where `was` is `old` as a scene writes it. None when `look`
+/// leaves out none of them.
+fn keep_bypassed(old: &Layer, was: &Value, look: &Value) -> Option<Value> {
+    let (Some(o), Some(was)) = (look.as_object(), was.as_object()) else {
+        return None;
     };
-    for (key, mut v) in was {
-        let effect = v.is_object() && old.live(Some(&key), "visible").is_ok();
-        if effect && o.get(&key).is_none_or(Value::is_null) {
+    let mut kept = None;
+    for (key, v) in was {
+        let effect = v.is_object() && old.live(Some(key), "visible").is_ok();
+        if effect && o.get(key).is_none_or(Value::is_null) {
+            let mut v = v.clone();
             v["visible"] = Value::from(false);
-            o.insert(key, v);
+            kept.get_or_insert_with(|| o.clone()).insert(key.clone(), v);
         }
     }
-    look
-}
-
-/// The keys of `d`, layer `layer` as a scene writes it, that change with a
-/// rebuild: every key but the name, the words and the live fields of
-/// `layer`, its effects' among them. A rect's border is live whole.
-fn build_of(layer: &Layer, d: &Value) -> Value {
-    let mut d = d.clone();
-    if let Some(o) = d.as_object_mut() {
-        o.retain(|k, v| {
-            if k == "name" || k == "text" || layer.live(None, k).is_ok() {
-                return false;
-            }
-            match v {
-                Value::Object(fields) if layer.live(Some(k), "visible").is_ok() => {
-                    fields.retain(|f, _| layer.live(Some(k), f).is_err());
-                    !(fields.is_empty() && layer.as_shape().is_some())
-                }
-                _ => true,
-            }
-        });
-    }
-    d
+    kept.map(Value::Object)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2444,21 +2422,20 @@ impl Scene {
     /// look already. A look that no layer takes, and a name that names no
     /// layer of the scene, fail.
     pub fn look(&self, look: &Value) -> Result<Option<Look>> {
-        let new = Layer::from_dict("the new layer", look)?;
-        let name = new.name().to_string();
-        let Some(old) = self.layer(&name) else {
-            bail!("the scene has no layer '{name}'");
+        let mut new = Layer::from_dict("the new layer", look)?;
+        let Some(old) = self.layer(new.name()) else {
+            bail!("the scene has no layer '{}'", new.name());
         };
-        let look = match kind_of(old) == kind_of(&new) {
-            true => keep_bypassed(old, look),
-            false => look.clone(),
-        };
-        let mut new = Layer::from_dict("the new layer", &look)?;
-        let (was, will) = (old.to_dict(), new.to_dict());
-        if was == will {
+        let was = old.to_dict();
+        if kind_of(old) == kind_of(&new) {
+            if let Some(kept) = keep_bypassed(old, &was, look) {
+                new = Layer::from_dict("the new layer", &kept)?;
+            }
+        }
+        if was == new.to_dict() {
             return Ok(None);
         }
-        let rebuild = build_of(old, &was) != build_of(old, &will);
+        let rebuild = !old.builds_as(&new);
         // The same build: the fonts and the file of the layer stay.
         if !rebuild {
             match (&mut new, old) {
@@ -2475,7 +2452,6 @@ impl Scene {
         Ok(Some(Look {
             old: old.clone(),
             new,
-            look,
             rebuild,
         }))
     }

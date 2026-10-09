@@ -1262,7 +1262,7 @@ impl Renderer {
         let files = drawn_files(&drawn).filter_map(|l| {
             Some((
                 format!("layer '{}': '{}'", l.name, l.image),
-                l.data.as_ref()?,
+                l.data.as_deref()?,
             ))
         });
         let mut images = assets.chain(files);

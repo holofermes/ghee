@@ -2059,7 +2059,7 @@ pub struct ImageLayer {
     pub width: Option<f64>,
     pub height: Option<f64>,
     /// The pixels of a file `image`. load_assets fills them.
-    pub data: Option<crate::assets::Image>,
+    pub data: Option<Arc<crate::assets::Image>>,
 }
 
 impl ImageLayer {

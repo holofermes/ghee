@@ -3094,7 +3094,7 @@ fn load_layer(
     let l = match layer {
         Layer::Text(l) => l,
         Layer::Image(l) if l.is_file() => {
-            l.data = Some(root.image(&l.name, &l.image)?);
+            l.data = Some(std::sync::Arc::new(root.image(&l.name, &l.image)?));
             return Ok(());
         }
         Layer::Image(_) | Layer::Shape(_) => return Ok(()),
@@ -4337,8 +4337,8 @@ mod tests {
         let sc = load("pic.png").unwrap();
         let l = sc.layers().find_map(Layer::as_image).unwrap();
         assert_eq!(
-            l.data,
-            Some(crate::assets::Image {
+            l.data.as_deref(),
+            Some(&crate::assets::Image {
                 width: 2,
                 height: 1,
                 components: 4,

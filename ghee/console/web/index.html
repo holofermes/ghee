@@ -1309,6 +1309,7 @@ addEventListener("scroll", closeMenus, true);
 function buildTabs(){
   const row = $("#tabs"), was = row.querySelector(".strip"), left = was ? was.scrollLeft : 0;
   const t = strip("tstrip");
+  wheelAcross(t);
   const tab = (label, classes, open, onOpen, title) => {
     const e = el("span", ["tab", ...classes, open ? "active" : ""].filter(Boolean).join(" "));
     if (!open) e.addEventListener("click", onOpen);
@@ -1877,6 +1878,17 @@ const stripFade = st => {
   st.classList.toggle("ml", st.scrollLeft > 1);
   st.classList.toggle("mr", st.scrollLeft < max - 1);
 };
+// ctrl with the wheel is the browser's zoom
+function wheelAcross(st){
+  st.addEventListener("wheel", e => {
+    if (e.ctrlKey || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+    const by = e.deltaY * (e.deltaMode === 1 ? parseFloat(getComputedStyle(st).lineHeight) : e.deltaMode === 2 ? st.clientWidth : 1);
+    const max = st.scrollWidth - st.clientWidth;
+    if (by < 0 ? st.scrollLeft <= 0 : st.scrollLeft >= max - 1) return;
+    e.preventDefault();
+    st.scrollLeft += by;
+  }, {passive: false});
+}
 // a strip taken out of the page shrinks to nothing, and is let go then
 const stripSeen = new ResizeObserver(es => es.forEach(e => {
   if (e.target.isConnected) stripFade(e.target); else stripSeen.unobserve(e.target);

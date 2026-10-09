@@ -985,7 +985,15 @@ impl SceneProcess {
                 Ok(taken) => {
                     for &k in &taken.changed {
                         self.took_call(&calls[k]);
-                        self.set_whole(&calls[k].layer);
+                    }
+                    let mut taken_here = vec![true; calls.len()];
+                    for &i in &taken.left {
+                        taken_here[i] = false;
+                    }
+                    for (call, here) in calls.iter().zip(taken_here) {
+                        if here {
+                            self.set_whole(&call.layer);
+                        }
                     }
                     slow.extend(taken.left.iter().map(|&i| at[i]));
                 }
@@ -1993,14 +2001,17 @@ sleep 60
             Ok(())
         }
 
-        /// Records the layers of the calls, and leaves a call to a layer
-        /// whose name starts with `slow`.
+        /// Records the layers of the calls, leaves a call to a layer whose
+        /// name starts with `slow`, and finds a layer whose name starts with
+        /// `same` at the look of its call already.
         fn update_calls(&mut self, calls: &[Call]) -> Result<crate::engine::Taken> {
             let names: Vec<&str> = calls.iter().map(|c| c.layer.as_str()).collect();
             self.log
                 .borrow_mut()
                 .push(format!("calls {}", names.join(" ")));
-            let (left, changed) = (0..calls.len()).partition(|&k| names[k].starts_with("slow"));
+            let (left, changed) = (0..calls.len())
+                .filter(|&k| !names[k].starts_with("same"))
+                .partition(|&k| names[k].starts_with("slow"));
             Ok(crate::engine::Taken { left, changed })
         }
 
@@ -3185,11 +3196,13 @@ while IFS= read -r line; do :; done
             "passes": [{"name": "main", "fragment": "void main(){}",
                         "layers": [{"name": "title", "text": "hi"},
                                    {"name": "slow", "shape": "rect"},
-                                   {"name": "odd", "text": "o"}]}],
+                                   {"name": "odd", "text": "o"},
+                                   {"name": "same", "shape": "rect"}]}],
         });
         let looks = r#"[{"name": "title", "text": "ho", "x": 4},
             {"name": "slow", "shape": "rect", "x": 2},
-            {"name": "odd", "text": "o", "width": 3}]"#;
+            {"name": "odd", "text": "o", "width": 3},
+            {"name": "same", "shape": "rect"}]"#;
         let body = [
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
@@ -3201,6 +3214,8 @@ while IFS= read -r line; do :; done
         let path = script(&d, "looks", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
+        let locks = Arc::new(Mutex::new(Locks::default()));
+        f.lock_into(Arc::clone(&locks));
         assert!(wait_until(Duration::from_secs(5), || {
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "title.y")
@@ -3210,7 +3225,7 @@ while IFS= read -r line; do :; done
         assert_eq!(
             *stub.log.borrow(),
             [
-                "calls title slow".to_string(),
+                "calls title slow same".to_string(),
                 r#"look {"name":"slow","shape":"rect","x":2}"#.to_string(),
                 r#"look {"name":"odd","text":"o","width":3}"#.to_string(),
                 "set title.y Numbers([1.0])".to_string(),
@@ -3218,6 +3233,9 @@ while IFS= read -r line; do :; done
         );
         // the process's own words, which no tick carries back
         assert_eq!(f.sent.get("title.text"), Some(&Value::from("ho")));
+        for name in ["title", "slow", "odd", "same"] {
+            assert!(lock(&locks).layer(name), "{name}");
+        }
     }
 
     #[test]

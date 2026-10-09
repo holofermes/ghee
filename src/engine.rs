@@ -1107,12 +1107,13 @@ impl Renderer {
             }
         }
         // The engine draws the hidden passes as copies, and the passes after
-        // the last visible one not at all.
+        // the last visible one not at all, or the first of them as its copy
+        // when that pass sets a size or a scale.
         let mut drawn = scene.drawn_passes();
         // The output pass renders at the renderer size. Its buffer feeds the
         // readback, the display and the encoder. The check reads the drawn
         // passes, so a filter pass appended after a sized pass keeps its
-        // size, and a sized pass that hidden passes leave last loses it.
+        // size, hidden or not.
         let n = drawn.len();
         let (sw, sh) = self.scene_size();
         let frame = (i64::from(sw), i64::from(sh));
@@ -5252,9 +5253,10 @@ mod tests {
         for (passes, red) in [
             (json!([scaled]), 255.0),
             (json!([scaled, b(true)]), 0.0),
+            (json!([scaled, b(false)]), 0.0),
             (json!([a]), 255.0),
             (json!([a, b(true)]), 0.0),
-            (json!([a, b(false)]), 255.0),
+            (json!([a, b(false)]), 0.0),
         ] {
             assert_eq!(r.setup(&scene_of(passes.clone())).unwrap(), "", "{passes}");
             r.set_time(Some(0.0));

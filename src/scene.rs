@@ -2814,17 +2814,23 @@ impl Scene {
     /// The passes that the engine draws, as the scene's own when every pass
     /// is visible. A hidden pass draws a copy of the pass before it, or black
     /// as the first pass, and its layers draw nothing. The passes after the
-    /// last visible one stay out, so that pass holds the frame, and a channel
-    /// that reads one of them reads that pass, which their copies would show.
+    /// last visible one stay out, so that pass holds the frame, unless it sets
+    /// a size or a scale: the first of them then holds the frame as a copy of
+    /// it at the frame's size, and the pass keeps its own. A channel that
+    /// reads a pass left out reads the pass that holds the frame, which their
+    /// copies would show.
     pub(crate) fn drawn_passes(&self) -> Cow<'_, [Pass]> {
         if self.passes.iter().all(|p| p.visible) {
             return Cow::Borrowed(&self.passes);
         }
-        let last = self
+        let seen = self
             .passes
             .iter()
             .rposition(|p| p.visible)
             .unwrap_or(self.passes.len() - 1);
+        let p = &self.passes[seen];
+        let copy = seen + 1 < self.passes.len() && (p.size.is_some() || p.scale.is_some());
+        let last = seen + usize::from(copy);
         let shown = &self.passes[..=last];
         let gone: Vec<&str> = self.passes[last + 1..]
             .iter()
@@ -2844,6 +2850,9 @@ impl Scene {
                             vec![Channel::new(Some(&shown[i - 1].name))],
                         ),
                     };
+                }
+                if copy && i == last {
+                    (d.size, d.scale) = (None, None);
                 }
                 for c in &mut d.channels {
                     if c.buffer.as_deref().is_some_and(|b| gone.contains(&b)) {
@@ -3547,6 +3556,44 @@ mod tests {
                 {"name": "c", "fragment": GOOD},
             ])
         );
+    }
+
+    #[test]
+    fn a_hidden_pass_after_a_sized_or_scaled_last_visible_pass_holds_the_frame_as_its_copy() {
+        let main = json!({"name": "main", "channels": [{"buffer": "c"}], "fragment": GOOD});
+        let mut scaled = main.clone();
+        scaled["scale"] = json!(2);
+        let mut sized = main.clone();
+        sized["size"] = json!([8, 8]);
+        for (main, want) in [
+            (scaled, vec!["main", "b"]),
+            (sized, vec!["main", "b"]),
+            (main, vec!["main"]),
+        ] {
+            let sc = Scene::from_dict(
+                &json!({"version": 1, "passes": [
+                    main,
+                    {"name": "b", "visible": false, "scale": 0.5, "fragment": GOOD},
+                    {"name": "c", "visible": false, "fragment": GOOD},
+                ]}),
+                None,
+                None,
+            )
+            .unwrap();
+            let drawn = sc.drawn_passes();
+            let names: Vec<&str> = drawn.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, want);
+            assert_eq!(drawn[0].channels, [Channel::new(want.last().copied())]);
+            assert_eq!(
+                (drawn[0].size, drawn[0].scale),
+                (sc.passes[0].size, sc.passes[0].scale)
+            );
+            if let [_, b] = &drawn[..] {
+                assert_eq!(b.fragment, COPY);
+                assert_eq!(b.channels, [Channel::new(Some("main"))]);
+                assert_eq!((b.size, b.scale), (None, None));
+            }
+        }
     }
 
     #[test]

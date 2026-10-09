@@ -209,8 +209,9 @@ perspective, then stays calm.
 
 A pass with `"visible": false` is hidden. It draws a copy of the pass before
 it, or black as the first pass, its layers draw nothing, and the frame is the
-last visible pass. A hidden pass keeps its params, arrays and layers, so a set
-and a feed still land, and a scene that hides every pass fails to load.
+last visible pass, which keeps its size or scale when hidden passes follow it.
+A hidden pass keeps its params, arrays and layers, so a set and a feed still
+land, and a scene that hides every pass fails to load.
 
 A pass buffer holds 8-bit RGBA, and a channel reads the alpha that its pass
 wrote. Every output frame is opaque, with alpha 255, unless

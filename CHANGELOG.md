@@ -146,9 +146,9 @@ A Rust host written for 0.4.0 needs these changes.
   alone.
 - Hide a pass with `"visible": false`, which a save keeps. A hidden pass
   draws a copy of the pass before it, or black as the first pass, its layers
-  draw nothing, and the frame is the last visible pass. It keeps its params
-  and arrays, so a set and a feed still land, and a scene that hides every
-  pass fails to load.
+  draw nothing, and the frame is the last visible pass, which keeps its size
+  or scale when hidden passes follow it. It keeps its params and arrays, so a
+  set and a feed still land, and a scene that hides every pass fails to load.
 - Store alpha in every pass buffer, so a channel reads the alpha that its
   pass wrote. Every frame stays opaque unless `ghee render --alpha` or
   `ghee.open(..., alpha=True)` keeps the output pass's alpha: a raw frame and
@@ -164,8 +164,7 @@ A Rust host written for 0.4.0 needs these changes.
   `"#rrggbb"` into them.
 - Render an output pass that sets a `size` at the screen size, with one
   warning at load, where ghee refused the scene. Its size applies again once
-  a filter or a pass follows it, and a pass that hidden passes leave last
-  renders at the screen size.
+  a filter or a pass follows it, hidden or not.
 - Render a pass at a share of the frame with `"scale"`, one number for both
   sides or `[x, y]`, beside `"size"` in pixels, and with `scale=` on
   `ghee.Pass`. The frame is the render size turned by `--rotate`, a scaled

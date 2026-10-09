@@ -116,36 +116,63 @@ impl Mode {
     }
 }
 
+/// A run as it takes layers: its blend, whether it holds a text and a Large
+/// shape, and whether it takes no more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Open {
+    blend: Blend,
+    text: bool,
+    big: bool,
+    closed: bool,
+}
+
+impl Open {
+    /// The run that starts at `c`.
+    pub(crate) fn at(c: &Candidate) -> Open {
+        Open {
+            blend: c.blend,
+            text: c.text,
+            big: c.class == Class::Large,
+            closed: c.class == Class::Alone,
+        }
+    }
+
+    /// True when `c` joins the run: one blend, no text and Large shape
+    /// together, and a text of class Alone by itself.
+    pub(crate) fn takes(&self, c: &Candidate) -> bool {
+        !self.closed
+            && c.class != Class::Alone
+            && self.blend == c.blend
+            && !(c.text && self.big)
+            && !(c.class == Class::Large && self.text)
+    }
+
+    /// The run with `c`, which joins it.
+    pub(crate) fn take(&mut self, c: &Candidate) {
+        self.text |= c.text;
+        self.big |= c.class == Class::Large;
+    }
+}
+
 /// The runs of the layers of a pass, each a span of `layers`, where None
 /// stands for a layer that draws on its own. A run takes the layers from
-/// its first on while each joins it: one blend, no text and Large shape
-/// together, and a text of class Alone by itself.
+/// its first on while each joins it.
 pub(crate) fn partition(layers: &[Option<Candidate>]) -> Vec<Range<usize>> {
     let mut out: Vec<Range<usize>> = Vec::new();
-    // The run that the layer before joined: its blend, whether it holds a
-    // text and a Large shape, and whether it takes no more.
-    let mut open: Option<(Blend, bool, bool, bool)> = None;
+    // The run that the layer before joined.
+    let mut open: Option<Open> = None;
     for (i, c) in layers.iter().enumerate() {
         let Some(c) = c else {
             open = None;
             continue;
         };
-        let large = c.class == Class::Large;
-        let joins = open.is_some_and(|(blend, text, big, closed)| {
-            !closed
-                && c.class != Class::Alone
-                && blend == c.blend
-                && !(c.text && big)
-                && !(large && text)
-        });
-        match (joins, open.as_mut(), out.last_mut()) {
-            (true, Some(run), Some(span)) => {
-                run.1 |= c.text;
-                run.2 |= large;
+        match (open.as_mut().filter(|run| run.takes(c)), out.last_mut()) {
+            (Some(run), Some(span)) => {
+                run.take(c);
                 span.end = i + 1;
             }
             _ => {
-                open = Some((c.blend, c.text, large, c.class == Class::Alone));
+                open = Some(Open::at(c));
                 out.push(i..i + 1);
             }
         }

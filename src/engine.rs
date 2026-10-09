@@ -52,7 +52,7 @@ use crate::hinted;
 use crate::layer::{
     is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer, GLSL_NAME,
 };
-use crate::run::{Candidate, Class, Mode};
+use crate::run::{Candidate, Class, Mode, Open};
 use crate::scene::{ArraySize, Look, ParamValue, Pass, Sampling, Scene};
 use crate::shape::ShapeLayer;
 use crate::text::{self, Fault, Layout};
@@ -233,6 +233,8 @@ struct Run {
     /// The name of the pass and its size in pixels.
     pass: String,
     size: [f64; 2],
+    /// The blend of its members.
+    blend: Blend,
     /// The layers, in their order.
     members: Vec<Member>,
     /// The mode whose program the batch holds, None for none yet.
@@ -248,6 +250,21 @@ impl Run {
     /// The place in `members` of layer `name`.
     fn find(&self, name: &str) -> Option<usize> {
         self.members.iter().position(|m| m.name == name)
+    }
+
+    /// The run as it takes more layers.
+    fn open(&self) -> Option<Open> {
+        let candidate = |m: &Member| Candidate {
+            text: m.text.is_some(),
+            class: m.class.get(),
+            blend: self.blend,
+        };
+        let (first, rest) = self.members.split_first()?;
+        let mut open = Open::at(&candidate(first));
+        for m in rest {
+            open.take(&candidate(m));
+        }
+        Some(open)
     }
 
     /// The program that the members ask for.
@@ -1514,6 +1531,7 @@ impl Renderer {
                             batch: b,
                             pass: p.name.clone(),
                             size,
+                            blend: l.blend(),
                             members,
                             installed: std::cell::Cell::new(Some(mode)),
                             curves: std::cell::Cell::new(Bound::None),
@@ -3092,11 +3110,16 @@ impl Renderer {
     /// Put `dl` among the drawn layers, after the layer before it in its
     /// pass, or last.
     fn put_drawn(&mut self, pass: &str, index: usize, dl: LayerBatches) {
-        let names = self.pass_layers(pass);
-        let before = index.checked_sub(1).and_then(|k| names.get(k));
-        let at = before
-            .and_then(|n| self.layers.iter().position(|d| d.name == *n))
-            .map_or(self.layers.len(), |k| k + 1);
+        let at = {
+            let scene = self.scene.borrow();
+            let before = scene
+                .as_ref()
+                .and_then(|s| s.passes.iter().find(|p| p.name == pass))
+                .and_then(|p| p.layers.get(index.checked_sub(1)?));
+            before
+                .and_then(|l| self.layers.iter().rposition(|d| d.name == l.name()))
+                .map_or(self.layers.len(), |k| k + 1)
+        };
         self.layers.insert(at, dl);
         self.moved();
     }
@@ -3117,6 +3140,9 @@ impl Renderer {
     /// quads.
     fn rerun(&mut self, pass: &str, fresh: Vec<Member>) -> Result<()> {
         let Some(pass_index) = self.pass_index(pass) else {
+            return Ok(());
+        };
+        let Some(fresh) = self.append(pass, pass_index, fresh)? else {
             return Ok(());
         };
         let size = self.pass_size(pass);
@@ -3218,6 +3244,11 @@ impl Renderer {
             }
             batches.push((batch, kept));
         }
+        for d in &mut self.layers {
+            if let Some(batch) = planned.get(d.name.as_str()) {
+                d.batch = *batch;
+            }
+        }
         for (span, (batch, kept)) in spans.iter().zip(batches) {
             let members: Vec<Member> = names[span.clone()]
                 .iter()
@@ -3227,19 +3258,13 @@ impl Renderer {
                     m
                 })
                 .collect();
-            for d in self
-                .layers
-                .iter_mut()
-                .filter(|d| names[span.clone()].contains(&d.name))
-            {
-                d.batch = batch;
-            }
             let was = kept.map(|k| &old[k]);
             let same = kept.is_some_and(|k| olds[k] == names[span.clone()]);
             self.runs.push(Run {
                 batch,
                 pass: pass.to_string(),
                 size,
+                blend: candidates[span.start].expect("a run's layer").blend,
                 members,
                 installed: std::cell::Cell::new(was.and_then(|r| r.installed.get())),
                 curves: std::cell::Cell::new(was.map_or(Bound::None, |r| r.curves.get())),
@@ -3260,6 +3285,85 @@ impl Renderer {
             }
         }
         gone
+    }
+
+    /// Put `fresh`, the member of the last layer of drawn pass `pass`, where
+    /// rerun() would group it, while every other member of the pass keeps
+    /// the class that the runs placed it by: at the end of the last run of
+    /// the pass when the run takes it, else in a run of its own. Returns
+    /// `fresh` for rerun() in any other case.
+    fn append(
+        &mut self,
+        pass: &str,
+        pass_index: c_int,
+        mut fresh: Vec<Member>,
+    ) -> Result<Option<Vec<Member>>> {
+        let Some(m) = fresh.first().filter(|_| fresh.len() == 1) else {
+            return Ok(Some(fresh));
+        };
+        let (blend, before) = {
+            let scene = self.scene.borrow();
+            let layers = scene
+                .as_ref()
+                .and_then(|s| s.passes.iter().find(|p| p.name == pass))
+                .map_or(&[][..], |p| &p.layers[..]);
+            match layers.split_last() {
+                Some((l, rest)) if l.name() == m.name => (
+                    l.blend(),
+                    rest.iter()
+                        .rev()
+                        .find_map(|l| self.layers.iter().rev().find(|d| d.name == l.name())),
+                ),
+                _ => return Ok(Some(fresh)),
+            }
+        };
+        let placed = |m: &Member| !m.reclass.get() && m.class.get() == m.placed;
+        let runs = || self.runs.iter().filter(|r| r.pass == pass);
+        if !runs().flat_map(|r| &r.members).all(placed) {
+            return Ok(Some(fresh));
+        }
+        let c = Candidate {
+            text: m.text.is_some(),
+            class: m.class.get(),
+            blend,
+        };
+        let tail = before.and_then(|d| {
+            self.runs.iter().position(|r| {
+                r.pass == pass && r.members.last().is_some_and(|last| last.name == d.name)
+            })
+        });
+        let joins = tail.filter(|r| self.runs[*r].open().is_some_and(|o| o.takes(&c)));
+        let before = before.map_or(-1, |d| d.batch);
+        let mut m = fresh.pop().expect("one member");
+        m.placed = m.class.get();
+        let name = m.name.clone();
+        let batch = match joins {
+            Some(r) => {
+                self.runs[r].members.push(m);
+                self.runs[r].batch
+            }
+            None => {
+                let batch =
+                    self.insert_batch(pass_index, before, &format!("layer '{name}'"), None, blend)?;
+                self.runs.push(Run {
+                    batch,
+                    pass: pass.to_string(),
+                    size: self.pass_size(pass),
+                    blend,
+                    members: vec![m],
+                    installed: std::cell::Cell::new(None),
+                    curves: std::cell::Cell::new(Bound::None),
+                    sent: std::cell::RefCell::new(Vec::new()),
+                });
+                batch
+            }
+        };
+        if let Some(d) = self.layers.iter_mut().find(|d| d.name == name) {
+            d.batch = batch;
+        }
+        self.moved();
+        self.unsettled.set(true);
+        Ok(None)
     }
 
     /// The class of member `m` of a pass of `size` pixels, layer `l`, from
@@ -8628,7 +8732,7 @@ mod tests {
         // Each row changes a running scene of shapes and slug texts in one
         // way, and the frame and the runs match those of the scene set up
         // with the layers that the change leaves: a layer added into a run,
-        // or splitting one, a member built again, replaced or leaving its
+        // at its end, or splitting one, a member built again, replaced or leaving its
         // run, a layer between runs that leaves them to join, and the live
         // fields of members, a layer that leaves, and a layer that moves or
         // takes another font size, which compiles nothing. An image ahead of
@@ -8709,6 +8813,24 @@ mod tests {
                 vec![image.clone(), base[1].clone()],
                 Op::Add(2, s.clone()),
                 vec![image.clone(), base[1].clone(), s.clone()],
+            ),
+            (
+                "a shape joins at the end",
+                base.clone(),
+                Op::Add(7, s.clone()),
+                with(&base, Some(7), &s),
+            ),
+            (
+                "a shape after an image starts a run",
+                vec![base[1].clone(), image.clone()],
+                Op::Add(2, s.clone()),
+                vec![base[1].clone(), image.clone(), s.clone()],
+            ),
+            (
+                "a blend starts a run at the end",
+                base.clone(),
+                Op::Add(7, add.clone()),
+                with(&base, Some(7), &add),
             ),
             (
                 "a text is left alone",

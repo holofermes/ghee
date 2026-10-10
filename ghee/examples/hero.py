@@ -396,7 +396,7 @@ def build(a):
                 fragment=SHADER_MAIN,
                 channels=[ghee.Channel(buffer="glow"), ghee.Channel(buffer="canvas")],
                 params={
-                    "text_speed": knob("text_speed", 0.115, -0.5, 0.5, 0.005),
+                    "text_speed": knob("text_speed", 0.101, -0.5, 0.5, 0.005),
                     "text_y": knob("text_y", 0.47, 0.0, 1.0, 0.01),
                     "text_height": knob("text_height", 0.57, 0.05, 1.5, 0.01),
                     "background": ghee.Param(

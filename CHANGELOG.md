@@ -401,8 +401,10 @@ A Rust host written for 0.4.0 needs these changes.
   Pillow drew them into an array, so the console sets them live.
 - Draw `--demo hero`'s word with the text layer `word`, in the pass
   `canvas` that `main` reads, where Pillow drew it into an array. The
-  layer's `text` sets the word, where the param `text` set it, and
-  `text_height` starts at 0.57, which draws the word as tall as Pillow did.
+  layer's `text` sets the word, where the param `text` set it.
+  `text_height` starts at 0.57, which draws the word as tall as Pillow did,
+  and `text_speed` at 0.101, which moves it across the screen as fast as
+  before.
 - Draw `--demo bluesun`'s wall with the image layer `picture`, from
   `plaster.png` in the pass `wall` that `main` reads, where Pillow made the
   plaster. The layer's `image` takes another picture, where the param

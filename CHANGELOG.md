@@ -514,8 +514,9 @@ A Rust host written for 0.4.0 needs these changes.
   is no str raises TypeError. On a
   Pi Zero 2 W, with rects and two-digit words in the pixel font and half of
   the calls changed each frame, a frame of 50 calls draws at 193 fps on a
-  128x32 SSD1306, and a frame of 200 calls at 181 fps, after a first frame
-  of 1.3 s that adds the 200 layers.
+  128x32 SSD1306 and a frame of 200 calls at 174 fps, 126 fps when each
+  changed text takes two characters that it never drew before, and the
+  first frame, which adds the 200 layers, takes 1.04 s.
 - Measure words with `h.measure(words, font_size=None, font_family=None)`,
   and with `ghee.measure` in a scene script: the width and height in pixels
   of the block that ghee lays them out in, at the size that fits the pass
@@ -993,7 +994,8 @@ A Rust host written for 0.4.0 needs these changes.
   its shaders as a uniform, so texts that differ in size alone draw through
   one program, and a text built again at another size compiles nothing,
   unless the size takes it to another atlas or, under `auto`, to another
-  render.
+  render. On a Pi Zero 2 W a look that moves a text takes 85 us, and one
+  that builds it again at another size 2.6 ms.
 - Take a layer out of a running scene with `Renderer::remove_layer`, and
   put one at another index among the layers of its pass with
   `Renderer::move_layer`, where it keeps its look, its atlas and its phases

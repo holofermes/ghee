@@ -8,6 +8,7 @@ state.
 """
 
 import array
+import glob
 import importlib.util
 import io
 import itertools
@@ -1036,6 +1037,8 @@ ghee.run(
 def test_a_layer_set_of_a_scene_that_ghee_runs_lands_in_the_frame(tmp_path):
     if not CLI.exists():
         pytest.skip(f"no {CLI} to run the scene")
+    if not glob.glob("/dev/dri/renderD*"):
+        pytest.skip("no GPU render node to run the scene")
     path = tmp_path / "lands.py"
     path.write_text(LANDS.format(python=sys.executable))
     path.chmod(0o755)

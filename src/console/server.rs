@@ -5010,12 +5010,12 @@ mod tests {
         frame();
         assert_eq!(locked(), none, "before the process sets anything");
         assert_eq!(set("pass=main&name=amt&value=0.25").0, 200);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while locked() == none && Instant::now() < deadline {
-            frame();
-        }
         let all =
             serde_json::json!({"params": ["main.amt"], "fields": ["title.x"], "layers": ["dot"]});
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while locked() != all && Instant::now() < deadline {
+            frame();
+        }
         assert_eq!(locked(), all);
         assert_eq!(
             set("pass=main&name=amt&value=0.5"),

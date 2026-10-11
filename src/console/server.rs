@@ -4866,7 +4866,7 @@ mod tests {
             drop(lp);
             publish_changes(&console, &st);
             let px = got.borrow();
-            let blue = px.chunks_exact(4).any(|p| p[2] > 200);
+            let blue = px.as_chunks::<4>().0.iter().any(|p| p[2] > 200);
             (px[12 * 4], px[12 * 4 + 1], blue)
         };
         let doc = || json_of(&ask(&api, "GET", "/scene", "name=proc", "").1);

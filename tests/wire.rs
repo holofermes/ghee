@@ -119,8 +119,10 @@ fn render(tag: &str, body: &str) -> (Vec<Vec<u8>>, String) {
     assert_eq!(out.stdout.len(), FRAMES * FRAME_W * FRAME_H * 4, "{err}");
     let frames = out
         .stdout
-        .chunks_exact(FRAME_W * FRAME_H * 4)
-        .map(<[u8]>::to_vec)
+        .as_chunks::<{ FRAME_W * FRAME_H * 4 }>()
+        .0
+        .iter()
+        .map(|f| f.to_vec())
         .collect();
     (frames, refused.join("\n"))
 }
@@ -128,7 +130,9 @@ fn render(tag: &str, body: &str) -> (Vec<Vec<u8>>, String) {
 /// The count of pixels of `frame` that hold the bar's lime.
 fn lime(frame: &[u8]) -> usize {
     frame
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[0] < 100 && px[1] > 200)
         .count()
 }

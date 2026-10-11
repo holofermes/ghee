@@ -40,7 +40,9 @@ pub fn decode_raw(
     let pixels = if is_f32 {
         Pixels::F32(
             bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
         )
@@ -76,7 +78,7 @@ pub fn decode_png(bytes: &[u8]) -> Result<Image> {
         png::ColorType::Rgba => (4, Pixels::U8(buf)),
         png::ColorType::GrayscaleAlpha => {
             let mut out = Vec::with_capacity(buf.len() * 2);
-            for ga in buf.chunks_exact(2) {
+            for ga in buf.as_chunks::<2>().0 {
                 out.extend_from_slice(&[ga[0], ga[0], ga[0], ga[1]]);
             }
             (4, Pixels::U8(out))

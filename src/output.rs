@@ -554,7 +554,7 @@ pub fn encode_png(frame: Frame<'_>) -> Result<Vec<u8>> {
 /// Divide each colour of RGBA pixels by its alpha, rounded to the nearest
 /// byte. An opaque pixel keeps its bytes, and a transparent one turns black.
 fn unpremultiply(px: &mut [u8]) {
-    for p in px.chunks_exact_mut(4) {
+    for p in px.as_chunks_mut::<4>().0 {
         let a = u32::from(p[3]);
         if a == 255 {
             continue;
@@ -797,8 +797,10 @@ mod tests {
         let mut rgba = OwnedFrame::of((16, 16, 4));
         for (i, (c, p)) in rgb
             .data
-            .chunks_exact_mut(3)
-            .zip(rgba.data.chunks_exact_mut(4))
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .zip(rgba.data.as_chunks_mut::<4>().0)
             .enumerate()
         {
             let v = [(i * 7) as u8, (i * 13) as u8, (i * 29) as u8];

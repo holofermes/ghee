@@ -514,7 +514,9 @@ impl ShapeLayer {
         let mut quads = Vec::new();
         shown.quads(pass, &mut quads);
         quads
-            .chunks_exact(QUAD)
+            .as_chunks::<QUAD>()
+            .0
+            .iter()
             .map(|q| {
                 let [a, b, c, d] = [q[0], q[1], q[2], q[3]].map(f64::from);
                 let segment = (f64::from(q[4]) / 4.0).floor() % 2.0 == 1.0;

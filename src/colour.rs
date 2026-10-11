@@ -148,9 +148,12 @@ impl Mips {
                     out.copy_from_slice(&px.to_le_bytes());
                     continue;
                 }
-                let a = r0[8 * span.start..8 * span.end].chunks_exact(8);
-                let b = r1[8 * span.start..8 * span.end].chunks_exact(8);
-                let o = out[4 * span.start..4 * span.end].chunks_exact_mut(4);
+                let a = r0[8 * span.start..8 * span.end].as_chunks::<8>().0.iter();
+                let b = r1[8 * span.start..8 * span.end].as_chunks::<8>().0.iter();
+                let o = out[4 * span.start..4 * span.end]
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut();
                 for ((a, b), o) in a.zip(b).zip(o) {
                     let px = average(texel(a), texel(&a[4..]), texel(b), texel(&b[4..]));
                     o.copy_from_slice(&px.to_le_bytes());
@@ -290,7 +293,7 @@ mod tests {
                     assert!(t[..3].iter().all(|c| *c <= t[3]), "{file} ({x}, {y}) {t:?}");
                 }
             }
-            assert!(f.texels.chunks_exact(4).any(|t| t[3] == 255));
+            assert!(f.texels.as_chunks::<4>().0.iter().any(|t| t[3] == 255));
             // Cells pack on the grid of MIP_PAD texels.
             let mut a = Atlas::default();
             for id in 0..9 {

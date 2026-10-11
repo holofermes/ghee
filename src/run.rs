@@ -184,7 +184,9 @@ pub(crate) fn partition(layers: &[Option<Candidate>]) -> Vec<Range<usize>> {
 /// pixels per em, each reaching 0.625 px past its glyph's box on each side.
 pub(crate) fn glyph_pixels(quads: &[f32], fs: f64) -> f64 {
     quads
-        .chunks_exact(4 * text::QUAD_FLOATS)
+        .as_chunks::<{ 4 * text::QUAD_FLOATS }>()
+        .0
+        .iter()
         .map(|q| {
             let [x0, y0, x1, y1] = [q[4], q[5], q[6], q[7]].map(f64::from);
             ((x1 - x0) * fs + 1.25) * ((y1 - y0) * fs + 1.25)
@@ -194,7 +196,7 @@ pub(crate) fn glyph_pixels(quads: &[f32], fs: f64) -> f64 {
 
 /// Append `quads`, a shape's quads, as a vertex of [`program`] holds them.
 pub(crate) fn shape_vertices(quads: &[f32], out: &mut Vec<f32>) {
-    for v in quads.chunks_exact(4 * crate::shape::ATTRIBUTES) {
+    for v in quads.as_chunks::<{ 4 * crate::shape::ATTRIBUTES }>().0 {
         out.extend_from_slice(v);
         out.extend_from_slice(&[0.0; VERTEX - 4 * crate::shape::ATTRIBUTES]);
     }
@@ -225,7 +227,7 @@ pub(crate) fn glyph_vertices(l: &TextLayer, quads: &[f32], size: [f64; 2], out: 
         (ALPHATO, to.alpha as f32),
         (OPACITY, l.opacity as f32),
     ];
-    for q in quads.chunks_exact(text::QUAD_FLOATS) {
+    for q in quads.as_chunks::<{ text::QUAD_FLOATS }>().0 {
         v[..text::QUAD_FLOATS].copy_from_slice(q);
         for (at, x) in lanes {
             v[at] = x;

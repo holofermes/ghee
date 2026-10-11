@@ -395,7 +395,15 @@ fn a_live_set_that_the_scene_refuses_says_why_and_changes_nothing() {
 
 /// The left edge of the first lit column of `frame`, w pixels wide.
 fn left(frame: &[u8], w: usize) -> Option<usize> {
-    (0..w).find(|x| frame.chunks_exact(4).skip(*x).step_by(w).any(|p| p[0] > 0))
+    (0..w).find(|x| {
+        frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .skip(*x)
+            .step_by(w)
+            .any(|p| p[0] > 0)
+    })
 }
 
 #[test]

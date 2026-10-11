@@ -4019,10 +4019,12 @@ impl Renderer {
         if layer.render.hinted() {
             for (q, k) in quads
                 .floats
-                .chunks_exact_mut(4 * text::QUAD_FLOATS)
+                .as_chunks_mut::<{ 4 * text::QUAD_FLOATS }>()
+                .0
+                .iter_mut()
                 .zip(drawn)
             {
-                for v in q.chunks_exact_mut(text::QUAD_FLOATS) {
+                for v in q.as_chunks_mut::<{ text::QUAD_FLOATS }>().0 {
                     v[11] = pen(k) as f32;
                 }
             }
@@ -6182,7 +6184,10 @@ mod tests {
                 assert_eq!(f[1], 200, "{kind} {i}");
                 match own {
                     Some(v) => assert_eq!(f[0], v, "{kind} {i}"),
-                    None => assert!(f.chunks_exact(4).any(|p| p[0] == 255), "{kind} {i}"),
+                    None => assert!(
+                        f.as_chunks::<4>().0.iter().any(|p| p[0] == 255),
+                        "{kind} {i}"
+                    ),
                 }
                 let textures = gl_objects()[0];
                 assert_eq!(*held.get_or_insert(textures), textures, "{kind} {i}");
@@ -6497,7 +6502,7 @@ mod tests {
         }
         // A GL reads a value v back as v * 255, rounded either way.
         for (got, v) in rgb[0][..3].iter().zip([0.25, 0.5, 0.0]) {
-            assert!((f64::from(*got) - v * 255.0).abs() < 1.0, "{:?}", &rgb[0]);
+            assert!((f64::from(*got) - v * 255.0).abs() < 1.0, "{:?}", rgb[0]);
         }
         assert_eq!(rgb[0], rgb[1]);
     }
@@ -9369,7 +9374,7 @@ mod tests {
         let drawing = |r: &mut Renderer| {
             r.set_time(Some(0.0));
             let frame = r.render(None).unwrap();
-            let shown = frame.chunks_exact(4).any(|p| p[0] != p[2]);
+            let shown = frame.as_chunks::<4>().0.iter().any(|p| p[0] != p[2]);
             let size = CString::new(text::internal(GLSL_NAME, "_emoji_size")).unwrap();
             let read = unsafe { ffi::ghee_mp_reads(r.handle, size.as_ptr()) };
             let held = r
@@ -9450,7 +9455,12 @@ mod tests {
         );
         writer.join().unwrap();
         let t0 = std::time::Instant::now();
-        while !still(&mut r).chunks_exact(4).any(|p| p[0] != p[2]) {
+        while !still(&mut r)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[0] != p[2])
+        {
             assert!(
                 t0.elapsed() < Duration::from_secs(20),
                 "the emoji never came in"
@@ -9532,7 +9542,7 @@ mod tests {
         let whole = r.render(None).unwrap().to_vec();
         assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
         assert!(
-            whole.chunks_exact(4).any(|p| p[0] != p[2]),
+            whole.as_chunks::<4>().0.iter().any(|p| p[0] != p[2]),
             "no emoji drawn"
         );
         assert!(cell == whole);
@@ -9630,7 +9640,10 @@ mod tests {
         };
         let want = frame(&mut r, false);
         let got = frame(&mut r, true);
-        assert!(want.chunks_exact(4).any(|p| p[0] != p[2]), "no emoji drawn");
+        assert!(
+            want.as_chunks::<4>().0.iter().any(|p| p[0] != p[2]),
+            "no emoji drawn"
+        );
         assert!(worst(&got, &want) <= 1, "{}", worst(&got, &want));
         // The fillers gave their room, and the first emoji kept its cell.
         let first = r.colours.borrow()["l0"]

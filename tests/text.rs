@@ -1151,7 +1151,7 @@ fn a_vec2_param_named_like_a_local_of_ghees_glsl_changes_no_pixel() {
     let plain = render(&mut r, &loaded(&doc));
     assert!(plain.contains(&255), "the scene draws nothing");
     // The pass and the layers paint grey, and the emoji paints colour.
-    let coloured = |f: &[u8]| f.chunks_exact(4).any(|p| p[0] != p[2]);
+    let coloured = |f: &[u8]| f.as_chunks::<4>().0.iter().any(|p| p[0] != p[2]);
     assert!(coloured(&plain), "the scene draws no emoji");
     assert!(render(&mut r, &loaded(&named)) == plain, "{names:?}");
 }
@@ -3974,7 +3974,13 @@ fn an_emoji_that_the_font_lacks_keeps_its_colours_and_moves_as_the_letters_do() 
         .iter()
         .map(|v| (f64::from(*v) / 2.0).round() as u8)
         .collect();
-    let rgb = |f: &[u8]| -> Vec<u8> { f.chunks_exact(4).flat_map(|p| p[..3].to_vec()).collect() };
+    let rgb = |f: &[u8]| -> Vec<u8> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| p[..3].to_vec())
+            .collect()
+    };
     assert!(worst(&rgb(&faded), &rgb(&half)) <= 1);
 }
 
@@ -4005,7 +4011,7 @@ fn an_emoji_takes_no_shadow_glow_or_stroke_beside_letters_that_do() {
         );
         assert_bitmap(&frame, w, &b, at, 1, [0, 0, 0], &keys.to_string());
         assert!(
-            frame.chunks_exact(4).any(|p| p[1] > 100),
+            frame.as_chunks::<4>().0.iter().any(|p| p[1] > 100),
             "{keys}: no effect drawn"
         );
         // Outside the I and its effects, the frame is the plain one.
@@ -4077,7 +4083,7 @@ fn a_hinted_layer_lights_the_pixels_that_pillow_lights() {
         shadowed["render"] = json!(kind);
         for keys in [json!({"render": kind}), shadowed] {
             let frame = render(&mut r, &hinted_scene(size, keys.clone()));
-            let got: Vec<u8> = frame.chunks_exact(4).map(|p| p[0]).collect();
+            let got: Vec<u8> = frame.as_chunks::<4>().0.iter().map(|p| p[0]).collect();
             let differ = got.iter().zip(&want).filter(|(a, b)| a != b).count();
             assert_eq!(
                 differ, 0,
@@ -4100,7 +4106,7 @@ fn auto_draws_hinted_below_the_switch_and_mtsdf_from_it() {
         let named = render(&mut r, &hinted_scene(size, json!({"render": same})));
         assert!(auto == named, "auto at {size} px draws unlike {same}");
         assert!(
-            auto.chunks_exact(4).any(|p| p[0] > 0),
+            auto.as_chunks::<4>().0.iter().any(|p| p[0] > 0),
             "{size} px draws nothing"
         );
     }

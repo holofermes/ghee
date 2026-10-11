@@ -1394,7 +1394,7 @@ impl TextLayer {
         let mut out = quads.to_vec();
         let at = out.len();
         out.extend_from_slice(quads);
-        for v in out[at..].chunks_exact_mut(text::QUAD_FLOATS) {
+        for v in out[at..].as_chunks_mut::<{ text::QUAD_FLOATS }>().0 {
             v[text::QUAD_FLOATS - 1] = 1.0;
         }
         out
@@ -1411,7 +1411,7 @@ impl TextLayer {
         let mut out = effects.to_vec();
         let at = out.len();
         out.extend_from_slice(letters);
-        for v in out[at..].chunks_exact_mut(text::QUAD_FLOATS) {
+        for v in out[at..].as_chunks_mut::<{ text::QUAD_FLOATS }>().0 {
             v[text::QUAD_FLOATS - 1] = 1.0;
         }
         out
@@ -2509,9 +2509,13 @@ impl Live {
             }
             (Form::Image, _) => bail!("{what} takes the name of an image asset, got numbers"),
             (Form::Words, _) => bail!("{what} takes text, got numbers"),
-            (Form::Points, n) if n.len() >= 4 && n.len() % 2 == 0 => {
-                Value::from(n.chunks_exact(2).map(<[f64]>::to_vec).collect::<Vec<_>>())
-            }
+            (Form::Points, n) if n.len() >= 4 && n.len() % 2 == 0 => Value::from(
+                n.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|p| p.to_vec())
+                    .collect::<Vec<_>>(),
+            ),
             (Form::Points, _) => bail!(
                 "{what} takes x and y in turn for two points or more, got {} numbers",
                 n.len()
@@ -3461,8 +3465,10 @@ mod tests {
         let (effects, letters) = both.split_at(quads.len());
         assert_eq!(effects, quads);
         for (v, w) in letters
-            .chunks_exact(text::QUAD_FLOATS)
-            .zip(quads.chunks_exact(text::QUAD_FLOATS))
+            .as_chunks::<{ text::QUAD_FLOATS }>()
+            .0
+            .iter()
+            .zip(quads.as_chunks::<{ text::QUAD_FLOATS }>().0)
         {
             let last = text::QUAD_FLOATS - 1;
             assert_eq!((&v[..last], v[last]), (&w[..last], 1.0));

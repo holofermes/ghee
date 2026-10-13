@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ghee-render"]
+# dependencies = ["ghee-render==0.4.1.dev0"]
 # ///
 """A word slides over water, and particles stream under the surface.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ghee-render"]
+# dependencies = ["ghee-render==0.4.1.dev0"]
 # ///
 """A spectrum and its history, from a scene with no JSON that feeds a 1D
 and a 2D array each frame.

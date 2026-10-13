@@ -14,13 +14,22 @@ esac
 
 manifests=("$root/Cargo.toml" "$root/python/Cargo.toml")
 locks=("$root/Cargo.lock" "$root/python/Cargo.lock")
+# The bundled Python examples, found by their PEP 723 block. Each pins
+# ghee-render to this version as the wheel spells it: 0.3.1-dev is 0.3.1.dev0.
+mapfile -t examples < <(grep -rlIx '# /// script' "$root/ghee/examples" | sort)
+pyversion=${version/%-dev/.dev0}
+if [ ${#examples[@]} -eq 0 ]; then
+    echo "release.sh: no file under ghee/examples carries a PEP 723 block" >&2
+    exit 1
+fi
 
+# check FILE GOT [WANT]: WANT is the version by default
 check() {
-    if [ "$2" != "$version" ]; then
+    if [ "$2" != "${3:-$version}" ]; then
         echo "release.sh: ${1#"$root/"} says '$2'" >&2
         exit 1
     fi
-    printf '%-20s %s\n' "${1#"$root/"}" "$2"
+    printf '%-28s %s\n' "${1#"$root/"}" "$2"
 }
 
 for manifest in "${manifests[@]}"; do
@@ -41,6 +50,18 @@ for lock in "${locks[@]}"; do
     done
 done
 
+block='/^# \/\/\/ script$/,/^# \/\/\/$/'
+for example in "${examples[@]}"; do
+    sed -i "${block}s/\"ghee-render[^\"]*\"/\"ghee-render==$pyversion\"/" "$example"
+done
+
+for example in "${examples[@]}"; do
+    for got in $(sed -n "${block}p" "$example" | grep -o '"ghee-render[^"]*"'); do
+        got=${got//\"/}
+        check "$example" "${got#ghee-render==}" "$pyversion"
+    done
+done
+
 # THIRD-PARTY-NOTICES lists the crates of python/Cargo.lock, written above
 cargo about generate --locked --manifest-path "$root/python/Cargo.toml" \
     --config "$root/tools/about.toml" --output-file "$root/THIRD-PARTY-NOTICES" \
@@ -48,4 +69,4 @@ cargo about generate --locked --manifest-path "$root/python/Cargo.toml" \
 
 # the Debian spelling the deb build derives: 0.3.1-dev sorts after 0.3.1, and
 # 0.3.1~dev sorts before it
-printf '%-20s %s\n' "deb (derived)" "$(printf %s "$version" | tr - '~')"
+printf '%-28s %s\n' "deb (derived)" "$(printf %s "$version" | tr - '~')"

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ghee-render"]
+# dependencies = ["ghee-render==0.4.1.dev0"]
 # ///
 """A karaoke line that fills as it is sung, mirrored in water by a later pass.
 

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ghee-render"]
+# dependencies = ["ghee-render==0.4.1.dev0"]
 # ///
 """A Python program that opens a screen and draws on it in its own loop.
 

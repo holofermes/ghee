@@ -1129,7 +1129,7 @@ function buildSceneMenu(){
   const own = isMine(), proc = isProcedural();
   box.appendChild(addMenu("⋯", [
     ["new scene", () => newScene(null)],
-    [own ? "duplicate" : "copy to my scenes", () => newScene(active), !active || proc, proc ? "a program writes this scene" : ""],
+    [own ? "duplicate" : "copy to my scenes", () => newScene(active), !active || proc],
     null,
     ["rename", renameScene, !own, "only a scene of my scenes renames"],
     ["delete", deleteScene, !own, "only a scene of my scenes is deleted here"],
@@ -1528,7 +1528,6 @@ function addMenu(label, items, trigCls = "addmini", title = ""){
 // a menu stays at the place it opened, so a scroll closes it
 addEventListener("scroll", closeMenus, true);
 
-const PROGRAM = "a program writes this scene: its passes and layers are its own";
 // Tabs never change width or place. The open tab's gear, pencil, eye and ×
 // sit at the row's end, greyed where the tab takes none. A script declares the
 // passes and the common block of its scene: + adds neither there, and the
@@ -1567,7 +1566,6 @@ function buildTabs(){
     gear.disabled = ren.disabled = eye.disabled = true;
     const del = tbtn("×", "remove the common block", "x", delCommon);
     del.disabled = proc;
-    if (proc) del.title = PROGRAM;
     acts.append(gear, ren, eye, del);
   } else {
     const i = curPass, p = work.passes[i], off = p.visible === false;
@@ -1579,7 +1577,6 @@ function buildTabs(){
     ren.disabled = proc || !!p.filter;
     eye.disabled = !off && shown <= 1;   // one pass at least stays visible
     del.disabled = work.passes.length <= 1 || (proc && !p.filter);
-    if (proc && !p.filter) ren.title = del.title = PROGRAM;
     acts.append(gear, ren, eye, del);
   }
   // the strip's width, and so the scroll it takes, is final once the actions are in
@@ -2111,8 +2108,7 @@ function buildLayers(){
   const row = el("div", "lyrow");
   row.appendChild(el("span", null, "layers"));
   // a program owns which layers its scene has, and their order
-  if (proc){ const why = el("span", null, "a program writes this scene"); why.title = PROGRAM; row.appendChild(why); }
-  else row.appendChild(addMenu("+ layer ▾", [
+  if (!proc) row.appendChild(addMenu("+ layer ▾", [
     ["text", () => addLayer(p, "text")],
     ["image", () => addLayer(p, "image"), !imageAssets().length && !isMine(), "the scene has no image asset"],
     ["shape", () => addLayer(p, "shape")]]));

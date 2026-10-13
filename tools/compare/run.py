@@ -27,9 +27,9 @@ raylib comes from its SDL build, raylib_sdl, which runs headless on SDL's
 offscreen driver.
 
 Onto the glass, with --glass CARD: each library puts its frames on the SPI
-or I2C panel of that DRM card. ghee scans out to the card, and Pillow and
-pygame write each frame whole to the card's fbdev, which flushes it to the
-panel at once. The runner times every bus transfer to the panel from the
+or I2C panel of that DRM card. ghee scans out to the card, ghee_drop with
+drop=True, and Pillow and pygame write each frame whole to the card's fbdev,
+which flushes it to the panel at once. The runner times every bus transfer to the panel from the
 kernel's tracepoints, through `sudo -n`, and measures for each library:
 
 - the time from the start of the process to the end of its first frame's
@@ -42,7 +42,8 @@ kernel's tracepoints, through `sudo -n`, and measures for each library:
   the clock down after the start, and the library's own process alone;
 - on a Pi 5, the board's power over --power-window seconds, held and paced;
 - run free for --free seconds: the frames drawn and the frames on the glass
-  a second, and the same latency.
+  a second, the same latency, and the CPU time of every task on the system
+  and of the library's process.
 
 With --perpixel, --glass runs per-pixel programs in place of the status
 screen, and --check draws each pair of them headless at the same steps and
@@ -74,7 +75,7 @@ import perpixel
 HERE = Path(__file__).resolve().parent
 FONTS = HERE.parents[1] / "ghee" / "examples" / "fonts"
 LIBS = ["ghee", "pillow", "pygame", "raylib"]
-GLASS_LIBS = ["ghee", "pillow", "pygame"]
+GLASS_LIBS = ["ghee", "ghee_drop", "pillow", "pygame"]
 SIZES = ["128x32", "256x64", "320x240"]
 PACE = 30
 DRAIN = 0.2
@@ -138,7 +139,8 @@ def glass_child(screen, args):
         while True:
             a = time.monotonic()
             screen.draw(*values(i, a - t0))
-            frames.append((a, fb.sent if fb else a, time.monotonic()))
+            b = time.monotonic()
+            frames.append((a, fb.sent if fb else b, b))
             i += 1
             if end is not None:
                 if frames[-1][2] >= end:
@@ -325,7 +327,11 @@ def measure_glass(lib, p, args, power):
         if power:
             out["watts"] = watts(args.power_window)
         paced = ask("stop")["frames"]
-        free = ask(f"free {args.free}")["frames"]
+        proc.stdin.write(f"free {args.free}\n")
+        proc.stdin.flush()
+        time.sleep(0.1)
+        out["free_cpu"], out["free_proc_cpu"] = glass.cores(args.free - 0.3, proc.pid)
+        free = ask()["frames"]
         proc.stdin.write("quit\n")
         proc.stdin.flush()
         proc.wait()
@@ -360,7 +366,8 @@ def watts(seconds):
 
 def glass_table(rows, power):
     head = ["library", "panel", "start s", "drawn/s", "glass/s", "updates/s", "ms"]
-    head += ["p95 ms", "drawn/s @30", "glass/s @30", "updates/s @30", "ms @30"]
+    head += ["p95 ms", "CPU free", "process free"]
+    head += ["drawn/s @30", "glass/s @30", "updates/s @30", "ms @30"]
     head += ["p95 @30", "CPU @30", "process @30"]
     if power:
         head += ["W held", "W @30"]
@@ -374,6 +381,7 @@ def glass_table(rows, power):
         cells = [r["lib"], r["size"], f"{m['startup']:.2f}", f"{f['drawn']:.0f}"]
         cells += [f"{f['glass']:.0f}", f"{f['updates']:.0f}"]
         cells += [f"{f['latency'] * 1e3:.2f}", f"{f['latency_p95'] * 1e3:.2f}"]
+        cells += [f"{m['free_cpu']:.1%}", f"{m['free_proc_cpu']:.1%}"]
         cells += [f"{pc['drawn']:.1f}", f"{pc['glass']:.1f}", f"{pc['updates']:.1f}"]
         cells += [f"{pc['latency'] * 1e3:.2f}", f"{pc['latency_p95'] * 1e3:.2f}"]
         cells += [f"{m['cpu']:.1%}", f"{m['proc_cpu']:.1%}"]

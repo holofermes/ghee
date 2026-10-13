@@ -3,12 +3,14 @@ import ghee
 
 class Screen:
     QUEUE = True
+    DROP = False
 
     def __init__(self, lay, panel=None):
         self.lay = lay
         self.panel = panel
         if panel:
-            self.h = ghee.open(display="kms", dri=panel.card)
+            drop = {"drop": True} if self.DROP else {}
+            self.h = ghee.open(display="kms", dri=panel.card, **drop)
         else:
             self.h = ghee.open(width=lay.w, height=lay.h)
 

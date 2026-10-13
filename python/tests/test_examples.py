@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 
+import pytest
 from conftest import REPO
 from test_api import png_pixels
 
@@ -25,25 +26,24 @@ def run_example(name, out, *flags):
     return png_pixels(out.read_bytes())
 
 
-def test_nowplaying_centres_the_same_artist_on_a_wider_frame(tmp_path):
-    """The artist's pass takes the frame's width from ghee.render_size(), and
-    main copies it pixel for pixel: the artist's rows of a 256x32 frame hold
-    the 128x32 frame's artist, moved right by half the extra width, and stay
-    dark on either side."""
-    w, h, narrow = run_example(
-        "nowplaying", tmp_path / "narrow.png", "--size", "128x32"
-    )
-    W, H, wide = run_example("nowplaying", tmp_path / "wide.png", "--size", "256x32")
-    assert (w, h, W, H) == (128, 32, 256, 32)
-    rows = round(0.4 * h)
-    left = (W - w) // 2
+@pytest.mark.parametrize(
+    ("size", "radius", "hub"), [("256x64", 10, 4), ("128x32", 5, 2)]
+)
+def test_nowplaying_runs_the_tape_between_two_reels(tmp_path, size, radius, hub):
+    """The reels take the bottom corners of the frame, and the bar between
+    them fills from the left with the share of the track played, its rest
+    dark."""
+    w, h, px = run_example("nowplaying", tmp_path / "f.png", "--size", size)
+    assert f"{w}x{h}" == size
 
-    def row(px, width, y, x0, x1):
-        return px[(y * width + x0) * 4 : (y * width + x1) * 4]
+    def lit(x, y):
+        return max(px[(y * w + x) * 4 : (y * w + x) * 4 + 3]) > 127
 
-    artist = [row(narrow, w, y, 0, w) for y in range(rows)]
-    assert any(max(r[0::4]) > 127 for r in artist), "the artist draws nothing"
-    assert [row(wide, W, y, left, left + w) for y in range(rows)] == artist
-    for y in range(rows):
-        assert max(row(wide, W, y, 0, left)[0::4]) == 0
-        assert max(row(wide, W, y, left + w, W)[0::4]) == 0
+    y = h - radius - 1
+    assert lit(radius + hub, y), "the left reel's hub"
+    assert lit(w - 1 - radius - hub, y), "the right reel's hub"
+    left, right = 2 * radius + 5, w - 2 * radius - 6
+    assert lit(left, y), "the bar's left end"
+    assert lit(right, y), "the bar's right end"
+    assert lit(left + 2, y), "the bar fills from the left"
+    assert not lit(right - 2, y), "the bar's rest stays dark"

@@ -451,5 +451,5 @@ ghee render --demo lettering -o lettering.png
 ghee render --demo lens -o lens.png
 ```
 
-`nowplaying` puts an artist over a scrolling title on a 128x32 or a 256x64
-panel.
+`nowplaying` sets the words of a cassette player's screen on each track, on a
+128x32 or a 256x64 panel, and scrolls a title too long for the screen.

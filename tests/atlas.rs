@@ -2,6 +2,7 @@
 //! against what `<name>_cover` draws on this host's GPU.
 
 use serde_json::json;
+use ttf_parser::Face;
 
 use ghee::engine::{probe_dri_devices, Renderer};
 use ghee::scene::Scene;
@@ -35,6 +36,21 @@ fn gpu() -> Renderer {
     );
 }
 
+/// The pixels that a layer in SANS at `px` pixels per em draws its first
+/// baseline below the em of its layout's ascent: the ascender as FreeType's
+/// size metrics round it for Pillow's default anchor, from Pillow's 26.6
+/// size request, FT_DivFix, FT_MulFix and the round up to a whole pixel,
+/// less the exact one.
+fn rounding(px: f64) -> f64 {
+    let data = std::fs::read(format!("{FONTS}/{SANS}")).unwrap();
+    let face = Face::parse(&data, 0).unwrap();
+    let (a, u) = (i64::from(face.ascender()), i64::from(face.units_per_em()));
+    let size = (px as f32 * 64.0) as i64;
+    let scale = ((size << 16) + (u >> 1)) / u;
+    let ascender = (a * scale + 0x8000) >> 16;
+    ((ascender + 63) >> 6) as f64 - a as f64 / u as f64 * px
+}
+
 /// The lyrics centred at 46 px/em in layer `t`, drawn from the MTSDF atlas,
 /// shown or hidden, in a pass of `code`.
 fn frame(r: &mut Renderer, code: &str, visible: bool) -> Vec<u8> {
@@ -63,12 +79,15 @@ fn the_mtsdf_fill_at_46_px_em_matches_exact_coverage() {
     let mut r = gpu();
     let cover = frame(
         &mut r,
-        "void main() {\n\
-         vec2 px = floor(uv * iResolution.xy) + 0.5;\n\
-         vec2 off = (iResolution.xy - t_size * 46.0) * 0.5;\n\
-         float c = t_cover((px - off) / 46.0, 46.0);\n\
-         gl_FragColor = vec4(vec3(c), 1.0);\n\
-         }",
+        &format!(
+            "void main() {{\n\
+             vec2 px = floor(uv * iResolution.xy) + 0.5;\n\
+             vec2 off = (iResolution.xy - t_size * 46.0) * 0.5 + vec2(0.0, {:?});\n\
+             float c = t_cover((px - off) / 46.0, 46.0);\n\
+             gl_FragColor = vec4(vec3(c), 1.0);\n\
+             }}",
+            rounding(46.0)
+        ),
         false,
     );
     let fill = frame(

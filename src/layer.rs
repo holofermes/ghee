@@ -27,13 +27,15 @@
 //! so a new speed carries the motion on from where it is.
 //!
 //! The block of the words or the picture sits at `x`, `y`, the pass pixel of
-//! its top left, y down, and a missing axis centres the block on it. With no
-//! `font_size`, a text block takes the largest size at which it fits its
-//! room: the pass less FIT_MARGIN of its shorter side on each edge, and on a
-//! given axis the pass past the given pixel less the margin at the far edge.
-//! The shaders work the size out from the block's size in em,
-//! `ghee_0_size`, which the engine sets as it sets `<name>_size` for the
-//! passes, so it follows the words.
+//! its top left, y down, and a missing axis centres the block on it. A text's
+//! first baseline sits below that top by its first font's ascender at the
+//! size, rounded up to a whole pixel as FreeType rounds it, where Pillow's
+//! `draw.text` puts it with its default anchor. With no `font_size`, a text
+//! block takes the largest size at which it fits its room: the pass less
+//! FIT_MARGIN of its shorter side on each edge, and on a given axis the pass
+//! past the given pixel less the margin at the far edge. The shaders work
+//! the size out from the block's size in em, `ghee_0_size`, which the engine
+//! sets as it sets `<name>_size` for the passes, so it follows the words.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -1586,6 +1588,14 @@ impl TextLayer {
         if self.grid().is_some() {
             main.push(SNAP.to_string());
         }
+        let fonts = self.data.as_deref().unwrap_or_default();
+        let (units, upem) = text::ascender(fonts);
+        let ascent = text::line_metrics(fonts).0;
+        main.push(ascender(
+            &format!("{units:?}"),
+            &format!("{upem:?}"),
+            &format!("{ascent:?}"),
+        ));
         if scroll.is_some() {
             main.push(SCROLL_LINES.to_string());
         }
@@ -2017,11 +2027,12 @@ fn named(glsl: &str) -> String {
 /// The main of a glyph of a slug text with no effects in each stage of a
 /// run's program, which draws the glyph as the text's own program does:
 /// the vertex stage's lines, with the font size in `fs`, 0 to fit the
-/// block to its room, and `grid` true for a text on the pixel grid, and the
-/// fragment stage's lines, which set gl_FragColor. Each uniform that the
-/// text's own program reads is a local of the same name, which the caller
-/// declares, and so are uv and ghee_v4.
-pub(crate) fn run_glyph(fs: &str, grid: &str) -> (String, String) {
+/// block to its room, `grid` true for a text on the pixel grid, and the
+/// first font's ascender in its units in `units` and its units per em in
+/// `upem`, and the fragment stage's lines, which set gl_FragColor. Each
+/// uniform that the text's own program reads is a local of the same name,
+/// which the caller declares, and so are uv and ghee_v4.
+pub(crate) fn run_glyph(fs: &str, grid: &str, units: &str, upem: &str) -> (String, String) {
     let pixel = text::built_in(Some(text::PIXEL)).expect("ghee carries the pixel font");
     let vertex = [
         format!("    float ghee_fs = {fs};"),
@@ -2035,6 +2046,7 @@ pub(crate) fn run_glyph(fs: &str, grid: &str) -> (String, String) {
         "    }".to_string(),
         PLACE.to_string(),
         format!("    if ({grid}) {}", SNAP.trim_start()),
+        ascender(units, upem, &format!("({units} / {upem})")),
         CORNER.replace("GROW", "0.625 / ghee_ppe"),
         slug_varyings(true, false).1.trim_end().to_string(),
         format!("    if ({grid}) {{\n{}\n    }}", pen(&[pixel])),
@@ -3008,6 +3020,20 @@ const GRADIENT: &str = r#"    float ghee_r = radians(ghee_NAME_angle);
 /// The line that puts the block's top left on a whole pixel.
 const SNAP: &str = "    ghee_org = floor(ghee_org + 0.5);";
 
+/// The lines that move the glyphs down from ghee_org, the block's top, so
+/// that the first baseline sits below it by the font's ascender as FreeType
+/// rounds it at the size for Pillow's default anchor: the size cut to 1/64
+/// px, the scale and the ascender in FreeType's fixed point, the ascender up
+/// to a whole pixel. `units` is the ascender in the font's units, `upem` its
+/// units per em, and `ascent` the em of the first baseline in the layout.
+fn ascender(units: &str, upem: &str, ascent: &str) -> String {
+    format!(
+        "    float ghee_ys = floor((floor(ghee_fs * 64.0) * 65536.0 + floor({upem} * 0.5)) / {upem});\n    \
+         float ghee_asc = ceil(floor(({units} * ghee_ys + 32768.0) / 65536.0) / 64.0);\n    \
+         ghee_org.y += ghee_asc - {ascent} * ghee_fs;"
+    )
+}
+
 /// The lines that set ghee_e, the em from the block's top left of the
 /// corner of a glyph's quad, and ghee_mv, its motion. GROW is the em that
 /// the quad reaches past the glyph's box.
@@ -3053,7 +3079,7 @@ fn pen(fonts: &[text::Font]) -> String {
     let (ascent, line) = text::line_metrics(fonts);
     format!(
         "    // Each glyph's pen and baseline, after its motion, land on whole pixels.\n    \
-         vec2 ghee_pen = (vec2(ghee_a3.y, {ascent:?} + ghee_a3.x * {line:?}) + ghee_mv) * ghee_fs;\n    \
+         vec2 ghee_pen = ghee_org + (vec2(ghee_a3.y, {ascent:?} + ghee_a3.x * {line:?}) + ghee_mv) * ghee_fs;\n    \
          ghee_org += floor(ghee_pen + 0.5) - ghee_pen;"
     )
 }

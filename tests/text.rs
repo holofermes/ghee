@@ -381,6 +381,27 @@ impl Fit {
     }
 }
 
+/// The pixels that a layer in the font `file` at `px` pixels per em draws
+/// its first baseline below the em of its layout's ascent: the ascender as
+/// FreeType's size metrics round it for Pillow's default anchor, less the
+/// exact one. Pillow requests the size in 26.6 pixels, cut from a float;
+/// FreeType takes the scale with FT_DivFix, the ascender with FT_MulFix,
+/// then rounds it up to a whole pixel. A font that does not load lays out
+/// with an ascender of one em.
+fn rounding(file: &str, px: f64) -> f64 {
+    let (a, u) = match fs::read(format!("{FONTS}/{file}")) {
+        Ok(data) => {
+            let face = Face::parse(&data, 0).unwrap();
+            (i64::from(face.ascender()), i64::from(face.units_per_em()))
+        }
+        Err(_) => (1, 1),
+    };
+    let size = (px as f32 * 64.0) as i64;
+    let scale = ((size << 16) + (u >> 1)) / u;
+    let ascender = (a * scale + 0x8000) >> 16;
+    ((ascender + 63) >> 6) as f64 - a as f64 / u as f64 * px
+}
+
 /// A pixel centre further than this from every edge, in pixels, takes full
 /// coverage or none. The antialiasing owns the band along the edges.
 const EDGE: f64 = 1.5;
@@ -1930,7 +1951,7 @@ fn hazard_scene(file: &str, words: &str, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, Align::Left, fit);
     doc["passes"][0] = json!({"name": "main",
         "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }",
-        "layers": [placed(words, fit)]});
+        "layers": [placed(file, words, fit)]});
     doc
 }
 
@@ -2283,10 +2304,11 @@ fn a_quad_spans_each_inked_glyph_with_its_indices() {
     }
 }
 
-/// The layer `label` in the font asset `face`, its block where `fit` puts it.
-fn placed(words: &str, fit: Fit) -> Value {
+/// The layer `label` in the font asset `face`, the fixture `file`, its
+/// block where `fit` puts it: its `y` above the fit's top by rounding().
+fn placed(file: &str, words: &str, fit: Fit) -> Value {
     json!({"name": "label", "text": words, "font_family": "face",
-           "x": fit.x, "y": fit.y, "font_size": fit.ppem})
+           "x": fit.x, "y": fit.y - rounding(file, fit.ppem), "font_size": fit.ppem})
 }
 
 const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
@@ -2295,7 +2317,7 @@ const BLACK: &str = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }";
 /// pass, in the slug render.
 fn layer_scene(file: &str, words: &str, align: Align, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, align, fit);
-    let mut l = placed(words, fit);
+    let mut l = placed(file, words, fit);
     l["text_align"] = json!(align_name(align));
     l["render"] = json!("slug");
     doc["passes"][0] = json!({"name": "main", "fragment": BLACK, "layers": [l]});
@@ -2465,10 +2487,10 @@ fn layers_land_in_their_order() {
         ([0.0, 1.0, 0.0], [255, 0, 0]),
         ([1.0, 0.0, 0.0], [0, 255, 0]),
     ] {
-        let mut under = placed("I", fit);
+        let mut under = placed(SANS, "I", fit);
         under["name"] = json!("under");
         under["color"] = json!(first);
-        let mut over = placed("I", fit);
+        let mut over = placed(SANS, "I", fit);
         over["color"] = json!(last.map(|c| f64::from(c) / 255.0));
         let mut doc = label_scene(SANS, "I", Align::Left, fit);
         doc["passes"][0] = json!({"name": "main", "fragment": BLACK, "layers": [under, over]});
@@ -2508,7 +2530,7 @@ fn a_layer_paints_its_color_at_its_opacity_by_its_blend() {
         ("mtsdf", 1.0, "multiply"),
         ("slug", 1.0, "screen"),
     ] {
-        let mut l = placed("I", fit);
+        let mut l = placed(SANS, "I", fit);
         l["render"] = json!(how);
         l["color"] = json!(c);
         l["opacity"] = json!(opacity);
@@ -2547,7 +2569,7 @@ fn a_gradient_spans_the_block_along_its_angle_as_css_does() {
     let (from, to) = ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
     let (_g, mut r) = gpu(w, h);
     for angle in [90.0, 180.0, 30.0] {
-        let mut l = placed(words, fit);
+        let mut l = placed(SANS, words, fit);
         l["color"] = json!({"from": "#ff0000", "to": [0.0, 0.0, 1.0], "angle": angle});
         let mut doc = label_scene(SANS, words, Align::Left, fit);
         doc["passes"][0] = json!({"name": "main", "fragment": BLACK, "layers": [l]});
@@ -3400,7 +3422,11 @@ fn a_scroll_moves_the_block_right_to_left_by_whole_pixels_and_fits_it_on_y() {
         for t in [0.0, 0.51, 2.03, 1.0e6 + 0.51] {
             let trip = fw + laid.width * ppem;
             let x = (fw - (t * speed * ppem).rem_euclid(trip)).floor();
-            let fit = Fit { x, y, ppem };
+            let fit = Fit {
+                x,
+                y: y + rounding(SANS, ppem),
+                ppem,
+            };
             let still = render(&mut r, &loaded(&layer_scene(SANS, words, Align::Left, fit)));
             let mut keys = keys.clone();
             keys["scroll"] = json!({"speed": speed});
@@ -3734,7 +3760,8 @@ fn assert_bitmap(
 /// placed by `fit` over a black pass.
 fn colour_scene(file: &str, words: &str, fit: Fit) -> Value {
     let mut doc = label_scene(file, words, Align::Left, fit);
-    doc["passes"][0] = json!({"name": "main", "fragment": BLACK, "layers": [placed(words, fit)]});
+    doc["passes"][0] =
+        json!({"name": "main", "fragment": BLACK, "layers": [placed(file, words, fit)]});
     doc
 }
 
@@ -3870,11 +3897,12 @@ impl Drop for EmojiDir {
 }
 
 /// A scene of one red text layer `label` in the built-in font, which lacks
-/// every emoji, of `words` placed by `fit` over a black pass, with `keys`
-/// merged in.
+/// every emoji, of `words` placed by `fit` over a black pass, as placed()
+/// places a layer, with `keys` merged in.
 fn fallback_scene(words: &str, fit: Fit, keys: Value) -> Value {
-    let mut l = json!({"name": "label", "text": words, "x": fit.x, "y": fit.y,
-                       "font_size": fit.ppem, "color": "#ff0000"});
+    let mut l = json!({"name": "label", "text": words, "x": fit.x,
+                       "y": fit.y - rounding(LATIN, fit.ppem), "font_size": fit.ppem,
+                       "color": "#ff0000"});
     l.as_object_mut()
         .unwrap()
         .extend(keys.as_object().unwrap().clone());
@@ -3921,7 +3949,7 @@ fn an_emoji_that_the_font_lacks_keeps_its_colours_and_moves_as_the_letters_do() 
     // its layer moved by, or nowhere.
     let rows = [
         (
-            json!({"x": fit.x + 12.0, "y": fit.y - 9.0}),
+            json!({"x": fit.x + 12.0, "y": fit.y - 9.0 - rounding(LATIN, fit.ppem)}),
             0.0,
             Some([12.0, -9.0]),
         ),
@@ -4041,14 +4069,11 @@ fn pillow_png(file: &str) -> (usize, Vec<u8>) {
 }
 
 /// One black pass of a text layer in the built-in font: the words of
-/// tools/fixtures/hinted/pillow.py at `size` px, from x 1 with the baseline
-/// on row 18, and `keys` on top.
-fn hinted_scene(size: f64, keys: Value) -> Scene {
-    let data = font(LATIN);
-    let face = Face::parse(&data, 0).unwrap();
-    let ascent = f64::from(face.ascender()) / f64::from(face.units_per_em());
+/// tools/fixtures/hinted/pillow.py at `size` px at (1, `y`), and `keys` on
+/// top.
+fn hinted_scene(size: f64, y: f64, keys: Value) -> Scene {
     let mut layer = json!({"name": "t", "text": "cpu 42% ping 12ms", "font_size": size,
-                           "x": 1.0, "y": 18.0 - ascent * size});
+                           "x": 1.0, "y": y});
     layer
         .as_object_mut()
         .unwrap()
@@ -4058,9 +4083,10 @@ fn hinted_scene(size: f64, keys: Value) -> Scene {
         "layers": [layer]}]}))
 }
 
-/// A hinted layer of the built-in font lights the pixels that Pillow lights
-/// with the same font: FreeType's grey coverage under `hinted`, its 1-bit
-/// render under `mono`, each glyph at Pillow's pen and on its baseline.
+/// A hinted layer of the built-in font at (x, y) lights the pixels that
+/// Pillow lights with the same font at the same (x, y) and its default
+/// anchor: FreeType's grey coverage under `hinted`, its 1-bit render under
+/// `mono`, each glyph at Pillow's pen and on its baseline.
 /// tools/fixtures/hinted/pillow.py drew the references with Pillow 12.3.0,
 /// whose FreeType is ghee's, 2.14.3. A black shadow under the letters leaves
 /// their pixels as they are, so a layer with effects draws its letters from
@@ -4071,18 +4097,18 @@ fn a_hinted_layer_lights_the_pixels_that_pillow_lights() {
     let (_g, mut r) = gpu(192, 24);
     let shadow = json!({"text_shadow": {"x": 0, "y": 0, "blur": 0, "color": "black",
                                         "strength": 1}});
-    for (size, kind, file) in [
-        (8.0, "hinted", "dejavu-8-grey.png"),
-        (12.0, "hinted", "dejavu-12-grey.png"),
-        (10.0, "mono", "dejavu-10-mono.png"),
-        (16.0, "mono", "dejavu-16-mono.png"),
+    for (size, y, kind, file) in [
+        (8.0, 10.0, "hinted", "dejavu-8-grey.png"),
+        (12.0, 6.0, "hinted", "dejavu-12-grey.png"),
+        (10.0, 8.0, "mono", "dejavu-10-mono.png"),
+        (16.0, 3.0, "mono", "dejavu-16-mono.png"),
     ] {
         let (w, want) = pillow_png(file);
         assert_eq!(w, 192);
         let mut shadowed = shadow.clone();
         shadowed["render"] = json!(kind);
         for keys in [json!({"render": kind}), shadowed] {
-            let frame = render(&mut r, &hinted_scene(size, keys.clone()));
+            let frame = render(&mut r, &hinted_scene(size, y, keys.clone()));
             let got: Vec<u8> = frame.as_chunks::<4>().0.iter().map(|p| p[0]).collect();
             let differ = got.iter().zip(&want).filter(|(a, b)| a != b).count();
             assert_eq!(
@@ -4102,8 +4128,9 @@ fn auto_draws_hinted_below_the_switch_and_mtsdf_from_it() {
     let below = ghee::layer::HINTED_BELOW - 1.0;
     let at = ghee::layer::HINTED_BELOW;
     for (size, same) in [(below, "hinted"), (at, "mtsdf")] {
-        let auto = render(&mut r, &hinted_scene(size, json!({})));
-        let named = render(&mut r, &hinted_scene(size, json!({"render": same})));
+        let y = 18.0 - size;
+        let auto = render(&mut r, &hinted_scene(size, y, json!({})));
+        let named = render(&mut r, &hinted_scene(size, y, json!({"render": same})));
         assert!(auto == named, "auto at {size} px draws unlike {same}");
         assert!(
             auto.as_chunks::<4>().0.iter().any(|p| p[0] > 0),

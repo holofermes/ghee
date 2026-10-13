@@ -17,7 +17,8 @@
 //! - ghee_a0: the corner x and y, the gradient's angle, alpha at its end
 //! - ghee_a1: the ink box in em
 //! - ghee_a2: the texel of the glyph's band entries, its bands, opacity
-//! - ghee_a3: the line index, the advance's start and end x, 0
+//! - ghee_a3: the line index, the advance's start x, the first font's
+//!   ascender in its units, its units per em
 //! - ghee_a4: the kind, x, y, visible
 //! - ghee_a5: centred on x and on y, the block's size in em
 //! - ghee_a6: the font size, 0 to fit, the colour
@@ -50,6 +51,8 @@ const VERTEX: usize = 4 * ATTRIBUTES;
 const ANGLE: usize = 2;
 const ALPHATO: usize = 3;
 const OPACITY: usize = 11;
+const ASCENDER: usize = 14;
+const UPEM: usize = 15;
 const KIND: usize = 16;
 const X: usize = 17;
 const Y: usize = 18;
@@ -222,10 +225,13 @@ pub(crate) fn glyph_vertices(l: &TextLayer, quads: &[f32], size: [f64; 2], out: 
     put(COLOR, &from.rgb);
     put(COLORTO, &to.rgb);
     put(ALPHA, &[from.alpha]);
+    let (units, upem) = text::ascender(l.data.as_deref().unwrap_or_default());
     let lanes = [
         (ANGLE, angle as f32),
         (ALPHATO, to.alpha as f32),
         (OPACITY, l.opacity as f32),
+        (ASCENDER, units as f32),
+        (UPEM, upem as f32),
     ];
     for q in quads.as_chunks::<{ text::QUAD_FLOATS }>().0 {
         v[..text::QUAD_FLOATS].copy_from_slice(q);
@@ -246,7 +252,12 @@ fn lane(at: usize, n: usize) -> String {
 pub fn program() -> (String, String) {
     let precision = PRECISION.join("\n");
     let kind = lane(KIND, 1);
-    let (glyph_vs, glyph_fs) = run_glyph(&lane(FONT_SIZE, 1), &format!("{kind} > 1.5"));
+    let (glyph_vs, glyph_fs) = run_glyph(
+        &lane(FONT_SIZE, 1),
+        &format!("{kind} > 1.5"),
+        &lane(ASCENDER, 1),
+        &lane(UPEM, 1),
+    );
     let local = |ty: &str, token: &str, at: String| {
         format!(
             "    {ty} {} = {at};",

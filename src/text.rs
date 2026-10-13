@@ -1151,6 +1151,15 @@ pub fn line_metrics(fonts: &[Font]) -> (f64, f64) {
     face_lines(&faces(fonts))
 }
 
+/// The ascender of the first font of `fonts` that parsed, in its units, and
+/// its units per em: ERROR_ASCENT em with none.
+pub fn ascender(fonts: &[Font]) -> (f64, f64) {
+    match faces(fonts).iter().flatten().next() {
+        Some(face) => (f64::from(face.ascender()), f64::from(face.units_per_em())),
+        None => (ERROR_ASCENT, 1.0),
+    }
+}
+
 fn u16x2(a: u16, b: u16) -> [u8; 4] {
     [(a >> 8) as u8, a as u8, (b >> 8) as u8, b as u8]
 }

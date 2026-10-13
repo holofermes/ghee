@@ -64,6 +64,15 @@ ghee/examples/fonts/DepartureMono-Regular.otf, a subset of Departure Mono by
 Helena Zhang, travels with the bundled examples, under the SIL Open Font
 License 1.1. Its text is ghee/examples/fonts/LICENSE-DepartureMono.txt.
 
+ghee/examples/fonts/LCDSeven-Bold.ttf, LCD Seven Bold, is a subset of DSEG7
+Classic Bold by keshikan, renamed for its Reserved Font Name "DSEG". It travels
+with the bundled examples, under the SIL Open Font License 1.1. Its text is
+ghee/examples/fonts/LICENSE-DSEG.txt.
+
+ghee/examples/fonts/Silkscreen-Regular.ttf, a subset of Silkscreen by Jason
+Kottke, travels with the bundled examples, under the SIL Open Font License
+1.1. Its text is ghee/examples/fonts/LICENSE-Silkscreen.txt.
+
 vendor/freetype holds FreeType 2.14.3, which ghee builds in, under the
 FreeType License, vendor/freetype/docs/FTL.TXT:
 

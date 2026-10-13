@@ -299,7 +299,7 @@ def test_a_gradient_is_the_gradient_object_of_the_format():
         "to": "yellow",
         "angle": 90,
     }
-    assert shim.gradient("red", [0, 0, 1])["angle"] == 0
+    assert shim.gradient("red", [0, 0, 1])["angle"] == 180
 
 
 def test_two_assets_of_one_name_are_refused():

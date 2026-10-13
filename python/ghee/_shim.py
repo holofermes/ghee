@@ -521,7 +521,7 @@ class _LiveEffect:
 # ------------------------------------------------------------------- drawing
 
 
-def gradient(start, end, angle: float = 0) -> dict:
+def gradient(start, end, angle: float = 180) -> dict:
     """A text's colour that runs from `start` to `end` along `angle` degrees,
     as CSS's angle: the gradient object of the scene format."""
     return {"from": start, "to": end, "angle": angle}

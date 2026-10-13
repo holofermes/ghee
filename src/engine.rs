@@ -9860,6 +9860,52 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_text_draws_the_same_bytes_whatever_its_atlas_held_before() {
+        // A glyph takes the room that the atlas has when it comes, so words
+        // drawn first move the cells of the words drawn after them.
+        let scene = |words: &str| {
+            let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fixtures/fonts");
+            let mut sc = Scene::from_dict(
+                &json!({
+                    "version": 1,
+                    "assets": {"sans": {"file": "DejaVuSans-ASCII.ttf"}},
+                    "passes": [{"name": "main",
+                        "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                        "layers": [{"name": "label", "text": words, "font_family": "sans",
+                                    "x": 2, "y": 1, "font_size": 150, "render": "mtsdf",
+                                    "glow": {}}]}],
+                }),
+                None,
+                None,
+            )
+            .unwrap();
+            sc.load_assets(fonts).unwrap();
+            sc
+        };
+        let mut frames = Vec::new();
+        for first in ["", "I", "~}|{zyxwvutsrqponmlkjihgfedcba"] {
+            let (_g, mut r) = gpu_at(800, 400);
+            let dir = crate::testing::TempDir::new("engine-atlas-history");
+            r.atlas_cache = Some(dir.join("atlas"));
+            if !first.is_empty() {
+                assert_eq!(r.setup(&scene(first)).unwrap(), "");
+                r.set_time(Some(0.0));
+                still(&mut r);
+            }
+            assert_eq!(r.setup(&scene("AV To\nghee")).unwrap(), "");
+            r.set_time(Some(0.0));
+            frames.push((first, still(&mut r)));
+        }
+        let (_, fresh) = &frames[0];
+        assert!(fresh.iter().any(|v| *v > 0));
+        for (first, f) in &frames[1..] {
+            let apart = f.iter().zip(fresh).filter(|(a, b)| a != b).count();
+            assert_eq!(apart, 0, "bytes apart after {first:?}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn with_the_time_pinned_a_render_waits_for_the_glyphs() {
         let want = reference("AVQ");
         let font = Switched::new();

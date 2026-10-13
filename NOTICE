@@ -60,6 +60,10 @@ ghee/examples/fonts/PixelOperator8.ttf, Pixel Operator 8 by Jayvee Enaguas,
 travels with the bundled examples, under CC0 1.0 Universal. Its text is
 ghee/examples/fonts/LICENSE-PixelOperator.txt.
 
+ghee/examples/fonts/DepartureMono-Regular.otf, a subset of Departure Mono by
+Helena Zhang, travels with the bundled examples, under the SIL Open Font
+License 1.1. Its text is ghee/examples/fonts/LICENSE-DepartureMono.txt.
+
 vendor/freetype holds FreeType 2.14.3, which ghee builds in, under the
 FreeType License, vendor/freetype/docs/FTL.TXT:
 

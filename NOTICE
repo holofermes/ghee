@@ -90,6 +90,15 @@ ghee/examples/fonts/NotoColorEmoji-karaoke.ttf, the two emoji of the karaoke
 example cut from Noto Color Emoji, travels with the bundled examples. Its
 license is ghee/examples/fonts/LICENSE-NotoColorEmoji.txt.
 
+ghee/examples/fonts/GrenzeGotisch-lens.ttf, Grenze Gotisch at its bold weight
+cut to the masthead of the lens example, travels with the bundled examples.
+Its license is ghee/examples/fonts/LICENSE-GrenzeGotisch.txt.
+
+ghee/examples/fonts/OldStandard-lens.ttf, OldStandard-Bold-lens.ttf and
+OldStandard-Italic-lens.ttf, Old Standard TT cut to the words of the lens
+example, travel with the bundled examples. Their license is
+ghee/examples/fonts/LICENSE-OldStandard.txt.
+
 vendor/freetype holds FreeType 2.14.3, which ghee builds in, under the
 FreeType License, vendor/freetype/docs/FTL.TXT:
 

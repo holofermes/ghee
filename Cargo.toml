@@ -35,6 +35,8 @@ assets = [
     ["ghee/examples/fonts/LICENSE-PixelOperator.txt", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-PressStart2P.txt", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-NotoColorEmoji.txt", "usr/share/doc/ghee/", "644"],
+    ["ghee/examples/fonts/LICENSE-GrenzeGotisch.txt", "usr/share/doc/ghee/", "644"],
+    ["ghee/examples/fonts/LICENSE-OldStandard.txt", "usr/share/doc/ghee/", "644"],
 ]
 
 [[bin]]

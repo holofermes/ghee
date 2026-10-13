@@ -258,35 +258,21 @@ fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
     );
     assert_eq!(uv["UV_INDEX_STRATEGY"], "first-index");
 
-    // a wheel of another version alone: a dev build refuses every
-    // ghee-render, which PyPI has only older, and a release leaves uv alone
+    // a wheel of another version alone: uv is left alone
     fs::remove_file(&wheel).unwrap();
     fs::write(
         dir.join("lib/ghee/ghee_render-0.0.1-cp310-abi3-linux_x86_64.whl"),
         b"",
     )
     .unwrap();
-    let (uv, err) = probe();
-    assert_eq!(
-        (uv["UV_INDEX"].as_str(), uv["UV_INDEX_STRATEGY"].as_str()),
-        ("", "")
-    );
-    if env!("CARGO_PKG_VERSION").contains('-') {
-        assert_eq!(uv["UV_NO_BINARY_PACKAGE"], "ghee-render");
-        assert_eq!(uv["UV_NO_BUILD_PACKAGE"], "ghee-render");
-        let lib = fs::canonicalize(dir.join("lib/ghee")).unwrap();
-        assert_eq!(
-            err,
-            format!(
-                "  careful  {} holds no ghee-render wheel of ghee {}, so uv refuses a scene \
-                 that declares ghee-render\n",
-                lib.display(),
-                env!("CARGO_PKG_VERSION")
-            )
-        );
-    } else {
-        assert_eq!(uv["UV_NO_BINARY_PACKAGE"], "");
-        assert_eq!(uv["UV_NO_BUILD_PACKAGE"], "");
+    let (uv, _) = probe();
+    for name in [
+        "UV_INDEX",
+        "UV_INDEX_STRATEGY",
+        "UV_NO_BINARY_PACKAGE",
+        "UV_NO_BUILD_PACKAGE",
+    ] {
+        assert_eq!(uv[name], "", "{name}");
     }
 }
 

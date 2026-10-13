@@ -71,8 +71,16 @@ it was handed: uv keys a local wheel by its name, and a rebuild keeps that name.
 `ghee` hands a scene script the wheel in `lib/ghee` beside its own `bin`
 directory (`src/procedural/wheel.rs`). Before the binary of a `cargo build`
 runs a bundled Python demo, `maturin build --release --compatibility linux -o
-../target/lib/ghee` in `python/` puts the wheel there. With no wheel there, uv
-refuses the demos.
+../target/lib/ghee` in `python/` puts the wheel there. With no wheel there,
+ghee leaves uv alone, and uv finds no ghee-render of the tree's dev version,
+which each bundled demo pins (`tools/release.sh` writes the pin). The wheel's
+own `ghee` looks beside the Python interpreter. Point uv at the tree's wheels
+by an absolute path, since a scene runs in its own directory, and keep uv's
+cache off, as above:
+
+```
+UV_FIND_LINKS=$PWD/python/target/wheels UV_NO_CACHE=1 ghee render --demo hero -o hero.png
+```
 
 The Pi wheels come from `tools/xwheels.sh`: cargo-zigbuild with the glibc
 pins, then a repack of the native wheel. `tools/mksysroot.sh` makes the

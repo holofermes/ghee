@@ -7,9 +7,10 @@
 //! an index that lists that wheel alone, puts it first on the process's
 //! `UV_INDEX` and sets `UV_INDEX_STRATEGY=first-index`: uv then takes
 //! ghee-render from the wheel and every other package from its other indexes.
-//! A dev build that finds no wheel tells uv to refuse every ghee-render, since
-//! each one on PyPI is older than the build. A release that finds none leaves
-//! uv alone, and uv takes the release from PyPI.
+//! A ghee that finds none leaves uv alone, and uv resolves the scene's own
+//! dependencies: the bundled examples pin ghee-render to ghee's version. The
+//! `ghee` command of the ghee-render wheel runs in the Python interpreter, and
+//! looks in the `lib/ghee` beside the interpreter.
 //!
 //! uv keeps one environment per script path and reuses it while it satisfies
 //! the script's dependencies, so the index reaches a scene when uv resolves
@@ -17,7 +18,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Once, OnceLock};
+use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
 use anyhow::{anyhow, bail, Result};
@@ -33,22 +34,16 @@ struct Wheel {
     id: String,
 }
 
-/// `lib/ghee` under the prefix of the running executable, and the wheel of
-/// this ghee in it, read once per process.
-struct Own {
-    dir: PathBuf,
-    wheel: Result<Option<Wheel>, String>,
-}
-
-fn own() -> &'static Own {
-    static OWN: OnceLock<Own> = OnceLock::new();
+/// The wheel of this ghee in `lib/ghee` under the prefix of the running
+/// executable, read once per process.
+fn own() -> &'static Result<Option<Wheel>, String> {
+    static OWN: OnceLock<Result<Option<Wheel>, String>> = OnceLock::new();
     OWN.get_or_init(|| {
         let dir = std::env::current_exe()
             .ok()
             .and_then(|exe| Some(exe.parent()?.parent()?.join("lib").join("ghee")))
             .unwrap_or_else(|| PathBuf::from("lib/ghee"));
-        let wheel = find(&dir, VERSION).map_err(|e| e.to_string());
-        Own { dir, wheel }
+        find(&dir, VERSION).map_err(|e| e.to_string())
     })
 }
 
@@ -113,7 +108,7 @@ fn find(dir: &Path, version: &str) -> Result<Option<Wheel>> {
 /// examples extract to a directory named after it, so each build's examples
 /// get new uv environments.
 pub(crate) fn identity() -> String {
-    match &own().wheel {
+    match own() {
         Ok(Some(w)) => w.id.clone(),
         _ => String::new(),
     }
@@ -185,8 +180,7 @@ fn before(first: &str, var: &str) -> String {
 /// The variables that hand a scene process this ghee's wheel. An error keeps
 /// the process from starting.
 pub(crate) fn uv_env() -> Result<Vec<(&'static str, String)>> {
-    let own = own();
-    match &own.wheel {
+    match own() {
         Err(e) => Err(anyhow!("{e}")),
         Ok(Some(wheel)) => {
             static INDEX: OnceLock<Result<String, String>> = OnceLock::new();
@@ -206,26 +200,6 @@ pub(crate) fn uv_env() -> Result<Vec<(&'static str, String)>> {
             Ok(vec![
                 ("UV_INDEX", before(&url, "UV_INDEX")),
                 ("UV_INDEX_STRATEGY", "first-index".to_string()),
-            ])
-        }
-        Ok(None) if VERSION.contains('-') => {
-            static SAID: Once = Once::new();
-            SAID.call_once(|| {
-                crate::report::warn(format!(
-                    "{} holds no ghee-render wheel of ghee {VERSION}, so uv refuses a scene \
-                     that declares ghee-render",
-                    own.dir.display()
-                ))
-            });
-            Ok(vec![
-                (
-                    "UV_NO_BINARY_PACKAGE",
-                    before("ghee-render", "UV_NO_BINARY_PACKAGE"),
-                ),
-                (
-                    "UV_NO_BUILD_PACKAGE",
-                    before("ghee-render", "UV_NO_BUILD_PACKAGE"),
-                ),
             ])
         }
         Ok(None) => Ok(Vec::new()),

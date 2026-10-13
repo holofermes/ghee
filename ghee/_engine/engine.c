@@ -326,6 +326,19 @@ struct GheeScene {
     bool fade_failed;                  // a fade buffer that GL refused, reported once
     int keep_last;                     // >0: an encoder samples the final pass, never draw it direct
 
+    // `changed` is set by every call that changes what the running scene
+    // draws, and a drawn frame clears it. `kept` holds the readback of the
+    // last frame drawn, as asked at kept_w x kept_h, while nothing that draws
+    // reads the time.
+    bool changed;
+    unsigned long long draws;          // render_passes runs
+    unsigned long long draws_seen;     // `draws` at the last ghee_mp_drew
+    bool drawn;
+    uint8_t *kept;
+    size_t kept_len, kept_cap;
+    int kept_w, kept_h;
+    bool kept_valid;
+
     char renderer[160];                  // GL_RENDERER and GL_VERSION, captured at create
     int compiled;                        // programs linked since create
     char last_error[ERROR_BUFFER_SIZE];
@@ -1165,6 +1178,7 @@ void ghee_destroy(GheeScene *g) {
         eglTerminate(g->display);
     }
     free(g->rgba_scratch);
+    free(g->kept);
     for (int a = 0; a < g->mp_nasset; a++) free(g->mp_asset[a].name);
     free(g->mp_asset);
     free(g->mp_batch);
@@ -1522,6 +1536,7 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
 int ghee_mp_commit(GheeScene *g) {
     if (g->stage_count <= 0) { set_error(g, "no pending passes to commit"); return -1; }
     make_current(g);
+    g->changed = true;
     int write[MP_MAX_PASSES] = { 0 };
     for (int p = 0; p < g->stage_count; p++) {
         const int q = g->stage_from[p];
@@ -1653,11 +1668,13 @@ bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int qua
     glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
     if (err != GL_NO_ERROR) {
         l->quads = 0;
+        g->changed = true;
         set_error(g, "%s: the upload of %d quads failed: GL 0x%X", l->name, quads, err);
         return false;
     }
     l->quads = quads;
     l->nattr = nattr;
+    g->changed = true;
     return true;
 }
 
@@ -1721,6 +1738,7 @@ bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float 
         l->stale_first = first;
         l->stale_quads = quads;
     }
+    g->changed = true;
     return true;
 }
 
@@ -1769,21 +1787,44 @@ bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
     if (!mp_pass_fits(g, pass, nchan, g->mp_ndatatex[pass])) return false;
     g->mp_chan_src[pass][channel] = src_pass;
     g->mp_nchan[pass] = nchan;
+    g->changed = true;
     return true;
 }
 
-static bool program_uniform(GLuint program, const parameter_t *param) {
+// Set `param` on `program`, which is in use after. false when the program
+// does not read it. A value other than the one that the program holds marks
+// the scene changed.
+static bool program_uniform(GheeScene *g, GLuint program, const parameter_t *param) {
     if (!program) return false;
     glUseProgram(program);
     const GLint loc = glGetUniformLocation(program, param->name);
     if (loc < 0) return false;
+    // A location reads back a mat4 at most.
+    union { GLfloat f[16]; GLint i[16]; } held;
+    memset(&held, 0xff, sizeof held);
+    if (param->type == PARAM_TYPE_INT) {
+        const GLint v = param->value.int_param->value;
+        glGetUniformiv(program, loc, held.i);
+        if (held.i[0] != v) g->changed = true;
+        glUniform1i(loc, v);
+        return true;
+    }
+    int n;
+    const float *v;
     switch (param->type) {
-        case PARAM_TYPE_FLOAT: glUniform1f(loc, param->value.float_param->value); break;
-        case PARAM_TYPE_INT:   glUniform1i(loc, param->value.int_param->value); break;
-        case PARAM_TYPE_VEC2: { const float *v = param->value.vec_param->value; glUniform2f(loc, v[0], v[1]); break; }
-        case PARAM_TYPE_VEC3: { const float *v = param->value.vec_param->value; glUniform3f(loc, v[0], v[1], v[2]); break; }
-        case PARAM_TYPE_VEC4: { const float *v = param->value.vec_param->value; glUniform4f(loc, v[0], v[1], v[2], v[3]); break; }
+        case PARAM_TYPE_FLOAT: n = 1; v = &param->value.float_param->value; break;
+        case PARAM_TYPE_VEC2: n = 2; v = param->value.vec_param->value; break;
+        case PARAM_TYPE_VEC3: n = 3; v = param->value.vec_param->value; break;
+        case PARAM_TYPE_VEC4: n = 4; v = param->value.vec_param->value; break;
         default: return false;
+    }
+    glGetUniformfv(program, loc, held.f);
+    if (memcmp(held.f, v, (size_t)n * sizeof *v) != 0) g->changed = true;
+    switch (n) {
+        case 1: glUniform1f(loc, v[0]); break;
+        case 2: glUniform2f(loc, v[0], v[1]); break;
+        case 3: glUniform3f(loc, v[0], v[1], v[2]); break;
+        default: glUniform4f(loc, v[0], v[1], v[2], v[3]); break;
     }
     return true;
 }
@@ -1792,16 +1833,16 @@ static bool program_uniform(GLuint program, const parameter_t *param) {
 bool ghee_mp_set_uniform(GheeScene *g, int pass, const parameter_t *param) {
     if (pass < 0 || pass >= g->mp_count) return false;
     make_current(g);
-    bool any = program_uniform(g->mp_program[pass], param);
+    bool any = program_uniform(g, g->mp_program[pass], param);
     for (int l = 0; l < g->mp_nbatch; l++)
-        if (g->mp_batch[l].pass == pass) any = program_uniform(g->mp_batch[l].program, param) || any;
+        if (g->mp_batch[l].pass == pass) any = program_uniform(g, g->mp_batch[l].program, param) || any;
     return any;
 }
 
 bool ghee_mp_set_pass_uniform(GheeScene *g, int pass, const parameter_t *param) {
     if (pass < 0 || pass >= g->mp_count) return false;
     make_current(g);
-    return program_uniform(g->mp_program[pass], param);
+    return program_uniform(g, g->mp_program[pass], param);
 }
 
 // Find a declared array by its "<name>_tex" sampler name. -1 = not declared.
@@ -1868,6 +1909,7 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
             g->mp_batch[l].loc.data[g->mp_ndatatex[pass]] =
                 glGetUniformLocation(g->mp_batch[l].program, g->mp_array_name[idx]);
     g->mp_datatex[pass][g->mp_ndatatex[pass]++] = idx;
+    g->changed = true;
     return idx;
 }
 
@@ -1908,6 +1950,7 @@ void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int co
     bool fresh = false;
     const int idx = mp_array_bind(g, name, count, rows, &fresh);
     if (idx < 0) return;
+    g->changed = true;
     if (g->has_float_tex) {
         mp_array_upload(fresh, count, rows, GL_FLOAT, data);
     } else {
@@ -1930,6 +1973,7 @@ void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, i
     bool fresh = false;
     const int idx = mp_array_bind(g, name, count, rows, &fresh);
     if (idx < 0) return;
+    g->changed = true;
     if (g->has_float_tex) {
         float *b = malloc((size_t)count * rows * sizeof(float));
         if (!b) return;
@@ -1992,9 +2036,11 @@ bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *a
         struct mp_use *u = &loc->uses[i];
         if ((at >= 0 && u->loc == at) || (size >= 0 && u->size == size)) {
             *u = (struct mp_use){ a, at, size };
+            g->changed = true;
             return true;
         }
     }
+    g->changed = true;
     return mp_add_use(g, loc, (struct mp_use){ a, at, size });
 }
 
@@ -2021,6 +2067,8 @@ bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_sourc
     }
     mp_free_uses(&old);
     program_drop(g, was);
+    l->dirty = true;
+    g->changed = true;
     return true;
 }
 
@@ -2046,6 +2094,7 @@ bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param
     struct mp_value *v = NULL;
     for (int k = 0; k < l->nvalues && !v; k++)
         if (strcmp(l->values[k].name, param->name) == 0) v = &l->values[k];
+    const bool fresh = !v;
     if (!v) {
         if (l->nvalues == l->values_cap) {
             const int cap = l->values_cap ? 2 * l->values_cap : 16;
@@ -2060,20 +2109,26 @@ bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param
         memset(v, 0, sizeof *v);
         v->name = name;
     }
+    const struct mp_value was = *v;
     v->type = param->type;
     switch (param->type) {
         case PARAM_TYPE_FLOAT: v->v[0] = param->value.float_param->value; break;
         case PARAM_TYPE_INT:   v->i = param->value.int_param->value; break;
         default: memcpy(v->v, param->value.vec_param->value, sizeof v->v); break;
     }
+    if (!fresh && was.type == v->type && was.i == v->i && memcmp(was.v, v->v, sizeof v->v) == 0)
+        return true;
     l->dirty = true;
+    g->changed = true;
     return true;
 }
 
 bool ghee_mp_set_batch_opacity(GheeScene *g, int batch, float opacity) {
     struct mp_batch *l = running_batch(g, batch);
     if (!l) return false;
-    l->opacity = opacity < 0.0f ? 0.0f : opacity > 1.0f ? 1.0f : opacity;
+    const float o = opacity < 0.0f ? 0.0f : opacity > 1.0f ? 1.0f : opacity;
+    if (memcmp(&o, &l->opacity, sizeof o) != 0) g->changed = true;
+    l->opacity = o;
     return true;
 }
 
@@ -2152,6 +2207,7 @@ int ghee_mp_insert_batch(GheeScene *g, int pass, int after, const char *name, co
     }
     memmove(&g->mp_order[at + 1], &g->mp_order[at], (size_t)(others - at) * sizeof *g->mp_order);
     g->mp_order[at] = idx;
+    g->changed = true;
     return idx;
 }
 
@@ -2168,6 +2224,7 @@ bool ghee_mp_remove_batch(GheeScene *g, int batch) {
     mp_free_uses(&l->loc);
     memset(l, 0, sizeof *l);
     l->pass = -1;
+    g->changed = true;
     return true;
 }
 
@@ -2206,6 +2263,7 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
         return false;
     }
     make_current(g);
+    g->changed = true;
     int idx = mp_asset_index(g, name);
     const bool fresh = idx < 0;
     if (fresh) {
@@ -2287,6 +2345,7 @@ bool ghee_mp_set_asset_rows(GheeScene *g, const char *name, const void *data, in
         return false;
     }
     make_current(g);
+    g->changed = true;
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, as->tex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, as->w, rows, as->fmt, as->type, data);
@@ -2323,6 +2382,7 @@ bool ghee_mp_set_asset_rect(GheeScene *g, const char *name, int level,
         return false;
     }
     make_current(g);
+    g->changed = true;
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, as->tex);
     glTexSubImage2D(GL_TEXTURE_2D, level, x, y, w, h, as->fmt, as->type, data);
@@ -2334,6 +2394,7 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name) {
     const int idx = mp_asset_index(g, name);
     if (idx < 0) return;
     make_current(g);
+    g->changed = true;
     glDeleteTextures(1, &g->mp_asset[idx].tex);
     free(g->mp_asset[idx].name);
     memmove(&g->mp_asset[idx], &g->mp_asset[idx + 1],
@@ -2612,6 +2673,7 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     }
     g->frame += 1;
     if (g->frame >= 1048576) g->frame = 0;
+    g->draws++;
 }
 
 // Read a rectangle back as `components` bytes a pixel. A GL that cannot hand
@@ -3269,6 +3331,82 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;  // swap all
 }
 
+static bool reads_time(const struct mp_locs *loc) {
+    return loc->time >= 0 || loc->dt >= 0 || loc->frame >= 0;
+}
+
+// True while a frame drawn now may differ from the last one with no call in
+// between: a program that draws reads iTime, iTimeDelta or iFrame, or a pass
+// reads a buffer of the frame before.
+static bool moves(GheeScene *g) {
+    for (int p = 0; p < g->mp_count; p++) {
+        if (g->mp_program[p] && reads_time(&g->mp_loc[p])) return true;
+        for (int c = 0; c < g->mp_nchan[p]; c++)
+            if (g->mp_chan_src[p][c] >= p) return true;
+    }
+    for (int k = 0; k < g->mp_nbatch; k++) {
+        const struct mp_batch *l = &g->mp_batch[k];
+        if (l->pass >= 0 && l->quads > 0 && l->program && l->opacity > 0.0f && reads_time(&l->loc))
+            return true;
+    }
+    return false;
+}
+
+bool ghee_mp_repeat(GheeScene *g, uint8_t *out, int pw, int ph) {
+    if (!(pw > 0 && ph > 0)) pw = ph = 0;
+    if (!g->drawn || g->changed || g->mp_count <= 0 || moves(g)) return false;
+    if (out && !(g->kept_valid && g->kept_w == pw && g->kept_h == ph)) return false;
+    // A repeat on a display returns when a present of a frame drawn in no
+    // time would: at once with drop, else a frame's time after the last
+    // return, the transfer on a display with no vblank, else the refresh.
+    double period = 0;
+    if (g->display_mode) {
+        if (g->disp_blanked || g->disp_first) return false;
+        flip_lock(g);
+        const bool failed = g->flip_failed, drop = g->drop;
+        double busy[TIMING_RING];
+        const int nb = g->jit ? ring_read(&g->flip_busy, busy) : 0;
+        flip_unlock(g);
+        if (failed) return false;
+        for (int i = 0; i < nb; i++)
+            if (period <= 0 || busy[i] < period) period = busy[i];
+        if (period <= 0 && g->disp_mode.vrefresh) period = 1.0 / g->disp_mode.vrefresh;
+        if (period <= 0) period = 1.0 / 60;
+        if (drop) period = 0;
+    }
+    if (out) memcpy(out, g->kept, g->kept_len);
+    elapsed_seconds(g);
+    g->frame += 1;
+    if (g->frame >= 1048576) g->frame = 0;
+    if (g->display_mode) {
+        if (period > 0 && g->presented + period > mono_seconds()) sleep_until(g->presented + period);
+        g->presented = mono_seconds();
+    }
+    return true;
+}
+
+void ghee_mp_drew(GheeScene *g, const uint8_t *out, int pw, int ph) {
+    if (g->draws == g->draws_seen) return;
+    g->draws_seen = g->draws;
+    g->changed = false;
+    g->drawn = true;
+    g->kept_valid = false;
+    if (!out || moves(g)) return;
+    if (!(pw > 0 && ph > 0)) pw = ph = 0;
+    const size_t n = (size_t)(pw ? pw : g->out_w) * (size_t)(ph ? ph : g->out_h) * (size_t)g->components;
+    if (n > g->kept_cap) {
+        uint8_t *grown = realloc(g->kept, n);
+        if (!grown) return;
+        g->kept = grown;
+        g->kept_cap = n;
+    }
+    memcpy(g->kept, out, n);
+    g->kept_len = n;
+    g->kept_w = pw;
+    g->kept_h = ph;
+    g->kept_valid = true;
+}
+
 // The GL this renderer runs on: GL_RENDERER and GL_VERSION in one string.
 const char *ghee_renderer(GheeScene *g) { return g ? g->renderer : ""; }
 
@@ -3284,7 +3422,10 @@ void ghee_restart_clock(GheeScene *g) {
 
 void ghee_set_dt(GheeScene *g, float dt) { g->dt = dt; }
 
-void ghee_keep_alpha(GheeScene *g, int keep) { g->keep_alpha = keep; }
+void ghee_keep_alpha(GheeScene *g, int keep) {
+    if (!keep != !g->keep_alpha) g->changed = true;
+    g->keep_alpha = keep;
+}
 
 bool ghee_set_rotate(GheeScene *g, int quarter_turns) {
     if (quarter_turns < 0 || quarter_turns > 3) {
@@ -3345,12 +3486,14 @@ void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
 void ghee_i_keep_last(GheeScene *g, int delta) {
     g->keep_last += delta;
     if (g->keep_last < 0) g->keep_last = 0;
+    g->changed = true;
 }
 
 // Tear down the running scene and anything pending (for switching scenes).
 // Keeps the GL context.
 void ghee_mp_reset(GheeScene *g) {
     make_current(g);
+    g->changed = true;
     ghee_mp_abort(g);
     mp_free_passes(g);
 }

@@ -217,6 +217,8 @@ extern "C" {
     ) -> bool;
     pub fn ghee_mp_render(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
     pub fn ghee_mp_present(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int);
+    pub fn ghee_mp_repeat(g: *mut GheeScene, buffer_rgb: *mut u8, pw: c_int, ph: c_int) -> bool;
+    pub fn ghee_mp_drew(g: *mut GheeScene, buffer_rgb: *const u8, pw: c_int, ph: c_int);
     pub fn ghee_flip_rotate(
         prev: *mut *mut c_void,
         shown: *mut *mut c_void,

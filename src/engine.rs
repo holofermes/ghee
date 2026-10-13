@@ -659,6 +659,17 @@ fn same_pass(ran: &Scene, was: &Pass, scene: &Scene, now: &Pass) -> bool {
     EDITED_FRAGMENT_KEEPS_BUFFERS && !ran.passes.iter().any(gave_up)
 }
 
+/// Render a frame, reading it back into `out` at pw x ph as ghee_mp_render
+/// does, or repeat the last one when it would draw the same pixels.
+fn render_or_repeat(handle: *mut ffi::GheeScene, out: *mut u8, pw: c_int, ph: c_int) {
+    unsafe {
+        if !ffi::ghee_mp_repeat(handle, out, pw, ph) {
+            ffi::ghee_mp_render(handle, out, pw, ph);
+            ffi::ghee_mp_drew(handle, out, pw, ph);
+        }
+    }
+}
+
 /// The (width, rows) of one array upload, and its data.
 ///
 /// A 1xN array uploads as many values as the feed holds, N at most. A 2D
@@ -1982,7 +1993,7 @@ impl Renderer {
     pub fn render(&mut self, provider: Option<Provider<'_>>) -> Result<&[u8]> {
         self.regroup()?;
         self.feed(provider)?;
-        unsafe { ffi::ghee_mp_render(self.handle, self.rgb.as_mut_ptr(), 0, 0) };
+        render_or_repeat(self.handle, self.rgb.as_mut_ptr(), 0, 0);
         Ok(&self.rgb)
     }
 
@@ -2014,7 +2025,7 @@ impl Renderer {
             self.components,
             out.len()
         );
-        unsafe { ffi::ghee_mp_render(self.handle, out.as_mut_ptr(), pw, ph) };
+        render_or_repeat(self.handle, out.as_mut_ptr(), pw, ph);
         Ok(())
     }
 
@@ -2036,7 +2047,7 @@ impl Renderer {
     pub fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
         self.regroup()?;
         self.feed(provider)?;
-        unsafe { ffi::ghee_mp_render(self.handle, ptr::null_mut(), 0, 0) };
+        render_or_repeat(self.handle, ptr::null_mut(), 0, 0);
         Ok(())
     }
 
@@ -2186,7 +2197,12 @@ impl Renderer {
             }
             None => (ptr::null_mut(), 0, 0),
         };
-        unsafe { ffi::ghee_mp_present(self.handle, buf, pw, ph) };
+        unsafe {
+            if !ffi::ghee_mp_repeat(self.handle, buf, pw, ph) {
+                ffi::ghee_mp_present(self.handle, buf, pw, ph);
+                ffi::ghee_mp_drew(self.handle, buf, pw, ph);
+            }
+        }
         Ok(())
     }
 
@@ -5322,6 +5338,9 @@ mod tests {
     const COMPONENTS: usize = 4;
 
     const FLAT: &str = "void main(){ gl_FragColor = vec4(0.5, 0.25, 0.75, 1.0); }";
+    /// A frame unlike the one before it, so that every present draws.
+    const TICKING: &str =
+        "void main(){ gl_FragColor = vec4(mod(float(iFrame), 7.0) / 7.0, 0.25, 0.75, 1.0); }";
     const BROKEN: &str = "void main(){ gl_FragColor = no_such_symbol; }";
     const RAW: &str =
         "#version 100\nprecision mediump float;\nvoid main(){ gl_FragColor = vec4(1.0); }";
@@ -5494,7 +5513,7 @@ mod tests {
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
         let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
         assert_eq!(
-            r.setup(&scene_of(json!([{"name": "main", "fragment": FLAT}])))
+            r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
                 .unwrap(),
             ""
         );
@@ -5539,7 +5558,11 @@ mod tests {
         let _g = lock();
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
         let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        assert_eq!(
+            r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
+                .unwrap(),
+            ""
+        );
         for n in 1..=30 {
             r.present(None, None).unwrap();
             assert_eq!(unsafe { ffi::ghee_display_taken(r.handle) }, n);
@@ -5557,7 +5580,7 @@ mod tests {
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
         let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
         assert_eq!(
-            r.setup(&scene_of(json!([{"name": "main", "fragment": FLAT}])))
+            r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
                 .unwrap(),
             ""
         );
@@ -5569,6 +5592,38 @@ mod tests {
         assert!(taken < 3000, "present waited for each of {taken} frames");
         r.blank(true).unwrap();
         assert_eq!(unsafe { ffi::ghee_display_taken(r.handle) }, 3000);
+        assert_eq!(r.last_error(), "");
+    }
+
+    #[test]
+    #[cfg_attr(
+        any(ghee_no_gpu, not(ghee_display)),
+        ignore = "needs a GL device and a connected display"
+    )]
+    fn a_display_takes_no_frame_that_changes_nothing_and_takes_the_next_change() {
+        let _g = lock();
+        let (dev, w, h) = probe_display_device(None).expect("no connected display");
+        let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
+        let sc = scene_of(json!([{"name": "main",
+            "params": {"level": {"type": "float", "value": 0.5}},
+            "fragment": "void main(){ gl_FragColor = vec4(level, 0.25, 0.75, 1.0); }"}]));
+        for drop in [false, true] {
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.set_drop(drop).unwrap();
+            r.present(None, None).unwrap();
+            let first = unsafe { ffi::ghee_display_taken(r.handle) };
+            for _ in 0..10 {
+                r.present(None, None).unwrap();
+            }
+            r.set_param("main", "level", "float", &ParamValue::Float(0.75))
+                .unwrap();
+            r.present(None, None).unwrap();
+            // A blank waits for every frame handed to the display.
+            r.blank(true).unwrap();
+            let taken = unsafe { ffi::ghee_display_taken(r.handle) };
+            assert_eq!(taken, first + 1, "drop {drop}");
+            r.blank(false).unwrap();
+        }
         assert_eq!(r.last_error(), "");
     }
 
@@ -6765,6 +6820,176 @@ mod tests {
             assert!((f64::from(*got) - v * 255.0).abs() < 1.0, "{:?}", rgb[0]);
         }
         assert_eq!(rgb[0], rgb[1]);
+    }
+
+    /// A gradient of different bytes over the frame, with no time in it.
+    const GRADIENT: &str = "void main(){ gl_FragColor = vec4(uv, 0.25, 1.0); }";
+
+    /// Whether the next frame of `r` repeats the last one.
+    fn repeats(r: &Renderer) -> bool {
+        unsafe { ffi::ghee_mp_repeat(r.handle(), ptr::null_mut(), 0, 0) }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_repeated_frame_reads_back_the_bytes_of_the_frame_drawn_before_it() {
+        let (_g, mut r) = gpu();
+        assert_eq!(
+            r.setup(&scene_of(json!([{"name": "main", "fragment": GRADIENT}])))
+                .unwrap(),
+            ""
+        );
+        for (pw, ph) in [(0, 0), (W as i32 / 2, H as i32 / 2)] {
+            let size = (pw > 0).then_some((pw, ph));
+            let n = if pw > 0 { (pw * ph) as usize } else { W * H } * COMPONENTS;
+            let mut drawn = vec![0u8; n];
+            r.render_into(None, &mut drawn, size).unwrap();
+            let mut again = vec![0u8; n];
+            assert!(unsafe { ffi::ghee_mp_repeat(r.handle(), again.as_mut_ptr(), pw, ph) });
+            assert_eq!(again, drawn, "at {pw}x{ph}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_frame_draws_after_a_change_and_while_the_scene_reads_the_time() {
+        let reads_v = "void main(){ gl_FragColor = vec4(texture2D(v_tex, uv).r, uv, 1.0); }";
+        type Change = fn(&mut Renderer);
+        let rows: [(&str, Value, Change, bool); 9] = [
+            ("nothing", json!({"fragment": GRADIENT}), |_| {}, true),
+            (
+                "iTime",
+                json!({"fragment": "void main(){ gl_FragColor = vec4(fract(iTime)); }"}),
+                |_| {},
+                false,
+            ),
+            (
+                "iTimeDelta",
+                json!({"fragment": "void main(){ gl_FragColor = vec4(iTimeDelta); }"}),
+                |_| {},
+                false,
+            ),
+            (
+                "iFrame",
+                json!({"fragment": "void main(){ gl_FragColor = vec4(float(iFrame)); }"}),
+                |_| {},
+                false,
+            ),
+            (
+                "the frame before",
+                json!({"channels": [{"buffer": "main"}],
+                       "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"}),
+                |_| {},
+                false,
+            ),
+            (
+                "a new param value",
+                json!({"params": {"level": {"type": "float", "value": 0.5}},
+                       "fragment": "void main(){ gl_FragColor = vec4(level); }"}),
+                |r| {
+                    r.set_param("main", "level", "float", &ParamValue::Float(0.75))
+                        .unwrap();
+                },
+                false,
+            ),
+            (
+                "the same param value",
+                json!({"params": {"level": {"type": "float", "value": 0.5}},
+                       "fragment": "void main(){ gl_FragColor = vec4(level); }"}),
+                |r| {
+                    r.set_param("main", "level", "float", &ParamValue::Float(0.5))
+                        .unwrap();
+                },
+                true,
+            ),
+            (
+                "an array upload",
+                json!({"arrays": [{"name": "v", "size": 4}], "fragment": reads_v}),
+                |r| {
+                    r.set_array("v", &Feed::Data(vec![0.5; 4])).unwrap();
+                },
+                false,
+            ),
+            (
+                "the alpha kept",
+                json!({"fragment": GRADIENT}),
+                |r| r.set_alpha(true),
+                false,
+            ),
+        ];
+        let (_g, mut r) = gpu();
+        for (what, pass, change, want) in rows {
+            let mut pass = pass;
+            pass["name"] = json!("main");
+            r.set_alpha(false);
+            assert_eq!(r.setup(&scene_of(json!([pass]))).unwrap(), "", "{what}");
+            r.set_time(Some(0.0));
+            r.render(None).unwrap();
+            change(&mut r);
+            assert_eq!(repeats(&r), want, "{what}");
+        }
+    }
+
+    /// A sink that keeps every frame it takes, each read back into a buffer
+    /// that no frame before it wrote.
+    struct Kept(Vec<Vec<u8>>);
+
+    impl crate::looper::Output for Kept {
+        fn copies(&self) -> bool {
+            false
+        }
+
+        fn write(&mut self, frame: crate::looper::Frame<'_>) -> Result<()> {
+            self.0.push(frame.data.to_vec());
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn every_tick_reaches_a_sink_and_a_scene_that_reads_the_time_draws_each_one() {
+        // (fragment, every frame the same as the first)
+        let rows = [
+            (
+                "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }",
+                true,
+            ),
+            (
+                "void main(){ gl_FragColor = vec4(fract(iTime), 0.0, 0.0, 1.0); }",
+                false,
+            ),
+            (
+                "void main(){ gl_FragColor = vec4(mod(float(iFrame), 4.0) / 4.0, 0.0, 0.0, 1.0); }",
+                false,
+            ),
+        ];
+        let (_g, mut r) = gpu();
+        for (fragment, same) in rows {
+            assert_eq!(
+                r.setup(&scene_of(json!([{"name": "main", "fragment": fragment}])))
+                    .unwrap(),
+                ""
+            );
+            let mut sink = Kept(Vec::new());
+            {
+                let mut lp = crate::looper::Loop::new(&mut r, vec![&mut sink]);
+                lp.frames = 4;
+                lp.timestep = Some(0.1);
+                lp.run().unwrap();
+            }
+            let frames = sink.0;
+            assert_eq!(frames.len(), 4, "{fragment}");
+            for (k, f) in frames.iter().enumerate().skip(1) {
+                if same {
+                    assert_eq!(f, &frames[0], "frame {k} of {fragment}");
+                } else {
+                    assert_ne!(f, &frames[k - 1], "frame {k} of {fragment}");
+                }
+            }
+            if same {
+                assert!(frames[0].chunks(4).all(|p| p == [255, 0, 0, 255]));
+            }
+        }
     }
 
     #[test]

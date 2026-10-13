@@ -242,6 +242,18 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 // Render the passes and scan the final buffer out to the display (display mode
 // only). buffer_rgb non-NULL also reads the frame back (for a console mirror).
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
+// Repeat the last frame in place of a render or a present that would draw
+// the same pixels: no call since the last drawn frame changed what the scene
+// draws, and nothing drawn reads iTime, iTimeDelta, iFrame or a buffer of the
+// frame before. A display keeps the frame on the glass, and the call returns
+// when ghee_mp_present of a frame drawn in no time would return. The final
+// pass keeps the frame for an encoder, and buffer_rgb, when given, takes the
+// readback of the last drawn frame at pw x ph, as ghee_mp_render reads it.
+// false leaves everything as it was, and the frame then draws.
+bool ghee_mp_repeat(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
+// After ghee_mp_render or ghee_mp_present with the same arguments: the frame
+// that it drew is the one that ghee_mp_repeat gives.
+void ghee_mp_drew(GheeScene *g, const uint8_t *buffer_rgb, int pw, int ph);
 // The scanout buffers after a present of `bo`. `prev` holds the buffer of the
 // most recent flip, pending or on the glass, and `shown` the one before it,
 // on the glass until that flip completes. An accepted flip displaces `shown`.

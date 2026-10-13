@@ -57,7 +57,7 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
 /// extracts this set to a cache directory first. A procedural example imports
 /// ghee from the ghee-render package, which uv installs.
-pub const EXAMPLES: [(&str, &[u8]); 31] = [
+pub const EXAMPLES: [(&str, &[u8]); 35] = [
     (
         "assets.glsl",
         include_bytes!("../../ghee/examples/assets.glsl"),
@@ -113,6 +113,18 @@ pub const EXAMPLES: [(&str, &[u8]); 31] = [
         "fonts/LICENSE-Silkscreen.txt",
         include_bytes!("../../ghee/examples/fonts/LICENSE-Silkscreen.txt"),
     ),
+    (
+        "fonts/Bedstead.otf",
+        include_bytes!("../../ghee/examples/fonts/Bedstead.otf"),
+    ),
+    (
+        "fonts/Bedstead-UltraCondensed.otf",
+        include_bytes!("../../ghee/examples/fonts/Bedstead-UltraCondensed.otf"),
+    ),
+    (
+        "fonts/LICENSE-Bedstead.txt",
+        include_bytes!("../../ghee/examples/fonts/LICENSE-Bedstead.txt"),
+    ),
     ("hero.py", include_bytes!("../../ghee/examples/hero.py")),
     ("host.py", include_bytes!("../../ghee/examples/host.py")),
     (
@@ -152,6 +164,7 @@ pub const EXAMPLES: [(&str, &[u8]); 31] = [
     ("stats.py", include_bytes!("../../ghee/examples/stats.py")),
     ("stats2.py", include_bytes!("../../ghee/examples/stats2.py")),
     ("stats3.py", include_bytes!("../../ghee/examples/stats3.py")),
+    ("stats4.py", include_bytes!("../../ghee/examples/stats4.py")),
 ];
 
 /// The bundled example scenes on disk. $GHEE_EXAMPLES wins. Otherwise this

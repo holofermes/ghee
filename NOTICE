@@ -73,6 +73,10 @@ ghee/examples/fonts/Silkscreen-Regular.ttf, a subset of Silkscreen by Jason
 Kottke, travels with the bundled examples, under the SIL Open Font License
 1.1. Its text is ghee/examples/fonts/LICENSE-Silkscreen.txt.
 
+ghee/examples/fonts/Bedstead.otf and Bedstead-UltraCondensed.otf, subsets of
+Bedstead by Ben Harris and others, travel with the bundled examples, under CC0
+1.0 Universal. Its text is ghee/examples/fonts/LICENSE-Bedstead.txt.
+
 vendor/freetype holds FreeType 2.14.3, which ghee builds in, under the
 FreeType License, vendor/freetype/docs/FTL.TXT:
 

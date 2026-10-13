@@ -47,12 +47,23 @@ pub struct Carried {
     pub saved: Option<Edits>,
 }
 
+/// A saved edit that makes no scene, and why. It waits in the state file
+/// until the console drops it, and each load tries it again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Broken {
+    /// One edit, as Edits::units() splits them.
+    pub edit: Edits,
+    pub why: String,
+}
+
 /// A scene as a load builds it.
 pub struct Opened {
     pub defaults: Scene,
     pub working: Scene,
     /// The items whose default changed since their edit.
     pub aside: Vec<Item>,
+    /// The edits that make no scene, which the working copy leaves out.
+    pub broken: Vec<Broken>,
     /// What the scene's state file holds. None when it has no file.
     pub saved: Option<Edits>,
     pub procedural: bool,
@@ -244,7 +255,7 @@ impl SceneStore {
                 (saved.clone().unwrap_or_default(), saved)
             }
         };
-        let (working, aside) = working(name, &defaults, &edits);
+        let (working, aside, broken) = working(name, &defaults, &edits);
         if let Some(fed) = process.as_mut() {
             fed.bind(&working);
         }
@@ -253,29 +264,54 @@ impl SceneStore {
             defaults,
             working,
             aside,
+            broken,
             saved,
         };
         Ok((opened, process))
     }
 }
 
-/// The working copy of scene `name`: `edits` over `defaults`, and the items
-/// set aside. Each item set aside and each edit skipped logs one line.
-pub fn working(name: &str, defaults: &Scene, edits: &Edits) -> (Scene, Vec<Item>) {
+/// The working copy of scene `name`: `edits` over `defaults`, the items set
+/// aside, and the edits that make no scene. When the edits together make no
+/// scene, each edit is laid alone over those before it that make one. Each
+/// item set aside, each edit skipped and each edit that makes no scene logs
+/// one line.
+pub fn working(name: &str, defaults: &Scene, edits: &Edits) -> (Scene, Vec<Item>, Vec<Broken>) {
     if edits.is_empty() {
-        return (defaults.clone(), Vec::new());
+        return (defaults.clone(), Vec::new(), Vec::new());
     }
-    let applied = state::apply(&defaults.to_dict(), edits, name);
+    let base = defaults.to_dict();
+    let applied = state::apply(&base, edits, name);
     for line in &applied.notes {
         eprintln!("{line}");
     }
-    match scene_of(defaults, &applied.doc, name) {
-        Ok(scene) => (scene, applied.aside),
-        Err(e) => {
-            eprintln!("{name}: its saved edits make no scene, so its defaults run: {e}");
-            (defaults.clone(), applied.aside)
+    if let Ok(scene) = scene_of(defaults, &applied.doc, name) {
+        return (scene, applied.aside, Vec::new());
+    }
+    let mut waiting = edits.clone();
+    waiting.items.retain(|i| !applied.aside.contains(i));
+    let (mut doc, mut broken) = (base.clone(), Vec::new());
+    for edit in waiting.units() {
+        let next = state::fold(&base, &doc, &edit);
+        match scene_of(defaults, &next, name) {
+            Ok(_) => doc = next,
+            Err(e) => {
+                let e = e.to_string();
+                let why = e
+                    .strip_prefix(&format!("{name}: "))
+                    .unwrap_or(&e)
+                    .to_string();
+                eprintln!(
+                    "{name}: its saved edit of {} makes no scene, so it waits in the state \
+                     file: {why}",
+                    edit.what()
+                );
+                broken.push(Broken { edit, why });
+            }
         }
     }
+    let scene = scene_of(defaults, &doc, name).unwrap_or_else(|_| defaults.clone());
+    (scene, applied.aside, broken)
 }
 
 /// The scene of `doc`, a document of scene `name`, with its files where the

@@ -171,6 +171,98 @@ impl Edits {
         Value::Object(d)
     }
 
+    /// Each edit alone, in the order a load lays them: each item, then the
+    /// value of each scene param, the values of each pass and those of each
+    /// layer.
+    pub fn units(&self) -> Vec<Edits> {
+        let mut out: Vec<Edits> = self
+            .items
+            .iter()
+            .map(|i| Edits {
+                values: Map::new(),
+                items: vec![i.clone()],
+            })
+            .collect();
+        for (key, v) in &self.values {
+            let Value::Object(m) = v else {
+                out.push(Edits {
+                    values: Map::from_iter([(key.clone(), v.clone())]),
+                    items: Vec::new(),
+                });
+                continue;
+            };
+            for (name, v) in m {
+                let one = Map::from_iter([(name.clone(), v.clone())]);
+                out.push(Edits {
+                    values: Map::from_iter([(key.clone(), Value::Object(one))]),
+                    items: Vec::new(),
+                });
+            }
+        }
+        out
+    }
+
+    /// What one edit of units() edits, for a person to read.
+    pub fn what(&self) -> String {
+        if let Some(item) = self.items.first() {
+            return item.what();
+        }
+        let Some((key, v)) = self.values.iter().next() else {
+            return "nothing".to_string();
+        };
+        let name = v
+            .as_object()
+            .and_then(|m| m.keys().next())
+            .map_or("", String::as_str);
+        match key.as_str() {
+            "params" => format!("param '{name}'"),
+            "passes" => format!("pass '{name}'"),
+            "layers" => format!("layer '{name}'"),
+            _ => format!("the values' '{key}'"),
+        }
+    }
+
+    /// Lay `under` beneath these edits: each of its items that these edits
+    /// do not hold, and each of its values that these edits do not set.
+    pub fn add_beneath(&mut self, under: &Edits) {
+        for item in &under.items {
+            let mine = |i: &Item| i.is(&item.item, item.pass.as_deref(), item.param.as_deref());
+            if !self.items.iter().any(mine) {
+                self.items.push(item.clone());
+            }
+        }
+        self.items
+            .sort_by_key(|i| KINDS.iter().position(|k| *k == i.item));
+        let mut values = under.values.clone();
+        compose(&mut values, &self.values);
+        self.values = values;
+    }
+
+    /// Take out each item and each value that `unit`, one edit of units(),
+    /// holds.
+    pub fn remove(&mut self, unit: &Edits) {
+        self.items.retain(|i| {
+            !unit
+                .items
+                .iter()
+                .any(|u| i.is(&u.item, u.pass.as_deref(), u.param.as_deref()))
+        });
+        for (key, v) in &unit.values {
+            let Value::Object(names) = v else {
+                self.values.remove(key);
+                continue;
+            };
+            if let Some(Value::Object(m)) = self.values.get_mut(key) {
+                for name in names.keys() {
+                    m.remove(name);
+                }
+                if m.is_empty() {
+                    self.values.remove(key);
+                }
+            }
+        }
+    }
+
     pub fn from_file(d: &Value) -> Result<Edits, String> {
         match d.get("version") {
             Some(v) if v.as_i64() == Some(VERSION) => {}
@@ -361,6 +453,20 @@ fn patch_of(from: &Map<String, Value>, to: &Map<String, Value>) -> Map<String, V
         out.insert(k.clone(), Value::Null);
     }
     out
+}
+
+/// Lay the merge patch `over` on the merge patch `under`, so that `under`
+/// patches what both did, and `over` wins a key that both set. A null of
+/// `over` stays, since it removes its key.
+fn compose(under: &mut Map<String, Value>, over: &Map<String, Value>) {
+    for (k, v) in over {
+        match (under.get_mut(k), v) {
+            (Some(Value::Object(u)), Value::Object(o)) => compose(u, o),
+            _ => {
+                under.insert(k.clone(), v.clone());
+            }
+        }
+    }
 }
 
 /// RFC 7386: lay `patch` over `target`.

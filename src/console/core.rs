@@ -496,13 +496,14 @@ pub trait ConsoleHost {
         Ok((self.scene_def(name)?, None))
     }
 
-    /// GET /edits: `{rev, values, items, unsaved, aside}`, the working copy's
-    /// edits as save() writes them, whether they differ from the state file,
-    /// and the items set aside.
+    /// GET /edits: `{rev, values, items, unsaved, aside, broken}`, the
+    /// working copy's edits as save() writes them, whether they differ from
+    /// the state file, the items set aside, and the saved edits that make no
+    /// scene, each as `{what, why}`.
     fn edits(&self, _name: Option<&str>) -> ConsoleResult<Value> {
         Ok(
             serde_json::json!({"rev": null, "values": {}, "items": [], "unsaved": false,
-                              "aside": []}),
+                              "aside": [], "broken": []}),
         )
     }
 
@@ -1542,7 +1543,7 @@ mod tests {
         assert_eq!(
             as_json(&ConsoleAPI::new(Bare).dispatch("GET", "/edits", &Query::new(), &local(), b"")),
             serde_json::json!({"rev": null, "values": {}, "items": [], "unsaved": false,
-                               "aside": []})
+                               "aside": [], "broken": []})
         );
     }
 

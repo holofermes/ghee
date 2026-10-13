@@ -458,6 +458,7 @@
   .ask .acts{display:flex; gap:8px; justify-content:flex-end}
   .ask .renin{display:block; width:100%; margin:0 0 8px}
   .ask .ferr{margin:0 0 10px}
+  .ask .why{white-space:pre-wrap; overflow-wrap:anywhere; max-height:40vh; overflow-y:auto; margin:-4px 0 14px}
   @media (pointer:coarse){
     .ask .q{font-size:15px}
     .ask .acts button{min-height:44px; padding:0 18px; font-size:15px}
@@ -578,6 +579,7 @@
 <div class="ask" id="ask" role="dialog" aria-modal="true" aria-labelledby="askText" hidden>
   <div class="panel card">
     <p class="q" id="askText"></p>
+    <div class="ferr why" id="askWhy" hidden></div>
     <div class="acts">
       <button id="askNo">cancel</button>
       <button class="primary" id="askYes">remove</button>
@@ -603,6 +605,7 @@
   <div class="toast" id="newer" role="status" hidden><span>files newer</span></div>
   <div class="toast" id="stale" role="status" hidden><span>files changed</span><button type="button" title="a reload takes the new files and keeps the edits made here">reload</button></div>
   <div class="toast" id="behind" role="status" hidden><span>this scene changed since you loaded it</span><button type="button" title="read the scene as it is now">reload</button></div>
+  <div class="toast" id="broken" role="status" hidden><span>saved edits do not build</span><button type="button" title="what does not build, and drop them">show</button></div>
 </div>
 
 <script src="h264client.js"></script>
@@ -867,7 +870,7 @@ const has = (o, k) => isObj(o) && Object.prototype.hasOwnProperty.call(o, k);
 // ---- the working copy's edits, as GET /edits lists them, and the defaults ----
 // A host that keeps no defaults answers no edits, and this page then marks
 // nothing and saves nothing.
-const NO_EDITS = {rev: null, values: {}, items: [], unsaved: false, aside: []};
+const NO_EDITS = {rev: null, values: {}, items: [], unsaved: false, aside: [], broken: []};
 let E = NO_EDITS, D = null;
 // rev is the revision of the scene this page last read, which every edit
 // carries. ghee counts each edit that it takes, so known, the revision that
@@ -1168,7 +1171,7 @@ async function loadScene(name, own = true){
   curPass = 0; postErr = err; errOpen = null; layerUI.clear(); layerChanges = null; waiting = [];
   LOCKS = locksOf(lastStats); shownLocks = canon(LOCKS);
   paintAll();
-  askAside();
+  askAside().then(askBroken);
 }
 // Every part of the page drawn from the working copy.
 function paintAll(){
@@ -1231,7 +1234,7 @@ async function refresh(force = false){
       cards.forEach(c => { if (!busy.includes(c.dataset.name)) recard(p, c.dataset.name); });
     else relist();
     loadCode(); paintShader(); showErrors(); syncAddRow(); buildParams(); refreshInfo(); paintStatus(); paintMarks();
-    askAside();
+    askAside().then(askBroken);
   } catch (_) {
   } finally { reading = false; }
 }
@@ -1272,6 +1275,29 @@ async function askAside(){
   } finally { answering = false; }
   if (name === active) await refresh(true);
 }
+
+// ---- saved edits that do not build: they wait in the state file, every
+// save keeps them, and the page asks once per scene whether to drop them.
+// Kept, a notice stays while they wait, and it asks again ----
+const keptBroken = new Set();
+const brokenKey = () => active + "\n" + canon(E.broken || []);
+async function askBroken(){
+  const list = E.broken || [], name = active, key = brokenKey();
+  toast($("#broken"), list.length > 0 && keptBroken.has(key));
+  if (!list.length || answering || keptBroken.has(key)) return;
+  answering = true;
+  let keep;
+  try {
+    keep = await ask(`Saved "${name}" edits do not build`, {yes: "keep them", no: "drop them", forced: true,
+      why: list.map(b => `${b.what}: ${b.why}`).join("\n")});
+  } finally { answering = false; }
+  if (name !== active) return;
+  if (keep){ keptBroken.add(key); toast($("#broken"), true); return; }
+  const r = await edit("/aside", name, `name=${enc(name)}&item=edits&answer=default`);
+  if (r && !r.ok && ![404, 409, 412].includes(r.status)){ postErr = await r.text(); showErrors(); }
+  if (name === active) await refresh(true);
+}
+$("#broken button").addEventListener("click", () => { keptBroken.delete(brokenKey()); toast($("#broken"), false); askBroken(); });
 
 // ---- the passes card: the tab row, a pass's inputs, its channels, its layers, its shader ----
 
@@ -2399,6 +2425,8 @@ async function renamePass(i){
 let answer = null, askedFrom = null, forced = false;
 function ask(question, o = {}){
   $("#askText").textContent = question;
+  $("#askWhy").textContent = o.why || "";
+  $("#askWhy").hidden = !o.why;
   $("#askYes").textContent = o.yes || "remove";
   $("#askNo").textContent = o.no || "cancel";
   forced = !!o.forced;

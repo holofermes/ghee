@@ -384,10 +384,14 @@ impl WorkingCopy {
         edits
     }
 
-    /// What a save writes: the working copy's edits and the items set aside.
+    /// What a save writes: the working copy's edits, the items set aside,
+    /// and beneath them the saved edits that make no scene.
     fn to_save(&self, locks: Option<&Locks>) -> Edits {
         let mut edits = self.edits(locks);
         edits.items.extend(self.opened.aside.iter().cloned());
+        for b in &self.opened.broken {
+            edits.add_beneath(&b.edit);
+        }
         edits
     }
 
@@ -415,6 +419,9 @@ impl WorkingCopy {
             "items": edits.items.iter().map(Item::to_json).collect::<Vec<_>>(),
             "unsaved": self.unsaved(locks),
             "aside": self.opened.aside.iter().map(Item::key).collect::<Vec<_>>(),
+            "broken": self.opened.broken.iter()
+                .map(|b| serde_json::json!({"what": b.edit.what(), "why": b.why}))
+                .collect::<Vec<_>>(),
         })
     }
 
@@ -510,6 +517,9 @@ struct Published {
 
 /// A source for one declared array: the host's data for this frame.
 pub type ArraySource = Box<dyn Fn(ArraySize, u64) -> Vec<f32> + Send + Sync>;
+
+/// The item of POST /aside that names the saved edits that make no scene.
+pub const BROKEN: &str = "edits";
 
 /// This module's state. The render loop and the request threads share it.
 pub struct Console {
@@ -2649,9 +2659,29 @@ impl ConsoleHost for RenderLoopHost {
 
     /// Keep takes the default item's hash as the edit's base and applies the
     /// edit, and default drops it. Either writes the state file at once, as
-    /// it was with that one item answered.
+    /// it was with that one item answered. The item BROKEN answers the saved
+    /// edits that make no scene: keep leaves them waiting, and default drops
+    /// them from the state file.
     fn answer(&self, _name: Option<&str>, aside: &Aside, keep: bool) -> ConsoleResult<()> {
         let store = &self.console.store;
+        if aside.item == BROKEN {
+            return self.console.with_active(|name, copy| {
+                if copy.opened.broken.is_empty() {
+                    return Err(ConsoleError::not_found("no such item is set aside"));
+                }
+                if keep {
+                    return Ok(());
+                }
+                let mut saved = copy.opened.saved.clone().unwrap_or_default();
+                for b in &copy.opened.broken {
+                    saved.remove(&b.edit);
+                }
+                store.save(name, &saved)?;
+                copy.opened.saved = (!saved.is_empty()).then_some(saved);
+                copy.opened.broken.clear();
+                Ok(())
+            });
+        }
         self.console.with_active(|name, copy| {
             let is = |i: &Item| i.is(&aside.item, aside.pass.as_deref(), aside.param.as_deref());
             let at = copy
@@ -3277,6 +3307,7 @@ mod tests {
             defaults: scene.clone(),
             working: scene,
             aside: Vec::new(),
+            broken: Vec::new(),
             saved: None,
             procedural: false,
         };
@@ -3448,6 +3479,63 @@ mod tests {
         }
     }
 
+    /// A saved image layer whose asset the scene lacks.
+    #[test]
+    fn saved_edits_that_make_no_scene_wait_in_the_state_file_until_dropped() {
+        let (d, states, console) = clocks("broken");
+        let file = clocks_file(&d, &states);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let layers = serde_json::json!({"item": "layers", "pass": "main",
+            "base": state::hash_json(&serde_json::json!([])),
+            "value": [{"name": "image", "image": "plaster"}]});
+        let saved = serde_json::json!({"version": 1,
+            "values": {"passes": {"main": {"params": {"cols": 5}}}}, "items": [layers]});
+        fs::write(&file, saved.to_string()).unwrap();
+        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
+        ready(&console, "clocks", opened);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let scene = json_of(&ask(&api, "GET", "/scene", "", "").1);
+        assert_eq!(scene["passes"][0]["params"]["cols"]["value"], 5);
+        assert!(scene["passes"][0].get("layers").is_none(), "{scene}");
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(edits["unsaved"], false);
+        assert_eq!(edits["broken"][0]["what"], "pass 'main''s layers");
+        assert!(
+            edits["broken"][0]["why"]
+                .as_str()
+                .unwrap()
+                .starts_with("layer 'image' image 'plaster'"),
+            "{edits}"
+        );
+        let set = "scene=clocks&pass=main&name=cols&value=6";
+        assert_eq!(ask(&api, "POST", "/set", set, "").0, 200);
+        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        let written = json_of(&fs::read_to_string(&file).unwrap());
+        assert_eq!(written["items"], serde_json::json!([layers]));
+        assert_eq!(written["values"]["passes"]["main"]["params"]["cols"], 6);
+        let answer = |a: &str| {
+            ask(
+                &api,
+                "POST",
+                "/aside",
+                &format!("name=clocks&item=edits&answer={a}"),
+                "",
+            )
+        };
+        assert_eq!(answer("keep").0, 200);
+        assert_eq!(json_of(&fs::read_to_string(&file).unwrap()), written);
+        assert_eq!(answer("default").0, 200);
+        let written = json_of(&fs::read_to_string(&file).unwrap());
+        assert!(written.get("items").is_none(), "{written}");
+        assert_eq!(written["values"]["passes"]["main"]["params"]["cols"], 6);
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(
+            (&edits["broken"], &edits["unsaved"]),
+            (&serde_json::json!([]), &Value::from(false))
+        );
+        assert_eq!(answer("default").0, 404);
+    }
+
     #[test]
     fn a_new_edit_of_a_shader_set_aside_answers_it_and_saves_alone() {
         let mine = "void main(){ gl_FragColor = vec4(0.5); }";
@@ -3564,6 +3652,7 @@ mod tests {
                 defaults: scene(doc(1.0, None, None)),
                 working: scene(doc(1.0, None, None)),
                 aside: Vec::new(),
+                broken: Vec::new(),
                 saved: None,
                 procedural: true,
             },

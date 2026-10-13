@@ -40,8 +40,10 @@ import signal
 import struct
 import sys
 import time
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+
+from ghee._look import _call_look, _circle, _floats, _look, _plain  # noqa: F401
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -69,33 +71,6 @@ LOCKSTEP = "GHEE_LOCKSTEP"
 
 
 # ---------------------------------------------------------------- scene model
-
-
-def _plain(v: Any) -> Any:
-    """`v` in the types that json and the bindings both take: a tuple as a
-    list, a path as its str, a numpy number or array as its Python value.
-    Anything else goes out as given, for ghee to judge."""
-    if isinstance(v, os.PathLike):
-        return os.fspath(v)
-    if isinstance(v, (list, tuple)):
-        return [_plain(x) for x in v]
-    if isinstance(v, dict):
-        return {k: _plain(x) for k, x in v.items()}
-    if isinstance(v, (str, bytes)) or not hasattr(v, "tolist"):
-        return v
-    return v.tolist()
-
-
-def _floats(v: Any) -> Any:
-    """`v` as `_plain` leaves it, with each real number in it a float."""
-    v = _plain(v)
-    if isinstance(v, list):
-        return [_floats(x) for x in v]
-    if isinstance(v, dict):
-        return {k: _floats(x) for k, x in v.items()}
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return float(v)
-    return v
 
 
 @dataclass
@@ -256,47 +231,6 @@ class Layer:
 
     def to_dict(self) -> dict:
         return _look(vars(self), self.name)
-
-
-# The effects of a text layer, in the order that the document writes them.
-_EFFECTS = ("text_shadow", "glow", "text_stroke", "karaoke", "wave", "scroll", "blink")
-
-# Every field of a Layer but its name, at its default.
-_FIELDS = {f.name: f.default for f in fields(Layer) if f.name != "name"}
-
-
-def _look(f: dict, name: str | None) -> dict:
-    """The layer of the fields `f`, every field of a Layer, as the scene
-    format writes it, under `name`, or with no name for None."""
-    d: dict = {} if name is None else {"name": name}
-    if f["visible"] is not True:
-        d["visible"] = _plain(f["visible"])
-    for k in ("x", "y", "color", "opacity"):
-        if f[k] is not None:
-            d[k] = _floats(f[k])
-    if f["blend"] != "normal":
-        d["blend"] = f["blend"]
-    if f["text"] is not None:
-        d["text"] = f["text"]
-    if f["image"] is not None:
-        d["image"] = _plain(f["image"])
-    if f["shape"] is not None:
-        d["shape"] = f["shape"]
-    for k in ("width", "height", "border", "border_radius", "points", "stroke_width"):
-        if f[k] is not None:
-            d[k] = _floats(f[k])
-    if f["font_size"] is not None:
-        d["font_size"] = _floats(f["font_size"])
-    if f["font_family"] is not None:
-        d["font_family"] = _plain(f["font_family"])
-    if f["text_align"] != "left":
-        d["text_align"] = f["text_align"]
-    if f["render"] is not None:
-        d["render"] = f["render"]
-    for k in _EFFECTS:
-        if f[k] is not None:
-            d[k] = _floats(f[k])
-    return d
 
 
 @dataclass
@@ -525,65 +459,6 @@ def gradient(start, end, angle: float = 180) -> dict:
     """A text's colour that runs from `start` to `end` along `angle` degrees,
     as CSS's angle: the gradient object of the scene format."""
     return {"from": start, "to": end, "angle": angle}
-
-
-# The keywords of each kind of call, in the order of a call's values, as
-# the native half numbers the kinds: a text, a rect, an image and a line,
-# and the shape that each kind's look names.
-_CALL_KEYS = (
-    (
-        "text",
-        "x",
-        "y",
-        "color",
-        "opacity",
-        "blend",
-        "visible",
-        "font_size",
-        "font_family",
-        "text_align",
-        "render",
-        "text_shadow",
-        "glow",
-        "text_stroke",
-        "karaoke",
-        "wave",
-        "scroll",
-        "blink",
-    ),
-    (
-        "x",
-        "y",
-        "width",
-        "height",
-        "color",
-        "opacity",
-        "blend",
-        "visible",
-        "border",
-        "border_radius",
-    ),
-    ("image", "x", "y", "width", "height", "color", "opacity", "blend", "visible"),
-    ("points", "x", "y", "color", "opacity", "blend", "visible", "stroke_width"),
-)
-_CALL_SHAPES = (None, "rect", None, "line")
-
-
-def _call_look(kind: int, vals: tuple, name: str | None) -> dict:
-    """The look of a call of `kind` with `vals`, as the scene format writes
-    it, under `name`, or with no name for None."""
-    given = {k: v for k, v in zip(_CALL_KEYS[kind], vals) if v is not None}
-    shape = _CALL_SHAPES[kind]
-    if shape is not None:
-        given["shape"] = shape
-    return _look({**_FIELDS, **given}, name)
-
-
-def _circle(centre, radius) -> tuple:
-    """The x, y, width, height and border_radius of the box of a circle of
-    `radius` around `centre`."""
-    cx, cy = _plain(centre)
-    return cx - radius, cy - radius, 2 * radius, 2 * radius, radius
 
 
 def __getattr__(name: str):

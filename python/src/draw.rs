@@ -573,10 +573,12 @@ impl Drawing {
     /// Add the layer of `c`, a call new to the screen, after the layer of
     /// the call before it.
     fn add(&mut self, py: Python<'_>, handle: &Bound<'_, PyAny>, c: Changed) -> PyResult<()> {
-        let shim = py.import("ghee._shim")?;
-        let look =
-            shim.getattr("_call_look")?
-                .call1((number_of(c.kind), c.values.bind(py), py.None()))?;
+        let looks = py.import("ghee._look")?;
+        let look = looks.getattr("_call_look")?.call1((
+            number_of(c.kind),
+            c.values.bind(py),
+            py.None(),
+        ))?;
         let (name, n, pass, index) = {
             let mut s = self.screen.bind(py).borrow_mut();
             let frame = s.frame;
@@ -654,7 +656,7 @@ impl Drawing {
     ) -> PyResult<()> {
         let n = c.layer.expect("a known call has its layer");
         let name = self.screen.bind(py).borrow().held[n as usize].name.clone();
-        let look = py.import("ghee._shim")?.getattr("_call_look")?.call1((
+        let look = py.import("ghee._look")?.getattr("_call_look")?.call1((
             number_of(c.kind),
             c.values.bind(py),
             &name,
@@ -780,7 +782,7 @@ impl Drawing {
                 Ok(b) => !b.is_true(),
                 Err(_) if v.is_none() => false,
                 Err(_) => py
-                    .import("ghee._shim")?
+                    .import("ghee._look")?
                     .getattr("_plain")?
                     .call1((&v,))?
                     .is(&*PyBool::new(py, false)),
@@ -1135,7 +1137,7 @@ impl Drawing {
         // Python code of its own.
         let site = self.screen.bind(py).borrow_mut().site(py)?;
         let boxed = py
-            .import("ghee._shim")?
+            .import("ghee._look")?
             .getattr("_circle")?
             .call1((centre, radius))?;
         let [x, y, w, h, r] = [0, 1, 2, 3, 4].map(|k| boxed.get_item(k).ok());

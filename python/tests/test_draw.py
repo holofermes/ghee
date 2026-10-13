@@ -4,6 +4,7 @@ A fake handle records what a drawing hands it, and a scene script's drawing
 writes the wire, bar the tests at the end, which draw on the renderer.
 """
 
+import dataclasses
 import inspect
 import os
 import pathlib
@@ -18,7 +19,7 @@ from test_errors import CLI
 from test_shim import END, drive, load, messages
 
 import ghee
-from ghee import _shim
+from ghee import _look, _shim
 
 
 class Fake:
@@ -180,9 +181,9 @@ def test_an_unchanged_call_writes_its_look_once(monkeypatch):
     """A frame compares a call's keywords with its last frame's, and only a
     call whose keywords changed writes its look again."""
     looks = []
-    look = _shim._look
+    look = _look._look
     monkeypatch.setattr(
-        _shim, "_look", lambda f, name: looks.append(name) or look(f, name)
+        _look, "_look", lambda f, name: looks.append(name) or look(f, name)
     )
 
     def draw(d, i):
@@ -486,9 +487,9 @@ def test_a_call_that_draw_leaves_goes_out_as_its_look():
 
 def test_a_call_that_draw_takes_writes_no_look(monkeypatch):
     looks = []
-    look = _shim._look
+    look = _look._look
     monkeypatch.setattr(
-        _shim, "_look", lambda f, name: looks.append(name) or look(f, name)
+        _look, "_look", lambda f, name: looks.append(name) or look(f, name)
     )
 
     def draw(d, i):
@@ -628,7 +629,12 @@ def test_numpy_values_and_paths_go_out_as_the_values_that_they_hold(monkeypatch)
 
     _, out = drive(shim, None, ticks(3), monkeypatch)
     sent = answers(out)
-    line = {"name": "line", "shape": "line", "points": [[0.0, 0.0], [4.0, 5.0]], "x": 1.0}
+    line = {
+        "name": "line",
+        "shape": "line",
+        "points": [[0.0, 0.0], [4.0, 5.0]],
+        "x": 1.0,
+    }
     image = {"name": "image", "image": "wifi.png", "x": 1.0}
     assert [m[0] for m in sent[0]] == [6, 6]
     assert sent[1:] == [[(8, "", [line, image])], []]
@@ -767,9 +773,9 @@ def test_a_drawing_draws_the_frames_that_its_looks_written_out_draw(monkeypatch)
     of each changed call out, and writes a look only for a call that builds
     its layer again."""
     names = []
-    look = _shim._call_look
+    look = _look._call_look
     monkeypatch.setattr(
-        _shim,
+        _look,
         "_call_look",
         lambda kind, vals, name: names.append(name) or look(kind, vals, name),
     )
@@ -788,6 +794,35 @@ def test_a_drawing_draws_the_frames_that_its_looks_written_out_draw(monkeypatch)
                 busy(d, i)
             assert screen.pixels() == written.pixels(), f"frame {i}"
         assert updates == 1
+
+
+def test_a_drawing_draws_its_frames_without_the_scene_shim():
+    """A module that a drawing imports loads again at each start: the scene
+    shim's imports took 230 ms on a Pi Zero 2 W."""
+    probe = (
+        "import sys, ghee\n"
+        "with ghee.open(width=16, height=4, timestep=0) as screen:\n"
+        "    with screen.draw() as d:\n"
+        "        d.rect(color='navy')\n"
+        "        d.text('hi', name='t', x=0, y=0, font_size=4, visible=False)\n"
+        "        d.circle((2, 2), 1)\n"
+        "print('ghee._shim' in sys.modules)\n"
+    )
+    ran = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert ran.stdout.split() == ["False"]
+
+
+def test_a_call_starts_from_the_defaults_of_a_layer():
+    """A drawing's call and a Layer write the same look for the same fields."""
+    fields = {f.name: f.default for f in dataclasses.fields(ghee.Layer)}
+    del fields["name"]
+    assert _look._FIELDS == fields
 
 
 def test_an_error_of_a_call_reaches_python_and_draws_no_frame():

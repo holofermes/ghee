@@ -506,19 +506,50 @@ const SIGTERM: c_int = 15;
 
 extern "C" {
     fn signal(sig: c_int, handler: extern "C" fn(c_int)) -> usize;
+    fn write(fd: c_int, buf: *const u8, count: usize) -> isize;
+    fn __errno_location() -> *mut c_int;
 }
 
+/// The socket that on_signal() writes a byte to, -1 until catch_signals().
+static WAKE: AtomicI32 = AtomicI32::new(-1);
+
+/// A signal handler may only make async-signal-safe calls, and taking a lock
+/// is not one: the thread that the signal lands on may hold that lock.
 extern "C" fn on_signal(sig: c_int) {
     SIGNALLED.store(sig, Ordering::SeqCst);
-    // a console blocks in its own server, and this is the way out
-    server::stop();
+    unsafe {
+        let errno = *__errno_location();
+        write(WAKE.load(Ordering::SeqCst), [0u8].as_ptr(), 1);
+        *__errno_location() = errno;
+    }
 }
 
-fn catch_signals() {
+/// SIGINT and SIGTERM record the signal, and a thread of their own stops the
+/// console, which blocks in its own server.
+fn catch_signals() -> std::io::Result<()> {
+    use std::io::Read;
+    use std::os::fd::IntoRawFd;
+    let (wake, woken) = std::os::unix::net::UnixStream::pair()?;
+    wake.set_nonblocking(true)?;
+    WAKE.store(wake.into_raw_fd(), Ordering::SeqCst);
+    std::thread::Builder::new()
+        .name("ghee-signals".into())
+        .spawn(move || {
+            let mut bytes = [0u8; 64];
+            loop {
+                match (&woken).read(&mut bytes) {
+                    Ok(0) => return,
+                    Ok(_) => server::stop(),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => return,
+                }
+            }
+        })?;
     unsafe {
         signal(SIGINT, on_signal);
         signal(SIGTERM, on_signal);
     }
+    Ok(())
 }
 
 /// True when the reader at the far end of the pipe is gone.
@@ -1627,7 +1658,10 @@ pub fn main(argv: Vec<String>) -> i32 {
         Ok(cli) => cli,
         Err(e) => return clap_status(&e),
     };
-    catch_signals();
+    if let Err(e) = catch_signals() {
+        eprintln!("ghee: {e}");
+        return 1;
+    }
     let (cmd, ran) = dispatch(cli, scene_args);
     match ran {
         Ok(()) => 0,

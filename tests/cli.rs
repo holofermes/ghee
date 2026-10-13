@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 /// A directory of one test's own under the temp directory. The drop removes
 /// it, with everything that the test wrote in it.
@@ -363,4 +363,72 @@ fn rotate_turns_the_written_frame_and_keeps_its_size() {
     assert_eq!(&px[..2], &[0, 7]);
     // its top-left pixel lands top right
     assert_eq!(&px[7 * 4..7 * 4 + 2], &[0, 0]);
+}
+
+const SIGINT: i32 = 2;
+const SIGTERM: i32 = 15;
+
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_burst_of_ctrl_c_and_sigterm_ends_the_console() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::time::{Duration, Instant};
+    let dir = Dir::new("signals");
+    let scene = dir.join("s.scene.json");
+    fs::write(
+        &scene,
+        r#"{"passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#,
+    )
+    .unwrap();
+    let mut ghee = Command::new(env!("CARGO_BIN_EXE_ghee"))
+        .arg("serve")
+        .arg(&scene)
+        .args(["--port", "0", "--size", "8x8"])
+        .arg("--state-dir")
+        .arg(dir.join("state"))
+        .arg("--my-scenes")
+        .arg(dir.join("mine"))
+        .env("GHEE_ASSETS", "")
+        .env("XDG_CACHE_HOME", &dir.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = BufReader::new(ghee.stdout.take().unwrap());
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    if !line.starts_with("ghee console: ") {
+        let mut err = String::new();
+        ghee.stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut err)
+            .unwrap();
+        panic!("{line:?} {err}");
+    }
+    // each signal lands while the other one's handler runs
+    for _ in 0..1000 {
+        unsafe {
+            kill(ghee.id() as i32, SIGINT);
+            kill(ghee.id() as i32, SIGTERM);
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = ghee.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            ghee.kill().unwrap();
+            ghee.wait().unwrap();
+            panic!("ghee serve runs on 10 s after the signals");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(matches!(status.code(), Some(0 | 143)), "{status:?}");
 }

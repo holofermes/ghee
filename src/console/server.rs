@@ -3216,7 +3216,9 @@ pub fn run(opts: Options) -> Result<()> {
     let serving = {
         let console = Arc::clone(&console);
         let api = Arc::new(
-            ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console))).with_web(console.web),
+            ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)))
+                .with_web(console.web)
+                .listening_on(&host),
         );
         thread::spawn(move || {
             for request in server.incoming_requests() {
@@ -3323,7 +3325,7 @@ mod tests {
         q: &str,
         body: &str,
     ) -> (u16, String, Option<String>) {
-        let headers = Headers::from([("Content-Type", "application/json")]);
+        let headers = Headers::from([("Content-Type", "application/json"), ("Host", "localhost")]);
         let r = api.dispatch(
             method,
             path,
@@ -4040,7 +4042,8 @@ mod tests {
 
     #[test]
     fn a_query_with_a_malformed_percent_escape_answers_400() {
-        let out = exchange(b"GET /stats?a=%zz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        let out =
+            exchange(b"GET /stats?a=%zz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
         assert!(out.starts_with("HTTP/1.1 400"), "{out}");
         assert!(
             out.ends_with("bad query: '%zz' is not a percent escape"),
@@ -4051,7 +4054,7 @@ mod tests {
     #[test]
     fn a_chunked_body_past_the_cap_answers_413() {
         let out = exchange(
-            b"POST /ping HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\
+            b"POST /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
               Transfer-Encoding: chunked\r\n\r\n6\r\n012345\r\n5\r\n67890\r\n0\r\n\r\n",
         );
         assert!(out.starts_with("HTTP/1.1 413"), "{out}");
@@ -4402,10 +4405,10 @@ mod tests {
             "POST",
             "/set",
             &parse_query("scene=one&name=k&value=1").unwrap(),
-            &Headers::new(),
+            &Headers::from([("Host", "localhost")]),
             b"",
         );
-        let json = Headers::from([("Content-Type", "application/json")]);
+        let json = Headers::from([("Content-Type", "application/json"), ("Host", "localhost")]);
         let apply = api.dispatch(
             "POST",
             "/scene",
@@ -4465,7 +4468,7 @@ mod tests {
             "POST",
             "/set",
             &parse_query("scene=bad&name=k&value=1").unwrap(),
-            &Headers::new(),
+            &Headers::from([("Host", "localhost")]),
             b"",
         );
         assert_eq!(set.status, 200);
@@ -4481,7 +4484,7 @@ mod tests {
         assert_eq!(k(&st), Value::from(0.0));
         let fix = r#"{"version": 1, "passes": [{"name": "main",
             "fragment": "void main(){ gl_FragColor = vec4(0.5); }"}]}"#;
-        let json = Headers::from([("Content-Type", "application/json")]);
+        let json = Headers::from([("Content-Type", "application/json"), ("Host", "localhost")]);
         let r = api.dispatch(
             "POST",
             "/scene",
@@ -4532,7 +4535,7 @@ mod tests {
                 "POST",
                 "/set",
                 &parse_query(q).unwrap(),
-                &Headers::new(),
+                &Headers::from([("Host", "localhost")]),
                 b"",
             )
         };
@@ -4669,7 +4672,7 @@ mod tests {
                 "POST",
                 "/set",
                 &parse_query(q).unwrap(),
-                &Headers::new(),
+                &Headers::from([("Host", "localhost")]),
                 b"",
             )
         };
@@ -5476,7 +5479,9 @@ mod tests {
             use std::io::Read;
             if self.1.borrow().is_null() {
                 let mut s = std::net::TcpStream::connect(("127.0.0.1", self.0))?;
-                s.write_all(b"GET /stats HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")?;
+                s.write_all(
+                    b"GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                )?;
                 let mut out = String::new();
                 s.read_to_string(&mut out)?;
                 let body = out.split_once("\r\n\r\n").map_or("", |(_, b)| b);

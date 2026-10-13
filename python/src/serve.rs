@@ -403,7 +403,11 @@ impl Console {
         let server = Arc::new(Server::http((host, port)).map_err(|e| anyhow!("{e}"))?);
         let accepting = {
             let (shared, server) = (Arc::clone(&shared), Arc::clone(&server));
-            let api = Arc::new(ConsoleAPI::new(Host(Arc::clone(&shared))).with_web(true));
+            let api = Arc::new(
+                ConsoleAPI::new(Host(Arc::clone(&shared)))
+                    .with_web(true)
+                    .listening_on(host),
+            );
             thread::spawn(move || {
                 for request in server.incoming_requests() {
                     let (shared, api) = (Arc::clone(&shared), Arc::clone(&api));

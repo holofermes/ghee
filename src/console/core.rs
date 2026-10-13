@@ -5,7 +5,7 @@
 //! query, headers, body). It turns the Response back into what it serves:
 //!
 //! ```text
-//! let api = ConsoleAPI::new(MyHost::new()).with_web(true);
+//! let api = ConsoleAPI::new(MyHost::new()).with_web(true).listening_on(addr);
 //! let refused = api.precheck(method, path, headers);  // before reading a body
 //! let body = api.read_body(reader)?;                   // a 413 past the cap
 //! let resp = api.dispatch(method, path, query, headers, body);
@@ -19,9 +19,10 @@
 //! them before dispatch reaches the static-file fallback.
 //!
 //! Every refusal lives here, so a new host inherits it. The refusals are the
-//! Origin check on a mutating request, the body cap, POST-only state changes,
-//! the JSON content type, an edit of a scene other than the active one and the
-//! static root check.
+//! Host check on a console that listens on loopback, the Origin check on a
+//! mutating request, the body cap, POST-only state changes, the JSON content
+//! type, an edit of a scene other than the active one and the static root
+//! check.
 //!
 //! A host that keeps each scene's working copy and its defaults says so
 //! through scene_doc(), edits(), save(), reset() and answer(). The defaults of
@@ -35,6 +36,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
+use std::net::IpAddr;
 use std::sync::Mutex;
 
 use serde_json::{Map, Value};
@@ -230,6 +232,40 @@ enum Set {
 pub enum Scope {
     Scene,
     Pass(i64),
+}
+
+/// Whether a console that listens on `addr` listens on loopback alone:
+/// localhost, an address of 127.0.0.0/8 or ::1.
+pub fn binds_loopback(addr: &str) -> bool {
+    let a = addr.trim().trim_start_matches('[').trim_end_matches(']');
+    a.eq_ignore_ascii_case("localhost") || a.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Whether `host`, a request's Host header, names loopback: localhost, an
+/// address of 127.0.0.0/8 or [::1], with or without a port. A page served
+/// from any other name reaches a loopback console only through DNS rebinding.
+pub fn loopback_host(host: &str) -> bool {
+    let h = host.trim();
+    let name = match h.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((addr, port)) if is_port(port) => addr,
+            _ => return false,
+        },
+        None => match h.rsplit_once(':') {
+            Some((name, port)) if is_port(&format!(":{port}")) => name,
+            Some(_) => return false,
+            None => h,
+        },
+    };
+    name.eq_ignore_ascii_case("localhost")
+        || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Nothing, or `:` and a port number.
+fn is_port(s: &str) -> bool {
+    s.is_empty()
+        || s.strip_prefix(':')
+            .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// A state-changing request must carry this server's own Origin. A request with
@@ -592,6 +628,10 @@ pub struct ConsoleAPI<H: ConsoleHost> {
     pub web: bool,
     pub post_only: Vec<String>,
     pub max_body: usize,
+    /// The console listens on an address other than loopback, so it answers
+    /// a request that names any host. On loopback it answers a request that
+    /// names loopback alone.
+    pub open: bool,
     /// The GPU's engine times at the last /stats that asked for usage.
     engines: Mutex<Option<usage::Engines>>,
 }
@@ -613,8 +653,16 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             web: false,
             post_only: POST_ONLY.iter().map(|p| (*p).to_string()).collect(),
             max_body: MAX_BODY,
+            open: false,
             engines: Mutex::new(None),
         }
+    }
+
+    /// The address that the transport listens on. A console on any address
+    /// other than loopback is open to that network.
+    pub fn listening_on(mut self, addr: &str) -> ConsoleAPI<H> {
+        self.open = !binds_loopback(addr);
+        self
     }
 
     pub fn with_web(mut self, web: bool) -> ConsoleAPI<H> {
@@ -673,8 +721,19 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     /// Response to send instead of handling the request, or None. dispatch runs
     /// this again, so a transport that skips it still gets the refusal.
     pub fn precheck(&self, method: &str, path: &str, headers: &Headers) -> Option<Response> {
+        let host = headers.get("Host");
+        if !self.open && !host.is_some_and(loopback_host) {
+            return Some(Response::text(
+                403,
+                &format!(
+                    "this console listens on loopback and answers a Host of localhost, \
+                     127.0.0.1 or [::1], got {}",
+                    host.map_or("none".to_string(), |h| py_repr(&Value::from(h)))
+                ),
+            ));
+        }
         if method == "POST" {
-            if !origin_allowed(headers.get("Origin").unwrap_or(""), headers.get("Host")) {
+            if !origin_allowed(headers.get("Origin").unwrap_or(""), host) {
                 return Some(Response::text(403, "cross-origin request"));
             }
             let raw = match headers.get("Content-Length").unwrap_or("0") {
@@ -1176,8 +1235,16 @@ mod tests {
         serde_json::from_str(SCENE).unwrap()
     }
 
+    /// The headers of a request from a page on loopback.
+    fn local() -> Headers {
+        Headers::from([("Host", "127.0.0.1:8090")])
+    }
+
     fn json_ct() -> Headers {
-        Headers::from([("Content-Type", "application/json")])
+        Headers::from([
+            ("Content-Type", "application/json"),
+            ("Host", "127.0.0.1:8090"),
+        ])
     }
 
     /// One recorded call on the fake host.
@@ -1361,11 +1428,11 @@ mod tests {
     }
 
     fn get(api: &ConsoleAPI<FakeHost>, path: &str, q: &[(&str, &str)]) -> Response {
-        api.dispatch("GET", path, &query(q), &Headers::new(), b"")
+        api.dispatch("GET", path, &query(q), &local(), b"")
     }
 
     fn post(api: &ConsoleAPI<FakeHost>, path: &str, q: &[(&str, &str)]) -> Response {
-        api.dispatch("POST", path, &query(q), &Headers::new(), b"")
+        api.dispatch("POST", path, &query(q), &local(), b"")
     }
 
     // reads
@@ -1419,8 +1486,7 @@ mod tests {
             as_json(&get(&api(), "/scenes", &[])),
             serde_json::json!({"scenes": ["a", "b", "c"], "active": "a", "procedural": ["c"]})
         );
-        let bare =
-            ConsoleAPI::new(Bare).dispatch("GET", "/scenes", &Query::new(), &Headers::new(), b"");
+        let bare = ConsoleAPI::new(Bare).dispatch("GET", "/scenes", &Query::new(), &local(), b"");
         assert_eq!(
             as_json(&bare),
             serde_json::json!({"scenes": [], "active": null, "procedural": []})
@@ -1474,13 +1540,7 @@ mod tests {
     #[test]
     fn a_host_with_no_working_copies_reports_no_edit() {
         assert_eq!(
-            as_json(&ConsoleAPI::new(Bare).dispatch(
-                "GET",
-                "/edits",
-                &Query::new(),
-                &Headers::new(),
-                b""
-            )),
+            as_json(&ConsoleAPI::new(Bare).dispatch("GET", "/edits", &Query::new(), &local(), b"")),
             serde_json::json!({"rev": null, "values": {}, "items": [], "unsaved": false,
                                "aside": []})
         );
@@ -2035,13 +2095,7 @@ mod tests {
     #[test]
     fn a_body_without_a_json_content_type_is_415() {
         let api = api();
-        let r = api.dispatch(
-            "POST",
-            "/scene",
-            &Query::new(),
-            &Headers::new(),
-            SCENE.as_bytes(),
-        );
+        let r = api.dispatch("POST", "/scene", &Query::new(), &local(), SCENE.as_bytes());
         assert_eq!(r.status, 415);
         assert!(body(&r).contains("application/json"));
         assert!(api.host.calls.borrow().is_empty());
@@ -2057,16 +2111,10 @@ mod tests {
                 "this console's scene has no defaults to go back to",
             ),
         ] {
-            let r = api.dispatch("POST", path, &Query::new(), &Headers::new(), b"");
+            let r = api.dispatch("POST", path, &Query::new(), &local(), b"");
             assert_eq!((r.status, body(&r).as_str()), (403, why));
         }
-        let r = api.dispatch(
-            "GET",
-            "/scene",
-            &query(&[("defaults", "1")]),
-            &Headers::new(),
-            b"",
-        );
+        let r = api.dispatch("GET", "/scene", &query(&[("defaults", "1")]), &local(), b"");
         assert_eq!(
             (r.status, body(&r).as_str()),
             (404, "this console's scene has no defaults")
@@ -2128,7 +2176,7 @@ mod tests {
     fn an_unknown_method_is_405() {
         assert_eq!(
             api()
-                .dispatch("DELETE", "/stats", &Query::new(), &Headers::new(), b"")
+                .dispatch("DELETE", "/stats", &Query::new(), &local(), b"")
                 .status,
             405
         );
@@ -2216,7 +2264,7 @@ mod tests {
         // A host that keeps GET /set for its scripts relabels the request as a
         // POST. The core keeps its refusal.
         let api = ConsoleAPI::new(FakeHost::new()).with_post_only(&[]);
-        assert!(api.precheck("GET", "/set", &Headers::new()).is_none());
+        assert!(api.precheck("GET", "/set", &local()).is_none());
         post(
             &api,
             "/set",
@@ -2261,9 +2309,70 @@ mod tests {
     }
 
     #[test]
+    fn a_loopback_console_answers_a_request_that_names_loopback_alone() {
+        let api = api();
+        for (host, ok) in [
+            (Some("127.0.0.1:8090"), true),
+            (Some("localhost:8090"), true),
+            (Some("LOCALHOST"), true),
+            (Some("[::1]:8090"), true),
+            (Some("127.0.0.2"), true),
+            (Some("rebind.example:8090"), false),
+            (Some("127.0.0.1.rebind.example"), false),
+            (Some("localhost.rebind.example:8090"), false),
+            (Some("[::1].example"), false),
+            (Some("192.168.1.5:8090"), false),
+            (Some("localhost:80x"), false),
+            (None, false),
+        ] {
+            let mut headers = Headers::new();
+            if let Some(h) = host {
+                headers.insert("Host", h);
+            }
+            for method in ["GET", "POST"] {
+                let refused = api.precheck(method, "/stats", &headers);
+                assert_eq!(refused.is_none(), ok, "{method} {host:?}");
+            }
+        }
+        assert!(api.host.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_dns_rebinding_request_is_refused_by_its_host() {
+        let headers = Headers::from([
+            ("Host", "rebind.example:8095"),
+            ("Origin", "http://rebind.example:8095"),
+        ]);
+        let r = api().precheck("POST", "/save", &headers).unwrap();
+        assert_eq!(
+            (r.status, body(&r).as_str()),
+            (
+                403,
+                "this console listens on loopback and answers a Host of localhost, \
+                 127.0.0.1 or [::1], got 'rebind.example:8095'"
+            )
+        );
+    }
+
+    #[test]
+    fn a_console_open_to_its_network_answers_any_host() {
+        for addr in ["0.0.0.0", "192.168.1.20", "::"] {
+            let api = api().listening_on(addr);
+            let headers = Headers::from([("Host", "pi.local:8080")]);
+            assert!(api.precheck("GET", "/stats", &headers).is_none(), "{addr}");
+        }
+        for addr in ["127.0.0.1", "localhost", "::1", "[::1]"] {
+            assert!(!api().listening_on(addr).open, "{addr}");
+        }
+    }
+
+    #[test]
     fn a_get_carrying_an_origin_is_not_refused() {
         // A read is safe. Only a mutating request gets the Origin check.
-        let headers = Headers::from([("Origin", "http://evil.example")]);
+        let headers = Headers::from([
+            ("Origin", "http://evil.example"),
+            ("Host", "127.0.0.1:8090"),
+        ]);
         assert!(api().precheck("GET", "/stats", &headers).is_none());
     }
 
@@ -2274,6 +2383,7 @@ mod tests {
         let headers = Headers::from([
             ("Content-Type", "application/json"),
             ("Content-Length", over.as_str()),
+            ("Host", "127.0.0.1:8090"),
         ]);
         let r = api.precheck("POST", "/scene", &headers).unwrap();
         assert_eq!(r.status, 413);
@@ -2288,7 +2398,7 @@ mod tests {
 
     #[test]
     fn a_bad_content_length_is_400() {
-        let headers = Headers::from([("Content-Length", "not-a-number")]);
+        let headers = Headers::from([("Content-Length", "not-a-number"), ("Host", "localhost")]);
         assert_eq!(
             api().precheck("POST", "/scene", &headers).unwrap().status,
             400
@@ -2299,13 +2409,21 @@ mod tests {
     fn the_body_cap_is_configurable() {
         let api = ConsoleAPI::new(FakeHost::new()).with_max_body(10);
         assert_eq!(
-            api.precheck("POST", "/scene", &Headers::from([("Content-Length", "11")]))
-                .unwrap()
-                .status,
+            api.precheck(
+                "POST",
+                "/scene",
+                &Headers::from([("Content-Length", "11"), ("Host", "localhost")])
+            )
+            .unwrap()
+            .status,
             413
         );
         assert!(api
-            .precheck("POST", "/scene", &Headers::from([("Content-Length", "10")]))
+            .precheck(
+                "POST",
+                "/scene",
+                &Headers::from([("Content-Length", "10"), ("Host", "localhost")])
+            )
             .is_none());
     }
 

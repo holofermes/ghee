@@ -42,18 +42,14 @@ SHADER = (
 float bare = 1.0;
 float shine = 0.0;
 
-// one line, drawn under the lines in front of it: `l0` and `l1` are the
-// levels of the bands either side of x, `f` the share of the way from one
-// to the next, `base` the line's height over the front line in pixels, and
-// `w` how much of the line shows
-void ridge(float l0, float l1, float f, float base, float y, float env, float A, float span, float w) {
-    float level = gain * mix(l0, l1, f);
-    float slope = A * env * gain * (l1 - l0) * (BANDS - 1.0) / span;
+void ridge(float left, float right, float along, float base, float y, float env, float A, float span, float shown) {
+    float level = gain * mix(left, right, along);
+    float slope = A * env * gain * (right - left) * (BANDS - 1.0) / span;
     float d = (y - base - A * env * level) / sqrt(1.0 + slope * slope);
     float stroke = clamp(0.5 * weight + 0.5 - abs(d), 0.0, 1.0);
     float under = clamp(0.5 - d, 0.0, 1.0);
-    shine += bare * stroke * w;
-    bare *= 1.0 - max(stroke, under) * w;
+    shine += bare * stroke * shown;
+    bare *= 1.0 - max(stroke, under) * shown;
 }
 
 void main() {

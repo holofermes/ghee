@@ -153,11 +153,14 @@ impl SceneStore {
             .map(|(_, p)| p)
     }
 
-    /// Whether `path` is a scene file in `mine`.
+    /// Whether `path` is the scene file of a scene in `mine`,
+    /// `mine/name/name.scene.json`.
     fn in_mine(&self, path: &str) -> bool {
-        self.mine
-            .as_deref()
-            .is_some_and(|m| path.strip_prefix(m).is_some_and(|r| r.starts_with('/')))
+        let Some(rest) = self.mine.as_deref().and_then(|m| path.strip_prefix(m)) else {
+            return false;
+        };
+        let parts: Vec<&str> = rest.split('/').collect();
+        matches!(parts.as_slice(), ["", dir, file] if *file == format!("{dir}{SCENE_SUFFIX}"))
     }
 
     /// Whether scene `name` is one that this console made.
@@ -1182,6 +1185,20 @@ mod tests {
         );
         let entries = fs::read_dir(&*m).unwrap().count();
         assert_eq!(entries, 3, "own, copy, blank and no temporary directory");
+    }
+
+    /// A directory inside the console's own, served as a scenes
+    /// directory, holds scenes of no one's own.
+    #[test]
+    fn a_scenes_directory_inside_the_consoles_own_is_not_its_own() {
+        let m = tmpdir("own-inner");
+        let d = format!("{m}/sub");
+        fs::create_dir_all(&d).unwrap();
+        write_text(&format!("{d}/one{SCENE_SUFFIX}"), SCENE);
+        let store = SceneStore::with_mine(&d, Some(&m), Vec::new());
+        assert_eq!(store.names(), ["one"]);
+        assert!(!store.is_mine("one"));
+        assert_eq!(store.delete("one").unwrap_err().status, 403);
     }
 
     #[test]

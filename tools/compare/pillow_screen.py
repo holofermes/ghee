@@ -1,9 +1,12 @@
 from PIL import Image, ImageDraw, ImageFont
 
+from fbdev import Framebuffer
+
 
 class Screen:
-    def __init__(self, lay):
+    def __init__(self, lay, panel=None):
         self.lay = lay
+        self.fb = panel and Framebuffer(panel.fb, lay.w, lay.h)
         self.image = Image.new("RGB", (lay.w, lay.h))
         self.d = ImageDraw.Draw(self.image)
         self.clock = ImageFont.truetype(lay.sans, lay.clock[2])
@@ -25,6 +28,8 @@ class Screen:
             d.rectangle((bx, by, bx + width - 1, by + bh - 1), fill=lay.mint)
         if load > 0.9 and blink:
             d.text(lay.hot[:2], "HOT", font=self.hot, fill=lay.mint)
+        if self.fb:
+            self.fb.write(self.image.tobytes("raw", "BGRX"))
         return self.image
 
     def save(self, path):

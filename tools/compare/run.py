@@ -4,13 +4,14 @@
 # ///
 """Time ghee and the Python drawing libraries on one status screen.
 
-Each library draws the stats demo's screen into a frame in memory: the time,
-the load as a share of the cores with a bar beside it, and a blinking HOT
-past 90%. The layout is the demo's 128x32 one, scaled by width / 128 and
-centred vertically. The clock and the load change on every frame.
+Each library draws the stats demo's screen: the time, the load as a share of
+the cores with a bar beside it, and a blinking HOT past 90%. The layout is
+the demo's 128x32 one, scaled by width / 128 and centred vertically. The
+clock and the load change on every frame. The runner starts one process for
+each library and size, and runs it in one of two modes.
 
-The runner starts one process for each library and size, and that process
-measures:
+Into memory, the default: each library draws its frame into memory, ghee
+reading it back from the GPU. The process measures:
 
 - the time from the start of the process to its first frame;
 - the mean and the 95th percentile frame time over --frames frames, run free;
@@ -25,8 +26,27 @@ amps, beside the same figure idle.
 raylib comes from its SDL build, raylib_sdl, which runs headless on SDL's
 offscreen driver.
 
+Onto the glass, with --glass CARD: each library puts its frames on the SPI
+or I2C panel of that DRM card. ghee scans out to the card, and Pillow and
+pygame write each frame whole to the card's fbdev, which flushes it to the
+panel at once. The runner times every bus transfer to the panel from the
+kernel's tracepoints, through `sudo -n`, and measures for each library:
+
+- the time from the start of the process to the end of its first frame's
+  transfer, then 120 frames to draw every glyph once;
+- paced to 30 fps: the frames on the glass a second, the latency from the
+  start of a frame's draw to the end of the transfer that carries it, mean
+  and 95th percentile, and the CPU time of every task on the system over
+  --window seconds, less the same figure with the library's first frame held
+  on the panel and nothing drawing, taken once the ondemand governor has let
+  the clock down after the start, and the library's own process alone;
+- on a Pi 5, the board's power over --power-window seconds, held and paced;
+- run free for --free seconds: the frames drawn and the frames on the glass
+  a second, and the same latency.
+
     uv run run.py
     uv run run.py --libs ghee,pillow --sizes 128x32 --png out
+    uv run run.py --glass /dev/dri/card1
 """
 
 import argparse
@@ -34,6 +54,7 @@ import importlib
 import json
 import os
 import resource
+import select
 import subprocess
 import sys
 import threading
@@ -41,11 +62,17 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import glass
+
 HERE = Path(__file__).resolve().parent
 FONTS = HERE.parents[1] / "ghee" / "examples" / "fonts"
 LIBS = ["ghee", "pillow", "pygame", "raylib"]
+GLASS_LIBS = ["ghee", "pillow", "pygame"]
 SIZES = ["128x32", "256x64", "320x240"]
 PACE = 30
+DRAIN = 0.2
+WARM = 120
+SETTLE = 1.0
 
 
 def layout(w, h, fonts):
@@ -78,10 +105,54 @@ def values(i, t):
     return clock, load, t * 2 % 1 < 0.5
 
 
+def say(msg):
+    print(json.dumps(msg), flush=True)
+
+
+def glass_child(screen, args):
+    t0 = time.monotonic()
+    screen.draw(*values(0, 0.0))
+    warm = []
+    for i in range(1, WARM):
+        a = time.monotonic()
+        screen.draw(*values(i, a - t0))
+        warm.append(time.monotonic() - a)
+    time.sleep(DRAIN)
+    say({"first": t0, "warm": max(warm)})
+    i = WARM
+    while True:
+        cmd = os.read(0, 64).decode().split()
+        if not cmd or cmd[0] == "quit":
+            return
+        frames = []
+        due = time.monotonic()
+        end = due + float(cmd[1]) if cmd[0] == "free" else None
+        fb = getattr(screen, "fb", None)
+        while True:
+            a = time.monotonic()
+            screen.draw(*values(i, a - t0))
+            frames.append((a, fb.sent if fb else a, time.monotonic()))
+            i += 1
+            if end is not None:
+                if frames[-1][2] >= end:
+                    break
+                continue
+            due += 1 / PACE
+            if select.select([0], [], [], max(0.0, due - time.monotonic()))[0]:
+                os.read(0, 64)
+                break
+        time.sleep(DRAIN)
+        say({"frames": frames})
+
+
 def child(args):
     w, h = map(int, args.size.split("x"))
     lib = importlib.import_module(f"{args.lib}_screen")
-    screen = lib.Screen(layout(w, h, Path(args.fonts)))
+    panel = SimpleNamespace(card=args.card, fb=args.fb) if args.card else None
+    lay = layout(w, h, Path(args.fonts))
+    if panel:
+        return glass_child(lib.Screen(lay, panel), args)
+    screen = lib.Screen(lay)
     if args.save:
         screen.draw("12:34", 0.95, True)
         screen.save(args.save)
@@ -209,6 +280,107 @@ def measure(lib, size, args, gpu, power):
     return result
 
 
+def measure_glass(lib, p, args, power):
+    tracer = glass.Tracer(p.bus)
+    tracer.start()
+    out, proc = {}, None
+    try:
+        cmd = [sys.executable, __file__, "--child", lib, "--size", p.size]
+        cmd += ["--card", p.card, "--fb", p.fb, "--fonts", args.fonts]
+        spawned = time.monotonic()
+        proc = subprocess.Popen(
+            cmd, cwd=HERE, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+
+        def ask(line=None):
+            if line:
+                proc.stdin.write(line + "\n")
+                proc.stdin.flush()
+            for reply in proc.stdout:
+                if reply.startswith("{"):
+                    return json.loads(reply)
+            raise RuntimeError(f"{lib} exited with status {proc.wait()}")
+
+        hello = ask()
+        first, out["warm"] = hello["first"], hello["warm"]
+        time.sleep(glass.settle())
+        out["idle_cpu"], _ = glass.cores(args.window, proc.pid)
+        if power:
+            out["idle_watts"] = watts(args.power_window)
+        proc.stdin.write("paced\n")
+        proc.stdin.flush()
+        time.sleep(SETTLE)
+        cpu, out["proc_cpu"] = glass.cores(args.window, proc.pid)
+        out["cpu"] = cpu - out["idle_cpu"]
+        if power:
+            out["watts"] = watts(args.power_window)
+        paced = ask("stop")["frames"]
+        free = ask(f"free {args.free}")["frames"]
+        proc.stdin.write("quit\n")
+        proc.stdin.flush()
+        proc.wait()
+    except (RuntimeError, BrokenPipeError) as e:
+        print(f"{lib}: {e}", file=sys.stderr)
+        return None
+    finally:
+        if proc and proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        transfers, out["lost"] = tracer.stop()
+    ups = glass.updates(transfers)
+    if args.raw:
+        raw = {"spawned": spawned, "first": first, "paced": paced, "free": free}
+        raw["transfers"] = transfers
+        Path(args.raw, f"{lib}.json").write_text(json.dumps(raw))
+    queue = getattr(importlib.import_module(f"{lib}_screen").Screen, "QUEUE", False)
+    out["startup"] = next(u[1] for u in ups if u[0] > first) - spawned
+    out["free"] = glass.phase(free, ups, queue, free[-1][2] + DRAIN)
+    out["paced"] = glass.phase(paced, ups, queue, paced[-1][2] + DRAIN)
+    return out
+
+
+def watts(seconds):
+    s = Sampler()
+    time.sleep(seconds)
+    return s.finish()
+
+
+def glass_table(rows, power):
+    head = ["library", "panel", "start s", "drawn/s", "glass/s", "ms", "p95 ms"]
+    head += ["glass/s @30", "ms @30", "p95 @30", "CPU @30", "process @30"]
+    if power:
+        head += ["W held", "W @30"]
+    lines = [head]
+    for r in rows:
+        m = r.get("m")
+        if m is None:
+            lines.append([r["lib"], r["size"], "failed"])
+            continue
+        f, pc = m["free"], m["paced"]
+        cells = [r["lib"], r["size"], f"{m['startup']:.2f}", f"{f['drawn']:.0f}"]
+        cells += [f"{f['glass']:.0f}", f"{f['latency'] * 1e3:.2f}"]
+        cells += [f"{f['latency_p95'] * 1e3:.2f}", f"{pc['glass']:.1f}"]
+        cells += [f"{pc['latency'] * 1e3:.2f}", f"{pc['latency_p95'] * 1e3:.2f}"]
+        cells += [f"{m['cpu']:.1%}", f"{m['proc_cpu']:.1%}"]
+        if power:
+            cells += [f"{m['idle_watts']:.2f}", f"{m['watts']:.2f}"]
+        lines.append(cells)
+        for name, ph in (("free", f), ("paced", pc)):
+            if ph["unmatched"]:
+                print(f"{r['lib']} {name}: {ph['unmatched']:+d} updates against frames")
+        if m["lost"]:
+            print(f"{r['lib']}: the trace buffer lost events")
+    print_rows(lines)
+
+
+def print_rows(lines):
+    widths = [
+        max(len(row[i]) for row in lines if i < len(row)) for i in range(len(lines[0]))
+    ]
+    for row in lines:
+        print("  ".join(c.ljust(widths[i]) for i, c in enumerate(row)).rstrip())
+
+
 def table(rows, idle):
     head = [
         "library",
@@ -238,32 +410,62 @@ def table(rows, idle):
         if idle is not None:
             cells.append(f"{m['watts']:.2f}")
         lines.append(cells)
-    widths = [
-        max(len(row[i]) for row in lines if i < len(row)) for i in range(len(head))
-    ]
-    for row in lines:
-        print("  ".join(c.ljust(widths[i]) for i, c in enumerate(row)).rstrip())
+    print_rows(lines)
     if idle is not None:
         print(f"board power idle: {idle:.2f} W, PMIC rails summed")
 
 
+def glass_main(args):
+    p = glass.panel(args.glass)
+    if args.raw:
+        os.makedirs(args.raw, exist_ok=True)
+    libs = args.libs.split(",") if args.libs else GLASS_LIBS
+    if set(libs) - set(GLASS_LIBS):
+        raise SystemExit(f"--glass takes {', '.join(GLASS_LIBS)}")
+    power = has_pmic()
+    rows = [
+        {"lib": lib, "size": p.size, "m": measure_glass(lib, p, args, power)}
+        for lib in libs
+    ]
+    if args.json:
+        Path(args.json).write_text(
+            json.dumps({"panel": p.size, "rows": rows}, indent=1)
+        )
+    glass_table(rows, power)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--libs", default=",".join(LIBS))
+    ap.add_argument("--libs")
     ap.add_argument("--sizes", default=",".join(SIZES))
     ap.add_argument("--frames", type=int, default=300)
     ap.add_argument("--paced", type=float, default=2.0, help="seconds at 30 fps")
     ap.add_argument("--fonts", default=str(FONTS))
     ap.add_argument("--png", help="save one frame of each library and size here")
     ap.add_argument("--json", help="write the results here")
+    ap.add_argument(
+        "--glass", metavar="CARD", help="the DRM card of a SPI or I2C panel"
+    )
+    ap.add_argument("--free", type=float, default=2.0, help="seconds run free")
+    ap.add_argument(
+        "--window", type=float, default=4.0, help="seconds of each CPU window"
+    )
+    ap.add_argument("--power-window", type=float, default=2.0)
+    ap.add_argument("--raw", help="write each library's frames and transfers here")
     ap.add_argument("--child", dest="lib", help=argparse.SUPPRESS)
+    ap.add_argument("--card", help=argparse.SUPPRESS)
+    ap.add_argument("--fb", help=argparse.SUPPRESS)
     ap.add_argument("--size", help=argparse.SUPPRESS)
     ap.add_argument("--spawned", type=float, help=argparse.SUPPRESS)
     ap.add_argument("--save", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.lib:
         return child(args)
-    libs, sizes = args.libs.split(","), args.sizes.split(",")
+    args.fonts = os.path.abspath(args.fonts)
+    if args.glass:
+        return glass_main(args)
+    libs = (args.libs or ",".join(LIBS)).split(",")
+    sizes = args.sizes.split(",")
     if args.png:
         os.makedirs(args.png, exist_ok=True)
         for lib in libs:

@@ -5,13 +5,16 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 import pygame
 
+from fbdev import Framebuffer
+
 
 class Screen:
-    def __init__(self, lay):
+    def __init__(self, lay, panel=None):
         self.lay = lay
         pygame.display.init()
         pygame.font.init()
-        self.surface = pygame.display.set_mode((lay.w, lay.h))
+        self.surface = pygame.display.set_mode((lay.w, lay.h), depth=32)
+        self.fb = panel and Framebuffer(panel.fb, lay.w, lay.h)
         self.clock = pygame.font.Font(lay.sans, lay.clock[2])
         self.load = pygame.font.Font(lay.pixel, lay.load[2])
         self.hot = pygame.font.Font(lay.sans, lay.hot[2])
@@ -31,6 +34,8 @@ class Screen:
             s.fill(self.mint, (bx, by, width, bh))
         if load > 0.9 and blink:
             s.blit(self.hot.render("HOT", True, self.mint), lay.hot[:2])
+        if self.fb:
+            self.fb.write(s.get_buffer())
         return s
 
     def save(self, path):

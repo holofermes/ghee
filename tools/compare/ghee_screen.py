@@ -2,9 +2,15 @@ import ghee
 
 
 class Screen:
-    def __init__(self, lay):
+    QUEUE = True
+
+    def __init__(self, lay, panel=None):
         self.lay = lay
-        self.h = ghee.open(width=lay.w, height=lay.h)
+        self.panel = panel
+        if panel:
+            self.h = ghee.open(display="kms", dri=panel.card)
+        else:
+            self.h = ghee.open(width=lay.w, height=lay.h)
 
     def draw(self, clock, load, blink):
         lay = self.lay
@@ -53,7 +59,8 @@ class Screen:
                 blink={"rate": 2},
                 visible=load > 0.9,
             )
-        return self.h.pixels()
+        if not self.panel:
+            return self.h.pixels()
 
     def save(self, path):
         self.h.save(path)

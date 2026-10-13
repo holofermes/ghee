@@ -903,10 +903,11 @@ def test_a_scene_script_under_ghee_draws_the_frames_that_a_screen_draws(tmp_path
     )
     path.chmod(0o755)
     frames = 12
+    # ghee takes the screen's glyph atlas cache: a glyph that sits elsewhere
+    # in the atlas can draw a level apart
     ran = subprocess.run(
         [str(CLI), "render", str(path), "-o", "-", "--size", "64x32"]
         + ["--frames", str(frames), "--timestep", "0"],
-        env={**os.environ, "XDG_CACHE_HOME": str(tmp_path)},
         capture_output=True,
         timeout=120,
         check=False,

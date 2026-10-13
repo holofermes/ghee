@@ -8,24 +8,7 @@
   "scenes": {
     "bars": {
       "path": "ghee/examples/bars.scene.json",
-      "shas": [
-        "b20fd972e8860f0ccb4763b1c45d108bc6b648e1787cbe48e4046438d247c412",
-        "9f73e7f3d92c02d254e56427e964ebcc179114685955e861914bfeaf5c3828c0",
-        "399db7e7c69caf4d60cd52ce5642c725340b7ac5cfcb3774384047fb4ccff32c",
-        "04432eada61e182d2c67cd2672c37c8c0baf955193c8988174311f6bf504492e",
-        "976fa5b21d4dbe30a3d0f38ed746dd18a789539716349eb23eb246c4adc4a512",
-        "44530ea3326023a0609fa5bc46b1e8b8492492a9f8d7a81f5cf9b43d0b9befad",
-        "40609a6ed42c123296a955c1830e4a41f9b4d6f761d37e41c018674a26b4325e",
-        "c2c3541d853f908d66b8c48497eabd766808f97f2d42d1c8232f4b1b78c11221",
-        "5287f2951121f2dbf9d085d4006c549c6f9efb86d1f4ac64b185e3780a044f5e",
-        "4444acb035bd097510951e3fd0049def588f22896c56487fdc4fa2f18c1e1c82",
-        "86ef0c5932ab600e1ee3c0e0e08e1952e5318cde27a047080f7938dcabc2f84b",
-        "a1f4eaaa87420b920248ac34126ec63ca0f58d664fc67db059c4fd63eaf987ff",
-        "c9a563adbcdd80e63726a4290c813dc6de749916df1b8d589301dabb162a3af5",
-        "b0b61a50cbaff4bc4bc363f27deabda7a877cbbe5f7ecf9700399a1c8bdc298b",
-        "141a844590ebc2aa68b4987a282af65f3afaeb4b7e0a549a5f1f32905923e446",
-        "597ff27fd87b6ce86d6dc29c3d64cca99555610002f56624b2cbfe42d667e8c1"
-      ]
+      "shas": []
     },
     "feedback": {
       "path": "ghee/examples/feedback.scene.json",

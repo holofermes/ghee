@@ -2462,7 +2462,7 @@ pub enum Form {
     /// A colour, as Rgb::from_json() takes it, a gradient object too with
     /// `gradient`. With `none`, none takes the field back to its default.
     Colour { gradient: bool, none: bool },
-    /// The name of an image asset of the scene.
+    /// The name of an image asset of the scene, or a .png or .jpg file.
     Image,
     /// A line's points, each [x, y], two or more.
     Points,
@@ -2485,7 +2485,7 @@ impl Form {
             Form::Number { .. } => "a number",
             Form::Flag => "true or false",
             Form::Colour { .. } => COLOUR_FORMS,
-            Form::Image => "the name of an image asset",
+            Form::Image => "the name of an image asset or a .png or .jpg file",
             Form::Points => "two points or more, each [x, y]",
             Form::Words => "words in a string",
         }
@@ -2519,7 +2519,7 @@ impl Live {
                 d.insert("angle".to_string(), Value::from(*angle));
                 Value::Object(d)
             }
-            (Form::Image, _) => bail!("{what} takes the name of an image asset, got numbers"),
+            (Form::Image, _) => bail!("{what} takes {}, got numbers", self.form.needs()),
             (Form::Words, _) => bail!("{what} takes text, got numbers"),
             (Form::Points, n) if n.len() >= 4 && n.len() % 2 == 0 => Value::from(
                 n.as_chunks::<2>()
@@ -3867,7 +3867,7 @@ mod tests {
                 None,
                 "image",
                 vec![1.0],
-                "layer 'i' image takes the name of an image asset, got numbers",
+                "layer 'i' image takes the name of an image asset or a .png or .jpg file, got numbers",
             ),
             (
                 &text,

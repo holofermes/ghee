@@ -330,10 +330,10 @@ impl Handle {
     /// Set a live field of the layer `name`, or of its effect `effect`, with
     /// no rebuild: `x`, `y`, `color`, `opacity` and `visible`, a text
     /// layer's `text`, the words, an image layer's `image`, the name of an
-    /// image asset of the scene, and an effect's `visible`, `color`,
-    /// `strength`, `sung`, `speed` and `rate`. `value` takes the form that
-    /// the scene format gives the field, and None takes `x`, `y` or `color`
-    /// back to its default.
+    /// image asset of the scene or a .png or .jpg file, and an effect's
+    /// `visible`, `color`, `strength`, `sung`, `speed` and `rate`. `value`
+    /// takes the form that the scene format gives the field, and None takes
+    /// `x`, `y` or `color` back to its default.
     ///
     /// Raises ValueError for a layer, an effect or a field that the scene
     /// lacks, for a field that changes with a rebuild, and for a value that

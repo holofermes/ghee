@@ -62,7 +62,6 @@ float bayer2(vec2 a) {
     return fract(a.x * 0.5 + a.y * a.y * 0.75);
 }
 
-// The ordered dither threshold of pixel p, 0 to 15/16.
 float bayer(vec2 p) {
     return bayer2(0.5 * p) * 0.25 + bayer2(p);
 }
@@ -87,7 +86,6 @@ float far_cloud(vec2 p, float hz) {
     return step(0.62, n * (0.6 + 0.5 * deck));
 }
 
-// The bank of clouds on the horizon: 1 inside it.
 float bank(vec2 p, float hz) {
     float x = p.x + iTime * 5.0;
     float h = max(fbm(vec2(x * 0.035, 3.0)) * 1.5 - 0.5, 0.0) * hz * 0.3;
@@ -95,8 +93,6 @@ float bank(vec2 p, float hz) {
     return step(hz + 2.0 - h - puff, p.y);
 }
 
-// One frond of a palm, from the crown c out to `side` at the angle e above
-// the horizon: it arcs and droops, with leaflets hanging under it.
 float frond(vec2 p, vec2 c, float side, float e, float len, float droop) {
     float run = len * cos(e);
     float t = (p.x - c.x) * side / run;

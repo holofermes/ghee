@@ -81,10 +81,10 @@ ghee/examples/fonts/Monogram.ttf, a subset of monogram by Vinícius Menézio,
 travels with the bundled examples, under CC0 1.0 Universal. Its text is
 ghee/examples/fonts/LICENSE-Monogram.txt.
 
-ghee/examples/fonts/TitlePixel.ttf, Press Start 2P by CodeMan38 cut to the
-letters of the assets example's title and renamed, as its Reserved Font Name
-requires, travels with the bundled examples under the SIL Open Font License
-1.1. Its text is ghee/examples/fonts/LICENSE-PressStart2P.txt.
+ghee/examples/fonts/TitlePixel.ttf, Press Start 2P by CodeMan38 cut to
+printable ASCII and renamed, as its Reserved Font Name requires, travels with
+the bundled examples under the SIL Open Font License 1.1. Its text is
+ghee/examples/fonts/LICENSE-PressStart2P.txt.
 
 vendor/freetype holds FreeType 2.14.3, which ghee builds in, under the
 FreeType License, vendor/freetype/docs/FTL.TXT:

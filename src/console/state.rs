@@ -4,9 +4,10 @@
 //! every edit made since. Its edits are what differs from the defaults, in two
 //! parts. The values are a JSON merge patch (RFC 7386) over the scene seen by
 //! name: `params` holds the scene params' values, `passes` each pass's
-//! `params`, `visible`, `size` and `scale`, and `layers` each layer's fields
-//! and effects. The items are the code and structure edits, each whole, with
-//! the hash of the same item in the defaults it was made against.
+//! `params`, `visible`, `size` and `scale`, `layers` each layer's fields and
+//! effects, and `assets` each asset whole. The items are the code and
+//! structure edits, each whole, with the hash of the same item in the
+//! defaults it was made against.
 //!
 //! A load applies the items, then the values, over the defaults. An item whose
 //! default changed since its edit is set aside, and the default runs until the
@@ -24,7 +25,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::layer::Layer;
-use crate::scene::{py_repr, Param, Pass};
+use crate::scene::{py_repr, Asset, Param, Pass};
 
 /// The format of a state file.
 pub const VERSION: i64 = 1;
@@ -171,34 +172,37 @@ impl Edits {
         Value::Object(d)
     }
 
-    /// Each edit alone, in the order a load lays them: each item, then the
-    /// value of each scene param, the values of each pass and those of each
-    /// layer.
+    /// Each edit alone: each asset, which a layer of an item may name, each
+    /// item, then the value of each scene param, the values of each pass and
+    /// those of each layer.
     pub fn units(&self) -> Vec<Edits> {
-        let mut out: Vec<Edits> = self
-            .items
-            .iter()
-            .map(|i| Edits {
-                values: Map::new(),
-                items: vec![i.clone()],
-            })
-            .collect();
-        for (key, v) in &self.values {
-            let Value::Object(m) = v else {
-                out.push(Edits {
-                    values: Map::from_iter([(key.clone(), v.clone())]),
-                    items: Vec::new(),
-                });
-                continue;
-            };
-            for (name, v) in m {
-                let one = Map::from_iter([(name.clone(), v.clone())]);
-                out.push(Edits {
-                    values: Map::from_iter([(key.clone(), Value::Object(one))]),
-                    items: Vec::new(),
-                });
+        let mut out = Vec::new();
+        let (assets, rest): (Vec<_>, Vec<_>) =
+            self.values.iter().partition(|(k, _)| *k == "assets");
+        let values = |pairs: Vec<(&String, &Value)>, out: &mut Vec<Edits>| {
+            for (key, v) in pairs {
+                let Value::Object(m) = v else {
+                    out.push(Edits {
+                        values: Map::from_iter([(key.clone(), v.clone())]),
+                        items: Vec::new(),
+                    });
+                    continue;
+                };
+                for (name, v) in m {
+                    let one = Map::from_iter([(name.clone(), v.clone())]);
+                    out.push(Edits {
+                        values: Map::from_iter([(key.clone(), Value::Object(one))]),
+                        items: Vec::new(),
+                    });
+                }
             }
-        }
+        };
+        values(assets, &mut out);
+        out.extend(self.items.iter().map(|i| Edits {
+            values: Map::new(),
+            items: vec![i.clone()],
+        }));
+        values(rest, &mut out);
         out
     }
 
@@ -218,6 +222,7 @@ impl Edits {
             "params" => format!("param '{name}'"),
             "passes" => format!("pass '{name}'"),
             "layers" => format!("layer '{name}'"),
+            "assets" => format!("asset '{name}'"),
             _ => format!("the values' '{key}'"),
         }
     }
@@ -557,6 +562,10 @@ fn filter_list(doc: &Value) -> Value {
         .collect()
 }
 
+fn assets(doc: &Value) -> Option<&Map<String, Value>> {
+    doc.get("assets").and_then(Value::as_object)
+}
+
 fn params(of: &Value) -> Option<&Map<String, Value>> {
     of.get("params").and_then(Value::as_object)
 }
@@ -704,6 +713,16 @@ pub fn diff(defaults: &Value, working: &Value, procedural: bool) -> Edits {
             layer_values.insert(name.to_string(), Value::Object(patch));
         }
     }
+    let empty = Map::new();
+    let (da, wa) = (assets(d).unwrap_or(&empty), assets(w).unwrap_or(&empty));
+    let mut asset_values: Map<String, Value> = wa
+        .iter()
+        .filter(|(n, wv)| !da.get(*n).is_some_and(|dv| same(dv, wv)))
+        .map(|(n, wv)| (n.clone(), wv.clone()))
+        .collect();
+    for n in da.keys().filter(|n| !wa.contains_key(*n)) {
+        asset_values.insert(n.clone(), Value::Null);
+    }
     let mut scene_values = Map::new();
     for (n, wv) in params(w).into_iter().flatten() {
         match params(d).and_then(|p| p.get(n)) {
@@ -733,6 +752,7 @@ pub fn diff(defaults: &Value, working: &Value, procedural: bool) -> Edits {
         ("params", scene_values),
         ("passes", pass_values),
         ("layers", layer_values),
+        ("assets", asset_values),
     ] {
         if !m.is_empty() {
             values.insert(key.to_string(), Value::Object(m));
@@ -810,6 +830,7 @@ fn lay(defaults: &Value, doc: &Value, edits: &Edits, scene: &str, check: bool) -
                     .collect(),
                 "passes" => put_pass(&mut out.doc, name, v),
                 "layers" => put_layer(&mut out.doc, name, v).err().into_iter().collect(),
+                "assets" => put_asset(&mut out.doc, name, v).err().into_iter().collect(),
                 _ => vec![format!(
                     "the scene's values take no '{key}', which are skipped"
                 )],
@@ -968,6 +989,30 @@ fn put_pass(doc: &mut Value, name: &str, v: &Value) -> Vec<String> {
         }
     }
     why
+}
+
+/// Set asset `name` of `doc` to `v`, whole, or remove it for a null.
+fn put_asset(doc: &mut Value, name: &str, v: &Value) -> Result<(), String> {
+    let Some(d) = doc.as_object_mut() else {
+        return Err("the scene is no object".to_string());
+    };
+    if v.is_null() {
+        if let Some(Value::Object(a)) = d.get_mut("assets") {
+            a.remove(name);
+            if a.is_empty() {
+                d.remove("assets");
+            }
+        }
+        return Ok(());
+    }
+    Asset::from_dict(name, v).map_err(|e| format!("asset '{name}' takes no saved value: {e}"))?;
+    let assets = d
+        .entry("assets")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Value::Object(a) = assets {
+        a.insert(name.to_string(), v.clone());
+    }
+    Ok(())
 }
 
 /// Lay the saved fields and effects of layer `name` over it in `doc`.
@@ -1174,6 +1219,22 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(apply(&d, &edits, "clocks").doc, w);
+    }
+
+    #[test]
+    fn an_asset_saves_whole_by_its_name_and_a_null_removes_one() {
+        let mut d = clocks();
+        d["assets"] = json!({"logo": {"file": "logo.png"}});
+        let mut w = d.clone();
+        w["assets"] = json!({"plaster": {"file": "plaster.png", "sampling": "linear"}});
+        let edits = diff(&d, &w, false);
+        assert_eq!(
+            Value::Object(edits.values.clone()),
+            json!({"assets": {"plaster": {"file": "plaster.png", "sampling": "linear"},
+                              "logo": null}})
+        );
+        assert_eq!(apply(&d, &edits, "clocks").doc, w);
+        assert!(diff(&d, &d, false).is_empty());
     }
 
     #[test]

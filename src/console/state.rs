@@ -374,21 +374,27 @@ pub fn write(path: &Path, scene: &str, edits: &Edits) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(io)?;
     }
+    let text = serde_json::to_string_pretty(&edits.to_file(scene)).map_err(|e| e.to_string())?;
+    write_file(path, (text + "\n").as_bytes()).map_err(io)
+}
+
+/// Write `bytes` to `path` whole, through a temporary file beside it and a
+/// rename.
+pub fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", std::process::id()));
-    let text = serde_json::to_string_pretty(&edits.to_file(scene)).map_err(|e| e.to_string())?;
     // The rename takes only bytes that reached the disk, so a power cut
     // leaves the old file or the new one, whole.
     let wrote = fs::File::create(&tmp)
         .and_then(|mut f| {
-            f.write_all((text + "\n").as_bytes())?;
+            f.write_all(bytes)?;
             f.sync_all()
         })
         .and_then(|()| fs::rename(&tmp, path));
     if wrote.is_err() {
         let _ = fs::remove_file(&tmp);
     }
-    wrote.map_err(io)
+    wrote
 }
 
 // ---------------------------------------------------------------- the doc

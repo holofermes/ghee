@@ -233,7 +233,9 @@ fn scene_set(a: &Ns) -> Result<Vec<(String, String)>> {
     }
     let dir = match &a.scene {
         Some(scene) => find_scene(scene, a.demo)?,
-        None => examples_dir().unwrap_or_default(),
+        None if a.demo => examples_dir().unwrap_or_default(),
+        // the console's own scenes are scene files, which take no args
+        None => return Ok(Vec::new()),
     };
     if !Path::new(&dir).is_dir() {
         return Ok(one(dir));
@@ -732,6 +734,10 @@ fn serve(
     dri: Option<String>,
 ) -> Result<()> {
     let (mut scenes_dir, mut store) = (None, None);
+    let my_scenes = match a.cmd {
+        "serve" => Some(my_scenes(a)?),
+        _ => None,
+    };
     if let Some(scene) = &a.scene {
         let path = find_scene(scene, a.demo)?;
         if Path::new(&path).is_dir() {
@@ -739,9 +745,13 @@ fn serve(
         } else {
             store = Some(one_scene_store(a, &path)?);
         }
+    } else if !a.demo {
+        scenes_dir = my_scenes.clone();
     }
     let ran = server::run(server::Options {
         scenes_dir,
+        my_scenes,
+        uploads: a.allow_uploads,
         state_dir: a.state_dir.clone(),
         store,
         size,
@@ -771,6 +781,28 @@ fn serve(
         std::process::exit(143);
     }
     ran
+}
+
+/// The directory of the scenes that `ghee serve` makes: --my-scenes, else
+/// $GHEE_MY_SCENES, else $XDG_DATA_HOME/ghee/scenes, else
+/// ~/.local/share/ghee/scenes.
+fn my_scenes(a: &Ns) -> Result<String> {
+    let given = a.my_scenes.clone().or_else(|| {
+        std::env::var_os("GHEE_MY_SCENES")
+            .filter(|d| !d.is_empty())
+            .map(Into::into)
+    });
+    let dir = given.or_else(|| {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|d| d.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))
+            .map(|d| d.join("ghee/scenes"))
+    });
+    let dir = dir.ok_or_else(|| {
+        exit("serve: no directory for your scenes: set HOME or XDG_DATA_HOME, or pass --my-scenes")
+    })?;
+    Ok(dir.to_string_lossy().into_owned())
 }
 
 /// The console's frame rate cap: --fps, whatever takes the frames.
@@ -803,18 +835,13 @@ fn cmd_serve(a: &Ns) -> Result<()> {
     if a.demo && given(&a.scene) {
         return Err(exit("serve: pass a scenes directory or --demo, not both"));
     }
-    if !a.demo && !given(&a.scene) {
-        if given(&a.display) && Path::new(text(&a.display)).is_dir() {
-            // --display takes an optional value, so it took the directory
-            return Err(exit(format!(
-                "serve: --display took '{}' as the display name; \
-                 put the scenes directory before it",
-                text(&a.display)
-            )));
-        }
-        return Err(exit(
-            "serve: pass a scenes directory, or --demo for the bundled examples",
-        ));
+    if !a.demo && !given(&a.scene) && given(&a.display) && Path::new(text(&a.display)).is_dir() {
+        // --display takes an optional value, so it took the directory
+        return Err(exit(format!(
+            "serve: --display took '{}' as the display name; \
+             put the scenes directory before it",
+            text(&a.display)
+        )));
     }
     cmd_render(a)
 }
@@ -1300,11 +1327,26 @@ struct RenderArgs {
 
 #[derive(Args)]
 struct ServeArgs {
-    #[arg(help = "scenes directory")]
+    #[arg(help = "scenes directory (default: your own scenes, see --my-scenes)")]
     scenes: Option<String>,
 
     #[arg(long, help = "serve the bundled example scenes")]
     demo: bool,
+
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "keep the scenes that you make in the console in DIR, one directory each \
+                (default $GHEE_MY_SCENES, else $XDG_DATA_HOME/ghee/scenes, else \
+                ~/.local/share/ghee/scenes)"
+    )]
+    my_scenes: Option<std::path::PathBuf>,
+
+    #[arg(
+        long,
+        help = "take uploaded images and fonts while --host opens the console to a network"
+    )]
+    allow_uploads: bool,
 
     #[arg(
         long,
@@ -1382,6 +1424,8 @@ pub struct Ns {
     port: u16,
     host: String,
     state_dir: Option<std::path::PathBuf>,
+    my_scenes: Option<std::path::PathBuf>,
+    allow_uploads: bool,
     preview_max: i32,
     preview_fps: i32,
     stream_max: i32,
@@ -1423,6 +1467,8 @@ impl RenderArgs {
             port: self.console.port,
             host: self.console.host,
             state_dir: self.console.state_dir,
+            my_scenes: None,
+            allow_uploads: false,
             preview_max: self.console.preview_max,
             preview_fps: self.console.preview_fps,
             stream_max: self.console.stream_max,
@@ -1464,6 +1510,8 @@ impl ServeArgs {
             port: self.console.port,
             host: self.console.host,
             state_dir: self.console.state_dir,
+            my_scenes: self.my_scenes,
+            allow_uploads: self.allow_uploads,
             preview_max: self.console.preview_max,
             preview_fps: self.console.preview_fps,
             stream_max: self.console.stream_max,
@@ -1824,11 +1872,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_wants_a_directory_or_demo_and_not_both() {
-        assert_eq!(
-            run(&["serve"]).unwrap_err().to_string(),
-            "serve: pass a scenes directory, or --demo for the bundled examples"
-        );
+    fn serve_takes_a_directory_or_demo_and_not_both() {
         assert_eq!(
             run(&["serve", "scenes/", "--demo"])
                 .unwrap_err()
@@ -2103,18 +2147,6 @@ mod tests {
         assert!(process.is_none()); // a JSON scene feeds itself
         let e = failure(scene_of(&ns(&["render", &path, "--filters", "nope"])));
         assert!(e.starts_with("unknown filter: nope (known: dither"), "{e}");
-    }
-
-    #[test]
-    fn serve_mounts_the_directory_it_was_given() {
-        // the console reports an empty directory before it binds anything.
-        // main() puts the command name in front.
-        let _e = crate::console::repo_examples();
-        let d = tmpdir("serve-dir");
-        assert_eq!(
-            failure(run(&["serve", &d])),
-            format!("no .scene.json in {d}")
-        );
     }
 
     #[test]

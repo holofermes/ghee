@@ -79,3 +79,17 @@ pub(crate) fn script(dir: &str, name: &str, body: &str) -> String {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
+
+/// A png of `w` by `h` grey RGB pixels.
+pub(crate) fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w, h);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().unwrap();
+    writer
+        .write_image_data(&vec![128; (w * h * 3) as usize])
+        .unwrap();
+    drop(writer);
+    out
+}

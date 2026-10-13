@@ -212,6 +212,8 @@ def test_the_console_serves_the_scene_it_renders(served):
         "scenes": ["scene"],
         "active": "scene",
         "procedural": ["scene"],
+        "mine": [],
+        "my_scenes": None,
     }
     scene = json_of(port, "/scene")
     assert [p["name"] for p in scene["passes"]] == ["main"]

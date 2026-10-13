@@ -154,7 +154,7 @@ const PARAM_TYPES: [&str; 8] = [
 // One dimension caps at 16384, above any GLES2 GL_MAX_TEXTURE_SIZE. A 2D input
 // or a sized pass caps at 16M texels.
 const MAX_DIM: i64 = 16384;
-const MAX_TEXELS: i64 = 1 << 24;
+pub(crate) const MAX_TEXELS: i64 = 1 << 24;
 
 /// The name of the text layer that Scene::measure() lays words out in.
 const MEASURED: &str = "measured";

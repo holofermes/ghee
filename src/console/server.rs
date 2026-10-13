@@ -185,6 +185,8 @@ pub enum Command {
     SceneObj(Box<Scene>, u64, bool),
     /// Draw one frame, for a stream that just opened or closed.
     Preview,
+    /// No scene: the renderer draws black.
+    Clear,
     Stop,
 }
 
@@ -2040,6 +2042,28 @@ fn load(
     console.loaded.notify_all();
 }
 
+/// Leave the renderer on no scene, drawing black.
+fn clear(
+    console: &Console,
+    renderer: &RefCell<Renderer>,
+    st: &RefCell<Running>,
+    ctrl: &ControllerSlot,
+) {
+    *ctrl.borrow_mut() = None;
+    *lock(&console.locks) = None;
+    *lock(&console.sources) = None;
+    *lock(&console.running) = None;
+    *st.borrow_mut() = Running::default();
+    let black = serde_json::json!({"version": 1, "passes": [{"name": "main",
+        "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"}]});
+    match Scene::from_dict(&black, None, None).and_then(|s| renderer.borrow_mut().setup(&s)) {
+        Ok(err) if err.is_empty() => {}
+        Ok(err) => eprintln!("ghee console: no scene: {err}"),
+        Err(e) => eprintln!("ghee console: no scene: {e}"),
+    }
+    console.reset_stats();
+}
+
 /// Apply every queued command, and report whether one landed. A queued command
 /// forces a draw this iteration, so an edit always shows.
 fn drain(
@@ -2101,6 +2125,7 @@ fn drain(
                     publish_changes(console, st);
                 }
             }
+            Command::Clear => clear(console, renderer, st, ctrl),
             Command::Preview | Command::Stop => {}
         }
     }
@@ -2382,8 +2407,9 @@ pub fn render_loop(
             let active = lock(&console.active);
             active.name.clone().map(|name| (name, active.asked))
         };
-        if let Some((name, switch)) = first {
-            load(console, &renderer, &st, &ctrl, &name, switch, "");
+        match first {
+            Some((name, switch)) => load(console, &renderer, &st, &ctrl, &name, switch, ""),
+            None => clear(console, &renderer, &st, &ctrl),
         }
         if let Err(e) = render.run() {
             eprintln!("ghee console: render: {e}");
@@ -2434,12 +2460,107 @@ impl ConsoleHost for RenderLoopHost {
         Ok(self.console.stats())
     }
 
+    /// The list is the directories' as they are now.
     fn scene_names(&self) -> ConsoleResult<Vec<String>> {
+        self.console.store.rescan();
         Ok(self.console.store.names())
     }
 
     fn procedural_names(&self) -> ConsoleResult<Vec<String>> {
         Ok(self.console.store.procedural_names())
+    }
+
+    fn mine_names(&self) -> ConsoleResult<Vec<String>> {
+        Ok(self.console.store.mine_names())
+    }
+
+    fn my_scenes(&self) -> Option<String> {
+        self.console.store.mine.clone()
+    }
+
+    /// A procedural scene has no scene file to copy: its program writes it.
+    fn new_scene(&self, name: &str, from: Option<&str>) -> ConsoleResult<()> {
+        let console = &self.console;
+        let store = &console.store;
+        let (doc, dir) = match from {
+            None => (store::blank(), None),
+            Some(from) => {
+                store.rescan();
+                if !store.contains(from) {
+                    return Err(ConsoleError::not_found(format!("no scene '{from}'")));
+                }
+                if store.is_procedural(from) {
+                    return Err(ConsoleError::read_only(format!(
+                        "a program writes scene '{from}', so it has no scene file to copy"
+                    )));
+                }
+                console.with_copy(Some(from), |_, copy| {
+                    let root = copy.opened.defaults.root.as_ref();
+                    (copy.working_doc(), root.map(|r| r.dir.clone()))
+                })?
+            }
+        };
+        let _editing = lock(&console.editing);
+        store.create(name, &doc, dir.as_deref(), &store::files_of(&doc))
+    }
+
+    /// The working copy goes with its scene, and a rename of the active
+    /// scene loads it from its new place.
+    fn rename_scene(&self, name: &str, to: &str, vid: &str) -> ConsoleResult<()> {
+        let console = &self.console;
+        let _editing = lock(&console.editing);
+        console.store.rename(name, to)?;
+        {
+            let mut copies = lock(&console.copies);
+            if let Some(copy) = copies.remove(name) {
+                copies.insert(to.to_string(), copy);
+            }
+        }
+        {
+            let mut revs = lock(&console.revs);
+            if let Some(rev) = revs.remove(name) {
+                revs.insert(to.to_string(), rev);
+            }
+        }
+        if lock(&console.active).name.as_deref() == Some(name) {
+            let switch = console.ask(to);
+            console.command(Command::Switch(to.to_string(), switch, vid.to_string()));
+        }
+        Ok(())
+    }
+
+    /// With the active scene gone, the console takes the first scene, or
+    /// none.
+    fn delete_scene(&self, name: &str) -> ConsoleResult<()> {
+        let console = &self.console;
+        let _editing = lock(&console.editing);
+        console.store.delete(name)?;
+        lock(&console.copies).remove(name);
+        lock(&console.revs).remove(name);
+        if lock(&console.active).name.as_deref() != Some(name) {
+            return Ok(());
+        }
+        match console.store.names().into_iter().next() {
+            Some(next) => {
+                let switch = console.ask(&next);
+                console.command(Command::Switch(next, switch, String::new()));
+            }
+            None => {
+                let mut active = lock(&console.active);
+                active.name = None;
+                active.failed = None;
+                drop(active);
+                console.command(Command::Clear);
+            }
+        }
+        Ok(())
+    }
+
+    fn upload_dir(&self, name: &str) -> ConsoleResult<std::path::PathBuf> {
+        self.console
+            .store
+            .own_dir(name)
+            .map(std::path::PathBuf::from)
     }
 
     fn active_name(&self) -> ConsoleResult<Option<String>> {
@@ -2551,6 +2672,9 @@ impl ConsoleHost for RenderLoopHost {
             other_reload(scene, self.active_name()?.as_deref())?;
         }
         if !self.console.store.contains(name) {
+            self.console.store.rescan();
+        }
+        if !self.console.store.contains(name) {
             return Err(ConsoleError::not_found("no scene"));
         }
         let switch = self.console.ask(name);
@@ -2636,9 +2760,21 @@ impl ConsoleHost for RenderLoopHost {
         })
     }
 
+    /// A scene of the console's own saves whole, and its defaults are then
+    /// the scene as saved.
     fn save(&self, _name: Option<&str>) -> ConsoleResult<()> {
         let console = &self.console;
         console.with_active(|name, copy| {
+            if console.store.is_mine(name) {
+                console.store.write(name, &copy.working_doc())?;
+                copy.opened.defaults = copy.opened.working.clone();
+                copy.defaults_doc = copy.opened.defaults.to_dict();
+                copy.opened.saved = None;
+                let size = lock(&console.scene_size).unwrap_or((console.w, console.h));
+                let (_, read) = collect(|| console.store.resolve(name, size));
+                *lock(&console.sources) = Some(console.snapshot(read));
+                return Ok(());
+            }
             let edits = console.with_locks(name, |locks| copy.to_save(locks));
             console.store.save(name, &edits)?;
             copy.opened.saved = (!edits.is_empty()).then_some(edits);
@@ -2873,6 +3009,10 @@ fn handle(console: &Arc<Console>, api: &ConsoleAPI<RenderLoopHost>, mut request:
         let resp = api.dispatch("GET", path, &query, &headers, b"");
         return send(request, &resp);
     }
+    if method == "POST" && path == "/upload" {
+        let resp = api.upload(&query, request.as_reader());
+        return send(request, &resp);
+    }
     let mut body: Vec<u8> = Vec::new();
     if method == "POST" {
         body = match api.read_body(request.as_reader()) {
@@ -3069,6 +3209,11 @@ pub struct Options {
     /// The array sources the scenes read per frame.
     pub arrays: Vec<(String, ArraySource)>,
     pub scenes_dir: Option<String>,
+    /// The directory of the scenes that the console makes, listed after
+    /// those of `scenes_dir`. None makes none.
+    pub my_scenes: Option<String>,
+    /// Take uploads while the console listens on a network.
+    pub uploads: bool,
     /// Where the scenes' state files live. None takes the store's own, else
     /// state::default_dir().
     pub state_dir: Option<std::path::PathBuf>,
@@ -3121,6 +3266,8 @@ impl Default for Options {
         Options {
             arrays: Vec::new(),
             scenes_dir: None,
+            my_scenes: None,
+            uploads: false,
             state_dir: None,
             size: (320, 240),
             port: 8090,
@@ -3149,10 +3296,14 @@ impl Default for Options {
     }
 }
 
-/// The store over `scenes_dir`, or over the bundled examples when it is None.
-/// The bundled examples keep their state files as demos, whichever way a
-/// caller names their directory.
-fn dir_store(scenes_dir: Option<String>, args: Vec<String>) -> Result<SceneStore> {
+/// The store over `scenes_dir`, or over the bundled examples when it is None,
+/// and over `mine`, the console's own scenes. The bundled examples keep their
+/// state files as demos, whichever way a caller names their directory.
+fn dir_store(
+    scenes_dir: Option<String>,
+    mine: Option<String>,
+    args: Vec<String>,
+) -> Result<SceneStore> {
     let demo = scenes_dir.is_none();
     let dir = match scenes_dir {
         Some(dir) => dir,
@@ -3160,9 +3311,19 @@ fn dir_store(scenes_dir: Option<String>, args: Vec<String>) -> Result<SceneStore
             anyhow!("no scenes directory (set GHEE_EXAMPLES for the bundled scenes)")
         })?,
     };
-    let mut store = SceneStore::new(&dir, args);
+    let mut store = SceneStore::with_mine(&dir, mine.as_deref(), args);
     store.demo = demo || is_examples_dir(std::path::Path::new(&dir));
     Ok(store)
+}
+
+/// The console's address as a URL that a browser on this machine opens.
+fn url(host: &str, port: u16) -> String {
+    let host = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) if ip.is_unspecified() => "localhost".to_string(),
+        Ok(std::net::IpAddr::V6(ip)) => format!("[{ip}]"),
+        _ => host.to_string(),
+    };
+    format!("http://{host}:{port}/")
 }
 
 /// Start the console and serve until stop() (or Ctrl-C).
@@ -3170,6 +3331,8 @@ pub fn run(opts: Options) -> Result<()> {
     let Options {
         arrays,
         scenes_dir,
+        my_scenes,
+        uploads,
         state_dir,
         size,
         port,
@@ -3197,12 +3360,9 @@ pub fn run(opts: Options) -> Result<()> {
     } = opts;
     let mut store = match store {
         Some(store) => store,
-        None => dir_store(scenes_dir, scene_args)?,
+        None => dir_store(scenes_dir, my_scenes, scene_args)?,
     };
     let names = store.names();
-    if names.is_empty() {
-        bail!("no .scene.json in {}", store.dir);
-    }
     store.filters = filters;
     store.state_dir = state_dir
         .or_else(|| store.state_dir.take())
@@ -3232,7 +3392,9 @@ pub fn run(opts: Options) -> Result<()> {
     console.arrays = arrays;
     lock(&console.stat).display =
         serde_json::json!({"w": size.0, "h": size.1, "format": "rgba", "rotation": rotate});
-    console.ask(&names[0]);
+    if let Some(first) = names.first() {
+        console.ask(first);
+    }
     let console = Arc::new(console);
     console.reset_stats();
     *lock(&CONSOLE) = Some(Arc::clone(&console));
@@ -3248,7 +3410,8 @@ pub fn run(opts: Options) -> Result<()> {
         let api = Arc::new(
             ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)))
                 .with_web(console.web)
-                .listening_on(&host),
+                .listening_on(&host)
+                .with_uploads(uploads),
         );
         thread::spawn(move || {
             for request in server.incoming_requests() {
@@ -3260,9 +3423,18 @@ pub fn run(opts: Options) -> Result<()> {
 
     match make_renderer(&console) {
         Ok(r) => {
+            let count = match names.len() {
+                0 => "no scene".to_string(),
+                1 => "1 scene".to_string(),
+                n => format!("{n} scenes"),
+            };
+            let mine = match console.store.mine.as_deref() {
+                Some(m) if m != console.store.dir => format!(", my scenes={m}"),
+                _ => String::new(),
+            };
             println!(
-                "ghee console: {} scenes [{}] on {host}:{port} (scenes={}, preview {}x{} rgba)",
-                names.len(),
+                "ghee console: {} {count} [{}] (scenes={}{mine}, preview {}x{} rgba)",
+                url(&host, port),
                 names
                     .iter()
                     .map(|n| format!("'{n}'"))
@@ -3477,6 +3649,104 @@ mod tests {
                 (404, "no such item is set aside".to_string(), None)
             );
         }
+    }
+
+    /// clocks of clocks(), and the console's own scenes in a directory of
+    /// their own.
+    fn with_mine(
+        tag: &str,
+    ) -> (
+        crate::testing::TempDir,
+        crate::testing::TempDir,
+        Arc<Console>,
+    ) {
+        let (d, states, console) = clocks(tag);
+        let m = crate::testing::TempDir::new(&format!("console-{tag}-mine"));
+        let mut store = SceneStore::with_mine(&d, Some(&m), Vec::new());
+        store.state_dir = console.store.state_dir.clone();
+        drop(states);
+        (d, m, Arc::new(Console::new(store)))
+    }
+
+    #[test]
+    fn a_new_scene_copies_the_working_copy_and_saves_whole_with_no_state_file() {
+        let (_d, m, console) = with_mine("own-new");
+        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
+        ready(&console, "clocks", opened);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let set = |scene: &str, value: u32| {
+            let q = format!("scene={scene}&pass=main&name=cols&value={value}");
+            ask(&api, "POST", "/set", &q, "").0
+        };
+        assert_eq!(set("clocks", 5), 200);
+        let made = ask(&api, "POST", "/new", "name=copy&from=clocks", "");
+        assert_eq!((made.0, made.1.as_str()), (200, r#"{"name":"copy"}"#));
+        let scenes = json_of(&ask(&api, "GET", "/scenes", "", "").1);
+        assert_eq!(scenes["scenes"], serde_json::json!(["clocks", "copy"]));
+        assert_eq!(scenes["mine"], serde_json::json!(["copy"]));
+        let (opened, _) = console.store.open("copy", None, (32, 24)).unwrap();
+        assert_eq!(
+            opened.defaults.passes[0]
+                .params
+                .get("cols")
+                .unwrap()
+                .value
+                .to_json(),
+            5
+        );
+        ready(&console, "copy", opened);
+        assert_eq!(set("copy", 3), 200);
+        assert!(json_of(&ask(&api, "GET", "/edits", "", "").1)["unsaved"] == true);
+        assert_eq!(ask(&api, "POST", "/save", "name=copy", "").0, 200);
+        let file = m.join("copy/copy.scene.json");
+        let written = json_of(&fs::read_to_string(&file).unwrap());
+        assert_eq!(written["passes"][0]["params"]["cols"]["value"], 3);
+        assert_eq!(
+            written["passes"][0]["fragment"],
+            serde_json::json!({"file": "main.glsl"})
+        );
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(
+            (&edits["values"], &edits["unsaved"]),
+            (&serde_json::json!({}), &Value::from(false))
+        );
+        assert_eq!(console.store.state_file("copy").unwrap(), None);
+        assert_eq!(console.stats()["stale"], false);
+    }
+
+    #[test]
+    fn a_new_scene_from_a_procedural_scene_is_refused() {
+        let (d, _m, console) = with_mine("own-program");
+        crate::testing::script(&d, "prog.py", "#!/bin/sh\nexit 1\n");
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        assert_eq!(
+            ask(&api, "POST", "/new", "name=copy&from=prog", ""),
+            (
+                403,
+                "a program writes scene 'prog', so it has no scene file to copy".to_string(),
+                None
+            )
+        );
+        assert_eq!(ask(&api, "POST", "/new", "name=copy&from=nope", "").0, 404);
+        assert_eq!(ask(&api, "POST", "/new", "name=blank", "").0, 200);
+        assert_eq!(console.store.mine_names(), ["blank"]);
+    }
+
+    #[test]
+    fn the_active_scene_renamed_or_removed_takes_the_console_along() {
+        let (_d, m, console) = with_mine("own-move");
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        assert_eq!(ask(&api, "POST", "/new", "name=one", "").0, 200);
+        let (opened, _) = console.store.open("one", None, (32, 24)).unwrap();
+        ready(&console, "one", opened);
+        let renamed = ask(&api, "POST", "/rename", "name=one&to=two", "");
+        assert_eq!((renamed.0, renamed.1.as_str()), (200, r#"{"name":"two"}"#));
+        assert_eq!(console.stats()["active"], "two");
+        assert!(m.join("two/two.scene.json").is_file());
+        assert_eq!(ask(&api, "POST", "/rename", "name=clocks&to=x", "").0, 403);
+        assert_eq!(ask(&api, "POST", "/delete", "name=two", "").0, 200);
+        assert_eq!(console.stats()["active"], "clocks");
+        assert!(!m.join("two").exists());
     }
 
     /// A saved image layer whose asset the scene lacks.
@@ -4391,7 +4661,7 @@ mod tests {
         let _e = crate::console::repo_examples();
         let states = std::path::Path::new("/states");
         let state_file = |dir: Option<String>, name: &str| {
-            let mut store = dir_store(dir, Vec::new()).unwrap();
+            let mut store = dir_store(dir, None, Vec::new()).unwrap();
             store.state_dir = Some(states.to_path_buf());
             store.state_file(name).unwrap().unwrap()
         };

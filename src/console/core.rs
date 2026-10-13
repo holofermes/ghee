@@ -50,11 +50,16 @@ use crate::usage;
 /// The console's cap on a request body. A POSTed scene is JSON text.
 pub const MAX_BODY: usize = 1 << 20;
 
-/// The paths that change the renderer. They take POST only. A hostile page
-/// reaches a GET through <img src>, and that request carries no Origin to
-/// refuse.
-pub const POST_ONLY: [&str; 7] = [
-    "/set", "/switch", "/next", "/prev", "/save", "/reset", "/aside",
+/// The cap on an uploaded file, which the transport streams to disk. A
+/// colour emoji font takes about 10 MB.
+pub const MAX_UPLOAD: usize = 32 << 20;
+
+/// The paths that change the renderer or the files. They take POST only. A
+/// hostile page reaches a GET through <img src>, and that request carries no
+/// Origin to refuse.
+pub const POST_ONLY: [&str; 11] = [
+    "/set", "/switch", "/next", "/prev", "/save", "/reset", "/aside", "/new", "/rename", "/delete",
+    "/upload",
 ];
 
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
@@ -479,6 +484,42 @@ pub trait ConsoleHost {
         Ok(Vec::new())
     }
 
+    /// The names among scene_names() of the scenes that this console made,
+    /// which a save writes whole, and which rename and delete take. /scenes
+    /// lists them under "mine".
+    fn mine_names(&self) -> ConsoleResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// The directory of the scenes that this console makes, which /scenes
+    /// gives as "my_scenes". None when it makes none.
+    fn my_scenes(&self) -> Option<String> {
+        None
+    }
+
+    /// Make scene `name` of the console's own: the blank scene, or the
+    /// working copy of scene `from` with the files that it names.
+    fn new_scene(&self, _name: &str, _from: Option<&str>) -> ConsoleResult<()> {
+        Err(keeps_no_scene())
+    }
+
+    /// Rename scene `name`, one of the console's own, to `to`. The page
+    /// `vid` asked.
+    fn rename_scene(&self, _name: &str, _to: &str, _vid: &str) -> ConsoleResult<()> {
+        Err(keeps_no_scene())
+    }
+
+    /// Remove scene `name`, one of the console's own, with its files.
+    fn delete_scene(&self, _name: &str) -> ConsoleResult<()> {
+        Err(keeps_no_scene())
+    }
+
+    /// The directory that a file uploaded for scene `name`, one of the
+    /// console's own, goes to.
+    fn upload_dir(&self, _name: &str) -> ConsoleResult<std::path::PathBuf> {
+        Err(keeps_no_scene())
+    }
+
     fn active_name(&self) -> ConsoleResult<Option<String>>;
 
     /// The resolved scene JSON for a name, or for the active scene when name is
@@ -629,10 +670,13 @@ pub struct ConsoleAPI<H: ConsoleHost> {
     pub web: bool,
     pub post_only: Vec<String>,
     pub max_body: usize,
+    pub max_upload: usize,
     /// The console listens on an address other than loopback, so it answers
     /// a request that names any host. On loopback it answers a request that
     /// names loopback alone.
     pub open: bool,
+    /// An open console takes uploads too.
+    pub uploads: bool,
     /// The GPU's engine times at the last /stats that asked for usage.
     engines: Mutex<Option<usage::Engines>>,
 }
@@ -654,9 +698,17 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             web: false,
             post_only: POST_ONLY.iter().map(|p| (*p).to_string()).collect(),
             max_body: MAX_BODY,
+            max_upload: MAX_UPLOAD,
             open: false,
+            uploads: false,
             engines: Mutex::new(None),
         }
+    }
+
+    /// Take uploads on a console that is open to its network.
+    pub fn with_uploads(mut self, uploads: bool) -> ConsoleAPI<H> {
+        self.uploads = uploads;
+        self
     }
 
     /// The address that the transport listens on. A console on any address
@@ -748,8 +800,8 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 ));
             }
             let n = raw.parse::<u128>().unwrap_or(u128::MAX);
-            if n > self.max_body as u128 {
-                return Some(self.too_large());
+            if n > self.cap(path) as u128 {
+                return Some(too_large(self.cap(path)));
             }
         }
         if method == "GET" && self.post_only.iter().any(|p| p == path) {
@@ -768,16 +820,71 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             return Err(Response::text(400, &format!("bad body: {e}")));
         }
         if body.len() > self.max_body {
-            return Err(self.too_large());
+            return Err(too_large(self.max_body));
         }
         Ok(body)
     }
 
-    fn too_large(&self) -> Response {
-        Response::text(
-            413,
-            &format!("body over the limit of {} bytes", self.max_body),
-        )
+    /// The cap on the body of a POST to `path`.
+    fn cap(&self, path: &str) -> usize {
+        match path {
+            "/upload" => self.max_upload,
+            _ => self.max_body,
+        }
+    }
+
+    /// POST /upload?name=&file=: the body, read from `body` up to the upload
+    /// cap, becomes the file `file` in the directory of scene `name`, one of
+    /// the console's own. It answers `{file}`, the name that it took: `file`,
+    /// or with another file of that name there, `file` with `-2`, `-3` and on
+    /// before its extension. A transport streams the body in, past the body
+    /// cap.
+    pub fn upload(&self, query: &Query, body: &mut dyn Read) -> Response {
+        self.take_upload(query, body)
+            .unwrap_or_else(|e| Response::text(e.status, &e.message))
+    }
+
+    fn take_upload(&self, query: &Query, body: &mut dyn Read) -> ConsoleResult<Response> {
+        if self.open && !self.uploads {
+            return Err(ConsoleError::read_only(
+                "this console listens on its network, which takes no upload unless \
+                 --allow-uploads lets it",
+            ));
+        }
+        let bad = |e: String| ConsoleError::bad_request(format!("bad /upload: {e}"));
+        let name = query
+            .get("name")
+            .ok_or_else(|| bad("the query has no 'name'".into()))?;
+        let file = query
+            .get("file")
+            .ok_or_else(|| bad("the query has no 'file'".into()))?;
+        let font = upload_kind(file).map_err(bad)?;
+        let dir = self.host.upload_dir(name)?;
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let tmp = dir.join(format!(".upload.{}.{n}.tmp", std::process::id()));
+        let kept = (|| -> ConsoleResult<String> {
+            let io =
+                |e: std::io::Error| ConsoleError::server_error(format!("{}: {e}", dir.display()));
+            let mut f = std::fs::File::create(&tmp).map_err(io)?;
+            let cap = self.max_upload as u64;
+            let got = std::io::copy(&mut body.take(cap + 1), &mut f)
+                .map_err(|e| ConsoleError::bad_request(format!("bad body: {e}")))?;
+            if got > cap {
+                return Err(ConsoleError {
+                    status: 413,
+                    message: format!("body over the limit of {cap} bytes"),
+                });
+            }
+            f.sync_all().map_err(io)?;
+            drop(f);
+            let bytes = std::fs::read(&tmp).map_err(io)?;
+            check_upload(file, font, &bytes).map_err(ConsoleError::bad_request)?;
+            crate::console::store::set_mode(&tmp, 0o644).map_err(io)?;
+            place(&dir, file, &tmp, &bytes)
+        })();
+        let _ = std::fs::remove_file(&tmp);
+        Ok(Response::json(&serde_json::json!({ "file": kept? })))
     }
 
     pub fn dispatch(
@@ -818,6 +925,11 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 );
                 let procedural = h.procedural_names()?;
                 d.insert("procedural".to_string(), Value::from(procedural));
+                d.insert("mine".to_string(), Value::from(h.mine_names()?));
+                d.insert(
+                    "my_scenes".to_string(),
+                    h.my_scenes().map_or(Value::Null, Value::from),
+                );
                 Ok(Response::json(&Value::Object(d)))
             }
             "/hwinfo" => Ok(Response::json(&h.hwinfo()?)),
@@ -907,6 +1019,28 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             h.edit_scene(&at(name), &mut || h.answer(name, &aside, keep))?;
             return Ok(Response::text(200, "ok"));
         }
+        if path == "/upload" {
+            return Ok(self.upload(query, &mut &body[..]));
+        }
+        let named = |key: &str| {
+            query.get(key).map(String::as_str).ok_or_else(|| {
+                ConsoleError::bad_request(format!("bad {path}: the query has no '{key}'"))
+            })
+        };
+        if path == "/new" {
+            let name = named("name")?;
+            h.new_scene(name, query.get("from").map(String::as_str))?;
+            return Ok(Response::json(&serde_json::json!({ "name": name })));
+        }
+        if path == "/rename" {
+            let to = named("to")?;
+            h.rename_scene(named("name")?, to, vid)?;
+            return Ok(Response::json(&serde_json::json!({ "name": to })));
+        }
+        if path == "/delete" {
+            h.delete_scene(named("name")?)?;
+            return Ok(Response::text(200, "ok"));
+        }
         Ok(Response::text(404, "no"))
     }
 
@@ -925,6 +1059,112 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             headers: Vec::new(),
         }
     }
+}
+
+fn too_large(cap: usize) -> Response {
+    Response::text(413, &format!("body over the limit of {cap} bytes"))
+}
+
+fn keeps_no_scene() -> ConsoleError {
+    ConsoleError::read_only("this console keeps no scenes of its own")
+}
+
+/// Whether `file`, an upload's name, names a font, or why the console takes
+/// no file of that name: a .png, .jpg, .jpeg, .ttf or .otf file named with
+/// ASCII letters, digits, `.`, `-` and `_`, no `.` first, 100 characters at
+/// most.
+fn upload_kind(file: &str) -> Result<bool, String> {
+    let ext = file.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    let named = file.len() <= 100
+        && !file.starts_with('.')
+        && file
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    match ext.as_deref() {
+        Some("png" | "jpg" | "jpeg") if named => Ok(false),
+        Some("ttf" | "otf") if named => Ok(true),
+        _ => Err(format!(
+            "an upload takes a .png, .jpg, .jpeg, .ttf or .otf file named with letters, \
+             digits, '.', '-' and '_', got {}",
+            py_repr(&Value::from(file))
+        )),
+    }
+}
+
+/// Why `bytes`, the upload `file`, is no file that a scene reads: an image
+/// that ghee's decoder refuses or that is over the pixel cap of an asset, or
+/// a font that does not parse.
+fn check_upload(file: &str, font: bool, bytes: &[u8]) -> Result<(), String> {
+    if font {
+        return crate::text::font(bytes)
+            .map(drop)
+            .map_err(|e| format!("{file}: unreadable font: {e}"));
+    }
+    let png = file.to_ascii_lowercase().ends_with(".png");
+    let size = match png {
+        true => png::Decoder::new(bytes)
+            .read_info()
+            .map(|r| (r.info().width, r.info().height))
+            .map_err(|e| e.to_string()),
+        false => {
+            let mut d = jpeg_decoder::Decoder::new(bytes);
+            d.read_info().map_err(|e| e.to_string()).and_then(|()| {
+                d.info()
+                    .map(|i| (u32::from(i.width), u32::from(i.height)))
+                    .ok_or_else(|| "no jpeg frame header".to_string())
+            })
+        }
+    };
+    let (w, h) = size.map_err(|e| format!("{file}: {e}"))?;
+    if i64::from(w) * i64::from(h) > crate::scene::MAX_TEXELS {
+        return Err(format!(
+            "{file} is {w}x{h}, over the {} pixel cap",
+            crate::scene::MAX_TEXELS
+        ));
+    }
+    let decoded = match png {
+        true => crate::assets::decode_png(bytes),
+        false => crate::assets::decode_jpeg(bytes),
+    };
+    decoded.map(drop).map_err(|e| format!("{file}: {e}"))
+}
+
+/// Give `tmp`, the upload `file` whose content is `bytes`, its name in `dir`:
+/// `file`, or the first of `file` with `-2`, `-3` and on before its extension
+/// that no other file takes. A file of that name with the same bytes is the
+/// upload already. A link never replaces a file, so no upload overwrites one.
+fn place(
+    dir: &std::path::Path,
+    file: &str,
+    tmp: &std::path::Path,
+    bytes: &[u8],
+) -> ConsoleResult<String> {
+    let (stem, ext) = file.rsplit_once('.').unwrap_or((file, ""));
+    for n in 1..100 {
+        let name = match n {
+            1 => file.to_string(),
+            n => format!("{stem}-{n}.{ext}"),
+        };
+        let path = dir.join(&name);
+        match std::fs::hard_link(tmp, &path) {
+            Ok(()) => return Ok(name),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if std::fs::read(&path).is_ok_and(|b| b == bytes) {
+                    return Ok(name);
+                }
+            }
+            Err(e) => {
+                return Err(ConsoleError::server_error(format!(
+                    "{}: {e}",
+                    path.display()
+                )))
+            }
+        }
+    }
+    Err(ConsoleError::conflict(format!(
+        "{} holds 99 other files named like {file}",
+        dir.display()
+    )))
 }
 
 /// The item that a POST /aside answers, and whether its answer keeps it.
@@ -1267,6 +1507,8 @@ mod tests {
         active: RefCell<String>,
         calls: RefCell<Vec<Call>>,
         boom: bool,
+        /// The directory that an upload goes to.
+        files: Option<String>,
     }
 
     impl FakeHost {
@@ -1276,6 +1518,7 @@ mod tests {
                 active: RefCell::new("a".to_string()),
                 calls: RefCell::new(Vec::new()),
                 boom: false,
+                files: None,
             }
         }
     }
@@ -1375,6 +1618,13 @@ mod tests {
                 .borrow_mut()
                 .push(Call::Answer(aside.clone(), keep));
             Ok(())
+        }
+
+        fn upload_dir(&self, name: &str) -> ConsoleResult<std::path::PathBuf> {
+            match (&self.files, name) {
+                (Some(d), "a") => Ok(std::path::PathBuf::from(d)),
+                _ => Err(ConsoleError::read_only(format!("no files for {name}"))),
+            }
         }
     }
 
@@ -1485,12 +1735,14 @@ mod tests {
     fn scenes_lists_names_active_and_the_procedural_ones() {
         assert_eq!(
             as_json(&get(&api(), "/scenes", &[])),
-            serde_json::json!({"scenes": ["a", "b", "c"], "active": "a", "procedural": ["c"]})
+            serde_json::json!({"scenes": ["a", "b", "c"], "active": "a", "procedural": ["c"],
+                               "mine": [], "my_scenes": null})
         );
         let bare = ConsoleAPI::new(Bare).dispatch("GET", "/scenes", &Query::new(), &local(), b"");
         assert_eq!(
             as_json(&bare),
-            serde_json::json!({"scenes": [], "active": null, "procedural": []})
+            serde_json::json!({"scenes": [], "active": null, "procedural": [], "mine": [],
+                               "my_scenes": null})
         );
     }
 
@@ -2364,6 +2616,141 @@ mod tests {
         }
         for addr in ["127.0.0.1", "localhost", "::1", "[::1]"] {
             assert!(!api().listening_on(addr).open, "{addr}");
+        }
+    }
+
+    // uploads
+
+    /// An API whose scene "a" takes uploads into a directory of its own.
+    fn uploads(tag: &str) -> (crate::testing::TempDir, ConsoleAPI<FakeHost>) {
+        let d = crate::testing::TempDir::new(&format!("upload-{tag}"));
+        let mut host = FakeHost::new();
+        host.files = Some(d.to_string());
+        (d, ConsoleAPI::new(host))
+    }
+
+    fn upload(api: &ConsoleAPI<FakeHost>, file: &str, bytes: &[u8]) -> (u16, String) {
+        let r = api.upload(&query(&[("name", "a"), ("file", file)]), &mut &bytes[..]);
+        (r.status, body(&r))
+    }
+
+    /// The names in `d`, a test's directory.
+    fn left_in(d: &str) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn an_upload_takes_its_name_or_the_next_free_one_and_reads_for_all() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, api) = uploads("names");
+        let (one, two) = (crate::testing::png(2, 2), crate::testing::png(3, 1));
+        assert_eq!(
+            upload(&api, "pic.png", &one),
+            (200, r#"{"file":"pic.png"}"#.to_string())
+        );
+        assert_eq!(upload(&api, "pic.png", &one).1, r#"{"file":"pic.png"}"#);
+        assert_eq!(upload(&api, "pic.png", &two).1, r#"{"file":"pic-2.png"}"#);
+        assert_eq!(std::fs::read(d.join("pic.png")).unwrap(), one);
+        assert_eq!(std::fs::read(d.join("pic-2.png")).unwrap(), two);
+        let mode = std::fs::metadata(d.join("pic-2.png"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o644);
+        assert_eq!(upload(&api, "sans.ttf", crate::text::BUILT_IN_FONT).0, 200);
+        assert_eq!(left_in(&d), ["pic-2.png", "pic.png", "sans.ttf"]);
+    }
+
+    #[test]
+    fn an_upload_that_is_no_image_or_font_leaves_nothing_behind() {
+        let (d, api) = uploads("refused");
+        assert_eq!(
+            upload(&api, "../x.png", &crate::testing::png(1, 1)),
+            (
+                400,
+                "bad /upload: an upload takes a .png, .jpg, .jpeg, .ttf or .otf file named \
+                 with letters, digits, '.', '-' and '_', got '../x.png'"
+                    .to_string()
+            )
+        );
+        for name in ["run.sh", ".pic.png", "pic", "a b.png"] {
+            assert_eq!(
+                upload(&api, name, &crate::testing::png(1, 1)).0,
+                400,
+                "{name}"
+            );
+        }
+        let (status, why) = upload(&api, "pic.png", b"not a png");
+        assert!(
+            status == 400 && why.starts_with("pic.png: "),
+            "{status} {why}"
+        );
+        let (status, why) = upload(&api, "pic.jpg", &crate::testing::png(1, 1));
+        assert!(
+            status == 400 && why.starts_with("pic.jpg: "),
+            "{status} {why}"
+        );
+        let (status, why) = upload(&api, "f.ttf", b"not a font");
+        assert!(
+            status == 400 && why.starts_with("f.ttf: unreadable font: "),
+            "{why}"
+        );
+        assert!(left_in(&d).is_empty());
+    }
+
+    #[test]
+    fn an_upload_past_its_cap_answers_413_and_leaves_nothing_behind() {
+        let (d, mut api) = uploads("cap");
+        let png = crate::testing::png(2, 2);
+        api.max_upload = png.len() - 1;
+        let length = png.len().to_string();
+        let headers = Headers::from([("Host", "localhost"), ("Content-Length", length.as_str())]);
+        assert_eq!(
+            api.precheck("POST", "/upload", &headers).unwrap().status,
+            413
+        );
+        assert_eq!(api.precheck("POST", "/scene", &headers), None);
+        assert_eq!(upload(&api, "pic.png", &png).0, 413);
+        assert!(left_in(&d).is_empty());
+    }
+
+    #[test]
+    fn a_console_open_to_its_network_takes_an_upload_only_when_allowed() {
+        let (_d, api) = uploads("open");
+        let api = api.listening_on("0.0.0.0");
+        assert_eq!(
+            upload(&api, "pic.png", &crate::testing::png(1, 1)),
+            (
+                403,
+                "this console listens on its network, which takes no upload unless \
+                 --allow-uploads lets it"
+                    .to_string()
+            )
+        );
+        let api = api.with_uploads(true);
+        assert_eq!(upload(&api, "pic.png", &crate::testing::png(1, 1)).0, 200);
+    }
+
+    #[test]
+    fn a_host_that_keeps_no_scenes_of_its_own_makes_and_takes_none() {
+        let api = ConsoleAPI::new(Bare);
+        for (path, q) in [
+            ("/new", vec![("name", "x")]),
+            ("/rename", vec![("name", "x"), ("to", "y")]),
+            ("/delete", vec![("name", "x")]),
+            ("/upload", vec![("name", "x"), ("file", "x.png")]),
+        ] {
+            let r = api.dispatch("POST", path, &query(&q), &local(), b"");
+            assert_eq!(
+                (r.status, body(&r).as_str()),
+                (403, "this console keeps no scenes of its own"),
+                "{path}"
+            );
         }
     }
 

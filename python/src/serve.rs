@@ -30,12 +30,14 @@ use ghee::console::core::{
     Response, Scope,
 };
 use ghee::console::server::{
-    coerce, serve_h264, stream_bitrate, stream_size, H264Fanout, Heartbeat, Options, H264_FPS,
-    VIEWER_DEADLINE,
+    coerce, leave_out, serve_h264, stream_bitrate, stream_size, H264Fanout, Heartbeat, Options,
+    H264_FPS, VIEWER_DEADLINE,
 };
+use ghee::console::state;
 use ghee::h264::{no_encoder, ColorSpace, SoftwareH264, SW_COLOR};
 use ghee::looper::Frame;
 use ghee::output::{encode_jpeg, encode_png};
+use ghee::procedural::process::Locks;
 use ghee::scene::{ParamValue, Scene};
 use ghee::stats::{monotonic, FrameRate, DEST_H264};
 use serde_json::{Map, Value};
@@ -146,6 +148,8 @@ pub struct Shared {
     queue: Mutex<Vec<Queued>>,
     /// The live fields of layers queued by requests for the next frame.
     layers: Mutex<Vec<LayerSet>>,
+    /// What the host set, which this console refuses to set.
+    locks: Mutex<Locks>,
     rate: Mutex<FrameRate>,
     frame_ms: Mutex<f64>,
     /// The renderer's text_errors(), a line each.
@@ -259,6 +263,7 @@ impl ConsoleHost for Host {
             "layer_changes".to_string(),
             Value::from(s.layer_changes.load(Ordering::SeqCst)),
         );
+        d.insert("locked".to_string(), lock(&s.locks).to_json());
         Ok(Value::Object(d))
     }
 
@@ -297,6 +302,9 @@ impl ConsoleHost for Host {
         let p = index
             .param(pass, name)
             .map_err(|e| ConsoleError::bad_request(e.message))?;
+        if let Some(why) = lock(&self.0.locks).param_refusal(p.pass.as_deref(), &p.uniform) {
+            return Err(ConsoleError::read_only(why));
+        }
         let coerced =
             coerce(&p.wire, &p.ty, &value).map_err(|e| ConsoleError::bad_request(e.to_string()))?;
         lock(&self.0.queue).push((p.pass.clone(), p.uniform.clone(), p.ty.clone(), coerced));
@@ -304,6 +312,9 @@ impl ConsoleHost for Host {
     }
 
     fn set_layer(&self, set: LayerSet) -> ConsoleResult<()> {
+        if let Some(why) = lock(&self.0.locks).field_refusal(&set.at()) {
+            return Err(ConsoleError::read_only(why));
+        }
         lock(&self.0.layers).push(set);
         Ok(())
     }
@@ -316,7 +327,8 @@ impl ConsoleHost for Host {
 
     /// An apply gives each layer of the scene the look that `scene` gives
     /// it, and changes nothing else: a layer that `scene` leaves out keeps
-    /// its look, and one that the scene lacks is skipped.
+    /// its look, and one that the scene lacks is skipped. What the host set
+    /// keeps the host's values.
     fn apply_scene(&self, scene: Scene) -> ConsoleResult<()> {
         let posted = scene.to_dict();
         let running = lock(&self.0.published).now();
@@ -326,6 +338,9 @@ impl ConsoleHost for Host {
                  owns the passes, the params and the assets",
             ));
         }
+        let mut changed = state::diff(&running, &posted, true);
+        leave_out(&mut changed.values, &lock(&self.0.locks));
+        let posted = state::fold(&running, &running, &changed);
         let now: Vec<&Value> = layers_of(&running).collect();
         let looks: Vec<Value> = layers_of(&posted)
             .filter(|l| {
@@ -383,6 +398,7 @@ impl Console {
             out,
             queue: Mutex::new(Vec::new()),
             layers: Mutex::new(Vec::new()),
+            locks: Mutex::new(Locks::default()),
             rate: Mutex::new(FrameRate::new()),
             frame_ms: Mutex::new(0.0),
             text_errors: Mutex::new(Vec::new()),
@@ -519,6 +535,11 @@ impl Console {
 
     pub fn take_params(&self) -> Vec<Queued> {
         std::mem::take(&mut lock(&self.shared.queue))
+    }
+
+    /// What the host set, which this console refuses to set.
+    pub fn locks(&self) -> MutexGuard<'_, Locks> {
+        lock(&self.shared.locks)
     }
 
     pub fn take_layers(&self) -> Vec<LayerSet> {

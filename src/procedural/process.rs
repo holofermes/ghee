@@ -463,21 +463,19 @@ struct Kept {
     value: ParamValue,
 }
 
-impl Kept {
-    /// The param as Locks names it.
-    fn locked(&self) -> String {
-        let name = uniform(&self.name);
-        match &self.pass {
-            Some(pass) => format!("{pass}.{name}"),
-            None => name.to_string(),
-        }
-    }
-}
-
 /// The uniform of the param `name`: a dotted name carries its pass, and the
 /// uniform is the tail.
 fn uniform(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, p)| p)
+}
+
+/// The param `name` of pass `pass`, None for a scene param, as Locks names
+/// it.
+fn param_name(pass: Option<&str>, name: &str) -> String {
+    match pass {
+        Some(pass) => format!("{pass}.{name}"),
+        None => name.to_string(),
+    }
 }
 
 /// The live field `at` as a message names it.
@@ -488,46 +486,84 @@ pub(crate) fn dotted(at: &Address) -> String {
     }
 }
 
-/// What a scene process set: each param, a scene param by its name and a
-/// param of a pass as `pass.name`, each live field of a layer as
-/// `layer.field` or `layer.effect.field`, and each layer that the process
-/// added or gave a look, every field of it.
+/// What the program of a scene set, a scene process or a host of the
+/// console: each param, a scene param by its name and a param of a pass as
+/// `pass.name`, each live field of a layer as `layer.field` or
+/// `layer.effect.field`, and each layer that the program added or gave a
+/// look, every field of it. A console refuses to set what the program set.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Locks {
+pub struct Locks {
     params: HashSet<String>,
     fields: HashSet<String>,
     layers: HashSet<String>,
 }
 
 impl Locks {
-    /// Whether the process set the param `name` of pass `pass`, None for a
-    /// scene param.
-    pub(crate) fn param(&self, pass: Option<&str>, name: &str) -> bool {
-        match pass {
-            Some(pass) => self.params.contains(&format!("{pass}.{name}")),
-            None => self.params.contains(name),
-        }
+    /// The program set the param `name` of pass `pass`, None for a scene
+    /// param.
+    pub fn set_param(&mut self, pass: Option<&str>, name: &str) {
+        self.params.insert(param_name(pass, name));
     }
 
-    /// Whether the process set the live field `at`, or its whole layer.
-    pub(crate) fn field(&self, at: &Address) -> bool {
+    /// The program set the live field `at`.
+    pub fn set_field(&mut self, at: &Address) {
+        self.fields.insert(dotted(at));
+    }
+
+    /// The program added layer `name`, or gave it a look.
+    pub fn set_layer(&mut self, name: &str) {
+        self.layers.insert(name.to_string());
+    }
+
+    /// Whether the program set the param `name` of pass `pass`, None for a
+    /// scene param.
+    pub fn param(&self, pass: Option<&str>, name: &str) -> bool {
+        self.params.contains(&param_name(pass, name))
+    }
+
+    /// Whether the program set the live field `at`, or its whole layer.
+    pub fn field(&self, at: &Address) -> bool {
         self.layer(at.layer) || self.fields.contains(&dotted(at))
     }
 
-    /// Whether the process set a field of the effect `effect` of layer
+    /// Whether the program set a field of the effect `effect` of layer
     /// `layer`.
-    pub(crate) fn effect(&self, layer: &str, effect: &str) -> bool {
+    pub fn effect(&self, layer: &str, effect: &str) -> bool {
         let at = format!("{layer}.{effect}.");
         self.fields.iter().any(|f| f.starts_with(&at))
     }
 
-    /// Whether the process set every field of layer `name`.
-    pub(crate) fn layer(&self, name: &str) -> bool {
+    /// Whether the program set every field of layer `name`.
+    pub fn layer(&self, name: &str) -> bool {
         self.layers.contains(name)
     }
 
+    /// Why a console refuses to set the param `name` of pass `pass`, None
+    /// for a scene param, or None when the program never set it.
+    pub fn param_refusal(&self, pass: Option<&str>, name: &str) -> Option<String> {
+        self.param(pass, name).then(|| {
+            format!(
+                "the scene's program sets param '{}'",
+                param_name(pass, name)
+            )
+        })
+    }
+
+    /// Why a console refuses to set the live field `at`, or None when the
+    /// program never set it or its layer.
+    pub fn field_refusal(&self, at: &Address) -> Option<String> {
+        match (self.layer(at.layer), self.fields.contains(&dotted(at))) {
+            (true, _) => Some(format!("the scene's program sets layer '{}'", at.layer)),
+            (false, true) => Some(format!(
+                "the scene's program sets layer field '{}'",
+                dotted(at)
+            )),
+            (false, false) => None,
+        }
+    }
+
     /// `{params, fields, layers}`, each a sorted list of names.
-    pub(crate) fn to_json(&self) -> Value {
+    pub fn to_json(&self) -> Value {
         let sorted = |set: &HashSet<String>| {
             let mut names: Vec<&String> = set.iter().collect();
             names.sort();
@@ -845,8 +881,8 @@ impl SceneProcess {
             return;
         }
         self.fields.insert(name.to_string());
-        if let Some(locks) = &self.locks {
-            lock(locks).fields.insert(name.to_string());
+        if let (Some(locks), Some(at)) = (&self.locks, Address::dotted(name)) {
+            lock(locks).set_field(&at);
         }
     }
 
@@ -857,7 +893,7 @@ impl SceneProcess {
         }
         self.whole.insert(name.to_string());
         if let Some(locks) = &self.locks {
-            lock(locks).layers.insert(name.to_string());
+            lock(locks).set_layer(name);
         }
     }
 
@@ -1417,9 +1453,9 @@ impl SceneController for SceneProcess {
                     held.insert(kept);
                 }
                 Entry::Vacant(slot) => {
-                    let first = slot.insert(kept).locked();
+                    let first = slot.insert(kept);
                     if let Some(locks) = &self.locks {
-                        lock(locks).params.insert(first);
+                        lock(locks).set_param(first.pass.as_deref(), uniform(&first.name));
                     }
                 }
             }

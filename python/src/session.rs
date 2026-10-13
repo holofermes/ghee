@@ -941,7 +941,8 @@ impl Session {
         let (pass, uniform) = (p.pass.clone(), p.uniform.clone());
         // The host set this value itself, so no tick reports it.
         self.held(pass.as_deref(), &uniform, v.to_json(), true);
-        if self.console.is_some() {
+        if let Some(c) = &self.console {
+            c.locks().set_param(pass.as_deref(), &uniform);
             self.set.push((pass, uniform));
         }
         Ok(())
@@ -971,6 +972,9 @@ impl Session {
         if let (true, None, "text") = (text, effect, field) {
             self.held_words(layer, value.clone(), true);
         }
+        if let Some(c) = &self.console {
+            c.locks().set_field(&at);
+        }
         self.note(layer);
         Ok(())
     }
@@ -983,6 +987,7 @@ impl Session {
             .add_layer(pass, index, layer)
             .map_err(refusal)?;
         self.took(layer);
+        self.whole(layer.get("name").and_then(Value::as_str));
         self.grown = true;
         Ok(())
     }
@@ -1012,12 +1017,14 @@ impl Session {
     /// Renderer::update_layer() does. False when the layer had it already.
     pub fn update_layer(&mut self, layer: &Value) -> Outcome<bool> {
         let changed = self.renderer.update_layer(layer).map_err(refusal)?;
+        let name = layer.get("name").and_then(Value::as_str);
         if changed {
             self.took(layer);
-            if let Some(name) = layer.get("name").and_then(Value::as_str) {
+            if let Some(name) = name {
                 self.note(name);
             }
         }
+        self.whole(name);
         Ok(changed)
     }
 
@@ -1035,7 +1042,20 @@ impl Session {
         for &k in &taken.changed {
             self.note(&calls[k].layer);
         }
+        for (k, call) in calls.iter().enumerate() {
+            if !taken.left.contains(&k) {
+                self.whole(Some(&call.layer));
+            }
+        }
         Ok(taken.left)
+    }
+
+    /// Lock layer `name` whole in a console: the host added it or gave it a
+    /// look.
+    fn whole(&self, name: Option<&str>) {
+        if let (Some(c), Some(name)) = (&self.console, name) {
+            c.locks().set_layer(name);
+        }
     }
 
     /// Record that the host changed layer `name`, for a console to take.

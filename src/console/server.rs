@@ -41,7 +41,7 @@ use crate::h264::{
 use crate::layer::Address;
 use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
-use crate::procedural::process::{dotted, Locks};
+use crate::procedural::process::Locks;
 use crate::scene::{ArraySize, Param, ParamValue, Reach, Scene};
 use crate::sources::{collect, Snapshot};
 use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG};
@@ -447,7 +447,7 @@ impl WorkingCopy {
 /// Take out of `values`, the values of a scene's edits, each param, layer
 /// and live field that `locks` holds, and the removal of an effect that
 /// holds such a field.
-fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
+pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
     fn take(map: &mut Map<String, Value>, mut out: impl FnMut(&str, &mut Value) -> bool) -> bool {
         let had = map.len();
         map.retain(|k, v| !out(k, v));
@@ -2594,19 +2594,17 @@ impl ConsoleHost for RenderLoopHost {
         let console = &self.console;
         console.with_active(|scene, copy| {
             let working = &mut copy.opened.working;
-            let set = |pass| console.with_locks(scene, |l| l.is_some_and(|l| l.param(pass, name)));
+            let refusal =
+                |pass| console.with_locks(scene, |l| l.and_then(|l| l.param_refusal(pass, name)));
             let held = match scope {
-                Scope::Scene => set(None).then(|| name.to_string()),
+                Scope::Scene => refusal(None),
                 Scope::Pass(i) => working
                     .passes
                     .get(usize::try_from(i).unwrap_or(usize::MAX))
-                    .filter(|p| set(Some(&p.name)))
-                    .map(|p| format!("{}.{name}", p.name)),
+                    .and_then(|p| refusal(Some(&p.name))),
             };
-            if let Some(wire) = held {
-                return Err(ConsoleError::read_only(format!(
-                    "the scene's program sets param '{wire}'"
-                )));
+            if let Some(why) = held {
+                return Err(ConsoleError::read_only(why));
             }
             let params = match scope {
                 Scope::Scene => Some(&mut working.params),
@@ -2631,12 +2629,7 @@ impl ConsoleHost for RenderLoopHost {
         let console = &self.console;
         console.with_active(|scene, copy| {
             let at = set.at();
-            let locked = console.with_locks(scene, |l| {
-                l.filter(|l| l.field(&at)).map(|l| match l.layer(at.layer) {
-                    true => format!("the scene's program sets layer '{}'", at.layer),
-                    false => format!("the scene's program sets layer field '{}'", dotted(&at)),
-                })
-            });
+            let locked = console.with_locks(scene, |l| l.and_then(|l| l.field_refusal(&at)));
             if let Some(why) = locked {
                 return Err(ConsoleError::read_only(why));
             }

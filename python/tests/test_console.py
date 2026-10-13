@@ -360,10 +360,6 @@ def test_the_console_shows_the_layers_that_a_drawing_adds_and_changes():
             counts.append(json_of(port, "/stats")["layer_changes"])
         assert drawn == [[("rect", 4), ("label", None)], [("rect", 9), ("label", None)]]
         assert counts[0] < counts[1] < counts[2]
-        # a drawn text layer's words take a /set, as a scene's own do
-        assert post(port, "/set?layer=label&field=text&value=ho")[0] == 200
-        h.frame()
-        assert json_of(port, "/scene")["passes"][0]["layers"][1]["text"] == "ho"
 
 
 def test_a_drawing_reaches_the_scene_with_its_frame():
@@ -375,17 +371,55 @@ def test_a_drawing_reaches_the_scene_with_its_frame():
         assert first_width(json_of(port, "/scene")) == 9
 
 
-def test_a_param_set_by_the_host_or_the_console_reaches_the_scene(served):
+def test_a_param_set_by_the_console_or_the_host_reaches_the_scene(served):
     h, port = served
     gain = lambda: json_of(port, "/scene")["passes"][0]["params"]["gain"]["value"]
-    h.set_param("gain", 0.25)
-    h.feed("level", LEVEL)
-    h.frame()
-    assert gain() == 0.25
     assert post(port, "/set?pass=main&name=gain&value=0.5")[0] == 200
     h.feed("level", LEVEL)
     h.frame()
     assert gain() == 0.5
+    h.set_param("gain", 0.25)
+    h.feed("level", LEVEL)
+    h.frame()
+    assert gain() == 0.25
+
+
+def test_the_console_locks_what_the_host_sets_and_the_rest_still_edits():
+    doc = copy.deepcopy(RED)
+    doc["passes"][0]["layers"] = [{"name": "title", "text": "hi", "font_size": 8}]
+    port = free_port()
+    with ghee.open(doc, width=32, height=16, serve=port) as h:
+        h.set_param("gain", 0.5)
+        h.set_layer("title", "x", 3)
+        with h.draw() as d:
+            d.text("12:00", font_size=8)
+        assert json_of(port, "/stats")["locked"] == {
+            "params": ["main.gain"],
+            "fields": ["title.x"],
+            "layers": ["text"],
+        }
+        for path, key in [
+            ("/set?pass=main&name=gain&value=1", "param 'main.gain'"),
+            ("/set?name=gain&value=1", "param 'main.gain'"),
+            ("/set?layer=title&field=x&value=1", "layer field 'title.x'"),
+            ("/set?layer=text&field=text&value=ho", "layer 'text'"),
+        ]:
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                post(port, path)
+            assert raised.value.code == 403, path
+            assert raised.value.read().decode().endswith(key), path
+        assert post(port, "/set?name=tint&value=0,1,0")[0] == 200
+        assert post(port, "/set?layer=title&field=y&value=2")[0] == 200
+        h.frame()
+        looked = json_of(port, "/scene")
+        title, text = looked["passes"][0]["layers"]
+        assert (looked["params"]["tint"]["value"], title["y"]) == ([0, 1, 0], 2)
+        title.update(x=9, opacity=0.5)
+        text["text"] = "ho"
+        assert post_json(port, "/scene", looked)[0] == 200
+        h.frame()
+        title, text = json_of(port, "/scene")["passes"][0]["layers"]
+        assert (title["x"], title["opacity"], text["text"]) == (3, 0.5, "12:00")
 
 
 def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():

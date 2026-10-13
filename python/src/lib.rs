@@ -690,10 +690,17 @@ fn _numbered(pattern: &str) -> PyResult<bool> {
     Ok(first != pattern)
 }
 
+extern "C" {
+    fn signal(sig: std::ffi::c_int, handler: usize) -> usize;
+}
+
 /// The `ghee` command: `argv` without the program name in, the exit status
 /// out.
 #[pyfunction]
 fn _command(py: Python<'_>, argv: Vec<String>) -> i32 {
+    // Python's own SIGINT handler only sets a flag, which native code never
+    // reads. On Linux SIGINT is 2 and SIG_DFL is 0.
+    unsafe { signal(2, 0) };
     py.detach(|| ghee::cli::main(argv))
 }
 

@@ -31,3 +31,23 @@ def test_the_wheel_installs_the_command_line(tmp_path):
             binary.stdout,
             binary.stderr,
         )
+
+
+def test_the_command_imports_nothing_past_the_native_module():
+    """Every module that `ghee` imports loads again at each start: the scene
+    shim's imports and the signal module took 230 ms on a Pi Zero 2 W."""
+
+    def modules(code, *argv):
+        probe = f"import sys; {code}print(*sys.modules)"
+        ran = subprocess.run(
+            [sys.executable, "-c", probe, *argv],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        return set(ran.stdout.split())
+
+    bare = modules("")
+    ran = modules("import ghee._cli; ghee._cli.main(); ", "--version")
+    assert ran - bare == {"ghee", "ghee._cli", "ghee._native"}

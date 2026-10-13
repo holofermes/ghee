@@ -10,36 +10,31 @@ the words out.
 docs/python.md and docs/procedural.md hold them.
 """
 
-from __future__ import annotations
-
-import importlib
-from typing import TYPE_CHECKING
-
-from ._shim import (
-    Arg,
-    ArrayInput,
-    Asset,
-    Channel,
-    Layer,
-    Param,
-    Pass,
-    Scene,
-    Tick,
-    args,
-    draw,
-    feed,
-    gradient,
-    layers,
-    measure,
-    render_size,
-    run,
-    set_param,
-    skip,
-    tick,
-)
-
+TYPE_CHECKING = False
 if TYPE_CHECKING:
     from ._native import Handle, open
+    from ._shim import (
+        Arg,
+        ArrayInput,
+        Asset,
+        Channel,
+        Layer,
+        Param,
+        Pass,
+        Scene,
+        Tick,
+        args,
+        draw,
+        feed,
+        gradient,
+        layers,
+        measure,
+        render_size,
+        run,
+        set_param,
+        skip,
+        tick,
+    )
 
 __all__ = [
     "Arg",
@@ -73,15 +68,16 @@ def _ext():
 
     A scene that only builds and feeds runs without it.
     """
-    import sysconfig
-
     try:
-        return importlib.import_module("ghee._native")
+        from . import _native
     except ImportError as e:
+        import sysconfig
+
         raise ImportError(
             "ghee._native is missing. It is the native half of ghee-render, "
             f"and this install carries none for {sysconfig.get_platform()}."
         ) from e
+    return _native
 
 
 def __getattr__(name):
@@ -95,4 +91,14 @@ def __getattr__(name):
         from importlib.metadata import version
 
         return version("ghee-render")
+    if name in __all__:
+        # The ghee command imports this package, and runs without the shim.
+        from . import _shim
+
+        globals().update({n: getattr(_shim, n) for n in __all__ if n in vars(_shim)})
+        return globals()[name]
     raise AttributeError(f"module 'ghee' has no attribute '{name}'")
+
+
+def __dir__():
+    return sorted({*globals(), *__all__})

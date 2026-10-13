@@ -68,6 +68,9 @@
   #theme{font-size:20px; line-height:1; padding:3px 9px; color:var(--ink)}
   .nav{display:flex; align-items:center; gap:4px}
   .nav .step{font-size:18px; line-height:1; padding:4px 9px; color:var(--muted)}
+  .nav .smenu{display:inline-flex; align-items:center; justify-content:center; min-width:34px; min-height:32px; border-radius:9px; cursor:pointer; user-select:none}
+  .nav .smenu:hover{color:var(--ink)}
+  @media (pointer:coarse){ .nav .smenu{min-width:44px; min-height:44px} }
   .actions{display:flex; gap:7px; align-items:center; flex-wrap:wrap; justify-content:flex-end}
   .grid{display:grid; grid-template-columns:var(--leftw, minmax(260px,440px)) 6px minmax(320px,1fr); gap:6px; flex:1 1 auto; min-height:0}
   .colgrip{cursor:col-resize; border-radius:3px; align-self:stretch}
@@ -459,6 +462,12 @@
   .ask .renin{display:block; width:100%; margin:0 0 8px}
   .ask .ferr{margin:0 0 10px}
   .ask .why{white-space:pre-wrap; overflow-wrap:anywhere; max-height:40vh; overflow-y:auto; margin:-4px 0 14px}
+  .ask .from{display:flex; align-items:center; gap:10px; margin:0 0 12px; font-size:13px; color:var(--accent)}
+  .ask .from select{flex:1; min-width:0}
+  .ask .note{margin:0 0 14px; font-size:12px; color:var(--muted)}
+  .ask .note a{color:inherit}
+  .start{display:flex; flex-direction:column; align-items:flex-start; gap:12px; margin:18px 0}
+  .start[hidden]{display:none}
   @media (pointer:coarse){
     .ask .q{font-size:15px}
     .ask .acts button{min-height:44px; padding:0 18px; font-size:15px}
@@ -502,6 +511,7 @@
     <button class="ghost step" id="prev" title="previous scene">‹</button>
     <select id="scenes"></select>
     <button class="ghost step" id="next" title="next scene">›</button>
+    <span id="sceneMenu"></span>
   </div>
   <span class="spacer"></span>
   <div class="actions">
@@ -564,6 +574,10 @@
       <h3>passes</h3>
       <div class="tabs" id="tabs"></div>
     </div>
+    <div class="start" id="start" hidden>
+      <span class="muted">No scenes yet.</span>
+      <button class="primary" id="startNew" type="button">new scene</button>
+    </div>
     <div class="inputs" id="inputs"></div>
     <div class="inputs" id="chans"></div>
     <div class="layers" id="layers"></div>
@@ -599,6 +613,22 @@
   </div>
 </div>
 
+<div class="ask" id="newd" role="dialog" aria-modal="true" aria-labelledby="newText" hidden>
+  <div class="panel card">
+    <p class="q" id="newText">New scene</p>
+    <input class="ctl renin" id="newName" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="name" placeholder="name">
+    <label class="from"><span>from</span><select class="ctl" id="newFrom"></select></label>
+    <div class="ferr" id="newErr" hidden></div>
+    <p class="note">A procedural scene is a program that you write by hand: see
+      <a href="https://github.com/holofermes/ghee/blob/main/docs/procedural.md" target="_blank" rel="noopener">procedural scenes</a> and
+      <a href="https://github.com/holofermes/ghee/blob/main/docs/python.md#python-scenes" target="_blank" rel="noopener">Python scenes</a>.</p>
+    <div class="acts">
+      <button id="newNo">cancel</button>
+      <button class="primary" id="newYes">create</button>
+    </div>
+  </div>
+</div>
+
 <div class="toasts" id="toasts">
   <div class="toast bad" id="offline" role="status" hidden><span>server not responding</span></div>
   <div class="toast" id="moved" role="status" title="dismiss" hidden><span></span></div>
@@ -629,9 +659,11 @@ const onCommon = () => curPass === COMMON;
 const hasCommon = () => !!work && typeof work.common === "string";
 const commonCode = () => (hasCommon() ? work.common : "");
 function setCommon(code){ work.common = code; }
-// the names of the scenes that a program writes, from /scenes
-let procedural = [];
+// from /scenes: the scenes in the order that ‹ and › step, the names of
+// those that a program writes and of those in my scenes, and my scenes' folder
+let sceneList = [], procedural = [], mine = [], myScenes = null;
 const isProcedural = () => procedural.includes(active);
+const isMine = () => mine.includes(active);
 let lastDisplay = null, lastStats = null, compileTimer = null;
 let devModel = "", devGpu = "";
 const FRAME = $(".frame"), SCREEN = FRAME.parentElement, IMG = $("#stream"), CV = $("#streamcv");
@@ -894,6 +926,9 @@ const hasEdits = () => Object.keys(E.values || {}).length > 0 || (E.items || [])
 function paintStatus(){
   $("#save").disabled = !E.unsaved;
   $("#reset").disabled = !hasEdits();
+  $("#apply").disabled = $("#prev").disabled = $("#next").disabled = !active;
+  $("#addToggle").hidden = !active;
+  if (!active) $("#addRow").classList.remove("show");
 }
 
 // An edit of scene `scene`. It carries the revision this page last read and
@@ -1046,20 +1081,152 @@ let FILTERS = {};   // name -> filter def (fragment + params), from /filters
 // empty field takes, and the built-in fonts.
 let FORMAT = null, FX = {};
 async function boot(){
-  const s = await jget("/scenes");
-  procedural = s.procedural;
   FORMAT = await jget("/format");
   FX = FORMAT.effects;
   try { FILTERS = await jget("/filters"); } catch(e) { console.warn("/filters unavailable:", e); FILTERS = {}; }
   // the frame's size, for a pass's size
   try { lastStats = await jget("/stats"); if (lastStats.display) lastDisplay = lastStats.display; } catch (_) {}
-  const sel = $("#scenes"); sel.innerHTML = "";
-  s.scenes.forEach(n => { const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
-  sel.value = s.active;
-  await loadScene(s.active);
+  const s = await readScenes();
+  if (s.active) await loadScene(s.active); else showEmpty();
   startStream();
   loadHwinfo();
   poll();
+}
+
+// The scene list as ghee finds it now: a scene file that lands in a scenes
+// folder joins it without a restart. The picker groups the scenes, and marks
+// those that a program writes.
+async function readScenes(){
+  const s = await jget("/scenes");
+  sceneList = s.scenes || []; procedural = s.procedural || []; mine = s.mine || []; myScenes = s.my_scenes || null;
+  buildPicker(); buildSceneMenu();
+  return s;
+}
+function buildPicker(){
+  const sel = $("#scenes");
+  sel.innerHTML = "";
+  sel.disabled = !sceneList.length;
+  if (!sceneList.length){ const o = el("option", null, "no scene"); o.value = ""; sel.appendChild(o); return; }
+  [["scenes", n => !mine.includes(n) && !procedural.includes(n)], ["programs", n => procedural.includes(n)],
+   ["my scenes", n => mine.includes(n)]].forEach(([label, test]) => {
+    const names = sceneList.filter(test);
+    if (!names.length) return;
+    const g = el("optgroup");
+    g.label = label;
+    names.forEach(n => { const o = el("option", null, n); o.value = n; g.appendChild(o); });
+    sel.appendChild(g);
+  });
+  sel.value = active || "";
+}
+addEventListener("focus", () => { if (sceneList.length || myScenes != null) readScenes().catch(() => {}); });
+
+// ---- my scenes: a new scene, blank or a copy of a listed scene, and the
+// rename and the delete of one of them ----
+function buildSceneMenu(){
+  const box = $("#sceneMenu");
+  box.innerHTML = "";
+  if (myScenes == null) return;
+  const own = isMine(), proc = isProcedural();
+  box.appendChild(addMenu("⋯", [
+    ["new scene", () => newScene(null)],
+    [own ? "duplicate" : "copy to my scenes", () => newScene(active), !active || proc, proc ? "a program writes this scene" : ""],
+    null,
+    ["rename", renameScene, !own, "only a scene of my scenes renames"],
+    ["delete", deleteScene, !own, "only a scene of my scenes is deleted here"],
+  ], "step smenu", "my scenes, in " + myScenes));
+}
+function sceneNameError(n, current){
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(n)) return "a scene name takes letters, digits, - and _, a letter or a digit first";
+  if (n.length > 64) return "a scene name takes 64 characters at most";
+  if (n !== current && sceneList.includes(n)) return n + " is taken";
+  return "";
+}
+function freeScene(base){
+  base = base.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^[-_]+/, "").slice(0, 60) || "scene";
+  if (!sceneList.includes(base)) return base;
+  let k = 2;
+  while (sceneList.includes(base + k)) k++;
+  return base + k;
+}
+let newFromEl = null;
+const newOpen = () => !$("#newd").hidden;
+function newScene(from){
+  const sel = $("#newFrom");
+  sel.innerHTML = "";
+  const blank = el("option", null, "blank");
+  blank.value = "";
+  sel.appendChild(blank);
+  sceneList.forEach(n => {
+    const o = el("option", null, procedural.includes(n) ? n + " (a program)" : n);
+    o.value = n; o.disabled = procedural.includes(n);
+    sel.appendChild(o);
+  });
+  sel.value = from || "";
+  $("#newText").textContent = !from ? "New scene" : mine.includes(from) ? `Duplicate ${from}` : `Copy ${from} to my scenes`;
+  $("#newName").value = freeScene(from || "scene");
+  $("#newErr").hidden = true;
+  newFromEl = document.activeElement;
+  $("#newd").hidden = false;
+  $("#newName").focus(); $("#newName").select();
+}
+function newClose(){
+  $("#newd").hidden = true;
+  if (newFromEl && newFromEl.isConnected) newFromEl.focus();
+}
+async function newCreate(){
+  const name = $("#newName").value.trim(), from = $("#newFrom").value, err = sceneNameError(name);
+  const say = t => { $("#newErr").textContent = t; $("#newErr").hidden = false; };
+  if (err) return say(err);
+  let q = "name=" + enc(name);
+  if (from) q += "&from=" + enc(from);
+  const r = await fetch("/new?" + q, {method: "POST"}).catch(() => null);
+  if (!r || !r.ok) return say(r ? await r.text() : "server not responding");
+  newClose();
+  await openScene(name);
+}
+$("#newNo").addEventListener("click", newClose);
+$("#newYes").addEventListener("click", newCreate);
+$("#newName").addEventListener("input", () => { $("#newErr").hidden = true; });
+$("#newd").addEventListener("click", e => { if (e.target === $("#newd")) newClose(); });
+$("#newd").addEventListener("keydown", e => {
+  if (e.key === "Escape"){ e.preventDefault(); newClose(); }
+  else if (e.key === "Enter" && !e.target.closest("a, button, select")){ e.preventDefault(); newCreate(); }
+  else if (e.key === "Tab"){
+    e.preventDefault();
+    const ring = [...$("#newd").querySelectorAll("input, select, a, button")], k = ring.indexOf(document.activeElement);
+    ring[(k + (e.shiftKey ? ring.length - 1 : 1)) % ring.length].focus();
+  }
+});
+$("#startNew").addEventListener("click", () => newScene(null));
+// the console on scene `name`, and the page with it
+async function openScene(name){
+  const r = await fetch("/switch?name=" + enc(name), {method: "POST"}).catch(() => null);
+  await readScenes();
+  if (r && r.ok) await loadScene((await r.json()).active);
+}
+async function renameScene(){
+  const old = active, n = await askName(`Rename scene ${old}`, old, sceneNameError);
+  if (n == null || n === old || old !== active) return;
+  const r = await fetch(`/rename?name=${enc(old)}&to=${enc(n)}&vid=${VID}`, {method: "POST"}).catch(() => null);
+  if (!r || !r.ok){ if (r){ postErr = await r.text(); showErrors(); } return; }
+  await readScenes();
+  await loadScene(n);
+}
+async function deleteScene(){
+  const name = active;
+  if (!await ask(`Delete scene ${name}? Its folder goes, with every file in it.`, {yes: "delete"}) || name !== active) return;
+  const r = await fetch("/delete?name=" + enc(name), {method: "POST"}).catch(() => null);
+  if (!r || !r.ok){ if (r){ postErr = await r.text(); showErrors(); } return; }
+  const s = await readScenes();
+  if (s.active) await loadScene(s.active); else showEmpty();
+}
+// No scene at all: the page offers a new one.
+function showEmpty(){
+  active = null; unread = null; work = {}; D = null; E = NO_EDITS; rev = known = null;
+  curPass = 0; postErr = ""; layerUI.clear();
+  buildPicker(); buildSceneMenu(); paintAll();
+  $("#start").hidden = false;
+  toast($("#broken"), false);
 }
 
 // H264/WebCodecs preview when the browser can (needs a secure context:
@@ -1168,6 +1335,8 @@ async function loadScene(name, own = true){
   take(got);
   if (err) unread = name;
   $("#scenes").value = name;
+  $("#start").hidden = true;
+  buildSceneMenu();
   curPass = 0; postErr = err; errOpen = null; layerUI.clear(); layerChanges = null; waiting = [];
   LOCKS = locksOf(lastStats); shownLocks = canon(LOCKS);
   paintAll();
@@ -1199,7 +1368,7 @@ addEventListener("pointerup", () => { pressing = false; }, true);
 addEventListener("pointercancel", () => { pressing = false; }, true);
 const inUse = () => {
   const a = document.activeElement, held = a && a.matches && a.matches("input[type=range], input[type=checkbox]");
-  return !!(menuFrom || setPop || answer || named || pressing || a === CODE.ta || (!held && a && a.closest && a.closest("#params, #chans")));
+  return !!(menuFrom || setPop || answer || named || newOpen() || pressing || a === CODE.ta || (!held && a && a.closest && a.closest("#params, #chans")));
 };
 async function refresh(force = false){
   if (reading || !work || (!force && inUse())) return;
@@ -1359,6 +1528,7 @@ function addMenu(label, items, trigCls = "addmini", title = ""){
 // a menu stays at the place it opened, so a scroll closes it
 addEventListener("scroll", closeMenus, true);
 
+const PROGRAM = "a program writes this scene: its passes and layers are its own";
 // Tabs never change width or place. The open tab's gear, pencil, eye and ×
 // sit at the row's end, greyed where the tab takes none. A script declares the
 // passes and the common block of its scene: + adds neither there, and the
@@ -1397,6 +1567,7 @@ function buildTabs(){
     gear.disabled = ren.disabled = eye.disabled = true;
     const del = tbtn("×", "remove the common block", "x", delCommon);
     del.disabled = proc;
+    if (proc) del.title = PROGRAM;
     acts.append(gear, ren, eye, del);
   } else {
     const i = curPass, p = work.passes[i], off = p.visible === false;
@@ -1408,6 +1579,7 @@ function buildTabs(){
     ren.disabled = proc || !!p.filter;
     eye.disabled = !off && shown <= 1;   // one pass at least stays visible
     del.disabled = work.passes.length <= 1 || (proc && !p.filter);
+    if (proc && !p.filter) ren.title = del.title = PROGRAM;
     acts.append(gear, ren, eye, del);
   }
   // the strip's width, and so the scroll it takes, is final once the actions are in
@@ -1790,8 +1962,60 @@ function pick(opts, value, set, cls = "ctl"){
   const all = opts.includes(value) ? opts : opts.concat([value]);   // a value the list lacks stays
   all.forEach(o => { const op = el("option", null, o); op.value = o; s.appendChild(op); });
   s.value = value;
-  s.addEventListener("change", () => set(s.value));
+  s.addEventListener("change", () => { if (s.value !== UPLOAD) set(s.value); });
   return s;
+}
+// ---- files from this computer: an upload lands in the folder of a scene of
+// my scenes, and the scene declares it as an asset ----
+const UPLOAD = "\u0001upload", IMAGES = ".png,.jpg,.jpeg", FONTS = ".ttf,.otf";
+// pick(), and last an entry that uploads a file, which a scene of my scenes
+// alone takes. `uploaded` gets the new asset's name.
+function pickFile(opts, value, set, accept, uploaded){
+  const s = pick(opts, value, set);
+  if (isProcedural()) return s;
+  const o = el("option", null, isMine() ? "upload…" : "upload… (in my scenes)");
+  o.value = UPLOAD; o.disabled = !isMine();
+  s.appendChild(o);
+  let last = s.value;
+  s.addEventListener("change", () => {
+    if (s.value !== UPLOAD){ last = s.value; return; }
+    s.value = last;
+    uploadAsset(accept).then(n => { if (n) uploaded(n); });
+  });
+  return s;
+}
+function chooseFile(accept){
+  return new Promise(done => {
+    const i = el("input");
+    i.type = "file"; i.accept = accept;
+    i.addEventListener("change", () => done(i.files[0] || null));
+    i.addEventListener("cancel", () => done(null));
+    i.click();
+  });
+}
+// a file's name as ghee takes it: letters, digits, '.', '-' and '_'
+const safeFile = n => n.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "").replace(/\.([A-Za-z]+)$/, (_, x) => "." + x.toLowerCase());
+// an asset's name from its file's: the name rule's, and no other name's
+function assetName(file, font){
+  let n = file.replace(/\.[^.]*$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!/^[a-z]/.test(n) || n.startsWith("gl_") || n.startsWith("ghee")) n = (font ? "font_" : "image_") + n;
+  return uniqueName(n.replace(/_+$/, ""));
+}
+// A file from this computer into the active scene's folder, declared as an
+// asset of the working copy. Its name, or null.
+async function uploadAsset(accept){
+  const f = await chooseFile(accept), name = active;
+  if (!f) return null;
+  const r = await fetch(`/upload?name=${enc(name)}&file=${enc(safeFile(f.name))}`, {method: "POST", body: f}).catch(() => null);
+  if (!r || !r.ok){ postErr = r ? await r.text() : "server not responding"; showErrors(); return null; }
+  const file = (await r.json()).file;
+  if (name !== active) return null;
+  const assets = work.assets = work.assets || {};
+  const had = Object.keys(assets).find(n => assets[n] && assets[n].file === file);
+  if (had) return had;
+  const n = assetName(file, accept === FONTS);
+  assets[n] = {file};
+  return n;
 }
 // The console's colour control, the swatch alone. `none` is the value of a
 // colour that can be off: null for a tint, "transparent" for a rect's fill.
@@ -1889,9 +2113,10 @@ function buildLayers(){
   const row = el("div", "lyrow");
   row.appendChild(el("span", null, "layers"));
   // a program owns which layers its scene has, and their order
-  if (!proc) row.appendChild(addMenu("+ layer ▾", [
+  if (proc){ const why = el("span", null, "a program writes this scene"); why.title = PROGRAM; row.appendChild(why); }
+  else row.appendChild(addMenu("+ layer ▾", [
     ["text", () => addLayer(p, "text")],
-    ["image", () => addLayer(p, "image"), !imageAssets().length, "the scene has no image asset"],
+    ["image", () => addLayer(p, "image"), !imageAssets().length && !isMine(), "the scene has no image asset"],
     ["shape", () => addLayer(p, "shape")]]));
   box.appendChild(row);
   (p.layers || []).slice().reverse().forEach(d => box.appendChild(layerCard(p, d)));
@@ -1900,15 +2125,18 @@ function buildLayers(){
 // A pass's layers paint in list order, and the card shows them front first:
 // layer k of the list is card length - 1 - k.
 const cardOf = (list, k) => document.querySelectorAll("#layers .lay")[list.length - 1 - k];
-function addLayer(p, kind){
-  const list = p.layers = p.layers || [];
+async function addLayer(p, kind){
   let d;
   if (kind === "text") d = {name: uniqueName("text"), text: "text"};
   else if (kind === "shape") d = {name: uniqueName("rect"), shape: "rect"};
   else {
-    const imgs = imageAssets(), used = new Set(list.map(x => x.image));
-    d = {name: uniqueName("image"), image: imgs.find(n => !used.has(n)) || imgs[0]};
+    // a scene of my scenes with no image takes one from this computer first
+    const imgs = imageAssets(), used = new Set((p.layers || []).map(x => x.image));
+    const image = imgs.find(n => !used.has(n)) || imgs[0] || await uploadAsset(IMAGES);
+    if (!image || !(work.passes || []).includes(p)) return;
+    d = {name: uniqueName("image"), image};
   }
+  const list = p.layers = p.layers || [];
   list.push(d);
   ui(d.name).open = true;
   postScene();
@@ -2212,7 +2440,7 @@ function layerCard(p, d){
     // a closed shape shows its colour, the one control that fits beside its name on a phone
     if (shape) st.appendChild(lockIf(look(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff"), "color")), lockedField(d, "color")));
     else if (img){
-      const s = pick(images, d.image, x => setKey(p, d, "image", x));
+      const s = pickFile(images, d.image, x => setKey(p, d, "image", x), IMAGES, n => { d.image = n; postScene(); redo(); });
       s.setAttribute("aria-label", "image");
       st.appendChild(lockIf(s, lockedField(d, "image")));
     } else {
@@ -2251,7 +2479,7 @@ function layerCard(p, d){
   } else if (img){
     const {kv, v} = KV("image");
     markField(kv.firstChild, p, d, "image");
-    v.appendChild(keyed(pick(images, d.image, x => setKey(p, d, "image", x)), "image"));
+    v.appendChild(keyed(pickFile(images, d.image, x => setKey(p, d, "image", x), IMAGES, n => { d.image = n; postScene(); redo(); }), "image"));
     const tint = KV("color");
     markField(tint.kv.firstChild, p, d, "color");
     tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", null), "color"));
@@ -2265,7 +2493,8 @@ function layerCard(p, d){
     lockIf(kv, lockedField(d, "text"));
     const fam = KV("font_family");
     markField(fam.kv.firstChild, p, d, "font_family");
-    fam.v.appendChild(keyed(pick(fontNames(), fontOf(d), x => { setKey(p, d, "font_family", fontValue(x)); redo(); }), "font_family"));
+    fam.v.appendChild(keyed(pickFile(fontNames(), fontOf(d), x => { setKey(p, d, "font_family", fontValue(x)); redo(); }, FONTS,
+      n => { setKey(p, d, "font_family", n); redo(); }), "font_family"));
     const align = KV("text_align");
     markField(align.kv.firstChild, p, d, "text_align");
     align.v.appendChild(keyed(pick(ALIGNS, d.text_align || "left", x => setKey(p, d, "text_align", x === "left" ? null : x)), "text_align"));
@@ -2455,10 +2684,10 @@ $("#ask").addEventListener("keydown", e=>{
 // A new name in the same dialog, resolved null on cancel. Enter takes the name
 // once it keeps the rule, Escape and the scrim cancel, and Tab goes round the
 // field and the two buttons.
-let named = null, nameFrom = null, nameWas = "";
-function askName(question, current){
+let named = null, nameFrom = null, nameWas = "", nameCheck = nameError;
+function askName(question, current, check = nameError){
   $("#renText").textContent = question;
-  $("#renIn").value = current; nameWas = current;
+  $("#renIn").value = current; nameWas = current; nameCheck = check;
   $("#renErr").hidden = true;
   nameFrom = document.activeElement;
   $("#ren").hidden = false;
@@ -2474,7 +2703,7 @@ function nameDone(v){
   done(v);
 }
 function nameOk(){
-  const n = $("#renIn").value.trim(), err = nameError(n, nameWas);
+  const n = $("#renIn").value.trim(), err = nameCheck(n, nameWas);
   if (err){ $("#renErr").textContent = err; $("#renErr").hidden = false; return; }
   nameDone(n);
 }
@@ -2773,8 +3002,8 @@ async function sceneMoved(from){
   moving = true;
   try {
     clearTimeout(compileTimer); compileTimer = null;
-    const s = await jget("/scenes");
-    procedural = s.procedural;
+    const s = await readScenes();
+    if (!s.active){ showEmpty(); return; }
     await loadScene(s.active, false);
     $("#moved span").textContent = `the console switched to ${s.active}, so this edit to ${from} was not applied`;
     popUp($("#moved"));
@@ -2841,9 +3070,9 @@ $("#stale button").addEventListener("click", reloadScene);
 $("#behind button").addEventListener("click", ()=>{ toast($("#behind"), false); refresh(true); });
 
 // scene nav
-$("#prev").addEventListener("click", async ()=>{ const r=await jpost("/prev"); await loadScene(r.active); });
-$("#next").addEventListener("click", async ()=>{ const r=await jpost("/next"); await loadScene(r.active); });
-$("#scenes").addEventListener("change", async e=>{ const r=await jpost("/switch?name="+encodeURIComponent(e.target.value)); await loadScene(r.active); });
+$("#prev").addEventListener("click", async ()=>{ if (!active) return; const r=await jpost("/prev"); await loadScene(r.active); });
+$("#next").addEventListener("click", async ()=>{ if (!active) return; const r=await jpost("/next"); await loadScene(r.active); });
+$("#scenes").addEventListener("change", async e=>{ if (e.target.value) await openScene(e.target.value); });
 
 // column resize (desktop): drag the grip, width persists per browser
 (function(){
@@ -3011,6 +3240,8 @@ async function poll(){
     lastStats = s;
     if (s.display) lastDisplay = s.display;
     if (unread && s.active === unread && s.rev != null) loadScene(unread, false);
+    if (!active && s.active) readScenes().then(() => { if (!active) loadScene(s.active); });
+    else if (active && !s.active && !unread && settled()) readScenes().then(r => { if (!r.active) showEmpty(); });
     if (s.layer_changes !== layerChanges){
       layerChanges = s.layer_changes;
       if (isProcedural()) followScene();

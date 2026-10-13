@@ -2016,6 +2016,27 @@ fn a_missing_font_draws_a_box_a_character_and_the_scene_runs() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn words_that_take_their_first_error_box_after_a_frame_draw_it() {
+    let words = "Ag j\nI";
+    let mut l = face_layer();
+    l.data = Some(vec![Err("gone".to_string())]);
+    let laid = l.build(words).unwrap();
+    let rects = box_rects(&laid);
+    let (bw, bh) = block(laid.built.as_ref().unwrap());
+    let fit = Fit::of(bw, bh, W, H);
+    let (_g, mut r) = gpu(W, H);
+    for how in RENDERS {
+        let doc = rendered(hazard_scene("Missing.ttf", "", fit), how);
+        render(&mut r, &loaded(&doc));
+        set_words(&r, "label", words);
+        r.set_time(Some(0.0));
+        let boxed = r.render(None).unwrap().to_vec();
+        assert_hazard(&boxed, W, fit, &rects, how);
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_font_family_names_a_font_asset_or_a_file() {
     let fit = Fit {
         x: 4.0,

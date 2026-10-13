@@ -187,7 +187,11 @@ struct LayerBatches {
     /// True once the colour batch has its program.
     coloured: std::cell::Cell<bool>,
     /// The engine's index of the error-box batch, -1 for an image layer.
+    /// The batch has no program until the layer's words first hold an
+    /// error box.
     boxes: c_int,
+    /// True once the error-box batch has its program.
+    boxed: std::cell::Cell<bool>,
     /// The layer's name.
     name: String,
     /// The phase of each of the layer's effects that moves by one, as the
@@ -1557,6 +1561,7 @@ impl Renderer {
                     colour: -1,
                     coloured: std::cell::Cell::new(false),
                     boxes: -1,
+                    boxed: std::cell::Cell::new(false),
                     name: l.name().to_string(),
                     phases: std::cell::RefCell::new(Vec::new()),
                     shared: std::cell::Cell::new(false),
@@ -1598,7 +1603,8 @@ impl Renderer {
             }
             // The colour glyphs of each layer come after every layer of the
             // pass, and the error boxes after them, so none hides an error
-            // box. A colour batch compiles at the layer's first colour glyph.
+            // box. A colour batch compiles at the layer's first colour glyph,
+            // and an error-box batch at its first error box.
             let first = layers.len() - if idx < 0 { 0 } else { p.layers.len() };
             for (dl, l) in layers[first..].iter_mut().zip(&p.layers) {
                 let Some(l) = l.as_text() else {
@@ -1610,12 +1616,12 @@ impl Renderer {
                     return self.batch_refused(&name, i);
                 }
             }
-            for ((dl, l), sh) in layers[first..].iter_mut().zip(&p.layers).zip(&shaders) {
-                let (Some(l), Some(sh)) = (l.as_text(), sh) else {
+            for (dl, l) in layers[first..].iter_mut().zip(&p.layers) {
+                let Some(l) = l.as_text() else {
                     continue;
                 };
                 let name = format!("layer '{}' error boxes", l.name);
-                dl.boxes = self.add_batch(idx, &name, &sh.boxes, Blend::Normal)?;
+                dl.boxes = self.add_batch_unbuilt(idx, &name, Blend::Normal)?;
                 if dl.boxes < 0 {
                     return self.batch_refused(&name, i);
                 }
@@ -2656,7 +2662,10 @@ impl Renderer {
                 Some(Layer::Text(l)) => {
                     let l = self.concrete(l);
                     let sh = self.text_shaders(&l, self.detail(&l));
-                    let mut out = vec![sh.glyphs, sh.boxes];
+                    let mut out = vec![sh.glyphs];
+                    if dl.boxed.get() {
+                        out.push(sh.boxes);
+                    }
                     if dl.coloured.get() {
                         out.push(sh.colour);
                     }
@@ -3646,6 +3655,7 @@ impl Renderer {
             colour: -1,
             coloured: std::cell::Cell::new(false),
             boxes: -1,
+            boxed: std::cell::Cell::new(false),
             name: name.to_string(),
             phases: std::cell::RefCell::new(Vec::new()),
             shared: std::cell::Cell::new(false),
@@ -3771,7 +3781,7 @@ impl Renderer {
             pass,
             boxes_after,
             &format!("{name} error boxes"),
-            Some(shaders.boxes),
+            None,
             Blend::Normal,
         )?;
         let k = self.places().drawn[&l.name];
@@ -3951,6 +3961,9 @@ impl Renderer {
             let own = text::internal(GLSL_NAME, "_size");
             self.set_layer_uniform(d, &own, "vec2", size)?;
             *d.shown.borrow_mut() = Some(shown);
+        }
+        if !boxes.is_empty() && !d.boxed.get() {
+            self.build_boxes(layer, d)?;
         }
         for (batch, floats, part) in [
             (d.batch, &quads, ""),
@@ -4246,6 +4259,21 @@ impl Renderer {
             bail!("layer '{}' colour glyphs: {err}", layer.name);
         }
         dl.coloured.set(true);
+        Ok(())
+    }
+
+    /// Compile the program of the error-box batch of `layer`, drawn as `dl`.
+    fn build_boxes(&self, layer: &TextLayer, dl: &LayerBatches) -> Result<()> {
+        let layer = self.concrete(layer);
+        let (vs, fs) = self.text_shaders(&layer, self.detail(&layer)).boxes;
+        let (bvs, bfs) = (CString::new(vs)?, CString::new(fs)?);
+        if !unsafe {
+            ffi::ghee_mp_set_batch_program(self.handle, dl.boxes, bvs.as_ptr(), bfs.as_ptr())
+        } {
+            let err = or_else(self.last_error(), "compile error");
+            bail!("layer '{}' error boxes: {err}", layer.name);
+        }
+        dl.boxed.set(true);
         Ok(())
     }
 
@@ -8469,8 +8497,9 @@ mod tests {
         assert_eq!((built.quads.count, built.boxes.count), (2, 0));
         let drawn = frame(&mut r);
         assert!(r.text_errors().is_empty());
-        // The error-box batch is live: given the glyphs' quads, it covers
-        // them.
+        // The error-box batch draws once it has its program: given the
+        // glyphs' quads, it covers them.
+        r.build_boxes(layer, &r.layers[0]).unwrap();
         let boxes = r.layers[0].boxes;
         r.batch_quads(boxes, "boxes", &built.quads.floats, 4)
             .unwrap();

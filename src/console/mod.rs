@@ -57,7 +57,7 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
 /// extracts this set to a cache directory first. A procedural example imports
 /// ghee from the ghee-render package, which uv installs.
-pub const EXAMPLES: [(&str, &[u8]); 22] = [
+pub const EXAMPLES: [(&str, &[u8]); 21] = [
     ("bars.glsl", include_bytes!("../../ghee/examples/bars.glsl")),
     (
         "bars.scene.json",
@@ -68,8 +68,12 @@ pub const EXAMPLES: [(&str, &[u8]); 22] = [
         include_bytes!("../../ghee/examples/blur.scene.json"),
     ),
     (
-        "echo.scene.json",
-        include_bytes!("../../ghee/examples/echo.scene.json"),
+        "feedback.glsl",
+        include_bytes!("../../ghee/examples/feedback.glsl"),
+    ),
+    (
+        "feedback.scene.json",
+        include_bytes!("../../ghee/examples/feedback.scene.json"),
     ),
     ("fonts/DejaVuSans-Latin.ttf", crate::text::BUILT_IN_FONT),
     (
@@ -117,14 +121,6 @@ pub const EXAMPLES: [(&str, &[u8]); 22] = [
         include_bytes!("../../ghee/examples/stamp.scene.json"),
     ),
     ("stats.py", include_bytes!("../../ghee/examples/stats.py")),
-    (
-        "trail.scene.json",
-        include_bytes!("../../ghee/examples/trail.scene.json"),
-    ),
-    (
-        "twopass.scene.json",
-        include_bytes!("../../ghee/examples/twopass.scene.json"),
-    ),
 ];
 
 /// The bundled example scenes on disk. $GHEE_EXAMPLES wins. Otherwise this

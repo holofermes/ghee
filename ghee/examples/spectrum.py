@@ -7,11 +7,12 @@
 and a 2D array each frame.
 
 The scene is built in code. The tick hook stands in for an analyser and
-makes one level per band. The feed `bars` sends those levels, and the shader
-stands a bar on each. The feed `history` sends the last ROWS frames of
-levels as a BANDS x ROWS grid, the newest row first, and the shader reads it
-with `history_sample2(uv)` as a spectrogram that scrolls down under the
-bars. The feeds send raw levels, and `gain` scales them in GLSL.
+makes one level per band. The feed `bars` sends those levels, and the
+shader stands them as blocks in a strip at the right edge. The feed
+`history` sends the last ROWS frames of levels as a BANDS x ROWS grid, the
+newest row first, and the shader reads it with `history_sample2(uv)` as a
+heat map that scrolls from the strip to the left, the low bands at the
+bottom. The feeds send raw levels, and `gain` scales them in GLSL.
 
     ghee render --demo spectrum -o frame.####.png --frames 60
     ghee render --demo spectrum --serve
@@ -26,31 +27,41 @@ ghee.args()  # the probe, this scene takes no arguments
 import math  # noqa: E402
 from array import array  # noqa: E402
 
-from lib import look  # noqa: E402
+BANDS = 32
+ROWS = 64
+NOTES = [5, 8, 6, 10]  # the band of each beat's note, and its harmonics
 
-BANDS = 48
-ROWS = 40
+SHADER = (
+    f"const float ROWS = {ROWS}.0;\n"
+    + """
+const float STRIP = 0.12;  // the live strip's share of the width, at the right
 
-SHADER = """
-const float FLOOR = 0.55;  // the bars stand on this line, the history hangs under it
+// step(edge, v) with no compare, which VC4 can misdraw after a texture read
+float over(float v, float edge) {
+    return clamp((v - edge) * 400.0, 0.0, 1.0);
+}
+
+vec3 heat(float v) {
+    vec3 col = mix(soot, ember, over(v, 0.25));
+    col = mix(col, flame, over(v, 0.5));
+    return mix(col, ash, over(v, 0.75));
+}
 
 void main() {
-    float fi = uv.x * float(bars_count);
-    int i = int(min(fi, float(bars_count - 1)));
-    float h = gain * bars_at(i);
-    float y = (FLOOR - uv.y) / FLOOR;  // 0 on the floor, 1 at the top
-    float column = smoothstep(0.46, 0.30, abs(fract(fi) - 0.5));
-    float body = column * (1.0 - smoothstep(h - 0.004, h + 0.004, y));
-    vec3 above = palette(0.16 + 0.30 * uv.x + 0.06 * h) * body * (0.3 + y);
+    float b = floor((1.0 - uv.y) * float(bars_count));
+    float band = (b + 0.5) / float(bars_count);
+    float edge = 1.0 - STRIP;
+    float age = floor(max(edge - uv.x, 0.0) / edge * ROWS);
+    vec3 col = heat(gain * history_sample2(vec2(band, (age + 0.5) / ROWS)));
 
-    float v = (uv.y - FLOOR) / (1.0 - FLOOR);  // 0 under the floor, 1 at the bottom
-    float level = gain * history_sample2(vec2((floor(fi) + 0.5) / float(bars_count), v));
-    vec3 below = palette(0.16 + 0.30 * uv.x + 0.06 * level) * level * level * (1.0 - v);
-
-    vec3 col = mix(above, below, smoothstep(FLOOR - 0.002, FLOOR + 0.002, uv.y));
-    gl_FragColor = vec4(tone(col * (0.4 + gain), 0.02, 1.5), 1.0);
+    float x = (uv.x - edge) / STRIP;
+    float live = gain * bars_at(int(b));
+    float block = over(x, 0.1) * (1.0 - over(x, 0.1 + 0.9 * min(live, 1.0)));
+    vec3 strip = mix(soot, ash, block);
+    gl_FragColor = vec4(mix(col, strip, over(uv.x, edge)), 1.0);
 }
 """
+)
 
 _levels = array("f", bytes(4 * BANDS))
 _history = array("f", bytes(4 * BANDS * ROWS))
@@ -58,17 +69,19 @@ _history = array("f", bytes(4 * BANDS * ROWS))
 
 @ghee.tick
 def listen(tick):
-    """The levels of this frame, pushed onto the history."""
-    t = tick.time
-    beat = t * 2.0 % 1.0  # two beats a second
+    """The levels of this frame, pushed onto the history: a kick and a
+    note on each beat, two beats a second, and a hi-hat between them."""
+    beats = tick.time * 2.0
+    beat = beats % 1.0
+    note = NOTES[int(beats) % len(NOTES)]
     for i in range(BANDS):
         x = i / (BANDS - 1)
-        # two sines that are not quite harmonics, running opposite ways, so
-        # the crest travels and never lands twice on the same band
-        w = 0.28 * math.sin(x * 4.4 + t) + 0.10 * math.sin(x * 9.7 - t * 0.6)
-        kick = math.exp(-8.0 * beat - 4.0 * x)
-        hat = math.exp(-12.0 * ((beat + 0.5) % 1.0)) * x
-        _levels[i] = 0.5 * (0.65 + w) + 0.9 * kick + 0.6 * hat
+        level = 0.15 + 0.05 * math.sin(i * 1.7 + tick.time * 3.0)
+        level += 0.9 * math.exp(-8.0 * beat - 6.0 * x)
+        level += 0.5 * math.exp(-14.0 * ((beat + 0.5) % 1.0)) * x
+        if i % note == 0 and i // note in (1, 2, 3):
+            level += (1.0 - 0.6 * beat) * 0.8 / (i // note)
+        _levels[i] = level
     _history[BANDS:] = _history[:-BANDS]
     _history[:BANDS] = _levels
 
@@ -85,7 +98,6 @@ def history(tick):
 
 def build():
     return ghee.Scene(
-        common=look.PALETTE + look.TONE,
         passes=[
             ghee.Pass(
                 name="main",
@@ -94,11 +106,13 @@ def build():
                     ghee.ArrayInput("bars", BANDS),
                     ghee.ArrayInput("history", (BANDS, ROWS)),
                 ],
-                params={
-                    "gain": ghee.Param(
-                        "gain", "float", 0.6, min=0.0, max=1.0, step=0.01
-                    )
-                },
+                params=[
+                    ghee.Param("gain", "float", 1.0, min=0.0, max=2.0, step=0.01),
+                    ghee.Param("soot", "color", "#131313"),
+                    ghee.Param("ember", "color", "#bd393d"),
+                    ghee.Param("flame", "color", "#f5855a"),
+                    ghee.Param("ash", "color", "#f7c787"),
+                ],
             )
         ],
     )

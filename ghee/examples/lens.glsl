@@ -34,7 +34,7 @@ void main() {
   float cover = page_cover(p, font_size * min(m, along));
 
   float inside = step(length(d), radius);
-  float rim = clamp(1.5 - abs(length(d) - radius), 0.0, 1.0);
+  float edge = clamp(1.5 - abs(length(d) - radius), 0.0, 1.0);
   vec3 col = mix(mix(paper, glass, inside), ink, cover);
-  gl_FragColor = vec4(mix(col, ink, 0.6 * rim), 1.0);
+  gl_FragColor = vec4(mix(col, rim, edge), 1.0);
 }

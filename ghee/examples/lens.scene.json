@@ -5,32 +5,14 @@
       "name": "main",
       "fragment": {"file": "lens.glsl"},
       "params": {
-        "zoom": {
-          "type": "float",
-          "value": 3.0,
-          "min": 1.0,
-          "max": 8.0,
-          "step": 0.1
-        },
-        "ink": {
-          "type": "color",
-          "value": [0.1, 0.09, 0.12]
-        },
-        "paper": {
-          "type": "color",
-          "value": [0.93, 0.9, 0.84]
-        },
-        "glass": {
-          "type": "color",
-          "value": [0.98, 0.96, 0.9]
-        }
+        "zoom": {"type": "float", "value": 3.0, "min": 1.0, "max": 8.0, "step": 0.1},
+        "ink": {"type": "color", "value": "#2b2622"},
+        "paper": {"type": "color", "value": "#efd7b4"},
+        "glass": {"type": "color", "value": "#fbf4e6"},
+        "rim": {"type": "color", "value": "#7a5e41"}
       },
       "layers": [
-        {
-          "name": "page",
-          "visible": false,
-          "text": "A lens drifts over the page.\nUnder it the words grow,\nand every edge stays sharp:\nthe shader reads the words\nfrom the curves of the font\nat the size where they land."
-        }
+        {"name": "page", "visible": false, "text": "A lens drifts over the page.\nUnder it the words grow,\nand every edge stays sharp:\nthe shader reads the words\nfrom the curves of the font\nat the size where they land."}
       ]
     }
   ]

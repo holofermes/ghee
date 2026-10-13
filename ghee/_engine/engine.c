@@ -647,12 +647,12 @@ static struct gbm_device *lending_gpu(GheeScene *g, int width, int height) {
     return gbm;
 }
 
-static GheeScene *create_impl(int width, int height, int components, const char *dri_device, int scanout, int rgb565, char **err) {
+static GheeScene *create_impl(int width, int height, int components, const char *dri_device, int card, int scanout, int rgb565, char **err) {
     static char early_err[ERROR_BUFFER_SIZE];
     early_err[0] = '\0';
 
     GheeScene *g = calloc(1, sizeof(GheeScene));
-    if (!g) { if (err) *err = "out of memory"; return NULL; }
+    if (!g) { if (card >= 0) close(card); if (err) *err = "out of memory"; return NULL; }
     g->width = g->out_w = width;
     g->height = g->out_h = height;
     g->components = components;
@@ -661,7 +661,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     g->display = EGL_NO_DISPLAY;
 
     const char *dev = dri_device ? dri_device : DEFAULT_DRI_DEVICE;
-    g->drm_fd = open(dev, O_RDWR | O_CLOEXEC);
+    g->drm_fd = card >= 0 ? card : open(dev, O_RDWR | O_CLOEXEC);
     if (g->drm_fd < 0) {
         snprintf(early_err, sizeof(early_err), "cannot open DRI device %s", dev);
         goto fail;
@@ -867,7 +867,7 @@ fail:
 }
 
 GheeScene *ghee_create(int width, int height, int components, const char *dri_device, char **err) {
-    return create_impl(width, height, components, dri_device, 0, 0, err);
+    return create_impl(width, height, components, dri_device, -1, 0, 0, err);
 }
 
 // One DRM framebuffer per GBM bo, cached in the bo's user data (added once).
@@ -1008,26 +1008,38 @@ static int pick_display_mode(int fd, uint32_t *conn_out, uint32_t *crtc_out,
     return 0;
 }
 
-int ghee_display_probe(const char *dri_device, int *width, int *height) {
+int ghee_display_open(const char *dri_device, int *width, int *height) {
     const char *dev = dri_device ? dri_device : DEFAULT_DRI_DEVICE;
-    int fd = open(dev, O_RDWR | O_CLOEXEC);
+    const int fd = open(dev, O_RDWR | O_CLOEXEC);
     if (fd < 0) return -1;
     uint32_t conn, crtc;
     drmModeModeInfo mode;
-    int rc = pick_display_mode(fd, &conn, &crtc, &mode);
-    close(fd);
-    if (rc) return -1;
+    if (pick_display_mode(fd, &conn, &crtc, &mode)) {
+        close(fd);
+        return -1;
+    }
     if (width) *width = mode.hdisplay;
     if (height) *height = mode.vdisplay;
+    return fd;
+}
+
+int ghee_display_probe(const char *dri_device, int *width, int *height) {
+    const int fd = ghee_display_open(dri_device, width, height);
+    if (fd < 0) return -1;
+    close(fd);
     return 0;
+}
+
+GheeScene *ghee_display_create(int width, int height, const char *dri_device, int rgb565, char **err) {
+    return ghee_display_create_on(-1, width, height, dri_device, rgb565, err);
 }
 
 // Render to a KMS connector instead of reading back. width/height should match
 // the connector mode (ghee_display_probe reports it). Needs DRM master.
 // rgb565 renders/scans 16-bit color: half the tile-store + scanout bytes.
-GheeScene *ghee_display_create(int width, int height, const char *dri_device, int rgb565, char **err) {
+GheeScene *ghee_display_create_on(int card, int width, int height, const char *dri_device, int rgb565, char **err) {
     static char eb[ERROR_BUFFER_SIZE];
-    GheeScene *g = create_impl(width, height, 4, dri_device, 1, rgb565, err);
+    GheeScene *g = create_impl(width, height, 4, dri_device, card, 1, rgb565, err);
     if (!g) return NULL;
     // Without master every page flip is refused, which used to show up as a
     // per-frame error and a display that never updates.
@@ -3173,13 +3185,19 @@ void ghee_mp_reset(GheeScene *g) {
 // then runs as before and reports its own error.
 int ghee_display_renders(const char *dri_device) {
     const char *dev = dri_device ? dri_device : DEFAULT_DRI_DEVICE;
+    const int fd = open(dev, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return 1;
+    const int hw = ghee_display_renders_on(fd);
+    close(fd);
+    return hw;
+}
+
+int ghee_display_renders_on(int card) {
     int hw = 1;
     struct gbm_device *gbm = NULL;
     EGLDisplay dpy = EGL_NO_DISPLAY;
     EGLContext ctx = EGL_NO_CONTEXT;
-    const int fd = open(dev, O_RDWR | O_CLOEXEC);
-    if (fd < 0) return 1;
-    gbm = gbm_create_device(fd);
+    gbm = gbm_create_device(card);
     if (!gbm) goto out;
     dpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, gbm, NULL);
     if (dpy == EGL_NO_DISPLAY || eglInitialize(dpy, NULL, NULL) == EGL_FALSE) {
@@ -3203,6 +3221,5 @@ out:
     if (ctx != EGL_NO_CONTEXT) eglDestroyContext(dpy, ctx);
     if (dpy != EGL_NO_DISPLAY) eglTerminate(dpy);
     if (gbm) gbm_device_destroy(gbm);
-    close(fd);
     return hw;
 }

@@ -9,13 +9,13 @@
 //! it.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
 use ghee::console::server::{coerce, gpu_caps, H264_FPS};
 use ghee::draw::{Arg, Call, CallKind};
-use ghee::engine::{probe_display, quarter_turns, Feed, Given, Refused, Renderer};
+use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
 use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::layer::Address;
@@ -444,16 +444,44 @@ fn open_sink(display: Option<&str>, opts: &[(String, Value)]) -> Outcome<Sink> {
     Ok(Sink::Kms)
 }
 
-/// (size, components) of the frame. A connected display on card `dri`, else
-/// on the first card with one, states its mode, which wins over the host's own
-/// size.
+/// The card that display_size() opened, under the `dri` that it was asked
+/// for, held for the open() that follows.
+static PROBED: Mutex<Option<(Option<String>, Card)>> = Mutex::new(None);
+
+/// The mode size of the display that open() with display="kms" and `dri`
+/// draws on. Its card stays open for that open().
+pub fn display_size(dri: Option<&str>) -> Option<(i32, i32)> {
+    let mut held = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((asked, card)) = held.as_ref() {
+        if asked.as_deref() == dri {
+            return Some(card.size());
+        }
+    }
+    let card = Card::open(dri)?;
+    let size = card.size();
+    *held = Some((dri.map(str::to_string), card));
+    Some(size)
+}
+
+/// The card of a display="kms" open on `dri`: the one that display_size()
+/// holds for it, else the card opened now.
+fn display_card(dri: Option<&str>) -> Option<Card> {
+    let held = PROBED.lock().unwrap_or_else(|e| e.into_inner()).take();
+    match held {
+        Some((asked, card)) if asked.as_deref() == dri => Some(card),
+        _ => Card::open(dri),
+    }
+}
+
+/// (size, components) of the frame. A connected display on `card` states
+/// its mode, which wins over the host's own size.
 fn geometry(
     sink: &Sink,
     size: Option<(i32, i32)>,
-    dri: Option<&str>,
+    card: Option<&Card>,
 ) -> Outcome<((i32, i32), i32)> {
     match sink {
-        Sink::Kms => match probe_display(dri).or(size) {
+        Sink::Kms => match card.map(Card::size).or(size) {
             Some(size) => Ok((size, 4)),
             None => Err(Fault::system(
                 "no connected display to size from; pass width and height",
@@ -534,14 +562,21 @@ impl Session {
         quarter_turns(rotate).map_err(scene_fault)?;
         let (scene, name) = load(source)?;
         let sink = open_sink(display.as_deref(), &opts)?;
-        let ((w, h), components) = geometry(&sink, size, dri.as_deref())?;
+        let card = match sink {
+            Sink::Kms => display_card(dri.as_deref()),
+            Sink::None => None,
+        };
+        let ((w, h), components) = geometry(&sink, size, card.as_ref())?;
         let kms = matches!(sink, Sink::Kms);
         let rgb565 = opts
             .iter()
             .find(|(k, _)| k == "rgb565")
             .is_some_and(|(_, v)| truthy(v));
-        let mut renderer =
-            Renderer::new(w, h, components, dri.as_deref(), kms, rgb565).map_err(system_fault)?;
+        let mut renderer = match card {
+            Some(card) => Renderer::on_card(card, w, h, rgb565),
+            None => Renderer::new(w, h, components, dri.as_deref(), kms, rgb565),
+        }
+        .map_err(system_fault)?;
         renderer.set_alpha(alpha);
         renderer.set_rotate(rotate).map_err(system_fault)?;
         let err = renderer.setup(&scene).map_err(system_fault)?;

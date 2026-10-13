@@ -33,6 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::raw::{c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -738,23 +739,62 @@ pub fn probe_dri_cards() -> Vec<String> {
     }
 }
 
+/// A card node that drives a connected display, held open. The kernel puts
+/// its console back on the display at the card's last close, so the card
+/// stays open from the probe that finds the display to the renderer that
+/// draws on it, which takes it over.
+pub struct Card {
+    device: String,
+    size: (i32, i32),
+    fd: OwnedFd,
+}
+
+impl Card {
+    /// The card `dri_device`, else the first card with a connected display,
+    /// open. None means no card node, or no connected display.
+    pub fn open(dri_device: Option<&str>) -> Option<Card> {
+        let devices = match dri_device.filter(|d| !d.is_empty()) {
+            Some(d) => vec![d.to_string()],
+            None => probe_dri_cards(),
+        };
+        for device in devices {
+            let Ok(cdev) = CString::new(device.as_str()) else {
+                continue;
+            };
+            let (mut w, mut h): (c_int, c_int) = (0, 0);
+            let fd = unsafe { ffi::ghee_display_open(cdev.as_ptr(), &mut w, &mut h) };
+            if fd >= 0 {
+                let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                return Some(Card {
+                    device,
+                    size: (w, h),
+                    fd,
+                });
+            }
+        }
+        None
+    }
+
+    /// The card node.
+    pub fn device(&self) -> &str {
+        &self.device
+    }
+
+    /// The mode size of the display, as (width, height).
+    pub fn size(&self) -> (i32, i32) {
+        self.size
+    }
+
+    /// True when GL on this card runs on the GPU, as display_renders() says.
+    pub fn renders(&self) -> bool {
+        unsafe { ffi::ghee_display_renders_on(self.fd.as_raw_fd()) != 0 }
+    }
+}
+
 /// The card node that drives a connected display, as (device, width, height).
 /// None means no display is connected.
 pub fn probe_display_device(dri_device: Option<&str>) -> Option<(String, i32, i32)> {
-    let devices = match dri_device.filter(|d| !d.is_empty()) {
-        Some(d) => vec![d.to_string()],
-        None => probe_dri_cards(),
-    };
-    for dev in devices {
-        let Ok(cdev) = CString::new(dev.as_str()) else {
-            continue;
-        };
-        let (mut w, mut h): (c_int, c_int) = (0, 0);
-        if unsafe { ffi::ghee_display_probe(cdev.as_ptr(), &mut w, &mut h) } == 0 {
-            return Some((dev, w, h));
-        }
-    }
-    None
+    Card::open(dri_device).map(|c| (c.device, c.size.0, c.size.1))
 }
 
 /// The mode size of the connected display, as (width, height).
@@ -1032,6 +1072,24 @@ impl Renderer {
         display: bool,
         rgb565: bool,
     ) -> Result<Renderer> {
+        Renderer::open(width, height, components, dri_device, display, rgb565, None)
+    }
+
+    /// A renderer that scans out to the display of `card` at width x
+    /// height, as Renderer::new does with display, on the open card.
+    pub fn on_card(card: Card, width: i32, height: i32, rgb565: bool) -> Result<Renderer> {
+        Renderer::open(width, height, 4, None, true, rgb565, Some(card))
+    }
+
+    fn open(
+        width: i32,
+        height: i32,
+        components: i32,
+        dri_device: Option<&str>,
+        display: bool,
+        rgb565: bool,
+        card: Option<Card>,
+    ) -> Result<Renderer> {
         // The engine reads back GL_RGB for 3 components and GL_RGBA otherwise.
         // Any other count sizes the frame buffer under what the engine writes.
         assert!(
@@ -1109,15 +1167,17 @@ impl Renderer {
         if display {
             // Scanout to a KMS connector needs a card node and DRM master.
             // A render node offers neither.
-            let dev = match device.map(str::to_string).or_else(env_dri) {
-                Some(d) => d,
-                None => probe_display_device(None)
-                    .map_or_else(|| "/dev/dri/card0".to_string(), |(d, _, _)| d),
+            let named = device.map(str::to_string).or_else(env_dri);
+            let card = card.or_else(|| named.is_none().then(|| Card::open(None)).flatten());
+            let (dev, fd) = match card {
+                Some(c) => (c.device, c.fd.into_raw_fd()),
+                None => (named.unwrap_or_else(|| "/dev/dri/card0".to_string()), -1),
             };
             let cdev = CString::new(dev.as_str())?;
             let mut err: *mut c_char = ptr::null_mut();
             r.handle = unsafe {
-                ffi::ghee_display_create(
+                ffi::ghee_display_create_on(
+                    fd,
                     width,
                     height,
                     cdev.as_ptr(),
@@ -5432,6 +5492,27 @@ mod tests {
             r.present(None, None).unwrap();
         }
         assert_eq!(r.last_error(), "");
+    }
+
+    #[test]
+    #[cfg_attr(
+        any(ghee_no_gpu, not(ghee_display)),
+        ignore = "needs a GL device and a connected display"
+    )]
+    fn a_display_draws_through_the_open_card_that_its_probe_found() {
+        let _g = lock();
+        env::remove_var("GHEE_DRI");
+        let card = Card::open(None).expect("no connected display");
+        let (w, h) = card.size();
+        // The probe's open of the card outlives the Card, so a renderer that
+        // opened the card again would find the DRM master taken.
+        let probe = card.fd.try_clone().unwrap();
+        let mut r = Renderer::on_card(card, w, h, false).unwrap();
+        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.present(None, None).unwrap();
+        assert_eq!(r.last_error(), "");
+        drop(r);
+        drop(probe);
     }
 
     #[test]

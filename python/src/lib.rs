@@ -674,12 +674,12 @@ fn open(
 
 /// The mode of the connected display on card `dri`, else on the first card
 /// with one, as open() takes it with display="kms", worked out before
-/// anything opens it. None for no connected display.
+/// open(). None for no connected display.
 #[pyfunction]
 #[pyo3(signature = (dri=None))]
 fn _display_size(dri: Option<PathBuf>) -> PyResult<Option<(i32, i32)>> {
     let dri = dri.map(|d| d.to_string_lossy().into_owned());
-    Ok(ghee::engine::probe_display(dri.as_deref()))
+    Ok(session::display_size(dri.as_deref()))
 }
 
 /// True when the image file name `pattern` numbers its frames: a run of `#`

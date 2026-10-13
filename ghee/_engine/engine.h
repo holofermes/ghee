@@ -54,6 +54,11 @@ GheeScene *ghee_create(int width, int height, int components, const char *dri_de
 // scanout instead of readback). width/height should match the connector mode.
 // Needs DRM master. Present frames with ghee_mp_present.
 GheeScene *ghee_display_create(int width, int height, const char *dri_device, int rgb565, char **err);
+// ghee_display_create on `card`, the open card node `dri_device` that
+// ghee_display_open returned. The renderer takes the descriptor over and
+// closes it at its destroy, or at once when the create fails. -1 opens
+// `dri_device`.
+GheeScene *ghee_display_create_on(int card, int width, int height, const char *dri_device, int rgb565, char **err);
 
 void ghee_set_verbosity(int level);
 
@@ -276,12 +281,17 @@ int  ghee_display_vrefresh(GheeScene *g);  // mode refresh Hz, 0 = not display m
 // or touching GL. Needs read access to the card node only, not DRM master.
 // 0 = width/height set, -1 = no device or nothing connected.
 int  ghee_display_probe(const char *dri_device, int *width, int *height);
+// ghee_display_probe that keeps the card open: its descriptor, or -1. The
+// kernel puts its console back on the display at the card's last close.
+int  ghee_display_open(const char *dri_device, int *width, int *height);
 
 // Whether GL on this card runs on hardware. A display-only card (a panel
 // under a kernel display driver) still gets hardware GL when Mesa pairs it
 // with the render node, so 0 means no usable render node exists. Quiet, and
 // it touches no GL state of a live renderer.
 int ghee_display_renders(const char *dri_device);
+// ghee_display_renders on `card`, an open card node, which stays open.
+int ghee_display_renders_on(int card);
 
 // Blank the display, or light it again (display mode only). Blanking stops
 // the CRTC driving the connector, which runs the kernel driver's own disable

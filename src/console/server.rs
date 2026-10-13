@@ -32,7 +32,7 @@ use crate::console::state::{self, Edits, Item};
 use crate::console::store::{self, Carried, Opened, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
 use crate::draw::Call;
-use crate::engine::{ErrorPass, Feed, Given, Provider, Renderer, Taken};
+use crate::engine::{Card, ErrorPass, Feed, Given, Provider, Renderer, Taken};
 use crate::feeds::demo_feed;
 use crate::h264::{
     avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
@@ -1862,9 +1862,10 @@ impl RenderTarget for SharedRenderer {
 }
 
 /// Create the render-thread Renderer. It probes the DRI devices, so the console
-/// runs on a Pi (card0) and on desktop Mesa (renderD128).
-fn make_renderer(console: &Console) -> Result<Renderer> {
-    let mut r = open_renderer(console)?;
+/// runs on a Pi (card0) and on desktop Mesa (renderD128). A display takes
+/// `card` when the caller holds it open.
+fn make_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
+    let mut r = open_renderer(console, card)?;
     r.set_alpha(console.alpha);
     r.set_rotate(console.rotate)?;
     if let Some(level) = console.brightness {
@@ -1875,8 +1876,11 @@ fn make_renderer(console: &Console) -> Result<Renderer> {
     Ok(r)
 }
 
-fn open_renderer(console: &Console) -> Result<Renderer> {
+fn open_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
     if console.display {
+        if let Some(card) = card {
+            return Renderer::on_card(card, console.w, console.h, console.rgb565);
+        }
         let dev = console
             .dri
             .clone()
@@ -3249,6 +3253,9 @@ pub struct Options {
     pub frames: u64,
     pub timestep: Option<f64>,
     pub dri_device: Option<String>,
+    /// The display's card, held open since the caller's probe, which the
+    /// renderer takes in place of opening `dri_device`.
+    pub card: Option<Card>,
     /// The summary hook. This hook makes the loop keep a cost per frame, and a
     /// run without it keeps none.
     pub on_stats: Option<StatsHook>,
@@ -3284,6 +3291,7 @@ impl Default for Options {
             frames: 0,
             timestep: None,
             dri_device: None,
+            card: None,
             on_stats: None,
         }
     }
@@ -3348,6 +3356,7 @@ pub fn run(opts: Options) -> Result<()> {
         frames,
         timestep,
         dri_device,
+        card,
         on_stats,
         filters,
     } = opts;
@@ -3414,7 +3423,7 @@ pub fn run(opts: Options) -> Result<()> {
         })
     };
 
-    match make_renderer(&console) {
+    match make_renderer(&console, card) {
         Ok(r) => {
             let count = match names.len() {
                 0 => "no scene".to_string(),

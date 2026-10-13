@@ -74,6 +74,14 @@ extern "C" {
         rgb565: c_int,
         err: *mut *mut c_char,
     ) -> *mut GheeScene;
+    pub fn ghee_display_create_on(
+        card: c_int,
+        width: c_int,
+        height: c_int,
+        dri_device: *const c_char,
+        rgb565: c_int,
+        err: *mut *mut c_char,
+    ) -> *mut GheeScene;
     pub fn ghee_set_verbosity(level: c_int);
     pub fn ghee_renderer(g: *mut GheeScene) -> *const c_char;
     pub fn ghee_last_error(g: *mut GheeScene) -> *const c_char;
@@ -235,7 +243,13 @@ extern "C" {
         width: *mut c_int,
         height: *mut c_int,
     ) -> c_int;
+    pub fn ghee_display_open(
+        dri_device: *const c_char,
+        width: *mut c_int,
+        height: *mut c_int,
+    ) -> c_int;
     pub fn ghee_display_renders(dri_device: *const c_char) -> c_int;
+    pub fn ghee_display_renders_on(card: c_int) -> c_int;
     pub fn ghee_display_blank(g: *mut GheeScene, blank: c_int) -> c_int;
     pub fn ghee_display_blanked(g: *mut GheeScene) -> c_int;
     pub fn ghee_encoder_create(

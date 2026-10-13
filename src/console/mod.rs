@@ -57,21 +57,16 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
 /// extracts this set to a cache directory first. A procedural example imports
 /// ghee from the ghee-render package, which uv installs.
-pub const EXAMPLES: [(&str, &[u8]); 27] = [
+pub const EXAMPLES: [(&str, &[u8]); 22] = [
     ("bars.glsl", include_bytes!("../../ghee/examples/bars.glsl")),
     (
         "bars.scene.json",
         include_bytes!("../../ghee/examples/bars.scene.json"),
     ),
     (
-        "bluesun.py",
-        include_bytes!("../../ghee/examples/bluesun.py"),
-    ),
-    (
         "blur.scene.json",
         include_bytes!("../../ghee/examples/blur.scene.json"),
     ),
-    ("clocks.py", include_bytes!("../../ghee/examples/clocks.py")),
     (
         "echo.scene.json",
         include_bytes!("../../ghee/examples/echo.scene.json"),
@@ -91,10 +86,6 @@ pub const EXAMPLES: [(&str, &[u8]); 27] = [
         "karaoke.py",
         include_bytes!("../../ghee/examples/karaoke.py"),
     ),
-    (
-        "lettering.py",
-        include_bytes!("../../ghee/examples/lettering.py"),
-    ),
     ("lens.glsl", include_bytes!("../../ghee/examples/lens.glsl")),
     (
         "lens.scene.json",
@@ -105,20 +96,12 @@ pub const EXAMPLES: [(&str, &[u8]); 27] = [
         include_bytes!("../../ghee/examples/lib/look.py"),
     ),
     (
-        "marquee.py",
-        include_bytes!("../../ghee/examples/marquee.py"),
-    ),
-    (
         "mix.scene.json",
         include_bytes!("../../ghee/examples/mix.scene.json"),
     ),
     (
         "nowplaying.py",
         include_bytes!("../../ghee/examples/nowplaying.py"),
-    ),
-    (
-        "plaster.png",
-        include_bytes!("../../ghee/examples/plaster.png"),
     ),
     (
         "spectrum.py",

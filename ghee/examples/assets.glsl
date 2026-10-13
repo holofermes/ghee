@@ -14,14 +14,11 @@
 
 void main() {
   vec2 px = uv * iResolution.xy + vec2(iTime * drift, 0.0);
-  // The checker's squares stand on a corner: d counts them along the two
-  // diagonals.
   vec2 d = vec2(px.x + px.y, px.x - px.y) / (tile * 1.4142);
   vec2 cell = floor(d);
   float square = mod(cell.x + cell.y, 2.0);
   vec3 col = mix(cream, blush, square);
 
-  // A berry of `berry` pixels stands upright in the middle of each square.
   // stamp.png's edge pixels are transparent, so a clamped read past the
   // berry's box draws nothing.
   vec2 middle = vec2(cell.x + cell.y + 1.0, cell.x - cell.y) * 0.5 * tile * 1.4142;

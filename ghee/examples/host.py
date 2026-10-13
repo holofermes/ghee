@@ -37,7 +37,6 @@ void main() {
     float gap = 1.0 / float(ROWS + 1);
     vec3 col = paper;
     for (int r = 0; r < ROWS; r++) {
-        // row 0 is the newest, at the bottom, and the older rows stand above
         float row = float(r);
         float v = walk_sample2(vec2(uv.x, (row + 0.5) / float(ROWS)));
         float y = 1.0 - (row + 1.0) * gap - 0.45 * gap * v;

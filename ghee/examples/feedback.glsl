@@ -24,7 +24,6 @@ void main() {
   // never reaches black.
   prev = max(prev * pow(decay, steps) - 1.5 / 255.0 * steps, 0.0);
 
-  // 1 in the first frame of each copy's interval, 0 in the others
   float stamp = clamp((iTimeDelta * copies - fract(iTime * copies)) * 1000.0, 0.0, 1.0);
   gl_FragColor = vec4(vec3(max(prev, outline(p) * stamp)), 1.0);
 }

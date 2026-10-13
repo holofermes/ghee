@@ -13,7 +13,6 @@ void main() {
   int i = int(min(fi, float(amplitudes_count - 1)));
   float level = gain * amplitudes_at(i);
 
-  // One pixel in each axis, for the edges.
   vec2 px = 1.0 / iResolution.xy;
   float base = 0.1;
   float top = base + 0.8 * min(level, 1.0);

@@ -23,8 +23,6 @@ void main() {
   float sun = texture2D(iChannel0, uv).r;
   float shade = texture2D(iChannel1, uv - offset).r;
 
-  // Each row under the horizon is a distance on the ground, and the grid
-  // scrolls toward the viewer.
   float below = max(uv.y - horizon, 0.002);
   float z = 0.25 / below;
   vec2 g = vec2((uv.x - 0.5) * z + 0.5, z + iTime * speed);

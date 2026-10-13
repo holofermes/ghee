@@ -176,7 +176,9 @@ GPU output:
   `#[cfg_attr(not(ghee_display), ignore = "needs a connected display")]` or
   `not(ghee_hw_h264)`, and fails where the host lacks it. A host that has
   one runs the tests with `RUSTFLAGS="--cfg ghee_display"` or
-  `--cfg ghee_hw_h264`. A test never returns early for missing hardware.
+  `--cfg ghee_hw_h264`. A test that needs a panel on a bus, a display with
+  no vblank, takes `ghee_panel` the same way, and a host with such a panel
+  passes both. A test never returns early for missing hardware.
 
 Errors: an error that a user reads is pinned whole with assert_eq, once, in
 the test of the code that writes it. A contains or ends_with match lets a

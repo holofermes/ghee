@@ -58,6 +58,12 @@
 // One buffer on the screen, one waiting on a page flip, one waiting for the
 // flip thread, and one to draw into. Without a flip thread, three.
 #define LENT_BUFFERS 4
+// The latest flips and draws that time a panel's next frame.
+#define TIMING_RING 16
+struct timing_ring { double v[TIMING_RING]; int n, at; };
+// The time that a frame drawn just in time waits for the bus, for a draw a
+// little slower than the ones before it.
+#define JIT_MARGIN 300e-6
 // GLES2 guarantees 8 vertex attributes, and VC4 holds no more.
 #define MP_BATCH_ATTRIBS 8
 // GLES2 guarantees 16-bit indices alone, and a quad takes 4 vertices, so a
@@ -293,6 +299,18 @@ struct GheeScene {
     struct gbm_bo *flip_freed[LENT_BUFFERS];   // off the glass, for present to release
     int flip_nfreed;
     char flip_error[ERROR_BUFFER_SIZE];        // the thread's error, for present to report
+    // A display with no vblank, a panel on a bus, takes the next frame the
+    // moment the transfer before it ends. present then returns once its frame
+    // is on the bus, as late as lets the next draw end when the bus frees.
+    bool jit;
+    double flip_sent;            // CLOCK_MONOTONIC seconds of the latest flip's ioctl
+    double flip_landed;          // the timestamp of the latest flip's event
+    struct timing_ring flip_busy;   // each flip's ioctl to its event
+    struct timing_ring draw_time;   // each return of present to its next frame, drawn
+    double presented;            // the latest return of present, 0 before the first
+    uint64_t frames;             // the frames that present has handed to the display
+    uint64_t flip_queued_frame;  // flip_queued's number among them
+    uint64_t taken;              // the number of the latest frame that the display took
     GLuint blit_prog;
     GLint blit_sampler, blit_flip, blit_opaque, blit_turn, blit_shift;
     GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
@@ -1082,6 +1100,9 @@ GheeScene *ghee_display_create_on(int card, int width, int height, const char *d
     // The scaling plane paces on the vblank, with no page flip. On one CPU
     // a flip's work runs on the drawing CPU wherever it is submitted.
     g->flipper = !g->disp_plane && sysconf(_SC_NPROCESSORS_ONLN) > 1;
+    uint64_t seq, ns;
+    g->jit = !g->disp_plane && drmCrtcGetSequence(g->drm_fd, g->disp_crtc, &seq, &ns) &&
+             errno == EOPNOTSUPP;
     make_current(g);
     if (g->gpu_fd >= 0 && !lend_buffers(g, eb, sizeof eb)) { if (err) *err = eb; ghee_destroy(g); return NULL; }
     if (!ensure_blit(g)) { if (err) *err = "blit shader failed"; ghee_destroy(g); return NULL; }
@@ -2711,10 +2732,71 @@ struct gbm_bo *ghee_flip_rotate(struct gbm_bo **prev, struct gbm_bo **shown,
     return freed;
 }
 
+static double mono_seconds(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
+static void sleep_until(double t) {
+    struct timespec ts = { .tv_sec = (time_t)t, .tv_nsec = (long)((t - (time_t)t) * 1e9) };
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
+}
+
+static void ring_push(struct timing_ring *r, double x) {
+    r->v[r->at] = x;
+    r->at = (r->at + 1) % TIMING_RING;
+    if (r->n < TIMING_RING) r->n++;
+}
+
+// The ring's timings into out, oldest first. Returns their count.
+static int ring_read(const struct timing_ring *r, double *out) {
+    for (int i = 0; i < r->n; i++) out[i] = r->v[(r->at - r->n + i + TIMING_RING) % TIMING_RING];
+    return r->n;
+}
+
+// The longest of n timings while they are few, else the second longest, so
+// that one stray timing moves nothing.
+static double usual_longest(const double *v, int n) {
+    double first = 0, second = 0;
+    for (int i = 0; i < n; i++) {
+        if (v[i] > first) {
+            second = first;
+            first = v[i];
+        } else if (v[i] > second) {
+            second = v[i];
+        }
+    }
+    return n < TIMING_RING / 2 ? first : second;
+}
+
+double ghee_jit_start(const double *draw, int ndraw, const double *busy, int nbusy) {
+    if (nbusy <= 0) return 0;
+    double fastest = busy[0];
+    for (int i = 1; i < nbusy; i++)
+        if (busy[i] < fastest) fastest = busy[i];
+    // A draw as long as a transfer, from a loop that sleeps or a stall, ends
+    // the draws that time the next one.
+    int from = ndraw;
+    while (from > 0 && draw[from - 1] < fastest) from--;
+    if (from == ndraw) return 0;
+    // A commit slower than the fastest waited on the GPU's fence.
+    const double lead = usual_longest(draw + from, ndraw - from) +
+                        usual_longest(busy, nbusy) - fastest + JIT_MARGIN;
+    return fastest - lead;
+}
+
+// A flip's user data is where its event's timestamp goes, in seconds.
+static void on_flip_event(int fd, unsigned int seq, unsigned int sec, unsigned int usec, void *at) {
+    (void)fd;
+    (void)seq;
+    if (at) *(double *)at = sec + usec * 1e-6;
+}
+
 // Wait for the event of the page flip in flight on `fd`, and reap it. false
 // leaves the reason in err.
 static bool await_flip(int fd, char *err, size_t n) {
-    drmEventContext ev = { .version = 2 };
+    drmEventContext ev = { .version = 2, .page_flip_handler = on_flip_event };
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
     for (;;) {
         const int r = poll(&pfd, 1, FLIP_STUCK_MS);
@@ -2737,11 +2819,32 @@ static bool wait_flip(GheeScene *g) {
         return false;
     }
     g->flip_pending = false;
+    if (g->flip_landed > g->flip_sent) ring_push(&g->flip_busy, g->flip_landed - g->flip_sent);
     return true;
 }
 
 static void flip_lock(GheeScene *g) { if (g->flipper) pthread_mutex_lock(&g->flip_mu); }
 static void flip_unlock(GheeScene *g) { if (g->flipper) pthread_mutex_unlock(&g->flip_mu); }
+
+uint64_t ghee_display_taken(GheeScene *g) {
+    flip_lock(g);
+    const uint64_t n = g->taken;
+    flip_unlock(g);
+    return n;
+}
+
+// Note the time since present last returned: the draw of the frame at hand.
+static void note_draw(GheeScene *g) {
+    if (g->presented > 0) ring_push(&g->draw_time, mono_seconds() - g->presented);
+}
+
+// The seconds after the latest flip's ioctl at which present returns.
+static double jit_start(GheeScene *g) {
+    double draw[TIMING_RING], busy[TIMING_RING];
+    const int nd = ring_read(&g->draw_time, draw);
+    const int nb = ring_read(&g->flip_busy, busy);
+    return ghee_jit_start(draw, nd, busy, nb);
+}
 
 // Release the buffers that the flip thread took off the glass, and report its
 // error. A window surface's buffers go back on the thread that draws into
@@ -2766,6 +2869,8 @@ static void *flip_main(void *arg) {
             pthread_mutex_unlock(&g->flip_mu);
             const bool reaped = await_flip(g->drm_fd, err, sizeof err);
             pthread_mutex_lock(&g->flip_mu);
+            if (reaped && g->flip_landed > g->flip_sent)
+                ring_push(&g->flip_busy, g->flip_landed - g->flip_sent);
             g->flip_pending = false;
             if (!reaped) snprintf(g->flip_error, sizeof g->flip_error, "%s", err);
             pthread_cond_broadcast(&g->flip_cv);
@@ -2774,8 +2879,11 @@ static void *flip_main(void *arg) {
         if (!g->flip_queued) break;
         struct gbm_bo *bo = g->flip_queued;
         const uint32_t fb = g->flip_queued_fb;
+        const uint64_t frame = g->flip_queued_frame;
         pthread_mutex_unlock(&g->flip_mu);
-        const bool flipped = !drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL);
+        const double sent = mono_seconds();
+        const bool flipped =
+            !drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, &g->flip_landed);
         const int e = errno;
         pthread_mutex_lock(&g->flip_mu);
         struct gbm_bo *freed = ghee_flip_rotate(&g->disp_prev, &g->disp_shown, bo, flipped);
@@ -2784,6 +2892,8 @@ static void *flip_main(void *arg) {
         g->flip_pending = flipped;
         if (flipped) {
             g->flip_failed = false;
+            g->flip_sent = sent;
+            g->taken = frame;
         } else if (!g->flip_failed) {   // a refused flip leaves disp_prev on the screen
             g->flip_failed = true;
             snprintf(g->flip_error, sizeof g->flip_error, "drmModePageFlip failed: %s%s", strerror(e),
@@ -3010,6 +3120,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         bo = gbm_surface_lock_front_buffer(g->gbm_surface);
     }
     uint32_t fb = fb_for(g, bo);
+    double until = 0;
     if (g->disp_plane) {
         // The mode is already set: the plane carries each frame from here, and
         // the wait inside means the buffer before this one is off the glass.
@@ -3020,37 +3131,56 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
             if (!g->disp_saved) g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
             g->disp_first = false;
         }
+        g->frames++;
         if (set_scaled_plane(g, fb, g->out_w, g->out_h)) {
             release_bo(g, g->disp_shown);
             g->disp_shown = g->disp_prev;
             g->disp_prev = bo;
+            g->taken = g->frames;
         } else {
             release_bo(g, bo);
         }
     } else if (g->disp_first) {
         if (!g->disp_saved) g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
+        g->frames++;
         if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, fb, 0, 0, &g->disp_conn, 1, &g->disp_mode))
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));
+        else
+            g->taken = g->frames;
         g->disp_first = false;
         g->disp_prev = bo;               // on the screen now (SetCrtc is immediate)
     } else if (g->flipper) {
         // The frame before waits for the flip in flight, and this one waits
         // for it.
         pthread_mutex_lock(&g->flip_mu);
+        note_draw(g);
         while (g->flip_queued) pthread_cond_wait(&g->flip_cv, &g->flip_mu);
         g->flip_queued = bo;
         g->flip_queued_fb = fb;
+        g->flip_queued_frame = ++g->frames;
         pthread_cond_broadcast(&g->flip_cv);
+        if (g->jit) {
+            while (g->flip_queued == bo) pthread_cond_wait(&g->flip_cv, &g->flip_mu);
+            const double start = g->disp_prev == bo ? jit_start(g) : 0;
+            if (start > 0) until = g->flip_sent + start;
+        }
         pthread_mutex_unlock(&g->flip_mu);
     } else {
+        note_draw(g);
         const bool waited = wait_flip(g);
-        const bool flipped =
-            waited && !drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL);
+        const double sent = mono_seconds();
+        const bool flipped = waited && !drmModePageFlip(g->drm_fd, g->disp_crtc, fb,
+                                                        DRM_MODE_PAGE_FLIP_EVENT, &g->flip_landed);
         const int err = errno;
+        g->frames++;
         release_bo(g, ghee_flip_rotate(&g->disp_prev, &g->disp_shown, bo, flipped));
         if (flipped) {
             g->flip_pending = true;
             g->flip_failed = false;
+            g->flip_sent = sent;
+            g->taken = g->frames;
+            const double start = g->jit ? jit_start(g) : 0;
+            if (start > 0) until = sent + start;
             // The kernel queues the flip's work on this CPU, the only one,
             // where it waits until this thread blocks, and a host busy with
             // its next frame holds the CPU for milliseconds. A yield starts
@@ -3064,6 +3194,8 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     }
     if (buffer_rgb && pw > 0 && ph > 0) read_preview(g, buffer_rgb, pw, ph);
     for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;
+    if (until > 0) sleep_until(until);
+    g->presented = mono_seconds();
 }
 
 // Render every pass and swap. buffer_rgb NULL renders nothing back to the CPU,

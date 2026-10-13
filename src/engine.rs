@@ -5516,6 +5516,75 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        any(ghee_no_gpu, not(ghee_panel)),
+        ignore = "needs a GL device and a connected panel"
+    )]
+    fn a_panels_present_returns_once_the_panel_took_its_frame() {
+        let _g = lock();
+        let (dev, w, h) = probe_display_device(None).expect("no connected display");
+        let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
+        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        for n in 1..=30 {
+            r.present(None, None).unwrap();
+            assert_eq!(unsafe { ffi::ghee_display_taken(r.handle) }, n);
+        }
+        assert_eq!(r.last_error(), "");
+    }
+
+    /// The milliseconds after a panel's flip goes in at which present
+    /// returns, for draws and transfers timed in milliseconds, oldest first.
+    fn jit_start(draw: &[f64], busy: &[f64]) -> f64 {
+        let draw: Vec<f64> = draw.iter().map(|d| d / 1e3).collect();
+        let busy: Vec<f64> = busy.iter().map(|b| b / 1e3).collect();
+        let n = |v: &[f64]| c_int::try_from(v.len()).unwrap();
+        let start =
+            unsafe { ffi::ghee_jit_start(draw.as_ptr(), n(&draw), busy.as_ptr(), n(&busy)) };
+        start * 1e3
+    }
+
+    #[test]
+    fn a_panels_next_draw_ends_just_before_the_bus_frees() {
+        let mut one_slow = [1.0; 16];
+        one_slow[8] = 3.0;
+        let mut two_slow = one_slow;
+        two_slow[12] = 3.0;
+        let mut paced = [1.0; 16];
+        paced[15] = 30.0;
+        let stall = [3.0, 3.0, 40.0, 1.0, 1.0];
+        let mut fenced = [5.0; 16];
+        fenced[3] = 5.5;
+        fenced[9] = 5.5;
+        // The draws and the transfers so far in ms, and the next draw, with
+        // the GPU's wait for it, that ends before the bus frees. None:
+        // present returns at once.
+        type Row<'a> = (&'a str, &'a [f64], &'a [f64], Option<f64>);
+        let rows: [Row; 8] = [
+            ("steady draws", &[1.0; 16], &[5.0; 16], Some(1.0)),
+            ("one slow draw", &one_slow, &[5.0; 16], Some(1.0)),
+            ("two slow draws", &two_slow, &[5.0; 16], Some(3.0)),
+            ("a few draws", &[1.0, 3.0, 1.0], &[5.0; 16], Some(3.0)),
+            ("after a stall", &stall, &[5.0; 16], Some(1.0)),
+            ("a loop that sleeps", &paced, &[5.0; 16], None),
+            ("a commit's wait on the GPU", &[1.0; 16], &fenced, Some(1.5)),
+            ("no transfer timed", &[1.0; 16], &[], None),
+        ];
+        for (case, draw, busy, next) in rows {
+            let start = jit_start(draw, busy);
+            match next {
+                None => assert!(start <= 0.0, "{case}: present waits {start} ms"),
+                Some(d) => {
+                    let spare = 5.0 - (start + d);
+                    assert!(
+                        spare > 0.0 && spare < 1.0,
+                        "{case}: a {d} ms draw ends {spare} ms before the bus frees"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_present_frees_the_buffer_that_an_accepted_flip_takes_off_the_glass() {
         let [a, b, c] = [1, 2, 3].map(ptr::without_provenance_mut::<c_void>);
         let (mut prev, mut shown) = (a, b);

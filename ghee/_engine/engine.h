@@ -300,6 +300,15 @@ int ghee_display_renders_on(int card);
 // paces its own loop. 0, or -1 with the reason in ghee_last_error.
 int ghee_display_blank(GheeScene *g, int blank);
 int ghee_display_blanked(GheeScene *g);
+// The number of the latest frame that the display took, counting from 1 the
+// frames that ghee_mp_present hands it, 0 before the first.
+uint64_t ghee_display_taken(GheeScene *g);
+// On a display with no vblank: the seconds after a flip's ioctl at which
+// ghee_mp_present returns, so that the next frame's draw ends just before
+// that flip's transfer does, 0 or less for at once. draw holds the latest
+// times from a return of present to its next frame, drawn, and busy the
+// latest times from a flip's ioctl to its event, each oldest first.
+double ghee_jit_start(const double *draw, int ndraw, const double *busy, int nbusy);
 
 // Zero-copy hardware H264 (encoder.c): the final pass is blitted into a linear
 // dmabuf and fed to the V4L2 M2M encoder (bcm2835-codec), with no CPU pixel copy.

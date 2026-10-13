@@ -21,7 +21,7 @@
     },
     {
       "name": "image",
-      "fragment": "float over(float v, float at) {\n  return clamp((v - at) * 400.0, 0.0, 1.0);\n}\n\nvoid main() {\n  vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);\n  vec2 t = texture2D(iChannel0, uv).rg;\n  vec3 col = mix(deep, mid, over(t.r, 0.35));\n  col = mix(col, bright, over(t.r, 0.7));\n  col = mix(background, col, t.g * smoothstep(0.0, 0.1, t.r));\n  float d = edge(p);\n  col = mix(col, line, exp(-abs(d) * 60.0) * 0.3);\n  gl_FragColor = vec4(mix(col, line, outline(d)), 1.0);\n}\n",
+      "fragment": "float over(float v, float at) {\n  return clamp((v - at) * 30.0, 0.0, 1.0);\n}\n\nvoid main() {\n  vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);\n  vec2 t = texture2D(iChannel0, uv).rg;\n  vec3 col = mix(deep, mid, over(t.r, 0.35));\n  col = mix(col, bright, over(t.r, 0.7));\n  col = mix(background, col, t.g * smoothstep(0.0, 0.1, t.r));\n  float d = edge(p);\n  col = mix(col, line, exp(-abs(d) * 60.0) * 0.3);\n  gl_FragColor = vec4(mix(col, line, outline(d)), 1.0);\n}\n",
       "channels": [{"buffer": "trail"}],
       "params": {
         "background": {"type": "color", "value": "#000000"},

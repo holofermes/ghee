@@ -178,15 +178,17 @@ def stats(xs):
 
 
 def phase(frames, ups, queue, end):
-    """Frames drawn and frames on the glass a second, and the latency from
-    a frame's draw to the end of its update, over one phase."""
+    """Frames drawn, frames on the glass and updates a second, and the
+    latency from a frame's draw to the end of its update, over one phase."""
     pairs, extra = carried(frames, ups, queue, end)
     t0, t1 = frames[0][0], frames[-1][2]
     glass = sum(1 for _, u in pairs if u[1] <= t1)
+    updates = sum(1 for u in ups if t0 < u[0] and u[1] <= t1)
     mean, p95 = stats([u[1] - f[0] for f, u in pairs])
     return {
         "drawn": len(frames) / (t1 - t0),
         "glass": glass / (t1 - t0),
+        "updates": updates / (t1 - t0),
         "latency": mean,
         "latency_p95": p95,
         "unmatched": extra,

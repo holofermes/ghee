@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ghee-render", "pillow", "pygame", "raylib_sdl"]
+# dependencies = ["ghee-render", "pillow", "pygame", "raylib_sdl", "luma.core"]
 # ///
 """Time ghee and the Python drawing libraries on one status screen.
 
@@ -44,9 +44,15 @@ kernel's tracepoints, through `sudo -n`, and measures for each library:
 - run free for --free seconds: the frames drawn and the frames on the glass
   a second, and the same latency.
 
+With --perpixel, --glass runs per-pixel programs in place of the status
+screen, and --check draws each pair of them headless at the same steps and
+compares the pictures: see perpixel.py.
+
     uv run run.py
     uv run run.py --libs ghee,pillow --sizes 128x32 --png out
     uv run run.py --glass /dev/dri/card1
+    uv run run.py --glass /dev/dri/card1 --perpixel
+    uv run run.py --perpixel --check out --sizes 256x64 --levels 16
 """
 
 import argparse
@@ -63,6 +69,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import glass
+import perpixel
 
 HERE = Path(__file__).resolve().parent
 FONTS = HERE.parents[1] / "ghee" / "examples" / "fonts"
@@ -146,6 +153,8 @@ def glass_child(screen, args):
 
 
 def child(args):
+    if args.lib in perpixel.PROGRAMS:
+        return perpixel.child(args.lib, args.card, args.fb, args.sources, PACE, DRAIN)
     w, h = map(int, args.size.split("x"))
     lib = importlib.import_module(f"{args.lib}_screen")
     panel = SimpleNamespace(card=args.card, fb=args.fb) if args.card else None
@@ -287,6 +296,7 @@ def measure_glass(lib, p, args, power):
     try:
         cmd = [sys.executable, __file__, "--child", lib, "--size", p.size]
         cmd += ["--card", p.card, "--fb", p.fb, "--fonts", args.fonts]
+        cmd += ["--sources", args.sources]
         spawned = time.monotonic()
         proc = subprocess.Popen(
             cmd, cwd=HERE, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
@@ -332,7 +342,10 @@ def measure_glass(lib, p, args, power):
         raw = {"spawned": spawned, "first": first, "paced": paced, "free": free}
         raw["transfers"] = transfers
         Path(args.raw, f"{lib}.json").write_text(json.dumps(raw))
-    queue = getattr(importlib.import_module(f"{lib}_screen").Screen, "QUEUE", False)
+    if lib in perpixel.PROGRAMS:
+        queue = lib in perpixel.QUEUE
+    else:
+        queue = getattr(importlib.import_module(f"{lib}_screen").Screen, "QUEUE", False)
     out["startup"] = next(u[1] for u in ups if u[0] > first) - spawned
     out["free"] = glass.phase(free, ups, queue, free[-1][2] + DRAIN)
     out["paced"] = glass.phase(paced, ups, queue, paced[-1][2] + DRAIN)
@@ -346,8 +359,9 @@ def watts(seconds):
 
 
 def glass_table(rows, power):
-    head = ["library", "panel", "start s", "drawn/s", "glass/s", "ms", "p95 ms"]
-    head += ["glass/s @30", "ms @30", "p95 @30", "CPU @30", "process @30"]
+    head = ["library", "panel", "start s", "drawn/s", "glass/s", "updates/s", "ms"]
+    head += ["p95 ms", "drawn/s @30", "glass/s @30", "updates/s @30", "ms @30"]
+    head += ["p95 @30", "CPU @30", "process @30"]
     if power:
         head += ["W held", "W @30"]
     lines = [head]
@@ -358,8 +372,9 @@ def glass_table(rows, power):
             continue
         f, pc = m["free"], m["paced"]
         cells = [r["lib"], r["size"], f"{m['startup']:.2f}", f"{f['drawn']:.0f}"]
-        cells += [f"{f['glass']:.0f}", f"{f['latency'] * 1e3:.2f}"]
-        cells += [f"{f['latency_p95'] * 1e3:.2f}", f"{pc['glass']:.1f}"]
+        cells += [f"{f['glass']:.0f}", f"{f['updates']:.0f}"]
+        cells += [f"{f['latency'] * 1e3:.2f}", f"{f['latency_p95'] * 1e3:.2f}"]
+        cells += [f"{pc['drawn']:.1f}", f"{pc['glass']:.1f}", f"{pc['updates']:.1f}"]
         cells += [f"{pc['latency'] * 1e3:.2f}", f"{pc['latency_p95'] * 1e3:.2f}"]
         cells += [f"{m['cpu']:.1%}", f"{m['proc_cpu']:.1%}"]
         if power:
@@ -419,9 +434,14 @@ def glass_main(args):
     p = glass.panel(args.glass)
     if args.raw:
         os.makedirs(args.raw, exist_ok=True)
-    libs = args.libs.split(",") if args.libs else GLASS_LIBS
-    if set(libs) - set(GLASS_LIBS):
-        raise SystemExit(f"--glass takes {', '.join(GLASS_LIBS)}")
+    known = perpixel.PROGRAMS if args.perpixel else GLASS_LIBS
+    libs = args.libs.split(",") if args.libs else known
+    if set(libs) - set(known):
+        raise SystemExit(f"--glass takes {', '.join(known)}")
+    if args.perpixel:
+        perpixel.fetch(args.sources)
+        perpixel.liquid_png(args.sources, p.w, p.h)
+        perpixel.chroma_palette(args.sources)
     power = has_pmic()
     rows = [
         {"lib": lib, "size": p.size, "m": measure_glass(lib, p, args, power)}
@@ -452,6 +472,16 @@ def main():
     )
     ap.add_argument("--power-window", type=float, default=2.0)
     ap.add_argument("--raw", help="write each library's frames and transfers here")
+    ap.add_argument(
+        "--perpixel", action="store_true", help="the per-pixel programs, perpixel.py"
+    )
+    ap.add_argument("--check", metavar="DIR", help="compare each pair's pictures")
+    ap.add_argument("--steps", default=",".join(str(s) for s in range(25, 2000, 50)))
+    ap.add_argument("--pairs", default="chroma,liquid")
+    ap.add_argument(
+        "--levels", type=int, default=16, help="the panel's levels, 16 or 2"
+    )
+    ap.add_argument("--sources", default=perpixel.default_sources())
     ap.add_argument("--child", dest="lib", help=argparse.SUPPRESS)
     ap.add_argument("--card", help=argparse.SUPPRESS)
     ap.add_argument("--fb", help=argparse.SUPPRESS)
@@ -462,6 +492,22 @@ def main():
     if args.lib:
         return child(args)
     args.fonts = os.path.abspath(args.fonts)
+    args.sources = os.path.abspath(args.sources)
+    if args.check:
+        perpixel.fetch(args.sources)
+        steps = [int(s) for s in args.steps.split(",")]
+        for size in args.sizes.split(","):
+            w, h = map(int, size.split("x"))
+            perpixel.check(
+                args.check,
+                args.sources,
+                w,
+                h,
+                args.levels,
+                steps,
+                args.pairs.split(","),
+            )
+        return
     if args.glass:
         return glass_main(args)
     libs = (args.libs or ",".join(LIBS)).split(",")

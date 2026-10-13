@@ -220,8 +220,23 @@ fn extract_examples_in(base: &std::path::Path, wheel: &str) -> std::io::Result<S
         }
         std::fs::write(done, b"")?;
         crate::report::progress_done();
+        prune_examples(&dir);
     }
     Ok(dir.to_string_lossy().into_owned())
+}
+
+/// Remove every examples directory beside `kept` that another build or
+/// version of ghee extracted.
+fn prune_examples(kept: &std::path::Path) {
+    let (Some(parent), Some(name)) = (kept.parent(), kept.file_name()) else {
+        return;
+    };
+    for e in std::fs::read_dir(parent).into_iter().flatten().flatten() {
+        let n = e.file_name();
+        if n != name && n.to_string_lossy().starts_with("examples-") {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// $GHEE_EXAMPLES on the repo's examples, for a test that reaches
@@ -303,5 +318,20 @@ mod tests {
         let first = extract_examples_in(base, &format!("{wheel}:1")).unwrap();
         let again = extract_examples_in(base, &format!("{wheel}:2")).unwrap();
         assert_ne!(first, again);
+    }
+
+    #[test]
+    fn the_cache_keeps_the_examples_of_the_last_build_alone() {
+        let cache = crate::testing::TempDir::new("examples-pruned");
+        let base = std::path::Path::new(&*cache);
+        let other = base.join("ghee/other");
+        std::fs::create_dir_all(&other).unwrap();
+        let first = extract_examples_in(base, "1").unwrap();
+        let again = extract_examples_in(base, "2").unwrap();
+        assert!(!std::path::Path::new(&first).exists());
+        assert!(std::path::Path::new(&again)
+            .join("bars.scene.json")
+            .is_file());
+        assert!(other.is_dir());
     }
 }

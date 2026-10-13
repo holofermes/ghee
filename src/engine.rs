@@ -5262,6 +5262,12 @@ impl Renderer {
         unsafe { ffi::ghee_compiled(self.handle) }
     }
 
+    /// The frames that the renderer drew since it was created. A frame that
+    /// repeats the last one draws none.
+    pub fn draws(&self) -> u64 {
+        unsafe { ffi::ghee_draws(self.handle) }
+    }
+
     /// The GL this renderer runs on: GL_RENDERER and GL_VERSION in one string.
     pub fn renderer(&self) -> String {
         let r = unsafe { ffi::ghee_renderer(self.handle) };

@@ -462,3 +462,70 @@ fn a_new_speed_carries_the_motion_on_from_where_it_is() {
         assert_eq!(free[k], pinned[k + 1], "free frame {k}");
     }
 }
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_shader_reads_a_hidden_layers_words_as_a_shown_ones_and_its_new_words_at_once() {
+    // main draws t's words through t_cover and never reads the pass that
+    // draws t itself.
+    let dir = Dir::new("cover");
+    let doc = |visible: bool, words: &str| {
+        json!({"version": 1, "passes": [
+            {"name": "words", "fragment": BLACK, "layers": [
+                {"name": "t", "text": words, "font_size": 16, "visible": visible}]},
+            {"name": "main", "fragment": "void main(){ float fs = 16.0; \
+                vec2 px = floor(uv * iResolution.xy) + 0.5; \
+                vec2 p = (px - 0.5 * (iResolution.xy - t_size * fs)) / fs; \
+                gl_FragColor = vec4(vec3(t_cover(p, fs)), 1.0); }"},
+        ]})
+    };
+    let (_g, mut r) = gpu(64, 32);
+    let frame = |r: &mut Renderer, visible: bool, words: &str| {
+        assert_eq!(r.setup(&dir.load(&doc(visible, words))).unwrap(), "");
+        r.set_time(Some(0.0));
+        r.render(None).unwrap().to_vec()
+    };
+    let shown = frame(&mut r, true, "Hi");
+    assert!(shown.chunks(4).any(|p| p[0] > 128), "no words drawn");
+    let lo = frame(&mut r, false, "Lo");
+    assert_eq!(frame(&mut r, false, "Hi"), shown);
+    r.set_layer(&at("t", None, "text"), Given::Text("Lo"))
+        .unwrap();
+    r.set_time(Some(0.0));
+    assert_eq!(r.render(None).unwrap(), lo);
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_hidden_layer_that_moves_draws_no_frame_and_shows_where_its_motion_went() {
+    // A hidden scroll moves on with nothing to draw, so each of its frames
+    // repeats the one before, and once shown it stands where it would stand
+    // had it shown all along.
+    let dir = Dir::new("hidden-motion");
+    let doc = |visible: bool| {
+        scene(json!([{"name": "t", "text": "Hi", "font_size": 16, "y": 8,
+                      "visible": visible, "scroll": {"speed": 2}}]))
+    };
+    let dt = 0.0625;
+    let (_g, mut r) = gpu(160, 48);
+    assert_eq!(r.setup(&dir.load(&doc(true))).unwrap(), "");
+    let mut shown = Vec::new();
+    for k in 0..8 {
+        r.set_time(Some(f64::from(k) * dt));
+        shown = r.render(None).unwrap().to_vec();
+    }
+    assert_eq!(r.setup(&dir.load(&doc(false))).unwrap(), "");
+    r.set_time(Some(0.0));
+    let hidden = r.render(None).unwrap().to_vec();
+    let draws = r.draws();
+    for k in 1..7 {
+        r.set_time(Some(f64::from(k) * dt));
+        assert_eq!(r.render(None).unwrap(), hidden, "frame {k}");
+    }
+    assert_eq!(r.draws(), draws);
+    r.set_layer(&at("t", None, "visible"), Given::Json(&json!(true)))
+        .unwrap();
+    r.set_time(Some(7.0 * dt));
+    assert_eq!(r.render(None).unwrap(), shown);
+    assert_eq!(r.draws(), draws + 1);
+}

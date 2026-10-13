@@ -283,6 +283,7 @@ int  ghee_gl_fd(GheeScene *g);               // the DRM descriptor that GL rende
 bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 bool ghee_mipmaps_npot(GheeScene *g);        // GPU mipmaps a texture of any size
 int  ghee_compiled(GheeScene *g);            // programs that the renderer linked since its create
+uint64_t ghee_draws(GheeScene *g);           // frames that the renderer drew since its create, none for a repeat
 
 void ghee_set_time(GheeScene *g, float t);
 void ghee_clear_time(GheeScene *g);   // back to the monotonic clock

@@ -69,6 +69,9 @@ struct timing_ring { double v[TIMING_RING]; int n, at; };
 // GLES2 guarantees 16-bit indices alone, and a quad takes 4 vertices, so a
 // batch of more quads than this draws in chunks.
 #define QUAD_CHUNK 16383
+// The float of a layer's own batch program, as src/layer.rs writes it, that
+// sends every vertex off the pass while it is below 0.5.
+#define VISIBLE_UNIFORM "ghee_0_visible"
 
 // An asset that a program reads, by its index in the engine's assets, and
 // the locations of its sampler and of its size, each -1 when the program
@@ -86,6 +89,7 @@ struct mp_locs {
     GLint time, dt, frame;
     GLint chan_res;                      // iChannelResolution, the size of each channel's source, which a draw sets
     GLint vflip;                         // ghee_vflip of vertex_shader_source, -1 to draw into the window surface
+    GLint visible;                       // VISIBLE_UNIFORM
     GLint chan[MP_MAX_CHANNELS];
     GLint data[MP_MAX_DATATEX];
     struct mp_use *uses;                 // in asset order, which is the order of their units
@@ -110,6 +114,11 @@ struct mp_prog {
     char *vertex, *fragment;
     int holders;
     int loaded;                          // the id of the batch whose values it holds, 0 for none
+    // The batch, flip and bind_epoch of the last full mp_bind, whose sizes
+    // and texture units the program still holds. bound_batch 0 for none.
+    int bound_batch;
+    float bound_vflip;
+    unsigned bound_epoch;
 };
 
 // A uniform of one batch's own, which the batch sets on its program before
@@ -147,6 +156,9 @@ struct mp_batch {
     int nvalues, values_cap;
     bool dirty;                          // a value changed since the batch last set them
     float opacity;                       // below 1 the batch draws through the fade buffer
+    bool hidden;                         // its program sends every vertex off the pass
+    GLuint pointed;                      // the buffer that the VAO's attribute pointers read, 0 for none
+    int pointed_nattr;
 };
 
 struct GheeScene {
@@ -331,8 +343,9 @@ struct GheeScene {
     // last frame drawn, as asked at kept_w x kept_h, while nothing that draws
     // reads the time.
     bool changed;
-    unsigned long long draws;          // render_passes runs
-    unsigned long long draws_seen;     // `draws` at the last ghee_mp_drew
+    unsigned bind_epoch;               // counts the calls that change what mp_bind sets on a batch's program
+    uint64_t draws;                    // render_passes runs
+    uint64_t draws_seen;               // `draws` at the last ghee_mp_drew
     bool drawn;
     uint8_t *kept;
     size_t kept_len, kept_cap;
@@ -547,7 +560,8 @@ static GLuint program_take(GheeScene *g, const char *vertex_source, const char *
         free(fragment);
         return 0;
     }
-    g->mp_prog[g->mp_nprog++] = (struct mp_prog){ prog, vertex, fragment, 1, 0 };
+    g->mp_prog[g->mp_nprog++] = (struct mp_prog){ .program = prog, .vertex = vertex,
+                                                  .fragment = fragment, .holders = 1 };
     return prog;
 }
 
@@ -1504,7 +1518,7 @@ static void mp_forget_asset(struct mp_locs *loc, int a) {
 // and set its iResolution, its iOutputResolution and an unflipped vflip.
 // Program 0, a pass with no quad, has no uniforms.
 static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *loc) {
-    loc->res = loc->time = loc->dt = loc->frame = loc->chan_res = loc->vflip = -1;
+    loc->res = loc->time = loc->dt = loc->frame = loc->chan_res = loc->vflip = loc->visible = -1;
     for (int c = 0; c < MP_MAX_CHANNELS; c++) loc->chan[c] = -1;
     for (int i = 0; i < MP_MAX_DATATEX; i++) loc->data[i] = -1;
     loc->uses = NULL;
@@ -1527,6 +1541,8 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
     for (int a = 0; a < g->mp_nasset; a++) mp_use_asset(g, prog, a, loc);
     loc->vflip = glGetUniformLocation(prog, "ghee_vflip");
     if (loc->vflip >= 0) glUniform1f(loc->vflip, 1.0f);
+    loc->visible = glGetUniformLocation(prog, VISIBLE_UNIFORM);
+    g->bind_epoch++;
 }
 
 // Make the pending passes the scene: the running one is freed and replaced in a
@@ -1617,6 +1633,11 @@ static bool make_quad_indices(GheeScene *g) {
     return true;
 }
 
+// Whether batch l lays any pixel on its pass.
+static bool batch_draws(const struct mp_batch *l) {
+    return l->pass >= 0 && l->quads > 0 && l->program && l->opacity > 0.0f && !l->hidden;
+}
+
 // Committed batch `batch`, or NULL with the error set for an index that
 // holds none: out of range, or a batch that ghee_mp_remove_batch took out.
 static struct mp_batch *running_batch(GheeScene *g, int batch) {
@@ -1642,6 +1663,7 @@ bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int qua
         return false;
     }
     const size_t bytes = (size_t)quads * quad_bytes;
+    const bool drew = batch_draws(l);
     float *copy = bytes ? realloc(l->copy, bytes) : NULL;
     if (bytes && !copy) {
         set_error(g, "%s: no memory for a copy of %d quads", l->name, quads);
@@ -1674,7 +1696,7 @@ bool ghee_mp_set_batch_quads(GheeScene *g, int batch, const float *data, int qua
     }
     l->quads = quads;
     l->nattr = nattr;
-    g->changed = true;
+    if (drew || batch_draws(l)) g->changed = true;
     return true;
 }
 
@@ -1738,7 +1760,7 @@ bool ghee_mp_set_batch_quads_at(GheeScene *g, int batch, int first, const float 
         l->stale_first = first;
         l->stale_quads = quads;
     }
-    g->changed = true;
+    if (batch_draws(l)) g->changed = true;
     return true;
 }
 
@@ -1788,6 +1810,7 @@ bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
     g->mp_chan_src[pass][channel] = src_pass;
     g->mp_nchan[pass] = nchan;
     g->changed = true;
+    g->bind_epoch++;
     return true;
 }
 
@@ -1910,6 +1933,7 @@ int ghee_mp_declare_array(GheeScene *g, int pass, const char *name) {
                 glGetUniformLocation(g->mp_batch[l].program, g->mp_array_name[idx]);
     g->mp_datatex[pass][g->mp_ndatatex[pass]++] = idx;
     g->changed = true;
+    g->bind_epoch++;
     return idx;
 }
 
@@ -2037,11 +2061,23 @@ bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *a
         if ((at >= 0 && u->loc == at) || (size >= 0 && u->size == size)) {
             *u = (struct mp_use){ a, at, size };
             g->changed = true;
+            g->bind_epoch++;
             return true;
         }
     }
     g->changed = true;
+    g->bind_epoch++;
     return mp_add_use(g, loc, (struct mp_use){ a, at, size });
+}
+
+// Whether batch l draws nothing: its program reads VISIBLE_UNIFORM, and the
+// batch holds it below 0.5.
+static bool batch_hidden(const struct mp_batch *l) {
+    if (l->loc.visible < 0) return false;
+    for (int k = 0; k < l->nvalues; k++)
+        if (strcmp(l->values[k].name, VISIBLE_UNIFORM) == 0)
+            return l->values[k].type == PARAM_TYPE_FLOAT && l->values[k].v[0] < 0.5f;
+    return false;
 }
 
 bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_source,
@@ -2068,6 +2104,7 @@ bool ghee_mp_set_batch_program(GheeScene *g, int batch, const char *vertex_sourc
     mp_free_uses(&old);
     program_drop(g, was);
     l->dirty = true;
+    l->hidden = batch_hidden(l);
     g->changed = true;
     return true;
 }
@@ -2118,8 +2155,10 @@ bool ghee_mp_set_batch_uniform(GheeScene *g, int batch, const parameter_t *param
     }
     if (!fresh && was.type == v->type && was.i == v->i && memcmp(was.v, v->v, sizeof v->v) == 0)
         return true;
+    const bool drew = batch_draws(l);
+    if (strcmp(v->name, VISIBLE_UNIFORM) == 0) l->hidden = batch_hidden(l);
     l->dirty = true;
-    g->changed = true;
+    if (drew || batch_draws(l)) g->changed = true;
     return true;
 }
 
@@ -2127,8 +2166,10 @@ bool ghee_mp_set_batch_opacity(GheeScene *g, int batch, float opacity) {
     struct mp_batch *l = running_batch(g, batch);
     if (!l) return false;
     const float o = opacity < 0.0f ? 0.0f : opacity > 1.0f ? 1.0f : opacity;
-    if (memcmp(&o, &l->opacity, sizeof o) != 0) g->changed = true;
+    const bool drew = batch_draws(l);
+    const bool same = memcmp(&o, &l->opacity, sizeof o) == 0;
     l->opacity = o;
+    if (!same && (drew || batch_draws(l))) g->changed = true;
     return true;
 }
 
@@ -2264,6 +2305,7 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
     }
     make_current(g);
     g->changed = true;
+    g->bind_epoch++;
     int idx = mp_asset_index(g, name);
     const bool fresh = idx < 0;
     if (fresh) {
@@ -2395,6 +2437,7 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name) {
     if (idx < 0) return;
     make_current(g);
     g->changed = true;
+    g->bind_epoch++;
     glDeleteTextures(1, &g->mp_asset[idx].tex);
     free(g->mp_asset[idx].name);
     memmove(&g->mp_asset[idx], &g->mp_asset[idx + 1],
@@ -2476,6 +2519,37 @@ static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, float vflip,
     }
 }
 
+// mp_bind() of batch `l` of pass p, its program in use. A program that this
+// batch bound last at this flip still holds its sizes and its texture units,
+// and takes the time and the asset textures alone.
+static void mp_bind_batch(GheeScene *g, int p, const struct mp_batch *l, float vflip, float elapsed) {
+    const struct mp_locs *loc = &l->loc;
+    struct mp_prog *pr = NULL;
+    for (int i = 0; i < g->mp_nprog && !pr; i++)
+        if (g->mp_prog[i].program == l->program) pr = &g->mp_prog[i];
+    if (!pr || pr->bound_batch != l->id || pr->bound_vflip != vflip ||
+        pr->bound_epoch != g->bind_epoch) {
+        mp_bind(g, p, loc, vflip, elapsed, false);
+        if (pr) {
+            pr->bound_batch = l->id;
+            pr->bound_vflip = vflip;
+            pr->bound_epoch = g->bind_epoch;
+        }
+        return;
+    }
+    if (loc->time >= 0) glUniform1f(loc->time, elapsed);
+    if (loc->dt >= 0) glUniform1f(loc->dt, g->dt);
+    if (loc->frame >= 0) glUniform1i(loc->frame, g->frame);
+    int unit = g->mp_nchan[p] + g->mp_ndatatex[p];
+    for (int i = 0; i < loc->nuses; i++) {
+        const struct mp_use *u = &loc->uses[i];
+        if (u->loc < 0) continue;
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(GL_TEXTURE_2D, g->mp_asset[u->asset].tex);
+        unit++;
+    }
+}
+
 // Set the values of batch `l` on its program, in use, unless the program
 // holds them already.
 static void mp_load_values(GheeScene *g, struct mp_batch *l) {
@@ -2511,10 +2585,23 @@ static void mp_blend(int blend) {
     }
 }
 
-static void mp_draw_quads(const struct mp_batch *l) {
+static void mp_draw_quads(struct mp_batch *l) {
     glBindVertexArray(l->vao);
-    glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
     const GLsizei stride = l->nattr * 4 * (GLsizei)sizeof(GLfloat);
+    if (l->quads <= QUAD_CHUNK) {
+        if (l->pointed != l->vbo || l->pointed_nattr != l->nattr) {
+            glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
+            for (int k = 0; k < l->nattr; k++)
+                glVertexAttribPointer(k, 4, GL_FLOAT, GL_FALSE, stride,
+                                      (const GLvoid *)((size_t)k * 4 * sizeof(GLfloat)));
+            l->pointed = l->vbo;
+            l->pointed_nattr = l->nattr;
+        }
+        glDrawElements(GL_TRIANGLES, l->quads * 6, GL_UNSIGNED_SHORT, (const GLvoid *)0);
+        return;
+    }
+    l->pointed = 0;
+    glBindBuffer(GL_ARRAY_BUFFER, l->vbo);
     for (int at = 0; at < l->quads; at += QUAD_CHUNK) {
         const int n = l->quads - at < QUAD_CHUNK ? l->quads - at : QUAD_CHUNK;
         const size_t base = (size_t)at * 4 * (size_t)stride;
@@ -2577,7 +2664,7 @@ static void mp_draw_batches(GheeScene *g, int p, GLuint target, float vflip, flo
     bool drew = false;
     for (int k = 0; k < g->mp_nbatch; k++) {
         struct mp_batch *l = &g->mp_batch[g->mp_order[k]];
-        if (l->pass != p || l->quads <= 0 || !l->program || l->opacity <= 0.0f) continue;
+        if (l->pass != p || !batch_draws(l)) continue;
         // Texture unit 0 holds what the pass bound there for its batches,
         // which the fade buffer takes for a while.
         GLint unit0 = 0;
@@ -2601,10 +2688,10 @@ static void mp_draw_batches(GheeScene *g, int p, GLuint target, float vflip, flo
             glClear(GL_COLOR_BUFFER_BIT);
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             // The fade buffer keeps GL's row order, as a pass's buffer does.
-            mp_bind(g, p, &l->loc, 1.0f, elapsed, false);
+            mp_bind_batch(g, p, l, 1.0f, elapsed);
             mp_blend(GHEE_BLEND_NORMAL);
         } else {
-            mp_bind(g, p, &l->loc, vflip, elapsed, false);
+            mp_bind_batch(g, p, l, vflip, elapsed);
             mp_blend(l->blend);
         }
         mp_draw_quads(l);
@@ -3346,8 +3433,7 @@ static bool moves(GheeScene *g) {
     }
     for (int k = 0; k < g->mp_nbatch; k++) {
         const struct mp_batch *l = &g->mp_batch[k];
-        if (l->pass >= 0 && l->quads > 0 && l->program && l->opacity > 0.0f && reads_time(&l->loc))
-            return true;
+        if (batch_draws(l) && reads_time(&l->loc)) return true;
     }
     return false;
 }
@@ -3461,6 +3547,8 @@ bool ghee_data_texture_linear(GheeScene *g) { return g && !(g->has_float_tex && 
 bool ghee_mipmaps_npot(GheeScene *g) { return g && g->has_npot; }
 
 int ghee_compiled(GheeScene *g) { return g ? g->compiled : 0; }
+
+uint64_t ghee_draws(GheeScene *g) { return g ? g->draws : 0; }
 
 // The display mode's refresh rate in Hz, 0 outside display mode.
 int ghee_display_vrefresh(GheeScene *g) { return g ? (int)g->disp_mode.vrefresh : 0; }

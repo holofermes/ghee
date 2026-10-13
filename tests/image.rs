@@ -87,6 +87,20 @@ fn write_picture(dir: &Path) {
     w.write_image_data(PICTURE.as_flattened()).unwrap();
 }
 
+/// Write PICTURE at twice its size, each texel 2x2, to `dir` as big.png.
+fn write_big(dir: &Path) {
+    let big: Vec<[u8; 4]> = (0..16)
+        .map(|i| PICTURE[(i / 8) * 2 + (i % 4) / 2])
+        .collect();
+    let file = fs::File::create(dir.join("big.png")).unwrap();
+    let mut enc = png::Encoder::new(file, 4, 4);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut out = enc.write_header().unwrap();
+    out.write_image_data(big.as_flattened()).unwrap();
+    out.finish().unwrap();
+}
+
 /// A scene of the image asset `pic`, pic.png, and pass `main` in UNDER with
 /// `layers`.
 fn image_scene(layers: Value) -> Value {
@@ -377,16 +391,7 @@ fn an_image_layer_takes_another_image_asset_live_at_that_images_size() {
     let (w, h) = (24, 16);
     let dir = Dir::new("live");
     write_picture(dir.path());
-    let big: Vec<[u8; 4]> = (0..16)
-        .map(|i| PICTURE[(i / 8) * 2 + (i % 4) / 2])
-        .collect();
-    let file = fs::File::create(dir.path().join("big.png")).unwrap();
-    let mut enc = png::Encoder::new(file, 4, 4);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut out = enc.write_header().unwrap();
-    out.write_image_data(big.as_flattened()).unwrap();
-    out.finish().unwrap();
+    write_big(dir.path());
     let orange = [1.0, 128.0 / 255.0, 0.0];
     let rows = [
         (
@@ -428,6 +433,31 @@ fn an_image_layer_takes_another_image_asset_live_at_that_images_size() {
         let got = r.render(None).unwrap().to_vec();
         assert_painted(&got, &painted(w, h, Some(rect), tint, opacity), w, &keys);
     }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn two_image_layers_each_paint_at_the_size_of_their_own_picture() {
+    // The two layers draw through one program, each with its own picture.
+    let (w, h) = (24, 16);
+    let dir = Dir::new("two");
+    write_picture(dir.path());
+    write_big(dir.path());
+    let mut doc = image_scene(json!([
+        {"name": "a", "image": "pic", "x": 1, "y": 1},
+        {"name": "b", "image": "big", "x": 10, "y": 2},
+    ]));
+    doc["assets"]["big"] = json!({"file": "big.png"});
+    let (_g, mut r) = gpu(w, h);
+    let got = render(&mut r, &loaded(&doc, dir.path()));
+    let a = painted(w, h, Some([1.0, 1.0, 2.0, 2.0]), [1.0; 3], 1.0);
+    let b = painted(w, h, Some([10.0, 2.0, 4.0, 4.0]), [1.0; 3], 1.0);
+    let want: Vec<[f64; 3]> = a
+        .iter()
+        .zip(&b)
+        .map(|(a, b)| if *b != UNDER { *b } else { *a })
+        .collect();
+    assert_painted(&got, &want, w, &doc["passes"][0]["layers"]);
 }
 
 #[test]

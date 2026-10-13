@@ -58,6 +58,14 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 /// extracts this set to a cache directory first. A procedural example imports
 /// ghee from the ghee-render package, which uv installs.
 pub const EXAMPLES: [(&str, &[u8]); 21] = [
+    (
+        "assets.glsl",
+        include_bytes!("../../ghee/examples/assets.glsl"),
+    ),
+    (
+        "assets.scene.json",
+        include_bytes!("../../ghee/examples/assets.scene.json"),
+    ),
     ("bars.glsl", include_bytes!("../../ghee/examples/bars.glsl")),
     (
         "bars.scene.json",
@@ -111,15 +119,7 @@ pub const EXAMPLES: [(&str, &[u8]); 21] = [
         "spectrum.py",
         include_bytes!("../../ghee/examples/spectrum.py"),
     ),
-    (
-        "stamp.glsl",
-        include_bytes!("../../ghee/examples/stamp.glsl"),
-    ),
     ("stamp.png", include_bytes!("../../ghee/examples/stamp.png")),
-    (
-        "stamp.scene.json",
-        include_bytes!("../../ghee/examples/stamp.scene.json"),
-    ),
     ("stats.py", include_bytes!("../../ghee/examples/stats.py")),
 ];
 

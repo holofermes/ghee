@@ -21,7 +21,7 @@ use std::io::{stdout, Stdout, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::error::{ContextKind, ErrorKind};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Map, Value};
@@ -32,6 +32,7 @@ use crate::console::{examples_dir, is_examples_dir};
 use crate::engine::{display_renders, probe_display, probe_display_device, Feed, Renderer};
 use crate::feeds::demo_feed;
 use crate::filters::{apply_filters, load_filters};
+use crate::golden;
 use crate::h264::H264Stream;
 use crate::looper::{ControllerSlot, Loop, Output, Pacer, SceneController};
 use crate::output::{expand_pattern, is_image_name, FixedPacer, ImageSequence, RawStream, Scanout};
@@ -39,7 +40,7 @@ use crate::overlay;
 use crate::procedural::process::{self, SceneProcess};
 use crate::procedural::{load_scene, scene_name};
 use crate::report;
-use crate::scene::{Reach, Scene};
+use crate::scene::{Pass, Reach, Scene};
 use crate::stats::rate;
 use crate::usage;
 
@@ -1560,10 +1561,62 @@ fn clap_status(e: &clap::Error) -> i32 {
     i32::from(e.use_stderr()) * 2
 }
 
+/// Two checks on the engine itself. They stay out of `ghee --help`.
+const EXTRAS: &str =
+    "usage: ghee smoke [dri] [components] | ghee golden --manifest PATH [--dump DIR | --pin]";
+
+/// The status of `ghee smoke` or `ghee golden`, None for any other command.
+fn extras(argv: &[String]) -> Option<i32> {
+    let rest: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+    let ran = match argv.first().map(String::as_str) {
+        Some("smoke") => smoke(&rest).map(|()| 0),
+        Some("golden") => golden(&rest),
+        _ => return None,
+    };
+    Some(ran.unwrap_or_else(|e| {
+        eprintln!("{e}");
+        1
+    }))
+}
+
+/// Render one flat pass at a known colour and read it back. One command covers
+/// the engine, the scene assembly and the readback.
+fn smoke(args: &[&str]) -> Result<()> {
+    let dri = args.first().copied().unwrap_or("/dev/dri/renderD128");
+    let components: i32 = match args.get(1) {
+        Some(c) => c.parse()?,
+        None => 3,
+    };
+    let mut r = Renderer::new(64, 64, components, Some(dri), false, false)?;
+    let scene = Scene::of(vec![Pass::of(
+        "main",
+        "void main(){ gl_FragColor = vec4(0.25,0.5,0.75,1.0); }",
+    )?])?;
+    let err = r.setup(&scene)?;
+    if !err.is_empty() {
+        bail!("scene build failed: {err}");
+    }
+    let frame = r.render(None)?;
+    println!("RUST_SMOKE_OK pixel={},{},{}", frame[0], frame[1], frame[2]);
+    Ok(())
+}
+
+fn golden(args: &[&str]) -> Result<i32> {
+    match args {
+        ["--manifest", path] => golden::run(path, None, false),
+        ["--manifest", path, "--dump", dir] => golden::run(path, Some(dir), false),
+        ["--manifest", path, "--pin"] => golden::run(path, None, true),
+        _ => bail!("{EXTRAS}"),
+    }
+}
+
 /// The command line's exit status. A scene, engine, encoder or missing
 /// dependency failure reaches the user as one line, with no stack. An argument
 /// error reads the same way. $GHEE_TRACEBACK asks for the whole error chain.
 pub fn main(argv: Vec<String>) -> i32 {
+    if let Some(code) = extras(&argv) {
+        return code;
+    }
     // A bare `ghee` and `ghee --version` greet, everything else works.
     if argv.is_empty() || argv == ["--version"] || argv == ["-V"] {
         eprint!("{}", report::splash(env!("CARGO_PKG_VERSION")));

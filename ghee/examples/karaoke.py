@@ -35,6 +35,8 @@ SONG = ((0, 0.0, 0.8), (5, 1.0, 1.4), (8, 1.5, 2.3), (13, 2.5, 4.0))
 BAR = 5.0  # seconds from one start of the line to the next
 ART = 160  # the sea's width in pixels
 CUE_SIZE = 13  # the emoji's size, in the sea's pixels per em
+GAP = 4  # the sea's pixels between the line and its emoji
+TOP = 0.28  # the line's top, as a share of the frame's height
 
 NIGHT = "#141833"
 
@@ -230,7 +232,12 @@ void main() {
 }
 """
 
-_placed = {}
+_laid = {"out": False}
+
+
+def cell(width):
+    """The frame's pixels to one pixel of the sea, on a frame `width` wide."""
+    return max(1, round(width / ART))
 
 
 def sung(t):
@@ -246,27 +253,26 @@ def sung(t):
 @ghee.tick
 def sing(tick):
     """Lay the line and its emoji out once, then fill the sung letters."""
-    if not _placed:
+    if not _laid["out"]:
         width, height = ghee.render_size()
-        cell = max(1, round(width / ART))
-        art_width = math.ceil(width / cell)
-        words, rows = ghee.measure(LINE, font_size=8 * cell, font_family="pixel")
+        px = cell(width)
+        art_width = math.ceil(width / px)
+        words, rows = ghee.measure(LINE, font_size=8 * px, font_family="pixel")
         cue, cue_rows = ghee.measure(CUE, font_size=CUE_SIZE, font_family="noto")
-        gap = 4
-        left = (art_width - (words / cell + gap + cue)) // 2
-        top = round(math.ceil(height / cell) * 0.28)
-        ghee.layers.line.x = left * cell
-        ghee.layers.line.y = top * cell
-        ghee.layers.emoji.x = left + words / cell + gap
-        ghee.layers.emoji.y = top + round((rows / cell - cue_rows) / 2) - 1
-        _placed["cell"] = cell
+        left = (art_width - (words / px + GAP + cue)) // 2
+        top = round(math.ceil(height / px) * TOP)
+        ghee.layers.line.x = left * px
+        ghee.layers.line.y = top * px
+        ghee.layers.emoji.x = left + words / px + GAP
+        ghee.layers.emoji.y = top + round((rows / px - cue_rows) / 2) - 1
+        _laid["out"] = True
     ghee.layers.line.karaoke.sung = sung(tick.time % BAR)
 
 
 def build():
     width, height = ghee.render_size()
-    cell = max(1, round(width / ART))
-    art = (math.ceil(width / cell), math.ceil(height / cell))
+    px = cell(width)
+    art = (math.ceil(width / px), math.ceil(height / px))
     return ghee.Scene(
         params={
             "horizon": ghee.Param(
@@ -281,7 +287,7 @@ def build():
                     ghee.Layer(
                         "line",
                         LINE,
-                        font_size=8 * cell,
+                        font_size=8 * px,
                         font_family="pixel",
                         render="hinted",
                         color="#c8b6dc",
@@ -333,7 +339,7 @@ def build():
             ),
             ghee.Pass(
                 "main",
-                f"const float CELL = {cell:.1f};\n{MAIN}",
+                f"const float CELL = {px:.1f};\n{MAIN}",
                 channels=[ghee.Channel("sea"), ghee.Channel("words")],
             ),
         ],

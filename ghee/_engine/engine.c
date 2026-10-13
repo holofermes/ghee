@@ -294,6 +294,7 @@ struct GheeScene {
     pthread_mutex_t flip_mu;
     pthread_cond_t flip_cv;
     struct gbm_bo *flip_queued;  // a drawn frame that waits for its flip, NULL for none
+    struct gbm_bo *flip_sending; // the frame inside the flip ioctl, NULL for none
     uint32_t flip_queued_fb;
     bool flip_stop;
     struct gbm_bo *flip_freed[LENT_BUFFERS];   // off the glass, for present to release
@@ -303,6 +304,7 @@ struct GheeScene {
     // moment the transfer before it ends. present then returns once its frame
     // is on the bus, as late as lets the next draw end when the bus frees.
     bool jit;
+    bool drop;                   // a frame that waits for its flip gives way to the next
     double flip_sent;            // CLOCK_MONOTONIC seconds of the latest flip's ioctl
     double flip_landed;          // the timestamp of the latest flip's event
     struct timing_ring flip_busy;   // each flip's ioctl to its event
@@ -926,7 +928,7 @@ static bool lend_buffers(GheeScene *g, char *eb, size_t n) {
         (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
     if (!create_image || !image_target) { snprintf(eb, n, "EGL on the GPU cannot import a dma-buf"); return false; }
     const int count = g->flipper ? LENT_BUFFERS : LENT_BUFFERS - 1;
-    for (int i = 0; i < count; i++) {
+    for (int i = g->lent_count; i < count; i++) {
         // The card's driver reads a buffer row by row and knows nothing of the
         // GPU's tiling, so every lent buffer is linear.
         struct gbm_bo *bo = gbm_bo_create(g->gbm, g->out_w, g->out_h, GBM_FORMAT_XRGB8888,
@@ -2871,6 +2873,12 @@ static void *flip_main(void *arg) {
             pthread_mutex_lock(&g->flip_mu);
             if (reaped && g->flip_landed > g->flip_sent)
                 ring_push(&g->flip_busy, g->flip_landed - g->flip_sent);
+            // The event puts disp_prev on the glass, and the frame before it
+            // is off.
+            if (reaped && g->disp_shown && g->flip_nfreed < LENT_BUFFERS) {
+                g->flip_freed[g->flip_nfreed++] = g->disp_shown;
+                g->disp_shown = NULL;
+            }
             g->flip_pending = false;
             if (!reaped) snprintf(g->flip_error, sizeof g->flip_error, "%s", err);
             pthread_cond_broadcast(&g->flip_cv);
@@ -2880,15 +2888,18 @@ static void *flip_main(void *arg) {
         struct gbm_bo *bo = g->flip_queued;
         const uint32_t fb = g->flip_queued_fb;
         const uint64_t frame = g->flip_queued_frame;
+        g->flip_queued = NULL;
+        g->flip_sending = bo;
+        pthread_cond_broadcast(&g->flip_cv);
         pthread_mutex_unlock(&g->flip_mu);
         const double sent = mono_seconds();
         const bool flipped =
             !drmModePageFlip(g->drm_fd, g->disp_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, &g->flip_landed);
         const int e = errno;
         pthread_mutex_lock(&g->flip_mu);
+        g->flip_sending = NULL;
         struct gbm_bo *freed = ghee_flip_rotate(&g->disp_prev, &g->disp_shown, bo, flipped);
         if (freed && g->flip_nfreed < LENT_BUFFERS) g->flip_freed[g->flip_nfreed++] = freed;
-        g->flip_queued = NULL;
         g->flip_pending = flipped;
         if (flipped) {
             g->flip_failed = false;
@@ -2926,9 +2937,39 @@ static void settle_flips(GheeScene *g) {
         return;
     }
     pthread_mutex_lock(&g->flip_mu);
-    while (g->flip_queued || g->flip_pending) pthread_cond_wait(&g->flip_cv, &g->flip_mu);
+    while (g->flip_queued || g->flip_sending || g->flip_pending)
+        pthread_cond_wait(&g->flip_cv, &g->flip_mu);
     take_freed(g);
     pthread_mutex_unlock(&g->flip_mu);
+}
+
+int ghee_display_set_drop(GheeScene *g, int drop) {
+    if (!g->display_mode) {
+        set_error(g, "drop: this renderer drives no display");
+        return -1;
+    }
+    if (drop && g->disp_plane) {
+        set_error(g, "drop takes the render at the display's own size, %ux%u",
+                  g->disp_mode.hdisplay, g->disp_mode.vdisplay);
+        return -1;
+    }
+    if (drop && !g->flipper) {
+        // A frame that waits for the display goes on when the bus frees,
+        // with no present to put it there, so one CPU runs the thread too.
+        char eb[ERROR_BUFFER_SIZE];
+        settle_flips(g);
+        g->flipper = true;
+        make_current(g);
+        if ((g->lent_count && !lend_buffers(g, eb, sizeof eb)) || !start_flipper(g, eb, sizeof eb)) {
+            g->flipper = false;
+            set_error(g, "%s", eb);
+            return -1;
+        }
+    }
+    flip_lock(g);
+    g->drop = drop;
+    flip_unlock(g);
+    return 0;
 }
 
 // Flip the queued frame, reap the last flip and end the flip thread.
@@ -3096,7 +3137,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     take_freed(g);
     for (int i = 0; i < g->lent_count && !bo; i++)
         if (g->lent[i].bo != g->disp_prev && g->lent[i].bo != g->disp_shown &&
-            g->lent[i].bo != g->flip_queued) {
+            g->lent[i].bo != g->flip_queued && g->lent[i].bo != g->flip_sending) {
             bo = g->lent[i].bo;
             g->scan_fbo = g->lent[i].fbo;
         }
@@ -3151,16 +3192,20 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         g->disp_prev = bo;               // on the screen now (SetCrtc is immediate)
     } else if (g->flipper) {
         // The frame before waits for the flip in flight, and this one waits
-        // for it.
+        // for it, or with drop takes its place.
         pthread_mutex_lock(&g->flip_mu);
         note_draw(g);
-        while (g->flip_queued) pthread_cond_wait(&g->flip_cv, &g->flip_mu);
+        if (g->drop && g->flip_queued)
+            release_bo(g, g->flip_queued);
+        else
+            while (g->flip_queued) pthread_cond_wait(&g->flip_cv, &g->flip_mu);
         g->flip_queued = bo;
         g->flip_queued_fb = fb;
         g->flip_queued_frame = ++g->frames;
         pthread_cond_broadcast(&g->flip_cv);
-        if (g->jit) {
-            while (g->flip_queued == bo) pthread_cond_wait(&g->flip_cv, &g->flip_mu);
+        if (g->jit && !g->drop) {
+            while (g->flip_queued == bo || g->flip_sending == bo)
+                pthread_cond_wait(&g->flip_cv, &g->flip_mu);
             const double start = g->disp_prev == bo ? jit_start(g) : 0;
             if (start > 0) until = g->flip_sent + start;
         }

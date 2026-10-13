@@ -5064,6 +5064,21 @@ impl Renderer {
         unsafe { ffi::ghee_display_blanked(self.handle) != 0 }
     }
 
+    /// Let the display skip to the newest frame. present() then hands its
+    /// frame to the display and returns at once, and a frame that still
+    /// waits for the display when the next one comes gives way to it, so the
+    /// display shows the newest frame each time it frees. A loop with no
+    /// pacer of its own then draws as fast as it can. Off by default, where
+    /// present() waits for the display, which takes every frame in order.
+    /// A renderer that drives no display, or a display scaled to the render
+    /// size, returns an error.
+    pub fn set_drop(&mut self, on: bool) -> Result<()> {
+        if unsafe { ffi::ghee_display_set_drop(self.handle, c_int::from(on)) } != 0 {
+            bail!("{}", self.last_error());
+        }
+        Ok(())
+    }
+
     /// Pin the `iTime` uniform to a fixed value, for a reproducible render.
     /// The default is the monotonic clock since the engine start.
     /// None returns the uniform to that clock.
@@ -5530,6 +5545,41 @@ mod tests {
             assert_eq!(unsafe { ffi::ghee_display_taken(r.handle) }, n);
         }
         assert_eq!(r.last_error(), "");
+    }
+
+    #[test]
+    #[cfg_attr(
+        any(ghee_no_gpu, not(ghee_display)),
+        ignore = "needs a GL device and a connected display"
+    )]
+    fn a_present_with_drop_returns_before_the_display_takes_its_frame_and_the_newest_goes_on() {
+        let _g = lock();
+        let (dev, w, h) = probe_display_device(None).expect("no connected display");
+        let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
+        assert_eq!(
+            r.setup(&scene_of(json!([{"name": "main", "fragment": FLAT}])))
+                .unwrap(),
+            ""
+        );
+        r.set_drop(true).unwrap();
+        for _ in 0..30 {
+            r.present(None, None).unwrap();
+        }
+        let taken = unsafe { ffi::ghee_display_taken(r.handle) };
+        assert!(taken < 30, "present waited for each of {taken} frames");
+        r.blank(true).unwrap();
+        assert_eq!(unsafe { ffi::ghee_display_taken(r.handle) }, 30);
+        assert_eq!(r.last_error(), "");
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn drop_on_a_renderer_with_no_display_is_refused() {
+        let (_g, mut r) = gpu();
+        assert_eq!(
+            r.set_drop(true).unwrap_err().to_string(),
+            "drop: this renderer drives no display"
+        );
     }
 
     /// The milliseconds after a panel's flip goes in at which present

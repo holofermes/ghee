@@ -300,6 +300,12 @@ int ghee_display_renders_on(int card);
 // paces its own loop. 0, or -1 with the reason in ghee_last_error.
 int ghee_display_blank(GheeScene *g, int blank);
 int ghee_display_blanked(GheeScene *g);
+// Let the display skip to the newest frame: ghee_mp_present hands its frame
+// over and returns at once, and a frame that still waits for the display
+// when the next one comes gives way to it. Off by default, where present
+// waits for the display, which takes every frame in order. 0, or -1 with the
+// reason in ghee_last_error.
+int ghee_display_set_drop(GheeScene *g, int drop);
 // The number of the latest frame that the display took, counting from 1 the
 // frames that ghee_mp_present hands it, 0 before the first.
 uint64_t ghee_display_taken(GheeScene *g);

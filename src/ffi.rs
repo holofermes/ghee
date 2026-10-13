@@ -252,6 +252,7 @@ extern "C" {
     pub fn ghee_display_renders_on(card: c_int) -> c_int;
     pub fn ghee_display_blank(g: *mut GheeScene, blank: c_int) -> c_int;
     pub fn ghee_display_blanked(g: *mut GheeScene) -> c_int;
+    pub fn ghee_display_set_drop(g: *mut GheeScene, drop: c_int) -> c_int;
     pub fn ghee_display_taken(g: *mut GheeScene) -> u64;
     pub fn ghee_jit_start(draw: *const f64, ndraw: c_int, busy: *const f64, nbusy: c_int) -> f64;
     pub fn ghee_encoder_create(

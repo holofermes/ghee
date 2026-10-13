@@ -257,7 +257,7 @@ def sing(tick):
         width, height = ghee.render_size()
         px = cell(width)
         art_width = math.ceil(width / px)
-        words, rows = ghee.measure(LINE, font_size=8 * px, font_family="pixel")
+        words, rows = ghee.measure(LINE, font_size=8 * px, font_family="Pixel Operator 8")
         cue, cue_rows = ghee.measure(CUE, font_size=CUE_SIZE, font_family="noto")
         left = (art_width - (words / px + GAP + cue)) // 2
         top = round(math.ceil(height / px) * TOP)
@@ -288,7 +288,7 @@ def build():
                         "line",
                         LINE,
                         font_size=8 * px,
-                        font_family="pixel",
+                        font_family="Pixel Operator 8",
                         render="hinted",
                         color="#c8b6dc",
                         text_shadow={

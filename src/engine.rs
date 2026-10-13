@@ -4486,6 +4486,12 @@ impl Renderer {
         Ok(())
     }
 
+    /// Wait for the font and the glyphs of every text's held words, which
+    /// the next render then draws, as a setup waits for the scene's own.
+    pub fn wait_for_words(&self) -> Result<()> {
+        self.tick_texts(true)
+    }
+
     /// Record that text layer `name` draws `words` from now on.
     fn drew(&self, name: &str, words: &str) {
         self.on_screen

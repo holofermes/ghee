@@ -695,6 +695,21 @@ def test_a_drawing_reaches_the_screen_and_a_call_that_stops_takes_its_layer_out(
             assert screen._drawing()["layers"] == [["rect"], [], ["rect"]][i]
 
 
+def test_the_first_frame_of_a_drawing_holds_its_words_with_a_glow(
+    tmp_path, monkeypatch
+):
+    """On a cold glyph atlas, as a frame under a pinned time draws them."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    frames = []
+    for timestep in (None, 0):
+        with ghee.open(width=64, height=32, timestep=timestep) as screen:
+            with screen.draw() as d:
+                d.text("hi", glow={})
+            frames.append(screen.pixels())
+    assert max(frames[1][0::4]) == 255
+    assert frames[0] == frames[1]
+
+
 def test_the_last_call_paints_on_top_whichever_came_last_before():
     with ghee.open(width=4, height=4, timestep=0) as screen:
         for top in ("red", "lime", "red"):

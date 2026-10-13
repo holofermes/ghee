@@ -745,6 +745,9 @@ impl Session {
         if self.timestep.is_some() {
             self.renderer.set_time(Some(t));
         }
+        if self.drawn.is_none() {
+            self.renderer.wait_for_words().map_err(system_fault)?;
+        }
         let want = self.console.as_ref().is_some_and(Console::wants_frame);
         let drew = self.draw(want)?;
         self.mirror();

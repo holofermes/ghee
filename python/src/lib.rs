@@ -466,7 +466,8 @@ impl Handle {
         self.held.get()?.feed(name, data).map_err(fault)
     }
 
-    /// Draw one frame and hand it to the output.
+    /// Draw one frame and hand it to the output. The first frame waits for
+    /// the glyphs of its words, as every frame does under `timestep`.
     ///
     /// Returns this tick: {"frame", "time", "dt", "params"}. `dt` is the
     /// time since the tick before, and `params` holds the params

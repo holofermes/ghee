@@ -3,6 +3,10 @@
 // words. Each pixel finds the point of the page that the lens shows there,
 // and page_cover reads the words at that point, at the font size that the
 // lens gives it, so an edge stays one pixel soft at every magnification.
+//
+//     ghee render --demo lens -o frame.####.png --frames 60
+//     ghee render --demo lens --serve
+
 void main() {
   // VC4 interpolates uv up to 0.04 px off the pixel centre.
   vec2 px = floor(uv * iResolution.xy) + 0.5;

@@ -1,3 +1,13 @@
+// bars: a bar for each value of an array that a program feeds each frame.
+//
+// The pass declares the array `amplitudes`, 16 floats. amplitudes_at(i)
+// gives a column its own value, and amplitudes_sample(x) reads the same
+// array interpolated, for the glow behind the bars. With no program to feed
+// it, ghee feeds a stand-in wave. host.py feeds it from Python.
+//
+//     ghee render --demo bars -o frame.####.png --frames 60
+//     ghee render --demo bars --filters dither -o dither.png
+
 vec3 palette(float t) {
     vec3 a = vec3(0.42, 0.40, 0.52);
     vec3 b = vec3(0.42, 0.38, 0.45);
@@ -12,8 +22,6 @@ vec3 tone(vec3 col, float black, float exposure) {
     return pow(col, vec3(1.0 / 2.2));
 }
 
-// amplitudes_at(i) gives a column its own value; amplitudes_sample(x) reads the
-// same host array interpolated, for the glow that runs behind the bars.
 void main() {
   vec2 p = vec2(uv.x, 1.0 - uv.y);  // y climbs off the floor
   float fi = p.x * float(amplitudes_count);

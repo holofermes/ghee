@@ -51,7 +51,12 @@ the engine needs no build step of its own. Cross-compiling takes `GHEE_SYSROOT`.
 plus the `ghee` package that wraps it and holds the procedural-scene shim
 (`python/ghee/_shim.py`). One abi3 wheel per architecture serves CPython 3.10
 and up. It is a crate of its own, so the commands above never build it. The
-wheel is the only way to `import ghee`: nothing vendors the shim.
+wheel is the only way to `import ghee`: nothing vendors the shim. The wheel's
+`ghee` command is `cli::main` compiled into the extension, behind the entry
+point `ghee._cli:main`, so a build from the sdist installs it too. The kernel
+names its process `ghee` after the script, so `pkill ghee` finds it, unless
+the venv's python path runs to 125 bytes or more: uv then writes a `/bin/sh`
+launcher, the process is named `python`, and `pkill -f bin/ghee` finds it.
 
 ```
 cd python && maturin build --release --compatibility linux

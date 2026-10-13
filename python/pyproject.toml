@@ -13,6 +13,9 @@ license-files = ["LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"]
 requires-python = ">=3.10"
 dynamic = ["version"]
 
+[project.scripts]
+ghee = "ghee._cli:main"
+
 [project.urls]
 Repository = "https://github.com/holofermes/ghee"
 

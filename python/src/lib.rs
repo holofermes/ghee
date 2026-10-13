@@ -690,6 +690,13 @@ fn _numbered(pattern: &str) -> PyResult<bool> {
     Ok(first != pattern)
 }
 
+/// The `ghee` command: `argv` without the program name in, the exit status
+/// out.
+#[pyfunction]
+fn _command(py: Python<'_>, argv: Vec<String>) -> i32 {
+    py.detach(|| ghee::cli::main(argv))
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -704,6 +711,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.setattr("_colour_name", wrap_pyfunction!(wire::_colour_name, m)?)?;
     m.setattr("_numbered", wrap_pyfunction!(_numbered, m)?)?;
     m.setattr("_display_size", wrap_pyfunction!(_display_size, m)?)?;
+    m.setattr("_command", wrap_pyfunction!(_command, m)?)?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
     Ok(())
 }

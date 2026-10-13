@@ -251,6 +251,10 @@ def _display_size(
     card with one, worked out before anything opens it. None for no
     connected display."""
 
+def _command(argv: list[str]) -> int:
+    """The `ghee` command: the arguments after the program name in, the
+    exit status out."""
+
 def open(
     scene: str | os.PathLike[str] | dict[str, Any] | Scene | None = None,
     display: _Display | None = None,

@@ -922,6 +922,9 @@ pub struct Renderer {
     reclassed: std::cell::Cell<bool>,
     /// The text problem causes logged since the setup, so each logs once.
     reported: std::cell::RefCell<HashSet<String>>,
+    /// Each effect that a text layer's render drops, as the layer's name and
+    /// the effect's key, logged once when the layer began to drop it.
+    undrawn: HashSet<(String, &'static str)>,
     /// The problems of each text layer, by its name.
     text_errors: std::cell::RefCell<HashMap<String, TextErrors>>,
     /// Counts the changes to text_errors.
@@ -1057,6 +1060,7 @@ impl Renderer {
             unsettled: std::cell::Cell::new(false),
             reclassed: std::cell::Cell::new(false),
             reported: std::cell::RefCell::new(HashSet::new()),
+            undrawn: HashSet::new(),
             text_errors: std::cell::RefCell::new(HashMap::new()),
             text_errors_seq: std::cell::Cell::new(0),
             atlases: std::cell::RefCell::new(Vec::new()),
@@ -1674,7 +1678,9 @@ impl Renderer {
         self.covered.clear();
         *self.glyphs.borrow_mut() = glyphs;
         self.pass_shown.borrow_mut().clear();
+        let was = std::mem::take(&mut self.undrawn);
         for l in scene.text_layers() {
+            self.say_undrawn(l, &was);
             let tex = CString::new(text::internal(&l.name, "_curves_tex"))?;
             let slug = l.render == Render::Slug && self.layers.iter().any(|d| d.name == l.name);
             if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
@@ -3691,6 +3697,9 @@ impl Renderer {
         index: usize,
         l: &TextLayer,
     ) -> Result<()> {
+        let was = self.undrawn.clone();
+        self.undrawn.retain(|(name, _)| *name != l.name);
+        self.say_undrawn(l, &was);
         let size = self.pass_size(pass_name);
         self.renders.remove(&l.name);
         if let Some(b) = l.place(&l.text).ok().and_then(|laid| laid.built) {
@@ -4647,6 +4656,23 @@ impl Renderer {
             );
         }
         Ok(())
+    }
+
+    /// Hold each effect of text layer `l` that its render does not draw,
+    /// and log each one that `was`, the effects dropped before, lacks.
+    fn say_undrawn(&mut self, l: &TextLayer, was: &HashSet<(String, &'static str)>) {
+        for kind in l.undrawn() {
+            let at = (l.name.clone(), kind.key());
+            if !was.contains(&at) {
+                crate::report::warn(format!(
+                    "layer '{}': render {} draws no {}, so the layer draws without it",
+                    l.name,
+                    l.render.as_str(),
+                    kind.key()
+                ));
+            }
+            self.undrawn.insert(at);
+        }
     }
 
     /// Log each new cause among the `faults` of a layout of `layer`, and hold
@@ -8536,7 +8562,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn slug_words_of_glyphs_that_the_renderer_holds_read_no_outline_and_upload_nothing() {
         let layer = json!({"name": "t", "text": "0123456789", "font_family": "pixel",
-                           "font_size": 8});
+                           "render": "slug", "font_size": 8});
         let sc = scene_of(json!([{"name": "main", "fragment": FLAT, "layers": [layer]}]));
         let (_g, mut r) = gpu();
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -8740,10 +8766,10 @@ mod tests {
         r.set_layer(&at, Given::Text(words)).unwrap();
     }
 
-    /// Words in the pixel font at `x`, `y` and `px` pixels per em.
+    /// Slug words in the pixel font at `x`, `y` and `px` pixels per em.
     fn words(name: &str, words: &str, x: f64, y: f64, px: f64) -> Value {
-        json!({"name": name, "text": words, "font_family": "pixel", "font_size": px,
-               "x": x, "y": y})
+        json!({"name": name, "text": words, "font_family": "pixel", "render": "slug",
+               "font_size": px, "x": x, "y": y})
     }
 
     /// `layers` with `layer` at `at`, or in place of the layer of its name.
@@ -8771,10 +8797,11 @@ mod tests {
             words("t1", "Ab", 10.0, 4.0, 8.0),
             json!({"name": "b", "shape": "line", "points": [[4, 8], [40, 20], [52, 6]],
                    "stroke_width": 2, "color": "lime"}),
-            json!({"name": "t2", "text": "cd", "font_family": "pixel", "font_size": 16,
-                   "x": 20, "y": 6, "color": "orange", "opacity": 0.6}),
+            json!({"name": "t2", "text": "cd", "font_family": "pixel", "render": "slug",
+                   "font_size": 16, "x": 20, "y": 6, "color": "orange", "opacity": 0.6}),
             rect("c", [30.0, 0.0, 20.0, 20.0], "blue"),
-            json!({"name": "t3", "text": "fit", "font_family": "pixel", "x": 96}),
+            json!({"name": "t3", "text": "fit", "font_family": "pixel", "render": "slug",
+                   "x": 96}),
             t4,
         ]
     }
@@ -8811,8 +8838,9 @@ mod tests {
         t2_blink["blink"] = json!({});
         let mut t2_small = base[3].clone();
         t2_small["font_size"] = json!(8);
-        let t2_other = json!({"name": "t2", "text": "xy", "font_family": "pixel", "font_size": 16,
-                              "x": 22, "y": 8, "color": "lime"});
+        let t2_other = json!({"name": "t2", "text": "xy", "font_family": "pixel",
+                              "render": "slug", "font_size": 16, "x": 22, "y": 8,
+                              "color": "lime"});
         let mut wave = words("w", "w", 24.0, 30.0, 8.0);
         wave["wave"] = json!({"height": 0.2});
         let calm = words("w", "w", 24.0, 30.0, 8.0);
@@ -9090,7 +9118,7 @@ mod tests {
         for (k, l) in together.iter().enumerate() {
             apart.push(l.clone());
             apart.push(
-                json!({"name": format!("x{k}"), "text": "", "font_family": "pixel",
+                json!({"name": format!("x{k}"), "text": "", "font_family": "pixel", "render": "slug",
                               "blink": {}}),
             );
         }
@@ -9180,7 +9208,7 @@ mod tests {
             for (k, l) in layers.iter().enumerate() {
                 apart.push(l.clone());
                 apart.push(
-                    json!({"name": format!("x{k}"), "text": "", "font_family": "pixel",
+                    json!({"name": format!("x{k}"), "text": "", "font_family": "pixel", "render": "slug",
                                   "blink": {}}),
                 );
             }
@@ -9256,7 +9284,7 @@ mod tests {
         for (k, l) in layers.iter().enumerate() {
             apart.push(l.clone());
             apart.push(
-                json!({"name": format!("x{k}"), "text": "", "font_family": "pixel",
+                json!({"name": format!("x{k}"), "text": "", "font_family": "pixel", "render": "slug",
                               "blink": {}}),
             );
         }

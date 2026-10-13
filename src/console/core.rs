@@ -1907,10 +1907,11 @@ mod tests {
         assert_eq!(f["fonts"], json!({"built-in": null, "pixel": "pixel"}));
     }
 
-    /// A rect's border, the keys of each shape and the render of a text
-    /// layer that names none, as docs/layers.md's tables give them.
+    /// A rect's border, the keys of each shape, the render of a text layer
+    /// that names none and the effects that each render draws, as
+    /// docs/layers.md gives them.
     #[test]
-    fn format_serves_the_border_the_keys_of_each_shape_and_the_render_of_each_font() {
+    fn format_serves_the_border_the_keys_of_each_shape_and_the_renders() {
         use serde_json::json;
         let f = as_json(&get(&api(), "/format", &[]));
         assert_eq!(
@@ -1923,9 +1924,20 @@ mod tests {
             json!({"rect": ["width", "height", "border", "border_radius"],
                    "line": ["points", "stroke_width"]})
         );
+        let every = json!([
+            "text_shadow",
+            "glow",
+            "text_stroke",
+            "karaoke",
+            "wave",
+            "scroll",
+            "blink"
+        ]);
         assert_eq!(
             f["render"],
-            json!({"default": "auto", "fonts": {"pixel": "slug"}})
+            json!({"default": "auto", "fonts": {"pixel": "hinted"},
+                   "effects": {"auto": every, "hinted": every, "mono": every, "mtsdf": every,
+                               "slug": ["karaoke", "wave", "scroll", "blink"]}})
         );
     }
 

@@ -147,6 +147,28 @@ fn a_sized_output_pass_says_once_that_it_renders_at_the_screen_size_and_quiet_sa
     assert_eq!(String::from_utf8(out.stderr).unwrap(), "");
 }
 
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_render_that_drops_an_effect_says_which_and_draws_on() {
+    let dir = Dir::new("undrawn");
+    let scene = r#"{"passes": [{"name": "main",
+        "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+        "layers": [{"name": "t", "text": "hi", "render": "slug", "glow": {},
+                    "text_stroke": {}, "wave": {}}]}]}"#;
+    let out = render(&dir.0, scene, &["--size", "64x32"]);
+    assert!(out.status.success(), "{out:?}");
+    let err = String::from_utf8(out.stderr).unwrap();
+    let said: Vec<&str> = err.lines().filter(|l| l.contains("careful")).collect();
+    assert_eq!(
+        said,
+        [
+            "  careful  layer 't': render slug draws no glow, so the layer draws without it",
+            "  careful  layer 't': render slug draws no text_stroke, so the layer draws without it",
+        ],
+        "{err}"
+    );
+}
+
 /// Each pixel of the scene holds its column in red and its row from the top
 /// in green.
 const POSITION: &str = r#"{"passes": [{"name": "main",

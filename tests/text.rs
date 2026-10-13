@@ -794,7 +794,7 @@ fn layers_round_trip_and_leave_their_defaults_out() {
         "name": "d", "color": "White", "text": "I",
         "text_shadow": {"color": "black"}, "glow": {"color": "ORANGE"},
     }, {
-        "name": "e", "text": "I", "font_family": "pixel", "render": "slug",
+        "name": "e", "text": "I", "font_family": "pixel", "render": "hinted",
     }]));
     let back = Scene::from_dict(&defaults, None, None).unwrap().to_dict();
     assert_eq!(

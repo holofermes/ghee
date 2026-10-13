@@ -306,14 +306,20 @@ impl Render {
         Render::Slug,
     ];
 
-    /// The render of a text layer in `font_family` that names none: slug
-    /// for the pixel font, whose square edges it draws exactly, and auto
-    /// for any other.
+    /// The render of a text layer in `font_family` that names none: hinted
+    /// for the pixel font, whose pixels it draws crisp, and auto for any
+    /// other.
     pub fn default_for(font_family: Option<&str>) -> Render {
         match font_family {
-            Some(text::PIXEL) => Render::Slug,
+            Some(text::PIXEL) => Render::Hinted,
             _ => Render::Auto,
         }
+    }
+
+    /// True for a render that draws the effect `kind`: slug draws none that
+    /// reads the distance to the letters.
+    pub fn draws(self, kind: Kind) -> bool {
+        !(self == Render::Slug && kind.reads_distance())
     }
 
     /// The render as a scene writes it.
@@ -1237,13 +1243,19 @@ impl TextLayer {
         self.effects.iter().find(|e| e.kind == kind)
     }
 
-    /// The effects that the layer draws, present or bypassed: under slug,
-    /// none that reads the distance to the letters.
+    /// The effects that the layer draws, present or bypassed, those that its
+    /// render draws.
     fn drawn(&self) -> impl Iterator<Item = &Effect> {
-        let slug = self.render == Render::Slug;
+        self.effects.iter().filter(|e| self.render.draws(e.kind))
+    }
+
+    /// The effects of the layer, present or bypassed, that its render does
+    /// not draw.
+    pub fn undrawn(&self) -> impl Iterator<Item = Kind> + '_ {
         self.effects
             .iter()
-            .filter(move |e| !(slug && e.kind.reads_distance()))
+            .map(|e| e.kind)
+            .filter(|k| !self.render.draws(*k))
     }
 
     /// The drawn effect `kind`.
@@ -1323,12 +1335,12 @@ impl TextLayer {
 
     /// The pixels per em that a fitted size rounds down to a whole multiple
     /// of, one at the least: the pixel font's grid, and a whole pixel for a
-    /// hinted render, since TrueType hinting rounds most fonts' sizes to
-    /// whole pixels per em.
+    /// hinted render of any other font, since TrueType hinting rounds most
+    /// fonts' sizes to whole pixels per em.
     fn fit_step(&self) -> Option<f64> {
-        match self.render.hinted() {
-            true => Some(1.0),
-            false => self.grid(),
+        match self.grid() {
+            Some(g) => Some(g),
+            None => self.render.hinted().then_some(1.0),
         }
     }
 
@@ -2556,7 +2568,8 @@ impl Live {
 /// with no rebuild, the same for a rect's border, the live fields of each kind
 /// of layer, what an empty field of each kind takes, the keys of each shape,
 /// the built-in fonts, each name the console shows with the `font_family` that
-/// it writes, and the render that a text layer takes in each font.
+/// it writes, the render that a text layer takes in each font, and the
+/// effects that each render draws.
 pub fn format() -> Value {
     let mut effects = Map::new();
     for kind in Kind::ALL {
@@ -2645,7 +2658,16 @@ pub fn format() -> Value {
     if pixel != plain {
         renders.insert(text::PIXEL.to_string(), Value::from(pixel.as_str()));
     }
-    let render = serde_json::json!({"default": plain.as_str(), "fonts": renders});
+    let mut drawn = Map::new();
+    for r in Render::ALL {
+        let keys: Vec<&str> = Kind::ALL
+            .into_iter()
+            .filter(|k| r.draws(*k))
+            .map(Kind::key)
+            .collect();
+        drawn.insert(r.as_str().to_string(), Value::from(keys));
+    }
+    let render = serde_json::json!({"default": plain.as_str(), "fonts": renders, "effects": drawn});
     serde_json::json!({"effects": effects, "border": border, "live": live, "empty": empty,
                        "shapes": shapes, "fonts": fonts, "render": render})
 }

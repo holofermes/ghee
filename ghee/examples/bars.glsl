@@ -17,7 +17,6 @@ float hash(float n) {
   return fract(n);
 }
 
-// the place of v among the integers from 0 once a and b are taken out
 float rank(float v, float a, float b) {
   return v - step(a, v - 0.5) - step(b, v - 0.5);
 }

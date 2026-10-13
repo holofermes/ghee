@@ -534,6 +534,8 @@ pub struct Console {
     pub display: bool,
     /// Scan out in 16-bit color. This halves the GPU store and the scanout bytes.
     pub rgb565: bool,
+    /// The display skips to the newest frame, and the render keeps its own pace.
+    pub drop: bool,
     /// The degrees clockwise that every output turns the frame.
     pub rotate: i64,
     /// The backlight level that the display takes at the start, 0 to 1.
@@ -633,6 +635,7 @@ impl Console {
             h: 240,
             display: false,
             rgb565: false,
+            drop: false,
             rotate: 0,
             brightness: None,
             preview_max: 480,
@@ -1866,6 +1869,9 @@ impl RenderTarget for SharedRenderer {
 /// `card` when the caller holds it open.
 fn make_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
     let mut r = open_renderer(console, card)?;
+    if console.drop {
+        r.set_drop(true)?;
+    }
     r.set_alpha(console.alpha);
     r.set_rotate(console.rotate)?;
     if let Some(level) = console.brightness {
@@ -3221,6 +3227,9 @@ pub struct Options {
     pub host: String,
     pub display: bool,
     pub rgb565: bool,
+    /// The display skips to the newest frame, and the render keeps its own
+    /// pace: Renderer::set_drop.
+    pub drop: bool,
     /// The degrees clockwise that every output turns the frame: 0, 90, 180
     /// or 270. `size` stays the output's.
     pub rotate: i64,
@@ -3274,6 +3283,7 @@ impl Default for Options {
             host: "127.0.0.1".to_string(),
             display: false,
             rgb565: false,
+            drop: false,
             rotate: 0,
             brightness: None,
             preview_max: 480,
@@ -3340,6 +3350,7 @@ pub fn run(opts: Options) -> Result<()> {
         host,
         display,
         rgb565,
+        drop,
         rotate,
         brightness,
         preview_max,
@@ -3374,6 +3385,7 @@ pub fn run(opts: Options) -> Result<()> {
     console.h = size.1;
     console.display = display;
     console.rgb565 = rgb565;
+    console.drop = drop;
     console.rotate = rotate;
     console.brightness = brightness;
     console.preview_max = preview_max;

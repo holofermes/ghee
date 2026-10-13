@@ -636,6 +636,9 @@ fn cmd_render(a: &Ns) -> Result<()> {
     if a.brightness.is_some() && !kms {
         return Err(exit(format!("{}: --brightness needs --display kms", a.cmd)));
     }
+    if a.drop && !kms {
+        return Err(exit(format!("{}: --drop needs --display kms", a.cmd)));
+    }
     if matches!(panel, Panel::None) && !given(&a.output) && !given(&a.h264) && !a.serve {
         return Err(exit(format!(
             "{}: pass -o PATTERN, --display, --h264 PATH or --serve",
@@ -668,6 +671,9 @@ fn cmd_render(a: &Ns) -> Result<()> {
         Some(card) => Renderer::on_card(card, w, h, a.rgb565)?,
         None => Renderer::new(w, h, components, dri.as_deref(), kms, a.rgb565)?,
     };
+    if a.drop {
+        r.set_drop(true)?;
+    }
     r.set_alpha(a.alpha);
     r.set_rotate(a.rotate)?;
     if let Some(level) = a.brightness {
@@ -815,6 +821,7 @@ fn serve(
         sinks,
         display: kms,
         rgb565: a.rgb565,
+        drop: a.drop,
         rotate: a.rotate,
         brightness: a.brightness,
         port: a.port,
@@ -1173,6 +1180,14 @@ struct RenderFlags {
 
     #[arg(
         long,
+        help = "show the newest frame on the --display kms display each time it frees, \
+                and skip the frames that waited: the render stops waiting for the \
+                display, so --fps paces it"
+    )]
+    drop: bool,
+
+    #[arg(
+        long,
         value_name = "DEGREES",
         default_value_t = 0,
         value_parser = rotation,
@@ -1471,6 +1486,7 @@ pub struct Ns {
     stats: bool,
     display: Option<String>,
     rgb565: bool,
+    drop: bool,
     rotate: i64,
     brightness: Option<f64>,
     frames: Option<i64>,
@@ -1514,6 +1530,7 @@ impl RenderArgs {
             verbose: self.render.verbose,
             display: self.render.display,
             rgb565: self.render.rgb565,
+            drop: self.render.drop,
             rotate: self.render.rotate,
             brightness: self.render.brightness,
             frames: self.render.frames,
@@ -1557,6 +1574,7 @@ impl ServeArgs {
             stats: false,
             display: self.render.display,
             rgb565: self.render.rgb565,
+            drop: self.render.drop,
             rotate: self.render.rotate,
             brightness: self.render.brightness,
             frames: self.render.frames,
@@ -1766,6 +1784,14 @@ mod tests {
             ns(&["serve", "--demo", "--brightness", "0.25"]).brightness,
             Some(0.25)
         );
+    }
+
+    #[test]
+    fn drop_takes_a_kms_display() {
+        let (_d, path) = scene_file("drop");
+        let e = run(&["render", &path, "-o", "x.png", "--drop"]).unwrap_err();
+        assert_eq!(e.to_string(), "render: --drop needs --display kms");
+        assert!(ns(&["serve", "--demo", "--display", "--drop"]).drop);
     }
 
     #[test]

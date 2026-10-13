@@ -31,11 +31,11 @@ LINE = "sing it with me 🎤✨"
 BEAT = 4.0  # seconds to sing LINE
 
 SKY = """
-// The moon's cover at p, a disc low over the horizon.
+// The moon's cover at p, a disc setting on the horizon.
 float disc(vec2 p) {
     vec2 aspect = vec2(iResolution.x / iResolution.y, 1.0);
-    vec2 d = (p - vec2(0.5, horizon - 0.035)) * aspect;
-    return 1.0 - smoothstep(0.07, 0.075, length(d));
+    vec2 d = (p - vec2(0.5, horizon - 0.015)) * aspect;
+    return 1.0 - smoothstep(0.052, 0.057, length(d));
 }
 
 void main() {

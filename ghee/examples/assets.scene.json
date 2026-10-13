@@ -7,16 +7,18 @@
       "fragment": {"file": "assets.glsl"},
       "params": {
         "tile": {"type": "float", "value": 40.0, "min": 16.0, "max": 120.0, "step": 1.0},
-        "berry": {"type": "float", "value": 16.0, "min": 4.0, "max": 64.0, "step": 1.0},
-        "pattern": {"type": "float", "value": 0.4, "min": 0.0, "max": 1.0, "step": 0.01},
-        "drift": {"type": "float", "value": 6.0, "min": -40.0, "max": 40.0, "step": 0.5},
+        "berry": {"type": "float", "value": 27.0, "min": 4.0, "max": 64.0, "step": 1.0},
+        "pattern": {"type": "float", "value": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},
+        "drift": {"type": "float", "value": 20.0, "min": -40.0, "max": 40.0, "step": 0.5},
+        "wobble": {"type": "float", "value": 5.0, "min": 0.0, "max": 12.0, "step": 0.5},
         "cream": {"type": "color", "value": "#fff1e8"},
-        "blush": {"type": "color", "value": "#feb0b1"}
+        "blush": {"type": "color", "value": "#feb0b1"},
+        "sparkle": {"type": "color", "value": "#de2368"}
       },
       "layers": [
-        {"name": "picture", "image": "stamp", "y": 14, "width": 96},
-        {"name": "title", "text": "strawberry", "y": 116, "font_size": 44, "color": {"from": "#f3747d", "to": "#feb0b1", "angle": 180}, "text_stroke": {"width": 0.07, "color": "#46324e"}, "text_shadow": {"x": 0.05, "y": 0.07, "blur": 0.08, "color": "#46324e", "strength": 0.6}},
-        {"name": "caption", "text": "fresh this morning", "y": 190, "font_size": 16, "font_family": "Pixel Operator 8", "color": "#46324e", "wave": {"height": 0.15, "speed": 0.8}, "text_stroke": {"width": 0.2, "color": "#fff1e8"}}
+        {"name": "picture", "image": "stamp", "y": 16, "width": 96},
+        {"name": "title", "text": "berry", "y": 126, "font_size": 48, "font_family": "fonts/TitlePixel.ttf", "color": {"from": "#f480a8", "to": "#c41f5d", "angle": 180}, "text_stroke": {"width": 0.125, "color": "#46324e"}, "text_shadow": {"x": 0.1875, "y": 0.1875, "blur": 0.1, "color": "#46324e", "strength": 0.5}},
+        {"name": "caption", "text": "fresh this morning", "y": 196, "font_size": 16, "font_family": "Pixel Operator 8", "color": "#46324e", "wave": {"height": 0.15, "speed": 0.8}, "text_stroke": {"width": 0.2, "color": "#fff1e8"}}
       ]
     }
   ]

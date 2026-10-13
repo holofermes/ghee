@@ -33,6 +33,7 @@ assets = [
     ["THIRD-PARTY-NOTICES", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-DejaVu.txt", "usr/share/doc/ghee/", "644"],
     ["ghee/examples/fonts/LICENSE-PixelOperator.txt", "usr/share/doc/ghee/", "644"],
+    ["ghee/examples/fonts/LICENSE-PressStart2P.txt", "usr/share/doc/ghee/", "644"],
 ]
 
 [[bin]]

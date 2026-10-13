@@ -64,10 +64,6 @@ pub const EXAMPLES: [(&str, &[u8]); 21] = [
         include_bytes!("../../ghee/examples/bars.scene.json"),
     ),
     (
-        "blur.scene.json",
-        include_bytes!("../../ghee/examples/blur.scene.json"),
-    ),
-    (
         "feedback.glsl",
         include_bytes!("../../ghee/examples/feedback.glsl"),
     ),
@@ -100,12 +96,16 @@ pub const EXAMPLES: [(&str, &[u8]); 21] = [
         include_bytes!("../../ghee/examples/lib/look.py"),
     ),
     (
-        "mix.scene.json",
-        include_bytes!("../../ghee/examples/mix.scene.json"),
-    ),
-    (
         "nowplaying.py",
         include_bytes!("../../ghee/examples/nowplaying.py"),
+    ),
+    (
+        "passes.glsl",
+        include_bytes!("../../ghee/examples/passes.glsl"),
+    ),
+    (
+        "passes.scene.json",
+        include_bytes!("../../ghee/examples/passes.scene.json"),
     ),
     (
         "spectrum.py",

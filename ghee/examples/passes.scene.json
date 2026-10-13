@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "params": {
+    "horizon": {"type": "float", "value": 0.6, "min": 0.3, "max": 0.8, "step": 0.01}
+  },
+  "passes": [
+    {
+      "name": "sun",
+      "scale": 0.25,
+      "sampling": "nearest",
+      "fragment": "void main() {\n  vec2 p = (uv - vec2(0.5, horizon - 0.2)) * vec2(iResolution.x / iResolution.y, 1.0);\n  float disc = step(length(p), sun_size);\n  float y = max(p.y / sun_size, 0.0);\n  float bands = step(0.6 * y, fract(y * 3.0 - iTime * 0.3));\n  gl_FragColor = vec4(vec3(disc * bands), 1.0);\n}\n",
+      "params": {
+        "sun_size": {"type": "float", "value": 0.22, "min": 0.05, "max": 0.45, "step": 0.01}
+      }
+    },
+    {
+      "name": "halo",
+      "scale": 0.125,
+      "sampling": "linear",
+      "channels": [{"buffer": "sun"}],
+      "fragment": "void main() {\n  vec2 px = radius / iResolution.xy;\n  float sum = 0.0;\n  for (int x = -2; x <= 2; x++) {\n    for (int y = -2; y <= 2; y++) {\n      sum += texture2D(iChannel0, uv + vec2(float(x), float(y)) * px).r;\n    }\n  }\n  gl_FragColor = vec4(vec3(sum / 25.0), 1.0);\n}\n",
+      "params": {
+        "radius": {"type": "float", "value": 1.5, "min": 0.0, "max": 6.0, "step": 0.1}
+      }
+    },
+    {
+      "name": "ground",
+      "size": [256, 256],
+      "sampling": "trilinear",
+      "fragment": "void main() {\n  vec2 cell = abs(fract(uv * cells) - 0.5);\n  gl_FragColor = vec4(vec3(smoothstep(0.42, 0.48, max(cell.x, cell.y))), 1.0);\n}\n",
+      "params": {
+        "cells": {"type": "float", "value": 4.0, "min": 1.0, "max": 16.0, "step": 1.0}
+      }
+    },
+    {
+      "name": "main",
+      "fragment": {"file": "passes.glsl"},
+      "channels": [{"buffer": "sun"}, {"buffer": "halo"}, {"buffer": "ground"}],
+      "params": {
+        "speed": {"type": "float", "value": 0.5, "min": 0.0, "max": 3.0, "step": 0.05},
+        "glow": {"type": "float", "value": 1.2, "min": 0.0, "max": 3.0, "step": 0.05},
+        "sky_top": {"type": "color", "value": [0.03, 0.02, 0.1]},
+        "sky_bottom": {"type": "color", "value": [0.45, 0.12, 0.35]},
+        "sun_color": {"type": "color", "value": [1.0, 0.75, 0.3]},
+        "ground_color": {"type": "color", "value": [0.03, 0.02, 0.08]},
+        "grid_color": {"type": "color", "value": [0.2, 0.8, 1.0]}
+      }
+    },
+    {
+      "name": "scanlines",
+      "visible": false,
+      "channels": [{"buffer": "main"}],
+      "fragment": "void main() {\n  vec3 col = texture2D(iChannel0, uv).rgb;\n  float odd = mod(floor(uv.y * iResolution.y), 2.0);\n  gl_FragColor = vec4(col * (1.0 - depth * odd), 1.0);\n}\n",
+      "params": {
+        "depth": {"type": "float", "value": 0.4, "min": 0.0, "max": 1.0, "step": 0.01}
+      }
+    }
+  ]
+}

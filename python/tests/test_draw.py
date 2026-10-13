@@ -955,7 +955,9 @@ def test_ghee_render_demo_stats_draws_the_time_and_the_load(tmp_path):
 
     def lit(x0, x1, y0, y1):
         return any(
-            px[(y * w + x) * 4] > 127 for y in range(y0, y1) for x in range(x0, x1)
+            max(px[(y * w + x) * 4 : (y * w + x) * 4 + 3]) > 127
+            for y in range(y0, y1)
+            for x in range(x0, x1)
         )
 
     # the time at the top left, and the frame of the load bar at the right

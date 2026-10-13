@@ -2,7 +2,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{PoisonError, RwLock};
 
 /// A directory of one test's own under the temp directory. The drop removes
 /// it, with everything that the test wrote in it.
@@ -27,20 +28,52 @@ impl Drop for Dir {
     }
 }
 
+/// A process starts with a copy of every descriptor open in the test process
+/// and keeps it until its exec. One that writes an executable keeps that
+/// file busy, and an exec of the file answers ETXTBSY. Writing an executable
+/// takes this lock exclusively, and starting a process takes it shared.
+static EXECUTABLES: RwLock<()> = RwLock::new(());
+
+/// Start `cmd` while no test writes an executable.
+fn start(cmd: &mut Command) -> Child {
+    let started = {
+        let _start = EXECUTABLES.read().unwrap_or_else(PoisonError::into_inner);
+        cmd.spawn()
+    };
+    started.unwrap()
+}
+
+/// Make the executable `path` with `make`, while no test starts a process.
+fn executable(path: &Path, make: impl FnOnce(&Path) -> std::io::Result<()>) {
+    use std::os::unix::fs::PermissionsExt;
+    let _write = EXECUTABLES.write().unwrap_or_else(PoisonError::into_inner);
+    make(path).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// What `cmd` printed, and how it exited.
+fn output(cmd: &mut Command) -> Output {
+    let cmd = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    start(cmd).wait_with_output().unwrap()
+}
+
 /// `ghee render` of the scene JSON `scene` with the flags `args`, one frame
 /// to a PNG in `dir`, with no $GHEE_ASSETS and the atlas cache in `dir`.
 fn render(dir: &Path, scene: &str, args: &[&str]) -> Output {
     let path = dir.join("s.scene.json");
     fs::write(&path, scene).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_ghee"))
-        .arg("render")
-        .arg(&path)
-        .args(["-o", &dir.join("out.png").to_string_lossy()])
-        .args(args)
-        .env("GHEE_ASSETS", "")
-        .env("XDG_CACHE_HOME", dir)
-        .output()
-        .unwrap()
+    output(
+        Command::new(env!("CARGO_BIN_EXE_ghee"))
+            .arg("render")
+            .arg(&path)
+            .args(["-o", &dir.join("out.png").to_string_lossy()])
+            .args(args)
+            .env("GHEE_ASSETS", "")
+            .env("XDG_CACHE_HOME", dir),
+    )
 }
 
 #[test]
@@ -141,21 +174,19 @@ const SIZE_SCRIPT: &str = "#!/bin/sh\nprintf '%s' \"$GHEE_SIZE\" > size\n\
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_scene_process_starts_with_the_size_that_it_renders_at_turned_by_rotate() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = Dir::new("size");
     let path = dir.join("sized");
-    fs::write(&path, SIZE_SCRIPT).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    executable(&path, |p| fs::write(p, SIZE_SCRIPT));
     for (rotate, want) in [("0", "32x24"), ("90", "24x32")] {
-        let out = Command::new(env!("CARGO_BIN_EXE_ghee"))
-            .arg("render")
-            .arg(&path)
-            .args(["-o", &dir.join("out.png").to_string_lossy()])
-            .args(["--size", "32x24", "--rotate", rotate, "--frames", "1"])
-            .env("GHEE_ASSETS", "")
-            .env("XDG_CACHE_HOME", &dir.0)
-            .output()
-            .unwrap();
+        let out = output(
+            Command::new(env!("CARGO_BIN_EXE_ghee"))
+                .arg("render")
+                .arg(&path)
+                .args(["-o", &dir.join("out.png").to_string_lossy()])
+                .args(["--size", "32x24", "--rotate", rotate, "--frames", "1"])
+                .env("GHEE_ASSETS", "")
+                .env("XDG_CACHE_HOME", &dir.0),
+        );
         assert!(out.status.success(), "{out:?}");
         assert_eq!(fs::read_to_string(dir.join("size")).unwrap(), want);
     }
@@ -182,15 +213,13 @@ while read -r l; do :; done
 /// A copy of ghee in `bin/` of a new directory, with `lib/ghee/` beside it
 /// and UV_SCRIPT as `scene.sh`: the directory, ghee and the scene.
 fn ghee_beside_lib(tag: &str) -> (Dir, PathBuf, PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
     let dir = Dir::new(tag);
     fs::create_dir_all(dir.join("bin")).unwrap();
     fs::create_dir_all(dir.join("lib/ghee")).unwrap();
     let ghee = dir.join("bin/ghee");
-    fs::copy(env!("CARGO_BIN_EXE_ghee"), &ghee).unwrap();
+    executable(&ghee, |p| fs::copy(env!("CARGO_BIN_EXE_ghee"), p).map(drop));
     let scene = dir.join("scene.sh");
-    fs::write(&scene, UV_SCRIPT).unwrap();
-    fs::set_permissions(&scene, fs::Permissions::from_mode(0o755)).unwrap();
+    executable(&scene, |p| fs::write(p, UV_SCRIPT));
     (dir, ghee, scene)
 }
 
@@ -233,17 +262,17 @@ fn a_scene_process_takes_ghee_render_from_the_wheel_beside_ghee() {
     let (dir, ghee, scene) = ghee_beside_lib("wheel");
     // `ghee render <scene> -- --help` runs the scene to ask what it takes
     let probe = || {
-        let out = Command::new(&ghee)
-            .arg("render")
-            .arg(&scene)
-            .args(["--", "--help"])
-            .env("XDG_CACHE_HOME", &dir.0)
-            .env_remove("UV_INDEX")
-            .env_remove("UV_INDEX_STRATEGY")
-            .env_remove("UV_NO_BINARY_PACKAGE")
-            .env_remove("UV_NO_BUILD_PACKAGE")
-            .output()
-            .unwrap();
+        let out = output(
+            Command::new(&ghee)
+                .arg("render")
+                .arg(&scene)
+                .args(["--", "--help"])
+                .env("XDG_CACHE_HOME", &dir.0)
+                .env_remove("UV_INDEX")
+                .env_remove("UV_INDEX_STRATEGY")
+                .env_remove("UV_NO_BINARY_PACKAGE")
+                .env_remove("UV_NO_BUILD_PACKAGE"),
+        );
         assert!(out.status.success(), "{out:?}");
         (uv_vars(&dir), String::from_utf8(out.stderr).unwrap())
     };
@@ -283,13 +312,13 @@ fn the_help_says_why_a_scene_cannot_run_beside_two_wheels_of_ghees_version() {
     let name = one.file_name().unwrap().to_string_lossy().into_owned();
     let other = name.replace("x86_64", "aarch64");
     fs::write(dir.join(&format!("lib/ghee/{other}")), b"").unwrap();
-    let out = Command::new(&ghee)
-        .arg("render")
-        .arg(&scene)
-        .args(["--", "--help"])
-        .env("XDG_CACHE_HOME", &dir.0)
-        .output()
-        .unwrap();
+    let out = output(
+        Command::new(&ghee)
+            .arg("render")
+            .arg(&scene)
+            .args(["--", "--help"])
+            .env("XDG_CACHE_HOME", &dir.0),
+    );
     assert!(out.status.success(), "{out:?}");
     let lib = fs::canonicalize(dir.join("lib/ghee")).unwrap();
     assert_eq!(
@@ -308,16 +337,16 @@ fn an_empty_or_relative_xdg_cache_home_puts_the_wheel_index_under_home() {
     let (dir, ghee, scene) = ghee_beside_lib("wheel-home");
     wheel_of_ghee(&dir);
     for xdg in ["", "cache"] {
-        let out = Command::new(&ghee)
-            .arg("render")
-            .arg(&scene)
-            .args(["--", "--help"])
-            .current_dir(&dir.0)
-            .env("XDG_CACHE_HOME", xdg)
-            .env("HOME", &dir.0)
-            .env_remove("UV_INDEX")
-            .output()
-            .unwrap();
+        let out = output(
+            Command::new(&ghee)
+                .arg("render")
+                .arg(&scene)
+                .args(["--", "--help"])
+                .current_dir(&dir.0)
+                .env("XDG_CACHE_HOME", xdg)
+                .env("HOME", &dir.0)
+                .env_remove("UV_INDEX"),
+        );
         assert!(out.status.success(), "{out:?}");
         let uv = uv_vars(&dir);
         let under = format!("file://{}/.cache/ghee/index-", dir.0.display());
@@ -330,17 +359,17 @@ fn an_empty_or_relative_xdg_cache_home_puts_the_wheel_index_under_home() {
 fn a_started_scene_takes_the_index_of_the_wheel_beside_ghee_ahead_of_its_own() {
     let (dir, ghee, scene) = ghee_beside_lib("wheel-start");
     let wheel = fs::canonicalize(wheel_of_ghee(&dir)).unwrap();
-    let out = Command::new(&ghee)
-        .arg("render")
-        .arg(&scene)
-        .args(["-o", &dir.join("out.png").to_string_lossy()])
-        .args(["--size", "8x8", "--frames", "1"])
-        .env("GHEE_ASSETS", "")
-        .env("XDG_CACHE_HOME", &dir.0)
-        .env("UV_INDEX", "file:///elsewhere")
-        .env_remove("UV_INDEX_STRATEGY")
-        .output()
-        .unwrap();
+    let out = output(
+        Command::new(&ghee)
+            .arg("render")
+            .arg(&scene)
+            .args(["-o", &dir.join("out.png").to_string_lossy()])
+            .args(["--size", "8x8", "--frames", "1"])
+            .env("GHEE_ASSETS", "")
+            .env("XDG_CACHE_HOME", &dir.0)
+            .env("UV_INDEX", "file:///elsewhere")
+            .env_remove("UV_INDEX_STRATEGY"),
+    );
     assert!(out.status.success(), "{out:?}");
     let uv = uv_vars(&dir);
     let (first, rest) = uv["UV_INDEX"]
@@ -384,21 +413,21 @@ fn a_burst_of_ctrl_c_and_sigterm_ends_the_console() {
         r#"{"passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#,
     )
     .unwrap();
-    let mut ghee = Command::new(env!("CARGO_BIN_EXE_ghee"))
-        .arg("serve")
-        .arg(&scene)
-        .args(["--port", "0", "--size", "8x8"])
-        .arg("--state-dir")
-        .arg(dir.join("state"))
-        .arg("--my-scenes")
-        .arg(dir.join("mine"))
-        .env("GHEE_ASSETS", "")
-        .env("XDG_CACHE_HOME", &dir.0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut ghee = start(
+        Command::new(env!("CARGO_BIN_EXE_ghee"))
+            .arg("serve")
+            .arg(&scene)
+            .args(["--port", "0", "--size", "8x8"])
+            .arg("--state-dir")
+            .arg(dir.join("state"))
+            .arg("--my-scenes")
+            .arg(dir.join("mine"))
+            .env("GHEE_ASSETS", "")
+            .env("XDG_CACHE_HOME", &dir.0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     let mut out = BufReader::new(ghee.stdout.take().unwrap());
     let mut line = String::new();
     out.read_line(&mut line).unwrap();

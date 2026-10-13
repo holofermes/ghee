@@ -227,6 +227,33 @@ def test_brightness_with_no_kms_display_stops_the_run_as_ghee_render_stops(
 
 
 @pytest.mark.parametrize(
+    "argv,drop",
+    [
+        (["--display", "kms", "--drop"], True),
+        (["--drop"], True),
+        (["--display", "kms"], False),
+    ],
+)
+def test_drop_lets_the_display_skip_to_the_newest_frame_as_ghee_render_does(
+    argv, drop, monkeypatch
+):
+    shim, _, opened = host(monkeypatch, [*argv, "--frames", "1"])
+    shim.run(scene_of(shim))
+    assert opened["drop"] is drop
+
+
+def test_drop_with_no_kms_display_stops_the_run_as_ghee_render_stops(
+    monkeypatch, capsys
+):
+    shim, fake, opened = host(monkeypatch, ["-o", "f.png", "--drop"])
+    with pytest.raises(SystemExit) as stopped:
+        shim.run(scene_of(shim))
+    assert stopped.value.code == 1
+    assert capsys.readouterr().err == "feeder.py: --drop needs --display kms\n"
+    assert not opened and not fake.calls
+
+
+@pytest.mark.parametrize(
     "argv,opts",
     [
         (["--display", "kms", "--rgb565"], {"rgb565": True}),

@@ -313,6 +313,8 @@ pub struct Opening {
     pub verbose: bool,
     /// Keep the output pass's alpha in the frames.
     pub alpha: bool,
+    /// The display skips to the newest frame: Renderer::set_drop.
+    pub drop: bool,
 }
 
 pub struct Session {
@@ -558,10 +560,14 @@ impl Session {
             stream_max,
             verbose,
             alpha,
+            drop,
         } = opening;
         quarter_turns(rotate).map_err(scene_fault)?;
         let (scene, name) = load(source)?;
         let sink = open_sink(display.as_deref(), &opts)?;
+        if drop && matches!(sink, Sink::None) {
+            return Err(Fault::scene("drop without display"));
+        }
         let card = match sink {
             Sink::Kms => display_card(dri.as_deref()),
             Sink::None => None,
@@ -577,6 +583,9 @@ impl Session {
             None => Renderer::new(w, h, components, dri.as_deref(), kms, rgb565),
         }
         .map_err(system_fault)?;
+        if drop {
+            renderer.set_drop(true).map_err(system_fault)?;
+        }
         renderer.set_alpha(alpha);
         renderer.set_rotate(rotate).map_err(system_fault)?;
         let err = renderer.setup(&scene).map_err(system_fault)?;

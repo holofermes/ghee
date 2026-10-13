@@ -590,6 +590,9 @@ impl Handle {
 /// `alpha` keeps the output pass's alpha in pixels(), opaque without it.
 /// `base_dir` is where a scene given as a dict, as JSON text or as a
 /// ghee.Scene finds its files, the working directory when None.
+/// `drop` lets the display skip to the newest frame each time it frees:
+/// frame() hands its frame over and returns at once, so `fps` paces the
+/// loop. Without it, frame() waits for the display, which takes every frame.
 /// `serve` serves the ghee console on that port, on 127.0.0.1. A (host, port)
 /// pair binds it elsewhere. `stream_max` caps the console's h264 stream on
 /// its longest side: pixels, or a fraction of the render size.
@@ -609,6 +612,7 @@ impl Handle {
     timestep=None,
     alpha=false,
     base_dir=None,
+    drop=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn open(
@@ -626,6 +630,7 @@ fn open(
     timestep: Option<f64>,
     alpha: bool,
     base_dir: Option<PathBuf>,
+    drop: bool,
 ) -> PyResult<Handle> {
     let source = source_of(scene, base_dir)?;
     let serve = serve.map(bind_of).transpose()?;
@@ -663,6 +668,7 @@ fn open(
         stream_max,
         verbose,
         alpha,
+        drop,
     })
     .map_err(fault)?;
     Ok(Handle {

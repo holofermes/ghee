@@ -280,6 +280,12 @@ def test_a_display_other_than_kms():
     assert str(raised.value) == "no display 'hdmi' (takes: kms)"
 
 
+def test_drop_without_a_display():
+    with pytest.raises(ValueError) as raised:
+        ghee.open(RED, width=8, height=8, drop=True)
+    assert str(raised.value) == "drop without display"
+
+
 def test_an_option_the_display_does_not_take():
     with pytest.raises(ValueError) as raised:
         ghee.open(RED, display="kms", opts={"width": 240})

@@ -812,6 +812,13 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
         "bandwidth (worth it on VC4-class boards), slight banding in gradients",
     )
     p.add_argument(
+        "--drop",
+        action="store_true",
+        help="show the newest frame on the --display kms display each time it "
+        "frees, and skip the frames that waited: the render stops waiting for the "
+        "display, so --fps paces it",
+    )
+    p.add_argument(
         "--serve", action="store_true", help="also run the console on this render"
     )
     p.add_argument(
@@ -1348,6 +1355,8 @@ def _open(scene: Scene, a):
     w, h = a.size or (None, None)
     if a.brightness is not None and _display(a) != "kms":
         _refuse("--brightness needs --display kms")
+    if a.drop and _display(a) != "kms":
+        _refuse("--drop needs --display kms")
     doc = scene.to_dict()
     display = _display(a)
     try:
@@ -1364,6 +1373,7 @@ def _open(scene: Scene, a):
             serve=(a.host, a.port) if a.serve else None,
             timestep=a.timestep,
             base_dir=_script_dir(),
+            drop=a.drop,
         )
     except (ValueError, RuntimeError) as e:
         _refuse(str(e))

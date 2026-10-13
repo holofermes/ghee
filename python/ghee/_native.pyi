@@ -270,4 +270,5 @@ def open(
     timestep: float | None = None,
     alpha: bool = False,
     base_dir: str | os.PathLike[str] | None = None,
+    drop: bool = False,
 ) -> Handle: ...

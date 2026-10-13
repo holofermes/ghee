@@ -6,16 +6,17 @@
       "name": "main",
       "fragment": {"file": "assets.glsl"},
       "params": {
-        "top": {"type": "color", "value": [0.16, 0.07, 0.2]},
-        "bottom": {"type": "color", "value": [0.05, 0.03, 0.08]},
-        "tile": {"type": "float", "value": 1.0, "min": 0.25, "max": 4.0, "step": 0.05},
-        "pattern": {"type": "float", "value": 0.12, "min": 0.0, "max": 1.0, "step": 0.01},
-        "drift": {"type": "float", "value": 8.0, "min": -40.0, "max": 40.0, "step": 0.5}
+        "tile": {"type": "float", "value": 40.0, "min": 16.0, "max": 120.0, "step": 1.0},
+        "berry": {"type": "float", "value": 16.0, "min": 4.0, "max": 64.0, "step": 1.0},
+        "pattern": {"type": "float", "value": 0.4, "min": 0.0, "max": 1.0, "step": 0.01},
+        "drift": {"type": "float", "value": 6.0, "min": -40.0, "max": 40.0, "step": 0.5},
+        "cream": {"type": "color", "value": "#fff1e8"},
+        "blush": {"type": "color", "value": "#feb0b1"}
       },
       "layers": [
-        {"name": "picture", "image": "stamp", "y": 20, "width": 96},
-        {"name": "title", "text": "berries", "y": 124, "font_size": 48, "color": {"from": "#ff5a7a", "to": "#ffd36e", "angle": 180}, "text_stroke": {"width": 0.04, "color": "#2a0f1e"}, "text_shadow": {}},
-        {"name": "caption", "text": "picked this morning", "y": 194, "font_size": 16, "color": "#fff3d6", "glow": {"color": "#ff5a7a", "blur": 0.4}}
+        {"name": "picture", "image": "stamp", "y": 14, "width": 96},
+        {"name": "title", "text": "strawberry", "y": 116, "font_size": 44, "color": {"from": "#f3747d", "to": "#feb0b1", "angle": 180}, "text_stroke": {"width": 0.07, "color": "#46324e"}, "text_shadow": {"x": 0.05, "y": 0.07, "blur": 0.08, "color": "#46324e", "strength": 0.6}},
+        {"name": "caption", "text": "fresh this morning", "y": 190, "font_size": 16, "font_family": "pixel", "color": "#46324e", "wave": {"height": 0.15, "speed": 0.8}, "text_stroke": {"width": 0.2, "color": "#fff1e8"}}
       ]
     }
   ]

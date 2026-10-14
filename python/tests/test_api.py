@@ -679,6 +679,16 @@ def test_measure_gives_the_size_of_the_words_and_raises_for_an_unknown_font():
         # with no size the block fits the screen
         fit = h.measure("a wide line of words")
         assert fit[0] <= 128 and fit[1] <= 32
+        # a list draws each character from the first font that holds it
+        fonts = ["Pixel Operator 8", "DejaVu Sans"]
+        pixel = h.measure("Hi", font_size=16, font_family=fonts[0])
+        dejavu = h.measure("\u00a7", font_size=16, font_family=fonts[1])
+        whole = h.measure("Hi\u00a7", font_size=16, font_family=fonts)
+        assert whole == pytest.approx((pixel[0] + dejavu[0], pixel[1]))
+        with pytest.raises(
+            TypeError, match="font_family needs a font's name or a path"
+        ):
+            h.measure("Hi", font_family=3)
         with pytest.raises(ValueError) as raised:
             h.measure("Hi", font_family="serif")
     assert str(raised.value).startswith("font_family 'serif' is no asset of the scene")

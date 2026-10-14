@@ -173,7 +173,8 @@ class Layer:
     {"from": ..., "to": ..., "angle": degrees}, with CSS's angle.
     `font_family` is a font file (.ttf or .otf), the name of a font Asset,
     or "DejaVu Sans" or "Pixel Operator 8", the two fonts that ghee carries,
-    and None draws from DejaVu Sans.
+    or a list of them, where each character draws from the first font that
+    holds it, and None draws from DejaVu Sans.
     `text_align` is "left", "center" or "right", and `render` is "auto",
     "hinted", "mono", "mtsdf" or "slug".
 
@@ -213,7 +214,7 @@ class Layer:
     opacity: float | None = None
     blend: Blend = "normal"
     font_size: float | None = None
-    font_family: str | os.PathLike[str] | None = None
+    font_family: str | os.PathLike[str] | Sequence[str | os.PathLike[str]] | None = None
     text_align: TextAlign = "left"
     render: Render | None = None
     text_shadow: dict | None = None
@@ -477,12 +478,15 @@ def __getattr__(name: str):
 def measure(
     words: str,
     font_size: float | None = None,
-    font_family: str | os.PathLike[str] | None = None,
+    font_family: str
+    | os.PathLike[str]
+    | Sequence[str | os.PathLike[str]]
+    | None = None,
 ) -> tuple[float, float]:
     """The width and height in pixels of the block that `words` lay out in,
     as a text of the scene that run() runs lays them out on its last pass:
     at `font_size`, or at the size that fits the pass when None, in
-    `font_family`, DejaVu Sans when None.
+    the fonts of `font_family`, DejaVu Sans when None.
 
     Raises RuntimeError outside run(), and ValueError for a font that the
     scene cannot give a text.
@@ -495,9 +499,8 @@ def measure(
             "a tick or a feed"
         )
     size = render_size()
-    family = None if font_family is None else os.fspath(font_family)
     base = _script_dir() or os.getcwd()
-    return _live().measure(words, size, base, font_size, family)
+    return _live().measure(words, size, base, font_size, _plain(font_family))
 
 
 def draw() -> Drawing:

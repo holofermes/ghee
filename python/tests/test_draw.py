@@ -406,6 +406,12 @@ SHAPES = [
             "text": "hi",
         },
     ),
+    (
+        lambda d: d.text(
+            "hi", font_family=("Pixel Operator 8", pathlib.Path("noto.ttf"))
+        ),
+        {"name": "text", "text": "hi", "font_family": ["Pixel Operator 8", "noto.ttf"]},
+    ),
 ]
 
 

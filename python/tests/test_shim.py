@@ -13,6 +13,7 @@ import importlib.util
 import io
 import itertools
 import json
+import pathlib
 import re
 import struct
 import subprocess
@@ -387,6 +388,16 @@ def test_a_layer_takes_the_scene_json_keys():
     built = layer.to_dict()
     assert built == recorded
     assert json.dumps(built) == json.dumps(recorded)  # key order too
+
+
+def test_a_layer_takes_a_list_of_fonts():
+    shim = load()
+    fonts = ("Pixel Operator 8", pathlib.Path("noto.ttf"))
+    assert shim.Layer("t", text="hi", font_family=fonts).to_dict() == {
+        "name": "t",
+        "text": "hi",
+        "font_family": ["Pixel Operator 8", "noto.ttf"],
+    }
 
 
 def test_a_layer_leaves_render_to_ghee_unless_it_names_one():
@@ -1081,7 +1092,7 @@ def test_measure_under_ghee_lays_words_out_in_the_render_size(monkeypatch):
     """A scene that ghee runs measures on its last pass, at the render size
     that ghee gives it, and reads ghee's refusal of a font."""
     shim = load()
-    got = []
+    got, listed = [], []
 
     @shim.tick
     def hook(tick):
@@ -1091,6 +1102,10 @@ def test_measure_under_ghee_lays_words_out_in_the_render_size(monkeypatch):
         with pytest.raises(ValueError) as raised:
             shim.measure("Hi", font_family="serif")
         got.append(str(raised.value))
+        fonts = ["Pixel Operator 8", "DejaVu Sans"]
+        listed.append(shim.measure("Hi\u00a7", font_size=16, font_family=fonts))
+        listed.append(shim.measure("Hi", font_size=16, font_family=fonts[0]))
+        listed.append(shim.measure("\u00a7", font_size=16, font_family=fonts[1]))
 
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     for size in ("96x32", "192x64"):
@@ -1102,6 +1117,10 @@ def test_measure_under_ghee_lays_words_out_in_the_render_size(monkeypatch):
     assert 32 < fit[0] <= 96 and fit[1] <= 32
     assert got[6] == pytest.approx((2 * fit[0], 2 * fit[1]))
     assert refused.startswith("font_family 'serif' is no asset of the scene")
+    # each character of a list draws from the first font that holds it, on
+    # the first font's line
+    whole, pixel, dejavu = listed[:3]
+    assert whole == pytest.approx((pixel[0] + dejavu[0], pixel[1]))
 
 
 def test_the_tick_line_carries_the_params(monkeypatch):

@@ -41,7 +41,10 @@ class Handle:
         self,
         words: str,
         font_size: float | None = None,
-        font_family: str | os.PathLike[str] | None = None,
+        font_family: str
+        | os.PathLike[str]
+        | Sequence[str | os.PathLike[str]]
+        | None = None,
     ) -> tuple[float, float]: ...
     def set_param(
         self,
@@ -121,7 +124,10 @@ class Drawing:
         blend: Blend | None = None,
         visible: bool | None = None,
         font_size: float | None = None,
-        font_family: str | os.PathLike[str] | None = None,
+        font_family: str
+        | os.PathLike[str]
+        | Sequence[str | os.PathLike[str]]
+        | None = None,
         text_align: TextAlign | None = None,
         render: Render | None = None,
         text_shadow: dict[str, Any] | None = None,
@@ -238,7 +244,7 @@ class _LayerWire:
         size: tuple[float, float],
         base_dir: str,
         font_size: float | None = None,
-        font_family: str | None = None,
+        font_family: str | Sequence[str] | None = None,
     ) -> tuple[float, float]: ...
 
 def _numbered(pattern: str) -> bool:

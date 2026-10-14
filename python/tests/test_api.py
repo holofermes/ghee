@@ -69,7 +69,7 @@ def test_a_param_reaches_the_shader_live():
         h.set_param("gain", 0.5)
         h.frame()
         assert abs(pixel(h)[0] - 128) <= 2
-        h.set_param("gain", 1.0, pass_="main")
+        h.set_param("gain", 1.0, in_pass="main")
         h.feed("level", LEVEL)
         h.frame()
         assert pixel(h)[0] == 255
@@ -77,6 +77,8 @@ def test_a_param_reaches_the_shader_live():
         h.feed("level", LEVEL)
         h.frame()
         assert pixel(h)[0] == 0
+        with pytest.raises(TypeError):
+            h.set_param("gain", 1.0, pass_="main")
 
 
 def test_vec_and_color_values_reach_the_shader():
@@ -105,7 +107,7 @@ def test_vec_and_color_values_reach_the_shader():
                 [[0.25, 0.5, 0], [0.75, 0.5, 0.25], [0.5, 0.25, 0.125], [0.5, 0.25, 1]],
             ), got
             h.set_param("a", [1.0, 0.0])
-            h.set_param("b", (0.0, 0.25, 1.0), pass_="main")
+            h.set_param("b", (0.0, 0.25, 1.0), in_pass="main")
             h.set_param("main.c", [0.5, 1.0, 0.0, 1.0])
             h.set_param("tint", [0.0, 1.0, 0.5])
             h.frame()
@@ -290,11 +292,11 @@ def test_a_host_feeds_a_mask_a_state_and_per_pass_params():
     with ghee.open(HOST_SCENE, width=16, height=16) as h:
         h.feed("text", mask)
         h.feed("state", array.array("f", [0.0, 0.0]))
-        h.set_param("snap", 1.0, pass_="hold")
-        h.set_param("hotColor", [1.0, 0.0, 0.0], pass_="main")
+        h.set_param("snap", 1.0, in_pass="hold")
+        h.set_param("hotColor", [1.0, 0.0, 0.0], in_pass="main")
         h.frame()
         assert pixel(h) == (255, 0, 0, 255)
-        h.set_param("visLines", 0.0, pass_="main")
+        h.set_param("visLines", 0.0, in_pass="main")
         h.feed("state", array.array("f", [0.5, 0.0]))
         h.frame()
         assert abs(pixel(h)[0] - 128) <= 2

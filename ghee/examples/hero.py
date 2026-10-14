@@ -432,7 +432,7 @@ def start(tick):
     _state["first"] = False
     if args.dither:
         for name, value in DITHER_PARAMS.items():
-            ghee.set_param(name, value, pass_="dither")
+            ghee.set_param(name, value, in_pass="dither")
 
 
 ghee.run(build(args))

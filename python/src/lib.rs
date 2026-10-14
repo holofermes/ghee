@@ -310,20 +310,20 @@ impl Handle {
 impl Handle {
     /// Set one live param, with no recompile.
     ///
-    /// `pass_` addresses the param of one pass. A dotted `pass.name` does the
+    /// `in_pass` addresses the param of one pass. A dotted `pass.name` does the
     /// same. A bare name is the scene param, else the param of the first pass
     /// that declares it.
-    #[pyo3(signature = (name, value, pass_=None))]
+    #[pyo3(signature = (name, value, in_pass=None))]
     fn set_param(
         &mut self,
         name: &str,
         value: &Bound<'_, PyAny>,
-        pass_: Option<&str>,
+        in_pass: Option<&str>,
     ) -> PyResult<()> {
         let value = to_json(value)?;
         self.held
             .get()?
-            .set_param(pass_, name, &value)
+            .set_param(in_pass, name, &value)
             .map_err(fault)
     }
 

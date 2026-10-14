@@ -50,7 +50,7 @@ class Handle:
         self,
         name: str,
         value: SupportsFloat | str | Iterable[SupportsFloat],
-        pass_: str | None = None,
+        in_pass: str | None = None,
     ) -> None: ...
     def set_layer(
         self,

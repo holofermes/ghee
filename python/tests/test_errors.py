@@ -85,7 +85,7 @@ def test_a_param_the_scene_does_not_declare():
         assert "param 'nope' is not a param this scene declares" in str(raised.value)
         assert "gain" in str(raised.value)
         with pytest.raises(ValueError):
-            h.set_param("gain", 1.0, pass_="nosuchpass")
+            h.set_param("gain", 1.0, in_pass="nosuchpass")
 
 
 def test_a_layer_the_scene_does_not_declare():

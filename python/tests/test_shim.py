@@ -853,7 +853,7 @@ def test_a_filter_param_goes_out_unchecked(monkeypatch):
 
     @shim.tick
     def hook(tick):
-        shim.set_param("levels", 4.0, pass_="dither")
+        shim.set_param("levels", 4.0, in_pass="dither")
         shim.set_param("levels", 2.0)
 
     scene = scene_of(shim)

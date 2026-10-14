@@ -47,8 +47,8 @@ class Fake:
     def feed(self, name, values):
         self.calls.append(("feed", name, list(values)))
 
-    def set_param(self, name, value, pass_=None):
-        self.calls.append(("set_param", name, value, pass_))
+    def set_param(self, name, value, in_pass=None):
+        self.calls.append(("set_param", name, value, in_pass))
 
     def set_layer(self, name, field, value, effect=None):
         self.calls.append(("set_layer", name, field, value, effect))

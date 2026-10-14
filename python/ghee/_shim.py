@@ -955,13 +955,13 @@ def tick(fn):
 def set_param(
     name: str,
     value: SupportsFloat | str | Iterable[SupportsFloat],
-    pass_: str | None = None,
+    in_pass: str | None = None,
 ) -> None:
     """Set a live param for this tick.
 
     A float takes one number, a color takes "#rrggbb", a CSS colour name or
     three numbers, a vecN takes N, and a string takes text.
-    `pass_` addresses the param of one pass, such as a filter param.
+    `in_pass` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
 
     Raises ValueError for a param that the scene does not declare, or for a
@@ -969,10 +969,10 @@ def set_param(
     alike. The params of a filter are ghee's to check: a name that reaches
     a filter goes out unchecked.
     """
-    wire = f"{pass_}.{name}" if pass_ else name
+    wire = f"{in_pass}.{name}" if in_pass else name
     _check(wire, value)
     if _HANDLE is not None:
-        _HANDLE.set_param(name, value, pass_=pass_)
+        _HANDLE.set_param(name, value, in_pass=in_pass)
         return
     # The wire carries a color written "#rrggbb" as three floats, and a
     # colour name as text.

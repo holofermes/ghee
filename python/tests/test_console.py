@@ -175,7 +175,7 @@ def test_a_tick_hands_the_host_the_params_the_console_set():
         }
         h.set_param("mood", "own")
         h.set_param("gain", 0.25)
-        h.set_param("tone", 0.1, pass_="glow")
+        h.set_param("tone", 0.1, in_pass="glow")
         h.layers.title.text = "own"
         assert h.frame()["params"] == {}
 
@@ -503,7 +503,7 @@ def test_an_apply_reports_the_error_of_every_look_that_fails(tmp_path):
 def test_a_set_the_scene_refuses_reads_as_set_param_reads(served):
     h, port = served
     with pytest.raises(ValueError) as python:
-        h.set_param("nope", 1.0, pass_="main")
+        h.set_param("nope", 1.0, in_pass="main")
     with pytest.raises(urllib.error.HTTPError) as raised:
         post(port, "/set?pass=main&name=nope&value=1")
     assert raised.value.code == 400

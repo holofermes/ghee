@@ -334,7 +334,7 @@ pub struct Session {
     hz: i32,
     pending: Vec<(String, Fed)>,
     buf: Vec<u8>,
-    alpha: AlphaForm,
+    alpha: Option<AlphaForm>,
     timestep: Option<f64>,
     started: Option<f64>,
     prev: Option<f64>,
@@ -663,7 +663,7 @@ impl Session {
             hz,
             pending: Vec::new(),
             buf: vec![0u8; (i64::from(h) * i64::from(w) * i64::from(components)) as usize],
-            alpha: alpha.unwrap_or_default(),
+            alpha,
             timestep,
             started: None,
             prev: None,
@@ -689,8 +689,9 @@ impl Session {
         self.renderer.components
     }
 
-    /// The form that the frames' kept alpha takes on the way out.
-    pub fn alpha(&self) -> AlphaForm {
+    /// The form that the frames' kept alpha takes on the way out, None when
+    /// every frame is opaque.
+    pub fn alpha(&self) -> Option<AlphaForm> {
         self.alpha
     }
 
@@ -969,7 +970,7 @@ impl Session {
                     height,
                     components,
                 },
-                self.alpha.image_premultiplied(),
+                self.alpha.is_some_and(AlphaForm::image_premultiplied),
             )
         } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
             encode_jpeg(

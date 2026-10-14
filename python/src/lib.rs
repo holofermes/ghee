@@ -508,7 +508,8 @@ impl Handle {
     /// "unpremultiplied".
     fn pixels<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let session = self.held.get()?;
-        let premultiplied = session.alpha().raw_premultiplied() || session.components() != 4;
+        let premultiplied =
+            session.alpha().is_none_or(AlphaForm::raw_premultiplied) || session.components() != 4;
         let data = session.pixels().map_err(fault)?;
         if premultiplied {
             return Ok(PyBytes::new(py, data));
@@ -532,17 +533,21 @@ impl Handle {
         })?;
         let session = self.held.get()?;
         let data = session.pixels().map_err(fault)?;
-        // Pillow's "RGBa" holds colour premultiplied by alpha, and its
-        // unpacker into "RGBA" divides it out.
-        let (mode, raw) = match session.components() {
-            3 => ("RGB", "RGB"),
-            _ if session.alpha().image_premultiplied() => ("RGBa", "RGBa"),
-            _ => ("RGBA", "RGBa"),
+        // Pillow's unpacker from "RGBa" to "RGBA" truncates, and save() rounds.
+        let (mode, divide) = match (session.components(), session.alpha()) {
+            (3, _) => ("RGB", false),
+            (_, None) => ("RGBA", false),
+            (_, Some(form)) if form.image_premultiplied() => ("RGBa", false),
+            _ => ("RGBA", true),
         };
-        pil.call_method1(
-            "frombytes",
-            (mode, self.size, PyBytes::new(py, data), "raw", raw),
-        )
+        let bytes = PyBytes::new_with(py, data.len(), |buf| {
+            buf.copy_from_slice(data);
+            if divide {
+                unpremultiply(buf);
+            }
+            Ok(())
+        })?;
+        pil.call_method1("frombytes", (mode, self.size, bytes))
     }
 
     /// Write the last frame to an image file: a .png, or a .jpg, which holds

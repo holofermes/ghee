@@ -503,9 +503,13 @@ def test_alpha_names_one_form_for_every_output(tmp_path):
         with ghee.open(HALF, width=8, height=4, alpha=alpha) as h:
             h.frame()
             assert close(pixel(h), raw), (alpha, pixel(h))
-            assert close(h.image().getpixel((0, 0)), picture), alpha
+            got = h.image().getpixel((0, 0))
+            if raw == picture:
+                assert got == pixel(h), (alpha, got, pixel(h))
             h.save(png)
-        assert close(image.open(png).getpixel((0, 0)), picture), alpha
+        saved = image.open(png).getpixel((0, 0))
+        assert close(saved, picture), alpha
+        assert got == saved, (alpha, got, saved)
         ran = subprocess.run(
             [
                 str(pathlib.Path(sys.executable).parent / "ghee"),

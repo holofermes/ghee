@@ -57,7 +57,7 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
 /// extracts this set to a cache directory first. A procedural example imports
 /// ghee from the ghee-render package, which uv installs.
-pub const EXAMPLES: [(&str, &[u8]); 46] = [
+pub const EXAMPLES: [(&str, &[u8]); 36] = [
     (
         "assets.glsl",
         include_bytes!("../../ghee/examples/assets.glsl"),
@@ -96,34 +96,6 @@ pub const EXAMPLES: [(&str, &[u8]); 46] = [
     (
         "fonts/LICENSE-DepartureMono.txt",
         include_bytes!("../../ghee/examples/fonts/LICENSE-DepartureMono.txt"),
-    ),
-    (
-        "fonts/LCDSeven-Bold.ttf",
-        include_bytes!("../../ghee/examples/fonts/LCDSeven-Bold.ttf"),
-    ),
-    (
-        "fonts/LICENSE-DSEG.txt",
-        include_bytes!("../../ghee/examples/fonts/LICENSE-DSEG.txt"),
-    ),
-    (
-        "fonts/Silkscreen-Regular.ttf",
-        include_bytes!("../../ghee/examples/fonts/Silkscreen-Regular.ttf"),
-    ),
-    (
-        "fonts/LICENSE-Silkscreen.txt",
-        include_bytes!("../../ghee/examples/fonts/LICENSE-Silkscreen.txt"),
-    ),
-    (
-        "fonts/Bedstead.otf",
-        include_bytes!("../../ghee/examples/fonts/Bedstead.otf"),
-    ),
-    (
-        "fonts/Bedstead-UltraCondensed.otf",
-        include_bytes!("../../ghee/examples/fonts/Bedstead-UltraCondensed.otf"),
-    ),
-    (
-        "fonts/LICENSE-Bedstead.txt",
-        include_bytes!("../../ghee/examples/fonts/LICENSE-Bedstead.txt"),
     ),
     (
         "fonts/Monogram.ttf",
@@ -206,9 +178,6 @@ pub const EXAMPLES: [(&str, &[u8]); 46] = [
     ),
     ("stamp.png", include_bytes!("../../ghee/examples/stamp.png")),
     ("stats.py", include_bytes!("../../ghee/examples/stats.py")),
-    ("stats2.py", include_bytes!("../../ghee/examples/stats2.py")),
-    ("stats3.py", include_bytes!("../../ghee/examples/stats3.py")),
-    ("stats4.py", include_bytes!("../../ghee/examples/stats4.py")),
 ];
 
 /// The bundled example scenes on disk. $GHEE_EXAMPLES wins. Otherwise this

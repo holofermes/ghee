@@ -321,8 +321,8 @@ def clock(tick):
 ghee.run()
 ```
 
-`ghee render --demo stats` draws the time and the load of the machine this
-way.
+`ghee render --demo stats` draws the load, memory, temperature and uptime of
+the machine this way.
 
 `params` on `ghee.Scene` and `ghee.Pass` takes a list of `ghee.Param`, such as
 `params=[ghee.Param("gain", "float", 0.5, min=0.0, max=1.0)]`. A dict keyed

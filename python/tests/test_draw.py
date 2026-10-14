@@ -980,13 +980,15 @@ def test_a_scene_script_under_ghee_draws_the_frames_that_a_screen_draws(tmp_path
             assert got == screen.pixels(), f"frame {i}"
 
 
-def test_ghee_render_demo_stats_draws_the_time_and_the_load(tmp_path):
+def test_ghee_render_demo_stats_draws_the_chart_and_the_readings(tmp_path):
     """`ghee render --demo stats` runs the bundled example under ghee, which
     draws its whole screen from its tick."""
     if not CLI.exists():
         pytest.skip(f"no {CLI} to run the scene")
     demos = tmp_path / "demos"
-    demos.mkdir()
+    (demos / "fonts").mkdir(parents=True)
+    font = "fonts/DepartureMono-Regular.otf"
+    (demos / font).write_bytes((REPO / "ghee/examples" / font).read_bytes())
     # the Python of this test, which holds this wheel, in place of uv's
     body = (REPO / "ghee/examples/stats.py").read_text().partition("\n")[2]
     stats = demos / "stats.py"
@@ -1017,6 +1019,8 @@ def test_ghee_render_demo_stats_draws_the_time_and_the_load(tmp_path):
             for x in range(x0, x1)
         )
 
-    # the time at the top left, and the frame of the load bar at the right
-    assert lit(0, 64, 0, 16)
-    assert lit(64, 128, 20, 28)
+    # the chart's frame at the left, the load at the top right, and a
+    # reading at the bottom right
+    assert lit(0, 1, 0, 32)
+    assert lit(64, 128, 0, 9)
+    assert lit(64, 128, 22, 31)

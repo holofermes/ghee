@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "passes": [
+    {
+      "name": "lots",
+      "size": [32, 32],
+      "sampling": "nearest",
+      "fragment": "float hash(vec2 p) {\n  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n}\n\nvoid main() {\n  vec2 lot = floor(uv * 32.0);\n  float park = step(0.72, hash(floor(lot / 4.0) + 3.0));\n  gl_FragColor = vec4(park, hash(lot), hash(lot + 7.0), 1.0);\n}\n"
+    },
+    {
+      "name": "clouds",
+      "size": [64, 64],
+      "sampling": "linear",
+      "fragment": "float hash(vec2 p) {\n  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n}\n\nfloat noise(vec2 p) {\n  vec2 i = floor(p);\n  vec2 f = fract(p);\n  f = f * f * (3.0 - 2.0 * f);\n  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);\n}\n\nvoid main() {\n  vec2 p = uv * 4.0 + vec2(iTime * wind, iTime * wind * 0.4);\n  float n = noise(p) * 0.65 + noise(p * 2.3 + 5.0) * 0.35;\n  gl_FragColor = vec4(vec3(smoothstep(0.6, 0.68, n)), 1.0);\n}\n",
+      "params": {
+        "wind": {"type": "float", "value": 0.12, "min": 0.0, "max": 1.0, "step": 0.01}
+      }
+    },
+    {
+      "name": "town",
+      "size": [512, 512],
+      "sampling": "trilinear",
+      "fragment": {"file": "passes4-town.glsl"},
+      "channels": [{"buffer": "lots"}, {"buffer": "clouds"}],
+      "params": {
+        "traffic": {"type": "float", "value": 2.0, "min": 0.0, "max": 6.0, "step": 0.1},
+        "train_speed": {"type": "float", "value": 6.0, "min": 0.0, "max": 30.0, "step": 0.5},
+        "cloud_shade": {"type": "float", "value": 0.35, "min": 0.0, "max": 1.0, "step": 0.01},
+        "grass": {"type": "color", "value": "#72a650"},
+        "foliage": {"type": "color", "value": "#2f7a3e"},
+        "asphalt": {"type": "color", "value": "#585c66"},
+        "gravel": {"type": "color", "value": "#8a8278"},
+        "walls": {"type": "color", "value": "#f1e8d5"},
+        "train": {"type": "color", "value": "#d8352a"},
+        "terracotta": {"type": "color", "value": "#c8553d"},
+        "slate": {"type": "color", "value": "#4a6fa5"},
+        "mustard": {"type": "color", "value": "#e0a526"},
+        "teal": {"type": "color", "value": "#2a9d8f"},
+        "cherry": {"type": "color", "value": "#b23a48"},
+        "pond": {"type": "color", "value": "#3d8fc4"},
+        "sand": {"type": "color", "value": "#d9c79a"}
+      }
+    },
+    {
+      "name": "scene",
+      "fragment": "void main() {\n  float z = 1.0 / (uv.y + 1.72);\n  vec2 board = vec2(0.5 + (uv.x - 0.5) * iResolution.x / iResolution.y * z * 0.62, 0.665 - (z - 0.368) * 2.2);\n  vec3 col = texture2D(iChannel0, board).rgb;\n  gl_FragColor = vec4(mix(col, haze, 0.3 * (1.0 - smoothstep(0.0, 0.45, uv.y))), 1.0);\n}\n",
+      "channels": [{"buffer": "town"}],
+      "params": {
+        "haze": {"type": "color", "value": "#cfe3ee"}
+      }
+    },
+    {
+      "name": "blur",
+      "size": [128, 128],
+      "sampling": "trilinear",
+      "fragment": "void main() {\n  vec2 px = spread / iChannelResolution[0].xy;\n  vec3 sum = vec3(0.0);\n  float total = 0.0;\n  for (int x = -2; x <= 2; x++) {\n    for (int y = -2; y <= 2; y++) {\n      float w = exp(-float(x * x + y * y) / 5.0);\n      sum += w * texture2D(iChannel0, uv + vec2(float(x), float(y)) * px).rgb;\n      total += w;\n    }\n  }\n  gl_FragColor = vec4(sum / total, 1.0);\n}\n",
+      "channels": [{"buffer": "scene"}],
+      "params": {
+        "spread": {"type": "float", "value": 1.5, "min": 0.5, "max": 6.0, "step": 0.1}
+      }
+    },
+    {
+      "name": "main",
+      "fragment": {"file": "passes4.glsl"},
+      "channels": [{"buffer": "scene"}, {"buffer": "blur"}],
+      "params": {
+        "focus": {"type": "float", "value": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},
+        "band": {"type": "float", "value": 0.06, "min": 0.0, "max": 0.5, "step": 0.01},
+        "fade": {"type": "float", "value": 0.3, "min": 0.01, "max": 0.6, "step": 0.01},
+        "depth_blur": {"type": "float", "value": 1.8, "min": 0.0, "max": 5.0, "step": 0.1},
+        "saturation": {"type": "float", "value": 1.35, "min": 0.0, "max": 2.0, "step": 0.05},
+        "contrast": {"type": "float", "value": 1.1, "min": 0.5, "max": 2.0, "step": 0.05}
+      }
+    },
+    {
+      "name": "photo",
+      "visible": false,
+      "fragment": "float hash(vec2 p) {\n  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n}\n\nvoid main() {\n  vec3 col = vec3(0.0);\n  if (gl_FragCoord.x >= 0.0) col = texture2D(iChannel0, uv).rgb;\n  vec2 q = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);\n  col *= 1.0 - vignette * dot(q, q);\n  col += (hash(floor(uv * iResolution.xy) + fract(iTime) * 97.0) - 0.5) * grain;\n  gl_FragColor = vec4(col, 1.0);\n}\n",
+      "channels": [{"buffer": "main"}],
+      "params": {
+        "vignette": {"type": "float", "value": 0.5, "min": 0.0, "max": 1.5, "step": 0.05},
+        "grain": {"type": "float", "value": 0.04, "min": 0.0, "max": 0.3, "step": 0.01}
+      }
+    }
+  ]
+}

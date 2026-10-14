@@ -1,7 +1,3 @@
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
 float box(vec2 p, vec2 lo, vec2 hi) {
   vec2 d = max(lo - p, p - hi);
   return 1.0 - smoothstep(-0.02, 0.02, max(d.x, d.y));
@@ -16,14 +12,14 @@ vec3 roof_color(float k) {
 }
 
 vec3 car(vec2 q, float along, float lane, float dir, vec3 col) {
-  float s = along * dir - iTime * traffic * (0.8 + 0.4 * hash(vec2(lane, 1.0)));
+  float s = along * dir - iTime * traffic * (0.8 + 0.4 * ghee_hash(vec2(lane, 1.0)));
   float slot = floor(s / 1.7);
   float x = fract(s / 1.7) * 1.7;
-  float here = step(0.45, hash(vec2(slot, lane)));
+  float here = step(0.45, ghee_hash(vec2(slot, lane)));
   float body = box(vec2(x, q.y), vec2(0.0, -0.1), vec2(0.5, 0.1)) * here;
   float glass = box(vec2(x, q.y), vec2(0.14, -0.07), vec2(0.36, 0.07));
-  vec3 paint = vec3(hash(vec2(slot, lane + 3.0)), hash(vec2(slot, lane + 5.0)), hash(vec2(slot, lane + 9.0)));
-  paint = mix(paint, vec3(0.95), step(0.7, hash(vec2(slot, lane + 11.0))));
+  vec3 paint = vec3(ghee_hash(vec2(slot, lane + 3.0)), ghee_hash(vec2(slot, lane + 5.0)), ghee_hash(vec2(slot, lane + 9.0)));
+  paint = mix(paint, vec3(0.95), step(0.7, ghee_hash(vec2(slot, lane + 11.0))));
   vec3 c = mix(col, vec3(0.08), box(vec2(x, q.y), vec2(0.04, -0.07), vec2(0.54, 0.13)) * here * 0.5);
   return mix(c, mix(paint, vec3(0.15, 0.2, 0.25), glass), body);
 }
@@ -35,7 +31,7 @@ void main() {
   vec4 plan = texture2D(iChannel0, uv);
   vec2 inblock = mod(lot, 4.0) + f;
 
-  vec3 col = grass * (0.95 + 0.08 * hash(floor(p * 3.0)));
+  vec3 col = grass * (0.95 + 0.08 * ghee_hash(floor(p * 3.0)));
   float rail = step(15.0, lot.y) * step(lot.y, 15.0);
   vec2 street = vec2(min(inblock.x, 4.0 - inblock.x), min(inblock.y, 4.0 - inblock.y));
   float road = 1.0 - smoothstep(0.24, 0.27, min(street.x, street.y));

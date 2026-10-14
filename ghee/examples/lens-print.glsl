@@ -1,30 +1,16 @@
-float hash(vec2 p) {
-  vec3 q = fract(p.xyx * 0.1031);
-  q += dot(q, q.yzx + 33.33);
-  return fract((q.x + q.y) * q.z);
-}
-
-float noise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
-             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-}
-
 float fbm(vec2 p) {
-  return 0.5 * noise(p) + 0.3 * noise(p * 2.1 + 5.2) + 0.2 * noise(p * 4.3 + 1.7);
+  return 0.5 * ghee_noise(p) + 0.3 * ghee_noise(p * 2.1 + 5.2) + 0.2 * ghee_noise(p * 4.3 + 1.7);
 }
 
 float fibres(vec2 q, float px, float scale, float seed) {
   vec2 g = q * scale;
   vec2 cell = floor(g) + seed;
-  float a = hash(cell) * 6.2832;
+  float a = ghee_hash(cell) * 6.2832;
   vec2 dir = vec2(cos(a), sin(a));
-  vec2 v = fract(g) - 0.5 - (vec2(hash(cell + 1.3), hash(cell + 7.1)) - 0.5) * 0.3;
+  vec2 v = fract(g) - 0.5 - (vec2(ghee_hash(vec3(cell, 1.0)), ghee_hash(vec3(cell, 2.0))) - 0.5) * 0.3;
   float dist = length(v - dir * clamp(dot(v, dir), -0.32, 0.32));
   float cells = px / scale;
-  return clamp((0.035 - dist) * cells + 0.5, 0.0, 1.0) * step(0.5, hash(cell + 3.3));
+  return clamp((0.035 - dist) * cells + 0.5, 0.0, 1.0) * step(0.5, ghee_hash(vec3(cell, 3.0)));
 }
 
 // The paper at page point q, in widths of the frame, with px pixels to the
@@ -34,7 +20,7 @@ vec2 paper_at(vec2 q, float px, float aspect) {
   tone *= 1.0 - 0.06 * fibres(q, px, 70.0, 0.0) + 0.04 * fibres(q, px, 110.0, 40.0);
   tone *= 1.0 - 0.1 * fibres(q, px, 260.0, 80.0) * clamp(px / 1500.0, 0.0, 1.0);
   vec2 g = q * 300.0;
-  float speck = hash(floor(g) + 9.0);
+  float speck = ghee_hash(floor(g) + 9.0);
   float dot_size = 0.12 + 0.2 * fract(speck * 37.0);
   tone *= 1.0 - 0.4 * step(0.991, speck) * clamp((dot_size - length(fract(g) - 0.5)) * px / 300.0 + 0.5, 0.0, 1.0);
   vec2 e = min(q, vec2(1.0, aspect) - q);
@@ -42,8 +28,8 @@ vec2 paper_at(vec2 q, float px, float aspect) {
   float stain = fbm(q * 4.0 + 17.0) + 0.12 * near_edge;
   float fox = smoothstep(0.68, 0.74, stain);
   float tide = smoothstep(0.68, 0.7, stain) - smoothstep(0.7, 0.74, stain);
-  float spots = smoothstep(0.94, 0.98, noise(q * 70.0 + 3.0)) * smoothstep(0.45, 0.65, noise(q * 5.0));
-  float edge = 1.0 - smoothstep(0.0, 0.07, min(e.x, e.y) + 0.025 * noise(q * 30.0));
+  float spots = smoothstep(0.94, 0.98, ghee_noise(q * 70.0 + 3.0)) * smoothstep(0.45, 0.65, ghee_noise(q * 5.0));
+  float edge = 1.0 - smoothstep(0.0, 0.07, min(e.x, e.y) + 0.025 * ghee_noise(q * 30.0));
   float stains = 0.16 * fox + 0.16 * tide;
   stains += 0.4 * spots * (1.0 - stains);
   edge *= 0.45;
@@ -54,8 +40,8 @@ vec2 paper_at(vec2 q, float px, float aspect) {
 // pored where magnified.
 float inked(float c, vec2 q, float px) {
   float blot = 0.7 + 0.3 * fbm(q * 30.0);
-  float pores = smoothstep(0.8, 0.95, noise(q * 520.0)) * clamp(px / 1500.0, 0.0, 1.0);
-  return (1.0 - pow(1.0 - c, 1.0 + noise(q * 18.0))) * (blot - 0.3 * pores);
+  float pores = smoothstep(0.8, 0.95, ghee_noise(q * 520.0)) * clamp(px / 1500.0, 0.0, 1.0);
+  return (1.0 - pow(1.0 - c, 1.0 + ghee_noise(q * 18.0))) * (blot - 0.3 * pores);
 }
 
 float rule(vec2 q, float y, float x0, float x1, float half_width, float px) {

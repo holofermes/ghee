@@ -15,10 +15,6 @@
 //     ghee render --demo assets -o assets.png
 //     ghee render --demo assets --serve
 
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-}
-
 void main() {
   vec2 px = uv * iResolution.xy + vec2(iTime * drift, 0.0);
   px += wobble * sin(px.yx * 0.035 + iTime * 1.6);
@@ -34,7 +30,7 @@ void main() {
   vec4 s = texture2D(stamp_tex, clamp(q, 0.0, 1.0));
   col = mix(col, s.rgb, s.a * square * pattern);
 
-  float h = hash(cell);
+  float h = ghee_hash(cell);
   float r = floor(5.9 * max(sin(iTime * 1.8 + h * 40.0), 0.0));
   vec2 k = abs(floor((px - middle) / 3.0 + 0.5));
   float arm = clamp((1.0 - min(k.x, k.y)) * 8.0, 0.0, 1.0) * clamp((r - max(k.x, k.y)) * 8.0, 0.0, 1.0);

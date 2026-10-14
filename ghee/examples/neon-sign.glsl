@@ -60,10 +60,6 @@ float wisp(vec2 p, float x) {
   return length(vec2(p.x - x - 0.07 * sin(y * 7.0 + 1.0), p.y - y));
 }
 
-float hash(float n) {
-  return fract(sin(n * 91.345) * 47453.5453);
-}
-
 vec4 tube(float d, float px, vec3 color, float on) {
   float body = 1.0 - smoothstep(0.075 - px, 0.075 + px, d);
   float core = exp(-d * d / 0.0015);
@@ -78,7 +74,7 @@ void main() {
 
   if (q.y > -1.2 && q.y < 1.6 && q.x > -3.0 && q.x < 4.5) {
     float buzz = step(0.55, fract(iTime / 6.0)) * step(fract(iTime / 6.0), 0.68);
-    float flicker = 1.0 - buzz * step(0.4, hash(floor(iTime * 24.0)));
+    float flicker = 1.0 - buzz * step(0.4, ghee_hash(floor(iTime * 24.0)));
     float d = min(min(letter_r(q), letter_a(q - vec2(0.85, 0.0))), letter_m(q - vec2(1.75, 0.0)));
     col += tube(min(d, letter_n(q - vec2(3.46, 0.0))), px, word, 1.0);
     col += tube(letter_e(q - vec2(2.75, 0.0)), px, word, flicker);

@@ -45,8 +45,8 @@ float halftone(vec2 at, vec2 cells) {
 void main() {
   vec2 px = 1.0 / iResolution.xy;
   float t = print_time();
-  vec2 shake = (vec2(hash(vec2(t, 1.0)), hash(vec2(t, 2.0))) - 0.5) * jitter;
-  vec2 shake2 = (vec2(hash(vec2(t, 3.0)), hash(vec2(t, 4.0))) - 0.5) * jitter;
+  vec2 shake = (vec2(ghee_hash(vec2(t, 1.0)), ghee_hash(vec2(t, 2.0))) - 0.5) * jitter;
+  vec2 shake2 = (vec2(ghee_hash(vec2(t, 3.0)), ghee_hash(vec2(t, 4.0))) - 0.5) * jitter;
 
   float pink_ink = halftone(uv - (pink_shift + shake) * px, iChannelResolution[0].xy);
   float blue_tone = texture2D(iChannel1, uv - blue_shift * px).r;

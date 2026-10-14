@@ -14,13 +14,6 @@
 //     ghee render --demo bars -o frame.####.png --frames 60
 //     ghee render --demo bars --filters dither -o dither.png
 
-float hash(float n) {
-  n = fract(n * 0.1031);
-  n *= n + 33.33;
-  n *= n + n;
-  return fract(n);
-}
-
 float rank(float v, float a, float b) {
   return v - step(a, v - 0.5) - step(b, v - 0.5);
 }
@@ -44,10 +37,10 @@ void main() {
   float seed = floor(grid);
   float since = fract(grid) * hold;
 
-  float a = floor(hash(seed + 0.1) * 4.0);
-  float b = mod(a + 1.0 + floor(hash(seed + 0.2) * 3.0), 4.0);
-  float c = floor(hash(seed + 0.3) * 8.0);
-  float d = mod(c + 1.0 + floor(hash(seed + 0.4) * 7.0), 8.0);
+  float a = floor(ghee_hash(vec2(seed, 1.0)) * 4.0);
+  float b = mod(a + 1.0 + floor(ghee_hash(vec2(seed, 2.0)) * 3.0), 4.0);
+  float c = floor(ghee_hash(vec2(seed, 3.0)) * 8.0);
+  float d = mod(c + 1.0 + floor(ghee_hash(vec2(seed, 4.0)) * 7.0), 8.0);
 
   vec2 q = floor(p * 2.0);
   float qi = q.x + 2.0 * q.y;
@@ -73,9 +66,9 @@ void main() {
 
   vec2 cell = box / exp2(depth);
 
-  float h1 = hash(band * 7.13 + seed * 3.7);
-  float h2 = hash(band * 3.31 + seed * 5.3 + 0.5);
-  float h3 = hash(band * 5.77 + seed * 1.9 + 0.25);
+  float h1 = ghee_hash(vec3(band, seed, 1.0));
+  float h2 = ghee_hash(vec3(band, seed, 2.0));
+  float h3 = ghee_hash(vec3(band, seed, 3.0));
   float wide = step(0.3 + 0.2 * (depth - 1.0), h2);
   float period = mix(fine, thick, wide) * iResolution.y;
   float angle = floor(h1 * 4.0) * 0.7853982;
@@ -83,7 +76,7 @@ void main() {
   float speed = mix(fine_speed, thick_speed, wide) * (step(0.5, h3) * 2.0 - 1.0);
   float s = dot(px, dir) / period - t * speed;
 
-  float wait = 0.1 * hash(band * 2.3 + seed * 4.1 + 0.6);
+  float wait = 0.1 * ghee_hash(vec3(band, seed, 4.0));
   float open = smoothstep(wait, wait + 0.1, since) * smoothstep(wait, wait + 0.1, hold - since);
   vec2 edge = (0.5 * open - abs(local - 0.5)) * cell;
   float inside = clamp(min(edge.x, edge.y) - 0.5 * gap + 0.5, 0.0, 1.0);
@@ -95,6 +88,6 @@ void main() {
   float solid = smoothstep(peak - 0.01, peak, level);
   float cover = mix(stripe, 1.0, solid) * inside * frame;
 
-  vec3 ink = pick(floor(hash(band * 1.7 + seed * 9.1 + 0.75) * 4.0));
+  vec3 ink = pick(floor(ghee_hash(vec3(band, seed, 5.0)) * 4.0));
   gl_FragColor = vec4(mix(paper, ink, cover), 1.0);
 }

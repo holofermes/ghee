@@ -30,24 +30,13 @@
 //     ghee render --demo neon -o frame.####.png --frames 60
 //     ghee render --demo neon --serve
 
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-float noise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-}
-
 vec3 wall(vec2 at, float aspect) {
   vec2 b = vec2(at.x * aspect, at.y) / vec2(0.1, 0.042);
   b.x += 0.5 * mod(floor(b.y), 2.0);
   vec2 f = fract(b);
   float m = smoothstep(0.0, 0.05, f.x) * (1.0 - smoothstep(0.95, 1.0, f.x));
   m *= smoothstep(0.0, 0.12, f.y) * (1.0 - smoothstep(0.88, 1.0, f.y));
-  vec3 col = mix(mortar, brick * (0.6 + 0.8 * hash(floor(b))) * (0.75 + 0.5 * f.y * f.y), m);
+  vec3 col = mix(mortar, brick * (0.6 + 0.8 * ghee_hash(floor(b))) * (0.75 + 0.5 * f.y * f.y), m);
   vec2 box = abs((at - vec2(0.5, 0.505)) * vec2(aspect, 1.0)) - vec2(0.375, 0.062);
   col = mix(col, vec3(0.01), 1.0 - smoothstep(0.0, 0.004, max(box.x, box.y)));
   float ledge = smoothstep(base - 0.03, base - 0.025, at.y);
@@ -56,7 +45,7 @@ vec3 wall(vec2 at, float aspect) {
 
 vec2 ripples(vec2 g) {
   vec2 cell = floor(g);
-  float h = hash(cell);
+  float h = ghee_hash(cell);
   float age = fract(iTime * 0.8 + h * 7.0);
   vec2 d = g - cell - 0.3 - 0.4 * vec2(h, fract(h * 13.0));
   float r = length(d) - age * 0.3;
@@ -77,7 +66,7 @@ void main() {
     vec2 ground = vec2((uv.x - 0.5) * aspect * z, z);
     vec2 g = mod(ground * vec2(6.0, 4.0), 2.0);
     st = texture2D(iChannel3, 1.0 - abs(1.0 - g));
-    float puddle = smoothstep(0.0, 0.08, 1.0 - length((ground - vec2(0.02, 0.38)) / vec2(0.15, 0.07)) + 0.4 * noise(ground * 14.0) - 0.2);
+    float puddle = smoothstep(0.0, 0.08, 1.0 - length((ground - vec2(0.02, 0.38)) / vec2(0.15, 0.07)) + 0.4 * ghee_noise(ground * 14.0) - 0.2);
     vec2 n = mix((st.rg * 2.0 - 1.0) * sign(1.0 - g), ripples(ground * 6.0), puddle);
     float tilt = (st.a - 0.5) * st.b * (1.0 - puddle);
     at = vec2(uv.x + n.x * 0.02, 2.0 * base - uv.y + n.y * 0.06 + tilt * 0.1);

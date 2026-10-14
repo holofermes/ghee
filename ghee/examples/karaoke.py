@@ -47,22 +47,8 @@ MARGIN = 2  # the sea's pixels between the plate and the frame's edge
 NIGHT = "#141833"
 
 SEA = """
-float hash(vec2 p) {
-    vec3 q = fract(p.xyx * 0.1031);
-    q += dot(q, q.yzx + 33.33);
-    return fract((q.x + q.y) * q.z);
-}
-
-float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
-               mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-}
-
 float fbm(vec2 p) {
-    return 0.55 * noise(p) + 0.3 * noise(p * 2.03 + 7.1) + 0.15 * noise(p * 4.07 + 3.7);
+    return 0.55 * ghee_noise(p) + 0.3 * ghee_noise(p * 2.03 + 7.1) + 0.15 * ghee_noise(p * 4.07 + 3.7);
 }
 
 float bayer2(vec2 a) {
@@ -119,7 +105,7 @@ float palm(vec2 p, vec2 base, vec2 crown, float len, float seed) {
     if (length(p - crown) < len * 1.4) {
         for (int k = 0; k < 10; k++) {
             float j = mod(float(k), 5.0);
-            float h = hash(vec2(seed, float(k)));
+            float h = ghee_hash(vec2(seed, float(k)));
             float e = 1.35 - 0.51 * j + 0.2 * (h - 0.5) + 0.07 * sin(iTime * 1.4 + seed + 1.9 * float(k));
             float l = len * (0.5 + 0.75 * sin(j * 0.667)) * (0.9 + 0.2 * h);
             m = max(m, frond(p, crown, sign(float(k) - 4.5), e, l, 1.4 - 0.25 * j));
@@ -193,10 +179,10 @@ void main() {
 
     if (p.y < hz) {
         float s = p.y / hz;
-        s += (noise(vec2(p.x * 0.035 + iTime * 0.1, p.y * 0.6)) - 0.5) * 0.05;
+        s += (ghee_noise(vec2(p.x * 0.035 + iTime * 0.1, p.y * 0.6)) - 0.5) * 0.05;
         col = sky_ramp(bands(clamp(s, 0.0, 1.0), 9.0, th));
 
-        float star = hash(p);
+        float star = ghee_hash(p);
         float twinkle = 0.5 + 0.5 * sin(iTime * (1.5 + 4.0 * star) + star * 60.0);
         float shine = step(0.988, star) * step(s, 0.6) * step(0.35, twinkle);
         col = mix(col, moon, shine * (0.5 + 0.5 * twinkle) * (1.0 - s));
@@ -204,7 +190,7 @@ void main() {
         float n = floor(iTime / 7.0);
         float age = iTime - n * 7.0 - 1.0;
         vec2 dir = vec2(-0.92, 0.39);
-        vec2 head = res * vec2(0.45 + 0.4 * hash(vec2(n, 1.0)), 0.04 + 0.1 * hash(vec2(n, 2.0))) + dir * age * 110.0;
+        vec2 head = res * vec2(0.45 + 0.4 * ghee_hash(vec2(n, 1.0)), 0.04 + 0.1 * ghee_hash(vec2(n, 2.0))) + dir * age * 110.0;
         vec2 q = p + 0.5 - head;
         float behind = -dot(q, dir);
         float meteor = step(abs(dot(q, vec2(-dir.y, dir.x))), 0.75) * step(0.0, behind) * step(behind, 12.0);
@@ -231,11 +217,11 @@ void main() {
         vec3 shallow = mix(water, dusk, 0.55);
         col = mix(shallow, deep, bands(d, 4.0, th));
 
-        float row = hash(vec2(p.y, 7.0));
+        float row = ghee_hash(vec2(p.y, 7.0));
         float drift = iTime * (1.0 + 3.0 * row) * sign(row - 0.5);
-        float ripple = noise(vec2((p.x + drift) * 0.3 / (0.4 + 1.6 * d), p.y * 3.1));
+        float ripple = ghee_noise(vec2((p.x + drift) * 0.3 / (0.4 + 1.6 * d), p.y * 3.1));
         col = mix(col, mix(water, dusk, 0.9), step(0.74, ripple));
-        float glint = step(0.8, noise(vec2((p.x - drift) * 0.5, p.y * 5.3))) * step(d, 0.12);
+        float glint = step(0.8, ghee_noise(vec2((p.x - drift) * 0.5, p.y * 5.3))) * step(d, 0.12);
         col = mix(col, mix(rose, ember, 0.4), glint * (1.0 - d / 0.12));
         col = mix(col, mix(rose, ember, 0.7), step(p.y, hz));
 
@@ -249,7 +235,7 @@ void main() {
         col = mix(col, glare, shine * (1.0 - 0.4 * d));
 
         vec2 cell = iOutputResolution.xy / res;
-        float keep = step(-0.5, sin(p.y * 2.3 - iTime * 4.0 + row * 3.0)) * step(0.2, hash(vec2(floor(at.x / 3.0), p.y)));
+        float keep = step(-0.5, sin(p.y * 2.3 - iTime * 4.0 + row * 3.0)) * step(0.2, ghee_hash(vec2(floor(at.x / 3.0), p.y)));
         fade = keep * (0.8 - 0.5 * d);
         col = mix(col, box.rgb * vec3(0.85, 0.85, 1.0), box.a * fade * (1.0 - real));
         vec4 words = texture2D(iChannel0, (at + 0.5) * cell / iOutputResolution.xy);

@@ -1106,6 +1106,9 @@ def test_measure_under_ghee_lays_words_out_in_the_render_size(monkeypatch):
         listed.append(shim.measure("Hi\u00a7", font_size=16, font_family=fonts))
         listed.append(shim.measure("Hi", font_size=16, font_family=fonts[0]))
         listed.append(shim.measure("\u00a7", font_size=16, font_family=fonts[1]))
+        with pytest.raises(ValueError) as raised:
+            shim.measure("Hi", font_family=[])
+        listed.append(str(raised.value))
 
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     for size in ("96x32", "192x64"):
@@ -1119,8 +1122,9 @@ def test_measure_under_ghee_lays_words_out_in_the_render_size(monkeypatch):
     assert refused.startswith("font_family 'serif' is no asset of the scene")
     # each character of a list draws from the first font that holds it, on
     # the first font's line
-    whole, pixel, dejavu = listed[:3]
+    whole, pixel, dejavu, empty = listed[:4]
     assert whole == pytest.approx((pixel[0] + dejavu[0], pixel[1]))
+    assert empty.endswith("or a list of them, got []")
 
 
 def test_the_tick_line_carries_the_params(monkeypatch):

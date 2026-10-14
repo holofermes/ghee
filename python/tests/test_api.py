@@ -685,10 +685,35 @@ def test_measure_gives_the_size_of_the_words_and_raises_for_an_unknown_font():
         dejavu = h.measure("\u00a7", font_size=16, font_family=fonts[1])
         whole = h.measure("Hi\u00a7", font_size=16, font_family=fonts)
         assert whole == pytest.approx((pixel[0] + dejavu[0], pixel[1]))
-        with pytest.raises(
-            TypeError, match="font_family needs a font's name or a path"
-        ):
-            h.measure("Hi", font_family=3)
         with pytest.raises(ValueError) as raised:
             h.measure("Hi", font_family="serif")
     assert str(raised.value).startswith("font_family 'serif' is no asset of the scene")
+
+
+# The words with which the scene format refuses a font_family, before the
+# value.
+NO_FAMILY = (
+    "font_family needs the name of a font asset or a .ttf or .otf file, or a "
+    "list of them, got "
+)
+
+
+def test_an_empty_list_of_fonts_is_refused_as_the_scene_format_refuses_it():
+    """A measure, a drawing's call and a Layer refuse [] in the same words,
+    and a measure refuses a list with an empty name too."""
+    with ghee.open(width=16, height=8) as h:
+        for family, shown in (
+            ([], "[]"),
+            (("Pixel Operator 8", ""), "['Pixel Operator 8', '']"),
+        ):
+            with pytest.raises(ValueError) as raised:
+                h.measure("Hi", font_family=family)
+            assert str(raised.value) == NO_FAMILY + shown
+        with pytest.raises(ValueError) as raised, h.draw() as d:
+            d.text("hi", font_family=[])
+        assert str(raised.value) == "layer 'text' " + NO_FAMILY + "[]"
+    layer = ghee.Layer("words", "hi", font_family=[])
+    scene = ghee.Scene(passes=[ghee.Pass("main", "void main(){}", layers=[layer])])
+    with pytest.raises(ValueError) as raised:
+        ghee.open(scene, width=8, height=8)
+    assert str(raised.value) == "scene: layer 'words' " + NO_FAMILY + "[]"

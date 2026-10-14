@@ -40,7 +40,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
 use crate::atlas;
@@ -947,6 +947,18 @@ fn family_of(v: &Value) -> Option<Vec<String>> {
     }
 }
 
+/// The fonts that a `font_family` value names, in order: one name, or a
+/// list of one or more. Fails naming what it takes for any other value.
+pub fn family(v: &Value) -> Result<Vec<String>> {
+    family_of(v).ok_or_else(|| {
+        anyhow!(
+            "font_family needs the name of a font asset or a .ttf or .otf file, or a list of \
+             them, got {}",
+            py_repr(v)
+        )
+    })
+}
+
 /// The first font that `font_family` names, None for none.
 fn first(font_family: &[String]) -> Option<&str> {
     font_family.first().map(String::as_str)
@@ -994,14 +1006,7 @@ impl TextLayer {
         let font_size = number("font_size", |f| f > 0.0, "a number of pixels above 0")?;
         let font_family = match given("font_family") {
             None => Vec::new(),
-            Some(v) => match family_of(v) {
-                Some(f) => f,
-                None => bail!(
-                    "{what} font_family needs the name of a font asset or a .ttf or .otf file, \
-                     or a list of them, got {}",
-                    py_repr(v)
-                ),
-            },
+            Some(v) => family(v).map_err(|e| anyhow!("{what} {e}"))?,
         };
         let text_align = match given("text_align") {
             None => Align::Left,

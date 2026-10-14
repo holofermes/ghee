@@ -80,27 +80,19 @@ pub fn arg(v: &Bound<'_, PyAny>) -> Option<Arg> {
 }
 
 /// The fonts that a `font_family` value names, in order: a str or a path,
-/// or a list or a tuple of them, and none for None.
+/// or a list or a tuple of one or more of them, and none for None. Any
+/// other value is refused as the scene format refuses it.
 pub fn family(v: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
-    let Some(v) = v else {
+    let Some(v) = v.filter(|v| !v.is_none()) else {
         return Ok(Vec::new());
     };
-    let names = match arg(v) {
-        Some(Arg::None) => Some(Vec::new()),
-        Some(Arg::Str(s)) => Some(vec![s]),
-        Some(Arg::List(items)) => items
-            .into_iter()
-            .map(|a| match a {
-                Arg::Str(s) => Some(s),
-                _ => None,
-            })
-            .collect(),
-        _ => None,
-    };
-    match names {
-        Some(names) => Ok(names),
+    match arg(v) {
+        Some(a) => {
+            ghee::layer::family(&a.to_json()).map_err(|e| PyValueError::new_err(e.to_string()))
+        }
         None => Err(PyTypeError::new_err(format!(
-            "font_family needs a font's name or a path, or a list of them, got {}",
+            "font_family needs the name of a font asset or a .ttf or .otf file, or a list of \
+             them, got {}",
             v.get_type().name()?
         ))),
     }

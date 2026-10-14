@@ -16,8 +16,8 @@ The command line adds filters in order, after the scene's own:
 ghee render --demo bars --filters dither --display kms
 ```
 
-ghee ships `dither`, `frc` and `frc256`, which [Text on 1-bit and 16-level
-panels](layers.md#text-on-1-bit-and-16-level-panels) describes. Write your own
+ghee ships `dither`, `frc` and `frc256`, which [1-bit and 16-level
+panels](displays.md#1-bit-and-16-level-panels) describes. Write your own
 as `<name>.filter.json` files, and add their directories to `$GHEE_FILTERS`, a
 colon-separated list. A filter declares assets as a scene does, and ghee
 resolves the asset's file beside the filter.

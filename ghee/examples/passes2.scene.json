@@ -27,12 +27,14 @@
     {
       "name": "glow",
       "scale": 0.25,
+      "sampling": "linear",
       "channels": [{"buffer": "sign"}],
       "fragment": "void main() {\n  vec2 px = 1.0 / iChannelResolution[0].xy;\n  vec3 sum = vec3(0.0);\n  for (int x = 0; x < 4; x++) {\n    for (int y = 0; y < 4; y++) {\n      sum += texture2D(iChannel0, uv + vec2(float(x) * 2.0 - 3.0, float(y) * 2.0 - 3.0) * px).rgb;\n    }\n  }\n  gl_FragColor = vec4(sum / 16.0, 1.0);\n}\n"
     },
     {
       "name": "halo",
       "scale": 0.125,
+      "sampling": "linear",
       "channels": [{"buffer": "glow"}],
       "fragment": "void main() {\n  vec2 px = spread / iChannelResolution[0].xy;\n  vec3 sum = vec3(0.0);\n  float total = 0.0;\n  for (int x = -2; x <= 2; x++) {\n    for (int y = -2; y <= 2; y++) {\n      float w = exp(-float(x * x + y * y) / 4.0);\n      sum += w * texture2D(iChannel0, uv + vec2(float(x), float(y)) * px).rgb;\n      total += w;\n    }\n  }\n  gl_FragColor = vec4(sum / total, 1.0);\n}\n",
       "params": {

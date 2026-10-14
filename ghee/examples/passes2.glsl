@@ -8,8 +8,9 @@
 // - `sign` draws the tubes and the LEDs sharp, at the frame's size.
 // - `glow` blurs `sign` at a quarter of the frame, 80x60 pixels in a 320x240
 //   frame, and `halo` blurs `glow` again at an eighth, 40x30 pixels. Both are
-//   read linear, so their few pixels blend into a smooth glow around the
-//   tubes and a wide halo that lights the wall.
+//   read `"linear"`, so their few pixels blend into a smooth glow around the
+//   tubes and a wide halo that lights the wall. Read nearest, the glow shows
+//   in squares four and eight frame pixels wide.
 // - `street` draws one tile of wet cobbles at 256x256 at any frame size, and
 //   `main` lays it in perspective under the wall, where a far frame pixel
 //   covers many of the tile's pixels. Read `"trilinear"`, ghee also builds

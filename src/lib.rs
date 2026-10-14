@@ -54,6 +54,7 @@ pub mod h264;
 pub(crate) mod hinted;
 pub mod layer;
 pub mod looper;
+pub(crate) mod noise;
 pub mod output;
 pub(crate) mod overlay;
 pub mod panel;

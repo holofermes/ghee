@@ -10871,6 +10871,59 @@ mod tests {
         }
     }
 
+    /// tools/fixtures/hash/values.json holds ghee_hash and ghee_noise at a set
+    /// of points, as tools/fixtures/hash/numpy.py computes their formulas in
+    /// numpy float32. A hash rounds nowhere, so every GPU gives its bits. A
+    /// noise blends as the GPU rounds, within 2^-20.
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn ghee_hash_and_ghee_noise_give_the_values_that_numpy_computes() {
+        let values: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tools/fixtures/hash/values.json"
+        )))
+        .unwrap();
+        for (set, call) in [
+            ("hash1", "ghee_hash(p.x)"),
+            ("hash2", "ghee_hash(p.xy)"),
+            ("hash3", "ghee_hash(p)"),
+            ("noise2", "ghee_noise(p.xy)"),
+            ("noise3", "ghee_noise(p)"),
+        ] {
+            let points = values[set].as_array().unwrap();
+            let w = points.len();
+            let mut code = String::from("void main(){ int i = int(gl_FragCoord.x); vec3 p;\n");
+            for (i, pt) in points.iter().enumerate() {
+                let mut c: Vec<String> = pt[0]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| format!("{:?}", v.as_f64().unwrap() as f32))
+                    .collect();
+                c.resize(3, "0.0".to_string());
+                code += &format!("  if (i == {i}) p = vec3({});\n", c.join(", "));
+            }
+            code += &format!(
+                "  float a = {call} * 256.0; float b = fract(a) * 256.0; float c = fract(b) * 256.0;\n\
+                 gl_FragColor = vec4(floor(a) / 255.0, floor(b) / 255.0, floor(c) / 255.0, 1.0); }}"
+            );
+            let (_g, mut r) = gpu_at(w, 1);
+            let sc = scene_of(json!([{"name": "main", "fragment": code}]));
+            assert_eq!(r.setup(&sc).unwrap(), "", "{set}");
+            let f = r.render(None).unwrap().to_vec();
+            for (i, pt) in points.iter().enumerate() {
+                let got = (0..3).fold(0u32, |v, c| v << 8 | px(&f, w, i, 0, c) as u32);
+                match pt[1].as_u64() {
+                    Some(k) => assert_eq!(u64::from(got), 2 * k, "{set} at {}", pt[0]),
+                    None => {
+                        let off = (f64::from(got) / 16777216.0 - pt[1].as_f64().unwrap()).abs();
+                        assert!(off <= 1.0 / 1048576.0, "{set} at {}: {got}", pt[0]);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_that_reads_its_last_frame_at_uv_keeps_its_first_frame() {

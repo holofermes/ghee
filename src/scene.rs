@@ -1816,13 +1816,11 @@ impl Pass {
         // A hidden pass, as Scene::drawn_passes() leaves it, runs ghee's copy
         // in its code, which reads neither the common block nor a text.
         if !self.visible {
-            let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |_| false);
+            let l =
+                self.preamble_reading(scene_params, assets, texts, hw_linear, vec![], |_| false);
             return with_main(l, &self.fragment);
         }
         let common_code = common.unwrap_or_default();
-        let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |t| {
-            calls_cover(common_code, t) || calls_cover(&self.fragment, t)
-        });
         // An author writes a filter on its own, and ghee appends it to any
         // scene. The scene's common block never reaches it, so a filter name
         // never collides with a scene name.
@@ -1832,17 +1830,22 @@ impl Pass {
             }
             _ => self.fragment.clone(),
         };
+        let noise = crate::noise::lines(&glsl_tokens(&body));
+        let l = self.preamble_reading(scene_params, assets, texts, hw_linear, noise, |t| {
+            calls_cover(common_code, t) || calls_cover(&self.fragment, t)
+        });
         with_main(l, &body)
     }
 
     /// The preamble, with the `<name>_size` of each text layer of `texts`,
-    /// and the coverage reader of each for which `reads` holds.
+    /// the coverage reader of each for which `reads` holds, and `functions`.
     fn preamble_reading(
         &self,
         scene_params: Option<&ParamMap>,
         assets: &[Asset],
         texts: &[&str],
         hw_linear: bool,
+        functions: Vec<String>,
         reads: impl Fn(&str) -> bool,
     ) -> Vec<String> {
         let mut l: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
@@ -1904,6 +1907,7 @@ impl Pass {
                 }
             }
         }
+        l.extend(functions);
         // A uniform named after a GLSL built-in function, such as mix, hides
         // the function from every line after it, so the params follow the
         // readers above, which call such functions. Every pass takes the same
@@ -2620,8 +2624,8 @@ impl Scene {
 
     /// The error for the first declared name that the scene cannot take: a
     /// name that breaks the name rule, a built-in name, a name that two
-    /// declarations share, or one GLSL name that two declarations make in one
-    /// pass.
+    /// declarations share, one GLSL name that two declarations make in one
+    /// pass, or a function of the scene's GLSL whose name starts with ghee.
     ///
     /// The passes, the layers, the scene's assets and the scene params share
     /// one set of names. A pass param or an array takes a name unique in
@@ -2757,6 +2761,26 @@ impl Scene {
                     return Some(format!("{owner} is declared twice"));
                 }
                 return Some(format!("{first} and {owner} both declare '{n}'"));
+            }
+        }
+        let reserved = |glsl: &str| {
+            let fns = functions(glsl);
+            fns.into_iter()
+                .filter(|f| f.starts_with("ghee"))
+                .min()
+                .map(py_str_repr)
+        };
+        if let Some(f) = self.common.as_deref().and_then(reserved) {
+            return Some(format!(
+                "function name {f} of the common block starts with 'ghee', which ghee reserves"
+            ));
+        }
+        for pass in &self.passes {
+            if let Some(f) = reserved(&pass.fragment) {
+                return Some(format!(
+                    "function name {f} in pass '{}' starts with 'ghee', which ghee reserves",
+                    pass.name
+                ));
             }
         }
         None
@@ -3542,6 +3566,35 @@ mod tests {
                 assert!(has(size), "pass {} lacks {size}", p.name);
             }
         }
+    }
+
+    #[test]
+    fn a_pass_holds_ghee_hash_and_ghee_noise_only_when_its_code_or_the_common_block_calls_them() {
+        let defines = |sc: &Scene, pass: usize| {
+            let g = sc.passes[pass].glsl(
+                Some(&sc.params),
+                sc.common.as_deref(),
+                &sc.assets,
+                &sc.text_names(),
+                false,
+            );
+            ["ghee_hash", "ghee_noise"]
+                .map(|f| g.lines().any(|l| l.starts_with(&format!("float {f}("))))
+        };
+        let passes = vec![
+            json!({"name": "hash", "fragment": "void main(){ gl_FragColor = vec4(ghee_hash(uv)); }"}),
+            json!({"name": "noise", "fragment":
+                "void main(){ gl_FragColor = vec4(ghee_noise(vec3(uv, 1.0))); }"}),
+            json!({"name": "plain", "fragment":
+                "// ghee_noise(uv)\nvoid main(){ gl_FragColor = vec4(uv, 0.0, 1.0); }"}),
+        ];
+        let sc = Scene::from_dict(&common_scene(None, Some(passes.clone())), None, None).unwrap();
+        assert_eq!(defines(&sc, 0), [true, false]);
+        assert_eq!(defines(&sc, 1), [true, true]);
+        assert_eq!(defines(&sc, 2), [false, false]);
+        let common = json!("float grain(vec2 p){ return ghee_noise(p); }");
+        let sc = Scene::from_dict(&common_scene(Some(common), Some(passes)), None, None).unwrap();
+        assert_eq!(defines(&sc, 2), [true, true]);
     }
 
     #[test]
@@ -4961,6 +5014,20 @@ mod tests {
                 json!({"assets": {"gheex": {"file": "l.png"}}}),
                 json!({}),
                 "asset name 'gheex' starts with 'ghee', which ghee reserves".to_string(),
+            ),
+            (
+                json!({"common": "float ghee_hash(vec2 p){ return 0.5; }"}),
+                json!({}),
+                "function name 'ghee_hash' of the common block starts with 'ghee', \
+                 which ghee reserves"
+                    .to_string(),
+            ),
+            (
+                json!({}),
+                json!({"fragment": "float ghee_noise(vec2 p){ return p.x; }\n\
+                    void main(){ gl_FragColor = vec4(ghee_noise(uv)); }"}),
+                "function name 'ghee_noise' in pass 'a' starts with 'ghee', which ghee reserves"
+                    .to_string(),
             ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));

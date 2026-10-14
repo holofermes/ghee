@@ -232,11 +232,11 @@ pub fn examples_dir() -> Option<String> {
 pub fn is_examples_dir(dir: &std::path::Path) -> bool {
     let given = std::env::var("GHEE_EXAMPLES").ok();
     let wheel = crate::procedural::wheel::identity();
-    is_examples_in(dir, given.as_deref(), &cache_home(), &wheel)
+    is_examples_in(dir, given.as_deref(), &cache_dir(), &wheel)
 }
 
 /// is_examples_dir() with `given` for $GHEE_EXAMPLES, and the examples of
-/// `wheel` under the cache directory `base`.
+/// `wheel` in ghee's cache directory `base`.
 fn is_examples_in(
     dir: &std::path::Path,
     given: Option<&str>,
@@ -253,21 +253,40 @@ fn is_examples_in(
     }
 }
 
-/// $XDG_CACHE_HOME, else ~/.cache, else the temp directory. An empty or
-/// relative $XDG_CACHE_HOME counts as unset, as the XDG spec says.
-pub(crate) fn cache_home() -> std::path::PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir)
+/// ghee's cache directory: $GHEE_CACHE, else ghee/ in $XDG_CACHE_HOME, else
+/// ~/.cache/ghee, else ghee/ in the temp directory. An empty or relative value
+/// counts as unset, as the XDG spec says of $XDG_CACHE_HOME.
+pub(crate) fn cache_dir() -> std::path::PathBuf {
+    let var = std::env::var_os;
+    cache_of(
+        var("GHEE_CACHE").as_deref(),
+        var("XDG_CACHE_HOME").as_deref(),
+        var("HOME").as_deref(),
+    )
+}
+
+/// cache_dir() with `ghee`, `xdg` and `home` for $GHEE_CACHE,
+/// $XDG_CACHE_HOME and $HOME.
+fn cache_of(
+    ghee: Option<&std::ffi::OsStr>,
+    xdg: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> std::path::PathBuf {
+    let absolute =
+        |v: Option<&std::ffi::OsStr>| v.map(std::path::PathBuf::from).filter(|p| p.is_absolute());
+    absolute(ghee).unwrap_or_else(|| {
+        absolute(xdg)
+            .or_else(|| home.map(|h| std::path::PathBuf::from(h).join(".cache")))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("ghee")
+    })
 }
 
 fn extract_examples() -> std::io::Result<String> {
-    extract_examples_in(&cache_home(), &crate::procedural::wheel::identity())
+    extract_examples_in(&cache_dir(), &crate::procedural::wheel::identity())
 }
 
-/// The directory of the examples under the cache directory `base`. Its name
+/// The directory of the examples in ghee's cache directory `base`. Its name
 /// comes from the examples, ghee's version and `wheel`, the identity of the
 /// ghee-render wheel that ghee hands a scene: uv keeps one environment per
 /// script path, and a new path makes it resolve each example again.
@@ -282,10 +301,10 @@ fn examples_in(base: &std::path::Path, wheel: &str) -> std::path::PathBuf {
     key.push(0);
     key.extend_from_slice(wheel.as_bytes());
     let tag = crate::procedural::wheel::tag(&key);
-    base.join("ghee").join(format!("examples-{tag}"))
+    base.join(format!("examples-{tag}"))
 }
 
-/// extract_examples() under the cache directory `base`, into examples_in().
+/// extract_examples() in ghee's cache directory `base`, into examples_in().
 fn extract_examples_in(base: &std::path::Path, wheel: &str) -> std::io::Result<String> {
     let dir = examples_in(base, wheel);
     let done = dir.join(".complete");
@@ -413,7 +432,7 @@ mod tests {
     fn the_cache_keeps_the_examples_of_the_last_build_alone() {
         let cache = crate::testing::TempDir::new("examples-pruned");
         let base = std::path::Path::new(&*cache);
-        let other = base.join("ghee/other");
+        let other = base.join("other");
         std::fs::create_dir_all(&other).unwrap();
         let first = extract_examples_in(base, "1").unwrap();
         let again = extract_examples_in(base, "2").unwrap();
@@ -422,5 +441,27 @@ mod tests {
             .join("bars.scene.json")
             .is_file());
         assert!(other.is_dir());
+    }
+
+    #[test]
+    fn ghee_cache_moves_the_cache_of_ghee_alone() {
+        let os = |v: &'static str| Some(std::ffi::OsStr::new(v));
+        let home = os("/home/u");
+        let moved = cache_of(os("/tmp/g"), os("/xdg"), home);
+        assert_eq!(moved, std::path::Path::new("/tmp/g"));
+        assert_eq!(
+            examples_in(&moved, "w").parent(),
+            Some(std::path::Path::new("/tmp/g"))
+        );
+        for unset in [None, os(""), os("g")] {
+            assert_eq!(
+                cache_of(unset, os("/xdg"), home),
+                std::path::Path::new("/xdg/ghee")
+            );
+            assert_eq!(
+                cache_of(unset, None, home),
+                std::path::Path::new("/home/u/.cache/ghee")
+            );
+        }
     }
 }

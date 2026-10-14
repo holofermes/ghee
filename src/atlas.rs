@@ -28,7 +28,8 @@
 //! gone.
 //!
 //! The cache keeps every page, one file per font key, px/em and range in
-//! `$XDG_CACHE_HOME/ghee/atlas/`, else `~/.cache/ghee/atlas/`.
+//! `atlas/` in ghee's cache directory: `$GHEE_CACHE`, else
+//! `$XDG_CACHE_HOME/ghee`, else `~/.cache/ghee`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
@@ -525,8 +526,7 @@ pub struct Config {
     /// The distance range in texels. A field spans half of it on each side of
     /// the outline.
     pub range: u32,
-    /// The cache directory. None takes `$XDG_CACHE_HOME/ghee/atlas`, else
-    /// `~/.cache/ghee/atlas`.
+    /// The cache directory. None takes `atlas/` in ghee's cache directory.
     pub cache: Option<PathBuf>,
 }
 
@@ -801,13 +801,7 @@ fn work(shared: &Shared, font: &dyn Font, config: &Config) {
         px_em: config.px_em,
         range: config.range,
     };
-    let mut file = match cache_dir(config) {
-        Ok(dir) => Some(dir.join(key.file_name())),
-        Err(e) => {
-            warn_memory(e);
-            None
-        }
-    };
+    let mut file = Some(cache_dir(config).join(key.file_name()));
     let cached = file
         .as_deref()
         .and_then(|f| fs::read(f).ok())
@@ -1046,20 +1040,12 @@ fn warn_memory(why: impl Display) {
     }
 }
 
-/// Config::cache, else $XDG_CACHE_HOME/ghee/atlas, else ~/.cache/ghee/atlas.
-fn cache_dir(config: &Config) -> std::result::Result<PathBuf, &'static str> {
-    if let Some(d) = &config.cache {
-        return Ok(d.clone());
-    }
-    let var = |k| {
-        std::env::var_os(k)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
-    let base = var("XDG_CACHE_HOME")
-        .or_else(|| var("HOME").map(|h| h.join(".cache")))
-        .ok_or("neither $XDG_CACHE_HOME nor $HOME is set")?;
-    Ok(base.join("ghee").join("atlas"))
+/// Config::cache, else atlas/ in ghee's cache directory.
+fn cache_dir(config: &Config) -> PathBuf {
+    config
+        .cache
+        .clone()
+        .unwrap_or_else(|| crate::console::cache_dir().join("atlas"))
 }
 
 /// What a cache file holds an atlas for.

@@ -142,9 +142,7 @@ fn file_url(path: &Path) -> String {
 /// PEP 503 that uv reads from a directory: `ghee-render/index.html`. The URL
 /// of the index comes back.
 fn write_index(wheel: &Wheel, cache: &Path) -> std::io::Result<String> {
-    let root = cache
-        .join("ghee")
-        .join(format!("index-{}", tag(wheel.id.as_bytes())));
+    let root = cache.join(format!("index-{}", tag(wheel.id.as_bytes())));
     let page = root.join("ghee-render").join("index.html");
     if !page.exists() {
         fs::create_dir_all(root.join("ghee-render"))?;
@@ -186,7 +184,7 @@ pub(crate) fn uv_env() -> Result<Vec<(&'static str, String)>> {
             static INDEX: OnceLock<Result<String, String>> = OnceLock::new();
             let url = INDEX
                 .get_or_init(|| {
-                    let cache = crate::console::cache_home();
+                    let cache = crate::console::cache_dir();
                     write_index(wheel, &cache).map_err(|e| {
                         format!(
                             "cannot write the ghee-render index under {}: {}",

@@ -91,9 +91,9 @@ class Drawing:
     its default again. A call keeps its layer from frame to frame by the line
     of code that makes it and its count from that line in the frame, or by
     its `name`, which names the layer too. A call with no name names its
-    layer after its kind: text, text2, image, rect, line. Two calls that draw
-    one layer in a frame raise ValueError, and a `name` that is no str raises
-    TypeError.
+    layer after its kind: text, text2, image, rect, line, circle. Two calls
+    that draw one layer in a frame raise ValueError, and a `name` that is no
+    str raises TypeError.
 
     Leaving the block sends ghee what changed: a live field changes live,
     any other change builds that layer alone again, a call that runs for the
@@ -179,8 +179,8 @@ class Drawing:
         visible: bool | None = None,
         border: dict[str, Any] | None = None,
     ) -> None:
-        """Draw a circle of `radius` pixels around `centre`, (x, y): a rect
-        of `2 * radius` with `border_radius` at `radius`."""
+        """Draw a circle of `radius` pixels around `centre`, (x, y), a
+        circle shape layer."""
     def line(
         self,
         a: Sequence[float],

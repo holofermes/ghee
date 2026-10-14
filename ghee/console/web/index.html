@@ -1870,7 +1870,7 @@ function syncAddRow(){
 
 // ---- layers ----
 const BLENDS = ["normal", "add", "multiply", "screen"], RENDERS = ["auto", "hinted", "mono", "mtsdf", "slug"], ALIGNS = ["left", "center", "right"];
-// a layer's kind as GET /format names it: text, image, rect or line
+// a layer's kind as GET /format names it: text, image, rect, line or circle
 const formKind = d => isImage(d) ? "image" : isShape(d) ? d.shape : "text";
 // a layer's own field that changes with no rebuild
 const isLive = (d, key) => ((FORMAT.live || {})[formKind(d)] || []).includes(key);
@@ -2316,18 +2316,18 @@ function numKV(p, d, key){
   v.appendChild(keyed(num(d[key], placeholder(d, key), x => setKey(p, d, key, x), isLive(d, key)), key));
   return lockIf(kv, lockedField(d, key));
 }
-// a shape's fill: white unless set, and a rect's turns off, which writes
-// transparent
+// a shape's fill: white unless set, and a rect's or a circle's turns off,
+// which writes transparent
 function fillKV(p, d){
   const {kv, v} = KV("color");
   markField(kv.firstChild, p, d, "color");
   v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff",
-    d.shape === "rect" ? "transparent" : undefined), "color"));
+    d.shape === "line" ? undefined : "transparent"), "color"));
   return lockIf(kv, lockedField(d, "color"));
 }
-// A rect's border, an object like an effect: its fields, an eye and a ×. A
-// border removed here comes back as it was, and else as the default layer's.
-// Its fields' defaults come from GET /format.
+// A rect's or a circle's border, an object like an effect: its fields, an eye
+// and a ×. A border removed here comes back as it was, and else as the
+// default layer's. Its fields' defaults come from GET /format.
 const borderDefault = k => FORMAT.border.find(f => f.key === k).default;
 function borderKV(p, d, redo){
   const o = d.border, u = ui(d.name);
@@ -2381,17 +2381,19 @@ function pointsKV(p, d, redo){
   v.appendChild(box);
   return lockIf(kv, lockedField(d, "points"));
 }
-// Switching shape puts the old shape's own keys aside and brings the new
-// one's back, as GET /format lists each shape's keys. A line needs two points.
+// Switching shape puts aside the old shape's keys that the new one does not
+// take and brings the new one's back, as GET /format lists each shape's keys.
+// A line needs two points.
 function switchShape(p, d, to){
-  const u = ui(d.name), from = d.shape;
-  if (to === from || !FORMAT.shapes[to]) return;
+  const u = ui(d.name), from = d.shape, takes = FORMAT.shapes[to];
+  if (to === from || !takes) return;
   u.shapes = u.shapes || {};
   const keep = {};
-  (FORMAT.shapes[from] || []).forEach(k => { if (k in d){ keep[k] = d[k]; delete d[k]; } });
+  (FORMAT.shapes[from] || []).forEach(k => { if (k in d && !takes.includes(k)){ keep[k] = d[k]; delete d[k]; } });
   u.shapes[from] = keep;
   d.shape = to;
-  Object.assign(d, u.shapes[to] || (to === "line" ? {points: [[0, 0], [16, 16]]} : {}));
+  const back = u.shapes[to] || (to === "line" ? {points: [[0, 0], [16, 16]]} : {});
+  Object.keys(back).forEach(k => { if (!(k in d)) d[k] = back[k]; });
   postScene();
 }
 
@@ -2466,6 +2468,7 @@ function layerCard(p, d){
     v.appendChild(keyed(pick(Object.keys(FORMAT.shapes), d.shape, x => { switchShape(p, d, x); redo(); }), "shape"));
     const rows = [kv, fillKV(p, d)];
     if (d.shape === "line") rows.push(pairKV(p, d, "x", "y"), pointsKV(p, d, redo), numKV(p, d, "stroke_width"));
+    else if (d.shape === "circle") rows.push(pairKV(p, d, "x", "y"), numKV(p, d, "radius"), borderKV(p, d, redo));
     else rows.push(pairKV(p, d, "x", "y"), pairKV(p, d, "width", "height"), borderKV(p, d, redo), numKV(p, d, "border_radius"));
     kvs.append(...rows.map(look));
   } else if (img){

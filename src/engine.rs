@@ -2906,11 +2906,11 @@ impl Renderer {
     /// Give the layer of the name of `layer` the look of `layer`, a layer as
     /// a scene declares it: every key that `layer` leaves out takes its
     /// default. An effect of the layer that `layer` leaves out stays,
-    /// bypassed, with its values, and so does a rect's border. A look that
-    /// differs in live fields alone takes them as set_layer() would, with no
-    /// rebuild, and any other difference builds the layer again in its
-    /// place, as replace_layer() does. Returns false when the layer has that
-    /// look already, and then changes nothing.
+    /// bypassed, with its values, and so does a rect's or a circle's border.
+    /// A look that differs in live fields alone takes them as set_layer()
+    /// would, with no rebuild, and any other difference builds the layer
+    /// again in its place, as replace_layer() does. Returns false when the
+    /// layer has that look already, and then changes nothing.
     ///
     /// A layer that the scene refuses, or a name that names no layer, fails
     /// with a Refused error and changes nothing.

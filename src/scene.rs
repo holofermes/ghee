@@ -2025,14 +2025,15 @@ fn kind_of(layer: &Layer) -> &'static str {
         Layer::Shape(l) => match l.shape {
             Shape::Rect { .. } => "rect",
             Shape::Line { .. } => "line",
+            Shape::Circle { .. } => "circle",
         },
     }
 }
 
 /// `look`, a layer of the kind of `old` as a scene declares it, with each
-/// effect of `old` that it leaves out, and a rect's border, bypassed with
-/// its values, where `was` is `old` as a scene writes it. None when `look`
-/// leaves out none of them.
+/// effect of `old` that it leaves out, and a rect's or a circle's border,
+/// bypassed with its values, where `was` is `old` as a scene writes it. None
+/// when `look` leaves out none of them.
 fn keep_bypassed(old: &Layer, was: &Value, look: &Value) -> Option<Value> {
     let (Some(o), Some(was)) = (look.as_object(), was.as_object()) else {
         return None;
@@ -2443,9 +2444,9 @@ impl Scene {
     /// The new look `look` of the layer of its name, a layer as a scene
     /// declares it: every key that `look` leaves out takes its default, and
     /// an effect of the layer that `look` leaves out stays, bypassed, with
-    /// its values, and so does a rect's border. None when the layer has that
-    /// look already. A look that no layer takes, and a name that names no
-    /// layer of the scene, fail.
+    /// its values, and so does a rect's or a circle's border. None when the
+    /// layer has that look already. A look that no layer takes, and a name
+    /// that names no layer of the scene, fail.
     pub fn look(&self, look: &Value) -> Result<Option<Look>> {
         let mut new = Layer::from_dict("the new layer", look)?;
         let Some(old) = self.layer(new.name()) else {

@@ -173,7 +173,7 @@ def test_a_frame_whose_calls_changed_nothing_sends_nothing():
 
     sent = frames(Fake(), draw, 4)
     assert len(sent[0]) == 4
-    assert sent[1] == [("remove", "rect2"), FRAME]
+    assert sent[1] == [("remove", "circle"), FRAME]
     assert sent[2] == sent[3] == [FRAME]
 
 
@@ -376,14 +376,12 @@ SHAPES = [
     (
         lambda d: d.circle((110, 14), 10, color="white"),
         {
-            "name": "rect",
+            "name": "circle",
             "x": 100.0,
             "y": 4.0,
             "color": "white",
-            "shape": "rect",
-            "width": 20.0,
-            "height": 20.0,
-            "border_radius": 10.0,
+            "shape": "circle",
+            "radius": 10.0,
         },
     ),
     (

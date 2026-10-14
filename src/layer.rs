@@ -87,6 +87,7 @@ pub(crate) fn layer_keys() -> Vec<&'static str> {
         &IMAGE_KEYS,
         &shape::RECT_KEYS,
         &shape::LINE_KEYS,
+        &shape::CIRCLE_KEYS,
     ]
     .concat()
 }
@@ -944,7 +945,12 @@ impl TextLayer {
             at,
             o,
             &TEXT_KEYS,
-            &[IMAGE_KIND, shape::RECT_KIND, shape::LINE_KIND],
+            &[
+                IMAGE_KIND,
+                shape::RECT_KIND,
+                shape::LINE_KIND,
+                shape::CIRCLE_KIND,
+            ],
         )?;
         let what = e.what.as_str();
         let given = |k: &str| given(o, k);
@@ -2105,7 +2111,12 @@ impl ImageLayer {
             at,
             o,
             &IMAGE_KEYS,
-            &[TEXT_KIND, shape::RECT_KIND, shape::LINE_KIND],
+            &[
+                TEXT_KIND,
+                shape::RECT_KIND,
+                shape::LINE_KIND,
+                shape::CIRCLE_KIND,
+            ],
         )?;
         let what = e.what.as_str();
         let color = match given(o, "color") {
@@ -2587,11 +2598,11 @@ impl Live {
 
 /// The layer format that the console edits, for GET /format: the fields of
 /// each effect in order, with their defaults and whether a /set changes them
-/// with no rebuild, the same for a rect's border, the live fields of each kind
-/// of layer, what an empty field of each kind takes, the keys of each shape,
-/// the built-in fonts, each name the console shows with the `font_family` that
-/// it writes, the render that a text layer takes in each font, and the
-/// effects that each render draws.
+/// with no rebuild, the same for the border of a rect or a circle, the live
+/// fields of each kind of layer, what an empty field of each kind takes, the
+/// keys of each shape, the built-in fonts, each name the console shows with
+/// the `font_family` that it writes, the render that a text layer takes in
+/// each font, and the effects that each render draws.
 pub fn format() -> Value {
     let mut effects = Map::new();
     for kind in Kind::ALL {
@@ -2616,6 +2627,10 @@ pub fn format() -> Value {
         (
             "line",
             serde_json::json!({"name": "a", "shape": "line", "points": [[0, 0], [1, 1]]}),
+        ),
+        (
+            "circle",
+            serde_json::json!({"name": "a", "shape": "circle"}),
         ),
     ];
     let mut live = Map::new();
@@ -2643,6 +2658,7 @@ pub fn format() -> Value {
         "rect": with(serde_json::json!({"width": "pass", "height": "pass",
                                         "border_radius": shape::BORDER_RADIUS})),
         "line": {"x": 0, "y": 0, "stroke_width": shape::STROKE_WIDTH},
+        "circle": with(serde_json::json!({"radius": "fit"})),
     });
     let rect = Layer::from_dict(
         "a layer",
@@ -2669,8 +2685,8 @@ pub fn format() -> Value {
             .map(|k| (*k).to_string())
             .collect()
     };
-    let shapes =
-        serde_json::json!({"rect": own(&shape::RECT_KEYS), "line": own(&shape::LINE_KEYS)});
+    let shapes = serde_json::json!({"rect": own(&shape::RECT_KEYS), "line": own(&shape::LINE_KEYS),
+                                    "circle": own(&shape::CIRCLE_KEYS)});
     let mut fonts = Map::new();
     fonts.insert("built-in".to_string(), Value::Null);
     fonts.insert(text::PIXEL.to_string(), Value::from(text::PIXEL));

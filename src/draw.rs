@@ -1,9 +1,9 @@
 //! The calls of a drawing. A host's drawing states the whole look of each
 //! layer that it draws, every frame, as the keywords of one call: a text, a
-//! rect, an image or a line. A Call holds the values of those keywords in
-//! their order, and layer_of() makes the layer that the call gives the
-//! layer of its name, the layer that Scene::look() makes from the same look
-//! written as a scene declares it.
+//! rect, an image, a line or a circle. A Call holds the values of those
+//! keywords in their order, and layer_of() makes the layer that the call
+//! gives the layer of its name, the layer that Scene::look() makes from the
+//! same look written as a scene declares it.
 //!
 //! A value that the scene format refuses, and a value of a kind that a Call
 //! holds no form for, make no layer here: the host then writes the look and
@@ -77,6 +77,7 @@ pub enum CallKind {
     Rect,
     Image,
     Line,
+    Circle,
 }
 
 /// The keywords of a text call, in the order of its args. The words come
@@ -135,6 +136,11 @@ pub const LINE_ARGS: [&str; 8] = [
     "stroke_width",
 ];
 
+/// The keywords of a circle call, in the order of its args.
+pub const CIRCLE_ARGS: [&str; 8] = [
+    "x", "y", "radius", "color", "opacity", "blend", "visible", "border",
+];
+
 impl CallKind {
     /// The keywords that a call of the kind takes, in the order of its args.
     pub fn keys(self) -> &'static [&'static str] {
@@ -143,6 +149,7 @@ impl CallKind {
             CallKind::Rect => &RECT_ARGS,
             CallKind::Image => &IMAGE_ARGS,
             CallKind::Line => &LINE_ARGS,
+            CallKind::Circle => &CIRCLE_ARGS,
         }
     }
 }
@@ -159,9 +166,10 @@ pub struct Call {
 /// The layer that `call` gives `old`, the layer of its name, as
 /// Scene::look() makes it: every keyword left out takes its default, and an
 /// effect of `old` that the call leaves out stays, bypassed, with its
-/// values, and so does a rect's border. A text keeps the fonts of `old`, and
-/// an image keeps its pixels while its image stays. None for a call of
-/// another kind than `old`, and for a value that the scene format refuses.
+/// values, and so does a rect's or a circle's border. A text keeps the
+/// fonts of `old`, and an image keeps its pixels while its image stays. None
+/// for a call of another kind than `old`, and for a value that the scene
+/// format refuses.
 pub fn layer_of(call: &Call, old: &Layer) -> Option<Layer> {
     if call.args.len() != call.kind.keys().len() {
         return None;
@@ -174,8 +182,8 @@ pub fn layer_of(call: &Call, old: &Layer) -> Option<Layer> {
         (CallKind::Image, Layer::Image(o)) => {
             ImageLayer::of_args(name, &call.args, o).map(Layer::Image)
         }
-        (CallKind::Rect | CallKind::Line, Layer::Shape(o)) => {
-            ShapeLayer::of_args(name, call.kind == CallKind::Line, &call.args, o).map(Layer::Shape)
+        (CallKind::Rect | CallKind::Line | CallKind::Circle, Layer::Shape(o)) => {
+            ShapeLayer::of_args(name, call.kind, &call.args, o).map(Layer::Shape)
         }
         _ => None,
     }
@@ -205,6 +213,7 @@ pub fn look_of(call: &Call) -> Value {
     match call.kind {
         CallKind::Rect => look.insert("shape".to_string(), Value::from("rect")),
         CallKind::Line => look.insert("shape".to_string(), Value::from("line")),
+        CallKind::Circle => look.insert("shape".to_string(), Value::from("circle")),
         CallKind::Text | CallKind::Image => None,
     };
     for (k, a) in call.kind.keys().iter().zip(&call.args) {
@@ -216,15 +225,16 @@ pub fn look_of(call: &Call) -> Value {
 }
 
 /// The call that gives the layer named in `look` that look, a layer as a
-/// scene declares it. A `shape` makes a rect or a line, an `image` an image,
-/// and any other look a text. None for a look with no name, and for a look
-/// that holds a key that no call of its kind takes.
+/// scene declares it. A `shape` makes a rect, a line or a circle, an `image`
+/// an image, and any other look a text. None for a look with no name, and
+/// for a look that holds a key that no call of its kind takes.
 pub fn call_of(look: &Value) -> Option<Call> {
     let m = look.as_object()?;
     let layer = m.get("name")?.as_str()?.to_string();
     let kind = match (m.get("shape").map(Value::as_str), m.contains_key("image")) {
         (Some(Some("rect")), _) => CallKind::Rect,
         (Some(Some("line")), _) => CallKind::Line,
+        (Some(Some("circle")), _) => CallKind::Circle,
         (Some(_), _) => return None,
         (None, true) => CallKind::Image,
         (None, false) => CallKind::Text,

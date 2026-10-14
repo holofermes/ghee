@@ -1,5 +1,5 @@
-//! Shape layers: the scene model, and the rects and lines that they paint on
-//! this host's GPU.
+//! Shape layers: the scene model, and the rects, lines and circles that they
+//! paint on this host's GPU.
 //!
 //! The references below classify each pixel from the shape's own geometry,
 //! as the distance from the pixel's centre to the outline: inside, outside,
@@ -81,6 +81,9 @@ fn shape_layers_round_trip_and_leave_their_defaults_out() {
         {"name": "d", "color": [1.0, 0.0, 0.25], "shape": "line",
          "points": [[0.0, 16.0], [8.5, 4.0]], "stroke_width": 0.0},
         {"name": "e", "x": 2.0, "shape": "line", "points": [[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]]},
+        {"name": "f", "y": 3.0, "opacity": 0.25, "shape": "circle", "radius": 5.5,
+         "border": {"width": 2.0, "color": "navy"}},
+        {"name": "g", "shape": "circle"},
     ]));
     let sc = loaded(&doc);
     assert_eq!(sc.to_dict(), doc);
@@ -91,12 +94,15 @@ fn shape_layers_round_trip_and_leave_their_defaults_out() {
          "blend": "normal", "shape": "rect", "width": null, "border_radius": 0,
          "border": {"width": 1, "color": "#ffffff", "visible": true}},
         {"name": "b", "shape": "line", "points": [[0, 0], [1, 1]], "stroke_width": 1},
+        {"name": "c", "shape": "circle", "radius": null,
+         "border": {"width": 1, "color": "white", "visible": true}},
     ]));
     let back = loaded(&defaults).to_dict();
     assert_eq!(
         back["passes"][0]["layers"],
         json!([{"name": "a", "shape": "rect", "border": {}},
-               {"name": "b", "shape": "line", "points": [[0.0, 0.0], [1.0, 1.0]]}])
+               {"name": "b", "shape": "line", "points": [[0.0, 0.0], [1.0, 1.0]]},
+               {"name": "c", "shape": "circle", "border": {}}])
     );
 }
 
@@ -114,12 +120,24 @@ fn a_shape_layer_declaration_names_what_is_wrong() {
     let points = "needs two points or more, each [x, y]";
     let rows = [
         (
-            s(json!({"shape": "circle"})),
-            "layer 's' shape needs 'rect' or 'line', got 'circle'".to_string(),
+            s(json!({"shape": "oval"})),
+            "layer 's' shape needs 'rect', 'line' or 'circle', got 'oval'".to_string(),
         ),
         (
             s(json!({"shape": 3})),
-            "layer 's' shape needs 'rect' or 'line', got 3".to_string(),
+            "layer 's' shape needs 'rect', 'line' or 'circle', got 3".to_string(),
+        ),
+        (
+            s(json!({"shape": "rect", "radius": 4})),
+            "layer 's' takes no 'radius', which sits on a circle".to_string(),
+        ),
+        (
+            s(json!({"shape": "circle", "width": 4})),
+            "layer 's' takes no 'width', which sits on a rect".to_string(),
+        ),
+        (
+            s(json!({"shape": "circle", "radius": -1})),
+            format!("layer 's' radius needs {pixels}, got -1"),
         ),
         (
             s(json!({"shape": "rect", "points": [[0, 0], [1, 1]]})),
@@ -393,6 +411,50 @@ fn a_rect_fills_its_box_and_draws_its_border_inside_its_edge() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_circle_draws_as_the_square_rect_of_its_box_rounded_by_its_radius() {
+    // A 96x64 pass. Each row: a circle's keys, and the keys of the rect of
+    // side 2 * radius whose border_radius is the radius. A circle with no
+    // radius is the largest that fits the pass.
+    let rows = [
+        (
+            json!({"x": 10, "y": 8, "radius": 20, "color": "orange"}),
+            json!({"x": 10, "y": 8, "width": 40, "height": 40, "border_radius": 20,
+                   "color": "orange"}),
+        ),
+        (
+            json!({"x": 10.25, "y": 8.5, "radius": 12.75, "opacity": 0.5,
+                   "border": {"width": 3, "color": "navy"}}),
+            json!({"x": 10.25, "y": 8.5, "width": 25.5, "height": 25.5, "border_radius": 12.75,
+                   "opacity": 0.5, "border": {"width": 3, "color": "navy"}}),
+        ),
+        (
+            json!({"y": 4, "radius": 15, "color": "navy", "blend": "add"}),
+            json!({"y": 4, "width": 30, "height": 30, "border_radius": 15, "color": "navy",
+                   "blend": "add"}),
+        ),
+        (
+            json!({"color": "transparent", "border": {"width": 2}}),
+            json!({"width": 64, "height": 64, "border_radius": 32, "color": "transparent",
+                   "border": {"width": 2}}),
+        ),
+    ];
+    let (_g, mut r) = gpu(96, 64);
+    for (circle, rect) in rows {
+        let layer = |shape: &str, keys: &Value| {
+            let mut l = json!({"name": "s", "shape": shape});
+            l.as_object_mut()
+                .unwrap()
+                .extend(keys.as_object().unwrap().clone());
+            loaded(&shape_scene(json!([l])))
+        };
+        let got = render(&mut r, &layer("circle", &circle));
+        let want = render(&mut r, &layer("rect", &rect));
+        assert_eq!(differ(&got, &want), 0, "{circle}");
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_line_runs_through_its_points_and_draws_each_joint_once() {
     // Each row: the line's keys and its points as pixel centres. Away from
     // the edges every pixel takes the line's colour at its opacity, the
@@ -587,6 +649,8 @@ fn every_field_of_a_shape_changes_live_and_compiles_nothing() {
          "color": "orange", "border": {"width": 3, "color": "navy"}, "border_radius": 4},
         {"name": "l", "shape": "line", "points": [[40, 4], [60, 30], [70, 10]],
          "stroke_width": 3, "color": "lime"},
+        {"name": "c", "shape": "circle", "x": 66, "y": 36, "radius": 10, "color": "red",
+         "border": {"width": 2}},
     ]);
     let doc = json!({
         "version": 1,
@@ -614,6 +678,9 @@ fn every_field_of_a_shape_changes_live_and_compiles_nothing() {
         (at("l", None, "stroke_width"), json!(6)),
         (at("l", None, "x"), json!(5)),
         (at("l", None, "color"), json!([0, 0, 1])),
+        (at("c", None, "radius"), json!(14.5)),
+        (at("c", None, "radius"), json!(null)),
+        (at("c", Some("border"), "width"), json!(4)),
         (at("dot", Some("border"), "color"), json!("blue")),
     ];
     let (_g, mut r) = gpu(96, 64);

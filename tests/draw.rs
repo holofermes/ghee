@@ -79,7 +79,7 @@ impl Drop for Dir {
 }
 
 /// One pass whose layers a drawing drew: a pixel-font text, a DejaVu text
-/// with a glow, a rect with a border, a line and an image file.
+/// with a glow, a rect with a border, a line, a circle and an image file.
 fn scene() -> Value {
     json!({
         "version": 1,
@@ -96,6 +96,7 @@ fn scene() -> Value {
             {"name": "bar", "shape": "rect", "x": 60, "y": 20, "width": 8, "height": 4},
             {"name": "trace", "shape": "line", "points": [[0, 40], [30, 30], [60, 44]],
              "stroke_width": 2, "color": "lime"},
+            {"name": "ring", "shape": "circle", "x": 100, "y": 4, "radius": 8},
             {"name": "dot", "image": "dot.png", "x": 90, "y": 30, "width": 6}
         ]}],
     })
@@ -166,6 +167,7 @@ fn look_of(c: &Call) -> Value {
     match c.kind {
         CallKind::Rect => look.insert("shape".to_string(), json!("rect")),
         CallKind::Line => look.insert("shape".to_string(), json!("line")),
+        CallKind::Circle => look.insert("shape".to_string(), json!("circle")),
         _ => None,
     };
     for (k, a) in c.kind.keys().iter().zip(&c.args) {
@@ -194,7 +196,7 @@ fn a_call_gives_its_layer_the_look_that_update_layer_gives_its_look_written_out(
     // update_layer() otherwise: a call that builds its layer again, gives
     // an image another file, draws another kind of layer, names no layer,
     // or holds a value that the scene refuses.
-    use CallKind::{Image, Line, Rect, Text};
+    use CallKind::{Circle, Image, Line, Rect, Text};
     let dir = Dir::new("calls");
     let clock = |more: &[(&str, Arg)]| {
         let mut given = vec![
@@ -353,6 +355,19 @@ fn a_call_gives_its_layer_the_look_that_update_layer_gives_its_look_written_out(
                 &[("points", list(&[list(&[n(0.0), n(40.0)])]))],
             )],
             false,
+        ),
+        (
+            vec![call(
+                Circle,
+                "ring",
+                &[
+                    ("x", n(98.0)),
+                    ("y", n(4.0)),
+                    ("radius", n(10.5)),
+                    ("border", dict(&[("width", n(2.0)), ("color", s("red"))])),
+                ],
+            )],
+            true,
         ),
         (
             vec![call(

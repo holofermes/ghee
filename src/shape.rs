@@ -1,5 +1,5 @@
-//! Shape layers: a rect or a line that a pass paints over its buffer, in the
-//! order of its `layers`.
+//! Shape layers: a rect, a line or a circle that a pass paints over its
+//! buffer, in the order of its `layers`.
 //!
 //! Every shape draws through one program, [`program`], which takes no GLSL
 //! from the layer: a shape is quads whose vertices carry all of it, and a
@@ -12,13 +12,15 @@
 //! corners rounded by `border_radius`, filled with `color`, and its `border`
 //! lies inside the box. A line runs through its `points`, each a pixel as
 //! luma and Pillow count them, so a point's centre is the pixel's centre, and
-//! `x`, `y` shift all of them. The fragment shader antialiases every edge
-//! from the distance to the shape.
+//! `x`, `y` shift all of them. A circle of `radius` draws as the rect of side
+//! 2 * radius at `x`, `y` whose `border_radius` is the radius, its `border`
+//! too. The fragment shader antialiases every edge from the distance to the
+//! shape.
 
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
 
-use crate::draw::{self, Arg};
+use crate::draw::{self, Arg, CallKind};
 use crate::engine::Blend;
 use crate::layer::{
     every_dict, given, number, object, spoken, Every, Form, Live, Rgb, COLOUR_FORMS, IMAGE_KIND,
@@ -32,11 +34,17 @@ pub(crate) const RECT_KEYS: [&str; 5] = ["shape", "width", "height", "border", "
 /// The keys of a line past those of every layer.
 pub(crate) const LINE_KEYS: [&str; 3] = ["shape", "points", "stroke_width"];
 
+/// The keys of a circle past those of every layer.
+pub(crate) const CIRCLE_KEYS: [&str; 3] = ["shape", "radius", "border"];
+
 /// A rect's keys, and the kind of layer in an error.
 pub(crate) const RECT_KIND: (&[&str], &str) = (&RECT_KEYS, "a rect");
 
 /// A line's keys, and the kind of layer in an error.
 pub(crate) const LINE_KIND: (&[&str], &str) = (&LINE_KEYS, "a line");
+
+/// A circle's keys, and the kind of layer in an error.
+pub(crate) const CIRCLE_KIND: (&[&str], &str) = (&CIRCLE_KEYS, "a circle");
 
 /// The keys of a border.
 const BORDER_KEYS: [&str; 3] = ["width", "color", "visible"];
@@ -64,7 +72,7 @@ const QUAD: usize = 4 * 4 * ATTRIBUTES;
 /// then compute one distance, bit for bit.
 const GRID: f64 = 64.0;
 
-/// The border of a rect.
+/// The border of a rect or a circle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Border {
     /// Pixels inside the box's edge.
@@ -89,6 +97,11 @@ pub enum Shape {
         points: Vec<[f64; 2]>,
         stroke_width: f64,
     },
+    Circle {
+        /// Pixels. None is the largest circle that fits the pass.
+        radius: Option<f64>,
+        border: Option<Border>,
+    },
 }
 
 /// A shape layer of a pass.
@@ -97,11 +110,11 @@ pub struct ShapeLayer {
     pub name: String,
     /// False hides the layer.
     pub visible: bool,
-    /// A rect's top left, centred on a missing axis, or a line's shift, 0 on
-    /// a missing axis.
+    /// The top left of a rect or of a circle's box, centred on a missing
+    /// axis, or a line's shift, 0 on a missing axis.
     pub x: Option<f64>,
     pub y: Option<f64>,
-    /// The fill of a rect, the colour of a line.
+    /// The fill of a rect or a circle, the colour of a line.
     pub color: Rgb,
     pub opacity: f64,
     pub blend: Blend,
@@ -120,24 +133,27 @@ impl ShapeLayer {
     /// pass 'main'", until its name is known.
     pub fn from_dict(at: &str, d: &Value) -> Result<ShapeLayer> {
         let o = object(at, d)?;
-        let line = match given(o, "shape") {
-            Some(Value::String(s)) if s == "rect" => false,
-            Some(Value::String(s)) if s == "line" => true,
+        let kind = match given(o, "shape") {
+            Some(Value::String(s)) if ["rect", "line", "circle"].contains(&s.as_str()) => {
+                s.as_str()
+            }
             v => {
                 let what = match o.get("name") {
                     Some(Value::String(n)) => format!("layer '{n}'"),
                     _ => at.to_string(),
                 };
                 bail!(
-                    "{what} shape needs 'rect' or 'line', got {}",
+                    "{what} shape needs 'rect', 'line' or 'circle', got {}",
                     py_repr(v.unwrap_or(&Value::Null))
                 );
             }
         };
-        let e = match line {
-            true => Every::from_dict(at, o, &LINE_KEYS, &[RECT_KIND, TEXT_KIND, IMAGE_KIND])?,
-            false => Every::from_dict(at, o, &RECT_KEYS, &[LINE_KIND, TEXT_KIND, IMAGE_KIND])?,
+        let (own, others): (&[&str], _) = match kind {
+            "line" => (&LINE_KEYS, [RECT_KIND, CIRCLE_KIND, TEXT_KIND, IMAGE_KIND]),
+            "circle" => (&CIRCLE_KEYS, [RECT_KIND, LINE_KIND, TEXT_KIND, IMAGE_KIND]),
+            _ => (&RECT_KEYS, [LINE_KIND, CIRCLE_KIND, TEXT_KIND, IMAGE_KIND]),
         };
+        let e = Every::from_dict(at, o, own, &others)?;
         let what = e.what.as_str();
         let color = match given(o, "color") {
             None => Rgb::WHITE,
@@ -150,18 +166,23 @@ impl ShapeLayer {
             },
         };
         let px = |k: &str| number(o, what, k, pixels, PIXELS);
-        let shape = match line {
-            true => Shape::Line {
+        let border_of = || match given(o, "border") {
+            None => Ok(None),
+            Some(b) => border(&format!("{what} border"), b).map(Some),
+        };
+        let shape = match kind {
+            "line" => Shape::Line {
                 points: points(what, given(o, "points"))?,
                 stroke_width: px("stroke_width")?.unwrap_or(STROKE_WIDTH),
             },
-            false => Shape::Rect {
+            "circle" => Shape::Circle {
+                radius: px("radius")?,
+                border: border_of()?,
+            },
+            _ => Shape::Rect {
                 width: px("width")?,
                 height: px("height")?,
-                border: match given(o, "border") {
-                    None => None,
-                    Some(b) => Some(border(&format!("{what} border"), b)?),
-                },
+                border: border_of()?,
                 border_radius: px("border_radius")?.unwrap_or(BORDER_RADIUS),
             },
         };
@@ -220,17 +241,25 @@ impl ShapeLayer {
                     d.insert("stroke_width".to_string(), Value::from(*stroke_width));
                 }
             }
+            Shape::Circle { radius, border } => {
+                d.insert("shape".to_string(), Value::from("circle"));
+                if let Some(r) = radius {
+                    d.insert("radius".to_string(), Value::from(*r));
+                }
+                if let Some(b) = border {
+                    d.insert("border".to_string(), border_dict(b));
+                }
+            }
         }
         Value::Object(d)
     }
 
-    /// The layer named `name` that a drawing's call with `args` gives
-    /// `old`: a line's in the order of draw::LINE_ARGS, a rect's in the order
-    /// of draw::RECT_ARGS, as draw::layer_of() makes it. None for another
-    /// shape than `old`'s.
+    /// The layer named `name` that a drawing's call of `kind` with `args`
+    /// gives `old`, its args in the order of the kind's keys, as
+    /// draw::layer_of() makes it. None for another shape than `old`'s.
     pub(crate) fn of_args(
         name: &str,
-        line: bool,
+        kind: CallKind,
         args: &[Arg],
         old: &ShapeLayer,
     ) -> Option<ShapeLayer> {
@@ -239,8 +268,8 @@ impl ShapeLayer {
             Arg::None => Some(Rgb::WHITE),
             c => draw::rgb(c),
         };
-        let (e, color, shape) = match (line, &old.shape) {
-            (true, Shape::Line { .. }) => {
+        let (e, color, shape) = match (kind, &old.shape) {
+            (CallKind::Line, Shape::Line { .. }) => {
                 let [points, x, y, color, opacity, blend, visible, stroke_width] = args else {
                     return None;
                 };
@@ -266,31 +295,28 @@ impl ShapeLayer {
                 let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
                 (e, colour(color)?, shape)
             }
-            (false, Shape::Rect { border: kept, .. }) => {
+            (CallKind::Rect, Shape::Rect { border: kept, .. }) => {
                 let [x, y, width, height, color, opacity, blend, visible, border, border_radius] =
                     args
                 else {
                     return None;
                 };
-                let border = match border {
-                    Arg::None => kept.map(|b| Border {
-                        visible: false,
-                        ..b
-                    }),
-                    b => {
-                        let m = draw::map(b, &BORDER_KEYS)?;
-                        Some(Border {
-                            width: px(draw::get(m, "width"))?.unwrap_or(BORDER_WIDTH),
-                            color: colour(draw::get(m, "color"))?,
-                            visible: draw::flag(draw::get(m, "visible"), true)?,
-                        })
-                    }
-                };
                 let shape = Shape::Rect {
                     width: px(width)?,
                     height: px(height)?,
-                    border,
+                    border: border_of_arg(border, *kept)?,
                     border_radius: px(border_radius)?.unwrap_or(BORDER_RADIUS),
+                };
+                let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
+                (e, colour(color)?, shape)
+            }
+            (CallKind::Circle, Shape::Circle { border: kept, .. }) => {
+                let [x, y, radius, color, opacity, blend, visible, border] = args else {
+                    return None;
+                };
+                let shape = Shape::Circle {
+                    radius: px(radius)?,
+                    border: border_of_arg(border, *kept)?,
                 };
                 let e = draw::Every::of_args(visible, x, y, opacity, blend)?;
                 (e, colour(color)?, shape)
@@ -309,7 +335,7 @@ impl ShapeLayer {
         })
     }
 
-    /// True when `other` is the same shape, a rect or a line.
+    /// True when `other` is the same shape, a rect, a line or a circle.
     pub(crate) fn same_shape(&self, other: &ShapeLayer) -> bool {
         self.kind() == other.kind()
     }
@@ -319,6 +345,7 @@ impl ShapeLayer {
         match self.shape {
             Shape::Rect { .. } => "rect",
             Shape::Line { .. } => "line",
+            Shape::Circle { .. } => "circle",
         }
     }
 
@@ -329,9 +356,9 @@ impl ShapeLayer {
         let kind = self.kind();
         if let Some(key) = effect {
             match (key, &self.shape) {
-                ("border", Shape::Rect { .. }) => {}
-                (_, Shape::Rect { .. }) => {
-                    bail!("{layer} has no effect '{key}', and a rect takes border alone")
+                ("border", Shape::Rect { .. } | Shape::Circle { .. }) => {}
+                (_, Shape::Rect { .. } | Shape::Circle { .. }) => {
+                    bail!("{layer} has no effect '{key}', and a {kind} takes border alone")
                 }
                 (_, Shape::Line { .. }) => {
                     bail!("{layer} has no effect '{key}', and a line takes no effects")
@@ -354,9 +381,8 @@ impl ShapeLayer {
                 form,
             });
         }
-        let line = matches!(self.shape, Shape::Line { .. });
-        let live: &[&str] = match line {
-            true => &[
+        let live: &[&str] = match self.shape {
+            Shape::Line { .. } => &[
                 "x",
                 "y",
                 "color",
@@ -365,7 +391,7 @@ impl ShapeLayer {
                 "points",
                 "stroke_width",
             ],
-            false => &[
+            Shape::Rect { .. } => &[
                 "x",
                 "y",
                 "color",
@@ -375,6 +401,7 @@ impl ShapeLayer {
                 "height",
                 "border_radius",
             ],
+            Shape::Circle { .. } => &["x", "y", "color", "opacity", "visible", "radius"],
         };
         let form = match field {
             "x" | "y" => Form::Number { none: true },
@@ -384,10 +411,11 @@ impl ShapeLayer {
             },
             "opacity" => Form::Number { none: false },
             "visible" => Form::Flag,
-            "width" | "height" if !line => Form::Number { none: true },
-            "border_radius" if !line => Form::Number { none: false },
-            "points" if line => Form::Points,
-            "stroke_width" if line => Form::Number { none: false },
+            "width" | "height" if kind == "rect" => Form::Number { none: true },
+            "border_radius" if kind == "rect" => Form::Number { none: false },
+            "points" if kind == "line" => Form::Points,
+            "stroke_width" if kind == "line" => Form::Number { none: false },
+            "radius" if kind == "circle" => Form::Number { none: true },
             "shape" | "blend" => bail!(
                 "{layer} {field} changes with a rebuild, and the live fields of a {kind} are {}",
                 spoken(live)
@@ -405,8 +433,8 @@ impl ShapeLayer {
 
     /// Set the live field `field`, or the field of the border for `effect`
     /// border, to `value`, written as the scene writes the key, through the
-    /// checks of a layer that a scene declares. A rect with no border takes
-    /// one, at the defaults of its other fields.
+    /// checks of a layer that a scene declares. A rect or a circle with no
+    /// border takes one, at the defaults of its other fields.
     pub fn set_live(&mut self, effect: Option<&str>, field: &str, value: &Value) -> Result<()> {
         let mut d = self.to_dict();
         match effect {
@@ -424,8 +452,8 @@ impl ShapeLayer {
     }
 
     /// Append the quads of the layer, as its run's batch draws them, in a
-    /// pass of `pass` pixels. A hidden layer, an empty rect and a line of no
-    /// thickness have none.
+    /// pass of `pass` pixels. A hidden layer, an empty rect or circle and a
+    /// line of no thickness have none.
     pub fn quads(&self, pass: [f64; 2], out: &mut Vec<f32>) {
         if !self.visible {
             return;
@@ -439,24 +467,11 @@ impl ShapeLayer {
                 border_radius,
             } => {
                 let size = [width.unwrap_or(pass[0]), height.unwrap_or(pass[1])];
-                if size[0] <= 0.0 || size[1] <= 0.0 {
-                    return;
-                }
-                let at = [self.x, self.y];
-                let corner = [0, 1].map(|a| at[a].unwrap_or((pass[a] - size[a]) / 2.0));
-                let (b, ink) = match border {
-                    Some(b) if b.visible && b.width > 0.0 => {
-                        (b.width, premultiplied(b.color, self.opacity))
-                    }
-                    _ => (0.0, [0.0; 4]),
-                };
-                let geometry = [
-                    corner[0] + size[0] / 2.0,
-                    corner[1] + size[1] / 2.0,
-                    size[0] / 2.0,
-                    size[1] / 2.0,
-                ];
-                quad(out, 0.0, geometry, [*border_radius, b], ink, fill);
+                self.boxed(pass, size, *border_radius, border, fill, out);
+            }
+            Shape::Circle { radius, border } => {
+                let r = radius.unwrap_or(pass[0].min(pass[1]) / 2.0);
+                self.boxed(pass, [2.0 * r; 2], r, border, fill, out);
             }
             Shape::Line {
                 points,
@@ -502,6 +517,38 @@ impl ShapeLayer {
                 }
             }
         }
+    }
+
+    /// Append the quad of a box of `size` pixels in a pass of `pass` pixels,
+    /// its corners rounded by `radius`, with `border` and the colour `fill`.
+    /// An empty box has none.
+    fn boxed(
+        &self,
+        pass: [f64; 2],
+        size: [f64; 2],
+        radius: f64,
+        border: &Option<Border>,
+        fill: [f64; 4],
+        out: &mut Vec<f32>,
+    ) {
+        if size[0] <= 0.0 || size[1] <= 0.0 {
+            return;
+        }
+        let at = [self.x, self.y];
+        let corner = [0, 1].map(|a| at[a].unwrap_or((pass[a] - size[a]) / 2.0));
+        let (b, ink) = match border {
+            Some(b) if b.visible && b.width > 0.0 => {
+                (b.width, premultiplied(b.color, self.opacity))
+            }
+            _ => (0.0, [0.0; 4]),
+        };
+        let geometry = [
+            corner[0] + size[0] / 2.0,
+            corner[1] + size[1] / 2.0,
+            size[0] / 2.0,
+            size[1] / 2.0,
+        ];
+        quad(out, 0.0, geometry, [radius, b], ink, fill);
     }
 
     /// The pixels that the layer's quads cover in a pass of `pass` pixels,
@@ -580,6 +627,28 @@ fn border(what: &str, d: &Value) -> Result<Border> {
         color,
         visible,
     })
+}
+
+/// The border that the arg `b` of a drawing's call gives a shape whose
+/// border is `kept`: None keeps `kept`, bypassed. None for a value that the
+/// scene format refuses.
+fn border_of_arg(b: &Arg, kept: Option<Border>) -> Option<Option<Border>> {
+    if *b == Arg::None {
+        return Some(kept.map(|b| Border {
+            visible: false,
+            ..b
+        }));
+    }
+    let m = draw::map(b, &BORDER_KEYS)?;
+    let color = match draw::get(m, "color") {
+        Arg::None => BORDER_COLOR,
+        c => draw::rgb(c)?,
+    };
+    Some(Some(Border {
+        width: draw::number(draw::get(m, "width"), pixels)?.unwrap_or(BORDER_WIDTH),
+        color,
+        visible: draw::flag(draw::get(m, "visible"), true)?,
+    }))
 }
 
 /// The border as a scene holds it, a field at its default left out.

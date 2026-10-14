@@ -184,6 +184,7 @@ fn number_of(kind: CallKind) -> i64 {
         CallKind::Rect => 1,
         CallKind::Image => 2,
         CallKind::Line => 3,
+        CallKind::Circle => 4,
     }
 }
 
@@ -194,6 +195,7 @@ fn base_of(kind: CallKind) -> &'static str {
         CallKind::Rect => "rect",
         CallKind::Image => "image",
         CallKind::Line => "line",
+        CallKind::Circle => "circle",
     }
 }
 
@@ -397,9 +399,9 @@ struct Changed {
 /// its default again. A call keeps its layer from frame to frame by the line
 /// of code that makes it and its count from that line in the frame, or by
 /// its `name`, which names the layer too. A call with no name names its
-/// layer after its kind: text, text2, image, rect, line. Two calls that draw
-/// one layer in a frame raise ValueError, and a `name` that is no str raises
-/// TypeError.
+/// layer after its kind: text, text2, image, rect, line, circle. Two calls
+/// that draw one layer in a frame raise ValueError, and a `name` that is no
+/// str raises TypeError.
 ///
 /// Leaving the block sends ghee what changed: a live field changes live,
 /// any other change builds that layer alone again, a call that runs for the
@@ -1116,8 +1118,8 @@ impl Drawing {
         )
     }
 
-    /// Draw a circle of `radius` pixels around `centre`, (x, y): a rect of
-    /// `2 * radius` with `border_radius` at `radius`.
+    /// Draw a circle of `radius` pixels around `centre`, (x, y), a circle
+    /// shape layer.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (centre, radius, *, name=None, color=None, opacity=None, blend=None,
                         visible=None, border=None))]
@@ -1140,13 +1142,13 @@ impl Drawing {
             .import("ghee._look")?
             .getattr("_circle")?
             .call1((centre, radius))?;
-        let [x, y, w, h, r] = [0, 1, 2, 3, 4].map(|k| boxed.get_item(k).ok());
+        let [x, y, r] = [0, 1, 2].map(|k| boxed.get_item(k).ok());
         self.put_at(
             py,
             site,
-            CallKind::Rect,
+            CallKind::Circle,
             name_of(&name)?,
-            &[x, y, w, h, color, opacity, blend, visible, border, r],
+            &[x, y, r, color, opacity, blend, visible, border],
         )
     }
 

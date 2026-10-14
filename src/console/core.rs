@@ -1885,11 +1885,12 @@ mod tests {
             );
         }
         let every = ["x", "y", "color", "opacity", "visible"];
-        let kinds: [(&str, &[&str]); 4] = [
+        let kinds: [(&str, &[&str]); 5] = [
             ("text", &["text"]),
             ("image", &["image"]),
             ("rect", &["width", "height", "border_radius"]),
             ("line", &["points", "stroke_width"]),
+            ("circle", &["radius"]),
         ];
         for (kind, own) in kinds {
             let mut want: Vec<&str> = every.to_vec();
@@ -1922,7 +1923,8 @@ mod tests {
         assert_eq!(
             f["shapes"],
             json!({"rect": ["width", "height", "border", "border_radius"],
-                   "line": ["points", "stroke_width"]})
+                   "line": ["points", "stroke_width"],
+                   "circle": ["radius", "border"]})
         );
         let every = json!([
             "text_shadow",

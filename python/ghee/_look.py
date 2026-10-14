@@ -73,6 +73,7 @@ _FIELDS = {
     "border_radius": None,
     "points": None,
     "stroke_width": None,
+    "radius": None,
 }
 
 
@@ -93,7 +94,15 @@ def _look(f: dict, name: str | None) -> dict:
         d["image"] = _plain(f["image"])
     if f["shape"] is not None:
         d["shape"] = f["shape"]
-    for k in ("width", "height", "border", "border_radius", "points", "stroke_width"):
+    for k in (
+        "width",
+        "height",
+        "radius",
+        "border",
+        "border_radius",
+        "points",
+        "stroke_width",
+    ):
         if f[k] is not None:
             d[k] = _floats(f[k])
     if f["font_size"] is not None:
@@ -111,8 +120,8 @@ def _look(f: dict, name: str | None) -> dict:
 
 
 # The keywords of each kind of call, in the order of a call's values, as
-# the native half numbers the kinds: a text, a rect, an image and a line,
-# and the shape that each kind's look names.
+# the native half numbers the kinds: a text, a rect, an image, a line and a
+# circle, and the shape that each kind's look names.
 _CALL_KEYS = (
     (
         "text",
@@ -148,8 +157,9 @@ _CALL_KEYS = (
     ),
     ("image", "x", "y", "width", "height", "color", "opacity", "blend", "visible"),
     ("points", "x", "y", "color", "opacity", "blend", "visible", "stroke_width"),
+    ("x", "y", "radius", "color", "opacity", "blend", "visible", "border"),
 )
-_CALL_SHAPES = (None, "rect", None, "line")
+_CALL_SHAPES = (None, "rect", None, "line", "circle")
 
 
 def _call_look(kind: int, vals: tuple, name: str | None) -> dict:
@@ -163,7 +173,7 @@ def _call_look(kind: int, vals: tuple, name: str | None) -> dict:
 
 
 def _circle(centre, radius) -> tuple:
-    """The x, y, width, height and border_radius of the box of a circle of
-    `radius` around `centre`."""
+    """The x and y of the top left of the box of a circle of `radius`
+    around `centre`, and the radius."""
     cx, cy = _plain(centre)
-    return cx - radius, cy - radius, 2 * radius, 2 * radius, radius
+    return cx - radius, cy - radius, radius

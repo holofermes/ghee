@@ -58,7 +58,7 @@ _VEC = {"vec2": 2, "vec3": 3, "vec4": 4}
 ParamType = Literal["float", "int", "bool", "color", "string", "vec2", "vec3", "vec4"]
 TextAlign = Literal["left", "center", "right"]
 Render = Literal["auto", "hinted", "mono", "mtsdf", "slug"]
-Shape = Literal["rect", "line"]
+Shape = Literal["rect", "line", "circle"]
 Blend = Literal["normal", "add", "multiply", "screen"]
 ArgType = Literal["string", "int", "float", "size", "bool"]
 
@@ -190,12 +190,15 @@ class Layer:
     keeps the image's aspect, and both left out take its own size. Its
     `color` is a tint that multiplies the picture.
 
-    A shape layer draws `shape`, "rect" or "line", in its `color`. A rect
-    fills `width` by `height` pass pixels, the pass's own on a size left out,
-    with `x`, `y` at its top left. `border` draws inside its edge, a dict of
-    `width` in pixels, `color` and `visible`, and `border_radius` rounds its
-    corners by that many pixels. A line runs through `points`, each [x, y]
-    a pixel, `stroke_width` pixels thick, and `x`, `y` shift every point.
+    A shape layer draws `shape`, "rect", "line" or "circle", in its `color`.
+    A rect fills `width` by `height` pass pixels, the pass's own on a size
+    left out, with `x`, `y` at its top left. `border` draws inside its edge,
+    a dict of `width` in pixels, `color` and `visible`, and `border_radius`
+    rounds its corners by that many pixels. A line runs through `points`,
+    each [x, y] a pixel, `stroke_width` pixels thick, and `x`, `y` shift
+    every point. A circle of `radius` pixels, the largest that fits the pass
+    on a radius left out, has the top left of its box at `x`, `y`, and takes
+    a `border` as a rect does.
 
     `ghee.layers` and a handle's `layers` set a layer's live fields while
     the scene runs.
@@ -228,6 +231,7 @@ class Layer:
     border_radius: float | None = None
     points: Sequence[Sequence[float]] | None = None
     stroke_width: float | None = None
+    radius: float | None = None
 
     def to_dict(self) -> dict:
         return _look(vars(self), self.name)

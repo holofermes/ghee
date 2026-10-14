@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import json
 import math
-import os
 import struct
 import sys
 
@@ -14,17 +13,15 @@ void main() {
 """
 
 scene = {
+    "lockstep": True,
     "passes": [
         {
             "name": "main",
             "fragment": FRAGMENT,
             "arrays": [{"name": "levels", "size": 16}],
         }
-    ]
+    ],
 }
-lockstep = os.environ.get("GHEE_LOCKSTEP") == "1"
-if lockstep:
-    scene["lockstep"] = True
 
 out = sys.stdout.buffer
 out.write(json.dumps(scene).encode() + b"\n")
@@ -37,6 +34,5 @@ for line in sys.stdin:
     # kind 0, the name's length, the name, the count, 16 little-endian floats
     out.write(struct.pack("<BB", 0, len(name)) + name)
     out.write(struct.pack("<I16f", 16, *levels))
-    if lockstep:
-        out.write(b"\x05")  # kind 5: the answer to this tick is complete
+    out.write(b"\x05")  # kind 5: done with this frame
     out.flush()

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "passes": [{
+    "name": "main",
+    "fragment": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+    "layers": [
+      { "name": "title", "text": "hello", "color": { "from": "red", "to": "yellow", "angle": 90 } }
+    ]
+  }]
+}

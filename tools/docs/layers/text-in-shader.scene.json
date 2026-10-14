@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "passes": [{
+    "name": "main",
+    "fragment": { "file": "title.glsl" },
+    "layers": [{ "name": "title", "text": "hello", "visible": false }]
+  }]
+}

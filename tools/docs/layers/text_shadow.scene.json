@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "passes": [{
+    "name": "main",
+    "fragment": "void main() { gl_FragColor = vec4(0.3, 0.42, 0.58, 1.0); }",
+    "layers": [
+      { "name": "title", "text": "hello", "font_size": 36, "text_shadow": {} }
+    ]
+  }]
+}

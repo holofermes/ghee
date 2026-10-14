@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "passes": [{
+    "name": "main",
+    "fragment": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+    "layers": [
+      { "name": "hinted", "text": "hello", "x": 6, "y": 8, "font_size": 14, "render": "hinted" },
+      { "name": "mono", "text": "hello", "x": 70, "y": 8, "font_size": 14, "render": "mono" },
+      { "name": "mtsdf", "text": "hello", "x": 134, "y": 8, "font_size": 14, "render": "mtsdf" },
+      { "name": "slug", "text": "hello", "x": 198, "y": 8, "font_size": 14, "render": "slug" },
+      { "name": "hinted_label", "text": "hinted", "x": 6, "y": 32, "font_size": 9, "color": "gray" },
+      { "name": "mono_label", "text": "mono", "x": 70, "y": 32, "font_size": 9, "color": "gray" },
+      { "name": "mtsdf_label", "text": "mtsdf", "x": 134, "y": 32, "font_size": 9, "color": "gray" },
+      { "name": "slug_label", "text": "slug", "x": 198, "y": 32, "font_size": 9, "color": "gray" }
+    ]
+  }]
+}

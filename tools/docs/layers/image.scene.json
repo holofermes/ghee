@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "passes": [{
+    "name": "main",
+    "fragment": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+    "layers": [
+      { "name": "wifi", "image": "wifi.png", "x": 112, "y": 0, "width": 16, "color": "orange" }
+    ]
+  }]
+}

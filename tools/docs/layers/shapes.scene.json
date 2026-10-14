@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "passes": [{
+    "name": "main",
+    "fragment": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+    "layers": [
+      { "name": "frame", "shape": "rect", "x": 0, "y": 24, "width": 128, "height": 8,
+        "color": "transparent", "border": { "width": 1, "color": "white" } },
+      { "name": "fill", "shape": "rect", "x": 2, "y": 26, "width": 60, "height": 4 },
+      { "name": "scope", "shape": "line", "points": [[0, 16], [8, 4], [16, 20]],
+        "color": "lime" }
+    ]
+  }]
+}

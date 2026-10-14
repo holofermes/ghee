@@ -282,8 +282,16 @@ fn cache_of(
     })
 }
 
+/// extract_examples_in() under cache_dir(). The process holds every directory
+/// returned until it exits.
 fn extract_examples() -> std::io::Result<String> {
-    extract_examples_in(&cache_dir(), &crate::procedural::wheel::identity())
+    static HELD: std::sync::Mutex<Vec<(String, std::fs::File)>> = std::sync::Mutex::new(Vec::new());
+    let (dir, lock) = extract_examples_in(&cache_dir(), &crate::procedural::wheel::identity())?;
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if !held.iter().any(|(d, _)| *d == dir) {
+        held.push((dir.clone(), lock));
+    }
+    Ok(dir)
 }
 
 /// The directory of the examples in ghee's cache directory `base`. Its name
@@ -304,9 +312,15 @@ fn examples_in(base: &std::path::Path, wheel: &str) -> std::path::PathBuf {
     base.join(format!("examples-{tag}"))
 }
 
-/// extract_examples() in ghee's cache directory `base`, into examples_in().
-fn extract_examples_in(base: &std::path::Path, wheel: &str) -> std::io::Result<String> {
+/// extract_examples() in ghee's cache directory `base`, into examples_in(),
+/// with the file that holds the directory's shared lock. A pruner skips the
+/// directory while that file stays open.
+fn extract_examples_in(
+    base: &std::path::Path,
+    wheel: &str,
+) -> std::io::Result<(String, std::fs::File)> {
     let dir = examples_in(base, wheel);
+    let lock = hold_examples(&dir)?;
     let done = dir.join(".complete");
     if !done.exists() {
         // Once per build, and it lands on whoever runs --demo first.
@@ -330,19 +344,64 @@ fn extract_examples_in(base: &std::path::Path, wheel: &str) -> std::io::Result<S
         crate::report::progress_done();
         prune_examples(&dir);
     }
-    Ok(dir.to_string_lossy().into_owned())
+    Ok((dir.to_string_lossy().into_owned(), lock))
+}
+
+/// The `.lock` file of the examples directory `dir`, made when missing.
+fn open_lock(dir: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".lock"))
+}
+
+/// A shared lock on the examples directory `dir`, made when missing. A pruner
+/// may remove the directory during the wait, so the lock counts only when
+/// `.lock` still names the locked file.
+fn hold_examples(dir: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::MetadataExt;
+    loop {
+        std::fs::create_dir_all(dir)?;
+        let lock = match open_lock(dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            lock => lock?,
+        };
+        lock.lock_shared()?;
+        let held = lock.metadata()?;
+        if let Ok(now) = std::fs::metadata(dir.join(".lock")) {
+            if (now.dev(), now.ino()) == (held.dev(), held.ino()) {
+                return Ok(lock);
+            }
+        }
+    }
 }
 
 /// Remove every examples directory beside `kept` that another build or
-/// version of ghee extracted.
+/// version of ghee extracted, unless a running ghee holds it. Each moves aside
+/// under its lock first, so a ghee that takes the same examples again makes a
+/// new directory.
 fn prune_examples(kept: &std::path::Path) {
     let (Some(parent), Some(name)) = (kept.parent(), kept.file_name()) else {
         return;
     };
     for e in std::fs::read_dir(parent).into_iter().flatten().flatten() {
         let n = e.file_name();
-        if n != name && n.to_string_lossy().starts_with("examples-") {
-            let _ = std::fs::remove_dir_all(e.path());
+        if n == name || !n.to_string_lossy().starts_with("examples-") {
+            continue;
+        }
+        let Ok(lock) = open_lock(&e.path()) else {
+            continue;
+        };
+        if lock.try_lock().is_ok() {
+            let gone = parent.join(format!(
+                "{}.pruned-{}",
+                n.to_string_lossy(),
+                std::process::id()
+            ));
+            if std::fs::rename(e.path(), &gone).is_ok() {
+                let _ = std::fs::remove_dir_all(gone);
+            }
         }
     }
 }
@@ -386,7 +445,7 @@ mod tests {
     fn the_embedded_examples_extract_and_resolve() {
         let cache = std::env::temp_dir().join(format!("ghee-examples-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cache);
-        let out = extract_examples_in(&cache, "").unwrap();
+        let (out, _held) = extract_examples_in(&cache, "").unwrap();
         let out = std::path::Path::new(&out);
         assert!(out.join("bars.scene.json").is_file());
         assert!(out.join("lib/look.py").is_file());
@@ -413,7 +472,7 @@ mod tests {
         let dir = std::path::Path::new(&*scenes);
         assert!(!is_examples_in(dir, None, base, "w"));
         assert_eq!(std::fs::read_dir(base).unwrap().count(), 0);
-        let out = extract_examples_in(base, "w").unwrap();
+        let (out, _held) = extract_examples_in(base, "w").unwrap();
         assert!(is_examples_in(std::path::Path::new(&out), None, base, "w"));
         assert!(is_examples_in(dir, Some(&scenes), base, "w"));
     }
@@ -423,8 +482,8 @@ mod tests {
         let cache = crate::testing::TempDir::new("examples-wheel");
         let base = std::path::Path::new(&*cache);
         let wheel = "/usr/lib/ghee/ghee_render-0.5.0-cp310-abi3-linux_aarch64.whl:4096";
-        let first = extract_examples_in(base, &format!("{wheel}:1")).unwrap();
-        let again = extract_examples_in(base, &format!("{wheel}:2")).unwrap();
+        let (first, _) = extract_examples_in(base, &format!("{wheel}:1")).unwrap();
+        let (again, _) = extract_examples_in(base, &format!("{wheel}:2")).unwrap();
         assert_ne!(first, again);
     }
 
@@ -434,13 +493,32 @@ mod tests {
         let base = std::path::Path::new(&*cache);
         let other = base.join("other");
         std::fs::create_dir_all(&other).unwrap();
-        let first = extract_examples_in(base, "1").unwrap();
-        let again = extract_examples_in(base, "2").unwrap();
+        let older = base.join("examples-0");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::write(older.join("bars.scene.json"), b"{}").unwrap();
+        let (first, _) = extract_examples_in(base, "1").unwrap();
+        let (again, _) = extract_examples_in(base, "2").unwrap();
         assert!(!std::path::Path::new(&first).exists());
+        assert!(!older.exists());
         assert!(std::path::Path::new(&again)
             .join("bars.scene.json")
             .is_file());
         assert!(other.is_dir());
+        assert_eq!(std::fs::read_dir(base).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn the_cache_keeps_the_examples_held_by_a_running_ghee() {
+        let cache = crate::testing::TempDir::new("examples-held");
+        let base = std::path::Path::new(&*cache);
+        let (first, held) = extract_examples_in(base, "1").unwrap();
+        let _ = extract_examples_in(base, "2").unwrap();
+        assert!(std::path::Path::new(&first)
+            .join("bars.scene.json")
+            .is_file());
+        drop(held);
+        let _ = extract_examples_in(base, "3").unwrap();
+        assert!(!std::path::Path::new(&first).exists());
     }
 
     #[test]

@@ -65,7 +65,8 @@ loop() {
 
 still uv 128x64
 still shadow 128x64
-still bars 128x64
+render bars 128x64 90 0.0333333
+loop bars 30 0
 
 for n in 2 4 8; do
     variant "rings-$n" rings main params.rings "$n"

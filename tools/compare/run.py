@@ -30,16 +30,34 @@ Onto the glass, with --glass CARD: each library puts its frames on the SPI
 or I2C panel of that DRM card. ghee scans out to the card, ghee_drop with
 drop=True, and Pillow and pygame write each frame whole to the card's fbdev,
 which flushes it to the panel at once. The runner times every bus transfer to the panel from the
-kernel's tracepoints, through `sudo -n`, and measures for each library:
+kernel's tracepoints, through `sudo -n`, and runs each library --repeats
+times, the libraries in turn (ABAB), each run a fresh process. Around the
+runs it:
 
-- the time from the start of the process to the end of its first frame's
-  transfer, then 120 frames to draw every glyph once;
+- sets every CPU policy's governor to performance, and puts the old one back
+  at the end, on an error or Ctrl-C too;
+- before each run, waits until the SoC reads under --cool degrees C
+  (`vcgencmd measure_temp`), and gives up after --cool-wait seconds;
+- after each run, reads `vcgencmd get_throttled`, and marks the run if a
+  flag holds at its end or came up during it. The summary leaves marked runs
+  out;
+- blanks the panel through its fbdev before each run and after the last.
+
+It measures for each run:
+
+- on a Pi 5, the board's power with no library running and the panel
+  blanked, over --power-window seconds;
+- the time from the start of the process to the end of the transfer that
+  puts its first frame on the panel, then 120 frames to draw every glyph
+  once;
 - paced to 30 fps: the frames on the glass a second, the latency from the
   start of a frame's draw to the end of the transfer that carries it, mean
   and 95th percentile, and the CPU time of every task on the system over
-  --window seconds, less the same figure with the library's first frame held
-  on the panel and nothing drawing, taken once the ondemand governor has let
-  the clock down after the start, and the library's own process alone;
+  --window seconds, less the same figure with the library's last frame held
+  on the panel and nothing drawing, and the library's own process alone;
+- the busy share of each of the GPU's engines for the library's process at
+  30 fps, from the DRM driver's fdinfo (drm-engine-*), where the driver
+  gives it;
 - on a Pi 5, the board's power over --power-window seconds, held and paced;
 - run free for --free seconds: the frames drawn and the frames on the glass
   a second, the same latency, and the CPU time of every task on the system
@@ -56,8 +74,8 @@ compares the pictures: see perpixel.py.
 
     uv run run.py
     uv run run.py --libs ghee,pillow --sizes 128x32 --png out
-    uv run run.py --glass /dev/dri/card1
-    uv run run.py --glass /dev/dri/card1 --perpixel
+    uv run run.py --glass /dev/dri/card1 --cool 45
+    uv run run.py --glass /dev/dri/card1 --cool 45 --perpixel
     uv run run.py --perpixel --check out --sizes 256x64 --levels 16
 """
 
@@ -74,6 +92,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import board
 import glass
 import perpixel
 
@@ -239,7 +258,7 @@ def gpu_time(path):
     return stamp, busy
 
 
-def board_watts():
+def rail_watts():
     out = subprocess.run(
         ["vcgencmd", "pmic_read_adc"], capture_output=True, text=True, check=True
     ).stdout
@@ -251,7 +270,11 @@ def board_watts():
             amps[name[:-2]] = value
         elif name.endswith("_V"):
             volts[name[:-2]] = value
-    return sum(a * volts[r] for r, a in amps.items() if r in volts)
+    return {r: a * volts[r] for r, a in amps.items() if r in volts}
+
+
+def board_watts():
+    return sum(rail_watts().values())
 
 
 def has_pmic():
@@ -270,17 +293,19 @@ class Sampler:
     def __init__(self):
         self.samples = []
         self.stop = threading.Event()
-        self.thread = threading.Thread(target=self.run)
+        self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
     def run(self):
         while not self.stop.wait(0.05):
-            self.samples.append(board_watts())
+            self.samples.append(rail_watts())
 
     def finish(self):
+        """The median board power, and each rail's median in `rails`."""
         self.stop.set()
         self.thread.join()
-        return median(self.samples)
+        self.rails = {r: median([s[r] for s in self.samples]) for r in self.samples[0]}
+        return median([sum(s.values()) for s in self.samples])
 
 
 def idle_watts(seconds):
@@ -317,10 +342,13 @@ def measure(lib, size, args, gpu, power):
     return result
 
 
-def measure_glass(lib, p, args, power):
+def measure_glass(lib, p, args, power, run):
+    out, proc = {}, None
+    glass.blank(p.fb)
+    if power:
+        out["board_watts"], out["board_rails"] = watts(args.power_window)
     tracer = glass.Tracer(p.bus)
     tracer.start()
-    out, proc = {}, None
     try:
         cmd = [sys.executable, __file__, "--child", lib, "--size", p.size]
         cmd += ["--card", p.card, "--fb", p.fb, "--fonts", args.fonts]
@@ -340,23 +368,30 @@ def measure_glass(lib, p, args, power):
             raise RuntimeError(f"{lib} exited with status {proc.wait()}")
 
         hello = ask()
+        warmed = time.monotonic()
         first, out["warm"] = hello["first"], hello["warm"]
         time.sleep(glass.settle())
         out["idle_cpu"], _ = glass.cores(args.window, proc.pid)
         if power:
-            out["idle_watts"] = watts(args.power_window)
+            out["idle_watts"], out["idle_rails"] = watts(args.power_window)
         proc.stdin.write("paced\n")
         proc.stdin.flush()
         time.sleep(SETTLE)
+        g0, t0 = board.gpu_ns(proc.pid), time.monotonic()
         cpu, out["proc_cpu"] = glass.cores(args.window, proc.pid)
+        g1, t1 = board.gpu_ns(proc.pid), time.monotonic()
+        out["gpu"] = board.gpu_share(g0, g1, t1 - t0)
         out["cpu"] = cpu - out["idle_cpu"]
         if power:
-            out["watts"] = watts(args.power_window)
+            out["watts"], out["rails"] = watts(args.power_window)
         paced = ask("stop")["frames"]
         proc.stdin.write(f"free {args.free}\n")
         proc.stdin.flush()
         time.sleep(0.1)
+        g0, t0 = board.gpu_ns(proc.pid), time.monotonic()
         out["free_cpu"], out["free_proc_cpu"] = glass.cores(args.free - 0.3, proc.pid)
+        g1, t1 = board.gpu_ns(proc.pid), time.monotonic()
+        out["free_gpu"] = board.gpu_share(g0, g1, t1 - t0)
         free = ask()["frames"]
         proc.stdin.write("quit\n")
         proc.stdin.flush()
@@ -373,15 +408,19 @@ def measure_glass(lib, p, args, power):
     if args.raw:
         raw = {"spawned": spawned, "first": first, "paced": paced, "free": free}
         raw["transfers"] = transfers
-        Path(args.raw, f"{lib}.json").write_text(json.dumps(raw))
+        Path(args.raw, f"{lib}-{run + 1}.json").write_text(json.dumps(raw))
     if lib in perpixel.PROGRAMS:
-        queue = lib in perpixel.QUEUE
+        queue, warm = lib in perpixel.QUEUE, perpixel.WARM
     else:
         queue = getattr(importlib.import_module(f"{lib}_screen").Screen, "QUEUE", False)
+        warm = WARM
     # A frame that changes nothing may reach the panel or not, so an update
     # carries the last frame that changed and was handed over before it.
     queue = queue and args.cadence == "frame"
     out["startup"] = next(u[1] for u in ups if u[0] > first) - spawned
+    out["warm_updates"] = sum(1 for u in ups if first < u[0] < warmed)
+    if queue and out["warm_updates"] != warm:
+        print(f"{lib}: {out['warm_updates']} updates for {warm} warm-up frames")
     out["free"] = glass.phase(free, ups, queue, free[-1][2] + DRAIN)
     out["paced"] = glass.phase(paced, ups, queue, paced[-1][2] + DRAIN)
     return out
@@ -390,38 +429,91 @@ def measure_glass(lib, p, args, power):
 def watts(seconds):
     s = Sampler()
     time.sleep(seconds)
-    return s.finish()
+    return s.finish(), s.rails
+
+
+def busiest(share):
+    """The busiest GPU engine's share, or None with no figure. v3d's cpu
+    queue runs on the CPU."""
+    if not share:
+        return None
+    return max(v for k, v in share.items() if k != "cpu")
 
 
 def glass_table(rows, power):
-    head = ["library", "panel", "start s", "drawn/s", "glass/s", "updates/s", "ms"]
-    head += ["p95 ms", "CPU free", "process free"]
+    head = ["run", "library", "panel", "C", "first s", "drawn/s", "glass/s"]
+    head += ["updates/s", "ms", "p95 ms", "CPU free", "process free"]
     head += ["drawn/s @30", "glass/s @30", "updates/s @30", "ms @30"]
-    head += ["p95 @30", "CPU @30", "process @30"]
+    head += ["p95 @30", "CPU @30", "process @30", "GPU @30"]
     if power:
-        head += ["W held", "W @30"]
+        head += ["W idle", "W held", "W @30"]
+    head.append("throttled")
     lines = [head]
     for r in rows:
         m = r.get("m")
         if m is None:
-            lines.append([r["lib"], r["size"], "failed"])
+            lines.append([str(r["run"]), r["lib"], r["size"], "failed"])
             continue
         f, pc = m["free"], m["paced"]
-        cells = [r["lib"], r["size"], f"{m['startup']:.2f}", f"{f['drawn']:.0f}"]
+        gpu = busiest(m["gpu"])
+        cells = [str(r["run"]), r["lib"], r["size"], f"{r['temp']:.1f}"]
+        cells += [f"{m['startup']:.2f}", f"{f['drawn']:.0f}"]
         cells += [f"{f['glass']:.0f}", f"{f['updates']:.0f}"]
         cells += [f"{f['latency'] * 1e3:.2f}", f"{f['latency_p95'] * 1e3:.2f}"]
         cells += [f"{m['free_cpu']:.1%}", f"{m['free_proc_cpu']:.1%}"]
         cells += [f"{pc['drawn']:.1f}", f"{pc['glass']:.1f}", f"{pc['updates']:.1f}"]
         cells += [f"{pc['latency'] * 1e3:.2f}", f"{pc['latency_p95'] * 1e3:.2f}"]
         cells += [f"{m['cpu']:.1%}", f"{m['proc_cpu']:.1%}"]
+        cells.append("-" if gpu is None else f"{gpu:.1%}")
         if power:
-            cells += [f"{m['idle_watts']:.2f}", f"{m['watts']:.2f}"]
+            cells += [f"{m['board_watts']:.2f}", f"{m['idle_watts']:.2f}"]
+            cells.append(f"{m['watts']:.2f}")
+        cells.append(", ".join(r["throttled"]) or "no")
         lines.append(cells)
         for name, ph in (("free", f), ("paced", pc)):
             if ph["unmatched"]:
                 print(f"{r['lib']} {name}: {ph['unmatched']:+d} updates against frames")
         if m["lost"]:
             print(f"{r['lib']}: the trace buffer lost events")
+    print_rows(lines)
+
+
+def spread(xs, fmt):
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return "-"
+    mid = (
+        xs[len(xs) // 2]
+        if len(xs) % 2
+        else (xs[len(xs) // 2 - 1] + xs[len(xs) // 2]) / 2
+    )
+    if len(xs) == 1 or fmt.format(xs[0]) == fmt.format(xs[-1]):
+        return fmt.format(mid)
+    return f"{fmt.format(mid)} ({fmt.format(xs[0])} to {fmt.format(xs[-1])})"
+
+
+def glass_summary(rows, power):
+    """Each library's median over its runs that neither failed nor
+    throttled, with the lowest and highest in brackets."""
+    head = ["library", "runs", "first s", "ms @30", "CPU @30", "process @30"]
+    head += ["GPU @30"]
+    if power:
+        head += ["W idle", "W @30"]
+    lines = [head]
+    for lib in dict.fromkeys(r["lib"] for r in rows):
+        ms = [r["m"] for r in rows if r["lib"] == lib and r["m"] and not r["throttled"]]
+        n = sum(1 for r in rows if r["lib"] == lib)
+        cells = [lib, f"{len(ms)} of {n}"]
+        cells.append(spread([m["startup"] for m in ms], "{:.2f}"))
+        cells.append(spread([m["paced"]["latency"] * 1e3 for m in ms], "{:.2f}"))
+        cells.append(spread([m["cpu"] * 100 for m in ms], "{:.1f}%"))
+        cells.append(spread([m["proc_cpu"] * 100 for m in ms], "{:.1f}%"))
+        gpu = [busiest(m["gpu"]) for m in ms]
+        cells.append(spread([g * 100 for g in gpu if g is not None], "{:.1f}%"))
+        if power:
+            cells.append(spread([m["board_watts"] for m in ms], "{:.2f}"))
+            cells.append(spread([m["watts"] for m in ms], "{:.2f}"))
+        lines.append(cells)
     print_rows(lines)
 
 
@@ -468,6 +560,13 @@ def table(rows, idle):
 
 
 def glass_main(args):
+    if args.cool is None:
+        raise SystemExit(
+            "--glass takes --cool C: the SoC temperature to wait for before "
+            "each run, a little over the board's own at idle"
+        )
+    if args.repeats < 2:
+        raise SystemExit("--glass takes --repeats 2 or more")
     p = glass.panel(args.glass)
     if args.raw:
         os.makedirs(args.raw, exist_ok=True)
@@ -480,15 +579,33 @@ def glass_main(args):
         perpixel.liquid_png(args.sources, p.w, p.h)
         perpixel.chroma_palette(args.sources)
     power = has_pmic()
-    rows = [
-        {"lib": lib, "size": p.size, "m": measure_glass(lib, p, args, power)}
-        for lib in libs
-    ]
-    if args.json:
-        Path(args.json).write_text(
-            json.dumps({"panel": p.size, "rows": rows}, indent=1)
-        )
+    flags = board.throttled()
+    print(f"get_throttled: {flags:#x}")
+    if flags >> 16:
+        print("  flags up since boot count for a run only if they hold at its end")
+    rows = []
+    with board.governor("performance"), glass.dark(p.fb):
+        for run in range(1, args.repeats + 1):
+            for lib in libs:
+                found, temp, waited = board.cool(args.cool, args.cool_wait)
+                cooled = f", {waited:.0f} s to cool" if waited >= 1 else ""
+                print(f"run {run} {lib}: SoC {found:.1f} C{cooled}", flush=True)
+                before = board.throttled()
+                m = measure_glass(lib, p, args, power, run - 1)
+                events = board.throttle_events(before, board.throttled())
+                if events:
+                    print(f"run {run} {lib}: {', '.join(events)}, marked", flush=True)
+                rows.append(
+                    {"run": run, "lib": lib, "size": p.size, "temp": temp}
+                    | {"waited": waited, "throttled": events, "m": m}
+                )
+                if args.json:
+                    Path(args.json).write_text(
+                        json.dumps({"panel": p.size, "rows": rows}, indent=1)
+                    )
     glass_table(rows, power)
+    print()
+    glass_summary(rows, power)
 
 
 def main():
@@ -514,6 +631,22 @@ def main():
         "--window", type=float, default=4.0, help="seconds of each CPU window"
     )
     ap.add_argument("--power-window", type=float, default=2.0)
+    ap.add_argument(
+        "--repeats", type=int, default=2, help="runs of each library on the glass"
+    )
+    ap.add_argument(
+        "--cool",
+        type=float,
+        metavar="C",
+        help="SoC temperature to wait for before each run on the glass",
+    )
+    ap.add_argument(
+        "--cool-wait",
+        type=float,
+        default=600.0,
+        metavar="S",
+        help="seconds to wait for --cool before giving up",
+    )
     ap.add_argument("--raw", help="write each library's frames and transfers here")
     ap.add_argument(
         "--perpixel", action="store_true", help="the per-pixel programs, perpixel.py"

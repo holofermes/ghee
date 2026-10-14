@@ -8,11 +8,16 @@ lead up to that one with less than a millisecond between each.
 """
 
 import bisect
+import contextlib
+import fcntl
+import os
 import re
 import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
+
+from fbdev import FBIOBLANK
 
 TRACE = Path("/sys/kernel/tracing")
 DATA = 64
@@ -40,6 +45,24 @@ def panel(card):
     return SimpleNamespace(
         card=str(card), fb=f"/dev/{fbs[0].name}", w=w, h=h, size=f"{w}x{h}", bus=bus
     )
+
+
+def blank(fb):
+    """Power the panel down through its fbdev, FB_BLANK_POWERDOWN."""
+    fd = os.open(fb, os.O_WRONLY)
+    try:
+        fcntl.ioctl(fd, FBIOBLANK, 4)
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def dark(fb):
+    """The panel blanked on leaving the block, however it is left."""
+    try:
+        yield
+    finally:
+        blank(fb)
 
 
 def tracefs(path, value=None):

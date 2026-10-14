@@ -173,10 +173,7 @@ pub const EXAMPLES: [(&str, &[u8]); 43] = [
         "neon-sign.glsl",
         include_bytes!("../../ghee/examples/neon-sign.glsl"),
     ),
-    (
-        "neon.glsl",
-        include_bytes!("../../ghee/examples/neon.glsl"),
-    ),
+    ("neon.glsl", include_bytes!("../../ghee/examples/neon.glsl")),
     (
         "neon.scene.json",
         include_bytes!("../../ghee/examples/neon.scene.json"),

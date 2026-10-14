@@ -386,8 +386,8 @@ impl Handle {
 
     /// The width and height in pixels of the block that `words` lay out in,
     /// as a drawing's text lays them out: at `font_size`, or at the size
-    /// that fits the screen when None, in `font_family`, the built-in font
-    /// when None.
+    /// that fits the screen when None, in `font_family`, DejaVu Sans when
+    /// None.
     #[pyo3(signature = (words, font_size=None, font_family=None))]
     fn measure(
         &mut self,

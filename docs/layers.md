@@ -67,9 +67,9 @@ A text layer takes these keys on top of every layer's:
 | --- | --- | --- |
 | `text` | the words | required |
 | `font_size` | pixels per em | the largest size that fits |
-| `font_family` | a font asset's name, a `.ttf` or `.otf` file, or `pixel` | DejaVu Sans, built in |
+| `font_family` | a font asset's name, a `.ttf` or `.otf` file, `DejaVu Sans` or `Pixel Operator 8` | `DejaVu Sans` |
 | `text_align` | `left`, `center` or `right` | `left` |
-| `render` | `auto`, `hinted`, `mono`, `mtsdf` or `slug`, as [Render](#render) describes | `auto`, `slug` in `pixel` |
+| `render` | `auto`, `hinted`, `mono`, `mtsdf` or `slug`, as [Render](#render) describes | `auto`, `slug` in `Pixel Operator 8` |
 
 The words lay out into a block, as wide as the longest line, with one line
 height for each line, and `text_align` puts each line within the block. A
@@ -241,9 +241,9 @@ Pillow lights on a 1-bit image, which luma.oled shows on such a panel:
 FreeType hints each glyph for one bit and draws it fully on or off, so every
 stroke keeps its pixels at any size. Under `auto` the panel cuts FreeType's
 grey letters at 128, and a thin stroke that falls across two pixels can lose
-both. `font_family: "pixel"` lights the font's own pixels at 8 pixels per em
-under its default render. This status line draws as luma.oled draws it on a
-128x32 SSD1306:
+both. `font_family: "Pixel Operator 8"` lights the font's own pixels at 8
+pixels per em under its default render. This status line draws as luma.oled
+draws it on a 128x32 SSD1306:
 
 ```json
 { "name": "cpu", "text": "cpu 42% ping 12ms", "font_size": 10, "x": 1, "y": 1,
@@ -392,18 +392,18 @@ shader that needs exact centres, like the one above, samples at
 ## Fonts and emoji
 
 A font is a TrueType or OpenType font with outlines. A text layer with no
-`font_family` draws from the built-in font: DejaVu Sans, cut to ASCII,
-Latin-1, the common punctuation, the euro sign and the trade mark sign, with
-its own hinting.
+`font_family`, or with `font_family: "DejaVu Sans"`, draws from DejaVu Sans,
+cut to ASCII, Latin-1, the common punctuation, the euro sign and the trade
+mark sign, with its own hinting.
 `font_family` takes a `.ttf` or `.otf` file, which resolves as an asset file
 does, or the name of a font asset, which several layers can share.
 
-`font_family: "pixel"` draws from Pixel Operator 8, a pixel font that ghee
-carries, drawn on a grid of 8 px to the em. Its layer takes `render` `slug`
-unless it names one, a size that fits rounds down to a whole multiple of 8
-px, 8 at the least, and the block, each pen and each baseline land on whole
-pixels, so at 8 px and its multiples every pixel is fully on or off. A
-`font_size` stays as given. A font asset named `pixel` stays the scene's own.
+`font_family: "Pixel Operator 8"` draws from Pixel Operator 8, a pixel font
+that ghee carries, drawn on a grid of 8 px to the em. Its layer takes `render`
+`slug` unless it names one, a size that fits rounds down to a whole multiple
+of 8 px, 8 at the least, and the block, each pen and each baseline land on
+whole pixels, so at 8 px and its multiples every pixel is fully on or off. A
+`font_size` stays as given.
 
 Emoji fall back to Noto Color Emoji. ghee looks for `NotoColorEmoji.ttf`
 beside the scene, then in each directory on `$GHEE_ASSETS`, then in

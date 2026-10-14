@@ -172,8 +172,8 @@ class Layer:
     largest size that fits its room. Its `color` takes a gradient too,
     {"from": ..., "to": ..., "angle": degrees}, with CSS's angle.
     `font_family` is a font file (.ttf or .otf), the name of a font Asset,
-    or "pixel" for the Pixel Operator 8 that ghee carries, and None draws
-    from the DejaVu Sans Latin that ghee carries.
+    or "DejaVu Sans" or "Pixel Operator 8", the two fonts that ghee carries,
+    and None draws from DejaVu Sans.
     `text_align` is "left", "center" or "right", and `render` is "auto",
     "hinted", "mono", "mtsdf" or "slug".
 
@@ -482,7 +482,7 @@ def measure(
     """The width and height in pixels of the block that `words` lay out in,
     as a text of the scene that run() runs lays them out on its last pass:
     at `font_size`, or at the size that fits the pass when None, in
-    `font_family`, the built-in font when None.
+    `font_family`, DejaVu Sans when None.
 
     Raises RuntimeError outside run(), and ValueError for a font that the
     scene cannot give a text.

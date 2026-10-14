@@ -16,7 +16,7 @@
       "layers": [
         {"name": "picture", "image": "stamp", "y": 14, "width": 96},
         {"name": "title", "text": "strawberry", "y": 116, "font_size": 44, "color": {"from": "#f3747d", "to": "#feb0b1", "angle": 180}, "text_stroke": {"width": 0.07, "color": "#46324e"}, "text_shadow": {"x": 0.05, "y": 0.07, "blur": 0.08, "color": "#46324e", "strength": 0.6}},
-        {"name": "caption", "text": "fresh this morning", "y": 190, "font_size": 16, "font_family": "pixel", "color": "#46324e", "wave": {"height": 0.15, "speed": 0.8}, "text_stroke": {"width": 0.2, "color": "#fff1e8"}}
+        {"name": "caption", "text": "fresh this morning", "y": 190, "font_size": 16, "font_family": "Pixel Operator 8", "color": "#46324e", "wave": {"height": 0.15, "speed": 0.8}, "text_stroke": {"width": 0.2, "color": "#fff1e8"}}
       ]
     }
   ]

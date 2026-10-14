@@ -154,19 +154,21 @@ fn needs_ink(ch: char) -> bool {
 /// A font file's bytes, or the reason they failed to load.
 pub type Font = std::result::Result<Arc<Vec<u8>>, String>;
 
-/// DejaVu Sans cut to Latin: the font of a text that names none.
-pub const BUILT_IN_FONT: &[u8] = include_bytes!("../ghee/examples/fonts/DejaVuSans-Latin.ttf");
+/// The font_family that names DEJAVU_FONT, the font of a text that names
+/// none.
+pub const DEJAVU: &str = "DejaVu Sans";
 
-/// The built-in font's bytes, one copy for every text that takes it.
-pub fn built_in_font() -> Font {
+/// DejaVu Sans cut to Latin.
+pub const DEJAVU_FONT: &[u8] = include_bytes!("../ghee/examples/fonts/DejaVuSans-Latin.ttf");
+
+/// DEJAVU_FONT's bytes, one copy for every text that takes it.
+pub fn dejavu_font() -> Font {
     static BYTES: std::sync::OnceLock<Arc<Vec<u8>>> = std::sync::OnceLock::new();
-    Ok(BYTES
-        .get_or_init(|| Arc::new(BUILT_IN_FONT.to_vec()))
-        .clone())
+    Ok(BYTES.get_or_init(|| Arc::new(DEJAVU_FONT.to_vec())).clone())
 }
 
-/// The font_family that names the built-in pixel font, PIXEL_FONT.
-pub const PIXEL: &str = "pixel";
+/// The font_family that names PIXEL_FONT.
+pub const PIXEL: &str = "Pixel Operator 8";
 
 /// Pixel Operator 8, drawn on a grid of PIXEL_EM pixels to the em, so at
 /// `font_size` 8 every edge falls on a pixel edge.
@@ -175,12 +177,12 @@ pub const PIXEL_FONT: &[u8] = include_bytes!("../ghee/examples/fonts/PixelOperat
 /// The pixels per em of PIXEL_FONT's grid.
 pub const PIXEL_EM: f64 = 8.0;
 
-/// The font of a text that names `family`, when ghee carries it: the
-/// built-in font for none, and the pixel font for PIXEL.
-pub fn built_in(family: Option<&str>) -> Option<Font> {
+/// The font of a text that names `family`, when ghee carries it:
+/// DEJAVU_FONT for none and for DEJAVU, and PIXEL_FONT for PIXEL.
+pub fn carried(family: Option<&str>) -> Option<Font> {
     static PIXEL_BYTES: std::sync::OnceLock<Arc<Vec<u8>>> = std::sync::OnceLock::new();
     match family {
-        None => Some(built_in_font()),
+        None | Some(DEJAVU) => Some(dejavu_font()),
         Some(PIXEL) => Some(Ok(PIXEL_BYTES
             .get_or_init(|| Arc::new(PIXEL_FONT.to_vec()))
             .clone())),

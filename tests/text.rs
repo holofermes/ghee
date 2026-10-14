@@ -36,11 +36,11 @@ const EMOJI: &str = "NotoColorEmoji-Smiles.ttf";
 /// table at 109 px/em, beside a strike at 20 px/em of flat green, and empty
 /// TrueType outlines.
 const EMOJI_SBIX: &str = "NotoColorEmoji-Smiles-sbix.ttf";
-/// DejaVu Sans cut to Latin, the built-in font, as ghee/examples/fonts holds
-/// it.
+/// DejaVu Sans cut to Latin, the font of a text that names none, as
+/// ghee/examples/fonts holds it.
 const LATIN: &str = "../../../ghee/examples/fonts/DejaVuSans-Latin.ttf";
-/// Pixel Operator 8, the built-in pixel font, as ghee/examples/fonts holds
-/// it.
+/// Pixel Operator 8, the pixel font that ghee carries, as ghee/examples/fonts
+/// holds it.
 const PIXEL: &str = "../../../ghee/examples/fonts/PixelOperator8.ttf";
 
 fn font(file: &str) -> Vec<u8> {
@@ -687,10 +687,10 @@ fn a_layer_built_before_its_font_loads_names_the_font() {
 }
 
 #[test]
-fn a_layer_with_no_font_family_lays_out_in_the_built_in_dejavu_sans_latin() {
+fn a_layer_with_no_font_family_lays_out_in_dejavu_sans_latin() {
     let doc = layers_scene(json!([{"name": "label", "text": "I"}]));
-    // The built-in font needs no directory, and a scene's fonts read from
-    // one leave it in place.
+    // DejaVu Sans needs no directory, and a scene's fonts read from one
+    // leave it in place.
     let bare = Scene::from_dict(&doc, None, None).unwrap();
     let _g = lock();
     for sc in [bare, loaded(&doc)] {
@@ -787,7 +787,7 @@ fn layers_round_trip_and_leave_their_defaults_out() {
          "karaoke": {"color": "TRANSPARENT"}},
         {"name": "i", "color": {"from": "lime", "to": "Transparent", "angle": 90.0},
          "text": "I"},
-        {"name": "j", "text": "I", "font_family": "pixel", "render": "mtsdf"},
+        {"name": "j", "text": "I", "font_family": "Pixel Operator 8", "render": "mtsdf"},
         {"name": "k", "text": "I", "render": "hinted"},
         {"name": "l", "text": "I", "render": "mono"},
         {"name": "m", "text": "I", "render": "mtsdf"},
@@ -815,7 +815,7 @@ fn layers_round_trip_and_leave_their_defaults_out() {
         "name": "d", "color": "White", "text": "I",
         "text_shadow": {"color": "black"}, "glow": {"color": "ORANGE"},
     }, {
-        "name": "e", "text": "I", "font_family": "pixel", "render": "hinted",
+        "name": "e", "text": "I", "font_family": "Pixel Operator 8", "render": "hinted",
     }]));
     let back = Scene::from_dict(&defaults, None, None).unwrap().to_dict();
     assert_eq!(
@@ -826,7 +826,7 @@ fn layers_round_trip_and_leave_their_defaults_out() {
                {"name": "c", "text": "I", "text_shadow": {}, "glow": {}, "text_stroke": {},
                 "karaoke": {}, "wave": {}, "scroll": {}, "blink": {}},
                {"name": "d", "text": "I", "text_shadow": {}, "glow": {}},
-               {"name": "e", "text": "I", "font_family": "pixel"}])
+               {"name": "e", "text": "I", "font_family": "Pixel Operator 8"}])
     );
 }
 
@@ -934,7 +934,7 @@ fn a_layer_declaration_names_what_it_lacks() {
         (
             t(json!({"font_family": "serif"})),
             "layer 't' font_family 'serif' is no asset of the scene, no .ttf or .otf file and \
-             not 'pixel', the built-in pixel font"
+             no font that ghee carries, 'DejaVu Sans' or 'Pixel Operator 8'"
                 .to_string(),
         ),
         (
@@ -1294,9 +1294,10 @@ fn a_measure_is_the_block_in_pixels_at_its_size_or_at_the_fit() {
         (Some("face"), SANS, "AV To\nghee", None, [160.0, 96.0]),
         (Some("face"), SANS, "Hi", None, [128.0, 32.0]),
         (None, LATIN, "ghee", None, [128.0, 32.0]),
-        (Some("pixel"), PIXEL, "42%", None, [128.0, 32.0]),
-        (Some("pixel"), PIXEL, "load 42%", None, [64.0, 16.0]),
-        (Some("pixel"), PIXEL, "42%", Some(8.0), [128.0, 32.0]),
+        (Some(text::DEJAVU), LATIN, "ghee", None, [128.0, 32.0]),
+        (Some(text::PIXEL), PIXEL, "42%", None, [128.0, 32.0]),
+        (Some(text::PIXEL), PIXEL, "load 42%", None, [64.0, 16.0]),
+        (Some(text::PIXEL), PIXEL, "42%", Some(8.0), [128.0, 32.0]),
     ];
     for (family, file, words, size, pass) in rows {
         let laid = lay(file, words, Align::Left);
@@ -1304,7 +1305,7 @@ fn a_measure_is_the_block_in_pixels_at_its_size_or_at_the_fit() {
             let m = 0.05 * pass[0].min(pass[1]);
             let fit = ((pass[0] - 2.0 * m) / laid.width).min((pass[1] - 2.0 * m) / laid.height);
             match family {
-                Some("pixel") => ((fit / 8.0).floor() * 8.0).max(8.0),
+                Some(text::PIXEL) => ((fit / 8.0).floor() * 8.0).max(8.0),
                 _ => fit,
             }
         });
@@ -1331,8 +1332,8 @@ fn a_measure_names_a_size_or_a_font_that_the_scene_cannot_take() {
         (
             None,
             Some("serif"),
-            "font_family 'serif' is no asset of the scene, no .ttf or .otf file and not \
-             'pixel', the built-in pixel font"
+            "font_family 'serif' is no asset of the scene, no .ttf or .otf file and no font \
+             that ghee carries, 'DejaVu Sans' or 'Pixel Operator 8'"
                 .to_string(),
         ),
         (
@@ -1625,7 +1626,7 @@ fn the_pixel_font_lights_its_own_pixels_on_whole_pixels() {
         };
         let top = [corner("x", w, laid.width), corner("y", h, laid.height)];
         let want = laid.on_pixels(top, px);
-        let mut layer = json!({"name": "t", "text": words, "font_family": "pixel",
+        let mut layer = json!({"name": "t", "text": words, "font_family": "Pixel Operator 8",
                                "text_align": align_name(align)});
         layer
             .as_object_mut()
@@ -2216,7 +2217,7 @@ fn words_that_fit_no_texture_draw_nothing_at_setup_keep_the_last_words_later_and
 /// Two slug layers in the pixel font, `a` over `b`, on a black pass.
 fn pixel_pair(a: &str, b: &str) -> Scene {
     let layer = |name: &str, words: &str, y: i32| {
-        json!({"name": name, "text": words, "font_family": "pixel", "font_size": 8,
+        json!({"name": name, "text": words, "font_family": "Pixel Operator 8", "font_size": 8,
                "x": 0, "y": y})
     };
     let doc = json!({"version": 1, "passes": [{"name": "main",
@@ -3932,7 +3933,7 @@ impl Drop for EmojiDir {
     }
 }
 
-/// A scene of one red text layer `label` in the built-in font, which lacks
+/// A scene of one red text layer `label` in DejaVu Sans, which lacks
 /// every emoji, of `words` placed by `fit` over a black pass, as placed()
 /// places a layer, with `keys` merged in.
 fn fallback_scene(words: &str, fit: Fit, keys: Value) -> Value {
@@ -3945,7 +3946,7 @@ fn fallback_scene(words: &str, fit: Fit, keys: Value) -> Value {
     json!({"version": 1, "passes": [{"name": "main", "fragment": BLACK, "layers": [l]}]})
 }
 
-/// The layout of `words` in the built-in font, then EMOJI.
+/// The layout of `words` in DejaVu Sans, then EMOJI.
 fn fallen_back(words: &str) -> text::Built {
     let fonts = vec![Ok(Arc::new(font(LATIN))), Ok(Arc::new(font(EMOJI)))];
     text::build(&fonts, words, Align::Left).built.unwrap()
@@ -4104,7 +4105,7 @@ fn pillow_png(file: &str) -> (usize, Vec<u8>) {
     (info.width as usize, buf)
 }
 
-/// One black pass of a text layer in the built-in font: the words of
+/// One black pass of a text layer in DejaVu Sans: the words of
 /// tools/fixtures/hinted/pillow.py at `size` px at (1, `y`), and `keys` on
 /// top.
 fn hinted_scene(size: f64, y: f64, keys: Value) -> Scene {
@@ -4119,7 +4120,7 @@ fn hinted_scene(size: f64, y: f64, keys: Value) -> Scene {
         "layers": [layer]}]}))
 }
 
-/// A hinted layer of the built-in font at (x, y) lights the pixels that
+/// A hinted layer of DejaVu Sans at (x, y) lights the pixels that
 /// Pillow lights with the same font at the same (x, y) and its default
 /// anchor: FreeType's grey coverage under `hinted`, its 1-bit render under
 /// `mono`, each glyph at Pillow's pen and on its baseline.

@@ -519,7 +519,7 @@ def test_a_layer_draws_its_words_in_its_color(monkeypatch):
 
 
 def test_a_layer_field_reaches_the_engine_live():
-    # The built-in font draws the layer's words, red over black.
+    # DejaVu Sans draws the layer's words, red over black.
     words = {
         "version": 1,
         "passes": [
@@ -572,7 +572,7 @@ def test_a_shape_field_reaches_the_engine_live():
 
 
 def test_a_handle_sets_a_layer_field_by_attribute_or_by_key():
-    # The built-in font draws the layer's words, red over black, with an
+    # DejaVu Sans draws the layer's words, red over black, with an
     # orange glow.
     words = {
         "version": 1,

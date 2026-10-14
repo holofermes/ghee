@@ -31,7 +31,13 @@ while True:
     load = os.getloadavg()[0] / os.cpu_count()
     with screen.draw() as d:
         d.text(time.strftime("%H:%M"), x=0, y=0, font_size=16)
-        d.text(f"load {load:.0%}", x=0, y=20, font_size=8, font_family="pixel")
+        d.text(
+            f"load {load:.0%}",
+            x=0,
+            y=20,
+            font_size=8,
+            font_family="Pixel Operator 8",
+        )
         d.rect(
             x=64,
             y=20,

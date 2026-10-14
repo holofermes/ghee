@@ -696,7 +696,7 @@ fn a_look_that_the_scene_refuses_is_refused_whole_and_changes_nothing() {
         (
             json!({"name": "title", "text": "Hi", "font_family": "serif"}),
             "layer 'title' font_family 'serif' is no asset of the scene, no .ttf or .otf file \
-             and not 'pixel', the built-in pixel font",
+             and no font that ghee carries, 'DejaVu Sans' or 'Pixel Operator 8'",
         ),
     ];
     let (_g, mut r) = gpu(160, 96);

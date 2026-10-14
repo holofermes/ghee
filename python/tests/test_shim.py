@@ -391,8 +391,11 @@ def test_a_layer_takes_the_scene_json_keys():
 
 def test_a_layer_leaves_render_to_ghee_unless_it_names_one():
     shim = load()
-    assert "render" not in shim.Layer("t", text="hi", font_family="pixel").to_dict()
-    named = shim.Layer("t", text="hi", font_family="pixel", render="mtsdf")
+    assert (
+        "render"
+        not in shim.Layer("t", text="hi", font_family="Pixel Operator 8").to_dict()
+    )
+    named = shim.Layer("t", text="hi", font_family="Pixel Operator 8", render="mtsdf")
     assert named.to_dict()["render"] == "mtsdf"
 
 

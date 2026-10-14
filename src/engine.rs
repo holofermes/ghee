@@ -3036,7 +3036,7 @@ impl Renderer {
 
     /// The size in pixels of the block that `words` lay out in, as a text
     /// layer of pass `pass` would lay them out in its font `font_family`,
-    /// the built-in font when None: at `font_size` pixels per em, or at the
+    /// DejaVu Sans when None: at `font_size` pixels per em, or at the
     /// size that fits the block to the pass, centred.
     ///
     /// A font that the scene cannot give the layer fails with a Refused
@@ -7453,7 +7453,8 @@ mod tests {
                     "params": {"gain": {"type": "float", "value": 1.0},
                                "mode": {"type": "string", "value": "a"}},
                     "fragment": "void main(){ gl_FragColor = vec4(vec3(gain * speed), 1.0); }",
-                    "layers": [{"name": "title", "text": "hi", "font_family": "pixel"}]}]}),
+                    "layers": [{"name": "title", "text": "hi",
+                                "font_family": "Pixel Operator 8"}]}]}),
             None,
             None,
         )
@@ -9154,7 +9155,7 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn slug_words_of_glyphs_that_the_renderer_holds_read_no_outline_and_upload_nothing() {
-        let layer = json!({"name": "t", "text": "0123456789", "font_family": "pixel",
+        let layer = json!({"name": "t", "text": "0123456789", "font_family": "Pixel Operator 8",
                            "render": "slug", "font_size": 8});
         let sc = scene_of(json!([{"name": "main", "fragment": FLAT, "layers": [layer]}]));
         let (_g, mut r) = gpu();
@@ -9180,7 +9181,7 @@ mod tests {
         // the scene built with that look: words of as many glyphs, none,
         // none again, more, the same words built again at another size.
         let text = |words: &str, px: i32| {
-            json!({"name": "t", "text": words, "font_family": "pixel",
+            json!({"name": "t", "text": words, "font_family": "Pixel Operator 8",
                    "font_size": px})
         };
         let scene =
@@ -9361,7 +9362,7 @@ mod tests {
 
     /// Slug words in the pixel font at `x`, `y` and `px` pixels per em.
     fn words(name: &str, words: &str, x: f64, y: f64, px: f64) -> Value {
-        json!({"name": name, "text": words, "font_family": "pixel", "render": "slug",
+        json!({"name": name, "text": words, "font_family": "Pixel Operator 8", "render": "slug",
                "font_size": px, "x": x, "y": y})
     }
 
@@ -9390,10 +9391,10 @@ mod tests {
             words("t1", "Ab", 10.0, 4.0, 8.0),
             json!({"name": "b", "shape": "line", "points": [[4, 8], [40, 20], [52, 6]],
                    "stroke_width": 2, "color": "lime"}),
-            json!({"name": "t2", "text": "cd", "font_family": "pixel", "render": "slug",
+            json!({"name": "t2", "text": "cd", "font_family": "Pixel Operator 8", "render": "slug",
                    "font_size": 16, "x": 20, "y": 6, "color": "orange", "opacity": 0.6}),
             rect("c", [30.0, 0.0, 20.0, 20.0], "blue"),
-            json!({"name": "t3", "text": "fit", "font_family": "pixel", "render": "slug",
+            json!({"name": "t3", "text": "fit", "font_family": "Pixel Operator 8", "render": "slug",
                    "x": 96}),
             t4,
         ]
@@ -9431,7 +9432,7 @@ mod tests {
         t2_blink["blink"] = json!({});
         let mut t2_small = base[3].clone();
         t2_small["font_size"] = json!(8);
-        let t2_other = json!({"name": "t2", "text": "xy", "font_family": "pixel",
+        let t2_other = json!({"name": "t2", "text": "xy", "font_family": "Pixel Operator 8",
                               "render": "slug", "font_size": 16, "x": 22, "y": 8,
                               "color": "lime"});
         let mut wave = words("w", "w", 24.0, 30.0, 8.0);
@@ -9711,8 +9712,8 @@ mod tests {
         for (k, l) in together.iter().enumerate() {
             apart.push(l.clone());
             apart.push(
-                json!({"name": format!("x{k}"), "text": "", "font_family": "pixel", "render": "slug",
-                              "blink": {}}),
+                json!({"name": format!("x{k}"), "text": "", "font_family": "Pixel Operator 8",
+                       "render": "slug", "blink": {}}),
             );
         }
         let (_g, mut r) = gpu_at(128, 64);
@@ -9801,8 +9802,8 @@ mod tests {
             for (k, l) in layers.iter().enumerate() {
                 apart.push(l.clone());
                 apart.push(
-                    json!({"name": format!("x{k}"), "text": "", "font_family": "pixel", "render": "slug",
-                                  "blink": {}}),
+                    json!({"name": format!("x{k}"), "text": "", "font_family": "Pixel Operator 8",
+                       "render": "slug", "blink": {}}),
                 );
             }
             assert!(
@@ -9877,8 +9878,8 @@ mod tests {
         for (k, l) in layers.iter().enumerate() {
             apart.push(l.clone());
             apart.push(
-                json!({"name": format!("x{k}"), "text": "", "font_family": "pixel", "render": "slug",
-                              "blink": {}}),
+                json!({"name": format!("x{k}"), "text": "", "font_family": "Pixel Operator 8",
+                       "render": "slug", "blink": {}}),
             );
         }
         assert!(worst(&run, &first_frames(&mut r, &doc(&apart), 1)) <= 1);
@@ -9958,7 +9959,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_layer_builds_its_colour_drawing_at_the_first_words_that_hold_a_colour_glyph() {
         // The fixture beside the scene, as a colour font asset, and as the
-        // emoji font that the built-in font falls back to.
+        // emoji font that DejaVu Sans falls back to.
         let dir = crate::testing::TempDir::new("engine-colour");
         let fixture = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -10005,7 +10006,7 @@ mod tests {
                 .any(|n| n == "ghee_label_emoji");
             (read, held, shown)
         };
-        // A layer in the colour font, and one in the built-in font.
+        // A layer in the colour font, and one in DejaVu Sans.
         for font in [Some("emoji"), None] {
             // Words with no colour glyph build no colour drawing.
             assert_eq!(r.setup(&load(font, " ")).unwrap(), "");

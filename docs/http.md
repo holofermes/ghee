@@ -88,9 +88,9 @@ error.
   each kind of layer, `text`, `image`, `rect` and `line`. `empty` holds what
   a field left out takes, for each kind: `centre`, `fit`, `auto`, `pass` or
   a number. `shapes` maps each shape, `rect` and `line`, to its own keys,
-  past `shape` and the keys that every layer takes. `fonts` maps each
-  built-in font's name to the `font_family` that picks it, null for the
-  default font. `render` gives the render of a text layer that names none:
+  past `shape` and the keys that every layer takes. `fonts` maps the name of
+  each font that ghee carries to the `font_family` that picks it, null for
+  the default font. `render` gives the render of a text layer that names none:
   `fonts` maps a `font_family` to its render, and every other font takes
   `default`.
 - `GET /filters`: the filter registry, `{name: filter def}`

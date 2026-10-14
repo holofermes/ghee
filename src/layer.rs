@@ -904,8 +904,9 @@ pub struct TextLayer {
     pub text: String,
     /// The pixels per em. None fits the block to its room.
     pub font_size: Option<f64>,
-    /// A font asset of the scene, or a .ttf or .otf file resolved as an
-    /// asset's file is. None draws from the built-in font.
+    /// A font asset of the scene, a .ttf or .otf file resolved as an
+    /// asset's file is, or the name of a font that ghee carries. None draws
+    /// from DejaVu Sans.
     pub font_family: Option<String>,
     pub text_align: Align,
     pub render: Render,
@@ -913,8 +914,8 @@ pub struct TextLayer {
     pub effects: Vec<Effect>,
     /// The bytes of the layer's fonts, or why they failed to load, in the
     /// order that a character looks for its glyph: the font of
-    /// `font_family`, or the built-in font. load_assets fills them, and
-    /// from_dict for the built-in font.
+    /// `font_family`, or DejaVu Sans. load_assets fills them, and from_dict
+    /// for a font that ghee carries.
     pub data: Option<Vec<Font>>,
     /// The font of the emoji that the layer's fonts lack, as load_assets
     /// found it. Words with a character that the layer's fonts lack, or one
@@ -1014,7 +1015,7 @@ impl TextLayer {
             blend: e.blend,
             text,
             font_size,
-            data: text::built_in(font_family.as_deref()).map(|f| vec![f]),
+            data: text::carried(font_family.as_deref()).map(|f| vec![f]),
             emoji: None,
             font_family,
             text_align,
@@ -1226,12 +1227,12 @@ impl TextLayer {
     }
 
     /// The font at index `i` of the fonts that a layout of the layer draws
-    /// from, in an error: "font 'sans'", "the built-in font", or "Noto Color
-    /// Emoji".
+    /// from, in an error: "font 'sans'", "font 'DejaVu Sans'", or "Noto
+    /// Color Emoji".
     pub fn font_name(&self, i: usize) -> String {
         match (i, &self.font_family) {
             (0, Some(f)) => format!("font '{f}'"),
-            (0, None) => "the built-in font".to_string(),
+            (0, None) => format!("font '{}'", text::DEJAVU),
             _ => emoji::NAME.to_string(),
         }
     }
@@ -2049,7 +2050,7 @@ fn named(glsl: &str) -> String {
 /// uniform that the text's own program reads is a local of the same name,
 /// which the caller declares, and so are uv and ghee_v4.
 pub(crate) fn run_glyph(fs: &str, grid: &str, units: &str, upem: &str) -> (String, String) {
-    let pixel = text::built_in(Some(text::PIXEL)).expect("ghee carries the pixel font");
+    let pixel = text::carried(Some(text::PIXEL)).expect("ghee carries the pixel font");
     let vertex = [
         format!("    float ghee_fs = {fs};"),
         "    if (ghee_fs <= 0.0) {".to_string(),
@@ -2600,9 +2601,9 @@ impl Live {
 /// each effect in order, with their defaults and whether a /set changes them
 /// with no rebuild, the same for the border of a rect or a circle, the live
 /// fields of each kind of layer, what an empty field of each kind takes, the
-/// keys of each shape, the built-in fonts, each name the console shows with
-/// the `font_family` that it writes, the render that a text layer takes in
-/// each font, and the effects that each render draws.
+/// keys of each shape, the fonts that ghee carries, each name the console
+/// shows with the `font_family` that it writes, the render that a text layer
+/// takes in each font, and the effects that each render draws.
 pub fn format() -> Value {
     let mut effects = Map::new();
     for kind in Kind::ALL {
@@ -2688,7 +2689,7 @@ pub fn format() -> Value {
     let shapes = serde_json::json!({"rect": own(&shape::RECT_KEYS), "line": own(&shape::LINE_KEYS),
                                     "circle": own(&shape::CIRCLE_KEYS)});
     let mut fonts = Map::new();
-    fonts.insert("built-in".to_string(), Value::Null);
+    fonts.insert(text::DEJAVU.to_string(), Value::Null);
     fonts.insert(text::PIXEL.to_string(), Value::from(text::PIXEL));
     let plain = Render::default_for(None);
     let mut renders = Map::new();
@@ -3487,11 +3488,19 @@ mod tests {
             (json!({"scroll": off}), [40.0, 1.0], 9.5),
             // The pixel font rounds a fit down to a whole multiple of 8 px,
             // 8 at the least, and takes a font_size as given.
-            (json!({"font_family": "pixel"}), [4.0, 1.0], 88.0),
-            (json!({"font_family": "pixel", "y": 150}), [4.0, 1.0], 40.0),
-            (json!({"font_family": "pixel", "x": 500}), [4.0, 1.0], 8.0),
+            (json!({"font_family": "Pixel Operator 8"}), [4.0, 1.0], 88.0),
             (
-                json!({"font_family": "pixel", "font_size": 30}),
+                json!({"font_family": "Pixel Operator 8", "y": 150}),
+                [4.0, 1.0],
+                40.0,
+            ),
+            (
+                json!({"font_family": "Pixel Operator 8", "x": 500}),
+                [4.0, 1.0],
+                8.0,
+            ),
+            (
+                json!({"font_family": "Pixel Operator 8", "font_size": 30}),
                 [4.0, 1.0],
                 30.0,
             ),
@@ -3559,7 +3568,7 @@ mod tests {
         }
     }
 
-    /// A text layer of `words` in the fixture font `own`, the built-in font
+    /// A text layer of `words` in the fixture font `own`, DejaVu Sans
     /// for None, that falls back to the fixture `emoji` copied into its own
     /// directory of `dir` as the emoji font's file.
     fn falling_back(

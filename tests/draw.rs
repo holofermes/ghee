@@ -87,7 +87,7 @@ fn scene() -> Value {
         "passes": [{"name": "main",
                     "fragment": "void main(){ gl_FragColor = vec4(0.1, 0.1, 0.3, 1.0); }",
                     "layers": [
-            {"name": "clock", "text": "12:00", "font_family": "pixel", "font_size": 8,
+            {"name": "clock", "text": "12:00", "font_family": "Pixel Operator 8", "font_size": 8,
              "x": 2, "y": 2},
             {"name": "title", "text": "Hi", "font_family": "sans", "font_size": 18, "x": 4,
              "y": 14, "karaoke": {"sung": 1}, "glow": {"strength": 0.5}},
@@ -201,7 +201,7 @@ fn a_call_gives_its_layer_the_look_that_update_layer_gives_its_look_written_out(
     let clock = |more: &[(&str, Arg)]| {
         let mut given = vec![
             ("text", s("12:00")),
-            ("font_family", s("pixel")),
+            ("font_family", s("Pixel Operator 8")),
             ("font_size", n(8.0)),
             ("x", n(2.0)),
             ("y", n(2.0)),

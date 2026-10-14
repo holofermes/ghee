@@ -423,10 +423,12 @@ def test_a_frame_hands_draw_the_calls_that_changed_alone_with_their_values():
     values in the order of its keywords."""
 
     def draw(d, i):
-        d.text(f"{min(i, 1)}", x=0, y=0, font_size=8, font_family="pixel")
+        d.text(f"{min(i, 1)}", x=0, y=0, font_size=8, font_family="Pixel Operator 8")
         d.rect(x=4, width=8, height=2 + (i >= 2))
 
-    text = values(TEXT_KEYS, text="1", x=0, y=0, font_size=8, font_family="pixel")
+    text = values(
+        TEXT_KEYS, text="1", x=0, y=0, font_size=8, font_family="Pixel Operator 8"
+    )
     rect = values(RECT_KEYS, x=4, width=8, height=3)
     assert frames(Typed(), draw, 4)[1:] == [
         [("draw", [(0, "text", text)]), FRAME],
@@ -743,7 +745,7 @@ def busy(d, i):
     again at frame 4."""
     c = COLOURS[i % len(COLOURS)]
     d.rect(color="navy")
-    d.text(f"{i % 10}", x=1, y=1, font_size=8, font_family="pixel", color=c)
+    d.text(f"{i % 10}", x=1, y=1, font_size=8, font_family="Pixel Operator 8", color=c)
     d.text(
         "AV",
         font_size=12 if i < 4 else 14,

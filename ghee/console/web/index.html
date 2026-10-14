@@ -1078,7 +1078,7 @@ async function reloadScene(){
 let FILTERS = {};   // name -> filter def (fragment + params), from /filters
 // The layer format, from GET /format: each effect's fields with their
 // defaults in draw order, the live fields of each kind of layer, what an
-// empty field takes, and the built-in fonts.
+// empty field takes, and the fonts that ghee carries.
 let FORMAT = null, FX = {};
 async function boot(){
   FORMAT = await jget("/format");
@@ -2181,8 +2181,9 @@ async function renameLayer(p, d){
 // A text layer that names no render takes its font's render, from GET /format.
 const defaultRender = d => has(FORMAT.render.fonts, d.font_family) ? FORMAT.render.fonts[d.font_family] : FORMAT.render.default;
 const renderOf = d => d.render || defaultRender(d);
-// The font_family dropdown: ghee's built-in fonts, then the scene's font
-// assets. A built-in font writes its value from GET /format, null for none.
+// The font_family dropdown: the fonts that ghee carries, then the scene's
+// font assets. A font that ghee carries writes its value from GET /format,
+// null for none.
 const fontAssets = () => Object.entries(work.assets || {})
   .filter(([, a]) => a && typeof a.file === "string" && /\.(ttf|otf)$/i.test(a.file)).map(([n]) => n);
 const fontNames = () => [...Object.keys(FORMAT.fonts || {}), ...fontAssets()];

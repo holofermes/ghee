@@ -38,7 +38,7 @@ def show(tick):
             x=0,
             y=20,
             font_size=8,
-            font_family="pixel",
+            font_family="Pixel Operator 8",
             color=PHOSPHOR,
         )
         d.rect(

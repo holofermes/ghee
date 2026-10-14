@@ -1,5 +1,6 @@
-"""Writes the PNGs that tests/text.rs holds a hinted layer's frame to: the
-built-in font's words as Pillow draws them, one image per size and mode.
+"""Writes the PNGs that tests/text.rs holds a hinted layer's frame to: words
+in DejaVu Sans, the font of a text that names none, as Pillow draws them,
+one image per size and mode.
 
 usage: uv run --no-project --with pillow==12.3.0 python -I pillow.py
 

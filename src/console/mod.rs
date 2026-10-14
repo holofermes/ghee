@@ -79,7 +79,7 @@ pub const EXAMPLES: [(&str, &[u8]); 22] = [
         "feedback.scene.json",
         include_bytes!("../../ghee/examples/feedback.scene.json"),
     ),
-    ("fonts/DejaVuSans-Latin.ttf", crate::text::BUILT_IN_FONT),
+    ("fonts/DejaVuSans-Latin.ttf", crate::text::DEJAVU_FONT),
     (
         "fonts/LICENSE-DejaVu.txt",
         include_bytes!("../../ghee/examples/fonts/LICENSE-DejaVu.txt"),

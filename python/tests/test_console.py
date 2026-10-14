@@ -316,7 +316,7 @@ def test_a_set_reaches_a_vec_or_color_uniform():
 
 
 def test_a_layer_set_lands_on_the_next_frame():
-    # The built-in font draws the layer's words, red over black.
+    # DejaVu Sans draws the layer's words, red over black.
     words = {
         "version": 1,
         "passes": [

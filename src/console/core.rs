@@ -1905,7 +1905,10 @@ mod tests {
             got.sort_unstable();
             assert_eq!(got, want, "{kind}");
         }
-        assert_eq!(f["fonts"], json!({"built-in": null, "pixel": "pixel"}));
+        assert_eq!(
+            f["fonts"],
+            json!({"DejaVu Sans": null, "Pixel Operator 8": "Pixel Operator 8"})
+        );
     }
 
     /// A rect's border, the keys of each shape, the render of a text layer
@@ -1937,7 +1940,7 @@ mod tests {
         ]);
         assert_eq!(
             f["render"],
-            json!({"default": "auto", "fonts": {"pixel": "hinted"},
+            json!({"default": "auto", "fonts": {"Pixel Operator 8": "hinted"},
                    "effects": {"auto": every, "hinted": every, "mono": every, "mtsdf": every,
                                "slug": ["karaoke", "wave", "scroll", "blink"]}})
         );
@@ -2676,7 +2679,7 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o644);
-        assert_eq!(upload(&api, "sans.ttf", crate::text::BUILT_IN_FONT).0, 200);
+        assert_eq!(upload(&api, "sans.ttf", crate::text::DEJAVU_FONT).0, 200);
         assert_eq!(left_in(&d), ["pic-2.png", "pic.png", "sans.ttf"]);
     }
 

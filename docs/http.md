@@ -91,8 +91,8 @@ error.
   past `shape` and the keys that every layer takes. `fonts` maps the name of
   each font that ghee carries to the `font_family` that picks it, null for
   the default font. `render` gives the render of a text layer that names none:
-  `fonts` maps a `font_family` to its render, and every other font takes
-  `default`.
+  `fonts` maps a `font_family` to its render, a list of fonts takes the render
+  of its first font, and every other font takes `default`.
 - `GET /filters`: the filter registry, `{name: filter def}`
 - `GET /hwinfo`: the host's hardware, each fact as text: `model`, the board
   as the device tree names it, or the kernel's name and release on a host

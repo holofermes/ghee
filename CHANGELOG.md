@@ -382,6 +382,16 @@ A Rust host written for 0.4.0 needs these changes.
   the first words that hold one, live words too, with no new setup. An
   emoji of new words that finds the layer's atlas full takes the room of the
   emoji that no words on screen draw, the longest unused first.
+- Take a list of fonts in `font_family`, such as `["Pixel Operator 8",
+  "noto"]`, each a font that ghee carries, a font asset or a font file. Each
+  character draws from the first font of the list that holds it, then from
+  Noto Color Emoji, then as the first font's missing-glyph box. The first font
+  sets the line's height and baseline, and the layer's default `render` and
+  pixel grid. Every font draws at the layer's `font_size`, and a colour font
+  in the list draws its emoji in colour, inline with the letters. Python's
+  `font_family`, `h.measure()` and `ghee.measure` take a list too,
+  `Scene::measure` and `Renderer::measure` a slice of names, and the console
+  shows a list as one entry and keeps it.
 - Keep the scene running through a text problem, print it once as an error,
   which `--quiet` keeps, and show it in the console and in `/stats` as
   `text_errors`, a line for each problem that names its layer or its font.

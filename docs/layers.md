@@ -67,9 +67,9 @@ A text layer takes these keys on top of every layer's:
 | --- | --- | --- |
 | `text` | the words | required |
 | `font_size` | pixels per em | the largest size that fits |
-| `font_family` | a font asset's name, a `.ttf` or `.otf` file, `DejaVu Sans` or `Pixel Operator 8` | `DejaVu Sans` |
+| `font_family` | a font asset's name, a `.ttf` or `.otf` file, `DejaVu Sans` or `Pixel Operator 8`, or a list of them | `DejaVu Sans` |
 | `text_align` | `left`, `center` or `right` | `left` |
-| `render` | `auto`, `hinted`, `mono`, `mtsdf` or `slug`, as [Render](#render) describes | `auto`, `slug` in `Pixel Operator 8` |
+| `render` | `auto`, `hinted`, `mono`, `mtsdf` or `slug`, as [Render](#render) describes | `auto`, `hinted` in `Pixel Operator 8` |
 
 The words lay out into a block, as wide as the longest line, with one line
 height for each line, and `text_align` puts each line within the block. A
@@ -400,16 +400,40 @@ does, or the name of a font asset, which several layers can share.
 
 `font_family: "Pixel Operator 8"` draws from Pixel Operator 8, a pixel font
 that ghee carries, drawn on a grid of 8 px to the em. Its layer takes `render`
-`slug` unless it names one, a size that fits rounds down to a whole multiple
+`hinted` unless it names one, a size that fits rounds down to a whole multiple
 of 8 px, 8 at the least, and the block, each pen and each baseline land on
 whole pixels, so at 8 px and its multiples every pixel is fully on or off. A
 `font_size` stays as given.
 
+`font_family` also takes a list of fonts, each a name or a file as above, and
+each character draws from the first font in the list that holds it. The first
+font sets the line: its height and its baseline, and with Pixel Operator 8
+first, the pixel grid and the `hinted` render. Every font of the list draws at
+the layer's `font_size`, on the first font's baseline, and a colour font in
+the list draws its emoji in colour. This scene draws a lyric line in pixel
+letters, with its emoji inline from the font asset `noto`, Noto Color Emoji
+cut to the two emoji that the line draws:
+
+```json
+{
+  "version": 1,
+  "assets": { "noto": { "file": "NotoColorEmoji-karaoke.ttf" } },
+  "passes": [{
+    "name": "main",
+    "fragment": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+    "layers": [
+      { "name": "lyric", "text": "🎤 sing along ✨", "font_size": 16,
+        "font_family": ["Pixel Operator 8", "noto"] }
+    ]
+  }]
+}
+```
+
 Emoji fall back to Noto Color Emoji. ghee looks for `NotoColorEmoji.ttf`
 beside the scene, then in each directory on `$GHEE_ASSETS`, then in
 `/usr/share/fonts/truetype/noto/`, where `sudo apt install
-fonts-noto-color-emoji` puts it. An emoji that the layer's font lacks draws
-from the first file found, and with no file found, it draws the font's
+fonts-noto-color-emoji` puts it. An emoji that the layer's fonts lack draws
+from the first file found, and with no file found, it draws the first font's
 missing-glyph box. A character followed by U+FE0F, the emoji variation
 selector, draws its emoji even from a font that holds a plain glyph for it, so
 ❤️ draws in colour. ghee reads the emoji font once, when words first need it,

@@ -30,14 +30,21 @@
       "fragment": "void main() {\n  vec2 at = uv;\n  float water = step(horizon, uv.y);\n  float stroke = 1.0;\n  if (water > 0.5) {\n    float wave = noise(vec2(uv.x * 3.0, uv.y * 80.0 + print_time() * 2.0));\n    at = vec2(uv.x + (wave - 0.5) * 0.05, 2.0 * horizon - uv.y);\n    stroke = step(0.35 + 0.5 * (uv.y - horizon) / (1.0 - horizon), noise(vec2(uv.x * 10.0 + wave * 4.0, uv.y * 120.0)));\n  }\n  float aspect = iResolution.x / iResolution.y;\n  float moon = 1.0 - smoothstep(0.1, 0.105, length((at - vec2(0.7, 0.24)) * vec2(aspect, 1.0)));\n  vec3 city = skyline(at);\n  float lit = 0.0;\n  if (gl_FragCoord.x >= 0.0) lit = texture2D(iChannel0, 1.0 - abs(1.0 - mod(city.yz, 2.0))).g;\n  gl_FragColor = vec4(vec3(mix(moon, lit, step(0.5, city.x)) * stroke), 1.0);\n}\n"
     },
     {
+      "name": "press",
+      "scale": 0.125,
+      "sampling": "linear",
+      "fragment": "void main() {\n  float t = print_time();\n  vec2 p = uv * vec2(4.0, 3.0) + 0.3 * vec2(hash(vec2(t, 5.0)), hash(vec2(t, 6.0)));\n  gl_FragColor = vec4(noise(p), noise(p + 5.2), noise(p + 9.7), 1.0);\n}\n"
+    },
+    {
       "name": "main",
       "fragment": {"file": "passes3.glsl"},
-      "channels": [{"buffer": "pink_plate"}, {"buffer": "blue_plate"}, {"buffer": "yellow_plate"}],
+      "channels": [{"buffer": "pink_plate"}, {"buffer": "blue_plate"}, {"buffer": "yellow_plate"}, {"buffer": "press"}],
       "params": {
         "pink_shift": {"type": "vec2", "value": [1.0, -1.0], "min": -4.0, "max": 4.0, "step": 0.5},
         "blue_shift": {"type": "vec2", "value": [0.0, 0.0], "min": -4.0, "max": 4.0, "step": 0.5},
         "yellow_shift": {"type": "vec2", "value": [-1.0, 1.0], "min": -4.0, "max": 4.0, "step": 0.5},
         "jitter": {"type": "float", "value": 1.0, "min": 0.0, "max": 4.0, "step": 0.1},
+        "patchy": {"type": "float", "value": 0.4, "min": 0.0, "max": 1.0, "step": 0.01},
         "pink": {"type": "color", "value": "#ff48b0"},
         "blue": {"type": "color", "value": "#0078bf"},
         "yellow": {"type": "color", "value": "#ffe800"}
@@ -47,7 +54,7 @@
       "name": "grain",
       "visible": false,
       "channels": [{"buffer": "main"}],
-      "fragment": "void main() {\n  vec3 col = texture2D(iChannel0, uv).rgb;\n  vec2 p = floor(uv * iResolution.xy);\n  float fibre = smoothstep(0.55, 0.9, noise(vec2(uv.x * 380.0 + uv.y * 90.0, uv.y * 30.0 - uv.x * 14.0)));\n  fibre += smoothstep(0.6, 0.9, noise(vec2(uv.x * 26.0 - uv.y * 40.0, uv.y * 300.0 + uv.x * 70.0)));\n  float speck = smoothstep(0.93, 1.0, hash(p + floor(print_time() * rate) * 31.0));\n  col = mix(col, paper, speck * amount);\n  gl_FragColor = vec4(col * (1.0 - 0.1 * amount * fibre), 1.0);\n}\n",
+      "fragment": "void main() {\n  vec3 col = vec3(0.0);\n  if (gl_FragCoord.x >= 0.0) col = texture2D(iChannel0, uv).rgb;\n  vec2 p = floor(uv * iResolution.xy);\n  float fibre = smoothstep(0.55, 0.9, noise(vec2(uv.x * 380.0 + uv.y * 90.0, uv.y * 30.0 - uv.x * 14.0)));\n  fibre += smoothstep(0.6, 0.9, noise(vec2(uv.x * 26.0 - uv.y * 40.0, uv.y * 300.0 + uv.x * 70.0)));\n  float speck = smoothstep(0.93, 1.0, hash(p + floor(print_time() * rate) * 31.0));\n  col = mix(col, paper, speck * amount);\n  gl_FragColor = vec4(col * (1.0 - 0.1 * amount * fibre), 1.0);\n}\n",
       "params": {
         "amount": {"type": "float", "value": 0.6, "min": 0.0, "max": 1.0, "step": 0.01}
       }

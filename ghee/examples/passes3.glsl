@@ -17,6 +17,10 @@
 //   across the dot, and the dots along an edge print lopsided.
 // - `blue_plate` and `yellow_plate` draw the city, the birds, the moon and
 //   the water at the frame's size, and `main` prints the blue in lines.
+// - `press` draws how much ink the drum lays down at an eighth of the frame,
+//   new for each print, and `main` thins each ink where it is low. Read
+//   linear, its few pixels blend into the soft patches of a real print. Read
+//   nearest, they print as squares eight frame pixels wide.
 // - `main` lays the three inks over the paper, each moved by its own shift,
 //   and the pink and the yellow by `jitter` too, a new offset for every
 //   print, so the plates sit out of register the way a riso prints them.
@@ -46,14 +50,15 @@ void main() {
 
   float pink_ink = halftone(uv - (pink_shift + shake) * px, iChannelResolution[0].xy);
   float blue_tone = texture2D(iChannel1, uv - blue_shift * px).r;
+  vec3 press = texture2D(iChannel3, uv).rgb;
   float yellow_ink = 0.0;
   if (gl_FragCoord.x >= 0.0) yellow_ink = texture2D(iChannel2, uv - (yellow_shift + shake2) * px).r;
 
   float line = 0.1 + 0.8 * fract((gl_FragCoord.y - blue_shift.y) / 3.0);
   float blue_ink = smoothstep(line - 0.1, line + 0.1, blue_tone);
-  pink_ink *= 0.82 + 0.18 * noise(uv * vec2(9.0, 30.0));
-  blue_ink *= 0.85 + 0.15 * noise(uv * vec2(11.0, 35.0) + 7.0);
-  yellow_ink *= 0.88 + 0.12 * noise(uv * vec2(8.0, 25.0) + 3.0);
+  pink_ink *= 1.0 - patchy * press.r;
+  blue_ink *= 1.0 - patchy * press.g;
+  yellow_ink *= 1.0 - patchy * press.b;
 
   vec3 col = paper;
   col *= mix(vec3(1.0), pink, pink_ink);

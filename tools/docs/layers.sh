@@ -84,7 +84,7 @@ loop() {
 still hello 128x64
 still gradient 128x64
 still transparent-glow 128x64
-still blends 512x64
+for b in normal add multiply screen; do still "blend-$b" 128x48; done
 still text_shadow 128x64
 still glow 128x64
 still text_stroke 128x64

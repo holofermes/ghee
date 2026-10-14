@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "passes": [
+    {
+      "name": "main",
+      "fragment": "void main() { gl_FragColor = vec4(vec3(uv.x), 1.0); }",
+      "layers": [
+        {
+          "name": "box",
+          "shape": "rect",
+          "x": 16,
+          "y": 12,
+          "width": 96,
+          "height": 24,
+          "color": "orange",
+          "blend": "screen"
+        }
+      ]
+    }
+  ]
+}

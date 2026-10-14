@@ -416,13 +416,27 @@ def test_a_scene_takes_its_own_args_beside_the_host_flags(monkeypatch):
     assert opened["display"] == "kms"
 
 
-def test_a_wire_run_refuses_the_host_flags(monkeypatch):
-    """ghee owns the render under the wire, so the scene takes its args alone."""
-    shim, _, _ = host(monkeypatch, ["--display", "kms"])
+def test_a_wire_run_leaves_the_host_flags_alone(monkeypatch, capsys):
+    """ghee owns the render under the wire, so the scene takes its args alone,
+    and names each flag that it leaves."""
+    shim, _, _ = host(monkeypatch, ["--display", "kms", "--bins", "8"])
     monkeypatch.setenv(shim.WIRE, "1")
-    monkeypatch.setattr(sys, "stderr", io.StringIO())
-    with pytest.raises(SystemExit):
-        shim.args([shim.Arg("bins", "int", default=4)])
+    got = shim.args([shim.Arg("bins", "int", default=4)])
+    assert got.bins == 8
+    assert capsys.readouterr().err == "feeder.py: ignoring --display kms\n"
+
+
+def test_a_flag_that_no_scene_declares_is_named_and_the_run_goes_on(
+    monkeypatch, capsys
+):
+    shim, _, opened = host(
+        monkeypatch, ["--bisn", "32", "--display", "kms", "--frames", "1"]
+    )
+    got = shim.args([shim.Arg("bins", "int", default=4)])
+    assert got.bins == 4
+    assert capsys.readouterr().err == "feeder.py: ignoring --bisn 32\n"
+    shim.run(scene_of(shim))
+    assert opened["display"] == "kms"
 
 
 def test_a_feed_the_scene_never_declared_stops_before_the_render(monkeypatch):

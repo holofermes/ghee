@@ -752,10 +752,26 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
         help_ = s.help if d is None else f"{s.help} (default: {shown})".lstrip()
         p.add_argument(f"--{s.name}", default=d, help=help_, **_ARG_TYPES[s.type])
     if os.environ.get(WIRE):
-        return p.parse_args(argv)
+        return _known(p, argv)
     _host_flags(p)
-    _HOST = p.parse_args(argv)
+    _HOST = _known(p, argv)
     return _HOST
+
+
+def _known(p: argparse.ArgumentParser, argv: list[str]):
+    """`argv` parsed by `p`, with every flag that `p` lacks left out and named
+    on stderr, one line each with the values that follow it. `ghee serve`
+    hands every scene the same arguments, and each scene takes its own."""
+    got, rest = p.parse_known_args(argv)
+    flags: list[list[str]] = []
+    for token in rest:
+        if token.startswith("-") or not flags:
+            flags.append([token])
+        else:
+            flags[-1].append(token)
+    for flag in flags:
+        print(f"{p.prog}: ignoring {' '.join(flag)}", file=sys.stderr)
+    return got
 
 
 def _rotation(s: str) -> int:
@@ -1308,7 +1324,7 @@ def _host_args():
     """The host flags of a run that declared no args of its own."""
     p = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]), allow_abbrev=False)
     _host_flags(p)
-    return p.parse_args(sys.argv[1:])
+    return _known(p, sys.argv[1:])
 
 
 def _script_dir() -> str | None:

@@ -1,3 +1,5 @@
+import time
+
 import ghee
 
 
@@ -61,6 +63,7 @@ class Screen:
                 blink={"rate": 2},
                 visible=load > 0.9,
             )
+            self.sent = time.monotonic()
         if not self.panel:
             return self.h.pixels()
 

@@ -173,18 +173,22 @@ def carried(frames, ups, queue, end):
 
 
 def stats(xs):
+    if not xs:
+        return float("nan"), float("nan")
     xs = sorted(xs)
     return sum(xs) / len(xs), xs[int(len(xs) * 0.95)]
 
 
 def phase(frames, ups, queue, end):
     """Frames drawn, frames on the glass and updates a second, and the
-    latency from a frame's draw to the end of its update, over one phase."""
-    pairs, extra = carried(frames, ups, queue, end)
+    latency from a frame's draw to the end of its update, over one phase. A
+    frame that draws what the one before it drew takes no update."""
+    changed = [f for f in frames if len(f) < 4 or f[3]]
+    pairs, extra = carried(changed, ups, queue, end) if changed else ([], 0)
     t0, t1 = frames[0][0], frames[-1][2]
     glass = sum(1 for _, u in pairs if u[1] <= t1)
     updates = sum(1 for u in ups if t0 < u[0] and u[1] <= t1)
-    mean, p95 = stats([u[1] - f[0] for f, u in pairs])
+    mean, p95 = stats([u[1] - (f[4] if len(f) > 4 else f[0]) for f, u in pairs])
     return {
         "drawn": len(frames) / (t1 - t0),
         "glass": glass / (t1 - t0),

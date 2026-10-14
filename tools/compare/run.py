@@ -45,6 +45,11 @@ kernel's tracepoints, through `sudo -n`, and measures for each library:
   a second, the same latency, and the CPU time of every task on the system
   and of the library's process.
 
+--cadence second changes the screen once a second with HOT hidden, the stats
+demo's own pace, and --cadence never leaves it as it is. The latency then
+runs from the moment the screen changes to the end of the transfer that
+carries the change.
+
 With --perpixel, --glass runs per-pixel programs in place of the status
 screen, and --check draws each pair of them headless at the same steps and
 compares the pictures: see perpixel.py.
@@ -113,6 +118,15 @@ def values(i, t):
     return clock, load, t * 2 % 1 < 0.5
 
 
+def ticked(i, t, cadence):
+    """values() at frame i, t seconds in, as often as `cadence` changes them:
+    every frame, once a second with HOT hidden, or never."""
+    if cadence == "frame":
+        return values(i, t)
+    k = int(t) if cadence == "second" else 0
+    return values(k % 90, 0.0)
+
+
 def say(msg):
     print(json.dumps(msg), flush=True)
 
@@ -123,7 +137,8 @@ def glass_child(screen, args):
     warm = []
     for i in range(1, WARM):
         a = time.monotonic()
-        screen.draw(*values(i, a - t0))
+        shown = values(i, a - t0)
+        screen.draw(*shown)
         warm.append(time.monotonic() - a)
     time.sleep(DRAIN)
     say({"first": t0, "warm": max(warm)})
@@ -136,11 +151,22 @@ def glass_child(screen, args):
         due = time.monotonic()
         end = due + float(cmd[1]) if cmd[0] == "free" else None
         fb = getattr(screen, "fb", None)
+        start = True
         while True:
             a = time.monotonic()
-            screen.draw(*values(i, a - t0))
+            now = ticked(i, a - t0, args.cadence)
+            screen.draw(*now)
             b = time.monotonic()
-            frames.append((a, fb.sent if fb else b, b))
+            sent, since, changed = b, a, now != shown
+            if fb:
+                sent = fb.sent
+            if args.cadence != "frame":
+                # The change at a phase's start came while nothing drew.
+                sent = getattr(screen, "sent", sent)
+                since = t0 + int(a - t0)
+                changed = changed and not start
+            frames.append((a, sent, b, changed, since))
+            shown, start = now, False
             i += 1
             if end is not None:
                 if frames[-1][2] >= end:
@@ -298,7 +324,7 @@ def measure_glass(lib, p, args, power):
     try:
         cmd = [sys.executable, __file__, "--child", lib, "--size", p.size]
         cmd += ["--card", p.card, "--fb", p.fb, "--fonts", args.fonts]
-        cmd += ["--sources", args.sources]
+        cmd += ["--sources", args.sources, "--cadence", args.cadence]
         spawned = time.monotonic()
         proc = subprocess.Popen(
             cmd, cwd=HERE, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
@@ -352,6 +378,9 @@ def measure_glass(lib, p, args, power):
         queue = lib in perpixel.QUEUE
     else:
         queue = getattr(importlib.import_module(f"{lib}_screen").Screen, "QUEUE", False)
+    # A frame that changes nothing may reach the panel or not, so an update
+    # carries the last frame that changed and was handed over before it.
+    queue = queue and args.cadence == "frame"
     out["startup"] = next(u[1] for u in ups if u[0] > first) - spawned
     out["free"] = glass.phase(free, ups, queue, free[-1][2] + DRAIN)
     out["paced"] = glass.phase(paced, ups, queue, paced[-1][2] + DRAIN)
@@ -475,6 +504,12 @@ def main():
         "--glass", metavar="CARD", help="the DRM card of a SPI or I2C panel"
     )
     ap.add_argument("--free", type=float, default=2.0, help="seconds run free")
+    ap.add_argument(
+        "--cadence",
+        choices=["frame", "second", "never"],
+        default="frame",
+        help="how often the status screen changes on the glass",
+    )
     ap.add_argument(
         "--window", type=float, default=4.0, help="seconds of each CPU window"
     )

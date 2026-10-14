@@ -737,8 +737,9 @@ pub struct SceneProcess {
     /// The loop's frame and time at the first tick offered, which the
     /// process reads as frame 0 at time 0.
     origin: Option<(u64, f64)>,
-    /// The params already logged as refused, so each logs once.
-    refused: HashSet<String>,
+    /// Each refused message already logged, by its name and its reason, so
+    /// each mistake logs once.
+    refused: HashSet<(String, String)>,
 }
 
 impl SceneProcess {
@@ -914,15 +915,15 @@ impl SceneProcess {
         Ok(())
     }
 
-    /// Log a param message that changes nothing, once for each name.
+    /// Log a message that changes nothing, once for each name and reason.
     fn refuse(&mut self, name: &str, why: &str) {
-        if self.refused.insert(name.to_string()) {
+        if self.refused.insert((name.to_string(), why.to_string())) {
             crate::report::warn(format!("{}: {why}, so it changes nothing", self.name));
         }
     }
 
-    /// Log a message that the renderer refused, once for each name, and
-    /// hand on any other failure.
+    /// Log a message that the renderer refused, once for each name and
+    /// reason, and hand on any other failure.
     fn refuse_or_fail(&mut self, name: &str, e: anyhow::Error) -> Result<()> {
         let Some(refused) = e.downcast_ref::<Refused>() else {
             return Err(e);
@@ -2492,7 +2493,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
                 (None, "words".to_string(), ParamValue::Str("hi".to_string()))
             ]
         );
-        assert_eq!(f.refused, HashSet::from(["gain".to_string()]));
+        assert_eq!(refused_names(&f), ["gain"]);
         f.tick(1, 0.0, 1.0 / 60.0).unwrap();
         ticks(&d, 2);
         f.on_param(None, "words", &ParamValue::Str("GHEE".to_string()));
@@ -2536,7 +2537,7 @@ while IFS= read -r line; do :; done
         // CSS's navy is #000080.
         assert_eq!((name.as_str(), c.rgb), ("tint", [0.0, 0.0, 128.0 / 255.0]));
         assert_eq!(c.to_json(), serde_json::json!("Navy"));
-        assert_eq!(f.refused, HashSet::from(["bg".to_string()]));
+        assert_eq!(refused_names(&f), ["bg"]);
     }
 
     /// A process that sends a param that the scene lacks, text to a float
@@ -2565,9 +2566,47 @@ while IFS= read -r line; do :; done
         let mut stub = Stub::default();
         f.update(&mut stub, 0, 0.0).unwrap();
         assert!(stub.set.borrow().is_empty());
-        let mut refused: Vec<&str> = f.refused.iter().map(String::as_str).collect();
-        refused.sort_unstable();
-        assert_eq!(refused, ["gain", "nope", "tint"]);
+        assert_eq!(refused_names(&f), ["gain", "nope", "tint"]);
+    }
+
+    /// The names of the refused messages logged so far, sorted, each once.
+    fn refused_names(f: &SceneProcess) -> Vec<String> {
+        let names: std::collections::BTreeSet<&str> =
+            f.refused.iter().map(|(name, _)| name.as_str()).collect();
+        names.into_iter().map(str::to_string).collect()
+    }
+
+    /// A process that sends the color param `tint` one number, then, after
+    /// the first tick, text that names no colour.
+    const TWO_MISTAKES_SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "params": {"tint": {"type": "color", "value": [0, 0, 0]}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
+# kind 1, tint, the float 1.0
+printf '\001\004tint\001\000\000\000\000\000\200\077'
+IFS= read -r line
+# kind 3, tint, the text "rde"
+printf '\003\004tint\003\000\000\000rde'
+while IFS= read -r line; do :; done
+"#;
+
+    #[test]
+    fn two_different_mistakes_under_one_name_each_log() {
+        let d = tmpdir("two-mistakes");
+        let path = script(&d, "two", TWO_MISTAKES_SCRIPT);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        let mut stub = Stub::default();
+        for frame in 0..2u64 {
+            assert!(wait_until(Duration::from_secs(5), || {
+                f.drain();
+                !f.incoming.is_empty()
+            }));
+            f.update(&mut stub, frame, 0.0).unwrap();
+            f.tick(frame + 1, 0.0, 1.0 / 60.0).unwrap();
+        }
+        assert_eq!(
+            f.refused.iter().filter(|(name, _)| name == "tint").count(),
+            2
+        );
     }
 
     /// A process in lockstep. It answers each tick 0.2 s late with the frame
@@ -2940,10 +2979,8 @@ while IFS= read -r line; do :; done
                 ParamValue::Float(f64::from(0.65f32))
             )]
         );
-        let mut refused: Vec<&String> = f.refused.iter().collect();
-        refused.sort();
         assert_eq!(
-            refused,
+            refused_names(&f),
             ["nope.x", "title.font_size", "title.karaoke.sung.more"]
         );
     }
@@ -2986,7 +3023,7 @@ while IFS= read -r line; do :; done
                 "Numbers([0.0, 16.0, 8.0, 4.0])".to_string()
             )]
         );
-        assert_eq!(f.refused, HashSet::from(["wave.points".to_string()]));
+        assert_eq!(refused_names(&f), ["wave.points"]);
         // A declared array stays an array.
         assert_eq!(
             stub.floats.borrow().as_slice(),
@@ -3112,9 +3149,7 @@ while IFS= read -r line; do :; done
                 "set scope.points Numbers([0.0, 1.0, 2.0, 3.0])".to_string(),
             ]
         );
-        let mut refused: Vec<&String> = f.refused.iter().collect();
-        refused.sort();
-        assert_eq!(refused, ["main", "refused"]);
+        assert_eq!(refused_names(&f), ["main", "refused"]);
         // the console's words for the added layer reach the process, and
         // the process's own words stay with it
         let at = Address {
@@ -3215,7 +3250,7 @@ while IFS= read -r line; do :; done
                 "set bar.x Numbers([1.0])".to_string(),
             ]
         );
-        assert_eq!(f.refused.iter().collect::<Vec<_>>(), ["dot"]);
+        assert_eq!(refused_names(&f), ["dot"]);
         // the words of the layer that left go out with no tick
         assert!(!f.values.contains_key("title.text"));
     }

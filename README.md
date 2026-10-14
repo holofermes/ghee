@@ -115,6 +115,7 @@ written and ported to a ghee shader:
 - [The console](docs/console.md), and its [HTTP API](docs/http.md)
 - [Python](docs/python.md)
 - [Procedural scenes](docs/procedural.md), for a program in any language
+- [Raspberry Pi](docs/pi.md): where the Pis differ, and VC4's shader rules
 - [From Rust](docs/rust.md)
 - [Build](docs/building.md)
 - [Troubleshooting](docs/troubleshooting.md)

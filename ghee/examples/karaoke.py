@@ -271,7 +271,7 @@ void main() {
 
 MAIN = """
 void main() {
-    vec2 px = floor(uv * iResolution.xy) + 0.5;
+    vec2 px = uv * iResolution.xy;
     vec2 art = (floor(px / CELL) + 0.5) / iChannelResolution[0].xy;
     vec3 sea = texture2D(iChannel0, art).rgb;
     vec4 words = vec4(0.0);

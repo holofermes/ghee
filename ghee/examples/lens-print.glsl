@@ -134,7 +134,7 @@ float ink_at(vec2 q, float px) {
 // last frame's pixels. It sets anew each pixel that holds no paper yet, as in
 // a new buffer, and one band of 8 rows a frame, which brings in new words.
 void main() {
-  vec2 px = floor(uv * iResolution.xy) + 0.5;
+  vec2 px = uv * iResolution.xy;
   float width = iResolution.x;
   float height = 0.5 * iResolution.y;
   float aspect = height / width;

@@ -79,7 +79,7 @@ void reel(vec2 p, vec2 c, float wound, float turn, inout vec3 col) {{
 
 void main() {{
     float pad = float(padding);
-    vec2 px = floor(uv * iResolution.xy) + 0.5;
+    vec2 px = uv * iResolution.xy;
     float y = iResolution.y - pad - R - 1.0;
     vec3 col = background;
     reel(px, vec2(pad + R + 0.5, y + 0.5), 1.0 - side, spin.x, col);

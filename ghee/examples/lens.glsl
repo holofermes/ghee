@@ -29,7 +29,7 @@ float under_at(vec2 p) {
 }
 
 void main() {
-  vec2 px = floor(uv * iResolution.xy) + 0.5;
+  vec2 px = uv * iResolution.xy;
   float width = iResolution.x;
   float aspect = iResolution.y / width;
   vec2 q = px / width;

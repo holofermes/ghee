@@ -20,7 +20,7 @@
       "name": "town",
       "size": [512, 512],
       "sampling": "trilinear",
-      "fragment": {"file": "passes4-town.glsl"},
+      "fragment": {"file": "tiltshift-town.glsl"},
       "channels": [{"buffer": "lots"}, {"buffer": "clouds"}],
       "params": {
         "traffic": {"type": "float", "value": 2.0, "min": 0.0, "max": 6.0, "step": 0.1},
@@ -61,7 +61,7 @@
     },
     {
       "name": "main",
-      "fragment": {"file": "passes4.glsl"},
+      "fragment": {"file": "tiltshift.glsl"},
       "channels": [{"buffer": "scene"}, {"buffer": "blur"}],
       "params": {
         "focus": {"type": "float", "value": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},

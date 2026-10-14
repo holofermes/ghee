@@ -1,4 +1,4 @@
-// passes4: a town in tilt-shift, the photo trick that blurs all but one row
+// tiltshift: a town in tilt-shift, the photo trick that blurs all but one row
 // of a real street until it looks like a toy model. Each pass draws at its
 // own size and is read its own way, and the last pass composes them.
 //
@@ -27,8 +27,8 @@
 // - `photo` is hidden with `"visible": false`, so the frame is `main`. Show
 //   it with its eye in the console for a lens's dark corners and grain.
 //
-//     ghee render --demo passes4 -o frame.####.png --frames 60
-//     ghee render --demo passes4 --serve
+//     ghee render --demo tiltshift -o frame.####.png --frames 60
+//     ghee render --demo tiltshift --serve
 
 void main() {
   float away = smoothstep(band, band + fade, abs(uv.y - focus));

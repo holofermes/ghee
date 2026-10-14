@@ -1,4 +1,4 @@
-// passes2: a neon sign at night. Each pass draws at its own size and is read
+// neon: a neon sign at night. Each pass draws at its own size and is read
 // its own way, and the last pass composes them.
 //
 // - `ticker` holds the scrolling menu, a text layer, at 56x8 pixels at any
@@ -27,8 +27,8 @@
 // The scene param `base`, where the wall meets the street, reaches every
 // pass, and `main` and `rain` read it.
 //
-//     ghee render --demo passes2 -o frame.####.png --frames 60
-//     ghee render --demo passes2 --serve
+//     ghee render --demo neon -o frame.####.png --frames 60
+//     ghee render --demo neon --serve
 
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);

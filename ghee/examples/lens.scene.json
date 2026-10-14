@@ -6,18 +6,18 @@
     "old_standard_bold": {"file": "fonts/OldStandard-Bold-lens.ttf"},
     "old_standard_italic": {"file": "fonts/OldStandard-Italic-lens.ttf"}
   },
+  "params": {
+    "zoom": {"type": "float", "value": 3.0, "min": 1.0, "max": 8.0, "step": 0.1},
+    "speed": {"type": "float", "value": 0.5, "min": 0.0, "max": 3.0, "step": 0.05}
+  },
+  "common": {"file": "lens-common.glsl"},
   "passes": [
     {
-      "name": "main",
-      "fragment": {"file": "lens.glsl"},
-      "params": {
-        "zoom": {"type": "float", "value": 3.0, "min": 1.0, "max": 8.0, "step": 0.1},
-        "speed": {"type": "float", "value": 0.5, "min": 0.0, "max": 3.0, "step": 0.05},
-        "ink": {"type": "color", "value": "#231f1c"},
-        "paper": {"type": "color", "value": "#e9d7b1"},
-        "foxing": {"type": "color", "value": "#a8703c"},
-        "rim": {"type": "color", "value": "#1b1d1a"}
-      },
+      "name": "print",
+      "scale": [1.0, 2.0],
+      "sampling": "nearest",
+      "fragment": {"file": "lens-print.glsl"},
+      "channels": [{"buffer": "print"}],
       "layers": [
         {"name": "masthead", "text": "The Evening Lens", "font_family": "gothic", "visible": false},
         {"name": "ear_left", "text": "All the News\nThat Fits\nUnder Glass", "font_family": "old_standard", "text_align": "center", "visible": false},
@@ -29,6 +29,17 @@
         {"name": "column2", "text": "THE METHOD. Each pixel\nunder the glass asks where\non the page its light comes\nfrom. Near the middle the\nanswer is close by, and the\npage grows. Toward the rim\nthe glass bends harder, the\nanswer runs far out, and the\nwords crowd into a ring. The\nshader asks the font how much\nof that point the ink covers,\nat the size that the glass\ngives it, and each edge comes\nout one pixel soft, be the\nletter large or small.", "font_family": "old_standard", "visible": false},
         {"name": "column3", "text": "WEATHER. Fair and clear,\nwith a lens passing over from\nthe west at a brisk pace.\nLight winds. More glass is\nexpected by morning.\n\nNOTICES. Lost, a magnifier\nwith a brass rim, much loved.\nThe finder will please return\nit to the editor.\n\nWanted, a reader with time\nto spare for very small print.\nInquire within.", "font_family": "old_standard", "visible": false}
       ]
+    },
+    {
+      "name": "main",
+      "fragment": {"file": "lens.glsl"},
+      "channels": [{"buffer": "print"}],
+      "params": {
+        "ink": {"type": "color", "value": "#231f1c"},
+        "paper": {"type": "color", "value": "#e9d7b1"},
+        "foxing": {"type": "color", "value": "#a8703c"},
+        "rim": {"type": "color", "value": "#1b1d1a"}
+      }
     }
   ]
 }

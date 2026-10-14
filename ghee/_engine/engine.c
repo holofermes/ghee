@@ -86,6 +86,8 @@ struct mp_use {
 // own cost otherwise.
 struct mp_locs {
     GLint res;                           // iResolution, which a draw sets: a batch's program may serve passes of two sizes
+    GLint pixel;                         // ghee_pixel, 1 / iResolution.xy
+    GLint yflip;                         // ghee_yflip, scale and offset from gl_FragCoord.y to the buffer's row order
     GLint time, dt, frame;
     GLint chan_res;                      // iChannelResolution, the size of each channel's source, which a draw sets
     GLint vflip;                         // ghee_vflip of vertex_shader_source, -1 to draw into the window surface
@@ -371,8 +373,9 @@ struct GheeScene {
 // blit. ghee_vflip = -1 mirrors the quad in y, for a pass that draws straight
 // into the window surface, which Mesa stores top row first. A lent scanout
 // buffer is an FBO and keeps GL's row order, the order of the readback, so a
-// pass draws into it unmirrored. uv stays as it is either way, so a pass's
-// own GLSL reads the same coordinates.
+// pass draws into it unmirrored. uv stays as it is either way, and a pass's
+// preamble turns gl_FragCoord.y by ghee_yflip, so a pass's own GLSL reads the
+// same coordinates.
 static const char *vertex_shader_source =
     "#version 100\n"
     "attribute vec4 position;"
@@ -1529,10 +1532,12 @@ static void mp_forget_asset(struct mp_locs *loc, int a) {
 }
 
 // Resolve the locations of a committed program that draws into a w x h buffer,
-// and set its iResolution, its iOutputResolution and an unflipped vflip.
+// and set its iResolution, its ghee_pixel, its iOutputResolution and an
+// unflipped vflip and ghee_yflip.
 // Program 0, a pass with no quad, has no uniforms.
 static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *loc) {
-    loc->res = loc->time = loc->dt = loc->frame = loc->chan_res = loc->vflip = loc->visible = -1;
+    loc->res = loc->pixel = loc->yflip = loc->time = loc->dt = loc->frame = loc->chan_res =
+        loc->vflip = loc->visible = -1;
     for (int c = 0; c < MP_MAX_CHANNELS; c++) loc->chan[c] = -1;
     for (int i = 0; i < MP_MAX_DATATEX; i++) loc->data[i] = -1;
     loc->uses = NULL;
@@ -1541,6 +1546,8 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
     glUseProgram(prog);
     loc->res = glGetUniformLocation(prog, "iResolution");
     if (loc->res >= 0) glUniform3f(loc->res, (float)w, (float)h, 1.0f);
+    loc->pixel = glGetUniformLocation(prog, "ghee_pixel");
+    if (loc->pixel >= 0) glUniform2f(loc->pixel, 1.0f / (float)w, 1.0f / (float)h);
     const GLint out_res = glGetUniformLocation(prog, "iOutputResolution");
     if (out_res >= 0) glUniform3f(out_res, (float)g->width, (float)g->height, 1.0f);
     loc->time = glGetUniformLocation(prog, "iTime");
@@ -1555,6 +1562,8 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
     for (int a = 0; a < g->mp_nasset; a++) mp_use_asset(g, prog, a, loc);
     loc->vflip = glGetUniformLocation(prog, "ghee_vflip");
     if (loc->vflip >= 0) glUniform1f(loc->vflip, 1.0f);
+    loc->yflip = glGetUniformLocation(prog, "ghee_yflip");
+    if (loc->yflip >= 0) glUniform2f(loc->yflip, 1.0f, 0.0f);
     loc->visible = glGetUniformLocation(prog, VISIBLE_UNIFORM);
     g->bind_epoch++;
 }
@@ -2482,7 +2491,10 @@ static float elapsed_seconds(GheeScene *g) {
 static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, float vflip,
                     float elapsed, bool bind) {
     if (loc->res >= 0) glUniform3f(loc->res, (float)g->mp_w[p], (float)g->mp_h[p], 1.0f);
+    if (loc->pixel >= 0)
+        glUniform2f(loc->pixel, 1.0f / (float)g->mp_w[p], 1.0f / (float)g->mp_h[p]);
     if (loc->vflip >= 0) glUniform1f(loc->vflip, vflip);
+    if (loc->yflip >= 0) glUniform2f(loc->yflip, vflip, vflip < 0.0f ? (float)g->mp_h[p] : 0.0f);
     if (loc->time >= 0) glUniform1f(loc->time, elapsed);
     if (loc->dt >= 0) glUniform1f(loc->dt, g->dt);
     if (loc->frame >= 0) glUniform1i(loc->frame, g->frame);

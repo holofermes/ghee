@@ -10785,6 +10785,88 @@ mod tests {
         }
     }
 
+    /// Each pixel of `f`, `w` wide, holds `want(x, y)` in red, green and blue.
+    fn assert_pixels(
+        f: &[u8],
+        w: usize,
+        h: usize,
+        what: &str,
+        want: impl Fn(usize, usize) -> [f64; 3],
+    ) {
+        for (x, y) in (0..h).flat_map(|y| (0..w).map(move |x| (x, y))) {
+            let got = [0, 1, 2].map(|c| px(f, w, x, y, c));
+            assert_eq!(got, want(x, y), "{what} at ({x}, {y})");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn uv_and_gl_fragcoord_hold_the_centre_of_their_pixel() {
+        // Red and green name the pixel that p falls in, blue how far p sits
+        // from its centre, in thousandths of a pixel. VC4 interpolates a
+        // varying up to a tenth of a pixel off the centre at this size.
+        let (w, h) = (1280usize, 720usize);
+        let (_g, mut r) = gpu_at(w, h);
+        for p in ["uv * iResolution.xy", "gl_FragCoord.xy"] {
+            let code = format!(
+                "void main(){{ vec2 p = {p}; vec2 i = floor(p); vec2 off = abs(p - i - 0.5); \
+                 gl_FragColor = vec4(mod(i, 256.0) / 255.0, max(off.x, off.y) * 1000.0 / 255.0, 1.0); }}"
+            );
+            assert_eq!(
+                r.setup(&scene_of(json!([{"name": "main", "fragment": code}])))
+                    .unwrap(),
+                ""
+            );
+            let f = r.render(None).unwrap().to_vec();
+            assert_pixels(&f, w, h, p, |x, y| {
+                [(x % 256) as f64, (y % 256) as f64, 0.0]
+            });
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_pass_that_reads_its_last_frame_at_uv_keeps_its_first_frame() {
+        // VC4's linear filter reads a texel centre exactly only where the
+        // centre is a binary fraction of the side, a power of two.
+        let (w, h) = (1024usize, 512usize);
+        let (_g, mut r) = gpu_at(w, h);
+        let sc = scene_of(json!([{
+            "name": "main",
+            "channels": [{"buffer": "main"}],
+            "fragment": "void main(){ vec2 i = floor(gl_FragCoord.xy); \
+                vec4 c = vec4(mod(i, 256.0) / 255.0, mod(i.x + i.y, 2.0), 1.0); \
+                if (iFrame > 0) c = texture2D(iChannel0, uv); gl_FragColor = c; }",
+        }]));
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        let mut f = Vec::new();
+        for _ in 0..4 {
+            f = r.render(None).unwrap().to_vec();
+        }
+        assert_pixels(&f, w, h, "uv", |x, y| {
+            [
+                (x % 256) as f64,
+                (y % 256) as f64,
+                ((x + y) % 2 * 255) as f64,
+            ]
+        });
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_pass_with_no_main_fails_with_the_gl_error_alone() {
+        let (_g, mut r) = gpu();
+        let err = r
+            .setup(&scene_of(
+                json!([{"name": "main", "fragment": "float f(){ return 1.0; }"}]),
+            ))
+            .unwrap();
+        assert!(
+            err.starts_with("pass 'main'") && !err.contains("ghee"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn a_turn_is_a_quarter_turn_clockwise() {
         for (degrees, turns) in [(0, 0), (90, 1), (180, 2), (270, 3)] {

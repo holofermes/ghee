@@ -9,15 +9,17 @@
 //! whether a file may lie outside that directory. [`Scene::of`] and
 //! [`Pass::of`] build a scene in code.
 //!
-//! [`Pass::glsl`] writes the fragment shader of a pass in three parts: the
-//! preamble, the scene's common block, then the pass's own GLSL, its
-//! `fragment`. The preamble declares what every pass reads, the varying `uv`
-//! and the uniforms `iTime`, `iTimeDelta`, `iFrame`, `iResolution`,
-//! `iOutputResolution`, `iChannel0` and up and `iChannelResolution`, then the
-//! samplers and the reader functions of each array, asset and text layer,
-//! then one uniform for each param under the param's name. The C engine sets
-//! each uniform by looking up that same name in the compiled program, so a
-//! name that the preamble writes is the contract between the two.
+//! [`Pass::glsl`] writes the fragment shader of a pass in four parts: the
+//! preamble, the scene's common block, the pass's own GLSL, its `fragment`,
+//! then ghee's main, which sets `uv` and `gl_FragCoord` to the pixel's centre
+//! and calls the pass's main under another name. The preamble declares what
+//! every pass reads, `uv` and the uniforms `iTime`, `iTimeDelta`, `iFrame`,
+//! `iResolution`, `iOutputResolution`, `iChannel0` and up and
+//! `iChannelResolution`, then the samplers and the reader functions of each
+//! array, asset and text layer, then one uniform for each param under the
+//! param's name. The C engine sets each uniform by looking up that same name
+//! in the compiled program, so a name that the preamble writes is the
+//! contract between the two.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -35,11 +37,11 @@ const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 
 /// Every name that ghee writes into GLSL and an author never writes starts
 /// with this prefix: a layer's own uniforms, textures and functions, and the
-/// vertex flip.
+/// preamble's own, such as the vertex flip and the renamed main.
 pub const PREFIX: &str = "ghee_";
 
-/// The uniforms and the varying that ghee declares in every pass for its
-/// author to read, beside iChannel0 and up.
+/// The uniforms and `uv` that ghee declares in every pass for its author to
+/// read, beside iChannel0 and up.
 const BUILT_INS: [&str; 7] = [
     "iTime",
     "iTimeDelta",
@@ -1813,7 +1815,7 @@ impl Pass {
         // in its code, which reads neither the common block nor a text.
         if !self.visible {
             let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |_| false);
-            return format!("{}\n\n{}", l.join("\n"), self.fragment);
+            return with_main(l, &self.fragment);
         }
         let common_code = common.unwrap_or_default();
         let l = self.preamble_reading(scene_params, assets, texts, hw_linear, |t| {
@@ -1828,7 +1830,7 @@ impl Pass {
             }
             _ => self.fragment.clone(),
         };
-        format!("{}\n\n{body}", l.join("\n"))
+        with_main(l, &body)
     }
 
     /// The preamble, with the `<name>_size` of each text layer of `texts`,
@@ -1844,21 +1846,28 @@ impl Pass {
         let mut l: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
         l.extend(
             [
-                "varying vec2 uv;",
                 "uniform vec3 iResolution;",
                 "uniform vec3 iOutputResolution;",
                 "uniform float iTime;",
                 "uniform float iTimeDelta;",
                 "uniform int iFrame;",
-                // VC4 shears gl_FragCoord.xy by about 1/3 px per row when a
-                // pass samples its own output. The interpolated varying stays
-                // within 0.04 px of the pixel centre. This define maps
-                // gl_FragCoord onto the varying, so scene code that reads
-                // gl_FragCoord.xy/iResolution.xy samples feedback without
-                // drift. A function reads the varying, so a local `uv` in the
-                // scene's own code leaves gl_FragCoord alone.
-                "vec4 ghee_fragcoord() { return vec4(uv * iResolution.xy, 0.0, 1.0); }",
-                "#define gl_FragCoord ghee_fragcoord()",
+                "uniform vec2 ghee_pixel;",
+                "uniform vec2 ghee_yflip;",
+                "vec2 uv;",
+                "vec4 ghee_fragcoord;",
+                // VC4 interpolates a varying up to a tenth of a pixel off the
+                // pixel centre, and puts gl_FragCoord.xy on the pixel's top
+                // left corner in the buffer's row order, which the window
+                // surface turns upside down. Flipped to that order, the floor
+                // of gl_FragCoord is the pixel on every GPU. float(int(x)) is
+                // that floor for x >= 0, in 2 VC4 instructions to floor's 5.
+                "void ghee_centre() {",
+                "  float y = gl_FragCoord.y * ghee_yflip.x + ghee_yflip.y;",
+                "  vec2 p = vec2(ivec2(gl_FragCoord.x, y)) + 0.5;",
+                "  ghee_fragcoord = vec4(p, 0.0, 1.0);",
+                "  uv = p * ghee_pixel;",
+                "}",
+                "#define gl_FragCoord ghee_fragcoord",
             ]
             .map(str::to_string),
         );
@@ -1915,6 +1924,20 @@ impl Pass {
         }
         l
     }
+}
+
+/// The preamble lines `l`, then `body` under ghee's own main, which sets `uv`
+/// and gl_FragCoord before it calls the body's. A body that names no main
+/// meets the GL's own error for a missing main.
+fn with_main(mut l: Vec<String>, body: &str) -> String {
+    if !glsl_tokens(body).contains(&"main") {
+        return format!("{}\n\n{body}", l.join("\n"));
+    }
+    l.push("#define main ghee_main".to_string());
+    format!(
+        "{}\n\n{body}\n#undef main\nvoid main() {{ ghee_centre(); ghee_main(); }}",
+        l.join("\n")
+    )
 }
 
 /// True when `glsl` names the coverage reader of text layer `name`. A reader
@@ -3417,7 +3440,7 @@ mod tests {
         )
         .unwrap();
         let every = [
-            "varying vec2 uv;",
+            "vec2 uv;",
             "uniform vec3 iResolution;",
             "uniform vec3 iOutputResolution;",
             "uniform float iTime;",

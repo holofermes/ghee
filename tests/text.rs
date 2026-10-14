@@ -1086,27 +1086,42 @@ fn locals(src: &str) -> Vec<String> {
     ];
     let scope = ["uniform", "varying", "attribute", "const", "precision"];
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let opens = |s: &str| -> i32 {
+        s.chars()
+            .map(|c| match c {
+                '{' | '(' => 1,
+                '}' | ')' => -1,
+                _ => 0,
+            })
+            .sum()
+    };
     let mut out: Vec<String> = Vec::new();
+    // The braces and parentheses open before a word: a name declared with
+    // none open is a file-scope declaration.
+    let mut depth = 0;
     for line in src.lines() {
         let code = line.split("//").next().unwrap_or("");
         let first = code.split_whitespace().next().unwrap_or("");
         if first.starts_with('#') || scope.contains(&first) {
             continue;
         }
-        // Each word, and the text up to the next word.
-        let mut words: Vec<(&str, &str)> = Vec::new();
+        // Each word, the text up to the next word, and the depth at the word.
+        let mut words: Vec<(&str, &str, i32)> = Vec::new();
         let mut rest = code;
         while let Some(i) = rest.find(ident) {
+            depth += opens(&rest[..i]);
             let tail = &rest[i..];
             let n = tail.find(|c| !ident(c)).unwrap_or(tail.len());
             let gap = &tail[n..];
             let next = gap.find(ident).unwrap_or(gap.len());
-            words.push((&tail[..n], &gap[..next]));
+            words.push((&tail[..n], &gap[..next], depth));
             rest = gap;
         }
+        depth += opens(rest);
         for pair in words.windows(2) {
-            let ((ty, gap), (name, after)) = (pair[0], pair[1]);
+            let ((ty, gap, _), (name, after, at)) = (pair[0], pair[1]);
             let declared = types.contains(&ty)
+                && at > 0
                 && !gap.is_empty()
                 && gap.trim().is_empty()
                 && !after.trim_start().starts_with('(');

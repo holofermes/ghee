@@ -5562,13 +5562,13 @@ mod tests {
             ""
         );
         r.set_drop(true).unwrap();
-        for _ in 0..30 {
+        for _ in 0..3000 {
             r.present(None, None).unwrap();
         }
         let taken = unsafe { ffi::ghee_display_taken(r.handle) };
-        assert!(taken < 30, "present waited for each of {taken} frames");
+        assert!(taken < 3000, "present waited for each of {taken} frames");
         r.blank(true).unwrap();
-        assert_eq!(unsafe { ffi::ghee_display_taken(r.handle) }, 30);
+        assert_eq!(unsafe { ffi::ghee_display_taken(r.handle) }, 3000);
         assert_eq!(r.last_error(), "");
     }
 

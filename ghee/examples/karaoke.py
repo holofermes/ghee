@@ -10,13 +10,14 @@ in the pixel font with a glow, and the tick hook fills the sung letters
 through the karaoke effect's `sung`, word by word on the times of SONG. The
 pass `cue` holds the emoji, which the font asset `noto` draws from
 fonts/NotoColorEmoji-karaoke.ttf, the two emoji of the line cut from Noto
-Color Emoji. The first tick measures the line with `ghee.measure` and puts the
-emoji after it.
+Color Emoji. The tick measures the line with `ghee.measure`, puts the emoji
+after it, and centres both on the plate, a dialog box at the height that
+`line_y` sets.
 
-The pass `sea` paints the scene ART pixels wide, and `main` reads it nearest,
-so its pixels show whole. Below the horizon, `sea` reads `words` and `cue`
-upside down, and the line shimmers in the water with the moon. `main` lays
-`words` over `sea`.
+The pass `sea` paints the scene and the plate ART pixels wide, and `main`
+reads it nearest, so its pixels show whole. Below the horizon, `sea` reads
+`words` and `cue` upside down, and the plate and the line shimmer in the
+water with the moon. `main` lays `words` over `sea`.
 
     ghee render --demo karaoke -o karaoke.####.png --frames 100 --timestep 0.05
     ghee render --demo karaoke --display kms
@@ -30,13 +31,18 @@ ghee.args()  # the probe, this scene takes no arguments
 
 LINE = "sing it with me"
 CUE = "🎤✨"
+FONT = "Pixel Operator 8"
+LINE_Y = 0.22  # the plate's place, from the frame's top (0) to its bottom (1)
 # Each word of LINE: its first character and when it is sung, in seconds.
 SONG = ((0, 0.0, 0.8), (5, 1.0, 1.4), (8, 1.5, 2.3), (13, 2.5, 4.0))
 BAR = 5.0  # seconds from one start of the line to the next
 ART = 160  # the sea's width in pixels
 CUE_SIZE = 13  # the emoji's size, in the sea's pixels per em
+EM = 8  # the line's size, in the sea's pixels per em
 GAP = 4  # the sea's pixels between the line and its emoji
-TOP = 0.28  # the line's top, as a share of the frame's height
+PAD = (5, 3)  # the sea's pixels between the line and the plate's border
+BORDER = 4  # the plate's border, in the sea's pixels
+MARGIN = 2  # the sea's pixels between the plate and the frame's edge
 
 NIGHT = "#141833"
 
@@ -123,15 +129,50 @@ float palm(vec2 p, vec2 base, vec2 crown, float len, float seed) {
     return m;
 }
 
+// The line and its emoji as one block, in the sea's pixels: left, top, size.
+vec4 block(vec2 res) {
+    vec2 words = floor(line_size * EM + 0.5);
+    vec2 cue = floor(emoji_size * CUE + 0.5);
+    vec2 size = vec2(words.x + GAP + cue.x, max(words.y, cue.y));
+    float room = max(res.y - size.y - 2.0 * (EDGE.y + MARGIN), 0.0);
+    return vec4(floor((res.x - size.x) * 0.5), MARGIN + EDGE.y + floor(room * line_y + 0.5), size);
+}
+
+// The dialog box around block b at q, and its shadow: colour, and coverage in alpha.
+vec4 dialog(vec2 q, vec4 b, float th) {
+    vec2 lo = b.xy - EDGE;
+    vec2 hi = b.xy + b.zw + EDGE - 1.0;
+    vec2 e = min(q - lo, hi - q);
+    float k = min(min(e.x, e.y), e.x + e.y - 2.0);
+    vec2 s = min(q - lo - 1.0, hi + 1.0 - q);
+    float shadow = step(0.0, min(min(s.x, s.y), s.x + s.y - 2.0));
+    float v = (q.y - lo.y - BORDER) / max(hi.y - lo.y - 2.0 * BORDER, 1.0);
+    vec3 c = mix(plate, plate * 0.55, bands(clamp(v, 0.0, 1.0), 3.0, th));
+    c = mix(c, mix(plate, frame, 0.3), step(q.y - lo.y, BORDER + 0.5));
+    c = mix(c, palms, step(k, BORDER - 0.5));
+    c = mix(c, mix(frame, rose, 0.6), step(k, BORDER - 1.5));
+    c = mix(c, frame, step(k, 1.5));
+    c = mix(c, palms, step(k, 0.5));
+    float on = step(0.0, k);
+    return vec4(mix(palms, c, on), max(on, shadow * 0.6));
+}
+
 void main() {
     vec2 p = floor(gl_FragCoord.xy);
     vec2 res = iResolution.xy;
     float hz = floor(res.y * horizon);
     float th = bayer(p);
+    float below = step(hz, p.y);
+    float wobble = floor(sin(p.y * 0.9 + iTime * 3.0) * 1.5 + 0.5);
+    vec2 at = mix(p, vec2(p.x + wobble, 2.0 * hz - p.y - 1.0), below);
+    vec4 b = block(res);
+    vec2 lo = b.xy - EDGE;
+    vec2 hi = b.xy + b.zw + EDGE;
+    float real = step(lo.x, p.x) * step(p.x, hi.x) * step(lo.y, p.y) * step(p.y, hi.y);
+    vec4 box = dialog(mix(at, p, real), b, th);
     float R = floor(res.y * moon_size);
     vec2 mc = vec2(floor(res.x * 0.5), hz - floor(R * 0.15));
     vec3 col;
-    vec2 at = p;
     float fade = 1.0;
 
     if (p.y < hz) {
@@ -194,11 +235,10 @@ void main() {
         vec3 glare = mix(mix(moon, ember, 0.15 + 0.7 * d), mix(ember, rose, d), step(reach * 0.45, x));
         col = mix(col, glare, shine * (1.0 - 0.4 * d));
 
-        float wobble = floor(sin(p.y * 0.9 + iTime * 3.0) * 1.5 + 0.5);
-        at = vec2(p.x + wobble, 2.0 * hz - p.y - 1.0);
         vec2 cell = iOutputResolution.xy / res;
         float keep = step(-0.5, sin(p.y * 2.3 - iTime * 4.0 + row * 3.0)) * step(0.2, hash(vec2(floor(at.x / 3.0), p.y)));
         fade = keep * (0.8 - 0.5 * d);
+        col = mix(col, box.rgb * vec3(0.85, 0.85, 1.0), box.a * fade * (1.0 - real));
         vec4 words = texture2D(iChannel0, (at + 0.5) * cell / iOutputResolution.xy);
         col = col * (1.0 - words.a * fade) + words.rgb * vec3(0.85, 0.85, 1.0) * fade;
     }
@@ -209,14 +249,16 @@ void main() {
     vec2 shore = vec2(p.x / (res.x * 0.3), (res.x - p.x) / (res.x * 0.32));
     fg = max(fg, step(res.y * (0.88 + 0.12 * shore.x * shore.x), p.y));
     fg = max(fg, step(res.y * (0.86 + 0.14 * shore.y * shore.y), p.y));
-    float below = step(hz, p.y);
 
     vec4 cue = vec4(0.0);
-    if (gl_FragCoord.x >= 0.0) cue = texture2D(iChannel1, (at + 0.5) / res);
+    if (gl_FragCoord.x >= 0.0) cue = texture2D(iChannel1, (mix(at, p, real) + 0.5) / res);
     vec3 sprite = floor(cue.rgb / max(cue.a, 0.01) * 4.0 + 0.5) / 4.0;
+    float shown = step(0.5, cue.a);
     col = mix(col, palms, fg * (1.0 - below));
-    col = mix(col, sprite, step(0.5, cue.a) * fade);
+    col = mix(col, sprite, shown * fade * (1.0 - real));
     col = mix(col, palms, fg * below);
+    col = mix(col, box.rgb, box.a * real);
+    col = mix(col, sprite, shown * real);
     gl_FragColor = vec4(col, 1.0);
 }
 """
@@ -232,7 +274,7 @@ void main() {
 }
 """
 
-_laid = {"out": False}
+_line = {"y": LINE_Y}
 
 
 def cell(width):
@@ -250,24 +292,37 @@ def sung(t):
     return count
 
 
+def whole(n):
+    """`n` rounded to a whole number, halves up, as the sea's `block` rounds."""
+    return math.floor(n + 0.5)
+
+
+def lay_out():
+    """Centre the line and its emoji on the plate, as `block` in SEA does."""
+    width, height = ghee.render_size()
+    px = cell(width)
+    art_width, art_height = math.ceil(width / px), math.ceil(height / px)
+    words, rows = ghee.measure(LINE, font_size=EM * px, font_family=FONT)
+    words, rows = whole(words / px), whole(rows / px)
+    cue, cue_rows = (
+        whole(n) for n in ghee.measure(CUE, font_size=CUE_SIZE, font_family="noto")
+    )
+    size = (words + GAP + cue, max(rows, cue_rows))
+    room = max(art_height - size[1] - 2 * (PAD[1] + BORDER + MARGIN), 0)
+    left = (art_width - size[0]) // 2
+    top = MARGIN + PAD[1] + BORDER + whole(room * _line["y"])
+    ghee.layers.line.x = left * px
+    ghee.layers.line.y = (top + (size[1] - rows) // 2) * px
+    ghee.layers.emoji.x = left + words + GAP
+    ghee.layers.emoji.y = top + (size[1] - cue_rows) // 2
+
+
 @ghee.tick
 def sing(tick):
-    """Lay the line and its emoji out once, then fill the sung letters."""
-    if not _laid["out"]:
-        width, height = ghee.render_size()
-        px = cell(width)
-        art_width = math.ceil(width / px)
-        words, rows = ghee.measure(
-            LINE, font_size=8 * px, font_family="Pixel Operator 8"
-        )
-        cue, cue_rows = ghee.measure(CUE, font_size=CUE_SIZE, font_family="noto")
-        left = (art_width - (words / px + GAP + cue)) // 2
-        top = round(math.ceil(height / px) * TOP)
-        ghee.layers.line.x = left * px
-        ghee.layers.line.y = top * px
-        ghee.layers.emoji.x = left + words / px + GAP
-        ghee.layers.emoji.y = top + round((rows / px - cue_rows) / 2) - 1
-        _laid["out"] = True
+    """Lay the line out when it moves, then fill the sung letters."""
+    if tick.frame == 0 or "line_y" in tick.params:
+        _line["y"] = tick.params.get("line_y", _line["y"])
+        lay_out()
     ghee.layers.line.karaoke.sung = sung(tick.time % BAR)
 
 
@@ -280,6 +335,9 @@ def build():
             "horizon": ghee.Param(
                 "horizon", "float", 0.6, min=0.4, max=0.85, step=0.01
             ),
+            "line_y": ghee.Param(
+                "line_y", "float", LINE_Y, min=0.0, max=1.0, step=0.01
+            ),
         },
         assets=[ghee.Asset("noto", "fonts/NotoColorEmoji-karaoke.ttf")],
         passes=[
@@ -289,8 +347,8 @@ def build():
                     ghee.Layer(
                         "line",
                         LINE,
-                        font_size=8 * px,
-                        font_family="Pixel Operator 8",
+                        font_size=EM * px,
+                        font_family=FONT,
                         render="hinted",
                         color="#c8b6dc",
                         text_shadow={
@@ -320,7 +378,12 @@ def build():
             ),
             ghee.Pass(
                 "sea",
-                SEA,
+                f"const float EM = {EM:.1f};\n"
+                f"const float CUE = {CUE_SIZE:.1f};\n"
+                f"const float GAP = {GAP:.1f};\n"
+                f"const vec2 EDGE = vec2({PAD[0] + BORDER:.1f}, {PAD[1] + BORDER:.1f});\n"
+                f"const float BORDER = {BORDER:.1f};\n"
+                f"const float MARGIN = {MARGIN:.1f};\n{SEA}",
                 size=art,
                 sampling="nearest",
                 channels=[ghee.Channel("words"), ghee.Channel("cue")],
@@ -334,6 +397,8 @@ def build():
                     ghee.Param("cloud", "color", "#2a2244"),
                     ghee.Param("water", "color", "#1d2a52"),
                     ghee.Param("palms", "color", "#0b0a16"),
+                    ghee.Param("plate", "color", "#252c5e"),
+                    ghee.Param("frame", "color", "#f6e7cf"),
                     ghee.Param(
                         "moon_size", "float", 0.17, min=0.05, max=0.4, step=0.01
                     ),

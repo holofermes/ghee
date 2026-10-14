@@ -1,23 +1,105 @@
 # Filters
 
-A filter is a named post process of one pass, and ghee appends it after the
-scene's own passes. A scene declares its filters in `filters`:
+A filter is a pass that ghee adds over the finished frame. ghee has three
+built in, to improve the look of 1-bit and 16-level panels: `dither`,
+`frc` and `frc256`.
+
+To use a filter, add it to the scene's `filters`:
 
 ```json
-{ "passes": [ ... ], "filters": ["dither"] }
+{
+  "version": 1,
+  "passes": [{ "name": "main", "fragment": "void main() { gl_FragColor = vec4(vec3(uv.x), 1.0); }" }],
+  "filters": ["frc"]
+}
 ```
 
-`{"name": "dither", "visible": false}` in place of a name lists the filter
-with its pass hidden.
+To add one on the command line, use `--filters`, with several names
+separated by commas. This draws the `bars` example through `frc` on a
+connected panel ([Hardware displays](displays.md#hardware-displays)):
 
-The command line adds filters in order, after the scene's own:
-
+```shell
+ghee render --demo bars --filters frc --display kms
 ```
-ghee render --demo bars --filters dither --display kms
+
+From Python, give `ghee.Scene` the same list, as in
+`ghee.Scene(passes=[...], filters=["frc"])`. In the
+[console](console.md), add one with its filter picker.
+
+## Picking a filter
+
+A 1-bit panel, such as the SSD1306 or SH1106, turns each pixel fully on or
+off. With no filter, every grey turns black or white. The pictures on this
+page show a clock over a grey ramp:
+
+![12:34 in white, and the ramp cut into black on the left and white on the right](../media/filters/none-1bit.png)
+
+If your screen shows only text, use `"render": "mono"`
+([Render](layers.md#render)) and no filter.
+
+### dither
+
+To show grey on a 1-bit panel at any frame rate, add `dither`. It draws grey
+as a still pattern of dots. Small letters break up.
+
+![12:34 and the ramp drawn in dots that grow denser to the right](../media/filters/dither.png)
+
+### frc
+
+To show soft greys on a 1-bit panel that takes about 200 frames a second,
+add `frc`. Each pixel blinks on and off fast enough to read as grey. It
+shows up to 16 greys. An SSD1306 reaches that rate on I2C at 1 MHz, the bus
+speed that [`ghee overlay ssd1306`](displays.md#setting-up-a-panel) sets.
+
+| Its 16 frames, slowed down | What the eye sees at 200 frames a second |
+| --- | --- |
+| ![the clock and the ramp blinking in black and white pixels](../media/filters/frc.webp) | ![12:34, and the ramp in 16 greys, its darkest end in dots](../media/filters/frc-seen.png) |
+
+On a slower panel, the darkest greys flicker. To calm them, raise `calm`,
+4 by default, and the darkest greys turn into a fixed pattern of dots that
+holds still. At 106 frames a second, set `calm` to 8, and at 86, set it to
+10. Text of 12 pixels per em then reads as well as at 210 frames a second.
+Text of 10 pixels roughens, and text of 8 breaks. To blink fewer greys more
+steadily, set `coarse` to 1 for every second grey, or 2 for every fourth.
+
+### frc256
+
+To show about 256 greys on a 16-level panel, such as the SSD1322, add
+`frc256`. It needs the
+panel's full rate, about 200 frames a second on the SSD1322. On a Pi 5,
+`frc256` takes an SSD1322 from 206 to 200 frames a second.
+
+| No filter, 16 levels | `frc256`, as the eye sees it |
+| --- | --- |
+| ![the ramp in 16 visible bands](../media/filters/none-16.png) | ![the ramp smooth from black to white](../media/filters/frc256-seen.png) |
+
+## Changing a filter's settings
+
+A scene file and `--filters` add a filter with its default settings. To
+change them, use the console, or set one from Python as a param:
+`screen.set_param("calm", 8)`. When the scene has a param of the same name,
+name the filter's pass too: `screen.set_param("calm", 8, in_pass="frc")`
+([Python](python.md#opening-a-scene)).
+
+## Your own filter
+
+To write a filter, put one pass in a file named `<name>.filter.json`. Its
+shader reads the frame so far as `iChannel0`. This one, `invert.filter.json`,
+turns the frame negative:
+
+```json
+{
+  "name": "invert",
+  "fragment": "void main() { vec3 c = texture2D(iChannel0, uv).rgb; gl_FragColor = vec4(1.0 - c, 1.0); }"
+}
 ```
 
-ghee ships `dither`, `frc` and `frc256`, which [1-bit and 16-level
-panels](displays.md#1-bit-and-16-level-panels) describes. Write your own
-as `<name>.filter.json` files, and add their directories to `$GHEE_FILTERS`, a
-colon-separated list. A filter declares assets as a scene does, and ghee
-resolves the asset's file beside the filter.
+To use it, list its folder in `$GHEE_FILTERS`, with more folders separated by colons:
+
+```shell
+GHEE_FILTERS=~/filters ghee render --demo bars --filters invert -o invert.png
+```
+
+A filter file also takes `params`, `channels` and `assets`, as a pass does
+([Scenes](scenes.md#passes)). ghee looks for a filter's asset files beside
+the filter file.

@@ -1,97 +1,125 @@
 # The console
 
-`ghee serve <scenes_dir>` starts the web console on `127.0.0.1:8090`. The
-console shows a hardware accelerated live preview of the running scene. It
-edits each pass's layers and their effects, and the GLSL of each pass, with
-compile errors inline. It lists a pass's layers front first: the last one in
-the scene's `layers` paints on top and shows at the top. It shows each param
-as a slider, hides passes, layers and effects, and picks filters. Its render
-info shows the frame rate, and while it is open the memory and the GPU time
-that ghee uses, where the kernel reports them. [docs/http.md](http.md)
-holds its API.
+The console is ghee's web page for a running scene. Use it to watch the
+scene, and to change its params, layers and shaders at runtime: a change
+shows on the preview at once, and on a screen too when ghee drives one.
 
-An edit goes into the working copy of the scene that ghee holds, which every
-open page shows. A live field applies as it changes, and every other edit
-reloads into the running renderer. A reload keeps the buffers of a pass that
-keeps its name and size, so a pass that reads itself goes on from its last
-frame, and back to defaults and a switch start every pass from black. The
-working copy lasts until ghee stops, and Save keeps its edits in the scene's
-[state file](#saved-edits).
+To open it and explore the bundled examples, run:
 
-A param or a layer field locks from the moment that a procedural scene's
-program first sets it, and a layer that the program adds locks whole: its
-controls grey out, and the console keeps none of its edits. The locks last
-while the program runs, back to defaults included, and a switch away and
-back starts the program again with nothing locked.
-
-`--fps N` caps the frame rate of `ghee serve` and of `ghee render --serve`.
-
-The console draws while someone watches it: a page's preview, a viewer of
-`/stream` or `/h264`, or a `GET /frame.png`. A console that drives a display
-or a panel draws every frame. While nobody watches, the console draws once
-for each edit and sleeps in between, and the scene's time keeps to the wall
-clock, so the next frame draws at the time that the clock reached. With
-`--timestep`, the scene's time keeps its fixed step per frame, however long
-the console slept.
-
-The console reads files from its scenes directory, the `$GHEE_ASSETS`
-directories and the system's emoji font alone, so a scene that it serves
-fails to load a path that is absolute or climbs out with `..`.
-
-![the console editing a live scene](https://raw.githubusercontent.com/holofermes/ghee/main/media/console.png)
-
-Careful: the console has no auth, and it compiles any GLSL posted to it, so it
-binds to loopback by default. `--host 0.0.0.0` opens it to your network. Do
-that only on a network you trust.
-
-## Saved edits
-
-Save writes the console's edits of a scene, what differs from the scene's
-files, to the scene's state file. ghee lays the state file over the scene's
-files each time that `ghee serve` or `ghee render --serve` loads the scene. A
-new version of the scene's files leaves the state file alone: a saved value
-stays, and every other setting follows the new files. A plain `ghee render`
-reads no state file, and a console hosted by Python saves nothing.
-
-The state files live in `$XDG_STATE_HOME/ghee/`, `~/.local/state/ghee/` when
-the variable is unset, and `--state-dir DIR` puts them in DIR. A scene's state
-file takes the scene file's absolute path under `scenes/`, with `.json` in
-place of `.scene.json` or of a procedural scene's extension, and a bundled
-demo's sits under `demo/`:
-
-```
-/srv/scenes/clocks/clocks.scene.json
-  ~/.local/state/ghee/scenes/srv/scenes/clocks/clocks.json
-ghee serve --demo, the scene wavy
-  ~/.local/state/ghee/demo/wavy.json
+```shell
+ghee serve --demo
 ```
 
-This state file sets two params of the pass `main` and holds an edit of its
-GLSL:
+ghee prints the address, and you open it in a browser:
 
-```json
-{
-  "version": 1,
-  "scene": "/srv/scenes/clocks/clocks.scene.json",
-  "values": { "passes": { "main": { "params": { "cols": 5, "rows": 4 } } } },
-  "items": [
-    { "item": "fragment", "pass": "main", "base": "4be1a2c97f3d0e55",
-      "value": "void main() { ... }" }
-  ]
-}
+```
+ghee console: http://127.0.0.1:8090/ 12 scenes ['assets', 'bars', 'feedback', 'lens', ...]
 ```
 
-`values` is a JSON merge patch over the scene by name: `params` holds the
-scene params' values, `passes` each pass's `params`, `visible`, `size`,
-`scale` and `sampling`, and `layers` each layer's settings and effects, as a
-layer's JSON holds them. `null` removes a key. `items` holds each edit of code
-or structure whole, with `base`, the hash of the same item in the files that it
-was made against: a pass's `fragment`, `channels` and `layers`, the `common`
-block, the `passes`, an added `param`, and the `filters`.
+To open it from your laptop while ghee runs on a Pi, see [From another
+computer](#from-another-computer).
 
-A value whose pass, layer or param is gone is skipped, with one line in the
-log, and the next save drops it. An item whose `base` no longer matches the
-files is set aside: the files' version runs, and the console asks once, keep
-mine or update to default. A state file that ghee cannot read, such as one
-with broken JSON, moves to `clocks.json.unreadable` beside it, with one line
-in the log, and the scene loads without its edits.
+## Opening it
+
+| To | Run |
+| --- | --- |
+| make and edit your own scenes | `ghee serve` |
+| browse a folder of scenes | `ghee serve DIR` |
+| browse the bundled examples | `ghee serve --demo` |
+| work on one scene | `ghee serve glow.scene.json` |
+| watch a render that also goes to a display or files | `ghee render SCENE --display kms --serve` |
+| watch your Python program | `ghee.open(..., serve=8090)` ([Python](python.md#the-console-from-python)) |
+
+The console listens on port 8090. To use another, pass `--port`. Whatever
+you serve, the scene list also shows [your own scenes](#your-scenes).
+
+## What you can change
+
+- **The scene:** pick one from the list.
+- **Params:** add, change or remove [params](scenes.md#params).
+- **Layers:** add, change or remove [layers](layers.md).
+- **Shaders:** edit each pass's GLSL, with compile errors marked on their line.
+- **Passes:** change an existing pass.
+- **Filters:** add, change or remove a [filter](filters.md).
+
+Click the ↺ beside a value to restore its default, or restore the whole
+scene at once.
+
+The preview shows an H264 video when the browser can play it, else an
+MJPEG stream. You can turn the preview, pop it out into its own window, or
+show it fullscreen.
+
+## Your scenes
+
+A scene that you make in the console is a real scene file, in a folder of
+its own: `glow/glow.scene.json`, beside a `.glsl` file for each pass. The
+folders live in `~/.local/share/ghee/scenes`. To keep them elsewhere, pass
+`--my-scenes DIR`, or set `$GHEE_MY_SCENES`. `ghee serve` with no folder
+serves them.
+
+In the console you can make a new scene, blank or as a copy of the open
+one, and rename or delete one of your own. To add an image or a font to one
+of your scenes, upload it from its layer: a `.png`, `.jpg`, `.ttf` or
+`.otf` file of up to 32 MiB. The file lands in the scene's folder.
+
+To render one of your scenes without the console, pass its folder to `ghee
+render` ([Where ghee finds a scene](scenes.md#where-ghee-finds-a-scene)).
+
+## Saving
+
+What Save does depends on whose scene it is.
+
+Your own scene: Save writes your changes into its files, like any editor.
+
+Any other scene, such as a bundled example or a scene in a folder that you
+serve: ghee never touches its files. Save keeps only your changes, as
+overrides in a state file of their own, in `~/.local/state/ghee`, or in
+`--state-dir DIR`. Each time a console opens that scene, with `ghee serve`
+or `ghee render --serve`, it lays your overrides on top. A `ghee render`
+without `--serve` ignores them and draws the original scene.
+
+If the scene's files change later, your overrides still apply. The console
+asks only where the two clash: keep yours, or take the files'.
+
+In the console, a scene can use only files inside its own folder or in
+`$GHEE_ASSETS`. A file given by an absolute path, or by a path that climbs
+out with `..`, fails to load there, even though `ghee render` loads it.
+
+## What a program locks
+
+When a [procedural scene](procedural.md)'s program sets a param or a layer,
+the console greys out its control. A layer added by
+a program is also locked on the frontend.
+
+When your Python program serves the console, with `ghee.open(serve=...)`,
+the console greys out whatever the program sets, the same way. That console
+can't switch scenes or save ([Python](python.md#the-console-from-python)).
+
+## From another computer
+
+By default, the console listens only on `127.0.0.1`, so only the machine
+that runs ghee can open it. To open it from another computer, the safest
+way is an ssh tunnel, which also gives you the H264 video:
+
+```shell
+ssh -L 8090:localhost:8090 pi@raspberrypi.local
+```
+
+Then open `http://localhost:8090/` on your computer.
+
+To open it to your network instead, pass `--host 0.0.0.0`, and open the
+Pi's address on port 8090. Over plain `http` from another computer, the
+browser shows the MJPEG stream: the H264 video needs `https` or
+`localhost`.
+
+Careful: the console has no password, and anyone who reaches it can change
+your scenes and run any shader. Open it only on a network you trust.
+Uploads stay off on a network until you pass `--allow-uploads`.
+
+A proxy in front of a console that listens on its own machine, such as
+`tailscale serve`, must send a `Host` of `localhost`, `127.0.0.1` or
+`[::1]`. The console refuses any other.
+
+To set the H264 video's and the MJPEG stream's size and frame rate, see
+`ghee serve --help`. To drive the console from a program, see [HTTP
+API](http.md).

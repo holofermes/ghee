@@ -70,14 +70,15 @@ void main() {
     vec2 c = vec2(0.3 + 0.4 * plan.b, 0.6 + 0.15 * plan.g);
     float trunk = 0.15 + 0.15 * plan.b;
     vec2 shore = (inblock - 2.0) / vec2(1.1, 0.8);
-    float water = (1.0 - smoothstep(0.95, 1.0, length(shore))) * plan.r;
+    float water = (1.0 - smoothstep(0.95, 1.0, length(shore))) * smoothstep(0.85, 0.95, plan.r);
     col *= 1.0 - 0.35 * (1.0 - smoothstep(0.2, 0.26, length((f - c - vec2(0.13, 0.05)) * vec2(1.0, 1.6))));
     vec2 q = f - c + vec2(0.0, trunk);
     float crown = (1.0 - smoothstep(0.21, 0.24, length(q))) * (1.0 - water);
     vec3 leaf = mix(foliage, foliage * 1.45 + 0.04, smoothstep(0.08, -0.16, q.x + q.y));
     col = mix(col, vec3(0.3, 0.22, 0.15), box(f, c - vec2(0.025, trunk), c + vec2(0.025, 0.0)) * (1.0 - water));
     col = mix(col, leaf, crown);
-    vec3 ripple = mix(pond, pond * 1.3 + 0.1, step(0.85, fract(dot(inblock, vec2(1.0, 3.0)) * 2.0 + iTime * 0.3)) * 0.4);
+    float ring = fract(length(shore) * 2.5 - iTime * 0.25);
+    vec3 ripple = mix(pond, pond * 1.25 + 0.08, smoothstep(0.3, 0.5, ring) * smoothstep(0.7, 0.5, ring) * 0.5);
     col = mix(col, mix(ripple, sand, smoothstep(0.82, 0.95, length(shore))), water);
   } else {
     float h = 0.1 + 0.22 * plan.g;

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "passes": [{
+    "name": "main",
+    "fragment": { "file": "bars.glsl" },
+    "arrays": [{ "name": "levels", "size": 16 }]
+  }]
+}

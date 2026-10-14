@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "passes": [
+    { "name": "main", "channels": [{ "buffer": "main" }], "fragment": { "file": "trail.glsl" } }
+  ]
+}

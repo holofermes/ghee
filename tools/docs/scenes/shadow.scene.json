@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "passes": [
+    { "name": "disc", "fragment": { "file": "disc.glsl" } },
+    { "name": "main", "channels": [{ "buffer": "disc" }], "fragment": { "file": "shadow.glsl" } }
+  ]
+}

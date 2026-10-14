@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "passes": [
+    { "name": "checker", "size": [64, 64], "sampling": "linear", "fragment": { "file": "checker.glsl" } },
+    { "name": "main", "channels": [{ "buffer": "checker" }], "fragment": { "file": "floor.glsl" } }
+  ]
+}

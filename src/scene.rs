@@ -1155,11 +1155,13 @@ fn declared_names(lines: &[String]) -> Vec<String> {
 /// `_at(i)` is one fetch at a computed coord. VC4 needs no uniform-array unroll
 /// and imposes no size cap.
 ///
-/// V3D cannot linear-filter a float texture, so a GPU-filtered fetch is nearest
-/// there and linear elsewhere. `hw_linear` says which GPU this is. Where the
-/// filter works, `_sample` and `_sample2` are one fetch. Where it does not, they
-/// read the exact texels and interpolate in the shader. That reproduces GL's
-/// LINEAR and CLAMP_TO_EDGE: texel centres and clamped edges.
+/// A GPU-filtered fetch is nearest on V3D, which cannot linear-filter a float
+/// texture, and on VC4, whose linear filter mixes a neighbour into a texel
+/// centre that is no binary fraction of the side, and linear elsewhere.
+/// `hw_linear` says which GPU this is. Where the filter works, `_sample` and
+/// `_sample2` are one fetch. Where it does not, they read the exact texels and
+/// interpolate in the shader. That reproduces GL's LINEAR and CLAMP_TO_EDGE:
+/// texel centres and clamped edges.
 fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     let n = &a.name;
     if let ArraySize::Grid(w, h) = a.size {
@@ -1175,10 +1177,10 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
                 py_float(w as f64),
                 py_float(h as f64)
             ),
-            "  vec2 x = p * dim - 0.5;".to_string(),
-            "  vec2 i = floor(x);".to_string(),
-            "  vec2 lo = (clamp(i, vec2(0.0), dim - 1.0) + 0.5) / dim;".to_string(),
-            "  vec2 hi = (clamp(i + 1.0, vec2(0.0), dim - 1.0) + 0.5) / dim;".to_string(),
+            "  vec2 x = clamp(p * dim - 0.5, vec2(0.0), dim - 1.0);".to_string(),
+            "  vec2 i = vec2(ivec2(x));".to_string(),
+            "  vec2 lo = (i + 0.5) / dim;".to_string(),
+            "  vec2 hi = lo + 1.0 / dim;".to_string(),
             format!("  float a = texture2D({n}_tex, vec2(lo.x, lo.y)).r;"),
             format!("  float b = texture2D({n}_tex, vec2(hi.x, lo.y)).r;"),
             format!("  float c = texture2D({n}_tex, vec2(lo.x, hi.y)).r;"),
@@ -1201,11 +1203,11 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     vec![
         at,
         format!("float {n}_sample(float t){{"),
-        format!("  float x = t * float({n}_count) - 0.5;"),
-        "  float i = floor(x);".to_string(),
-        format!("  float last = float({n}_count - 1);"),
-        format!("  float a = {n}_at(int(clamp(i, 0.0, last)));"),
-        format!("  float b = {n}_at(int(clamp(i + 1.0, 0.0, last)));"),
+        format!("  float x = clamp(t * float({n}_count) - 0.5, 0.0, float({n}_count - 1));"),
+        "  float i = float(int(x));".to_string(),
+        format!("  float lo = (i + 0.5) / float({n}_count);"),
+        format!("  float a = texture2D({n}_tex, vec2(lo, 0.5)).r;"),
+        format!("  float b = texture2D({n}_tex, vec2(lo + 1.0 / float({n}_count), 0.5)).r;"),
         "  return mix(a, b, x - i);".to_string(),
         "}".to_string(),
     ]

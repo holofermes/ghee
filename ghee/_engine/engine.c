@@ -913,7 +913,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
                   (version && strncmp(version, "OpenGL ES 3", 11) == 0);
     SAY(2, "   format  data texture %s%s\n",
             g->has_float_tex ? "float" : "8-bit LUMINANCE",
-            g->has_float_tex ? (g->has_float_linear ? " (linear)" : " (nearest)") : " (linear)");
+            g->has_float_tex && g->has_float_linear ? " (linear)" : " (nearest)");
 
     clock_gettime(CLOCK_MONOTONIC, &g->start_time);
     g->dt = 1.0f / 60.0f;
@@ -1975,7 +1975,7 @@ static int mp_array_bind(GheeScene *g, const char *name, int count, int rows, bo
     glBindTexture(GL_TEXTURE_2D, g->mp_array_tex[idx]);
     *fresh = (g->mp_array_size[idx] != count * rows);
     if (*fresh) {
-        const GLint filt = g->has_float_tex && !g->has_float_linear ? GL_NEAREST : GL_LINEAR;
+        const GLint filt = ghee_data_texture_linear(g) ? GL_LINEAR : GL_NEAREST;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -3715,10 +3715,12 @@ int ghee_gl_fd(GheeScene *g) {
     return g->gpu_fd >= 0 ? g->gpu_fd : g->drm_fd;
 }
 
-// Whether this GL linear-filters a data texture. ghee_mp_set_array picks its
-// filter from the same condition. False on V3D, which has float textures but
-// no OES_texture_float_linear, so a filtered fetch is nearest.
-bool ghee_data_texture_linear(GheeScene *g) { return g && !(g->has_float_tex && !g->has_float_linear); }
+// Whether this GL linear-filters a data texture, which ghee_mp_set_array
+// filters by the same answer. False on V3D, which has float textures but no
+// OES_texture_float_linear, and on VC4, whose linear filter mixes a
+// neighbour into a read at a texel centre that is no binary fraction of the
+// side.
+bool ghee_data_texture_linear(GheeScene *g) { return g && g->has_float_tex && g->has_float_linear; }
 
 bool ghee_mipmaps_npot(GheeScene *g) { return g && g->has_npot; }
 

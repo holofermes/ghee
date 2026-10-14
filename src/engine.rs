@@ -5244,8 +5244,8 @@ impl Renderer {
     }
 
     /// True when this GPU linear-filters the float textures that carry arrays.
-    /// V3D returns false. It has no OES_texture_float_linear.
-    /// A filtered fetch there returns the nearest texel.
+    /// V3D and VC4 return false, and a filtered fetch there returns the
+    /// nearest texel.
     pub fn data_texture_linear(&self) -> bool {
         unsafe { ffi::ghee_data_texture_linear(self.handle) }
     }
@@ -7854,6 +7854,46 @@ mod tests {
                 got.iter().cloned().fold(f64::MIN, f64::max),
             );
             assert_eq!(lo, hi); // One value covers the whole frame.
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn every_texel_of_an_array_reads_as_fed_at_its_centre() {
+        // No centre of 28 texels is an exact binary fraction, and each texel
+        // stands far from its neighbours, so a read that mixes one in moves.
+        const N: usize = 28;
+        let level = |c: usize, r: usize| {
+            let k = (c * 7 + r * 3) % 40;
+            if (c + r).is_multiple_of(2) {
+                k
+            } else {
+                255 - k
+            }
+        };
+        let grid: Vec<f32> = (0..N * N)
+            .map(|i| level(i % N, i / N) as f32 / 255.0)
+            .collect();
+        let line: Vec<f32> = (0..N).map(|i| level(i, 0) as f32 / 255.0).collect();
+        let sc = scene_of(json!([{
+            "name": "main",
+            "arrays": [{"name": "grid", "size": [N, N]}, {"name": "line", "size": N}],
+            "fragment": "void main(){ vec2 i = floor(gl_FragCoord.xy); \
+                gl_FragColor = vec4(grid_sample2((i + 0.5) / 28.0), line_at(int(i.x)), \
+                line_sample((i.x + 0.5) / 28.0), 1.0); }",
+        }]));
+        let (_g, mut r) = gpu_at(N, N);
+        for shader_lerp in [false, true] {
+            r.shader_lerp = shader_lerp;
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            let mut provider = |name: &str, _: ArraySize| match name {
+                "grid" => Feed::Data(grid.clone()),
+                _ => Feed::Data(line.clone()),
+            };
+            let f = r.render(Some(&mut provider)).unwrap().to_vec();
+            assert_pixels(&f, N, N, &format!("shader_lerp {shader_lerp}"), |x, y| {
+                [level(x, y), level(x, 0), level(x, 0)].map(|l| l as f64)
+            });
         }
     }
 

@@ -3035,8 +3035,8 @@ impl Renderer {
     }
 
     /// The size in pixels of the block that `words` lay out in, as a text
-    /// layer of pass `pass` would lay them out in its font `font_family`,
-    /// DejaVu Sans when None: at `font_size` pixels per em, or at the
+    /// layer of pass `pass` would lay them out in its fonts `font_family`,
+    /// DejaVu Sans when empty: at `font_size` pixels per em, or at the
     /// size that fits the block to the pass, centred.
     ///
     /// A font that the scene cannot give the layer fails with a Refused
@@ -3046,7 +3046,7 @@ impl Renderer {
         pass: &str,
         words: &str,
         font_size: Option<f64>,
-        font_family: Option<&str>,
+        font_family: &[&str],
     ) -> Result<[f64; 2]> {
         let scene = self.scene.borrow();
         let Some(scene) = scene.as_ref() else {
@@ -4146,7 +4146,13 @@ impl Renderer {
         let Some(drawn) = self.drawn(name) else {
             return Ok((Vec::new(), Vec::new()));
         };
-        let fonts: Vec<text::Font> = (0..=built.glyphs.iter().map(|p| p.font).max().unwrap_or(0))
+        let own = layer.data.as_ref().map_or(1, Vec::len);
+        let count = built
+            .glyphs
+            .iter()
+            .map(|p| p.font + 1)
+            .fold(own, usize::max);
+        let fonts: Vec<text::Font> = (0..count)
             .map(|i| layer.font(i).ok_or_else(|| layer.font_name(i)))
             .collect();
         let mut all = self.hinted.borrow_mut();

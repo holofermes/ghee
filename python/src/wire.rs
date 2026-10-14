@@ -190,8 +190,10 @@ impl LayerWire {
         size: (f64, f64),
         base_dir: &str,
         font_size: Option<f64>,
-        font_family: Option<&str>,
+        font_family: Option<Bound<'_, PyAny>>,
     ) -> PyResult<(f64, f64)> {
+        let family = crate::draw::family(font_family.as_ref())?;
+        let family: Vec<&str> = family.iter().map(String::as_str).collect();
         if self.loaded.is_none() {
             let mut loaded = self.handed.clone();
             loaded
@@ -202,7 +204,7 @@ impl LayerWire {
         }
         let scene = self.loaded.as_ref().expect("loaded just now");
         let [w, h] = scene
-            .measure([size.0, size.1], words, font_size, font_family)
+            .measure([size.0, size.1], words, font_size, &family)
             .map_err(scene_fault)
             .map_err(fault)?;
         Ok((w, h))

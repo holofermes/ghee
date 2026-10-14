@@ -843,7 +843,8 @@ fn a_layer_declaration_names_what_it_lacks() {
     let colour =
         "needs '#rrggbb', a CSS colour name, [r, g, b] or a gradient {\"from\", \"to\", \"angle\"}";
     let forms = "needs '#rrggbb', a CSS colour name or three numbers [r, g, b]";
-    let family = "font_family needs the name of a font asset or a .ttf or .otf file";
+    let family =
+        "font_family needs the name of a font asset or a .ttf or .otf file, or a list of them";
     let cases = [
         (
             scene_err(&layers_scene(json!(3))),
@@ -930,6 +931,20 @@ fn a_layer_declaration_names_what_it_lacks() {
         (
             t(json!({"font_family": ""})),
             format!("layer 't' {family}, got ''"),
+        ),
+        (
+            t(json!({"font_family": []})),
+            format!("layer 't' {family}, got []"),
+        ),
+        (
+            t(json!({"font_family": ["sans", 3]})),
+            format!("layer 't' {family}, got ['sans', 3]"),
+        ),
+        (
+            t(json!({"font_family": ["sans", "serif"]})),
+            "layer 't' font_family 'serif' is no asset of the scene, no .ttf or .otf file and \
+             no font that ghee carries, 'DejaVu Sans' or 'Pixel Operator 8'"
+                .to_string(),
         ),
         (
             t(json!({"font_family": "serif"})),
@@ -1309,13 +1324,77 @@ fn a_measure_is_the_block_in_pixels_at_its_size_or_at_the_fit() {
                 _ => fit,
             }
         });
-        let got = sc.measure(pass, words, size, family).unwrap();
+        let got = sc.measure(pass, words, size, family.as_slice()).unwrap();
         let want = [laid.width * px, laid.height * px];
         assert!(
             (got[0] - want[0]).abs() < 1e-6 && (got[1] - want[1]).abs() < 1e-6,
             "{family:?} {words:?} {size:?}: {got:?}, want {want:?}"
         );
     }
+}
+
+#[test]
+fn a_measure_in_a_list_of_fonts_adds_up_each_fonts_run_on_the_first_fonts_line() {
+    // Two glyphs of two fonts take no kerning, and every font draws at the
+    // layer's size, so the block of a line is as wide as the blocks of its
+    // runs, each in its own font, and as tall as the first font's line. The
+    // measure is the layout's block at the size, or at the size that fits.
+    let _g = lock();
+    let sc = loaded(&json!({"version": 1,
+                            "assets": {"face": {"file": SANS}, "emoji": {"file": EMOJI}},
+                            "passes": [{"name": "main", "fragment": "void main(){}"}]}));
+    let list = ["face", text::DEJAVU, "emoji"];
+    let at = |words: &str, family: &[&str], size| {
+        sc.measure([256.0, 64.0], words, size, family).unwrap()
+    };
+    let words = "AV\u{e9}\u{1f600}";
+    let whole = at(words, &list, Some(20.0));
+    let runs = [
+        at("AV", &["face"], Some(20.0)),
+        at("\u{e9}", &[text::DEJAVU], Some(20.0)),
+        at("\u{1f600}", &["emoji"], Some(20.0)),
+    ];
+    let width: f64 = runs.iter().map(|r| r[0]).sum();
+    assert!((whole[0] - width).abs() < 1e-9, "{whole:?} {runs:?}");
+    assert_eq!(whole[1], runs[0][1]);
+    let fonts = vec![
+        Ok(Arc::new(font(SANS))),
+        Ok(Arc::new(font(LATIN))),
+        Ok(Arc::new(font(EMOJI))),
+    ];
+    let laid = text::build(&fonts, words, Align::Left);
+    assert_eq!(laid.faults, []);
+    let (bw, bh) = block(laid.built.as_ref().unwrap());
+    assert!(near((whole[0], whole[1]), (bw * 20.0, bh * 20.0)));
+    let m = 0.05 * 64.0;
+    let fit = ((256.0 - 2.0 * m) / bw).min((64.0 - 2.0 * m) / bh);
+    assert!(near(
+        (at(words, &list, None)[0], at(words, &list, None)[1]),
+        (bw * fit, bh * fit)
+    ));
+}
+
+#[test]
+fn a_list_of_fonts_loads_each_and_names_the_one_that_fails() {
+    // A font that ghee carries, a font asset and a font file, in order.
+    let _g = lock();
+    let mut doc = layers_scene(json!([{"name": "label", "text": "I",
+                                       "font_family": [text::PIXEL, "sans", SANS]}]));
+    let sc = loaded(&doc);
+    let data = sc.text_layer("label").unwrap().data.clone().unwrap();
+    let bytes: Vec<Vec<u8>> = data.into_iter().map(|f| f.unwrap().to_vec()).collect();
+    assert_eq!(bytes, [font(PIXEL), font(SANS), font(SANS)]);
+    layer_of(&mut doc, "label")["font_family"] = json!(["sans", "Missing.ttf"]);
+    let sc = with_assets_env("", || loaded(&doc));
+    let data = sc.text_layer("label").unwrap().data.clone().unwrap();
+    assert_eq!(data[0].as_ref().unwrap().to_vec(), font(SANS));
+    assert!(
+        data[1].as_ref().unwrap_err().starts_with(&format!(
+            "layer 'label' font_family 'Missing.ttf' ({FONTS}/Missing.ttf): No such file"
+        )),
+        "{:?}",
+        data[1]
+    );
 }
 
 #[test]
@@ -1346,7 +1425,9 @@ fn a_measure_names_a_size_or_a_font_that_the_scene_cannot_take() {
         ),
     ];
     for (size, family, want) in rows {
-        let e = sc.measure([128.0, 32.0], "hi", size, family).unwrap_err();
+        let e = sc
+            .measure([128.0, 32.0], "hi", size, family.as_slice())
+            .unwrap_err();
         assert_eq!(e.to_string(), want);
     }
 }
@@ -3823,6 +3904,35 @@ fn a_layer_paints_its_colour_glyphs_in_their_own_colours() {
             assert_bitmap(&frame, w, &b, at, 1, [0, 0, 0], &what);
             assert_eq!(r.text_errors(), [] as [String; 0], "{what}");
         }
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_colour_font_in_a_list_paints_its_emoji_on_the_first_fonts_baseline() {
+    // The fixture sans draws A, and the colour font after it in the list
+    // draws the emoji in its own colours, past the advance of A, on the
+    // baseline of the sans.
+    let words = "A\u{1f600}";
+    let fonts = vec![Ok(Arc::new(font(SANS))), Ok(Arc::new(font(EMOJI)))];
+    let laid = text::build(&fonts, words, Align::Left);
+    assert_eq!(laid.faults, []);
+    let built = laid.built.as_ref().unwrap();
+    let a = drawn(SANS, "A", Align::Left);
+    assert_eq!((built.glyphs[0].font, built.colour[0].font), (0, 1));
+    assert_eq!(built.colour[0].origin, [a.size[0], a.glyphs[0].origin[1]]);
+    assert_eq!(built.size[1], a.size[1]);
+    let b = bitmap(EMOJI, '\u{1f600}');
+    let (w, h) = (300, 160);
+    let (fit, at) = bitmap_fit(built, 0, &b, 1.0, [100.0, 6.0]);
+    let mut doc = colour_scene(SANS, words, fit);
+    doc["assets"]["emoji"] = json!({"file": EMOJI});
+    layer_of(&mut doc, "label")["font_family"] = json!(["face", "emoji"]);
+    let (_g, mut r) = gpu(w, h);
+    for how in RENDERS {
+        let frame = render(&mut r, &loaded(&rendered(doc.clone(), how)));
+        assert_bitmap(&frame, w, &b, at, 1, [0, 0, 0], how);
+        assert_eq!(r.text_errors(), [] as [String; 0], "{how}");
     }
 }
 

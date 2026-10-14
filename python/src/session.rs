@@ -1156,7 +1156,7 @@ impl Session {
         &self,
         words: &str,
         font_size: Option<f64>,
-        font_family: Option<&str>,
+        font_family: &[&str],
     ) -> Outcome<(f64, f64)> {
         let pass = self.draw_pass();
         let [w, h] = self

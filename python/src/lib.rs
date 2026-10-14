@@ -386,19 +386,20 @@ impl Handle {
 
     /// The width and height in pixels of the block that `words` lay out in,
     /// as a drawing's text lays them out: at `font_size`, or at the size
-    /// that fits the screen when None, in `font_family`, DejaVu Sans when
-    /// None.
+    /// that fits the screen when None, in the fonts of `font_family`, DejaVu
+    /// Sans when None.
     #[pyo3(signature = (words, font_size=None, font_family=None))]
     fn measure(
         &mut self,
         words: &str,
         font_size: Option<f64>,
-        font_family: Option<PathBuf>,
+        font_family: Option<Bound<'_, PyAny>>,
     ) -> PyResult<(f64, f64)> {
-        let family = font_family.map(|f| f.to_string_lossy().into_owned());
+        let family = draw::family(font_family.as_ref())?;
+        let family: Vec<&str> = family.iter().map(String::as_str).collect();
         self.held
             .get()?
-            .measure(words, font_size, family.as_deref())
+            .measure(words, font_size, &family)
             .map_err(fault)
     }
 

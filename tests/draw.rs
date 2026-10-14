@@ -252,6 +252,16 @@ fn a_call_gives_its_layer_the_look_that_update_layer_gives_its_look_written_out(
             vec![title(&[("glow", dict(&[("strength", n(0.5))]))])],
             true,
         ),
+        (
+            vec![
+                title(&[("font_family", list(&[s("Pixel Operator 8"), s("sans")]))]),
+                title(&[
+                    ("font_family", list(&[s("Pixel Operator 8"), s("sans")])),
+                    ("text", s("Hey")),
+                ]),
+            ],
+            true,
+        ),
         (vec![title(&[("glow", dict(&[("blur", n(0.5))]))])], false),
         (vec![title(&[("glow", dict(&[("sung", n(1.0))]))])], false),
         (

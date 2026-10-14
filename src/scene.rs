@@ -2222,7 +2222,7 @@ impl Scene {
     /// `l`, when it names no asset of the right kind.
     fn check_file(&self, l: &Layer) -> Result<()> {
         let fault = match l {
-            Layer::Text(t) => t.font_family.as_deref().and_then(|f| self.font_fault(f)),
+            Layer::Text(t) => t.font_family.iter().find_map(|f| self.font_fault(f)),
             Layer::Image(i) => self.image_fault(&i.image),
             Layer::Shape(_) => None,
         };
@@ -2315,7 +2315,7 @@ impl Scene {
         (old, words)
     }
 
-    /// Why a text layer of the scene cannot take `font` as its
+    /// Why a text layer of the scene cannot take `font` among its
     /// font_family, or None when it can: a font file, a font asset of the
     /// scene, or a font that ghee carries.
     fn font_fault(&self, font: &str) -> Option<String> {
@@ -2340,15 +2340,15 @@ impl Scene {
 
     /// The size in pixels of the block that `words` lay out in, as a text
     /// layer of the scene in a pass of `pass` pixels would lay them out in
-    /// `font_family`, DejaVu Sans when None: at `font_size` pixels per
-    /// em, or at the size that fits the block to the pass, centred. A font
-    /// file resolves as a layer's does.
+    /// the fonts `font_family`, DejaVu Sans when empty: at `font_size`
+    /// pixels per em, or at the size that fits the block to the pass,
+    /// centred. A font file resolves as a layer's does.
     pub fn measure(
         &self,
         pass: [f64; 2],
         words: &str,
         font_size: Option<f64>,
-        font_family: Option<&str>,
+        font_family: &[&str],
     ) -> Result<[f64; 2]> {
         if let Some(px) = font_size.filter(|px| !(px.is_finite() && *px > 0.0)) {
             bail!(
@@ -2356,7 +2356,7 @@ impl Scene {
                 py_float(px)
             );
         }
-        if let Some(e) = font_family.and_then(|f| self.font_fault(f)) {
+        if let Some(e) = font_family.iter().find_map(|f| self.font_fault(f)) {
             bail!("{e}");
         }
         let mut d = Map::new();
@@ -2365,8 +2365,8 @@ impl Scene {
         if let Some(px) = font_size {
             d.insert("font_size".to_string(), Value::from(px));
         }
-        if let Some(f) = font_family {
-            d.insert("font_family".to_string(), Value::from(f));
+        if !font_family.is_empty() {
+            d.insert("font_family".to_string(), Value::from(font_family));
         }
         let mut layer = Layer::from_dict(MEASURED, &Value::Object(d))?;
         // The layer's name opens each error of its fonts, and the caller
@@ -3127,29 +3127,33 @@ fn load_layer(
         Layer::Image(_) | Layer::Shape(_) => return Ok(()),
     };
     l.emoji = emoji.clone();
-    let Some(f) = l.font_family.clone() else {
+    if l.font_family.is_empty() {
         l.data = Some(vec![crate::text::dejavu_font()]);
         return Ok(());
-    };
-    if !crate::text::is_font_file(&f) {
-        l.data = match assets.iter().find(|a| a.name == f) {
-            Some(a) => a.font.clone().map(|f| vec![f]),
-            None => crate::text::carried(Some(&f)).map(|f| vec![f]),
-        };
-        return Ok(());
     }
-    if root.outside(&f) {
-        bail!(
-            "layer '{}' font_family {} is outside the scene directory",
-            l.name,
-            py_str_repr(&f)
-        );
+    let mut fonts = Vec::new();
+    for f in &l.font_family {
+        if !crate::text::is_font_file(f) {
+            let font = match assets.iter().find(|a| a.name == *f) {
+                Some(a) => a.font.clone(),
+                None => crate::text::carried(Some(f)),
+            };
+            fonts.extend(font);
+            continue;
+        }
+        if root.outside(f) {
+            bail!(
+                "layer '{}' font_family {} is outside the scene directory",
+                l.name,
+                py_str_repr(f)
+            );
+        }
+        let what = format!("layer '{}' font_family {}", l.name, py_str_repr(f));
+        fonts.push(root.read(f, &what).and_then(|(bytes, path)| {
+            crate::text::font(&bytes).map_err(|e| format!("{what} ({path}): unreadable font: {e}"))
+        }));
     }
-    let what = format!("layer '{}' font_family {}", l.name, py_str_repr(&f));
-    let font = root.read(&f, &what).and_then(|(bytes, path)| {
-        crate::text::font(&bytes).map_err(|e| format!("{what} ({path}): unreadable font: {e}"))
-    });
-    l.data = Some(vec![font]);
+    l.data = (fonts.len() == l.font_family.len()).then_some(fonts);
     Ok(())
 }
 
@@ -3361,7 +3365,7 @@ mod tests {
             "passes": [{"name": "m", "fragment": GOOD}]});
         let sc = Scene::from_dict(&doc, None, None).unwrap();
         let e = sc
-            .measure([64.0, 32.0], "Hi", Some(12.0), Some("sans"))
+            .measure([64.0, 32.0], "Hi", Some(12.0), &["sans"])
             .unwrap_err();
         assert_eq!(
             e.to_string(),
@@ -4450,6 +4454,12 @@ mod tests {
             (
                 json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD,
                     "layers": [{"name": "label", "text": "hi", "font_family": "../up.ttf"}]}]}),
+                "layer 'label' font_family '../up.ttf'",
+            ),
+            (
+                json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD,
+                    "layers": [{"name": "label", "text": "hi",
+                                "font_family": ["Pixel Operator 8", "../up.ttf"]}]}]}),
                 "layer 'label' font_family '../up.ttf'",
             ),
             (

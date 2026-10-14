@@ -589,14 +589,23 @@ fn pick_before<'f, 'a>(
 
 /// True when a font after `fonts` may draw a character of `words`: a
 /// character that needs ink and that no font of `fonts` holds, or one that
-/// U+FE0F follows.
+/// U+FE0F follows and that no font of `fonts` holds a colour glyph for.
 pub fn may_fall_back(fonts: &[Font], words: &str) -> bool {
     let faces = faces(fonts);
+    let colour = |ch: char| {
+        faces
+            .iter()
+            .flatten()
+            .any(|f| f.glyph_index(ch).is_some_and(|g| is_colour(f, g)))
+    };
     let chars: Vec<char> = words.chars().collect();
-    chars.iter().enumerate().any(|(i, &ch)| {
-        chars.get(i + 1) == Some(&EMOJI_SELECTOR)
-            || (needs_ink(ch) && pick(&faces, ch).is_none_or(|(_, _, g)| g.is_none()))
-    })
+    chars
+        .iter()
+        .enumerate()
+        .any(|(i, &ch)| match chars.get(i + 1) == Some(&EMOJI_SELECTOR) {
+            true => !colour(ch),
+            false => needs_ink(ch) && pick(&faces, ch).is_none_or(|(_, _, g)| g.is_none()),
+        })
 }
 
 /// True when `face` holds outlines, TrueType or CFF.

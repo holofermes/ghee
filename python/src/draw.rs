@@ -79,6 +79,33 @@ pub fn arg(v: &Bound<'_, PyAny>) -> Option<Arg> {
     arg(&plain(v)?)
 }
 
+/// The fonts that a `font_family` value names, in order: a str or a path,
+/// or a list or a tuple of them, and none for None.
+pub fn family(v: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
+    let Some(v) = v else {
+        return Ok(Vec::new());
+    };
+    let names = match arg(v) {
+        Some(Arg::None) => Some(Vec::new()),
+        Some(Arg::Str(s)) => Some(vec![s]),
+        Some(Arg::List(items)) => items
+            .into_iter()
+            .map(|a| match a {
+                Arg::Str(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    };
+    match names {
+        Some(names) => Ok(names),
+        None => Err(PyTypeError::new_err(format!(
+            "font_family needs a font's name or a path, or a list of them, got {}",
+            v.get_type().name()?
+        ))),
+    }
+}
+
 /// `v`, a value of none of the types that arg() reads as they are, as the
 /// shim's `_plain` writes it: a path as its str, an object with `tolist()`,
 /// such as a numpy number or array, as what that gives. None for any other

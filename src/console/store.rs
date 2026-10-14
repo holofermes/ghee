@@ -577,7 +577,7 @@ pub fn name_fault(name: &str) -> Option<String> {
 }
 
 /// The files that the scene document `doc` names beside it: each asset's
-/// file, an image layer's image file and a text layer's font file.
+/// file, an image layer's image file and a text layer's font files.
 pub fn files_of(doc: &Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |f: Option<&str>| {
@@ -603,7 +603,13 @@ pub fn files_of(doc: &Value) -> Vec<String> {
     for l in layers {
         let text = |k: &str| l.get(k).and_then(Value::as_str);
         add(text("image").filter(|f| crate::layer::is_image_file(f)));
-        add(text("font_family").filter(|f| crate::text::is_font_file(f)));
+        let fonts = match l.get("font_family") {
+            Some(Value::Array(names)) => names.iter().collect(),
+            f => Vec::from_iter(f),
+        };
+        for f in fonts {
+            add(f.as_str().filter(|f| crate::text::is_font_file(f)));
+        }
     }
     out
 }
@@ -1185,6 +1191,14 @@ mod tests {
         );
         let entries = fs::read_dir(&*m).unwrap().count();
         assert_eq!(entries, 3, "own, copy, blank and no temporary directory");
+    }
+
+    #[test]
+    fn the_files_of_a_scene_hold_each_font_file_of_a_list() {
+        let doc = json!({"passes": [{"name": "main", "layers": [
+            {"name": "a", "text": "hi", "font_family": ["Pixel Operator 8", "a.ttf", "noto"]},
+            {"name": "b", "text": "hi", "font_family": "b.otf"}]}]});
+        assert_eq!(files_of(&doc), ["a.ttf", "b.otf"]);
     }
 
     /// A directory inside the console's own, served as a scenes

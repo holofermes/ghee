@@ -309,11 +309,11 @@ impl Render {
         Render::Slug,
     ];
 
-    /// The render of a text layer in `font_family` that names none: hinted
-    /// for the pixel font, whose pixels it draws crisp, and auto for any
-    /// other.
-    pub fn default_for(font_family: Option<&str>) -> Render {
-        match font_family {
+    /// The render of a text layer that names none, by `first`, the first
+    /// font of its `font_family`: hinted for the pixel font, whose pixels it
+    /// draws crisp, and auto for any other.
+    pub fn default_for(first: Option<&str>) -> Render {
+        match first {
             Some(text::PIXEL) => Render::Hinted,
             _ => Render::Auto,
         }
@@ -904,18 +904,18 @@ pub struct TextLayer {
     pub text: String,
     /// The pixels per em. None fits the block to its room.
     pub font_size: Option<f64>,
-    /// A font asset of the scene, a .ttf or .otf file resolved as an
-    /// asset's file is, or the name of a font that ghee carries. None draws
-    /// from DejaVu Sans.
-    pub font_family: Option<String>,
+    /// The fonts of the words, in order, each a font asset of the scene, a
+    /// .ttf or .otf file resolved as an asset's file is, or the name of a
+    /// font that ghee carries. Empty draws from DejaVu Sans.
+    pub font_family: Vec<String>,
     pub text_align: Align,
     pub render: Render,
     /// The layer's effects, in the order of Kind::ALL.
     pub effects: Vec<Effect>,
     /// The bytes of the layer's fonts, or why they failed to load, in the
-    /// order that a character looks for its glyph: the font of
-    /// `font_family`, or DejaVu Sans. load_assets fills them, and from_dict
-    /// for a font that ghee carries.
+    /// order that a character looks for its glyph: the fonts of
+    /// `font_family`, or DejaVu Sans. load_assets fills them, and
+    /// from_dict for fonts that ghee carries.
     pub data: Option<Vec<Font>>,
     /// The font of the emoji that the layer's fonts lack, as load_assets
     /// found it. Words with a character that the layer's fonts lack, or one
@@ -935,6 +935,29 @@ pub struct Shaders {
     pub boxes: Program,
     /// The colour glyphs, each from its bitmap.
     pub colour: Program,
+}
+
+/// The fonts that a `font_family` value names, in order: one name, or a
+/// list of one or more. None for any other value.
+fn family_of(v: &Value) -> Option<Vec<String>> {
+    let name = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    match v {
+        Value::Array(names) if !names.is_empty() => names.iter().map(name).collect(),
+        v => Some(vec![name(v)?]),
+    }
+}
+
+/// The first font that `font_family` names, None for none.
+fn first(font_family: &[String]) -> Option<&str> {
+    font_family.first().map(String::as_str)
+}
+
+/// The fonts of a text in `font_family`, when ghee carries each of them.
+fn carried(font_family: &[String]) -> Option<Vec<Font>> {
+    match font_family {
+        [] => Some(vec![text::dejavu_font()]),
+        names => names.iter().map(|f| text::carried(Some(f))).collect(),
+    }
 }
 
 impl TextLayer {
@@ -970,12 +993,15 @@ impl TextLayer {
         };
         let font_size = number("font_size", |f| f > 0.0, "a number of pixels above 0")?;
         let font_family = match given("font_family") {
-            None => None,
-            Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
-            Some(v) => bail!(
-                "{what} font_family needs the name of a font asset or a .ttf or .otf file, got {}",
-                py_repr(v)
-            ),
+            None => Vec::new(),
+            Some(v) => match family_of(v) {
+                Some(f) => f,
+                None => bail!(
+                    "{what} font_family needs the name of a font asset or a .ttf or .otf file, \
+                     or a list of them, got {}",
+                    py_repr(v)
+                ),
+            },
         };
         let text_align = match given("text_align") {
             None => Align::Left,
@@ -988,7 +1014,7 @@ impl TextLayer {
             },
         };
         let render = match given("render").map(|v| v.as_str().and_then(Render::of)) {
-            None => Render::default_for(font_family.as_deref()),
+            None => Render::default_for(first(&font_family)),
             Some(Some(r)) => r,
             Some(None) => bail!(
                 "{what} render needs 'auto', 'hinted', 'mono', 'mtsdf' or 'slug', got {}",
@@ -1015,7 +1041,7 @@ impl TextLayer {
             blend: e.blend,
             text,
             font_size,
-            data: text::carried(font_family.as_deref()).map(|f| vec![f]),
+            data: carried(&font_family),
             emoji: None,
             font_family,
             text_align,
@@ -1038,9 +1064,8 @@ impl TextLayer {
         let Arg::Str(words) = words else { return None };
         let color = TextLayer::color_of(color)?;
         let font_family = match font_family {
-            Arg::None => None,
-            Arg::Str(s) if !s.is_empty() => Some(s.clone()),
-            _ => return None,
+            Arg::None => Vec::new(),
+            a => family_of(&a.to_json())?,
         };
         let text_align = match text_align {
             Arg::None => Align::Left,
@@ -1048,7 +1073,7 @@ impl TextLayer {
             _ => return None,
         };
         let render = match render {
-            Arg::None => Render::default_for(font_family.as_deref()),
+            Arg::None => Render::default_for(first(&font_family)),
             Arg::Str(s) => Render::of(s)?,
             _ => return None,
         };
@@ -1122,8 +1147,14 @@ impl TextLayer {
         if let Some(px) = self.font_size {
             d.insert("font_size".to_string(), Value::from(px));
         }
-        if let Some(f) = &self.font_family {
-            d.insert("font_family".to_string(), Value::from(f.clone()));
+        match &self.font_family[..] {
+            [] => {}
+            [one] => {
+                d.insert("font_family".to_string(), Value::from(one.as_str()));
+            }
+            all => {
+                d.insert("font_family".to_string(), Value::from(all.to_vec()));
+            }
         }
         if self.text_align != Align::Left {
             d.insert(
@@ -1131,7 +1162,7 @@ impl TextLayer {
                 Value::from(self.text_align.as_str()),
             );
         }
-        if self.render != Render::default_for(self.font_family.as_deref()) {
+        if self.render != Render::default_for(first(&self.font_family)) {
             d.insert("render".to_string(), Value::from(self.render.as_str()));
         }
         for e in &self.effects {
@@ -1230,10 +1261,10 @@ impl TextLayer {
     /// from, in an error: "font 'sans'", "font 'DejaVu Sans'", or "Noto
     /// Color Emoji".
     pub fn font_name(&self, i: usize) -> String {
-        match (i, &self.font_family) {
-            (0, Some(f)) => format!("font '{f}'"),
-            (0, None) => format!("font '{}'", text::DEJAVU),
-            _ => emoji::NAME.to_string(),
+        match self.font_family.get(i) {
+            Some(f) => format!("font '{f}'"),
+            None if i == 0 => format!("font '{}'", text::DEJAVU),
+            None => emoji::NAME.to_string(),
         }
     }
 
@@ -1353,12 +1384,12 @@ impl TextLayer {
         }
     }
 
-    /// The pixels per em of the grid that the layer's font draws on, for
-    /// the pixel font. A fitted size then rounds down to a whole multiple of
-    /// it, one grid at the least, and the block, each pen and each baseline
-    /// land on whole pixels.
+    /// The pixels per em of the grid that the layer's first font draws on,
+    /// for the pixel font. A fitted size then rounds down to a whole multiple
+    /// of it, one grid at the least, and the block, each pen and each
+    /// baseline land on whole pixels.
     pub(crate) fn grid(&self) -> Option<f64> {
-        (self.font_family.as_deref() == Some(text::PIXEL)).then_some(text::PIXEL_EM)
+        (first(&self.font_family) == Some(text::PIXEL)).then_some(text::PIXEL_EM)
     }
 
     /// The texels per em of the layer's atlas in a pass of `pass` pixels, its
@@ -2603,7 +2634,7 @@ impl Live {
 /// fields of each kind of layer, what an empty field of each kind takes, the
 /// keys of each shape, the fonts that ghee carries, each name the console
 /// shows with the `font_family` that it writes, the render that a text layer
-/// takes in each font, and the effects that each render draws.
+/// takes by its first font, and the effects that each render draws.
 pub fn format() -> Value {
     let mut effects = Map::new();
     for kind in Kind::ALL {
@@ -2936,7 +2967,7 @@ impl Layer {
                 blend: l.blend,
                 text: String::new(),
                 font_size: l.font_size,
-                font_family: None,
+                font_family: Vec::new(),
                 text_align: l.text_align,
                 render: l.render,
                 effects: l.effects.clone(),
@@ -3685,6 +3716,111 @@ mod tests {
             ))]
         );
         assert_eq!(laid.built.unwrap().glyphs[1].gid, 0);
+    }
+
+    #[test]
+    fn a_list_of_fonts_draws_each_character_from_the_first_that_holds_it() {
+        // The fixture sans holds ASCII alone, NotoColorEmoji-Smiles U+1F600
+        // in colour, DejaVu Sans é and an outline copyright sign, and the
+        // emoji font NotoColorEmoji-Copyright a colour copyright sign. None
+        // holds the snowman, U+2603. Each row is the emoji font, the words,
+        // and the characters drawn as glyphs and as colour glyphs, with the
+        // index of their font: the list's, then the emoji font.
+        let dir = crate::testing::TempDir::new("layer-list");
+        let read = |f: &str| {
+            let path = format!("{}/tools/fixtures/fonts/{f}", env!("CARGO_MANIFEST_DIR"));
+            text::font(&std::fs::read(path).unwrap())
+        };
+        let list = vec![
+            read("DejaVuSans-ASCII.ttf"),
+            read("NotoColorEmoji-Smiles.ttf"),
+            text::dejavu_font(),
+        ];
+        let copyright = Some("NotoColorEmoji-Copyright.ttf");
+        type Row<'a> = (
+            Option<&'a str>,
+            &'a str,
+            &'a [(char, usize)],
+            &'a [(char, usize)],
+        );
+        let rows: [Row; 4] = [
+            (
+                copyright,
+                "A\u{1f600}\u{e9}\u{a9}",
+                &[('A', 0), ('\u{e9}', 2), ('\u{a9}', 2)],
+                &[('\u{1f600}', 1)],
+            ),
+            (copyright, "\u{a9}\u{fe0f}", &[], &[('\u{a9}', 3)]),
+            // The snowman draws glyph 0 of the first font, its missing-glyph
+            // box, with an emoji font and without one.
+            (copyright, "\u{2603}", &[('\u{2603}', 0)], &[]),
+            (
+                None,
+                "\u{a9}\u{fe0f}\u{2603}",
+                &[('\u{a9}', 2), ('\u{2603}', 0)],
+                &[],
+            ),
+        ];
+        let mut kept = text::Glyphs::default();
+        for (emoji, words, glyphs, colour) in rows {
+            let mut l = falling_back(&dir, None, emoji, words);
+            l.data = Some(list.clone());
+            let through = l.lay_out(words, text::Curves::Own, &mut kept);
+            for laid in [l.build(words).unwrap(), through.unwrap()] {
+                assert_eq!(laid.faults, [], "{words:?}");
+                let built = laid.built.unwrap();
+                let of = |ps: &[text::Placement]| -> Vec<(char, usize)> {
+                    ps.iter().map(|p| (p.ch, p.font)).collect()
+                };
+                assert_eq!(of(&built.glyphs), glyphs, "{words:?} with {emoji:?}");
+                assert_eq!(of(&built.colour), colour, "{words:?} with {emoji:?}");
+                let snowman = built.glyphs.iter().find(|p| p.ch == '\u{2603}');
+                assert!(snowman.is_none_or(|p| p.gid == 0));
+            }
+        }
+        // An emoji that a font of the list holds in colour needs no emoji
+        // font, U+FE0F after it too.
+        assert!(!text::may_fall_back(&list, "\u{1f600}\u{fe0f}"));
+        assert!(text::may_fall_back(&list, "\u{a9}\u{fe0f}"));
+    }
+
+    #[test]
+    fn a_list_of_fonts_writes_back_as_given_and_its_first_font_sets_the_render_and_the_grid() {
+        let pixel_first = layer(json!({"font_family": ["Pixel Operator 8", "noto"]}));
+        assert_eq!(pixel_first.font_family, ["Pixel Operator 8", "noto"]);
+        assert_eq!(
+            (pixel_first.render, pixel_first.grid()),
+            (Render::Hinted, Some(text::PIXEL_EM))
+        );
+        assert_eq!(
+            pixel_first.to_dict()["font_family"],
+            json!(["Pixel Operator 8", "noto"])
+        );
+        assert!(pixel_first.to_dict().get("render").is_none());
+        let pixel_second = layer(json!({"font_family": ["noto", "Pixel Operator 8"]}));
+        assert_eq!(
+            (pixel_second.render, pixel_second.grid()),
+            (Render::Auto, None)
+        );
+        // One name in a list draws as the name alone, written as a string.
+        let one = layer(json!({"font_family": ["Pixel Operator 8"]}));
+        assert_eq!(one, layer(json!({"font_family": "Pixel Operator 8"})));
+        assert_eq!(one.to_dict()["font_family"], json!("Pixel Operator 8"));
+        // Fonts that ghee carries load as the layer parses, the others with
+        // the scene's assets.
+        assert_eq!(
+            layer(json!({"font_family": ["Pixel Operator 8", "DejaVu Sans"]})).data,
+            Some(vec![
+                text::carried(Some(text::PIXEL)).unwrap(),
+                text::dejavu_font()
+            ])
+        );
+        assert_eq!(pixel_first.data, None);
+        let names: Vec<String> = (0..3).map(|i| pixel_second.font_name(i)).collect();
+        assert_eq!(
+            names,
+            ["font 'noto'", "font 'Pixel Operator 8'", "Noto Color Emoji"]
+        );
     }
 
     fn text_and_image() -> (Layer, Layer) {

@@ -6,19 +6,19 @@
 """A karaoke line over a pixel-art sea at dusk, sung word by word.
 
 The pass `words` holds the line alone. Its text layer `line` draws the words
-in the pixel font with a glow, and the tick hook fills the sung letters
-through the karaoke effect's `sung`, word by word, LETTER seconds a letter.
-The pass `cue` holds the emoji, which the font asset `noto` draws from
-fonts/NotoColorEmoji-karaoke.ttf, the two emoji of the line cut from Noto
-Color Emoji. The tick measures the line with `ghee.measure`, puts the emoji
-after it, and centres both on the plate, a dialog box at the height that
-`line_y` sets. The words that the console gives `line` reach the tick in its
-params as `line.text`, and the tick measures and times them again.
+in the pixel font with a glow, and its emoji inline from the font asset
+`noto`, fonts/NotoColorEmoji-karaoke.ttf, the two emoji of the line cut from
+Noto Color Emoji. The tick hook fills the sung letters through the karaoke
+effect's `sung`, word by word, LETTER seconds a letter. The tick measures the
+line with `ghee.measure` and centres it on the plate, a dialog box at the
+height that `line_y` sets. The words that the console gives `line` reach the
+tick in its params as `line.text`, and the tick measures and times them
+again.
 
 The pass `sea` paints the scene and the plate ART pixels wide, and `main`
 reads it nearest, so its pixels show whole. Below the horizon, `sea` reads
-`words` and `cue` upside down, and the plate and the line shimmer in the
-water with the moon. `main` lays `words` over `sea`.
+`words` upside down, and the plate and the line shimmer in the water with the
+moon. `main` lays `words` over `sea`.
 
     ghee render --demo karaoke -o karaoke.####.png --frames 100 --timestep 0.05
     ghee render --demo karaoke --display kms
@@ -31,18 +31,15 @@ import ghee
 
 ghee.args()  # the probe, this scene takes no arguments
 
-LINE = "sing it with me"
-CUE = "🎤✨"
-FONT = "Pixel Operator 8"
+LINE = "sing it with me 🎤✨"
+FONTS = ["Pixel Operator 8", "noto"]
 LINE_Y = 0.22  # the plate's place, from the frame's top (0) to its bottom (1)
 LETTER = 0.2  # seconds to sing a letter
 BREATH = 0.2  # seconds between two words
 HOLD = 1.0  # seconds the last word is held
 REST = 1.0  # seconds from the end of the line to its next start
 ART = 160  # the sea's width in pixels
-CUE_SIZE = 13  # the emoji's size, in the sea's pixels per em
 EM = 8  # the line's size, in the sea's pixels per em
-GAP = 4  # the sea's pixels between the line and its emoji
 PAD = (5, 3)  # the sea's pixels between the line and the plate's border
 BORDER = 4  # the plate's border, in the sea's pixels
 MARGIN = 2  # the sea's pixels between the plate and the frame's edge
@@ -150,11 +147,9 @@ vec3 moon_face(vec2 m, float th) {
     return mix(face, mix(moon_shade, rose, 0.45), pit.y);
 }
 
-// The line and its emoji as one block, in the sea's pixels: left, top, size.
+// The line's block in the sea's pixels: left, top, size.
 vec4 block(vec2 res) {
-    vec2 words = floor(line_size * EM + 0.5);
-    vec2 cue = floor(emoji_size * CUE + 0.5);
-    vec2 size = vec2(words.x + GAP + cue.x, max(words.y, cue.y));
+    vec2 size = floor(line_size * EM + 0.5);
     float room = max(res.y - size.y - 2.0 * (EDGE.y + MARGIN), 0.0);
     return vec4(floor((res.x - size.x) * 0.5), MARGIN + EDGE.y + floor(room * line_y + 0.5), size);
 }
@@ -268,15 +263,8 @@ void main() {
     fg = max(fg, step(res.y * (0.88 + 0.12 * shore.x * shore.x), p.y));
     fg = max(fg, step(res.y * (0.86 + 0.14 * shore.y * shore.y), p.y));
 
-    vec4 cue = vec4(0.0);
-    if (gl_FragCoord.x >= 0.0) cue = texture2D(iChannel1, (mix(at, p, real) + 0.5) / res);
-    vec3 sprite = floor(cue.rgb / max(cue.a, 0.01) * 4.0 + 0.5) / 4.0;
-    float shown = step(0.5, cue.a);
-    col = mix(col, palms, fg * (1.0 - below));
-    col = mix(col, sprite, shown * fade * (1.0 - real));
-    col = mix(col, palms, fg * below);
+    col = mix(col, palms, fg);
     col = mix(col, box.rgb, box.a * real);
-    col = mix(col, sprite, shown * real);
     gl_FragColor = vec4(col, 1.0);
 }
 """
@@ -302,7 +290,7 @@ def song(text):
     """Each word of `text`: where its characters start and end, and when it
     is sung, in seconds from the line's start."""
     words, t = [], 0.0
-    for m in re.finditer(r"\S+", text):
+    for m in re.finditer(r"\S*\w\S*", text):
         words.append([m.start(), m.end(), t, t + LETTER * len(m[0])])
         t = words[-1][3] + BREATH
     if words:
@@ -321,7 +309,6 @@ def sung(words, t):
 
 _line = {
     "line.text": LINE,
-    "emoji.text": CUE,
     "line_y": LINE_Y,
     "song": song(LINE),
     "start": 0.0,
@@ -334,33 +321,22 @@ def whole(n):
 
 
 def lay_out():
-    """Centre the line and its emoji on the plate, as `block` in SEA does."""
+    """Centre the line on the plate, as `block` in SEA does."""
     width, height = ghee.render_size()
     px = cell(width)
     art_width, art_height = math.ceil(width / px), math.ceil(height / px)
-    words, rows = ghee.measure(_line["line.text"], font_size=EM * px, font_family=FONT)
-    words, rows = whole(words / px), whole(rows / px)
-    cue, cue_rows = (
-        whole(n)
-        for n in ghee.measure(
-            _line["emoji.text"], font_size=CUE_SIZE, font_family="noto"
-        )
-    )
-    size = (words + GAP + cue, max(rows, cue_rows))
-    room = max(art_height - size[1] - 2 * (PAD[1] + BORDER + MARGIN), 0)
-    left = (art_width - size[0]) // 2
-    top = MARGIN + PAD[1] + BORDER + whole(room * _line["line_y"])
-    ghee.layers.line.x = left * px
-    ghee.layers.line.y = (top + (size[1] - rows) // 2) * px
-    ghee.layers.emoji.x = left + words + GAP
-    ghee.layers.emoji.y = top + (size[1] - cue_rows) // 2
+    size = ghee.measure(_line["line.text"], font_size=EM * px, font_family=FONTS)
+    wide, tall = (whole(n / px) for n in size)
+    room = max(art_height - tall - 2 * (PAD[1] + BORDER + MARGIN), 0)
+    ghee.layers.line.x = (art_width - wide) // 2 * px
+    ghee.layers.line.y = (MARGIN + PAD[1] + BORDER + whole(room * _line["line_y"])) * px
 
 
 @ghee.tick
 def sing(tick):
     """Lay the line out again when its words or its height change, and sing
     new words from their start, then fill the sung letters."""
-    changed = [k for k in ("line.text", "emoji.text", "line_y") if k in tick.params]
+    changed = [k for k in ("line.text", "line_y") if k in tick.params]
     _line.update((k, tick.params[k]) for k in changed)
     if "line.text" in changed:
         _line["song"] = song(_line["line.text"])
@@ -394,7 +370,7 @@ def build():
                         "line",
                         LINE,
                         font_size=EM * px,
-                        font_family=FONT,
+                        font_family=FONTS,
                         render="hinted",
                         color="#c8b6dc",
                         text_shadow={
@@ -410,29 +386,14 @@ def build():
                 ],
             ),
             ghee.Pass(
-                "cue",
-                size=art,
-                layers=[
-                    ghee.Layer(
-                        "emoji",
-                        CUE,
-                        font_size=CUE_SIZE,
-                        font_family="noto",
-                        wave={"height": 0.12, "speed": 0.8},
-                    )
-                ],
-            ),
-            ghee.Pass(
                 "sea",
                 f"const float EM = {EM:.1f};\n"
-                f"const float CUE = {CUE_SIZE:.1f};\n"
-                f"const float GAP = {GAP:.1f};\n"
                 f"const vec2 EDGE = vec2({PAD[0] + BORDER:.1f}, {PAD[1] + BORDER:.1f});\n"
                 f"const float BORDER = {BORDER:.1f};\n"
                 f"const float MARGIN = {MARGIN:.1f};\n{SEA}",
                 size=art,
                 sampling="nearest",
-                channels=[ghee.Channel("words"), ghee.Channel("cue")],
+                channels=[ghee.Channel("words")],
                 params=[
                     ghee.Param("zenith", "color", NIGHT),
                     ghee.Param("dusk", "color", "#3d5470"),

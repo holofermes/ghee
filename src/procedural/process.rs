@@ -1246,10 +1246,17 @@ impl SceneProcess {
         if out.closed {
             return;
         }
+        let mut dt = dt;
         match out.pending.take() {
             Some(old) => {
                 for (name, value) in old.params {
                     params.entry(name).or_insert(value);
+                }
+                // The tick that the process never got leaves its time to this
+                // one, so the process's dt adds up to its time.
+                dt += old.dt;
+                if !self.pinned {
+                    dt = dt.min(crate::looper::MAX_DT);
                 }
             }
             None => self.offered += 1,
@@ -2607,6 +2614,45 @@ while IFS= read -r line; do :; done
             f.refused.iter().filter(|(name, _)| name == "tint").count(),
             2
         );
+    }
+
+    /// A process that reads no tick for half a second, then writes every
+    /// tick that it reads to ticks.jsonl in its own directory.
+    const SLOW_READER: &str = r#"#!/bin/sh
+printf '%s\n' '{"version": 1, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
+sleep 0.5
+cat > ticks.jsonl
+"#;
+
+    #[test]
+    fn the_dt_of_the_ticks_that_a_slow_process_gets_adds_up_to_its_time() {
+        let d = tmpdir("slow-reader");
+        let path = script(&d, "slow", SLOW_READER);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        f.pin();
+        // more ticks than the pipe holds, so the later ones drop
+        for frame in 0..3000u64 {
+            f.tick(frame, frame as f64 * 0.001, 0.001).unwrap();
+        }
+        // stdin closes, and the process reads what the pipe holds
+        drop(f);
+        let file = format!("{d}/ticks.jsonl");
+        let read = || fs::read_to_string(&file).unwrap_or_default();
+        assert!(wait_until(Duration::from_secs(5), || read().contains("\"frame\":2999")));
+        let seen: Vec<Value> = read()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let num = |t: &Value, k: &str| t[k].as_f64().unwrap();
+        assert!(seen
+            .windows(2)
+            .any(|w| num(&w[1], "frame") - num(&w[0], "frame") > 1.0));
+        // each tick's dt is the time since the tick before it in the file
+        for w in seen.windows(2) {
+            let gap = num(&w[1], "time") - num(&w[0], "time");
+            assert!((num(&w[1], "dt") - gap).abs() < 1e-9, "{w:?}");
+        }
     }
 
     /// A process in lockstep. It answers each tick 0.2 s late with the frame

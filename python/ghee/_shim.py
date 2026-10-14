@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from ghee._look import _call_look, _circle, _floats, _look, _plain  # noqa: F401
+from ghee._tick import Tick
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -535,6 +536,9 @@ class _Wire:
     kind 7, a layer taken out as kind 9, a layer moved as kind 10, and a
     hidden layer as a live set."""
 
+    def _tick(self) -> Tick | None:
+        return _TICK
+
     def _drawing(self) -> dict:
         return _live().drawing()
 
@@ -891,25 +895,6 @@ def _host_flags(p: argparse.ArgumentParser) -> None:
 # ------------------------------------------------------------------ the loop
 
 
-@dataclass
-class Tick:
-    """One render tick.
-
-    `frame` counts the ticks, and `time` and `dt` are in seconds: `dt` is
-    the time since the tick before, 1/60 for the first tick unless a timestep
-    pins it.
-    `params` holds the params that changed, each under its bare name, or as
-    `pass.name` when the bare name sets another param, each value as a scene
-    file writes it, and a text layer's words as its `text`, such as
-    `title.text`. The first tick holds them all.
-    """
-
-    frame: int
-    time: float
-    dt: float
-    params: dict[str, object]
-
-
 _FEEDS: dict = {}
 _HOOKS: list = []
 _OUT: list = []
@@ -927,6 +912,8 @@ _FILTERS: list = []
 _SCENE: Scene | None = None
 _LIVE = None
 _DRAWN = None
+# the tick that the wire handed this iteration
+_TICK: Tick | None = None
 
 
 def feed(name: str):
@@ -1262,7 +1249,7 @@ def run(scene: Scene | None = None) -> None:
     too and is already stopping. The scene ends where it stands, quietly: a
     traceback here would say a scene crashed, and it did what it was told.
     """
-    global _PARAMS, _FILTERS, _SCENE, _LIVE, _DRAWN
+    global _PARAMS, _FILTERS, _SCENE, _LIVE, _DRAWN, _TICK
     if scene is None:
         scene = Scene(passes=[Pass("main", _BLACK)])
     _PARAMS, _FILTERS = _param_types(scene), list(scene.filters)
@@ -1276,7 +1263,7 @@ def run(scene: Scene | None = None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        _PARAMS, _FILTERS, _SCENE, _LIVE = None, [], None, None
+        _PARAMS, _FILTERS, _SCENE, _LIVE, _TICK = None, [], None, None, None
 
 
 def _wire(scene: Scene) -> None:
@@ -1285,7 +1272,7 @@ def _wire(scene: Scene) -> None:
     Under a ghee that sets $GHEE_LOCKSTEP, every answer ends with kind 5, as
     the handshake's `"lockstep": true` promises.
     """
-    global _CLEAN
+    global _CLEAN, _TICK
     out = sys.stdout.buffer
     lockstep = bool(os.environ.get(LOCKSTEP))
     hello = scene.to_dict()
@@ -1297,7 +1284,7 @@ def _wire(scene: Scene) -> None:
     for line in sys.stdin:
         if not line.strip():
             continue
-        t = _tick(line)
+        t = _TICK = _tick(line)
         del _OUT[:]
         _CLEAN = False
         for hook in _HOOKS:
@@ -1456,7 +1443,7 @@ def _direct(scene: Scene) -> None:
     times: list = []
     try:
         while not _STOPPED and (frames == 0 or frame < frames):
-            t = _tick_of(handle._tick())
+            t = handle._tick()
             _CLEAN = False
             for hook in _HOOKS:
                 hook(t)

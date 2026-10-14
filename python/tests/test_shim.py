@@ -1219,7 +1219,7 @@ def test_the_stubs_name_what_the_native_module_takes():
     calls = {f.name: f for f in drawing.body if isinstance(f, ast.FunctionDef)}
     public = {n for n in dir(native.Drawing) if not n.startswith("_")}
     assert {n for n in calls if not n.startswith("_")} == public
-    for name in public:
+    for name in public - {"tick"}:
         assert params(calls[name]) == runtime(getattr(native.Drawing, name)), name
 
 

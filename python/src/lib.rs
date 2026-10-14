@@ -184,19 +184,17 @@ fn fed(name: &str, data: &Bound<'_, PyAny>) -> PyResult<Fed> {
     ))
 }
 
-fn tick_dict(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyDict>> {
-    let d = PyDict::new(py);
-    d.set_item("frame", tick.frame)?;
-    d.set_item("time", tick.time)?;
-    d.set_item("dt", tick.dt)?;
+/// `tick` as a ghee.Tick, from the module that loads with no shim.
+fn tick_of(py: Python<'_>, tick: Tick) -> PyResult<Bound<'_, PyAny>> {
     let params = match tick.params.is_empty() {
         true => PyDict::new(py).into_any(),
         false => py
             .import("json")?
             .call_method1("loads", (Value::Object(tick.params).to_string(),))?,
     };
-    d.set_item("params", params)?;
-    Ok(d)
+    py.import("ghee._tick")?
+        .getattr("Tick")?
+        .call1((tick.frame, tick.time, tick.dt, params))
 }
 
 /// What a drawing paints on, as the shim's drawing reads it.
@@ -418,9 +416,9 @@ impl Handle {
 
     /// Open this iteration and give its tick, which the next frame() or
     /// skip() takes and returns: the shim's hooks run between the two.
-    fn _tick<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    fn _tick<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let tick = self.held.get()?.begin().map_err(fault)?;
-        tick_dict(py, tick)
+        tick_of(py, tick)
     }
 
     /// The pass that a drawing paints on and its layers, every name that
@@ -470,23 +468,22 @@ impl Handle {
     /// Draw one frame and hand it to the output. The first frame waits for
     /// the glyphs of its words, as every frame does under `timestep`.
     ///
-    /// Returns this tick: {"frame", "time", "dt", "params"}. `dt` is the
-    /// time since the tick before, and `params` holds the params
-    /// that changed since the last tick, a text layer's words as its `text`,
-    /// the first tick all of them.
-    fn frame<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    /// Returns this frame's ghee.Tick: `frame`, `time`, `dt`, the time since
+    /// the tick before, and `params`, the params that changed since the last
+    /// tick, a text layer's words as its `text`, the first tick all of them.
+    fn frame<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let mut held = Held(self.held.get()?);
         let tick = py.detach(move || held.frame()).map_err(fault)?;
-        tick_dict(py, tick)
+        tick_of(py, tick)
     }
 
     /// Take this tick with no draw. The display keeps its last frame.
     ///
     /// Returns the same tick as frame().
-    fn skip<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    fn skip<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let mut held = Held(self.held.get()?);
         let tick = py.detach(move || held.skip()).map_err(fault)?;
-        tick_dict(py, tick)
+        tick_of(py, tick)
     }
 
     /// The last frame, row-major (height, width, components).

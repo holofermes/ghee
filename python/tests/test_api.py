@@ -43,7 +43,7 @@ def test_a_scene_renders_the_frame_it_declares():
         assert h.size == (320, 240)
         assert h.components == 4
         assert pixel(h) == (255, 0, 0, 255)
-        assert tick["frame"] == 0
+        assert tick.frame == 0
         assert len(h.pixels()) == 320 * 240 * 4
 
 
@@ -158,17 +158,17 @@ def test_skip_takes_the_tick_and_draws_nothing():
         drawn = h.pixels()
         h.set_param("gain", 0.0)
         tick = h.skip()
-        assert tick["frame"] == 1
+        assert tick.frame == 1
         assert h.pixels() == drawn
-        assert h.frame()["frame"] == 2
+        assert h.frame().frame == 2
 
 
 def test_a_tick_carries_the_frame_the_time_and_the_step():
     with ghee.open(RED, width=8, height=8, timestep=0.1) as h:
         ticks = [h.frame(), h.skip(), h.frame()]
-    assert [t["frame"] for t in ticks] == [0, 1, 2]
-    assert [round(t["time"], 6) for t in ticks] == [0.0, 0.1, 0.2]
-    assert [t["dt"] for t in ticks] == [0.1, 0.1, 0.1]
+    assert [t.frame for t in ticks] == [0, 1, 2]
+    assert [round(t.time, 6) for t in ticks] == [0.0, 0.1, 0.2]
+    assert [t.dt for t in ticks] == [0.1, 0.1, 0.1]
 
 
 def test_a_frame_after_a_long_wait_steps_a_quarter_second_at_most():
@@ -177,7 +177,7 @@ def test_a_frame_after_a_long_wait_steps_a_quarter_second_at_most():
         h.frame()
         time.sleep(0.4)
         tick = h.frame()
-        assert (tick["dt"], pixel(h)[0]) == (0.25, 255)
+        assert (tick.dt, pixel(h)[0]) == (0.25, 255)
 
 
 def test_an_unpinned_tick_reads_the_wall_clock():
@@ -185,17 +185,17 @@ def test_an_unpinned_tick_reads_the_wall_clock():
         first = h.frame()
         second = h.frame()
         third = h.frame()
-    assert first["time"] == 0.0
-    assert 0.0 < second["time"] < third["time"] < 5.0
-    assert first["dt"] == 1.0 / 60.0  # nothing is measured before the second frame
-    assert 0.0 < third["dt"] <= 0.25
+    assert first.time == 0.0
+    assert 0.0 < second.time < third.time < 5.0
+    assert first.dt == 1.0 / 60.0  # nothing is measured before the second frame
+    assert 0.0 < third.dt <= 0.25
 
 
 def test_the_ticks_dt_add_up_to_the_time_passed_over_skips():
     with ghee.open(RED, width=8, height=8) as h:
         ticks = [h.frame(), h.skip(), h.skip(), h.frame()]
-    passed = ticks[-1]["time"] - ticks[0]["time"]
-    assert sum(t["dt"] for t in ticks[1:]) == pytest.approx(passed, abs=1e-9)
+    passed = ticks[-1].time - ticks[0].time
+    assert sum(t.dt for t in ticks[1:]) == pytest.approx(passed, abs=1e-9)
 
 
 def test_a_pinned_timestep_repeats_a_render_bit_for_bit():
@@ -630,7 +630,7 @@ def test_a_tick_carries_the_dt_that_its_frame_draws_with():
             time.sleep(0.02)
             tick = h.frame()
             assert tick == opened
-            ticks.append((tick["dt"], pixel(h)[0]))
+            ticks.append((tick.dt, pixel(h)[0]))
     assert ticks[0][0] == 1.0 / 60.0
     for dt, red in ticks:
         assert abs(dt * 4 * 255 - red) <= 1.5, ticks

@@ -2,26 +2,17 @@
 
 import os
 from collections.abc import Iterable, Sequence
-from typing import Any, Literal, SupportsFloat, TypeAlias, TypedDict
+from typing import Any, Literal, SupportsFloat, TypeAlias
 
 from typing_extensions import Buffer, Self
 
 from ._shim import Blend, Layers, Render, Scene, TextAlign
+from ._tick import Tick
 
 __version__: str
 
 # The connected KMS display.
 _Display: TypeAlias = Literal["kms"]
-
-class _Tick(TypedDict):
-    """One tick: the frame's number, its time, the time since the tick
-    before, and the params that changed since the last tick, a text layer's
-    words as its `text`."""
-
-    frame: int
-    time: float
-    dt: float
-    params: dict[str, object]
 
 class Handle:
     """A rendering scene, and the output it draws to."""
@@ -60,8 +51,8 @@ class Handle:
         effect: str | None = None,
     ) -> None: ...
     def feed(self, name: str, data: Buffer | Iterable[SupportsFloat]) -> None: ...
-    def frame(self) -> _Tick: ...
-    def skip(self) -> _Tick: ...
+    def frame(self) -> Tick: ...
+    def skip(self) -> Tick: ...
     def pixels(self) -> bytes: ...
     def image(self) -> Any: ...
     def save(self, path: str | os.PathLike[str]) -> None: ...
@@ -84,6 +75,8 @@ class Drawing:
 
     Each call writes a layer. Leaving a screen's block draws the frame, and
     leaving the block of ghee.draw() hands its layers to the tick's frame.
+    `tick` holds the frame's tick from the moment the block opens, so a loop
+    reads the console's changes before it draws.
     A call takes the keys of its layer as keywords, the effects included, as
     ghee.Layer takes them, and `name`. Positions and box sizes are pixels
     from the top left, y down, on the screen's last pass before its filters,
@@ -110,6 +103,8 @@ class Drawing:
     def __init__(
         self, handle: Any, screen: _Screen, ends_frame: bool = True
     ) -> None: ...
+    @property
+    def tick(self) -> Tick | None: ...
     def __enter__(self) -> Self: ...
     def __exit__(self, *_args: object) -> bool: ...
     def text(

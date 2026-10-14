@@ -408,6 +408,8 @@ struct Changed {
 ///
 /// Each call writes a layer. Leaving a screen's block draws the frame, and
 /// leaving the block of ghee.draw() hands its layers to the tick's frame.
+/// `tick` holds the frame's tick from the moment the block opens, so a loop
+/// reads the console's changes before it draws.
 /// A call takes the keys of its layer as keywords, the effects included, as
 /// ghee.Layer takes them, and `name`. Positions and box sizes are pixels
 /// from the top left, y down, on the screen's last pass before its filters,
@@ -434,6 +436,8 @@ pub struct Drawing {
     handle: Py<PyAny>,
     screen: Py<Screen>,
     ends_frame: bool,
+    /// The tick of the frame, from the handle as the block opens.
+    tick: Option<Py<PyAny>>,
     /// Each line's count of calls in the frame.
     counts: Vec<u32>,
     /// The layer of each call, in order.
@@ -448,6 +452,7 @@ impl Drawing {
             handle,
             screen,
             ends_frame,
+            tick: None,
             counts: Vec::new(),
             layers: Vec::new(),
             changed: Vec::new(),
@@ -984,8 +989,17 @@ impl Drawing {
         Drawing::of(py, handle, screen, ends_frame)
     }
 
-    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
+    fn __enter__(mut slf: PyRefMut<'_, Self>) -> PyResult<PyRefMut<'_, Self>> {
+        let tick = slf.handle.bind(slf.py()).call_method0("_tick")?.unbind();
+        slf.tick = Some(tick);
+        Ok(slf)
+    }
+
+    /// The tick of the frame that the block draws, None before the block
+    /// opens.
+    #[getter]
+    fn tick(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        self.tick.as_ref().map(|t| t.clone_ref(py))
     }
 
     #[pyo3(signature = (kind, _value, _traceback))]

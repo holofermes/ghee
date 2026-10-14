@@ -17,6 +17,8 @@ import pytest
 from conftest import REPO
 from test_shim import REFUSED, load, scene_of
 
+from ghee._tick import Tick
+
 
 class Fake:
     """The handle open() hands back. It records what the loop asks of it, and
@@ -35,7 +37,7 @@ class Fake:
         if self.opened is None:
             params = self.changes.pop(0) if self.changes else {}
             n = self.ticks
-            self.opened = {"frame": n, "time": 0.5 * n, "dt": 0.5, "params": params}
+            self.opened = Tick(n, 0.5 * n, 0.5, params)
         return self.opened
 
     def _taken(self):

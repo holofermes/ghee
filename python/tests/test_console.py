@@ -161,13 +161,13 @@ def test_a_tick_hands_the_host_the_params_the_console_set():
             "glow.tone": 0.0,
             "title.text": "hi",
         }
-        assert h.frame()["params"] == first
-        assert h.skip()["params"] == {}
+        assert h.frame().params == first
+        assert h.skip().params == {}
         post(port, "/set?name=mood&value=wild")
         post(port, "/set?name=gain&value=0.5")
         post(port, "/set?pass=glow&name=tone&value=0.75")
         post(port, "/set?layer=title&field=text&value=ho")
-        assert h.frame()["params"] == {
+        assert h.frame().params == {
             "mood": "wild",
             "gain": 0.5,
             "glow.tone": 0.75,
@@ -177,7 +177,28 @@ def test_a_tick_hands_the_host_the_params_the_console_set():
         h.set_param("gain", 0.25)
         h.set_param("tone", 0.1, in_pass="glow")
         h.layers.title.text = "own"
-        assert h.frame()["params"] == {}
+        assert h.frame().params == {}
+
+
+def test_a_drawing_reads_the_console_s_change_before_it_draws():
+    port = free_port()
+    doc = {
+        "version": 1,
+        "params": {"gain": {"type": "float", "value": 0.0}},
+        "passes": [
+            {"name": "main", "fragment": "void main(){ gl_FragColor = vec4(gain); }"}
+        ],
+    }
+    with ghee.open(doc, width=8, height=8, serve=port) as h:
+        h.frame()
+        post(port, "/set?name=gain&value=0.5")
+        with h.draw() as d:
+            seen = d.tick.params
+            d.text(f"{seen.get('gain')}", name="seen")
+        assert seen == {"gain": 0.5}
+        tick = h.frame()
+        assert (tick.frame, tick.params) == (2, {})
+        assert isinstance(tick, ghee.Tick)
 
 
 def test_the_console_publishes_the_render(served):

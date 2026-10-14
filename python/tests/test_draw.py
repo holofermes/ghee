@@ -35,6 +35,9 @@ class Fake:
             "all": list(layers),
         }
 
+    def _tick(self):
+        return ghee.Tick(0, 0.0, 1 / 60, {})
+
     def _drawing(self):
         return self.scene
 

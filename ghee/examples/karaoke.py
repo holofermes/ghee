@@ -7,12 +7,13 @@
 
 The pass `words` holds the line alone. Its text layer `line` draws the words
 in the pixel font with a glow, and the tick hook fills the sung letters
-through the karaoke effect's `sung`, word by word on the times of SONG. The
-pass `cue` holds the emoji, which the font asset `noto` draws from
+through the karaoke effect's `sung`, word by word, LETTER seconds a letter.
+The pass `cue` holds the emoji, which the font asset `noto` draws from
 fonts/NotoColorEmoji-karaoke.ttf, the two emoji of the line cut from Noto
 Color Emoji. The tick measures the line with `ghee.measure`, puts the emoji
 after it, and centres both on the plate, a dialog box at the height that
-`line_y` sets.
+`line_y` sets. The words that the console gives `line` reach the tick in its
+params as `line.text`, and the tick measures and times them again.
 
 The pass `sea` paints the scene and the plate ART pixels wide, and `main`
 reads it nearest, so its pixels show whole. Below the horizon, `sea` reads
@@ -24,6 +25,7 @@ water with the moon. `main` lays `words` over `sea`.
 """
 
 import math
+import re
 
 import ghee
 
@@ -33,9 +35,10 @@ LINE = "sing it with me"
 CUE = "🎤✨"
 FONT = "Pixel Operator 8"
 LINE_Y = 0.22  # the plate's place, from the frame's top (0) to its bottom (1)
-# Each word of LINE: its first character and when it is sung, in seconds.
-SONG = ((0, 0.0, 0.8), (5, 1.0, 1.4), (8, 1.5, 2.3), (13, 2.5, 4.0))
-BAR = 5.0  # seconds from one start of the line to the next
+LETTER = 0.2  # seconds to sing a letter
+BREATH = 0.2  # seconds between two words
+HOLD = 1.0  # seconds the last word is held
+REST = 1.0  # seconds from the end of the line to its next start
 ART = 160  # the sea's width in pixels
 CUE_SIZE = 13  # the emoji's size, in the sea's pixels per em
 EM = 8  # the line's size, in the sea's pixels per em
@@ -274,22 +277,40 @@ void main() {
 }
 """
 
-_line = {"y": LINE_Y}
-
 
 def cell(width):
     """The frame's pixels to one pixel of the sea, on a frame `width` wide."""
     return max(1, round(width / ART))
 
 
-def sung(t):
-    """How many characters of LINE are sung `t` seconds into the bar."""
+def song(text):
+    """Each word of `text`: where its characters start and end, and when it
+    is sung, in seconds from the line's start."""
+    words, t = [], 0.0
+    for m in re.finditer(r"\S+", text):
+        words.append([m.start(), m.end(), t, t + LETTER * len(m[0])])
+        t = words[-1][3] + BREATH
+    if words:
+        words[-1][3] += HOLD
+    return words
+
+
+def sung(words, t):
+    """How many characters of the line are sung `t` seconds into its bar."""
     count = 0.0
-    for k, (first, start, end) in enumerate(SONG):
-        last = SONG[k + 1][0] - 1 if k + 1 < len(SONG) else len(LINE)
+    for first, last, start, end in words:
         if t >= start:
             count = first + min((t - start) / (end - start), 1.0) * (last - first)
     return count
+
+
+_line = {
+    "line.text": LINE,
+    "emoji.text": CUE,
+    "line_y": LINE_Y,
+    "song": song(LINE),
+    "start": 0.0,
+}
 
 
 def whole(n):
@@ -302,15 +323,18 @@ def lay_out():
     width, height = ghee.render_size()
     px = cell(width)
     art_width, art_height = math.ceil(width / px), math.ceil(height / px)
-    words, rows = ghee.measure(LINE, font_size=EM * px, font_family=FONT)
+    words, rows = ghee.measure(_line["line.text"], font_size=EM * px, font_family=FONT)
     words, rows = whole(words / px), whole(rows / px)
     cue, cue_rows = (
-        whole(n) for n in ghee.measure(CUE, font_size=CUE_SIZE, font_family="noto")
+        whole(n)
+        for n in ghee.measure(
+            _line["emoji.text"], font_size=CUE_SIZE, font_family="noto"
+        )
     )
     size = (words + GAP + cue, max(rows, cue_rows))
     room = max(art_height - size[1] - 2 * (PAD[1] + BORDER + MARGIN), 0)
     left = (art_width - size[0]) // 2
-    top = MARGIN + PAD[1] + BORDER + whole(room * _line["y"])
+    top = MARGIN + PAD[1] + BORDER + whole(room * _line["line_y"])
     ghee.layers.line.x = left * px
     ghee.layers.line.y = (top + (size[1] - rows) // 2) * px
     ghee.layers.emoji.x = left + words + GAP
@@ -319,11 +343,18 @@ def lay_out():
 
 @ghee.tick
 def sing(tick):
-    """Lay the line out when it moves, then fill the sung letters."""
-    if tick.frame == 0 or "line_y" in tick.params:
-        _line["y"] = tick.params.get("line_y", _line["y"])
+    """Lay the line out again when its words or its height change, and sing
+    new words from their start, then fill the sung letters."""
+    changed = [k for k in ("line.text", "emoji.text", "line_y") if k in tick.params]
+    _line.update((k, tick.params[k]) for k in changed)
+    if "line.text" in changed:
+        _line["song"] = song(_line["line.text"])
+        _line["start"] = tick.time
+    if changed or tick.frame == 0:
         lay_out()
-    ghee.layers.line.karaoke.sung = sung(tick.time % BAR)
+    words = _line["song"]
+    bar = (words[-1][3] if words else 0.0) + REST
+    ghee.layers.line.karaoke.sung = sung(words, (tick.time - _line["start"]) % bar)
 
 
 def build():

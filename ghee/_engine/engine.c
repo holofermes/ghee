@@ -337,6 +337,15 @@ struct GheeScene {
     GLint fade_sampler, fade_scale, fade_opacity, fade_vflip;
     bool fade_failed;                  // a fade buffer that GL refused, reported once
     int keep_last;                     // >0: an encoder samples the final pass, never draw it direct
+    // A headless readback of the whole frame can draw the last pass straight
+    // into a linear buffer and copy that out with the CPU. glReadPixels runs
+    // a blit on the GPU and detiles on the CPU, which costs VC4 and V3D more.
+    int read_linear;                   // 1 wherever the buffer can be made, -1 on VC4 and V3D, 0 never
+    struct gbm_bo *lin_bo;
+    EGLImageKHR lin_image;
+    GLuint lin_tex, lin_fbo;
+    bool lin_tried;
+    bool lin_last;                     // the last frame left its last pass in lin_fbo alone
 
     // `changed` is set by every call that changes what the running scene
     // draws, and a drawn frame clears it. `kept` holds the readback of the
@@ -905,6 +914,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
 
     clock_gettime(CLOCK_MONOTONIC, &g->start_time);
     g->dt = 1.0f / 60.0f;
+    g->read_linear = -1;
     return g;
 
 fail:
@@ -1174,6 +1184,9 @@ void ghee_destroy(GheeScene *g) {
             if (g->lent[i].tex) glDeleteTextures(1, &g->lent[i].tex);
             if (g->lent[i].image != EGL_NO_IMAGE_KHR && destroy_image) destroy_image(g->display, g->lent[i].image);
         }
+        if (g->lin_fbo) glDeleteFramebuffers(1, &g->lin_fbo);
+        if (g->lin_tex) glDeleteTextures(1, &g->lin_tex);
+        if (g->lin_image != EGL_NO_IMAGE_KHR && destroy_image) destroy_image(g->display, g->lin_image);
         if (g->preview_fbo) { glDeleteFramebuffers(1, &g->preview_fbo); glDeleteTextures(1, &g->preview_tex); }
         if (g->blit_prog) glDeleteProgram(g->blit_prog);
         if (g->fade_fbo) { glDeleteFramebuffers(1, &g->fade_fbo); glDeleteTextures(1, &g->fade_tex); }
@@ -1204,6 +1217,7 @@ void ghee_destroy(GheeScene *g) {
     free(g->mp_prog);
     free(g->mp_order);
     for (int i = 0; i < g->lent_count; i++) gbm_bo_destroy(g->lent[i].bo);
+    if (g->lin_bo) gbm_bo_destroy(g->lin_bo);
     if (g->gbm_surface) gbm_surface_destroy(g->gbm_surface);
     if (g->gbm) gbm_device_destroy(g->gbm);
     if (g->gpu_fd >= 0) close(g->gpu_fd);
@@ -1545,6 +1559,8 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
     g->bind_epoch++;
 }
 
+static void lin_restore(GheeScene *g);
+
 // Make the pending passes the scene: the running one is freed and replaced in a
 // single step, all but the buffers that ghee_mp_carry hands on. Returns the
 // pass count, -1 if nothing was pending (in which case the running scene is
@@ -1552,6 +1568,7 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
 int ghee_mp_commit(GheeScene *g) {
     if (g->stage_count <= 0) { set_error(g, "no pending passes to commit"); return -1; }
     make_current(g);
+    lin_restore(g);
     g->changed = true;
     int write[MP_MAX_PASSES] = { 0 };
     for (int p = 0; p < g->stage_count; p++) {
@@ -1807,6 +1824,7 @@ bool ghee_mp_set_channel(GheeScene *g, int pass, int channel, int src_pass) {
     }
     const int nchan = (channel + 1 > g->mp_nchan[pass]) ? channel + 1 : g->mp_nchan[pass];
     if (!mp_pass_fits(g, pass, nchan, g->mp_ndatatex[pass])) return false;
+    lin_restore(g);
     g->mp_chan_src[pass][channel] = src_pass;
     g->mp_nchan[pass] = nchan;
     g->changed = true;
@@ -2734,7 +2752,7 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
         // enforces that), so the direct scanout draw still gets the display
         // viewport.
         glViewport(0, 0, g->mp_w[p], g->mp_h[p]);
-        const float vflip = direct && !g->lent_count ? -1.0f : 1.0f;
+        const float vflip = direct && !target ? -1.0f : 1.0f;
         if (g->mp_program[p]) {
             // The fullscreen quad overwrites every pixel, so the clear is invisible, and
             // on tiled GPUs (VC4) it flags the target as not-loaded, skipping a
@@ -3392,11 +3410,157 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     g->presented = mono_seconds();
 }
 
+// Make the linear buffer of a headless readback, once. false when the GPU
+// makes no linear buffer that it renders into and the CPU maps.
+static bool ensure_linear(GheeScene *g) {
+    if (g->lin_fbo) return true;
+    if (g->lin_tried) return false;
+    g->lin_tried = true;
+    PFNEGLCREATEIMAGEKHRPROC create_image = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_target =
+        (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    PFNEGLDESTROYIMAGEKHRPROC destroy_image =
+        (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+    if (!create_image || !image_target || !destroy_image || !g->gbm) return false;
+    struct gbm_bo *bo = gbm_bo_create(g->gbm, g->out_w, g->out_h, GBM_FORMAT_ABGR8888,
+                                      GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+    if (!bo) return false;
+    uint32_t stride = 0;
+    void *map = NULL;
+    if (!gbm_bo_map(bo, 0, 0, g->out_w, g->out_h, GBM_BO_TRANSFER_READ, &stride, &map)) {
+        gbm_bo_destroy(bo);
+        return false;
+    }
+    gbm_bo_unmap(bo, map);
+    // v3d reads a dma-buf that arrives without a modifier as tiled.
+    uint64_t mod = gbm_bo_get_modifier(bo);
+    if (mod == DRM_FORMAT_MOD_INVALID) mod = DRM_FORMAT_MOD_LINEAR;
+    const int fd = gbm_bo_get_fd(bo);
+    if (fd < 0) { gbm_bo_destroy(bo); return false; }
+    const EGLint attr[] = {
+        EGL_WIDTH, g->out_w,
+        EGL_HEIGHT, g->out_h,
+        EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_ABGR8888,
+        EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)gbm_bo_get_stride(bo),
+        EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(mod & 0xffffffff),
+        EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(mod >> 32),
+        EGL_NONE };
+    const EGLImageKHR image = create_image(g->display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attr);
+    close(fd);
+    if (image == EGL_NO_IMAGE_KHR) { gbm_bo_destroy(bo); return false; }
+    while (glGetError() != GL_NO_ERROR) { }
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    image_target(GL_TEXTURE_2D, image);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (status != GL_FRAMEBUFFER_COMPLETE || glGetError() != GL_NO_ERROR) {
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+        destroy_image(g->display, image);
+        gbm_bo_destroy(bo);
+        return false;
+    }
+    g->lin_bo = bo;
+    g->lin_image = image;
+    g->lin_tex = tex;
+    g->lin_fbo = fbo;
+    return true;
+}
+
+// Whether this frame's whole readback draws the last pass into the linear
+// buffer alone: nothing else samples the last pass's own buffer, neither a
+// pass, nor a turn, nor an encoder.
+static bool reads_linear(GheeScene *g) {
+    if (g->display_mode || g->turn || g->keep_last || !g->read_linear) return false;
+    if (g->read_linear < 0 && !strstr(g->renderer, "VC4") && !strstr(g->renderer, "V3D")) return false;
+    const int last = g->mp_count - 1;
+    for (int p = 0; p < g->mp_count; p++)
+        for (int c = 0; c < g->mp_nchan[p]; c++)
+            if (g->mp_chan_src[p][c] == last) return false;
+    return ensure_linear(g);
+}
+
+// Copy the frame out of the linear buffer, as read_pixels reads the last
+// pass's buffer. false with the error set when the CPU cannot map it.
+static bool read_linear(GheeScene *g, uint8_t *out) {
+    uint32_t stride = 0;
+    void *map = NULL;
+    glFinish();
+    const uint8_t *src = gbm_bo_map(g->lin_bo, 0, 0, g->out_w, g->out_h, GBM_BO_TRANSFER_READ,
+                                    &stride, &map);
+    if (!src) {
+        set_error(g, "cannot map the %dx%d readback buffer: %s", g->out_w, g->out_h, strerror(errno));
+        return false;
+    }
+    const int w = g->out_w, h = g->out_h, c = g->components;
+    // A last pass that stores no alpha reads back 255 from its RGB buffer.
+    const bool opaque = !(g->mp_alpha[g->mp_count - 1] && g->keep_alpha);
+    for (int y = 0; y < h; y++) {
+        const uint8_t *row = src + (size_t)y * stride;
+        uint8_t *dst = out + (size_t)y * w * c;
+        if (c == 4) {
+            memcpy(dst, row, (size_t)w * 4);
+            if (opaque)
+                for (int x = 0; x < w; x++) dst[4 * x + 3] = 255;
+        } else {
+            for (int x = 0; x < w; x++) {
+                dst[3 * x] = row[4 * x];
+                dst[3 * x + 1] = row[4 * x + 1];
+                dst[3 * x + 2] = row[4 * x + 2];
+            }
+        }
+    }
+    gbm_bo_unmap(g->lin_bo, map);
+    return true;
+}
+
+// Copy a frame that left its last pass in the linear buffer alone into the
+// last pass's own buffer, for a reader that the frame did not have.
+static void lin_restore(GheeScene *g) {
+    if (!g->lin_last) return;
+    g->lin_last = false;
+    make_current(g);
+    if (g->mp_count <= 0 || !ensure_blit(g)) return;
+    const int last = g->mp_count - 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[last][1 - g->mp_write[last]]);
+    glViewport(0, 0, g->out_w, g->out_h);
+    glDisable(GL_BLEND);
+    bind_blit(g, g->lin_tex, 0.0f, 0.0f);
+    draw_blit(g, g->out_w, g->out_h);
+}
+
+bool ghee_read_linear(GheeScene *g, int mode) {
+    g->read_linear = mode;
+    if (!mode || g->display_mode) return false;
+    make_current(g);
+    return ensure_linear(g);
+}
+
 // Render every pass and swap. buffer_rgb NULL renders nothing back to the CPU,
 // pw/ph > 0 read back a GPU-downscaled preview instead of the full frame.
 void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (g->mp_count <= 0) { set_error(g, "render: the scene has no passes"); return; }
     make_current(g);
+    if (buffer_rgb && !(pw > 0 && ph > 0) && reads_linear(g)) {
+        g->scan_fbo = g->lin_fbo;
+        render_passes(g, elapsed_seconds(g), true);
+        g->lin_last = true;
+        if (!read_linear(g, buffer_rgb)) g->read_linear = 0;
+        for (int p = 0; p < g->mp_count; p++) g->mp_write[p] ^= 1;
+        return;
+    }
+    g->lin_last = false;
     render_passes(g, elapsed_seconds(g), false);
 
     const int last = g->mp_count - 1;
@@ -3572,6 +3736,7 @@ void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
 }
 
 void ghee_i_keep_last(GheeScene *g, int delta) {
+    lin_restore(g);
     g->keep_last += delta;
     if (g->keep_last < 0) g->keep_last = 0;
     g->changed = true;

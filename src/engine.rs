@@ -6936,6 +6936,93 @@ mod tests {
         }
     }
 
+    /// The frame of `steps` on a `components` renderer, the first set up and
+    /// each one after it an edit of the one before, each drawn once at time
+    /// 0, with the whole readback `linear` (a mode of ghee_read_linear), and
+    /// whether this GPU makes the linear buffer.
+    fn read_through(
+        components: i32,
+        alpha: bool,
+        steps: &[Value],
+        linear: c_int,
+    ) -> (Vec<u8>, bool) {
+        let _g = lock();
+        let dev = probe_dri_devices()
+            .into_iter()
+            .find(|d| Renderer::new(8, 8, components, Some(d), false, false).is_ok())
+            .expect("no GL device opens");
+        let mut r =
+            Renderer::new(W as i32, H as i32, components, Some(&dev), false, false).unwrap();
+        r.set_alpha(alpha);
+        let made = unsafe { ffi::ghee_read_linear(r.handle(), linear) };
+        let mut f = Vec::new();
+        for (k, passes) in steps.iter().enumerate() {
+            let sc = scene_of(passes.clone());
+            let err = match k {
+                0 => r.setup(&sc),
+                _ => r.rebuild(&sc),
+            };
+            assert_eq!(err.unwrap(), "");
+            r.set_time(Some(0.0));
+            f = r.render(None).unwrap().to_vec();
+        }
+        (f, made)
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_frame_read_through_the_linear_buffer_holds_the_bytes_that_glreadpixels_reads() {
+        // On a GPU whose GBM makes no linear buffer both reads are
+        // glReadPixels.
+        let half = "void main(){ gl_FragColor = vec4(uv * 0.5, 0.25, 0.5); }";
+        let gradient = json!([{"name": "main", "fragment": GRADIENT}]);
+        let rows: [(&str, i32, bool, Vec<Value>); 6] = [
+            ("rgba", 4, false, vec![gradient.clone()]),
+            ("rgb", 3, false, vec![gradient.clone()]),
+            (
+                "alpha",
+                4,
+                false,
+                vec![json!([{"name": "main", "fragment": half}])],
+            ),
+            (
+                "alpha kept",
+                4,
+                true,
+                vec![json!([{"name": "main", "fragment": half}])],
+            ),
+            (
+                "a sized pass under the last",
+                4,
+                false,
+                vec![json!([
+                    {"name": "small", "size": [8, 6], "fragment": GRADIENT},
+                    {"name": "main", "channels": [{"buffer": "small"}],
+                     "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
+                ])],
+            ),
+            (
+                "an edit that reads the frame before",
+                4,
+                true,
+                vec![
+                    gradient.clone(),
+                    json!([{"name": "main", "channels": [{"buffer": "main"}],
+                            "fragment": "void main(){ gl_FragColor = \
+                                texture2D(iChannel0, uv) * 0.5 + vec4(0.25); }"}]),
+                ],
+            ),
+        ];
+        for (what, components, alpha, steps) in &rows {
+            let (plain, _) = read_through(*components, *alpha, steps, 0);
+            let (linear, made) = read_through(*components, *alpha, steps, 1);
+            assert_eq!(linear, plain, "{what}, linear buffer made: {made}");
+        }
+        // The edit carries main's buffers, so its frame shows the gradient.
+        let (rebuilt, _) = read_through(4, true, &rows[5].3, 0);
+        assert_ne!(channel(&rebuilt, 0)[0], channel(&rebuilt, 0)[W * H - 1]);
+    }
+
     /// A sink that keeps every frame it takes, each read back into a buffer
     /// that no frame before it wrote.
     struct Kept(Vec<Vec<u8>>);

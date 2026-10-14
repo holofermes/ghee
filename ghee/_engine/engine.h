@@ -242,6 +242,11 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
 // Render the passes and scan the final buffer out to the display (display mode
 // only). buffer_rgb non-NULL also reads the frame back (for a console mirror).
 void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph);
+// How ghee_mp_render reads a whole headless frame back: through a linear
+// buffer that the last pass draws into and the CPU maps (1), on VC4 and V3D
+// alone, where that reads faster than glReadPixels (-1, the default), or with
+// glReadPixels always (0). Returns whether this GPU makes the linear buffer.
+bool ghee_read_linear(GheeScene *g, int mode);
 // Repeat the last frame in place of a render or a present that would draw
 // the same pixels: no call since the last drawn frame changed what the scene
 // draws, and nothing drawn reads iTime, iTimeDelta, iFrame or a buffer of the

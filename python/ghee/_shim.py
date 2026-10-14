@@ -66,9 +66,6 @@ ArgType = Literal["string", "int", "float", "size", "bool"]
 
 # ghee sets this in the scene process it starts. Without it, run() self-hosts.
 WIRE = "GHEE_WIRE"
-# ghee sets this when it reads kind 5 and the handshake's "lockstep". Without
-# it, the wire goes on with neither.
-LOCKSTEP = "GHEE_LOCKSTEP"
 
 
 # ---------------------------------------------------------------- scene model
@@ -1269,15 +1266,13 @@ def run(scene: Scene | None = None) -> None:
 def _wire(scene: Scene) -> None:
     """Write the handshake, then answer ticks until ghee closes stdin.
 
-    Under a ghee that sets $GHEE_LOCKSTEP, every answer ends with kind 5, as
-    the handshake's `"lockstep": true` promises.
+    Every answer ends with kind 5, as the handshake's `"lockstep": true`
+    promises.
     """
     global _CLEAN, _TICK
     out = sys.stdout.buffer
-    lockstep = bool(os.environ.get(LOCKSTEP))
     hello = scene.to_dict()
-    if lockstep:
-        hello["lockstep"] = True
+    hello["lockstep"] = True
     out.write(json.dumps(hello).encode("utf-8") + b"\n")
     out.flush()
     arrays = _arrays(scene)
@@ -1301,11 +1296,9 @@ def _wire(scene: Scene) -> None:
             _OUT.append(msg)
         if _CLEAN:
             _OUT.append(b"\x02")
-        if lockstep:
-            _OUT.append(b"\x05")
-        if _OUT:
-            out.write(b"".join(_OUT))
-            out.flush()
+        _OUT.append(b"\x05")
+        out.write(b"".join(_OUT))
+        out.flush()
 
 
 # --------------------------------------------------------------- direct mode

@@ -67,11 +67,6 @@ const MAX_VALUES: usize = 1 << 22;
 /// run() reads it to tell a ghee-started run from a direct one.
 const WIRE: &str = "GHEE_WIRE";
 
-/// ghee sets this env var in every scene process it starts, to say that it
-/// reads kind 5 and the handshake's `"lockstep"`. A scene sends them only
-/// when it finds the var, so it runs under a ghee that reads neither.
-const LOCKSTEP: &str = "GHEE_LOCKSTEP";
-
 /// ghee's render size, as WxH, in every scene process it starts.
 /// A scene sizes its own buffers against it, so `half` and `quarter` mean
 /// something before a single pass is built.
@@ -772,7 +767,6 @@ impl SceneProcess {
             .envs(uv)
             .env(SIZE, format!("{w}x{h}"))
             .env(WIRE, "1")
-            .env(LOCKSTEP, "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2186,7 +2180,7 @@ sleep 60
         let d = tmpdir("wire");
         let mark = format!("{d}/mark");
         let body = format!(
-            "printf '%s %s' \"$GHEE_WIRE\" \"$GHEE_LOCKSTEP\" > {mark}\n\
+            "printf '%s %s' \"$GHEE_WIRE\" \"${{GHEE_LOCKSTEP-unset}}\" > {mark}\n\
              printf '{{\"passes\":[{{\"name\":\"main\",\"fragment\":\"void main(){{}}\"}}]}}\\n'\n\
              sleep 5\n"
         );
@@ -2200,7 +2194,7 @@ sleep 60
         .unwrap();
         (f.term_after, f.kill_after) = (SOON, SOON);
         assert!(wait_until(SETTLE, || fs::read_to_string(&mark).is_ok()));
-        assert_eq!(fs::read_to_string(&mark).unwrap(), "1 1");
+        assert_eq!(fs::read_to_string(&mark).unwrap(), "1 unset");
         drop(f);
     }
 
@@ -2576,11 +2570,9 @@ while IFS= read -r line; do :; done
         assert_eq!(refused, ["gain", "nope", "tint"]);
     }
 
-    /// A process that goes lockstep when ghee says it reads kind 5. It
-    /// answers each tick 0.2 s late with the frame number as the text of
-    /// `word`, then kind 5.
+    /// A process in lockstep. It answers each tick 0.2 s late with the frame
+    /// number as the text of `word`, then kind 5.
     const LOCKSTEP_SCRIPT: &str = r#"#!/bin/sh
-[ "$GHEE_LOCKSTEP" = 1 ] || exit 1
 printf '%s\n' '{"version": 1, "lockstep": true, "params": {"word": {"type": "string", "value": ""}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
 while IFS= read -r line; do
     n=${line#*\"frame\":}; n=${n%%,*}; n=${n%%\}*}

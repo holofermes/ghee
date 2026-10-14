@@ -20,7 +20,7 @@ use ghee::filters::{apply_filters, load_filters};
 use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
-use ghee::output::{encode_jpeg, encode_png, expand_pattern, FixedPacer};
+use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, AlphaForm, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
 use ghee::scene::{no_layer, no_param, short_floats, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
@@ -311,8 +311,9 @@ pub struct Opening {
     pub serve: Option<(String, u16)>,
     pub stream_max: Option<StreamMax>,
     pub verbose: bool,
-    /// Keep the output pass's alpha in the frames.
-    pub alpha: bool,
+    /// Keep the output pass's alpha in the frames, in this form. None keeps
+    /// every frame opaque.
+    pub alpha: Option<AlphaForm>,
     /// The display skips to the newest frame: Renderer::set_drop.
     pub drop: bool,
 }
@@ -333,6 +334,7 @@ pub struct Session {
     hz: i32,
     pending: Vec<(String, Fed)>,
     buf: Vec<u8>,
+    alpha: AlphaForm,
     timestep: Option<f64>,
     started: Option<f64>,
     prev: Option<f64>,
@@ -586,7 +588,7 @@ impl Session {
         if drop {
             renderer.set_drop(true).map_err(system_fault)?;
         }
-        renderer.set_alpha(alpha);
+        renderer.set_alpha(alpha.is_some());
         renderer.set_rotate(rotate).map_err(system_fault)?;
         let err = renderer.setup(&scene).map_err(system_fault)?;
         if !err.is_empty() {
@@ -661,6 +663,7 @@ impl Session {
             hz,
             pending: Vec::new(),
             buf: vec![0u8; (i64::from(h) * i64::from(w) * i64::from(components)) as usize],
+            alpha: alpha.unwrap_or_default(),
             timestep,
             started: None,
             prev: None,
@@ -684,6 +687,11 @@ impl Session {
 
     pub fn components(&self) -> i32 {
         self.renderer.components
+    }
+
+    /// The form that the frames' kept alpha takes on the way out.
+    pub fn alpha(&self) -> AlphaForm {
+        self.alpha
     }
 
     /// The GL that renders, GL_RENDERER and GL_VERSION in one string.
@@ -954,12 +962,15 @@ impl Session {
         let components = self.renderer.components;
         let lower = path.to_ascii_lowercase();
         let bytes = if lower.ends_with(".png") {
-            encode_png(Frame {
-                data,
-                width,
-                height,
-                components,
-            })
+            encode_png_as(
+                Frame {
+                    data,
+                    width,
+                    height,
+                    components,
+                },
+                self.alpha.image_premultiplied(),
+            )
         } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
             encode_jpeg(
                 Frame {

@@ -35,7 +35,9 @@ use crate::filters::{apply_filters, load_filters};
 use crate::golden;
 use crate::h264::H264Stream;
 use crate::looper::{ControllerSlot, Loop, Output, Pacer, SceneController};
-use crate::output::{expand_pattern, is_image_name, FixedPacer, ImageSequence, RawStream, Scanout};
+use crate::output::{
+    expand_pattern, is_image_name, AlphaForm, FixedPacer, ImageSequence, RawStream, Scanout,
+};
 use crate::overlay;
 use crate::procedural::process::{self, SceneProcess};
 use crate::procedural::{load_scene, scene_name};
@@ -426,7 +428,10 @@ enum FileSink {
 
 fn file_sink(a: &Ns) -> Result<FileSink> {
     if text(&a.output) == "-" {
-        return Ok(FileSink::Raw(RawStream::new(stdout())));
+        return Ok(FileSink::Raw(RawStream::with_alpha(
+            stdout(),
+            a.alpha.unwrap_or_default(),
+        )));
     }
     if !given(&a.output) {
         return Ok(FileSink::None);
@@ -450,6 +455,7 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
         0,
         save_opts,
         usize::try_from(a.write_buffer).unwrap_or(0),
+        a.alpha.unwrap_or_default(),
     )))
 }
 
@@ -600,7 +606,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
             a.cmd
         )));
     }
-    if a.alpha && a.components == 3 {
+    if a.alpha.is_some() && a.components == 3 {
         return Err(exit(format!(
             "{}: --alpha with --components 3; an RGB frame holds no alpha",
             a.cmd
@@ -615,7 +621,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
                 a.cmd
             )));
         }
-        if a.alpha && !pattern.to_lowercase().ends_with(".png") {
+        if a.alpha.is_some() && !pattern.to_lowercase().ends_with(".png") {
             return Err(exit(format!(
                 "{}: --alpha with a .jpg; a JPEG holds no alpha",
                 a.cmd
@@ -674,7 +680,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     if a.drop {
         r.set_drop(true)?;
     }
-    r.set_alpha(a.alpha);
+    r.set_alpha(a.alpha.is_some());
     r.set_rotate(a.rotate)?;
     if let Some(level) = a.brightness {
         match r.set_brightness(level) {
@@ -817,7 +823,7 @@ fn serve(
         store,
         size,
         components,
-        alpha: a.alpha,
+        alpha: a.alpha.is_some(),
         sinks,
         display: kms,
         rgb565: a.rgb565,
@@ -1340,10 +1346,14 @@ struct RenderArgs {
 
     #[arg(
         long,
+        value_name = "FORM",
+        num_args = 0..=1,
+        value_parser = ["premultiplied", "unpremultiplied"],
         help = "keep the output pass's alpha in RGBA frames, which are opaque \
-                without it"
+                without it. Bare, raw frames hold colour premultiplied and \
+                PNGs unpremultiplied; a FORM holds for both"
     )]
-    alpha: bool,
+    alpha: Option<Option<String>>,
 
     #[arg(
         long,
@@ -1478,7 +1488,8 @@ pub struct Ns {
     h264: Option<String>,
     serve: bool,
     components: i32,
-    alpha: bool,
+    /// None keeps every frame opaque.
+    alpha: Option<AlphaForm>,
     save_opts: Option<String>,
     write_buffer: i64,
     fps: Option<f64>,
@@ -1519,7 +1530,10 @@ impl RenderArgs {
             h264: self.h264,
             serve: self.serve,
             components: self.components,
-            alpha: self.alpha,
+            alpha: self.alpha.map(|form| match form.as_deref() {
+                Some(name) => AlphaForm::named(name).expect("clap checks the name"),
+                None => AlphaForm::Each,
+            }),
             save_opts: self.save_opts,
             write_buffer: self.write_buffer,
             fps: self.fps,
@@ -1566,7 +1580,7 @@ impl ServeArgs {
             quiet: self.render.quiet,
             verbose: self.render.verbose,
             components: 4,
-            alpha: false,
+            alpha: None,
             save_opts: None,
             write_buffer: 16,
             fps: self.fps,

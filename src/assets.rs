@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rgba_png_round_trips_through_the_project_encoder_as_straight_colour() {
+    fn an_rgba_png_round_trips_through_the_project_encoder_as_unpremultiplied_colour() {
         let drawn = [10, 20, 30, 255, 20, 10, 0, 40, 64, 128, 32, 128, 0, 0, 0, 0];
         let png = encode_png(frame(&drawn, 2, 2, 4)).unwrap();
         let img = decode_png(&png).unwrap();

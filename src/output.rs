@@ -162,6 +162,40 @@ impl Spec {
     }
 }
 
+/// How a frame that keeps its alpha holds its colour on the way out. The GPU
+/// draws colour premultiplied by alpha. By default each output takes its own
+/// form: a raw frame premultiplied as drawn, an image file unpremultiplied as
+/// PNG wants it. A form named here holds for every output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AlphaForm {
+    #[default]
+    Each,
+    Premultiplied,
+    Unpremultiplied,
+}
+
+impl AlphaForm {
+    /// The form that a flag or a keyword names.
+    pub fn named(name: &str) -> Result<AlphaForm> {
+        match name {
+            "premultiplied" => Ok(AlphaForm::Premultiplied),
+            "unpremultiplied" => Ok(AlphaForm::Unpremultiplied),
+            _ => bail!("alpha takes premultiplied or unpremultiplied, got '{name}'"),
+        }
+    }
+
+    /// True when an image file, or a picture handed on, holds colour
+    /// premultiplied.
+    pub fn image_premultiplied(self) -> bool {
+        self == AlphaForm::Premultiplied
+    }
+
+    /// True when a raw frame holds colour premultiplied.
+    pub fn raw_premultiplied(self) -> bool {
+        self != AlphaForm::Unpremultiplied
+    }
+}
+
 /// Hold a display loop at an explicit frame rate.
 pub struct FixedPacer {
     pub period: f64,
@@ -243,7 +277,7 @@ impl ImageSequence {
     /// The defaults: start 0, no save options, depth 16.
     #[allow(dead_code)]
     pub fn new(pattern: &str) -> ImageSequence {
-        ImageSequence::with_opts(pattern, 0, None, 16)
+        ImageSequence::with_opts(pattern, 0, None, 16, AlphaForm::Each)
     }
 
     pub fn with_opts(
@@ -251,6 +285,7 @@ impl ImageSequence {
         start: i64,
         save_opts: Option<Map<String, Value>>,
         depth: usize,
+        alpha: AlphaForm,
     ) -> ImageSequence {
         let (jobs, inbox) = channel::<Job>();
         let (recycle, free) = channel::<OwnedFrame>();
@@ -258,7 +293,8 @@ impl ImageSequence {
         let worker = {
             let (pattern, opts) = (pattern.to_string(), save_opts.unwrap_or_default());
             let (recycle, err) = (recycle.clone(), Arc::clone(&err));
-            std::thread::spawn(move || run(&inbox, &recycle, &err, &pattern, &opts))
+            let premultiplied = alpha.image_premultiplied();
+            std::thread::spawn(move || run(&inbox, &recycle, &err, &pattern, &opts, premultiplied))
         };
         ImageSequence {
             pattern: pattern.to_string(),
@@ -303,13 +339,14 @@ fn run(
     err: &Arc<Mutex<Option<String>>>,
     pattern: &str,
     opts: &Map<String, Value>,
+    premultiplied: bool,
 ) {
     while let Ok(Job::Frame(index, buf)) = inbox.recv() {
         // the write never holds the lock, because acquire() reads it every
         // frame from the render thread
         let failed = err.lock().unwrap_or_else(|e| e.into_inner()).is_some();
         if !failed {
-            if let Err(e) = save(pattern, index, buf.view(), opts) {
+            if let Err(e) = save(pattern, index, buf.view(), opts, premultiplied) {
                 *err.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{e:#}"));
             }
         }
@@ -317,9 +354,15 @@ fn run(
     }
 }
 
-fn save(pattern: &str, index: i64, frame: Frame<'_>, opts: &Map<String, Value>) -> Result<()> {
+fn save(
+    pattern: &str,
+    index: i64,
+    frame: Frame<'_>,
+    opts: &Map<String, Value>,
+    premultiplied: bool,
+) -> Result<()> {
     let path = expand_pattern(pattern, index)?;
-    let bytes = encode(&path, frame, opts)?;
+    let bytes = encode(&path, frame, opts, premultiplied)?;
     fs::write(&path, bytes).with_context(|| path.clone())
 }
 
@@ -385,11 +428,22 @@ impl Drop for ImageSequence {
 /// mpv, or a recorder.
 pub struct RawStream<W: Write> {
     pub stream: W,
+    premultiplied: bool,
+    scratch: Vec<u8>,
 }
 
 impl<W: Write> RawStream<W> {
+    /// A stream of frames premultiplied as drawn.
     pub fn new(stream: W) -> RawStream<W> {
-        RawStream { stream }
+        RawStream::with_alpha(stream, AlphaForm::Each)
+    }
+
+    pub fn with_alpha(stream: W, alpha: AlphaForm) -> RawStream<W> {
+        RawStream {
+            stream,
+            premultiplied: alpha.raw_premultiplied(),
+            scratch: Vec::new(),
+        }
     }
 }
 
@@ -399,7 +453,14 @@ impl<W: Write> Output for RawStream<W> {
     }
 
     fn write(&mut self, frame: Frame<'_>) -> Result<()> {
-        self.stream.write_all(frame.data)?;
+        if self.premultiplied || frame.components != 4 {
+            self.stream.write_all(frame.data)?;
+        } else {
+            self.scratch.clear();
+            self.scratch.extend_from_slice(frame.data);
+            unpremultiply(&mut self.scratch);
+            self.stream.write_all(&self.scratch)?;
+        }
         Ok(self.stream.flush()?)
     }
 }
@@ -413,9 +474,14 @@ fn suffix(path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn encode(path: &str, frame: Frame<'_>, opts: &Map<String, Value>) -> Result<Vec<u8>> {
+fn encode(
+    path: &str,
+    frame: Frame<'_>,
+    opts: &Map<String, Value>,
+    premultiplied: bool,
+) -> Result<Vec<u8>> {
     match suffix(path).as_str() {
-        ".png" => encode_png(frame),
+        ".png" => encode_png_as(frame, premultiplied),
         ".jpg" | ".jpeg" => {
             let quality = opts.get("quality").and_then(Value::as_u64).unwrap_or(75);
             encode_jpeg(frame, quality as u8)
@@ -521,8 +587,14 @@ fn png_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
 }
 
 /// A frame as an 8-bit RGB or RGBA PNG. An RGBA frame holds colour
-/// premultiplied by alpha, and the PNG holds it straight.
+/// premultiplied by alpha, and the PNG holds it unpremultiplied.
 pub fn encode_png(frame: Frame<'_>) -> Result<Vec<u8>> {
+    encode_png_as(frame, false)
+}
+
+/// encode_png(), keeping an RGBA frame's colour premultiplied when
+/// `premultiplied` says so.
+pub fn encode_png_as(frame: Frame<'_>, premultiplied: bool) -> Result<Vec<u8>> {
     let color = match frame.components {
         3 => 2u8,
         4 => 6u8,
@@ -535,7 +607,7 @@ pub fn encode_png(frame: Frame<'_>) -> Result<Vec<u8>> {
         raw.push(0); // filter type: none
         let start = raw.len();
         raw.extend_from_slice(row);
-        if frame.components == 4 {
+        if frame.components == 4 && !premultiplied {
             unpremultiply(&mut raw[start..]);
         }
     }
@@ -553,7 +625,7 @@ pub fn encode_png(frame: Frame<'_>) -> Result<Vec<u8>> {
 
 /// Divide each colour of RGBA pixels by its alpha, rounded to the nearest
 /// byte. An opaque pixel keeps its bytes, and a transparent one turns black.
-fn unpremultiply(px: &mut [u8]) {
+pub fn unpremultiply(px: &mut [u8]) {
     for p in px.as_chunks_mut::<4>().0 {
         let a = u32::from(p[3]);
         if a == 255 {
@@ -740,7 +812,8 @@ mod tests {
         // file still matches a synchronous save of that frame byte for byte.
         let dir = tmpdir("pool");
         let want = frames(10, 20);
-        let mut seq = ImageSequence::with_opts(&at(&dir, "p.####.png"), 0, None, 2);
+        let mut seq =
+            ImageSequence::with_opts(&at(&dir, "p.####.png"), 0, None, 2, AlphaForm::Each);
         for f in &want {
             let mut buf = seq.acquire(f.shape()).unwrap();
             buf.data.copy_from_slice(&f.data); // stands in for render_into(out=buf)
@@ -786,7 +859,9 @@ mod tests {
             ("out.tiff", "wants a .png or .jpg file name, got 'out.tiff'"),
             ("out", "wants a .png or .jpg file name, got 'out'"),
         ] {
-            let e = encode(path, frame.view(), &opts).unwrap_err().to_string();
+            let e = encode(path, frame.view(), &opts, false)
+                .unwrap_err()
+                .to_string();
             assert_eq!(e, msg);
         }
     }
@@ -810,10 +885,10 @@ mod tests {
         }
         let mut opts = Map::new();
         opts.insert("quality".to_string(), Value::from(20));
-        let small = encode("f.jpg", rgb.view(), &opts).unwrap();
-        assert_eq!(encode("f.jpg", rgba.view(), &opts).unwrap(), small);
+        let small = encode("f.jpg", rgb.view(), &opts, false).unwrap();
+        assert_eq!(encode("f.jpg", rgba.view(), &opts, false).unwrap(), small);
         opts.insert("quality".to_string(), Value::from(95));
-        let large = encode("f.jpeg", rgb.view(), &opts).unwrap();
+        let large = encode("f.jpeg", rgb.view(), &opts, false).unwrap();
         assert!(small.len() < large.len());
         assert_eq!(&small[..2], &[0xff, 0xd8]); // SOI
     }
@@ -898,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn a_png_holds_straight_alpha_and_a_raw_stream_the_frame_as_drawn() {
+    fn a_png_holds_unpremultiplied_alpha_and_a_raw_stream_the_frame_as_drawn() {
         let mut buf = OwnedFrame::of((1, 5, 4));
         let drawn = [
             10, 20, 30, 255, // opaque
@@ -916,6 +991,23 @@ mod tests {
         let mut rs = RawStream::new(Vec::new());
         rs.write(buf.view()).unwrap();
         assert_eq!(rs.stream, drawn);
+    }
+
+    #[test]
+    fn a_named_alpha_form_holds_for_raw_frames_and_pngs_alike() {
+        let mut buf = OwnedFrame::of((1, 2, 4));
+        let drawn = [10, 20, 30, 255, 64, 128, 32, 128];
+        buf.data.copy_from_slice(&drawn);
+        let unpremultiplied = [10, 20, 30, 255, 128, 255, 64, 128];
+        let png = encode_png_as(buf.view(), true).unwrap();
+        assert_eq!(png_pixels(&png, 8), drawn);
+        let mut rs = RawStream::with_alpha(Vec::new(), AlphaForm::Unpremultiplied);
+        rs.write(buf.view()).unwrap();
+        assert_eq!(rs.stream, unpremultiplied);
+        let mut rs = RawStream::with_alpha(Vec::new(), AlphaForm::Premultiplied);
+        rs.write(buf.view()).unwrap();
+        assert_eq!(rs.stream, drawn);
+        assert!(AlphaForm::named("linear").is_err());
     }
 
     #[test]

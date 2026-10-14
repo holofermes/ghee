@@ -21,6 +21,7 @@ mod wire;
 use std::path::PathBuf;
 use std::thread::{self, ThreadId};
 
+use ghee::output::{unpremultiply, AlphaForm};
 use pyo3::exceptions::{PyImportError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyString, PyTuple};
@@ -267,6 +268,22 @@ fn stream_max_of(v: &Bound<'_, PyAny>) -> PyResult<StreamMax> {
     ))
 }
 
+/// The caller's alpha: False for opaque frames, True for each output's own
+/// form, or the name of one form for every output.
+fn alpha_of(v: &Bound<'_, PyAny>) -> PyResult<Option<AlphaForm>> {
+    if let Ok(b) = v.cast::<PyBool>() {
+        return Ok(b.is_true().then_some(AlphaForm::Each));
+    }
+    let name = v.extract::<String>().unwrap_or_default();
+    match AlphaForm::named(&name) {
+        Ok(form) => Ok(Some(form)),
+        Err(_) => Err(PyValueError::new_err(format!(
+            "alpha takes True, False, \"premultiplied\" or \"unpremultiplied\", got {}",
+            v.repr()?
+        ))),
+    }
+}
+
 fn bind_of(serve: &Bound<'_, PyAny>) -> PyResult<(String, u16)> {
     if let Ok(port) = serve.extract::<i64>() {
         return Ok((serve::LOOPBACK.to_string(), port_of(port)?));
@@ -486,15 +503,25 @@ impl Handle {
         tick_of(py, tick)
     }
 
-    /// The last frame, row-major (height, width, components).
+    /// The last frame, row-major (height, width, components). Kept alpha
+    /// holds colour premultiplied, as drawn, unless open() names
+    /// "unpremultiplied".
     fn pixels<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let data = self.held.get()?.pixels().map_err(fault)?;
-        Ok(PyBytes::new(py, data))
+        let session = self.held.get()?;
+        let premultiplied = session.alpha().raw_premultiplied() || session.components() != 4;
+        let data = session.pixels().map_err(fault)?;
+        if premultiplied {
+            return Ok(PyBytes::new(py, data));
+        }
+        let mut data = data.to_vec();
+        unpremultiply(&mut data);
+        Ok(PyBytes::new(py, &data))
     }
 
-    /// The last frame as an RGBA Pillow image, its colour straight as in a
-    /// saved .png. Pillow is an optional dependency of the package, and
-    /// without it image() raises ImportError.
+    /// The last frame as an RGBA Pillow image, its colour unpremultiplied as
+    /// in a saved .png, or as an "RGBa" image, premultiplied, when open()
+    /// names "premultiplied". Pillow is an optional dependency of the
+    /// package, and without it image() raises ImportError.
     fn image<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pil = py.import("PIL.Image").map_err(|e| {
             let err = PyImportError::new_err(
@@ -506,9 +533,10 @@ impl Handle {
         let session = self.held.get()?;
         let data = session.pixels().map_err(fault)?;
         // Pillow's "RGBa" holds colour premultiplied by alpha, and its
-        // unpacker divides it out.
+        // unpacker into "RGBA" divides it out.
         let (mode, raw) = match session.components() {
             3 => ("RGB", "RGB"),
+            _ if session.alpha().image_premultiplied() => ("RGBa", "RGBa"),
             _ => ("RGBA", "RGBa"),
         };
         pil.call_method1(
@@ -585,7 +613,9 @@ impl Handle {
 /// size.
 /// `fps` caps the pace. None runs free.
 /// `timestep` pins time to frame*S, so a render repeats bit for bit.
-/// `alpha` keeps the output pass's alpha in pixels(), opaque without it.
+/// `alpha` keeps the output pass's alpha, opaque without it. True keeps
+/// pixels() premultiplied, as drawn, and image() and save() unpremultiplied;
+/// "premultiplied" or "unpremultiplied" holds for all three.
 /// `base_dir` is where a scene given as a dict, as JSON text or as a
 /// ghee.Scene finds its files, the working directory when None.
 /// `drop` lets the display skip to the newest frame each time it frees:
@@ -608,7 +638,7 @@ impl Handle {
     stream_max=None,
     verbose=false,
     timestep=None,
-    alpha=false,
+    alpha=None,
     base_dir=None,
     drop=false,
 ))]
@@ -626,10 +656,11 @@ fn open(
     stream_max: Option<&Bound<'_, PyAny>>,
     verbose: bool,
     timestep: Option<f64>,
-    alpha: bool,
+    alpha: Option<&Bound<'_, PyAny>>,
     base_dir: Option<PathBuf>,
     drop: bool,
 ) -> PyResult<Handle> {
+    let alpha = alpha.map(alpha_of).transpose()?.flatten();
     let source = source_of(scene, base_dir)?;
     let serve = serve.map(bind_of).transpose()?;
     let stream_max = stream_max.map(stream_max_of).transpose()?;

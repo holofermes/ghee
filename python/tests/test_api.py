@@ -5,6 +5,7 @@ import json
 import pathlib
 import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -464,7 +465,7 @@ def test_a_frame_is_opaque_unless_open_keeps_the_alpha():
         assert reads_back(pixel(h), (0.25, 0.5, 0.0, 0.5))
 
 
-def test_image_is_the_last_frame_as_a_pillow_image_with_straight_colour():
+def test_image_is_the_last_frame_as_a_pillow_image_with_unpremultiplied_colour():
     image = pillow()
     with ghee.open(HALF, width=8, height=4) as h:
         h.frame()
@@ -473,12 +474,57 @@ def test_image_is_the_last_frame_as_a_pillow_image_with_straight_colour():
         assert (got.mode, got.size) == ("RGBA", (8, 4))
         assert got.tobytes() == h.pixels()
     # The kept alpha holds the colour premultiplied, (0.25, 0.5, 0) at 0.5,
-    # and Pillow holds it straight.
+    # and Pillow holds it unpremultiplied.
     with ghee.open(HALF, width=8, height=4, alpha=True) as h:
         h.frame()
         want = (0.5, 1.0, 0.0, 0.5)
         px = h.image().getpixel((0, 0))
         assert all(abs(p - v * 255) <= 2 for p, v in zip(px, want)), px
+
+
+def test_alpha_names_one_form_for_every_output(tmp_path):
+    """HALF is orange at half alpha: (0.25, 0.5, 0) premultiplied, (0.5, 1, 0)
+    unpremultiplied. True keeps each output's own form, and a form's name
+    holds for raw frames, Pillow images, PNG files and `ghee render -o -`."""
+    image = pillow()
+    pre, unpre = (0.25, 0.5, 0.0, 0.5), (0.5, 1.0, 0.0, 0.5)
+    forms = {
+        True: ((), pre, unpre),
+        "premultiplied": (("premultiplied",), pre, pre),
+        "unpremultiplied": (("unpremultiplied",), unpre, unpre),
+    }
+    scene = scene_file(tmp_path, HALF)
+
+    def close(px, want):
+        return all(abs(p - v * 255) <= 2 for p, v in zip(px, want))
+
+    for alpha, (flag, raw, picture) in forms.items():
+        png = tmp_path / "f.png"
+        with ghee.open(HALF, width=8, height=4, alpha=alpha) as h:
+            h.frame()
+            assert close(pixel(h), raw), (alpha, pixel(h))
+            assert close(h.image().getpixel((0, 0)), picture), alpha
+            h.save(png)
+        assert close(image.open(png).getpixel((0, 0)), picture), alpha
+        ran = subprocess.run(
+            [
+                str(pathlib.Path(sys.executable).parent / "ghee"),
+                "render",
+                scene,
+                "-o",
+                "-",
+                "--size",
+                "8x4",
+                "--alpha",
+                *flag,
+            ],
+            capture_output=True,
+            check=True,
+            timeout=60,
+        )
+        assert close(ran.stdout[:4], raw), (alpha, tuple(ran.stdout[:4]))
+    with pytest.raises(ValueError):
+        ghee.open(HALF, width=8, height=4, alpha="linear")
 
 
 def test_image_without_pillow_says_that_it_needs_pillow(monkeypatch):

@@ -269,7 +269,7 @@ def open(
     stream_max: float | None = None,
     verbose: bool = False,
     timestep: float | None = None,
-    alpha: bool = False,
+    alpha: bool | Literal["premultiplied", "unpremultiplied"] = False,
     base_dir: str | os.PathLike[str] | None = None,
     drop: bool = False,
 ) -> Handle: ...

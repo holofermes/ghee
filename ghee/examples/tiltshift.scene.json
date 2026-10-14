@@ -1,9 +1,9 @@
 {
   "version": 1,
   "params": {
-    "seed": {"type": "float", "value": 11.0, "min": 0.0, "max": 99.0, "step": 1.0},
+    "seed": {"type": "float", "value": 20.0, "min": 0.0, "max": 99.0, "step": 1.0},
     "parks": {"type": "float", "value": 0.18, "min": 0.0, "max": 0.6, "step": 0.01},
-    "ponds": {"type": "float", "value": 0.5, "min": 0.0, "max": 1.0, "step": 0.05}
+    "ponds": {"type": "float", "value": 0.35, "min": 0.0, "max": 1.0, "step": 0.05}
   },
   "passes": [
     {
@@ -28,8 +28,8 @@
       "fragment": {"file": "tiltshift-town.glsl"},
       "channels": [{"buffer": "lots"}, {"buffer": "clouds"}],
       "params": {
-        "traffic": {"type": "float", "value": 2.0, "min": 0.0, "max": 6.0, "step": 0.1},
-        "train_speed": {"type": "float", "value": 6.0, "min": 0.0, "max": 30.0, "step": 0.5},
+        "traffic": {"type": "float", "value": 5.6, "min": 0.0, "max": 6.0, "step": 0.1},
+        "train_speed": {"type": "float", "value": 23.0, "min": 0.0, "max": 30.0, "step": 0.5},
         "cloud_shade": {"type": "float", "value": 0.35, "min": 0.0, "max": 1.0, "step": 0.01},
         "grass": {"type": "color", "value": "#72a650"},
         "foliage": {"type": "color", "value": "#2f7a3e"},

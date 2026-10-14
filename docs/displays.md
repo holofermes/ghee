@@ -1,115 +1,191 @@
 # Outputs and displays
 
-## Where does it run?
+ghee puts each frame on one or more outputs: image files, raw frames on
+stdout, an H264 stream, a display (HDMI, or a small panel on SPI or I2C),
+and ghee's web console.
 
-ghee renders with GLES2 through DRM/GBM on a stock Raspberry Pi OS Lite image,
-and it scans its frames straight out to HDMI.
+A scene is what ghee draws, kept in a file ([Scenes](scenes.md)). For
+example, this renders `neon`, a scene bundled with ghee, into sixty PNG
+files, `frame.0000.png` to `frame.0059.png`:
 
-| Hardware | OS | Driver | Hardware H264 |
-| --- | --- | --- | --- |
-| Pi 1, Pi Zero, Pi Zero W (armv6) | Raspberry Pi OS bookworm or trixie | vc4 | yes |
-| Pi 2, Pi 3, Pi Zero 2 W (arm64) | Raspberry Pi OS bookworm or trixie | vc4 | yes |
-| Pi 4, Pi 400 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 | yes |
-| Pi 5 (arm64) | Raspberry Pi OS bookworm or trixie | v3d + vc4 | ffmpeg/libx264 |
-| Desktop Linux (x86_64) | any current distro | Mesa | ffmpeg/libx264 |
-
-ghee runs on every Pi back to the Pi 1, and builds ship for all of them. Pi 1
-through Pi 4 encode H264 on the Broadcom block. The block needs a frame of
-16384 pixels or more, so ghee scales a smaller frame up by the smallest whole
-factor that reaches that size, each pixel a square block: a 128x32 panel
-streams at 256x64. The Pi 5 has no encoder, so there and on desktop ghee
-encodes with ffmpeg/libx264. Install it if needed:
-
+```shell
+ghee render --demo neon -o frame.####.png --frames 60 --timestep 0.0333
 ```
+
+Frame 30, shown here at three times its size:
+
+![a pink neon RAMEN sign and a bowl on a brick wall, an amber OPEN board under it, and their reflections on a wet street](../media/displays/neon.png)
+
+To get the same files on every run, however fast ghee draws, use
+`--timestep S`: frame N then shows the scene at N × S seconds. Without it,
+each frame shows the scene at the moment ghee draws it.
+
+To render your own scene, give its file in place of `--demo neon`, as in
+`ghee render clock.scene.json -o clock.png`.
+
+## Picking an output
+
+| Output | `ghee render` | `ghee serve` | `ghee.open` in Python |
+| --- | --- | --- | --- |
+| [image files](#image-files) | `-o frame.####.png` | | `screen.save("frame.png")` |
+| [raw frames](#raw-frames) | `-o -` | | `screen.pixels()` |
+| [an H264 stream](#h264) | `--h264 PATH` | the console's video | the console's video |
+| [a display](#hardware-displays) | `--display kms` | `--display kms` | `display="kms"` |
+| [the console](#the-console) | `--serve` | always | `serve=8090` |
+
+In Python, `screen` is what `ghee.open` returns ([Python](python.md)).
+
+You can give `ghee render` several outputs at once. This puts a scene on
+the connected panel, and also writes each frame to a PNG, until Ctrl-C:
+
+```shell
+ghee render --demo bars --display kms -o frame.####.png
+```
+
+To set how many frames `ghee render` draws, on any output, use `--frames`.
+Without it, image files and raw frames get one frame, and a display, a
+stream or the console runs until Ctrl-C. With no display, ghee draws at 320x240. To draw at another size,
+use `--size WxH`.
+
+## Image files
+
+To write several frames, put a run of `#` in the file name. ghee replaces
+the run with the frame's number: `frame.####.png`. If you ask for more than
+one frame and the file name has no `#`, ghee stops with `multiple frames
+into one filename`.
+
+To pick the format, end the file name in `.png` or `.jpg`. PNGs are
+lossless and stored uncompressed. For smaller files, use `.jpg` with
+`--save-opts quality=90`.
+
+Image files are opaque. To keep the scene's transparency, add `--alpha`. A
+PNG then holds unpremultiplied colours, or premultiplied ones with `--alpha
+premultiplied`. A JPEG holds no transparency.
+
+## Raw frames
+
+To pipe frames to a program that reads raw video, use `-o -`. ghee writes
+each frame's RGBA bytes to stdout, row by row from the top, with no header.
+For a program that reads RGB without alpha, add `--components 3`.
+
+Give the reading program the size that ghee draws at. This pipes 300 frames
+of `bars` at 320x240 through ffmpeg into a 5 s `out.mp4`:
+
+```shell
+ghee render --demo bars -o - --size 320x240 --frames 300 --timestep 0.0166667 |
+  ffmpeg -f rawvideo -pix_fmt rgba -s 320x240 -framerate 60 -i - -pix_fmt yuv420p out.mp4
+```
+
+If you keep transparency with `--alpha`, raw frames come premultiplied. For
+ffmpeg's `rgba`, which reads them unpremultiplied, add `--alpha
+unpremultiplied`.
+
+## H264
+
+To write an H264 stream, use `--h264 PATH`, or `-` for stdout. The file is
+a raw H264 stream, not an MP4, so name it `.h264`. This plays a scene in mpv
+as it renders:
+
+```shell
+ghee render --demo neon --h264 - | mpv -
+```
+
+The stream runs at 30 frames a second, and ghee draws it at that pace. To
+set another rate, use `--fps`. To write a clip of a set length, use
+`--frames`. This writes 5 s of `neon` and copies it into an MP4:
+
+```shell
+ghee render --demo neon --h264 neon.h264 --frames 150
+ffmpeg -framerate 30 -i neon.h264 -c copy neon.mp4
+```
+
+For a sharper stream, raise its target bitrate with `--bitrate`, in bits a
+second. For a smaller file, lower it.
+
+A Pi Zero to Pi 4 encodes with its hardware encoder. There, ghee scales a
+small panel's stream up by a whole factor, to at least 16384 pixels: a
+128x32 panel's stream comes out at 256x64. The panel still shows 128x32.
+
+A Pi 5 or a desktop computer encodes with ffmpeg's libx264. To install it:
+
+```shell
 sudo apt install ffmpeg
 ```
 
-## Outputs
-
-Render one of the Python [procedural scenes](scenes.md#procedural-scenes) to
-the connected HDMI display, and hand it an argument of its own after `--`:
-
-```
-ghee render --demo bluesun --display kms -- --emit 480x300
-```
-
-Write raw frames to stdout and pipe them through ffmpeg into an mp4, with
-`--timestep` pinning engine time to a fixed 1/60 s step per frame:
-
-```
-ghee render --demo bars -o - --frames 300 --timestep 0.0166667 |
-  ffmpeg -f rawvideo -pix_fmt rgba -s 320x240 -framerate 60 -i - out.mp4
-```
-
-Or stream it as a hardware accelerated H264 Annex-B stream, and pipe it to
-mpv:
-
-```
-ghee render --demo trail --h264 - --fps 30 | mpv -
-```
-
-Or scan it straight out to the connected display, HDMI or an SPI or I2C
-panel, as [Hardware displays](#hardware-displays) describes:
-
-```
-ghee render --demo trail --display kms
-```
-
-You can combine outputs: one render can write PNGs, drive a panel and stream
-H264 at the same time, and `--serve` attaches the console to preview and
-author the scene:
-
-```
-ghee render --demo bars --display kms -o frame.####.png          # panel and a contact sheet
-ghee render --demo bars --display kms --serve --host 0.0.0.0     # panel, edit it from a laptop
-```
-
-Everything except hardware H264 and KMS scanout reads the frame back with a
-blocking glReadPixels (GLES2 has no async readback), so bigger outputs cost
-more CPU.
-
 ## Hardware displays
 
-```
-ghee displays                         # the cards with a connected display
-ghee render scene.json --display kms
-ghee serve scenes/ --display kms      # the console, driving the display
-ghee overlay st7789                   # hand an SPI panel to the kernel
-```
-
-`kms` is any connected KMS display: HDMI, or an SPI/I2C panel with a kernel
-driver. `ghee displays` lists the cards, and `--dri` picks one.
-
-`--rotate` turns the frame clockwise on the GPU, by 90, 180 or 270 degrees,
-on its way to every output: the display, the files, the raw frames and the
-console's video. At 90 and 270 the scene renders at the output's size turned,
-so a 128x32 panel gives the scene 32x128. `--brightness` sets a KMS display's
-backlight from 0 to 1, through the backlight device that the kernel
-registered for it. When the display has no backlight device, or its device
-refuses the write, ghee prints the error once and renders on. ghee puts the
-earlier level back when it exits, and a crash leaves the set level on the
-display. On a panel under the kernel's ssd130x driver, the backlight
-sets the panel's contrast.
-
-Show the `stats` demo on a panel mounted upside down, its backlight at 0.5:
+To draw on a display, use `--display kms`. `kms`, the Linux kernel's
+display system, is its only value, so a bare `--display` does the same.
+ghee draws on HDMI, or on an SPI or I2C panel ([Setting up a
+panel](#setting-up-a-panel)). To list the connected displays, run
+`ghee displays`. On a Pi with a panel and an HDMI screen:
 
 ```
+kms          /dev/dri/card1 connected, 128x32
+kms          /dev/dri/card2 connected, 1280x800
+```
+
+`--display kms` takes the first display in that list, here the panel. To
+draw on the HDMI screen, pass its card:
+
+```shell
+ghee render --demo neon --display kms --dri /dev/dri/card2
+```
+
+On HDMI, a running desktop's window manager holds the display, and ghee
+stops with an error that starts `cannot take DRM master`. To free it, stop
+the desktop (`sudo systemctl stop lightdm` on Raspberry Pi OS), or boot the
+Pi to the command line (`sudo raspi-config`). The Linux text console steps
+aside by itself.
+
+ghee draws at the display's own size. On a large HDMI screen, you can draw
+smaller with `--size`, and the display stretches the frame. A panel's size
+is fixed: given `--size` with a panel, ghee stops with an error.
+
+In Python, pass the same settings to `ghee.open` as keywords
+([ghee.open](python.md#gheeopen)).
+
+### Pace
+
+On a display, ghee draws at the display's own pace. To draw fewer frames,
+use `--fps`.
+
+Use `--drop` when the newest frame matters more than every frame, such as
+in a scene that follows music. The display then shows the newest frame each
+time it's ready, and drops older ones. Set `--fps` too, or ghee draws as
+fast as it can and keeps a CPU core busy ([Frames](python.md#frames) has
+Python's side).
+
+
+### Rotate and brightness
+
+If your display is rotated, use `--rotate 90`, `180` or `270`. ghee turns
+the frame clockwise on its way to every output. At 90 and 270 the scene
+draws with width and height swapped, 64x128 on a 128x64 panel. The same
+scene of the word `hello` at 128x64:
+
+| `--rotate 0` | `--rotate 90` | `--rotate 180` |
+| --- | --- | --- |
+| ![hello, upright](../media/displays/rotate-0.png) | ![hello, turned to read top to bottom](../media/displays/rotate-90.png) | ![hello, upside down](../media/displays/rotate-180.png) |
+
+To set a panel's brightness, use `--brightness LEVEL`, from 0 to 1. On an
+SSD1306, SH1106 or SSD1322, that's the contrast. A backlight that is only
+on or off turns off below 0.5 and on from 0.5. On a display with no backlight, such as most HDMI screens,
+ghee prints `the display on /dev/dri/card2 has no backlight device` and
+draws on. This shows the `stats` scene upside down on an SSD1306, at half
+its contrast:
+
+```shell
 ghee render --demo stats --display kms --rotate 180 --brightness 0.5
 ```
 
-The kernel drives a range of SPI and I2C panels, each set up with a
-device-tree overlay. `ghee overlay` writes what an ST7789, an ILI9341, an
-SSD1306, an SH1106 or an SSD1322 needs and says how to install it, and the
-panel then answers `--display kms`. Careful: the ILI9341, SH1106 and SSD1322
-setups follow the kernel's drivers and bindings, and are untested on a panel.
+## Setting up a panel
 
-`ghee overlay st7789` needs the panel's `width` and `height`. `madctl` sets
-its rotation and mirroring, 0xC0 by default, `x_offset` and `y_offset` place
-it in the controller's memory, 0 by default, `dc`, `rst` and `backlight`
-take its GPIOs, 25, none and 22 by default, and `speed` its SPI clock in Hz,
-62500000 by default.
-
-Write the setup of the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
+The kernel drives SPI and I2C panels through a device tree overlay. To set
+one up, run `ghee overlay PANEL`. It prints the `config.txt` lines that the
+panel needs, writes any file that those lines need, and says how to install
+them. Once the overlay is in, `--display kms` can draw on the panel. This
+sets up the Adafruit 1.3" TFT Bonnet, a 240x240 ST7789:
 
 ```
 $ ghee overlay st7789 --opts width=240,height=240,madctl=0x00,backlight=26
@@ -117,25 +193,10 @@ dtoverlay=mipi-dbi-spi,spi0-0,speed=62500000
 dtparam=width=240,height=240
 dtparam=dc-gpio=25,backlight-gpio=26
 dtparam=write-only
-wrote panel.bin. Copy it to /lib/firmware/panel.bin, add the lines above to
-/boot/firmware/config.txt, and reboot
+wrote panel.bin. Copy it to /lib/firmware/panel.bin, add the lines above to /boot/firmware/config.txt, and reboot
 ```
 
-`ghee overlay ili9341` takes the same options, and its firmware replays the
-init of the kernel's own ili9341 driver. The panel is 320x240 by default, its
-`madctl` 0x28 when it is wider than tall and 0x48 otherwise, its `speed`
-32000000, and `dc`, `rst` and `backlight` are 25, 27 and 18 by default, the
-pins of Adafruit's EYESPI Pi Beret. An IPS panel shows its colours inverted
-under that init, and `invert=True` turns them back.
-
-`ghee overlay ssd1306` needs the panel's `height`, 32 or 64. `address` takes
-the panel's I2C address, 0x3C by default, and `speed` the bus rate in Hz,
-1000000 by default. The rate line sets the whole of I2C bus 1, every device
-on it included. On a Pi 5, a 128x32 SSD1306 reaches about 216 fps at 1 MHz
-and about 86 at 400 kHz, and above 1 MHz the Pi 5's I2C controller slows it
-to about 43.
-
-Write the setup of a 128x32 SSD1306 at the default address:
+And this, a 128x32 SSD1306 at its usual address:
 
 ```
 $ ghee overlay ssd1306 --opts height=32
@@ -145,35 +206,50 @@ dtoverlay=ssd1306,height=32,inverted,sequential
 add the lines above to /boot/firmware/config.txt, and reboot
 ```
 
-`ghee overlay sh1106` sets up a 1.3" 128x64 SH1106 on I2C bus 1, and `ghee
-overlay sh1106-spi` one on SPI bus 0. The Pi ships no overlay that fits this
-panel to the kernel's ssd130x driver, so each writes one of its own,
-`ghee-sh1106.dts` or `ghee-sh1106-spi.dts`, and dtc on the Pi compiles it into
-/boot/firmware/overlays. `sh1106` takes `address`, 0x3C by default, and
-`speed`, 400000 by default, the SH1106's I2C fast mode. `sh1106-spi` takes
-`spi_device`, the chip select, 0 by default, `speed`, 4000000 by default, and
-`dc` and `rst`, 24 and 25 by default, the pins of the Pi's own SPI OLED
-overlays and of Waveshare's 1.3inch OLED HAT.
+Pass the panel's options to `--opts` as `key=value` pairs. Pins are BCM
+numbers, and `speed` is the bus clock in Hz.
 
-Write the setup of an SH1106 on I2C at the default address:
+| Panel | Bus | Colours | Options, and their defaults |
+| --- | --- | --- | --- |
+| `st7789` | SPI | full colour | `width` and `height`, required. `madctl` 0xC0. `dc` 25, `rst` none, `backlight` 22, `speed` 62500000, `x_offset` and `y_offset` 0, `spi_bus` and `spi_device` 0 |
+| `ili9341` | SPI | full colour | as `st7789`, with `width` 320, `height` 240, `madctl` 0x28 when wider than tall and 0x48 otherwise, `dc` 25, `rst` 27, `backlight` 18 and `speed` 32000000. `invert=True` for an IPS panel |
+| `ssd1306` | I2C | 1-bit | `height` 32 or 64, required. `address` 0x3C, `speed` 1000000 |
+| `sh1106` | I2C | 1-bit | `address` 0x3C, `speed` 400000. A 1.3" 128x64 panel |
+| `sh1106-spi` | SPI | 1-bit | `spi_device` 0, `dc` 24, `rst` 25, `speed` 4000000 (Waveshare's 1.3inch OLED HAT) |
+| `ssd1322` | SPI | 16 levels | `width` 256, `height` 64, `col_offset` 28, counted in columns of 4 pixels. `spi_device` 0, `dc` 24, `rst` 25, `speed` 10000000 |
 
-```
-$ ghee overlay sh1106
-dtparam=i2c_arm=on
-dtparam=i2c_arm_baudrate=400000
-dtoverlay=ghee-sh1106
-wrote ghee-sh1106.dts. Compile it with `sudo dtc -@ -I dts -O dtb -o
-/boot/firmware/overlays/ghee-sh1106.dtbo ghee-sh1106.dts`, add the lines
-above to /boot/firmware/config.txt, and reboot
-```
+If an ST7789 or ILI9341 picture comes out upside down, use `--rotate 180`.
+If it comes out mirrored, flip a bit in `madctl`, starting from its value in
+the table: 0x40 flips the columns, 0x80 the rows. If its colours come out
+swapped, flip 0x08. Then run `ghee overlay` again. If the picture comes out
+shifted, set `x_offset` and `y_offset` from the board's own docs.
 
-Careful: up to Linux 7.3, and in the Pi's 6.18 kernel, the ssd130x driver
-leaves an SSD1322 dark. `ghee overlay ssd1322` writes its overlay,
-`ghee-ssd1322.dts`, for a kernel whose ssd130x drives it. The overlay fits a
-256x64 module by default, its glass from `col_offset` 28, counted in column
-addresses of 4 pixels, and `width`, `height` and `col_offset` fit another.
-`spi_device`, `dc` and `rst` take the defaults of `sh1106-spi`, and `speed` is
-10000000, the SSD1322's datasheet clock. On a Pi 5 a 256x64 SSD1322 draws
-about 145 fps at 10 MHz, and 206 at 16 MHz on short wires. The overlay divides
-the panel's display clock by 1, so the glass redraws as fast as `frc256`
-needs.
+### 1-bit and 16-level panels
+
+A 1-bit panel shows each pixel fully on or off, so grey edges turn ragged
+and thin text breaks up. Careful: on a 1-bit panel, set text to `"render":
+"mono"` ([Render](layers.md#render)), or bring grey back with a filter
+([Filters](filters.md)). To show grey as a pattern of dots, add `dither`.
+To get more greys on a panel that takes about 200 frames a second, such as
+an SSD1306 on I2C at 1 MHz, add `frc`. To show
+about 256 greys on a 16-level panel, add `frc256`.
+
+## The console
+
+To browse, switch and edit scenes in ghee's [console](console.md), run
+`ghee serve`.
+To watch one render that also goes to a display or files, add `--serve` to
+`ghee render`. Both print the console's address, `http://127.0.0.1:8090/`
+by default.
+
+To open the console from another computer, add `--host 0.0.0.0`, and open
+the Pi's address on port 8090. Read [Console](console.md) first, on who can
+then reach it.
+
+On `localhost` or over `https`, the console shows an H264 video. Over plain
+`http` from another computer, it shows a JPEG preview. To set the H264 video's or the JPEG preview's size
+and frame rate, see `ghee serve --help`.
+
+
+Each Pi's own limits, such as the largest frame that it can draw, are on
+[Raspberry Pi](pi.md).

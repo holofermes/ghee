@@ -1,93 +1,57 @@
 # ghee for Python
 
-`pip install ghee-render` installs the [ghee](https://github.com/holofermes/ghee)
-renderer as a Python library, `ghee.open`, and the Python sugar for writing
-a [procedural scene](https://github.com/holofermes/ghee/blob/main/docs/procedural.md).
-The package installs no `ghee` command. That command comes from the deb on
-the [releases page](https://github.com/holofermes/ghee/releases), or from a
-[source build](https://github.com/holofermes/ghee/blob/main/docs/building.md).
-
-Build the wheel yourself with maturin:
+`ghee-render` installs [ghee](https://github.com/holofermes/ghee), a GPU
+renderer for small screens: the Python package `ghee`, and the `ghee`
+command. It runs on 64-bit Linux, x86_64 or Arm, with Python 3.10 or newer:
 
 ```
-maturin build --release --compatibility linux
+pip install ghee-render
 ```
 
-## Drawing on a panel
+On a Pi with a 32-bit OS, take the deb from the [releases
+page](https://github.com/holofermes/ghee/releases).
 
-This loop draws the time, the load of the machine as a share of its cores
-with a bar beside it, and a blinking HOT past 90% on a 128x32 panel, set up as
-[Hardware displays](https://github.com/holofermes/ghee/blob/main/docs/displays.md#hardware-displays)
-shows:
+This program opens a 128x64 screen in memory, draws `hello` on it, and saves
+the frame as a PNG:
 
 ```python
-import os
-import time
-
 import ghee
 
-screen = ghee.open(display="kms")
-while True:
-    load = os.getloadavg()[0] / os.cpu_count()
-    with screen.draw() as d:
-        d.text(time.strftime("%H:%M"), x=0, y=0, font_size=16)
-        d.text(
-            f"load {load:.0%}",
-            x=0,
-            y=20,
-            font_size=8,
-            font_family="Pixel Operator 8",
-        )
-        d.rect(
-            x=64,
-            y=20,
-            width=64,
-            height=8,
-            color="transparent",
-            border={"width": 1, "color": "white"},
-        )
-        d.rect(x=66, y=22, width=60 * min(load, 1), height=4)
-        if load > 0.9:
-            d.text("HOT", x=100, y=0, font_size=12, blink={"rate": 2})
+screen = ghee.open(width=128, height=64)
+with screen.draw() as d:
+    d.text("hello", color="orange", glow={})
+    d.line((8, 56), (120, 56), color="orange")
+screen.save("hello.png")
 ```
 
-## A Python scene
+![hello in orange with an orange glow, and an orange line under it](https://raw.githubusercontent.com/holofermes/ghee/main/media/python/hello.png)
 
-This procedural scene draws the time on each tick, and `python clock.py`
-shows it on the connected display:
+To draw on the connected display instead, use `ghee.open(display="kms")`:
+HDMI, or a panel on SPI or I2C, set up with its device tree overlay.
 
-```python
-import time
+Either way ghee draws on the GPU.
 
-import ghee
+Use the `ghee` command to render a scene to an image:
 
-ghee.args()  # the probe, this scene takes no arguments
+```
+ghee render --demo bars -o bars.png
+```
 
+Or serve the web console, to author and edit the demo scenes:
 
-@ghee.tick
-def clock(tick):
-    with ghee.draw() as d:
-        d.text(time.strftime("%H:%M:%S"))
-
-
-ghee.run()
+```
+ghee serve --demo
 ```
 
 ## Docs
 
 - [Python](https://github.com/holofermes/ghee/blob/main/docs/python.md):
-  `ghee.open`, drawing, the shim and direct mode
+  drawing, opening a scene, and Python scenes
 - [Scenes](https://github.com/holofermes/ghee/blob/main/docs/scenes.md)
 - [Layers](https://github.com/holofermes/ghee/blob/main/docs/layers.md)
-- [Filters](https://github.com/holofermes/ghee/blob/main/docs/filters.md)
 - [Outputs and displays](https://github.com/holofermes/ghee/blob/main/docs/displays.md)
-- [The console](https://github.com/holofermes/ghee/blob/main/docs/console.md),
-  and its [HTTP API](https://github.com/holofermes/ghee/blob/main/docs/http.md)
-- [Procedural scenes](https://github.com/holofermes/ghee/blob/main/docs/procedural.md),
-  the wire between ghee and a scene
-- [From Rust](https://github.com/holofermes/ghee/blob/main/docs/rust.md)
-- [Build](https://github.com/holofermes/ghee/blob/main/docs/building.md)
-- [Troubleshooting](https://github.com/holofermes/ghee/blob/main/docs/troubleshooting.md)
+- [The console](https://github.com/holofermes/ghee/blob/main/docs/console.md)
+- [Every page](https://github.com/holofermes/ghee#docs)
 
 ## License
 

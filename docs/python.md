@@ -1,137 +1,77 @@
 # Python
 
-## ghee.open
+The `ghee` Python package lets you draw on a screen from your own program, or
+write a scene that the `ghee` command renders. You can install both the Python
+package and the `ghee` command from PyPI, as
+[`ghee-render`](https://pypi.org/project/ghee-render/), and
+[Install](../README.md#install) has more.
+
+For example, this program opens a 128x64 screen in memory, draws `hello` on
+it, and saves the frame as a PNG:
 
 ```python
 import ghee
 
-h = ghee.open(
-    "scene.json",  # a path, the JSON text of a scene, a dict, a ghee.Scene, or None
-    display="kms",  # the connected display, or None for headless
-    opts=None,  # {"rgb565": True} scans "kms" out in 16-bit color
-    dri=None,  # the card, as --dri takes it
-    rotate=0,  # 0, 90, 180 or 270 degrees clockwise
-    width=None,  # a headless size, a display states its own
-    height=None,
-    fps=30,  # pace cap, None runs free
-    serve=8090,  # console port, ("0.0.0.0", 8090) binds elsewhere
-    stream_max=None,  # h264 stream cap: pixels, or a fraction of the render size
-    verbose=False,
-    timestep=None,  # pin time to frame*S for a reproducible render
-    alpha=False,  # keep the output pass's alpha in pixels()
-    base_dir=None,  # where a scene given as no path finds its files
-)
-
-h.set_param("gain", 1.5)  # a scene param
-h.set_param("snap", 1.0, pass_="hold")  # the param of one pass
-h.set_param("hold.snap", 1.0)  # the same param, dotted
-h.layers.title.text = "hello"  # the words of the text layer title
-h.layers.title.x = 10  # a live field of a layer
-h.layers.title.karaoke.sung = 12  # a live field of one of its effects
-
-h.feed("level", bars)  # bytes, bytearray, memoryview, array, numpy, numbers
-tick = h.frame()  # {"frame": 12, "time": 0.4, "dt": 0.0166, "params": {}}
-tick = h.skip()  # the same tick, with no draw
-
-with h.draw() as d:  # one frame of words, pictures and shapes
-    d.text("hello", x=4, y=4)
-w, ht = h.measure("hello", font_size=12)  # the block's size in pixels
-h.brightness = 0.5  # a KMS display's backlight, 0 to 1
-
-h.size  # (width, height)
-h.components  # 3 for RGB, 4 for RGBA
-h.pixels()  # the last frame, row-major (height, width, components)
-h.image()  # the last frame as a Pillow image
-h.save("frame.####.png")  # the last frame as a .png or a .jpg file
-h.close()  # also a context manager
+screen = ghee.open(width=128, height=64)
+with screen.draw() as d:
+    d.text("hello", color="orange", glow={})
+    d.line((8, 56), (120, 56), color="orange")
+screen.save("hello.png")
 ```
 
-## What each call does
+![hello in orange with an orange glow, and an orange line under it](../media/python/hello.png)
 
-`set_param` sets a live param, with no recompile. A bare name sets the scene
-param, else the param of the first pass that declares it.
+To draw directly to a connected display instead, use
+`ghee.open(display="kms")`: HDMI, or a panel on SPI or I2C, set up with its
+device tree overlay ([Hardware displays](displays.md#hardware-displays)).
 
-`layers` sets a live field of a layer, by attribute or by key:
-`h.layers.title.x = 10`, `h.layers["title"]["karaoke"]["sung"] = 12`.
-`set_layer(name, field, value, effect=None)` makes the same set as a call. The
-live fields are a layer's `x`, `y`, `color`, `opacity` and `visible`, a text
-layer's `text`, the words, an image layer's `image`, the name of an image
-asset of the scene or an image file, an effect's `visible`, `color`,
-`strength`, `sung`, `speed` and `rate`, and every field of a shape layer but
-`shape` and `blend`, a rect's border as `h.layers.frame.border.color`. A value
-takes the form that the scene gives the field, and None takes `x`, `y`,
-`color`, or a rect's `width` or `height` back to its default. A set raises
-ValueError at once for a layer, an effect or a field that the scene lacks, for
-a field that changes with a rebuild, and for a value that the field does not
-take. `layers` sets fields and reads none back.
+## Two ways
 
-A scene file finds its files beside itself, and a Python scene beside its
-script, under ghee and in [direct mode](#direct-mode) alike. A scene given as
-a dict, as JSON text or as a `ghee.Scene` finds its files in `base_dir`, the
-working directory by default. A file missing there resolves through
-`$GHEE_ASSETS`, a colon-separated list of directories.
+Use `ghee.open` when ghee is one part of your program, such as a logger that
+also shows its readings. Your program runs its own loop, and draws when it
+wants. To feed a megabyte or more each frame, use `ghee.open`: it takes less
+CPU than a Python scene.
 
-`feed` holds the data for one declared array, and the next frame consumes it
-once. A uint8 buffer reaches the texture as byte / 255, and any other buffer
-or iterable of numbers as floats. An array keeps its texture data until a
-feed changes it.
-
-`frame` draws and hands the frame to the output. `time` is the wall clock
-since the first frame, and `dt` is the time since the tick before, of a
-frame or a skip, a quarter second at most, and 1/60 for the first tick, so
-the ticks' `dt` add up to the time passed while each tick follows the one
-before within a quarter second. A frame drawn after a drawn frame takes `dt`
-as its `iTimeDelta`. `timestep` pins `time` to `frame * S` and
-`dt` to S. `params` holds the params that the console changed since the last
-tick, each under its bare name, or as `pass.name` when the bare name sets
-another param, with their values as a scene file writes them, and a text
-layer's words as its `text`, such as `title.text`. The first tick holds them
-all, and a set from the host itself stays out.
-
-`pixels` reads alpha 255 in every pixel, unless `alpha=True` keeps the alpha
-that the output pass wrote, with the colour premultiplied by it.
-
-`skip` takes the tick and draws nothing, and the panel keeps its last frame.
-
-`image` gives the last frame as an RGBA Pillow image, its colour straight as
-in a saved `.png`. Pillow stays out of ghee-render's dependencies, and
-`image` raises ImportError without it.
-
-`save` writes the last frame to a `.png` file, or to a `.jpg`, which holds no
-alpha. A run of `#` in the name takes the number of the frame's tick, as
-`ghee render -o` numbers its files.
-
-`serve` serves the console on `127.0.0.1`, and a `(host, port)` pair binds it
-elsewhere. Anyone who reaches the port can change params, so bind beyond
-loopback only on a network you trust.
-[docs/http.md](http.md)
-holds the API. This console shows the host's own scene, the layers of a
-drawing among them, as the host changes it. Params, the live fields of
-layers and the look of each layer change from it, and it refuses scene
-switches, saves and every other edit. The video stream advances with
-`frame()`: viewers see a new frame only when the host draws one.
-
-With no scene, `ghee.open` makes one pass, `main`, that clears to black, for
-a drawing to paint on. `rotate` turns the frame clockwise on its way to every
-output, the display, the files and the console's video, and at 90 and 270 the
-scene renders at the frame's size turned, so a 128x32 panel gives the scene
-32x128. `h.size` is the frame's size, the size of `pixels()`.
-
-`brightness` reads and sets the backlight of a KMS display, 0 to 1, through
-the backlight device that the kernel registered for it, such as a panel's
-contrast. It reads None for a display with no backlight device, and a set
-raises ValueError there and on a screen with no KMS display. Closing the
-screen puts the earlier level back.
+Write a [Python scene](#python-scenes) for ghee to run the way it runs a
+[scene](scenes.md) file. `ghee render` puts it on a display or into image
+files, and `ghee serve` lists it in the [console](console.md) beside your
+other scenes, to switch between them. A scene file holds fixed values. A
+Python scene computes its own each frame, such as the time.
 
 ## Drawing
 
-`screen.draw()` opens one frame for a `with` block, and each call in the
-block writes a layer. Leaving the block draws the frame, and the panel holds
-it until the next, so the host's loop sets the pace: a loop that sleeps
-freezes the scroll, the wave and the blink between its frames.
+To draw a frame, open a `with screen.draw() as d:` block, and make one call
+for each [layer](layers.md), later calls on top:
 
-This loop draws the time, the load of the machine as a share of its cores
-with a bar beside it, and a blinking HOT past 90%:
+| Call | What it draws |
+| --- | --- |
+| `d.text(words)` | words ([Text layers](layers.md#text-layers)) |
+| `d.image(path)` | a `.png` or `.jpg` file, or an image asset ([Image layers](layers.md#image-layers)) |
+| `d.rect()` | a box, or the whole screen with no `width` and `height` ([Shape layers](layers.md#shape-layers)) |
+| `d.circle((x, y), radius)` | a filled circle of `radius` pixels around (x, y) ([Shape layers](layers.md#shape-layers)) |
+| `d.line((x0, y0), (x1, y1))` | a line between two points |
+| `d.lines(points)` | a line through a list of (x, y) points |
+
+When the block ends, ghee renders the frame and shows it, as `screen.frame()`
+does ([Frames](#frames)).
+
+Pass a layer's keys to its call as keywords, such as `x`, `y`, `color` and
+`font_size`. [Layers](layers.md) lists them. `x` and `y` place the layer's top
+left corner, in pixels from the screen's top left, y down. To turn on an
+effect such as `glow`, pass it a dict of its own keys, or an empty dict for
+its defaults: `glow={}`.
+
+The layers stay from frame to frame, so a blink or a scroll keeps moving.
+ghee knows each call by its line of code, and each frame's calls state the
+whole picture. A key that a call leaves out goes back to its default. A call
+that your code skips in a frame takes its layer away, and the other calls
+keep theirs, names included. When the skipped call runs again, it adds a new
+layer, and its effects start over.
+
+This loop shows the machine's load on a 128x32 panel, which gives the screen
+its size. It draws the time, the load, a bar that fills with the load, and a
+HOT that blinks twice a second above 90%. `fps=10` holds the loop to ten
+frames a second:
 
 ```python
 import os
@@ -139,7 +79,7 @@ import time
 
 import ghee
 
-screen = ghee.open(display="kms")
+screen = ghee.open(display="kms", fps=10)
 while True:
     load = os.getloadavg()[0] / os.cpu_count()
     with screen.draw() as d:
@@ -161,155 +101,142 @@ while True:
         )
         d.rect(x=66, y=22, width=60 * min(load, 1), height=4)
         if load > 0.9:
-            d.text("HOT", x=100, y=0, font_size=12, blink={"rate": 2})
+            w, _ = screen.measure("HOT", font_size=12)
+            d.text("HOT", x=128 - w, y=0, font_size=12, blink={"rate": 2})
 ```
 
-The calls, each with the layer that it writes:
+At 95% load:
+
+![21:47 and load 95% on the left, a bar almost full on the right, and HOT blinking in the top right corner](../media/python/status.webp)
+
+Effects that move, such as `blink`, `scroll` and `wave`, keep their pace while
+your loop draws four frames a second or more. In a slower loop, each frame
+moves them a quarter second.
+
+Use `name=` to name the layer of a call, as the console shows it. Without it,
+ghee names a new layer after its call, `text`, then `text2`, and so on. Two
+calls with the same name in a frame raise ValueError.
+
+Use `screen.measure("HOT", font_size=12)` to get the width and height of words
+in pixels before you draw them, as for HOT above. Leave out `font_size` to
+measure them at the size that fits the screen.
+
+## Opening a scene
+
+You can also open a [scene](scenes.md) with `ghee.open`: a path to a
+`.scene.json`, a dict, the JSON text of a scene, or a
+[`ghee.Scene`](#building-a-scene-in-python). This opens the bars scene from
+[Arrays](scenes.md#arrays), feeds it a ramp, and draws a frame:
 
 ```python
-d.text("hello", x=4, y=4, font_size=12, color="orange", glow={"blur": 0.25})
-d.text("hello")  # fitted and centred
-d.text("hi", color=ghee.gradient("red", "yellow", angle=90))
-d.image("wifi.png", x=110, y=0, width=32, color="orange")  # an image layer
-d.rect(x=0, y=20, width=91, height=9, color="white")  # a shape layer
-d.rect(color="navy")  # the whole screen
-d.circle((110, 14), 10, color="white")  # a box with round ends
-d.line((0, 31), (127, 31), color="white", stroke_width=1)
-d.lines(points, color="lime", stroke_width=1)  # a waveform
+import ghee
+
+screen = ghee.open("bars.scene.json", width=128, height=64)
+screen.feed("levels", [(i + 1) / 16 for i in range(16)])
+screen.frame()
+screen.save("ramp.png")
 ```
 
-A call takes the keys of its layer as keywords, the effects included, as
-`ghee.Layer` takes them, and `name`. A path and a numpy number or array draw
-as the str and the values that they hold. Positions and box sizes are pixels
-from the top left, y down, on the scene's last pass before its filters, where
-the drawing paints over the scene's own layers in the order of the calls.
-`d.circle(centre, radius)` writes a box of `2 * radius` with `border_radius`
-at `radius`, and `d.line(a, b)` is `d.lines([a, b])`, whose points stand
-where they say: `x` and `y` shift a line, and no line is centred.
+![16 white bars on black, each taller than the one on its left](../media/python/ramp.png)
 
-Each frame states the whole look of each call, so a keyword left out takes
-its default again. A call keeps its layer from frame to frame by the line
-of code that makes it, and by its count from that line in the frame, so a
-call that comes and goes above another leaves the other's layer alone.
-`name` names the layer, for a shader that reads `<name>_cover`, and takes the
-place of the line, and when the scene holds a layer of that name, the call
-draws it. A call with no name names its layer after its kind, `text`,
-`text2`, `image`, `rect`, `line`, past every name of the scene. Two calls
-that draw one layer in a frame raise ValueError, and a `name` that is no
-str raises TypeError.
-
-Leaving the block sends ghee what changed. A live field changes live. Any
-other change builds that layer alone again, and a new size of an effect,
-such as a glow's `blur`, also compiles the layer's shaders, so an effect
-size that changes every frame slows every frame. A call that runs for the
-first time adds its layer after the layer of the call before it, a layer
-under the layer of a call before its own moves after that layer, and an
-effect that a call stops naming is bypassed. The layer of a call that did
-not run leaves the scene, and a layer of the scene's own hides instead. A
-call that comes and goes adds its layer each time that it comes back, and a
-call that keeps running with `visible=False` hides its layer for free. A
-frame whose calls changed nothing sends nothing.
-
-`screen.measure(words, font_size=None, font_family=None)` gives the width
-and height in pixels of the block that a drawing's text lays `words` out in,
-at the size that fits the screen when `font_size` is None.
-
-## ghee for luma.oled and Pillow users
-
-A luma.oled loop draws each frame with Pillow on the CPU and sends it to the
-panel. A ghee loop keeps that shape: the GPU draws the frame, and the
-kernel's driver of the panel shows it, set up as
-[Hardware displays](displays.md#hardware-displays)
-describes. A Pillow box `(x0, y0, x1, y1)`
-holds both corner pixels, so its ghee box takes `x=x0`, `y=y0`, and `w` and
-`h` of `x1 - x0 + 1` and `y1 - y0 + 1`. Each call maps to its ghee
-counterpart:
-
-| luma.oled and Pillow | ghee |
+| Call | What it changes, from the next frame |
 | --- | --- |
-| `device = ssd1306(i2c(port=1, address=0x3C))` | `screen = ghee.open(display="kms")` |
-| `with canvas(device) as draw:` | `with screen.draw() as d:` |
-| `font = ImageFont.truetype("DejaVuSans.ttf", 12)` | `font_family="DejaVuSans.ttf", font_size=12` on the call |
-| `draw.text((x, y), "hi", font=font, fill="orange")` | `d.text("hi", x=x, y=y, font_size=12, color="orange")` |
-| `draw.text(...)` on a 1-bit device such as the `ssd1306` | `d.text(..., render="mono")`, which lights the pixels that Pillow lights |
-| `draw.textlength("hi", font=font)`, `draw.textbbox(...)` | `screen.measure("hi", font_size=12)` |
-| `draw.rectangle(box, fill="white")` | `d.rect(x=x0, y=y0, width=w, height=h)` |
-| `draw.rectangle(box, outline="white", width=1)` | `d.rect(..., color="transparent", border={"width": 1, "color": "white"})` |
-| `draw.rounded_rectangle(box, radius=3, fill="white")` | `d.rect(..., border_radius=3)` |
-| `draw.ellipse(box, fill="white")`, a circle | `d.circle((x0 + w / 2, y0 + w / 2), w / 2)` |
-| `draw.line((x0, y0, x1, y1), fill="white", width=1)` | `d.line((x0, y0), (x1, y1), stroke_width=1)` |
-| `draw.line(points, fill="lime")` | `d.lines(points, color="lime")` |
-| `image.paste(icon, (x, y), icon)` | `d.image("icon.png", x=x, y=y)` |
-| `draw.text(..., stroke_width=1, stroke_fill="black")` | `d.text(..., text_stroke={"width": 1 / 12, "color": "black"})`, in em at `font_size=12` |
-| `ssd1306(serial, rotate=2)` | `ghee.open(display="kms", rotate=180)` |
-| `device.contrast(128)` | `screen.brightness = 0.5` |
+| `screen.feed(name, values)` | the numbers of an [array](scenes.md#arrays) |
+| `screen.set_param(name, value)` | a [param](scenes.md#params) |
+| `screen.layers.title.x = 10` | a key of the layer `title` ([Changing a layer at runtime](layers.md#changing-a-layer-at-runtime)) |
 
-Code that keeps luma for the panel takes ghee's frame as a Pillow image.
-This loop draws the time in a glow, headless at the panel's size, and hands
-each frame to the luma device:
+`feed` takes a list of floats, or a buffer such as a numpy array. Bytes, from
+`bytes` or a numpy `uint8` array, become 0 to 1: each byte is divided by 255.
+On a Pi 0 to 3, an array stores only bytes, so floats outside 0 to 1 clamp. On
+a Pi 4 or 5, or a desktop, an array stores true floats, with no clamping.
 
-```python
-screen = ghee.open(width=device.width, height=device.height)
-while True:
-    with screen.draw() as d:
-        d.text(time.strftime("%H:%M"), glow={})
-    device.display(screen.image().convert(device.mode))
-```
+Use `set_param` to set a param of the scene, and `in_pass="blur"` to set the
+param of its [pass](scenes.md#passes) `blur`.
 
-## Rules
+Use `layers` to change a layer's keys at runtime, such as `x`, `color` or
+`text`.
 
-ghee is thread-affine: open a handle on one thread and use it on that same
-thread. A call from another thread raises RuntimeError.
+## ghee.open
 
-A scene, GLSL or param error raises ValueError, and a system error raises
-RuntimeError.
+| Key | Values | Default | What it changes |
+| --- | --- | --- | --- |
+| `scene` | a path, a dict, JSON text, a `ghee.Scene` | none: a black frame | the scene |
+| `display` | `"kms"` | none | `"kms"` draws on the connected display |
+| `width`, `height` | pixels, both or neither | 320x240 | the frame's size in memory. With a display, the display's own size wins, and `width` and `height` are ignored |
+| `rotate` | `0`, `90`, `180`, `270` | `0` | turns the frame clockwise. At 90 and 270 you draw at the size turned, 32x128 on a 128x32 panel |
+| `fps` | frames a second | none | holds the loop to at most this many frames a second |
+| `drop` | `True`, `False` | `False` | `True` lets the display skip to the newest frame ([Frames](#frames)) |
+| `timestep` | seconds a frame | none: the clock | fixes the time between frames, so a render repeats exactly |
+| `alpha` | `True`, `"premultiplied"`, `"unpremultiplied"`, `False` | `False` | keeps the transparency drawn by the scene ([Frames](#frames)) |
+| `serve` | a port, or `(host, port)` | none | serves the [console](#the-console-from-python) |
+| `stream_max` | pixels, or a share from 0 to 1 | the frame's size | caps the size of the console's video |
+| `opts` | `{"rgb565": True}` | none | 16-bit colour on the display, as `ghee render --rgb565` |
+| `dri` | a device in `/dev/dri` | `$GHEE_DRI`, else the first that opens | which GPU, as `ghee render --dri` |
+| `base_dir` | a folder | the working directory | where a dict, JSON text or a `ghee.Scene` finds its files, and the files that drawing calls name ([Assets](layers.md#assets)) |
+| `verbose` | `True`, `False` | `False` | `True` prints what ghee opened |
 
-`frame()` releases the GIL, so the host's other threads run while it renders.
+## Frames
+
+Each frame has a tick: its number, its time, and what the console changed.
+`screen.frame()` draws a frame and returns its tick, and a `screen.draw()`
+block holds it as `d.tick`:
+
+| Tick | What it holds |
+| --- | --- |
+| `tick.frame` | the frame's number, from 0 |
+| `tick.time` | seconds since the first frame |
+| `tick.dt` | seconds since the tick before |
+| `tick.params` | the params that the [console](#the-console-from-python) changed since the tick before, as a dict such as `{"speed": 2.0}`. The first tick holds every param |
+
+You can use `screen.skip()` to keep the last frame on the display.
+
+On a display, `frame()` waits for the display, so your loop runs at the
+display's pace. To slow it down, use `fps`.
+
+Use `drop=True` when your loop must not wait for the display, such as a loop
+that also reads a sensor or follows music. `frame()` then returns at once, and
+the display shows the newest frame each time it's ready, dropping any older
+one still waiting. Set `fps` too, or the loop runs as fast as it can and keeps
+a CPU core busy.
+
+You can read the frame back:
+
+| Call | What it gives |
+| --- | --- |
+| `screen.pixels()` | bytes, RGBA for each pixel, row by row from the top |
+| `screen.image()` | a Pillow image. It needs Pillow |
+| `screen.save("frame.png")` | a `.png` or `.jpg` file. A run of `#` in the name takes the frame's number |
+
+On a display, these raise RuntimeError.
+
+With `alpha=True`, ghee keeps the transparency drawn by the scene.
+`pixels()` gives the raw frame, premultiplied as rendered, and `image()` and
+`save()` give it unpremultiplied. A half-transparent orange pixel reads
+(128, 64, 0, 128) from `pixels()`, and (255, 128, 0, 128) from `image()` and
+`save()`. To get the same form from every output, set `alpha="premultiplied"` or
+`alpha="unpremultiplied"`.
+
+`screen.brightness` sets a display's brightness, from 0 to 1.
+
+To close the screen, call `screen.close()`, or open it in a
+`with ghee.open(...) as screen:` block.
 
 ## Python scenes
 
-The shim writes a procedural scene. A PEP 723 scene declares `ghee-render`
-inline:
+A Python scene is a [procedural scene](procedural.md) written in Python, a
+script that ghee runs in place of a scene file.
 
-    #!/usr/bin/env -S uv run --script
-    # /// script
-    # dependencies = ["ghee-render"]
-    # ///
-
-The shim gives:
-
-- `ghee.Scene / Pass / Param / ArrayInput / Channel / Asset / Layer` to build
-  the scene.
-- `ghee.Arg` and `ghee.args([...])` to declare the scene's arguments, and to
-  answer `-- --help`.
-- `ghee.render_size()`, the size that the scene renders at, as `(w, h)`. A
-  pass with a size or a scale reads its own size in `iResolution`, so a
-  scene that needs the frame's shape there writes it from this.
-- `@ghee.feed("name")` to supply the values of a named array, each tick. The
-  function returns a buffer or an iterable of numbers. A uint8 buffer, such
-  as `bytes`, a `bytearray` or a numpy uint8 array, goes out as byte / 255,
-  and any other numbers go out as float32. None leaves the array as it
-  stands.
-- `@ghee.tick` to run a hook on each tick, before the feeds. The hook
-  receives a `ghee.Tick` and calls `ghee.set_param(name, value)`,
-  `ghee.layers`, `ghee.draw()`, `ghee.measure` and `ghee.skip()`.
-- `ghee.run(scene)` for the handshake, then the tick loop.
-
-A `ghee.Tick` holds `frame`, the tick's number, `time` and `dt` in seconds,
-`dt` the time since the tick before, and `params`, the params that changed,
-by name, and a text layer's words as its `text`, such as `title.text`. The
-first tick's `params` holds them all.
-
-This procedural scene draws the time. With no scene, `ghee.run()` starts
-from one pass, `main`, that clears to black, and the first tick's drawing
-grows it:
+To write one, put `@ghee.tick` on a function: ghee runs it before each frame.
+This one, `clock.py`, draws the time:
 
 ```python
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["ghee-render==0.5.0"]
+# ///
 import time
 
 import ghee
-
-ghee.args()  # the probe, this scene takes no arguments
 
 
 @ghee.tick
@@ -321,174 +248,176 @@ def clock(tick):
 ghee.run()
 ```
 
-`ghee render --demo stats` draws the load, memory, temperature and uptime of
-the machine this way.
+Its first four lines let [uv](https://docs.astral.sh/uv/) run the script with
+`ghee-render` pinned to your ghee's version (`ghee --version`).
 
-`params` on `ghee.Scene` and `ghee.Pass` takes a list of `ghee.Param`, such as
-`params=[ghee.Param("gain", "float", 0.5, min=0.0, max=1.0)]`. A dict keyed
-by name works too, and a key that differs from its param's name raises
-ValueError.
+To render one frame of it into `clock.png`:
 
-`ghee.Pass` takes `size=(w, h)` for a buffer of its own in pixels, or
-`scale=`, a share of the frame, one number or `(x, y)`, so
-`ghee.Pass("blur", BLUR, scale=0.5)` renders at half the frame on every
-screen.
-
-`ghee.Asset(name, file)` takes the keys of an asset of the scene format:
-`sampling`, "nearest" or "linear", and for a `.raw` file of bare pixels its
-`width`, `height`, `format`, "u8" or "f32", and `components`.
-
-The shim builds the scene and leaves every check to ghee, so a mistake in the
-scene reads the same in `ghee.open`, in a direct run and under `ghee render`.
-
-`ghee.set_param` raises ValueError for a param that the scene does not
-declare, or for a value that does not fit the param's type. A param set in a
-hook lands in the frame of its tick in [direct mode](#direct-mode), and under
-ghee with `--timestep`. Under ghee without it, the param lands a frame later
-or more.
-
-`ghee.measure` measures words as a handle's `measure` does, on the last pass
-of the scene that `run()` runs, at the render size that ghee gives the scene,
-and raises RuntimeError outside a tick or a feed.
-
-`ghee.layers` makes the sets of a handle's `layers` from a tick or a feed,
-and they land as a param does. Under ghee, each set goes out with the tick's
-answer, and the first one loads the native half of the package, which checks
-every set against the scene and raises ValueError where ghee would refuse
-it. In a direct run, each set goes to the handle. A set before `ghee.run`
-raises RuntimeError.
-
-`ghee.draw()` opens a [drawing](#drawing) of the tick's frame in a tick or
-a feed, and the frame of that tick draws its calls, so one `with` block in
-a tick states the whole drawing of that frame. The calls land as the sets of
-`ghee.layers` do, checked against the scene first, and under ghee a layer
-that a call adds or changes goes out with the tick's answer.
-
-The same clock from a scene of its own declares its text layer, and the
-tick sets the layer's words through `ghee.layers` in place of the drawing:
-
-```python
-@ghee.tick
-def clock(tick):
-    ghee.layers.clock.text = time.strftime("%H:%M:%S")
-
-
-ghee.run(
-    ghee.Scene(
-        passes=[ghee.Pass("main", layers=[ghee.Layer("clock", text="00:00:00")])],
-    )
-)
+```shell
+chmod +x clock.py
+ghee render clock.py -o clock.png --size 128x64
 ```
 
-## Layers
+![21:47:05 in white on black](../media/python/clock.png)
 
-`ghee.Layer(name, text=None, visible=True, x=None, y=None, color=None,
-opacity=None, blend="normal", font_size=None, font_family=None,
-text_align="left", render=None, text_shadow=None, glow=None,
-text_stroke=None, karaoke=None, wave=None, scroll=None, blink=None,
-image=None, width=None, height=None, shape=None, border=None,
-border_radius=None, points=None, stroke_width=None)` takes the keys of a layer
-as keywords, and [Layers](layers.md) holds
-what each does. A text layer takes `text`, an image layer `image`, and a shape
-layer `shape`. A keyword left at None leaves its key to ghee's default, and an
-effect takes a dict of its fields, `{}` for every default. This scene draws
-`hello` in a gradient with a soft shadow, and the image `stamp.png` in the top
-left corner:
+You can also run the script on its own: `./clock.py` draws on the first
+connected display found, and it takes the same flags as `ghee render`, which
+you can list with `./clock.py --help`.
+
+| Call | What it does |
+| --- | --- |
+| `ghee.run(scene)` | runs a [`ghee.Scene`](#building-a-scene-in-python), or a black frame with none |
+| `@ghee.tick` | runs the function before each frame, with the frame's tick |
+| `@ghee.feed("levels")` | runs the function before each frame, with the tick, and feeds what it returns to the array `levels`. None leaves the array as it is |
+| `ghee.draw()` | in a tick, a `with` block for this frame's calls ([Drawing](#drawing)) |
+| `ghee.layers`, `ghee.set_param`, `ghee.measure` | in a tick, as a screen's |
+| `ghee.skip()` | in a tick, keeps the last frame on the display |
+| `ghee.render_size()` | the frame's width and height, known before `ghee.run` |
+| `ghee.args([...])` | the script's own [arguments](#arguments) |
+
+### Arguments
+
+To give the script arguments of its own, declare them with `ghee.args`, which
+returns their values. This `clock.py` takes `--no-seconds`:
 
 ```python
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["ghee-render==0.5.0"]
+# ///
+import time
+
+import ghee
+
+args = ghee.args([ghee.Arg("seconds", "bool", True, "show the seconds")])
+form = "%H:%M:%S" if args.seconds else "%H:%M"
+
+
+@ghee.tick
+def clock(tick):
+    with ghee.draw() as d:
+        d.text(time.strftime(form))
+
+
+ghee.run()
+```
+
+Then run it with:
+
+```shell
+./clock.py --no-seconds
+```
+
+Through `ghee render`, put the script's arguments after `--`
+([Procedural scenes](procedural.md)).
+
+Declare each argument with `ghee.Arg(name, type, default, help)`, in one of
+these types:
+
+| Type | Takes |
+| --- | --- |
+| `string` | text |
+| `int` | a whole number |
+| `float` | a number |
+| `bool` | `--name`, or `--no-name` |
+| `size` | `WxH`, or a share of the frame: `full`, `half`, `quarter`, `eighth` or `sixteenth`. Its value is `(w, h)` in pixels |
+
+## The console from Python
+
+When your code changes a scene's params or layers, and the scene is served in
+the [console](console.md), the console stops you editing those values as soon
+as your code changes them. To serve the console from `ghee.open`, pass
+`serve=8090` and open `http://127.0.0.1:8090`.
+
+## Building a scene in Python
+
+Use `ghee.Scene` and its parts to build a scene in memory, and pass it to
+`ghee.open` or `ghee.run`. Each class stands for one object of the scene
+file, and takes its keys as keywords:
+
+| Class | Writes | Its keys |
+| --- | --- | --- |
+| `ghee.Scene(passes, ...)` | the scene | [The scene file](scenes.md#the-scene-file) |
+| `ghee.Pass(name, fragment, ...)` | a pass, its GLSL in `fragment` | [Passes](scenes.md#passes) |
+| `ghee.Param(name, type, value, ...)` | a param | [Params](scenes.md#params) |
+| `ghee.ArrayInput(name, size)` | an array | [Arrays](scenes.md#arrays) |
+| `ghee.Channel(buffer)` | a channel | [Channels](scenes.md#channels) |
+| `ghee.Asset(name, file, ...)` | an asset | [Assets](layers.md#assets), [Data files](scenes.md#data-files) |
+| `ghee.Layer(name, ...)` | a layer | [Layers](layers.md) |
+
+In this scene, a `color` param `ink` holds orange, and the shader paints it from
+the top down to black. `uv`, which ghee gives every shader, runs from 0 at the
+top to 1 at the bottom ([Built-in names](scenes.md#built-in-names)). A text
+layer writes `hello` over it with a shadow:
+
+```python
+import ghee
+
 scene = ghee.Scene(
-    assets=[ghee.Asset("stamp", "stamp.png")],
+    params=[ghee.Param("ink", "color", "orange")],
     passes=[
         ghee.Pass(
             "main",
-            "void main() { gl_FragColor = vec4(0.1, 0.12, 0.2, 1.0); }",
-            layers=[
-                ghee.Layer(
-                    "title",
-                    text="hello",
-                    color={"from": "#ff0000", "to": "#ffff00", "angle": 90},
-                    text_shadow={},
-                ),
-                ghee.Layer("icon", image="stamp", x=4, y=4, width=16),
-            ],
+            "void main() { gl_FragColor = vec4(ink * (1.0 - uv.y), 1.0); }",
+            layers=[ghee.Layer("title", text="hello", text_shadow={})],
         )
     ],
 )
+screen = ghee.open(scene, width=128, height=64)
+screen.frame()
+screen.save("scene.png")
 ```
 
-A pass of layers alone, `ghee.Pass("words", layers=[...])`, starts each frame
-transparent, for a later pass to read through a channel.
+![hello in white with a shadow, over orange at the top that darkens to black at the bottom](../media/python/scene.png)
 
-A text problem leaves the scene running, and a set of the layer's `text`
-raises nothing for it. ghee prints it once on stderr, and the console shows
-it.
+## luma.oled and Pillow calls in ghee
 
-## Coverage in a shader
+Each call, and the ghee call that draws the same:
 
-Every pass except a filter pass reads the words of a text layer with
-`float <name>_cover(vec2 p, float font_size)`: `p` in em from the top left of
-the block, y down like `uv`, and `font_size` the pixels per em there,
-which sets the antialiasing. `<name>_size` is the block in em. A hidden layer
-gives a shader its words and draws none itself. With `CODE` holding a shader
-such as the one in
-[Coverage in a shader](layers.md#coverage-in-a-shader):
+| luma.oled and Pillow | ghee |
+| --- | --- |
+| `device = ssd1306(i2c(port=1, address=0x3C))` | `screen = ghee.open(display="kms")`, with the panel set up ([Hardware displays](displays.md#hardware-displays)) |
+| `with canvas(device) as draw:` | `with screen.draw() as d:` |
+| `font = ImageFont.truetype("DejaVuSans.ttf", 12)` | `font_size=12` on the call, DejaVu Sans by default. `font_family="Other.ttf"` takes another font |
+| `draw.text((x, y), "hi", font=font, fill="orange")` | `d.text("hi", x=x, y=y, font_size=12, color="orange")` |
+| `draw.text(...)` on a 1-bit device such as the `ssd1306` | `d.text(..., render="mono")` ([Render](layers.md#render)) |
+| `draw.textlength("hi", font=font)`, `draw.textbbox(...)` | `screen.measure("hi", font_size=12)` |
+| `draw.rectangle((x0, y0, x1, y1), fill="white")` | `d.rect(x=x0, y=y0, width=x1 - x0 + 1, height=y1 - y0 + 1)` |
+| `draw.rectangle(box, outline="white", width=1)` | `d.rect(..., color="transparent", border={"width": 1, "color": "white"})` |
+| `draw.rounded_rectangle(box, radius=3, fill="white")` | `d.rect(..., border_radius=3)` |
+| `draw.ellipse((x0, y0, x1, y1), fill="white")` of a circle | `d.circle(((x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2), (x1 - x0 + 1) / 2)` |
+| `draw.line((x0, y0, x1, y1), fill="white", width=1)` | `d.line((x0, y0), (x1, y1), stroke_width=1)` |
+| `draw.line(points, fill="lime")` | `d.lines(points, color="lime")` |
+| `image.paste(icon, (x, y), icon)` | `d.image("icon.png", x=x, y=y)` |
+| `draw.text(..., stroke_width=1, stroke_fill="black")` at size 12 | `d.text(..., text_stroke={"width": 1 / 12, "color": "black"})`, its width in em |
+| `ssd1306(serial, rotate=2)` | `ghee.open(display="kms", rotate=180)` |
+| `device.contrast(128)` | `screen.brightness = 0.5` |
 
-    scene = ghee.Scene(
-        passes=[ghee.Pass("main", CODE, layers=[ghee.Layer("title", text="hello", visible=False)])],
-    )
+To keep luma for the panel, hand it ghee's frame as a Pillow image. This loop
+draws the time ten times a second, in memory at the panel's size, in
+`render="mono"` for the 1-bit SSD1306:
 
-`ghee render --demo lettering -o lettering.png` shows the words at every
-size, and `ghee render --demo lens` bends them under a lens.
+```python
+import time
 
-## Direct mode
+import ghee
+from luma.core.interface.serial import i2c
+from luma.oled.device import ssd1306
 
-The same scene file runs two ways. When ghee starts it, as
-`ghee render spectrum.py` or from a scenes directory, `run()` feeds ghee over
-the
-[wire protocol](procedural.md).
-When you run the file itself, `run()` opens the embedded renderer and renders
-directly:
+device = ssd1306(i2c(port=1, address=0x3C))
+screen = ghee.open(width=device.width, height=device.height, fps=10)
+while True:
+    with screen.draw() as d:
+        d.text(time.strftime("%H:%M"), render="mono")
+    device.display(screen.image().convert(device.mode))
+```
 
-    ./spectrum.py --display --frames 300
-    ./spectrum.py -o frame.####.png --size 320x240 --frames 60
+## Threads and errors
 
-ghee sets `GHEE_WIRE=1` in every scene process it starts, and `run()` tells
-the two apart by it.
+Use a screen from the thread that opened it: a call from another thread
+raises RuntimeError.
 
-The scene takes its own arguments first, then these flags of `ghee render`:
+A mistake in the scene, its GLSL, a param or a feed raises ValueError. A
+failure of the system, such as a GPU that does not open, raises RuntimeError.
 
-- `-o PATTERN`: image files, as `frame.####.png`, or `-` for raw RGBA frames
-  on stdout. Files and the pipe take every frame, a skipped one too, and
-  more than one frame takes a pattern that numbers them.
-- `--display [kms]`: the connected display, bare or `kms`. It is the default
-  with no `-o` and no `--serve`.
-- `--serve`, `--port PORT`, `--host HOST`: the console.
-- `--size WxH`: the render size. With no `--size`, a display states its
-  own, which `ghee.render_size()` and a size arg given as a share, such as
-  `half`, take too, turned by `--rotate`. A run with no display renders at
-  320x240.
-- `--rotate DEGREES`: 0, 90, 180 or 270, the frame turned clockwise on its
-  way to every output.
-- `--brightness LEVEL`: the backlight of the `kms` display, 0 to 1. A
-  display that refuses it prints the error once, and the run goes on.
-- `--rgb565`: the `kms` display scanned out in 16-bit color.
-- `--dri DEVICE`: the DRI device, and with `--display` the card whose
-  display it drives.
-- `--fps N`, `--stats` and `--timestep S`.
-- `--frames N`: the frame count. It defaults to 1 for image files or the
-  pipe, and to 0 for a display or the console, which runs until SIGINT or
-  SIGTERM.
-
-The feeds, the hooks, `ghee.layers`, `ghee.draw()` and `ghee.skip()` work the
-same. The tick keeps its wire shape: `dt` is the time since the tick before,
-`params` holds the params that the console changed, and the first tick holds
-every param. A scene or a display that ghee refuses stops the run with ghee's
-one line and exit status 1. If one of your own arguments collides with these
-names, argparse says so.
-
-## What the wire carries
-
-The wire suits small per-frame data. Megabyte-scale data costs a
-serialization and two copies for each frame, and on a small Pi that shows up
-as a low frame rate. A data-heavy host takes `ghee.open` instead: the
-renderer in the same process, with no pipe.
+While `frame()` draws, your other Python threads keep running.

@@ -1,293 +1,411 @@
 # Scenes
 
-ghee teaches no GLSL: [The Book of Shaders](https://thebookofshaders.com) and
-[Shadertoy](https://www.shadertoy.com) have that covered.
+A scene is one or more GLSL fragment shaders, called passes, that ghee runs
+every frame and puts on a display, into image files or into a stream. ghee
+gives every shader [built-in names](#built-in-names), such as `uv`, the
+pixel's position, and `iTime`, the time. You can have a pass read another
+pass's picture, and values that change at runtime.
 
-A scene is a JSON file that holds an ordered list of passes, each with its own
-GLSL fragment shader. This is `bars.scene.json`, one of the bundled examples:
+For example, this scene, `uv.scene.json`, holds one pass, which colours each
+pixel by `uv`. `uv` runs from 0 to 1 across the picture, so red grows to the
+right, and green grows down:
+
+```json
+{
+  "version": 1,
+  "passes": [{
+    "name": "main",
+    "fragment": "void main() { gl_FragColor = vec4(uv, 0.5, 1.0); }"
+  }]
+}
+```
+
+And you can render it to a PNG with the `ghee` command
+([Install](../README.md#install)). The pictures on this page are drawn at
+three times their size:
+
+```shell
+ghee render uv.scene.json -o uv.png --size 128x64
+```
+
+![blue at the top left, pink at the top right, green at the bottom left and pale yellow at the bottom right](../media/scenes/uv.png)
+
+Without `--size`, ghee renders at a default size, or at the display's size with
+`--display`. You can also render more frames, draw on a display, or watch and
+edit the scene in the [console](console.md). [Outputs and
+displays](displays.md) lists every output:
+
+```shell
+# frame.0000.png to frame.0059.png, with a timestep of 0.033 s
+ghee render uv.scene.json -o frame.####.png --frames 60 --timestep 0.033
+# the connected display, HDMI or a panel, until Ctrl-C
+ghee render uv.scene.json --display kms
+# the console, at http://127.0.0.1:8090
+ghee serve uv.scene.json
+```
+
+You can do the same from Python: build the scene with `ghee.Scene`, render it
+in your program with `ghee.open`, here with no display, and draw one frame
+with `frame()` ([Python](python.md)):
+
+```python
+import ghee
+
+scene = ghee.Scene(passes=[
+    ghee.Pass("main", "void main() { gl_FragColor = vec4(uv, 0.5, 1.0); }"),
+])
+screen = ghee.open(scene, width=128, height=64)
+screen.frame()
+screen.save("uv.png")
+```
+
+## Built-in names
+
+You can use these GLSL names in every pass:
+
+| GLSL name | What it holds |
+| --- | --- |
+| `vec2 uv` | the pixel's centre in the buffer, from (0, 0) at its top left corner to (1, 1) at its bottom right |
+| `vec4 gl_FragCoord` | the pixel's centre in pixels, (0.5, 0.5, 0, 1) for the top left pixel |
+| `float iTime` | seconds since the first frame, or the frame's number times S under `--timestep S` |
+| `float iTimeDelta` | seconds since the frame before |
+| `int iFrame` | the frame's number, 0 first. It starts again at 0 after 1048576 frames |
+| `vec3 iResolution` | the buffer's width and height in pixels, and 1 |
+| `vec3 iOutputResolution` | the frame's width and height in pixels, and 1 |
+| `sampler2D iChannel0`, `iChannel1`, ... | the buffer of each [channel](#channels) |
+| `vec3 iChannelResolution[i]` | the width and height of channel i's buffer, and 1 |
+| `float ghee_hash(p)` | a random value from 0 to 1 for a `float`, `vec2` or `vec3` `p`, the same on every GPU |
+| `float ghee_noise(p)` | smooth noise from 0 to 1 for a `vec2` or `vec3` `p`, built on `ghee_hash` |
+
+`uv` and `gl_FragCoord` sit on the exact centre of the pixel on every GPU.
+Both run y down, with y = 0 at the top.
+
+## The scene file
+
+| Key | Values | Default | What it changes |
+| --- | --- | --- | --- |
+| `passes` | a list of [passes](#passes) | required | the shaders, in the order that they draw |
+| `params` | `{"<name>": <param>}` | none | [params](#params) that every pass reads |
+| `common` | GLSL, or `{"file": "common.glsl"}` | none | GLSL that ghee puts at the top of every pass, such as a function that two passes share |
+| `assets` | `{"<name>": <asset>}` | none | image, font and [data](#data-files) files ([Assets](layers.md#assets)) |
+| `filters` | a list of filter names | none | passes that ghee adds after the scene's own, such as `dither` ([Filters](filters.md)) |
+| `version` | `1` | `1` | the scene format's version |
+
+Give a scene file a name that ends in `.scene.json`. A path in it is
+relative to the file's folder.
+
+## Passes
+
+A pass is a fragment shader and the picture that it draws, which ghee calls
+its buffer. The passes draw in order, and the last one makes the frame.
+
+A pass's GLSL is GLSL ES 1.00, the GLSL of OpenGL ES 2.0, because every Pi
+runs it ([Raspberry Pi](pi.md)). In each pass, define `void main()`, and write
+the pixel's colour to `gl_FragColor`. Use `texture2D` to read a texture. ghee
+writes the `#version` and `precision` lines for you. A shader that fails to
+compile stops `ghee render`, which prints the pass, the line and the GPU's
+message.
+
+| Key | Values | Default | What it changes |
+| --- | --- | --- | --- |
+| `name` | a [name](#names) | `"main"`, so a second pass needs a name | the name that a channel reads it by |
+| `fragment` | GLSL, or `{"file": "main.glsl"}` | none: the pass then draws its [layers](layers.md) alone, over a transparent buffer | the shader |
+| `channels` | a list of `{"buffer": "<pass>"}` | none | the buffers that it reads ([Channels](#channels)) |
+| `params` | `{"<name>": <param>}` | none | [params](#params) that this pass alone reads |
+| `arrays` | a list of `{"name": "<name>", "size": <size>}` | none | numbers that a program feeds it ([Arrays](#arrays)) |
+| `layers` | a list of layers | none | text, images and shapes drawn over its buffer ([Layers](layers.md)) |
+| `size` | `[w, h]` in pixels | the frame's size | the buffer's size ([Size and sampling](#size-and-sampling)). The pass that makes the frame draws at the frame's size whatever it sets |
+| `scale` | a share of the frame, one number or `[x, y]` | `1` | the buffer's size, as a share of the frame's. A pass takes `size` or `scale` |
+| `sampling` | `nearest`, `linear`, `trilinear` | `linear` | how every channel that reads this pass reads its buffer |
+| `visible` | `true`, `false` | `true` | `false` skips the pass, which hands on the picture before it |
+
+## Channels
+
+List the buffers that a pass reads in its `channels`, and read them in its
+shader: the first as `iChannel0`, the second as `iChannel1`, and so on. Use
+`texture2D(iChannel0, uv)` to read the pixel at the same place. `texture2D`
+takes a position from 0 to 1, so `uv` reads the same place whatever the
+buffer's size ([Built-in names](#built-in-names)).
+
+For example, the pass `disc` draws a white disc. The pass `main` reads it in
+place, and again 6 pixels up and to the left, so the shadow falls down and to
+the right:
 
 ```json
 {
   "version": 1,
   "passes": [
-    {
-      "name": "main",
-      "fragment": { "file": "bars.glsl" },
-      "arrays": [{ "name": "amplitudes", "size": 16 }],
-      "params": {
-        "base": { "type": "color", "value": [0.04, 0.04, 0.04] },
-        "bar": { "type": "color", "value": [0.1, 0.9, 0.4] }
-      }
-    }
+    { "name": "disc", "fragment": { "file": "disc.glsl" } },
+    { "name": "main", "channels": [{ "buffer": "disc" }], "fragment": { "file": "shadow.glsl" } }
   ]
 }
 ```
 
-and `bars.glsl` beside it:
+`disc.glsl`:
 
 ```glsl
 void main() {
-  int last = amplitudes_count - 1;
-  float fi = uv.x * float(last);
-  int i0 = int(floor(fi));
-  float h = mix(amplitudes_at(i0), amplitudes_at(min(i0 + 1, last)), fract(fi));
-  float m = step(uv.y, h);
-  gl_FragColor = vec4(mix(base, bar, m), 1.0);
+  float d = length(gl_FragCoord.xy - 0.5 * iResolution.xy);
+  gl_FragColor = vec4(vec3(clamp(20.0 - d, 0.0, 1.0)), 1.0);
 }
 ```
 
-A pass's `fragment` holds its GLSL as text, or names a file beside the scene
-as `{ "file": "bars.glsl" }`. A scene can also be a program that writes its
-own JSON and feeds it data: see [Procedural scenes](#procedural-scenes).
-
-ghee refuses a scene with an unknown key. The error names the key and where it
-sits, and it suggests the closest known key, or the object that takes the key:
-`"font"` on a layer points to `font_family`, and `"fragment"` on a layer
-points to its pass. A key one edit from a key of its own object points there
-first, so a scene's `"filter"` points to `filters`.
-
-When GLSL fails to compile, `ghee render` stops with an error. The error opens
-with the pass and the line of its fragment that holds the mistake, as in
-`pass 'main', line 2 of its fragment:`, and the GL's own message follows. A
-mistake in the common block reads `line 2 of the common block`.
-
-ghee also looks a scene name up in the directories on `$GHEE_SCENES`, a
-colon-separated list. Careful: procedural scenes are executables, and ghee
-runs them. Only put directories you trust on `$GHEE_SCENES`.
-
-## How does it work
-
-The pass model follows Shadertoy. The passes render in order, and each pass is
-a fragment shader that draws into its own buffer. A pass reads another pass
-through a numbered channel sampler. A channel that reads an earlier pass sees
-that pass's buffer from this frame. A channel that reads the pass itself, or a
-later pass, sees the buffer from the previous frame. ghee sends the last pass
-to the output, at the output's size.
-
-A pass renders at the frame's size, at its own `"size": [w, h]` in pixels,
-or at `"scale"`, a share of the frame, one number for both sides or `[x, y]`.
-A pass takes one of the two. The frame is the render size turned by
-`--rotate`, and a scaled side rounds to the nearest pixel, 1 at least, so
-this pass blurs at half the frame's size on every screen:
-
-```json
-{ "name": "blur", "scale": 0.5, "fragment": { "file": "blur.glsl" } }
-```
-
-The last pass ignores a size or a scale, with a warning. A pass samples other
-passes in normalized coordinates, and `"sampling"` on a pass picks how every
-channel that reads it samples it: `"nearest"` hands each the nearest pixel
-whole, `"linear"`, the default, blends the four around the point, and
-`"trilinear"` builds the mip chain of the pass's buffer after each frame and
-blends across it. A buffer drawn small and far away, such as words in
-perspective, then stays calm.
-
-A pass with `"visible": false` is hidden. It draws a copy of the pass before
-it, or black as the first pass, its layers draw nothing, and the frame is the
-last visible pass, which keeps its size or scale when hidden passes follow it.
-A hidden pass keeps its params, arrays and layers, so a set and a feed still
-land, and a scene that hides every pass fails to load.
-
-A pass buffer holds 8-bit RGBA, and a channel reads the alpha that its pass
-wrote. Every output frame is opaque, with alpha 255, unless
-`ghee render --alpha` keeps the output pass's alpha in RGBA frames. ghee then
-treats the colour as premultiplied by that alpha, as layers blend it. A raw
-frame on `-o -` keeps the colour premultiplied, and a PNG file stores it
-straight.
-
-ghee puts a preamble like this one in front of the GLSL of every pass:
+`shadow.glsl`:
 
 ```glsl
-uniform float iTime;                // seconds since start
-uniform float iTimeDelta;           // seconds the last frame took
-uniform int   iFrame;               // frame number, 0 first, wraps at 2^20
-uniform vec3  iResolution;          // buffer size in pixels, z = 1.0
-uniform vec3  iOutputResolution;    // frame size in pixels, z = 1.0
-uniform vec3  iChannelResolution[4]; // each channel's buffer size, z = 1.0
-varying vec2  uv;                   // 0..1 across the buffer, y = 0 at the top
-// gl_FragCoord maps to the varying, so its y = 0 is at the
-// top too, where Shadertoy has y = 0 at the bottom
-
-// declared array, e.g. {"name": "amplitudes", "size": 16}:
-const int amplitudes_count;         // = 16
-float amplitudes_at(int i);         // one element
-float amplitudes_sample(float t);   // interpolated, t in 0..1, clamped edges
-// arrays are bound as 1xN textures
-
-// a 2D input, e.g. {"name": "mask", "size": [96, 16]}:
-float mask_sample2(vec2 uv);        // bilinear, normalized uv
-// the host feeds w*h floats: a mask, host-rasterized text, an image
-
-// per channel: uniform sampler2D iChannel0..N
-// per param:   uniform <type> <name>
-// then the scene's common block, if it has one
-```
-
-The scene's `common` block holds GLSL that ghee puts after the preamble of
-every pass except a filter pass. It takes the two forms of a `fragment`:
-`"common": "..."`, or `"common": { "file": "common.glsl" }`.
-
-A pass declares each channel by the name of the buffer that it reads:
-
-```json
-{ "name": "compose", "fragment": { "file": "compose.glsl" }, "channels": [{ "buffer": "compose" }] }
-```
-
-That pass samples its own previous frame through `iChannel0`:
-
-```glsl
-// compose.glsl: everything drawn so far, fading a little each frame
 void main() {
-  vec3 prev = texture2D(iChannel0, uv).rgb;
-  gl_FragColor = vec4(prev * 0.95, 1.0);
+  float disc = texture2D(iChannel0, uv).r;
+  float shadow = texture2D(iChannel0, uv - vec2(6.0) / iResolution.xy).r;
+  vec3 color = mix(vec3(0.85), vec3(0.35), shadow);
+  gl_FragColor = vec4(mix(color, vec3(1.0, 0.55, 0.1), disc), 1.0);
 }
 ```
 
-A param is a typed uniform declared on the pass, with optional range metadata:
+![an orange disc on light grey, its dark grey shadow down and to the right](../media/scenes/shadow.png)
+
+A pass can read any pass's buffer. Reading an earlier pass gives the picture that it
+drew this frame. Reading itself, or a later pass, gives its picture from the
+frame before, black on the first frame: that is [feedback](#feedback).
+
+### Feedback
+
+A pass that reads its own buffer gets its picture from the frame before. This
+scene dims that picture a little, then draws a spot that circles, so the spot
+leaves a trail:
 
 ```json
-{ "params": { "gain": { "type": "float", "value": 0.45, "min": 0, "max": 1, "step": 0.01 } } }
+{
+  "version": 1,
+  "passes": [
+    { "name": "main", "channels": [{ "buffer": "main" }], "fragment": { "file": "trail.glsl" } }
+  ]
+}
 ```
 
-The preamble turns that into `uniform float gain;`, and the console shows
-every param as a live control. The types are `float`, `int`, `bool`, `color`
-(a `vec3` in the shader, which takes a [colour](layers.md#colours)), `vec2`, `vec3`,
-`vec4` and `string`. A string param never reaches the shader: a procedural
-scene reads it on its ticks, and `options` turns its text box in the console
-into a dropdown. A param declared on the scene, in place of a pass, holds one
-value that every pass reads.
+`trail.glsl`:
 
-A scene declares an asset by its file. ghee decodes the file at setup and
-binds it in every pass:
+```glsl
+void main() {
+  vec2 spot = 0.5 * iResolution.xy + 24.0 * vec2(cos(iTime * 3.0), sin(iTime * 3.0));
+  vec3 last = texture2D(iChannel0, uv).rgb;
+  vec3 now = vec3(1.0, 0.55, 0.1) * step(length(gl_FragCoord.xy - spot), 4.0);
+  gl_FragColor = vec4(max(last * 0.92 - 1.0 / 255.0, now), 1.0);
+}
+```
+
+![an orange spot circling on black, a fading trail behind it](../media/scenes/trail.webp)
+
+Careful: a buffer holds 8 bits for each of red, green, blue and alpha, on
+every GPU ([Raspberry Pi](pi.md) says why). A dimming that only multiplies
+stops short of black, so take a level, `1.0 / 255.0`, off too.
+
+### Size and sampling
+
+A pass draws at the frame's size. To draw it at another size, set `size` or
+`scale`. A channel reads a buffer of any size through `uv` all the same, and
+you set how with the pass's `sampling`. For example, this pass draws a
+checker at 64x64:
 
 ```json
-{ "assets": { "noise": { "file": "noise.raw", "width": 32, "height": 32, "format": "u8" } } }
+{ "name": "checker", "size": [64, 64], "sampling": "nearest", "fragment": { "file": "checker.glsl" } }
 ```
 
-ghee looks a relative `file` up in the directory of the scene file, or of a
-procedural scene's executable, then in each directory on `$GHEE_ASSETS`, a
-colon-separated list. A path may be absolute or climb out with `..`, except
-in a scene that [the console](console.md) serves.
+A later pass reads it as a floor in perspective, bigger than it is at the
+bottom and smaller at the top:
 
-A pass samples the asset as `uniform sampler2D noise_tex`, and reads its size
-in pixels in `uniform vec2 noise_size`. Sampling is `nearest` unless the
-asset sets `"sampling": "linear"`.
-
-An asset file is a `.png`, a `.jpg`, or a `.raw` file of bare pixels. A `.raw`
-file declares `width`, `height` and `format`, `u8` or little-endian `f32`, and
-`components` sets 1, 3 or 4 values per pixel, 1 by default. A `.ttf` or `.otf`
-file is a font for a [text layer](layers.md#text-layers)'s `font_family`, and only the
-layer reads it.
-
-### Names
-
-Every pass, layer, asset and scene param of a scene takes a name of its own.
-A pass's params and arrays take names unique within the pass that no pass,
-layer, asset or scene param holds, so two passes may each declare a param
-`gain`. A name holds ASCII letters, digits and `_`, starts with a letter, ends
-with a letter or a digit, holds no `__`, and does not start with `gl_` or
-`ghee`.
-
-ghee writes these names into every shader: `iTime`, `iTimeDelta`, `iFrame`,
-`iResolution`, `iOutputResolution`, `iChannelResolution`, `uv`, and
-`iChannel0` and up. A param, an array or an asset that takes one of them fails
-to load. A param that holds no string takes no GLSL keyword, such as `half`,
-no name of a GLSL function, such as `mix`, and no name of a function that the
-GLSL it reaches defines, `main` among them. A layer may take any name that the
-rule allows.
-
-Each declaration adds names to the GLSL of the passes that it reaches:
-
-| Declared | GLSL names | Reaches |
+| `nearest` | `linear` | `trilinear` |
 | --- | --- | --- |
-| a param `gain` | `gain` | its pass, or every pass for a scene param |
-| an array `amplitudes` | `amplitudes_tex`, `amplitudes_count` and the readers in the preamble | its pass |
-| an image asset `noise` | `noise_tex`, `noise_size` | every pass except a filter pass |
-| a text layer `title` | `title_cover`, `title_size` | every pass except a filter pass |
+| ![](../media/scenes/sampling-nearest.png) | ![](../media/scenes/sampling-linear.png) | ![](../media/scenes/sampling-trilinear.png) |
 
-A font asset and an image layer add no name. A scene fails to load when two
-declarations add the same name to one pass, such as a param `title_size`
-beside a text layer `title`, and the error names both.
+| Sampling | What a channel reads | Use it for |
+| --- | --- | --- |
+| `nearest` | the nearest pixel, whole | crisp pixels, and exact copies |
+| `linear` | the four pixels around the point, blended | a buffer read at its size or bigger |
+| `trilinear` | smaller copies of the buffer too, made after each frame | a buffer read smaller than it is, which breaks into patterns under `linear` |
+
+Careful: on a Pi 0 to 3, a `trilinear` pass needs a `size` whose sides are
+powers of two, such as `[256, 128]`, or the scene fails to load
+([Raspberry Pi](pi.md)).
+
+## Params
+
+A param is a named value that a pass reads, and that you change at
+runtime. For example, `rings` sets how many rings this pass draws:
+
+```json
+{
+  "name": "main",
+  "fragment": { "file": "rings.glsl" },
+  "params": {
+    "rings": { "type": "float", "value": 4, "min": 1, "max": 12, "step": 1 }
+  }
+}
+```
+
+`rings.glsl`:
+
+```glsl
+void main() {
+  float d = length(gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
+  gl_FragColor = vec4(vec3(step(0.5, fract(d * rings))), 1.0);
+}
+```
+
+| `"value": 2` | `"value": 4` | `"value": 8` |
+| --- | --- | --- |
+| ![](../media/scenes/rings-2.png) | ![](../media/scenes/rings-4.png) | ![](../media/scenes/rings-8.png) |
+
+The [console](console.md) shows each param as a control. From Python, set it
+for the next frame with `screen.set_param("rings", 8)`, or with `POST /set`
+([HTTP API](http.md)).
+
+| Key | Values | Default | What it changes |
+| --- | --- | --- | --- |
+| `type` | a type below | required | the type in GLSL |
+| `value` | a value of the type | required | the value |
+| `min`, `max` | numbers | set by the console | the ends of the console's slider |
+| `step` | a number | set by the console | the console's slider step |
+| `options` | a list of strings | none | a `string` param's choices, as a menu in the console |
+
+| Type | In GLSL | Value |
+| --- | --- | --- |
+| `float` | `float` | a number |
+| `int` | `int` | a whole number |
+| `bool` | `bool` | `true`, `false` |
+| `color` | `vec3` | a [colour](#colours) |
+| `vec2`, `vec3`, `vec4` | the same | 2, 3 or 4 numbers |
+| `string` | none | text, for a [procedural scene](#procedural-scenes) to read |
+
+A param in a pass's `params` reaches that pass alone. Declare it in the
+scene's own `params` to make it reach every pass.
+
+### Colours
+
+Write a colour as `"#rrggbb"`, a CSS colour name such as `"navy"`, or
+`[r, g, b]` from 0 to 1. A colour param, a layer's `color` and a border's
+`color` all take it.
+
+## Arrays
+
+An array is a list of numbers that a program feeds to a pass at runtime,
+such as the levels of a spectrum. Set its shape with `size`:
+`"size": 16` is a list of 16 numbers, and `"size": [16, 2]` a grid 16 wide
+and 2 high, fed as one list of 32 numbers, the top row first.
+
+In GLSL, read a list called `levels` with `levels_count`, how many numbers it
+holds, `levels_at(i)`, number `i` from 0, and `levels_sample(t)`, the numbers
+blended at `t`, from 0 to 1 along the list. Read a grid with
+`levels_sample2(p)`, the numbers blended at `p`, from 0 to 1 across the grid,
+so `levels_sample2(uv)` spreads the grid over the buffer.
+
+This pass declares a list of 16 numbers, and draws a bar for each:
+
+```json
+{ "name": "main", "fragment": { "file": "bars.glsl" }, "arrays": [{ "name": "levels", "size": 16 }] }
+```
+
+`bars.glsl`:
+
+```glsl
+void main() {
+  float x = uv.x * float(levels_count);
+  float level = levels_at(int(x));
+  float bar = step(1.0 - uv.y, level) * step(0.2, fract(x));
+  gl_FragColor = vec4(vec3(bar), 1.0);
+}
+```
+
+Under `ghee render` and the console, an array that nothing feeds holds a
+wave that moves from 0 to 1, so the bars show on their own:
+
+![16 white bars on black, rising and falling in a wave](../media/scenes/bars.webp)
+
+From Python, feed the array for the next frame with
+`screen.feed("levels", values)`. With `ghee.open`, the array holds zeros until the first `feed`. A
+[procedural scene](#procedural-scenes) feeds it each frame.
+
+On a Pi 0 to 3, an array holds 8 bits a value, so a value outside 0 to 1
+clamps. A Pi 4 or 5, and a desktop, hold any number, as a 32-bit float
+([Raspberry Pi](pi.md)).
+
+## Data files
+
+In any pass, read an image asset `noise` as `sampler2D noise_tex`, and its
+width and height in pixels as `vec2 noise_size` ([Images in a
+shader](layers.md#images-in-a-shader)). Read a `.raw` asset the same way: a
+file of bare pixels, such as a table of noise, whose layout you declare in its
+asset entry:
+
+```json
+"assets": { "noise": { "file": "noise.raw", "width": 64, "height": 64, "format": "u8" } }
+```
+
+| Key | Values | Default | What it changes |
+| --- | --- | --- | --- |
+| `width`, `height` | pixels | required | the size |
+| `format` | `u8`, a byte a value, or `f32`, a little-endian 32-bit float | required | how the file stores a value |
+| `components` | `1`, `3`, `4` | `1` | the values in a pixel, read in `.r`, `.rgb` or `.rgba` |
+| `sampling` | `nearest`, `linear` | `nearest` | how a shader reads it |
+
+## Names
+
+The names of passes, layers, assets and scene params share one pool, and
+each must be unique. A pass's own params and arrays only need to differ
+inside that pass, so two passes can each have a param `gain`.
+
+A name holds ASCII letters, digits and `_`, starts with a letter, and ends
+with a letter or a digit, with no `__` anywhere, and no `gl_` or `ghee` at the
+start. A name also can't be one of ghee's [built-in names](#built-in-names),
+or a GLSL name that ghee makes from another of your names, such as
+`levels_at` from an array `levels` or `title_size` from a text layer `title`.
+The error names both.
 
 ## Procedural scenes
 
-A procedural scene is an executable, in any language, that supplies its own
-scene and data. ghee starts it and talks to it over stdin and stdout.
-[docs/procedural.md](procedural.md) holds the wire contract.
+A procedural scene is a program that writes a scene and feeds it every frame,
+such as the levels of a spectrum. ghee runs it in place of a scene file
+([Procedural scenes](procedural.md)), and [Python scenes](python.md#python-scenes)
+shows how to write one in Python.
 
-The Python package `ghee-render` speaks that contract for Python.
-`import ghee` gives `Scene`, `Pass`, `Param`, `Asset` and `Layer` to build
-the scene, `@ghee.feed` and `@ghee.tick` to supply the data, `ghee.layers` to
-set the layers' live fields, `ghee.draw` to draw words, pictures and shapes
-from a tick, and `ghee.run` for the loop. A PEP 723 scene declares
-`ghee-render` inline, under `#!/usr/bin/env -S uv run --script`, as the
-bundled examples do.
+## Where ghee finds a scene
 
-ghee hands such a scene the ghee-render wheel that sits beside the `ghee`
-command, in `lib/ghee` next to its `bin` directory, `/usr/lib/ghee` for the
-deb: uv takes ghee-render from that wheel alone, and every other package from
-its indexes. ghee puts the wheel's index first on the scene's `UV_INDEX` and
-sets `UV_INDEX_STRATEGY=first-index`. A dev build with no wheel there makes uv
-refuse the scene, and a release with none lets uv take the release from PyPI.
-uv keeps a scene's environment while it satisfies the scene's dependencies,
-so a scene of yours keeps the ghee-render of its first run until
-`uv cache clean`.
+You can give `ghee render` a scene in any of these forms:
 
-A Python scene also renders on its own, with no `ghee` command:
-`./scene.py --display --frames 300`. [docs/python.md](python.md)
-holds the Python side.
+| You give | ghee renders |
+| --- | --- |
+| `bars.scene.json` | the scene file, or an executable `bars.*` beside it (Careful below) |
+| `clock.py`, or any executable file | the program's scene |
+| a folder `bars/` | `bars/bars.scene.json`, or an executable `bars/bars.*` |
+| `bars` | `bars.scene.json`, an executable `bars.*` or a folder `bars/`, in the working directory, then in each folder of `$GHEE_SCENES`, a colon-separated list |
+| `--demo bars` | the example `bars` |
 
-`ghee/examples/` holds the bundled demos.
+Careful: an executable file that shares a scene file's name, such as `bars.py`
+or `bars.sh` beside `bars.scene.json`, runs in its place, even when you give
+`bars.scene.json`.
+
+Careful: procedural scenes are executables, and ghee runs them. Only put
+directories you trust on `$GHEE_SCENES`.
+
+You can give `ghee serve` the same forms. Give it a folder, and it serves
+every scene in it. With no scene, it serves the scenes that you make in the
+[console](console.md). Each sits in a folder of its own, in
+`~/.local/share/ghee/scenes` by default: `glow/glow.scene.json`, beside a
+`.glsl` file for each pass. To render one, give `ghee render` its folder:
+`ghee render ~/.local/share/ghee/scenes/glow`.
+
+## Examples
+
+To render one of the scenes that come with ghee, use `ghee render --demo
+<name>`. To open them all in the console, use `ghee serve --demo`. `assets`, `bars`,
+`feedback`, `lens`, `neon`, `passes` and `tiltshift` are scene files, and
+`hero`, `karaoke`, `nowplaying`, `spectrum` and `stats` are Python scenes.
+Each file in [ghee/examples](../ghee/examples) opens with what it shows.
 
 ## Limits
 
-A scene holds any number of assets and layers, and names of any length. These
-caps hold, and a scene past one fails to load or to set up with the error
-shown:
-
-- 16 textures in one pass, fewer on a GPU with fewer texture units. A pass
-  counts its channels and arrays, each asset that its GLSL samples, and the
-  curves of each text layer whose `_cover` it reads. A layer counts its pass's
-  channels and arrays, plus its own textures: the two pages of its atlas, its
-  bitmaps under a hinted render, and the pages too there with a shadow, a
-  glow or a stroke, its curves under `"render": "slug"`, or its image:
-  `pass 'main' needs 17 texture units, a pass binds at most 16`, or
-  `layer 'title' needs 17 texture units, a pass binds at most 16`.
-- 16 passes, filter passes included: `17 passes, over the cap of 16`.
-- 16384 pixels on a side and 16777216 pixels in all, for a pass with a size
-  or a scale, an array and a `.raw` asset:
-  `pass 'a' size needs two positive ints [w, h] up to 16384, got [20000, 8]`,
-  `pass 'a' is 32000x240, over the 16384 pixel cap of a side`,
-  `pass 'a' is 8192x4096, over the 16777216 pixel cap`.
-- The GPU's own texture size, 2048 pixels on a side on a VC4, for an array
-  and an image:
-  `array 'a' is 4096x1, over this GPU's 2048 pixel cap of a side`,
-  `asset 'sky' is 4096x1024, over this GPU's 2048 pixel cap of a side`,
-  `layer 'pic': 'sky.png' is 4096x1024, over this GPU's 2048 pixel cap of a side`.
-
-A text layer past one of these caps leaves the scene running. ghee prints the
-problem once, and the console shows it:
-
-- A 1024x2048 data texture holds the curves of a layer's words, which `_cover`
-  and the slug render read: about 24000 characters of DejaVu Sans in lines of
-  60. At most 4 glyphs can overlap one spot. Words past either cap leave the
-  last words that fit, and a layer whose first words do not fit draws none:
-  `layer 'title': the words need a 1024x8192 texture, and a VC4 holds 1024x2048 at most`,
-  `layer 'title': more than 4 glyphs overlap at one spot`.
-- 64 curves in one strip of a glyph. The data texture cuts each glyph into as
-  many as 64 strips across and 64 down, fewer when the words crowd it. A glyph
-  past the cap draws an error box:
-  `layer 'title': 'X' has more than 64 curves in one band`.
-- Two pages of 2048x2048 hold the MTSDF fields of a font at one detail. A
-  glyph past them draws an error box, once the glyphs that no words on screen
-  draw have given up their room:
-  `layer 'title': 'A' has no field in the atlas: the 2 pages of the atlas, 2048x2048 each, are full`.
-- An atlas of 2048x2048 holds the emoji of a layer, with room for 132 emoji of
-  Noto Color Emoji. An emoji past it draws an error box, once the emoji that
-  no words on screen draw have given up their room.
-
-The wire of a [procedural scene](#procedural-scenes) names an array or a param
-in 255 bytes at most, and the Python shim raises ValueError past it.
-
-GLES2 only: no compute, geometry or tessellation shaders. VC4 also has no
-derivatives (`fwidth`) and no multisampled FBOs.
+| Limit | Cap |
+| --- | --- |
+| passes in a scene, filters included | 16 |
+| textures that one pass reads: its channels and arrays, the assets that it samples, and the text layers that it reads ([Text in a shader](layers.md#text-in-a-shader)) | 16, or the GPU's own count when lower |
+| a pass's `size`, an array, a `.raw` file | 16384 pixels a side, and 16777216 in all |
+| an image or an array | the GPU's own texture size ([Raspberry Pi](pi.md) has each Pi's) |

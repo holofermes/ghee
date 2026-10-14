@@ -252,11 +252,11 @@ A Rust host written for 0.4.0 needs these changes.
   over its buffer after its own shader, in list order, as one quad over each
   glyph. A layer needs a `name`, holds its words in `text`, and takes
   `font_size`, `font_family`, a `.ttf` or `.otf` file or the name of a font
-  asset, and `text_align`. A layer with no `font_family` draws from the
-  built-in font, DejaVu Sans cut to ASCII, Latin-1 and the common
-  punctuation. New words in a layer's live `text`, from Python's `layers`,
-  `/set`, the console or a procedural scene, lay out again with no
-  recompile.
+  asset, and `text_align`. A layer with no `font_family`, or with
+  `font_family: "DejaVu Sans"`, draws from DejaVu Sans, cut to ASCII,
+  Latin-1 and the common punctuation. New words in a layer's live `text`,
+  from Python's `layers`, `/set`, the console or a procedural scene, lay out
+  again with no recompile.
 - Space a layer's glyphs by their advances and the font's pair kerning, the
   pair adjustments of the `kern` feature in its GPOS table, as HarfBuzz
   applies them, or, in a font without that feature, its `kern` table.
@@ -316,9 +316,9 @@ A Rust host written for 0.4.0 needs these changes.
   takes `hinted` below 128 pixels per em, where a hinted bitmap outgrows its
   MTSDF cell, and `mtsdf` from there, by the layer's size when it builds. A
   hinted layer's shadow, glow and stroke draw from its MTSDF atlas, and a
-  fitted hinted size rounds down to a whole pixel. The built-in DejaVu Sans
-  carries its TrueType instructions. ghee builds FreeType from
-  `vendor/freetype`, and its license reads `MIT AND FTL`.
+  fitted hinted size rounds down to a whole pixel. DejaVu Sans carries its
+  TrueType instructions. ghee builds FreeType from `vendor/freetype`, and its
+  license reads `MIT AND FTL`.
 - Draw a layer's glyphs from an MTSDF atlas under `"render": "mtsdf"`, one
   texture read a pixel. `"render": "slug"` computes Slug's exact coverage from
   the font's curves instead, at any size and with no atlas. The slug layers
@@ -336,13 +336,12 @@ A Rust host written for 0.4.0 needs these changes.
   shape of more than 3400 pixels beside a text, since on a Pi Zero 2 W that
   program costs 28 ns more for each pixel of a glyph and 5.6 ns more for
   each pixel of a shape.
-- Draw a text layer from Pixel Operator 8, a second built-in font, with
-  `font_family: "pixel"`, as the font's own pixels: such a layer takes
-  `render` slug unless it names one, a size that fits rounded down to a
-  whole multiple of 8 px, 8 at the least, and its block, each pen and each
-  baseline on whole pixels, so at 8 px and its multiples every pixel is
-  fully on or off. A `font_size` stays as given. A font asset named `pixel`
-  stays the scene's own.
+- Draw a text layer from Pixel Operator 8, a second font that ghee carries,
+  with `font_family: "Pixel Operator 8"`, as the font's own pixels: such a
+  layer takes `render` slug unless it names one, a size that fits rounded
+  down to a whole multiple of 8 px, 8 at the least, and its block, each pen
+  and each baseline on whole pixels, so at 8 px and its multiples every
+  pixel is fully on or off. A `font_size` stays as given.
 - Generate a font's atlas on every core at its first use: the glyphs of the
   words first, then a preload of ASCII, Latin-1 and the common punctuation in
   the room left. Cache the atlas in `$XDG_CACHE_HOME/ghee/atlas`. New words
@@ -744,8 +743,8 @@ A Rust host written for 0.4.0 needs these changes.
 - Serve the layer format at `GET /format`: each effect's fields with their
   defaults and whether they change live, the same for a rect's border, the
   live fields of each kind of layer, what a field left out takes, each
-  shape's own keys, the built-in fonts, and the render that a text layer
-  takes in each font when it names none.
+  shape's own keys, the fonts that ghee carries, and the render that a text
+  layer takes in each font when it names none.
 - Name the board and its GPU in `GET /hwinfo` from the device tree, so a
   Pi 5 reads Raspberry Pi 5 and VideoCore VII, with its memory and, on a
   Raspberry Pi, its GPU memory and temperature.
@@ -776,11 +775,11 @@ A Rust host written for 0.4.0 needs these changes.
   `trilinear`. The settings show the size alone on the last pass, on a
   filter and on a procedural scene.
 - Take the effects' fields and defaults, a border's defaults, the live
-  fields, what an empty field takes, each shape's keys, the built-in fonts
-  and each font's render from `GET /format`, and the device's rows of
-  the render info from `GET /hwinfo`. font_family lists `built-in`, `pixel`
-  and the scene's font assets, and a number shows 3 decimals at most until
-  it is edited.
+  fields, what an empty field takes, each shape's keys, the fonts that ghee
+  carries and each font's render from `GET /format`, and the device's rows
+  of the render info from `GET /hwinfo`. font_family lists `DejaVu Sans`,
+  `Pixel Operator 8` and the scene's font assets, and a number shows 3
+  decimals at most until it is edited.
 - Give up on a `/stats` poll after 5 s, and poll again after any answer or
   none, where a hung answer stopped the page's polling.
 - Show a param set through `set_param` or `/set` in `GET /scene` of

@@ -5,7 +5,11 @@
 // wave. The grid splits the frame in four, two of the quarters in four, and
 // two of those cells in four again, so the first values take the big cells.
 // A cell's stripes widen with its value and fill it solid past `peak`. Every
-// `hold` seconds the grid splits anew.
+// `hold` seconds the grid splits anew: its cells close into their centres one
+// by one, and the cells of the next grid open out of theirs. `rate` sets the
+// pace of the stripes and of the splits together. At 1 the stripes slide
+// `thick_speed` and `fine_speed` stripes a second and a grid holds `hold`
+// seconds, and at 0.1 everything runs ten times slower.
 //
 //     ghee render --demo bars -o frame.####.png --frames 60
 //     ghee render --demo bars --filters dither -o dither.png
@@ -35,8 +39,10 @@ void main() {
   float frame = step(0.0, p.x) * step(p.x, 1.0) * step(0.0, p.y) * step(p.y, 1.0);
   p = clamp(p, 0.0, 0.9999);
 
-  float shuffle = step(hold - 0.4, mod(iTime, hold));
-  float seed = mix(floor(iTime / hold), 100.0 + floor(iTime * 12.0), shuffle);
+  float t = iTime * rate;
+  float grid = t / hold + 0.5;
+  float seed = floor(grid);
+  float since = fract(grid) * hold;
 
   float a = floor(hash(seed + 0.1) * 4.0);
   float b = mod(a + 1.0 + floor(hash(seed + 0.2) * 3.0), 4.0);
@@ -75,10 +81,11 @@ void main() {
   float angle = floor(h1 * 4.0) * 0.7853982;
   vec2 dir = vec2(cos(angle), sin(angle));
   float speed = mix(fine_speed, thick_speed, wide) * (step(0.5, h3) * 2.0 - 1.0);
-  float s = dot(px, dir) / period - iTime * speed;
+  float s = dot(px, dir) / period - t * speed;
 
-  vec2 lp = local * cell;
-  vec2 edge = min(lp, cell - lp);
+  float wait = 0.1 * hash(band * 2.3 + seed * 4.1 + 0.6);
+  float open = smoothstep(wait, wait + 0.1, since) * smoothstep(wait, wait + 0.1, hold - since);
+  vec2 edge = (0.5 * open - abs(local - 0.5)) * cell;
   float inside = clamp(min(edge.x, edge.y) - 0.5 * gap + 0.5, 0.0, 1.0);
 
   float level = 0.0;

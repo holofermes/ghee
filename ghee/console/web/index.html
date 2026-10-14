@@ -2178,8 +2178,10 @@ async function renameLayer(p, d){
   buildLayers(); buildInputs();
 }
 
-// A text layer that names no render takes its font's render, from GET /format.
-const defaultRender = d => has(FORMAT.render.fonts, d.font_family) ? FORMAT.render.fonts[d.font_family] : FORMAT.render.default;
+// A text layer that names no render takes the render of its first font,
+// from GET /format.
+const firstFont = d => Array.isArray(d.font_family) ? d.font_family[0] : d.font_family;
+const defaultRender = d => has(FORMAT.render.fonts, firstFont(d)) ? FORMAT.render.fonts[firstFont(d)] : FORMAT.render.default;
 const renderOf = d => d.render || defaultRender(d);
 // The font_family dropdown: the fonts that ghee carries, then the scene's
 // font assets. A font that ghee carries writes its value from GET /format,
@@ -2188,7 +2190,8 @@ const fontAssets = () => Object.entries(work.assets || {})
   .filter(([, a]) => a && typeof a.file === "string" && /\.(ttf|otf)$/i.test(a.file)).map(([n]) => n);
 const fontNames = () => [...Object.keys(FORMAT.fonts || {}), ...fontAssets()];
 const fontValue = name => has(FORMAT.fonts, name) ? FORMAT.fonts[name] : name;
-const fontOf = d => d.font_family == null ? Object.keys(FORMAT.fonts || {}).find(n => FORMAT.fonts[n] == null) || ""
+const fontOf = d => Array.isArray(d.font_family) ? d.font_family.join(", ")
+  : d.font_family == null ? Object.keys(FORMAT.fonts || {}).find(n => FORMAT.fonts[n] == null) || ""
   : Object.keys(FORMAT.fonts || {}).find(n => FORMAT.fonts[n] === d.font_family) || d.font_family;
 // A text layer shows the effects that its render draws, from GET /format.
 const drawsFx = (d, f) => (FORMAT.render.effects[renderOf(d)] || []).includes(f);

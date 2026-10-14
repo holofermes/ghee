@@ -132,6 +132,24 @@ float palm(vec2 p, vec2 base, vec2 crown, float len, float seed) {
     return m;
 }
 
+// A crater at c.xy of radius c.z on the moon's face, lit from the right: 1 in
+// x on its floor, and 1 in y on the wall in its rim's shade.
+vec2 crater(vec2 m, vec3 c) {
+    float shade = step(c.z, length(m - c.xy + vec2(0.3, -0.15) * c.z));
+    return step(length(m - c.xy), c.z) * vec2(1.0, shade);
+}
+
+// The moon's face at m, in the moon's own space, its rim at 1.
+vec3 moon_face(vec2 m, float th) {
+    float mare = step(0.64, fbm(m * 1.6 + 2.7) + (th - 0.5) * 0.08);
+    float limb = step(1.0, length(m - vec2(0.16, -0.06)) + (th - 0.5) * 0.1);
+    vec2 pit = max(max(crater(m, vec3(-0.36, -0.34, 0.22)), crater(m, vec3(0.3, 0.4, 0.18))),
+                   max(crater(m, vec3(0.5, -0.32, 0.13)), crater(m, vec3(-0.18, 0.56, 0.12))));
+    vec3 face = mix(moon, moon_shade, max(mare, limb));
+    face = mix(face, mix(moon_shade, rose, 0.15), pit.x);
+    return mix(face, mix(moon_shade, rose, 0.45), pit.y);
+}
+
 // The line and its emoji as one block, in the sea's pixels: left, top, size.
 vec4 block(vec2 res) {
     vec2 words = floor(line_size * EM + 0.5);
@@ -174,7 +192,7 @@ void main() {
     float real = step(lo.x, p.x) * step(p.x, hi.x) * step(lo.y, p.y) * step(p.y, hi.y);
     vec4 box = dialog(mix(at, p, real), b, th);
     float R = floor(res.y * moon_size);
-    vec2 mc = vec2(floor(res.x * 0.5), hz - floor(R * 0.15));
+    vec2 mc = vec2(floor(res.x * moon_x), hz - floor(R * 0.15));
     vec3 col;
     float fade = 1.0;
 
@@ -200,10 +218,7 @@ void main() {
         float d = length(p + 0.5 - mc);
         float halo = clamp(1.0 - (d - R) / (R * 0.9), 0.0, 1.0);
         col = mix(col, mix(ember, moon, 0.4), floor(halo * 3.0 + th) / 3.0 * 0.45);
-        float disc = step(d, R);
-        float maria = step(0.64, fbm(p * 0.11 + 3.0));
-        vec3 face = mix(moon, moon_shade, max(maria, step(R - 1.5, d) * step(p.x, mc.x - R * 0.2)));
-        col = mix(col, face, disc);
+        if (d < R) col = moon_face((p + 0.5 - mc) / R, th);
 
         float far = far_cloud(p, hz);
         float far_lit = far * (1.0 - far_cloud(p + vec2(0.0, 1.0), hz));
@@ -433,6 +448,7 @@ def build():
                     ghee.Param(
                         "moon_size", "float", 0.17, min=0.05, max=0.4, step=0.01
                     ),
+                    ghee.Param("moon_x", "float", 0.5, min=0.0, max=1.0, step=0.01),
                 ],
             ),
             ghee.Pass(

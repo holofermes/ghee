@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "assets": { "wifi": { "file": "wifi.png", "sampling": "linear" } },
+  "passes": [{
+    "name": "main",
+    "fragment": "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+    "layers": [
+      { "name": "icon", "image": "wifi", "width": 64, "color": "orange" }
+    ]
+  }]
+}

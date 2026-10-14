@@ -19,8 +19,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$out"
 
-# The 16x16 icon of image.png and image-in-shader.png: white, and fully
-# transparent around it.
+# The 16x16 icon of the image pictures: white, and fully transparent around it.
 python3 - "$tmp/wifi.png" <<'EOF'
 import struct, sys, zlib
 
@@ -94,6 +93,11 @@ still shapes 128x32
 still render 256x48
 still text-in-shader 256x64
 still image-in-shader 128x64
+still missing-glyph 128x32
+# error-box.png's font is missing on purpose, and ghee names it on stderr.
+still error-box 128x32
+still scale-nearest 80x80
+still scale-linear 80x80
 
 # One wave at the default speed, 0.6 waves a second, and one blink at the
 # default rate, 1 a second.

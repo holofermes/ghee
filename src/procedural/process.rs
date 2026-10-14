@@ -1546,19 +1546,21 @@ fn arity(ty: &str) -> usize {
 }
 
 /// The floats of a param message, as the param's own type.
-/// None means the message is short, or the param takes text.
+/// None means the message holds more or fewer numbers than the type takes,
+/// or the param takes text.
 fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
-    let at = |i: usize| values.get(i).map(|v| f64::from(*v));
+    if values.len() != arity(ty) {
+        return None;
+    }
+    let at = |i: usize| f64::from(values[i]);
     match ty {
-        "float" => Some(ParamValue::Float(at(0)?)),
-        "int" => Some(ParamValue::Int(at(0)?.round() as i64)),
-        "bool" => Some(ParamValue::Bool(at(0)? != 0.0)),
-        "color" => Some(ParamValue::Color(Rgb::numbers([at(0)?, at(1)?, at(2)?]))),
-        "vec2" | "vec3" | "vec4" => {
-            let n = ty[3..].parse::<usize>().ok()?;
-            (values.len() >= n)
-                .then(|| ParamValue::Vec(values[..n].iter().map(|v| f64::from(*v)).collect()))
-        }
+        "float" => Some(ParamValue::Float(at(0))),
+        "int" => Some(ParamValue::Int(at(0).round() as i64)),
+        "bool" => Some(ParamValue::Bool(at(0) != 0.0)),
+        "color" => Some(ParamValue::Color(Rgb::numbers([at(0), at(1), at(2)]))),
+        "vec2" | "vec3" | "vec4" => Some(ParamValue::Vec(
+            values.iter().map(|v| f64::from(*v)).collect(),
+        )),
         _ => None,
     }
 }
@@ -2574,6 +2576,44 @@ while IFS= read -r line; do :; done
         f.update(&mut stub, 0, 0.0).unwrap();
         assert!(stub.set.borrow().is_empty());
         assert_eq!(refused_names(&f), ["gain", "nope", "tint"]);
+    }
+
+    #[test]
+    fn a_param_message_with_too_many_numbers_is_refused() {
+        let d = tmpdir("too-many");
+        let doc = serde_json::json!({
+            "version": 1,
+            "params": {"gain": {"type": "float", "value": 0.0},
+                       "at": {"type": "vec2", "value": [0, 0]},
+                       "tint": {"type": "color", "value": [0, 0, 0]},
+                       "amp": {"type": "float", "value": 0.0}},
+            "passes": [{"name": "main", "fragment": "void main(){}"}],
+        });
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            numbers("gain", &[1.0, 0.0]),
+            numbers("at", &[0.25, 0.5, 0.75]),
+            numbers("tint", &[1.0, 0.0, 0.0, 1.0]),
+            numbers("amp", &[0.5]),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "many", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(pump(&mut f, |f| f.incoming.len() == 4));
+        let mut stub = Stub::default();
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert_eq!(
+            stub.set.borrow().as_slice(),
+            [(None, "amp".to_string(), ParamValue::Float(0.5))]
+        );
+        assert_eq!(refused_names(&f), ["at", "gain", "tint"]);
+        assert!(f.refused.contains(&(
+            "gain".to_string(),
+            "float param 'gain' takes a number, got 2".to_string()
+        )));
     }
 
     /// The names of the refused messages logged so far, sorted, each once.

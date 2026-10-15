@@ -1,34 +1,75 @@
 {
   "version": 1,
   "params": {
-    "size": {"type": "float", "value": 0.27, "min": 0.05, "max": 0.5, "step": 0.01},
-    "breathe": {"type": "float", "value": 0.4, "min": 0.0, "max": 0.4, "step": 0.01},
-    "turn": {"type": "float", "value": 2.0, "min": -2.0, "max": 2.0, "step": 0.05},
-    "corners": {"type": "int", "value": 5, "min": 3, "max": 8, "step": 1}
+    "water_level": {"type": "float", "value": 0.2, "min": 0.0, "max": 0.8, "step": 0.01},
+    "wave_height": {"type": "float", "value": 0.45, "min": 0.0, "max": 1.0, "step": 0.01},
+    "wave_speed": {"type": "float", "value": -0.12, "min": -1.0, "max": 1.0, "step": 0.005}
   },
-  "common": "float edge(vec2 p) {\n  float a = atan(p.y, p.x) - iTime * turn;\n  float s = 6.2831853 / float(corners);\n  float r = size * (1.0 + breathe * sin(iTime * 1.2566371)) * cos(3.14159265 / float(corners));\n  return cos(floor(0.5 + a / s) * s - a) * length(p) - r;\n}\n\nfloat outline(float d) {\n  return 1.0 - smoothstep(0.003, 0.009, abs(d));\n}\n",
+  "common": {"file": "feedback-common.glsl"},
   "passes": [
     {
-      "name": "trail",
-      "fragment": {"file": "feedback.glsl"},
-      "channels": [{"buffer": "trail"}],
+      "name": "prev",
+      "size": [16, 12],
+      "sampling": "nearest",
+      "fragment": "void main() {\n  gl_FragColor = vec4(texture2D(iChannel0, uv).rgb, 1.0);\n}\n",
+      "channels": [{"buffer": "state"}]
+    },
+    {
+      "name": "state",
+      "size": [16, 12],
+      "sampling": "nearest",
+      "fragment": {"file": "feedback-flow.glsl"},
+      "channels": [{"buffer": "state"}, {"buffer": "life"}],
       "params": {
-        "copies": {"type": "float", "value": 26.5, "min": 1.0, "max": 30.0, "step": 0.5},
-        "shrink": {"type": "float", "value": 1.024, "min": 0.98, "max": 1.06, "step": 0.001},
-        "decay": {"type": "float", "value": 0.999, "min": 0.8, "max": 0.999, "step": 0.001},
-        "twist": {"type": "float", "value": 30.0, "min": -180.0, "max": 180.0, "step": 1.0}
+        "drift": {"type": "vec2", "value": [-0.14, -0.02], "min": -0.5, "max": 0.5, "step": 0.005},
+        "speed": {"type": "float", "value": 1.0, "min": 0.0, "max": 3.0, "step": 0.05},
+        "speed_spread": {"type": "float", "value": 1.0, "min": 0.0, "max": 1.0, "step": 0.01},
+        "swirl": {"type": "float", "value": 0.2, "min": 0.0, "max": 0.6, "step": 0.01},
+        "swirl_size": {"type": "float", "value": 1.8, "min": 0.3, "max": 4.0, "step": 0.05}
+      }
+    },
+    {
+      "name": "life",
+      "size": [16, 12],
+      "sampling": "nearest",
+      "fragment": "void main() {\n  float age = 0.0;\n  if (gl_FragCoord.x >= 0.0) age = unpack_age(texture2D(iChannel0, uv).rg);\n  if (iTime < 0.1) age = hash(uv * 7.3) * lifespan(uv);\n  else if (age >= lifespan(uv)) age = 0.0;\n  else age += iTimeDelta / max(lifetime, 0.1);\n  float hi = floor(age * 255.0);\n  gl_FragColor = vec4(hi / 255.0, age * 255.0 - hi, 0.0, 1.0);\n}\n",
+      "channels": [{"buffer": "life"}],
+      "params": {
+        "lifetime": {"type": "float", "value": 6.0, "min": 0.5, "max": 20.0, "step": 0.1}
+      }
+    },
+    {
+      "name": "attr",
+      "size": [16, 12],
+      "sampling": "nearest",
+      "fragment": "const float DSPAN = 0.0625;\nconst float JUMP = 0.03;\n\nvoid main() {\n  vec2 p1 = unpack_pos(texture2D(iChannel0, uv).rgb);\n  vec2 d = p1 - unpack_pos(texture2D(iChannel1, uv).rgb);\n  float age = unpack_age(texture2D(iChannel2, uv).rg);\n  float span = lifespan(uv);\n  float b = mix(dim, bright, hash(uv * 9.3))\n          * smoothstep(0.0, 0.08, age) * smoothstep(span, span - 0.15, age)\n          * smoothstep(-0.02, 0.1, depth(p1))\n          * (1.0 - smoothstep(JUMP * 0.8, JUMP, length(d)));\n  gl_FragColor = vec4(clamp(d / DSPAN + 0.5, 0.0, 1.0), b, 1.0);\n}\n",
+      "channels": [{"buffer": "state"}, {"buffer": "prev"}, {"buffer": "life"}],
+      "params": {
+        "dim": {"type": "float", "value": 0.35, "min": 0.0, "max": 1.0, "step": 0.01},
+        "bright": {"type": "float", "value": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}
+      }
+    },
+    {
+      "name": "trails",
+      "fragment": {"file": "feedback.glsl"},
+      "channels": [{"buffer": "state"}, {"buffer": "attr"}, {"buffer": "trails"}],
+      "params": {
+        "trail_length": {"type": "float", "value": 0.7, "min": 0.0, "max": 3.0, "step": 0.01},
+        "dot_size": {"type": "float", "value": 1.6, "min": 0.5, "max": 6.0, "step": 0.1}
       }
     },
     {
       "name": "image",
-      "fragment": "float over(float v, float at) {\n  return clamp((v - at) * 30.0, 0.0, 1.0);\n}\n\nvoid main() {\n  vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);\n  vec2 t = texture2D(iChannel0, uv).rg;\n  vec3 col = mix(deep, mid, over(t.r, 0.35));\n  col = mix(col, bright, over(t.r, 0.7));\n  col = mix(background, col, t.g * smoothstep(0.0, 0.1, t.r));\n  float d = edge(p);\n  col = mix(col, line, exp(-abs(d) * 60.0) * 0.3);\n  gl_FragColor = vec4(mix(col, line, outline(d)), 1.0);\n}\n",
-      "channels": [{"buffer": "trail"}],
+      "fragment": "void main() {\n  vec2 o = 2.0 / iResolution.xy;\n  float ink = 0.0;\n  float halo = 0.0;\n  if (gl_FragCoord.x >= 0.0) {\n    ink = texture2D(iChannel0, uv).r;\n    halo = texture2D(iChannel0, uv + vec2(o.x, 0.0)).r + texture2D(iChannel0, uv - vec2(o.x, 0.0)).r\n         + texture2D(iChannel0, uv + vec2(0.0, o.y)).r + texture2D(iChannel0, uv - vec2(0.0, o.y)).r;\n  }\n  float px = 1.0 / iResolution.y;\n  float y = uv.y - waterline(uv.x);\n  vec3 col = mix(background, deep, clamp(y * 2.0, 0.0, 1.0));\n  col += tail * glow * halo * 0.25;\n  col = mix(col, tail, smoothstep(0.0, 0.45, ink));\n  col = mix(col, head, smoothstep(0.5, 0.9, ink));\n  float line = 1.0 - smoothstep(0.5 * px, 1.5 * px, abs(y));\n  gl_FragColor = vec4(mix(col, surface, line * surface_glow), 1.0);\n}\n",
+      "channels": [{"buffer": "trails"}],
       "params": {
         "background": {"type": "color", "value": "#000000"},
-        "deep": {"type": "color", "value": "#474747"},
-        "mid": {"type": "color", "value": "#8f8f8f"},
-        "bright": {"type": "color", "value": "#d6d6d6"},
-        "line": {"type": "color", "value": "#ffffff"}
+        "deep": {"type": "color", "value": "#00050d"},
+        "tail": {"type": "color", "value": "#054073"},
+        "head": {"type": "color", "value": "#8cfff2"},
+        "surface": {"type": "color", "value": "#338ce6"},
+        "surface_glow": {"type": "float", "value": 0.8, "min": 0.0, "max": 1.0, "step": 0.01},
+        "glow": {"type": "float", "value": 0.6, "min": 0.0, "max": 1.5, "step": 0.01}
       }
     }
   ]

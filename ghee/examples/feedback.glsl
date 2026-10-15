@@ -1,38 +1,79 @@
-// feedback: a pass that reads its own last frame.
+// feedback: particles drift in a current under a slow wave, and a pass that
+// reads its own last frame keeps their trails.
 //
-// The pass `trail` reads itself through iChannel0, so each frame starts from
-// the frame before, scaled toward the centre by `shrink`, turned by `twist`
-// degrees a second and dimmed by `decay`, with black past its edges.
-// `copies` times a second it adds the outline of a polygon with `corners`
-// corners that turns and breathes. The older copies sink inward and fade,
-// and as each one landed at a turn of its own, their corners wind into a
-// spiral. Each pixel of `trail` holds the age of its copy in red, 1 as the
-// copy lands and down to 0, and in green how much line covers it. The pass
-// `image` reads `trail` after the loop, greys each copy by its age, and
-// draws the outline as it is now on top, with a glow. The common block holds
-// the outline, which both passes draw, from the scene params.
+// The pass `state` holds one particle per texel, 192 in a 16 by 12 grid, and
+// moves each along the curl of a noise field (feedback-flow.glsl). `prev`
+// keeps last frame's positions, `life` each particle's age, and `attr` the
+// step each one took and how bright it is.
 //
-//     ghee render --demo feedback -o frame.####.png --frames 120
+// This pass, `trails`, reads itself through iChannel2: each frame starts
+// from the frame before, halved every `trail_length` seconds, and draws each
+// particle's step as a short stroke on top. The trail behind a particle is
+// only the buffer's memory, so at a trail_length of zero the dots are left
+// alone. `image` colours the trails, from `tail` when dim to `head` when
+// bright, with a `glow` around them, under the wave's `surface` line.
+//
+//     ghee render --demo feedback -o frame.####.png --frames 300
 //     ghee render --demo feedback --serve
 
+const int GW = 16;
+const int GH = 12;
+const vec2 GRID = vec2(16.0, 12.0);
+const float DSPAN = 0.0625;
+const float JUMP = 0.03;
+
+float seg(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / (dot(ba, ba) + 1e-9), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+// A particle far from this pixel is rejected on its coarse position, before
+// the rest of its stroke is worked out.
+#define STROKE(cell, texel) \
+  away = uva - coarse_pos(texel) * asp; \
+  if (dot(away, away) < reach2) { \
+    vec2 p1 = unpack_pos(texel); \
+    vec3 a = texture2D(iChannel1, cell).rgb; \
+    vec2 p0 = p1 - (a.rg - 0.5) * DSPAN; \
+    ink = max(ink, a.b * smoothstep(w, w * 0.35, seg(uva, p0 * asp, p1 * asp))); \
+  }
+
 void main() {
-  vec2 aspect = vec2(iResolution.x / iResolution.y, 1.0);
-  vec2 p = (uv - 0.5) * aspect;
+  vec2 asp = vec2(ASPECT, 1.0);
+  vec2 uva = uv * asp;
 
-  // The decay and the shrink count in 60ths of a second, so the trail keeps
-  // its shape at any frame rate.
+  // The fade dithers below one level, so an 8-bit buffer fades smoothly and
+  // reaches black.
   float steps = iTimeDelta * 60.0;
-  float a = radians(twist) * iTimeDelta;
-  vec2 q = mat2(cos(a), sin(a), -sin(a), cos(a)) * p * pow(shrink, steps) / aspect + 0.5;
-  vec2 inside = clamp((0.5 - abs(q - 0.5)) * iResolution.xy + 0.5, 0.0, 1.0);
-  vec2 prev = texture2D(iChannel0, q).rg * inside.x * inside.y;
-  // The buffer is 8-bit: less than one level off each frame and a dim pixel
-  // never reaches black.
-  float fade = max(1.5 * steps, 1.0) / 255.0;
-  float age = max(prev.r * pow(decay, steps) - fade, 0.0);
-  float ink = max(prev.g - fade, 0.0);
+  float last = 0.0;
+  if (gl_FragCoord.x >= 0.0) last = texture2D(iChannel2, uv).r;
+  float ink = max(last * pow(0.5, iTimeDelta / max(trail_length, 0.001))
+                  - steps * 0.6 / 255.0 + (hash(uv + fract(iTime) * 113.1) - 0.5) / 255.0, 0.0);
 
-  float stamp = clamp((iTimeDelta * copies - fract(iTime * copies)) * 1000.0, 0.0, 1.0);
-  float line = outline(edge(p)) * stamp;
-  gl_FragColor = vec4(mix(age, 1.0, smoothstep(0.0, 0.6, line)), max(ink, line), 0.0, 1.0);
+  float w = 0.75 * dot_size / iResolution.y;
+  float reach = w + (JUMP + 0.006) * length(asp);
+  float reach2 = reach * reach;
+
+  vec2 away;
+  for (int ix = 0; ix < GW; ix++) {
+    for (int iy = 0; iy < GH; iy += 4) {
+      vec2 c0 = (vec2(float(ix), float(iy)) + 0.5) / GRID;
+      vec2 c1 = (vec2(float(ix), float(iy + 1)) + 0.5) / GRID;
+      vec2 c2 = (vec2(float(ix), float(iy + 2)) + 0.5) / GRID;
+      vec2 c3 = (vec2(float(ix), float(iy + 3)) + 0.5) / GRID;
+      vec3 s0 = vec3(0.0), s1 = vec3(0.0), s2 = vec3(0.0), s3 = vec3(0.0);
+      if (gl_FragCoord.x >= 0.0) {
+        s0 = texture2D(iChannel0, c0).rgb;
+        s1 = texture2D(iChannel0, c1).rgb;
+        s2 = texture2D(iChannel0, c2).rgb;
+        s3 = texture2D(iChannel0, c3).rgb;
+      }
+      STROKE(c0, s0);
+      STROKE(c1, s1);
+      STROKE(c2, s2);
+      STROKE(c3, s3);
+    }
+  }
+  gl_FragColor = vec4(ink, 0.0, 0.0, 1.0);
 }

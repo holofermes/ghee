@@ -57,7 +57,7 @@ pub fn static_asset(name: &str) -> (&'static str, &'static [u8]) {
 /// The bundled example scenes, compiled in. Scene loading reads files, so ghee
 /// extracts this set to a cache directory first. A procedural example imports
 /// ghee from the ghee-render package, which uv installs.
-pub const EXAMPLES: [(&str, &[u8]); 46] = [
+pub const EXAMPLES: [(&str, &[u8]); 48] = [
     (
         "assets.glsl",
         include_bytes!("../../ghee/examples/assets.glsl"),
@@ -215,6 +215,14 @@ pub const EXAMPLES: [(&str, &[u8]); 46] = [
     ),
     ("stamp.png", include_bytes!("../../ghee/examples/stamp.png")),
     ("stats.py", include_bytes!("../../ghee/examples/stats.py")),
+    (
+        "feedback-common.glsl",
+        include_bytes!("../../ghee/examples/feedback-common.glsl"),
+    ),
+    (
+        "feedback-flow.glsl",
+        include_bytes!("../../ghee/examples/feedback-flow.glsl"),
+    ),
 ];
 
 /// The bundled example scenes on disk. $GHEE_EXAMPLES wins. Otherwise this

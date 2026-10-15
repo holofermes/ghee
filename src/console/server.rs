@@ -85,6 +85,9 @@ pub const VIEWER_DEADLINE: f64 = 10.0;
 /// a layer every frame.
 pub const LAYERS_PUBLISH_EVERY: f64 = 0.2;
 
+/// How long after a scene's last change its draft is written.
+pub const DRAFT_AFTER: Duration = Duration::from_secs(1);
+
 /// run() sets this. stop() ends that console from anywhere.
 static CONSOLE: Mutex<Option<Arc<Console>>> = Mutex::new(None);
 
@@ -409,6 +412,7 @@ impl WorkingCopy {
         Carried {
             edits: self.to_save(None),
             saved: self.opened.saved.clone(),
+            draft: self.opened.draft.clone(),
         }
     }
 
@@ -424,6 +428,7 @@ impl WorkingCopy {
             "broken": self.opened.broken.iter()
                 .map(|b| serde_json::json!({"what": b.edit.what(), "why": b.why}))
                 .collect::<Vec<_>>(),
+            "draft": self.opened.draft.is_some(),
         })
     }
 
@@ -581,6 +586,8 @@ pub struct Console {
     /// since an apply loads its assets and a save writes its file with
     /// `copies` held.
     revs: Mutex<HashMap<String, u64>>,
+    /// When each scene whose draft is due changed last, by name.
+    drafts: Mutex<HashMap<String, Instant>>,
     /// What the process of the scene named beside it set, while it runs.
     locks: Mutex<Option<(String, Arc<Mutex<Locks>>)>>,
     /// The document of the active scene as the render thread last set it,
@@ -661,6 +668,7 @@ impl Console {
             loaded: Condvar::new(),
             copies: Mutex::new(HashMap::new()),
             revs: Mutex::new(HashMap::new()),
+            drafts: Mutex::new(HashMap::new()),
             locks: Mutex::new(None),
             running: Mutex::new(None),
             layer_changes: AtomicU64::new(0),
@@ -816,6 +824,45 @@ impl Console {
     fn bump(&self, name: &str, copy: &mut WorkingCopy, vid: &str) {
         copy.bump(vid);
         lock(&self.revs).insert(name.to_string(), copy.rev);
+        lock(&self.drafts).insert(name.to_string(), Instant::now());
+    }
+
+    /// Bring the draft of each scene that changed DRAFT_AFTER ago or more, or
+    /// with `all` of each scene that changed, in line with its working copy:
+    /// the working copy's edits while they differ from the state file, else
+    /// no draft. A scene whose draft waits for the console keeps it.
+    fn write_drafts(&self, all: bool) {
+        let due: Vec<String> = {
+            let mut drafts = lock(&self.drafts);
+            let now = Instant::now();
+            let due: Vec<String> = drafts
+                .iter()
+                .filter(|(_, at)| all || now.duration_since(**at) >= DRAFT_AFTER)
+                .map(|(name, _)| name.clone())
+                .collect();
+            for name in &due {
+                drafts.remove(name);
+            }
+            due
+        };
+        for name in due {
+            let copies = lock(&self.copies);
+            let Some(copy) = copies.get(&name) else {
+                continue;
+            };
+            if copy.opened.draft.is_some() {
+                continue;
+            }
+            let (unsaved, edits) =
+                self.with_locks(&name, |locks| (copy.unsaved(locks), copy.to_save(locks)));
+            let wrote = match unsaved {
+                true => self.store.write_draft(&name, &edits),
+                false => self.store.remove_draft(&name),
+            };
+            if let Err(e) = wrote {
+                eprintln!("ghee console: {name}: its unsaved edits: {e}");
+            }
+        }
     }
 
     /// Run `f` on the working copy of the active scene, or say why no edit
@@ -969,6 +1016,14 @@ pub fn stop() {
     let console = lock(&CONSOLE).clone();
     if let Some(console) = console {
         console.stop();
+    }
+}
+
+/// Write each draft that is due, until the console stops.
+pub fn draft_loop(console: &Console) {
+    while !console.stopping() {
+        thread::sleep(Duration::from_millis(250));
+        console.write_drafts(false);
     }
 }
 
@@ -2781,6 +2836,12 @@ impl ConsoleHost for RenderLoopHost {
             let edits = console.with_locks(name, |locks| copy.to_save(locks));
             console.store.save(name, &edits)?;
             copy.opened.saved = (!edits.is_empty()).then_some(edits);
+            if copy.opened.draft.is_none() {
+                console
+                    .store
+                    .remove_draft(name)
+                    .map_err(ConsoleError::server_error)?;
+            }
             Ok(())
         })
     }
@@ -2859,6 +2920,35 @@ impl ConsoleHost for RenderLoopHost {
                 self.console
                     .command(Command::SceneObj(scene, copy.generation, false));
             }
+            Ok(())
+        })
+    }
+
+    /// Restore lays the draft's edits over the defaults, as a load lays a
+    /// state file's, and its items whose default changed are set aside.
+    /// Drop removes the draft.
+    fn draft(&self, _name: Option<&str>, restore: bool) -> ConsoleResult<()> {
+        let store = &self.console.store;
+        self.console.with_active(|name, copy| {
+            let Some(draft) = copy.opened.draft.clone() else {
+                return Err(ConsoleError::not_found("no unsaved edits wait"));
+            };
+            if !restore {
+                store
+                    .remove_draft(name)
+                    .map_err(ConsoleError::server_error)?;
+                copy.opened.draft = None;
+                return Ok(());
+            }
+            let (working, aside, broken) = store::working(name, &copy.opened.defaults, &draft);
+            copy.opened.working = working;
+            copy.opened.aside = aside;
+            copy.opened.broken = broken;
+            copy.opened.draft = None;
+            copy.generation += 1;
+            let scene = Box::new(copy.opened.working.clone());
+            self.console
+                .command(Command::SceneObj(scene, copy.generation, false));
             Ok(())
         })
     }
@@ -3415,7 +3505,11 @@ pub fn run(opts: Options) -> Result<()> {
     let server = Server::http((host.as_str(), port)).map_err(|e| anyhow!("{e}"))?;
     let server = Arc::new(server);
     *lock(&console.httpd) = Some(Arc::clone(&server));
-    for worker in [encoder_loop as fn(&Console), h264_sw_loop as fn(&Console)] {
+    for worker in [
+        encoder_loop as fn(&Console),
+        h264_sw_loop as fn(&Console),
+        draft_loop as fn(&Console),
+    ] {
         let console = Arc::clone(&console);
         thread::spawn(move || worker(&console));
     }
@@ -3469,6 +3563,7 @@ pub fn run(opts: Options) -> Result<()> {
     // thread, and the handlers it spawned end on the same flag.
     console.stop();
     let _ = serving.join();
+    console.write_drafts(true);
     let fatal = lock(&console.fatal).clone();
     if !fatal.is_empty() {
         bail!("{fatal}");
@@ -3495,6 +3590,7 @@ mod tests {
             aside: Vec::new(),
             broken: Vec::new(),
             saved: None,
+            draft: None,
             procedural: false,
         };
         ready(console, name, opened);
@@ -3610,6 +3706,81 @@ mod tests {
         );
         assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
         assert!(!file.exists());
+    }
+
+    /// A console over the clocks of clocks() in `d` and its state directory
+    /// `states`, as a new ghee starts it, with clocks loaded.
+    fn clocks_again(d: &str, states: &str) -> ConsoleAPI<RenderLoopHost> {
+        let mut store = SceneStore::new(d, Vec::new());
+        store.state_dir = Some(std::path::PathBuf::from(states));
+        let console = Arc::new(Console::new(store));
+        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
+        ready(&console, "clocks", opened);
+        ConsoleAPI::new(RenderLoopHost::new(console))
+    }
+
+    #[test]
+    fn unsaved_edits_wait_after_a_stop_until_a_page_restores_or_drops_them() {
+        for answer in ["restore", "drop"] {
+            let (d, states, _) = clocks(&format!("draft-{answer}"));
+            let api = clocks_again(&d, &states);
+            let q = "scene=clocks&pass=main&name=cols&value=5";
+            assert_eq!(ask(&api, "POST", "/set", q, "").0, 200);
+            api.host.console.write_drafts(true);
+            let draft = std::path::Path::new(&*states).join(format!("scenes{d}/clocks.draft.json"));
+            assert_eq!(
+                json_of(&fs::read_to_string(&draft).unwrap()),
+                serde_json::json!({"version": 1, "scene": format!("{d}/clocks.scene.json"),
+                    "values": {"passes": {"main": {"params": {"cols": 5}}}}})
+            );
+            let api = clocks_again(&d, &states);
+            let cols = |api: &ConsoleAPI<RenderLoopHost>| {
+                json_of(&ask(api, "GET", "/scene", "", "").1)["passes"][0]["params"]["cols"]
+                    ["value"]
+                    .clone()
+            };
+            let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+            assert_eq!(
+                (cols(&api), &edits["draft"]),
+                (Value::from(7), &Value::from(true))
+            );
+            let q = format!("name=clocks&answer={answer}");
+            assert_eq!(ask(&api, "POST", "/draft", &q, "").0, 200);
+            let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+            match answer {
+                "restore" => {
+                    assert_eq!(cols(&api), 5);
+                    assert_eq!(edits["unsaved"], true);
+                }
+                _ => {
+                    assert_eq!(cols(&api), 7);
+                    assert!(!draft.exists());
+                }
+            }
+            assert_eq!(edits["draft"], false);
+            assert_eq!(
+                ask(&api, "POST", "/draft", &q, ""),
+                (404, "no unsaved edits wait".to_string(), None)
+            );
+        }
+    }
+
+    #[test]
+    fn a_save_or_a_working_copy_that_matches_the_state_file_again_removes_the_draft() {
+        let (d, states, _) = clocks("draft-gone");
+        let api = clocks_again(&d, &states);
+        let draft = std::path::Path::new(&*states).join(format!("scenes{d}/clocks.draft.json"));
+        let set = |cols: i32| {
+            let q = format!("scene=clocks&pass=main&name=cols&value={cols}");
+            assert_eq!(ask(&api, "POST", "/set", &q, "").0, 200);
+            api.host.console.write_drafts(true);
+            draft.exists()
+        };
+        assert!(set(5));
+        assert!(!set(7));
+        assert!(set(5));
+        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        assert!(!draft.exists());
     }
 
     #[test]
@@ -3938,6 +4109,7 @@ mod tests {
                 aside: Vec::new(),
                 broken: Vec::new(),
                 saved: None,
+                draft: None,
                 procedural: true,
             },
         );

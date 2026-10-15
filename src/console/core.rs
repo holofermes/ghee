@@ -57,9 +57,9 @@ pub const MAX_UPLOAD: usize = 32 << 20;
 /// The paths that change the renderer or the files. They take POST only. A
 /// hostile page reaches a GET through <img src>, and that request carries no
 /// Origin to refuse.
-pub const POST_ONLY: [&str; 11] = [
-    "/set", "/switch", "/next", "/prev", "/save", "/reset", "/aside", "/new", "/rename", "/delete",
-    "/upload",
+pub const POST_ONLY: [&str; 12] = [
+    "/set", "/switch", "/next", "/prev", "/save", "/reset", "/aside", "/draft", "/new", "/rename",
+    "/delete", "/upload",
 ];
 
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
@@ -537,14 +537,15 @@ pub trait ConsoleHost {
         Ok((self.scene_def(name)?, None))
     }
 
-    /// GET /edits: `{rev, values, items, unsaved, aside, broken}`, the
-    /// working copy's edits as save() writes them, whether they differ from
-    /// the state file, the items set aside, and the saved edits that make no
-    /// scene, each as `{what, why}`.
+    /// GET /edits: `{rev, values, items, unsaved, aside, broken, draft}`,
+    /// the working copy's edits as save() writes them, whether they differ
+    /// from the state file, the items set aside, the saved edits that make no
+    /// scene, each as `{what, why}`, and whether unsaved edits from before
+    /// ghee stopped wait for an answer.
     fn edits(&self, _name: Option<&str>) -> ConsoleResult<Value> {
         Ok(
             serde_json::json!({"rev": null, "values": {}, "items": [], "unsaved": false,
-                              "aside": [], "broken": []}),
+                              "aside": [], "broken": [], "draft": false}),
         )
     }
 
@@ -563,6 +564,12 @@ pub trait ConsoleHost {
     /// Answer an item set aside: keep it over the new default, or drop it.
     fn answer(&self, _name: Option<&str>, _item: &Aside, _keep: bool) -> ConsoleResult<()> {
         Err(ConsoleError::not_found("no such item is set aside"))
+    }
+
+    /// Answer the unsaved edits from before ghee stopped: restore them in
+    /// the working copy, or drop them.
+    fn draft(&self, _name: Option<&str>, _restore: bool) -> ConsoleResult<()> {
+        Err(ConsoleError::not_found("no unsaved edits wait"))
     }
 
     /// Each filter name and its definition, for the "+ filter" picker.
@@ -1017,6 +1024,25 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             let (aside, keep) = parse_aside(query)
                 .map_err(|e| ConsoleError::bad_request(format!("bad /aside: {e}")))?;
             h.edit_scene(&at(name), &mut || h.answer(name, &aside, keep))?;
+            return Ok(Response::text(200, "ok"));
+        }
+        if path == "/draft" {
+            let restore = match query.get("answer").map(String::as_str) {
+                Some("restore") => true,
+                Some("drop") => false,
+                Some(a) => {
+                    return Err(ConsoleError::bad_request(format!(
+                        "bad /draft: answer needs restore or drop, got {}",
+                        py_repr(&Value::from(a))
+                    )))
+                }
+                None => {
+                    return Err(ConsoleError::bad_request(
+                        "bad /draft: the query has no 'answer'",
+                    ))
+                }
+            };
+            h.edit_scene(&at(name), &mut || h.draft(name, restore))?;
             return Ok(Response::text(200, "ok"));
         }
         if path == "/upload" {
@@ -1499,6 +1525,7 @@ mod tests {
         Save(Option<String>),
         Reset(Option<String>),
         Answer(Aside, bool),
+        Draft(bool),
     }
 
     /// A host that records instead of rendering.
@@ -1617,6 +1644,11 @@ mod tests {
             self.calls
                 .borrow_mut()
                 .push(Call::Answer(aside.clone(), keep));
+            Ok(())
+        }
+
+        fn draft(&self, _name: Option<&str>, restore: bool) -> ConsoleResult<()> {
+            self.calls.borrow_mut().push(Call::Draft(restore));
             Ok(())
         }
 
@@ -1795,7 +1827,7 @@ mod tests {
         assert_eq!(
             as_json(&ConsoleAPI::new(Bare).dispatch("GET", "/edits", &Query::new(), &local(), b"")),
             serde_json::json!({"rev": null, "values": {}, "items": [], "unsaved": false,
-                               "aside": [], "broken": []})
+                               "aside": [], "broken": [], "draft": false})
         );
     }
 
@@ -2426,6 +2458,27 @@ mod tests {
             let api = api();
             let r = post(&api, "/aside", &q);
             assert_eq!((r.status, body(&r)), (400, format!("bad /aside: {why}")));
+            assert!(api.host.calls.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_draft_answer_restores_or_drops() {
+        for (answer, restore) in [("restore", true), ("drop", false)] {
+            let api = api();
+            assert_eq!(post(&api, "/draft", &[("answer", answer)]).status, 200);
+            assert_eq!(*api.host.calls.borrow(), vec![Call::Draft(restore)]);
+        }
+        for (q, why) in [
+            (
+                vec![("answer", "later")],
+                "answer needs restore or drop, got 'later'",
+            ),
+            (vec![], "the query has no 'answer'"),
+        ] {
+            let api = api();
+            let r = post(&api, "/draft", &q);
+            assert_eq!((r.status, body(&r)), (400, format!("bad /draft: {why}")));
             assert!(api.host.calls.borrow().is_empty());
         }
     }

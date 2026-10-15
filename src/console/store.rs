@@ -62,6 +62,7 @@ pub struct SceneStore {
 pub struct Carried {
     pub edits: Edits,
     pub saved: Option<Edits>,
+    pub draft: Option<Edits>,
 }
 
 /// A saved edit that makes no scene, and why. It waits in the state file
@@ -83,6 +84,9 @@ pub struct Opened {
     pub broken: Vec<Broken>,
     /// What the scene's state file holds. None when it has no file.
     pub saved: Option<Edits>,
+    /// The edits that the draft beside the state file holds, which wait for
+    /// the console to restore or drop them. None when no draft waits.
+    pub draft: Option<Edits>,
     pub procedural: bool,
 }
 
@@ -282,6 +286,58 @@ impl SceneStore {
         }
     }
 
+    /// The draft beside the scene's state file, or None when the store keeps
+    /// no state file for the scene.
+    pub fn draft_file(&self, name: &str) -> Option<PathBuf> {
+        let path = self.state_file(name).ok().flatten()?;
+        Some(state::draft_of(&path))
+    }
+
+    /// The edits of the scene's draft, when they differ from `saved`, the
+    /// edits of its state file. A draft that matches them is removed, and an
+    /// unreadable one moves aside.
+    fn read_draft(&self, name: &str, saved: Option<&Edits>) -> Option<Edits> {
+        let path = self.draft_file(name)?;
+        let draft = match state::read(&path) {
+            Ok(draft) => draft?,
+            Err(e) => {
+                match state::move_unreadable(&path) {
+                    Ok(to) => eprintln!(
+                        "{name}: its unsaved edits are unreadable: {e}. They moved to {}",
+                        to.display()
+                    ),
+                    Err(why) => eprintln!("{name}: its unsaved edits are unreadable: {e}: {why}"),
+                }
+                return None;
+            }
+        };
+        if draft.same(saved.unwrap_or(&Edits::default())) {
+            if let Err(e) = state::remove(&path) {
+                eprintln!("{name}: {e}");
+            }
+            return None;
+        }
+        eprintln!("{name}: unsaved edits from before ghee stopped wait for the console");
+        Some(draft)
+    }
+
+    /// Write `edits`, the working copy's edits, to the scene's draft.
+    pub fn write_draft(&self, name: &str, edits: &Edits) -> Result<(), String> {
+        let file = self.file(name).map_err(|e| e.to_string())?;
+        match self.draft_file(name) {
+            Some(path) => state::write_draft(&path, &file, edits),
+            None => Ok(()),
+        }
+    }
+
+    /// Remove the scene's draft.
+    pub fn remove_draft(&self, name: &str) -> Result<(), String> {
+        match self.draft_file(name) {
+            Some(path) => state::remove(&path),
+            None => Ok(()),
+        }
+    }
+
     /// Write `edits` to the scene's state file, or remove the file when there
     /// are none.
     pub fn save(&self, name: &str, edits: &Edits) -> ConsoleResult<()> {
@@ -461,11 +517,12 @@ impl SceneStore {
         size: (i32, i32),
     ) -> ConsoleResult<(Opened, Option<SceneProcess>)> {
         let (defaults, mut process) = self.start(name, size)?;
-        let (edits, saved) = match carried {
-            Some(c) => (c.edits, c.saved),
+        let (edits, saved, draft) = match carried {
+            Some(c) => (c.edits, c.saved, c.draft),
             None => {
                 let saved = self.read_state(name);
-                (saved.clone().unwrap_or_default(), saved)
+                let draft = self.read_draft(name, saved.as_ref());
+                (saved.clone().unwrap_or_default(), saved, draft)
             }
         };
         let (working, aside, broken) = working(name, &defaults, &edits);
@@ -479,6 +536,7 @@ impl SceneStore {
             aside,
             broken,
             saved,
+            draft,
         };
         Ok((opened, process))
     }

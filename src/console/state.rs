@@ -326,6 +326,12 @@ pub fn file_of(dir: &Path, scene: &str, demo: Option<&str>) -> PathBuf {
     dir.join("scenes").join(format!("{stem}.json"))
 }
 
+/// The draft beside the state file `path`: `clocks.draft.json` beside
+/// `clocks.json`.
+pub fn draft_of(path: &Path) -> PathBuf {
+    path.with_extension("draft.json")
+}
+
 /// The edits that the state file `path` holds. None when there is no file.
 pub fn read(path: &Path) -> Result<Option<Edits>, String> {
     let text = match fs::read_to_string(path) {
@@ -364,18 +370,32 @@ pub fn move_unreadable(path: &Path) -> Result<PathBuf, String> {
 /// Write `edits` of the scene file `scene` to the state file `path`, whole,
 /// through a temporary file and a rename. No edit removes the file.
 pub fn write(path: &Path, scene: &str, edits: &Edits) -> Result<(), String> {
-    let io = |e: std::io::Error| format!("{}: {e}", path.display());
     if edits.is_empty() {
-        return match fs::remove_file(path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io(e)),
-            _ => Ok(()),
-        };
+        return remove(path);
     }
+    write_draft(path, scene, edits)
+}
+
+/// Write `edits` of the scene file `scene` to the draft `path`, whole, in the
+/// state file's format. A draft with no edit stays a file: it takes the
+/// scene back to its defaults.
+pub fn write_draft(path: &Path, scene: &str, edits: &Edits) -> Result<(), String> {
+    let io = |e: std::io::Error| format!("{}: {e}", path.display());
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(io)?;
     }
     let text = serde_json::to_string_pretty(&edits.to_file(scene)).map_err(|e| e.to_string())?;
     write_file(path, (text + "\n").as_bytes()).map_err(io)
+}
+
+/// Remove the file `path`, which may be gone already.
+pub fn remove(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("{}: {e}", path.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Write `bytes` to `path` whole, through a temporary file beside it and a

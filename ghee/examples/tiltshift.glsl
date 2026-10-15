@@ -25,7 +25,13 @@
 //   and `yaw` place the camera: `yaw` turns it around the board, `zoom` takes
 //   it closer, `pan_x` and `pan_y` move the point it looks at, and `fov` is
 //   how many degrees it sees from top to bottom, so a wide strip sees as far
-//   as a tall frame does. Past the board's edges the town goes on mirrored.
+//   as a tall frame does. `lots`, `clouds` and `town` each draw a tile that
+//   meets itself at its edges, and `scene` lays the board on the ground again
+//   and again, so the camera glides over the town forever: `travel` is the
+//   way it goes, x to the right and y ahead, and `travel_speed` how many lots
+//   it crosses a second. With `fov_time` above 0, the view opens from
+//   `fov_from` to `fov` over that many seconds, from a close detail out to
+//   the town.
 // - `blur` blurs `scene` at 128x128 and is read trilinear too. `main` reads
 //   it with a bias that grows as a pixel's distance strays from the one in
 //   focus, as through a lens, and the bias picks smaller mipmaps, so the

@@ -12,9 +12,9 @@ vec3 roof_color(float k) {
 }
 
 vec3 car(vec2 q, float along, float lane, float dir, vec3 col) {
-  float s = along * dir - iTime * traffic * (0.8 + 0.4 * ghee_hash(vec2(lane, 1.0)));
-  float slot = floor(s / 1.7);
-  float x = fract(s / 1.7) * 1.7;
+  float s = (along * dir - iTime * traffic * (0.8 + 0.4 * ghee_hash(vec2(lane, 1.0)))) * (19.0 / 32.0);
+  float slot = mod(floor(s), 19.0);
+  float x = fract(s) * (32.0 / 19.0);
   float here = step(0.45, ghee_hash(vec2(slot, lane)));
   float body = box(vec2(x, q.y), vec2(0.0, -0.1), vec2(0.5, 0.1)) * here;
   float glass = box(vec2(x, q.y), vec2(0.14, -0.07), vec2(0.36, 0.07));
@@ -25,7 +25,8 @@ vec3 car(vec2 q, float along, float lane, float dir, vec3 col) {
 }
 
 float coach(float x, float y) {
-  return step(0.0, x) * step(x, 7.2) * step(0.12, fract(x / 1.2) * 1.2) * box(vec2(0.0, y), vec2(-1.0, 0.36), vec2(1.0, 0.64));
+  x = mod(x, 32.0);
+  return step(x, 7.2) * step(0.12, fract(x / 1.2) * 1.2) * box(vec2(0.0, y), vec2(-1.0, 0.36), vec2(1.0, 0.64));
 }
 
 void main() {
@@ -55,7 +56,7 @@ void main() {
     col = mix(col, vec3(0.35, 0.27, 0.2), sleepers);
     float rails = box(f, vec2(-1.0, 0.4), vec2(2.0, 0.44)) + box(f, vec2(-1.0, 0.58), vec2(2.0, 0.62));
     col = mix(col, vec3(0.75, 0.75, 0.78), rails);
-    float x = p.x - mod(iTime * train_speed + 8.0, 64.0) + 16.0;
+    float x = p.x - iTime * train_speed;
     vec2 up = away * clamp(0.24 * lift, 0.0, 0.3);
     col = mix(col, col * 0.6, coach(x - sun.x * 0.15, f.y - sun.y * 0.15));
     float side_wall = max(coach(x, f.y), coach(x - up.x * 0.5, f.y - up.y * 0.5));
@@ -75,8 +76,8 @@ void main() {
     float dx = (inblock.x < 2.0 ? inblock.x : inblock.x - 4.0);
     col = mix(col, vec3(0.9, 0.85, 0.6), horiz * step(0.5, fract(p.x * 2.0)) * (1.0 - smoothstep(0.01, 0.02, abs(dy))));
     col = mix(col, vec3(0.9, 0.85, 0.6), vert * step(0.5, fract(p.y * 2.0)) * (1.0 - smoothstep(0.01, 0.02, abs(dx))));
-    float hl = floor((lot.y + 2.0) / 4.0);
-    float vl = floor((lot.x + 2.0) / 4.0);
+    float hl = mod(floor((lot.y + 2.0) / 4.0), 8.0);
+    float vl = mod(floor((lot.x + 2.0) / 4.0), 8.0);
     col = horiz > 0.5 ? car(vec2(0.0, dy - 0.12 * sign(dy)), p.x, hl * 2.0 + step(0.0, dy), sign(dy), col) : col;
     col = vert > 0.5 ? car(vec2(0.0, dx - 0.12 * sign(dx)), p.y, vl * 2.0 + step(0.0, dx) + 50.0, sign(dx), col) : col;
   } else {

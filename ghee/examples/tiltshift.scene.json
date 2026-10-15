@@ -18,7 +18,7 @@
       "name": "clouds",
       "size": [64, 64],
       "sampling": "linear",
-      "fragment": "void main() {\n  vec2 p = uv * 4.0 + vec2(iTime * wind, iTime * wind * 0.4);\n  float n = ghee_noise(p) * 0.65 + ghee_noise(p * 2.3 + 5.0) * 0.35;\n  gl_FragColor = vec4(vec3(smoothstep(0.6, 0.68, n)), 1.0);\n}\n",
+      "fragment": "float wave(vec2 p, float n) {\n  vec2 i = floor(p);\n  vec2 f = fract(p);\n  f = f * f * (3.0 - 2.0 * f);\n  float a = mix(ghee_hash(mod(i, n)), ghee_hash(mod(i + vec2(1.0, 0.0), n)), f.x);\n  float b = mix(ghee_hash(mod(i + vec2(0.0, 1.0), n)), ghee_hash(mod(i + 1.0, n)), f.x);\n  return mix(a, b, f.y);\n}\n\nvoid main() {\n  vec2 p = uv * 4.0 + mod(iTime * wind * vec2(1.0, 0.4), 4.0);\n  float n = wave(p, 4.0) * 0.65 + wave(p * 2.0 + 5.0, 8.0) * 0.35;\n  gl_FragColor = vec4(vec3(smoothstep(0.6, 0.68, n)), 1.0);\n}\n",
       "params": {
         "wind": {"type": "float", "value": 0.12, "min": 0.0, "max": 1.0, "step": 0.01}
       }
@@ -50,13 +50,17 @@
     },
     {
       "name": "scene",
-      "fragment": "void main() {\n  float t = radians(tilt);\n  float a = radians(yaw);\n  vec3 forward = vec3(sin(a) * cos(t), cos(a) * cos(t), -sin(t));\n  vec3 right = vec3(cos(a), -sin(a), 0.0);\n  vec3 up = vec3(sin(a) * sin(t), cos(a) * sin(t), cos(t));\n  vec2 q = (uv - 0.5) * vec2(2.0 * iResolution.x / iResolution.y, -2.0) * tan(radians(fov) * 0.5);\n  vec3 ray = forward + q.x * right + q.y * up;\n  vec3 eye = vec3(0.5 + pan_x * right.xy + pan_y * vec2(sin(a), cos(a)), 0.0) - forward / zoom;\n  float far = 8.0;\n  if (ray.z < 0.0) far = min(far, -eye.z / ray.z * zoom);\n  vec2 board = eye.xy + ray.xy * far / zoom;\n  vec3 col = texture2D(iChannel0, 1.0 - abs(1.0 - mod(board, 2.0))).rgb;\n  gl_FragColor = vec4(mix(col, haze, clamp(0.3 * (far - 1.2), 0.0, 1.0)), clamp(1.5 - 1.0 / far, 0.0, 1.0));\n}\n",
+      "fragment": "void main() {\n  float t = radians(tilt);\n  float a = radians(yaw);\n  vec3 forward = vec3(sin(a) * cos(t), cos(a) * cos(t), -sin(t));\n  vec3 right = vec3(cos(a), -sin(a), 0.0);\n  vec3 up = vec3(sin(a) * sin(t), cos(a) * sin(t), cos(t));\n  float view = fov_time > 0.0 ? mix(fov_from, fov, smoothstep(0.0, 1.0, iTime / fov_time)) : fov;\n  vec2 lens = vec2(2.0 * iResolution.x / iResolution.y, -2.0) * tan(radians(view) * 0.5);\n  vec2 ahead = vec2(sin(a), cos(a));\n  vec2 glide = travel.x * right.xy + travel.y * ahead;\n  glide *= travel_speed / 32.0 / max(length(travel), 1e-4);\n  vec3 eye = vec3(0.5 + pan_x * right.xy + pan_y * ahead + mod(glide * iTime, 1.0), 0.0) - forward / zoom;\n  vec2 quad = (floor(gl_FragCoord.xy * 0.5) * 2.0 + 1.0) / iResolution.xy;\n  vec3 ray = forward + (quad.x - 0.5) * lens.x * right + (quad.y - 0.5) * lens.y * up;\n  float far = 8.0;\n  if (ray.z < 0.0) far = min(far, -eye.z / ray.z * zoom);\n  vec2 tile = floor(eye.xy + ray.xy * far / zoom);\n  ray = forward + (uv.x - 0.5) * lens.x * right + (uv.y - 0.5) * lens.y * up;\n  far = 8.0;\n  if (ray.z < 0.0) far = min(far, -eye.z / ray.z * zoom);\n  vec2 board = eye.xy + ray.xy * far / zoom;\n  vec3 col = texture2D(iChannel0, board - tile).rgb;\n  gl_FragColor = vec4(mix(col, haze, clamp(0.3 * (far - 1.2), 0.0, 1.0)), clamp(1.5 - 1.0 / far, 0.0, 1.0));\n}\n",
       "channels": [{"buffer": "town"}],
       "params": {
         "zoom": {"type": "float", "value": 4.6, "min": 0.5, "max": 8.0, "step": 0.05},
         "pan_x": {"type": "float", "value": 0.07, "min": -1.0, "max": 1.0, "step": 0.01},
         "pan_y": {"type": "float", "value": 0.0, "min": -1.0, "max": 1.0, "step": 0.01},
         "fov": {"type": "float", "value": 65.0, "min": 10.0, "max": 100.0, "step": 1.0},
+        "fov_from": {"type": "float", "value": 12.0, "min": 5.0, "max": 100.0, "step": 1.0},
+        "fov_time": {"type": "float", "value": 0.0, "min": 0.0, "max": 60.0, "step": 0.5},
+        "travel": {"type": "vec2", "value": [0.0, 1.0], "min": -1.0, "max": 1.0, "step": 0.05},
+        "travel_speed": {"type": "float", "value": 0.8, "min": 0.0, "max": 8.0, "step": 0.05},
         "haze": {"type": "color", "value": "#cfe3ee"}
       }
     },

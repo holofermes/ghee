@@ -10,19 +10,22 @@
 // - `clouds` draws the shadows of passing clouds at 64x64, and `town` darkens
 //   the board under them. Read `"linear"`, its few pixels blend into soft
 //   shadows. Read nearest, they show as squares eight board pixels wide.
-// - `town` draws the board seen from above at 512x512, with its cars and
-//   its train, and `scene` lays it in perspective, where a far frame pixel
+// - `town` draws the board seen from above at 512x512, with its cars and its
+//   train. It reads the scene's own params `tilt` and `yaw`, how steeply the
+//   camera looks down and from where, and draws each house as a box seen from
+//   the camera: its roof shifted away by its height, the walls that face the
+//   camera below it, and the shadows falling the same way across the frame at
+//   any yaw. `scene` lays the board in perspective, where a far frame pixel
 //   covers many of the board's pixels. Read `"trilinear"`, ghee also builds
-//   the board's mipmaps after each frame, copies halved again and again
-//   down to one pixel, and a far frame pixel reads the copy at its own
-//   scale, so the far rows stay calm. Read linear, they turn jagged.
-// - `scene` draws that perspective view sharp, at the frame's size, and
-//   keeps each pixel's distance from the camera in its alpha. Its params
-//   place the camera: `tilt` is how steeply it looks down, `yaw` turns it
-//   around the board, `zoom` takes it closer, `pan_x` and `pan_y` move the
-//   point it looks at, and `fov` is how many degrees it sees from top to
-//   bottom, so a wide strip sees as far as a tall frame does. Past the
-//   board's edges the town goes on mirrored.
+//   the board's mipmaps after each frame, copies halved again and again down
+//   to one pixel, and a far frame pixel reads the copy at its own scale, so
+//   the far rows stay calm. Read linear, they turn jagged.
+// - `scene` draws that perspective view sharp, at the frame's size, and keeps
+//   each pixel's distance from the camera in its alpha. Its params and `tilt`
+//   and `yaw` place the camera: `yaw` turns it around the board, `zoom` takes
+//   it closer, `pan_x` and `pan_y` move the point it looks at, and `fov` is
+//   how many degrees it sees from top to bottom, so a wide strip sees as far
+//   as a tall frame does. Past the board's edges the town goes on mirrored.
 // - `blur` blurs `scene` at 128x128 and is read trilinear too. `main` reads
 //   it with a bias that grows as a pixel's distance strays from the one in
 //   focus, as through a lens, and the bias picks smaller mipmaps, so the

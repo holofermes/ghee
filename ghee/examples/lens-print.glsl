@@ -119,29 +119,36 @@ float ink_at(vec2 q, float px) {
 // (times 0.9) and of `foxing`. The page lies still, so the top half keeps the
 // last frame's pixels. It sets anew each pixel that holds no paper yet, as in
 // a new buffer, and one band of 8 rows a frame, which brings in new words.
+// While the view scrolls, the top half's rows hold the page's rows in a ring,
+// row r the view's page row that is r modulo the height, and the rows that
+// scrolled in since the last frame are set anew.
 void main() {
   vec2 px = uv * iResolution.xy;
   float width = iResolution.x;
   float height = 0.5 * iResolution.y;
   float aspect = height / width;
+  vec2 s = scrolled(width, aspect, iTime);
+  float before = scrolled(width, aspect, iTime - iTimeDelta).x;
   vec4 o = vec4(0.0, 0.0, 0.0, 1.0);
   bool set = false;
   vec2 page;
   float m = 1.0;
   if (px.y < height) {
+    float row = mod(px.y - s.x, height);
     if (gl_FragCoord.x >= 0.0) o = texture2D(iChannel0, px / iResolution.xy);
-    set = o.g < 0.01 || floor(mod(float(iFrame) + 0.5, ceil(height / 8.0))) == floor(px.y / 8.0);
-    if (set) page = turned(px / width, aspect);
+    bool came = s.x + row > before + height - 1.0 || s.x < before;
+    set = o.g < 0.01 || came || floor(mod(float(iFrame) + 0.5, ceil(height / 8.0))) == floor(px.y / 8.0);
+    if (set) page = page_of(vec2(px.x, row) / width, width, s);
   } else {
     vec2 q = vec2(px.x, px.y - height) / width;
     vec3 lens = lens_now(aspect);
     set = length(q - lens.xy) < 1.02 * lens.z;
-    if (set) page = seen_at(q, lens, aspect, m);
+    if (set) page = seen_at(q, lens, width, s, m);
   }
   if (set) {
     float c = 0.0;
     if (gl_FragCoord.x >= 0.0) c = ink_at(page, width * m);
-    o.rgb = vec3(inked(c, page, width * m), paper_at(page, width * m, aspect) * vec2(0.9, 1.0));
+    o.rgb = vec3(inked(c, page, width * m), paper_at(page, width * m, s.y / width) * vec2(0.9, 1.0));
   }
   gl_FragColor = o;
 }

@@ -6,6 +6,11 @@
 // one pixel soft at every magnification. Toward its rim the glass bends
 // harder, crowds the words into a ring and splits their colours.
 //
+// The page is three quarters as tall as it is wide. A frame wider than that,
+// such as a 256x64 panel, shows a strip of the page across its width and
+// scrolls down it `scroll` times a minute, back to the top in a loop, while
+// the lens glides along the strip.
+//
 // Pass `print`, in lens-print.glsl, sets the page as it lies and as the lens
 // shows it: its paper, and the ink that the words lay on it. This pass colours
 // the page and draws the glass.
@@ -33,6 +38,7 @@ void main() {
   float width = iResolution.x;
   float aspect = iResolution.y / width;
   vec2 q = px / width;
+  vec2 s = scrolled(width, aspect, iTime);
   vec3 lens = lens_now(aspect);
   vec2 centre = lens.xy;
   float radius = lens.z;
@@ -69,7 +75,7 @@ void main() {
     col = mix(col, vec3(1.0), 0.85 * spot);
   } else {
     vec4 page = vec4(0.0);
-    if (gl_FragCoord.x >= 0.0) page = texture2D(iChannel0, px / iChannelResolution[0].xy);
+    if (gl_FragCoord.x >= 0.0) page = texture2D(iChannel0, vec2(px.x, mod(px.y + s.x, iResolution.y)) / iChannelResolution[0].xy);
     col = mix(paper * (page.g / 0.9) + foxing * page.b, ink, page.r);
     vec2 below = (q - centre - vec2(0.09, 0.12) * radius) / radius;
     float fall = length(below);

@@ -10,8 +10,8 @@
 //   frame size. `sign` lights one LED of the board for each of its pixels,
 //   and `"sampling": "nearest"` hands each LED its pixel whole. Read
 //   `"linear"`, each LED blends the pixels around it and the letters smear.
-// - `sign` draws the tubes, the LEDs, the lit windows and the cars' lights
-//   sharp, at the frame's size.
+// - `sign` draws the tubes, the LEDs and the lit windows sharp, at the
+//   frame's size.
 // - `glow` blurs `sign` at a quarter of the frame, 80x60 pixels in a 320x240
 //   frame, and `halo` blurs `glow` again at an eighth, 40x30 pixels. Both are
 //   read `"linear"`, so their few pixels blend into a smooth glow around the
@@ -26,7 +26,10 @@
 //   `main` mirrors every other tile, so the tile's coordinate never jumps and
 //   trilinear draws no seam.
 // - `main` lights the shopfronts with `glow` and `halo`, adds them over
-//   them, and mirrors it all in the wet street.
+//   them, and mirrors it all in the wet street. Over the kerb it draws the
+//   passing cars as a long exposure shows them, thin streaks of headlights
+//   and taillights, mirrored in the street too. `traffic` sets how many
+//   cars pass, none at 0.
 // - `rain` is hidden with `"visible": false`, so the frame is `main`. Show it
 //   with its eye in the console.
 //
@@ -91,6 +94,24 @@ vec2 ripples(vec2 g) {
   return d / max(r, 0.001) * ring;
 }
 
+// One lane of cars' lights as a long exposure draws them: each car a thin
+// streak, brightest at its head. The streaks' brightness along x.
+float streaks(float x, float dir, float seed) {
+  float period = 6.0;
+  float u = x * dir - iTime * car_speed + seed * 3.7;
+  float k = floor(u / period);
+  float h = ghee_hash(vec2(k, seed));
+  float len = 1.4 + 1.4 * fract(h * 17.0);
+  float behind = period * (0.5 + 0.5 * fract(h * 31.0)) - (u - k * period);
+  float px = 1.0 / iResolution.y;
+  float along = smoothstep(-px, px, behind) * (1.0 - smoothstep(0.3 * len, len, behind));
+  return along * (0.6 + 0.4 * exp(-behind * 6.0)) * step(h, traffic) * 2.5;
+}
+
+float across(float dy, float width) {
+  return exp(-dy * dy / (width * width)) + 0.08 * exp(-abs(dy) * iResolution.y / 4.0);
+}
+
 void main() {
   float aspect = iResolution.x / iResolution.y;
   vec2 at = uv;
@@ -99,7 +120,14 @@ void main() {
   float wet = 0.0;
   float shine = 0.0;
   vec3 above = vec3(0.0);
-  vec3 traffic = vec3(0.0);
+  vec3 road_light = vec3(0.0);
+  float road = 1.0 - base;
+  float far = base - 0.02;
+  float near = base + 0.1 * road;
+  float width = max(0.6 / iResolution.y, 0.003);
+  float x = (uv.x - 0.5) * aspect;
+  float back = streaks(x, -1.0, 1.0);
+  float front = streaks(x, 1.0, 2.0);
   if (below > 0.0) {
     float z = 0.2 / (below + 0.3);
     vec2 ground = vec2((uv.x - 0.5) * aspect * z, z);
@@ -112,7 +140,12 @@ void main() {
     wet = mix(mix(0.9, 0.3, st.b), 0.9, puddle);
     shine = mix(0.25 + 0.75 * clamp(-n.y, 0.0, 1.0), 0.0, puddle);
     above = texture2D(iChannel2, vec2(uv.x, base - 0.2)).rgb * halo_gain * exp(-below * 6.0);
-    traffic = texture2D(iChannel0, uv).rgb + texture2D(iChannel1, uv).rgb * glow_gain;
+    float dr = 3.0 * width + 0.01 * abs(n.y);
+    float smear = 0.05 * road;
+    float rf = uv.y - 2.0 * base + far + n.y * 0.01;
+    float rn = uv.y - near - 0.12 * road + n.y * 0.01;
+    road_light = wet * (taillights * back * (across(rf, dr) + 0.4 * across(rf - smear, smear)) + headlights * front * (across(rn, dr) + 0.4 * across(rn - smear, smear)));
+    road_light += texture2D(iChannel1, uv).rgb * glow_gain;
   }
 
   vec4 sign = texture2D(iChannel0, at);
@@ -125,7 +158,8 @@ void main() {
     vec3 stone = asphalt * (0.5 + st.a) * (ambient + above * 2.0) * st.b * (0.5 + shine);
     col = stone + mix(light, neon, 0.15 + 0.85 * (1.0 - st.b)) * wet;
     col *= smoothstep(0.0, 0.01, below) * 0.6 + 0.4;
-    col += traffic;
+    col += road_light;
   }
+  col += taillights * back * across(uv.y - far, width) + headlights * front * across(uv.y - near, width);
   gl_FragColor = vec4(1.0 - exp(-col * exposure), 1.0);
 }

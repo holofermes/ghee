@@ -212,22 +212,6 @@ void main() {
     col += lit(lantern * 0.075, px, lanterns * ribs) + vec4(0.0, 0.0, 0.0, 0.5 * exp(-dot(l, l) * 900.0));
   }
 
-  float below = uv.y - base;
-  if (below > 0.0) {
-    float aspect = iResolution.x / iResolution.y;
-    float x = (uv.x - 0.5) * aspect;
-    float far = (below - 0.07) / 0.008;
-    float near = (below - 0.17) / 0.013;
-    far = exp(-far * far);
-    near = exp(-near * near);
-    float a = (x - iTime * cars) / 2.5;
-    float k = floor(a);
-    float run = smoothstep(0.0, 0.5, fract(a)) * (1.0 - smoothstep(0.55, 0.6, fract(a))) * step(0.35, ghee_hash(vec2(k, 1.0)));
-    float r = (x + iTime * cars * 1.3) / 3.1;
-    float back = smoothstep(0.0, 0.1, fract(r)) * (1.0 - smoothstep(0.3, 0.7, fract(r))) * step(0.3, ghee_hash(vec2(floor(r), 2.0)));
-    col += vec4(headlights * far * run + taillights * near * back, 0.5 * (far * run + near * back));
-  }
-
   vec2 led = led_at(uv);
   if (led.x > 0.0 && led.x < 56.0 && led.y > 0.0 && led.y < 8.0) {
     float dot_mask = mix(1.0, 1.0 - smoothstep(0.3, 0.42, length(fract(led) - 0.5)), smoothstep(1.5, 2.5, led_pitch()));

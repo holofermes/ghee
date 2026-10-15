@@ -1,7 +1,7 @@
 {
   "version": 1,
   "params": {
-    "base": {"type": "float", "value": 0.64, "min": 0.5, "max": 0.9, "step": 0.01}
+    "base": {"type": "float", "value": 0.61, "min": 0.5, "max": 0.9, "step": 0.01}
   },
   "common": {"file": "neon-row.glsl"},
   "passes": [
@@ -28,10 +28,7 @@
         "shop_1": {"type": "color", "value": "#ff8a1e"},
         "shop_2": {"type": "color", "value": "#2ee8c8"},
         "shop_3": {"type": "color", "value": "#b03cff"},
-        "shop_4": {"type": "color", "value": "#3c8cff"},
-        "headlights": {"type": "color", "value": "#fff1d6"},
-        "taillights": {"type": "color", "value": "#ff2a1a"},
-        "cars": {"type": "float", "value": 1.2, "min": 0.0, "max": 4.0, "step": 0.05}
+        "shop_4": {"type": "color", "value": "#3c8cff"}
       }
     },
     {
@@ -48,7 +45,7 @@
       "channels": [{"buffer": "glow"}],
       "fragment": "void main() {\n  vec2 px = spread / iChannelResolution[0].xy;\n  vec3 sum = vec3(0.0);\n  float total = 0.0;\n  for (int x = -2; x <= 2; x++) {\n    for (int y = -2; y <= 2; y++) {\n      float w = exp(-float(x * x + y * y) / 4.0);\n      sum += w * texture2D(iChannel0, uv + vec2(float(x), float(y)) * px).rgb;\n      total += w;\n    }\n  }\n  gl_FragColor = vec4(sum / total, 1.0);\n}\n",
       "params": {
-        "spread": {"type": "float", "value": 2.5, "min": 0.5, "max": 4.0, "step": 0.1}
+        "spread": {"type": "float", "value": 2.1, "min": 0.5, "max": 4.0, "step": 0.1}
       }
     },
     {
@@ -64,14 +61,18 @@
       "params": {
         "glow_gain": {"type": "float", "value": 1.5, "min": 0.0, "max": 3.0, "step": 0.05},
         "halo_gain": {"type": "float", "value": 1.8, "min": 0.0, "max": 3.0, "step": 0.05},
-        "core": {"type": "float", "value": 1.2, "min": 0.0, "max": 3.0, "step": 0.05},
+        "core": {"type": "float", "value": 1.0, "min": 0.0, "max": 3.0, "step": 0.05},
         "exposure": {"type": "float", "value": 1.6, "min": 0.5, "max": 4.0, "step": 0.05},
         "ambient": {"type": "float", "value": 0.12, "min": 0.0, "max": 0.5, "step": 0.01},
         "brick": {"type": "color", "value": "#6b3b44"},
         "facade": {"type": "color", "value": "#3a3640"},
         "mortar": {"type": "color", "value": "#2a2630"},
         "kerb": {"type": "color", "value": "#4a4652"},
-        "asphalt": {"type": "color", "value": "#2c2f3a"}
+        "asphalt": {"type": "color", "value": "#2c2f3a"},
+        "headlights": {"type": "color", "value": "#fff1d6"},
+        "taillights": {"type": "color", "value": "#ff2a1a"},
+        "traffic": {"type": "float", "value": 0.6, "min": 0.0, "max": 1.0, "step": 0.01},
+        "car_speed": {"type": "float", "value": 3.0, "min": 0.5, "max": 8.0, "step": 0.1}
       }
     },
     {

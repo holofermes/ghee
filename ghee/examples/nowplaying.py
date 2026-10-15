@@ -7,21 +7,22 @@
 the track count, the time played and the track's length, and the tape
 running between two turning reels.
 
-The pass `main` draws the reels, the bar between them and the play or pause
-sign from its params: `progress` fills the bar, `side` winds the tape from
-the left reel onto the right one over the whole playlist, and `spin` turns
-each reel. Its text layers, in monogram, carry the words. The layout
-follows ghee.render_size(): a 256x64 SSD1322 shows the artist on a line of
-its own, a 128x32 SSD1306 runs it after the title. The scene param
-`padding` insets the whole layout from the frame's edges by that many
-pixels, and the pass `inset` paints that margin in `background`, over a
-scrolling title too.
+The pass `words` holds the text layers, in monogram. The pass `main` shows
+the words through a window between two reels and draws the reels, the play or
+pause sign and the bar from its params: `progress` fills the bar, `side`
+winds the tape from the left reel onto the right one over the whole playlist,
+and `spin` turns each reel. The scene param `reels` sizes the reels, 1 as
+tall as the room under the top line, and the window takes the width between
+them. The layout follows ghee.render_size(): a 256x64 SSD1322 shows the artist
+on a line of its own, a 128x32 SSD1306 runs it after the title. The scene
+param `padding` insets the whole layout from the frame's edges by that many
+pixels, painted in `background`.
 
 The tick hook stands in for a music player. It plays a stretch of each track
 of PLAYLIST, pauses, and moves on, sets the params, and sets the words of the
 layers through `ghee.layers`, which ghee lays out again with no recompile. A
-title too long for the screen scrolls. Put a player's own state in
-now_playing().
+title too long for the window scrolls behind the reels. Put a player's own
+state in now_playing().
 
     ghee render --demo nowplaying --display kms        # a panel with a kernel driver
     ./nowplaying.py -o np.####.png --size 256x64 --frames 300 --timestep 0.05
@@ -52,68 +53,79 @@ TAPE = 1.6  # the tape's speed, in a full reel's radii a second
 
 W, H = ghee.render_size()
 BIG = H >= 64
-R = 10 if BIG else 5  # a reel's radius, from its centre pixel
-HUB = 4 if BIG else 2
-BAR = 3 if BIG else 2  # the bar's rows above and below the reels' centre
-ICON = 7  # the play and pause signs' height, the capitals'
+REELS = 0.8
+BAR = 4 if BIG else 3  # the bar's rows above and below its middle row
+GAP = 3  # pixels between a reel and the window between the reels
 TITLE = 2 * PX if BIG else PX
 
 MAIN = """
-const float R = {r:.1f};
-const float HUB = {hub:.1f};
 const float BAR = {bar:.1f};
-const float ICON = {icon:.1f};
+const float GAP = {gap:.1f};
 
-void reel(vec2 p, vec2 c, float wound, float turn, inout vec3 col) {{
+void reel(vec2 p, vec2 c, float r, float wound, float turn, inout vec3 col) {{
     vec2 q = p - c;
     float d = length(q);
-    float pack = sqrt(mix((HUB + 2.0) * (HUB + 2.0), (R - 1.0) * (R - 1.0), wound));
+    float hub = max(2.0, floor(0.4 * r + 0.5));
+    float pack = sqrt(mix((hub + 2.0) * (hub + 2.0), (r - 1.0) * (r - 1.0), wound));
     float tooth = mod(atan(q.y, q.x) - turn, 2.0944) - 1.0472;
-    if (abs(d - R) < 0.5) col = dim;
-    if (d > HUB + 0.5 && d < pack - 0.5) col = dim;
+    float rail = r - BAR;
+    if (abs(q.y - rail) < 0.5 && abs(q.x) > sqrt(r * r - rail * rail) && abs(q.x) < r + GAP - 1.0) col = dim;
+    if (d < r + 0.5) col = background;
+    if (abs(d - r) < 0.5) col = dim;
+    if (d > hub + 0.5 && d < pack - 0.5) col = dim;
     if (abs(d - pack) < 0.5) col = ink;
-    if (abs(q.y) < 0.5 && abs(q.x) > pack && abs(q.x) < R + 5.0) col = dim;
-    if (abs(d - HUB) < 0.5) col = ink;
-    if (d < HUB && d > HUB - 2.0 && abs(d * sin(tooth)) < 0.6) col = ink;
+    if (abs(d - hub) < 0.5) col = ink;
+    if (d < hub && d > min(hub - 2.0, 0.5 * hub) && abs(d * sin(tooth)) < 0.6) col = ink;
 }}
 
 void main() {{
     float pad = float(padding);
-    vec2 px = uv * iResolution.xy;
-    float y = iResolution.y - pad - R - 1.0;
+    vec2 b = floor(uv * iResolution.xy);
+    vec2 far = iResolution.xy - pad - 1.0;
+    float r = clamp(floor(reels * floor((iResolution.y - 10.0 - 2.0 * pad) / 2.0) + 0.5), 3.0, floor((iResolution.y - 10.0 - 2.0 * pad) / 2.0));
     vec3 col = background;
-    reel(px, vec2(pad + R + 0.5, y + 0.5), 1.0 - side, spin.x, col);
-    reel(px, vec2(iResolution.x - pad - R - 0.5, y + 0.5), side, spin.y, col);
-    vec2 b = px - 0.5;
-    vec4 bar = vec4(pad + 2.0 * R + 5.0, y - BAR, iResolution.x - pad - 2.0 * R - 6.0, y + BAR);
+    if (gl_FragCoord.x >= 0.0) col = texture2D(iChannel0, uv).rgb;
+    vec2 window = vec2(pad + 2.0 * r + 1.0 + GAP, far.x - 2.0 * r - 1.0 - GAP);
+    if (b.y >= pad + 8.0 && (b.x < window.x || b.x > window.y)) col = background;
+    float y = far.y - r;
+    reel(b, vec2(pad + r, y), r, 1.0 - side, spin.x, col);
+    reel(b, vec2(far.x - r, y), r, side, spin.y, col);
+    float h = 2.0 * BAR + 1.0;
+    vec2 i = vec2(b.x - window.x, b.y - (far.y + 1.0 - h));
+    if (i.y >= 0.0 && i.y < h && i.x >= 0.0) {{
+        bool play = i.x <= min(i.y, h - 1.0 - i.y);
+        bool pause = i.x < 2.0 || (i.x >= (h + 1.0) * 0.5 - 1.0 && i.x < (h + 1.0) * 0.5 + 1.0);
+        if (playing > 0.5 ? play : pause) col = ink;
+    }}
+    vec4 bar = vec4(window.x + (h + 1.0) * 0.5 + 3.0, far.y + 1.0 - h, window.y, far.y);
     if (b.x >= bar.x && b.x <= bar.z && b.y >= bar.y && b.y <= bar.w) {{
         bool edge = b.x == bar.x || b.x == bar.z || b.y == bar.y || b.y == bar.w;
         float end = bar.x + 2.0 + floor((bar.z - bar.x - 3.0) * progress + 0.5);
         bool fill = b.y >= bar.y + 2.0 && b.y <= bar.w - 2.0 && b.x >= bar.x + 2.0 && b.x < end;
         if (edge || fill) col = ink;
     }}
-    vec2 i = b - pad;
-    if (i.y >= 0.0 && i.y < ICON && i.x >= 0.0) {{
-        float h = ICON;
-        bool play = i.x <= min(i.y, h - 1.0 - i.y);
-        bool pause = i.x < 2.0 || (i.x >= (h + 1.0) * 0.5 && i.x < (h + 1.0) * 0.5 + 2.0);
-        if (playing > 0.5 ? play : pause) col = ink;
-    }}
-    gl_FragColor = vec4(col, 1.0);
+    float inside = step(pad, b.x) * step(pad, b.y) * step(b.x, far.x) * step(b.y, far.y);
+    gl_FragColor = vec4(mix(background, col, inside), 1.0);
 }}
 """
 
-INSET = """
+WORDS = """
 void main() {
-    vec2 b = floor(uv * iResolution.xy);
-    float pad = float(padding);
-    vec2 far = iResolution.xy - pad - 1.0;
-    vec3 col = background;
-    if (gl_FragCoord.x >= 0.0) col = texture2D(iChannel0, uv).rgb;
-    float inside = step(pad, b.x) * step(pad, b.y) * step(b.x, far.x) * step(b.y, far.y);
-    gl_FragColor = vec4(mix(background, col, inside), 1.0);
+    gl_FragColor = vec4(background, 1.0);
 }
 """
+
+
+def radius(reels, pad):
+    """A reel's radius from its centre pixel: `reels` of the most that fits
+    under the top line."""
+    most = (H - 10 - 2 * pad) // 2
+    return min(max(math.floor(reels * most + 0.5), 3), most)
+
+
+def window(reels, pad):
+    """The width between the reels, where the words and the bar show."""
+    return W - 2 * (pad + 2 * radius(reels, pad) + 1 + GAP)
 
 
 def now_playing(t):
@@ -141,12 +153,12 @@ def width(words, size=PX):
 
 def rows(pad):
     """The y of the artist's layer and of the title's, which centre their
-    capitals between the top line and the reels."""
-    top, reels = pad + 7, H - 1 - pad - 2 * R
+    capitals and the title's descenders between the top line and the bar."""
+    top, bar = pad + 9, H - 1 - pad - 2 * BAR
     if BIG:
-        caps = top + (reels - top - 25) // 2
+        caps = top + (bar - top - 29) // 2
         return caps - 4, caps + 3
-    return None, top + (reels - top - 7) // 2 - 4
+    return None, top + (bar - top - 9) // 2 - 4
 
 
 _now = {
@@ -155,6 +167,7 @@ _now = {
     "playing": None,
     "spin": [0.0, 0.0],
     "pad": PADDING,
+    "reels": REELS,
 }
 
 
@@ -164,17 +177,20 @@ def player(tick):
     n, artist, title, length, pos, playing, side = now_playing(tick.time)
     if playing:
         for k, wound in enumerate((1 - side, side)):
-            radius = math.sqrt(BARE**2 + wound * (1 - BARE**2))
-            _now["spin"][k] += tick.dt * TAPE / radius
+            pack = math.sqrt(BARE**2 + wound * (1 - BARE**2))
+            _now["spin"][k] += tick.dt * TAPE / pack
     ghee.set_param("spin", _now["spin"])
     ghee.set_param("progress", pos / length)
     ghee.set_param("side", side)
     ghee.set_param("playing", 1.0 if playing else 0.0)
     layers = ghee.layers
     pad = int(tick.params.get("padding", _now["pad"]))
+    reels = float(tick.params.get("reels", _now["reels"]))
+    if _now["reels"] != reels:
+        _now.update(reels=reels, track=None)
     if _now["pad"] != pad:
         _now.update(pad=pad, track=None, time=None)
-        layers.count.x, layers.count.y = pad + ICON + 3, pad - 4
+        layers.count.x, layers.count.y = pad, pad - 4
         layers.time.y = pad - 4
         artist_y, layers.title.y = rows(pad)
         if BIG:
@@ -183,7 +199,7 @@ def player(tick):
         _now["track"] = n
         layers.count.text = f"{n + 1:02}/{len(PLAYLIST):02}"
         words = title if BIG else f"{title} - {artist}"
-        fits = width(words, TITLE) <= W - 2 * pad
+        fits = width(words, TITLE) <= window(reels, pad)
         layers.title.text = words
         layers.title.scroll.visible = not fits
         layers.title.x = round((W - width(words, TITLE)) / 2) if fits else 0
@@ -207,7 +223,7 @@ def build():
     top = PADDING - 4
     artist_y, title_y = rows(PADDING)
     layers = [
-        ghee.Layer("count", "01/03", x=PADDING + ICON + 3, y=top, font_size=PX, **text),
+        ghee.Layer("count", "01/03", x=PADDING, y=top, font_size=PX, **text),
         ghee.Layer(
             "time",
             "0:00",
@@ -230,16 +246,19 @@ def build():
         layers.append(
             ghee.Layer("artist", PLAYLIST[0][0], y=artist_y, font_size=PX, **text)
         )
-    shader = MAIN.format(r=R, hub=HUB, bar=BAR, icon=ICON)
+    shader = MAIN.format(bar=BAR, gap=GAP)
     return ghee.Scene(
         params=[
             ghee.Param("background", "color", "#000000"),
             ghee.Param("padding", "int", PADDING, min=0, max=8),
+            ghee.Param("reels", "float", REELS, min=0.0, max=1.0),
         ],
         passes=[
+            ghee.Pass("words", WORDS, layers=layers),
             ghee.Pass(
                 "main",
                 shader,
+                channels=[ghee.Channel("words")],
                 params=[
                     ghee.Param("ink", "color", ORANGE),
                     ghee.Param("dim", "color", BROWN),
@@ -248,9 +267,7 @@ def build():
                     ghee.Param("spin", "vec2", [0.0, 0.0]),
                     ghee.Param("playing", "float", 1.0, min=0.0, max=1.0),
                 ],
-                layers=layers,
             ),
-            ghee.Pass("inset", INSET, channels=[ghee.Channel("main")]),
         ],
     )
 

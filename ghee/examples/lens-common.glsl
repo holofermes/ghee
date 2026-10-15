@@ -2,12 +2,12 @@
 // the page and scrolls down it.
 const float page_shape = 0.75;
 
-// The rows of the page that the view has scrolled past at time t, a whole
-// number that grows on, and the page's height in rows.
+// The rows of the page that the view has scrolled past at time t, a number
+// that grows on, and the page's height in rows.
 vec2 scrolled(float width, float aspect, float t) {
   float rows = floor(page_shape * width + 0.5);
   if (aspect >= page_shape) return vec2(0.0, floor(aspect * width + 0.5));
-  return vec2(floor(t * scroll / 60.0 * rows), rows);
+  return vec2(t * scroll / 60.0 * rows, rows);
 }
 
 // The lens at this frame, in widths of the frame: its centre, then its

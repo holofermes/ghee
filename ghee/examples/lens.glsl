@@ -8,8 +8,8 @@
 //
 // The page is three quarters as tall as it is wide. A frame wider than that,
 // such as a 256x64 panel, shows a strip of the page across its width and
-// scrolls down it `scroll` times a minute, back to the top in a loop, while
-// the lens glides along the strip.
+// scrolls down it `scroll` times a minute, a fraction of a row a frame, back
+// to the top in a loop, while the lens glides along the strip.
 //
 // Pass `print`, in lens-print.glsl, sets the page as it lies and as the lens
 // shows it: its paper, and the ink that the words lay on it. This pass colours
@@ -75,7 +75,14 @@ void main() {
     col = mix(col, vec3(1.0), 0.85 * spot);
   } else {
     vec4 page = vec4(0.0);
-    if (gl_FragCoord.x >= 0.0) page = texture2D(iChannel0, vec2(px.x, mod(px.y + s.x, iResolution.y)) / iChannelResolution[0].xy);
+    float k = floor(s.x);
+    float i = floor(px.y);
+    vec2 here = vec2(px.x, mod(i + k, iResolution.y) + 0.5);
+    vec2 next = vec2(px.x, mod(i + k + 1.0, iResolution.y) + 0.5);
+    if (i > iResolution.y - 1.5) next.y = 2.0 * iResolution.y - 0.5;
+    if (gl_FragCoord.x >= 0.0) {
+      page = mix(texture2D(iChannel0, here / iChannelResolution[0].xy), texture2D(iChannel0, next / iChannelResolution[0].xy), s.x - k);
+    }
     col = mix(paper * (page.g / 0.9) + foxing * page.b, ink, page.r);
     vec2 below = (q - centre - vec2(0.09, 0.12) * radius) / radius;
     float fall = length(below);

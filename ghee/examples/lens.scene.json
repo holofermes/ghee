@@ -7,9 +7,9 @@
     "old_standard_italic": {"file": "fonts/OldStandard-Italic-lens.ttf"}
   },
   "params": {
-    "zoom": {"type": "float", "value": 3.0, "min": 1.0, "max": 8.0, "step": 0.1},
-    "speed": {"type": "float", "value": 0.5, "min": 0.0, "max": 3.0, "step": 0.05},
-    "scroll": {"type": "float", "value": 2.0, "min": 0.0, "max": 20.0, "step": 0.1}
+    "zoom": {"type": "float", "value": 3.6, "min": 1.0, "max": 8.0, "step": 0.1},
+    "speed": {"type": "float", "value": 0.9, "min": 0.0, "max": 3.0, "step": 0.05},
+    "scroll": {"type": "float", "value": 9.2, "min": 0.0, "max": 20.0, "step": 0.1}
   },
   "common": {"file": "lens-common.glsl"},
   "passes": [

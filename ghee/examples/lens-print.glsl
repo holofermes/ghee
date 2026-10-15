@@ -121,24 +121,31 @@ float ink_at(vec2 q, float px) {
 // a new buffer, and one band of 8 rows a frame, which brings in new words.
 // While the view scrolls, the top half's rows hold the page's rows in a ring,
 // row r the view's page row that is r modulo the height, and the rows that
-// scrolled in since the last frame are set anew.
+// scrolled in since the last frame are set anew. The view shows the page
+// between two of those rows, so the bottom half's last row, which the lens
+// never reaches on a scrolling strip, holds the page row after the ring's
+// last.
 void main() {
   vec2 px = uv * iResolution.xy;
   float width = iResolution.x;
   float height = 0.5 * iResolution.y;
   float aspect = height / width;
   vec2 s = scrolled(width, aspect, iTime);
-  float before = scrolled(width, aspect, iTime - iTimeDelta).x;
+  vec2 rows = vec2(floor(s.x), s.y);
+  float before = floor(scrolled(width, aspect, iTime - iTimeDelta).x);
   vec4 o = vec4(0.0, 0.0, 0.0, 1.0);
   bool set = false;
   vec2 page;
   float m = 1.0;
   if (px.y < height) {
-    float row = mod(px.y - s.x, height);
+    float row = mod(px.y - rows.x, height);
     if (gl_FragCoord.x >= 0.0) o = texture2D(iChannel0, px / iResolution.xy);
-    bool came = s.x + row > before + height - 1.0 || s.x < before;
+    bool came = rows.x + row > before + height - 1.0 || rows.x < before;
     set = o.g < 0.01 || came || floor(mod(float(iFrame) + 0.5, ceil(height / 8.0))) == floor(px.y / 8.0);
-    if (set) page = page_of(vec2(px.x, row) / width, width, s);
+    if (set) page = page_of(vec2(px.x, row) / width, width, rows);
+  } else if (aspect < page_shape && px.y > iResolution.y - 1.0) {
+    set = true;
+    page = page_of(vec2(px.x, height + 0.5) / width, width, rows);
   } else {
     vec2 q = vec2(px.x, px.y - height) / width;
     vec3 lens = lens_now(aspect);

@@ -14,7 +14,8 @@ the newest row first, which the feed `history` sends. The shader stands
 each row behind the one before, and a line hides the lines behind it.
 The hook also sets `scroll`, the share of a row since the last copy, so the
 lines glide back between copies. The feeds send raw levels, and `gain`
-scales them in GLSL.
+scales them in GLSL. `ridges` lines stand in the stack, the first
+`fade_start` of them full and the next `fade_length` fading out.
 
 The stack stands in 3D, and the shader looks at it through a camera of its
 own params: `tilt` is how steeply the view looks down, `yaw` turns it
@@ -53,7 +54,7 @@ float side = 1.0;
 float sharp = 1.0;
 float stretch = 1.0;
 
-void ridge(float left, float right, float along, vec3 p, float rise, float span, float shown) {
+void ridge(float left, float right, float along, vec3 p, float rise, float span, float shown, float lit) {
     float level = gain * mix(left, right, along);
     float slope = rise * gain * (right - left) * (BANDS - 1.0) / span;
     float s = slope * slant + lean;
@@ -62,7 +63,7 @@ void ridge(float left, float right, float along, vec3 p, float rise, float span,
     shown *= step(abs(p.x + d * s / (root * stretch)), 0.5 * span);
     float stroke = clamp(0.5 * weight + 0.5 - abs(d), 0.0, 1.0);
     float under = clamp(0.5 - d, 0.0, 1.0);
-    shine += bare * stroke * shown;
+    shine += bare * stroke * shown * lit;
     bare *= 1.0 - max(stroke, under) * shown;
 }
 
@@ -73,7 +74,7 @@ float envelope(float x) {
 void main() {
     vec2 px = uv * iResolution.xy;
     float span = 0.56 * iResolution.x;
-    float count = min(lines, floor(0.9 * iResolution.y / 4.0 - 0.5 * height));
+    float count = clamp(floor(ridges + 0.5), 1.0, ROWS);
     float gap = 0.9 * iResolution.y / (count + 0.5 * height);
     float deep = gap / sin(VIEW);
     float tall = height * gap / cos(VIEW);
@@ -102,12 +103,12 @@ void main() {
         a = bars_at(int(i));
         b = bars_at(int(i) + 1);
     }
-    ridge(a, b, x * (BANDS - 1.0) - i, p, tall * envelope(x), span, 1.0);
+    ridge(a, b, x * (BANDS - 1.0) - i, p, tall * envelope(x), span, 1.0, 1.0);
 
     float drop = max(sin(pitch), 0.02);
     float margin = (0.5 * weight + 1.0) * sqrt(lean * lean + side) / sharp;
     float first = max(floor((eye.z + (eye.y - tall * gain - margin) / drop * ahead.z) / deep - scroll), 0.0);
-    float last = min(ceil((eye.z + (eye.y + margin) / drop * ahead.z) / deep - scroll), count - 1.0);
+    float last = min(ceil((eye.z + (eye.y + margin) / drop * ahead.z) / deep - scroll), min(count, ceil(fade_start + fade_length)) - 1.0);
     for (int k = 0; k < 64; k++) {
         float row = first + float(k);
         if (row > last || bare < 0.004) break;
@@ -120,8 +121,9 @@ void main() {
             a = history_sample2(vec2((i + 0.5) / BANDS, v));
             b = history_sample2(vec2((i + 1.5) / BANDS, v));
         }
-        float fade = mix(1.0, 1.0 - scroll, step(count - 1.5, row));
-        ridge(a, b, x * (BANDS - 1.0) - i, p, tall * envelope(x), span, fade);
+        float leaving = mix(1.0, 1.0 - scroll, step(count - 1.5, row));
+        float lit = 1.0 - clamp((row + scroll - fade_start) / max(fade_length, 0.01), 0.0, 1.0);
+        ridge(a, b, x * (BANDS - 1.0) - i, p, tall * envelope(x), span, leaving, lit);
     }
 
     gl_FragColor = vec4(mix(background, line_color, clamp(shine, 0.0, 1.0)), 1.0);
@@ -207,12 +209,18 @@ def build():
                 params=[
                     ghee.Param("gain", "float", 1.0, min=0.0, max=2.0, step=0.01),
                     ghee.Param("scroll", "float", 0.0, min=0.0, max=1.0, step=0.01),
-                    ghee.Param("lines", "float", 40.0, min=4.0, max=63.0, step=1.0),
+                    ghee.Param("ridges", "float", 40.0, min=1.0, max=ROWS, step=1.0),
+                    ghee.Param(
+                        "fade_start", "float", 12.0, min=0.0, max=ROWS, step=1.0
+                    ),
+                    ghee.Param(
+                        "fade_length", "float", 28.0, min=0.0, max=ROWS, step=1.0
+                    ),
                     ghee.Param("height", "float", 8.0, min=0.0, max=10.0, step=0.1),
                     ghee.Param("weight", "float", 1.2, min=0.5, max=3.0, step=0.1),
                     ghee.Param("tilt", "float", TILT, min=0.0, max=85.0, step=1.0),
                     ghee.Param("yaw", "float", 0.0, min=-85.0, max=85.0, step=1.0),
-                    ghee.Param("zoom", "float", 1.0, min=0.25, max=4.0, step=0.05),
+                    ghee.Param("zoom", "float", 0.95, min=0.25, max=4.0, step=0.05),
                     ghee.Param("pan_x", "float", 0.0, min=-1.0, max=1.0, step=0.01),
                     ghee.Param("pan_y", "float", 0.0, min=-1.0, max=1.0, step=0.01),
                     ghee.Param("background", "color", "#000000"),

@@ -30,8 +30,8 @@
 // The scene params reach every pass: `horizon` places the city, `zoom` and
 // `pan` frame the picture, `rate` sets how many prints a second the
 // animation shows, and `paper` is the paper's colour. The default frame
-// fits the skyline and the water on a 4:1 strip; zoom 1 and pan 0 show the
-// whole picture.
+// fits the skyline and the water on a 4:1 strip, and zoom 1 and pan 0 show
+// the whole picture.
 //
 //     ghee render --demo passes -o frame.####.png --frames 60
 //     ghee render --demo passes --serve

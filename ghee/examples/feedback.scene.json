@@ -1,9 +1,9 @@
 {
   "version": 1,
   "params": {
-    "water_level": {"type": "float", "value": 0.2, "min": 0.0, "max": 0.8, "step": 0.01},
-    "wave_height": {"type": "float", "value": 0.45, "min": 0.0, "max": 1.0, "step": 0.01},
-    "wave_speed": {"type": "float", "value": -0.12, "min": -1.0, "max": 1.0, "step": 0.005}
+    "water_level": {"type": "float", "value": 0.27, "min": 0.0, "max": 0.8, "step": 0.01},
+    "wave_height": {"type": "float", "value": 1.0, "min": 0.0, "max": 1.0, "step": 0.01},
+    "wave_speed": {"type": "float", "value": 0.205, "min": -1.0, "max": 1.0, "step": 0.005}
   },
   "common": {"file": "feedback-common.glsl"},
   "passes": [
@@ -21,11 +21,11 @@
       "fragment": {"file": "feedback-flow.glsl"},
       "channels": [{"buffer": "state"}, {"buffer": "life"}],
       "params": {
-        "drift": {"type": "vec2", "value": [-0.14, -0.02], "min": -0.5, "max": 0.5, "step": 0.005},
-        "speed": {"type": "float", "value": 1.0, "min": 0.0, "max": 3.0, "step": 0.05},
+        "drift": {"type": "vec2", "value": [-0.396, -0.057], "min": -0.5, "max": 0.5, "step": 0.005},
+        "speed": {"type": "float", "value": 0.95, "min": 0.0, "max": 3.0, "step": 0.05},
         "speed_spread": {"type": "float", "value": 1.0, "min": 0.0, "max": 1.0, "step": 0.01},
-        "swirl": {"type": "float", "value": 0.2, "min": 0.0, "max": 0.6, "step": 0.01},
-        "swirl_size": {"type": "float", "value": 1.8, "min": 0.3, "max": 4.0, "step": 0.05}
+        "swirl": {"type": "float", "value": 0.3, "min": 0.0, "max": 0.6, "step": 0.01},
+        "swirl_size": {"type": "float", "value": 3.25, "min": 0.3, "max": 4.0, "step": 0.05}
       }
     },
     {
@@ -35,7 +35,7 @@
       "fragment": "void main() {\n  float age = 0.0;\n  if (gl_FragCoord.x >= 0.0) age = unpack_age(texture2D(iChannel0, uv).rg);\n  if (iTime < 0.1) age = hash(uv * 7.3) * lifespan(uv);\n  else if (age >= lifespan(uv)) age = 0.0;\n  else age += iTimeDelta / max(lifetime, 0.1);\n  float hi = floor(age * 255.0);\n  gl_FragColor = vec4(hi / 255.0, age * 255.0 - hi, 0.0, 1.0);\n}\n",
       "channels": [{"buffer": "life"}],
       "params": {
-        "lifetime": {"type": "float", "value": 6.0, "min": 0.5, "max": 20.0, "step": 0.1}
+        "lifetime": {"type": "float", "value": 8.1, "min": 0.5, "max": 20.0, "step": 0.1}
       }
     },
     {
@@ -45,7 +45,7 @@
       "fragment": "const float DSPAN = 0.0625;\nconst float JUMP = 0.03;\n\nvoid main() {\n  vec2 p1 = unpack_pos(texture2D(iChannel0, uv).rgb);\n  vec2 d = p1 - unpack_pos(texture2D(iChannel1, uv).rgb);\n  float age = unpack_age(texture2D(iChannel2, uv).rg);\n  float span = lifespan(uv);\n  float b = mix(dim, bright, hash(uv * 9.3))\n          * smoothstep(0.0, 0.08, age) * smoothstep(span, span - 0.15, age)\n          * smoothstep(-0.02, 0.1, depth(p1))\n          * (1.0 - smoothstep(JUMP * 0.8, JUMP, length(d)));\n  gl_FragColor = vec4(clamp(d / DSPAN + 0.5, 0.0, 1.0), b, 1.0);\n}\n",
       "channels": [{"buffer": "state"}, {"buffer": "prev"}, {"buffer": "life"}],
       "params": {
-        "dim": {"type": "float", "value": 0.35, "min": 0.0, "max": 1.0, "step": 0.01},
+        "dim": {"type": "float", "value": 0.08, "min": 0.0, "max": 1.0, "step": 0.01},
         "bright": {"type": "float", "value": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}
       }
     },
@@ -54,8 +54,8 @@
       "fragment": {"file": "feedback.glsl"},
       "channels": [{"buffer": "state"}, {"buffer": "attr"}, {"buffer": "trails"}],
       "params": {
-        "trail_length": {"type": "float", "value": 0.7, "min": 0.0, "max": 3.0, "step": 0.01},
-        "dot_size": {"type": "float", "value": 1.6, "min": 0.5, "max": 6.0, "step": 0.1}
+        "trail_length": {"type": "float", "value": 0.17, "min": 0.0, "max": 3.0, "step": 0.01},
+        "dot_size": {"type": "float", "value": 1.0, "min": 0.5, "max": 6.0, "step": 0.1}
       }
     },
     {
@@ -68,8 +68,8 @@
         "tail": {"type": "color", "value": "#054073"},
         "head": {"type": "color", "value": "#8cfff2"},
         "surface": {"type": "color", "value": "#338ce6"},
-        "surface_glow": {"type": "float", "value": 0.8, "min": 0.0, "max": 1.0, "step": 0.01},
-        "glow": {"type": "float", "value": 0.6, "min": 0.0, "max": 1.5, "step": 0.01}
+        "surface_glow": {"type": "float", "value": 0.24, "min": 0.0, "max": 1.0, "step": 0.01},
+        "glow": {"type": "float", "value": 0.91, "min": 0.0, "max": 1.5, "step": 0.01}
       }
     }
   ]

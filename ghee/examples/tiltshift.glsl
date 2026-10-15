@@ -16,7 +16,12 @@
 //   the board's mipmaps after each frame, copies halved again and again
 //   down to one pixel, and a far frame pixel reads the copy at its own
 //   scale, so the far rows stay calm. Read linear, they turn jagged.
-// - `scene` draws that perspective view sharp, at the frame's size.
+// - `scene` draws that perspective view sharp, at the frame's size. Its
+//   params place the camera: `tilt` is how steeply it looks down, `yaw`
+//   turns it around the board, `zoom` takes it closer, and `pan_x` and
+//   `pan_y` move the point it looks at. The view keeps its width at any
+//   frame size, so a wide strip shows a slice of it. Past the board's edges
+//   the town goes on mirrored.
 // - `blur` blurs `scene` at 128x128 and is read trilinear too. `main` reads
 //   it with a bias that grows with the distance from the `focus` row, and
 //   the bias picks smaller mipmaps, so the blur grows with that distance.

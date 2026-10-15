@@ -30,8 +30,8 @@
 //   passing cars as a long exposure shows them, thin streaks of headlights
 //   and taillights, mirrored in the street too. `traffic` sets how many
 //   cars pass, none at 0.
-// - `rain` is hidden with `"visible": false`, so the frame is `main`. Show it
-//   with its eye in the console.
+// - `rain` draws drops and their splashes on the street over `main`, lit by
+//   `halo`. Hide it with its eye in the console for a dry street.
 //
 // The scene param `base`, where the wall meets the street, reaches every
 // pass, and the row, `sign`, `main` and `rain` read it.

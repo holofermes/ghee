@@ -3,6 +3,7 @@
   "params": {
     "base": {"type": "float", "value": 0.64, "min": 0.5, "max": 0.9, "step": 0.01}
   },
+  "common": {"file": "neon-row.glsl"},
   "passes": [
     {
       "name": "ticker",
@@ -21,7 +22,16 @@
         "bowl": {"type": "color", "value": "#21d4ff"},
         "chopsticks": {"type": "color", "value": "#ffb22e"},
         "steam": {"type": "color", "value": "#c9f3ff"},
-        "leds": {"type": "color", "value": "#ff9d1c"}
+        "leds": {"type": "color", "value": "#ff9d1c"},
+        "lanterns": {"type": "color", "value": "#ff3b24"},
+        "rooms": {"type": "color", "value": "#ffb36b"},
+        "shop_1": {"type": "color", "value": "#ff8a1e"},
+        "shop_2": {"type": "color", "value": "#2ee8c8"},
+        "shop_3": {"type": "color", "value": "#b03cff"},
+        "shop_4": {"type": "color", "value": "#3c8cff"},
+        "headlights": {"type": "color", "value": "#fff1d6"},
+        "taillights": {"type": "color", "value": "#ff2a1a"},
+        "cars": {"type": "float", "value": 1.2, "min": 0.0, "max": 4.0, "step": 0.05}
       }
     },
     {
@@ -58,6 +68,7 @@
         "exposure": {"type": "float", "value": 1.6, "min": 0.5, "max": 4.0, "step": 0.05},
         "ambient": {"type": "float", "value": 0.12, "min": 0.0, "max": 0.5, "step": 0.01},
         "brick": {"type": "color", "value": "#6b3b44"},
+        "facade": {"type": "color", "value": "#3a3640"},
         "mortar": {"type": "color", "value": "#2a2630"},
         "kerb": {"type": "color", "value": "#4a4652"},
         "asphalt": {"type": "color", "value": "#2c2f3a"}

@@ -24,13 +24,14 @@
 // - `main` lays the three inks over the paper, each moved by its own shift,
 //   and the pink and the yellow by `jitter` too, a new offset for every
 //   print, so the plates sit out of register the way a riso prints them.
-// - `grain` is hidden with `"visible": false`, so the frame is `main`. Show
-//   it with its eye in the console for the paper's fibres and the specks
-//   where the ink missed.
+// - `grain` adds the paper's fibres and the specks where the ink missed.
+//   Hide it with its eye in the console, and the frame is `main`.
 //
-// The scene params reach every pass: `horizon` places the city, `rate` sets
-// how many prints a second the animation shows, and `paper` is the paper's
-// colour.
+// The scene params reach every pass: `horizon` places the city, `zoom` and
+// `pan` frame the picture, `rate` sets how many prints a second the
+// animation shows, and `paper` is the paper's colour. The default frame
+// fits the skyline and the water on a 4:1 strip; zoom 1 and pan 0 show the
+// whole picture.
 //
 //     ghee render --demo passes -o frame.####.png --frames 60
 //     ghee render --demo passes --serve

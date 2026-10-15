@@ -9,7 +9,11 @@
 // by one, and the cells of the next grid open out of theirs. `rate` sets the
 // pace of the stripes and of the splits together. At 1 the stripes slide
 // `thick_speed` and `fine_speed` stripes a second and a grid holds `hold`
-// seconds, and at 0.1 everything runs ten times slower.
+// seconds, and at 0.1 everything runs ten times slower. `shimmer` slows the
+// fine stripes alone. A stripe, and the gap between two, is at least 3 pixels
+// wide, and fades where its value would make it thinner. Fine stripes repeat
+// every 6 pixels or more and thick ones every 12, so on a small panel the
+// stripes stay steady as they slide.
 //
 //     ghee render --demo bars -o frame.####.png --frames 60
 //     ghee render --demo bars --filters dither -o dither.png
@@ -70,10 +74,10 @@ void main() {
   float h2 = ghee_hash(vec3(band, seed, 2.0));
   float h3 = ghee_hash(vec3(band, seed, 3.0));
   float wide = step(0.3 + 0.2 * (depth - 1.0), h2);
-  float period = mix(fine, thick, wide) * iResolution.y;
+  float period = mix(max(fine * iResolution.y, 6.0), max(thick * iResolution.y, 12.0), wide);
   float angle = floor(h1 * 4.0) * 0.7853982;
   vec2 dir = vec2(cos(angle), sin(angle));
-  float speed = mix(fine_speed, thick_speed, wide) * (step(0.5, h3) * 2.0 - 1.0);
+  float speed = mix(fine_speed * shimmer, thick_speed, wide) * (step(0.5, h3) * 2.0 - 1.0);
   float s = dot(px, dir) / period - t * speed;
 
   float wait = 0.1 * ghee_hash(vec3(band, seed, 4.0));
@@ -84,7 +88,11 @@ void main() {
   float level = 0.0;
   if (gl_FragCoord.x >= 0.0) level = gain * amplitudes_at(int(band));
   float duty = clamp(level / peak, 0.0, 1.0);
-  float stripe = clamp((0.5 * duty - abs(fract(s) - 0.5)) * period + 0.5, 0.0, 1.0);
+  float lit = duty * period;
+  float drawn = clamp(lit, 3.0, period - 3.0);
+  float stripe = clamp(0.5 * drawn - abs(fract(s) - 0.5) * period + 0.5, 0.0, 1.0);
+  stripe = mix(0.0, stripe, min(lit / 3.0, 1.0));
+  stripe = mix(stripe, 1.0, clamp(1.0 - (period - lit) / 3.0, 0.0, 1.0));
   float solid = smoothstep(peak - 0.01, peak, level);
   float cover = mix(stripe, 1.0, solid) * inside * frame;
 

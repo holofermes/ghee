@@ -14,6 +14,7 @@
         "fine": {"type": "float", "value": 0.025, "min": 0.01, "max": 0.1, "step": 0.001},
         "thick_speed": {"type": "float", "value": 0.25, "min": 0.0, "max": 8.0, "step": 0.05},
         "fine_speed": {"type": "float", "value": 4.0, "min": 0.0, "max": 8.0, "step": 0.05},
+        "shimmer": {"type": "float", "value": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},
         "margin": {"type": "float", "value": 0.07, "min": 0.0, "max": 0.2, "step": 0.005},
         "gap": {"type": "float", "value": 3.0, "min": 0.0, "max": 8.0, "step": 0.5},
         "paper": {"type": "color", "value": "#edebd5"},

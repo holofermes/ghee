@@ -71,6 +71,10 @@
   .nav .smenu{display:inline-flex; align-items:center; justify-content:center; min-width:34px; min-height:32px; border-radius:9px; cursor:pointer; user-select:none}
   .nav .smenu:hover{color:var(--ink)}
   @media (pointer:coarse){ .nav .smenu{min-width:44px; min-height:44px} }
+  .hist{display:flex; align-items:center; gap:2px}
+  .hbtn{display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; padding:0; color:var(--ink)}
+  .hbtn svg{width:16px; height:16px}
+  @media (pointer:coarse){ .hbtn{width:40px; height:40px} .hbtn svg{width:19px; height:19px} }
   .actions{display:flex; gap:7px; align-items:center; flex-wrap:wrap; justify-content:flex-end}
   .grid{display:grid; grid-template-columns:var(--leftw, minmax(260px,440px)) 6px minmax(320px,1fr); gap:6px; flex:1 1 auto; min-height:0}
   .colgrip{cursor:col-resize; border-radius:3px; align-self:stretch}
@@ -513,6 +517,10 @@
     <button class="ghost step" id="next" title="next scene">›</button>
     <span id="sceneMenu"></span>
   </div>
+  <div class="hist">
+    <button class="ghost hbtn" id="undo" type="button" aria-label="undo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+    <button class="ghost hbtn" id="redo" type="button" aria-label="redo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+  </div>
   <span class="spacer"></span>
   <div class="actions">
     <button class="primary" id="apply">apply</button>
@@ -632,6 +640,7 @@
 <div class="toasts" id="toasts">
   <div class="toast bad" id="offline" role="status" hidden><span>server not responding</span></div>
   <div class="toast" id="moved" role="status" title="dismiss" hidden><span></span></div>
+  <div class="toast" id="refused" role="status" title="dismiss" hidden><span></span></div>
   <div class="toast" id="newer" role="status" hidden><span>files newer</span></div>
   <div class="toast" id="stale" role="status" hidden><span>files changed</span><button type="button" title="a reload takes the new files and keeps the edits made here">reload</button></div>
   <div class="toast" id="behind" role="status" hidden><span>this scene changed since you loaded it</span><button type="button" title="read the scene as it is now">reload</button></div>
@@ -902,7 +911,7 @@ const has = (o, k) => isObj(o) && Object.prototype.hasOwnProperty.call(o, k);
 // ---- the working copy's edits, as GET /edits lists them, and the defaults ----
 // A host that keeps no defaults answers no edits, and this page then marks
 // nothing and saves nothing.
-const NO_EDITS = {rev: null, values: {}, items: [], unsaved: false, aside: [], broken: []};
+const NO_EDITS = {rev: null, values: {}, items: [], unsaved: false, aside: [], broken: [], draft: false};
 let E = NO_EDITS, D = null;
 // rev is the revision of the scene this page last read, which every edit
 // carries. ghee counts each edit that it takes, so known, the revision that
@@ -937,6 +946,7 @@ function paintStatus(){
 // the marks up to date.
 let inflight = 0;
 async function edit(path, scene, q, body){
+  if ((path === "/set" || path === "/scene") && scene === active) remember();
   let u = `${path}?${q}&vid=${VID}`;
   if (rev != null && scene === active) u += `&rev=${rev}`;
   const o = body == null ? {method: "POST"} : {method: "POST", headers: {"Content-Type": "application/json"}, body};
@@ -973,6 +983,195 @@ async function readEdits(){
 }
 // no edit of this page's on its way, nor the read of its edits
 const settled = () => !inflight && !editsTimer && !editsReading && !compileTimer;
+
+// ---- undo and redo. This page keeps a history of its own changes per
+// scene, in its memory, 100 steps each. Changes to the same settings, each
+// within 2 s of the one before, join one step, so a slider's drag or a run of
+// typing in the shader undoes at once. An undo sends the reverse change as
+// any edit goes, live sets when only values differ and an apply otherwise,
+// and refuses a setting that another page changed since the step. A new
+// change drops the steps that redo would take ----
+const STEP_MS = 2000, STEPS = 100;
+const HIST = new Map();
+// the scene as ghee holds it, as far as this page knows: the last read, with
+// this page's changes since
+let base = null;
+let travelling = false;
+function hist(name = active){
+  let h = HIST.get(name);
+  if (!h){ h = {past: [], future: [], sig: "", at: 0}; HIST.set(name, h); }
+  return h;
+}
+// Every setting of scene doc by its address, a JSON path: the scene's own
+// keys, its params' declarations and values, the order of its passes and of
+// each pass's layers, and each key of a pass and of a layer. An empty list
+// reads as an absent key. A filter pass's shader and channels are ghee's,
+// and stay out.
+function flat(doc){
+  const f = new Map(), put = (path, v) => { if (v !== undefined && !(Array.isArray(v) && !v.length)) f.set(JSON.stringify(path), v); };
+  const params = (at, ps) => Object.entries(ps || {}).forEach(([n, pm]) => {
+    const {value, ...decl} = isObj(pm) ? pm : {value: pm};
+    put([...at, n], decl); put([...at, n, "value"], value);
+  });
+  if (!isObj(doc)) return f;
+  Object.keys(doc).forEach(k => { if (k !== "passes" && k !== "params") put([k], doc[k]); });
+  params(["params"], doc.params);
+  const passes = doc.passes || [];
+  put(["passes"], passes.map(p => p.name));
+  passes.forEach(p => {
+    Object.keys(p).forEach(k => {
+      if (!["name", "params", "layers"].includes(k) && !(p.filter && (k === "fragment" || k === "channels"))) put(["p", p.name, k], p[k]);
+    });
+    params(["p", p.name, "params"], p.params);
+    if (p.layers) put(["p", p.name, "layers"], p.layers.map(d => d.name));
+    (p.layers || []).forEach(d => Object.keys(d).forEach(k => { if (k !== "name") put(["l", d.name, k], d[k]); }));
+  });
+  return f;
+}
+// a value as canon() writes it, each number as the 32-bit float that ghee holds
+const canon32 = v => canon(JSON.parse(JSON.stringify(v === undefined ? null : v, (k, x) => typeof x === "number" ? Math.fround(x) : x)));
+const differ = (fa, fb) => [...new Set([...fa.keys(), ...fb.keys()])].filter(k => canon32(fa.get(k)) !== canon32(fb.get(k))).sort();
+// what the settings at `keys` are, for a button's title and a notice
+function whatOf(keys){
+  const paths = keys.map(k => JSON.parse(k));
+  const order = paths.find(p => p[0] === "passes" || (p[0] === "p" && p.length === 3 && p[2] === "layers"));
+  if (order) return order[0] === "passes" ? "passes" : `${order[1]} layers`;
+  const one = p => p[0] === "params" ? p[1] : p[0] === "l" ? `${p[1]} ${p[2]}`
+    : p[0] === "p" ? (p[2] === "params" ? p[3] : p[2] === "fragment" ? `${p[1]} shader` : `${p[1]} ${p[2]}`)
+    : p[0] === "common" ? "common shader" : p[0];
+  const names = [...new Set(paths.map(one))];
+  if (names.length === 1) return names[0];
+  const layers = [...new Set(paths.map(p => p[0] === "l" ? p[1] : null))];
+  if (layers.length === 1 && layers[0]) return layers[0];
+  return "changes";
+}
+// Count the change from scene doc a to b as a step, or as part of the one
+// before. A change named by `what` is a step of its own.
+function remember(a = base, b = work, what = null){
+  if (travelling || !a || !b) return;
+  const fa = flat(a), fb = flat(b), keys = differ(fa, fb);
+  if (b === work) base = clone(work);
+  if (!keys.length) return;
+  const h = hist(), sig = what ? "" : keys.join("\n"), now = Date.now(), top = h.past[h.past.length - 1];
+  if (sig && top && h.sig === sig && now - h.at < STEP_MS) keys.forEach(k => { top.after[k] = fb.get(k); });
+  else {
+    const step = {what: what || whatOf(keys), before: {}, after: {}};
+    keys.forEach(k => { step.before[k] = fa.get(k); step.after[k] = fb.get(k); });
+    h.past.push(step);
+    if (h.past.length > STEPS) h.past.shift();
+  }
+  h.future = []; h.sig = sig; h.at = now;
+  paintHist();
+}
+const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const KEYS = MAC ? {undo: "⌘Z", redo: "⇧⌘Z"} : {undo: "Ctrl+Z", redo: "Ctrl+Shift+Z"};
+function paintHist(){
+  const h = active ? hist() : {past: [], future: []};
+  [["undo", "Undo", h.past], ["redo", "Redo", h.future]].forEach(([id, verb, list]) => {
+    const b = $("#" + id), step = list[list.length - 1];
+    b.disabled = !step;
+    b.title = `${verb}${step ? " " + step.what : ""} (${KEYS[id]})`;
+  });
+}
+// Lay the settings of `want`, by address, over scene doc `doc`. A pass or a
+// layer that an order brings back comes from `doc` as it was, wherever it sat.
+function lay(doc, want){
+  const passes = new Map((doc.passes || []).map(p => [p.name, p]));
+  const layers = new Map();
+  (doc.passes || []).forEach(p => (p.layers || []).forEach(d => layers.set(d.name, d)));
+  const set = (o, k, v) => { if (v === undefined) delete o[k]; else o[k] = clone(v); };
+  const param = (ps, n, sub, v) => {
+    if (sub === "value"){ if (ps[n]) set(ps[n], "value", v); return; }
+    if (v === undefined){ delete ps[n]; return; }
+    ps[n] = Object.assign(clone(v), ps[n] && has(ps[n], "value") ? {value: ps[n].value} : {});
+  };
+  const rank = p => p[0] === "passes" ? 0 : p[0] === "p" && p.length === 3 && p[2] === "layers" ? 1 : p[p.length - 1] === "value" && (p[0] === "params" || p[2] === "params") ? 3 : 2;
+  const paths = Object.keys(want).map(k => [JSON.parse(k), want[k]]).sort((x, y) => rank(x[0]) - rank(y[0]));
+  for (const [p, v] of paths){
+    const pass = () => (doc.passes || []).find(q => q.name === p[1]);
+    if (p[0] === "passes") doc.passes = (v || []).map(n => passes.get(n) || {name: n});
+    else if (p[0] === "params"){ doc.params = doc.params || {}; param(doc.params, p[1], p[2], v); }
+    else if (p[0] === "p" && p.length > 3 && p[2] === "params"){
+      const q = pass();
+      if (q){ q.params = q.params || {}; param(q.params, p[3], p[4], v); }
+    } else if (p[0] === "p" && p[2] === "layers"){
+      const q = pass();
+      if (q){ if (v === undefined) delete q.layers; else q.layers = v.map(n => layers.get(n) || {name: n}); }
+    } else if (p[0] === "p"){ const q = pass(); if (q) set(q, p[2], v); }
+    else if (p[0] === "l"){
+      const d = (doc.passes || []).flatMap(q => q.layers || []).find(x => x.name === p[1]);
+      if (d) set(d, p[2], v);
+    } else set(doc, p[0], v);
+  }
+  return doc;
+}
+// A /set for the setting at path p of scene doc, with value v, or null when
+// the setting takes no live set.
+function liveSet(doc, p, v){
+  const value = x => x === undefined || x === null || isObj(x) ? null : Array.isArray(x) ? x.join(",") : String(x);
+  if (p[0] === "params" && p[2] === "value" && value(v) != null) return `name=${enc(p[1])}&value=${enc(value(v))}`;
+  if (p[0] === "p" && p[2] === "params" && p[4] === "value" && value(v) != null)
+    return `pass=${enc(p[1])}&name=${enc(p[3])}&value=${enc(value(v))}`;
+  if (p[0] === "l"){
+    const d = (doc.passes || []).flatMap(q => q.layers || []).find(x => x.name === p[1]);
+    if (d && isLive(d, p[2])) return `layer=${enc(d.name)}&field=${enc(p[2])}&value=${enc(liveWire(d, p[2], v))}`;
+  }
+  return null;
+}
+// Take this page's last step back, or forward again with `back` false. The
+// step stays where it is when another page changed one of its settings
+// since, or when ghee refuses the change.
+async function travel(back){
+  if (travelling || !work || !active || answer || named) return;
+  if (compileTimer){ clearTimeout(compileTimer); compileTimer = null; await postScene(); }
+  const h = hist(), from = back ? h.past : h.future, step = from[from.length - 1];
+  if (!step) return;
+  const want = back ? step.before : step.after, was = back ? step.after : step.before;
+  const now = flat(work), moved = Object.keys(was).filter(k => canon32(now.get(k)) !== canon32(was[k]));
+  if (moved.length){
+    $("#refused span").textContent = `${whatOf(moved)} was changed on another page, so this ${back ? "undo" : "redo"} was not applied`;
+    popUp($("#refused"));
+    return;
+  }
+  toast($("#refused"), false);
+  const name = active, open = openTab(), target = lay(clone(work), want);
+  const sets = Object.keys(want).map(k => liveSet(target, JSON.parse(k), want[k]));
+  travelling = true;
+  let r = null;
+  try {
+    work = target;
+    if (sets.every(q => q != null)){
+      for (const q of sets){
+        r = await edit("/set", name, `scene=${enc(name)}&${q}`);
+        if (!r || !r.ok) break;
+      }
+    } else r = await postScene();
+  } finally { travelling = false; }
+  if (name !== active) return;
+  const ok = !!(r && r.ok);
+  if (ok){
+    from.pop();
+    (back ? h.future : h.past).push(step);
+    h.sig = "";
+    base = clone(work);
+  }
+  repaint(open);
+  paintHist();
+  // a stale refusal keeps its notice, which reads the scene again
+  if (!ok && !(r && r.status === 412)) await refresh(true);
+}
+$("#undo").addEventListener("click", () => travel(true));
+$("#redo").addEventListener("click", () => travel(false));
+// Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo, or ⌘ on a Mac. A field that
+// takes typing keeps the browser's own undo of its text.
+document.addEventListener("keydown", e => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const t = e.target;
+  if (t && t.matches && t.matches("textarea, [contenteditable], input:not([type=range]):not([type=checkbox]):not([type=color]):not([type=button])")) return;
+  const k = e.key.toLowerCase();
+  if (k === "z" && !e.shiftKey){ e.preventDefault(); travel(true); }
+  else if (k === "z" || (k === "y" && !e.shiftKey)){ e.preventDefault(); travel(false); }
+});
 
 // ---- marks: a value that differs from its default shows its key in the
 // mark colour. Only a value is marked, never a name. A key registers how to
@@ -1313,6 +1512,7 @@ async function readScene(name){
 }
 function take(got){
   work = got.scene; D = got.defaults; E = got.edits;
+  base = got.base || clone(got.scene);
   rev = known = got.rev;
   reads++;
 }
@@ -1339,8 +1539,8 @@ async function loadScene(name, own = true){
   buildSceneMenu();
   curPass = 0; postErr = err; errOpen = null; layerUI.clear(); layerChanges = null; waiting = [];
   LOCKS = locksOf(lastStats); shownLocks = canon(LOCKS);
-  paintAll();
-  askAside().then(askBroken);
+  paintAll(); paintHist();
+  askDraft().then(askAside).then(askBroken);
 }
 // Every part of the page drawn from the working copy.
 function paintAll(){
@@ -1371,13 +1571,15 @@ const inUse = () => {
   return !!(menuFrom || setPop || answer || named || newOpen() || pressing || a === CODE.ta || (!held && a && a.closest && a.closest("#params, #chans")));
 };
 async function refresh(force = false){
+  while (force && reading) await sleep(30);
   if (reading || !work || (!force && inUse())) return;
   reading = true;
   const name = active;
   try {
     const got = await readScene(name);
     if (name !== active) return;
-    const open = onCommon() ? COMMON : ((work.passes || [])[curPass] || {}).name;
+    got.base = clone(got.scene);
+    const open = openTab();
     const busy = force ? [] : busyLayers();
     const kept = [];
     (got.scene.passes || []).forEach(fp => {
@@ -1393,19 +1595,51 @@ async function refresh(force = false){
     // a read that this page asked for is the scene as it is now
     if (force){ postErr = ""; toast($("#behind"), false); }
     waiting = kept;
-    if (open === COMMON) curPass = hasCommon() ? COMMON : 0;
-    else curPass = Math.max(0, (work.passes || []).findIndex(p => p.name === open));
-    if (!work.passes || !work.passes.length){ paintAll(); return; }
-    buildTabs(); buildInputs(); buildChannels();
-    const p = onCommon() ? null : work.passes[curPass], cards = [...document.querySelectorAll("#layers .lay")];
-    const shown = cards.map(c => c.dataset.name).reverse().join("\n");
-    if (kept.length && p && !p.filter && shown === (p.layers || []).map(d => d.name).join("\n"))
-      cards.forEach(c => { if (!busy.includes(c.dataset.name)) recard(p, c.dataset.name); });
-    else relist();
-    loadCode(); paintShader(); showErrors(); syncAddRow(); buildParams(); refreshInfo(); paintStatus(); paintMarks();
-    askAside().then(askBroken);
+    repaint(open, kept, busy);
+    askDraft().then(askAside).then(askBroken);
   } catch (_) {
   } finally { reading = false; }
+}
+// the open tab: COMMON, or the open pass's name
+const openTab = () => onCommon() ? COMMON : ((work.passes || [])[curPass] || {}).name;
+// The page drawn again from the working copy, with the tab `open` open and
+// the open layers and the scroll kept. The layers named in `kept` hold this
+// page's copy, and those in `busy` are in use.
+function repaint(open, kept = [], busy = []){
+  const same = open === openTab(), top = CODE.ta.scrollTop;
+  if (open === COMMON) curPass = hasCommon() ? COMMON : 0;
+  else curPass = Math.max(0, (work.passes || []).findIndex(p => p.name === open));
+  if (!work.passes || !work.passes.length){ paintAll(); return; }
+  buildTabs(); buildInputs(); buildChannels();
+  const p = onCommon() ? null : work.passes[curPass], cards = [...document.querySelectorAll("#layers .lay")];
+  const shown = cards.map(c => c.dataset.name).reverse().join("\n");
+  if (kept.length && p && !p.filter && shown === (p.layers || []).map(d => d.name).join("\n"))
+    cards.forEach(c => { if (!busy.includes(c.dataset.name)) recard(p, c.dataset.name); });
+  else relist();
+  loadCode();
+  if (same) CODE.ta.scrollTop = top;
+  paintShader(); showErrors(); syncAddRow(); buildParams(); refreshInfo(); paintStatus(); paintMarks();
+}
+
+// ---- unsaved edits from before ghee stopped wait in a draft, and the first
+// page that opens the scene asks whether to restore them. Escape and the
+// scrim do nothing. A restore is one step, so undo takes it back ----
+async function askDraft(){
+  if (answering || !E.draft) return;
+  answering = true;
+  const name = active;
+  let restore;
+  try {
+    restore = await ask(`Restore unsaved "${name}" edits`, {yes: "restore", no: "drop", forced: true});
+  } finally { answering = false; }
+  if (name !== active) return;
+  const was = clone(base);
+  // 404: another page answered first
+  const r = await edit("/draft", name, `name=${enc(name)}&answer=${restore ? "restore" : "drop"}`);
+  if (r && !r.ok && ![404, 409, 412].includes(r.status)){ postErr = await r.text(); showErrors(); }
+  if (name !== active) return;
+  await refresh(true);
+  if (restore && r && r.ok && name === active) remember(was, base, "restore");
 }
 
 // ---- an item set aside: its default changed since its edit, and the page
@@ -1910,10 +2144,13 @@ const toHex = c => Array.isArray(c) || typeof c === "string" ? rgbToHex(c) : c;
 function setKey(p, d, key, v){
   if (v == null) delete d[key]; else d[key] = v;
   if (!isLive(d, key)){ postScene(); return; }
+  setLive(d, key, liveWire(d, key, v));
+}
+// the value of layer d's live field `key` as a /set sends it
+function liveWire(d, key, v){
   const empty = emptyOf(d, key);
-  const wire = key === "opacity" ? (v == null ? 1 : v) : key === "visible" ? (v !== false) : key === "color" ? liveColor(v)
-    : key === "points" ? JSON.stringify(v) : v != null ? v : typeof empty === "number" ? empty : "none";
-  setLive(d, key, String(wire));
+  return String(key === "opacity" ? (v == null ? 1 : v) : key === "visible" ? (v !== false) : key === "color" ? liveColor(v)
+    : key === "points" ? JSON.stringify(v) : v != null ? v : typeof empty === "number" ? empty : "none");
 }
 // The words, live through the layer's text field.
 function wordsTo(p, d){
@@ -2557,6 +2794,12 @@ function takeLayers(fresh){
     if (wp === open && next.map(d => d.name).join() !== (wp.layers || []).map(d => d.name).join()) relisted = true;
     if (next.length) wp.layers = next; else delete wp.layers;
   });
+  // what the program drew is the scene as ghee holds it, and makes no step
+  (fresh.passes || []).forEach(fp => {
+    const bp = ((base && base.passes) || []).find(p => p.name === fp.name);
+    if (!bp) return;
+    if (fp.layers && fp.layers.length) bp.layers = clone(fp.layers); else delete bp.layers;
+  });
   waiting = waits;
   if (relisted) relist();
   else changed.forEach(n => recard(open, n));
@@ -2981,11 +3224,17 @@ let postErr = "";
 async function postScene(){
   const name = active;
   const r = await edit("/scene", name, "name=" + enc(name), JSON.stringify(work));
-  if (!r || r.status === 409 || r.status === 412) return;
-  if (r.status === 503){ rebuildSoon(); return; }
-  if (r.ok){ postErr = ""; adoptFilters(await r.json()); }
+  if (!r || r.status === 409 || r.status === 412) return r;
+  if (r.status === 503){ rebuildSoon(); return r; }
+  if (r.ok){
+    postErr = "";
+    const doc = await r.json();
+    adoptFilters(doc);
+    if (base && name === active) adoptFilters(doc, base);
+  }
   else postErr = await r.text();
   showErrors();
+  return r;
 }
 // A live value for scene `scene`, the one this page showed when it built the
 // control.
@@ -3011,10 +3260,10 @@ async function sceneMoved(from){
 
 // A filter pass is the server's: take its fragment and channels as the server
 // built them, and any param it added. Values already here stay.
-function adoptFilters(doc){
+function adoptFilters(doc, into = work){
   (doc.passes||[]).forEach(d => {
     if (!d.filter) return;
-    const p = work.passes.find(w => w.name === d.name && w.filter === d.filter);
+    const p = (into.passes || []).find(w => w.name === d.name && w.filter === d.filter);
     if (!p) return;
     p.fragment = d.fragment; p.channels = d.channels || [];
     const params = {};
@@ -3059,8 +3308,12 @@ $("#save").addEventListener("click", async ()=>{
 $("#reset").addEventListener("click", async ()=>{
   const name = active;
   if (!hasEdits() || !await ask(`Take ${name} back to its defaults? Every edit goes.`, {yes: "back to defaults"}) || name !== active) return;
+  const was = clone(base);
   const r = await edit("/reset", name, "name=" + enc(name));
-  if (r && r.ok) await refresh(true);
+  if (r && r.ok){
+    await refresh(true);
+    if (name === active) remember(was, base, "back to defaults");
+  }
   else if (r && r.status !== 409 && r.status !== 412){ postErr = await r.text(); showErrors(); }
 });
 

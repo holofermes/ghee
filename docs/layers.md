@@ -133,7 +133,8 @@ Set `angle` as in CSS: 0 runs up, 90 right, and 180, the default, down.
 
 ghee carries two fonts. DejaVu Sans is the default. Pixel Operator 8 is a
 pixel font, crisp at 8, 16, 24 px and every other multiple of 8, and a Pixel
-Operator 8 text with no `font_size` fits to one of those. For any other font,
+Operator 8 text with no `font_size` fits to one of those. Its letters draw
+`hinted` at any size, unless the layer sets a `render`. For any other font,
 bold included, give its `.ttf` or `.otf` file as an [asset](#assets), or its
 path in `font_family`.
 

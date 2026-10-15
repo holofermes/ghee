@@ -223,7 +223,7 @@ bottom and smaller at the top:
 | `linear` | the four pixels around the point, blended | a buffer read at its size or bigger |
 | `trilinear` | smaller copies of the buffer too, made after each frame | a buffer read smaller than it is, which breaks into patterns under `linear` |
 
-Careful: on a Pi 0 to 3, a `trilinear` pass needs a `size` whose sides are
+Careful: on a Pi Zero to Pi 3, a `trilinear` pass needs a `size` whose sides are
 powers of two, such as `[256, 128]`, or the scene fails to load
 ([Raspberry Pi](pi.md)).
 
@@ -324,8 +324,8 @@ From Python, feed the array for the next frame with
 `screen.feed("levels", values)`. With `ghee.open`, the array holds zeros until the first `feed`. A
 [procedural scene](#procedural-scenes) feeds it each frame.
 
-On a Pi 0 to 3, an array holds 8 bits a value, so a value outside 0 to 1
-clamps. A Pi 4 or 5, and a desktop, hold any number, as a 32-bit float
+On a Pi Zero to Pi 3, an array holds 8 bits a value, so a value outside 0 to 1
+clamps. A Pi 4 or Pi 5, and a desktop, hold any number, as a 32-bit float
 ([Raspberry Pi](pi.md)).
 
 ## Data files

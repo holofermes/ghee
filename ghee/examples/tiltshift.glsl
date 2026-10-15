@@ -16,19 +16,21 @@
 //   the board's mipmaps after each frame, copies halved again and again
 //   down to one pixel, and a far frame pixel reads the copy at its own
 //   scale, so the far rows stay calm. Read linear, they turn jagged.
-// - `scene` draws that perspective view sharp, at the frame's size. Its
-//   params place the camera: `tilt` is how steeply it looks down, `yaw`
-//   turns it around the board, `zoom` takes it closer, and `pan_x` and
-//   `pan_y` move the point it looks at. The view keeps its width at any
-//   frame size, so a wide strip shows a slice of it. Past the board's edges
-//   the town goes on mirrored.
+// - `scene` draws that perspective view sharp, at the frame's size, and
+//   keeps each pixel's distance from the camera in its alpha. Its params
+//   place the camera: `tilt` is how steeply it looks down, `yaw` turns it
+//   around the board, `zoom` takes it closer, `pan_x` and `pan_y` move the
+//   point it looks at, and `fov` is how many degrees it sees from top to
+//   bottom, so a wide strip sees as far as a tall frame does. Past the
+//   board's edges the town goes on mirrored.
 // - `blur` blurs `scene` at 128x128 and is read trilinear too. `main` reads
-//   it with a bias that grows with the distance from the `focus` row, and
-//   the bias picks smaller mipmaps, so the blur grows with that distance.
-//   Read linear, the bias does nothing and every blurred row is as soft as
-//   the next.
-// - `main` mixes `scene` and `blur` by that distance and lifts the colours,
-//   so the town reads as a model on a table.
+//   it with a bias that grows as a pixel's distance strays from the one in
+//   focus, as through a lens, and the bias picks smaller mipmaps, so the
+//   blur grows with it. `focus` sets the distance kept sharp: 0.5 is the
+//   point the camera looks at, lower is nearer. Read linear, the bias does
+//   nothing and every blurred pixel is as soft as the next.
+// - `main` mixes `scene` and `blur` by the same measure and lifts the
+//   colours, so the town reads as a model on a table.
 // - `photo` is hidden with `"visible": false`, so the frame is `main`. Show
 //   it with its eye in the console for a lens's dark corners and grain.
 //
@@ -36,12 +38,12 @@
 //     ghee render --demo tiltshift --serve
 
 void main() {
-  float away = smoothstep(band, band + fade, abs(uv.y - focus));
+  vec4 sharp = texture2D(iChannel0, uv);
+  float away = smoothstep(band, band + fade, abs(sharp.a - focus));
   vec2 shrink = iResolution.xy / iChannelResolution[1].xy;
   float bias = log2(min(shrink.x, shrink.y)) + depth_blur * away * away;
-  vec3 sharp = texture2D(iChannel0, uv).rgb;
   vec3 soft = texture2D(iChannel1, uv, bias).rgb;
-  vec3 col = mix(sharp, soft, away);
+  vec3 col = mix(sharp.rgb, soft, away);
   col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, saturation);
   gl_FragColor = vec4((col - 0.5) * contrast + 0.5, 1.0);
 }

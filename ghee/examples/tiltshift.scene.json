@@ -48,14 +48,15 @@
     },
     {
       "name": "scene",
-      "fragment": "void main() {\n  float t = radians(tilt);\n  float a = radians(yaw);\n  vec3 forward = vec3(sin(a) * cos(t), cos(a) * cos(t), -sin(t));\n  vec3 right = vec3(cos(a), -sin(a), 0.0);\n  vec3 up = vec3(sin(a) * sin(t), cos(a) * sin(t), cos(t));\n  vec2 q = (uv - 0.5) * vec2(2.0, -2.0 * iResolution.y / iResolution.x);\n  vec3 ray = forward + q.x * right + q.y * up;\n  vec3 eye = vec3(0.5 + pan_x * right.xy + pan_y * vec2(sin(a), cos(a)), 0.0) - forward / zoom;\n  float far = 8.0;\n  if (ray.z < 0.0) far = min(far, -eye.z / ray.z * zoom);\n  vec2 board = eye.xy + ray.xy * far / zoom;\n  vec3 col = texture2D(iChannel0, 1.0 - abs(1.0 - mod(board, 2.0))).rgb;\n  gl_FragColor = vec4(mix(col, haze, clamp(0.3 * (far - 1.2), 0.0, 1.0)), 1.0);\n}\n",
+      "fragment": "void main() {\n  float t = radians(tilt);\n  float a = radians(yaw);\n  vec3 forward = vec3(sin(a) * cos(t), cos(a) * cos(t), -sin(t));\n  vec3 right = vec3(cos(a), -sin(a), 0.0);\n  vec3 up = vec3(sin(a) * sin(t), cos(a) * sin(t), cos(t));\n  vec2 q = (uv - 0.5) * vec2(2.0 * iResolution.x / iResolution.y, -2.0) * tan(radians(fov) * 0.5);\n  vec3 ray = forward + q.x * right + q.y * up;\n  vec3 eye = vec3(0.5 + pan_x * right.xy + pan_y * vec2(sin(a), cos(a)), 0.0) - forward / zoom;\n  float far = 8.0;\n  if (ray.z < 0.0) far = min(far, -eye.z / ray.z * zoom);\n  vec2 board = eye.xy + ray.xy * far / zoom;\n  vec3 col = texture2D(iChannel0, 1.0 - abs(1.0 - mod(board, 2.0))).rgb;\n  gl_FragColor = vec4(mix(col, haze, clamp(0.3 * (far - 1.2), 0.0, 1.0)), clamp(1.5 - 1.0 / far, 0.0, 1.0));\n}\n",
       "channels": [{"buffer": "town"}],
       "params": {
-        "zoom": {"type": "float", "value": 4.5, "min": 0.5, "max": 8.0, "step": 0.05},
+        "zoom": {"type": "float", "value": 4.6, "min": 0.5, "max": 8.0, "step": 0.05},
         "pan_x": {"type": "float", "value": 0.0, "min": -1.0, "max": 1.0, "step": 0.01},
         "pan_y": {"type": "float", "value": 0.0, "min": -1.0, "max": 1.0, "step": 0.01},
         "tilt": {"type": "float", "value": 45.0, "min": 5.0, "max": 90.0, "step": 1.0},
         "yaw": {"type": "float", "value": 0.0, "min": -180.0, "max": 180.0, "step": 1.0},
+        "fov": {"type": "float", "value": 40.0, "min": 10.0, "max": 100.0, "step": 1.0},
         "haze": {"type": "color", "value": "#cfe3ee"}
       }
     },

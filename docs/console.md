@@ -49,6 +49,22 @@ The preview shows an H264 video when the browser can play it, else an
 MJPEG stream. You can turn the preview, pop it out into its own window, or
 show it fullscreen.
 
+## Undo and redo
+
+To take back your last change, click the undo arrow beside the scene list,
+or press Ctrl+Z (⌘Z on a Mac). To bring it back, click the redo arrow, or
+press Ctrl+Shift+Z or Ctrl+Y. Hover over an arrow to see which change it
+takes. In a text field or the shader editor, Ctrl+Z undoes your typing
+there instead.
+
+A slider's drag is one step, and so is a run of typing in the shader. Back
+to defaults is one step too, so its undo brings your changes back.
+
+Each page keeps its own history for each scene, until you reload the page.
+An undo takes back only that page's changes. When another page, in another
+tab or on another device, changed the same setting since, the console
+refuses the undo and says so.
+
 ## Your scenes
 
 A scene that you make in the console is a real scene file, in a folder of
@@ -80,6 +96,13 @@ without `--serve` ignores them and draws the original scene.
 
 If the scene's files change later, your overrides still apply. The console
 asks only where the two clash: keep yours, or take the files'.
+
+If ghee stops before you save, at a restart, a reboot or a crash, the scene
+comes back as you last saved it. Your unsaved changes wait in a draft
+beside the state file, and the first console that opens the scene asks
+whether to restore or drop them. A restore is one undo step. ghee writes the
+draft a second after your last change. Your own scenes keep no draft, so
+save them before ghee stops.
 
 In the console, a scene can use only files inside its own folder or in
 `$GHEE_ASSETS`. A file given by an absolute path, or by a path that climbs

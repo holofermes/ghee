@@ -127,9 +127,9 @@ and pass the number alone: an ETag of `"5"` is `rev=5`.
 curl -X POST 'http://127.0.0.1:8090/set?name=tile&value=3&rev=5&vid=myprog'
 ```
 
-`/set`, `POST /scene`, `/save`, `/reset` and `/aside` edit the open scene.
-To name it, pass `scene=` to `/set`, or `name=` to the others: a name other
-than the open scene's answers 409. `/new`, `/rename`, `/delete` and
+`/set`, `POST /scene`, `/save`, `/reset`, `/aside` and `/draft` edit the
+open scene. To name it, pass `scene=` to `/set`, or `name=` to the others: a
+name other than the open scene's answers 409. `/new`, `/rename`, `/delete` and
 `/upload` work on any of your scenes, open or not.
 
 ## Reading
@@ -151,7 +151,7 @@ curl http://127.0.0.1:8090/stats
 | `/stats?usage=1` | the same, plus the memory and the GPU time that ghee uses |
 | `/scenes` | `scenes`, every scene's name. `active`, the open scene. `procedural`, the ones that a program writes. `mine`, your own, and `my_scenes`, their folder ([Your scenes](console.md#your-scenes)) |
 | `/scene?name=` | the scene as it runs, as JSON, with its revision in the `ETag` header. `defaults=1` gives it without your changes. With no name, the open scene |
-| `/edits?name=` | your changes to the scene, as a save writes them. `unsaved` says whether they differ from what's saved, `aside` lists the changes waiting for an answer, and `broken` the saved changes that no longer build ([Saving](console.md#saving)) |
+| `/edits?name=` | your changes to the scene, as a save writes them. `unsaved` says whether they differ from what's saved, `aside` lists the changes waiting for an answer, `broken` the saved changes that no longer build, and `draft` says whether unsaved changes from before ghee stopped wait for an answer ([Saving](console.md#saving)) |
 | `/frame.png` | a PNG of the next frame, at the render size, with every `/set` that answered before it. 409 while the scene fails to compile |
 | `/format` | what a layer takes: each kind's keys, the keys that change at runtime, each effect's keys and defaults, and the fonts that ghee carries |
 | `/filters` | the filters, by name |
@@ -187,6 +187,7 @@ the GPU on a Pi Zero to Pi 3.
 | `/save?name=` | saves your changes ([Saving](console.md#saving)) |
 | `/reset?name=` | takes the scene back to its files. What you saved stays saved until the next save |
 | `/aside?name=&item=&answer=` | answers a change set aside, named as `/edits` lists it: `answer=keep` or `answer=default`. `item=edits` answers the saved changes that no longer build |
+| `/draft?name=&answer=` | answers the unsaved changes from before ghee stopped: `answer=restore` puts them back, and `answer=drop` deletes them. 404 when none wait |
 
 `/switch` answers as soon as the scene starts to load, and an edit before
 it has loaded answers 503. To wait for the load, GET `/scene`, which

@@ -55,6 +55,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Write colours as CSS names, such as `"navy"` and `"transparent"`.
 - Edit layers, passes and shaders in the console, save your edits, and make
   new scenes ([Console](docs/console.md)).
+- Undo and redo your console edits with Ctrl+Z and Ctrl+Shift+Z ([Undo and
+  redo](docs/console.md#undo-and-redo)).
+- Restore the console edits that you hadn't saved when ghee stopped. The
+  first console that opens the scene asks ([Saving](docs/console.md#saving)).
 - Set up an SH1106, SSD1322 or ILI9341 panel with `ghee overlay`.
 - Turn the frame with `--rotate`, and set a display's brightness with
   `--brightness`.

@@ -10,11 +10,15 @@ The scene is built in code. The tick hook stands in for an analyser and
 makes one level per band each frame. The feed `bars` sends those levels,
 and the shader draws them as the front line. Every 1/`speed` seconds the
 hook copies the levels to the top of the history, BANDS x ROWS levels with
-the newest row first, which the feed `history` sends. The shader draws each
-row as a line behind the one before, and a line hides the lines behind it.
+the newest row first, which the feed `history` sends. The shader stands
+each row behind the one before, and a line hides the lines behind it.
 The hook also sets `scroll`, the share of a row since the last copy, so the
 lines glide back between copies. The feeds send raw levels, and `gain`
 scales them in GLSL.
+
+The stack stands in 3D, and the shader looks at it through a camera of its
+own params: `tilt` is how steeply the view looks down, `yaw` turns it
+around the stack, and `zoom`, `pan_x` and `pan_y` frame it.
 
     ghee render --demo spectrum -o frame.####.png --frames 60
     ghee render --demo spectrum --serve
@@ -32,66 +36,95 @@ from array import array  # noqa: E402
 BANDS = 48
 ROWS = 64
 SPEED = 5.0
+TILT = 55.0
 CHORDS = [17.0, 19.5, 21.0, 20.5]  # the band of each bar's root note
 TUNE = [0.0, 1.5, 2.5, 3.5, 5.0, 3.5, 2.5, 1.5]  # bands above the root
 ACCENTS = [1.0, 0.6, 0.8, 0.5]
 
 SHADER = (
     f"const float BANDS = {BANDS}.0;\nconst float ROWS = {ROWS}.0;\n"
+    f"const float VIEW = {math.radians(TILT):.7f};\n"
     + """
 float bare = 1.0;
 float shine = 0.0;
+float slant = 1.0;
+float lean = 0.0;
+float side = 1.0;
+float sharp = 1.0;
+float stretch = 1.0;
 
-void ridge(float left, float right, float along, float base, float y, float env, float A, float span, float shown) {
+void ridge(float left, float right, float along, vec3 p, float rise, float span, float shown) {
     float level = gain * mix(left, right, along);
-    float slope = A * env * gain * (right - left) * (BANDS - 1.0) / span;
-    float d = (y - base - A * env * level) / sqrt(1.0 + slope * slope);
+    float slope = rise * gain * (right - left) * (BANDS - 1.0) / span;
+    float s = slope * slant + lean;
+    float root = sqrt(s * s + side);
+    float d = (p.y - rise * level) * sharp / root;
+    shown *= step(abs(p.x + d * s / (root * stretch)), 0.5 * span);
     float stroke = clamp(0.5 * weight + 0.5 - abs(d), 0.0, 1.0);
     float under = clamp(0.5 - d, 0.0, 1.0);
     shine += bare * stroke * shown;
     bare *= 1.0 - max(stroke, under) * shown;
 }
 
+float envelope(float x) {
+    return mix(0.12, 1.0, smoothstep(0.02, 0.3, x) * smoothstep(0.98, 0.7, x));
+}
+
 void main() {
     vec2 px = uv * iResolution.xy;
     float span = 0.56 * iResolution.x;
-    float x = (px.x - 0.5 * (iResolution.x - span)) / span;
-    float inside = step(0.0, x) * step(x, 1.0);
-    x = clamp(x, 0.0, 1.0);
-    float y = 0.94 * iResolution.y - px.y;
     float count = min(lines, floor(0.9 * iResolution.y / 4.0 - 0.5 * height));
     float gap = 0.9 * iResolution.y / (count + 0.5 * height);
-    float A = height * gap;
-    float env = mix(0.12, 1.0, smoothstep(0.02, 0.3, x) * smoothstep(0.98, 0.7, x));
+    float deep = gap / sin(VIEW);
+    float tall = height * gap / cos(VIEW);
 
-    float t = x * (BANDS - 1.0);
-    float i = min(floor(t), BANDS - 2.0);
-    float f = t - i;
-    vec2 at = vec2((i + 0.5) / BANDS, (i + 1.5) / BANDS);
+    float pitch = radians(tilt);
+    float turn = radians(yaw);
+    vec3 ahead = vec3(sin(turn) * cos(pitch), -sin(pitch), max(cos(turn) * cos(pitch), 0.001));
+    vec3 across = vec3(cos(turn), 0.0, -sin(turn));
+    vec3 up = vec3(sin(turn) * sin(pitch), cos(pitch), cos(turn) * sin(pitch));
+    vec2 at = vec2(px.x - 0.5 * iResolution.x, 0.94 * iResolution.y - px.y - 0.5 * count * gap);
+    at = at / zoom + vec2(pan_x, pan_y) * iResolution.y;
+    vec3 eye = vec3(0.0, 0.0, 0.5 * count * deep) + at.x * across + at.y * up;
+    slant = cos(pitch);
+    lean = sin(turn) * sin(pitch);
+    side = cos(turn) * cos(turn);
+    sharp = zoom * ahead.z;
+    stretch = zoom * cos(turn);
 
+    vec3 p = eye - ahead * eye.z / ahead.z;
+    float x = p.x / span + 0.5;
+    x = clamp(x, 0.0, 1.0);
+    float i = min(floor(x * (BANDS - 1.0)), BANDS - 2.0);
     float a = 0.0;
     float b = 0.0;
     if (gl_FragCoord.x >= 0.0) {
         a = bars_at(int(i));
         b = bars_at(int(i) + 1);
     }
-    ridge(a, b, f, 0.0, y, env, A, span, 1.0);
+    ridge(a, b, x * (BANDS - 1.0) - i, p, tall * envelope(x), span, 1.0);
 
-    float first = floor((y - A - 2.0) / gap - scroll);
-    for (int k = 0; k < 12; k++) {
+    float drop = max(sin(pitch), 0.02);
+    float margin = (0.5 * weight + 1.0) * sqrt(lean * lean + side) / sharp;
+    float first = max(floor((eye.z + (eye.y - tall * gain - margin) / drop * ahead.z) / deep - scroll), 0.0);
+    float last = min(ceil((eye.z + (eye.y + margin) / drop * ahead.z) / deep - scroll), count - 1.0);
+    for (int k = 0; k < 64; k++) {
         float row = first + float(k);
-        float base = (row + scroll) * gap;
-        float there = step(0.0, row) * step(row, count - 1.0);
+        if (row > last || bare < 0.004) break;
+        p = eye + ahead * ((row + scroll) * deep - eye.z) / ahead.z;
+        x = p.x / span + 0.5;
+        x = clamp(x, 0.0, 1.0);
+        i = min(floor(x * (BANDS - 1.0)), BANDS - 2.0);
         float v = (row + 0.5) / ROWS;
         if (gl_FragCoord.x >= 0.0) {
-            a = history_sample2(vec2(at.x, v));
-            b = history_sample2(vec2(at.y, v));
+            a = history_sample2(vec2((i + 0.5) / BANDS, v));
+            b = history_sample2(vec2((i + 1.5) / BANDS, v));
         }
         float fade = mix(1.0, 1.0 - scroll, step(count - 1.5, row));
-        ridge(a, b, f, base, y, env, A, span, there * fade);
+        ridge(a, b, x * (BANDS - 1.0) - i, p, tall * envelope(x), span, fade);
     }
 
-    gl_FragColor = vec4(mix(background, line_color, clamp(shine, 0.0, 1.0) * inside), 1.0);
+    gl_FragColor = vec4(mix(background, line_color, clamp(shine, 0.0, 1.0)), 1.0);
 }
 """
 )
@@ -177,6 +210,11 @@ def build():
                     ghee.Param("lines", "float", 40.0, min=4.0, max=63.0, step=1.0),
                     ghee.Param("height", "float", 8.0, min=0.0, max=10.0, step=0.1),
                     ghee.Param("weight", "float", 1.2, min=0.5, max=3.0, step=0.1),
+                    ghee.Param("tilt", "float", TILT, min=0.0, max=85.0, step=1.0),
+                    ghee.Param("yaw", "float", 0.0, min=-85.0, max=85.0, step=1.0),
+                    ghee.Param("zoom", "float", 1.0, min=0.25, max=4.0, step=0.05),
+                    ghee.Param("pan_x", "float", 0.0, min=-1.0, max=1.0, step=0.01),
+                    ghee.Param("pan_y", "float", 0.0, min=-1.0, max=1.0, step=0.01),
                     ghee.Param("background", "color", "#000000"),
                     ghee.Param("line_color", "color", "#ffffff"),
                 ],

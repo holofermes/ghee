@@ -4,6 +4,8 @@ The console is ghee's web page for a running scene. Use it to watch the
 scene, and to change its params, layers and shaders at runtime: a change
 shows on the preview at once, and on a screen too when ghee drives one.
 
+![the console with the neon example open: the preview, the scene list, the params, and the ticker pass with its text layer opened out](../media/console/console.png)
+
 To open it and explore the bundled examples, run:
 
 ```shell
@@ -32,6 +34,8 @@ computer](#from-another-computer).
 
 The console listens on port 8090. To use another, pass `--port`. Whatever
 you serve, the scene list also shows [your own scenes](#your-scenes).
+
+![the scene list open, in three groups: scenes, programs and my scenes](../media/console/scene-list.png)
 
 ## What you can change
 
@@ -97,12 +101,19 @@ without `--serve` ignores them and draws the original scene.
 If the scene's files change later, your overrides still apply. The console
 asks only where the two clash: keep yours, or take the files'.
 
+If a saved change stops building, such as a layer whose image is gone, the
+console asks whether to keep it or drop it:
+
+![a dialog that says the saved "assets" edits do not build, names the missing image, and offers drop them or keep them](../media/console/broken-edits.png)
+
 If ghee stops before you save, at a restart, a reboot or a crash, the scene
 comes back as you last saved it. Your unsaved changes wait in a draft
 beside the state file, and the first console that opens the scene asks
 whether to restore or drop them. A restore is one undo step. ghee writes the
 draft a second after your last change. Your own scenes keep no draft, so
 save them before ghee stops.
+
+![a dialog that asks whether to restore the unsaved "neon" edits, with drop and restore](../media/console/restore-edits.png)
 
 In the console, a scene can use only files inside its own folder or in
 `$GHEE_ASSETS`. A file given by an absolute path, or by a path that climbs

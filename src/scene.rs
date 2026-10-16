@@ -12,14 +12,15 @@
 //! [`Pass::glsl`] writes the fragment shader of a pass in four parts: the
 //! preamble, the scene's common block, the pass's own GLSL, its `fragment`,
 //! then ghee's main, which sets `uv` and `gl_FragCoord` to the pixel's centre
-//! and calls the pass's main under another name. The preamble declares what
-//! every pass reads, `uv` and the uniforms `iTime`, `iTimeDelta`, `iFrame`,
-//! `iResolution`, `iOutputResolution`, `iChannel0` and up and
-//! `iChannelResolution`, then the samplers and the reader functions of each
-//! array, asset and text layer, then one uniform for each param under the
-//! param's name. The C engine sets each uniform by looking up that same name
-//! in the compiled program, so a name that the preamble writes is the
-//! contract between the two.
+//! and calls the pass's main under another name, or the pass's `mainImage`
+//! with Shadertoy's coordinates. The preamble declares what every pass reads,
+//! `uv` and the uniforms `iTime`, `iTimeDelta`, `iFrame`, `iResolution`,
+//! `iOutputResolution`, `iChannel0` and up and `iChannelResolution`, then
+//! the samplers and the reader functions of each array, asset and text
+//! layer, then one uniform for each param under the param's name. The C
+//! engine sets each uniform by looking up that same name in the compiled
+//! program, so a name that the preamble writes is the contract between the
+//! two.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -1818,7 +1819,7 @@ impl Pass {
         if !self.visible {
             let l =
                 self.preamble_reading(scene_params, assets, texts, hw_linear, vec![], |_| false);
-            return with_main(l, &self.fragment);
+            return with_main(l, &self.fragment, self.channels.len());
         }
         let common_code = common.unwrap_or_default();
         // An author writes a filter on its own, and ghee appends it to any
@@ -1834,7 +1835,7 @@ impl Pass {
         let l = self.preamble_reading(scene_params, assets, texts, hw_linear, noise, |t| {
             calls_cover(common_code, t) || calls_cover(&self.fragment, t)
         });
-        with_main(l, &body)
+        with_main(l, &body, self.channels.len())
     }
 
     /// The preamble, with the `<name>_size` of each text layer of `texts`,
@@ -1933,17 +1934,56 @@ impl Pass {
 }
 
 /// The preamble lines `l`, then `body` under ghee's own main, which sets `uv`
-/// and gl_FragCoord before it calls the body's. A body that names no main
-/// meets the GL's own error for a missing main.
-fn with_main(mut l: Vec<String>, body: &str) -> String {
+/// and gl_FragCoord before it calls the body's main, or the body's mainImage
+/// when the body defines it and names no main. `channels` is the number of
+/// the pass's channels. A body that names neither meets the GL's own error
+/// for a missing main.
+fn with_main(mut l: Vec<String>, body: &str, channels: usize) -> String {
     if !glsl_tokens(body).contains(&"main") {
-        return format!("{}\n\n{body}", l.join("\n"));
+        if !functions(body).contains("mainImage") {
+            return format!("{}\n\n{body}", l.join("\n"));
+        }
+        l.extend(shadertoy_lines(channels));
+        return format!(
+            "{}\n\n{body}\nvoid main() {{ ghee_centre(); \
+             mainImage(gl_FragColor, vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y)); }}",
+            l.join("\n")
+        );
     }
     l.push("#define main ghee_main".to_string());
     format!(
         "{}\n\n{body}\n#undef main\nvoid main() {{ ghee_centre(); ghee_main(); }}",
         l.join("\n")
     )
+}
+
+/// The GLSL that a pass written for Shadertoy reads beside the preamble, for
+/// a pass of `channels` channels: `texture` and `texelFetch` with y up, and
+/// `tanh`. `texelFetch(iChannelN, p, lod)` reads the size of channel N
+/// through the macro `iChannelN()`. The preprocessor expands that macro only
+/// where a call follows the name, so the sampler keeps its name.
+fn shadertoy_lines(channels: usize) -> Vec<String> {
+    let mut l: Vec<String> = [
+        "vec4 ghee_texture(sampler2D s, vec2 p) { return texture2D(s, vec2(p.x, 1.0 - p.y)); }",
+        "vec4 ghee_texture(sampler2D s, vec2 p, float bias) {",
+        "  return texture2D(s, vec2(p.x, 1.0 - p.y), bias);",
+        "}",
+        "#define texture ghee_texture",
+        "vec4 ghee_fetch(sampler2D s, vec3 size, ivec2 p) {",
+        "  vec2 c = (vec2(p) + 0.5) / size.xy;",
+        "  return texture2D(s, vec2(c.x, 1.0 - c.y));",
+        "}",
+        "#define texelFetch(s, p, lod) ghee_fetch(s, s(), p)",
+    ]
+    .map(str::to_string)
+    .into();
+    l.extend((0..channels).map(|i| format!("#define iChannel{i}() iChannelResolution[{i}]")));
+    for t in ["float", "vec2", "vec3", "vec4"] {
+        l.push(format!(
+            "{t} tanh({t} x) {{ return 1.0 - 2.0 / (exp(2.0 * x) + 1.0); }}"
+        ));
+    }
+    l
 }
 
 /// True when `glsl` names the coverage reader of text layer `name`. A reader

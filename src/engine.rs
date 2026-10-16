@@ -6122,6 +6122,81 @@ mod tests {
         }
     }
 
+    /// Pass `a` draws a picture that runs one way in y, at a quarter of the
+    /// frame, and pass `c` reads `b` two pixels down. `b` reads `a`, by
+    /// `texture` and `texelFetch`, and itself one pixel up.
+    fn three_passes(b: &str) -> Scene {
+        scene_of(json!([
+            {"name": "a", "size": [W / 4, H / 4], "sampling": "nearest",
+             "fragment": "void main(){ gl_FragColor = vec4(uv, step(gl_FragCoord.y, 3.0), 1.0); }"},
+            {"name": "b", "channels": [{"buffer": "a"}, {"buffer": "b"}], "fragment": b},
+            {"name": "c", "channels": [{"buffer": "b"}],
+             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv + vec2(0.0, 2.0) / iResolution.xy); }"},
+        ]))
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_shadertoy_pass_reads_and_feeds_ghee_passes() {
+        let shadertoy = "void mainImage(out vec4 o, in vec2 f) {
+            vec4 here = texture(iChannel0, f / iResolution.xy);
+            vec4 up = texelFetch(iChannel0, ivec2(f / 4.0) + ivec2(0, 1), 0);
+            vec4 last = texture(iChannel1, (f + vec2(0.0, 1.0)) / iResolution.xy);
+            o = vec4(here.r, up.g, tanh(2.0 * last.b + here.b) * 0.9, 1.0);
+        }";
+        let ghee = "void main() {
+            vec4 here = texture2D(iChannel0, uv);
+            vec2 q = floor(gl_FragCoord.xy / 4.0) - vec2(0.0, 1.0);
+            vec4 up = texture2D(iChannel0, (q + 0.5) / iChannelResolution[0].xy);
+            vec4 last = texture2D(iChannel1, uv - vec2(0.0, 1.0) / iResolution.xy);
+            float t = 1.0 - 2.0 / (exp(2.0 * (2.0 * last.b + here.b)) + 1.0);
+            gl_FragColor = vec4(here.r, up.g, t * 0.9, 1.0);
+        }";
+        let (_g, mut r) = gpu();
+        r.set_time(Some(0.0));
+        let mut frames = Vec::new();
+        for b in [shadertoy, ghee] {
+            assert_eq!(r.setup(&three_passes(b)).unwrap(), "");
+            for _ in 0..3 {
+                r.render(None).unwrap();
+            }
+            frames.push(r.render(None).unwrap().to_vec());
+        }
+        let (got, want) = (&frames[0], &frames[1]);
+        assert!(px(want, W, 0, 4, 1) + 100.0 < px(want, W, 0, H - 4, 1));
+        assert!(px(want, W, 0, 0, 2) > 100.0 && px(want, W, 0, H - 1, 2) < 100.0);
+        for (k, (a, b)) in got.iter().zip(want).enumerate() {
+            let at = k / COMPONENTS;
+            assert!(
+                a.abs_diff(*b) <= 1,
+                "pixel ({}, {}): {a} against {b}",
+                at % W,
+                at / W
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_pass_with_main_keeps_its_own_texture_and_mainimage_errors_keep_lines() {
+        let (_g, mut r) = gpu();
+        let own = "float texture(vec2 p) { return p.x; }
+            float tanh(float x) { return 0.5; }
+            void mainImage(out vec4 o, in vec2 f) { o = vec4(1.0); }
+            void main() { gl_FragColor = vec4(texture(vec2(0.25, 0.0)), tanh(0.0), 0.0, 1.0); }";
+        assert_eq!(r.setup(&scene_of(json!([{"fragment": own}]))).unwrap(), "");
+        let f = r.render(None).unwrap();
+        assert!(
+            (px(f, W, 0, 0, 0) - 64.0).abs() <= 1.0 && (px(f, W, 0, 0, 1) - 128.0).abs() <= 1.0
+        );
+        let mut sc = scene_of(
+            json!([{"fragment": "void mainImage(out vec4 o, in vec2 f) {\n  o = nope;\n}"}]),
+        );
+        sc.common = Some("float k() { return 1.0; }".to_string());
+        assert_ne!(r.setup(&sc).unwrap(), "");
+        assert_eq!(r.error_line, Some(2));
+    }
+
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn render_into_a_caller_buffer() {

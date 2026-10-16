@@ -46,6 +46,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Change a layer at runtime with `screen.layers`, `ghee.layers` or `/set`.
 - Sample image and `.raw` data assets in a shader.
 - Read `iFrame`, `iChannelResolution` and `iOutputResolution` in a pass.
+- Run a Shadertoy pass as it is: a pass that defines `mainImage` instead of
+  `main` gets y-up coordinates, `texture`, `texelFetch` and `tanh` ([From
+  Shadertoy](docs/scenes.md#from-shadertoy)).
 - Use `ghee_hash` and `ghee_noise` to get the same random values on every
   GPU.
 - Set how other passes sample a pass with its `sampling`: nearest, linear or

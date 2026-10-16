@@ -1692,7 +1692,7 @@ async function askBroken(){
   let keep;
   try {
     keep = await ask(`Saved "${name}" edits do not build`, {yes: "keep them", no: "drop them", forced: true,
-      why: list.map(b => `${b.what}: ${b.why}`).join("\n")});
+      why: list.map(b => b.why.startsWith(b.what) ? b.why : `${b.what}: ${b.why}`).join("\n")});
   } finally { answering = false; }
   if (name !== active) return;
   if (keep){ keptBroken.add(key); toast($("#broken"), true); return; }

@@ -171,7 +171,7 @@ curl http://127.0.0.1:8090/stats
 | `stale` | `true` when the scene's files changed since it loaded |
 | `layer_changes` | how many times the scene's program changed its layers. Read `/scene` again when it moves |
 | `locked` | what the scene's program sets: `params`, `fields` and `layers` |
-| `gpu` | `trilinear_npot`: `false` where a `trilinear` pass needs power-of-two sides ([Size and sampling](scenes.md#size-and-sampling)) |
+| `gpu` | `trilinear_npot`: `false` where a `trilinear` pass needs power-of-two sides |
 
 `?usage=1` adds `rss_mib`, `gpu_mib`, `gpu_busy`, `machine_free_mib` and
 `soc_celsius`. Each is `null` where the machine doesn't report it, such as

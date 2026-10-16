@@ -15,7 +15,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::ffi::c_int;
+use std::ffi::{c_int, c_void};
 use std::fs::File;
 use std::io::{stdout, Stdout, Write};
 use std::path::Path;
@@ -526,7 +526,7 @@ const SIGTERM: c_int = 15;
 
 extern "C" {
     fn signal(sig: c_int, handler: extern "C" fn(c_int)) -> usize;
-    fn write(fd: c_int, buf: *const u8, count: usize) -> isize;
+    fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn __errno_location() -> *mut c_int;
 }
 
@@ -539,7 +539,7 @@ extern "C" fn on_signal(sig: c_int) {
     SIGNALLED.store(sig, Ordering::SeqCst);
     unsafe {
         let errno = *__errno_location();
-        write(WAKE.load(Ordering::SeqCst), [0u8].as_ptr(), 1);
+        write(WAKE.load(Ordering::SeqCst), [0u8].as_ptr().cast(), 1);
         *__errno_location() = errno;
     }
 }

@@ -68,10 +68,11 @@ that your code skips in a frame takes its layer away, and the other calls
 keep theirs, names included. When the skipped call runs again, it adds a new
 layer, and its effects start over.
 
-This loop shows the machine's load on a 128x32 panel, which gives the screen
-its size. It draws the time, the load, a bar that fills with the load, and a
-HOT that blinks twice a second above 90%. `fps=10` holds the loop to ten
-frames a second:
+This loop shows the machine's load on a 128x32 SSD1306, and the panel
+gives the screen its size. The SSD1306 is a 1-bit panel, so the text draws
+in `mono`, every pixel on or off. The loop draws the time, the load, a bar
+that fills with the load, and a HOT that blinks twice a second above 90%.
+`fps=10` holds the loop to ten frames a second:
 
 ```python
 import os
@@ -83,13 +84,14 @@ screen = ghee.open(display="kms", fps=10)
 while True:
     load = os.getloadavg()[0] / os.cpu_count()
     with screen.draw() as d:
-        d.text(time.strftime("%H:%M"), x=0, y=0, font_size=16)
+        d.text(time.strftime("%H:%M"), x=0, y=0, font_size=16, render="mono")
         d.text(
             f"load {load:.0%}",
             x=0,
             y=20,
             font_size=8,
             font_family="Pixel Operator 8",
+            render="mono",
         )
         d.rect(
             x=64,
@@ -102,7 +104,9 @@ while True:
         d.rect(x=66, y=22, width=60 * min(load, 1), height=4)
         if load > 0.9:
             w, _ = screen.measure("HOT", font_size=12)
-            d.text("HOT", x=128 - w, y=0, font_size=12, blink={"rate": 2})
+            d.text(
+                "HOT", x=128 - w, y=0, font_size=12, render="mono", blink={"rate": 2}
+            )
 ```
 
 At 95% load:

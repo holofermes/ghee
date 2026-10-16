@@ -199,6 +199,11 @@ Careful: a buffer holds 8 bits for each of red, green, blue and alpha, on
 every GPU ([Raspberry Pi](pi.md) says why). A dimming that only multiplies
 stops short of black, so take a level, `1.0 / 255.0`, off too.
 
+A feedback pass changes its picture once a frame, so its trail is shorter
+at a higher frame rate. On a display, ghee draws at the display's pace, and
+in the console it draws as fast as it can. To keep the same trail
+everywhere, set the rate with `--fps`, such as `--fps 30`.
+
 ### Size and sampling
 
 A pass draws at the frame's size. To draw it at another size, set `size` or

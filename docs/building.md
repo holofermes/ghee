@@ -1,12 +1,14 @@
 # Build
 
-The build needs a Rust toolchain and the GLES/DRM development headers. On
-Raspberry Pi OS or Debian:
+The build needs Rust, from [rustup.rs](https://rustup.rs), and the GLES/DRM
+development headers. On Raspberry Pi OS or Debian:
 
 ```
 sudo apt install libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev
 cargo build --release
 ```
+
+The build puts the `ghee` command in `target/release/ghee`.
 
 A Python scene that this build runs takes the ghee-render wheel built from
 the same tree, from `target/lib/ghee`:

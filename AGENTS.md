@@ -32,6 +32,10 @@ a pinned reference:
 cargo run --release -- golden --manifest tools/fixtures/golden/manifest.json
 ```
 
+The manifest's references are pinned on a Raspberry Pi with VC4. On any
+other GL the check fails every scene. Off that board, render before and
+after your change on your own host and compare the bytes ([Tests](#tests)).
+
 Ask a human when a change needs hardware. Give the human a rendered reference
 image to compare against, when an image helps.
 
@@ -40,9 +44,14 @@ image to compare against, when an image helps.
 ```
 cargo build --release
 cargo test --release
-cargo clippy --release --all-targets
+cargo clippy --release --all-targets -- -D warnings
 cargo fmt
 ```
+
+Without ffmpeg, run the tests with `RUSTFLAGS="--cfg ghee_no_ffmpeg"`.
+
+A commit subject names the area, then takes the imperative, such as
+`console: name a broken edit once`.
 
 `build.rs` rebuilds the C engine when anything in `ghee/_engine/` changes, so
 the engine needs no build step of its own. Cross-compiling takes `GHEE_SYSROOT`.

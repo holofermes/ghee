@@ -523,7 +523,6 @@
   </div>
   <span class="spacer"></span>
   <div class="actions">
-    <button class="primary" id="apply">apply</button>
     <button id="save" disabled>save</button>
     <button id="reset" type="button" disabled>back to defaults</button>
     <button class="ghost" id="theme" title="toggle theme">☾</button>
@@ -641,7 +640,6 @@
   <div class="toast bad" id="offline" role="status" hidden><span>server not responding</span></div>
   <div class="toast" id="moved" role="status" title="dismiss" hidden><span></span></div>
   <div class="toast" id="refused" role="status" title="dismiss" hidden><span></span></div>
-  <div class="toast" id="newer" role="status" hidden><span>files newer</span></div>
   <div class="toast" id="stale" role="status" hidden><span>files changed</span><button type="button" title="a reload takes the new files and keeps the edits made here">reload</button></div>
   <div class="toast" id="behind" role="status" hidden><span>this scene changed since you loaded it</span><button type="button" title="read the scene as it is now">reload</button></div>
   <div class="toast" id="broken" role="status" hidden><span>saved edits do not build</span><button type="button" title="what does not build, and drop them">show</button></div>
@@ -935,7 +933,7 @@ const hasEdits = () => Object.keys(E.values || {}).length > 0 || (E.items || [])
 function paintStatus(){
   $("#save").disabled = !E.unsaved;
   $("#reset").disabled = !hasEdits();
-  $("#apply").disabled = $("#prev").disabled = $("#next").disabled = !active;
+  $("#prev").disabled = $("#next").disabled = !active;
   $("#addToggle").hidden = !active;
   if (!active) $("#addRow").classList.remove("show");
 }
@@ -3281,16 +3279,6 @@ CODE.ta.addEventListener("input", ()=>{
 });
 
 // top-bar actions
-let newerTimer = null;
-$("#apply").addEventListener("click", async ()=>{
-  if (onCommon()) setCommon(CODE.ta.value);
-  else work.passes[curPass].fragment = CODE.ta.value;
-  await postScene();
-  if (staleScene){   // allowed: apply never writes disk, it just ignores the newer files
-    popUp($("#newer"));
-    clearTimeout(newerTimer); newerTimer = setTimeout(()=>toast($("#newer"), false), 1400);
-  }
-});
 // Save writes the working copy's edits to the scene's state file on the
 // device. A save's refusal shows until a save succeeds, and saveErr holds it.
 let saveErr = "";

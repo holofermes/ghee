@@ -63,7 +63,8 @@ its defaults: `glow={}`.
 
 The layers stay from frame to frame, so a blink or a scroll keeps moving.
 ghee knows each call by its line of code, and each frame's calls state the
-whole picture. A key that a call leaves out goes back to its default. A call
+whole picture. A key that a call leaves out takes its default, or the value
+you gave it in the [console](#the-console-from-python). A call
 that your code skips in a frame takes its layer away, and the other calls
 keep theirs, names included. When the skipped call runs again, it adds a new
 layer, and its effects start over.
@@ -329,10 +330,11 @@ these types:
 
 ## The console from Python
 
-When your code changes a scene's params or layers, and the scene is served in
-the [console](console.md), the console stops you editing those values as soon
-as your code changes them. To serve the console from `ghee.open`, pass
-`serve=8090` and open `http://127.0.0.1:8090`.
+To serve the [console](console.md) from `ghee.open`, pass `serve=8090` and
+open `http://127.0.0.1:8090`. The console stops you editing each param and
+layer key that your code sets, as soon as your code sets it. In a drawing,
+those are the keys that each call passes. To try values for a key in the
+console, leave it out of the call: your value stays from frame to frame.
 
 ## Building a scene in Python
 

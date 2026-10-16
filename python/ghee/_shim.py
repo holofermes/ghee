@@ -545,10 +545,10 @@ class _Wire:
     def _send(self, kind: int, wire: str, text: str) -> None:
         _send(kind, wire, text)
 
-    def _add_layer(self, pass_: str, index: int, layer: dict) -> None:
+    def _add_layer(self, pass_: str, index: int, layer: dict, keys: list) -> None:
         _send(*_live().add(pass_, index, layer))
 
-    def _update_layer(self, layer: dict) -> None:
+    def _update_layer(self, layer: dict, keys: list) -> None:
         message = _live().update(layer)
         if message is not None:
             _send(*message)

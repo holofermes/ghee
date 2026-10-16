@@ -126,8 +126,10 @@ the console greys out its control. A layer added by
 a program is also locked on the frontend.
 
 When your Python program serves the console, with `ghee.open(serve=...)`,
-the console greys out whatever the program sets, the same way. That console
-can't switch scenes or save ([Python](python.md#the-console-from-python)).
+the console greys out each param and layer key that the program sets. A
+drawing sets the keys that its calls pass, and the console keeps your
+values for the rest. That console can't switch scenes or save
+([Python](python.md#the-console-from-python)).
 
 ## From another computer
 

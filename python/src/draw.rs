@@ -402,6 +402,18 @@ struct Changed {
     values: Py<PyTuple>,
 }
 
+/// The keys that the call `c` gives, in the order of its kind's keywords.
+fn given(py: Python<'_>, c: &Changed) -> Vec<&'static str> {
+    let values = c.values.bind(py).iter();
+    c.kind
+        .keys()
+        .iter()
+        .zip(values)
+        .filter(|(_, v)| !v.is_none())
+        .map(|(k, _)| *k)
+        .collect()
+}
+
 /// One frame of a screen, the block of `with screen.draw() as d:`, or of
 /// the scene that run() runs, the block of `with ghee.draw() as d:` in a
 /// tick or a feed.
@@ -416,13 +428,13 @@ struct Changed {
 /// and the drawing paints over the scene's own layers there, in the order
 /// of the calls.
 ///
-/// Each frame states the whole look of each call: a keyword left out takes
-/// its default again. A call keeps its layer from frame to frame by the line
-/// of code that makes it and its count from that line in the frame, or by
-/// its `name`, which names the layer too. A call with no name names its
-/// layer after its kind: text, text2, image, rect, line, circle. Two calls
-/// that draw one layer in a frame raise ValueError, and a `name` that is no
-/// str raises TypeError.
+/// Each frame states the whole look of each call: a keyword left out takes its
+/// default again, or the value that a console gave it. A call keeps its layer
+/// from frame to frame by the line of code that makes it and its count from
+/// that line in the frame, or by its `name`, which names the layer too. A call
+/// with no name names its layer after its kind: text, text2, image, rect, line,
+/// circle. Two calls that draw one layer in a frame raise ValueError, and a
+/// `name` that is no str raises TypeError.
 ///
 /// Leaving the block sends ghee what changed: a live field changes live,
 /// any other change builds that layer alone again, a call that runs for the
@@ -648,7 +660,8 @@ impl Drawing {
         let named = PyDict::new(py);
         named.set_item("name", &name)?;
         named.update(look.cast::<PyDict>()?.as_mapping())?;
-        handle.call_method1("_add_layer", (pass, index, &named))?;
+        let keys = given(py, &c);
+        handle.call_method1("_add_layer", (pass, index, &named, keys))?;
         let mut s = self.screen.bind(py).borrow_mut();
         if c.layer.is_none() {
             s.slot(c.key).named = Some(n);
@@ -696,7 +709,7 @@ impl Drawing {
             _ => false,
         };
         if !same_look {
-            handle.call_method1("_update_layer", (&look,))?;
+            handle.call_method1("_update_layer", (&look, given(py, &c)))?;
         }
         self.screen.bind(py).borrow_mut().held[n as usize].look = Some(look.unbind());
         self.took(py, c)

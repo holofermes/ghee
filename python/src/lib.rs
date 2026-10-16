@@ -445,21 +445,28 @@ impl Handle {
     }
 
     /// Add `layer`, a layer as a scene declares it, at `index` among the
-    /// layers of pass `pass`, with no rebuild.
-    fn _add_layer(&mut self, pass: &str, index: usize, layer: &Bound<'_, PyAny>) -> PyResult<()> {
+    /// layers of pass `pass`, with no rebuild. `keys` are the keys that the
+    /// drawing's call gives.
+    fn _add_layer(
+        &mut self,
+        pass: &str,
+        index: usize,
+        layer: &Bound<'_, PyAny>,
+        keys: Vec<String>,
+    ) -> PyResult<()> {
         let layer = to_json(layer)?;
         self.held
             .get()?
-            .add_layer(pass, index, &layer)
+            .add_layer(pass, index, &layer, &keys)
             .map_err(fault)
     }
 
     /// Give the layer of the name of `layer` the look of `layer`, live where
-    /// the change is live and rebuilt alone otherwise. False when the layer
-    /// had that look.
-    fn _update_layer(&mut self, layer: &Bound<'_, PyAny>) -> PyResult<bool> {
+    /// the change is live and rebuilt alone otherwise. `keys` are the keys
+    /// that the drawing's call gives. False when the layer had that look.
+    fn _update_layer(&mut self, layer: &Bound<'_, PyAny>, keys: Vec<String>) -> PyResult<bool> {
         let layer = to_json(layer)?;
-        self.held.get()?.update_layer(&layer).map_err(fault)
+        self.held.get()?.update_layer(&layer, &keys).map_err(fault)
     }
 
     /// Take layer `name` out of the scene, with no rebuild.

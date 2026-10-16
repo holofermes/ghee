@@ -83,13 +83,13 @@ class Drawing:
     and the drawing paints over the scene's own layers there, in the order
     of the calls.
 
-    Each frame states the whole look of each call: a keyword left out takes
-    its default again. A call keeps its layer from frame to frame by the line
-    of code that makes it and its count from that line in the frame, or by
-    its `name`, which names the layer too. A call with no name names its
-    layer after its kind: text, text2, image, rect, line, circle. Two calls
-    that draw one layer in a frame raise ValueError, and a `name` that is no
-    str raises TypeError.
+    Each frame states the whole look of each call: a keyword left out takes its
+    default again, or the value that a console gave it. A call keeps its layer
+    from frame to frame by the line of code that makes it and its count from
+    that line in the frame, or by its `name`, which names the layer too. A call
+    with no name names its layer after its kind: text, text2, image, rect, line,
+    circle. Two calls that draw one layer in a frame raise ValueError, and a
+    `name` that is no str raises TypeError.
 
     Leaving the block sends ghee what changed: a live field changes live,
     any other change builds that layer alone again, a call that runs for the

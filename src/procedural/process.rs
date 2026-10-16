@@ -483,9 +483,10 @@ pub(crate) fn dotted(at: &Address) -> String {
 
 /// What the program of a scene set, a scene process or a host of the
 /// console: each param, a scene param by its name and a param of a pass as
-/// `pass.name`, each live field of a layer as `layer.field` or
-/// `layer.effect.field`, and each layer that the program added or gave a
-/// look, every field of it. A console refuses to set what the program set.
+/// `pass.name`, each field of a layer as `layer.field` or
+/// `layer.effect.field`, each effect whole as `layer.effect`, and each layer
+/// that the program added or gave a look, every field of it. A console
+/// refuses to set what the program set.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Locks {
     params: HashSet<String>,
@@ -516,16 +517,28 @@ impl Locks {
         self.params.contains(&param_name(pass, name))
     }
 
-    /// Whether the program set the live field `at`, or its whole layer.
+    /// Whether the program set the live field `at`, its whole effect or its
+    /// whole layer.
     pub fn field(&self, at: &Address) -> bool {
-        self.layer(at.layer) || self.fields.contains(&dotted(at))
+        self.layer(at.layer) || self.field_set(at).is_some()
     }
 
-    /// Whether the program set a field of the effect `effect` of layer
-    /// `layer`.
+    /// The name of what the program set that holds the field `at`: the
+    /// field or its whole effect. None when the program set neither.
+    fn field_set(&self, at: &Address) -> Option<String> {
+        let whole = at.effect.map(|e| format!("{}.{e}", at.layer));
+        [Some(dotted(at)), whole]
+            .into_iter()
+            .flatten()
+            .find(|f| self.fields.contains(f))
+    }
+
+    /// Whether the program set the effect `effect` of layer `layer` whole,
+    /// or a field of it.
     pub fn effect(&self, layer: &str, effect: &str) -> bool {
-        let at = format!("{layer}.{effect}.");
-        self.fields.iter().any(|f| f.starts_with(&at))
+        let whole = format!("{layer}.{effect}");
+        let at = format!("{whole}.");
+        self.fields.contains(&whole) || self.fields.iter().any(|f| f.starts_with(&at))
     }
 
     /// Whether the program set every field of layer `name`.
@@ -547,14 +560,11 @@ impl Locks {
     /// Why a console refuses to set the live field `at`, or None when the
     /// program never set it or its layer.
     pub fn field_refusal(&self, at: &Address) -> Option<String> {
-        match (self.layer(at.layer), self.fields.contains(&dotted(at))) {
-            (true, _) => Some(format!("the scene's program sets layer '{}'", at.layer)),
-            (false, true) => Some(format!(
-                "the scene's program sets layer field '{}'",
-                dotted(at)
-            )),
-            (false, false) => None,
+        if self.layer(at.layer) {
+            return Some(format!("the scene's program sets layer '{}'", at.layer));
         }
+        self.field_set(at)
+            .map(|f| format!("the scene's program sets layer field '{f}'"))
     }
 
     /// `{params, fields, layers}`, each a sorted list of names.

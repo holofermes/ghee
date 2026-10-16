@@ -416,14 +416,14 @@ def test_the_console_locks_what_the_host_sets_and_the_rest_still_edits():
             d.text("12:00", font_size=8)
         assert json_of(port, "/stats")["locked"] == {
             "params": ["main.gain"],
-            "fields": ["title.x"],
-            "layers": ["text"],
+            "fields": ["text.font_size", "text.text", "title.x"],
+            "layers": [],
         }
         for path, key in [
             ("/set?pass=main&name=gain&value=1", "param 'main.gain'"),
             ("/set?name=gain&value=1", "param 'main.gain'"),
             ("/set?layer=title&field=x&value=1", "layer field 'title.x'"),
-            ("/set?layer=text&field=text&value=ho", "layer 'text'"),
+            ("/set?layer=text&field=text&value=ho", "layer field 'text.text'"),
         ]:
             with pytest.raises(urllib.error.HTTPError) as raised:
                 post(port, path)
@@ -441,6 +441,48 @@ def test_the_console_locks_what_the_host_sets_and_the_rest_still_edits():
         h.frame()
         title, text = json_of(port, "/scene")["passes"][0]["layers"]
         assert (title["x"], title["opacity"], text["text"]) == (3, 0.5, "12:00")
+
+
+def test_a_drawing_locks_the_keys_it_passes_and_the_console_keeps_the_rest():
+    port = free_port()
+    with ghee.open(copy.deepcopy(RED), width=32, height=16, serve=port) as h:
+
+        def draw(words):
+            with h.draw() as d:
+                d.text(words, x=1, font_size=8, glow={})
+
+        def text():
+            return json_of(port, "/scene")["passes"][0]["layers"][0]
+
+        draw("a")
+        assert json_of(port, "/stats")["locked"]["fields"] == [
+            "text.font_size",
+            "text.glow",
+            "text.text",
+            "text.x",
+        ]
+        for path, key in [
+            ("/set?layer=text&field=x&value=5", "text.x"),
+            ("/set?layer=text&effect=glow&field=strength&value=0.5", "text.glow"),
+        ]:
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                post(port, path)
+            assert raised.value.code == 403, path
+            assert raised.value.read().decode().endswith(f"'{key}'"), path
+        assert post(port, "/set?layer=text&field=opacity&value=0.5")[0] == 200
+        draw("b")
+        looked = json_of(port, "/scene")
+        looked["passes"][0]["layers"][0].update(text_align="center", x=7)
+        assert post_json(port, "/scene", looked)[0] == 200
+        for words in "cde":
+            draw(words)
+        got = text()
+        assert (got["text"], got["x"], got["opacity"], got["text_align"]) == (
+            "e",
+            1,
+            0.5,
+            "center",
+        )
 
 
 def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():

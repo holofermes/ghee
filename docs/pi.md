@@ -25,7 +25,6 @@ For a scene that must run on every Pi, keep to the VC4 column.
 | a frame, a pass, an image or an [array](scenes.md#arrays) | 2048 pixels a side at most | 4096 pixels a side at most |
 | the values of an [array](scenes.md#arrays) that a program feeds | 8 bits each, so a value outside 0 to 1 clamps | 32-bit floats |
 | a [data file](scenes.md#data-files), `.raw`, in `f32` | fails to load, so use `u8` | loads, and is read `nearest` |
-| a `trilinear` pass | needs sides that are powers of two, such as `[256, 128]`, under Raspberry Pi OS's Mesa | any size |
 | GPU memory | set aside at boot ([GPU memory](#gpu-memory)) | the system's RAM |
 
 To fill an HDMI screen larger than 2048 pixels on VC4, draw at 1920x1080 or

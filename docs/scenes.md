@@ -223,10 +223,6 @@ bottom and smaller at the top:
 | `linear` | the four pixels around the point, blended | a buffer read at its size or bigger |
 | `trilinear` | smaller copies of the buffer too, made after each frame | a buffer read smaller than it is, which breaks into patterns under `linear` |
 
-Careful: on a Pi Zero to Pi 3, a `trilinear` pass needs a `size` whose sides are
-powers of two, such as `[256, 128]`, or the scene fails to load
-([Raspberry Pi](pi.md)).
-
 ## Params
 
 A param is a named value that a pass reads, and that you change at

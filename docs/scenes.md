@@ -74,7 +74,7 @@ You can use these GLSL names in every pass:
 | `vec3 iOutputResolution` | the frame's width and height in pixels, and 1 |
 | `sampler2D iChannel0`, `iChannel1`, ... | the buffer of each [channel](#channels) |
 | `vec3 iChannelResolution[i]` | the width and height of channel i's buffer, and 1 |
-| `float ghee_hash(p)` | a random value from 0 to 1 for a `float`, `vec2` or `vec3` `p`, the same on every GPU |
+| `float ghee_hash(p)` | a random value from 0 to 1 for a `float`, `vec2` or `vec3` `p`, the same on every GPU. It reads `p` to the nearest 1/2048, and a `vec2` or `vec3` repeats every 4096 along each axis |
 | `float ghee_noise(p)` | smooth noise from 0 to 1 for a `vec2` or `vec3` `p`, built on `ghee_hash` |
 
 `uv` and `gl_FragCoord` sit on the exact centre of the pixel on every GPU.
@@ -381,6 +381,10 @@ or `bars.sh` beside `bars.scene.json`, runs in its place, even when you give
 
 Careful: procedural scenes are executables, and ghee runs them. Only put
 directories you trust on `$GHEE_SCENES`.
+
+ghee keeps the examples that `--demo` unpacks, its glyph atlases and the
+index of the `ghee-render` wheel in its cache, `~/.cache/ghee` by default,
+or `ghee` in `$XDG_CACHE_HOME`. To move it, set `$GHEE_CACHE`.
 
 You can give `ghee serve` the same forms. Give it a folder, and it serves
 every scene in it. With no scene, it serves the scenes that you make in the

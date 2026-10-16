@@ -214,7 +214,8 @@ With `alpha=True`, ghee keeps the transparency drawn by the scene.
 `save()` give it unpremultiplied. A half-transparent orange pixel reads
 (128, 64, 0, 128) from `pixels()`, and (255, 128, 0, 128) from `image()` and
 `save()`. To get the same form from every output, set `alpha="premultiplied"` or
-`alpha="unpremultiplied"`.
+`alpha="unpremultiplied"`. With `alpha="premultiplied"`, `image()` gives a
+Pillow image in mode `RGBa`, Pillow's name for premultiplied RGBA.
 
 `screen.brightness` sets a display's brightness, from 0 to 1.
 

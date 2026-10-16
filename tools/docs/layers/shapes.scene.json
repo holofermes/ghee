@@ -7,8 +7,9 @@
       { "name": "frame", "shape": "rect", "x": 0, "y": 24, "width": 128, "height": 8,
         "color": "transparent", "border_radius": 4, "border": { "width": 1, "color": "white" } },
       { "name": "fill", "shape": "rect", "x": 2, "y": 26, "width": 60, "height": 4, "border_radius": 2 },
-      { "name": "scope", "shape": "line", "points": [[0, 12], [16, 4], [32, 16], [48, 8], [64, 18], [80, 2], [96, 14], [112, 6], [127, 12]],
-        "color": "lime" }
+      { "name": "scope", "shape": "line", "points": [[0, 12], [16, 4], [32, 16], [48, 8], [64, 18], [80, 2], [96, 12]],
+        "color": "lime" },
+      { "name": "dot", "shape": "circle", "x": 106, "y": 3, "radius": 8, "color": "orange" }
     ]
   }]
 }

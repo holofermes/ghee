@@ -311,8 +311,9 @@ lands.
 - Rename is a pencil that opens the console's dialog. Removing a pass or a
   layer asks first in the same dialog.
 - An edit applies at once to the working copy that ghee holds of the
-  scene, which every open page shows, and Save keeps it on the device, in
-  the scene's state file. The page keeps no copy of its own.
+  scene, which every open page shows. Save writes a scene of the user's own
+  to its files, and any other scene's edits to its state file on the device.
+  The page keeps no copy of its own.
 
 ## Names
 
@@ -326,9 +327,9 @@ each one for a reader who has never seen ghee.
 - Where CSS has a word for a value, use it too: a colour takes CSS's colour
   names, such as `navy` and `transparent`, in any case, beside `#rrggbb` and
   three numbers.
-- Everywhere else, use a plain word: a shape layer holds `shape`, `rect` or
-  `line`, and a line its `points`. A name never asks a newcomer to decode
-  jargon such as pixels per em.
+- Everywhere else, use a plain word: a shape layer holds `shape`, `rect`,
+  `line` or `circle`, and a line its `points`. A name never asks a newcomer
+  to decode jargon such as pixels per em.
 - `vertex` and `fragment` name shader stages and nothing else.
 - A value is plain keys, never a small syntax inside a string: `x` and `y` as
   two keys, a gradient as `{"from", "to", "angle"}`, an effect as an object

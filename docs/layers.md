@@ -212,7 +212,8 @@ block, like pixel art. For smooth scaling, declare the image as an asset with
 
 To draw a rect, a line or a circle, use a shape layer with `"shape"` set to
 `"rect"`, `"line"` or `"circle"`. These draw a progress bar with round ends
-along the bottom of a 128x32 panel, and a lime line above it:
+along the bottom of a 128x32 panel, a lime line above it, and an orange dot
+at the right:
 
 ```json
 "layers": [
@@ -221,11 +222,12 @@ along the bottom of a 128x32 panel, and a lime line above it:
   { "name": "fill", "shape": "rect", "x": 2, "y": 26, "width": 60, "height": 4,
     "border_radius": 2 },
   { "name": "scope", "shape": "line", "color": "lime",
-    "points": [[0, 12], [16, 4], [32, 16], [48, 8], [64, 18], [80, 2], [96, 14], [112, 6], [127, 12]] }
+    "points": [[0, 12], [16, 4], [32, 16], [48, 8], [64, 18], [80, 2], [96, 12]] },
+  { "name": "dot", "shape": "circle", "x": 106, "y": 3, "radius": 8, "color": "orange" }
 ]
 ```
 
-![a progress bar with round ends along the bottom, and a lime line across the panel above it](../media/layers/shapes.png)
+![a progress bar with round ends along the bottom, a lime line above it, and an orange dot at the right](../media/layers/shapes.png)
 
 | Key | Values | Default | What it changes |
 | --- | --- | --- | --- |

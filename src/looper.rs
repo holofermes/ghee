@@ -81,6 +81,12 @@ pub trait RenderTarget {
         Err(Refused(format!("this renderer draws no layer '{name}'")).into())
     }
 
+    /// The layer `name` of the running scene, written as a scene declares
+    /// it. None when the target draws no layer of that name.
+    fn layer(&self, _name: &str) -> Option<Value> {
+        None
+    }
+
     /// Give the layers of `calls` their looks, as Renderer::update_calls()
     /// does. A target that draws no layers leaves every call for
     /// update_layer().
@@ -183,6 +189,10 @@ impl RenderTarget for Renderer {
 
     fn update_layer(&mut self, layer: &Value) -> Result<bool> {
         Renderer::update_layer(self, layer)
+    }
+
+    fn layer(&self, name: &str) -> Option<Value> {
+        self.with_layer(name, |_, l| l.to_dict())
     }
 
     fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {

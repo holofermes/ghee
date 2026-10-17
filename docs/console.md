@@ -121,15 +121,12 @@ out with `..`, fails to load there, even though `ghee render` loads it.
 
 ## What a program locks
 
-When a [procedural scene](procedural.md)'s program sets a param or a layer,
-the console greys out its control. A layer added by
-a program is also locked on the frontend.
+When a [procedural scene](procedural.md) runs, the console locks each param
+and layer key that its program sets.
 
-When your Python program serves the console, with `ghee.open(serve=...)`,
-the console greys out each param and layer key that the program sets. A
-drawing sets the keys that its calls pass, and the console keeps your
-values for the rest. That console can't switch scenes or save
-([Python](python.md#the-console-from-python)).
+When your Python program serves the console, with
+`ghee.open(serve=...)`, the console locks each param and layer key that the
+program sets. That console can't switch scenes or save.
 
 ## From another computer
 

@@ -8,19 +8,20 @@
 //! The engine is thread-affine, so a Session belongs to the thread that built
 //! it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
 use ghee::console::server::{coerce, gpu_caps, H264_FPS};
-use ghee::draw::{call_of, Arg, Call, CallKind};
+use ghee::draw::{Arg, Call, CallKind};
 use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
 use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, AlphaForm, FixedPacer};
+use ghee::procedural::locks::{call_keys, look_keys, Tuned};
 use ghee::procedural::{load_scene, process, scene_name};
 use ghee::scene::{no_layer, no_param, short_floats, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
@@ -363,9 +364,8 @@ pub struct Session {
     /// The host changed which layers the scene holds, or a layer's kind,
     /// since the console last took the scene.
     grown: bool,
-    /// The keys of each layer that a console changed, a field or an effect
-    /// by its name, as a drawing's call names them.
-    edited: HashMap<String, HashSet<String>>,
+    /// The keys of layers that a console changed.
+    tuned: Tuned,
 }
 
 /// The value of each param of `scene`, by the name that a tick gives it, and
@@ -681,7 +681,7 @@ impl Session {
             changed: Vec::new(),
             set: Vec::new(),
             grown: false,
-            edited: HashMap::new(),
+            tuned: Tuned::default(),
         })
     }
 
@@ -1044,20 +1044,14 @@ impl Session {
 
     /// Add `layer`, a layer as a scene declares it, at `index` among the
     /// layers of pass `pass`, with no rebuild. Its words, when it has them,
-    /// are the host's own, and so are its keys `keys`.
-    pub fn add_layer(
-        &mut self,
-        pass: &str,
-        index: usize,
-        layer: &Value,
-        keys: &[String],
-    ) -> Outcome<()> {
+    /// are the host's own, and so are its keys.
+    pub fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Outcome<()> {
         self.renderer
             .add_layer(pass, index, layer)
             .map_err(refusal)?;
         self.took(layer);
         if let Some(name) = layer.get("name").and_then(Value::as_str) {
-            self.lock(name, keys.iter().map(String::as_str));
+            self.lock(name, look_keys(layer));
         }
         self.grown = true;
         Ok(())
@@ -1072,7 +1066,7 @@ impl Session {
         let text = format!("{name}.text");
         self.values.remove(&text);
         self.sent.remove(&text);
-        self.edited.remove(name);
+        self.tuned.forget(name);
         self.grown = true;
         Ok(())
     }
@@ -1086,22 +1080,24 @@ impl Session {
     }
 
     /// Give the layer of the name of `layer` its look, as
-    /// Renderer::update_layer() does, where the host gives the keys `keys`
-    /// and each other key that a console changed keeps the console's value.
-    /// False when the layer had it already.
-    pub fn update_layer(&mut self, layer: &Value, keys: &[String]) -> Outcome<bool> {
+    /// Renderer::update_layer() does, where each key that `layer` leaves out
+    /// and a console changed keeps the console's value. The keys of `layer`
+    /// are the host's own. False when the layer had that look already.
+    pub fn update_layer(&mut self, layer: &Value) -> Outcome<bool> {
         let name = layer.get("name").and_then(Value::as_str);
-        let kept = name.and_then(|n| self.kept_look(n, layer, keys));
-        let layer = kept.as_ref().unwrap_or(layer);
-        let changed = self.renderer.update_layer(layer).map_err(refusal)?;
+        let kept = self
+            .tuned
+            .look(layer, |n| RenderTarget::layer(&self.renderer, n));
+        let look = kept.as_ref().unwrap_or(layer);
+        let changed = self.renderer.update_layer(look).map_err(refusal)?;
         if changed {
-            self.took(layer);
+            self.took(look);
             if let Some(name) = name {
                 self.note(name);
             }
         }
         if let Some(name) = name {
-            self.lock(name, keys.iter().map(String::as_str));
+            self.lock(name, look_keys(layer));
         }
         Ok(changed)
     }
@@ -1112,19 +1108,13 @@ impl Session {
     /// changed its layer as the host's own. Returns the indexes of the calls
     /// left for update_layer().
     pub fn update_calls(&mut self, calls: &[Call]) -> Outcome<Vec<usize>> {
-        let kept: Vec<Option<Call>> = calls.iter().map(|c| self.kept(c)).collect();
-        let taken = match kept.iter().any(Option::is_some) {
-            true => {
-                let calls: Vec<Call> = calls
-                    .iter()
-                    .zip(kept)
-                    .map(|(c, k)| k.unwrap_or_else(|| c.clone()))
-                    .collect();
-                self.renderer.update_calls(&calls)
-            }
-            false => self.renderer.update_calls(calls),
-        }
-        .map_err(refusal)?;
+        let kept = self
+            .tuned
+            .calls(calls, |n| RenderTarget::layer(&self.renderer, n));
+        let taken = self
+            .renderer
+            .update_calls(kept.as_deref().unwrap_or(calls))
+            .map_err(refusal)?;
         for call in taken.changed.iter().map(|&k| &calls[k]) {
             if let (CallKind::Text, Some(Arg::Str(words))) = (call.kind, call.args.first()) {
                 self.held_words(&call.layer, Value::from(words.as_str()), true);
@@ -1135,63 +1125,17 @@ impl Session {
         }
         for (k, call) in calls.iter().enumerate() {
             if !taken.left.contains(&k) {
-                let keys = call.kind.keys().iter().zip(&call.args);
-                self.lock(
-                    &call.layer,
-                    keys.filter(|(_, a)| **a != Arg::None).map(|(k, _)| *k),
-                );
+                self.lock(&call.layer, call_keys(call));
             }
         }
         Ok(taken.left)
     }
 
-    /// `call` with each key that it leaves out and a console changed at the
-    /// value of its layer, None when it leaves out no such key.
-    fn kept(&self, call: &Call) -> Option<Call> {
-        let edited = self.edited.get(&call.layer)?;
-        let now = self.renderer.with_layer(&call.layer, |_, l| l.to_dict())?;
-        let mut kept = call.clone();
-        let mut any = false;
-        for (key, arg) in call.kind.keys().iter().zip(&mut kept.args) {
-            if let (Arg::None, true, Some(v)) = (&*arg, edited.contains(*key), now.get(*key)) {
-                *arg = Arg::of_json(v);
-                any = true;
-            }
-        }
-        any.then_some(kept)
-    }
-
-    /// `look`, the look that the host gives layer `name` with the keys
-    /// `keys`, with each other key of its kind that a console changed at the
-    /// value of the layer. None when there is no such key.
-    fn kept_look(&self, name: &str, look: &Value, keys: &[String]) -> Option<Value> {
-        let edited = self.edited.get(name)?;
-        let kind = call_of(look)?.kind;
-        let now = self.renderer.with_layer(name, |_, l| l.to_dict())?;
-        let mut kept = look.clone();
-        let into = kept.as_object_mut()?;
-        let mut any = false;
-        for key in kind.keys().iter().filter(|k| edited.contains(**k)) {
-            if let (false, Some(v)) = (keys.iter().any(|k| k == key), now.get(*key)) {
-                into.insert(key.to_string(), v.clone());
-                any = true;
-            }
-        }
-        any.then_some(kept)
-    }
-
-    /// Lock the keys `keys` of layer `name` in a console, each a field or
-    /// an effect: the host gave them.
-    fn lock<'a>(&self, name: &str, keys: impl Iterator<Item = &'a str>) {
+    /// Lock the keys `keys` of layer `name` in a console: the host gave
+    /// them.
+    fn lock(&self, name: &str, keys: Vec<&str>) {
         if let Some(c) = &self.console {
-            let mut locks = c.locks();
-            for field in keys {
-                locks.set_field(&Address {
-                    layer: name,
-                    effect: None,
-                    field,
-                });
-            }
+            c.locks().set_keys(name, keys);
         }
     }
 
@@ -1325,11 +1269,7 @@ impl Session {
             self.renderer
                 .set_layer(&set.at(), Given::Json(&set.value))
                 .map_err(system_fault)?;
-            let key = set.effect.as_deref().unwrap_or(&set.field);
-            self.edited
-                .entry(set.layer.clone())
-                .or_default()
-                .insert(key.to_string());
+            self.tuned.set(&set.at());
             // A text layer alone takes a `text`.
             if let (None, "text") = (set.effect.as_deref(), set.field.as_str()) {
                 self.held_words(&set.layer, set.value.clone(), false);
@@ -1367,51 +1307,17 @@ impl Session {
         Ok(())
     }
 
-    /// `look`, the look that an apply gives a layer, with each key that the
-    /// host gave at the layer's value, and hold each other key whose value
-    /// differs from the layer's as a console's own.
-    fn applied(&mut self, mut look: Value) -> Value {
-        let Some(name) = look.get("name").and_then(Value::as_str).map(str::to_string) else {
-            return look;
-        };
+    /// `look`, the look that an apply gives a layer, as Tuned::applied()
+    /// keeps it.
+    fn applied(&mut self, look: Value) -> Value {
+        let name = look.get("name").and_then(Value::as_str);
         let (Some(console), Some(now)) = (
             self.console.as_ref(),
-            self.renderer.with_layer(&name, |_, l| l.to_dict()),
+            name.and_then(|n| RenderTarget::layer(&self.renderer, n)),
         ) else {
             return look;
         };
-        let (Some(now), Some(into)) = (now.as_object(), look.as_object_mut()) else {
-            return look;
-        };
-        let mut keys: Vec<String> = now.keys().chain(into.keys()).cloned().collect();
-        keys.sort_unstable();
-        keys.dedup();
-        let locks = console.locks();
-        let mut edited = Vec::new();
-        for key in keys {
-            let at = Address {
-                layer: &name,
-                effect: None,
-                field: &key,
-            };
-            if locks.field(&at) {
-                match now.get(&key) {
-                    Some(v) => into.insert(key, v.clone()),
-                    None => into.remove(&key),
-                };
-                continue;
-            }
-            let (mut a, mut b) = (now.get(&key).cloned(), into.get(&key).cloned());
-            a.iter_mut().chain(b.iter_mut()).for_each(short_floats);
-            if a != b {
-                edited.push(key);
-            }
-        }
-        drop(locks);
-        if !edited.is_empty() {
-            self.edited.entry(name).or_default().extend(edited);
-        }
-        look
+        self.tuned.applied(look, &now, &console.locks())
     }
 
     /// The layers named `changed`, whole, and the values of the params of

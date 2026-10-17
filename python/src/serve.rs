@@ -37,7 +37,7 @@ use ghee::console::state;
 use ghee::h264::{no_encoder, ColorSpace, SoftwareH264, SW_COLOR};
 use ghee::looper::Frame;
 use ghee::output::{encode_jpeg, encode_png};
-use ghee::procedural::process::Locks;
+use ghee::procedural::locks::Locks;
 use ghee::scene::{ParamValue, Scene};
 use ghee::stats::{monotonic, FrameRate, DEST_H264};
 use serde_json::{Map, Value};

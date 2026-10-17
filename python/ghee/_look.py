@@ -164,12 +164,14 @@ _CALL_SHAPES = (None, "rect", None, "line", "circle")
 
 def _call_look(kind: int, vals: tuple, name: str | None) -> dict:
     """The look of a call of `kind` with `vals`, as the scene format writes
-    it, under `name`, or with no name for None."""
+    it, under `name`, or with no name for None. The look holds each key that
+    the call gives, a key at its default too, and no other."""
     given = {k: v for k, v in zip(_CALL_KEYS[kind], vals) if v is not None}
     shape = _CALL_SHAPES[kind]
     if shape is not None:
         given["shape"] = shape
-    return _look({**_FIELDS, **given}, name)
+    look = _look({**_FIELDS, **given}, name)
+    return {**look, **{k: v for k, v in given.items() if k not in look}}
 
 
 def _circle(centre, radius) -> tuple:

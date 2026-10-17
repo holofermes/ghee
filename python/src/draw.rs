@@ -402,18 +402,6 @@ struct Changed {
     values: Py<PyTuple>,
 }
 
-/// The keys that the call `c` gives, in the order of its kind's keywords.
-fn given(py: Python<'_>, c: &Changed) -> Vec<&'static str> {
-    let values = c.values.bind(py).iter();
-    c.kind
-        .keys()
-        .iter()
-        .zip(values)
-        .filter(|(_, v)| !v.is_none())
-        .map(|(k, _)| *k)
-        .collect()
-}
-
 /// One frame of a screen, the block of `with screen.draw() as d:`, or of
 /// the scene that run() runs, the block of `with ghee.draw() as d:` in a
 /// tick or a feed.
@@ -660,8 +648,7 @@ impl Drawing {
         let named = PyDict::new(py);
         named.set_item("name", &name)?;
         named.update(look.cast::<PyDict>()?.as_mapping())?;
-        let keys = given(py, &c);
-        handle.call_method1("_add_layer", (pass, index, &named, keys))?;
+        handle.call_method1("_add_layer", (pass, index, &named))?;
         let mut s = self.screen.bind(py).borrow_mut();
         if c.layer.is_none() {
             s.slot(c.key).named = Some(n);
@@ -709,7 +696,7 @@ impl Drawing {
             _ => false,
         };
         if !same_look {
-            handle.call_method1("_update_layer", (&look, given(py, &c)))?;
+            handle.call_method1("_update_layer", (&look,))?;
         }
         self.screen.bind(py).borrow_mut().held[n as usize].look = Some(look.unbind());
         self.took(py, c)

@@ -41,7 +41,7 @@ use crate::h264::{
 use crate::layer::Address;
 use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
-use crate::procedural::process::Locks;
+use crate::procedural::locks::Locks;
 use crate::scene::{ArraySize, Param, ParamValue, Reach, Scene};
 use crate::sources::{collect, Snapshot};
 use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG};
@@ -449,8 +449,8 @@ impl WorkingCopy {
     }
 }
 
-/// Take out of `values`, the values of a scene's edits, each param, layer
-/// and live field that `locks` holds, and the removal of an effect that
+/// Take out of `values`, the values of a scene's edits, each param and
+/// field of a layer that `locks` holds, and the removal of an effect that
 /// holds such a field.
 pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
     fn take(map: &mut Map<String, Value>, mut out: impl FnMut(&str, &mut Value) -> bool) -> bool {
@@ -484,29 +484,28 @@ pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
     if let Some(Value::Object(layers)) = values.get_mut("layers") {
         let gone = take(layers, |layer, v| {
             let Value::Object(fields) = v else {
-                return locks.layer(layer);
+                return false;
             };
-            locks.layer(layer)
-                || take(fields, |key, value| {
-                    let own = Address {
-                        layer,
-                        effect: None,
-                        field: key,
-                    };
-                    match value {
-                        _ if locks.field(&own) => true,
-                        Value::Null => locks.effect(layer, key),
-                        Value::Object(sub) => take(sub, |field, _| {
-                            let at = Address {
-                                layer,
-                                effect: Some(key),
-                                field,
-                            };
-                            locks.field(&at)
-                        }),
-                        _ => false,
-                    }
-                })
+            take(fields, |key, value| {
+                let own = Address {
+                    layer,
+                    effect: None,
+                    field: key,
+                };
+                match value {
+                    _ if locks.field(&own) => true,
+                    Value::Null => locks.effect(layer, key),
+                    Value::Object(sub) => take(sub, |field, _| {
+                        let at = Address {
+                            layer,
+                            effect: Some(key),
+                            field,
+                        };
+                        locks.field(&at)
+                    }),
+                    _ => false,
+                }
+            })
         });
         if gone {
             values.remove("layers");
@@ -1857,6 +1856,10 @@ impl RenderTarget for SharedRenderer {
             self.mirror(name);
         }
         Ok(changed)
+    }
+
+    fn layer(&self, name: &str) -> Option<Value> {
+        RenderTarget::layer(&*self.renderer.borrow(), name)
     }
 
     fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {
@@ -5549,7 +5552,7 @@ mod tests {
             publish_changes(&console, &st);
         };
         let locked = || console.stats()["locked"].clone();
-        let none = serde_json::json!({"params": [], "fields": [], "layers": []});
+        let none = serde_json::json!({"params": [], "fields": []});
         let set = |q: &str| {
             let (status, body, _) = ask(&api, "POST", "/set", &format!("scene=proc&{q}"), "");
             (status, body)
@@ -5558,8 +5561,8 @@ mod tests {
         frame();
         assert_eq!(locked(), none, "before the process sets anything");
         assert_eq!(set("pass=main&name=amt&value=0.25").0, 200);
-        let all =
-            serde_json::json!({"params": ["main.amt"], "fields": ["title.x"], "layers": ["dot"]});
+        let all = serde_json::json!({"params": ["main.amt"],
+                                     "fields": ["dot.height", "dot.width", "title.x"]});
         let deadline = Instant::now() + Duration::from_secs(10);
         while locked() != all && Instant::now() < deadline {
             frame();
@@ -5577,17 +5580,23 @@ mod tests {
             )
         );
         assert_eq!(
-            set("layer=dot&field=x&value=3"),
-            (403, "the scene's program sets layer 'dot'".to_string())
+            set("layer=dot&field=width&value=3"),
+            (
+                403,
+                "the scene's program sets layer field 'dot.width'".to_string()
+            )
         );
         assert_eq!(set("layer=title&field=y&value=3").0, 200);
         // a page one step behind posts the values from before the sets
         let mut stale = json_of(&ask(&api, "GET", "/scene", "name=proc", "").1);
         stale["passes"][0]["params"]["amt"]["value"] = Value::from(0.9);
         for layer in stale["passes"][0]["layers"].as_array_mut().unwrap() {
-            layer["x"] = Value::from(9);
-            if layer["name"] == "title" {
-                layer["y"] = Value::from(6);
+            match layer["name"].as_str() {
+                Some("title") => {
+                    layer["x"] = Value::from(9);
+                    layer["y"] = Value::from(6);
+                }
+                _ => layer["width"] = Value::from(9),
             }
         }
         let posted = ask(&api, "POST", "/scene", "name=proc", &stale.to_string());

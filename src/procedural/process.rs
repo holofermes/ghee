@@ -28,6 +28,7 @@ use crate::draw::{self, Arg, Call, CallKind};
 use crate::engine::{Feed, Given, Refused};
 use crate::layer::{Address, Layer, Rgb};
 use crate::looper::{RenderTarget, SceneController};
+use crate::procedural::locks::{call_keys, look_keys, Locks, Tuned};
 use crate::procedural::resolve;
 use crate::scene::{py_repr, ArraySize, ParamValue, Reach, Scene};
 
@@ -464,124 +465,6 @@ fn uniform(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, p)| p)
 }
 
-/// The param `name` of pass `pass`, None for a scene param, as Locks names
-/// it.
-fn param_name(pass: Option<&str>, name: &str) -> String {
-    match pass {
-        Some(pass) => format!("{pass}.{name}"),
-        None => name.to_string(),
-    }
-}
-
-/// The live field `at` as a message names it.
-pub(crate) fn dotted(at: &Address) -> String {
-    match at.effect {
-        Some(effect) => format!("{}.{effect}.{}", at.layer, at.field),
-        None => format!("{}.{}", at.layer, at.field),
-    }
-}
-
-/// What the program of a scene set, a scene process or a host of the
-/// console: each param, a scene param by its name and a param of a pass as
-/// `pass.name`, each field of a layer as `layer.field` or
-/// `layer.effect.field`, each effect whole as `layer.effect`, and each layer
-/// that the program added or gave a look, every field of it. A console
-/// refuses to set what the program set.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Locks {
-    params: HashSet<String>,
-    fields: HashSet<String>,
-    layers: HashSet<String>,
-}
-
-impl Locks {
-    /// The program set the param `name` of pass `pass`, None for a scene
-    /// param.
-    pub fn set_param(&mut self, pass: Option<&str>, name: &str) {
-        self.params.insert(param_name(pass, name));
-    }
-
-    /// The program set the live field `at`.
-    pub fn set_field(&mut self, at: &Address) {
-        self.fields.insert(dotted(at));
-    }
-
-    /// The program added layer `name`, or gave it a look.
-    pub fn set_layer(&mut self, name: &str) {
-        self.layers.insert(name.to_string());
-    }
-
-    /// Whether the program set the param `name` of pass `pass`, None for a
-    /// scene param.
-    pub fn param(&self, pass: Option<&str>, name: &str) -> bool {
-        self.params.contains(&param_name(pass, name))
-    }
-
-    /// Whether the program set the live field `at`, its whole effect or its
-    /// whole layer.
-    pub fn field(&self, at: &Address) -> bool {
-        self.layer(at.layer) || self.field_set(at).is_some()
-    }
-
-    /// The name of what the program set that holds the field `at`: the
-    /// field or its whole effect. None when the program set neither.
-    fn field_set(&self, at: &Address) -> Option<String> {
-        let whole = at.effect.map(|e| format!("{}.{e}", at.layer));
-        [Some(dotted(at)), whole]
-            .into_iter()
-            .flatten()
-            .find(|f| self.fields.contains(f))
-    }
-
-    /// Whether the program set the effect `effect` of layer `layer` whole,
-    /// or a field of it.
-    pub fn effect(&self, layer: &str, effect: &str) -> bool {
-        let whole = format!("{layer}.{effect}");
-        let at = format!("{whole}.");
-        self.fields.contains(&whole) || self.fields.iter().any(|f| f.starts_with(&at))
-    }
-
-    /// Whether the program set every field of layer `name`.
-    pub fn layer(&self, name: &str) -> bool {
-        self.layers.contains(name)
-    }
-
-    /// Why a console refuses to set the param `name` of pass `pass`, None
-    /// for a scene param, or None when the program never set it.
-    pub fn param_refusal(&self, pass: Option<&str>, name: &str) -> Option<String> {
-        self.param(pass, name).then(|| {
-            format!(
-                "the scene's program sets param '{}'",
-                param_name(pass, name)
-            )
-        })
-    }
-
-    /// Why a console refuses to set the live field `at`, or None when the
-    /// program never set it or its layer.
-    pub fn field_refusal(&self, at: &Address) -> Option<String> {
-        if self.layer(at.layer) {
-            return Some(format!("the scene's program sets layer '{}'", at.layer));
-        }
-        self.field_set(at)
-            .map(|f| format!("the scene's program sets layer field '{f}'"))
-    }
-
-    /// `{params, fields, layers}`, each a sorted list of names.
-    pub fn to_json(&self) -> Value {
-        let sorted = |set: &HashSet<String>| {
-            let mut names: Vec<&String> = set.iter().collect();
-            names.sort();
-            Value::from(names.into_iter().cloned().collect::<Vec<_>>())
-        };
-        serde_json::json!({
-            "params": sorted(&self.params),
-            "fields": sorted(&self.fields),
-            "layers": sorted(&self.layers),
-        })
-    }
-}
-
 /// What the reader thread takes off stdout between two drains.
 #[derive(Default)]
 struct Inbox {
@@ -720,10 +603,11 @@ pub struct SceneProcess {
     /// The last value that the process set of each param, by the name that
     /// a tick gives the param.
     kept: HashMap<String, Kept>,
-    /// The live fields that the process set, by the names of their
-    /// messages, and the layers that it added or gave a look.
+    /// The live fields and the keys of layers that the process set, by the
+    /// names of their messages, `layer.field` or `layer.effect.field`.
     fields: HashSet<String>,
-    whole: HashSet<String>,
+    /// The keys of layers that a console changed.
+    tuned: Tuned,
     /// Where each first set lands, for a console that locks them, emptied
     /// when the process ends.
     locks: Option<Arc<Mutex<Locks>>>,
@@ -816,7 +700,7 @@ impl SceneProcess {
             sent: HashMap::new(),
             kept: HashMap::new(),
             fields: HashSet::new(),
-            whole: HashSet::new(),
+            tuned: Tuned::default(),
             locks: None,
             rebuilt: false,
             clean: 0,
@@ -873,9 +757,9 @@ impl SceneProcess {
         self.pinned = true;
     }
 
-    /// Record in `locks` each param, live field and layer that the process
-    /// sets from now on, once, at its first set, and empty `locks` when the
-    /// process ends.
+    /// Record in `locks` each param, live field and key of a layer that the
+    /// process sets from now on, once, at its first set, and empty `locks`
+    /// when the process ends.
     pub(crate) fn lock_into(&mut self, locks: Arc<Mutex<Locks>>) {
         self.locks = Some(locks);
     }
@@ -891,14 +775,10 @@ impl SceneProcess {
         }
     }
 
-    /// The process added layer `name`, or gave it a look.
-    fn set_whole(&mut self, name: &str) {
-        if self.whole.contains(name) {
-            return;
-        }
-        self.whole.insert(name.to_string());
-        if let Some(locks) = &self.locks {
-            lock(locks).set_layer(name);
+    /// The process gave layer `layer` the keys `keys`.
+    fn set_keys(&mut self, layer: &str, keys: &[&str]) {
+        for key in keys {
+            self.set_field(&format!("{layer}.{key}"));
         }
     }
 
@@ -957,7 +837,7 @@ impl SceneProcess {
         match renderer.add_layer(pass, index, &layer) {
             Ok(()) => {
                 self.took(&layer);
-                self.set_whole(&name);
+                self.set_keys(&name, &look_keys(&layer));
             }
             Err(e) => self.refuse_or_fail(&name, e)?,
         }
@@ -980,19 +860,21 @@ impl SceneProcess {
         }
     }
 
-    /// Give layer `name` the look `look`.
+    /// Give layer `name` the look `look`, where each key that `look` leaves
+    /// out and a console changed keeps the console's value.
     fn give_look(
         &mut self,
         renderer: &mut dyn RenderTarget,
         name: &str,
         look: &Value,
     ) -> Result<()> {
-        match renderer.update_layer(look) {
+        let kept = self.tuned.look(look, |n| renderer.layer(n));
+        match renderer.update_layer(kept.as_ref().unwrap_or(look)) {
             Ok(changed) => {
                 if changed {
-                    self.took(look);
+                    self.took(kept.as_ref().unwrap_or(look));
                 }
-                self.set_whole(name);
+                self.set_keys(name, &look_keys(look));
             }
             Err(e) => self.refuse_or_fail(name, e)?,
         }
@@ -1024,7 +906,9 @@ impl SceneProcess {
             }
         }
         if !calls.is_empty() {
-            match renderer.update_calls(&calls) {
+            let kept = self.tuned.calls(&calls, |n| renderer.layer(n));
+            let taken = renderer.update_calls(kept.as_deref().unwrap_or(&calls));
+            match taken {
                 Ok(taken) => {
                     for &k in &taken.changed {
                         self.took_call(&calls[k]);
@@ -1035,7 +919,7 @@ impl SceneProcess {
                     }
                     for (call, here) in calls.iter().zip(taken_here) {
                         if here {
-                            self.set_whole(&call.layer);
+                            self.set_keys(&call.layer, &call_keys(call));
                         }
                     }
                     slow.extend(taken.left.iter().map(|&i| at[i]));
@@ -1057,6 +941,7 @@ impl SceneProcess {
             return self.refuse_or_fail(name, e);
         }
         self.layers.remove(name);
+        self.tuned.forget(name);
         let text = format!("{name}.text");
         self.values.remove(&text);
         self.sent.remove(&text);
@@ -1538,6 +1423,7 @@ impl SceneController for SceneProcess {
     }
 
     fn on_layer(&mut self, at: &Address, value: &Value) {
+        self.tuned.set(at);
         if let (None, "text") = (at.effect, at.field) {
             if let Some(held) = self.values.get_mut(&format!("{}.text", at.layer)) {
                 held.clone_from(value);
@@ -1960,6 +1846,8 @@ sleep 60
         /// Every param set, live set, layer added, look given, layer taken out
         /// and layer moved, in order.
         log: std::cell::RefCell<Vec<String>>,
+        /// The layer that layer() gives for its name.
+        now: Value,
     }
 
     impl RenderTarget for Stub {
@@ -2042,6 +1930,10 @@ sleep 60
         fn update_layer(&mut self, layer: &Value) -> Result<bool> {
             self.log.borrow_mut().push(format!("look {layer}"));
             Ok(true)
+        }
+
+        fn layer(&self, name: &str) -> Option<Value> {
+            (self.now["name"] == name).then(|| self.now.clone())
         }
 
         fn remove_layer(&mut self, name: &str) -> Result<()> {
@@ -3399,9 +3291,70 @@ while IFS= read -r line; do :; done
         );
         // the process's own words, which no tick carries back
         assert_eq!(f.sent.get("title.text"), Some(&Value::from("ho")));
-        for name in ["title", "slow", "odd", "same"] {
-            assert!(lock(&locks).layer(name), "{name}");
-        }
+        assert_eq!(
+            lock(&locks).to_json()["fields"],
+            serde_json::json!([
+                "odd.text",
+                "odd.width",
+                "slow.x",
+                "title.text",
+                "title.x",
+                "title.y"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_kind_7_message_keeps_the_console_s_value_of_each_key_that_it_leaves_out() {
+        let d = tmpdir("kept");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "fragment": "void main(){}",
+                        "layers": [{"name": "title", "text": "hi"}]}],
+        });
+        let look = r#"{"name": "title", "text": "ho", "font_size": 9}"#;
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            message(7, "title", look.len() as u32, look.as_bytes()),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "kept", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        let locks = Arc::new(Mutex::new(Locks::default()));
+        f.lock_into(Arc::clone(&locks));
+        let at = |effect, field| Address {
+            layer: "title",
+            effect,
+            field,
+        };
+        f.on_layer(&at(None, "opacity"), &Value::from(0.5));
+        f.on_layer(&at(Some("glow"), "strength"), &Value::from(0.25));
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            !f.incoming.is_empty()
+        }));
+        let mut stub = Stub {
+            now: serde_json::json!({"name": "title", "text": "hi", "x": 3, "opacity": 0.5,
+                                    "glow": {"strength": 0.25}}),
+            ..Stub::default()
+        };
+        f.update(&mut stub, 0, 0.0).unwrap();
+        let given = stub.log.borrow()[0]
+            .strip_prefix("look ")
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            serde_json::from_str::<Value>(&given).unwrap(),
+            serde_json::json!({"font_size": 9, "glow": {"strength": 0.25}, "name": "title",
+                               "opacity": 0.5, "text": "ho"})
+        );
+        assert_eq!(
+            lock(&locks).to_json()["fields"],
+            serde_json::json!(["title.font_size", "title.text"])
+        );
     }
 
     #[test]

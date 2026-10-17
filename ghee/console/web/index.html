@@ -2521,16 +2521,14 @@ function locked(node){
   return node;
 }
 // ---- what the scene's program set, as /stats lists it under locked: each
-// param, each field and each effect of a layer, and each layer that it added
-// or gave a look locks the same way, until the program ends ----
-const NO_LOCKS = {params: [], fields: [], layers: []};
+// param, and each field and each effect of a layer, until the program ends ----
+const NO_LOCKS = {params: [], fields: []};
 let LOCKS = NO_LOCKS, shownLocks = canon(NO_LOCKS);
 const locksOf = s => (s && s.active === active && s.locked) || NO_LOCKS;
 const lockedParam = (pass, name) => LOCKS.params.includes(pass == null ? name : pass + "." + name);
-const lockedLayer = d => LOCKS.layers.includes(d.name);
-const lockedField = (d, field, effect) => lockedLayer(d) || (effect != null && LOCKS.fields.includes(d.name + "." + effect))
+const lockedField = (d, field, effect) => (effect != null && LOCKS.fields.includes(d.name + "." + effect))
   || LOCKS.fields.includes(d.name + "." + (effect ? effect + "." : "") + field);
-const lockedSub = (d, f) => lockedLayer(d) || LOCKS.fields.some(k => k === d.name + "." + f || k.startsWith(d.name + "." + f + "."));
+const lockedSub = (d, f) => LOCKS.fields.some(k => k === d.name + "." + f || k.startsWith(d.name + "." + f + "."));
 const lockIf = (node, on) => on ? locked(node) : node;
 function paintLocks(){
   shownLocks = canon(LOCKS);
@@ -2697,8 +2695,7 @@ function layerCard(p, d){
     st.appendChild(mv);
   }
   head.append(st, acts); card.appendChild(head);
-  const whole = () => lockedLayer(d) && [...st.children].filter(c => c !== tog).concat(card.querySelector(".lbody") || []).forEach(locked);
-  if (!u.open){ whole(); return card; }
+  if (!u.open) return card;
 
   const body = el("div", "lbody"), kvs = el("div", "kvs");
   if (shape){
@@ -2738,7 +2735,6 @@ function layerCard(p, d){
   body.appendChild(kvs);
   if (kind === "text") body.appendChild(look(fxBlock(p, d)));   // an image or a shape layer takes no effects
   card.appendChild(body);
-  whole();
   return card;
 }
 

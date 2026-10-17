@@ -41,10 +41,10 @@ class Fake:
     def _drawing(self):
         return self.scene
 
-    def _add_layer(self, pass_, index, layer, keys):
+    def _add_layer(self, pass_, index, layer):
         self.sent.append(("add", pass_, index, layer))
 
-    def _update_layer(self, layer, keys):
+    def _update_layer(self, layer):
         self.sent.append(("update", layer))
         return True
 

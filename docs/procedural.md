@@ -277,8 +277,8 @@ names.
 | 4 | an array | bytes | feeds the array, each byte read as byte / 255 |
 | 5 | no name field | none | done with this frame, under [lockstep](#lockstep) |
 | 6 | a pass | JSON | adds a layer: `{"index": 0, "layer": {...}}`. `index` runs from 0, drawn first, to the pass's number of layers, which appends |
-| 7 | a layer | JSON | replaces the layer with the layer in the JSON, whose `name` must be the message's name. Keys that it leaves out go back to their defaults |
-| 8 | empty, length 0 | JSON | replaces several layers at once: a list of layers as kind 7 takes them, each layer at most once |
+| 7 | a layer | JSON | gives the layer the keys in the JSON, whose `name` must be the message's name. A key that it leaves out keeps the value from the [console](console.md#what-a-program-locks), else takes its default |
+| 8 | empty, length 0 | JSON | gives several layers their keys at once: a list of layers as kind 7 takes them, each layer at most once |
 | 9 | a layer | none, count 0 | removes the layer |
 | 10 | a layer | JSON | moves the layer among its pass's layers: `{"index": 2}` |
 

@@ -1,11 +1,15 @@
 """The console the host embeds: what it serves, and what a /set does."""
 
 import concurrent.futures
+import contextlib
 import copy
+import inspect
 import json
 import os
 import shutil
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -417,7 +421,6 @@ def test_the_console_locks_what_the_host_sets_and_the_rest_still_edits():
         assert json_of(port, "/stats")["locked"] == {
             "params": ["main.gain"],
             "fields": ["text.font_size", "text.text", "title.x"],
-            "layers": [],
         }
         for path, key in [
             ("/set?pass=main&name=gain&value=1", "param 'main.gain'"),
@@ -483,6 +486,127 @@ def test_a_drawing_locks_the_keys_it_passes_and_the_console_keeps_the_rest():
             0.5,
             "center",
         )
+
+
+def call(d, n):
+    """The call of the program of drawn() at frame n. It passes x, font_size
+    and glow, and font_size changes each frame, so each frame gives the
+    layer a new look."""
+    d.text(f"w{n}", x=1, font_size=8 + n % 2, glow={})
+
+
+SERVED = f"""#!{sys.executable}
+import ghee
+
+{inspect.getsource(call)}
+
+@ghee.tick
+def draw(t):
+    with ghee.draw() as d:
+        call(d, t.frame)
+
+
+ghee.run()
+"""
+
+
+@contextlib.contextmanager
+def drawn(host, tmp_path):
+    """A program that makes call() each frame, run by `host`: ghee.open with
+    serve=, or `ghee serve` as a scene of its own. Gives the console's port,
+    and a step that lets the program draw on."""
+    port = free_port()
+    if host == "open":
+        with ghee.open(copy.deepcopy(RED), width=32, height=16, serve=port) as h:
+            frames = iter(range(10**6))
+
+            def step():
+                with h.draw() as d:
+                    call(d, next(frames))
+
+            step()
+            yield port, step
+        return
+    scene = tmp_path / "drawn.py"
+    scene.write_text(SERVED)
+    scene.chmod(0o755)
+    cli = shutil.which("ghee", path=os.path.dirname(sys.executable))
+    assert cli, f"no ghee command beside {sys.executable}"
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path), "XDG_DATA_HOME": str(tmp_path)}
+    served = subprocess.Popen(
+        [cli, "serve", str(scene), "--port", str(port), "--size", "32x16"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    def alive():
+        if served.poll() is not None:
+            pytest.fail(served.stderr.read())
+        time.sleep(0.01)
+
+    # ghee serve draws frames while someone watches
+    def watch():
+        url = f"http://127.0.0.1:{port}/stream?vid=drawn"
+        with contextlib.suppress(OSError), urllib.request.urlopen(url) as r:
+            while r.read(4096):
+                pass
+
+    try:
+        until(lambda: get(port, "/stats", timeout=1)[0] == 200, alive)
+        threading.Thread(target=watch, daemon=True).start()
+        yield port, alive
+    finally:
+        served.terminate()
+        _, err = served.communicate(timeout=10)
+        print(err, file=sys.stderr)
+
+
+def until(done, step, limit=10.0):
+    """Run `step` until `done` holds, for up to `limit` seconds."""
+    end = time.monotonic() + limit
+    while time.monotonic() < end:
+        try:
+            if done():
+                return
+        except (OSError, urllib.error.URLError):
+            pass
+        step()
+    pytest.fail(f"no {done} in {limit}s")
+
+
+@pytest.mark.parametrize("host", ["open", "serve"])
+def test_a_drawing_locks_the_keys_it_passes_through_either_host(host, tmp_path):
+    with drawn(host, tmp_path) as (port, step):
+        locked = ["text.font_size", "text.glow", "text.text", "text.x"]
+
+        def drawn_and_locked():
+            layers = json_of(port, "/scene")["passes"][0].get("layers", [])
+            fields = json_of(port, "/stats")["locked"]["fields"]
+            return [d["name"] for d in layers] == ["text"] and fields == locked
+
+        until(drawn_and_locked, step)
+        for path, key in [
+            ("/set?layer=text&field=x&value=5", "text.x"),
+            ("/set?layer=text&effect=glow&field=strength&value=0.5", "text.glow"),
+        ]:
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                post(port, path)
+            why = raised.value.read().decode()
+            assert (raised.value.code, why.endswith(f"'{key}'")) == (403, True), why
+        assert post(port, "/set?layer=text&field=opacity&value=0.5")[0] == 200
+        sizes = []
+
+        def text():
+            layer = json_of(port, "/scene")["passes"][0]["layers"][0]
+            if not sizes or sizes[-1] != layer["font_size"]:
+                sizes.append(layer["font_size"])
+            return layer
+
+        until(lambda: len(sizes) > 3, lambda: (step(), text()))
+        got = text()
+        assert (got["x"], got.get("opacity")) == (1, 0.5)
 
 
 def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():

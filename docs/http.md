@@ -48,7 +48,7 @@ bad /set: param 'nope' is not a param this scene declares (main.tile, tile, main
 | Status | When |
 | --- | --- |
 | 400 | a bad query or value. The text names what's wrong, and lists the names that work |
-| 403 | a param or a layer that the scene's program sets ([Locked](#locked)), a change that a [Python console](#from-python) refuses, a `Host` header other than `localhost`, a `127.x.x.x` address or `[::1]`, with or without a port ([From another computer](console.md#from-another-computer)), or a POST from another site's web page |
+| 403 | a param or a layer key that the scene's program sets ([Locked](#locked)), a change that a [Python console](#from-python) refuses, a `Host` header other than `localhost`, a `127.x.x.x` address or `[::1]`, with or without a port ([From another computer](console.md#from-another-computer)), or a POST from another site's web page |
 | 404 | an unknown path, scene or item |
 | 405 | a GET to a path that changes something. Those take POST alone |
 | 409 | an edit for a scene other than the open one, or a scene name that's taken |
@@ -110,7 +110,7 @@ To put `x`, `y`, `color`, a rect's `width` or `height`, or a circle's
 ### Locked
 
 While a [procedural scene](procedural.md)'s program, or your Python
-program, sets a param or a layer, a `/set` of it answers 403, and `GET
+program, sets a param or a layer key, a `/set` of it answers 403, and `GET
 /stats` lists it under [`locked`](#stats).
 
 ## Revisions
@@ -170,7 +170,7 @@ curl http://127.0.0.1:8090/stats
 | `text_errors` | one line for each text layer's problem |
 | `stale` | `true` when the scene's files changed since it loaded |
 | `layer_changes` | how many times the scene's program changed its layers. Read `/scene` again when it moves |
-| `locked` | what the scene's program sets: `params`, `fields` and `layers` |
+| `locked` | what the scene's program sets: `params` and `fields` |
 | `gpu` | `trilinear_npot`: `false` where a `trilinear` pass needs power-of-two sides |
 
 `?usage=1` adds `rss_mib`, `gpu_mib`, `gpu_busy`, `machine_free_mib` and

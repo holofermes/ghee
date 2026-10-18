@@ -709,10 +709,13 @@ impl<'a> Loop<'a> {
         shut.and(ran)
     }
 
+    /// Clear every sink and turn it off, unless a hold turned it off.
     fn shutdown(&mut self) -> Result<()> {
         for s in self.sinks.iter_mut() {
             s.clear()?;
-            s.turn_off()?;
+            if !self.holding {
+                s.turn_off()?;
+            }
         }
         Ok(())
     }
@@ -1846,6 +1849,24 @@ mod tests {
         assert_eq!(s.on, 2);
         assert_eq!(s.off, 2, "once for the hold, once on the way out");
         assert_eq!(polled.get(), 5, "a held iteration still drains the host");
+    }
+
+    #[test]
+    fn a_run_that_stops_in_a_hold_turns_a_sink_off_once() {
+        let mut r = Recorder::default();
+        let mut s = Sink::new();
+        {
+            let mut lp = Loop::new(&mut r, vec![&mut s]);
+            let asked = Cell::new(0);
+            lp.held = Some(Box::new(move || {
+                asked.set(asked.get() + 1);
+                asked.get() > 1
+            }));
+            lp.stopping = Some(Box::new(after(3)));
+            lp.idle_hook = Some(Box::new(|_| 0.0));
+            lp.run().unwrap();
+        }
+        assert_eq!((s.on, s.off), (1, 1));
     }
 
     #[test]

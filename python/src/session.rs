@@ -1,6 +1,6 @@
 //! One scene, one renderer, one output. The host asks for each frame.
 //!
-//! The scene loading and the pacing are ghee's own.
+//! The scene loading, the pacing and the console are ghee's own.
 //! A frame follows ghee::looper: `t` is the wall clock since the first frame,
 //! iTimeDelta is the period since the last frame drawn, and MAX_DT caps it.
 //! A tick's dt is the time since the tick before, which MAX_DT caps too.
@@ -12,21 +12,20 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
-use ghee::console::hub::{gpu_caps, H264_FPS};
+use ghee::console::hub::{frame_format, gpu_caps, HwLane, RawFrame};
 use ghee::draw::Call;
 use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
 use ghee::filters::apply_filters;
-use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::layer::Address;
-use ghee::live::{Changes, Live};
+use ghee::live::Live;
 use ghee::looper::{Frame, Pacer, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, AlphaForm, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{coerce, short_floats, truthy, ArraySize, Scene};
+use ghee::scene::{coerce, truthy, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
-use crate::serve::{encode_bitrate, encode_size, Console, ParamSet};
+use crate::serve::{Console, Serving};
 
 /// A render with no display takes this size, as in the CLI.
 pub const DEFAULT_SIZE: (i32, i32) = (320, 240);
@@ -181,14 +180,9 @@ pub struct Session {
     live: Live,
     pacer: Option<Box<dyn Pacer>>,
     console: Option<Console>,
-    /// The h264 cap for the longest side. 0 streams the render size.
-    stream_longest: i32,
-    /// The console's hardware H264 encoder. It issues GL calls, so it belongs
-    /// to this thread, and it never outlives the renderer.
-    h264: Option<HardwareH264>,
-    /// The rate that the H264 stream declares: the display's refresh, else the
-    /// console's own cadence.
-    hz: i32,
+    /// The console's hardware H264 lane. It issues GL calls, so it belongs to
+    /// this thread, and it never outlives the renderer.
+    h264: HwLane,
     pending: Vec<(String, Fed)>,
     buf: Vec<u8>,
     alpha: Option<AlphaForm>,
@@ -401,11 +395,7 @@ impl Session {
             Sink::None => Vec::new(),
             Sink::Kms => vec![DEST_KMS.to_string()],
         };
-        let format = match &sink {
-            _ if rgb565 => "rgb565".to_string(),
-            _ if components == 3 => "rgb".to_string(),
-            _ => "rgba".to_string(),
-        };
+        let format = frame_format(rgb565, components);
         if verbose {
             eprintln!(
                 "ghee: {name} {w}x{h} {format} -> {}",
@@ -427,36 +417,32 @@ impl Session {
                 Console::start(
                     &host,
                     port,
-                    &name,
-                    &scene,
-                    Arc::clone(live.index()),
-                    live.locks(),
-                    (w, h),
-                    &format,
-                    rotate,
-                    gpu_caps(&renderer),
-                    out,
-                    longest,
-                    verbose,
+                    Serving {
+                        name: &name,
+                        scene: &scene,
+                        index: Arc::clone(live.index()),
+                        locks: live.locks(),
+                        size: (w, h),
+                        format,
+                        rotate,
+                        gpu: gpu_caps(&renderer),
+                        out,
+                        stream_max: longest,
+                        verbose,
+                    },
                 )
                 .map_err(system_fault)?,
             ),
         };
-        let hz = match kms {
-            true => renderer.display_vrefresh(),
-            false => 0,
-        };
         Ok(Session {
             renderer,
             sink,
-            stream_longest: longest,
             live,
             pacer: fps
                 .filter(|f| *f != 0.0)
                 .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>),
             console,
-            h264: None,
-            hz,
+            h264: HwLane::default(),
             pending: Vec::new(),
             buf: vec![0u8; (i64::from(h) * i64::from(w) * i64::from(components)) as usize],
             alpha,
@@ -575,22 +561,39 @@ impl Session {
         if self.drawn.is_none() {
             self.renderer.wait_for_words().map_err(system_fault)?;
         }
-        let want = self.console.as_ref().is_some_and(Console::wants_frame);
-        let drew = self.draw(want)?;
-        self.mirror();
+        let hub = self.console.as_ref().map(Console::hub);
+        let shot = hub.is_some_and(|h| h.shot.wants());
+        let preview = match hub {
+            Some(h) if h.wants_preview() => Some(h.preview_size()),
+            _ => None,
+        };
+        let want = if shot { Some(self.size()) } else { preview };
+        let (drew, read) = self.draw(want)?;
+        if let Some(hub) = self.console.as_ref().map(Console::hub) {
+            self.h264.mirror(hub, &self.renderer);
+        }
+        let components = self.renderer.components;
         self.drawn = Some(self.frame);
         self.frame += 1;
         let end = monotonic();
-        if let Some(c) = self.console.as_ref() {
-            c.frame_done(end - t0);
+        if let Some(hub) = self.console.as_ref().map(Console::hub) {
+            hub.frame_done(end - t0);
             let seq = self.renderer.text_errors_seq();
             if seq != self.text_errors {
                 self.text_errors = seq;
-                c.text_errors(&self.renderer.text_errors());
+                hub.set_text_errors(self.renderer.text_errors());
             }
-            if want {
-                let (w, h) = self.size();
-                c.publish(&self.buf, w, h, self.renderer.components);
+            if let Some((width, height)) = read.filter(|_| want.is_some()) {
+                let frame = Frame {
+                    data: &self.buf[..(width * height * components) as usize],
+                    width,
+                    height,
+                    components,
+                };
+                match shot {
+                    true => hub.shot.write(Arc::new(RawFrame::of(frame))),
+                    false => hub.publish_frame(frame),
+                }
             }
         }
         if let Some(pacer) = self.pacer.as_mut() {
@@ -600,9 +603,11 @@ impl Session {
         Ok(tick)
     }
 
-    /// Render the passes and hand the frame to the output. Returns the clock at
-    /// the end of the render.
-    fn draw(&mut self, want: bool) -> Outcome<f64> {
+    /// Render the passes and hand the frame to the output. A display reads
+    /// the frame back at the size that `want` asks, and a render with no
+    /// display reads back the whole frame. Returns the clock at the end of the
+    /// render, and the size of the frame read back.
+    fn draw(&mut self, want: Option<(i32, i32)>) -> Outcome<(f64, Option<(i32, i32)>)> {
         let Session {
             renderer,
             sink,
@@ -624,70 +629,17 @@ impl Session {
         };
         match sink {
             Sink::Kms => {
-                // present() has no direct full-frame readback, so a preview
-                // states its size.
-                let preview = want.then(|| (&mut buf[..], (w, h)));
+                let preview = want.map(|size| (&mut buf[..], size));
                 renderer
                     .present(Some(&mut provider), preview)
                     .map_err(system_fault)?;
-                Ok(monotonic())
+                Ok((monotonic(), want))
             }
             Sink::None => {
                 renderer
                     .render_into(Some(&mut provider), buf, None)
                     .map_err(system_fault)?;
-                Ok(monotonic())
-            }
-        }
-    }
-
-    /// The console's hardware H264 mirror: encode the frame just drawn, with no
-    /// readback. The engine holds the final pass in its FBO while the encoder
-    /// exists, so encode_last() always has a texture to sample. A failure goes
-    /// to Console::hardware_failed and never to the host's frame, because a
-    /// stream is no reason to fail the frame.
-    fn mirror(&mut self) {
-        let Session {
-            renderer,
-            console,
-            h264,
-            hz,
-            stream_longest,
-            ..
-        } = self;
-        let Some(console) = console.as_ref() else {
-            return;
-        };
-        if !console.hardware_h264() {
-            if let Some(mut enc) = h264.take() {
-                enc.close(); // an open encoder costs a display its direct scanout
-            }
-            return;
-        }
-        if h264.is_none() {
-            let (w, h) = encode_size(renderer.width, renderer.height, *stream_longest);
-            let fps = if *hz > 0 { *hz } else { H264_FPS };
-            match HardwareH264::new(renderer, w, h, fps, encode_bitrate(w, h, fps)) {
-                Ok(enc) => {
-                    console.h264_opened(enc.w, enc.h, HW_COLOR);
-                    *h264 = Some(enc);
-                }
-                Err(e) => return console.hardware_failed(&e.to_string()),
-            }
-        }
-        let enc = h264.as_mut().expect("the encoder was just created");
-        if console.wants_key() {
-            enc.force_keyframe();
-        }
-        match enc.encode_last() {
-            Ok((Some(au), _)) => console.push_au(au),
-            Ok((None, _)) => {}
-            Err(e) => {
-                let why = e.to_string();
-                if let Some(mut enc) = h264.take() {
-                    enc.close();
-                }
-                console.hardware_failed(&why);
+                Ok((monotonic(), Some((w, h))))
             }
         }
     }
@@ -698,7 +650,8 @@ impl Session {
     /// falls back to a plain skip, and the host's own frame() reports it.
     pub fn skip(&mut self) -> Outcome<Tick> {
         let tick = self.begin()?;
-        if self.console.as_ref().is_some_and(Console::wants_draw) && self.frame().is_ok() {
+        let wants = self.console.as_ref().is_some_and(|c| c.hub().wants_draw());
+        if wants && self.frame().is_ok() {
             if self.pacer.is_none() {
                 nap(self.idle());
             }
@@ -707,7 +660,7 @@ impl Session {
         self.opened = None;
         self.frame += 1;
         if let Some(c) = self.console.as_ref() {
-            c.skipped();
+            c.hub().skipped();
         }
         nap(self.idle());
         Ok(tick)
@@ -892,12 +845,14 @@ impl Session {
     }
 
     /// What a console queued, applied before this frame draws: params, live
-    /// fields and the looks of applies. The console then takes the scene,
+    /// fields and the looks of applies. A still that /frame.png asked for
+    /// before them takes the next frame. The console then takes the scene,
     /// when it changed.
     fn drain(&mut self) -> Outcome<()> {
         let Some(console) = self.console.as_ref() else {
             return Ok(());
         };
+        console.hub().shot.arm();
         let layers = console.take_layers();
         let looks = console.take_looks();
         let params = console.take_params();
@@ -921,61 +876,13 @@ impl Session {
                 Err(e) => failed.push(e.to_string()),
             }
         }
-        if let (true, Some(c)) = (applied, self.console.as_ref()) {
-            c.look_error(&failed.join("\n"));
-        }
-        let Changes {
-            layers,
-            params,
-            grown,
-        } = self.live.take_changes();
-        let by_host = grown || !(layers.is_empty() && params.is_empty());
-        if edited || grown {
-            let scene = self.renderer.with_scene(Scene::to_dict);
-            if let (Some(c), Some(scene)) = (self.console.as_ref(), scene) {
-                c.publish_scene(scene, Arc::clone(self.live.index()), by_host);
+        if let Some(c) = self.console.as_ref() {
+            if applied {
+                c.hub().set_apply_error(&failed.join("\n"));
             }
-        } else if by_host {
-            let (layers, params) = self.changes(layers, params);
-            if let Some(c) = self.console.as_ref() {
-                c.publish_changes(layers, params);
-            }
+            c.publish(&self.renderer, &mut self.live, edited);
         }
         Ok(())
-    }
-
-    /// The layers named `changed`, whole, and the values of the params of
-    /// `set`, as the renderer's scene holds them.
-    fn changes(
-        &self,
-        changed: Vec<String>,
-        set: Vec<(Option<String>, String)>,
-    ) -> (Vec<Value>, Vec<ParamSet>) {
-        let mut params = Vec::new();
-        for (pass, name) in set {
-            let value = self.renderer.with_scene(|s| {
-                let params = match pass.as_deref() {
-                    Some(p) => &s.passes.iter().find(|q| q.name == p)?.params,
-                    None => &s.params,
-                };
-                Some(params.get(&name)?.value.to_json())
-            });
-            if let Some(mut value) = value.flatten() {
-                short_floats(&mut value);
-                params.push((pass, name, value));
-            }
-        }
-        let layers = changed
-            .iter()
-            .filter_map(|name| {
-                self.renderer.with_layer(name, |_, l| {
-                    let mut doc = l.to_dict();
-                    short_floats(&mut doc);
-                    doc
-                })
-            })
-            .collect();
-        (layers, params)
     }
 
     /// Drop everything the session holds.
@@ -984,9 +891,7 @@ impl Session {
             c.stop();
         }
         // the encoder holds engine resources, so it goes before the renderer
-        if let Some(mut enc) = self.h264.take() {
-            enc.close();
-        }
+        self.h264.close();
         self.sink = Sink::None;
         self.renderer.close();
     }

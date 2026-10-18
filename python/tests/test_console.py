@@ -511,13 +511,15 @@ ghee.run()
 
 
 @contextlib.contextmanager
-def drawn(host, tmp_path):
+def drawn(host, tmp_path, size=(32, 16)):
     """A program that makes call() each frame, run by `host`: ghee.open with
-    serve=, or `ghee serve` as a scene of its own. Gives the console's port,
-    and a step that lets the program draw on."""
+    serve=, or `ghee serve` as a scene of its own, with what it prints in
+    tmp_path/"stdout". Gives the console's port, and a step that lets the
+    program draw on."""
     port = free_port()
+    width, height = size
     if host == "open":
-        with ghee.open(copy.deepcopy(RED), width=32, height=16, serve=port) as h:
+        with ghee.open(copy.deepcopy(RED), width=width, height=height, serve=port) as h:
             frames = iter(range(10**6))
 
             def step():
@@ -532,11 +534,15 @@ def drawn(host, tmp_path):
     scene.chmod(0o755)
     cli = shutil.which("ghee", path=os.path.dirname(sys.executable))
     assert cli, f"no ghee command beside {sys.executable}"
-    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path), "XDG_DATA_HOME": str(tmp_path)}
+    env = {
+        **os.environ,
+        "XDG_STATE_HOME": str(tmp_path),
+        "XDG_DATA_HOME": str(tmp_path),
+    }
     served = subprocess.Popen(
-        [cli, "serve", str(scene), "--port", str(port), "--size", "32x16"],
+        [cli, "serve", str(scene), "--port", str(port), "--size", f"{width}x{height}"],
         env=env,
-        stdout=subprocess.DEVNULL,
+        stdout=(tmp_path / "stdout").open("w"),
         stderr=subprocess.PIPE,
         text=True,
     )
@@ -619,6 +625,47 @@ def test_a_drawing_locks_the_keys_it_passes_through_either_host(host, tmp_path):
             0.5,
             "Pixel Operator 8",
         )
+
+
+def jpeg_size(jpg):
+    """(width, height) from a JPEG's start of frame."""
+    at = 2
+    while jpg[at + 1] != 0xC0:
+        at += 2 + int.from_bytes(jpg[at + 2 : at + 4], "big")
+    return int.from_bytes(jpg[at + 7 : at + 9], "big"), int.from_bytes(
+        jpg[at + 5 : at + 7], "big"
+    )
+
+
+def first_jpeg(port):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/stream", timeout=20) as r:
+        head = b""
+        while not head.endswith(b"\r\n\r\n") or b"Content-Length" not in head:
+            head += read_exact(r, 1)
+        return read_exact(r, int(head.split(b"Content-Length:")[1].split(b"\r\n")[0]))
+
+
+@pytest.mark.parametrize("host", ["open", "serve"])
+def test_either_host_prints_its_address_and_serves_the_same_stats_and_preview(
+    host, tmp_path, capfd
+):
+    with drawn(host, tmp_path, size=(640, 320)) as (port, step):
+        until(lambda: json_of(port, "/stats")["frames"] > 0, step)
+        assert sorted(json_of(port, "/stats")) == sorted(
+            ["active", "display", "error", "error_line", "error_pass", "fps"]
+            + ["frame_ms", "frames", "gpu", "layer_changes", "locked", "out"]
+            + ["rev", "skipped", "stale", "stream_fps", "text_errors"]
+        )
+        assert jpeg_size(watching(None, lambda: first_jpeg(port), step=step)) == (
+            480,
+            240,
+        )
+    printed = capfd.readouterr().out
+    if host == "serve":
+        printed = (tmp_path / "stdout").read_text()
+    line = next(x for x in printed.splitlines() if x.startswith("ghee console:"))
+    assert line.startswith(f"ghee console: http://127.0.0.1:{port}/ 1 scene ['"), line
+    assert line.endswith("preview 640x320 rgba)"), line
 
 
 def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():

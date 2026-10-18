@@ -96,9 +96,9 @@ and each shader goes back into the file that the scene names for it.
 Any other scene, such as a bundled example or a scene in a folder that you
 serve: ghee never touches its files. Save keeps only your changes, as
 overrides in a state file of their own, in `~/.local/state/ghee`, or in
-`--state-dir DIR`. Each time a console opens that scene, with `ghee serve`
-or `ghee render --serve`, it lays your overrides on top. A `ghee render`
-without `--serve` ignores them and draws the original scene.
+`--state-dir DIR`. Each time ghee opens that scene, in a console or in
+`ghee render`, it lays your overrides on top. To draw the scene as its
+files hold it, pass `--original` to `ghee render`.
 
 If the scene's files change later, your overrides still apply. The console
 asks only where the two clash: keep yours, or take the files'.

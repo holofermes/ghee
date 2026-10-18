@@ -72,6 +72,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   redo](docs/console.md#undo-and-redo)).
 - Restore the console edits that you hadn't saved when ghee stopped. The
   first console that opens the scene asks ([Saving](docs/console.md#saving)).
+- `ghee render` draws a scene with the edits that a console saved for it.
+  To draw the scene as its files hold it, pass `--original`.
 - Set up an SH1106, SSD1322 or ILI9341 panel with `ghee overlay`.
 - Turn the frame with `--rotate`, and set a display's brightness with
   `--brightness`.

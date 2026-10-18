@@ -283,7 +283,7 @@ impl SceneStore {
 
     /// The edits that the scene's state file holds. An unreadable file holds
     /// none: it moves aside before a save can replace it, and logs one line.
-    fn read_state(&self, name: &str) -> Option<Edits> {
+    pub fn read_state(&self, name: &str) -> Option<Edits> {
         let path = self.state_file(name).ok().flatten()?;
         match state::read(&path) {
             Ok(edits) => edits,

@@ -26,7 +26,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde_json::{Map, Value};
 
 use crate::console::server;
-use crate::console::store::SceneStore;
+use crate::console::state;
+use crate::console::store::{self, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
 use crate::control::{self, Control, SIGTERM};
 use crate::engine::{probe_display, Card, Feed, Renderer, DEFAULT_SIZE};
@@ -298,6 +299,9 @@ fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProce
         true => exit(e.to_string()),
         false => e,
     })?;
+    if !a.original {
+        scene = with_saved_edits(a, &path, scene)?;
+    }
     // the process addresses the params of the final scene, filters included
     if let Some(fed) = process.as_mut() {
         fed.bind(&scene);
@@ -306,6 +310,23 @@ fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProce
         }
     }
     Ok((scene, process))
+}
+
+/// `scene`, the scene of `path`, with the edits that a console saved for it
+/// laid on, as a console opens it.
+fn with_saved_edits(a: &Ns, path: &str, scene: Scene) -> Result<Scene> {
+    let mut store = match &a.here {
+        Some(here) => SceneStore::here(path, Arc::clone(&here.program), Vec::new()),
+        None => one_scene_store(a, path)?,
+    };
+    store.state_dir = a.state_dir.clone().or_else(state::default_dir);
+    let Some(name) = store.names().into_iter().next() else {
+        return Ok(scene);
+    };
+    match store.read_state(&name) {
+        Some(edits) => Ok(store::working(&name, &scene, &edits).0),
+        None => Ok(scene),
+    }
 }
 
 /// What --display names: the KMS scanout, with the mode size of its
@@ -1287,6 +1308,14 @@ struct RenderArgs {
     )]
     stats: bool,
 
+    #[arg(
+        long,
+        conflicts_with = "serve",
+        help = "draw the scene as its files hold it, without the edits that a \
+                console saved for it"
+    )]
+    original: bool,
+
     #[command(flatten)]
     render: RenderFlags,
 
@@ -1404,6 +1433,8 @@ pub struct Ns {
     port: u16,
     host: String,
     state_dir: Option<std::path::PathBuf>,
+    /// Draw the scene without the edits that a console saved for it.
+    original: bool,
     my_scenes: Option<std::path::PathBuf>,
     allow_uploads: bool,
     preview_max: i32,
@@ -1464,6 +1495,7 @@ impl RenderArgs {
             port: self.console.port,
             host: self.console.host,
             state_dir: self.console.state_dir,
+            original: self.original,
             my_scenes: None,
             allow_uploads: false,
             preview_max: self.console.preview_max,
@@ -1510,6 +1542,7 @@ impl ServeArgs {
             port: self.console.port,
             host: self.console.host,
             state_dir: self.console.state_dir,
+            original: false,
             my_scenes: self.my_scenes,
             allow_uploads: self.allow_uploads,
             preview_max: self.console.preview_max,
@@ -1667,7 +1700,7 @@ pub fn say_failure(cmd: &str, e: &anyhow::Error) {
 
 /// The flags of `ghee render` that a scene's program takes when it renders
 /// itself, by their long names.
-pub const DIRECT_FLAGS: [&str; 15] = [
+pub const DIRECT_FLAGS: [&str; 16] = [
     "output",
     "display",
     "rgb565",
@@ -1683,6 +1716,7 @@ pub const DIRECT_FLAGS: [&str; 15] = [
     "rotate",
     "brightness",
     "dri",
+    "original",
 ];
 
 /// A flag of `ghee render`, as its --help shows it.
@@ -2406,6 +2440,40 @@ mod tests {
             &mut None,
         ));
         assert!(e.starts_with("unknown filter: nope (known: dither"), "{e}");
+    }
+
+    /// A console's saved edit reaches a render and the console alike, and
+    /// --original leaves it off.
+    #[test]
+    fn a_render_lays_on_the_edits_that_a_console_saved_unless_original() {
+        let d = tmpdir("saved");
+        let path = format!("{d}/s.scene.json");
+        let gain = r#"{"version":1,"passes":[{"name":"main",
+            "fragment":"void main(){ gl_FragColor = vec4(gain); }",
+            "params":{"gain":{"type":"float","value":0.5}}}]}"#;
+        fs::write(&path, gain).unwrap();
+        let states = tmpdir("saved-state");
+        let mut console = SceneStore::one(&path, Vec::new()).unwrap();
+        console.state_dir = Some(std::path::PathBuf::from(&*states));
+        let defaults = console.resolve("s", (8, 8)).unwrap().to_dict();
+        let mut working = defaults.clone();
+        working["passes"][0]["params"]["gain"]["value"] = Value::from(0.75);
+        let edits = state::diff(&defaults, &working, false);
+        console.save("s", &edits).unwrap();
+        let gain_of = |scene: &Scene| scene.passes[0].params.get("gain").unwrap().value.to_json();
+        let (opened, _) = console.open("s", None, (8, 8)).unwrap();
+        assert_eq!(gain_of(&opened.working), 0.75);
+        let render = |extra: &[&str]| {
+            let mut t = vec!["render", path.as_str(), "--state-dir", &states];
+            t.extend(extra);
+            scene_of(&ns(&t), &mut None).unwrap().0
+        };
+        assert_eq!(gain_of(&render(&[])), 0.75);
+        assert_eq!(gain_of(&render(&["--original"])), 0.5);
+        let e = Cli::try_parse_from(argv(&["ghee", "render", &path, "--original", "--serve"]))
+            .err()
+            .unwrap();
+        assert_eq!(e.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

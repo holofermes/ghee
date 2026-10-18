@@ -31,7 +31,7 @@ use crate::console::store::SceneStore;
 use crate::console::{examples_dir, is_examples_dir};
 use crate::engine::{probe_display, Card, Feed, Renderer};
 use crate::feeds::demo_feed;
-use crate::filters::{apply_filters, load_filters};
+use crate::filters::{self, apply_filters};
 use crate::golden;
 use crate::h264::H264Stream;
 use crate::looper::{ControllerSlot, Loop, Output, Pacer, SceneController};
@@ -295,20 +295,10 @@ fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProce
             wanted.push(n);
         }
     }
-    let reg = load_filters(&[]);
-    let unknown: Vec<&str> = wanted
-        .iter()
-        .filter(|n| !reg.contains_key(n.as_str()))
-        .map(String::as_str)
-        .collect();
-    if !unknown.is_empty() {
-        return Err(exit(format!(
-            "unknown filter: {} (known: {})",
-            unknown.join(", "),
-            reg.keys().cloned().collect::<Vec<_>>().join(", ")
-        )));
-    }
-    apply_filters(&mut scene, &wanted, Some(&reg))?;
+    apply_filters(&mut scene, &wanted, None).map_err(|e| match e.is::<filters::Unknown>() {
+        true => exit(e.to_string()),
+        false => e,
+    })?;
     // the process addresses the params of the final scene, filters included
     if let Some(fed) = process.as_mut() {
         fed.bind(&scene);

@@ -128,9 +128,41 @@ pub fn filter_defs() -> Map<String, Value> {
     reg
 }
 
+/// A filter name that the registry lacks.
+#[derive(Debug)]
+pub struct Unknown(String);
+
+impl std::fmt::Display for Unknown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unknown {}
+
+/// Fail with Unknown when `reg` lacks a filter of `names`, naming each such
+/// filter and every filter that `reg` holds.
+pub fn check_filters(names: &[String], reg: &Map<String, Value>) -> Result<()> {
+    let unknown: Vec<&str> = names
+        .iter()
+        .filter(|n| !reg.contains_key(n.as_str()))
+        .map(String::as_str)
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(Unknown(format!(
+        "unknown filter: {} (known: {})",
+        unknown.join(", "),
+        reg.keys().cloned().collect::<Vec<_>>().join(", ")
+    ))
+    .into())
+}
+
 /// Append each named filter as a pass, in order. Each one reads the pass before
 /// it, so the last filter reaches the display. A filter among the scene's
-/// `hidden_filters` appends hidden.
+/// `hidden_filters` appends hidden. A name that the registry lacks fails with
+/// Unknown.
 pub fn apply_filters(
     scene: &mut Scene,
     names: &[String],
@@ -146,7 +178,7 @@ fn append_filters(
     registry: Option<&Map<String, Value>>,
     hidden: &[String],
 ) -> Result<()> {
-    if names.is_empty() || scene.passes.is_empty() {
+    if names.is_empty() {
         return Ok(());
     }
     let loaded;
@@ -157,14 +189,12 @@ fn append_filters(
             &loaded
         }
     };
+    check_filters(names, reg)?;
+    if scene.passes.is_empty() {
+        return Ok(());
+    }
     for name in names {
-        let Some(fd) = reg.get(name) else {
-            eprintln!(
-                "filter '{name}': unknown, skipped (known: {})",
-                reg.keys().cloned().collect::<Vec<_>>().join(", ")
-            );
-            continue;
-        };
+        let fd = &reg[name];
         let Some(fname) = fd.get("name").and_then(Value::as_str) else {
             bail!("filter '{name}': needs a string 'name' and 'fragment'");
         };
@@ -208,18 +238,13 @@ pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>)
             &loaded
         }
     };
-    let unknown = |name: &str| {
-        anyhow::anyhow!(
-            "filter '{name}': unknown (known: {})",
-            reg.keys().cloned().collect::<Vec<_>>().join(", ")
-        )
-    };
     for i in 0..scene.passes.len() {
         let name = scene.passes[i].filter.clone();
         if name.is_empty() {
             continue;
         }
-        let fd = reg.get(&name).ok_or_else(|| unknown(&name))?;
+        check_filters(std::slice::from_ref(&name), reg)?;
+        let fd = &reg[&name];
         if i == 0 {
             bail!("filter '{name}': a filter pass needs a pass before it");
         }
@@ -228,9 +253,6 @@ pub fn rebuild_filters(scene: &mut Scene, registry: Option<&Map<String, Value>>)
         let p = filter_pass(&name, fd, &own, &prev, Some(&scene.passes[i]))?;
         scene.passes[i] = p;
         merge_assets(scene, &name, fd)?;
-    }
-    if let Some(name) = missing.iter().find(|n| !reg.contains_key(*n)) {
-        return Err(unknown(name));
     }
     append_filters(scene, &missing, Some(reg), &hidden)?;
     match scene.name_clash() {
@@ -753,7 +775,7 @@ mod tests {
         )
         .unwrap();
         let e = rebuild_filters(&mut sc, None).unwrap_err().to_string();
-        assert!(e.contains("'nope': unknown"), "{e}");
+        assert!(e.starts_with("unknown filter: nope (known: "), "{e}");
     }
 
     #[test]
@@ -768,7 +790,7 @@ mod tests {
         )
         .unwrap();
         let e = rebuild_filters(&mut sc, None).unwrap_err().to_string();
-        assert!(e.contains("'nope': unknown"), "{e}");
+        assert!(e.starts_with("unknown filter: nope (known: "), "{e}");
     }
 
     #[test]
@@ -825,11 +847,17 @@ mod tests {
     }
 
     #[test]
-    fn unknown_filter_skipped() {
-        // Hosts share a filter list, so a missing filter still renders the scene.
+    fn an_unknown_filter_fails_and_adds_no_pass() {
         let _g = env_guard();
         let mut sc = Scene::of(vec![Pass::of("main", FLAT).unwrap()]).unwrap();
-        apply_filters(&mut sc, &["does-not-exist".to_string()], None).unwrap();
+        let wanted = ["dither".to_string(), "does-not-exist".to_string()];
+        let e = apply_filters(&mut sc, &wanted, None).unwrap_err();
+        assert!(e.is::<Unknown>());
+        assert!(
+            e.to_string()
+                .starts_with("unknown filter: does-not-exist (known: "),
+            "{e}"
+        );
         assert_eq!(names(&sc), ["main"]);
     }
 

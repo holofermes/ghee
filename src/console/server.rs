@@ -3419,6 +3419,7 @@ pub fn run(opts: Options) -> Result<()> {
         on_stats,
         filters,
     } = opts;
+    crate::filters::check_filters(&filters, &crate::filters::load_filters(&[]))?;
     let mut store = match store {
         Some(store) => store,
         None => dir_store(scenes_dir, my_scenes, scene_args)?,
@@ -5953,6 +5954,21 @@ mod tests {
         assert_eq!(n, 3);
         assert!(wall > 0.0);
         assert_eq!(out, ["bound"]);
+    }
+
+    #[test]
+    fn a_console_run_with_a_filter_that_no_filter_answers_fails_before_it_serves() {
+        let (_d, console) = tmp_console("unknown-filter");
+        let port = free_port();
+        let ran = run(Options {
+            store: Some(SceneStore::new(&console.store.dir, Vec::new())),
+            port,
+            filters: vec!["nope".to_string()],
+            ..Options::default()
+        });
+        let e = ran.unwrap_err().to_string();
+        assert!(e.starts_with("unknown filter: nope (known: "), "{e}");
+        assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_ok());
     }
 
     /// A sink that reads GET /stats from the console on `port` at the first

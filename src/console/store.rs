@@ -925,6 +925,30 @@ mod tests {
         assert_eq!(once.passes.len(), 2, "the dither is not applied twice");
     }
 
+    #[test]
+    fn a_scene_or_a_store_filter_that_no_filter_answers_fails_its_load() {
+        let d = tmpdir("unknown-filter");
+        let own = r#"{"version": 1, "filters": ["nope"],
+             "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
+        write_text(&format!("{d}/own.scene.json"), own);
+        write_text(&format!("{d}/plain.scene.json"), SCENE);
+        let mut store = SceneStore::new(&d, Vec::new());
+        store.filters = vec!["dither".to_string()];
+        let e = store.start("own", SIZE).err().unwrap();
+        assert!(
+            e.message.starts_with("unknown filter: nope (known: "),
+            "{}",
+            e.message
+        );
+        store.filters = vec!["nope".to_string()];
+        let e = store.start("plain", SIZE).err().unwrap();
+        assert!(
+            e.message.starts_with("unknown filter: nope (known: "),
+            "{}",
+            e.message
+        );
+    }
+
     /// A directory of two JSON scenes.
     fn scenes(tag: &str) -> (crate::testing::TempDir, SceneStore) {
         let d = tmpdir(tag);

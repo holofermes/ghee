@@ -107,6 +107,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - `dither` no longer draws wrong 4x4 blocks on a Pi Zero to Pi 3.
 - ghee opens a display's card once, so the kernel's console no longer
   flashes before the first frame.
+- The console refuses a scene with a filter that ghee doesn't know and
+  names the filter, as `ghee render` does, instead of skipping the filter.
 
 ## 0.4.0 - 2026-08-06
 

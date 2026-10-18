@@ -16,7 +16,7 @@ use std::time::Duration;
 use ghee::console::server::{gpu_caps, H264_FPS};
 use ghee::draw::{Arg, Call, CallKind};
 use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
-use ghee::filters::{apply_filters, load_filters};
+use ghee::filters::apply_filters;
 use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::layer::Address;
 use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
@@ -415,20 +415,7 @@ fn load(source: Source) -> Outcome<(Scene, String)> {
         }
     };
     let wanted = scene.filters.clone();
-    let reg = load_filters(&[]);
-    let unknown: Vec<&str> = wanted
-        .iter()
-        .filter(|n| !reg.contains_key(n.as_str()))
-        .map(String::as_str)
-        .collect();
-    if !unknown.is_empty() {
-        return Err(Fault::scene(format!(
-            "unknown filter: {} (known: {})",
-            unknown.join(", "),
-            reg.keys().cloned().collect::<Vec<_>>().join(", ")
-        )));
-    }
-    apply_filters(&mut scene, &wanted, Some(&reg)).map_err(scene_fault)?;
+    apply_filters(&mut scene, &wanted, None).map_err(scene_fault)?;
     Ok((scene, name))
 }
 

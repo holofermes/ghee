@@ -65,7 +65,8 @@ curl -X POST 'http://127.0.0.1:8090/set?name=tile&value=3'
 ```
 
 ghee takes the scene's param of that name, else the param of the first pass
-that declares it. To pick a pass, add `pass=`, as in
+that declares it. To pick a pass, name it in `name`, as in
+`/set?name=main.tile&value=3`, or add `pass=`, as in
 `/set?pass=main&name=tile&value=3`.
 
 | Param type | `value` |

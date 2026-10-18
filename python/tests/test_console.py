@@ -313,7 +313,7 @@ def test_the_console_serves_its_own_page(served):
 
 def test_a_set_lands_on_the_next_frame(served):
     h, port = served
-    assert post(port, "/set?pass=main&name=gain&value=0.25")[0] == 200
+    assert post(port, "/set?name=main.gain&value=0.25")[0] == 200
     h.feed("level", LEVEL)
     h.frame()
     assert abs(h.pixels()[0] - 64) <= 2

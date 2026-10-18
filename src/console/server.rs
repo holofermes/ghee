@@ -2254,7 +2254,7 @@ mod tests {
         let (_, _, first) = ask(&api, "GET", "/scene", "", "");
         for q in [
             "scene=clocks&pass=main&name=cols&value=5",
-            "scene=clocks&pass=main&name=rows&value=4",
+            "scene=clocks&name=main.rows&value=4",
         ] {
             assert_eq!(ask(&api, "POST", "/set", q, "").0, 200);
         }

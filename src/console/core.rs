@@ -1218,7 +1218,8 @@ fn parse_aside(query: &Query) -> Result<(Aside, bool), String> {
 /// What a /set changes, or the first thing wrong with it. A query that names
 /// a `layer` sets one of its live fields, and its value parses by the field.
 /// Any other query sets the param that param_of() finds, and its value
-/// parses by the param's type. The outer error is the host's own.
+/// parses by the param's type. A `name` of `pass.name` with no `pass` names
+/// both. The outer error is the host's own.
 fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set, String>> {
     if let Some(layer) = query.get("layer") {
         let parts = || -> Result<(&String, &String), String> {
@@ -1256,9 +1257,12 @@ fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set
         Err(e) => return Ok(Err(e)),
     };
     let doc = host.live_doc()?;
-    let pass = query.get("pass").map(String::as_str);
+    let (pass, name) = match (query.get("pass"), name.split_once('.')) {
+        (None, Some((pass, name))) => (Some(pass), name),
+        (pass, _) => (pass.map(String::as_str), name.as_str()),
+    };
     Ok(param_of(&doc, pass, name).and_then(|(scope, ty)| {
-        parse_param_value(&ty, raw).map(|value| Set::Param(scope, name.clone(), value))
+        parse_param_value(&ty, raw).map(|value| Set::Param(scope, name.to_string(), value))
     }))
 }
 
@@ -2196,6 +2200,8 @@ mod tests {
             (Some("main"), "nope", "main.nope"),
             (Some("other"), "k", "other.k"),
             (Some("scene"), "tint", "scene.tint"),
+            (None, "other.k", "other.k"),
+            (None, "main.tint", "main.tint"),
             // a text's words take the layer's address alone
             (None, "words", "words"),
         ] {
@@ -2207,6 +2213,29 @@ mod tests {
                 format!("bad /set: param '{wire}' is not a param this scene declares ({wires})");
             assert_eq!((r.status, body(&r)), (400, want));
             assert_eq!(*api.host.calls.borrow(), vec![Call::SceneDef(None)]);
+        }
+    }
+
+    #[test]
+    fn every_name_that_a_refused_set_lists_sets_its_param() {
+        let main = Scope::Pass(0);
+        for (name, raw, scope, param) in [
+            ("tint", "1", Scope::Scene, "tint"),
+            ("main.k", "0.5", main, "k"),
+            ("k", "0.5", main, "k"),
+            ("main.on", "true", main, "on"),
+            ("main.c", "1,0,0", main, "c"),
+            ("main.v", "0.1,0.2", main, "v"),
+        ] {
+            let api = api();
+            let r = post(&api, "/set", &[("name", name), ("value", raw)]);
+            assert_eq!((r.status, body(&r).as_str()), (200, "ok"), "{name}");
+            assert!(
+                matches!(api.host.calls.borrow().last(),
+                    Some(Call::SetParam(s, n, _)) if *s == scope && n == param),
+                "{name}: {:?}",
+                api.host.calls.borrow()
+            );
         }
     }
 

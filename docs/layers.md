@@ -167,6 +167,10 @@ and `{}` takes the defaults:
 { "name": "title", "text": "hello", "glow": {}, "wave": {} }
 ```
 
+An effect's sizes are in em, a share of the font size, so that the effect
+grows with the letters: a `text_stroke` `width` of 0.1 is a tenth of the
+font size. A shape's sizes, such as a border's `width`, are in pixels.
+
 To turn an effect off and keep its settings, set `"visible": false` inside it.
 The console shows every effect's settings.
 

@@ -352,8 +352,9 @@ pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
     }
 }
 
-/// A source for one declared array: the host's data for this frame.
-pub type ArraySource = Box<dyn Fn(ArraySize, u64) -> Vec<f32> + Send + Sync>;
+/// A source for one declared array: its size and the frame number give this
+/// frame's data, as the engine's provider gives it.
+pub type ArraySource = Box<dyn FnMut(ArraySize, u64) -> Feed>;
 
 /// The item of POST /aside that names the saved edits that make no scene.
 pub const BROKEN: &str = "edits";
@@ -387,7 +388,6 @@ pub struct Console {
     pub stale_interval: Option<f64>,
     /// What stops and pauses the render.
     pub control: Control,
-    arrays: Vec<(String, ArraySource)>,
     /// The frame's size, the preview, the streams and /stats.
     pub hub: Hub,
 
@@ -438,7 +438,6 @@ impl Console {
             dri: None,
             stale_interval: None,
             control: Control::new(),
-            arrays: Vec::new(),
             hub: Hub::new(),
             active: Mutex::new(Active::default()),
             editing: Mutex::new(()),
@@ -1290,11 +1289,12 @@ fn publish_text_errors(console: &Console, renderer: &Renderer, seen: &Cell<u64>)
 ///
 /// GL is thread-affine, so the caller creates the Renderer on the thread that
 /// calls this. The sinks belong to the caller, and this draws to them from
-/// here.
+/// here. `arrays` feed the arrays of the scenes by name.
 pub fn render_loop(
     console: &Arc<Console>,
     renderer: Rc<RefCell<Renderer>>,
     mut sinks: Vec<Box<dyn Output>>,
+    mut arrays: Vec<(String, ArraySource)>,
     pacer: Option<Box<dyn Pacer>>,
     on_stats: Option<StatsHook>,
 ) {
@@ -1342,7 +1342,7 @@ pub fn render_loop(
         render.clock.pacer = pacer;
         // the loop rests so the handler and encoder threads run
         render.rest = 0.003;
-        let feed = provider(console);
+        let feed = provider(&mut arrays);
         render.provider = Some(Box::new(feed));
         render.controller = Some(&ctrl);
         render.poll = Some(Box::new(|| drain(console, &renderer, &st, &ctrl)));
@@ -1423,9 +1423,9 @@ pub fn render_loop(
 }
 
 /// The host's array source for a name, else the placeholder feed.
-fn provider(console: &Console) -> impl FnMut(&str, ArraySize, u64) -> Feed + '_ {
-    |name: &str, size: ArraySize, frame: u64| match console.arrays.iter().find(|(n, _)| n == name) {
-        Some((_, src)) => Feed::Data(src(size, frame)),
+fn provider(arrays: &mut [(String, ArraySource)]) -> impl FnMut(&str, ArraySize, u64) -> Feed + '_ {
+    |name: &str, size: ArraySize, frame: u64| match arrays.iter_mut().find(|(n, _)| n == name) {
+        Some((_, src)) => src(size, frame),
         None => Feed::Data(demo_feed(name, size, frame)),
     }
 }
@@ -2068,7 +2068,6 @@ pub fn run(opts: Options) -> Result<()> {
     console.timestep = timestep;
     console.dri = dri_device;
     console.control = control;
-    console.arrays = arrays;
     let hub = &mut console.hub;
     (hub.w, hub.h) = size;
     hub.preview_max = preview_max;
@@ -2128,7 +2127,8 @@ pub fn run(opts: Options) -> Result<()> {
                 }
             }
             println!("{}", banner(&address, &names, &from, size, format));
-            render_loop(&console, Rc::new(RefCell::new(r)), sinks, pacer, on_stats);
+            let r = Rc::new(RefCell::new(r));
+            render_loop(&console, r, sinks, arrays, pacer, on_stats);
         }
         Err(e) => {
             console.hub.set_error(&e.to_string(), None, None);
@@ -4057,6 +4057,43 @@ mod tests {
         }
     }
 
+    /// A sink that keeps the red of the first pixel of every frame.
+    struct Reds(Rc<RefCell<Vec<u8>>>);
+
+    impl Output for Reds {
+        fn write(&mut self, frame: Frame<'_>) -> Result<()> {
+            self.0.borrow_mut().push(frame.data[0]);
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn an_array_source_sends_bytes_and_then_says_unchanged() {
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
+        let d = crate::testing::TempDir::new("console-arrays");
+        let scene = r#"{"version": 1, "passes": [{"name": "main",
+            "arrays": [{"name": "level", "size": 1}],
+            "fragment": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }"}]}"#;
+        fs::write(d.join("level.scene.json"), scene).unwrap();
+        let reds = Rc::new(RefCell::new(Vec::new()));
+        let level: ArraySource = Box::new(|_size, frame| match frame {
+            0 => Feed::DataU8(vec![255]),
+            _ => Feed::Unchanged,
+        });
+        let ran = run(Options {
+            store: Some(SceneStore::new(&d, Vec::new())),
+            port: free_port(),
+            size: Some((8, 8)),
+            frames: 3,
+            arrays: vec![("level".to_string(), level)],
+            sinks: vec![Box::new(Reds(Rc::clone(&reds)))],
+            ..Options::default()
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        assert_eq!(*reds.borrow(), [255, 255, 255]);
+    }
+
     /// A sink that pauses the console at its first frame, and a thread that
     /// lets it go `after` seconds later.
     struct PauseAt {
@@ -4296,7 +4333,14 @@ mod tests {
         let mut renderer = gpu(32, 24);
         renderer.set_rotate(90).unwrap();
         let sinks: Vec<Box<dyn Output>> = vec![Box::new(Bound(Rc::new(Cell::new(0))))];
-        render_loop(&console, Rc::new(RefCell::new(renderer)), sinks, None, None);
+        render_loop(
+            &console,
+            Rc::new(RefCell::new(renderer)),
+            sinks,
+            Vec::new(),
+            None,
+            None,
+        );
         assert_eq!(fs::read_to_string(d.join("size")).unwrap(), "24x32");
         // a scene that the console never loaded, read through GET /scene
         fs::remove_file(d.join("size")).unwrap();
@@ -4317,7 +4361,14 @@ mod tests {
         let renderer = gpu(8, 8);
         let npot = renderer.trilinear_npot();
         let sinks: Vec<Box<dyn Output>> = vec![Box::new(Bound(Rc::new(Cell::new(0))))];
-        render_loop(&console, Rc::new(RefCell::new(renderer)), sinks, None, None);
+        render_loop(
+            &console,
+            Rc::new(RefCell::new(renderer)),
+            sinks,
+            Vec::new(),
+            None,
+            None,
+        );
         assert_eq!(
             console.stats()["gpu"],
             serde_json::json!({"trilinear_npot": npot})
@@ -4353,7 +4404,7 @@ mod tests {
             let hook: StatsHook = Box::new(move |times, wall, out| {
                 *got.borrow_mut() = Some((times.len(), wall, out.to_vec()));
             });
-            render_loop(&console, renderer, Vec::new(), None, Some(hook));
+            render_loop(&console, renderer, Vec::new(), Vec::new(), None, Some(hook));
             stopper.join().unwrap();
             let (n, _, _) = summary.borrow().clone().expect("no summary");
             if viewers == 0 {

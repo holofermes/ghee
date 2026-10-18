@@ -163,6 +163,7 @@ curl http://127.0.0.1:8090/stats
 | --- | --- |
 | `active`, `rev` | the open scene and its revision |
 | `fps`, `frame_ms` | frames a second, and the milliseconds of a frame |
+| `frames`, `skipped` | the count of frames drawn, and of frames skipped |
 | `out` | the outputs that take frames now, such as `kms` and `mjpeg` |
 | `display` | the frame's `w` and `h` in pixels, its `format`, and its `rotation` in degrees |
 | `error` | the compile error, if any. ghee keeps drawing the last code that compiled |

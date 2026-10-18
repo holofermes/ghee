@@ -36,7 +36,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `SceneProcess::start` takes a `size`, `render_loop` takes the renderer,
   a `ConsoleHost` implements `set_layer` and `save`, and a
   `SceneController` gives the console its `ghee::live::Live` through
-  `live()` instead of taking `on_param`.
+  `live()` instead of taking `on_param`. Set a `Console`'s frame size and
+  its preview and stream settings on `console.hub`, and take the stream
+  types from `ghee::console::hub`.
 
 ### Added
 
@@ -115,6 +117,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `ghee render` runs it.
 - `ghee.open(display="kms")` refuses a card whose GL runs in software, as
   `ghee render` does, instead of drawing through llvmpipe.
+- The console's `/stats` gives `display.format` as `rgb565` under
+  `--rgb565`, instead of `rgba`.
 
 ## 0.4.0 - 2026-08-06
 

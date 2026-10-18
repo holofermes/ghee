@@ -2297,6 +2297,26 @@ mod tests {
         assert!(!file.exists());
     }
 
+    #[test]
+    fn a_scene_posted_back_takes_its_assets_from_its_folder_with_or_without_filters() {
+        for filters in [serde_json::json!([]), serde_json::json!(["frc"])] {
+            let d = crate::testing::TempDir::new("console-asset-folder");
+            fs::create_dir_all(d.join("word")).unwrap();
+            fs::write(d.join("word/pic.png"), crate::testing::png(2, 2)).unwrap();
+            let mut doc: Value = serde_json::from_str(SCENE).unwrap();
+            doc["assets"] = serde_json::json!({"pic": {"file": "pic.png"}});
+            doc["filters"] = filters.clone();
+            fs::write(d.join("word/word.scene.json"), doc.to_string()).unwrap();
+            let console = Arc::new(Console::new(SceneStore::new(&d, Vec::new())));
+            let (opened, _) = console.store.open("word", None, (32, 24)).unwrap();
+            ready(&console, "word", opened);
+            let api = ConsoleAPI::new(RenderLoopHost::new(console));
+            let (_, scene, _) = ask(&api, "GET", "/scene", "", "");
+            let (status, body, _) = ask(&api, "POST", "/scene", "", &scene);
+            assert_eq!(status, 200, "{filters}: {body}");
+        }
+    }
+
     /// A console over the clocks of clocks() in `d` and its state directory
     /// `states`, as a new ghee starts it, with clocks loaded.
     fn clocks_again(d: &str, states: &str) -> ConsoleAPI<RenderLoopHost> {

@@ -454,6 +454,7 @@ fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
     }
     if added {
         use std::mem::take;
+        let root = take(&mut scene.root);
         *scene = Scene::new(
             take(&mut scene.passes),
             take(&mut scene.version),
@@ -463,6 +464,7 @@ fn merge_assets(scene: &mut Scene, filter: &str, fd: &Value) -> Result<()> {
             take(&mut scene.assets),
         )
         .map_err(|e| anyhow::anyhow!("filter '{filter}': {e}"))?;
+        scene.root = root;
     }
     Ok(())
 }

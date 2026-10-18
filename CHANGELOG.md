@@ -134,6 +134,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 ### Fixed
 
 - A console no longer hangs on Ctrl-C or SIGTERM.
+- An edit in the console of a scene with `filters` finds the scene's
+  images and fonts in its folder, instead of failing to load them.
 - A Pi 5's SPI or I2C panel shows the frame that the GPU drew, instead of
   stale fragments of earlier frames.
 - ghee frees each scene's GPU buffers at a switch. A console on a Pi 5 ran

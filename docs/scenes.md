@@ -88,7 +88,7 @@ Both run y down, with y = 0 at the top.
 | `params` | `{"<name>": <param>}` | none | [params](#params) that every pass reads |
 | `common` | GLSL, or `{"file": "common.glsl"}` | none | GLSL that ghee puts at the top of every pass, such as a function that two passes share |
 | `assets` | `{"<name>": <asset>}` | none | image, font and [data](#data-files) files ([Assets](layers.md#assets)) |
-| `filters` | a list of filter names | none | passes that ghee adds after the scene's own, such as `dither` ([Filters](filters.md)) |
+| `filters` | a list of filter names, or of objects with a `name` and the filter's settings | none | passes that ghee adds after the scene's own, such as `dither` ([Filters](filters.md)) |
 | `version` | `1` | `1` | the scene format's version |
 
 Give a scene file a name that ends in `.scene.json`. A path in it is

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
 use ghee::engine::{probe_dri_devices, Given, Renderer};
-use ghee::filters::apply_filters;
+use ghee::filters::{apply_filters, Filter};
 use ghee::layer::{Address, Detail, Layer, TextLayer};
 use ghee::scene::{Param, ParamValue, Pass, Scene, SceneBuilder};
 use ghee::text::{self, Align};
@@ -1231,9 +1231,9 @@ fn a_vec_or_color_param_named_like_a_swizzle_reads_as_any_uniform() {
     // A filter's code selects .rgb beside a scene param rgb.
     let rgb = json!({"rgb": red});
     let mut sc = loaded(&scene(rgb, &code("v.rg")));
-    apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
+    apply_filters(&mut sc, &[Filter::named("dither")], None).unwrap();
     let mut plain = loaded(&scene(json!({}), &code("v.rg")));
-    apply_filters(&mut plain, &["dither".to_string()], None).unwrap();
+    apply_filters(&mut plain, &[Filter::named("dither")], None).unwrap();
     assert!(render(&mut r, &sc) == render(&mut r, &plain));
 }
 
@@ -1253,7 +1253,7 @@ fn every_scene_pass_reads_the_layers_and_a_filter_pass_none() {
         ],
     });
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-    apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
+    apply_filters(&mut sc, &[Filter::named("dither")], None).unwrap();
     assert_eq!(sc.passes.len(), 3);
     let glsl = |p: &Pass| p.glsl(Some(&sc.params), None, &sc.assets, &sc.text_names(), false);
     for p in &sc.passes[..2] {
@@ -1278,7 +1278,7 @@ fn layers_survive_a_filter_asset_and_a_built_param() {
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     sc.passes[0].layers[0].as_text_mut().unwrap().data = Some(alone(&font(SANS)));
     let layers = sc.passes[0].layers.clone();
-    apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+    apply_filters(&mut sc, &[Filter::named("frc256")], None).unwrap();
     assert!(sc.assets.iter().any(|a| a.name == "frc256_bluenoise"));
     assert_eq!(sc.passes[0].layers, layers);
     let sc = Ok::<_, anyhow::Error>(sc)
@@ -1960,7 +1960,7 @@ fn a_filter_after_a_layer_compiles() {
     let fit = Fit::of(laid.width, laid.height, W, H);
     let (_g, mut r) = gpu(W, H);
     let mut sc = loaded(&label_scene(SANS, "I", Align::Left, fit));
-    apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
+    apply_filters(&mut sc, &[Filter::named("dither")], None).unwrap();
     assert_eq!(r.setup(&sc).unwrap(), "");
 }
 

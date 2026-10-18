@@ -45,8 +45,9 @@ pub struct SceneStore {
     pub scenes: Vec<(String, String)>,
     /// Every scene in this store ends with these filters, after its own. A host
     /// whose panel needs one (a 1-bit panel needs the dither) sets them here
-    /// instead of writing them into every scene.
-    pub filters: Vec<String>,
+    /// instead of writing them into every scene. A filter that the scene lists
+    /// too keeps the scene's place and takes the values set here.
+    pub filters: Vec<crate::filters::Filter>,
     /// The directory of the scenes that this console makes. None when it
     /// makes none.
     pub mine: Option<String>,
@@ -526,12 +527,7 @@ impl SceneStore {
         };
         // The scene's own filters run first, the store's follow, so a host
         // filter like the dither lands last where the panel needs it.
-        let mut filters = scene.filters.clone();
-        for name in &self.filters {
-            if !filters.contains(name) {
-                filters.push(name.clone());
-            }
-        }
+        let filters = crate::filters::chain(&scene.filters, &self.filters);
         apply_filters(&mut scene, &filters, None)
             .map_err(|e| ConsoleError::server_error(e.to_string()))?;
         if let Some(fed) = process.as_mut() {
@@ -972,7 +968,7 @@ mod tests {
         let (plain, _) = store.start("plain", SIZE).unwrap();
         assert_eq!(plain.passes.len(), 1, "no filter yet");
 
-        store.filters = vec!["dither".to_string()];
+        store.filters = vec![crate::filters::Filter::named("dither")];
         let (dithered, _) = store.start("plain", SIZE).unwrap();
         assert_eq!(dithered.passes.len(), 2);
         assert_eq!(dithered.passes[1].name, "dither");
@@ -994,14 +990,14 @@ mod tests {
         write_text(&format!("{d}/own.scene.json"), own);
         write_text(&format!("{d}/plain.scene.json"), SCENE);
         let mut store = SceneStore::new(&d, Vec::new());
-        store.filters = vec!["dither".to_string()];
+        store.filters = vec![crate::filters::Filter::named("dither")];
         let e = store.start("own", SIZE).err().unwrap();
         assert!(
             e.message.starts_with("unknown filter: nope (known: "),
             "{}",
             e.message
         );
-        store.filters = vec!["nope".to_string()];
+        store.filters = vec![crate::filters::Filter::named("nope")];
         let e = store.start("plain", SIZE).err().unwrap();
         assert!(
             e.message.starts_with("unknown filter: nope (known: "),
@@ -1127,6 +1123,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["".to_string(), "dither".to_string()]
         );
+    }
+
+    #[test]
+    fn a_filter_s_values_from_the_scene_file_outlast_an_edit_of_the_filter_list() {
+        let d = tmpdir("filter-values");
+        let mut doc: Value = serde_json::from_str(SCENE).unwrap();
+        doc["filters"] = json!([{"name": "frc", "calm": 8}]);
+        write_text(&format!("{d}/f{SCENE_SUFFIX}"), &doc.to_string());
+        let mut store = SceneStore::new(&d, Vec::new());
+        let calm = |sc: &Scene| sc.passes[1].params.get("calm").unwrap().value.to_json();
+        let defaults = store.resolve("f", SIZE).unwrap();
+        assert_eq!(calm(&defaults), json!(8.0));
+        // The console adds dither after frc.
+        let mut w = defaults.clone();
+        w.filters.push(crate::filters::Filter::named("dither"));
+        crate::filters::rebuild_filters(&mut w, None).unwrap();
+        let edits = state::diff(&defaults.to_dict(), &w.to_dict(), false);
+        let (back, aside, broken) = working("f", &defaults, &edits);
+        assert!(aside.is_empty() && broken.is_empty());
+        assert_eq!(calm(&back), json!(8.0));
+        assert_eq!(back.passes[2].filter, "dither");
+        // A host filter of the same name sets its values in the scene's place.
+        let host = json!({"name": "frc", "calm": 10});
+        store.filters = vec![crate::filters::Filter::from_json(&host).unwrap()];
+        let (hosted, _) = store.start("f", SIZE).unwrap();
+        assert_eq!(hosted.passes.len(), 2);
+        assert_eq!(calm(&hosted), json!(10.0));
     }
 
     /// A .scene.json and the program beside it are the members of one

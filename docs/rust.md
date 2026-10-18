@@ -131,8 +131,13 @@ Use `pacer` to cap the frame rate. `pacer(Some(fps), Sinks::Display)` caps
 the console and its display at `fps`. With None, the display's refresh
 paces the render.
 
-Set `filters` to end every scene with the same [filters](filters.md). To
-find the scenes' files in folders of your own, call
+Set `filters` to end every scene with the same [filters](filters.md), such
+as `vec![Filter::named("frc")]` with `ghee::filters::Filter`. To start one
+at settings of your own, make it with `Filter::from_json`, as in
+`Filter::from_json(&json!({"name": "frc", "calm": 8}))?`. A filter that a
+scene lists too keeps its place in the scene and takes your settings.
+
+To find the scenes' files in folders of your own, call
 `ghee::scene::set_asset_dirs` before `run`. ghee searches them after the
 scene's own folder and before `$GHEE_ASSETS`.
 

@@ -899,9 +899,18 @@ fn put(defaults: &Value, doc: &mut Value, item: &Item) -> Result<(), String> {
             doc["passes"] = Value::Array(kept);
         }
         "filters" => {
+            // A filter that the scene file lists keeps the values that its
+            // entry there sets.
+            let was = list(&doc["filters"]);
+            let entry = |n: Value| {
+                was.iter()
+                    .find(|w| *w == &n || w.get("name") == Some(&n))
+                    .cloned()
+                    .unwrap_or(n)
+            };
             let kept: Vec<Value> = own(doc).cloned().collect();
             doc["passes"] = Value::Array(kept);
-            doc["filters"] = Value::Array(list(&item.value));
+            doc["filters"] = list(&item.value).into_iter().map(entry).collect();
         }
         "common" => match &item.value {
             Value::Null => {

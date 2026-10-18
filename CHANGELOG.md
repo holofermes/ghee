@@ -42,7 +42,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   its `clock`. Take a `Result` from `Card::open`, pass the display's `Card`
   in the console's `Options.display` and its size as an `Option` in `size`,
   and give an `ArraySource`'s data as a `Feed`. Stop a console through the
-  `Control` in its `Options.control` instead of `server::stop()`.
+  `Control` in its `Options.control` instead of `server::stop()`. List a
+  `Scene`'s filters and those of `Options.filters` as
+  `ghee::filters::Filter`s instead of names.
 
 ### Added
 
@@ -76,6 +78,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Use `--drop` to show the newest frame instead of waiting for the display.
 - Show more greys on small panels with the `frc` and `frc256` filters
   ([Filters](docs/filters.md)).
+- Start a filter at settings of your own with an entry such as
+  `{"name": "frc", "calm": 8}` in a scene's `filters`, or with
+  `--filters frc:calm=8` ([Changing a filter's
+  settings](docs/filters.md#changing-a-filters-settings)).
 - Keep transparency in the output with `--alpha`, premultiplied or
   unpremultiplied.
 - Move ghee's cache with `$GHEE_CACHE`.

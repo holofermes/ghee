@@ -2865,7 +2865,7 @@ async function delPass(i){
   if (!await ask(`Remove pass ${name}${n > 1 ? ` and its ${n} layers` : n ? " and its layer" : ""}?`) || work.passes[i] !== p) return;
   work.passes.splice(i, 1);
   if (filt && Array.isArray(work.filters)){
-    const fi = work.filters.indexOf(filt);
+    const fi = work.filters.findIndex(f => f === filt || f.name === filt);
     if (fi >= 0) work.filters.splice(fi, 1);
   }
   work.passes.forEach(q => { q.channels = (q.channels || []).filter(c => c.buffer !== name); });

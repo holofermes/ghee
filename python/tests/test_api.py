@@ -82,6 +82,22 @@ def test_a_param_reaches_the_shader_live():
             h.set_param("gain", 1.0, pass_="main")
 
 
+def test_a_filter_entry_starts_the_filter_where_set_param_puts_it():
+    ramp = "void main(){ gl_FragColor = vec4(vec3(uv.x), 1.0); }"
+
+    def frame(filters, levels=None):
+        doc = {"version": 1, "passes": [{"fragment": ramp}], "filters": filters}
+        with ghee.open(doc, width=16, height=2) as h:
+            if levels is not None:
+                h.set_param("levels", levels, in_pass="dither")
+            h.frame()
+            return h.pixels()
+
+    entry = frame([{"name": "dither", "levels": 8}])
+    assert entry == frame(["dither"], 8)
+    assert entry != frame(["dither"])
+
+
 def test_vec_and_color_values_reach_the_shader():
     built = ghee.Scene(
         passes=[

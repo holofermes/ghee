@@ -75,8 +75,20 @@ panel's full rate, about 200 frames a second on the SSD1322. On a Pi 5,
 
 ## Changing a filter's settings
 
-A scene file and `--filters` add a filter with its default settings. To
-change them, use the console, or set one from Python as a param:
+To start a filter at settings of your own, list it in `filters` as an
+object with its `name` and the settings that you change. This `frc` holds
+still on a panel that takes about 106 frames a second:
+
+```json
+"filters": [{ "name": "frc", "calm": 8 }]
+```
+
+On the command line, put each setting after the name, with a colon before
+each, as in `--filters frc:calm=8:coarse=1`. From Python, give
+`ghee.Scene` the same object. In the console, change a setting on the
+filter's pass.
+
+To change a setting at runtime from Python, set it as a param:
 `screen.set_param("calm", 8)`. When the scene has a param of the same name,
 name the filter's pass too: `screen.set_param("calm", 8, in_pass="frc")`
 ([Python](python.md#opening-a-scene)).

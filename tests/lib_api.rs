@@ -159,7 +159,7 @@ fn a_scene_filter_name_resolves_to_an_appended_pass() {
     let mut sc = Scene::of(vec![Pass::of("main", FLAT).unwrap()])
         .filters(&["dither"])
         .unwrap();
-    assert_eq!(sc.filters, ["dither"]);
+    assert_eq!(sc.filters, [ghee::filters::Filter::named("dither")]);
     let names = sc.filters.clone();
     apply_filters(&mut sc, &names, None).unwrap();
     let passes: Vec<&str> = sc.passes.iter().map(|p| p.name.as_str()).collect();

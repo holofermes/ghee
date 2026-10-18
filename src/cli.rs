@@ -31,7 +31,7 @@ use crate::console::{examples_dir, is_examples_dir};
 use crate::control::{self, Control, SIGTERM};
 use crate::engine::{probe_display, Card, Feed, Renderer, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
-use crate::filters::{self, apply_filters};
+use crate::filters::{self, apply_filters, Filter};
 use crate::golden;
 use crate::h264::H264Stream;
 use crate::looper::{ControllerSlot, Loop, Output, Pacer, SceneController};
@@ -291,20 +291,9 @@ fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProce
     } else {
         (load_scene(&path, &a.scene_args, true)?, None)
     };
-    let mut names = scene.filters.clone();
-    names.extend(
-        text(&a.filters)
-            .split(',')
-            .map(str::trim)
-            .filter(|n| !n.is_empty())
-            .map(String::from),
-    );
-    let mut wanted: Vec<String> = Vec::new();
-    for n in names {
-        if !wanted.contains(&n) {
-            wanted.push(n);
-        }
-    }
+    let given = Filter::parse_list(text(&a.filters))
+        .map_err(|e| exit(format!("{}: --filters: {e}", a.cmd)))?;
+    let wanted = filters::chain(&scene.filters, &given);
     apply_filters(&mut scene, &wanted, None).map_err(|e| match e.is::<filters::Unknown>() {
         true => exit(e.to_string()),
         false => e,
@@ -1287,7 +1276,8 @@ struct RenderArgs {
 
     #[arg(
         long,
-        help = "comma-separated filter names applied after the scene's own"
+        help = "comma-separated filters applied after the scene's own, each a name and \
+                any settings after colons, e.g. frc:calm=8"
     )]
     filters: Option<String>,
 
@@ -2393,6 +2383,24 @@ mod tests {
         assert_eq!(scene.passes.len(), 2);
         assert_eq!(scene.passes[1].name, "dither");
         assert!(process.is_none()); // a JSON scene feeds itself
+        let (scene, _) = scene_of(
+            &ns(&["render", &path, "--filters", "dither:levels=4,frc:calm=8"]),
+            &mut None,
+        )
+        .unwrap();
+        let value = |i: usize, p: &str| scene.passes[i].params.get(p).unwrap().value.to_json();
+        assert_eq!(
+            (value(1, "levels"), value(2, "calm")),
+            (serde_json::json!(4.0), serde_json::json!(8.0))
+        );
+        let e = failure(scene_of(
+            &ns(&["render", &path, "--filters", "frc:calm"]),
+            &mut None,
+        ));
+        assert_eq!(
+            e,
+            "render: --filters: filter 'frc:calm': 'calm' needs the form param=value"
+        );
         let e = failure(scene_of(
             &ns(&["render", &path, "--filters", "nope"]),
             &mut None,

@@ -334,14 +334,15 @@ class Scene:
     keyed by their names.
     `common` is GLSL that ghee puts in front of each pass.
     `filters` are named post-process passes that ghee appends after the
-    scene's own.
+    scene's own: each a filter's name, or a dict of its `name` and values
+    for its params, such as `{"name": "frc", "calm": 8}`.
     `assets` are the image and font files the scene names.
     Two assets of one name raise ValueError.
     """
 
     passes: list[Pass] = field(default_factory=list)
     version: int = 1
-    filters: list[str] = field(default_factory=list)
+    filters: list[str | dict] = field(default_factory=list)
     params: dict[str, Param] | list[Param] = field(default_factory=dict)
     common: str | None = None
     assets: list[Asset] = field(default_factory=list)
@@ -1170,7 +1171,8 @@ def run(scene: Scene | None = None) -> None:
     global _PARAMS, _FILTERS, _SCENE, _LIVE, _DRAWN, _TICK
     if scene is None:
         scene = Scene(passes=[Pass("main", _BLACK)])
-    _PARAMS, _FILTERS = None, list(scene.filters)
+    _PARAMS = None
+    _FILTERS = [f["name"] if isinstance(f, dict) else f for f in scene.filters]
     _SCENE = scene
     _DRAWN = None
     try:

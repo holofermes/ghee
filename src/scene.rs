@@ -29,6 +29,7 @@ use std::fs;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
+use crate::filters::Filter;
 use crate::layer::{is_image_file, Address, Form, Layer, Rgb, TextLayer, COLOUR_FORMS};
 use crate::shape::Shape;
 
@@ -268,22 +269,6 @@ fn obj_of<'a>(d: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Va
             "'{key}' needs an object of name -> definition, got {}",
             py_repr(v)
         ),
-    }
-}
-
-/// An entry of a scene's `filters`, as its name and its eye: a filter's
-/// name, or `{"name": <name>, "visible": <bool>}`.
-fn filter_entry(v: &Value) -> Option<(String, bool)> {
-    match v {
-        Value::String(n) => Some((n.clone(), true)),
-        Value::Object(o) if o.keys().all(|k| k == "name" || k == "visible") => {
-            let visible = match o.get("visible") {
-                None => true,
-                Some(v) => v.as_bool()?,
-            };
-            Some((o.get("name")?.as_str()?.to_string(), visible))
-        }
-        _ => None,
     }
 }
 
@@ -2135,13 +2120,9 @@ fn keep_bypassed(old: &Layer, was: &Value, look: &Value) -> Option<Value> {
 pub struct Scene {
     pub passes: Vec<Pass>,
     pub version: Value,
-    /// The named filters to append after the scene's own passes, in order. The
+    /// The filters to append after the scene's own passes, in order. The
     /// last one reaches the display. The filters module resolves a name.
-    pub filters: Vec<String>,
-    /// The names among `filters` whose pass starts hidden. A scene file marks
-    /// one as `{"name": <name>, "visible": false}` in `filters`. Appending the
-    /// filters puts the eye on each filter's pass and empties this list.
-    pub hidden_filters: Vec<String>,
+    pub filters: Vec<Filter>,
     /// The scene params. Every pass preamble declares them, and one set reaches
     /// every pass at once. They take the shape of a pass param.
     pub params: ParamMap,
@@ -2236,7 +2217,7 @@ impl Scene {
     pub fn new(
         passes: Vec<Pass>,
         version: Value,
-        filters: Vec<String>,
+        filters: Vec<Filter>,
         params: ParamMap,
         common: Option<String>,
         assets: Vec<Asset>,
@@ -2277,7 +2258,6 @@ impl Scene {
             passes,
             version,
             filters,
-            hidden_filters: Vec::new(),
             params,
             common,
             assets,
@@ -3025,20 +3005,10 @@ impl Scene {
             ]
             .concat();
             known_keys(o, "the scene", &SCENE_KEYS, &elsewhere)?;
-            let mut filters = Vec::new();
-            let mut hidden_filters = Vec::new();
-            for f in list_of(o, "filters")? {
-                let Some((name, visible)) = filter_entry(f) else {
-                    bail!(
-                        "'filters' takes names and objects with a 'name' and a 'visible', got {}",
-                        py_repr(f)
-                    );
-                };
-                if !visible && !hidden_filters.contains(&name) {
-                    hidden_filters.push(name.clone());
-                }
-                filters.push(name);
-            }
+            let filters = list_of(o, "filters")?
+                .iter()
+                .map(Filter::from_json)
+                .collect::<Result<Vec<_>>>()?;
             let version = o.get("version").cloned().unwrap_or_else(|| Value::from(1));
             let passes = list_of(o, "passes")?
                 .iter()
@@ -3053,9 +3023,7 @@ impl Scene {
                 assets.push(Asset::from_dict(n, ad)?);
             }
             let common = common_block(o, files)?;
-            let mut scene = Scene::new(passes, version, filters, params, common, assets)?;
-            scene.hidden_filters = hidden_filters;
-            Ok(scene)
+            Scene::new(passes, version, filters, params, common, assets)
         })()
         .map_err(|e| anyhow!("{src}: {e}"))
     }
@@ -3072,18 +3040,9 @@ impl Scene {
             out.insert("common".to_string(), Value::from(c.clone()));
         }
         if !self.filters.is_empty() {
-            let entry = |n: &String| match self.hidden_filters.contains(n) {
-                true => {
-                    let mut m = Map::new();
-                    m.insert("name".to_string(), Value::from(n.as_str()));
-                    m.insert("visible".to_string(), Value::from(false));
-                    Value::Object(m)
-                }
-                false => Value::from(n.as_str()),
-            };
             out.insert(
                 "filters".to_string(),
-                self.filters.iter().map(entry).collect(),
+                self.filters.iter().map(Filter::to_json).collect(),
             );
         }
         if !self.params.is_empty() {
@@ -3368,14 +3327,12 @@ impl SceneBuilder for Result<Scene> {
     fn param(self, param: Param) -> Result<Scene> {
         let mut s = self?;
         s.params.insert(param.name.clone(), param);
-        let mut n = Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)?;
-        n.hidden_filters = s.hidden_filters;
-        Ok(n)
+        Scene::new(s.passes, s.version, s.filters, s.params, s.common, s.assets)
     }
 
     fn filters(self, names: &[&str]) -> Result<Scene> {
         let mut s = self?;
-        s.filters.extend(names.iter().map(|n| (*n).to_string()));
+        s.filters.extend(names.iter().map(|n| Filter::named(n)));
         Ok(s)
     }
 }
@@ -4663,9 +4620,13 @@ mod tests {
         .unwrap();
         let reg = crate::filters::load_filters(&[&filters]);
         let mut sc = Scene::of(vec![Pass::of("m", GOOD).unwrap()]).unwrap();
-        let e = crate::filters::apply_filters(&mut sc, &["esc".to_string()], Some(&reg))
-            .unwrap_err()
-            .to_string();
+        let e = crate::filters::apply_filters(
+            &mut sc,
+            &[crate::filters::Filter::named("esc")],
+            Some(&reg),
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(
             e,
             "filter 'esc' asset 'm' file '../m.raw' is outside the filter directory"
@@ -5226,7 +5187,7 @@ mod tests {
     }
 
     #[test]
-    fn a_filters_entry_is_a_name_or_a_name_with_its_eye() {
+    fn a_filters_entry_is_a_name_or_a_name_with_its_eye_and_values() {
         // The entry as a file writes it, and as to_dict writes it back.
         for (entry, back) in [
             (json!("dither"), json!("dither")),
@@ -5236,10 +5197,14 @@ mod tests {
                 json!({"name": "dither", "visible": false}),
                 json!({"name": "dither", "visible": false}),
             ),
+            (
+                json!({"name": "dither", "levels": 4, "visible": true}),
+                json!({"name": "dither", "levels": 4}),
+            ),
         ] {
             let d = json!({"passes": [{"name": "m", "fragment": "x"}], "filters": [entry]});
             let sc = Scene::from_dict(&d, None, None).unwrap();
-            assert_eq!(sc.filters, ["dither"], "{entry}");
+            assert_eq!(sc.filters[0].name, "dither", "{entry}");
             assert_eq!(sc.to_dict()["filters"], json!([back]), "{entry}");
         }
     }
@@ -5254,16 +5219,13 @@ mod tests {
                 json!({"name": "dither", "visible": "no"}),
                 "{'name': 'dither', 'visible': 'no'}",
             ),
-            (
-                json!({"name": "dither", "visble": false}),
-                "{'name': 'dither', 'visble': False}",
-            ),
         ] {
             let d = json!({"passes": [{"name": "m", "fragment": "x"}], "filters": [entry]});
             assert_eq!(
                 Scene::from_dict(&d, None, None).unwrap_err().to_string(),
                 format!(
-                    "scene: 'filters' takes names and objects with a 'name' and a 'visible', got {got}"
+                    "scene: 'filters' takes names, and objects with a 'name' and values for \
+                     the filter's params, got {got}"
                 )
             );
         }
@@ -5279,14 +5241,24 @@ mod tests {
             None,
         )
         .unwrap();
-        let e = crate::filters::apply_filters(&mut sc, &["dither".to_string()], None).unwrap_err();
+        let e = crate::filters::apply_filters(
+            &mut sc,
+            &[crate::filters::Filter::named("dither")],
+            None,
+        )
+        .unwrap_err();
         assert_eq!(
             e.to_string(),
             "scene param 'amount' and param 'amount' in pass 'dither' share a name"
         );
         let doc = named(json!({"params": {"frc256_bluenoise_tex": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-        let e = crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap_err();
+        let e = crate::filters::apply_filters(
+            &mut sc,
+            &[crate::filters::Filter::named("frc256")],
+            None,
+        )
+        .unwrap_err();
         assert_eq!(
             e.to_string(),
             "filter 'frc256': scene param 'frc256_bluenoise_tex' and asset 'bluenoise' of filter \
@@ -5295,7 +5267,8 @@ mod tests {
         // A layer's names stay out of a filter pass.
         let doc = named(json!({"params": {"bluenoise": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-        crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+        crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc256")], None)
+            .unwrap();
     }
 
     #[test]
@@ -5473,7 +5446,8 @@ mod tests {
                         "layers": [{"name": "i", "image": "pic"}]}],
         });
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-        crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+        crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc256")], None)
+            .unwrap();
         let filter = sc.assets.iter().find(|a| !a.from_filter.is_empty());
         let filter = filter.unwrap().name.clone();
         let image = Address {

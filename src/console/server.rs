@@ -1925,8 +1925,9 @@ pub struct Options {
     /// A prebuilt store, instead of one over scenes_dir.
     pub store: Option<SceneStore>,
     /// Filters every scene ends with, after its own. A host whose panel needs
-    /// one sets them here.
-    pub filters: Vec<String>,
+    /// one sets them here. A filter that the scene lists too keeps the
+    /// scene's place and takes the values set here.
+    pub filters: Vec<crate::filters::Filter>,
     /// The output sinks the frames also reach, so a console writes files.
     /// `display` covers the KMS scanout instead, because that one is a mode
     /// the renderer is created in. run() writes these from its own thread, so
@@ -4235,7 +4236,7 @@ mod tests {
         let ran = run(Options {
             store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port,
-            filters: vec!["nope".to_string()],
+            filters: vec![crate::filters::Filter::named("nope")],
             ..Options::default()
         });
         let e = ran.unwrap_err().to_string();

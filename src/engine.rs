@@ -6788,8 +6788,15 @@ mod tests {
             "17 passes, over the cap of 16"
         );
         let mut filtered = scene_of(json!(passes(15)));
-        crate::filters::apply_filters(&mut filtered, &["dither".into(), "frc".into()], None)
-            .unwrap();
+        crate::filters::apply_filters(
+            &mut filtered,
+            &[
+                crate::filters::Filter::named("dither"),
+                crate::filters::Filter::named("frc"),
+            ],
+            None,
+        )
+        .unwrap();
         assert_eq!(
             r.setup(&filtered).unwrap(),
             "17 passes, 2 of them filters, over the cap of 16"
@@ -6807,7 +6814,8 @@ mod tests {
         let (_g, mut r) = gpu_at(w, h);
         let mut sc = scene_of(json!([{"name": "main",
             "fragment": "void main(){ gl_FragColor = vec4(vec3(floor(uv.x * 16.0) / 16.0), 1.0); }"}]));
-        crate::filters::apply_filters(&mut sc, &["frc".to_string()], None).unwrap();
+        crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc")], None)
+            .unwrap();
         assert_eq!(r.setup(&sc).unwrap(), "");
         let corr = |a: &[f64], b: &[f64]| {
             let n = a.len() as f64;
@@ -7412,7 +7420,8 @@ mod tests {
             "fragment": "void main(){ float x = floor(gl_FragCoord.x); \
                          float g = x == 8.0 ? 1.0 : (x == 20.0 ? 128.0 / 255.0 : 0.0); \
                          gl_FragColor = vec4(vec3(g), 1.0); }"}]));
-        crate::filters::apply_filters(&mut sc, &["frc256".to_string()], None).unwrap();
+        crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc256")], None)
+            .unwrap();
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
         let mut avg = vec![0.0; W * H];
@@ -8053,7 +8062,12 @@ mod tests {
         assert!(!names.is_empty());
         for n in names {
             let mut sc = Scene::load(&format!("{dir}/{n}")).unwrap();
-            crate::filters::apply_filters(&mut sc, &["dither".to_string()], None).unwrap();
+            crate::filters::apply_filters(
+                &mut sc,
+                &[crate::filters::Filter::named("dither")],
+                None,
+            )
+            .unwrap();
             for shader_lerp in [false, true] {
                 r.shader_lerp = shader_lerp;
                 assert_eq!(r.setup(&sc).unwrap(), "", "{n} shader_lerp {shader_lerp}");

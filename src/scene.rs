@@ -2157,8 +2157,8 @@ pub struct Scene {
 }
 
 /// Where a loaded scene's files resolve: its directory, as far as `reach`
-/// allows, then the directories of `$GHEE_ASSETS`, and the directory of the
-/// system's emoji font.
+/// allows, then the directories of set_asset_dirs() and `$GHEE_ASSETS`, and
+/// the directory of the system's emoji font.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Root {
     pub dir: String,
@@ -2187,7 +2187,12 @@ impl Root {
                 let elsewhere = match (file.starts_with('/'), self.more.is_empty()) {
                     (true, _) => String::new(),
                     (false, true) => ", and $GHEE_ASSETS names no directory".to_string(),
-                    (false, false) => format!(", nor in $GHEE_ASSETS ({})", self.more.join(", ")),
+                    (false, false) => match lock_dirs().is_empty() {
+                        true => format!(", nor in $GHEE_ASSETS ({})", self.more.join(", ")),
+                        false => {
+                            format!(", nor in the asset directories ({})", self.more.join(", "))
+                        }
+                    },
                 };
                 Err(format!(
                     "{what} ({first}): No such file or directory{elsewhere}"
@@ -3146,9 +3151,9 @@ impl Scene {
     /// names one.
     ///
     /// An absolute path reads as it stands. Any other path resolves in
-    /// `base_dir`, then through `$GHEE_ASSETS`, colon-separated directories, in
-    /// order, and the error names the first path and the directories of
-    /// `$GHEE_ASSETS`. Reach::Inside refuses a path outside `base_dir`. A
+    /// `base_dir`, then in the directories of set_asset_dirs(), then through
+    /// `$GHEE_ASSETS`, colon-separated directories, in order, and the error
+    /// names the first path and those directories. Reach::Inside refuses a path outside `base_dir`. A
     /// filter's asset is the filter's to load. The emoji font is the one that
     /// crate::emoji finds from `base_dir`, under either reach.
     pub fn load_assets_in(&mut self, base_dir: &str, reach: Reach) -> Result<()> {
@@ -3257,14 +3262,37 @@ fn load_layer(
     Ok(())
 }
 
-/// The directories `$GHEE_ASSETS` names, colon-separated, absolute, in order.
+/// The directories that set_asset_dirs() set.
+static ASSET_DIRS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+fn lock_dirs() -> std::sync::RwLockReadGuard<'static, Vec<String>> {
+    ASSET_DIRS.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Find a scene's files in `dirs` too, after the scene's own directory and
+/// before the directories of `$GHEE_ASSETS`, for every scene that this
+/// process loads from then on. Use it in place of setting `$GHEE_ASSETS`
+/// from a program whose threads run.
+pub fn set_asset_dirs<P: AsRef<std::path::Path>>(dirs: &[P]) {
+    let dirs = dirs
+        .iter()
+        .map(|d| normpath(&abspath(&d.as_ref().to_string_lossy())))
+        .collect();
+    *ASSET_DIRS.write().unwrap_or_else(|e| e.into_inner()) = dirs;
+}
+
+/// The directories of set_asset_dirs(), then those that `$GHEE_ASSETS`
+/// names, colon-separated, absolute, in order.
 fn asset_dirs() -> Vec<String> {
-    std::env::var("GHEE_ASSETS")
-        .unwrap_or_default()
-        .split(':')
-        .filter(|d| !d.is_empty())
-        .map(|d| normpath(&abspath(d)))
-        .collect()
+    let mut dirs = lock_dirs().clone();
+    dirs.extend(
+        std::env::var("GHEE_ASSETS")
+            .unwrap_or_default()
+            .split(':')
+            .filter(|d| !d.is_empty())
+            .map(|d| normpath(&abspath(d))),
+    );
+    dirs
 }
 
 /// Chained construction on a Pass constructor's Result:
@@ -4341,6 +4369,22 @@ mod tests {
             Scene::from_dict(&d, None, None).unwrap().passes[0].fragment,
             scene.passes[0].fragment
         );
+    }
+
+    #[test]
+    fn an_asset_resolves_in_the_hosts_asset_directories_after_the_scene_directory() {
+        let scene_dir = tmpdir("host-asset-scene");
+        let asset_dir = tmpdir("host-asset-store");
+        fs::write(format!("{asset_dir}/n.raw"), [1u8, 2, 3, 4]).unwrap();
+        let raw = json!({"file": "n.raw", "width": 2, "height": 2, "format": "u8"});
+        let doc = asset_scene(json!({"n": raw}));
+        let mut scene = Scene::from_dict(&doc, None, None).unwrap();
+        set_asset_dirs(&[asset_dir.to_string()]);
+        let loaded = scene.load_assets_in(&scene_dir, Reach::Any);
+        let dirs = asset_dirs();
+        set_asset_dirs::<&str>(&[]);
+        loaded.unwrap();
+        assert_eq!(dirs.first(), Some(&asset_dir.to_string()));
     }
 
     #[test]

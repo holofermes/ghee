@@ -14,7 +14,6 @@ These hold on every Pi, set by what VC4 can do:
 - A pass's buffer holds 8 bits for each of red, green, blue and alpha, the
   most that VC4 draws.
 - A pass reads at most 16 textures, VC4's count.
-- `fwidth`, `dFdx` and `dFdy` don't compile in a pass.
 
 ## Where the Pis differ
 
@@ -26,6 +25,7 @@ For a scene that must run on every Pi, keep to the VC4 column.
 | the values of an [array](scenes.md#arrays) that a program feeds | 8 bits each, so a value outside 0 to 1 clamps | 32-bit floats |
 | a [data file](scenes.md#data-files), `.raw`, in `f32` | fails to load, so use `u8` | loads, and is read `nearest` |
 | GPU memory | set aside at boot ([GPU memory](#gpu-memory)) | the system's RAM |
+| `fwidth`, `dFdx` and `dFdy` | fail to compile | compile with the pass's `#extension` line ([Passes](scenes.md#passes)) |
 
 To fill an HDMI screen larger than 2048 pixels on VC4, draw at 1920x1080 or
 less with `--size`, and the screen stretches the frame

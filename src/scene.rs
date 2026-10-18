@@ -1844,19 +1844,29 @@ impl Pass {
             return with_main(l, &self.fragment, self.channels.len());
         }
         let common_code = common.unwrap_or_default();
+        let (fragment, mut directives) = extensions(&self.fragment);
         // An author writes a filter on its own, and ghee appends it to any
         // scene. The scene's common block never reaches it, so a filter name
         // never collides with a scene name.
         let body = match common {
             Some(c) if !c.is_empty() && self.filter.is_empty() => {
-                format!("{c}\n\n{}", self.fragment)
+                let (c, more) = extensions(c);
+                for d in more {
+                    if !directives.contains(&d) {
+                        directives.push(d);
+                    }
+                }
+                format!("{c}\n\n{fragment}")
             }
-            _ => self.fragment.clone(),
+            _ => fragment,
         };
         let noise = crate::noise::lines(&glsl_tokens(&body));
-        let l = self.preamble_reading(scene_params, assets, texts, hw_linear, noise, |t| {
+        let mut l = self.preamble_reading(scene_params, assets, texts, hw_linear, noise, |t| {
             calls_cover(common_code, t) || calls_cover(&self.fragment, t)
         });
+        // GLSL ES 1.00 takes an #extension line only ahead of every
+        // declaration, so the lines go right after #version.
+        l.splice(1..1, directives);
         with_main(l, &body, self.channels.len())
     }
 
@@ -1953,6 +1963,29 @@ impl Pass {
         }
         l
     }
+}
+
+/// `glsl` with each `#extension` line left empty, so every other line keeps
+/// its number, and those lines.
+pub(crate) fn extensions(glsl: &str) -> (String, Vec<String>) {
+    let mut found = Vec::new();
+    let kept: Vec<&str> = glsl
+        .split('\n')
+        .map(|line| {
+            let directive = line.trim_start().strip_prefix('#').map(str::trim_start);
+            match directive.is_some_and(|d| d.starts_with("extension")) {
+                true => {
+                    let d = line.trim().to_string();
+                    if !found.contains(&d) {
+                        found.push(d);
+                    }
+                    ""
+                }
+                false => line,
+            }
+        })
+        .collect();
+    (kept.join("\n"), found)
 }
 
 /// The preamble lines `l`, then `body` under ghee's own main, which sets `uv`

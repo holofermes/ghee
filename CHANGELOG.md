@@ -143,6 +143,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   the card's own error, no connected display, or GL in software.
 - `Renderer::blank` does nothing on a renderer with no display, instead of
   failing.
+- ghee puts a pass's `#extension` lines above its own declarations, so
+  `fwidth`, `dFdx` and `dFdy` compile on every GPU that has them, instead of
+  on none ([Passes](docs/scenes.md#passes)).
 
 ## 0.4.0 - 2026-08-06
 

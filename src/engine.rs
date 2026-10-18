@@ -1737,8 +1737,14 @@ impl Renderer {
                 let err = or_else(self.last_error(), "compile error");
                 self.compile_error = unsafe { ffi::ghee_last_error_is_compile(self.handle) };
                 unsafe { ffi::ghee_mp_abort(self.handle) };
-                let (line, in_common) =
-                    user_line(&err, &glsl, &p.fragment, scene.common.as_deref());
+                // The assembled source holds the code with its #extension
+                // lines moved out.
+                let code = crate::scene::extensions(&p.fragment).0;
+                let common = scene
+                    .common
+                    .as_deref()
+                    .map(|c| crate::scene::extensions(c).0);
+                let (line, in_common) = user_line(&err, &glsl, &code, common.as_deref());
                 let pass = format!("pass '{}'", p.name);
                 self.error = match (line, in_common) {
                     (Some(n), true) => format!("{pass}, line {n} of the common block: {err}"),
@@ -6253,6 +6259,33 @@ mod tests {
         sc.common = Some("float k() { return 1.0; }".to_string());
         assert_ne!(r.setup(&sc).unwrap(), "");
         assert_eq!(r.error_line, Some(2));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_pass_takes_derivatives_through_its_extension_line_and_keeps_its_lines() {
+        let (_g, mut r) = gpu();
+        let ext = "#extension GL_OES_standard_derivatives : enable";
+        // A step of one pixel, in half red.
+        let half = 0.5 * W as f64;
+        let main = format!(
+            "{ext}\nvoid main(){{ gl_FragColor = vec4(fwidth(uv.x) * {half:.1}, 0.0, 0.0, 1.0); }}"
+        );
+        let toy = format!(
+            "{ext}\nvoid mainImage(out vec4 o, in vec2 f) {{ o = vec4(dFdx(f.x) * 0.5); }}"
+        );
+        let common = format!("{ext}\nfloat step_x(float x) {{ return dFdx(x); }}");
+        let in_common = format!("void main(){{ gl_FragColor = vec4(step_x(uv.x) * {half:.1}); }}");
+        for (fragment, common) in [(&main, None), (&toy, None), (&in_common, Some(&common))] {
+            let mut sc = scene_of(json!([{"fragment": fragment}]));
+            sc.common = common.cloned();
+            assert_eq!(r.setup(&sc).unwrap(), "", "{fragment}");
+            let f = r.render(None).unwrap();
+            assert!((px(f, W, 0, 0, 0) - 128.0).abs() <= 1.0, "{fragment}");
+        }
+        let sc = scene_of(json!([{"fragment": format!("{ext}\nvoid main(){{\n  nope();\n}}")}]));
+        assert_ne!(r.setup(&sc).unwrap(), "");
+        assert_eq!(r.error_line, Some(3));
     }
 
     #[test]

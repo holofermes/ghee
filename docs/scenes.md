@@ -107,6 +107,11 @@ pass that defines `mainImage` instead of `main` runs as a Shadertoy pass
 `precision` lines for you. A shader that fails to compile stops `ghee
 render`, which prints the pass, the line and the GPU's message.
 
+To use `fwidth`, `dFdx` or `dFdy`, put
+`#extension GL_OES_standard_derivatives : enable` in the pass or in
+`common`. A Pi Zero to Pi 3 has none of them, so such a pass fails to
+compile there ([Raspberry Pi](pi.md)).
+
 | Key | Values | Default | What it changes |
 | --- | --- | --- | --- |
 | `name` | a [name](#names) | `"main"`, so a second pass needs a name | the name that a channel reads it by |

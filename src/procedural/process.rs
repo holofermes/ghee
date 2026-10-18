@@ -2421,11 +2421,11 @@ while IFS= read -r line; do :; done
         );
     }
 
-    /// A process that reads no tick for half a second, then writes every
-    /// tick that it reads to ticks.jsonl in its own directory.
+    /// A process that reads no tick until the file `go` shows up in its own
+    /// directory, then writes every tick that it reads to ticks.jsonl there.
     const SLOW_READER: &str = r#"#!/bin/sh
 printf '%s\n' '{"version": 1, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
-sleep 0.5
+while [ ! -e go ]; do sleep 0.01; done
 cat > ticks.jsonl
 "#;
 
@@ -2440,6 +2440,7 @@ cat > ticks.jsonl
         for frame in 0..3000u64 {
             f.tick(frame, frame as f64 * 0.001, 0.001).unwrap();
         }
+        fs::write(format!("{d}/go"), "").unwrap();
         // stdin closes, and the process reads what the pipe holds
         drop(f);
         let file = format!("{d}/ticks.jsonl");

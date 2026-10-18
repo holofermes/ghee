@@ -6,7 +6,9 @@
 //! live params, and ghee writes one JSON line to its stdin for each render
 //! tick.
 //!
-//! The render thread never blocks on the process.
+//! The render thread never blocks on the process. A `Program` speaks the
+//! same messages from inside this process instead, and answers each tick
+//! before its frame draws.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_int;
@@ -555,10 +557,30 @@ pub fn with_stderr(e: &anyhow::Error) -> String {
 
 // ------------------------------------------------------------------ the process
 
+/// A scene's program that runs inside this process and speaks the wire's
+/// messages, as a host that embeds an interpreter runs a script.
+pub trait Program: Send + Sync {
+    /// The scene, the document that the handshake line holds, for a render
+    /// at `size`. ghee asks again each time it starts the scene.
+    fn start(&self, size: (i32, i32)) -> Result<Value>;
+
+    /// The answer to `tick`, a tick's JSON line: the messages of the wire,
+    /// kind 5 last.
+    fn answer(&self, tick: &str) -> Result<Vec<u8>>;
+}
+
+/// Where the program of a scene runs.
+enum Peer {
+    /// A child process, on its pipes.
+    Child(Child),
+    /// A `Program` in this process.
+    Here(Arc<dyn Program>),
+}
+
 pub struct SceneProcess {
     /// The path the caller named, for the error messages.
     pub name: String,
-    child: Child,
+    peer: Peer,
     inbox: Arc<Mutex<Inbox>>,
     /// Woken with the inbox when an answer ends or stdout ends.
     answered: Arc<Condvar>,
@@ -648,7 +670,7 @@ impl SceneProcess {
         let stdin = take_stdin(&mut child)?;
         let mut process = SceneProcess {
             name: path.to_string(),
-            child,
+            peer: Peer::Child(child),
             inbox,
             answered,
             outbox,
@@ -686,25 +708,84 @@ impl SceneProcess {
             }
         };
         crate::report::progress_done();
-        let mut doc: Value = serde_json::from_str(line.trim()).map_err(|e| {
+        let doc: Value = serde_json::from_str(line.trim()).map_err(|e| {
             anyhow!(process.epitaph(&format!("handshake line is not a scene object: {e}")))
         })?;
+        let scene = process.hello(doc, &dir, reach, edit)?;
+        process.writer = Some(write_ticks(stdin, Arc::clone(&process.outbox)));
+        Ok((scene, process))
+    }
+
+    /// Start `program`, the program of the scene at `path`, as start() starts
+    /// a process. It answers every tick at once, so it runs in lockstep.
+    pub fn here(
+        path: &str,
+        program: Arc<dyn Program>,
+        reach: Reach,
+        size: (i32, i32),
+        edit: impl FnOnce(&mut Value),
+    ) -> Result<(Scene, SceneProcess)> {
+        let dir = match Path::new(path).parent() {
+            Some(d) if !d.as_os_str().is_empty() => d.to_string_lossy().into_owned(),
+            _ => ".".to_string(),
+        };
+        let doc = program.start(size).map_err(|e| anyhow!("{path}: {e:#}"))?;
+        crate::sources::record(path);
+        let mut process = SceneProcess {
+            name: path.to_string(),
+            peer: Peer::Here(program),
+            inbox: Arc::new(Mutex::new(Inbox::default())),
+            answered: Arc::new(Condvar::new()),
+            outbox: Arc::new((Mutex::new(Outbox::default()), Condvar::new())),
+            stderr: Arc::new(Mutex::new(String::new())),
+            errors: None,
+            writer: None,
+            threads: Vec::new(),
+            data: HashMap::new(),
+            unsent: false,
+            incoming: Vec::new(),
+            live: Live::default(),
+            clean: 0,
+            dead: None,
+            lockstep: false,
+            term_after: TERM_AFTER,
+            kill_after: KILL_AFTER,
+            pinned: false,
+            offered: 0,
+            origin: None,
+            refused: HashSet::new(),
+        };
+        let scene = process.hello(doc, &dir, reach, edit)?;
+        process.lockstep = true;
+        Ok((scene, process))
+    }
+
+    /// The scene of the handshake's document `doc`, whose files resolve in
+    /// `dir` as far as `reach` allows, after `edit`. A scene that the edit
+    /// breaks runs as the program wrote it, with a warning.
+    fn hello(
+        &mut self,
+        mut doc: Value,
+        dir: &str,
+        reach: Reach,
+        edit: impl FnOnce(&mut Value),
+    ) -> Result<Scene> {
         // "lockstep" belongs to the handshake, and the scene takes no such key.
         let lockstep = doc.as_object_mut().and_then(|o| o.remove("lockstep"));
         let mut edited = doc.clone();
         edit(&mut edited);
-        let mut scene = match Scene::from_dict_in(&edited, &dir, reach, Some(path)) {
+        let path = Some(self.name.as_str());
+        let mut scene = match Scene::from_dict_in(&edited, dir, reach, path) {
             Ok(scene) => scene,
             Err(e) if edited != doc => {
                 crate::report::warn(format!("{e}, so the scene runs as its process wrote it"));
-                Scene::from_dict_in(&doc, &dir, reach, Some(path))?
+                Scene::from_dict_in(&doc, dir, reach, path)?
             }
             Err(e) => return Err(e),
         };
-        scene.load_assets_in(&dir, reach)?;
-        process.lockstep = lockstep == Some(Value::Bool(true));
-        process.writer = Some(write_ticks(stdin, Arc::clone(&process.outbox)));
-        Ok((scene, process))
+        scene.load_assets_in(dir, reach)?;
+        self.lockstep = lockstep == Some(Value::Bool(true));
+        Ok(scene)
     }
 
     /// The loop pins time to a fixed step. A lockstep process then answers
@@ -926,6 +1007,26 @@ impl SceneProcess {
     /// One JSON line for this tick, carrying the params that changed.
     fn offer(&mut self, frame: u64, time: f64, dt: f64) {
         let mut params = self.live.tick_params();
+        if let Peer::Here(program) = &self.peer {
+            let line = Tick {
+                frame,
+                time,
+                dt,
+                params,
+            }
+            .line();
+            self.offered += 1;
+            let fault = match program.answer(&line) {
+                Ok(bytes) => messages(&mut &bytes[..], &self.inbox, &self.answered).err(),
+                Err(e) => Some(format!("{e:#}")),
+            };
+            let mut inbox = lock(&self.inbox);
+            if let Some(why) = fault {
+                inbox.fault = why;
+            }
+            inbox.ended = self.offered;
+            return;
+        }
         let (slot, wake) = &*self.outbox;
         let mut out = lock(slot);
         if out.closed {
@@ -970,11 +1071,13 @@ impl SceneProcess {
             wait_until(SETTLE, || w.is_finished());
             self.threads.push(w);
         }
-        if !self.reaped(self.term_after) {
-            unsafe { kill(self.child.id() as c_int, SIGTERM) };
-            if !self.reaped(self.kill_after) {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+        if let Peer::Child(child) = &mut self.peer {
+            if !reaped(child, self.term_after) {
+                unsafe { kill(child.id() as c_int, SIGTERM) };
+                if !reaped(child, self.kill_after) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
             }
         }
         // a child of the process can hold the pipes open after the process ends
@@ -982,15 +1085,14 @@ impl SceneProcess {
         wait_until(SETTLE, || self.threads.iter().all(JoinHandle::is_finished));
         self.threads.clear();
     }
+}
 
-    /// Wait for the process to exit, and reap it.
-    /// False means the process outlives the wait.
-    fn reaped(&mut self, patience: Duration) -> bool {
-        let child = &mut self.child;
-        wait_until(patience, || {
-            matches!(child.try_wait(), Ok(Some(_)) | Err(_))
-        })
-    }
+/// Wait for `child` to exit, and reap it.
+/// False means the process outlives the wait.
+fn reaped(child: &mut Child, patience: Duration) -> bool {
+    wait_until(patience, || {
+        matches!(child.try_wait(), Ok(Some(_)) | Err(_))
+    })
 }
 
 impl Drop for SceneProcess {
@@ -1009,12 +1111,13 @@ impl SceneController for SceneProcess {
         }
         // A lockstep process answers its first tick before that frame draws,
         // so the frame shows the data of its own tick. Later ticks wait only
-        // with the time pinned.
+        // with the time pinned. A program here has answered every tick.
         let first = self.offered == 0;
         let (f0, t0) = *self.origin.get_or_insert((frame, t));
         let frame = frame.saturating_sub(f0);
         self.offer(frame, t - t0, dt);
-        if self.lockstep && (self.pinned || first) {
+        let here = matches!(self.peer, Peer::Here(_));
+        if self.lockstep && (self.pinned || first || here) {
             self.await_answers(frame)?;
             self.drain();
             if let Some(dead) = &self.dead {
@@ -2444,6 +2547,71 @@ done
         let again = f.tick(1, 0.0, 0.016).unwrap_err();
         assert_eq!(again.to_string(), shown);
         assert_eq!(with_stderr(&again), with_stderr(&e));
+    }
+
+    /// A program in this process: it answers each tick with the array
+    /// `level`, the tick's frame four times, and fails at frame 2.
+    struct Counter(Mutex<Vec<String>>);
+
+    impl Program for Counter {
+        fn start(&self, (w, _): (i32, i32)) -> Result<Value> {
+            Ok(
+                serde_json::json!({"version": 1, "params": {"w": {"type": "int", "value": w}},
+                "passes": [{"name": "main", "fragment": "void main(){}",
+                "arrays": [{"name": "level", "size": 4}]}]}),
+            )
+        }
+
+        fn answer(&self, tick: &str) -> Result<Vec<u8>> {
+            self.0.lock().unwrap().push(tick.to_string());
+            let frame = serde_json::from_str::<Value>(tick)?["frame"]
+                .as_u64()
+                .unwrap();
+            if frame == 2 {
+                return Err(anyhow!("gave up"));
+            }
+            let mut out = vec![SET_ARRAY, 5];
+            out.extend(b"level");
+            out.extend(4u32.to_le_bytes());
+            for _ in 0..4 {
+                out.extend((frame as f32).to_le_bytes());
+            }
+            out.push(END_TICK);
+            Ok(out)
+        }
+    }
+
+    #[test]
+    fn a_program_in_this_process_answers_each_tick_before_its_frame() {
+        let program = Arc::new(Counter(Mutex::new(Vec::new())));
+        let (scene, mut f) =
+            SceneProcess::here("/tmp/count.py", program.clone(), Reach::Any, (8, 2), |_| {})
+                .unwrap();
+        assert_eq!(scene.params.get("w").unwrap().value, ParamValue::Int(8));
+        f.bind(&scene);
+        let mut stub = Stub {
+            feeds: vec![("level".to_string(), ArraySize::Linear(4))],
+            ..Stub::default()
+        };
+        for frame in 0..2 {
+            f.tick(frame + 5, 1.0 + frame as f64, 0.5).unwrap();
+            f.update(&mut stub, frame + 5, 0.0).unwrap();
+            let floats = stub.floats.borrow();
+            assert_eq!(floats.last().unwrap().1, vec![frame as f32; 4]);
+        }
+        let seen: Vec<Value> = program
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            (&seen[1]["frame"], &seen[1]["time"]),
+            (&Value::from(1), &Value::from(1.0))
+        );
+        let e = f.tick(7, 3.0, 0.5).unwrap_err();
+        assert_eq!(e.to_string(), "/tmp/count.py: gave up");
     }
 
     #[test]

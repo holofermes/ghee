@@ -18,14 +18,14 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::{Map, Value};
 
 use crate::console::core::{ConsoleError, ConsoleResult};
 use crate::console::state::{self, Edits, Item};
 use crate::filters::{apply_filters, rebuild_filters};
-use crate::procedural::process::{self, SceneProcess};
+use crate::procedural::process::{self, Program, SceneProcess};
 use crate::scene::{Reach, Scene};
 
 const SCENE_SUFFIX: &str = ".scene.json";
@@ -55,6 +55,8 @@ pub struct SceneStore {
     pub scans: bool,
     /// What the last rescan() found, which then stands for `scenes`.
     found: Mutex<Option<Vec<(String, String)>>>,
+    /// The program in this process that writes the store's one scene.
+    here: Option<Arc<dyn Program>>,
 }
 
 /// What a load carries from the working copy that a scene had before: its
@@ -104,6 +106,7 @@ impl SceneStore {
             mine: None,
             scans: false,
             found: Mutex::new(None),
+            here: None,
         }
     }
 
@@ -198,6 +201,19 @@ impl SceneStore {
         Ok(store)
     }
 
+    /// A store over one scene, the one that `program` writes in this
+    /// process, named by `path`, the file of its program.
+    pub fn here(path: &str, program: Arc<dyn Program>, args: Vec<String>) -> SceneStore {
+        let full = abspath(path);
+        let dir = Path::new(&full)
+            .parent()
+            .map_or_else(|| "/".to_string(), |d| d.to_string_lossy().into_owned());
+        let mut store = SceneStore::new(&dir, args);
+        store.scenes = vec![(crate::procedural::scene_name(&full), full)];
+        store.here = Some(program);
+        store
+    }
+
     pub fn names(&self) -> Vec<String> {
         self.list().into_iter().map(|(n, _)| n).collect()
     }
@@ -212,7 +228,7 @@ impl SceneStore {
 
     /// Whether a program writes scene `name`.
     pub fn is_procedural(&self, name: &str) -> bool {
-        self.file(name).is_ok_and(|p| self.program(&p).is_some())
+        self.here.is_some() || self.file(name).is_ok_and(|p| self.program(&p).is_some())
     }
 
     /// The program that writes the scene of `path`, its file. A scene in
@@ -479,10 +495,27 @@ impl SceneStore {
         let path = self.file(name)?;
         // Anyone who reaches the console posts the scenes that it loads, so
         // their files stay inside the scene's directory.
-        let (mut scene, mut process) = match self.program(&path) {
+        let started = match (&self.here, self.program(&path)) {
+            (Some(program), _) => Some(SceneProcess::here(
+                &path,
+                Arc::clone(program),
+                Reach::Inside,
+                size,
+                |_| {},
+            )),
+            (None, Some(exe)) => Some(SceneProcess::start(
+                &exe,
+                &self.args,
+                Reach::Inside,
+                size,
+                |_| {},
+            )),
+            (None, None) => None,
+        };
+        let (mut scene, mut process) = match started {
             // the console error state reaches a browser, so it carries the
             // stderr of a dead process
-            Some(exe) => SceneProcess::start(&exe, &self.args, Reach::Inside, size, |_| {})
+            Some(started) => started
                 .map(|(scene, fed)| (scene, Some(fed)))
                 .map_err(|e| ConsoleError::server_error(process::with_stderr(&e)))?,
             None => (

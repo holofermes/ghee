@@ -800,6 +800,18 @@ impl Card {
     pub fn renders(&self) -> bool {
         unsafe { ffi::ghee_display_renders_on(self.fd.as_raw_fd()) != 0 }
     }
+
+    /// Fail unless GL on this card runs on the GPU, as renders() says. ghee
+    /// refuses to draw a display through software GL.
+    pub fn check_renders(&self) -> Result<()> {
+        if self.renders() {
+            return Ok(());
+        }
+        bail!(
+            "GL on {} runs in software; no hardware render node pairs with this card",
+            self.device
+        )
+    }
 }
 
 /// The card node that drives a connected display, as (device, width, height).

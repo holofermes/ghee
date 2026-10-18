@@ -325,13 +325,8 @@ fn kms_panel(a: &Ns, card: &mut Option<Card>) -> Result<Panel> {
     let Some(card) = display_card(a, card) else {
         return Ok(Panel::Kms);
     };
-    if !card.renders() {
-        return Err(exit(format!(
-            "{}: GL on {} runs in software; no hardware render node pairs with this card",
-            a.cmd,
-            card.device()
-        )));
-    }
+    card.check_renders()
+        .map_err(|e| exit(format!("{}: {e}", a.cmd)))?;
     Ok(Panel::Kms)
 }
 

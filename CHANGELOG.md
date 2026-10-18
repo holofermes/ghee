@@ -111,6 +111,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   names the filter, as `ghee render` does, instead of skipping the filter.
 - The console lists a scene folder that holds only its program, as
   `ghee render` runs it.
+- `ghee.open(display="kms")` refuses a card whose GL runs in software, as
+  `ghee render` does, instead of drawing through llvmpipe.
 
 ## 0.4.0 - 2026-08-06
 

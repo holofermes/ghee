@@ -555,6 +555,9 @@ impl Session {
             Sink::Kms => display_card(dri.as_deref()),
             Sink::None => None,
         };
+        if let Some(card) = &card {
+            card.check_renders().map_err(system_fault)?;
+        }
         let ((w, h), components) = geometry(&sink, size, card.as_ref())?;
         let kms = matches!(sink, Sink::Kms);
         let rgb565 = opts

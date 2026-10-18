@@ -1,42 +1,226 @@
 # From Rust
 
-ghee is a library and a command. A render takes three calls: load or build a
-scene, set it up, then render frames.
+ghee is a library as well as a command. Use it to render a scene into a
+buffer of your own, or to run the console on a display from your own program.
 
-```rust
+## Depend on it
+
+Add ghee to your `Cargo.toml` as a git dependency, with the two crates that
+the examples here use:
+
+```toml
+[dependencies]
+ghee = { git = "https://github.com/holofermes/ghee" }
+anyhow = "1"
+serde_json = "1"
+```
+
+To pin a release, add `tag = "vX.Y.Z"` with a version from the [releases
+page](https://github.com/holofermes/ghee/releases). The build needs the
+GLES and DRM headers that [Building](building.md) lists.
+
+## Render frames into a buffer
+
+This program loads a scene, sets it up and renders one frame, RGBA at
+320x240. The closure that `render` takes gives the data of each array that
+the scene declares, by its name and size:
+
+```rust,no_run
 use ghee::engine::{Feed, Renderer};
 use ghee::scene::{ArraySize, Scene};
 
-let scene = Scene::load("bars.scene.json")?;
-// width, height, components, DRI device (None probes), scanout, rgb565
-let mut r = Renderer::new(320, 240, 4, None, false, false)?;
-assert_eq!(r.setup(&scene)?, "");
-
-let frame = r.render(Some(&mut |_name, size| match size {
-    ArraySize::Linear(n) => Feed::Data(vec![0.5; n as usize]),
-    ArraySize::Grid(w, h) => Feed::Data(vec![0.5; (w * h) as usize]),
-}))?;
+fn main() -> anyhow::Result<()> {
+    let scene = Scene::load("bars.scene.json")?;
+    // width, height, components, DRI device (None probes), scanout, rgb565
+    let mut r = Renderer::new(320, 240, 4, None, false, false)?;
+    let err = r.setup(&scene)?;
+    anyhow::ensure!(err.is_empty(), "{err}");
+    let frame = r.render(Some(&mut |_name, size| match size {
+        ArraySize::Linear(n) => Feed::Data(vec![0.5; n as usize]),
+        ArraySize::Grid(w, h) => Feed::Data(vec![0.5; (w * h) as usize]),
+    }))?;
+    assert_eq!(frame.len(), 320 * 240 * 4);
+    Ok(())
+}
 ```
 
-`render` takes one closure, which answers with the data for a named array. The
-engine is thread-affine: build and use a Renderer on one thread.
+`setup` returns the compile error, and an empty string when the scene
+compiled. Create and use a `Renderer` on one thread: GL is thread-affine.
 
-A running scene grows with no rebuild. `add_layer` puts a layer, written as a
-scene declares it, into a pass at an index among its layers, and every other
-layer and pass keeps what it holds, its phases and its arrays included. A
-shape compiles nothing, and a layer whose shaders come out the same as
-another layer's draws through the same program:
+Give an array's data as `Feed::Data` for floats, or as `Feed::DataU8` for
+bytes, each one read as byte / 255. Give `Feed::Unchanged` when the array
+holds what it held last frame, and ghee skips the upload. After every
+`setup`, give the data again.
 
-```rust
-r.add_layer("main", 0, &serde_json::json!(
-    {"name": "bar", "shape": "rect", "x": 0, "y": 28, "width": 64, "height": 4}))?;
+## Change layers at runtime
+
+A running scene takes new layers with no rebuild. Use `add_layer` to put a
+layer, written as a scene declares it ([Layers](layers.md)), into a pass at
+an index among its layers. Every other layer and pass keeps what it holds,
+its phases and its arrays included. A shape compiles nothing, and a layer
+whose shaders come out the same as another layer's draws through the same
+program. Use `move_layer` to put a layer at another index of its pass, and
+`remove_layer` to take it out:
+
+```rust,no_run
+use ghee::engine::Renderer;
+use ghee::scene::Scene;
+use serde_json::json;
+
+fn main() -> anyhow::Result<()> {
+    let mut r = Renderer::new(128, 32, 4, None, false, false)?;
+    r.setup(&Scene::load("bars.scene.json")?)?;
+    let bar = json!({"name": "bar", "shape": "rect", "x": 0, "y": 28, "width": 64, "height": 4});
+    r.add_layer("main", 0, &bar)?;
+    r.move_layer("bar", 1)?;
+    r.remove_layer("bar")?;
+    Ok(())
+}
 ```
 
-`remove_layer` takes a layer out the same way, and `move_layer` puts one at
-another index among the layers of its pass, where it keeps its look and its
-phases and compiles nothing:
+## Run the console on a display
 
-```rust
-r.move_layer("bar", 1)?;
-r.remove_layer("bar")?;
+This program runs the [console](console.md) on the display that the kernel
+drives, over the scenes in `scenes/`, and feeds each scene's array `level`
+from its own source. It draws at most 30 frames a second, and Ctrl-C or
+SIGTERM stops it and turns the display off:
+
+```rust,no_run
+use ghee::console::server::{self, ArraySource, Options};
+use ghee::control::{self, Control};
+use ghee::engine::{Card, Feed};
+use ghee::output::{pacer, Sinks};
+use ghee::scene::ArraySize;
+
+fn main() -> anyhow::Result<()> {
+    let level: ArraySource = Box::new(|size, frame| match size {
+        ArraySize::Linear(n) => {
+            Feed::Data((0..n).map(|i| ((frame as i64 + i) % 60) as f32 / 60.0).collect())
+        }
+        ArraySize::Grid(w, h) => Feed::DataU8(vec![255; (w * h) as usize]),
+    });
+    let stop = Control::new();
+    control::stop_on_signals(&stop)?;
+    server::run(Options {
+        scenes_dir: Some("scenes".into()),
+        display: Some(Card::open(None)?),
+        arrays: vec![("level".into(), level)],
+        pacer: pacer(Some(30.0), Sinks::Display),
+        control: stop,
+        ..Options::default()
+    })
+}
 ```
+
+`run` serves the console at http://127.0.0.1:8090 and draws every frame on
+the thread that calls it. Every field of `Options` has a default, so set
+only the ones you need. To reach the console from another machine, set
+`host`, and read [From another computer](console.md#from-another-computer)
+first.
+
+`Card::open(None)` opens the first card with a connected display, and the
+render takes the display's mode as its size. To pick a card, pass its node,
+such as `Some("/dev/dri/card1")`. Its error says why no display opened: the
+node's own error, no connected display, or GL that runs in software, which
+ghee refuses. Leave `display` at None to render with no display, at `size`
+or 320x240.
+
+An `ArraySource` gives the data of one array from the array's size and the
+frame number, in a `Feed` as `render`'s closure does. An array with no
+source gets ghee's placeholder data.
+
+Use `pacer` to cap the frame rate. `pacer(Some(fps), Sinks::Display)` caps
+the console and its display at `fps`. With None, the display's refresh
+paces the render.
+
+Set `filters` to end every scene with the same [filters](filters.md). To
+find the scenes' files in folders of your own, call
+`ghee::scene::set_asset_dirs` before `run`. ghee searches them after the
+scene's own folder and before `$GHEE_ASSETS`.
+
+A scene that a program writes ([Procedural scenes](procedural.md)) runs
+under the console: list it in `scenes_dir`. A `Renderer` alone draws scene
+files.
+
+## Put the frames anywhere
+
+This program hands every frame to a sink of its own, which keeps the newest
+frame for another thread:
+
+```rust,no_run
+use std::sync::{Arc, Mutex};
+
+use ghee::console::server::{self, Options};
+use ghee::looper::{Frame, Output};
+
+struct Latest(Arc<Mutex<Vec<u8>>>);
+
+impl Output for Latest {
+    fn write(&mut self, frame: Frame<'_>) -> anyhow::Result<()> {
+        let mut held = self.0.lock().unwrap();
+        held.clear();
+        held.extend_from_slice(frame.data);
+        Ok(())
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let latest = Arc::new(Mutex::new(Vec::new()));
+    server::run(Options {
+        scenes_dir: Some("scenes".into()),
+        sinks: vec![Box::new(Latest(Arc::clone(&latest)))],
+        ..Options::default()
+    })
+}
+```
+
+`frame.data` holds the pixels row by row, `frame.width` by `frame.height`,
+`frame.components` bytes each. ghee calls `write` on the thread that runs
+the console. Implement `persists` to return true when your sink keeps
+showing its last frame, and ghee then skips a frame that would come out the
+same. Implement `turn_on` and `turn_off` for a sink with a power state, such
+as a backlight: ghee turns it on with the first frame, and off while the
+render pauses and when it ends.
+
+## Stop and pause
+
+This program pauses the console every ten seconds, and lets it go on ten
+seconds later, from a thread of its own:
+
+```rust,no_run
+use std::thread;
+use std::time::Duration;
+
+use ghee::console::server::{self, Options};
+use ghee::control::Control;
+
+fn main() -> anyhow::Result<()> {
+    let control = Control::new();
+    let pauser = control.clone();
+    thread::spawn(move || {
+        while !pauser.stopped() {
+            thread::sleep(Duration::from_secs(10));
+            pauser.pause(!pauser.paused());
+        }
+    });
+    server::run(Options {
+        scenes_dir: Some("scenes".into()),
+        control,
+        ..Options::default()
+    })
+}
+```
+
+A paused console blanks its display, turns your sinks off and draws
+nothing. It still takes requests, and they land on the first frame after
+the pause. Use `pause` to rest the display while your program has nothing
+to show.
+
+`run` returns when its `Control` stops. Keep a clone of the `Control` that
+you pass in `Options`, and call `stop` on it from any thread.
+`stop_on_signals` stops it on SIGINT and SIGTERM, and `signal` then names
+the signal, such as 15 for SIGTERM. A stopped `Control` stays stopped, so
+make a new one for each run.
+
+Careful: `stop` takes a lock. Never call it from a signal handler of your
+own: use `stop_on_signals`.

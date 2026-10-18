@@ -14,7 +14,7 @@ panel, HDMI, image files, or an H264 stream. Multi-pass, any Raspberry Pi.
 - [The console](docs/console.md), a web page to watch and edit a scene at runtime.
 - [Python](docs/python.md): draw on a screen from your own program, or write a scene in Python.
 - [Procedural scenes](docs/procedural.md): a program in any language that writes and feeds a scene.
-- [Rust](docs/rust.md), the renderer as a library.
+- [Rust](docs/rust.md): render a scene, or run the console on a display, from your own program.
 
 ## Install
 

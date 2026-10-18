@@ -71,3 +71,8 @@ pub mod stats;
 pub(crate) mod testing;
 pub mod text;
 pub(crate) mod usage;
+
+/// The examples of docs/rust.md, built as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../docs/rust.md")]
+pub struct RustDoc;

@@ -39,7 +39,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `live()` instead of taking `on_param`. Set a `Console`'s frame size and
   its preview and stream settings on `console.hub`, and take the stream
   types from `ghee::console::hub`. Set a `Loop`'s `timestep` and `pacer` on
-  its `clock`.
+  its `clock`. Take a `Result` from `Card::open`, pass the display's `Card`
+  in the console's `Options.display` and its size as an `Option` in `size`,
+  and give an `ArraySource`'s data as a `Feed`. Stop a console through the
+  `Control` in its `Options.control` instead of `server::stop()`.
 
 ### Added
 
@@ -82,6 +85,11 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   ([Procedural scenes](docs/procedural.md)).
 - Try the new bundled demos: assets, bars, feedback, lens, neon, passes,
   tiltshift, hero, karaoke, nowplaying, spectrum and stats.
+- Stop or pause a console from any thread of a Rust host with a
+  `ghee::control::Control`, and stop it on SIGINT and SIGTERM with
+  `stop_on_signals` ([Rust](docs/rust.md)).
+- Name a Rust host's asset folders with `ghee::scene::set_asset_dirs`, and
+  cap its frame rate with `ghee::output::pacer`.
 - The PyPI wheel carries the `ghee` command. It starts in 111 ms on a Pi
   Zero 2 W.
 
@@ -124,6 +132,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `ghee render` does, instead of drawing through llvmpipe.
 - The console's `/stats` gives `display.format` as `rgb565` under
   `--rgb565`, instead of `rgba`.
+- `--display kms` and `ghee.open(display="kms")` say why no display opened:
+  the card's own error, no connected display, or GL in software.
+- `Renderer::blank` does nothing on a renderer with no display, instead of
+  failing.
 
 ## 0.4.0 - 2026-08-06
 

@@ -33,6 +33,7 @@ use crate::console::hub::{
 use crate::console::state::{self, Edits, Item};
 use crate::console::store::{self, Carried, Opened, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
+use crate::control::Control;
 use crate::draw::Call;
 use crate::engine::{Card, Feed, Given, Provider, Renderer, Taken, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
@@ -51,9 +52,6 @@ pub const LOAD_TIMEOUT: Duration = Duration::from_secs(35);
 
 /// How long after a scene's last change its draft is written.
 pub const DRAFT_AFTER: Duration = Duration::from_secs(1);
-
-/// run() sets this. stop() ends that console from anywhere.
-static CONSOLE: Mutex<Option<Arc<Console>>> = Mutex::new(None);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -379,7 +377,7 @@ pub struct Console {
     pub components: i32,
     /// The readback keeps the output pass's alpha.
     pub alpha: bool,
-    /// 0 renders until stop(). A count ends the console with the render.
+    /// 0 renders until its control stops it. A count ends the console with the render.
     pub frames: u64,
     /// Pin engine time to frame * this, for a reproducible render.
     pub timestep: Option<f64>,
@@ -387,6 +385,8 @@ pub struct Console {
     pub dri: Option<String>,
     /// The interval a stale check reads disk at. None takes the default window.
     pub stale_interval: Option<f64>,
+    /// What stops and pauses the render.
+    pub control: Control,
     arrays: Vec<(String, ArraySource)>,
     /// The frame's size, the preview, the streams and /stats.
     pub hub: Hub,
@@ -437,6 +437,7 @@ impl Console {
             timestep: None,
             dri: None,
             stale_interval: None,
+            control: Control::new(),
             arrays: Vec::new(),
             hub: Hub::new(),
             active: Mutex::new(Active::default()),
@@ -635,10 +636,9 @@ impl Console {
     }
 
     /// Shut the server down, and signal the render loop and the encode threads.
-    /// run() calls it on the way out. A host that runs the console in a thread
-    /// calls it to end one. It waits for no thread, because a request handler
-    /// and a signal handler both call it. It ends run()'s own loop, so run()
-    /// closes its sinks before it returns.
+    /// run() calls it on the way out, and Control::stop() through it. It waits
+    /// for no thread, because a request handler calls it. It ends run()'s own
+    /// loop, so run() closes its sinks before it returns.
     pub fn stop(&self) {
         self.hub.stop();
         self.q.put(Command::Stop); // wake a render loop parked on the command queue
@@ -658,14 +658,6 @@ impl Drawer for Console {
     /// The still rides the command queue, which forces a draw.
     fn shot(&self) {
         self.q.put(Command::Shot);
-    }
-}
-
-/// Shut down the console run() started.
-pub fn stop() {
-    let console = lock(&CONSOLE).clone();
-    if let Some(console) = console {
-        console.stop();
     }
 }
 
@@ -1375,6 +1367,7 @@ pub fn render_loop(
             drives || console.hub.nclients() > 0 || console.hub.fanout.nclients() > 0
         }));
         render.stopping = Some(Box::new(|| console.stopping()));
+        render.held = Some(Box::new(|| console.control.paused()));
         render.on_frame = Some(Box::new(|_loop, cost| {
             console.hub.frame_done(cost);
             if changed(&st, &ctrl) {
@@ -1944,7 +1937,7 @@ pub struct Options {
     pub components: i32,
     /// Keep the output pass's alpha in 4-component frames.
     pub alpha: bool,
-    /// 0 serves until stop(). A count ends the console with the render.
+    /// 0 serves until `control` stops it. A count ends the console with the render.
     pub frames: u64,
     pub timestep: Option<f64>,
     /// The GL device of a render with no display. None takes the first one
@@ -1953,6 +1946,9 @@ pub struct Options {
     /// The summary hook. This hook makes the loop keep a cost per frame, and a
     /// run without it keeps none.
     pub on_stats: Option<StatsHook>,
+    /// What stops and pauses the console. Keep a clone to stop it from
+    /// another thread.
+    pub control: Control,
 }
 
 impl Default for Options {
@@ -1987,6 +1983,7 @@ impl Default for Options {
             timestep: None,
             dri_device: None,
             on_stats: None,
+            control: Control::new(),
         }
     }
 }
@@ -2011,7 +2008,8 @@ fn dir_store(
     Ok(store)
 }
 
-/// Start the console and serve until stop() (or Ctrl-C).
+/// Start the console and serve until `control` stops it, or until the
+/// render ends.
 pub fn run(opts: Options) -> Result<()> {
     let Options {
         arrays,
@@ -2043,6 +2041,7 @@ pub fn run(opts: Options) -> Result<()> {
         dri_device,
         on_stats,
         filters,
+        control,
     } = opts;
     crate::filters::check_filters(&filters, &crate::filters::load_filters(&[]))?;
     let mut store = match store {
@@ -2068,6 +2067,7 @@ pub fn run(opts: Options) -> Result<()> {
     console.frames = frames;
     console.timestep = timestep;
     console.dri = dri_device;
+    console.control = control;
     console.arrays = arrays;
     let hub = &mut console.hub;
     (hub.w, hub.h) = size;
@@ -2092,7 +2092,20 @@ pub fn run(opts: Options) -> Result<()> {
     }
     let console = Arc::new(console);
     console.hub.reset();
-    *lock(&CONSOLE) = Some(Arc::clone(&console));
+    {
+        let weak = Arc::downgrade(&console);
+        console.control.attach(Box::new(move || {
+            if let Some(console) = weak.upgrade() {
+                match console.control.stopped() {
+                    true => console.stop(),
+                    false => console.wake(),
+                }
+            }
+        }));
+    }
+    if console.control.stopped() {
+        console.stop();
+    }
     let server = Server::http((host.as_str(), port)).map_err(|e| anyhow!("{e}"))?;
     let address = url(&host, bound_port(&server, port));
     spawn_encoders(&console);
@@ -2127,6 +2140,7 @@ pub fn run(opts: Options) -> Result<()> {
     console.stop();
     let _ = serving.join();
     console.write_drafts(true);
+    console.control.detach();
     let fatal = console.hub.fatal();
     if !fatal.is_empty() {
         bail!("{fatal}");
@@ -4041,6 +4055,89 @@ mod tests {
             self.0.set(self.0.get() + 1);
             Ok(())
         }
+    }
+
+    /// A sink that pauses the console at its first frame, and a thread that
+    /// lets it go `after` seconds later.
+    struct PauseAt {
+        wrote: Rc<Cell<u32>>,
+        offs: Rc<Cell<u32>>,
+        after: f64,
+        control: Control,
+    }
+
+    impl Output for PauseAt {
+        fn persists(&self) -> bool {
+            true
+        }
+
+        fn write(&mut self, _frame: Frame<'_>) -> Result<()> {
+            self.wrote.set(self.wrote.get() + 1);
+            if self.wrote.get() == 1 {
+                self.control.pause(true);
+                let after = Duration::from_secs_f64(self.after);
+                let control = self.control.clone();
+                thread::spawn(move || {
+                    thread::sleep(after);
+                    control.pause(false);
+                });
+            }
+            Ok(())
+        }
+
+        fn turn_off(&mut self) -> Result<()> {
+            self.offs.set(self.offs.get() + 1);
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_paused_console_turns_its_sinks_off_and_draws_on_after_it() {
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
+        let (_d, console) = tmp_console("pause");
+        let (wrote, offs) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let control = Control::new();
+        let start = monotonic();
+        let ran = run(Options {
+            store: Some(SceneStore::new(&console.store.dir, Vec::new())),
+            port: free_port(),
+            size: Some((32, 24)),
+            frames: 3,
+            sinks: vec![Box::new(PauseAt {
+                wrote: Rc::clone(&wrote),
+                offs: Rc::clone(&offs),
+                after: 0.1,
+                control: control.clone(),
+            })],
+            control: control.clone(),
+            ..Options::default()
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        assert!(monotonic() - start >= 0.1);
+        assert_eq!(wrote.get(), 3);
+        assert_eq!(offs.get(), 2, "once for the pause, once on the way out");
+        assert!(!control.paused());
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_console_stopped_before_it_runs_ends_at_once() {
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
+        let (_d, console) = tmp_console("stopped");
+        let control = Control::new();
+        control.stop();
+        let drawn = Rc::new(Cell::new(0));
+        let ran = run(Options {
+            store: Some(SceneStore::new(&console.store.dir, Vec::new())),
+            port: free_port(),
+            size: Some((8, 8)),
+            sinks: vec![Box::new(Bound(Rc::clone(&drawn)))],
+            control,
+            ..Options::default()
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        assert!(drawn.get() <= 1, "{} frames", drawn.get());
     }
 
     #[test]

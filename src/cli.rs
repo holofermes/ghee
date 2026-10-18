@@ -15,11 +15,9 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::ffi::{c_int, c_void};
 use std::fs::File;
 use std::io::{stdout, Stdout, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -30,6 +28,7 @@ use serde_json::{Map, Value};
 use crate::console::server;
 use crate::console::store::SceneStore;
 use crate::console::{examples_dir, is_examples_dir};
+use crate::control::{self, Control, SIGTERM};
 use crate::engine::{probe_display, Card, Feed, Renderer, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
 use crate::filters::{self, apply_filters};
@@ -477,73 +476,6 @@ fn sink_list<'a>(
     sinks
 }
 
-/// The signal that ends the run, 0 for none. SIGTERM (timeout, systemd stop)
-/// and SIGINT unwind the run. The run turns its sinks off, so a panel holds no
-/// stale frame.
-static SIGNALLED: AtomicI32 = AtomicI32::new(0);
-
-// Linux signal numbers. The handler is a plain function pointer, so the
-// install needs neither SIG_DFL nor SIG_IGN.
-const SIGINT: c_int = 2;
-const SIGTERM: c_int = 15;
-
-extern "C" {
-    fn signal(sig: c_int, handler: usize) -> usize;
-    fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
-    fn __errno_location() -> *mut c_int;
-}
-
-/// The socket that on_signal() writes a byte to, -1 until catch_signals().
-static WAKE: AtomicI32 = AtomicI32::new(-1);
-
-/// A signal handler may only make async-signal-safe calls, and taking a lock
-/// is not one: the thread that the signal lands on may hold that lock.
-extern "C" fn on_signal(sig: c_int) {
-    SIGNALLED.store(sig, Ordering::SeqCst);
-    unsafe {
-        let errno = *__errno_location();
-        write(WAKE.load(Ordering::SeqCst), [0u8].as_ptr().cast(), 1);
-        *__errno_location() = errno;
-    }
-}
-
-/// SIGINT and SIGTERM record the signal, and a thread of their own stops the
-/// console, which blocks in its own server. Returns the handlers of SIGINT
-/// and SIGTERM that these replaced.
-fn catch_signals() -> std::io::Result<[usize; 2]> {
-    use std::io::Read;
-    use std::os::fd::IntoRawFd;
-    if WAKE.load(Ordering::SeqCst) < 0 {
-        let (wake, woken) = std::os::unix::net::UnixStream::pair()?;
-        wake.set_nonblocking(true)?;
-        WAKE.store(wake.into_raw_fd(), Ordering::SeqCst);
-        std::thread::Builder::new()
-            .name("ghee-signals".into())
-            .spawn(move || {
-                let mut bytes = [0u8; 64];
-                loop {
-                    match (&woken).read(&mut bytes) {
-                        Ok(0) => return,
-                        Ok(_) => server::stop(),
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(_) => return,
-                    }
-                }
-            })?;
-    }
-    SIGNALLED.store(0, Ordering::SeqCst);
-    let handler = on_signal as extern "C" fn(c_int) as usize;
-    unsafe { Ok([signal(SIGINT, handler), signal(SIGTERM, handler)]) }
-}
-
-/// Put back the handlers of SIGINT and SIGTERM that catch_signals() replaced.
-fn release_signals(held: [usize; 2]) {
-    unsafe {
-        signal(SIGINT, held[0]);
-        signal(SIGTERM, held[1]);
-    }
-}
-
 /// True when the reader at the far end of the pipe is gone.
 fn broken_pipe(e: &anyhow::Error) -> bool {
     e.chain().any(|c| {
@@ -713,9 +645,8 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         lp.frames = want.max(0) as u64;
         lp.clock.timestep = a.timestep;
         lp.clock.pacer = pace;
-        lp.stopping = Some(Box::new(move || {
-            want < 0 || SIGNALLED.load(Ordering::SeqCst) != 0
-        }));
+        let control = a.control.clone();
+        lp.stopping = Some(Box::new(move || want < 0 || control.stopped()));
         if keep || live {
             lp.on_frame = Some(Box::new(|lp, cost| {
                 if keep {
@@ -748,7 +679,7 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         closed = closed.and(s.close());
     }
     r.close();
-    if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
+    if a.control.signal() == Some(SIGTERM) {
         return Ok(());
     }
     ran?;
@@ -825,10 +756,11 @@ fn serve(
         dri_device: dri,
         on_stats: a.stats.then(serve_stats),
         pacer: console_pacer(a),
+        control: a.control.clone(),
         ..Default::default()
     });
-    match SIGNALLED.load(Ordering::SeqCst) {
-        SIGTERM => Ok(()),
+    match a.control.signal() {
+        Some(SIGTERM) => Ok(()),
         _ => ran,
     }
 }
@@ -1503,6 +1435,16 @@ pub struct Ns {
     /// The program in this process that writes the scene, for a scene that
     /// renders itself.
     here: Option<Here>,
+    /// What stops the render: SIGINT and SIGTERM.
+    control: Control,
+}
+
+impl Ns {
+    /// This namespace, its render stopped through `control`.
+    fn under(mut self, control: &Control) -> Ns {
+        self.control = control.clone();
+        self
+    }
 }
 
 impl RenderArgs {
@@ -1548,6 +1490,7 @@ impl RenderArgs {
             bitrate: self.bitrate,
             scene_args,
             here: None,
+            control: Control::new(),
         }
     }
 }
@@ -1593,12 +1536,13 @@ impl ServeArgs {
             bitrate: self.bitrate,
             scene_args,
             here: None,
+            control: Control::new(),
         }
     }
 }
 
 /// The command name behind a failure report, and the result of that command.
-fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
+fn dispatch(cli: Cli, scene_args: Vec<String>, control: &Control) -> (&'static str, Result<()>) {
     let cmd = match &cli.cmd {
         Command::Render(_) => "render",
         Command::Serve(_) => "serve",
@@ -1612,8 +1556,8 @@ fn dispatch(cli: Cli, scene_args: Vec<String>) -> (&'static str, Result<()>) {
         );
     }
     let ran = match cli.cmd {
-        Command::Render(a) => cmd_render(&a.ns(scene_args)),
-        Command::Serve(a) => cmd_serve(&a.ns(scene_args)),
+        Command::Render(a) => cmd_render(&a.ns(scene_args).under(control)),
+        Command::Serve(a) => cmd_serve(&a.ns(scene_args).under(control)),
         Command::Displays => cmd_displays(),
         Command::Overlay(a) => cmd_overlay(&a),
     };
@@ -1701,18 +1645,19 @@ pub fn main(argv: Vec<String>) -> i32 {
         Ok(cli) => cli,
         Err(e) => return clap_status(&e),
     };
-    if let Err(e) = catch_signals() {
+    let control = Control::new();
+    if let Err(e) = control::catch(&control) {
         eprintln!("ghee: {e}");
         return 1;
     }
-    let (cmd, ran) = dispatch(cli, scene_args);
-    status(cmd, ran)
+    let (cmd, ran) = dispatch(cli, scene_args, &control);
+    status(&control, cmd, ran)
 }
 
-/// The exit status of command `cmd` that ended with `ran`: 143 after a
-/// SIGTERM, else 1 for an error, which this prints.
-fn status(cmd: &str, ran: Result<()>) -> i32 {
-    if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
+/// The exit status of command `cmd` that ended with `ran` under `control`:
+/// 143 after a SIGTERM, else 1 for an error, which this prints.
+fn status(control: &Control, cmd: &str, ran: Result<()>) -> i32 {
+    if control.signal() == Some(SIGTERM) {
         return 143;
     }
     match ran {
@@ -1876,10 +1821,10 @@ pub fn direct(prog: &str, flags: &[String], here: Here, card: Option<Card>) -> R
             return Ok(2);
         }
     };
-    let held = catch_signals()?;
+    let held = control::catch(&a.control)?;
     let ran = render(&a, card);
-    release_signals(held);
-    if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
+    control::release(&a.control, held);
+    if a.control.signal() == Some(SIGTERM) {
         return Ok(143);
     }
     ran.map(|()| 0)
@@ -1915,7 +1860,7 @@ mod tests {
 
     fn run(tokens: &[&str]) -> Result<()> {
         let (cli, scene_args) = parse(tokens);
-        dispatch(cli, scene_args).1
+        dispatch(cli, scene_args, &Control::new()).1
     }
 
     /// The message of a call that has to fail. Neither Panel nor FileSink is

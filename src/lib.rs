@@ -41,6 +41,7 @@ pub(crate) mod atlas;
 pub mod cli;
 pub(crate) mod colour;
 pub mod console;
+pub mod control;
 pub(crate) mod cparam;
 pub mod css;
 pub mod draw;

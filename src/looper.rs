@@ -551,6 +551,13 @@ impl<'a> Clock<'a> {
         }
     }
 
+    /// The host held the loop: the time that passed meanwhile is no frame
+    /// period and no tick's dt.
+    pub fn resume(&mut self) {
+        self.prev = None;
+        self.ticked = None;
+    }
+
     /// The measured frame period.
     pub fn period(&self) -> Option<f64> {
         self.period
@@ -625,12 +632,19 @@ pub struct Loop<'a> {
     pub idle_hook: Option<Box<dyn FnMut(Option<f64>) -> f64 + 'a>>,
     /// -> false while nobody takes the frames, see should_draw
     pub watched: Option<Box<dyn FnMut() -> bool + 'a>>,
+    /// -> true while the host holds the loop. A held loop blanks the display
+    /// and turns its sinks off, draws nothing, and keeps calling `poll` and
+    /// waiting through idle(). The first frame after the hold lights them
+    /// again.
+    pub held: Option<Box<dyn FnMut() -> bool + 'a>>,
     /// iterations, skipped ones included
     pub frame: u64,
     pub drawn: u64,
     /// seconds from the start of run() to the end of its last iteration,
     /// skipped ones included
     pub elapsed: f64,
+    /// the display is blank and the sinks are off for a hold
+    holding: bool,
     buf: Vec<u8>,
     buf_shape: (i32, i32, i32),
 }
@@ -652,9 +666,11 @@ impl<'a> Loop<'a> {
             on_error: None,
             idle_hook: None,
             watched: None,
+            held: None,
             frame: 0,
             drawn: 0,
             elapsed: 0.0,
+            holding: false,
             buf: Vec::new(),
             buf_shape: (0, 0, 0),
         }
@@ -725,6 +741,15 @@ impl<'a> Loop<'a> {
     }
 
     fn step(&mut self, scanout: bool, skippable: bool, lit: &mut bool) -> Result<()> {
+        if self.held.as_mut().is_some_and(|h| h()) {
+            return self.hold();
+        }
+        if self.holding {
+            self.holding = false;
+            self.renderer.blank(false)?;
+            *lit = false;
+            self.clock.resume();
+        }
         let t0 = monotonic();
         let forced = match self.poll.as_mut() {
             Some(p) => p(),
@@ -767,6 +792,23 @@ impl<'a> Loop<'a> {
         if !self.clock.pace(&m, drew) && self.rest != 0.0 {
             sleep(self.rest);
         }
+        Ok(())
+    }
+
+    /// One iteration of a hold. A hold counts no frame.
+    fn hold(&mut self) -> Result<()> {
+        if !self.holding {
+            self.holding = true;
+            self.renderer.blank(true)?;
+            for s in self.sinks.iter_mut() {
+                s.turn_off()?;
+            }
+        }
+        if let Some(p) = self.poll.as_mut() {
+            p();
+        }
+        let idle = self.idle();
+        sleep(idle);
         Ok(())
     }
 
@@ -971,6 +1013,7 @@ mod tests {
         fed: Vec<Vec<f32>>,
         /// True when the clock restarted since the loop last asked.
         restart: Rc<Cell<bool>>,
+        blanks: RefCell<Vec<bool>>,
     }
 
     impl Recorder {
@@ -1025,6 +1068,11 @@ mod tests {
 
         fn clock_restarted(&self) -> bool {
             self.restart.replace(false)
+        }
+
+        fn blank(&self, on: bool) -> Result<()> {
+            self.blanks.borrow_mut().push(on);
+            Ok(())
         }
 
         fn draw(&mut self, provider: Option<Provider<'_>>) -> Result<()> {
@@ -1769,6 +1817,35 @@ mod tests {
             lp.run().unwrap();
         }
         assert_eq!((s.cleared, s.off), (1, 1));
+    }
+
+    #[test]
+    fn a_hold_blanks_once_draws_nothing_and_lights_the_next_frame() {
+        let mut r = Recorder::default();
+        let mut s = Sink::new();
+        let asked = Cell::new(0);
+        let polled = Cell::new(0);
+        {
+            let mut lp = Loop::new(&mut r, vec![&mut s]);
+            lp.frames = 2;
+            // the first frame draws, the next three iterations hold
+            lp.held = Some(Box::new(|| {
+                asked.set(asked.get() + 1);
+                (2..=4).contains(&asked.get())
+            }));
+            lp.poll = Some(Box::new(|| {
+                polled.set(polled.get() + 1);
+                false
+            }));
+            lp.idle_hook = Some(Box::new(|_| 0.0));
+            lp.run().unwrap();
+            assert_eq!(lp.drawn, 2);
+        }
+        assert_eq!(*r.blanks.borrow(), [true, false]);
+        assert_eq!(s.frames.len(), 2);
+        assert_eq!(s.on, 2);
+        assert_eq!(s.off, 2, "once for the hold, once on the way out");
+        assert_eq!(polled.get(), 5, "a held iteration still drains the host");
     }
 
     #[test]

@@ -3424,7 +3424,8 @@ $("#pAdd").addEventListener("click", ()=>{
   } else if (type === "bool"){
     into[name] = {type:"bool", value:false};
   } else if (type === "color"){
-    into[name] = {type:"color", value:"#ffffff"};
+    const typed = $("#pVal").value.trim();
+    into[name] = {type:"color", value: CSS.supports("color", typed) ? typed : "#ffffff"};
   } else if (VEC_ARITY[type]){
     into[name] = {type, value:Array(VEC_ARITY[type]).fill(0), min:parseFloat($("#pMin").value)||0, max:parseFloat($("#pMax").value)||1};
   } else {

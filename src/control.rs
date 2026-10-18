@@ -130,9 +130,8 @@ extern "C" fn on_signal(sig: c_int) {
 }
 
 /// Stop `control` on SIGINT and SIGTERM. A thread of ghee's own stops it, so
-/// the signal handler takes no lock. Call it once per render, on the thread
-/// that starts the render, before the render runs. The handlers stay
-/// installed after the render ends.
+/// the signal handler takes no lock. The handlers stay installed after the
+/// render ends.
 pub fn stop_on_signals(control: &Control) -> io::Result<()> {
     catch(control).map(|_| ())
 }

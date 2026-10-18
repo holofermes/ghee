@@ -378,7 +378,8 @@ pub struct Console {
     pub components: i32,
     /// The readback keeps the output pass's alpha.
     pub alpha: bool,
-    /// 0 renders until its control stops it. A count ends the console with the render.
+    /// 0 renders until its control stops it. A count ends the console with
+    /// the render.
     pub frames: u64,
     /// Pin engine time to frame * this, for a reproducible render.
     pub timestep: Option<f64>,
@@ -1937,7 +1938,8 @@ pub struct Options {
     pub components: i32,
     /// Keep the output pass's alpha in 4-component frames.
     pub alpha: bool,
-    /// 0 serves until `control` stops it. A count ends the console with the render.
+    /// 0 serves until `control` stops it. A count ends the console with the
+    /// render.
     pub frames: u64,
     pub timestep: Option<f64>,
     /// The GL device of a render with no display. None takes the first one

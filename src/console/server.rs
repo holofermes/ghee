@@ -3571,7 +3571,9 @@ mod tests {
         let states = crate::testing::TempDir::new("console-locks-states");
         let mut store = SceneStore::new(&d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(&*states));
-        let console = Arc::new(Console::new(store));
+        let mut console = Console::new(store);
+        console.hub.publish_every = 0.0;
+        let console = Arc::new(console);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let renderer = Rc::new(RefCell::new(gpu(16, 8)));
         let st = Rc::new(RefCell::new(Running::default()));

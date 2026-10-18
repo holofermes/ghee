@@ -2763,6 +2763,34 @@ pub fn format() -> Value {
                        "shapes": shapes, "fonts": fonts, "render": render})
 }
 
+/// Put `value` at the key of `at` in `look`, a layer as a scene declares it:
+/// a key of the layer, or a field of its effect `at.effect`. Null takes the
+/// key out. None when `look` holds no such effect.
+pub fn set_key(look: &mut Value, at: &Address, value: Value) -> Option<()> {
+    let into = match at.effect {
+        Some(effect) => look.get_mut(effect)?.as_object_mut()?,
+        None => look.as_object_mut()?,
+    };
+    match value {
+        Value::Null => into.remove(at.field),
+        v => into.insert(at.field.to_string(), v),
+    };
+    Some(())
+}
+
+/// Why a layer takes no live set of a key that it takes in its look: the key
+/// changes with a rebuild of the layer.
+#[derive(Debug)]
+pub struct Rebuild(pub String);
+
+impl std::fmt::Display for Rebuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Rebuild {}
+
 /// `items` as a sentence names them: "a, b and c".
 pub(crate) fn spoken(items: &[&str]) -> String {
     match items.split_last() {
@@ -2816,11 +2844,14 @@ impl Layer {
                     "{layer} {key} has no field '{field}', and the live fields of {key} are {}",
                     spoken(&live)
                 ),
-                Some(f) if f.change == Change::Rebuild => bail!(
-                    "{layer} {key} {field} changes with a rebuild, and the live fields of {key} \
-                     are {}",
-                    spoken(&live)
-                ),
+                Some(f) if f.change == Change::Rebuild => {
+                    return Err(Rebuild(format!(
+                        "{layer} {key} {field} changes with a rebuild, and the live fields of \
+                         {key} are {}",
+                        spoken(&live)
+                    ))
+                    .into())
+                }
                 Some(f) => match f.takes {
                     Takes::Colour => Form::Colour {
                         gradient: false,
@@ -2847,10 +2878,14 @@ impl Layer {
             },
             "image" if image => Form::Image,
             "text" if !image => Form::Words,
-            _ if EVERY_KEYS.contains(&field) || own.contains(&field) => bail!(
-                "{layer} {field} changes with a rebuild, and the live fields of {kind} are {}",
-                spoken(&live)
-            ),
+            "name" => bail!("{layer} keeps its name"),
+            _ if EVERY_KEYS.contains(&field) || own.contains(&field) => {
+                return Err(Rebuild(format!(
+                    "{layer} {field} changes with a rebuild, and the live fields of {kind} are {}",
+                    spoken(&live)
+                ))
+                .into())
+            }
             _ => bail!(
                 "{layer} has no field '{field}', and the live fields of {kind} are {}",
                 spoken(&live)

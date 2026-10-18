@@ -8,15 +8,15 @@
 //! renderer, then keeps by the rules of procedural::locks what changed.
 //! The renderer's scene is the scene's document.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
 use serde_json::{Map, Value};
 
-use crate::draw::{Arg, Call, CallKind};
+use crate::draw::{call_of, Arg, Call, CallKind};
 use crate::engine::{Given, Refused};
-use crate::layer::{Address, Layer};
+use crate::layer::{set_key, Address, Layer, Rebuild};
 use crate::looper::RenderTarget;
 use crate::procedural::locks::{call_keys, look_keys, Locks, Tuned};
 use crate::scene::{no_layer, no_param, ArraySize, ParamValue, Scene};
@@ -232,6 +232,10 @@ pub struct Live {
     locks: Arc<Mutex<Locks>>,
     /// The keys of layers that a console changed.
     tuned: Tuned,
+    /// The look of each layer of the scene's own, as the scene declared it.
+    own: HashMap<String, Value>,
+    /// The layers that the program added.
+    added: HashSet<String>,
     /// The scene was set up again, so restore() sets every kept value again.
     rebuilt: bool,
     layers: BTreeSet<String>,
@@ -275,6 +279,26 @@ fn name_of(look: &Value) -> Option<&str> {
     look.get("name").and_then(Value::as_str)
 }
 
+/// The look of the layer of `at` with the key of `at` at `given`, when the
+/// layer takes that key in its look but not live. None otherwise.
+fn rebuilt_look(renderer: &dyn RenderTarget, at: &Address, given: Given) -> Option<Value> {
+    let mut look = renderer.layer(at.layer)?;
+    let layer = Layer::from_dict("the layer", &look).ok()?;
+    layer
+        .live(at.effect, at.field)
+        .err()?
+        .downcast_ref::<Rebuild>()?;
+    let value = match given {
+        Given::Json(v) => v.clone(),
+        Given::Numbers([]) => Value::Null,
+        Given::Numbers([n]) => Value::from(f64::from(*n)),
+        Given::Numbers(ns) => ns.iter().map(|n| Value::from(f64::from(*n))).collect(),
+        Given::Text(t) => serde_json::from_str(t).unwrap_or_else(|_| Value::from(t)),
+    };
+    set_key(&mut look, at, value)?;
+    Some(look)
+}
+
 impl Default for Live {
     /// The live state of a scene that declares nothing, until bind().
     fn default() -> Live {
@@ -285,6 +309,8 @@ impl Default for Live {
             kept: HashMap::new(),
             locks: Arc::new(Mutex::new(Locks::default())),
             tuned: Tuned::default(),
+            own: HashMap::new(),
+            added: HashSet::new(),
             rebuilt: false,
             layers: BTreeSet::new(),
             params: BTreeSet::new(),
@@ -306,6 +332,14 @@ impl Live {
     /// values included, and take its values. The next tick reports every
     /// value. What the program set and what a console changed stay.
     pub fn bind(&mut self, scene: &Scene) {
+        self.own
+            .retain(|name, _| scene.layers().any(|l| l.name() == name));
+        for l in scene.layers() {
+            let name = l.name();
+            if !self.added.contains(name) && !self.own.contains_key(name) {
+                self.own.insert(name.to_string(), l.to_dict());
+            }
+        }
         let index = Index::of(scene);
         self.values = values_of(scene, &index);
         self.sent.clear();
@@ -354,15 +388,22 @@ impl Live {
         Ok(())
     }
 
-    /// Set the live field `at` to `given`, with no rebuild. The program set
-    /// it: it locks, and new words of a text layer reach no tick.
+    /// Set the field `at` to `given`: a live field with no rebuild, and any
+    /// other key of the layer by building the layer again alone. The program
+    /// set it: it locks, and new words of a text layer reach no tick.
     pub fn set_layer(
         &mut self,
-        renderer: &dyn RenderTarget,
+        renderer: &mut dyn RenderTarget,
         at: &Address,
         given: Given,
     ) -> Result<()> {
-        renderer.set_layer(at, given)?;
+        if let Err(e) = renderer.set_layer(at, given) {
+            let Some(look) = rebuilt_look(&*renderer, at, given) else {
+                return Err(e);
+            };
+            renderer.update_layer(&look)?;
+            self.took(&look);
+        }
         if let (None, "text") = (at.effect, at.field) {
             let words = match given {
                 Given::Json(v) => Some(v.clone()),
@@ -390,6 +431,7 @@ impl Live {
         renderer.add_layer(pass, index, look)?;
         self.took(look);
         if let Some(name) = name_of(look) {
+            self.added.insert(name.to_string());
             lock(&self.locks).set_keys(name, look_keys(look));
             self.layers.insert(name.to_string());
         }
@@ -398,10 +440,12 @@ impl Live {
     }
 
     /// Give the layer of the name of `look` that look, where each key that
-    /// `look` leaves out and a console changed keeps the console's value.
-    /// The keys of `look` lock. False when the layer had that look already.
+    /// `look` leaves out and a console changed keeps the console's value,
+    /// and each other key that it leaves out takes the scene's own value
+    /// for a layer of the scene's own. The keys of `look` lock. False when the layer had that look already.
     pub fn update_layer(&mut self, renderer: &mut dyn RenderTarget, look: &Value) -> Result<bool> {
         let kept = self.tuned.look(look, |n| renderer.layer(n));
+        let kept = self.own_look(kept.as_ref().unwrap_or(look)).or(kept);
         let given = kept.as_ref().unwrap_or(look);
         let changed = renderer.update_layer(given)?;
         if changed {
@@ -417,8 +461,8 @@ impl Live {
     }
 
     /// Give the layers of `calls` their looks, where a key that a call leaves
-    /// out and a console changed keeps the console's value. The keys that
-    /// each call passes lock. Returns the indexes of the calls that the
+    /// out takes the console's value, else the scene's own, as
+    /// update_layer() fills a look. The keys that each call passes lock. Returns the indexes of the calls that the
     /// renderer leaves for update_layer().
     pub fn update_calls(
         &mut self,
@@ -426,6 +470,7 @@ impl Live {
         calls: &[Call],
     ) -> Result<Vec<usize>> {
         let kept = self.tuned.calls(calls, |n| renderer.layer(n));
+        let kept = self.own_calls(kept.as_deref().unwrap_or(calls)).or(kept);
         let taken = renderer.update_calls(kept.as_deref().unwrap_or(calls))?;
         for &k in &taken.changed {
             let call = &calls[k];
@@ -444,6 +489,50 @@ impl Live {
         Ok(taken.left)
     }
 
+    /// `look` with each key that it leaves out at the scene's own value, for
+    /// a layer of the scene's own of the same kind. None when no key fills.
+    /// A drawn layer shows unless the program hides it.
+    fn own_look(&self, look: &Value) -> Option<Value> {
+        let own = self.own.get(name_of(look)?)?.as_object()?;
+        if own.get("shape") != look.get("shape")
+            || own.contains_key("image") != look.get("image").is_some()
+        {
+            return None;
+        }
+        let mut kept = look.clone();
+        let into = kept.as_object_mut()?;
+        let mut any = false;
+        for (k, v) in own.iter().filter(|(k, _)| *k != "visible") {
+            if !into.contains_key(k) {
+                into.insert(k.clone(), v.clone());
+                any = true;
+            }
+        }
+        any.then_some(kept)
+    }
+
+    /// `calls` with each key that a call leaves out at the scene's own
+    /// value, as own_look() fills a look. None when no key fills.
+    fn own_calls(&self, calls: &[Call]) -> Option<Vec<Call>> {
+        let mut kept = calls.to_vec();
+        let mut any = false;
+        for call in &mut kept {
+            let Some(own) = self.own.get(&call.layer).and_then(call_of) else {
+                continue;
+            };
+            if own.kind != call.kind {
+                continue;
+            }
+            for ((key, arg), was) in call.kind.keys().iter().zip(&mut call.args).zip(own.args) {
+                if *arg == Arg::None && was != Arg::None && *key != "visible" {
+                    *arg = was;
+                    any = true;
+                }
+            }
+        }
+        any.then_some(kept)
+    }
+
     /// Take layer `name` out of the scene, with no rebuild.
     pub fn remove_layer(&mut self, renderer: &mut dyn RenderTarget, name: &str) -> Result<()> {
         renderer.remove_layer(name)?;
@@ -452,6 +541,8 @@ impl Live {
         self.values.remove(&text);
         self.sent.remove(&text);
         self.tuned.forget(name);
+        self.own.remove(name);
+        self.added.remove(name);
         self.layers.remove(name);
         self.grown = true;
         Ok(())

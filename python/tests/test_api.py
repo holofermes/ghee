@@ -613,8 +613,8 @@ def test_a_layer_field_reaches_the_engine_live():
         h.set_layer("t", "visible", False, effect="glow")
         h.frame()
         assert max(h.pixels()[0::4]) == 0 and max(h.pixels()[1::4]) == 255
-        with pytest.raises(ValueError, match="font_size changes with a rebuild"):
-            h.set_layer("t", "font_size", 12)
+        with pytest.raises(ValueError, match="layer 't' keeps its name"):
+            h.set_layer("t", "name", "u")
 
 
 def test_a_shape_field_reaches_the_engine_live():
@@ -810,3 +810,4 @@ def test_a_handles_layers_list_their_names():
         assert repr(h.layers) == "<layers title, bar, dot>"
         with pytest.raises(TypeError, match="a layer's name is a str, got int"):
             h.layers[0]
+

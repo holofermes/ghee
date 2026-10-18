@@ -1105,3 +1105,88 @@ def test_a_picture_that_is_no_image_raises_type_error(image, error):
         screen.draw() as d,
     ):
         d.image(image(np))
+
+
+# A scene whose text layer `title` declares its place, its size and its
+# colour, red.
+OWN = {
+    "version": 1,
+    "passes": [
+        {
+            "name": "main",
+            "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+            "layers": [
+                {
+                    "name": "title",
+                    "text": "I",
+                    "x": 2,
+                    "y": 2,
+                    "font_size": 12,
+                    "color": "#ff0000",
+                }
+            ],
+        }
+    ],
+}
+
+
+def own(draw, layers, i):
+    """Frame 0 draws the scene's title by its name, frame 1 green, frame 2
+    leaves the colour out again, and frames 3 and 4 set its font_size
+    instead, the second larger."""
+    if i < 3:
+        with draw() as d:
+            d.text("I", name="title", color="#00ff00" if i == 1 else None)
+    else:
+        layers.title.font_size = 12 if i == 3 else 20
+
+
+OWNED = """#!{python}
+import ghee
+
+{own}
+
+@ghee.tick
+def show(tick):
+    own(ghee.draw, ghee.layers, tick.frame)
+
+
+ghee.run({scene!r})
+"""
+
+
+def test_a_scene_layer_keeps_its_own_values_on_a_screen_and_under_ghee_alike(tmp_path):
+    def peaks(px):
+        return [max(px[c::4]) for c in range(3)]
+
+    def lit(px):
+        return sum(1 for i in range(0, len(px), 4) if max(px[i : i + 3]) > 127)
+
+    frames = 5
+    size = 24 * 24 * 4
+    with ghee.open(OWN, width=24, height=24, timestep=0) as screen:
+        drawn = []
+        for i in range(frames):
+            own(screen.draw, screen.layers, i)
+            if i >= 3:
+                screen.frame()
+            drawn.append(screen.pixels())
+    lit_by = [[c > 127 for c in peaks(px)] for px in drawn[:3]]
+    assert lit_by == [[True, False, False], [False, True, False], [True, False, False]]
+    assert lit(drawn[4]) > lit(drawn[3])
+    if not CLI.exists():
+        pytest.skip(f"no {CLI} to run the scene")
+    path = tmp_path / "own.py"
+    path.write_text(
+        OWNED.format(python=sys.executable, own=inspect.getsource(own), scene=OWN)
+    )
+    path.chmod(0o755)
+    ran = subprocess.run(
+        [str(CLI), "render", str(path), "-o", "-", "--size", "24x24"]
+        + ["--frames", str(frames), "--timestep", "0"],
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert ran.returncode == 0, ran.stderr
+    assert [ran.stdout[i * size : (i + 1) * size] for i in range(frames)] == drawn

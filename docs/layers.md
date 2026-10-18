@@ -339,7 +339,5 @@ Change an effect's settings the same way:
 its default.
 
 Most changes show on the next frame, such as position, colour or opacity.
-From the console, changing a key such as `font_size`, or adding an effect,
-makes ghee build the layer again, which can take a few frames on a Pi 0 to 3.
-From Python, `screen.layers` changes only the keys that show on the next
-frame, and raises ValueError for the others.
+Changing a key such as `font_size`, or adding an effect, makes ghee build the
+layer again, which can take a few frames on a Pi 0 to 3.

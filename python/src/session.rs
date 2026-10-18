@@ -721,7 +721,7 @@ impl Session {
             field,
         };
         self.live
-            .set_layer(&self.renderer, &at, Given::Json(value))
+            .set_layer(&mut self.renderer, &at, Given::Json(value))
             .map_err(refusal)
     }
 

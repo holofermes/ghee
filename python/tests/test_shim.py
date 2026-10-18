@@ -984,10 +984,8 @@ LAYER_REFUSED = [
     (("nope", "x", 1, None), "layer 'nope' is not a layer this scene declares"),
     (("title", "sung", 1, "glow"), "layer 'title' has no effect 'glow'"),
     (("title", "colour", "#ff0000", None), "layer 'title' has no field 'colour'"),
-    (
-        ("title", "font_size", 12, None),
-        "layer 'title' font_size changes with a rebuild",
-    ),
+    (("title", "name", "t", None), "layer 'title' keeps its name"),
+    (("title", "font_size", "big", None), "layer 'title' font_size needs"),
     (("title", "x", "left", None), "layer 'title' x needs a number"),
 ]
 
@@ -1287,3 +1285,24 @@ def test_run_takes_what_open_takes(tmp_path, monkeypatch):
             **plain,
             "lockstep": True,
         }
+
+
+def test_a_key_that_rebuilds_its_layer_goes_out_as_its_value(monkeypatch):
+    shim = load()
+
+    @shim.tick
+    def hook(tick):
+        shim.layers.title.font_size = 20
+        shim.layers.title.font_family = "Pixel Operator 8"
+        shim.layers.title.glow = {}
+        shim.layers.title.font_size = None
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    _, out = drive(shim, layered(shim), ticks, monkeypatch)
+    assert messages(out) == [
+        (1, "title.font_size", [20.0]),
+        (3, "title.font_family", '"Pixel Operator 8"'),
+        (3, "title.glow", "{}"),
+        (1, "title.font_size", []),
+        END,
+    ]

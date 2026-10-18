@@ -23,8 +23,8 @@ use serde_json::{Map, Value};
 use crate::draw::{self, Arg, CallKind};
 use crate::engine::Blend;
 use crate::layer::{
-    every_dict, given, number, object, spoken, Every, Form, Live, Rgb, COLOUR_FORMS, IMAGE_KIND,
-    TEXT_KIND,
+    every_dict, given, number, object, spoken, Every, Form, Live, Rebuild, Rgb, COLOUR_FORMS,
+    IMAGE_KIND, TEXT_KIND,
 };
 use crate::scene::{known_keys, py_repr};
 
@@ -403,6 +403,12 @@ impl ShapeLayer {
             ],
             Shape::Circle { .. } => &["x", "y", "color", "opacity", "visible", "radius"],
         };
+        let rebuild = || {
+            Rebuild(format!(
+                "{layer} {field} changes with a rebuild, and the live fields of a {kind} are {}",
+                spoken(live)
+            ))
+        };
         let form = match field {
             "x" | "y" => Form::Number { none: true },
             "color" => Form::Colour {
@@ -416,10 +422,9 @@ impl ShapeLayer {
             "points" if kind == "line" => Form::Points,
             "stroke_width" if kind == "line" => Form::Number { none: false },
             "radius" if kind == "circle" => Form::Number { none: true },
-            "shape" | "blend" => bail!(
-                "{layer} {field} changes with a rebuild, and the live fields of a {kind} are {}",
-                spoken(live)
-            ),
+            "name" => bail!("{layer} keeps its name"),
+            "shape" | "blend" => return Err(rebuild().into()),
+            "border" if kind != "line" => return Err(rebuild().into()),
             _ => bail!(
                 "{layer} has no field '{field}', and the live fields of a {kind} are {}",
                 spoken(live)

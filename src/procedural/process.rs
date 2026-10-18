@@ -2878,8 +2878,24 @@ while IFS= read -r line; do :; done
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         assert!(pump(&mut f, |f| f.incoming.len() >= 7));
-        let mut stub = Stub::default();
+        let mut stub = Stub {
+            now: serde_json::json!({"name": "title", "text": "hi", "karaoke": {}}),
+            ..Stub::default()
+        };
         f.update(&mut stub, 0, 0.0).unwrap();
+        let looks: Vec<Value> = stub
+            .log
+            .borrow()
+            .iter()
+            .filter_map(|l| serde_json::from_str(l.strip_prefix("look ")?).ok())
+            .collect();
+        assert_eq!(
+            looks,
+            [
+                serde_json::json!({"name": "title", "text": "hi", "karaoke": {},
+                                "font_size": 20.0})
+            ]
+        );
         let fields = |n: &str, v: &str| (n.to_string(), v.to_string());
         assert_eq!(
             *stub.layers.borrow(),
@@ -2897,10 +2913,7 @@ while IFS= read -r line; do :; done
                 ParamValue::Float(f64::from(0.65f32))
             )]
         );
-        assert_eq!(
-            refused_names(&f),
-            ["nope.x", "title.font_size", "title.karaoke.sung.more"]
-        );
+        assert_eq!(refused_names(&f), ["nope.x", "title.karaoke.sung.more"]);
     }
 
     #[test]
@@ -3282,6 +3295,55 @@ while IFS= read -r line; do :; done
         assert_eq!(
             lock(&locks).to_json()["fields"],
             serde_json::json!(["title.font_size", "title.text"])
+        );
+    }
+
+    #[test]
+    fn a_kind_7_message_keeps_the_scene_s_value_of_each_key_that_it_leaves_out() {
+        let d = tmpdir("own");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "fragment": "void main(){}",
+                        "layers": [{"name": "title", "text": "hi", "x": 3, "font_size": 12,
+                                    "color": "red", "visible": false}]}],
+        });
+        let look = r#"{"name": "title", "text": "ho", "font_size": 9}"#;
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            message(7, "title", look.len() as u32, look.as_bytes()),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "own", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        let at = Address {
+            layer: "title",
+            effect: None,
+            field: "color",
+        };
+        console_layer(&mut f, &at, Value::from("lime"));
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            !f.incoming.is_empty()
+        }));
+        let mut stub = Stub {
+            now: serde_json::json!({"name": "title", "text": "hi", "x": 3, "font_size": 12,
+                                    "color": "lime", "visible": false}),
+            ..Stub::default()
+        };
+        f.update(&mut stub, 0, 0.0).unwrap();
+        let given = stub.log.borrow()[0]
+            .strip_prefix("look ")
+            .unwrap()
+            .to_string();
+        let mut given = serde_json::from_str::<Value>(&given).unwrap();
+        let x = given.as_object_mut().unwrap().remove("x");
+        assert_eq!(x.as_ref().and_then(Value::as_f64), Some(3.0));
+        assert_eq!(
+            given,
+            serde_json::json!({"color": "lime", "font_size": 9, "name": "title", "text": "ho"})
         );
     }
 

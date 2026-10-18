@@ -122,6 +122,9 @@ Use `name=` to name the layer of a call, as the console shows it. Without it,
 ghee names a new layer after its call, `text`, then `text2`, and so on. Two
 calls with the same name in a frame raise ValueError.
 
+To draw a layer of the scene, pass its name. A key that the call leaves out
+then keeps the value you gave it in the console, else the scene's.
+
 Use `screen.measure("HOT", font_size=12)` to get the width and height of words
 in pixels before you draw them, as for HOT above. Leave out `font_size` to
 measure them at the size that fits the screen.
@@ -158,8 +161,9 @@ a Pi 4 or 5, or a desktop, an array stores true floats, with no clamping.
 Use `set_param` to set a param of the scene, and `in_pass="blur"` to set the
 param of its [pass](scenes.md#passes) `blur`.
 
-Use `layers` to change a layer's keys at runtime, such as `x`, `color` or
-`text`.
+Use `layers` to change a layer's keys at runtime, such as `x`, `color`,
+`text` or `font_size`. Use `list(screen.layers)` to get the names of the
+layers.
 
 ## ghee.open
 

@@ -5,8 +5,8 @@
 //! each key of a layer that it sends locks in the console: a key of a look
 //! or of a call, or a live field. An effect sent whole is one key. A look or
 //! a call from the program that leaves out a key that a console changed
-//! keeps the console's value of it. Any other key left out takes its
-//! default.
+//! keeps the console's value of it. Any other key left out takes the value
+//! that the scene declares for a layer of its own, else its default.
 
 use std::collections::{HashMap, HashSet};
 

@@ -274,17 +274,19 @@ names.
 | 3 | `<layer>.text` | UTF-8 text | sets a text layer's words |
 | 3 | `<layer>.image` | UTF-8 text | sets an image layer's picture: an [image asset](layers.md#assets)'s name, or a `.png` or `.jpg` file's path |
 | 3 | `<layer>.color` | UTF-8 text | a colour as `#rrggbb` or a CSS colour name, or a text's gradient as JSON, `{"from": "red", "to": "yellow", "angle": 90}` |
+| 3 | `<layer>.key` | UTF-8 text | sets any other key of the layer: text, such as `mono` for `render`, or JSON for a list or an effect, such as `{"strength": 0.5}` for `glow` |
 | 4 | an array | bytes | feeds the array, each byte read as byte / 255 |
 | 5 | no name field | none | done with this frame, under [lockstep](#lockstep) |
 | 6 | a pass | JSON | adds a layer: `{"index": 0, "layer": {...}}`. `index` runs from 0, drawn first, to the pass's number of layers, which appends |
-| 7 | a layer | JSON | gives the layer the keys in the JSON, whose `name` must be the message's name. A key that it leaves out keeps the value from the [console](console.md#what-a-program-locks), else takes its default |
+| 7 | a layer | JSON | gives the layer the keys in the JSON, whose `name` must be the message's name. A key that it leaves out keeps the value from the [console](console.md#what-a-program-locks), else the scene's own value for a layer that the scene declares, else takes its default |
 | 8 | empty, length 0 | JSON | gives several layers their keys at once: a list of layers as kind 7 takes them, each layer at most once |
 | 9 | a layer | none, count 0 | removes the layer |
 | 10 | a layer | JSON | moves the layer among its pass's layers: `{"index": 2}` |
 
-Kinds 0, 1 and 3 set the layer keys that change at runtime ([Changing a
-layer at runtime](layers.md#changing-a-layer-at-runtime)). Passes and
-layers can't share a name: a scene that reuses one fails to load.
+Kinds 0, 1 and 3 set a key of a layer. A key that doesn't change at runtime,
+such as `font_size`, makes ghee build the layer again ([Changing a layer at
+runtime](layers.md#changing-a-layer-at-runtime)). Passes and layers can't
+share a name: a scene that reuses one fails to load.
 
 Before each frame, ghee applies what arrived: the newest data of each array,
 and the other messages in their order. Arrays and params keep their values

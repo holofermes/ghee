@@ -138,6 +138,8 @@ the desktop (`sudo systemctl stop lightdm` on Raspberry Pi OS), or boot the
 Pi to the command line (`sudo raspi-config`). The Linux text console steps
 aside by itself.
 
+ghee turns the display off when it ends or a program closes it.
+
 ghee draws at the display's own size. On a large HDMI screen, you can draw
 smaller with `--size`, and the display stretches the frame. A panel's size
 is fixed: given `--size` with a panel, ghee stops with an error.

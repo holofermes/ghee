@@ -138,6 +138,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   images and fonts in its folder, instead of failing to load them.
 - With `--host 0.0.0.0`, the console prints the addresses that reach it,
   instead of `localhost`.
+- ghee turns a display off when it lets go of it, instead of leaving the
+  kernel's console buffer lit on it.
 - A Pi 5's SPI or I2C panel shows the frame that the GPU drew, instead of
   stale fragments of earlier frames.
 - ghee frees each scene's GPU buffers at a switch. A console on a Pi 5 ran

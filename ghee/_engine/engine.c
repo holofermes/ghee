@@ -41,6 +41,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <sys/ioctl.h>
+#include <dirent.h>
+#include <linux/fb.h>
 #include "engine.h"
 #include "engine_internal.h"
 
@@ -271,7 +274,6 @@ struct GheeScene {
     bool display_mode;
     uint32_t disp_conn, disp_crtc;
     drmModeModeInfo disp_mode;
-    drmModeCrtc *disp_saved;
     struct gbm_bo *disp_prev;    // buffer of the most recent flip (pending or on the screen)
     struct gbm_bo *disp_shown;   // buffer of the flip before that (still on the screen until
                                  // the pending one completes, released after)
@@ -1191,27 +1193,52 @@ GheeScene *ghee_display_create_on(int card, int width, int height, const char *d
     return g;
 }
 
+// The kernel's fbdev emulation of a card, open, else -1. At the card's last
+// close the kernel lights the display again with the fbdev's own buffer.
+static int open_fbdev(int drm_fd) {
+    char dir[PATH_MAX + 16];
+    if (!node_device(drm_fd, dir)) return -1;
+    strcat(dir, "/graphics");
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    int fd = -1;
+    for (struct dirent *e; fd < 0 && (e = readdir(d));) {
+        if (strncmp(e->d_name, "fb", 2)) continue;
+        char node[300];
+        snprintf(node, sizeof node, "/dev/%s", e->d_name);
+        fd = open(node, O_RDWR | O_CLOEXEC);
+        if (fd < 0) SAY(1, "  display  cannot open %s: %s\n", node, strerror(errno));
+    }
+    closedir(d);
+    return fd;
+}
+
+static void zero_fbdev(int fb) {
+    struct fb_fix_screeninfo fix;
+    if (ioctl(fb, FBIOGET_FSCREENINFO, &fix)) return;
+    static const char zeros[4096];
+    for (size_t at = 0; at < fix.smem_len;) {
+        size_t n = fix.smem_len - at < sizeof zeros ? fix.smem_len - at : sizeof zeros;
+        ssize_t put = pwrite(fb, zeros, n, (off_t)at);
+        if (put <= 0) return;
+        at += (size_t)put;
+    }
+}
+
 void ghee_destroy(GheeScene *g) {
     if (!g) return;
     // every GL delete below needs THIS instance's context current: with two live
     // renderers the wrong context would destroy the other one's objects
     const bool have_gl = g->display != EGL_NO_DISPLAY && g->context != EGL_NO_CONTEXT;
     if (have_gl) make_current(g);
+    // The display ends dark. Removing its framebuffers turns its CRTC off. The
+    // kernel lights an fbdev again at the card's last close, so the fbdev is
+    // cleared before that close and blanked after it.
+    int fbdev = -1;
     if (g->display_mode) {
         stop_flipper(g);   // reap any in-flight flip before tearing the CRTC down
-        if (g->disp_plane && g->disp_saved) {
-            // The scaled path set no mode, so destroy puts none back. The plane
-            // still points at a buffer about to be freed, so hand it the old
-            // framebuffer at full size and leave the CRTC alone.
-            drmModeSetPlane(g->drm_fd, g->disp_plane, g->disp_crtc,
-                            g->disp_saved->buffer_id, 0,
-                            0, 0, g->disp_mode.hdisplay, g->disp_mode.vdisplay,
-                            0, 0, (uint32_t)g->disp_mode.hdisplay << 16,
-                            (uint32_t)g->disp_mode.vdisplay << 16);
-        } else if (g->disp_saved) {
-            drmModeSetCrtc(g->drm_fd, g->disp_saved->crtc_id, g->disp_saved->buffer_id,
-                           g->disp_saved->x, g->disp_saved->y, &g->disp_conn, 1, &g->disp_saved->mode);
-        }
+        fbdev = open_fbdev(g->drm_fd);
+        if (fbdev >= 0) zero_fbdev(fbdev);
         release_bo(g, g->disp_shown);
         release_bo(g, g->disp_prev);
         drmDropMaster(g->drm_fd);
@@ -1262,6 +1289,10 @@ void ghee_destroy(GheeScene *g) {
     if (g->gbm) gbm_device_destroy(g->gbm);
     if (g->gpu_fd >= 0) close(g->gpu_fd);
     if (g->drm_fd >= 0) close(g->drm_fd);
+    if (fbdev >= 0) {
+        ioctl(fbdev, FBIOBLANK, FB_BLANK_POWERDOWN);
+        close(fbdev);
+    }
     free(g->last_error);
     free(g->read_error);
     free(g);
@@ -3399,13 +3430,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     if (g->disp_plane) {
         // The mode is already set: the plane carries each frame from here, and
         // the wait inside means the buffer before this one is off the glass.
-        if (g->disp_first) {
-            // ghee_display_blank sets disp_first again on a relight, with the
-            // CRTC already disabled. Only the first capture holds what
-            // ghee_destroy restores.
-            if (!g->disp_saved) g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
-            g->disp_first = false;
-        }
+        g->disp_first = false;
         g->frames++;
         if (set_scaled_plane(g, fb, g->out_w, g->out_h)) {
             release_bo(g, g->disp_shown);
@@ -3416,7 +3441,6 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
             release_bo(g, bo);
         }
     } else if (g->disp_first) {
-        if (!g->disp_saved) g->disp_saved = drmModeGetCrtc(g->drm_fd, g->disp_crtc);
         g->frames++;
         if (drmModeSetCrtc(g->drm_fd, g->disp_crtc, fb, 0, 0, &g->disp_conn, 1, &g->disp_mode))
             set_error(g, "drmModeSetCrtc failed: %s", strerror(errno));

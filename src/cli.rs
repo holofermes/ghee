@@ -20,10 +20,11 @@ use std::fs::File;
 use std::io::{stdout, Stdout, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use clap::error::{ContextKind, ErrorKind};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde_json::{Map, Value};
 
 use crate::console::server;
@@ -39,7 +40,7 @@ use crate::output::{
     expand_pattern, is_image_name, AlphaForm, FixedPacer, ImageSequence, RawStream, Scanout,
 };
 use crate::overlay;
-use crate::procedural::process::{self, SceneProcess};
+use crate::procedural::process::{self, Program, SceneProcess};
 use crate::procedural::{load_scene, scene_name};
 use crate::report;
 use crate::scene::{Pass, Reach, Scene};
@@ -254,7 +255,7 @@ fn scene_args_help(a: &Ns) -> Result<()> {
         return Ok(());
     }
     let set = scene_set(a)?;
-    let prog = match a.cmd {
+    let prog = match a.cmd.as_str() {
         "serve" => "ghee serve --".to_string(),
         _ => format!("ghee render {} --", set.first().map_or("", |(n, _)| n)),
     };
@@ -269,17 +270,27 @@ fn scene_args_help(a: &Ns) -> Result<()> {
 /// order: the scene's own first, then --filters. A scene process sizes
 /// itself on the display's card, which `card` holds from then on.
 fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProcess>)> {
-    let path = find_scene(text(&a.scene), a.demo)?;
+    let path = match &a.here {
+        Some(here) => here.path.clone(),
+        None => find_scene(text(&a.scene), a.demo)?,
+    };
     report::detail("scene", &path);
-    let (mut scene, mut process) = match process::executable(&path) {
-        Some(exe) => {
-            let turned = a.rotate == 90 || a.rotate == 270;
-            let (w, h) = prospective_size(a, card)?;
-            let size = if turned { (h, w) } else { (w, h) };
-            let (scene, fed) = SceneProcess::start(&exe, &a.scene_args, Reach::Any, size, |_| {})?;
-            (scene, Some(fed))
-        }
-        None => (load_scene(&path, &a.scene_args, true)?, None),
+    let program = a.here.as_ref().map(|h| Arc::clone(&h.program));
+    let exe = process::executable(&path).filter(|_| program.is_none());
+    let (mut scene, mut process) = if program.is_some() || exe.is_some() {
+        let turned = a.rotate == 90 || a.rotate == 270;
+        let (w, h) = prospective_size(a, card)?;
+        let size = if turned { (h, w) } else { (w, h) };
+        let (scene, fed) = match (program, exe) {
+            (Some(program), _) => SceneProcess::here(&path, program, Reach::Any, size, |_| {})?,
+            (None, Some(exe)) => {
+                SceneProcess::start(&exe, &a.scene_args, Reach::Any, size, |_| {})?
+            }
+            (None, None) => unreachable!("one of the two is there"),
+        };
+        (scene, Some(fed))
+    } else {
+        (load_scene(&path, &a.scene_args, true)?, None)
     };
     let mut names = scene.filters.clone();
     names.extend(
@@ -423,10 +434,11 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
     }
     let pattern = text(&a.output);
     if a.frames.is_some_and(|n| n > 1) && expand_pattern(pattern, 0)? == pattern {
-        return Err(exit(
-            "render: multiple frames into one filename; number them with \
+        return Err(exit(format!(
+            "{}: multiple frames into one filename; number them with \
              a # run (frame.####.png)",
-        ));
+            a.cmd
+        )));
     }
     let save_opts = match given(&a.save_opts) {
         true => Some(parse_kv(
@@ -510,7 +522,7 @@ const SIGINT: c_int = 2;
 const SIGTERM: c_int = 15;
 
 extern "C" {
-    fn signal(sig: c_int, handler: extern "C" fn(c_int)) -> usize;
+    fn signal(sig: c_int, handler: usize) -> usize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn __errno_location() -> *mut c_int;
 }
@@ -530,31 +542,40 @@ extern "C" fn on_signal(sig: c_int) {
 }
 
 /// SIGINT and SIGTERM record the signal, and a thread of their own stops the
-/// console, which blocks in its own server.
-fn catch_signals() -> std::io::Result<()> {
+/// console, which blocks in its own server. Returns the handlers of SIGINT
+/// and SIGTERM that these replaced.
+fn catch_signals() -> std::io::Result<[usize; 2]> {
     use std::io::Read;
     use std::os::fd::IntoRawFd;
-    let (wake, woken) = std::os::unix::net::UnixStream::pair()?;
-    wake.set_nonblocking(true)?;
-    WAKE.store(wake.into_raw_fd(), Ordering::SeqCst);
-    std::thread::Builder::new()
-        .name("ghee-signals".into())
-        .spawn(move || {
-            let mut bytes = [0u8; 64];
-            loop {
-                match (&woken).read(&mut bytes) {
-                    Ok(0) => return,
-                    Ok(_) => server::stop(),
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => return,
+    if WAKE.load(Ordering::SeqCst) < 0 {
+        let (wake, woken) = std::os::unix::net::UnixStream::pair()?;
+        wake.set_nonblocking(true)?;
+        WAKE.store(wake.into_raw_fd(), Ordering::SeqCst);
+        std::thread::Builder::new()
+            .name("ghee-signals".into())
+            .spawn(move || {
+                let mut bytes = [0u8; 64];
+                loop {
+                    match (&woken).read(&mut bytes) {
+                        Ok(0) => return,
+                        Ok(_) => server::stop(),
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => return,
+                    }
                 }
-            }
-        })?;
-    unsafe {
-        signal(SIGINT, on_signal);
-        signal(SIGTERM, on_signal);
+            })?;
     }
-    Ok(())
+    SIGNALLED.store(0, Ordering::SeqCst);
+    let handler = on_signal as extern "C" fn(c_int) as usize;
+    unsafe { Ok([signal(SIGINT, handler), signal(SIGTERM, handler)]) }
+}
+
+/// Put back the handlers of SIGINT and SIGTERM that catch_signals() replaced.
+fn release_signals(held: [usize; 2]) {
+    unsafe {
+        signal(SIGINT, held[0]);
+        signal(SIGTERM, held[1]);
+    }
 }
 
 /// True when the reader at the far end of the pipe is gone.
@@ -571,6 +592,11 @@ fn broken_pipe(e: &anyhow::Error) -> bool {
 
 /// One render into as many sinks as the flags ask for.
 fn cmd_render(a: &Ns) -> Result<()> {
+    render(a, None)
+}
+
+/// cmd_render(), with `card` open already for --display.
+fn render(a: &Ns, card: Option<Card>) -> Result<()> {
     // before anything opens: the tokens after `--` own their own --help
     scene_args_help(a)?;
     if a.serve && given(&a.filters) {
@@ -616,7 +642,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     report::apply(a);
     // the scene loads first: it owns the tokens after `--` and their --help. A
     // rejected scene fails before a display opens.
-    let mut card = None;
+    let mut card = card;
     let scene = if a.serve {
         None
     } else {
@@ -757,7 +783,7 @@ fn cmd_render(a: &Ns) -> Result<()> {
     }
     r.close();
     if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
-        std::process::exit(143);
+        return Ok(());
     }
     ran?;
     closed?;
@@ -786,11 +812,17 @@ fn serve(
     card: Option<Card>,
 ) -> Result<()> {
     let (mut scenes_dir, mut store) = (None, None);
-    let my_scenes = match a.cmd {
+    let my_scenes = match a.cmd.as_str() {
         "serve" => Some(my_scenes(a)?),
         _ => None,
     };
-    if let Some(scene) = &a.scene {
+    if let Some(here) = &a.here {
+        store = Some(SceneStore::here(
+            &here.path,
+            Arc::clone(&here.program),
+            Vec::new(),
+        ));
+    } else if let Some(scene) = &a.scene {
         let path = find_scene(scene, a.demo)?;
         if Path::new(&path).is_dir() {
             scenes_dir = Some(path);
@@ -831,10 +863,10 @@ fn serve(
         pacer: console_pacer(a),
         ..Default::default()
     });
-    if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
-        std::process::exit(143);
+    match SIGNALLED.load(Ordering::SeqCst) {
+        SIGTERM => Ok(()),
+        _ => ran,
     }
-    ran
 }
 
 /// The directory of the scenes that `ghee serve` makes: --my-scenes, else
@@ -1243,7 +1275,7 @@ struct RenderFlags {
 /// per command, so each command declares it.
 #[derive(Args)]
 struct ConsoleFlags {
-    #[arg(long, default_value_t = 8090)]
+    #[arg(long, default_value_t = 8090, help = "the console's port")]
     port: u16,
 
     #[arg(
@@ -1466,7 +1498,8 @@ struct OverlayArgs {
 /// over a directory. It carries render's whole namespace, and every flag it
 /// does not offer keeps its default.
 pub struct Ns {
-    cmd: &'static str,
+    /// The command's name, which each of its error lines starts with.
+    cmd: String,
     scene: Option<String>,
     demo: bool,
     output: Option<String>,
@@ -1503,12 +1536,15 @@ pub struct Ns {
     pub quiet: bool,
     pub verbose: bool,
     scene_args: Vec<String>,
+    /// The program in this process that writes the scene, for a scene that
+    /// renders itself.
+    here: Option<Here>,
 }
 
 impl RenderArgs {
     fn ns(self, scene_args: Vec<String>) -> Ns {
         Ns {
-            cmd: "render",
+            cmd: "render".to_string(),
             scene: Some(self.scene),
             demo: self.demo,
             output: self.output,
@@ -1547,6 +1583,7 @@ impl RenderArgs {
             stream_fps: self.console.stream_fps,
             bitrate: self.bitrate,
             scene_args,
+            here: None,
         }
     }
 }
@@ -1554,7 +1591,7 @@ impl RenderArgs {
 impl ServeArgs {
     fn ns(self, scene_args: Vec<String>) -> Ns {
         Ns {
-            cmd: "serve",
+            cmd: "serve".to_string(),
             // --demo leaves it None: the bundled examples
             scene: self.scenes,
             demo: self.demo,
@@ -1591,6 +1628,7 @@ impl ServeArgs {
             stream_fps: self.console.stream_fps,
             bitrate: self.bitrate,
             scene_args,
+            here: None,
         }
     }
 }
@@ -1704,19 +1742,183 @@ pub fn main(argv: Vec<String>) -> i32 {
         return 1;
     }
     let (cmd, ran) = dispatch(cli, scene_args);
+    status(cmd, ran)
+}
+
+/// The exit status of command `cmd` that ended with `ran`: 143 after a
+/// SIGTERM, else 1 for an error, which this prints.
+fn status(cmd: &str, ran: Result<()>) -> i32 {
+    if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
+        return 143;
+    }
     match ran {
         Ok(()) => 0,
         Err(e) => {
-            if std::env::var("GHEE_TRACEBACK").is_ok_and(|v| !v.is_empty()) {
-                eprintln!("{e:?}");
-            } else if let Some(line) = e.downcast_ref::<Exit>() {
-                eprintln!("{line}");
-            } else {
-                eprintln!("{cmd}: {e:#}");
-            }
+            say_failure(cmd, &e);
             1
         }
     }
+}
+
+/// Print `e`, the failure of command `cmd`, as the command line prints it.
+pub fn say_failure(cmd: &str, e: &anyhow::Error) {
+    if std::env::var("GHEE_TRACEBACK").is_ok_and(|v| !v.is_empty()) {
+        eprintln!("{e:?}");
+    } else if let Some(line) = e.downcast_ref::<Exit>() {
+        eprintln!("{line}");
+    } else {
+        eprintln!("{cmd}: {e:#}");
+    }
+}
+
+// ------------------------------------------------- a scene that renders itself
+
+/// The flags of `ghee render` that a scene's program takes when it renders
+/// itself, by their long names.
+pub const DIRECT_FLAGS: [&str; 15] = [
+    "output",
+    "display",
+    "rgb565",
+    "drop",
+    "serve",
+    "port",
+    "host",
+    "size",
+    "fps",
+    "stats",
+    "frames",
+    "timestep",
+    "rotate",
+    "brightness",
+    "dri",
+];
+
+/// A flag of `ghee render`, as its --help shows it.
+pub struct Flag {
+    pub long: String,
+    pub short: Option<char>,
+    /// The flag takes a value: always, never, or as `--display` takes one.
+    pub takes: Takes,
+    pub help: String,
+    /// The name of its value.
+    pub metavar: Option<String>,
+    pub default: Option<String>,
+}
+
+/// Whether a flag takes a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Takes {
+    Never,
+    Always,
+    Maybe,
+}
+
+/// The flags of DIRECT_FLAGS, in that order.
+pub fn direct_flags() -> Vec<Flag> {
+    let cli = Cli::command();
+    let render = cli
+        .find_subcommand("render")
+        .expect("ghee has a render command");
+    DIRECT_FLAGS
+        .iter()
+        .filter_map(|id| render.get_arguments().find(|a| a.get_id() == *id))
+        .map(|a| {
+            let takes = match a.get_num_args() {
+                _ if !a.get_action().takes_values() => Takes::Never,
+                Some(r) if r.min_values() == 0 => Takes::Maybe,
+                _ => Takes::Always,
+            };
+            Flag {
+                long: a.get_long().unwrap_or_default().to_string(),
+                short: a.get_short(),
+                takes,
+                help: a.get_help().map(ToString::to_string).unwrap_or_default(),
+                metavar: a
+                    .get_value_names()
+                    .and_then(|v| v.first())
+                    .map(ToString::to_string),
+                default: a
+                    .get_default_values()
+                    .first()
+                    .filter(|_| takes != Takes::Never)
+                    .map(|v| v.to_string_lossy().into_owned()),
+            }
+        })
+        .collect()
+}
+
+/// The program of a scene that renders itself: the path of its file, and
+/// the program, which runs in this process.
+pub struct Here {
+    pub path: String,
+    pub program: Arc<dyn Program>,
+}
+
+/// The namespace of a render of `here` with `flags`, flags of DIRECT_FLAGS
+/// alone, or the line that says why the flags make none. With no -o and no
+/// --serve the frames go to the display.
+fn direct_ns(prog: &str, flags: &[String], here: Option<Here>) -> Result<Ns, String> {
+    let path = here.as_ref().map_or("-", |h| h.path.as_str());
+    let argv = ["ghee", "render", path]
+        .into_iter()
+        .map(String::from)
+        .chain(flags.iter().cloned());
+    let cli = Cli::try_parse_from(argv).map_err(|e| clap_line(&e))?;
+    let Command::Render(r) = cli.cmd else {
+        unreachable!("the command line names render")
+    };
+    let mut a = r.ns(Vec::new());
+    a.cmd = prog.to_string();
+    if !given(&a.output) && !given(&a.display) && !a.serve {
+        a.display = Some("kms".to_string());
+    }
+    a.here = here;
+    Ok(a)
+}
+
+/// Why `flags`, flags of DIRECT_FLAGS alone, make no render: the line, as
+/// `argument --rotate: ...`. None when they make one.
+pub fn direct_check(flags: &[String]) -> Option<String> {
+    direct_ns("", flags, None).err()
+}
+
+/// One line for a flag that clap refuses.
+fn clap_line(e: &clap::Error) -> String {
+    let arg = e.get(ContextKind::InvalidArg).map(|v| v.to_string());
+    let value = e.get(ContextKind::InvalidValue).map(|v| v.to_string());
+    let why = std::error::Error::source(e).map(ToString::to_string);
+    match (arg, value, why) {
+        (Some(arg), Some(value), Some(why)) => {
+            let flag = arg.split(' ').next().unwrap_or_default();
+            format!("argument {flag}: {why}, got '{value}'")
+        }
+        _ => {
+            let text = e.to_string();
+            let first = text.lines().next().unwrap_or_default();
+            first.trim_start_matches("error: ").to_string()
+        }
+    }
+}
+
+/// Render `here` as `ghee render` renders a scene, with `flags`, flags of
+/// DIRECT_FLAGS alone, and `card` open already for the display. Returns the
+/// exit status of `ghee render`, or the failure, which say_failure() prints
+/// as `ghee render` prints it, each line starting with `prog`.
+pub fn direct(prog: &str, flags: &[String], here: Here, card: Option<Card>) -> Result<i32> {
+    let a = match direct_ns(prog, flags, Some(here)) {
+        Ok(a) => a,
+        Err(why) => {
+            eprintln!("{prog}: error: {why}");
+            return Ok(2);
+        }
+    };
+    let held = catch_signals()?;
+    let ran = render(&a, card);
+    release_signals(held);
+    if SIGNALLED.load(Ordering::SeqCst) == SIGTERM {
+        return Ok(143);
+    }
+    ran.map(|()| 0)
 }
 
 #[cfg(test)]
@@ -2312,5 +2514,65 @@ mod tests {
         assert!(in_examples(path));
         let a = ns(&["render", "--demo", "bars", "--serve"]);
         assert!(one_scene_store(&a, path).unwrap().demo);
+    }
+
+    /// A program in this process: one red pass, which answers each tick
+    /// with nothing.
+    struct Red;
+
+    impl Program for Red {
+        fn start(&self, _size: (i32, i32)) -> Result<Value> {
+            Ok(serde_json::from_str(SCENE)?)
+        }
+
+        fn answer(&self, _tick: &str) -> Result<Vec<u8>> {
+            Ok(vec![5])
+        }
+    }
+
+    #[test]
+    fn a_scene_that_renders_itself_takes_its_flags_from_ghee_render() {
+        let flags = direct_flags();
+        let longs: Vec<&str> = flags.iter().map(|f| f.long.as_str()).collect();
+        assert_eq!(longs, DIRECT_FLAGS);
+        let output = &flags[0];
+        assert_eq!((output.short, output.takes), (Some('o'), Takes::Always));
+        assert!(output.help.starts_with("image pattern"), "{}", output.help);
+        assert_eq!(flags[1].takes, Takes::Maybe);
+        assert_eq!(flags[2].takes, Takes::Never);
+        assert_eq!(flags[5].default.as_deref(), Some("8090"));
+        assert_eq!(direct_check(&argv(&["--rotate=90", "-o", "f.png"])), None);
+        assert_eq!(
+            direct_check(&argv(&["--rotate=45"])).unwrap(),
+            "argument --rotate: wants 0, 90, 180 or 270, got '45'"
+        );
+        let a = direct_ns("feeder.py", &[], None).unwrap();
+        assert_eq!((a.cmd.as_str(), text(&a.display)), ("feeder.py", "kms"));
+        assert!(direct_ns("x", &argv(&["--serve"]), None)
+            .unwrap()
+            .display
+            .is_none());
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_scene_that_renders_itself_renders_as_ghee_render() {
+        let d = tmpdir("here");
+        let here = || Here {
+            path: format!("{d}/red.py"),
+            program: Arc::new(Red),
+        };
+        let frame = format!("{d}/f.png");
+        let flags = argv(&["-o", &frame, "--size", "8x4"]);
+        assert_eq!(direct("red.py", &flags, here(), None).unwrap(), 0);
+        let png = fs::read(&frame).unwrap();
+        assert_eq!(&png[1..4], b"PNG");
+        let flags = argv(&["-o", &frame, "--frames", "2"]);
+        let a = direct_ns("red.py", &flags, Some(here())).unwrap();
+        let e = render(&a, None).unwrap_err().to_string();
+        assert!(
+            e.starts_with("red.py: multiple frames into one filename"),
+            "{e}"
+        );
     }
 }

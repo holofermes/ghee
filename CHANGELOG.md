@@ -146,6 +146,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - ghee puts a pass's `#extension` lines above its own declarations, so
   `fwidth`, `dFdx` and `dFdy` compile on every GPU that has them, instead of
   on none ([Passes](docs/scenes.md#passes)).
+- ghee refuses a frame or a pass past the GPU's texture size, 2048 pixels a
+  side on a Pi Zero to Pi 3, and names the cap, instead of failing with a
+  GL error.
 
 ## 0.4.0 - 2026-08-06
 

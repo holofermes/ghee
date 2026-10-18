@@ -1387,6 +1387,16 @@ impl Renderer {
             self.error = e;
             return Ok(self.error.clone());
         }
+        let past = self.past_max("the frame", frame.0, frame.1).or_else(|| {
+            drawn.iter().find_map(|p| {
+                let (w, h) = p.size_in(frame)?;
+                self.past_max(&format!("pass '{}'", p.name), w, h)
+            })
+        });
+        if let Some(e) = past {
+            self.error = e;
+            return Ok(self.error.clone());
+        }
         let assets = scene
             .assets
             .iter()
@@ -5205,9 +5215,9 @@ impl Renderer {
         i64::from(unsafe { ffi::ghee_max_texture_size(self.handle) })
     }
 
-    /// The error for `what`, an array or an image of `w` x `h` pixels, when a
-    /// side is past max_texture_size(). GL refuses a texture past it, and a
-    /// pass then samples black.
+    /// The error for `what`, the frame, a pass, an array or an image of `w` x
+    /// `h` pixels, when a side is past max_texture_size(). GL refuses a
+    /// texture past it.
     fn past_max(&self, what: &str, w: i64, h: i64) -> Option<String> {
         let max = self.max_texture_size();
         (w.max(h) > max)
@@ -7534,7 +7544,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn an_array_or_an_image_past_the_gpus_texture_size_is_refused_and_the_scene_runs_on() {
+    fn a_pass_an_array_or_an_image_past_the_gpus_texture_size_is_refused_and_the_scene_runs_on() {
         let (_g, mut r) = gpu();
         assert_eq!(r.setup(&flat_scene()).unwrap(), "");
         let before = r.render(None).unwrap().to_vec();
@@ -7568,6 +7578,12 @@ mod tests {
                 (sc, format!("array 'a' is {w}x{h}, {cap}"))
             })
             .collect();
+        let mut sized = scene_of(json!([
+            {"name": "wide", "size": [4, 1], "fragment": white},
+            {"name": "main", "channels": [{"buffer": "wide"}], "fragment": white},
+        ]));
+        sized.passes[0].size = Some((over, 1));
+        rows.push((sized, format!("pass 'wide' is {over}x1, {cap}")));
         for (doc, want) in [
             (
                 json!({"version": 1, "assets": {"sky": {"file": "wide.png"}},
@@ -7621,6 +7637,20 @@ mod tests {
             format!("layer 'pic': 'wide.png' is {over}x1, {cap}")
         );
         assert_eq!(r.render(None).unwrap(), shown);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_frame_past_the_gpus_texture_size_is_refused() {
+        let max = gpu().1.max_texture_size();
+        let (_g, mut r) = gpu_at(max as usize + 1, 1);
+        assert_eq!(
+            r.setup(&flat_scene()).unwrap(),
+            format!(
+                "the frame is {}x1, over this GPU's {max} pixel cap of a side",
+                max + 1
+            )
+        );
     }
 
     #[test]
